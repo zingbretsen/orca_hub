@@ -16,8 +16,7 @@ defmodule OrcaHub.MCP.Plug do
 
   @impl true
   def call(%{method: "POST"} = conn, _opts) do
-    {:ok, body, conn} = read_body(conn)
-    message = Jason.decode!(body)
+    message = conn.body_params
 
     case message do
       %{"method" => "initialize", "id" => _id} ->
