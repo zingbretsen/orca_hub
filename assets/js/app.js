@@ -25,11 +25,24 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/orca_hub"
 import topbar from "../vendor/topbar"
 
+let Hooks = {
+  ...colocatedHooks,
+  ScrollToBottom: {
+    mounted() { this.scrollToBottom() },
+    updated() {
+      const threshold = 100
+      const atBottom = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < threshold
+      if (atBottom) this.scrollToBottom()
+    },
+    scrollToBottom() { this.el.scrollTop = this.el.scrollHeight }
+  }
+}
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: Hooks,
 })
 
 // Show progress bar on live navigation and form submits

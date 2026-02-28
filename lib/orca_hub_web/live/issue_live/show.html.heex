@@ -1,0 +1,80 @@
+<.header>
+  <.link navigate={~p"/issues"} class="text-sm opacity-70">&larr; Issues</.link>
+  <span class="ml-2">{@issue.title}</span>
+  <span class={[
+    "badge ml-2",
+    @issue.status == "open" && "badge-info",
+    @issue.status == "in_progress" && "badge-warning",
+    @issue.status == "closed" && "badge-success"
+  ]}>
+    {@issue.status}
+  </span>
+  <:actions>
+    <div class="flex gap-2">
+      <button :if={@issue.status != "closed"} phx-click="update_status" phx-value-status="closed" class="btn btn-sm btn-success">
+        Close
+      </button>
+      <button :if={@issue.status == "closed"} phx-click="update_status" phx-value-status="open" class="btn btn-sm btn-info">
+        Reopen
+      </button>
+      <.link patch={~p"/issues/#{@issue.id}/edit"} class="btn btn-sm">Edit</.link>
+    </div>
+  </:actions>
+</.header>
+
+<div :if={@issue.description} class="mt-4 p-4 bg-base-200 rounded-lg whitespace-pre-wrap text-sm">
+  {@issue.description}
+</div>
+
+<div class="mt-8">
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">Sessions</h3>
+    <button :if={@session_form == nil} phx-click="start_session" class="btn btn-sm btn-primary">
+      Start Session
+    </button>
+  </div>
+
+  <div :if={@session_form} class="card bg-base-200 p-4 mb-4">
+    <h4 class="font-medium mb-3">New Session for this Issue</h4>
+    <.form for={@session_form} phx-submit="create_session" class="space-y-3">
+      <div class="flex gap-2 items-end">
+        <div class="flex-1">
+          <.input field={@session_form[:directory]} type="text" label="Directory" placeholder="/home/zach/my-project" />
+        </div>
+      </div>
+      <.input field={@session_form[:model]} type="select" label="Model" options={[
+        {"Default", ""},
+        {"Opus", "opus"},
+        {"Sonnet", "sonnet"},
+        {"Haiku", "haiku"}
+      ]} />
+      <.input field={@session_form[:title]} type="text" label="Title (optional)" />
+      <div class="flex justify-end gap-2">
+        <button type="button" phx-click="cancel_session" class="btn btn-sm">Cancel</button>
+        <.button type="submit" class="btn-sm">Create & Start</.button>
+      </div>
+    </.form>
+  </div>
+
+  <div :if={@issue.sessions == []} class="text-sm text-base-content/50 p-4 text-center">
+    No sessions yet. Start one to begin working on this issue.
+  </div>
+
+  <.table :if={@issue.sessions != []} id="issue-sessions" rows={@issue.sessions}>
+    <:col :let={session} label="Title">{session.title || session.directory}</:col>
+    <:col :let={session} label="Status">
+      <span class={[
+        "badge",
+        session.status == "running" && "badge-warning",
+        session.status == "idle" && "badge-success",
+        session.status == "error" && "badge-error"
+      ]}>
+        {session.status}
+      </span>
+    </:col>
+    <:col :let={session} label="Model">{session.model || "default"}</:col>
+    <:action :let={session}>
+      <.link navigate={~p"/sessions/#{session.id}"}>View</.link>
+    </:action>
+  </.table>
+</div>

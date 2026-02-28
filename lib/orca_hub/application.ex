@@ -12,9 +12,8 @@ defmodule OrcaHub.Application do
       OrcaHub.Repo,
       {DNSCluster, query: Application.get_env(:orca_hub, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: OrcaHub.PubSub},
-      # Start a worker by calling: OrcaHub.Worker.start_link(arg)
-      # {OrcaHub.Worker, arg},
-      # Start to serve requests, typically the last entry
+      {Registry, keys: :unique, name: OrcaHub.SessionRegistry},
+      OrcaHub.SessionSupervisor,
       OrcaHubWeb.Endpoint
     ]
 

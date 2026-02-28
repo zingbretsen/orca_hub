@@ -1,0 +1,54 @@
+<.header>
+  Issues
+  <:actions>
+    <.link patch={~p"/issues/new"}>
+      <.button>New Issue</.button>
+    </.link>
+  </:actions>
+</.header>
+
+<.table id="issues" rows={@streams.issues}>
+  <:col :let={{_id, issue}} label="Title">{issue.title}</:col>
+  <:col :let={{_id, issue}} label="Status">
+    <span class={[
+      "badge",
+      issue.status == "open" && "badge-info",
+      issue.status == "in_progress" && "badge-warning",
+      issue.status == "closed" && "badge-success"
+    ]}>
+      {issue.status}
+    </span>
+  </:col>
+  <:action :let={{_id, issue}}>
+    <.link navigate={~p"/issues/#{issue.id}"}>View</.link>
+  </:action>
+  <:action :let={{_id, issue}}>
+    <.link patch={~p"/issues/#{issue.id}/edit"}>Edit</.link>
+  </:action>
+  <:action :let={{_id, issue}}>
+    <.link phx-click="delete" phx-value-id={issue.id} data-confirm="Delete this issue?">
+      Delete
+    </.link>
+  </:action>
+</.table>
+
+<div :if={@live_action in [:new, :edit]} class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+  <div class="card bg-base-100 shadow-xl w-full max-w-md p-6">
+    <h2 class="text-lg font-semibold mb-4">{if @live_action == :new, do: "New Issue", else: "Edit Issue"}</h2>
+    <.form for={@form} phx-submit="save" class="space-y-4">
+      <.input field={@form[:title]} type="text" label="Title" placeholder="Describe the issue" />
+      <.input field={@form[:description]} type="textarea" label="Description" placeholder="Details about the issue..." />
+      <.input
+        :if={@live_action == :edit}
+        field={@form[:status]}
+        type="select"
+        label="Status"
+        options={[{"Open", "open"}, {"In Progress", "in_progress"}, {"Closed", "closed"}]}
+      />
+      <div class="flex justify-end gap-2 mt-4">
+        <.link patch={~p"/issues"} class="btn">Cancel</.link>
+        <.button type="submit">{if @live_action == :new, do: "Create", else: "Save"}</.button>
+      </div>
+    </.form>
+  </div>
+</div>

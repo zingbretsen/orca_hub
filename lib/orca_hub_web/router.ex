@@ -18,6 +18,15 @@ defmodule OrcaHubWeb.Router do
     pipe_through :browser
 
     get "/", PageController, :home
+
+    live "/issues", IssueLive.Index, :index
+    live "/issues/new", IssueLive.Index, :new
+    live "/issues/:id", IssueLive.Show, :show
+    live "/issues/:id/edit", IssueLive.Index, :edit
+
+    live "/sessions", SessionLive.Index, :index
+    live "/sessions/new", SessionLive.Index, :new
+    live "/sessions/:id", SessionLive.Show, :show
   end
 
   # Other scopes may use custom stacks.
