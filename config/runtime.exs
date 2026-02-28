@@ -1,4 +1,9 @@
 import Config
+import Dotenvy
+
+if config_env() in [:dev, :test] do
+  source!([".env"])
+end
 
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
