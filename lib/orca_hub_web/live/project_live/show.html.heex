@@ -40,6 +40,17 @@
   </.table>
 </div>
 
+<div :if={@commits != []} class="mt-8">
+  <h3 class="text-lg font-semibold mb-4">Recent Changes</h3>
+  <div class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
+    <div :for={commit <- @commits} class="flex items-baseline gap-3 px-4 py-2 text-sm">
+      <code class="text-primary font-mono text-xs">{commit.hash}</code>
+      <span class="flex-1 truncate">{commit.subject}</span>
+      <span class="text-base-content/50 text-xs whitespace-nowrap">{commit.relative_date}</span>
+    </div>
+  </div>
+</div>
+
 <div class="mt-8">
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">

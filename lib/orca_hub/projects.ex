@@ -47,4 +47,36 @@ defmodule OrcaHub.Projects do
     path = Path.join(dir, filename)
     File.write(path, content)
   end
+
+  @doc """
+  Returns recent git commits from the project directory.
+  Returns a list of maps with :hash, :subject, :relative_date, and :author keys.
+  """
+  def git_log(%Project{directory: dir}, count \\ 20) do
+    case System.cmd("git", ["log", "--format=%h|%s|%ar|%an", "-n", "#{count}"],
+           cd: dir,
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        commits =
+          output
+          |> String.trim()
+          |> String.split("\n", trim: true)
+          |> Enum.map(fn line ->
+            case String.split(line, "|", parts: 4) do
+              [hash, subject, relative_date, author] ->
+                %{hash: hash, subject: subject, relative_date: relative_date, author: author}
+
+              _ ->
+                nil
+            end
+          end)
+          |> Enum.reject(&is_nil/1)
+
+        commits
+
+      _ ->
+        []
+    end
+  end
 end

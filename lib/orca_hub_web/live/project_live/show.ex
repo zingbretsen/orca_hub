@@ -8,9 +8,11 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     project = Projects.get_project!(id)
     instructions = Projects.load_instructions_file(project)
 
+    commits = Projects.git_log(project)
+
     {:ok,
      socket
-     |> assign(project: project, page_title: project.name)
+     |> assign(project: project, page_title: project.name, commits: commits)
      |> assign_instructions(instructions)}
   end
 
