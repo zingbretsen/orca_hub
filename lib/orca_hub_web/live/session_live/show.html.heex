@@ -41,39 +41,50 @@
       {upload_error_to_string(err)}
     </p>
 
-    <div class="flex flex-col sm:flex-row gap-2">
-      <.form for={%{}} phx-submit="send_message" phx-change="validate" class="flex gap-2 flex-1" multipart>
-        <label class="btn btn-ghost btn-square" disabled={@status == :running}>
-          <.live_file_input upload={@uploads.image} class="hidden" />
-          <.icon name="hero-photo" class="size-5" />
-        </label>
-        <label class="btn btn-ghost btn-square" disabled={@status == :running}>
-          <.live_file_input upload={@uploads.file} class="hidden" />
-          <.icon name="hero-paper-clip" class="size-5" />
-        </label>
-        <textarea
-          name="prompt"
-          placeholder="Send a message..."
-          class="textarea textarea-bordered flex-1 min-w-0 resize-none overflow-hidden leading-normal"
-          disabled={@status == :running}
-          autofocus
-          rows="1"
-          phx-hook="AutoResize"
-          id="prompt-input"
-        ><%= @prompt %></textarea>
-        <.button type="submit" disabled={@status == :running}>
-          <span :if={@status == :running} class="loading loading-spinner loading-sm"></span>
-          <span :if={@status != :running}>Send</span>
-        </.button>
-      </.form>
-      <div class="flex gap-2">
-        <.button phx-click="commit" disabled={@status == :running} class="btn-secondary">
-          Commit
-        </.button>
-        <.link navigate={~p"/sessions/new?directory=#{@session.directory}"} class="btn btn-ghost">
-          + New
-        </.link>
+    <.form for={%{}} phx-submit="send_message" phx-change="validate" class="flex gap-2" multipart>
+      <div class="dropdown dropdown-top">
+        <div tabindex="0" role="button" class="btn btn-ghost btn-square">
+          <.icon name="hero-plus" class="size-5" />
+        </div>
+        <ul tabindex="0" class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg mb-2">
+          <li>
+            <label class={@status == :running && "opacity-50 pointer-events-none"}>
+              <.live_file_input upload={@uploads.image} class="hidden" />
+              <.icon name="hero-photo" class="size-5" /> Upload image
+            </label>
+          </li>
+          <li>
+            <label class={@status == :running && "opacity-50 pointer-events-none"}>
+              <.live_file_input upload={@uploads.file} class="hidden" />
+              <.icon name="hero-paper-clip" class="size-5" /> Attach file
+            </label>
+          </li>
+          <li>
+            <button type="button" phx-click="commit" disabled={@status == :running}>
+              <.icon name="hero-check" class="size-5" /> Commit
+            </button>
+          </li>
+          <li>
+            <.link navigate={~p"/sessions/new?directory=#{@session.directory}"}>
+              <.icon name="hero-plus-circle" class="size-5" /> New session
+            </.link>
+          </li>
+        </ul>
       </div>
-    </div>
+      <textarea
+        name="prompt"
+        placeholder="Send a message..."
+        class="textarea textarea-bordered flex-1 min-w-0 resize-none overflow-y-auto leading-normal max-h-[7.5rem]"
+        disabled={@status == :running}
+        autofocus
+        rows="1"
+        phx-hook="AutoResize"
+        id="prompt-input"
+      ><%= @prompt %></textarea>
+      <.button type="submit" disabled={@status == :running}>
+        <span :if={@status == :running} class="loading loading-spinner loading-sm"></span>
+        <span :if={@status != :running}>Send</span>
+      </.button>
+    </.form>
   </div>
 </div>

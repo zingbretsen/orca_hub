@@ -36,10 +36,8 @@ defmodule OrcaHubWeb.Router do
     live "/sessions/:id", SessionLive.Show, :show
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", OrcaHubWeb do
-  #   pipe_through :api
-  # end
+  # MCP Streamable HTTP endpoint
+  forward "/mcp", OrcaHub.MCP.Plug
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
   if Application.compile_env(:orca_hub, :dev_routes) do

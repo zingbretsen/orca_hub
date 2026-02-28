@@ -1,22 +1,27 @@
 defmodule OrcaHubWeb.QueueLive do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Sessions, SessionSupervisor, SessionRunner}
+  alias OrcaHub.{Sessions, SessionSupervisor, SessionRunner, Feedback}
   alias OrcaHubWeb.Markdown
 
   @impl true
   def mount(_params, _session, socket) do
     entries = load_entries()
 
+    feedback_requests = Feedback.list_pending_requests()
+
     if connected?(socket) do
       for {session, _msg} <- entries do
         Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session.id}")
       end
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "feedback_requests")
     end
 
     {:ok,
      socket
      |> assign(:entries, entries)
+     |> assign(:feedback_requests, feedback_requests)
      |> assign(:prompt, "")
      |> assign(:page_title, "Queue")}
   end
@@ -119,6 +124,20 @@ defmodule OrcaHubWeb.QueueLive do
     end
   end
 
+  def handle_event("respond_feedback", %{"feedback_id" => id, "response" => response}, socket) do
+    response = String.trim(response)
+    id = String.to_integer(id)
+
+    if response == "" do
+      {:noreply, socket}
+    else
+      Feedback.respond(id, response)
+
+      {:noreply,
+       assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
+    end
+  end
+
   def handle_event("validate", _params, socket) do
     {:noreply, socket}
   end
@@ -140,6 +159,10 @@ defmodule OrcaHubWeb.QueueLive do
     else
       {:noreply, socket}
     end
+  end
+
+  def handle_info({:new_feedback_request, _request}, socket) do
+    {:noreply, assign(socket, :feedback_requests, Feedback.list_pending_requests())}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}

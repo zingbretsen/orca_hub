@@ -24,7 +24,9 @@ defmodule OrcaHub.Application do
       {DNSCluster, query: Application.get_env(:orca_hub, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: OrcaHub.PubSub},
       {Registry, keys: :unique, name: OrcaHub.SessionRegistry},
+      {Registry, keys: :unique, name: OrcaHub.MCPRegistry},
       OrcaHub.SessionSupervisor,
+      {DynamicSupervisor, name: OrcaHub.MCPSupervisor, strategy: :one_for_one},
       OrcaHubWeb.Endpoint
     ]
 

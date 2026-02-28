@@ -1,14 +1,53 @@
 <.header>
   Queue
   <:subtitle>
-    <span :if={@entries != []}>
-      {length(@entries)} idle {if length(@entries) == 1, do: "session", else: "sessions"} — oldest first
+    <span :if={@entries != [] || @feedback_requests != []}>
+      {length(@feedback_requests)} feedback {if length(@feedback_requests) == 1, do: "request", else: "requests"},
+      {length(@entries)} idle {if length(@entries) == 1, do: "session", else: "sessions"}
     </span>
   </:subtitle>
 </.header>
 
-<div :if={@entries == []} class="text-sm text-base-content/50 p-8 text-center">
-  No idle sessions. All caught up!
+<%!-- Feedback requests --%>
+<div :for={request <- @feedback_requests} id={"feedback-#{request.id}"} class="card bg-warning/10 shadow-sm border border-warning/30 mt-4">
+  <div class="card-body p-4 gap-3">
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="badge badge-warning badge-sm">Feedback</span>
+          <span :if={request.session} class="text-xs text-base-content/50">
+            Session: {request.session.title || "Untitled"}
+          </span>
+        </div>
+      </div>
+      <span class="text-xs text-base-content/40 whitespace-nowrap">
+        {time_ago(request.inserted_at)}
+      </span>
+    </div>
+
+    <div class="prose prose-sm max-w-none bg-base-200 rounded-lg p-3">
+      {request.question}
+    </div>
+
+    <.form for={%{}} phx-submit="respond_feedback" class="flex gap-2">
+      <input type="hidden" name="feedback_id" value={request.id} />
+      <textarea
+        name="response"
+        placeholder="Type your response..."
+        class="textarea textarea-bordered flex-1 min-w-0 resize-none overflow-hidden leading-normal"
+        rows="1"
+        phx-hook="AutoResize"
+        id={"feedback-response-#{request.id}"}
+      ></textarea>
+      <.button type="submit">
+        Respond
+      </.button>
+    </.form>
+  </div>
+</div>
+
+<div :if={@entries == [] && @feedback_requests == []} class="text-sm text-base-content/50 p-8 text-center">
+  No pending items. All caught up!
 </div>
 
 <div class="space-y-4 mt-4">
