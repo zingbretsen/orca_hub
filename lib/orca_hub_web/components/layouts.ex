@@ -43,12 +43,12 @@ defmodule OrcaHubWeb.Layouts do
         </a>
       </div>
       <div class="flex-none">
-        <ul class="flex flex-column px-1 space-x-4 items-center">
+        <ul class="flex flex-row px-1 gap-1 sm:gap-4 items-center">
           <li>
-            <a href={~p"/issues"} class="btn btn-ghost">Issues</a>
+            <a href={~p"/issues"} class="btn btn-ghost btn-sm sm:btn-md">Issues</a>
           </li>
           <li>
-            <a href={~p"/sessions"} class="btn btn-ghost">Sessions</a>
+            <a href={~p"/sessions"} class="btn btn-ghost btn-sm sm:btn-md">Sessions</a>
           </li>
           <li>
             <.theme_toggle />
@@ -57,8 +57,8 @@ defmodule OrcaHubWeb.Layouts do
       </div>
     </header>
 
-    <main class="px-4 py-20 sm:px-6 lg:px-8">
-      <div class="mx-auto max-w-2xl space-y-4">
+    <main class="px-4 py-6 sm:px-6 sm:py-10 lg:px-8">
+      <div class="mx-auto max-w-5xl space-y-4">
         {render_slot(@inner_block)}
       </div>
     </main>

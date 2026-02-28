@@ -3,7 +3,13 @@ defmodule OrcaHub.Sessions do
   alias OrcaHub.{Repo, Sessions.Session, Sessions.Message}
 
   def list_sessions do
-    Repo.all(from s in Session, order_by: [desc: s.inserted_at])
+    Repo.all(from s in Session, where: is_nil(s.archived_at), order_by: [asc: s.directory, desc: s.inserted_at])
+  end
+
+  def archive_session(%Session{} = session) do
+    session
+    |> Session.changeset(%{archived_at: DateTime.utc_now() |> DateTime.truncate(:second)})
+    |> Repo.update()
   end
 
   def get_session!(id), do: Repo.get!(Session, id)

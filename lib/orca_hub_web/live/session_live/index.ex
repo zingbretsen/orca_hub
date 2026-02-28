@@ -6,9 +6,11 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   @impl true
   def mount(_params, _session, socket) do
+    sessions = Sessions.list_sessions()
+
     {:ok,
      socket
-     |> stream(:sessions, Sessions.list_sessions())
+     |> assign(grouped_sessions: group_sessions(sessions))
      |> assign(browsing: false, browse_path: nil, browse_entries: [])}
   end
 
@@ -21,8 +23,8 @@ defmodule OrcaHubWeb.SessionLive.Index do
     assign(socket, page_title: "Sessions", form: nil)
   end
 
-  defp apply_action(socket, :new, _params) do
-    changeset = Session.changeset(%Session{}, %{})
+  defp apply_action(socket, :new, params) do
+    changeset = Session.changeset(%Session{}, %{"directory" => params["directory"] || ""})
 
     socket
     |> assign(page_title: "New Session")
@@ -45,11 +47,11 @@ defmodule OrcaHubWeb.SessionLive.Index do
     end
   end
 
-  def handle_event("delete", %{"id" => id}, socket) do
+  def handle_event("archive", %{"id" => id}, socket) do
     session = Sessions.get_session!(id)
     OrcaHub.SessionSupervisor.stop_session(id)
-    {:ok, _} = Sessions.delete_session(session)
-    {:noreply, stream_delete(socket, :sessions, session)}
+    {:ok, _} = Sessions.archive_session(session)
+    {:noreply, assign(socket, grouped_sessions: group_sessions(Sessions.list_sessions()))}
   end
 
   def handle_event("browse", _params, socket) do
@@ -76,6 +78,38 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   def handle_event("browse_close", _params, socket) do
     {:noreply, assign(socket, browsing: false)}
+  end
+
+  defp group_sessions(sessions) do
+    # Group sessions by directory
+    groups = Enum.group_by(sessions, & &1.directory)
+
+    # Sort directories and nest subdirectories under parent directories
+    dirs = groups |> Map.keys() |> Enum.sort()
+
+    # Build hierarchy: for each directory, check if it's a subdirectory of a previous root
+    build_hierarchy(dirs, groups)
+  end
+
+  defp build_hierarchy(dirs, groups) do
+    Enum.reduce(dirs, [], fn dir, acc ->
+      # Check if this dir is a subdirectory of an existing root
+      parent = Enum.find(acc, fn {root, _sessions, _children} ->
+        dir != root && String.starts_with?(dir, root <> "/")
+      end)
+
+      case parent do
+        {root, root_sessions, children} ->
+          updated = {root, root_sessions, children ++ [{dir, groups[dir], []}]}
+          Enum.map(acc, fn
+            {^root, _, _} -> updated
+            other -> other
+          end)
+
+        nil ->
+          acc ++ [{dir, groups[dir], []}]
+      end
+    end)
   end
 
   defp browse_to(socket, path) do

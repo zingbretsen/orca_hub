@@ -80,8 +80,14 @@ defmodule OrcaHub.SessionRunner do
   def handle_info({port, {:exit_status, code}}, %{port: port} = state) do
     Logger.info("Claude CLI exited (code #{code}) for session #{state.session_id}")
     new_status = if code == 0, do: :idle, else: :error
-    Sessions.update_session(Sessions.get_session!(state.session_id), %{status: to_string(new_status)})
+    session = Sessions.get_session!(state.session_id)
+    Sessions.update_session(session, %{status: to_string(new_status)})
     broadcast(state.session_id, {:status, new_status})
+
+    if code == 0 && (session.title == nil || session.title == "") do
+      maybe_generate_title(state)
+    end
+
     {:noreply, %{state | port: nil, status: new_status}}
   end
 
@@ -133,6 +139,69 @@ defmodule OrcaHub.SessionRunner do
 
   defp persist_message(session_id, event) do
     Sessions.create_message(%{session_id: session_id, data: event})
+  end
+
+  defp maybe_generate_title(state) do
+    session_id = state.session_id
+
+    Task.start(fn ->
+      # Extract user and assistant text from messages
+      summary =
+        state.messages
+        |> Enum.take(6)
+        |> Enum.map_join("\n", fn
+          %{"type" => "user", "message" => %{"content" => content}} ->
+            text = content |> Enum.map_join(" ", &(&1["text"] || "")) |> String.slice(0, 200)
+            "User: #{text}"
+
+          %{"type" => "assistant", "message" => %{"content" => content}} ->
+            text = content |> Enum.map_join(" ", &(&1["text"] || "")) |> String.slice(0, 200)
+            "Assistant: #{text}"
+
+          _ ->
+            ""
+        end)
+
+      case generate_title(summary) do
+        {:ok, title} ->
+          session = Sessions.get_session!(session_id)
+          Sessions.update_session(session, %{title: title})
+          broadcast(session_id, {:title_updated, title})
+
+        {:error, reason} ->
+          Logger.warning("Failed to generate title for session #{session_id}: #{inspect(reason)}")
+      end
+    end)
+  end
+
+  defp generate_title(summary) do
+    api_key = System.get_env("OPENAI_API_KEY")
+
+    resp =
+      Req.post!("https://api.openai.com/v1/chat/completions",
+        headers: [{"authorization", "Bearer #{api_key}"}],
+        json: %{
+          model: "gpt-5-nano",
+          messages: [
+            %{
+              role: "system",
+              content:
+                "Generate a short title (max 6 words) for this coding session. Return only the title, no quotes or punctuation."
+            },
+            %{role: "user", content: summary}
+          ],
+          max_tokens: 30
+        }
+      )
+
+    case resp.status do
+      200 ->
+        title = get_in(resp.body, ["choices", Access.at(0), "message", "content"])
+        {:ok, String.trim(title)}
+
+      status ->
+        {:error, "OpenAI returned #{status}: #{inspect(resp.body)}"}
+    end
   end
 
   defp shell_escape(arg), do: "'" <> String.replace(arg, "'", "'\\''") <> "'"

@@ -1,4 +1,4 @@
-<div class="flex flex-col h-[calc(100vh-8rem)]">
+<div class="flex flex-col h-[calc(100vh-6rem)] sm:h-[calc(100vh-8rem)]">
   <.header>
     <.link navigate={~p"/sessions"} class="text-sm opacity-70">&larr; Sessions</.link>
     <span class="ml-2">{@session.title || @session.directory}</span>
@@ -17,14 +17,14 @@
     <MessageComponents.message_feed messages={@messages} />
   </div>
 
-  <div class="mt-4 flex gap-2">
+  <div class="mt-2 sm:mt-4 flex flex-col sm:flex-row gap-2">
     <.form for={%{}} phx-submit="send_message" class="flex gap-2 flex-1">
       <input
         type="text"
         name="prompt"
         value={@prompt}
         placeholder="Send a message..."
-        class="input input-bordered flex-1"
+        class="input input-bordered flex-1 min-w-0"
         disabled={@status == :running}
         autofocus
       />

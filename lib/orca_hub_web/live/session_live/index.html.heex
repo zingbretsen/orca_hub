@@ -7,32 +7,75 @@
   </:actions>
 </.header>
 
-<.table id="sessions" rows={@streams.sessions}>
-  <:col :let={{_id, session}} label="Title">{session.title}</:col>
-  <:col :let={{_id, session}} label="Directory">{session.directory}</:col>
-  <:col :let={{_id, session}} label="Status">
-    <span class={[
-      "badge",
-      session.status == "running" && "badge-warning",
-      session.status == "idle" && "badge-success",
-      session.status == "error" && "badge-error"
-    ]}>
-      {session.status}
-    </span>
-  </:col>
-  <:col :let={{_id, session}} label="Model">{session.model || "default"}</:col>
-  <:action :let={{_id, session}}>
-    <.link navigate={~p"/sessions/#{session.id}"}>View</.link>
-  </:action>
-  <:action :let={{_id, session}}>
-    <.link phx-click="delete" phx-value-id={session.id} data-confirm="Delete this session?">
-      Delete
-    </.link>
-  </:action>
-</.table>
+<div :if={@grouped_sessions == []} class="text-sm text-base-content/50 p-4 text-center">
+  No sessions yet.
+</div>
 
-<div :if={@live_action == :new} class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-  <div class="card bg-base-100 shadow-xl w-full max-w-md p-6">
+<div :for={{root_dir, root_sessions, children} <- @grouped_sessions} class="mb-6">
+  <div class="flex items-center justify-between mb-2">
+    <h3 class="text-sm font-semibold text-base-content/70 flex items-center gap-2">
+      <.icon name="hero-folder-micro" class="size-4" />
+      {root_dir}
+    </h3>
+    <.link patch={~p"/sessions/new?directory=#{root_dir}"} class="btn btn-xs btn-ghost">
+      + New
+    </.link>
+  </div>
+
+  <.table id={"sessions-#{root_dir}"} rows={root_sessions}>
+    <:col :let={session} label="Title">{session.title}</:col>
+    <:col :let={session} label="Status">
+      <span class={[
+        "badge",
+        session.status == "running" && "badge-warning",
+        session.status == "idle" && "badge-success",
+        session.status == "error" && "badge-error"
+      ]}>
+        {session.status}
+      </span>
+    </:col>
+    <:action :let={session}>
+      <.link navigate={~p"/sessions/#{session.id}"}>View</.link>
+    </:action>
+    <:action :let={session}>
+      <.link phx-click="archive" phx-value-id={session.id} data-confirm="Archive this session?">
+        Archive
+      </.link>
+    </:action>
+  </.table>
+
+  <div :for={{child_dir, child_sessions, _} <- children} class="ml-6 mt-2">
+    <h4 class="text-sm font-medium text-base-content/60 mb-1 flex items-center gap-2">
+      <.icon name="hero-folder-micro" class="size-3.5" />
+      {Path.relative_to(child_dir, root_dir)}
+    </h4>
+
+    <.table id={"sessions-#{child_dir}"} rows={child_sessions}>
+      <:col :let={session} label="Title">{session.title}</:col>
+      <:col :let={session} label="Status">
+        <span class={[
+          "badge",
+          session.status == "running" && "badge-warning",
+          session.status == "idle" && "badge-success",
+          session.status == "error" && "badge-error"
+        ]}>
+          {session.status}
+        </span>
+      </:col>
+      <:action :let={session}>
+        <.link navigate={~p"/sessions/#{session.id}"}>View</.link>
+      </:action>
+      <:action :let={session}>
+        <.link phx-click="delete" phx-value-id={session.id} data-confirm="Delete this session?">
+          Delete
+        </.link>
+      </:action>
+    </.table>
+  </div>
+</div>
+
+<div :if={@live_action == :new} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
+  <div class="card bg-base-100 shadow-xl w-full max-w-md p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
     <h2 class="text-lg font-semibold mb-4">New Session</h2>
     <.form for={@form} phx-submit="save" class="space-y-4">
       <div class="flex gap-2 items-end">
@@ -47,7 +90,6 @@
         {"Sonnet", "sonnet"},
         {"Haiku", "haiku"}
       ]} />
-      <.input field={@form[:title]} type="text" label="Title (optional)" />
       <div class="flex justify-end gap-2 mt-4">
         <.link patch={~p"/sessions"} class="btn">Cancel</.link>
         <.button type="submit">Create</.button>
@@ -56,8 +98,8 @@
   </div>
 </div>
 
-<div :if={@browsing} class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
-  <div class="card bg-base-100 shadow-xl w-full max-w-lg p-6">
+<div :if={@browsing} class="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50">
+  <div class="card bg-base-100 shadow-xl w-full max-w-lg p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
     <h2 class="text-lg font-semibold mb-2">Select Directory</h2>
     <div class="flex items-center gap-2 mb-3 text-sm">
       <button type="button" phx-click="browse_up" class="btn btn-sm btn-ghost" disabled={@browse_path == "/"}>

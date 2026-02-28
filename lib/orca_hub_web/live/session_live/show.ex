@@ -61,4 +61,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, assign(socket, :status, status)}
   end
 
+  def handle_info({:title_updated, title}, socket) do
+    session = %{socket.assigns.session | title: title}
+    {:noreply, socket |> assign(:session, session) |> assign(:page_title, title)}
+  end
+
 end
