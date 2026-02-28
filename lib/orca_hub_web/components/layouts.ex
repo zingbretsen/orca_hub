@@ -44,6 +44,7 @@ defmodule OrcaHubWeb.Layouts do
       <a href={~p"/projects"} class="btn btn-ghost btn-xs sm:btn-sm">Projects</a>
       <a href={~p"/issues"} class="btn btn-ghost btn-xs sm:btn-sm">Issues</a>
       <a href={~p"/sessions"} class="btn btn-ghost btn-xs sm:btn-sm">Sessions</a>
+      <a href={~p"/usage"} class="btn btn-ghost btn-xs sm:btn-sm">Usage</a>
       <.theme_toggle />
     </header>
 

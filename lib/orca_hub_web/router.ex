@@ -30,6 +30,7 @@ defmodule OrcaHubWeb.Router do
     live "/projects/:id/edit", ProjectLive.Index, :edit
 
     live "/queue", QueueLive, :index
+    live "/usage", UsageLive, :index
 
     live "/sessions", SessionLive.Index, :index
     live "/sessions/new", SessionLive.Index, :new
