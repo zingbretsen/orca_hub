@@ -36,6 +36,16 @@ defmodule OrcaHubWeb.IssueLive.Show do
       {:ok, session} ->
         {:ok, _} = OrcaHub.SessionSupervisor.start_session(session.id)
 
+        # Auto-send the issue as the first message
+        prompt =
+          if issue.description && issue.description != "" do
+            "#{issue.title}\n\n#{issue.description}"
+          else
+            issue.title
+          end
+
+        OrcaHub.SessionRunner.send_message(session.id, prompt)
+
         # Update issue status to in_progress if it's open
         if issue.status == "open" do
           Issues.update_issue(issue, %{status: "in_progress"})

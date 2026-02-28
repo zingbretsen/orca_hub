@@ -87,6 +87,7 @@ defmodule OrcaHub.SessionRunner do
     broadcast(state.session_id, {:status, new_status})
 
     if code == 0 && (session.title == nil || session.title == "") do
+      Logger.info("Attempting title generation for session #{state.session_id}, first_prompt: #{inspect(state.first_prompt)}")
       maybe_generate_title(state.session_id, state.first_prompt)
     end
 
@@ -143,11 +144,16 @@ defmodule OrcaHub.SessionRunner do
     Sessions.create_message(%{session_id: session_id, data: event})
   end
 
+  defp maybe_generate_title(session_id, nil) do
+    Logger.warning("Skipping title generation for session #{session_id}: no first_prompt")
+  end
+
   defp maybe_generate_title(session_id, prompt) do
     Task.start(fn ->
       try do
         case generate_title(prompt) do
           {:ok, title} ->
+            Logger.info("Generated title for session #{session_id}: #{title}")
             session = Sessions.get_session!(session_id)
             Sessions.update_session(session, %{title: title})
             broadcast(session_id, {:title_updated, title})
@@ -165,13 +171,13 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp generate_title(summary) do
-    api_key = System.get_env("OPENAI_API_KEY")
+    api_key = Application.get_env(:orca_hub, :openai_api_key)
 
     resp =
       Req.post!("https://api.openai.com/v1/chat/completions",
         headers: [{"authorization", "Bearer #{api_key}"}],
         json: %{
-          model: "gpt-5-nano",
+          model: "gpt-4.1-nano",
           messages: [
             %{
               role: "system",
@@ -180,14 +186,16 @@ defmodule OrcaHub.SessionRunner do
             },
             %{role: "user", content: summary}
           ],
-          max_completion_tokens: 30
+          max_completion_tokens: 200
         }
       )
+
+    Logger.info("OpenAI response: #{inspect(resp.body)}")
 
     case resp.status do
       200 ->
         title = get_in(resp.body, ["choices", Access.at(0), "message", "content"])
-        {:ok, String.trim(title)}
+        {:ok, String.trim(title || "")}
 
       status ->
         {:error, "OpenAI returned #{status}: #{inspect(resp.body)}"}
