@@ -39,3 +39,13 @@ npm-debug.log
 .env
 
 test-results/
+
+# Dev database
+*.db
+*.db-*
+
+# Log files
+/log/
+
+# Uploaded files
+upload_*
