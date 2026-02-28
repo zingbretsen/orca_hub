@@ -81,9 +81,11 @@
         phx-hook="AutoResize"
         id="prompt-input"
       ><%= @prompt %></textarea>
-      <.button type="submit" disabled={@status == :running}>
-        <span :if={@status == :running} class="loading loading-spinner loading-sm"></span>
-        <span :if={@status != :running}>Send</span>
+      <button :if={@status == :running} type="button" phx-click="interrupt" class="btn btn-error btn-square">
+        <.icon name="hero-stop" class="size-5" />
+      </button>
+      <.button :if={@status != :running} type="submit">
+        Send
       </.button>
     </.form>
   </div>

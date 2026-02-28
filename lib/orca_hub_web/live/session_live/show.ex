@@ -90,6 +90,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, cancel_upload(socket, :image, ref)}
   end
 
+  def handle_event("interrupt", _params, socket) do
+    SessionRunner.interrupt(socket.assigns.session.id)
+    {:noreply, socket}
+  end
+
   def handle_event("commit", _params, socket) do
     prompt = "Commit the changes you made in this session. Only stage files you actually modified — do not use `git add -A` or `git add .`. Use a descriptive commit message based on the diff."
 

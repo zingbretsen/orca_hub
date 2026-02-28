@@ -20,6 +20,10 @@ defmodule OrcaHub.SessionRunner do
     GenServer.call(via(session_id), :get_state)
   end
 
+  def interrupt(session_id) do
+    GenServer.call(via(session_id), :interrupt)
+  end
+
   # Callbacks
 
   @impl true
@@ -61,6 +65,16 @@ defmodule OrcaHub.SessionRunner do
     Sessions.update_session(Sessions.get_session!(state.session_id), %{status: "running"})
     first_prompt = state.first_prompt || prompt
     {:reply, :ok, %{state | port: port, status: :running, buffer: "", messages: state.messages ++ [user_event], first_prompt: first_prompt}}
+  end
+
+  def handle_call(:interrupt, _from, %{status: :running, port: port} = state) when not is_nil(port) do
+    {:os_pid, os_pid} = Port.info(port, :os_pid)
+    System.cmd("kill", ["-INT", "#{os_pid}"])
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:interrupt, _from, state) do
+    {:reply, {:error, :not_running}, state}
   end
 
   def handle_call(:get_state, _from, state) do
