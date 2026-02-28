@@ -170,6 +170,7 @@ defmodule OrcaHub.SessionRunner do
 
         {:error, reason} ->
           Logger.warning("Failed to generate title for session #{session_id}: #{inspect(reason)}")
+          broadcast(session_id, {:title_error, reason})
       end
     end)
   end
@@ -190,7 +191,7 @@ defmodule OrcaHub.SessionRunner do
             },
             %{role: "user", content: summary}
           ],
-          max_tokens: 30
+          max_completion_tokens: 30
         }
       )
 

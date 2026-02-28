@@ -24,21 +24,71 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
      |> assign(:prompt, "")
-     |> assign(:page_title, session.title || session.directory)}
+     |> assign(:page_title, session.title || session.directory)
+     |> allow_upload(:image,
+       accept: ~w(.jpg .jpeg .png .gif .webp),
+       max_entries: 1,
+       max_file_size: 10_000_000
+     )
+     |> allow_upload(:file,
+       accept: :any,
+       max_entries: 5,
+       max_file_size: 50_000_000
+     )}
   end
 
-  @impl true
-  def handle_event("send_message", %{"prompt" => prompt}, socket) when prompt != "" do
-    case SessionRunner.send_message(socket.assigns.session.id, prompt) do
-      :ok ->
-        {:noreply, assign(socket, :prompt, "")}
+  @convert_url "https://api.lab.ingbretsenhome.com/convert"
 
-      {:error, :busy} ->
-        {:noreply, put_flash(socket, :error, "Session is busy")}
+  @impl true
+  def handle_event("send_message", %{"prompt" => prompt}, socket) do
+    {image_paths, socket} = consume_uploaded_entries_for(socket, :image)
+    {file_entries, socket} = consume_uploaded_file_entries(socket)
+
+    image_attachments = Enum.map(image_paths, &"[Attached image: #{&1}]")
+
+    file_attachments =
+      Enum.map(file_entries, fn {path, md_path} ->
+        if md_path do
+          "[Attached file: #{path}]\n[Extracted text: #{md_path}]"
+        else
+          "[Attached file: #{path}]"
+        end
+      end)
+
+    attachments = Enum.join(image_attachments ++ file_attachments, "\n\n")
+
+    full_prompt =
+      case {String.trim(prompt), attachments} do
+        {"", ""} -> nil
+        {text, ""} -> text
+        {"", att} -> "I've attached files to the session directory. Please review them.\n\n#{att}"
+        {text, att} -> "#{text}\n\n#{att}"
+      end
+
+    if full_prompt do
+      case SessionRunner.send_message(socket.assigns.session.id, full_prompt) do
+        :ok ->
+          {:noreply, assign(socket, :prompt, "")}
+
+        {:error, :busy} ->
+          {:noreply, put_flash(socket, :error, "Session is busy")}
+      end
+    else
+      {:noreply, socket}
     end
   end
 
-  def handle_event("send_message", _params, socket), do: {:noreply, socket}
+  def handle_event("validate", _params, socket) do
+    {:noreply, socket}
+  end
+
+  def handle_event("cancel-upload", %{"ref" => ref, "upload" => upload}, socket) do
+    {:noreply, cancel_upload(socket, String.to_existing_atom(upload), ref)}
+  end
+
+  def handle_event("cancel-upload", %{"ref" => ref}, socket) do
+    {:noreply, cancel_upload(socket, :image, ref)}
+  end
 
   def handle_event("commit", _params, socket) do
     prompt = "Commit all current changes. Use a descriptive commit message based on the diff."
@@ -66,4 +116,68 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, socket |> assign(:session, session) |> assign(:page_title, title)}
   end
 
+  def handle_info({:title_error, reason}, socket) do
+    {:noreply, put_flash(socket, :error, "Title generation failed: #{reason}")}
+  end
+
+  defp upload_error_to_string(:too_large), do: "File is too large"
+  defp upload_error_to_string(:not_accepted), do: "Invalid file type"
+  defp upload_error_to_string(:too_many_files), do: "Too many files"
+  defp upload_error_to_string(err), do: "Upload error: #{inspect(err)}"
+
+  defp consume_uploaded_entries_for(socket, upload_name) do
+    case uploaded_entries(socket, upload_name) do
+      {[_ | _], _} ->
+        paths =
+          consume_uploaded_entries(socket, upload_name, fn %{path: tmp_path}, entry ->
+            dir = socket.assigns.session.directory
+            ext = Path.extname(entry.client_name)
+            filename = "upload_#{System.os_time(:millisecond)}#{ext}"
+            dest = Path.join(dir, filename)
+            File.cp!(tmp_path, dest)
+            {:ok, dest}
+          end)
+
+        {paths, socket}
+
+      _ ->
+        {[], socket}
+    end
+  end
+
+  defp consume_uploaded_file_entries(socket) do
+    case uploaded_entries(socket, :file) do
+      {[_ | _], _} ->
+        entries =
+          consume_uploaded_entries(socket, :file, fn %{path: tmp_path}, entry ->
+            dir = socket.assigns.session.directory
+            ext = Path.extname(entry.client_name)
+            filename = "upload_#{System.os_time(:millisecond)}#{ext}"
+            dest = Path.join(dir, filename)
+            File.cp!(tmp_path, dest)
+            md_path = convert_document(dest, entry.client_name)
+            {:ok, {dest, md_path}}
+          end)
+
+        {entries, socket}
+
+      _ ->
+        {[], socket}
+    end
+  end
+
+  defp convert_document(path, client_name) do
+    case Req.post(@convert_url,
+           form_multipart: [file: {path, filename: client_name}],
+           receive_timeout: 60_000
+         ) do
+      {:ok, %{status: 200, body: %{"markdown" => markdown}}} ->
+        md_path = Path.rootname(path) <> ".md"
+        File.write!(md_path, markdown)
+        md_path
+
+      _ ->
+        nil
+    end
+  end
 end

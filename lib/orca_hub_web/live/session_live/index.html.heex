@@ -11,16 +11,18 @@
   No sessions yet.
 </div>
 
-<div :for={{root_dir, root_sessions, children} <- @grouped_sessions} class="mb-6">
-  <div class="flex items-center justify-between mb-2">
+<details :for={{root_dir, root_sessions, children} <- @grouped_sessions} class="mb-4 group" open>
+  <summary class="flex items-center justify-between cursor-pointer list-none mb-2">
     <h3 class="text-sm font-semibold text-base-content/70 flex items-center gap-2">
+      <.icon name="hero-chevron-right-micro" class="size-4 transition-transform group-open:rotate-90" />
       <.icon name="hero-folder-micro" class="size-4" />
       {root_dir}
+      <span class="badge badge-sm badge-ghost">{length(root_sessions) + Enum.sum(Enum.map(children, fn {_, s, _} -> length(s) end))}</span>
     </h3>
-    <.link patch={~p"/sessions/new?directory=#{root_dir}"} class="btn btn-xs btn-ghost">
+    <.link patch={~p"/sessions/new?directory=#{root_dir}"} class="btn btn-xs btn-ghost" phx-click={JS.dispatch("click:stop_propagation")}>
       + New
     </.link>
-  </div>
+  </summary>
 
   <.table id={"sessions-#{root_dir}"} rows={root_sessions}>
     <:col :let={session} label="Title">{session.title}</:col>
@@ -44,11 +46,15 @@
     </:action>
   </.table>
 
-  <div :for={{child_dir, child_sessions, _} <- children} class="ml-6 mt-2">
-    <h4 class="text-sm font-medium text-base-content/60 mb-1 flex items-center gap-2">
-      <.icon name="hero-folder-micro" class="size-3.5" />
-      {Path.relative_to(child_dir, root_dir)}
-    </h4>
+  <details :for={{child_dir, child_sessions, _} <- children} class="ml-6 mt-2 group/child" open>
+    <summary class="flex items-center gap-2 cursor-pointer list-none mb-1">
+      <h4 class="text-sm font-medium text-base-content/60 flex items-center gap-2">
+        <.icon name="hero-chevron-right-micro" class="size-3.5 transition-transform group-open/child:rotate-90" />
+        <.icon name="hero-folder-micro" class="size-3.5" />
+        {Path.relative_to(child_dir, root_dir)}
+        <span class="badge badge-sm badge-ghost">{length(child_sessions)}</span>
+      </h4>
+    </summary>
 
     <.table id={"sessions-#{child_dir}"} rows={child_sessions}>
       <:col :let={session} label="Title">{session.title}</:col>
@@ -71,8 +77,8 @@
         </.link>
       </:action>
     </.table>
-  </div>
-</div>
+  </details>
+</details>
 
 <div :if={@live_action == :new} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
   <div class="card bg-base-100 shadow-xl w-full max-w-md p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">

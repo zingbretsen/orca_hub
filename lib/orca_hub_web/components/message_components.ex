@@ -55,11 +55,26 @@ defmodule OrcaHubWeb.MessageComponents do
       |> assign(:tool_results, tool_results)
       |> assign(:tool_use_result, tool_use_result)
 
+    # Extract attachments from text
+    {display_text, attachments} = extract_attachments(text)
+
+    assigns =
+      assigns
+      |> assign(:text, display_text)
+      |> assign(:attachments, attachments)
+
     ~H"""
-    <div :if={@text != ""} class="chat chat-end">
+    <div :if={@text != "" || @attachments != []} class="chat chat-end">
       <div class="chat-header text-xs opacity-50 mb-1">You</div>
       <div class="chat-bubble chat-bubble-primary">
-        {@text}
+        <div :for={{type, path} <- @attachments} class="mb-2">
+          <img :if={type == :image} src={image_data_uri(path)} class="max-w-xs max-h-48 rounded" />
+          <div :if={type == :file} class="flex items-center gap-2 text-xs opacity-80 bg-primary-content/10 rounded px-2 py-1">
+            <.icon name="hero-paper-clip-micro" class="size-3" />
+            {Path.basename(path)}
+          </div>
+        </div>
+        <span :if={@text != ""}>{@text}</span>
       </div>
     </div>
     <div :for={tr <- @tool_results} class="ml-4 my-1">
@@ -405,4 +420,44 @@ defmodule OrcaHubWeb.MessageComponents do
   defp format_duration(nil), do: "?"
   defp format_duration(ms) when ms < 1000, do: "#{ms}ms"
   defp format_duration(ms), do: "#{Float.round(ms / 1000, 1)}s"
+
+  defp extract_attachments(text) do
+    # Extract [Attached image: path] and [Attached file: path] tags
+    image_matches = Regex.scan(~r/\[Attached image: (.+?)\]/, text)
+    file_matches = Regex.scan(~r/\[Attached file: (.+?)\]/, text)
+
+    attachments =
+      Enum.map(image_matches, fn [_, path] -> {:image, path} end) ++
+        Enum.map(file_matches, fn [_, path] -> {:file, path} end)
+
+    clean_text =
+      text
+      |> String.replace(~r/\n*\[Attached (?:image|file): .+?\]/, "")
+      |> String.replace(~r/^I've attached files to the session directory\. Please review them\.\s*/, "")
+      |> String.trim()
+
+    {clean_text, attachments}
+  end
+
+  defp image_data_uri(path) do
+    case File.read(path) do
+      {:ok, data} ->
+        ext = path |> Path.extname() |> String.downcase()
+
+        mime =
+          case ext do
+            ".jpg" -> "image/jpeg"
+            ".jpeg" -> "image/jpeg"
+            ".png" -> "image/png"
+            ".gif" -> "image/gif"
+            ".webp" -> "image/webp"
+            _ -> "image/png"
+          end
+
+        "data:#{mime};base64,#{Base.encode64(data)}"
+
+      {:error, _} ->
+        ""
+    end
+  end
 end

@@ -84,11 +84,15 @@ defmodule OrcaHubWeb.SessionLive.Index do
     # Group sessions by directory
     groups = Enum.group_by(sessions, & &1.directory)
 
-    # Sort directories and nest subdirectories under parent directories
+    # Sort directories alphabetically for hierarchy building
     dirs = groups |> Map.keys() |> Enum.sort()
 
-    # Build hierarchy: for each directory, check if it's a subdirectory of a previous root
+    # Build hierarchy, then sort groups by most recently updated session
     build_hierarchy(dirs, groups)
+    |> Enum.sort_by(fn {_dir, root_sessions, children} ->
+      all_sessions = root_sessions ++ Enum.flat_map(children, fn {_, s, _} -> s end)
+      all_sessions |> Enum.map(& &1.updated_at) |> Enum.max(NaiveDateTime)
+    end, {:desc, NaiveDateTime})
   end
 
   defp build_hierarchy(dirs, groups) do
