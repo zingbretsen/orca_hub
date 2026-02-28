@@ -91,7 +91,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("commit", _params, socket) do
-    prompt = "Commit all current changes. Use a descriptive commit message based on the diff."
+    prompt = "Commit the changes you made in this session. Only stage files you actually modified — do not use `git add -A` or `git add .`. Use a descriptive commit message based on the diff."
 
     case SessionRunner.send_message(socket.assigns.session.id, prompt) do
       :ok ->
