@@ -27,6 +27,23 @@ import topbar from "../vendor/topbar"
 
 let Hooks = {
   ...colocatedHooks,
+  AutoResize: {
+    mounted() {
+      this.resize()
+      this.el.addEventListener("input", () => this.resize())
+      this.el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey || e.shiftKey)) {
+          e.preventDefault()
+          this.el.closest("form").dispatchEvent(new Event("submit", {bubbles: true, cancelable: true}))
+        }
+      })
+    },
+    updated() { this.resize() },
+    resize() {
+      this.el.style.height = "auto"
+      this.el.style.height = this.el.scrollHeight + "px"
+    }
+  },
   ScrollToBottom: {
     mounted() { this.scrollToBottom() },
     updated() {

@@ -7,6 +7,17 @@ defmodule OrcaHub.Application do
 
   @impl true
   def start(_type, _args) do
+    File.mkdir_p!("log")
+
+    :logger.add_handler(:file_log, :logger_std_h, %{
+      config: %{file: ~c"log/dev.log"},
+      formatter:
+        Logger.Formatter.new(
+          format: "$date $time [$level] $message\n",
+          colors: [enabled: false]
+        )
+    })
+
     children = [
       OrcaHubWeb.Telemetry,
       OrcaHub.Repo,

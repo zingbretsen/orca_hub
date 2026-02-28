@@ -9,6 +9,11 @@
 
 <.table id="issues" rows={@streams.issues}>
   <:col :let={{_id, issue}} label="Title">{issue.title}</:col>
+  <:col :let={{_id, issue}} label="Project">
+    <.link :if={issue.project} navigate={~p"/projects/#{issue.project.id}"} class="link">
+      {issue.project.name}
+    </.link>
+  </:col>
   <:col :let={{_id, issue}} label="Status">
     <span class={[
       "badge",
@@ -38,6 +43,13 @@
     <.form for={@form} phx-submit="save" class="space-y-4">
       <.input field={@form[:title]} type="text" label="Title" placeholder="Describe the issue" />
       <.input field={@form[:description]} type="textarea" label="Description" placeholder="Details about the issue..." />
+      <.input
+        field={@form[:project_id]}
+        type="select"
+        label="Project"
+        prompt="Select a project"
+        options={Enum.map(@projects, &{&1.name, &1.id})}
+      />
       <.input
         :if={@live_action == :edit}
         field={@form[:status]}

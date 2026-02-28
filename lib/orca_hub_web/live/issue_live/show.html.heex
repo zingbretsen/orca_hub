@@ -22,6 +22,10 @@
   </:actions>
 </.header>
 
+<div :if={@issue.project} class="mt-2 text-sm">
+  <.link navigate={~p"/projects/#{@issue.project.id}"} class="link">{@issue.project.name}</.link>
+</div>
+
 <div :if={@issue.description} class="mt-4 p-4 bg-base-200 rounded-lg whitespace-pre-wrap text-sm">
   {@issue.description}
 </div>

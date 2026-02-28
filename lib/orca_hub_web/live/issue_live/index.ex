@@ -3,10 +3,14 @@ defmodule OrcaHubWeb.IssueLive.Index do
 
   alias OrcaHub.Issues
   alias OrcaHub.Issues.Issue
+  alias OrcaHub.Projects
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, stream(socket, :issues, Issues.list_issues())}
+    {:ok,
+     socket
+     |> stream(:issues, Issues.list_issues())
+     |> assign(projects: Projects.list_projects())}
   end
 
   @impl true
@@ -18,8 +22,12 @@ defmodule OrcaHubWeb.IssueLive.Index do
     assign(socket, page_title: "Issues", form: nil, issue: nil)
   end
 
-  defp apply_action(socket, :new, _params) do
-    changeset = Issue.changeset(%Issue{}, %{})
+  defp apply_action(socket, :new, params) do
+    attrs = case params do
+      %{"project_id" => project_id} -> %{project_id: project_id}
+      _ -> %{}
+    end
+    changeset = Issue.changeset(%Issue{}, attrs)
 
     socket
     |> assign(page_title: "New Issue", issue: nil)

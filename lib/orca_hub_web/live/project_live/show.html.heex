@@ -1,0 +1,79 @@
+<.header>
+  <.link navigate={~p"/projects"} class="text-sm opacity-70">&larr; Projects</.link>
+  <span class="ml-2">{@project.name}</span>
+  <:actions>
+    <.link patch={~p"/projects/#{@project.id}/edit"} class="btn btn-sm">Edit Project</.link>
+  </:actions>
+</.header>
+
+<div class="mt-2 text-sm text-base-content/60 font-mono">
+  {@project.directory}
+</div>
+
+<div class="mt-8">
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">Issues</h3>
+    <.link navigate={~p"/issues/new?project_id=#{@project.id}"}>
+      <.button class="btn-sm">New Issue</.button>
+    </.link>
+  </div>
+
+  <div :if={@project.issues == []} class="text-sm text-base-content/50 p-4 text-center">
+    No issues yet.
+  </div>
+
+  <.table :if={@project.issues != []} id="project-issues" rows={@project.issues}>
+    <:col :let={issue} label="Title">{issue.title}</:col>
+    <:col :let={issue} label="Status">
+      <span class={[
+        "badge",
+        issue.status == "open" && "badge-info",
+        issue.status == "in_progress" && "badge-warning",
+        issue.status == "closed" && "badge-success"
+      ]}>
+        {issue.status}
+      </span>
+    </:col>
+    <:action :let={issue}>
+      <.link navigate={~p"/issues/#{issue.id}"}>View</.link>
+    </:action>
+  </.table>
+</div>
+
+<div class="mt-8">
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">
+      {if @instructions_file, do: @instructions_file, else: "Instructions"}
+    </h3>
+    <div class="flex gap-2">
+      <button :if={@instructions_file && !@editing} phx-click="edit" class="btn btn-sm">
+        Edit
+      </button>
+      <button :if={!@instructions_file} phx-click="create_instructions" class="btn btn-sm btn-primary">
+        Create CLAUDE.md
+      </button>
+    </div>
+  </div>
+
+  <div :if={@instructions_file && !@editing} class="prose prose-sm max-w-none bg-base-200 rounded-lg p-4 overflow-auto">
+    {OrcaHubWeb.Markdown.render(@instructions_content)}
+  </div>
+
+  <div :if={@editing} class="space-y-3">
+    <form phx-submit="save_instructions">
+      <textarea
+        name="content"
+        class="textarea textarea-bordered w-full font-mono text-sm"
+        rows="20"
+      >{@instructions_content}</textarea>
+      <div class="flex justify-end gap-2 mt-3">
+        <button type="button" phx-click="cancel_edit" class="btn btn-sm">Cancel</button>
+        <.button type="submit" class="btn-sm">Save</.button>
+      </div>
+    </form>
+  </div>
+
+  <div :if={!@instructions_file && !@editing} class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg">
+    No CLAUDE.md or AGENTS.md found in this directory.
+  </div>
+</div>

@@ -9,6 +9,7 @@ defmodule OrcaHub.Issues.Issue do
     field :description, :string
     field :status, :string, default: "open"
 
+    belongs_to :project, OrcaHub.Projects.Project, type: :binary_id
     has_many :sessions, OrcaHub.Sessions.Session
 
     timestamps()
@@ -16,7 +17,7 @@ defmodule OrcaHub.Issues.Issue do
 
   def changeset(issue, attrs) do
     issue
-    |> cast(attrs, [:title, :description, :status])
+    |> cast(attrs, [:title, :description, :status, :project_id])
     |> validate_required([:title])
     |> validate_inclusion(:status, ~w(open in_progress closed))
   end

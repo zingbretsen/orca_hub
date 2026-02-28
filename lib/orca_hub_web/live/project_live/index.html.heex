@@ -1,0 +1,73 @@
+<.header>
+  Projects
+  <:actions>
+    <.link patch={~p"/projects/new"}>
+      <.button>New Project</.button>
+    </.link>
+  </:actions>
+</.header>
+
+<.table id="projects" rows={@streams.projects}>
+  <:col :let={{_id, project}} label="Name">{project.name}</:col>
+  <:col :let={{_id, project}} label="Directory">
+    <span class="font-mono text-sm">{project.directory}</span>
+  </:col>
+  <:action :let={{_id, project}}>
+    <.link navigate={~p"/projects/#{project.id}"}>View</.link>
+  </:action>
+  <:action :let={{_id, project}}>
+    <.link patch={~p"/projects/#{project.id}/edit"}>Edit</.link>
+  </:action>
+  <:action :let={{_id, project}}>
+    <.link phx-click="delete" phx-value-id={project.id} data-confirm="Delete this project?">
+      Delete
+    </.link>
+  </:action>
+</.table>
+
+<div :if={@live_action in [:new, :edit]} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
+  <div class="card bg-base-100 shadow-xl w-full max-w-md p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
+    <h2 class="text-lg font-semibold mb-4">{if @live_action == :new, do: "New Project", else: "Edit Project"}</h2>
+    <.form for={@form} phx-submit="save" class="space-y-4">
+      <.input field={@form[:name]} type="text" label="Name" placeholder="My Project" />
+      <div class="flex gap-2 items-end">
+        <div class="flex-1">
+          <.input field={@form[:directory]} type="text" label="Directory" placeholder="/home/zach/my-project" />
+        </div>
+        <button type="button" phx-click="browse" class="btn btn-outline mb-0.5">Browse</button>
+      </div>
+      <div class="flex justify-end gap-2 mt-4">
+        <.link patch={~p"/projects"} class="btn">Cancel</.link>
+        <.button type="submit">{if @live_action == :new, do: "Create", else: "Save"}</.button>
+      </div>
+    </.form>
+  </div>
+</div>
+
+<div :if={@browsing} class="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50">
+  <div class="card bg-base-100 shadow-xl w-full max-w-lg p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
+    <h2 class="text-lg font-semibold mb-2">Select Directory</h2>
+    <div class="flex items-center gap-2 mb-3 text-sm">
+      <button type="button" phx-click="browse_up" class="btn btn-sm btn-ghost" disabled={@browse_path == "/"}>
+        ↑ Up
+      </button>
+      <code class="flex-1 truncate bg-base-200 rounded px-2 py-1">{@browse_path}</code>
+    </div>
+    <div class="overflow-y-auto max-h-64 border border-base-300 rounded">
+      <div :if={@browse_entries == []} class="p-3 text-sm text-base-content/50">No subdirectories</div>
+      <button
+        :for={entry <- @browse_entries}
+        type="button"
+        phx-click="browse_navigate"
+        phx-value-path={entry}
+        class="flex items-center gap-2 w-full text-left px-3 py-2 hover:bg-base-200 text-sm border-b border-base-300 last:border-b-0"
+      >
+        📁 {Path.basename(entry)}
+      </button>
+    </div>
+    <div class="flex justify-end gap-2 mt-4">
+      <button type="button" phx-click="browse_close" class="btn btn-sm">Cancel</button>
+      <button type="button" phx-click="browse_select" class="btn btn-sm btn-primary">Select this directory</button>
+    </div>
+  </div>
+</div>

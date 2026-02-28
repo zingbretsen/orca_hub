@@ -31,35 +31,25 @@ defmodule OrcaHubWeb.Layouts do
     default: nil,
     doc: "the current [scope](https://hexdocs.pm/phoenix/scopes.html)"
 
-  slot :inner_block, required: true
+  slot :inner_block
 
   def app(assigns) do
     ~H"""
-    <header class="navbar px-4 sm:px-6 lg:px-8">
-      <div class="flex-1">
-        <a href="/" class="flex-1 flex w-fit items-center gap-2">
-          <img src={~p"/images/logo.svg"} width="36" />
-          <span class="text-sm font-semibold">v{Application.spec(:phoenix, :vsn)}</span>
-        </a>
-      </div>
-      <div class="flex-none">
-        <ul class="flex flex-row px-1 gap-1 sm:gap-4 items-center">
-          <li>
-            <a href={~p"/issues"} class="btn btn-ghost btn-sm sm:btn-md">Issues</a>
-          </li>
-          <li>
-            <a href={~p"/sessions"} class="btn btn-ghost btn-sm sm:btn-md">Sessions</a>
-          </li>
-          <li>
-            <.theme_toggle />
-          </li>
-        </ul>
-      </div>
+    <header class="flex flex-wrap items-center gap-2 px-4 py-2 sm:px-6 lg:px-8">
+      <a href="/" class="flex items-center gap-2 mr-auto">
+        <img src={~p"/images/logo.svg"} width="36" />
+        <span class="hidden sm:inline text-sm font-semibold">v{Application.spec(:phoenix, :vsn)}</span>
+      </a>
+      <a href={~p"/queue"} class="btn btn-ghost btn-xs sm:btn-sm">Queue</a>
+      <a href={~p"/projects"} class="btn btn-ghost btn-xs sm:btn-sm">Projects</a>
+      <a href={~p"/issues"} class="btn btn-ghost btn-xs sm:btn-sm">Issues</a>
+      <a href={~p"/sessions"} class="btn btn-ghost btn-xs sm:btn-sm">Sessions</a>
+      <.theme_toggle />
     </header>
 
     <main class="px-4 py-6 sm:px-6 sm:py-10 lg:px-8">
       <div class="mx-auto max-w-5xl space-y-4">
-        {render_slot(@inner_block)}
+        {@inner_content}
       </div>
     </main>
 

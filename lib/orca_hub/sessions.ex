@@ -37,4 +37,26 @@ defmodule OrcaHub.Sessions do
     |> Message.changeset(attrs)
     |> Repo.insert()
   end
+
+  def list_idle_sessions_with_last_assistant_message do
+    sessions =
+      Repo.all(
+        from s in Session,
+          where: is_nil(s.archived_at) and s.status == "idle",
+          order_by: [asc: s.updated_at]
+      )
+
+    Enum.map(sessions, fn session ->
+      last_assistant =
+        Repo.one(
+          from m in Message,
+            where: m.session_id == ^session.id,
+            where: fragment("? ->> 'type' = 'assistant'", m.data),
+            order_by: [desc: m.inserted_at],
+            limit: 1
+        )
+
+      {session, last_assistant}
+    end)
+  end
 end

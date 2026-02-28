@@ -3,10 +3,14 @@ defmodule OrcaHub.Issues do
   alias OrcaHub.{Repo, Issues.Issue}
 
   def list_issues do
-    Repo.all(from i in Issue, order_by: [desc: i.inserted_at])
+    Repo.all(from i in Issue, order_by: [desc: i.inserted_at], preload: [:project])
   end
 
-  def get_issue!(id), do: Repo.get!(Issue, id) |> Repo.preload(:sessions)
+  def list_issues_for_project(project_id) do
+    Repo.all(from i in Issue, where: i.project_id == ^project_id, order_by: [desc: i.inserted_at])
+  end
+
+  def get_issue!(id), do: Repo.get!(Issue, id) |> Repo.preload([:sessions, :project])
 
   def create_issue(attrs) do
     %Issue{}

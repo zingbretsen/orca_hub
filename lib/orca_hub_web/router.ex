@@ -24,6 +24,13 @@ defmodule OrcaHubWeb.Router do
     live "/issues/:id", IssueLive.Show, :show
     live "/issues/:id/edit", IssueLive.Index, :edit
 
+    live "/projects", ProjectLive.Index, :index
+    live "/projects/new", ProjectLive.Index, :new
+    live "/projects/:id", ProjectLive.Show, :show
+    live "/projects/:id/edit", ProjectLive.Index, :edit
+
+    live "/queue", QueueLive, :index
+
     live "/sessions", SessionLive.Index, :index
     live "/sessions/new", SessionLive.Index, :new
     live "/sessions/:id", SessionLive.Show, :show

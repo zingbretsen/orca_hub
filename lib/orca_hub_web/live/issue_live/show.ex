@@ -17,7 +17,9 @@ defmodule OrcaHubWeb.IssueLive.Show do
 
   @impl true
   def handle_event("start_session", _params, socket) do
-    changeset = Session.changeset(%Session{}, %{})
+    issue = socket.assigns.issue
+    defaults = if issue.project, do: %{directory: issue.project.directory}, else: %{}
+    changeset = Session.changeset(%Session{}, defaults)
 
     {:noreply, assign(socket, session_form: to_form(changeset))}
   end

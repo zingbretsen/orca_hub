@@ -37,7 +37,8 @@ defmodule OrcaHub.SessionRunner do
        port: nil,
        buffer: "",
        status: :idle,
-       messages: saved_messages
+       messages: saved_messages,
+       first_prompt: nil
      }}
   end
 
@@ -58,7 +59,8 @@ defmodule OrcaHub.SessionRunner do
     port = open_port(prompt, state)
     broadcast(state.session_id, {:status, :running})
     Sessions.update_session(Sessions.get_session!(state.session_id), %{status: "running"})
-    {:reply, :ok, %{state | port: port, status: :running, buffer: "", messages: state.messages ++ [user_event]}}
+    first_prompt = state.first_prompt || prompt
+    {:reply, :ok, %{state | port: port, status: :running, buffer: "", messages: state.messages ++ [user_event], first_prompt: first_prompt}}
   end
 
   def handle_call(:get_state, _from, state) do
@@ -85,7 +87,7 @@ defmodule OrcaHub.SessionRunner do
     broadcast(state.session_id, {:status, new_status})
 
     if code == 0 && (session.title == nil || session.title == "") do
-      maybe_generate_title(state)
+      maybe_generate_title(state.session_id, state.first_prompt)
     end
 
     {:noreply, %{state | port: nil, status: new_status}}
@@ -141,36 +143,23 @@ defmodule OrcaHub.SessionRunner do
     Sessions.create_message(%{session_id: session_id, data: event})
   end
 
-  defp maybe_generate_title(state) do
-    session_id = state.session_id
-
+  defp maybe_generate_title(session_id, prompt) do
     Task.start(fn ->
-      # Extract user and assistant text from messages
-      summary =
-        state.messages
-        |> Enum.take(6)
-        |> Enum.map_join("\n", fn
-          %{"type" => "user", "message" => %{"content" => content}} ->
-            text = content |> Enum.map_join(" ", &(&1["text"] || "")) |> String.slice(0, 200)
-            "User: #{text}"
+      try do
+        case generate_title(prompt) do
+          {:ok, title} ->
+            session = Sessions.get_session!(session_id)
+            Sessions.update_session(session, %{title: title})
+            broadcast(session_id, {:title_updated, title})
 
-          %{"type" => "assistant", "message" => %{"content" => content}} ->
-            text = content |> Enum.map_join(" ", &(&1["text"] || "")) |> String.slice(0, 200)
-            "Assistant: #{text}"
-
-          _ ->
-            ""
-        end)
-
-      case generate_title(summary) do
-        {:ok, title} ->
-          session = Sessions.get_session!(session_id)
-          Sessions.update_session(session, %{title: title})
-          broadcast(session_id, {:title_updated, title})
-
-        {:error, reason} ->
-          Logger.warning("Failed to generate title for session #{session_id}: #{inspect(reason)}")
-          broadcast(session_id, {:title_error, reason})
+          {:error, reason} ->
+            Logger.warning("Failed to generate title for session #{session_id}: #{inspect(reason)}")
+            broadcast(session_id, {:title_error, reason})
+        end
+      rescue
+        e ->
+          Logger.error("Title generation crashed for session #{session_id}: #{Exception.message(e)}")
+          broadcast(session_id, {:title_error, Exception.message(e)})
       end
     end)
   end

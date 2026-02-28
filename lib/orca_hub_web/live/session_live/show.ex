@@ -167,8 +167,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp convert_document(path, client_name) do
+    content = File.read!(path)
+
     case Req.post(@convert_url,
-           form_multipart: [file: {path, filename: client_name}],
+           form_multipart: [file: {content, filename: client_name}],
            receive_timeout: 60_000
          ) do
       {:ok, %{status: 200, body: %{"markdown" => markdown}}} ->
@@ -179,5 +181,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
       _ ->
         nil
     end
+  rescue
+    _ -> nil
   end
 end

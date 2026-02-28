@@ -51,15 +51,16 @@
           <.live_file_input upload={@uploads.file} class="hidden" />
           <.icon name="hero-paper-clip" class="size-5" />
         </label>
-        <input
-          type="text"
+        <textarea
           name="prompt"
-          value={@prompt}
           placeholder="Send a message..."
-          class="input input-bordered flex-1 min-w-0"
+          class="textarea textarea-bordered flex-1 min-w-0 resize-none overflow-hidden leading-normal"
           disabled={@status == :running}
           autofocus
-        />
+          rows="1"
+          phx-hook="AutoResize"
+          id="prompt-input"
+        ><%= @prompt %></textarea>
         <.button type="submit" disabled={@status == :running}>
           <span :if={@status == :running} class="loading loading-spinner loading-sm"></span>
           <span :if={@status != :running}>Send</span>

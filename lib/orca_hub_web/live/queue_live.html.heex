@@ -1,0 +1,93 @@
+<.header>
+  Queue
+  <:subtitle>
+    <span :if={@entries != []}>
+      {length(@entries)} idle {if length(@entries) == 1, do: "session", else: "sessions"} — oldest first
+    </span>
+  </:subtitle>
+</.header>
+
+<div :if={@entries == []} class="text-sm text-base-content/50 p-8 text-center">
+  No idle sessions. All caught up!
+</div>
+
+<div class="space-y-4 mt-4">
+  <div
+    :for={{session, message} <- @entries}
+    id={"queue-#{session.id}"}
+    class="card bg-base-100 shadow-sm border border-base-300"
+  >
+    <div class="card-body p-4 gap-3">
+      <%!-- Header: title, directory, time --%>
+      <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+          <.link navigate={~p"/sessions/#{session.id}"} class="font-semibold hover:underline truncate block">
+            {session.title || "Untitled"}
+          </.link>
+          <div class="flex items-center gap-2 text-xs text-base-content/50 mt-0.5">
+            <.icon name="hero-folder-micro" class="size-3" />
+            <span class="truncate">{session.directory}</span>
+            <span :if={worktree?(session.directory)} class="badge badge-xs badge-outline">worktree</span>
+          </div>
+        </div>
+        <span class="text-xs text-base-content/40 whitespace-nowrap">
+          {time_ago(session.updated_at)}
+        </span>
+      </div>
+
+      <%!-- Last assistant message --%>
+      <% text = extract_assistant_text(message) %>
+      <div :if={text} class="prose prose-sm max-w-none bg-base-200 rounded-lg p-3 max-h-48 overflow-y-auto">
+        {Markdown.render(text)}
+      </div>
+      <div :if={!text} class="text-sm text-base-content/40 italic">
+        No assistant response yet
+      </div>
+
+      <%!-- Actions --%>
+      <div class="flex flex-wrap gap-2">
+        <button phx-click="archive" phx-value-id={session.id} class="btn btn-sm btn-ghost" data-confirm="Archive this session?">
+          <.icon name="hero-archive-box-micro" class="size-4" /> Archive
+        </button>
+        <button phx-click="commit" phx-value-id={session.id} class="btn btn-sm btn-secondary">
+          <.icon name="hero-check-circle-micro" class="size-4" /> Commit
+        </button>
+        <button phx-click="add_tests" phx-value-id={session.id} class="btn btn-sm btn-ghost">
+          <.icon name="hero-beaker-micro" class="size-4" /> Add Tests
+        </button>
+        <div :if={worktree?(session.directory)} class="flex gap-2">
+          <button phx-click="rebase" phx-value-id={session.id} class="btn btn-sm btn-outline">
+            <.icon name="hero-arrow-path-micro" class="size-4" /> Rebase
+          </button>
+          <button phx-click="merge_to_main" phx-value-id={session.id} class="btn btn-sm btn-primary" data-confirm="Merge this branch into main?">
+            <.icon name="hero-arrow-right-circle-micro" class="size-4" /> Merge to Main
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%!-- Bottom input: sends to first session --%>
+<div :if={@entries != []} class="mt-6 sticky bottom-4">
+  <div class="card bg-base-100 shadow-lg border border-base-300 p-4">
+    <% {first_session, _} = hd(@entries) %>
+    <div class="text-xs text-base-content/50 mb-2">
+      Sending to: <span class="font-semibold">{first_session.title || first_session.directory}</span>
+    </div>
+    <.form for={%{}} phx-submit="send_message" phx-change="validate" class="flex gap-2">
+      <textarea
+        name="prompt"
+        placeholder="Send a message to the oldest idle session..."
+        class="textarea textarea-bordered flex-1 min-w-0 resize-none overflow-hidden leading-normal"
+        autofocus
+        rows="1"
+        phx-hook="AutoResize"
+        id="queue-prompt"
+      ><%= @prompt %></textarea>
+      <.button type="submit">
+        Send
+      </.button>
+    </.form>
+  </div>
+</div>
