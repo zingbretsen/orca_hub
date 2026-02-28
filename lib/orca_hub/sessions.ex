@@ -3,7 +3,12 @@ defmodule OrcaHub.Sessions do
   alias OrcaHub.{Repo, Sessions.Session, Sessions.Message}
 
   def list_sessions do
-    Repo.all(from s in Session, where: is_nil(s.archived_at), order_by: [asc: s.directory, desc: s.updated_at])
+    Repo.all(
+      from s in Session,
+        where: is_nil(s.archived_at),
+        preload: [:project],
+        order_by: [desc: s.updated_at]
+    )
   end
 
   def archive_session(%Session{} = session) do
@@ -12,7 +17,7 @@ defmodule OrcaHub.Sessions do
     |> Repo.update()
   end
 
-  def get_session!(id), do: Repo.get!(Session, id)
+  def get_session!(id), do: Repo.get!(Session, id) |> Repo.preload(:project)
 
   def create_session(attrs) do
     %Session{}

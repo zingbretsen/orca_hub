@@ -56,7 +56,9 @@ defmodule OrcaHub.MCP.Tools do
       issue = Issues.get_issue!(issue_id)
       directory = if issue.project, do: issue.project.directory, else: File.cwd!()
 
-      case Sessions.create_session(%{directory: directory, issue_id: issue.id}) do
+      project_id = if issue.project, do: issue.project.id, else: nil
+
+      case Sessions.create_session(%{directory: directory, issue_id: issue.id, project_id: project_id}) do
         {:ok, session} ->
           {:ok, _} = SessionSupervisor.start_session(session.id)
 

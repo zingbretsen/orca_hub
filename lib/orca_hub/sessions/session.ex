@@ -16,13 +16,14 @@ defmodule OrcaHub.Sessions.Session do
 
     has_many :messages, OrcaHub.Sessions.Message
     belongs_to :issue, OrcaHub.Issues.Issue
+    belongs_to :project, OrcaHub.Projects.Project
 
     timestamps()
   end
 
   def changeset(session, attrs) do
     session
-    |> cast(attrs, [:directory, :claude_session_id, :title, :status, :model, :issue_id, :archived_at])
+    |> cast(attrs, [:directory, :claude_session_id, :title, :status, :model, :issue_id, :project_id, :archived_at])
     |> validate_required([:directory])
     |> validate_inclusion(:status, ~w(idle running error))
   end

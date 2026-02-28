@@ -10,6 +10,7 @@ defmodule OrcaHub.Projects.Project do
     field :directory, :string
 
     has_many :issues, OrcaHub.Issues.Issue
+    has_many :sessions, OrcaHub.Sessions.Session
 
     timestamps()
   end

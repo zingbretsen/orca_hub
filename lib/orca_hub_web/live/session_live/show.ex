@@ -24,7 +24,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
      |> assign(:prompt, "")
-     |> assign(:page_title, session.title || session.directory)
+     |> assign(:page_title, session.title || (session.project && session.project.name) || session.directory)
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
        max_entries: 1,

@@ -11,20 +11,27 @@
   No sessions yet.
 </div>
 
-<details :for={{root_dir, root_sessions, children} <- @grouped_sessions} class="mb-4 group" open>
+<details :for={{project, sessions} <- @grouped_sessions} class="mb-4 group" open>
   <summary class="flex items-center justify-between cursor-pointer list-none mb-2">
     <h3 class="text-sm font-semibold text-base-content/70 flex items-center gap-2">
       <.icon name="hero-chevron-right-micro" class="size-4 transition-transform group-open:rotate-90" />
-      <.icon name="hero-folder-micro" class="size-4" />
-      {root_dir}
-      <span class="badge badge-sm badge-ghost">{length(root_sessions) + Enum.sum(Enum.map(children, fn {_, s, _} -> length(s) end))}</span>
+      <.icon name={if(project, do: "hero-code-bracket-micro", else: "hero-folder-micro")} class="size-4" />
+      {if project, do: project.name, else: "Unassigned"}
+      <span class="badge badge-sm badge-ghost">{length(sessions)}</span>
     </h3>
-    <.link patch={~p"/sessions/new?directory=#{root_dir}"} class="btn btn-xs btn-ghost" phx-click={JS.dispatch("click:stop_propagation")}>
+    <.link
+      :if={project}
+      patch={~p"/sessions/new?project_id=#{project.id}"}
+      class="btn btn-xs btn-ghost"
+    >
+      + New
+    </.link>
+    <.link :if={!project} patch={~p"/sessions/new"} class="btn btn-xs btn-ghost">
       + New
     </.link>
   </summary>
 
-  <.table id={"sessions-#{root_dir}"} rows={root_sessions}>
+  <.table id={"sessions-#{if project, do: project.id, else: "unassigned"}"} rows={sessions}>
     <:col :let={session} label="Title">{session.title}</:col>
     <:col :let={session} label="Status">
       <span class={[
@@ -45,45 +52,19 @@
       </.link>
     </:action>
   </.table>
-
-  <details :for={{child_dir, child_sessions, _} <- children} class="ml-6 mt-2 group/child" open>
-    <summary class="flex items-center gap-2 cursor-pointer list-none mb-1">
-      <h4 class="text-sm font-medium text-base-content/60 flex items-center gap-2">
-        <.icon name="hero-chevron-right-micro" class="size-3.5 transition-transform group-open/child:rotate-90" />
-        <.icon name="hero-folder-micro" class="size-3.5" />
-        {Path.relative_to(child_dir, root_dir)}
-        <span class="badge badge-sm badge-ghost">{length(child_sessions)}</span>
-      </h4>
-    </summary>
-
-    <.table id={"sessions-#{child_dir}"} rows={child_sessions}>
-      <:col :let={session} label="Title">{session.title}</:col>
-      <:col :let={session} label="Status">
-        <span class={[
-          "badge",
-          session.status == "running" && "badge-warning",
-          session.status == "idle" && "badge-success",
-          session.status == "error" && "badge-error"
-        ]}>
-          {session.status}
-        </span>
-      </:col>
-      <:action :let={session}>
-        <.link navigate={~p"/sessions/#{session.id}"}>View</.link>
-      </:action>
-      <:action :let={session}>
-        <.link phx-click="delete" phx-value-id={session.id} data-confirm="Delete this session?">
-          Delete
-        </.link>
-      </:action>
-    </.table>
-  </details>
 </details>
 
 <div :if={@live_action == :new} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
   <div class="card bg-base-100 shadow-xl w-full max-w-md p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
     <h2 class="text-lg font-semibold mb-4">New Session</h2>
-    <.form for={@form} phx-submit="save" class="space-y-4">
+    <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-4">
+      <.input
+        field={@form[:project_id]}
+        type="select"
+        label="Project"
+        prompt="None"
+        options={Enum.map(@projects, &{&1.name, &1.id})}
+      />
       <div class="flex gap-2 items-end">
         <div class="flex-1">
           <.input field={@form[:directory]} type="text" label="Directory" placeholder="/home/zach/my-project" />
