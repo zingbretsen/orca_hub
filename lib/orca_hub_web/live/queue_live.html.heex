@@ -50,9 +50,10 @@
   No pending items. All caught up!
 </div>
 
+<% visible_entries = if @show_all, do: @entries, else: Enum.take(@entries, 1) %>
 <div class="space-y-4 mt-4">
   <div
-    :for={{session, message} <- @entries}
+    :for={{session, message} <- visible_entries}
     id={"queue-#{session.id}"}
     class="card bg-base-100 shadow-sm border border-base-300"
   >
@@ -105,6 +106,10 @@
       </div>
     </div>
   </div>
+
+  <button :if={length(@entries) > 1} phx-click="show_all" class="btn btn-sm btn-ghost w-full">
+    {if @show_all, do: "Show only next", else: "Show all #{length(@entries)} sessions"}
+  </button>
 </div>
 
 <%!-- Bottom input: sends to first session --%>

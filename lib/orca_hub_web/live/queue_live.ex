@@ -23,6 +23,7 @@ defmodule OrcaHubWeb.QueueLive do
      |> assign(:entries, entries)
      |> assign(:feedback_requests, feedback_requests)
      |> assign(:prompt, "")
+     |> assign(:show_all, false)
      |> assign(:page_title, "Queue")}
   end
 
@@ -136,6 +137,10 @@ defmodule OrcaHubWeb.QueueLive do
       {:noreply,
        assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
     end
+  end
+
+  def handle_event("show_all", _params, socket) do
+    {:noreply, assign(socket, :show_all, !socket.assigns.show_all)}
   end
 
   def handle_event("validate", _params, socket) do
