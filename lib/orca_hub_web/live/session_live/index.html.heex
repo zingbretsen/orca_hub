@@ -1,0 +1,85 @@
+<.header>
+  Sessions
+  <:actions>
+    <.link patch={~p"/sessions/new"}>
+      <.button>New Session</.button>
+    </.link>
+  </:actions>
+</.header>
+
+<.table id="sessions" rows={@streams.sessions}>
+  <:col :let={{_id, session}} label="Title">{session.title}</:col>
+  <:col :let={{_id, session}} label="Directory">{session.directory}</:col>
+  <:col :let={{_id, session}} label="Status">
+    <span class={[
+      "badge",
+      session.status == "running" && "badge-warning",
+      session.status == "idle" && "badge-success",
+      session.status == "error" && "badge-error"
+    ]}>
+      {session.status}
+    </span>
+  </:col>
+  <:col :let={{_id, session}} label="Model">{session.model || "default"}</:col>
+  <:action :let={{_id, session}}>
+    <.link navigate={~p"/sessions/#{session.id}"}>View</.link>
+  </:action>
+  <:action :let={{_id, session}}>
+    <.link phx-click="delete" phx-value-id={session.id} data-confirm="Delete this session?">
+      Delete
+    </.link>
+  </:action>
+</.table>
+
+<div :if={@live_action == :new} class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+  <div class="card bg-base-100 shadow-xl w-full max-w-md p-6">
+    <h2 class="text-lg font-semibold mb-4">New Session</h2>
+    <.form for={@form} phx-submit="save" class="space-y-4">
+      <div class="flex gap-2 items-end">
+        <div class="flex-1">
+          <.input field={@form[:directory]} type="text" label="Directory" placeholder="/home/zach/my-project" />
+        </div>
+        <button type="button" phx-click="browse" class="btn btn-outline mb-0.5">Browse</button>
+      </div>
+      <.input field={@form[:model]} type="select" label="Model" options={[
+        {"Default", ""},
+        {"Opus", "opus"},
+        {"Sonnet", "sonnet"},
+        {"Haiku", "haiku"}
+      ]} />
+      <.input field={@form[:title]} type="text" label="Title (optional)" />
+      <div class="flex justify-end gap-2 mt-4">
+        <.link patch={~p"/sessions"} class="btn">Cancel</.link>
+        <.button type="submit">Create</.button>
+      </div>
+    </.form>
+  </div>
+</div>
+
+<div :if={@browsing} class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
+  <div class="card bg-base-100 shadow-xl w-full max-w-lg p-6">
+    <h2 class="text-lg font-semibold mb-2">Select Directory</h2>
+    <div class="flex items-center gap-2 mb-3 text-sm">
+      <button type="button" phx-click="browse_up" class="btn btn-sm btn-ghost" disabled={@browse_path == "/"}>
+        ↑ Up
+      </button>
+      <code class="flex-1 truncate bg-base-200 rounded px-2 py-1">{@browse_path}</code>
+    </div>
+    <div class="overflow-y-auto max-h-64 border border-base-300 rounded">
+      <div :if={@browse_entries == []} class="p-3 text-sm text-base-content/50">No subdirectories</div>
+      <button
+        :for={entry <- @browse_entries}
+        type="button"
+        phx-click="browse_navigate"
+        phx-value-path={entry}
+        class="flex items-center gap-2 w-full text-left px-3 py-2 hover:bg-base-200 text-sm border-b border-base-300 last:border-b-0"
+      >
+        📁 {Path.basename(entry)}
+      </button>
+    </div>
+    <div class="flex justify-end gap-2 mt-4">
+      <button type="button" phx-click="browse_close" class="btn btn-sm">Cancel</button>
+      <button type="button" phx-click="browse_select" class="btn btn-sm btn-primary">Select this directory</button>
+    </div>
+  </div>
+</div>
