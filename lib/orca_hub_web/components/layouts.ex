@@ -36,16 +36,21 @@ defmodule OrcaHubWeb.Layouts do
   def app(assigns) do
     ~H"""
     <header class="flex flex-wrap items-center gap-2 px-4 py-2 sm:px-6 lg:px-8">
-      <a href="/" class="flex items-center gap-2 mr-auto">
-        <img src={~p"/images/logo.svg"} width="36" />
-        <span class="hidden sm:inline text-sm font-semibold">v{Application.spec(:phoenix, :vsn)}</span>
-      </a>
+      <a href="/" class="font-semibold mr-auto">OrcaHub</a>
       <a href={~p"/queue"} class="btn btn-ghost btn-xs sm:btn-sm">Queue</a>
       <a href={~p"/projects"} class="btn btn-ghost btn-xs sm:btn-sm">Projects</a>
       <a href={~p"/issues"} class="btn btn-ghost btn-xs sm:btn-sm">Issues</a>
       <a href={~p"/sessions"} class="btn btn-ghost btn-xs sm:btn-sm">Sessions</a>
-      <a href={~p"/usage"} class="btn btn-ghost btn-xs sm:btn-sm">Usage</a>
-      <.theme_toggle />
+      <div class="dropdown dropdown-end">
+        <div tabindex="0" role="button" class="btn btn-ghost btn-xs sm:btn-sm btn-circle">
+          <.icon name="hero-cog-6-tooth-micro" class="size-5" />
+        </div>
+        <div tabindex="0" class="dropdown-content z-[1] menu p-4 shadow-lg bg-base-200 rounded-box w-52">
+          <a href={~p"/usage"} class="btn btn-ghost btn-sm justify-start mb-2">Usage</a>
+          <h3 class="text-xs font-semibold uppercase opacity-60 mb-2">Theme</h3>
+          <.theme_toggle />
+        </div>
+      </div>
     </header>
 
     <main class="px-4 py-6 sm:px-6 sm:py-10 lg:px-8">
