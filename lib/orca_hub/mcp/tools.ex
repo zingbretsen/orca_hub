@@ -30,7 +30,7 @@ defmodule OrcaHub.MCP.Tools do
       %{
         "name" => "get_human_feedback",
         "description" =>
-          "Ask a human operator a question and wait for their response. The question appears in the OrcaHub queue for a human to answer. This call blocks until the human responds.",
+          "Ask a human operator a question and wait for their response. The question appears in the OrcaHub queue for a human to answer. This call blocks until the human responds.\n\nUse this tool when you need specific feedback or a decision from the user about your implementation — for example, choosing between approaches, clarifying requirements, or confirming a design choice. The human will only see the question you send, with no other context, so make your question self-contained and include any relevant details they'd need to answer. Do NOT use this tool for general status updates or thinking out loud — those can be regular assistant messages.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{

@@ -38,7 +38,11 @@ let Hooks = {
         }
       })
     },
-    updated() { this.resize() },
+    updated() {
+      // Sync textarea value with server-rendered content (e.g. after clearing prompt)
+      this.el.value = this.el.textContent
+      this.resize()
+    },
     resize() {
       this.el.style.height = "auto"
       this.el.style.height = this.el.scrollHeight + "px"
