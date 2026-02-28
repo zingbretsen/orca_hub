@@ -29,6 +29,11 @@
       {request.question}
     </div>
 
+    <div class="flex gap-2">
+      <button phx-click="approve_feedback" phx-value-id={request.id} class="btn btn-sm btn-success">
+        <.icon name="hero-hand-thumb-up-micro" class="size-4" /> Yes
+      </button>
+    </div>
     <.form for={%{}} phx-submit="respond_feedback" class="flex gap-2">
       <input type="hidden" name="feedback_id" value={request.id} />
       <textarea
@@ -86,6 +91,9 @@
 
       <%!-- Actions --%>
       <div class="flex flex-wrap gap-2">
+        <button phx-click="approve_session" phx-value-id={session.id} class="btn btn-sm btn-success">
+          <.icon name="hero-hand-thumb-up-micro" class="size-4" /> Yes
+        </button>
         <button phx-click="archive" phx-value-id={session.id} class="btn btn-sm btn-ghost" data-confirm="Archive this session?">
           <.icon name="hero-archive-box-micro" class="size-4" /> Archive
         </button>

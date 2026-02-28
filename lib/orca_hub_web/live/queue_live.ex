@@ -125,6 +125,26 @@ defmodule OrcaHubWeb.QueueLive do
     end
   end
 
+  def handle_event("approve_session", %{"id" => id}, socket) do
+    ensure_runner(id)
+
+    case SessionRunner.send_message(id, "That sounds great, go for it!") do
+      :ok ->
+        {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
+
+      {:error, :busy} ->
+        {:noreply, put_flash(socket, :error, "Session is busy")}
+    end
+  end
+
+  def handle_event("approve_feedback", %{"id" => id}, socket) do
+    id = String.to_integer(id)
+    Feedback.respond(id, "That sounds great, go for it!")
+
+    {:noreply,
+     assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
+  end
+
   def handle_event("respond_feedback", %{"feedback_id" => id, "response" => response}, socket) do
     response = String.trim(response)
     id = String.to_integer(id)
