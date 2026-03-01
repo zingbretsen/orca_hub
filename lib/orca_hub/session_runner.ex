@@ -149,6 +149,7 @@ defmodule OrcaHub.SessionRunner do
 
   defp broadcast(session_id, payload) do
     Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", payload)
+    Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session_id, payload})
   end
 
   defp maybe_put(opts, _key, nil), do: opts

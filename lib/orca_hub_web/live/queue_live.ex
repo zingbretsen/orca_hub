@@ -16,6 +16,7 @@ defmodule OrcaHubWeb.QueueLive do
       end
 
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "feedback_requests")
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
     end
 
     {:ok,
@@ -169,21 +170,11 @@ defmodule OrcaHubWeb.QueueLive do
 
   @impl true
   def handle_info({:status, status}, socket) do
-    if status == :idle do
-      # A session just went idle — reload the full list
-      entries = load_entries()
+    handle_status_change(status, socket)
+  end
 
-      # Subscribe to any new sessions we weren't tracking
-      existing_ids = MapSet.new(socket.assigns.entries, fn {s, _} -> s.id end)
-
-      for {session, _msg} <- entries, session.id not in existing_ids do
-        Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session.id}")
-      end
-
-      {:noreply, assign(socket, :entries, entries)}
-    else
-      {:noreply, socket}
-    end
+  def handle_info({_session_id, {:status, status}}, socket) do
+    handle_status_change(status, socket)
   end
 
   def handle_info({:new_feedback_request, _request}, socket) do
@@ -191,6 +182,21 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
+
+  defp handle_status_change(:idle, socket) do
+    entries = load_entries()
+
+    # Subscribe to any new sessions we weren't tracking
+    existing_ids = MapSet.new(socket.assigns.entries, fn {s, _} -> s.id end)
+
+    for {session, _msg} <- entries, session.id not in existing_ids do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session.id}")
+    end
+
+    {:noreply, assign(socket, :entries, entries)}
+  end
+
+  defp handle_status_change(_status, socket), do: {:noreply, socket}
 
   defp load_entries do
     Sessions.list_idle_sessions_with_last_assistant_message()
