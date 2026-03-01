@@ -41,6 +41,7 @@
   <div :if={@session_form} class="card bg-base-200 p-4 mb-4">
     <h4 class="font-medium mb-3">New Session for this Issue</h4>
     <.form for={@session_form} phx-submit="create_session" class="space-y-3">
+      <.input field={@session_form[:project_id]} type="hidden" />
       <div class="flex gap-2 items-end">
         <div class="flex-1">
           <.input field={@session_form[:directory]} type="text" label="Directory" placeholder="/home/zach/my-project" />

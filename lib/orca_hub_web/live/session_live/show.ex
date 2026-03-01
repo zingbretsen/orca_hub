@@ -1,5 +1,6 @@
 defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
+  require Logger
 
   alias OrcaHub.{Sessions, SessionSupervisor, SessionRunner}
   alias OrcaHubWeb.MessageComponents
@@ -183,10 +184,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
         File.write!(md_path, markdown)
         md_path
 
-      _ ->
+      other ->
+        Logger.warning("Document conversion failed for #{client_name}: #{inspect(other)}")
         nil
     end
   rescue
-    _ -> nil
+    e ->
+      Logger.warning("Document conversion error for #{client_name}: #{Exception.message(e)}")
+      nil
   end
 end

@@ -44,24 +44,19 @@ defmodule OrcaHub.Sessions do
   end
 
   def list_idle_sessions_with_last_assistant_message do
-    sessions =
-      Repo.all(
-        from s in Session,
-          where: is_nil(s.archived_at) and s.status == "idle",
-          order_by: [asc: s.updated_at]
-      )
+    last_messages =
+      from m in Message,
+        where: fragment("? ->> 'type' = 'assistant'", m.data),
+        distinct: m.session_id,
+        order_by: [asc: m.session_id, desc: m.inserted_at]
 
-    Enum.map(sessions, fn session ->
-      last_assistant =
-        Repo.one(
-          from m in Message,
-            where: m.session_id == ^session.id,
-            where: fragment("? ->> 'type' = 'assistant'", m.data),
-            order_by: [desc: m.inserted_at],
-            limit: 1
-        )
-
-      {session, last_assistant}
-    end)
+    Repo.all(
+      from s in Session,
+        left_join: m in subquery(last_messages),
+        on: m.session_id == s.id,
+        where: is_nil(s.archived_at) and s.status == "idle",
+        order_by: [asc: s.updated_at],
+        select: {s, m}
+    )
   end
 end
