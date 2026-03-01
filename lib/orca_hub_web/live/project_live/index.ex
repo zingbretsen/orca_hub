@@ -49,32 +49,6 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     {:noreply, stream_delete(socket, :projects, project)}
   end
 
-  defp save_project(socket, :new, params) do
-    case Projects.create_project(params) do
-      {:ok, project} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Project created")
-         |> push_navigate(to: ~p"/projects/#{project.id}")}
-
-      {:error, changeset} ->
-        {:noreply, assign(socket, form: to_form(changeset))}
-    end
-  end
-
-  defp save_project(socket, :edit, params) do
-    case Projects.update_project(socket.assigns.project, params) do
-      {:ok, _project} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Project updated")
-         |> push_navigate(to: ~p"/projects")}
-
-      {:error, changeset} ->
-        {:noreply, assign(socket, form: to_form(changeset))}
-    end
-  end
-
   def handle_event("browse", _params, socket) do
     home = System.user_home!()
     {:noreply, browse_to(socket, home)}
@@ -100,6 +74,32 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
   def handle_event("browse_close", _params, socket) do
     {:noreply, assign(socket, browsing: false)}
+  end
+
+  defp save_project(socket, :new, params) do
+    case Projects.create_project(params) do
+      {:ok, project} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Project created")
+         |> push_navigate(to: ~p"/projects/#{project.id}")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, form: to_form(changeset))}
+    end
+  end
+
+  defp save_project(socket, :edit, params) do
+    case Projects.update_project(socket.assigns.project, params) do
+      {:ok, _project} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Project updated")
+         |> push_navigate(to: ~p"/projects")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, form: to_form(changeset))}
+    end
   end
 
   defp browse_to(socket, path) do

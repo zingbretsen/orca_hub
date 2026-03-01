@@ -9,7 +9,8 @@ import Config
 
 config :orca_hub,
   ecto_repos: [OrcaHub.Repo],
-  generators: [timestamp_type: :utc_datetime]
+  generators: [timestamp_type: :utc_datetime],
+  document_convert_url: "https://api.lab.ingbretsenhome.com/convert"
 
 # Configure the endpoint
 config :orca_hub, OrcaHubWeb.Endpoint,

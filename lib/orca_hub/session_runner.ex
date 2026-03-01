@@ -163,7 +163,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp maybe_generate_title(session_id, prompt) do
-    Task.start(fn ->
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
       try do
         case generate_title(prompt) do
           {:ok, title} ->

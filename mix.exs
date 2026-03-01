@@ -68,7 +68,8 @@ defmodule OrcaHub.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
       {:dotenvy, "~> 1.0"},
-      {:ex_orca, path: "../ex_orca"}
+      {:ex_orca, path: "../ex_orca"},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
 

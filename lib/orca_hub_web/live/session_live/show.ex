@@ -38,7 +38,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      )}
   end
 
-  @convert_url "https://api.lab.ingbretsenhome.com/convert"
+  @convert_url Application.compile_env(:orca_hub, :document_convert_url)
 
   @impl true
   def handle_event("send_message", %{"prompt" => prompt}, socket) do
@@ -113,15 +113,18 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, assign(socket, :messages, socket.assigns.messages ++ [event])}
   end
 
+  @impl true
   def handle_info({:status, status}, socket) do
     {:noreply, assign(socket, :status, status)}
   end
 
+  @impl true
   def handle_info({:title_updated, title}, socket) do
     session = %{socket.assigns.session | title: title}
     {:noreply, socket |> assign(:session, session) |> assign(:page_title, title)}
   end
 
+  @impl true
   def handle_info({:title_error, reason}, socket) do
     {:noreply, put_flash(socket, :error, "Title generation failed: #{reason}")}
   end

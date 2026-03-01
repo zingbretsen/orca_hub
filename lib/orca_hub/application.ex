@@ -25,6 +25,7 @@ defmodule OrcaHub.Application do
       {Phoenix.PubSub, name: OrcaHub.PubSub},
       {Registry, keys: :unique, name: OrcaHub.SessionRegistry},
       {Registry, keys: :unique, name: OrcaHub.MCPRegistry},
+      {Task.Supervisor, name: OrcaHub.TaskSupervisor},
       OrcaHub.SessionSupervisor,
       {DynamicSupervisor, name: OrcaHub.MCPSupervisor, strategy: :one_for_one},
       OrcaHubWeb.Endpoint
