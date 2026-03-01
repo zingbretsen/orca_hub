@@ -371,7 +371,7 @@ defmodule OrcaHubWeb.CoreComponents do
         </tr>
       </thead>
       <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
-        <tr :for={row <- @rows} id={@row_id && @row_id.(row)} class="hover">
+        <tr :for={row <- @rows} id={@row_id && @row_id.(row)} class="row-hover">
           <td
             :for={col <- @col}
             phx-click={@row_click && @row_click.(row)}

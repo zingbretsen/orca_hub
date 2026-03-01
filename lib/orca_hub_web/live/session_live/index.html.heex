@@ -12,7 +12,7 @@
 </div>
 
 <details :for={{project, sessions} <- @grouped_sessions} class="mb-4 group" {if(sessions != [], do: [open: true], else: [])}>
-  <summary class="flex items-center justify-between cursor-pointer list-none mb-2">
+  <summary class="flex items-center justify-between cursor-pointer list-none mb-2 rounded-lg px-2 py-1 -mx-2 hover:bg-base-200 transition-colors">
     <h3 class="text-sm font-semibold text-base-content/70 flex items-center gap-2">
       <.icon name="hero-chevron-right-micro" class="size-4 transition-transform group-open:rotate-90" />
       <.icon name={if(project, do: "hero-code-bracket-micro", else: "hero-folder-micro")} class="size-4" />
