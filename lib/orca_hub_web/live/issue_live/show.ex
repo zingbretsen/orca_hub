@@ -51,10 +51,7 @@ defmodule OrcaHubWeb.IssueLive.Show do
           Issues.update_issue(issue, %{status: "in_progress"})
         end
 
-        {:noreply,
-         socket
-         |> put_flash(:info, "Session started")
-         |> push_navigate(to: ~p"/sessions/#{session.id}")}
+        {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, session_form: to_form(changeset))}

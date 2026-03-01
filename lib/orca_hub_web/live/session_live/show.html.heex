@@ -65,9 +65,9 @@
             </button>
           </li>
           <li>
-            <.link navigate={~p"/sessions/new?directory=#{@session.directory}"}>
+            <button type="button" phx-click="new_session">
               <.icon name="hero-plus-circle" class="size-5" /> New session
-            </.link>
+            </button>
           </li>
         </ul>
       </div>
@@ -79,6 +79,7 @@
         autofocus
         rows="1"
         phx-hook="AutoResize"
+        phx-debounce="blur"
         id="prompt-input"
       ><%= @prompt %></textarea>
       <button :if={@status == :running} type="button" phx-click="interrupt" class="btn btn-error btn-square">

@@ -46,13 +46,25 @@ defmodule OrcaHubWeb.SessionLive.Index do
       {:ok, session} ->
         {:ok, _} = OrcaHub.SessionSupervisor.start_session(session.id)
 
-        {:noreply,
-         socket
-         |> put_flash(:info, "Session created")
-         |> push_navigate(to: ~p"/sessions/#{session.id}")}
+        {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: to_form(changeset))}
+    end
+  end
+
+  def handle_event("create_for_project", %{"project-id" => project_id}, socket) do
+    project = Projects.get_project!(project_id)
+    params = %{"project_id" => project_id, "directory" => project.directory}
+
+    case Sessions.create_session(params) do
+      {:ok, session} ->
+        {:ok, _} = OrcaHub.SessionSupervisor.start_session(session.id)
+
+        {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to create session")}
     end
   end
 

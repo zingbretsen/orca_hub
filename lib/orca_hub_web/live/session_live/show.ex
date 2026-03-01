@@ -79,8 +79,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
-  def handle_event("validate", _params, socket) do
-    {:noreply, socket}
+  def handle_event("validate", params, socket) do
+    {:noreply, assign(socket, :prompt, params["prompt"] || socket.assigns.prompt)}
   end
 
   def handle_event("cancel-upload", %{"ref" => ref, "upload" => upload}, socket) do
@@ -94,6 +94,21 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def handle_event("interrupt", _params, socket) do
     SessionRunner.interrupt(socket.assigns.session.id)
     {:noreply, socket}
+  end
+
+  def handle_event("new_session", _params, socket) do
+    session = socket.assigns.session
+    params = %{"directory" => session.directory, "project_id" => session.project_id}
+
+    case Sessions.create_session(params) do
+      {:ok, new_session} ->
+        {:ok, _} = OrcaHub.SessionSupervisor.start_session(new_session.id)
+
+        {:noreply, push_navigate(socket, to: ~p"/sessions/#{new_session.id}")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to create session")}
+    end
   end
 
   def handle_event("commit", _params, socket) do

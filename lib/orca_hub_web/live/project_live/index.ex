@@ -79,10 +79,7 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   defp save_project(socket, :new, params) do
     case Projects.create_project(params) do
       {:ok, project} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Project created")
-         |> push_navigate(to: ~p"/projects/#{project.id}")}
+        {:noreply, push_navigate(socket, to: ~p"/projects/#{project.id}")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: to_form(changeset))}
@@ -92,10 +89,7 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   defp save_project(socket, :edit, params) do
     case Projects.update_project(socket.assigns.project, params) do
       {:ok, _project} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Project updated")
-         |> push_navigate(to: ~p"/projects")}
+        {:noreply, push_navigate(socket, to: ~p"/projects")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: to_form(changeset))}

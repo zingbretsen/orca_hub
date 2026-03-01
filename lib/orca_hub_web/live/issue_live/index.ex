@@ -57,10 +57,7 @@ defmodule OrcaHubWeb.IssueLive.Index do
   defp save_issue(socket, :new, params) do
     case Issues.create_issue(params) do
       {:ok, issue} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Issue created")
-         |> push_navigate(to: ~p"/issues/#{issue.id}")}
+        {:noreply, push_navigate(socket, to: ~p"/issues/#{issue.id}")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: to_form(changeset))}
@@ -70,10 +67,7 @@ defmodule OrcaHubWeb.IssueLive.Index do
   defp save_issue(socket, :edit, params) do
     case Issues.update_issue(socket.assigns.issue, params) do
       {:ok, _issue} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Issue updated")
-         |> push_navigate(to: ~p"/issues")}
+        {:noreply, push_navigate(socket, to: ~p"/issues")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: to_form(changeset))}

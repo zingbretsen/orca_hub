@@ -49,8 +49,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
       :ok ->
         {:noreply,
          socket
-         |> assign(instructions_content: content, instructions_file: filename, editing: false)
-         |> put_flash(:info, "#{filename} saved")}
+         |> assign(instructions_content: content, instructions_file: filename, editing: false)}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to save: #{reason}")}
