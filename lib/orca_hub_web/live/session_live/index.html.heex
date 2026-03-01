@@ -11,7 +11,7 @@
   No sessions yet.
 </div>
 
-<details :for={{project, sessions} <- @grouped_sessions} class="mb-4 group" open>
+<details :for={{project, sessions} <- @grouped_sessions} class="mb-4 group" {if(sessions != [], do: [open: true], else: [])}>
   <summary class="flex items-center justify-between cursor-pointer list-none mb-2">
     <h3 class="text-sm font-semibold text-base-content/70 flex items-center gap-2">
       <.icon name="hero-chevron-right-micro" class="size-4 transition-transform group-open:rotate-90" />
@@ -32,7 +32,10 @@
     </.link>
   </summary>
 
-  <.table id={"sessions-#{if project, do: project.id, else: "unassigned"}"} rows={sessions}>
+  <div :if={sessions == []} class="text-sm text-base-content/50 p-4">
+    No active sessions.
+  </div>
+  <.table :if={sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}"} rows={sessions}>
     <:col :let={session} label="Title">{session.title}</:col>
     <:col :let={session} label="Status">
       <span class={[

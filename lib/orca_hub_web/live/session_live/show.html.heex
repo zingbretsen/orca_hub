@@ -71,17 +71,17 @@
           </li>
         </ul>
       </div>
-      <textarea
-        name="prompt"
-        placeholder="Send a message..."
-        class="textarea textarea-bordered flex-1 min-w-0 resize-none overflow-y-auto leading-normal max-h-[7.5rem]"
-        disabled={@status == :running}
-        autofocus
-        rows="1"
-        phx-hook="AutoResize"
-        phx-debounce="blur"
-        id="prompt-input"
-      ><%= @prompt %></textarea>
+      <div id="prompt-wrapper" phx-update="ignore" class="flex-1 min-w-0">
+        <textarea
+          name="prompt"
+          placeholder="Send a message..."
+          class="textarea textarea-bordered w-full resize-none overflow-y-auto leading-normal max-h-[7.5rem]"
+          autofocus
+          rows="1"
+          phx-hook="AutoResize"
+          id="prompt-input"
+        ></textarea>
+      </div>
       <button :if={@status == :running} type="button" phx-click="interrupt" class="btn btn-error btn-square">
         <.icon name="hero-stop" class="size-5" />
       </button>

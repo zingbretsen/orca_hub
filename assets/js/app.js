@@ -37,11 +37,13 @@ let Hooks = {
           this.el.closest("form").dispatchEvent(new Event("submit", {bubbles: true, cancelable: true}))
         }
       })
-    },
-    updated() {
-      // Sync textarea value with server-rendered content (e.g. after clearing prompt)
-      this.el.value = this.el.textContent
-      this.resize()
+      this.handleEvent("clear-prompt", () => {
+        this.el.value = ""
+        this.resize()
+      })
+      this.handleEvent("set-prompt-disabled", ({disabled}) => {
+        this.el.disabled = disabled
+      })
     },
     resize() {
       this.el.style.height = "auto"

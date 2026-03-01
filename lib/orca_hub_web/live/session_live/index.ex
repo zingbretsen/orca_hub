@@ -8,10 +8,12 @@ defmodule OrcaHubWeb.SessionLive.Index do
   def mount(_params, _session, socket) do
     sessions = Sessions.list_sessions()
 
+    projects = Projects.list_projects()
+
     {:ok,
      socket
-     |> assign(grouped_sessions: group_sessions(sessions))
-     |> assign(projects: Projects.list_projects())
+     |> assign(grouped_sessions: group_sessions(sessions, projects))
+     |> assign(projects: projects)
      |> assign(browsing: false, browse_path: nil, browse_entries: [])}
   end
 
@@ -72,7 +74,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
     session = Sessions.get_session!(id)
     OrcaHub.SessionSupervisor.stop_session(id)
     {:ok, _} = Sessions.archive_session(session)
-    {:noreply, assign(socket, grouped_sessions: group_sessions(Sessions.list_sessions()))}
+    {:noreply, assign(socket, grouped_sessions: group_sessions(Sessions.list_sessions(), socket.assigns.projects))}
   end
 
   def handle_event("validate", %{"session" => params}, socket) do
@@ -118,18 +120,29 @@ defmodule OrcaHubWeb.SessionLive.Index do
     {:noreply, assign(socket, browsing: false)}
   end
 
-  defp group_sessions(sessions) do
+  defp group_sessions(sessions, projects) do
     # Group sessions by project (nil project grouped separately)
     groups = Enum.group_by(sessions, & &1.project)
 
-    # Sort: projects with most recent session first, unassigned last
-    groups
+    # Add empty groups for projects with no sessions
+    all_groups =
+      Enum.reduce(projects, groups, fn project, acc ->
+        if Enum.any?(acc, fn {p, _} -> p && p.id == project.id end) do
+          acc
+        else
+          Map.put(acc, project, [])
+        end
+      end)
+
+    # Sort: projects with most recent session first, empty projects last, unassigned at end
+    all_groups
     |> Enum.sort_by(fn
-      {nil, sessions} -> {1, sessions |> Enum.map(& &1.updated_at) |> Enum.max(NaiveDateTime)}
+      {nil, _} -> {2, ~N[0000-01-01 00:00:00]}
+      {_project, []} -> {1, ~N[0000-01-01 00:00:00]}
       {_project, sessions} -> {0, sessions |> Enum.map(& &1.updated_at) |> Enum.max(NaiveDateTime)}
     end, fn
-      {0, date_a}, {0, date_b} -> NaiveDateTime.compare(date_a, date_b) != :lt
-      {g1, _}, {g2, _} -> g1 <= g2
+      {g1, _}, {g2, _} when g1 != g2 -> g1 <= g2
+      {_, date_a}, {_, date_b} -> NaiveDateTime.compare(date_a, date_b) != :lt
     end)
   end
 

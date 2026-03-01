@@ -24,7 +24,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:session, session)
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
-     |> assign(:prompt, "")
      |> assign(:page_title, session.title || (session.project && session.project.name) || session.directory)
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
@@ -42,8 +41,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   @impl true
   def handle_event("send_message", %{"prompt" => prompt}, socket) do
+    Logger.info("send_message: prompt=#{inspect(String.trim(prompt))}")
+    Logger.info("send_message: image entries=#{length(socket.assigns.uploads.image.entries)}, file entries=#{length(socket.assigns.uploads.file.entries)}")
     {image_paths, socket} = consume_uploaded_entries_for(socket, :image)
     {file_entries, socket} = consume_uploaded_file_entries(socket)
+    Logger.info("send_message: image_paths=#{inspect(image_paths)}, file_entries=#{inspect(file_entries)}")
 
     image_attachments = Enum.map(image_paths, &"[Attached image: #{&1}]")
 
@@ -69,7 +71,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     if full_prompt do
       case SessionRunner.send_message(socket.assigns.session.id, full_prompt) do
         :ok ->
-          {:noreply, assign(socket, :prompt, "")}
+          {:noreply, push_event(socket, "clear-prompt", %{})}
 
         {:error, :busy} ->
           {:noreply, put_flash(socket, :error, "Session is busy")}
@@ -79,8 +81,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
-  def handle_event("validate", params, socket) do
-    {:noreply, assign(socket, :prompt, params["prompt"] || socket.assigns.prompt)}
+  def handle_event("validate", _params, socket) do
+    Logger.info("validate: image entries=#{length(socket.assigns.uploads.image.entries)}, file entries=#{length(socket.assigns.uploads.file.entries)}")
+    {:noreply, socket}
   end
 
   def handle_event("cancel-upload", %{"ref" => ref, "upload" => upload}, socket) do
@@ -130,7 +133,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   @impl true
   def handle_info({:status, status}, socket) do
-    {:noreply, assign(socket, :status, status)}
+    {:noreply,
+     socket
+     |> assign(:status, status)
+     |> push_event("set-prompt-disabled", %{disabled: status == :running})}
   end
 
   @impl true
@@ -154,10 +160,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
       {[_ | _], _} ->
         paths =
           consume_uploaded_entries(socket, upload_name, fn %{path: tmp_path}, entry ->
-            dir = socket.assigns.session.directory
             ext = Path.extname(entry.client_name)
             filename = "upload_#{System.os_time(:millisecond)}#{ext}"
-            dest = Path.join(dir, filename)
+            dest = Path.join("/tmp", filename)
+            Logger.info("#{upload_name} upload: #{entry.client_name} -> #{dest}")
             File.cp!(tmp_path, dest)
             {:ok, dest}
           end)
@@ -174,12 +180,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
       {[_ | _], _} ->
         entries =
           consume_uploaded_entries(socket, :file, fn %{path: tmp_path}, entry ->
-            dir = socket.assigns.session.directory
             ext = Path.extname(entry.client_name)
             filename = "upload_#{System.os_time(:millisecond)}#{ext}"
-            dest = Path.join(dir, filename)
+            dest = Path.join("/tmp", filename)
+            Logger.info("file upload: #{entry.client_name} -> #{dest}")
             File.cp!(tmp_path, dest)
             md_path = convert_document(dest, entry.client_name)
+            Logger.info("file upload: md_path=#{inspect(md_path)}")
             {:ok, {dest, md_path}}
           end)
 
@@ -191,6 +198,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp convert_document(path, client_name) do
+    Logger.info("convert_document: path=#{path}, client_name=#{client_name}, url=#{@convert_url}")
     content = File.read!(path)
 
     case Req.post(@convert_url,
