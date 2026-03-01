@@ -44,9 +44,12 @@ defmodule OrcaHub.Triggers.Trigger do
         changeset
 
       expr ->
-        case Crontab.CronExpression.Parser.parse(expr) do
-          {:ok, _} -> changeset
-          {:error, _} -> add_error(changeset, :cron_expression, "is not a valid cron expression")
+        parts = String.split(expr)
+
+        if length(parts) in 5..7 do
+          changeset
+        else
+          add_error(changeset, :cron_expression, "is not a valid cron expression")
         end
     end
   end
