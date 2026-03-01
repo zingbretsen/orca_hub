@@ -6,62 +6,100 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     project = Projects.get_project!(id)
-    instructions = Projects.load_instructions_file(project)
-
+    md_files = Projects.list_markdown_files(project)
     commits = Projects.git_log(project)
 
     {:ok,
      socket
-     |> assign(project: project, page_title: project.name, commits: commits)
-     |> assign_instructions(instructions)}
-  end
-
-  defp assign_instructions(socket, nil) do
-    assign(socket,
-      instructions_file: nil,
-      instructions_content: nil,
-      editing: false
-    )
-  end
-
-  defp assign_instructions(socket, {filename, content}) do
-    assign(socket,
-      instructions_file: filename,
-      instructions_content: content,
-      editing: false
-    )
+     |> assign(
+       project: project,
+       page_title: project.name,
+       commits: commits,
+       md_files: md_files,
+       selected_file: nil,
+       file_content: nil,
+       file_editing: false,
+       new_file_name: nil
+     )}
   end
 
   @impl true
-  def handle_event("edit", _params, socket) do
-    {:noreply, assign(socket, editing: true)}
-  end
-
-  def handle_event("cancel_edit", _params, socket) do
-    {:noreply, assign(socket, editing: false)}
-  end
-
-  def handle_event("save_instructions", %{"content" => content}, socket) do
+  def handle_event("select_file", %{"path" => path}, socket) do
     project = socket.assigns.project
-    filename = socket.assigns.instructions_file || "CLAUDE.md"
 
-    case Projects.save_instructions_file(project, filename, content) do
-      :ok ->
+    case Projects.load_markdown_file(project, path) do
+      {:ok, content} ->
         {:noreply,
-         socket
-         |> assign(instructions_content: content, instructions_file: filename, editing: false)}
+         assign(socket,
+           selected_file: path,
+           file_content: content,
+           file_editing: false,
+           new_file_name: nil
+         )}
 
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to save: #{reason}")}
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to load #{path}")}
     end
   end
 
-  def handle_event("create_instructions", _params, socket) do
+  def handle_event("edit_file", _params, socket) do
+    {:noreply, assign(socket, file_editing: true)}
+  end
+
+  def handle_event("cancel_edit_file", _params, socket) do
+    if socket.assigns.new_file_name do
+      {:noreply, assign(socket, file_editing: false, selected_file: nil, new_file_name: nil)}
+    else
+      {:noreply, assign(socket, file_editing: false)}
+    end
+  end
+
+  def handle_event("save_file", params, socket) do
+    content = params["content"]
+    project = socket.assigns.project
+
+    path =
+      if socket.assigns.new_file_name != nil do
+        filename = params["filename"] || ""
+        if String.ends_with?(filename, ".md"), do: filename, else: filename <> ".md"
+      else
+        socket.assigns.selected_file
+      end
+
+    if path == "" or path == ".md" do
+      {:noreply, put_flash(socket, :error, "Please enter a filename")}
+    else
+      case Projects.save_markdown_file(project, path, content) do
+      :ok ->
+        md_files = Projects.list_markdown_files(project)
+
+        {:noreply,
+         assign(socket,
+           file_content: content,
+           file_editing: false,
+           selected_file: path,
+           new_file_name: nil,
+           md_files: md_files
+         )}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
+      end
+    end
+  end
+
+  def handle_event("new_file", _params, socket) do
     {:noreply,
      assign(socket,
-       instructions_file: "CLAUDE.md",
-       instructions_content: "",
-       editing: true
+       selected_file: nil,
+       new_file_name: "",
+       file_content: "",
+       file_editing: true
      )}
+  end
+
+  def handle_event("deselect_file", _params, socket) do
+    {:noreply,
+     assign(socket, selected_file: nil, file_content: nil, file_editing: false, new_file_name: nil)}
   end
 end

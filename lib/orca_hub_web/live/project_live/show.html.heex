@@ -53,38 +53,90 @@
 
 <div class="mt-8">
   <div class="flex items-center justify-between mb-4">
-    <h3 class="text-lg font-semibold">
-      {if @instructions_file, do: @instructions_file, else: "Instructions"}
-    </h3>
-    <div class="flex gap-2">
-      <button :if={@instructions_file && !@editing} phx-click="edit" class="btn btn-sm">
-        Edit
-      </button>
-      <button :if={!@instructions_file} phx-click="create_instructions" class="btn btn-sm btn-primary">
-        Create CLAUDE.md
-      </button>
+    <h3 class="text-lg font-semibold">Markdown Files</h3>
+    <button phx-click="new_file" class="btn btn-sm btn-primary">New File</button>
+  </div>
+
+  <div :if={@md_files == [] && !@new_file_name} class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg">
+    No markdown files found in this project.
+  </div>
+
+  <div :if={@md_files != [] || @new_file_name} class="flex flex-col md:flex-row gap-4">
+    <%!-- File tree sidebar --%>
+    <div class="md:w-64 shrink-0">
+      <ul class="menu menu-sm bg-base-200 rounded-lg w-full">
+        <li :for={file <- @md_files}>
+          <button
+            phx-click="select_file"
+            phx-value-path={file}
+            class={[@selected_file == file && "active"]}
+          >
+            <span class="font-mono text-xs truncate">{file}</span>
+          </button>
+        </li>
+      </ul>
     </div>
-  </div>
 
-  <div :if={@instructions_file && !@editing} class="prose prose-sm max-w-none bg-base-200 rounded-lg p-4 overflow-auto">
-    {OrcaHubWeb.Markdown.render(@instructions_content)}
-  </div>
-
-  <div :if={@editing} class="space-y-3">
-    <form phx-submit="save_instructions">
-      <textarea
-        name="content"
-        class="textarea textarea-bordered w-full font-mono text-sm"
-        rows="20"
-      >{@instructions_content}</textarea>
-      <div class="flex justify-end gap-2 mt-3">
-        <button type="button" phx-click="cancel_edit" class="btn btn-sm">Cancel</button>
-        <.button type="submit" class="btn-sm">Save</.button>
+    <%!-- File content area --%>
+    <div class="flex-1 min-w-0">
+      <%!-- New file form --%>
+      <div :if={@new_file_name != nil && @file_editing} class="space-y-3">
+        <form phx-submit="save_file" class="space-y-3">
+          <input
+            type="text"
+            name="filename"
+            value={@new_file_name}
+            placeholder="path/to/file.md"
+            class="input input-bordered input-sm w-full font-mono"
+          />
+          <textarea
+            name="content"
+            class="textarea textarea-bordered w-full font-mono text-sm"
+            rows="20"
+          >{@file_content}</textarea>
+          <div class="flex justify-end gap-2">
+            <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">Cancel</button>
+            <.button type="submit" class="btn-sm">Save</.button>
+          </div>
+        </form>
       </div>
-    </form>
-  </div>
 
-  <div :if={!@instructions_file && !@editing} class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg">
-    No CLAUDE.md or AGENTS.md found in this directory.
+      <%!-- View selected file --%>
+      <div :if={@selected_file && !@file_editing && @new_file_name == nil}>
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <span class="font-mono text-sm text-base-content/70">{@selected_file}</span>
+            <button phx-click="deselect_file" class="btn btn-ghost btn-xs">&times;</button>
+          </div>
+          <button phx-click="edit_file" class="btn btn-sm">Edit</button>
+        </div>
+        <div class="prose prose-sm max-w-none bg-base-200 rounded-lg p-4 overflow-auto">
+          {OrcaHubWeb.Markdown.render(@file_content)}
+        </div>
+      </div>
+
+      <%!-- Edit selected file --%>
+      <div :if={@selected_file && @file_editing && @new_file_name == nil} class="space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="font-mono text-sm text-base-content/70">{@selected_file}</span>
+        </div>
+        <form phx-submit="save_file">
+          <textarea
+            name="content"
+            class="textarea textarea-bordered w-full font-mono text-sm"
+            rows="20"
+          >{@file_content}</textarea>
+          <div class="flex justify-end gap-2 mt-3">
+            <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">Cancel</button>
+            <.button type="submit" class="btn-sm">Save</.button>
+          </div>
+        </form>
+      </div>
+
+      <%!-- No file selected --%>
+      <div :if={!@selected_file && @new_file_name == nil} class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg">
+        Select a file to view its contents.
+      </div>
+    </div>
   </div>
 </div>

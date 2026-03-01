@@ -48,6 +48,73 @@ defmodule OrcaHub.Projects do
     File.write(path, content)
   end
 
+  @skip_dirs ~w(.git .claude node_modules deps _build .elixir_ls .hex .mix _deps vendor)
+
+  @doc """
+  Recursively lists all .md files in the project directory.
+  Returns sorted list of relative paths.
+  """
+  def list_markdown_files(%Project{directory: dir}) do
+    dir
+    |> find_md_files("")
+    |> Enum.sort()
+  end
+
+  defp find_md_files(base_dir, rel_dir) do
+    full_dir = Path.join(base_dir, rel_dir)
+
+    case File.ls(full_dir) do
+      {:ok, entries} ->
+        entries
+        |> Enum.reject(&String.starts_with?(&1, "."))
+        |> Enum.reject(&(&1 in @skip_dirs))
+        |> Enum.flat_map(fn entry ->
+          rel_path = if(rel_dir == "", do: entry, else: Path.join(rel_dir, entry))
+          full_path = Path.join(base_dir, rel_path)
+
+          cond do
+            File.dir?(full_path) -> find_md_files(base_dir, rel_path)
+            String.ends_with?(entry, ".md") -> [rel_path]
+            true -> []
+          end
+        end)
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  @doc """
+  Loads a markdown file by relative path from the project directory.
+  Returns {:ok, content} or {:error, reason}.
+  """
+  def load_markdown_file(%Project{directory: dir}, rel_path) do
+    with :ok <- validate_path(rel_path) do
+      File.read(Path.join(dir, rel_path))
+    end
+  end
+
+  @doc """
+  Saves a markdown file by relative path in the project directory.
+  """
+  def save_markdown_file(%Project{directory: dir}, rel_path, content) do
+    with :ok <- validate_path(rel_path) do
+      full_path = Path.join(dir, rel_path)
+      full_path |> Path.dirname() |> File.mkdir_p!()
+      File.write(full_path, content)
+    end
+  end
+
+  defp validate_path(rel_path) do
+    normalized = Path.expand(rel_path, "/")
+
+    if String.starts_with?(normalized, "/") and not String.contains?(normalized, "..") do
+      :ok
+    else
+      {:error, :invalid_path}
+    end
+  end
+
   @doc """
   Returns recent git commits from the project directory.
   Returns a list of maps with :hash, :subject, :relative_date, and :author keys.
