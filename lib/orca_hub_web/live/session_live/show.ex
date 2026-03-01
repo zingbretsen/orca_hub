@@ -27,7 +27,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:page_title, session.title || (session.project && session.project.name) || session.directory)
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
-       max_entries: 1,
+       max_entries: 5,
        max_file_size: 10_000_000
      )
      |> allow_upload(:file,

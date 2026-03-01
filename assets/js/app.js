@@ -50,6 +50,45 @@ let Hooks = {
       this.el.style.height = this.el.scrollHeight + "px"
     }
   },
+  DropTarget: {
+    mounted() {
+      const imageTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"]
+      let dragCount = 0
+      const overlay = this.el.querySelector("[data-drop-overlay]")
+
+      this.el.addEventListener("dragenter", (e) => {
+        e.preventDefault()
+        dragCount++
+        if (overlay) overlay.classList.remove("hidden")
+      })
+
+      this.el.addEventListener("dragover", (e) => {
+        e.preventDefault()
+      })
+
+      this.el.addEventListener("dragleave", (e) => {
+        e.preventDefault()
+        dragCount--
+        if (dragCount <= 0) {
+          dragCount = 0
+          if (overlay) overlay.classList.add("hidden")
+        }
+      })
+
+      this.el.addEventListener("drop", (e) => {
+        e.preventDefault()
+        dragCount = 0
+        if (overlay) overlay.classList.add("hidden")
+
+        const files = Array.from(e.dataTransfer.files)
+        const images = files.filter(f => imageTypes.includes(f.type))
+        const others = files.filter(f => !imageTypes.includes(f.type))
+
+        if (images.length > 0) this.upload("image", images)
+        if (others.length > 0) this.upload("file", others)
+      })
+    }
+  },
   ScrollToBottom: {
     mounted() { this.scrollToBottom() },
     updated() {
