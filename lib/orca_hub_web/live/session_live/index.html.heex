@@ -7,6 +7,17 @@
   </:actions>
 </.header>
 
+<div class="flex gap-1 mt-4">
+  <button
+    :for={{label, value} <- [{"Manual", :manual}, {"Automated", :automated}, {"All", :all}]}
+    phx-click="set_filter"
+    phx-value-filter={value}
+    class={["btn btn-sm", @session_filter == value && "btn-active"]}
+  >
+    {label}
+  </button>
+</div>
+
 <div :if={@grouped_sessions == []} class="text-sm text-base-content/50 p-4 text-center">
   No sessions yet.
 </div>

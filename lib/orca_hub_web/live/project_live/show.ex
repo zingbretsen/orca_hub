@@ -1,13 +1,15 @@
 defmodule OrcaHubWeb.ProjectLive.Show do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.Projects
+  alias OrcaHub.{Projects, Triggers}
+  alias OrcaHub.Triggers.Trigger
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     project = Projects.get_project!(id)
     md_files = Projects.list_markdown_files(project)
     commits = Projects.git_log(project)
+    triggers = Triggers.list_triggers_for_project(project.id)
 
     {:ok,
      socket
@@ -19,7 +21,11 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        selected_file: nil,
        file_content: nil,
        file_editing: false,
-       new_file_name: nil
+       new_file_name: nil,
+       triggers: triggers,
+       editing_trigger: nil,
+       show_trigger_form: false,
+       trigger_form: to_form(Triggers.change_trigger(%Trigger{project_id: project.id}))
      )}
   end
 
@@ -101,5 +107,76 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   def handle_event("deselect_file", _params, socket) do
     {:noreply,
      assign(socket, selected_file: nil, file_content: nil, file_editing: false, new_file_name: nil)}
+  end
+
+  # Trigger events
+
+  def handle_event("new_trigger", _params, socket) do
+    changeset = Triggers.change_trigger(%Trigger{project_id: socket.assigns.project.id})
+
+    {:noreply,
+     assign(socket, show_trigger_form: true, editing_trigger: nil, trigger_form: to_form(changeset))}
+  end
+
+  def handle_event("edit_trigger", %{"id" => id}, socket) do
+    trigger = Triggers.get_trigger!(id)
+    changeset = Triggers.change_trigger(trigger)
+
+    {:noreply,
+     assign(socket, show_trigger_form: true, editing_trigger: trigger, trigger_form: to_form(changeset))}
+  end
+
+  def handle_event("cancel_trigger", _params, socket) do
+    {:noreply, assign(socket, show_trigger_form: false, editing_trigger: nil)}
+  end
+
+  def handle_event("validate_trigger", %{"trigger" => params}, socket) do
+    trigger = socket.assigns.editing_trigger || %Trigger{project_id: socket.assigns.project.id}
+    changeset = Triggers.change_trigger(trigger, params)
+    {:noreply, assign(socket, trigger_form: to_form(changeset, action: :validate))}
+  end
+
+  def handle_event("save_trigger", %{"trigger" => params}, socket) do
+    project = socket.assigns.project
+    attrs = Map.put(params, "project_id", project.id)
+
+    result =
+      case socket.assigns.editing_trigger do
+        nil -> Triggers.create_trigger(attrs)
+        trigger -> Triggers.update_trigger(trigger, attrs)
+      end
+
+    case result do
+      {:ok, _} ->
+        triggers = Triggers.list_triggers_for_project(project.id)
+
+        {:noreply,
+         assign(socket, triggers: triggers, show_trigger_form: false, editing_trigger: nil)}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, trigger_form: to_form(changeset))}
+    end
+  end
+
+  def handle_event("delete_trigger", %{"id" => id}, socket) do
+    trigger = Triggers.get_trigger!(id)
+    {:ok, _} = Triggers.delete_trigger(trigger)
+    triggers = Triggers.list_triggers_for_project(socket.assigns.project.id)
+    {:noreply, assign(socket, triggers: triggers)}
+  end
+
+  def handle_event("toggle_trigger", %{"id" => id}, socket) do
+    trigger = Triggers.get_trigger!(id)
+    {:ok, _} = Triggers.update_trigger(trigger, %{enabled: !trigger.enabled})
+    triggers = Triggers.list_triggers_for_project(socket.assigns.project.id)
+    {:noreply, assign(socket, triggers: triggers)}
+  end
+
+  def handle_event("fire_trigger", %{"id" => id}, socket) do
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      OrcaHub.TriggerExecutor.execute(id)
+    end)
+
+    {:noreply, put_flash(socket, :info, "Trigger fired")}
   end
 end

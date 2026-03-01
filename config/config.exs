@@ -12,6 +12,9 @@ config :orca_hub,
   generators: [timestamp_type: :utc_datetime],
   document_convert_url: "https://api.lab.ingbretsenhome.com/convert"
 
+config :orca_hub, OrcaHub.Scheduler,
+  jobs: []
+
 # Configure the endpoint
 config :orca_hub, OrcaHubWeb.Endpoint,
   url: [host: "localhost"],

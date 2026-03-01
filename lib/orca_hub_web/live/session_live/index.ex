@@ -6,15 +6,19 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   @impl true
   def mount(_params, _session, socket) do
-    sessions = Sessions.list_sessions()
-
     projects = Projects.list_projects()
+    filter = :manual
 
     {:ok,
      socket
-     |> assign(grouped_sessions: group_sessions(sessions, projects))
-     |> assign(projects: projects)
-     |> assign(browsing: false, browse_path: nil, browse_entries: [])}
+     |> assign(
+       projects: projects,
+       session_filter: filter,
+       grouped_sessions: group_sessions(Sessions.list_sessions(filter), projects),
+       browsing: false,
+       browse_path: nil,
+       browse_entries: []
+     )}
   end
 
   @impl true
@@ -70,11 +74,23 @@ defmodule OrcaHubWeb.SessionLive.Index do
     end
   end
 
+  def handle_event("set_filter", %{"filter" => filter}, socket) do
+    filter = String.to_existing_atom(filter)
+    sessions = Sessions.list_sessions(filter)
+
+    {:noreply,
+     assign(socket,
+       session_filter: filter,
+       grouped_sessions: group_sessions(sessions, socket.assigns.projects)
+     )}
+  end
+
   def handle_event("archive", %{"id" => id}, socket) do
     session = Sessions.get_session!(id)
     OrcaHub.SessionSupervisor.stop_session(id)
     {:ok, _} = Sessions.archive_session(session)
-    {:noreply, assign(socket, grouped_sessions: group_sessions(Sessions.list_sessions(), socket.assigns.projects))}
+    filter = socket.assigns.session_filter
+    {:noreply, assign(socket, grouped_sessions: group_sessions(Sessions.list_sessions(filter), socket.assigns.projects))}
   end
 
   def handle_event("validate", %{"session" => params}, socket) do

@@ -2,13 +2,21 @@ defmodule OrcaHub.Sessions do
   import Ecto.Query
   alias OrcaHub.{Repo, Sessions.Session, Sessions.Message}
 
-  def list_sessions do
-    Repo.all(
+  def list_sessions(filter \\ :manual) do
+    query =
       from s in Session,
         where: is_nil(s.archived_at),
         preload: [:project],
         order_by: [desc: s.updated_at]
-    )
+
+    query =
+      case filter do
+        :all -> query
+        :manual -> from s in query, where: s.triggered == false
+        :automated -> from s in query, where: s.triggered == true
+      end
+
+    Repo.all(query)
   end
 
   def archive_session(%Session{} = session) do
@@ -18,6 +26,8 @@ defmodule OrcaHub.Sessions do
   end
 
   def get_session!(id), do: Repo.get!(Session, id) |> Repo.preload(:project)
+
+  def get_session(id), do: Repo.get(Session, id)
 
   def create_session(attrs) do
     %Session{}

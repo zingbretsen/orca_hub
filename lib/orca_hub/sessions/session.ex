@@ -13,6 +13,7 @@ defmodule OrcaHub.Sessions.Session do
     field :status, :string, default: "idle"
     field :model, :string
     field :archived_at, :utc_datetime
+    field :triggered, :boolean, default: false
 
     has_many :messages, OrcaHub.Sessions.Message
     belongs_to :issue, OrcaHub.Issues.Issue
@@ -23,7 +24,7 @@ defmodule OrcaHub.Sessions.Session do
 
   def changeset(session, attrs) do
     session
-    |> cast(attrs, [:directory, :claude_session_id, :title, :status, :model, :issue_id, :project_id, :archived_at])
+    |> cast(attrs, [:directory, :claude_session_id, :title, :status, :model, :issue_id, :project_id, :archived_at, :triggered])
     |> validate_required([:directory])
     |> validate_inclusion(:status, ~w(idle running error))
   end
