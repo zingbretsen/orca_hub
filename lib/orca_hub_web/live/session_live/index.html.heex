@@ -103,11 +103,23 @@
 <div :if={@browsing} class="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50">
   <div class="card bg-base-100 shadow-xl w-full max-w-lg p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
     <h2 class="text-lg font-semibold mb-2">Select Directory</h2>
-    <div class="flex items-center gap-2 mb-3 text-sm">
+    <form phx-submit="browse_go" class="flex items-center gap-2 mb-3 text-sm">
       <button type="button" phx-click="browse_up" class="btn btn-sm btn-ghost" disabled={@browse_path == "/"}>
         ↑ Up
       </button>
-      <code class="flex-1 truncate bg-base-200 rounded px-2 py-1">{@browse_path}</code>
+      <input
+        type="text"
+        name="path"
+        value={@browse_path}
+        class="input input-sm input-bordered flex-1 font-mono text-sm"
+      />
+      <button type="submit" class="btn btn-sm btn-ghost">Go</button>
+    </form>
+    <div class="flex items-center gap-2 mb-3">
+      <label class="label cursor-pointer gap-2 text-sm">
+        <input type="checkbox" class="checkbox checkbox-sm" phx-click="browse_toggle_hidden" checked={@browse_show_hidden} />
+        Show hidden
+      </label>
     </div>
     <div class="overflow-y-auto max-h-64 border border-base-300 rounded">
       <div :if={@browse_entries == []} class="p-3 text-sm text-base-content/50">No subdirectories</div>

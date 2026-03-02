@@ -17,7 +17,8 @@ defmodule OrcaHubWeb.SessionLive.Index do
        grouped_sessions: group_sessions(Sessions.list_sessions(filter), projects),
        browsing: false,
        browse_path: nil,
-       browse_entries: []
+       browse_entries: [],
+       browse_show_hidden: false
      )}
   end
 
@@ -132,6 +133,22 @@ defmodule OrcaHubWeb.SessionLive.Index do
      |> assign(browsing: false, form: to_form(changeset))}
   end
 
+  def handle_event("browse_go", %{"path" => path}, socket) do
+    path = String.trim(path)
+    expanded = if String.starts_with?(path, "~"), do: Path.expand(path), else: path
+
+    if File.dir?(expanded) do
+      {:noreply, browse_to(socket, expanded)}
+    else
+      {:noreply, assign(socket, browse_path: expanded)}
+    end
+  end
+
+  def handle_event("browse_toggle_hidden", _params, socket) do
+    show_hidden = !socket.assigns.browse_show_hidden
+    {:noreply, socket |> assign(browse_show_hidden: show_hidden) |> browse_to(socket.assigns.browse_path)}
+  end
+
   def handle_event("browse_close", _params, socket) do
     {:noreply, assign(socket, browsing: false)}
   end
@@ -163,13 +180,17 @@ defmodule OrcaHubWeb.SessionLive.Index do
   end
 
   defp browse_to(socket, path) do
+    show_hidden = socket.assigns[:browse_show_hidden] || false
+
     entries =
       case File.ls(path) do
         {:ok, names} ->
           names
           |> Enum.map(&Path.join(path, &1))
           |> Enum.filter(&File.dir?/1)
-          |> Enum.reject(fn p -> String.starts_with?(Path.basename(p), ".") end)
+          |> then(fn dirs ->
+            if show_hidden, do: dirs, else: Enum.reject(dirs, fn p -> String.starts_with?(Path.basename(p), ".") end)
+          end)
           |> Enum.sort()
 
         {:error, _} ->

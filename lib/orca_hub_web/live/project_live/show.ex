@@ -2,6 +2,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   use OrcaHubWeb, :live_view
 
   alias OrcaHub.{Projects, Triggers}
+  alias OrcaHub.Projects.Project
   alias OrcaHub.Triggers.Trigger
 
   @impl true
@@ -25,8 +26,75 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        triggers: triggers,
        editing_trigger: nil,
        show_trigger_form: false,
-       trigger_form: to_form(Triggers.change_trigger(%Trigger{project_id: project.id}))
+       trigger_form: to_form(Triggers.change_trigger(%Trigger{project_id: project.id})),
+       edit_form: nil,
+       browsing: false,
+       browse_path: nil,
+       browse_entries: []
      )}
+  end
+
+  @impl true
+  def handle_params(_params, _url, socket) do
+    case socket.assigns.live_action do
+      :edit ->
+        project = socket.assigns.project
+        changeset = Project.changeset(project, %{})
+        {:noreply, assign(socket, edit_form: to_form(changeset), page_title: "Edit #{project.name}")}
+
+      :show ->
+        {:noreply, assign(socket, edit_form: nil, page_title: socket.assigns.project.name)}
+    end
+  end
+
+  @impl true
+  def handle_event("save_project", %{"project" => params}, socket) do
+    case Projects.update_project(socket.assigns.project, params) do
+      {:ok, project} ->
+        {:noreply,
+         socket
+         |> assign(project: project)
+         |> push_patch(to: ~p"/projects/#{project.id}")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, edit_form: to_form(changeset))}
+    end
+  end
+
+  def handle_event("validate_project", %{"project" => params}, socket) do
+    changeset =
+      socket.assigns.project
+      |> Project.changeset(params)
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign(socket, edit_form: to_form(changeset))}
+  end
+
+  def handle_event("browse", _params, socket) do
+    home = System.user_home!()
+    {:noreply, browse_to(socket, home)}
+  end
+
+  def handle_event("browse_navigate", %{"path" => path}, socket) do
+    {:noreply, browse_to(socket, path)}
+  end
+
+  def handle_event("browse_up", _params, socket) do
+    parent = Path.dirname(socket.assigns.browse_path)
+    {:noreply, browse_to(socket, parent)}
+  end
+
+  def handle_event("browse_select", _params, socket) do
+    project = socket.assigns.project
+    changeset = Project.changeset(project, %{"directory" => socket.assigns.browse_path})
+
+    {:noreply,
+     socket
+     |> assign(browsing: false, edit_form: to_form(changeset))}
+  end
+
+  def handle_event("browse_close", _params, socket) do
+    {:noreply, assign(socket, browsing: false)}
   end
 
   @impl true
@@ -192,5 +260,22 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     end)
 
     {:noreply, put_flash(socket, :info, "Trigger fired")}
+  end
+
+  defp browse_to(socket, path) do
+    entries =
+      case File.ls(path) do
+        {:ok, names} ->
+          names
+          |> Enum.map(&Path.join(path, &1))
+          |> Enum.filter(&File.dir?/1)
+          |> Enum.reject(fn p -> String.starts_with?(Path.basename(p), ".") end)
+          |> Enum.sort()
+
+        {:error, _} ->
+          []
+      end
+
+    assign(socket, browsing: true, browse_path: path, browse_entries: entries)
   end
 end

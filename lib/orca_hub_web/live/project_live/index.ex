@@ -9,7 +9,7 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     {:ok,
      socket
      |> stream(:projects, Projects.list_projects())
-     |> assign(browsing: false, browse_path: nil, browse_entries: [])}
+     |> assign(browsing: false, browse_path: nil, browse_entries: [], browse_show_hidden: false)}
   end
 
   @impl true
@@ -26,15 +26,6 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
     socket
     |> assign(page_title: "New Project", project: nil)
-    |> assign(form: to_form(changeset))
-  end
-
-  defp apply_action(socket, :edit, %{"id" => id}) do
-    project = Projects.get_project!(id)
-    changeset = Project.changeset(project, %{})
-
-    socket
-    |> assign(page_title: "Edit Project", project: project)
     |> assign(form: to_form(changeset))
   end
 
@@ -72,6 +63,22 @@ defmodule OrcaHubWeb.ProjectLive.Index do
      |> assign(browsing: false, form: to_form(changeset))}
   end
 
+  def handle_event("browse_go", %{"path" => path}, socket) do
+    path = String.trim(path)
+    expanded = if String.starts_with?(path, "~"), do: Path.expand(path), else: path
+
+    if File.dir?(expanded) do
+      {:noreply, browse_to(socket, expanded)}
+    else
+      {:noreply, assign(socket, browse_path: expanded)}
+    end
+  end
+
+  def handle_event("browse_toggle_hidden", _params, socket) do
+    show_hidden = !socket.assigns.browse_show_hidden
+    {:noreply, socket |> assign(browse_show_hidden: show_hidden) |> browse_to(socket.assigns.browse_path)}
+  end
+
   def handle_event("browse_close", _params, socket) do
     {:noreply, assign(socket, browsing: false)}
   end
@@ -86,24 +93,18 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     end
   end
 
-  defp save_project(socket, :edit, params) do
-    case Projects.update_project(socket.assigns.project, params) do
-      {:ok, _project} ->
-        {:noreply, push_navigate(socket, to: ~p"/projects")}
-
-      {:error, changeset} ->
-        {:noreply, assign(socket, form: to_form(changeset))}
-    end
-  end
-
   defp browse_to(socket, path) do
+    show_hidden = socket.assigns[:browse_show_hidden] || false
+
     entries =
       case File.ls(path) do
         {:ok, names} ->
           names
           |> Enum.map(&Path.join(path, &1))
           |> Enum.filter(&File.dir?/1)
-          |> Enum.reject(fn p -> String.starts_with?(Path.basename(p), ".") end)
+          |> then(fn dirs ->
+            if show_hidden, do: dirs, else: Enum.reject(dirs, fn p -> String.starts_with?(Path.basename(p), ".") end)
+          end)
           |> Enum.sort()
 
         {:error, _} ->

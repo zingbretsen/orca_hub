@@ -361,7 +361,7 @@ defmodule OrcaHubWeb.CoreComponents do
 
     ~H"""
     <div class="overflow-x-auto">
-    <table class="table table-zebra">
+    <table class="table">
       <thead>
         <tr>
           <th :for={col <- @col}>{col[:label]}</th>
