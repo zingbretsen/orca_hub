@@ -15,19 +15,46 @@
     <.input field={@trigger_form[:project_id]} type="select" label="Project" options={Enum.map(@projects, &{&1.name, &1.id})} />
     <.input field={@trigger_form[:name]} type="text" label="Name" placeholder="Weekly k3s update check" />
     <.input field={@trigger_form[:prompt]} type="textarea" label="Prompt" placeholder="Check for updates to all services..." />
+
     <div>
-      <label class="label"><span class="label-text">Quick Schedule</span></label>
-      <select name="schedule_preset" phx-change="set_schedule_preset" class="select select-bordered w-full">
-        <option value="">Custom</option>
-        <option value="every_15m">Every 15 minutes</option>
-        <option value="hourly">Every hour</option>
-        <option value="daily_9am">Every day at 9am</option>
-        <option value="weekdays_9am">Every weekday at 9am</option>
-        <option value="weekly_mon_9am">Every Monday at 9am</option>
-        <option value="monthly_9am">Every 1st of the month at 9am</option>
-      </select>
+      <label class="label"><span class="label-text">Schedule</span></label>
+      <div class="flex flex-wrap gap-2 mb-3">
+        <button :for={mode <- ["hourly", "daily", "weekly", "custom"]}
+          type="button"
+          phx-click="set_schedule_mode"
+          phx-value-mode={mode}
+          class={["btn btn-sm", if(@schedule_mode == mode, do: "btn-primary", else: "btn-ghost")]}>
+          {String.capitalize(mode)}
+        </button>
+      </div>
+
+      <div :if={@schedule_mode == "hourly"} class="flex items-center gap-2 text-sm">
+        <span>At minute</span>
+        <.input field={@trigger_form[:schedule_minute]} type="select" options={Enum.map(0..59, &{String.pad_leading("#{&1}", 2, "0"), &1})} />
+        <span>of every hour</span>
+      </div>
+
+      <div :if={@schedule_mode == "daily"} class="flex items-center gap-2 text-sm">
+        <span>Every day at</span>
+        <.input field={@trigger_form[:schedule_hour]} type="select" options={hours_options()} />
+        <span>:</span>
+        <.input field={@trigger_form[:schedule_minute]} type="select" options={Enum.map(0..59, &{String.pad_leading("#{&1}", 2, "0"), &1})} />
+      </div>
+
+      <div :if={@schedule_mode == "weekly"} class="flex items-center gap-2 text-sm">
+        <span>Every</span>
+        <.input field={@trigger_form[:schedule_day]} type="select" options={[{"Monday", "1"}, {"Tuesday", "2"}, {"Wednesday", "3"}, {"Thursday", "4"}, {"Friday", "5"}, {"Saturday", "6"}, {"Sunday", "0"}]} />
+        <span>at</span>
+        <.input field={@trigger_form[:schedule_hour]} type="select" options={hours_options()} />
+        <span>:</span>
+        <.input field={@trigger_form[:schedule_minute]} type="select" options={Enum.map(0..59, &{String.pad_leading("#{&1}", 2, "0"), &1})} />
+      </div>
+
+      <div :if={@schedule_mode == "custom"}>
+        <.input field={@trigger_form[:cron_expression]} type="text" placeholder="0 9 * * 1  (Mondays at 9am)" />
+      </div>
     </div>
-    <.input field={@trigger_form[:cron_expression]} type="text" label="Cron Schedule" placeholder="0 9 * * 1  (Mondays at 9am)" />
+
     <div class="flex gap-6">
       <.input field={@trigger_form[:reuse_session]} type="checkbox" label="Reuse previous session" />
       <.input field={@trigger_form[:archive_on_complete]} type="checkbox" label="Hide from queue when done" />

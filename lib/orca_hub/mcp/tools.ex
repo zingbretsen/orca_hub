@@ -4,7 +4,7 @@ defmodule OrcaHub.MCP.Tools do
   """
   require Logger
 
-  alias OrcaHub.{Issues, Sessions, SessionSupervisor, SessionRunner, Feedback}
+  alias OrcaHub.{Issues, Sessions, SessionSupervisor, SessionRunner, Feedback, Triggers, Projects}
 
   def list do
     [
@@ -110,6 +110,63 @@ defmodule OrcaHub.MCP.Tools do
             }
           },
           "required" => ["issue_id"]
+        }
+      },
+      %{
+        "name" => "create_scheduled_trigger",
+        "description" =>
+          "Create a scheduled trigger that automatically runs a prompt on a cron schedule. The trigger will create (or reuse) a Claude Code session in the specified project's directory and send the prompt each time the cron schedule fires.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "name" => %{
+              "type" => "string",
+              "description" => "A short descriptive name for the trigger (e.g. \"Daily test run\")"
+            },
+            "prompt" => %{
+              "type" => "string",
+              "description" => "The prompt to send to the Claude Code session each time the trigger fires"
+            },
+            "schedule" => %{
+              "type" => "string",
+              "enum" => ["hourly", "daily", "weekly"],
+              "description" =>
+                "Simple schedule preset. Use this OR cron_expression, not both. Defaults: hourly = minute 0, daily = 9:00 AM, weekly = Monday 9:00 AM. Use hour/minute/day_of_week to customize."
+            },
+            "hour" => %{
+              "type" => "integer",
+              "description" => "Hour of day (0-23) for daily/weekly schedules. Default: 9"
+            },
+            "minute" => %{
+              "type" => "integer",
+              "description" => "Minute of hour (0-59). Default: 0"
+            },
+            "day_of_week" => %{
+              "type" => "integer",
+              "description" =>
+                "Day of week for weekly schedule (0=Sunday, 1=Monday, ..., 6=Saturday). Default: 1 (Monday)"
+            },
+            "cron_expression" => %{
+              "type" => "string",
+              "description" =>
+                "Advanced: a raw cron expression (5-7 parts). Use this for schedules that don't fit the simple presets. Overrides the schedule parameter."
+            },
+            "project_id" => %{
+              "type" => "string",
+              "description" => "The UUID of the project to run the trigger in"
+            },
+            "reuse_session" => %{
+              "type" => "boolean",
+              "description" =>
+                "If true, reuse the last session instead of creating a new one each time. Default: false"
+            },
+            "archive_on_complete" => %{
+              "type" => "boolean",
+              "description" =>
+                "If true, archive the session once it completes. Default: false"
+            }
+          },
+          "required" => ["name", "prompt", "project_id"]
         }
       }
     ]
@@ -253,6 +310,52 @@ defmodule OrcaHub.MCP.Tools do
     rescue
       Ecto.NoResultsError ->
         error("Issue #{issue_id} not found")
+    end
+  end
+
+  def call("create_scheduled_trigger", args, _state) do
+    cron =
+      cond do
+        args["cron_expression"] ->
+          args["cron_expression"]
+
+        args["schedule"] == "hourly" ->
+          "#{args["minute"] || 0} * * * *"
+
+        args["schedule"] == "weekly" ->
+          "#{args["minute"] || 0} #{args["hour"] || 9} * * #{args["day_of_week"] || 1}"
+
+        true ->
+          # Default to daily
+          "#{args["minute"] || 0} #{args["hour"] || 9} * * *"
+      end
+
+    attrs = %{
+      name: args["name"],
+      prompt: args["prompt"],
+      cron_expression: cron,
+      project_id: args["project_id"],
+      reuse_session: args["reuse_session"] || false,
+      archive_on_complete: args["archive_on_complete"] || false
+    }
+
+    # Verify the project exists
+    try do
+      _project = Projects.get_project!(attrs.project_id)
+
+      case Triggers.create_trigger(attrs) do
+        {:ok, trigger} ->
+          text(
+            "Trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
+              "Schedule: #{trigger.cron_expression}"
+          )
+
+        {:error, changeset} ->
+          error("Failed to create trigger: #{inspect(changeset.errors)}")
+      end
+    rescue
+      Ecto.NoResultsError ->
+        error("Project #{attrs.project_id} not found")
     end
   end
 

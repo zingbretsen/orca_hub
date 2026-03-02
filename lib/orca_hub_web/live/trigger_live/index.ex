@@ -15,6 +15,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
        triggers: Triggers.list_triggers(),
        show_trigger_form: false,
        editing_trigger: nil,
+       schedule_mode: "daily",
        trigger_form: to_form(Triggers.change_trigger(%Trigger{}))
      )}
   end
@@ -36,6 +37,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       page_title: "New Trigger",
       show_trigger_form: true,
       editing_trigger: nil,
+      schedule_mode: "daily",
       trigger_form: to_form(changeset)
     )
   end
@@ -49,6 +51,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       page_title: "Edit Trigger",
       show_trigger_form: true,
       editing_trigger: trigger,
+      schedule_mode: detect_schedule_mode(trigger.cron_expression),
       trigger_form: to_form(changeset)
     )
   end
@@ -63,18 +66,8 @@ defmodule OrcaHubWeb.TriggerLive.Index do
   }
 
   @impl true
-  def handle_event("set_schedule_preset", %{"schedule_preset" => preset}, socket) do
-    case Map.get(@schedule_presets, preset) do
-      nil ->
-        {:noreply, socket}
-
-      cron ->
-        trigger = socket.assigns.editing_trigger || %Trigger{}
-        current_params = socket.assigns.trigger_form.params || %{}
-        updated_params = Map.put(current_params, "cron_expression", cron)
-        changeset = Triggers.change_trigger(trigger, updated_params)
-        {:noreply, assign(socket, trigger_form: to_form(changeset))}
-    end
+  def handle_event("set_schedule_mode", %{"mode" => mode}, socket) do
+    {:noreply, assign(socket, schedule_mode: mode)}
   end
 
   def handle_event("validate_trigger", %{"trigger" => params}, socket) do
@@ -84,6 +77,8 @@ defmodule OrcaHubWeb.TriggerLive.Index do
   end
 
   def handle_event("save_trigger", %{"trigger" => params}, socket) do
+    params = maybe_build_cron(params, socket.assigns.schedule_mode)
+
     result =
       case socket.assigns.editing_trigger do
         nil -> Triggers.create_trigger(params)
@@ -127,5 +122,50 @@ defmodule OrcaHubWeb.TriggerLive.Index do
      socket
      |> assign(show_trigger_form: false, editing_trigger: nil)
      |> push_patch(to: ~p"/triggers")}
+  end
+
+  defp maybe_build_cron(params, "hourly") do
+    minute = params["schedule_minute"] || "0"
+    Map.put(params, "cron_expression", "#{minute} * * * *")
+  end
+
+  defp maybe_build_cron(params, "daily") do
+    minute = params["schedule_minute"] || "0"
+    hour = params["schedule_hour"] || "9"
+    Map.put(params, "cron_expression", "#{minute} #{hour} * * *")
+  end
+
+  defp maybe_build_cron(params, "weekly") do
+    minute = params["schedule_minute"] || "0"
+    hour = params["schedule_hour"] || "9"
+    day = params["schedule_day"] || "1"
+    Map.put(params, "cron_expression", "#{minute} #{hour} * * #{day}")
+  end
+
+  defp maybe_build_cron(params, _custom), do: params
+
+  defp detect_schedule_mode(cron) when is_binary(cron) do
+    case String.split(cron) do
+      [_m, "*", "*", "*", "*"] -> "hourly"
+      [_m, _h, "*", "*", "*"] -> "daily"
+      [_m, _h, "*", "*", _d] -> "weekly"
+      _ -> "custom"
+    end
+  end
+
+  defp detect_schedule_mode(_), do: "daily"
+
+  def hours_options do
+    Enum.map(0..23, fn h ->
+      label =
+        cond do
+          h == 0 -> "12 AM"
+          h < 12 -> "#{h} AM"
+          h == 12 -> "12 PM"
+          true -> "#{h - 12} PM"
+        end
+
+      {label, h}
+    end)
   end
 end
