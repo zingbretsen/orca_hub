@@ -40,10 +40,11 @@ let Hooks = {
       this.handleEvent("clear-prompt", () => {
         this.el.value = ""
         this.resize()
+        this.el.focus()
       })
-      this.handleEvent("set-prompt-disabled", ({disabled}) => {
-        this.el.disabled = disabled
-      })
+    },
+    updated() {
+      if (!this.el.disabled) this.el.focus()
     },
     resize() {
       this.el.style.height = "auto"

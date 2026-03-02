@@ -133,10 +133,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   @impl true
   def handle_info({:status, status}, socket) do
-    {:noreply,
-     socket
-     |> assign(:status, status)
-     |> push_event("set-prompt-disabled", %{disabled: status == :running})}
+    {:noreply, assign(socket, :status, status)}
   end
 
   @impl true

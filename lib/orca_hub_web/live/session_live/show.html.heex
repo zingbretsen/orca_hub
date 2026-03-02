@@ -78,7 +78,7 @@
           </li>
         </ul>
       </div>
-      <div id="prompt-wrapper" phx-update="ignore" class="flex-1 min-w-0">
+      <div class="flex-1 min-w-0">
         <textarea
           name="prompt"
           placeholder="Send a message..."
@@ -87,6 +87,7 @@
           rows="1"
           phx-hook="AutoResize"
           id="prompt-input"
+          disabled={@status == :running}
         ></textarea>
       </div>
       <button :if={@status == :running} type="button" phx-click="interrupt" class="btn btn-error btn-square">
