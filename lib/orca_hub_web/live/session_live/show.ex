@@ -146,6 +146,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, put_flash(socket, :error, "Title generation failed: #{reason}")}
   end
 
+  @impl true
+  def terminate(_reason, socket) do
+    if session = socket.assigns[:session] do
+      if Enum.empty?(Sessions.list_messages(session.id)) do
+        SessionSupervisor.stop_session(session.id)
+        Sessions.archive_session(session)
+      end
+    end
+  end
+
   defp upload_error_to_string(:too_large), do: "File is too large"
   defp upload_error_to_string(:not_accepted), do: "Invalid file type"
   defp upload_error_to_string(:too_many_files), do: "Too many files"
