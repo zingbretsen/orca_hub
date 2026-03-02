@@ -53,7 +53,30 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     )
   end
 
+  @schedule_presets %{
+    "every_15m" => "*/15 * * * *",
+    "hourly" => "0 * * * *",
+    "daily_9am" => "0 9 * * *",
+    "weekdays_9am" => "0 9 * * 1-5",
+    "weekly_mon_9am" => "0 9 * * 1",
+    "monthly_9am" => "0 9 1 * *"
+  }
+
   @impl true
+  def handle_event("set_schedule_preset", %{"schedule_preset" => preset}, socket) do
+    case Map.get(@schedule_presets, preset) do
+      nil ->
+        {:noreply, socket}
+
+      cron ->
+        trigger = socket.assigns.editing_trigger || %Trigger{}
+        current_params = socket.assigns.trigger_form.params || %{}
+        updated_params = Map.put(current_params, "cron_expression", cron)
+        changeset = Triggers.change_trigger(trigger, updated_params)
+        {:noreply, assign(socket, trigger_form: to_form(changeset))}
+    end
+  end
+
   def handle_event("validate_trigger", %{"trigger" => params}, socket) do
     trigger = socket.assigns.editing_trigger || %Trigger{}
     changeset = Triggers.change_trigger(trigger, params)
