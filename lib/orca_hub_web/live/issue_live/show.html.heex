@@ -30,6 +30,20 @@
   {@issue.description}
 </div>
 
+<div :if={@issue.approaches_tried && @issue.approaches_tried != ""} class="mt-4">
+  <h3 class="text-sm font-semibold mb-1 opacity-70">Approaches Tried</h3>
+  <div class="p-4 bg-base-200 rounded-lg whitespace-pre-wrap text-sm">
+    {@issue.approaches_tried}
+  </div>
+</div>
+
+<div :if={@issue.notes && @issue.notes != ""} class="mt-4">
+  <h3 class="text-sm font-semibold mb-1 opacity-70">Notes</h3>
+  <div class="p-4 bg-base-200 rounded-lg whitespace-pre-wrap text-sm">
+    {@issue.notes}
+  </div>
+</div>
+
 <div class="mt-8">
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">Sessions</h3>

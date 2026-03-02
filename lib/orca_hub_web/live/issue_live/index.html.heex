@@ -57,6 +57,20 @@
         label="Status"
         options={[{"Open", "open"}, {"In Progress", "in_progress"}, {"Closed", "closed"}]}
       />
+      <.input
+        :if={@live_action == :edit}
+        field={@form[:approaches_tried]}
+        type="textarea"
+        label="Approaches Tried"
+        placeholder="Log of approaches tried across sessions..."
+      />
+      <.input
+        :if={@live_action == :edit}
+        field={@form[:notes]}
+        type="textarea"
+        label="Notes"
+        placeholder="General observations and cross-session notes..."
+      />
       <div class="flex justify-end gap-2 mt-4">
         <.link patch={~p"/issues"} class="btn">Cancel</.link>
         <.button type="submit">{if @live_action == :new, do: "Create", else: "Save"}</.button>

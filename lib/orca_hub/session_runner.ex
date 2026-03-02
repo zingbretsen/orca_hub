@@ -41,6 +41,7 @@ defmodule OrcaHub.SessionRunner do
        port: nil,
        buffer: "",
        error_output: "",
+       issue_id: session.issue_id,
        status: :idle,
        messages: saved_messages,
        first_prompt: nil
@@ -149,6 +150,7 @@ defmodule OrcaHub.SessionRunner do
       [cwd: state.directory]
       |> maybe_put(:session_id, state.claude_session_id)
       |> maybe_put(:model, state.model)
+      |> maybe_put(:system_prompt, issue_system_prompt(state.issue_id))
 
     {args, port_opts} = Config.build_args(prompt, opts)
 
@@ -192,6 +194,23 @@ defmodule OrcaHub.SessionRunner do
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, val), do: Keyword.put(opts, key, val)
+
+  defp issue_system_prompt(nil), do: nil
+
+  defp issue_system_prompt(issue_id) do
+    """
+    You are working on OrcaHub issue #{issue_id}.
+
+    You have MCP tools to interact with this issue:
+    - `get_issue`: Read the issue's current state including previous approaches and notes
+    - `update_issue`: Append to the issue's approaches_tried and notes fields
+
+    Before starting work, call `get_issue` with issue_id "#{issue_id}" to see what previous sessions have tried.
+
+    When you make progress or finish, call `update_issue` to record what you attempted and your findings. This is append-only — never try to rewrite or remove previous entries. Only add information about your own approach and results.
+    """
+    |> String.trim()
+  end
 
   defp persist_message(session_id, event) do
     Sessions.create_message(%{session_id: session_id, data: event})
