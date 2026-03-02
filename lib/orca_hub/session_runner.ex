@@ -40,6 +40,7 @@ defmodule OrcaHub.SessionRunner do
        model: session.model,
        port: nil,
        buffer: "",
+       error_output: "",
        status: :idle,
        messages: saved_messages,
        first_prompt: nil
@@ -64,7 +65,7 @@ defmodule OrcaHub.SessionRunner do
     broadcast(state.session_id, {:status, :running})
     Sessions.update_session(Sessions.get_session!(state.session_id), %{status: "running"})
     first_prompt = state.first_prompt || prompt
-    {:reply, :ok, %{state | port: port, status: :running, buffer: "", messages: state.messages ++ [user_event], first_prompt: first_prompt}}
+    {:reply, :ok, %{state | port: port, status: :running, buffer: "", error_output: "", messages: state.messages ++ [user_event], first_prompt: first_prompt}}
   end
 
   def handle_call(:interrupt, _from, %{status: :running, port: port} = state) when not is_nil(port) do
@@ -85,8 +86,18 @@ defmodule OrcaHub.SessionRunner do
   def handle_info({port, {:data, data}}, %{port: port} = state) do
     {events, new_buffer} = StreamParser.parse(data, state.buffer)
 
+    # Capture non-JSON lines as error output (StreamParser silently drops them)
+    error_lines = extract_non_json_lines(data, state.buffer)
+
+    error_output =
+      if error_lines != "" do
+        state.error_output <> error_lines
+      else
+        state.error_output
+      end
+
     new_state =
-      Enum.reduce(events, %{state | buffer: new_buffer}, fn event, acc ->
+      Enum.reduce(events, %{state | buffer: new_buffer, error_output: error_output}, fn event, acc ->
         handle_event(event, acc)
       end)
 
@@ -96,6 +107,24 @@ defmodule OrcaHub.SessionRunner do
   def handle_info({port, {:exit_status, code}}, %{port: port} = state) do
     Logger.info("Claude CLI exited (code #{code}) for session #{state.session_id}")
     new_status = if code == 0, do: :idle, else: :error
+
+    error_text = String.trim(state.error_output <> state.buffer)
+
+    state =
+      if code != 0 && error_text != "" do
+        error_event = %{
+          "type" => "cli_error",
+          "exit_code" => code,
+          "message" => error_text
+        }
+
+        persist_message(state.session_id, error_event)
+        broadcast(state.session_id, {:event, error_event})
+        %{state | messages: state.messages ++ [error_event]}
+      else
+        state
+      end
+
     session = Sessions.get_session!(state.session_id)
     Sessions.update_session(session, %{status: to_string(new_status)})
     broadcast(state.session_id, {:status, new_status})
@@ -122,12 +151,21 @@ defmodule OrcaHub.SessionRunner do
       |> maybe_put(:model, state.model)
 
     {args, port_opts} = Config.build_args(prompt, opts)
-    cmd = Enum.map_join([claude_path | args], " ", &shell_escape/1)
+
+    script_args =
+      case :os.type() do
+        {:unix, :darwin} ->
+          ["-q", "/dev/null", claude_path | args]
+
+        _ ->
+          cmd = Enum.map_join([claude_path | args], " ", &shell_escape/1)
+          ["-qc", cmd, "/dev/null"]
+      end
 
     Port.open(
       {:spawn_executable, script_path},
       [:binary, :exit_status, :stderr_to_stdout,
-       {:args, ["-qc", cmd, "/dev/null"]}] ++ port_opts
+       {:args, script_args}] ++ port_opts
     )
   end
 
@@ -215,6 +253,23 @@ defmodule OrcaHub.SessionRunner do
       status ->
         {:error, "OpenAI returned #{status}: #{inspect(resp.body)}"}
     end
+  end
+
+  defp extract_non_json_lines(data, buffer) do
+    combined = buffer <> data
+    {complete_lines, _remainder} = combined |> String.split("\n") |> Enum.split(-1)
+
+    complete_lines
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.reject(fn line ->
+      stripped = Regex.replace(~r/\e\[[0-9;]*m/, line, "")
+      match?({:ok, _}, Jason.decode(stripped))
+    end)
+    |> Enum.join("\n")
+    |> then(fn
+      "" -> ""
+      text -> text <> "\n"
+    end)
   end
 
   defp shell_escape(arg), do: "'" <> String.replace(arg, "'", "'\\''") <> "'"

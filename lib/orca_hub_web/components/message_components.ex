@@ -19,6 +19,8 @@ defmodule OrcaHubWeb.MessageComponents do
           <.result_message msg={msg} />
         <% "system" -> %>
           <.system_message msg={msg} />
+        <% "cli_error" -> %>
+          <.cli_error_message msg={msg} />
         <% type when type in ~w(rate_limit_event) -> %>
           <% # Hide noisy internal events %>
         <% _ -> %>
@@ -209,6 +211,25 @@ defmodule OrcaHubWeb.MessageComponents do
     <div class="flex items-center gap-1.5 text-xs opacity-40 italic py-1">
       <.icon name="hero-cog-6-tooth-micro" class="size-3" />
       {@subtype}
+    </div>
+    """
+  end
+
+  attr :msg, :map, required: true
+
+  defp cli_error_message(assigns) do
+    assigns =
+      assigns
+      |> assign(:exit_code, assigns.msg["exit_code"])
+      |> assign(:message, assigns.msg["message"])
+
+    ~H"""
+    <div class="my-2 rounded-lg bg-error/10 border border-error/30 p-3">
+      <div class="flex items-center gap-1.5 text-xs font-medium text-error mb-1">
+        <.icon name="hero-exclamation-triangle-micro" class="size-3" />
+        CLI error (exit code {@exit_code})
+      </div>
+      <pre class="text-xs text-error/80 whitespace-pre-wrap overflow-x-auto max-h-64 overflow-y-auto">{@message}</pre>
     </div>
     """
   end
