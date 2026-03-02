@@ -82,7 +82,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("validate", _params, socket) do
-    Logger.info("validate: image entries=#{length(socket.assigns.uploads.image.entries)}, file entries=#{length(socket.assigns.uploads.file.entries)}")
     {:noreply, socket}
   end
 

@@ -8,8 +8,8 @@ import Config
 config :orca_hub, OrcaHub.Repo,
   username: System.get_env("DB_USERNAME", "orca_hub"),
   password: System.get_env("DB_PASSWORD", "postgres"),
-  hostname: "192.168.1.177",
-  database: "orca_hub_dev",
+  hostname: System.get_env("DB_HOST", "127.0.0.1"),
+  database: System.get_env("DB_NAME", "orca_hub_dev"),
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
