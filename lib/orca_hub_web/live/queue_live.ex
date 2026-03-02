@@ -24,6 +24,7 @@ defmodule OrcaHubWeb.QueueLive do
      |> assign(:entries, entries)
      |> assign(:feedback_requests, feedback_requests)
      |> assign(:prompt, "")
+     |> assign(:form_key, 0)
      |> assign(:show_all, false)
      |> assign(:page_title, "Queue")}
   end
@@ -53,7 +54,8 @@ defmodule OrcaHubWeb.QueueLive do
             {:noreply,
              socket
              |> assign(:entries, reject_session(socket.assigns.entries, session.id))
-             |> assign(:prompt, "")}
+             |> assign(:prompt, "")
+             |> update(:form_key, &(&1 + 1))}
 
           {:error, :busy} ->
             {:noreply, put_flash(socket, :error, "Session is busy")}

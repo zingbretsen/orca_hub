@@ -23,6 +23,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - Messages are stored as flexible maps in a `data` column (no fixed schema for message content)
 - File uploads save to the session's working directory so Claude can access them via its Read tool
 - Document uploads (PDF, DOCX, etc.) are converted to markdown via `https://api.lab.ingbretsenhome.com/convert` and saved as `.md` files alongside the original
+- Index tables use `row_click` with `JS.navigate` to make rows clickable to the show page (no separate View/Edit action links). See projects and issues index pages for examples.
 - Sessions are grouped by directory in the index view, sorted by most recently updated
 - Title auto-generation uses OpenAI API (`gpt-5-nano`)
 

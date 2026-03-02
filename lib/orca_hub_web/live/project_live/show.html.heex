@@ -132,6 +132,18 @@
     <.form for={@trigger_form} phx-submit="save_trigger" phx-change="validate_trigger" class="space-y-3">
       <.input field={@trigger_form[:name]} type="text" label="Name" placeholder="Weekly k3s update check" />
       <.input field={@trigger_form[:prompt]} type="textarea" label="Prompt" placeholder="Check for updates to all services..." />
+      <div>
+        <label class="label"><span class="label-text">Quick Schedule</span></label>
+        <select name="schedule_preset" phx-change="set_schedule_preset" class="select select-bordered w-full">
+          <option value="">Custom</option>
+          <option value="every_15m">Every 15 minutes</option>
+          <option value="hourly">Every hour</option>
+          <option value="daily_9am">Every day at 9am</option>
+          <option value="weekdays_9am">Every weekday at 9am</option>
+          <option value="weekly_mon_9am">Every Monday at 9am</option>
+          <option value="monthly_9am">Every 1st of the month at 9am</option>
+        </select>
+      </div>
       <.input field={@trigger_form[:cron_expression]} type="text" label="Cron Schedule" placeholder="0 9 * * 1  (Mondays at 9am)" />
       <div class="flex gap-6">
         <.input field={@trigger_form[:reuse_session]} type="checkbox" label="Reuse previous session" />

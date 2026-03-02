@@ -135,7 +135,7 @@
         autofocus
         rows="1"
         phx-hook="AutoResize"
-        id="queue-prompt"
+        id={"queue-prompt-#{@form_key}"}
       ><%= @prompt %></textarea>
       <.button type="submit">
         Send
