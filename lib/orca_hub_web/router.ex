@@ -17,7 +17,7 @@ defmodule OrcaHubWeb.Router do
   scope "/", OrcaHubWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    live "/", DashboardLive, :index
 
     live "/issues", IssueLive.Index, :index
     live "/issues/new", IssueLive.Index, :new

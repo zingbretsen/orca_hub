@@ -1,0 +1,100 @@
+<.header>
+  Dashboard
+</.header>
+
+<%!-- Stats grid --%>
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
+  <.link navigate={~p"/sessions"} class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow">
+    <div class="card-body p-4">
+      <div class="text-2xl font-bold">{@total_sessions}</div>
+      <div class="text-sm text-base-content/60">Sessions</div>
+      <div class="flex gap-2 mt-1 flex-wrap">
+        <span :if={@running_count > 0} class="badge badge-info badge-sm">{@running_count} running</span>
+        <span :if={@idle_count > 0} class="badge badge-warning badge-sm">{@idle_count} idle</span>
+        <span :if={@error_count > 0} class="badge badge-error badge-sm">{@error_count} error</span>
+      </div>
+    </div>
+  </.link>
+
+  <.link navigate={~p"/queue"} class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow">
+    <div class="card-body p-4">
+      <div class="text-2xl font-bold">{@feedback_count}</div>
+      <div class="text-sm text-base-content/60">Pending Feedback</div>
+      <div :if={@feedback_count > 0} class="mt-1">
+        <span class="badge badge-warning badge-sm">needs attention</span>
+      </div>
+    </div>
+  </.link>
+
+  <.link navigate={~p"/issues"} class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow">
+    <div class="card-body p-4">
+      <div class="text-2xl font-bold">{@open_issues}</div>
+      <div class="text-sm text-base-content/60">Open Issues</div>
+    </div>
+  </.link>
+
+  <.link navigate={~p"/projects"} class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow">
+    <div class="card-body p-4">
+      <div class="text-2xl font-bold">{@project_count}</div>
+      <div class="text-sm text-base-content/60">Projects</div>
+      <div :if={@enabled_triggers > 0} class="mt-1">
+        <span class="badge badge-ghost badge-sm">{@enabled_triggers} active triggers</span>
+      </div>
+    </div>
+  </.link>
+</div>
+
+<%!-- Quick actions --%>
+<div class="flex flex-wrap gap-2 mt-6">
+  <.link navigate={~p"/sessions/new"} class="btn btn-primary btn-sm">
+    <.icon name="hero-plus-micro" class="size-4" /> New Session
+  </.link>
+  <.link navigate={~p"/queue"} class="btn btn-ghost btn-sm">
+    <.icon name="hero-queue-list-micro" class="size-4" /> Queue
+  </.link>
+  <.link navigate={~p"/usage"} class="btn btn-ghost btn-sm">
+    <.icon name="hero-chart-bar-micro" class="size-4" /> Usage
+  </.link>
+</div>
+
+<%!-- Recent sessions --%>
+<div class="mt-8">
+  <h2 class="text-lg font-semibold mb-3">Recent Sessions</h2>
+
+  <div :if={@recent_sessions == []} class="text-sm text-base-content/50 p-8 text-center">
+    No sessions yet. Create one to get started!
+  </div>
+
+  <div class="space-y-2">
+    <.link
+      :for={session <- @recent_sessions}
+      navigate={~p"/sessions/#{session.id}"}
+      class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow block"
+    >
+      <div class="card-body p-3 flex-row items-center gap-3">
+        <div class={[
+          "badge badge-sm",
+          session.status == "running" && "badge-info",
+          session.status == "idle" && "badge-warning",
+          session.status == "error" && "badge-error"
+        ]}>
+          {session.status}
+        </div>
+        <div class="min-w-0 flex-1">
+          <div class="font-medium truncate">{session.title || "Untitled"}</div>
+          <div class="text-xs text-base-content/50 truncate flex items-center gap-1">
+            <.icon name="hero-folder-micro" class="size-3 shrink-0" />
+            {if session.project, do: session.project.name, else: session.directory}
+          </div>
+        </div>
+        <div class="text-xs text-base-content/40 whitespace-nowrap">
+          {time_ago(session.updated_at)}
+        </div>
+      </div>
+    </.link>
+  </div>
+
+  <.link :if={@total_sessions > 8} navigate={~p"/sessions"} class="btn btn-ghost btn-sm w-full mt-2">
+    View all sessions
+  </.link>
+</div>
