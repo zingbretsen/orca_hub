@@ -41,7 +41,6 @@ defmodule OrcaHubWeb.Layouts do
       <nav class="hidden md:flex items-center gap-1 ml-4 mr-auto">
         <a href={~p"/queue"} class="btn btn-ghost btn-sm">Queue</a>
         <a href={~p"/projects"} class="btn btn-ghost btn-sm">Projects</a>
-        <a href={~p"/issues"} class="btn btn-ghost btn-sm">Issues</a>
         <a href={~p"/triggers"} class="btn btn-ghost btn-sm">Triggers</a>
         <a href={~p"/sessions"} class="btn btn-ghost btn-sm">Sessions</a>
         <a href={~p"/usage"} class="btn btn-ghost btn-sm">Usage</a>
@@ -58,7 +57,6 @@ defmodule OrcaHubWeb.Layouts do
         <ul tabindex="0" class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-52">
           <li><a href={~p"/queue"}>Queue</a></li>
           <li><a href={~p"/projects"}>Projects</a></li>
-          <li><a href={~p"/issues"}>Issues</a></li>
           <li><a href={~p"/triggers"}>Triggers</a></li>
           <li><a href={~p"/sessions"}>Sessions</a></li>
           <li><a href={~p"/usage"}>Usage</a></li>
