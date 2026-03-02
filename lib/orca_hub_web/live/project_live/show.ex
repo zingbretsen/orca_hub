@@ -109,6 +109,20 @@ defmodule OrcaHubWeb.ProjectLive.Show do
      assign(socket, selected_file: nil, file_content: nil, file_editing: false, new_file_name: nil)}
   end
 
+  def handle_event("create_session", _params, socket) do
+    project = socket.assigns.project
+    params = %{"project_id" => project.id, "directory" => project.directory}
+
+    case OrcaHub.Sessions.create_session(params) do
+      {:ok, session} ->
+        {:ok, _} = OrcaHub.SessionSupervisor.start_session(session.id)
+        {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to create session")}
+    end
+  end
+
   # Trigger events
 
   def handle_event("new_trigger", _params, socket) do

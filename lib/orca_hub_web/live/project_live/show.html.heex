@@ -12,10 +12,39 @@
 
 <div class="mt-8">
   <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">Sessions</h3>
+    <button phx-click="create_session" class="btn btn-sm btn-primary">New Session</button>
+  </div>
+
+  <div :if={@project.sessions == []} class="text-sm text-base-content/50 p-4 text-center">
+    No sessions yet.
+  </div>
+
+  <.table :if={@project.sessions != []} id="project-sessions" rows={@project.sessions}>
+    <:col :let={session} label="Title">{session.title || "Untitled"}</:col>
+    <:col :let={session} label="Status">
+      <span class={[
+        "badge",
+        session.status == "idle" && "badge-ghost",
+        session.status == "running" && "badge-warning",
+        session.status == "error" && "badge-error"
+      ]}>
+        {session.status}
+      </span>
+    </:col>
+    <:col :let={session} label="Updated">
+      {Calendar.strftime(session.updated_at, "%b %d, %H:%M")}
+    </:col>
+    <:action :let={session}>
+      <.link navigate={~p"/sessions/#{session.id}"}>View</.link>
+    </:action>
+  </.table>
+</div>
+
+<div class="mt-8">
+  <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">Issues</h3>
-    <.link navigate={~p"/issues/new?project_id=#{@project.id}"}>
-      <.button class="btn-sm">New Issue</.button>
-    </.link>
+    <.link navigate={~p"/issues/new?project_id=#{@project.id}"} class="btn btn-sm btn-primary">New Issue</.link>
   </div>
 
   <div :if={@project.issues == []} class="text-sm text-base-content/50 p-4 text-center">

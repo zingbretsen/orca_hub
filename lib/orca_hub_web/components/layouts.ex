@@ -36,8 +36,22 @@ defmodule OrcaHubWeb.Layouts do
   def app(assigns) do
     ~H"""
     <header class="flex items-center gap-2 px-4 py-2 sm:px-6 lg:px-8">
-      <a href="/" class="font-semibold mr-auto">OrcaHub</a>
-      <div class="dropdown dropdown-end">
+      <a href="/" class="font-semibold">OrcaHub</a>
+
+      <nav class="hidden md:flex items-center gap-1 ml-4 mr-auto">
+        <a href={~p"/queue"} class="btn btn-ghost btn-sm">Queue</a>
+        <a href={~p"/projects"} class="btn btn-ghost btn-sm">Projects</a>
+        <a href={~p"/issues"} class="btn btn-ghost btn-sm">Issues</a>
+        <a href={~p"/triggers"} class="btn btn-ghost btn-sm">Triggers</a>
+        <a href={~p"/sessions"} class="btn btn-ghost btn-sm">Sessions</a>
+        <a href={~p"/usage"} class="btn btn-ghost btn-sm">Usage</a>
+      </nav>
+
+      <div class="hidden md:flex items-center ml-auto">
+        <.theme_toggle />
+      </div>
+
+      <div class="dropdown dropdown-end md:hidden ml-auto">
         <div tabindex="0" role="button" class="btn btn-ghost btn-sm btn-circle">
           <.icon name="hero-bars-3-micro" class="size-5" />
         </div>

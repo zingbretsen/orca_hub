@@ -9,7 +9,10 @@ defmodule OrcaHub.Projects do
     Repo.all(from p in Project, order_by: [asc: p.name])
   end
 
-  def get_project!(id), do: Repo.get!(Project, id) |> Repo.preload(:issues)
+  def get_project!(id) do
+    Repo.get!(Project, id)
+    |> Repo.preload([:issues, sessions: from(s in OrcaHub.Sessions.Session, order_by: [desc: s.updated_at])])
+  end
 
   def create_project(attrs) do
     %Project{}
