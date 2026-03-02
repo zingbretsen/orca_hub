@@ -29,6 +29,10 @@ defmodule OrcaHubWeb.Router do
     live "/projects/:id", ProjectLive.Show, :show
     live "/projects/:id/edit", ProjectLive.Index, :edit
 
+    live "/triggers", TriggerLive.Index, :index
+    live "/triggers/new", TriggerLive.Index, :new
+    live "/triggers/:id/edit", TriggerLive.Index, :edit
+
     live "/queue", QueueLive, :index
     live "/usage", UsageLive, :index
 

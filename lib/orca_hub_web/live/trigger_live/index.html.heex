@@ -1,0 +1,74 @@
+<.header>
+  Triggers
+  <:actions>
+    <.link patch={~p"/triggers/new"}>
+      <.button class="btn-sm">New Trigger</.button>
+    </.link>
+  </:actions>
+</.header>
+
+<div :if={@show_trigger_form} class="card bg-base-200 p-4 mt-6">
+  <h4 class="font-semibold mb-3">
+    {if @editing_trigger, do: "Edit Trigger", else: "New Trigger"}
+  </h4>
+  <.form for={@trigger_form} phx-submit="save_trigger" phx-change="validate_trigger" class="space-y-3">
+    <.input field={@trigger_form[:project_id]} type="select" label="Project" options={Enum.map(@projects, &{&1.name, &1.id})} />
+    <.input field={@trigger_form[:name]} type="text" label="Name" placeholder="Weekly k3s update check" />
+    <.input field={@trigger_form[:prompt]} type="textarea" label="Prompt" placeholder="Check for updates to all services..." />
+    <.input field={@trigger_form[:cron_expression]} type="text" label="Cron Schedule" placeholder="0 9 * * 1  (Mondays at 9am)" />
+    <div class="flex gap-6">
+      <.input field={@trigger_form[:reuse_session]} type="checkbox" label="Reuse previous session" />
+      <.input field={@trigger_form[:archive_on_complete]} type="checkbox" label="Hide from queue when done" />
+    </div>
+    <div class="flex justify-end gap-2">
+      <.link patch={~p"/triggers"} class="btn btn-sm">Cancel</.link>
+      <.button type="submit" class="btn-sm">
+        {if @editing_trigger, do: "Update", else: "Create"}
+      </.button>
+    </div>
+  </.form>
+</div>
+
+<div :if={@triggers == [] && !@show_trigger_form} class="text-sm text-base-content/50 p-8 text-center mt-6">
+  No triggers yet.
+</div>
+
+<div :if={@triggers != []} class="mt-6">
+  <div :for={{project, project_triggers} <- Enum.group_by(@triggers, & &1.project)} class="mb-6">
+    <div class="flex items-center gap-2 mb-2">
+      <h3 class="text-sm font-semibold text-base-content/70">
+        <.link navigate={~p"/projects/#{project.id}"} class="hover:underline">{project.name}</.link>
+      </h3>
+    </div>
+    <div class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
+      <div :for={trigger <- project_triggers} class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="font-medium">{trigger.name}</span>
+            <span class={["badge badge-xs", if(trigger.enabled, do: "badge-success", else: "badge-ghost")]}>
+              {if trigger.enabled, do: "active", else: "disabled"}
+            </span>
+          </div>
+          <div class="text-base-content/50 text-xs mt-0.5 font-mono">{trigger.cron_expression}</div>
+          <div :if={trigger.last_fired_at} class="text-base-content/40 text-xs mt-0.5">
+            Last fired: {Calendar.strftime(trigger.last_fired_at, "%Y-%m-%d %H:%M UTC")}
+          </div>
+        </div>
+        <div class="flex items-center gap-1">
+          <button phx-click="fire_trigger" phx-value-id={trigger.id} class="btn btn-xs btn-ghost" title="Fire now">
+            <.icon name="hero-play-micro" class="size-4" />
+          </button>
+          <button phx-click="toggle_trigger" phx-value-id={trigger.id} class="btn btn-xs btn-ghost" title={if trigger.enabled, do: "Disable", else: "Enable"}>
+            <.icon name={if trigger.enabled, do: "hero-pause-micro", else: "hero-play-micro"} class="size-4" />
+          </button>
+          <.link patch={~p"/triggers/#{trigger.id}/edit"} class="btn btn-xs btn-ghost" title="Edit">
+            <.icon name="hero-pencil-micro" class="size-4" />
+          </.link>
+          <button phx-click="delete_trigger" phx-value-id={trigger.id} data-confirm="Delete this trigger?" class="btn btn-xs btn-ghost text-error" title="Delete">
+            <.icon name="hero-trash-micro" class="size-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

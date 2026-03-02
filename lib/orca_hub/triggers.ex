@@ -2,6 +2,10 @@ defmodule OrcaHub.Triggers do
   import Ecto.Query
   alias OrcaHub.{Repo, Triggers.Trigger}
 
+  def list_triggers do
+    Repo.all(from t in Trigger, order_by: [asc: t.name], preload: [:project])
+  end
+
   def list_triggers_for_project(project_id) do
     Repo.all(from t in Trigger, where: t.project_id == ^project_id, order_by: [asc: t.name])
   end

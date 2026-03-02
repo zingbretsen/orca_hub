@@ -35,21 +35,22 @@ defmodule OrcaHubWeb.Layouts do
 
   def app(assigns) do
     ~H"""
-    <header class="flex flex-wrap items-center gap-2 px-4 py-2 sm:px-6 lg:px-8">
+    <header class="flex items-center gap-2 px-4 py-2 sm:px-6 lg:px-8">
       <a href="/" class="font-semibold mr-auto">OrcaHub</a>
-      <a href={~p"/queue"} class="btn btn-ghost btn-xs sm:btn-sm">Queue</a>
-      <a href={~p"/projects"} class="btn btn-ghost btn-xs sm:btn-sm">Projects</a>
-      <a href={~p"/issues"} class="btn btn-ghost btn-xs sm:btn-sm">Issues</a>
-      <a href={~p"/sessions"} class="btn btn-ghost btn-xs sm:btn-sm">Sessions</a>
       <div class="dropdown dropdown-end">
-        <div tabindex="0" role="button" class="btn btn-ghost btn-xs sm:btn-sm btn-circle">
-          <.icon name="hero-cog-6-tooth-micro" class="size-5" />
+        <div tabindex="0" role="button" class="btn btn-ghost btn-sm btn-circle">
+          <.icon name="hero-bars-3-micro" class="size-5" />
         </div>
-        <div tabindex="0" class="dropdown-content z-[1] menu p-4 shadow-lg bg-base-200 rounded-box w-52">
-          <a href={~p"/usage"} class="btn btn-ghost btn-sm justify-start mb-2">Usage</a>
-          <h3 class="text-xs font-semibold uppercase opacity-60 mb-2">Theme</h3>
-          <.theme_toggle />
-        </div>
+        <ul tabindex="0" class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-52">
+          <li><a href={~p"/queue"}>Queue</a></li>
+          <li><a href={~p"/projects"}>Projects</a></li>
+          <li><a href={~p"/issues"}>Issues</a></li>
+          <li><a href={~p"/triggers"}>Triggers</a></li>
+          <li><a href={~p"/sessions"}>Sessions</a></li>
+          <li><a href={~p"/usage"}>Usage</a></li>
+          <li class="menu-title text-xs uppercase opacity-60 mt-2">Theme</li>
+          <li><.theme_toggle /></li>
+        </ul>
       </div>
     </header>
 
