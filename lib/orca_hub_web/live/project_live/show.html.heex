@@ -8,8 +8,9 @@
   </:actions>
 </.header>
 
-<div class="mt-2 text-sm text-base-content/60 font-mono">
-  {@project.directory}
+<div class="mt-2 text-sm text-base-content/60 font-mono flex items-center gap-3">
+  <span>{@project.directory}</span>
+  <span :if={@current_branch} class="badge badge-outline badge-sm">{@current_branch}</span>
 </div>
 
 <div :if={@live_action == :edit} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
@@ -194,8 +195,78 @@
   </div>
 </div>
 
+<%!-- Worktrees --%>
+<div class="mt-8">
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">Worktrees</h3>
+    <button phx-click="new_worktree" class="btn btn-sm btn-primary">New Worktree</button>
+  </div>
+
+  <div :if={@show_worktree_form} class="card bg-base-200 p-4 mb-4">
+    <h4 class="font-semibold mb-3">New Worktree</h4>
+    <form phx-submit="create_worktree" class="space-y-3">
+      <div>
+        <label class="label"><span class="label-text">Existing branch</span></label>
+        <select name="existing_branch" class="select select-bordered w-full font-mono">
+          <option value="">-- select a branch --</option>
+          <option :for={branch <- @branches} value={branch}>{branch}</option>
+        </select>
+      </div>
+      <div class="divider text-xs text-base-content/40 my-1">OR create new</div>
+      <div>
+        <label class="label"><span class="label-text">New branch name</span></label>
+        <input type="text" name="new_branch" placeholder="feature/my-branch" class="input input-bordered w-full font-mono" />
+      </div>
+      <div class="flex justify-end gap-2">
+        <button type="button" phx-click="cancel_worktree" class="btn btn-sm">Cancel</button>
+        <.button type="submit" class="btn-sm">Create</.button>
+      </div>
+    </form>
+  </div>
+
+  <div :if={@worktrees == [] && !@show_worktree_form} class="text-sm text-base-content/50 p-4 text-center">
+    No worktrees.
+  </div>
+
+  <div :if={@worktrees != []} class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
+    <div :for={wt <- @worktrees} class="flex items-center gap-3 px-4 py-3 text-sm">
+      <div class="flex-1 min-w-0">
+        <div class="font-medium">{wt[:branch]}</div>
+        <div class="text-base-content/50 text-xs font-mono mt-0.5 truncate">{wt[:path]}</div>
+      </div>
+      <div class="flex items-center gap-1">
+        <button phx-click="worktree_session" phx-value-path={wt[:path]} class="btn btn-xs btn-ghost" title="Start session">
+          <.icon name="hero-play-micro" class="size-4" />
+        </button>
+        <button phx-click="worktree_rebase" phx-value-path={wt[:path]} class="btn btn-xs btn-ghost" title="Rebase onto main">
+          <.icon name="hero-arrow-path-micro" class="size-4" />
+        </button>
+        <button phx-click="worktree_merge" phx-value-branch={wt[:branch]} class="btn btn-xs btn-ghost" title="Merge into main">
+          <.icon name="hero-arrow-down-on-square-micro" class="size-4" />
+        </button>
+        <button
+          phx-click="worktree_remove"
+          phx-value-path={wt[:path]}
+          phx-value-branch={wt[:branch]}
+          data-confirm={"Remove worktree and delete branch #{wt[:branch]}?"}
+          class="btn btn-xs btn-ghost text-error"
+          title="Remove worktree"
+        >
+          <.icon name="hero-trash-micro" class="size-4" />
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%!-- Recent Changes --%>
 <div :if={@commits != []} class="mt-8">
-  <h3 class="text-lg font-semibold mb-4">Recent Changes</h3>
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">Recent Changes</h3>
+    <button phx-click="git_pull" class="btn btn-sm btn-ghost">
+      <.icon name="hero-arrow-down-tray-micro" class="size-4" /> Pull
+    </button>
+  </div>
   <div class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
     <div :for={commit <- @commits} class="flex items-baseline gap-3 px-4 py-2 text-sm">
       <code class="text-primary font-mono text-xs">{commit.hash}</code>

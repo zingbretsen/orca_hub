@@ -149,4 +149,137 @@ defmodule OrcaHub.Projects do
         []
     end
   end
+
+  @doc "Returns the current git branch name."
+  def git_branch(%Project{directory: dir}) do
+    case System.cmd("git", ["branch", "--show-current"], cd: dir, stderr_to_stdout: true) do
+      {output, 0} -> String.trim(output)
+      _ -> nil
+    end
+  end
+
+  @doc "Returns list of local branch names."
+  def git_branches(%Project{directory: dir}) do
+    case System.cmd("git", ["branch", "--format=%(refname:short)"], cd: dir, stderr_to_stdout: true) do
+      {output, 0} ->
+        output |> String.split("\n", trim: true) |> Enum.map(&String.trim/1) |> Enum.sort()
+
+      _ ->
+        []
+    end
+  end
+
+  @doc "Returns the main/master branch name for the repo."
+  def git_main_branch(%Project{directory: dir}) do
+    # Check which of main/master exists
+    case System.cmd("git", ["branch", "--list", "main"], cd: dir, stderr_to_stdout: true) do
+      {output, 0} when output != "" -> "main"
+      _ ->
+        case System.cmd("git", ["branch", "--list", "master"], cd: dir, stderr_to_stdout: true) do
+          {output, 0} when output != "" -> "master"
+          _ -> "main"
+        end
+    end
+  end
+
+  @doc "Runs git pull in the project directory."
+  def git_pull(%Project{directory: dir}) do
+    case System.cmd("git", ["pull"], cd: dir, stderr_to_stdout: true) do
+      {output, 0} -> {:ok, String.trim(output)}
+      {output, _} -> {:error, String.trim(output)}
+    end
+  end
+
+  @doc "Lists git worktrees. Returns list of maps with :path, :branch, :head keys."
+  def git_worktree_list(%Project{directory: dir}) do
+    case System.cmd("git", ["worktree", "list", "--porcelain"], cd: dir, stderr_to_stdout: true) do
+      {output, 0} ->
+        output
+        |> String.split("\n\n", trim: true)
+        |> Enum.map(fn block ->
+          lines = String.split(block, "\n", trim: true)
+
+          Enum.reduce(lines, %{}, fn line, acc ->
+            cond do
+              String.starts_with?(line, "worktree ") -> Map.put(acc, :path, String.trim_leading(line, "worktree "))
+              String.starts_with?(line, "HEAD ") -> Map.put(acc, :head, String.trim_leading(line, "HEAD "))
+              String.starts_with?(line, "branch ") -> Map.put(acc, :branch, String.trim_leading(line, "branch refs/heads/"))
+              line == "bare" -> Map.put(acc, :bare, true)
+              true -> acc
+            end
+          end)
+        end)
+        # Filter out the main worktree (the project dir itself)
+        |> Enum.reject(fn wt -> Path.expand(wt[:path]) == Path.expand(dir) end)
+
+      _ ->
+        []
+    end
+  end
+
+  @doc """
+  Creates a new git worktree in .worktrees/<branch_name>.
+  If `new_branch: true` is passed, creates a new branch with `-b`.
+  Otherwise checks out an existing branch.
+  """
+  def git_create_worktree(%Project{directory: dir}, branch_name, opts \\ []) do
+    ensure_worktrees_gitignored(dir)
+    worktree_path = Path.join([dir, ".worktrees", branch_name])
+
+    args =
+      if Keyword.get(opts, :new_branch, false) do
+        ["worktree", "add", worktree_path, "-b", branch_name]
+      else
+        ["worktree", "add", worktree_path, branch_name]
+      end
+
+    case System.cmd("git", args, cd: dir, stderr_to_stdout: true) do
+      {_output, 0} -> {:ok, worktree_path}
+      {output, _} -> {:error, String.trim(output)}
+    end
+  end
+
+  defp ensure_worktrees_gitignored(dir) do
+    gitignore_path = Path.join(dir, ".gitignore")
+
+    existing =
+      case File.read(gitignore_path) do
+        {:ok, content} -> content
+        {:error, _} -> ""
+      end
+
+    unless String.contains?(existing, ".worktrees") do
+      addition = if String.ends_with?(existing, "\n") or existing == "", do: ".worktrees/\n", else: "\n.worktrees/\n"
+      File.write(gitignore_path, existing <> addition)
+    end
+  end
+
+  @doc "Rebases the worktree branch onto the main branch."
+  def git_rebase_worktree(%Project{directory: dir}, worktree_path) do
+    main = git_main_branch(%Project{directory: dir})
+
+    # First fetch to make sure we have latest
+    System.cmd("git", ["fetch", "origin"], cd: worktree_path, stderr_to_stdout: true)
+
+    case System.cmd("git", ["rebase", "origin/#{main}"], cd: worktree_path, stderr_to_stdout: true) do
+      {output, 0} -> {:ok, String.trim(output)}
+      {output, _} ->
+        # Abort the failed rebase
+        System.cmd("git", ["rebase", "--abort"], cd: worktree_path, stderr_to_stdout: true)
+        {:error, String.trim(output)}
+    end
+  end
+
+  @doc "Merges a worktree branch into the main branch."
+  def git_merge_worktree(%Project{directory: dir}, branch_name) do
+    main = git_main_branch(%Project{directory: dir})
+
+    # Checkout main in the main worktree and merge
+    with {_, 0} <- System.cmd("git", ["checkout", main], cd: dir, stderr_to_stdout: true),
+         {output, 0} <- System.cmd("git", ["merge", branch_name], cd: dir, stderr_to_stdout: true) do
+      {:ok, String.trim(output)}
+    else
+      {output, _} -> {:error, String.trim(output)}
+    end
+  end
 end

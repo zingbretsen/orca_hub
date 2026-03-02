@@ -11,6 +11,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     md_files = Projects.list_markdown_files(project)
     commits = Projects.git_log(project)
     triggers = Triggers.list_triggers_for_project(project.id)
+    current_branch = Projects.git_branch(project)
+    worktrees = Projects.git_worktree_list(project)
+    branches = Projects.git_branches(project)
 
     {:ok,
      socket
@@ -19,6 +22,10 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        page_title: project.name,
        commits: commits,
        md_files: md_files,
+       current_branch: current_branch,
+       worktrees: worktrees,
+       branches: branches,
+       show_worktree_form: false,
        selected_file: nil,
        file_content: nil,
        file_editing: false,
@@ -283,6 +290,127 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     end)
 
     {:noreply, put_flash(socket, :info, "Trigger fired")}
+  end
+
+  # Git operations
+
+  def handle_event("git_pull", _params, socket) do
+    project = socket.assigns.project
+
+    case Projects.git_pull(project) do
+      {:ok, output} ->
+        commits = Projects.git_log(project)
+        current_branch = Projects.git_branch(project)
+
+        {:noreply,
+         socket
+         |> assign(commits: commits, current_branch: current_branch)
+         |> put_flash(:info, output)}
+
+      {:error, output} ->
+        {:noreply, put_flash(socket, :error, output)}
+    end
+  end
+
+  def handle_event("new_worktree", _params, socket) do
+    {:noreply, assign(socket, show_worktree_form: true)}
+  end
+
+  def handle_event("cancel_worktree", _params, socket) do
+    {:noreply, assign(socket, show_worktree_form: false)}
+  end
+
+  def handle_event("create_worktree", params, socket) do
+    existing = params["existing_branch"] || ""
+    new_name = String.trim(params["new_branch"] || "")
+
+    {branch, opts} =
+      cond do
+        new_name != "" -> {new_name, [new_branch: true]}
+        existing != "" -> {existing, []}
+        true -> {"", []}
+      end
+
+    if branch == "" do
+      {:noreply, put_flash(socket, :error, "Select a branch or enter a new branch name")}
+    else
+      project = socket.assigns.project
+
+      case Projects.git_create_worktree(project, branch, opts) do
+        {:ok, _worktree_path} ->
+          worktrees = Projects.git_worktree_list(project)
+          branches = Projects.git_branches(project)
+
+          {:noreply,
+           socket
+           |> assign(worktrees: worktrees, branches: branches, show_worktree_form: false)
+           |> put_flash(:info, "Worktree created for branch #{branch}")}
+
+        {:error, output} ->
+          {:noreply, put_flash(socket, :error, output)}
+      end
+    end
+  end
+
+  def handle_event("worktree_session", %{"path" => path}, socket) do
+    project = socket.assigns.project
+    params = %{"project_id" => project.id, "directory" => path}
+
+    case OrcaHub.Sessions.create_session(params) do
+      {:ok, session} ->
+        {:ok, _} = OrcaHub.SessionSupervisor.start_session(session.id)
+        {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to create session")}
+    end
+  end
+
+  def handle_event("worktree_rebase", %{"path" => path}, socket) do
+    project = socket.assigns.project
+
+    case Projects.git_rebase_worktree(project, path) do
+      {:ok, output} ->
+        commits = Projects.git_log(project)
+        {:noreply, socket |> assign(commits: commits) |> put_flash(:info, "Rebase successful: #{output}")}
+
+      {:error, output} ->
+        {:noreply, put_flash(socket, :error, "Rebase failed (auto-aborted): #{output}")}
+    end
+  end
+
+  def handle_event("worktree_merge", %{"branch" => branch}, socket) do
+    project = socket.assigns.project
+
+    case Projects.git_merge_worktree(project, branch) do
+      {:ok, output} ->
+        commits = Projects.git_log(project)
+        current_branch = Projects.git_branch(project)
+
+        {:noreply,
+         socket
+         |> assign(commits: commits, current_branch: current_branch)
+         |> put_flash(:info, "Merged #{branch}: #{output}")}
+
+      {:error, output} ->
+        {:noreply, put_flash(socket, :error, "Merge failed: #{output}")}
+    end
+  end
+
+  def handle_event("worktree_remove", %{"path" => path, "branch" => branch}, socket) do
+    project = socket.assigns.project
+    dir = project.directory
+
+    case System.cmd("git", ["worktree", "remove", path], cd: dir, stderr_to_stdout: true) do
+      {_, 0} ->
+        # Also delete the branch
+        System.cmd("git", ["branch", "-d", branch], cd: dir, stderr_to_stdout: true)
+        worktrees = Projects.git_worktree_list(project)
+        {:noreply, socket |> assign(worktrees: worktrees) |> put_flash(:info, "Worktree removed")}
+
+      {output, _} ->
+        {:noreply, put_flash(socket, :error, "Remove failed: #{String.trim(output)}")}
+    end
   end
 
   defp browse_to(socket, path) do
