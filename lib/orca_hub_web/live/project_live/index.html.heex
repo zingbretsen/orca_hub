@@ -22,7 +22,7 @@
 <div :if={@live_action == :new} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
   <div class="card bg-base-100 shadow-xl w-full max-w-md p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
     <h2 class="text-lg font-semibold mb-4">New Project</h2>
-    <.form for={@form} phx-submit="save" class="space-y-4">
+    <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-4">
       <.input field={@form[:name]} type="text" label="Name" placeholder="My Project" />
       <div class="flex gap-2 items-end">
         <div class="flex-1">

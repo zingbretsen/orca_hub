@@ -40,6 +40,12 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     {:noreply, stream_delete(socket, :projects, project)}
   end
 
+  def handle_event("validate", %{"project" => params}, socket) do
+    project = socket.assigns.project || %Project{}
+    changeset = Project.changeset(project, params)
+    {:noreply, assign(socket, form: to_form(changeset))}
+  end
+
   def handle_event("browse", _params, socket) do
     home = System.user_home!()
     {:noreply, browse_to(socket, home)}
@@ -56,7 +62,12 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
   def handle_event("browse_select", _params, socket) do
     project = socket.assigns.project || %Project{}
-    changeset = Project.changeset(project, %{"directory" => socket.assigns.browse_path})
+    path = socket.assigns.browse_path
+    existing_params = socket.assigns.form.source.params || %{}
+    current_name = existing_params["name"]
+
+    name = if current_name in [nil, ""], do: Path.basename(path), else: current_name
+    changeset = Project.changeset(project, %{"directory" => path, "name" => name})
 
     {:noreply,
      socket
