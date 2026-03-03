@@ -13,7 +13,7 @@
   </h4>
   <.form for={@trigger_form} phx-submit="save_trigger" phx-change="validate_trigger" class="space-y-3">
     <.input field={@trigger_form[:project_id]} type="select" label="Project" options={Enum.map(@projects, &{&1.name, &1.id})} />
-    <.input field={@trigger_form[:name]} type="text" label="Name" placeholder="Weekly k3s update check" />
+    <.input field={@trigger_form[:name]} type="text" label="Name" placeholder="Weekly k3s update check" phx-hook="AutoFocus" />
     <.input field={@trigger_form[:prompt]} type="textarea" label="Prompt" placeholder="Check for updates to all services..." />
 
     <div>

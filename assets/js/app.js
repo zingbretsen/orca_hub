@@ -83,9 +83,14 @@ let Hooks = {
       window.removeEventListener("keydown", this.handler)
     }
   },
+  AutoFocus: {
+    mounted() { this.el.focus() },
+    updated() { this.el.focus() }
+  },
   AutoResize: {
     mounted() {
       this.resize()
+      this.el.focus()
       this.el.addEventListener("input", () => this.resize())
       this.el.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && (e.ctrlKey || e.metaKey || e.shiftKey)) {

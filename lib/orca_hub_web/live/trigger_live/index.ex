@@ -30,8 +30,14 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     assign(socket, page_title: "Triggers", show_trigger_form: false, editing_trigger: nil)
   end
 
-  defp apply_action(socket, :new, _params) do
-    changeset = Triggers.change_trigger(%Trigger{})
+  defp apply_action(socket, :new, params) do
+    attrs =
+      case params do
+        %{"project_id" => project_id} -> %{project_id: project_id}
+        _ -> %{}
+      end
+
+    changeset = Triggers.change_trigger(%Trigger{}, attrs)
 
     socket
     |> assign(
