@@ -7,6 +7,7 @@ defmodule OrcaHub.Scheduler do
     jobs() |> Enum.each(fn job -> delete_job(job.name) end)
 
     Triggers.list_enabled_triggers()
+    |> Enum.filter(& &1.cron_expression)
     |> Enum.each(&schedule_trigger/1)
   end
 
