@@ -173,7 +173,66 @@ let Hooks = {
       // Get the text content from the adjacent message bubble
       const bubble = this.el.closest("[data-tts-container]")?.querySelector("[data-tts-text]")
       if (!bubble) return ""
-      return bubble.innerText || ""
+      return this.cleanTextForTTS(bubble.innerText || "")
+    },
+
+    cleanTextForTTS(text) {
+      // Strip markdown artifacts that innerText might preserve
+      text = text.replace(/^#{1,6}\s+/gm, "")          // markdown headers
+      text = text.replace(/```[\s\S]*?```/g, "")        // code blocks
+      text = text.replace(/`([^`]+)`/g, "$1")           // inline code (keep content)
+
+      // Elixir/programming term pronunciations (run BEFORE path/hash replacements)
+      const termMap = {
+        "HEEx": "heeks",
+        "EEx": "eeks",
+        "heex": "heeks",
+        "eex": "eeks",
+        "defp": "def p",
+        "defmodule": "def module",
+        "GenServer": "gen server",
+        "PubSub": "pub sub",
+        "LiveView": "live view",
+        "ExUnit": "ex unit",
+        "iex": "I E X",
+        "CSRF": "C S R F",
+        "JSONL": "JSON lines",
+        "nginx": "engine x",
+        "stdin": "standard in",
+        "stdout": "standard out",
+        "stderr": "standard error",
+        "CLI": "C L I",
+        "OTP": "O T P",
+        "npm": "N P M",
+        "UUID": "U U I D",
+        "regex": "regex",
+        "phx": "phoenix",
+      }
+
+      for (const [term, replacement] of Object.entries(termMap)) {
+        text = text.replace(new RegExp(`\\b${term}\\b`, "g"), replacement)
+      }
+
+      // File paths with directories: extract just the filename
+      text = text.replace(/(?:\/[\w.-]+)+\/([\w.-]+)/g, (match, filename) => {
+        return filename
+          .replace(/_/g, " ")
+          .replace(/\.(\w+)$/, " dot $1")
+      })
+
+      // Standalone filenames (word.ext): "show.ex" -> "show dot ex"
+      text = text.replace(/\b(\w[\w-]*)\.(ex|exs|js|ts|css|html|json|md|yml|yaml|toml|txt|rb|py|go|rs|sh|heex|eex|leex)\b/g,
+        (match, name, ext) => `${name.replace(/_/g, " ")} dot ${ext}`
+      )
+
+      // Remaining underscores to spaces (variable names etc.)
+      text = text.replace(/_/g, " ")
+
+      // Clean up excessive whitespace
+      text = text.replace(/\n{2,}/g, ". ")
+      text = text.replace(/\s+/g, " ")
+
+      return text.trim()
     },
 
     toggle() {
