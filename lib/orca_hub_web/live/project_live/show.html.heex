@@ -70,7 +70,7 @@
     No sessions yet.
   </div>
 
-  <.table :if={@project.sessions != []} id="project-sessions" rows={@project.sessions}>
+  <.table :if={@project.sessions != []} id="project-sessions" rows={@project.sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}>
     <:col :let={session} label="Title">{session.title || "Untitled"}</:col>
     <:col :let={session} label="Status">
       <span class={[
@@ -85,9 +85,6 @@
     <:col :let={session} label="Updated">
       {Calendar.strftime(session.updated_at, "%b %d, %H:%M")}
     </:col>
-    <:action :let={session}>
-      <.link navigate={~p"/sessions/#{session.id}"}>View</.link>
-    </:action>
   </.table>
 </div>
 
@@ -101,7 +98,7 @@
     No issues yet.
   </div>
 
-  <.table :if={@project.issues != []} id="project-issues" rows={@project.issues}>
+  <.table :if={@project.issues != []} id="project-issues" rows={@project.issues} row_click={fn issue -> JS.navigate(~p"/issues/#{issue.id}") end}>
     <:col :let={issue} label="Title">{issue.title}</:col>
     <:col :let={issue} label="Status">
       <span class={[
@@ -113,9 +110,6 @@
         {issue.status}
       </span>
     </:col>
-    <:action :let={issue}>
-      <.link navigate={~p"/issues/#{issue.id}"}>View</.link>
-    </:action>
   </.table>
 </div>
 

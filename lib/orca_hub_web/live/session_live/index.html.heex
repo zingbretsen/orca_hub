@@ -46,7 +46,7 @@
   <div :if={sessions == []} class="text-sm text-base-content/50 p-4">
     No active sessions.
   </div>
-  <.table :if={sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}"} rows={sessions}>
+  <.table :if={sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}"} rows={sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}>
     <:col :let={session} label="Title">{session.title}</:col>
     <:col :let={session} label="Status">
       <span class={[
@@ -58,9 +58,6 @@
         {session.status}
       </span>
     </:col>
-    <:action :let={session}>
-      <.link navigate={~p"/sessions/#{session.id}"}>View</.link>
-    </:action>
     <:action :let={session}>
       <.link phx-click="archive" phx-value-id={session.id} data-confirm="Archive this session?">
         Archive
