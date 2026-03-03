@@ -49,3 +49,6 @@ test-results/
 
 # Uploaded files
 upload_*
+
+# Screenshots
+/*.png

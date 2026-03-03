@@ -1,6 +1,9 @@
 <.header>
   Issues
   <:actions>
+    <button phx-click="toggle_closed" class="btn btn-ghost btn-sm">
+      {if @show_closed, do: "Hide closed", else: "Show closed"}
+    </button>
     <.link patch={~p"/issues/new"}>
       <.button>New Issue</.button>
     </.link>

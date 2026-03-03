@@ -78,7 +78,7 @@
     No sessions yet. Start one to begin working on this issue.
   </div>
 
-  <.table :if={@issue.sessions != []} id="issue-sessions" rows={@issue.sessions}>
+  <.table :if={@issue.sessions != []} id="issue-sessions" rows={@issue.sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}>
     <:col :let={session} label="Title">{session.title || session.directory}</:col>
     <:col :let={session} label="Status">
       <span class={[
@@ -91,8 +91,5 @@
       </span>
     </:col>
     <:col :let={session} label="Model">{session.model || "default"}</:col>
-    <:action :let={session}>
-      <.link navigate={~p"/sessions/#{session.id}"}>View</.link>
-    </:action>
   </.table>
 </div>

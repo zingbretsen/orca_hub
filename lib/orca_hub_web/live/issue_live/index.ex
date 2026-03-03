@@ -9,7 +9,8 @@ defmodule OrcaHubWeb.IssueLive.Index do
   def mount(_params, _session, socket) do
     {:ok,
      socket
-     |> stream(:issues, Issues.list_issues())
+     |> assign(show_closed: false)
+     |> stream(:issues, Issues.list_issues(exclude_closed: true))
      |> assign(projects: Projects.list_projects())}
   end
 
@@ -46,6 +47,15 @@ defmodule OrcaHubWeb.IssueLive.Index do
   @impl true
   def handle_event("save", %{"issue" => params}, socket) do
     save_issue(socket, socket.assigns.live_action, params)
+  end
+
+  def handle_event("toggle_closed", _params, socket) do
+    show_closed = !socket.assigns.show_closed
+
+    {:noreply,
+     socket
+     |> assign(show_closed: show_closed)
+     |> stream(:issues, Issues.list_issues(exclude_closed: !show_closed), reset: true)}
   end
 
   def handle_event("delete", %{"id" => id}, socket) do

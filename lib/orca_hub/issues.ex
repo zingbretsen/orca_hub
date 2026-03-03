@@ -2,8 +2,15 @@ defmodule OrcaHub.Issues do
   import Ecto.Query
   alias OrcaHub.{Repo, Issues.Issue}
 
-  def list_issues do
-    Repo.all(from i in Issue, order_by: [desc: i.inserted_at], preload: [:project])
+  def list_issues(opts \\ []) do
+    query = from i in Issue, order_by: [desc: i.inserted_at], preload: [:project]
+
+    query =
+      if Keyword.get(opts, :exclude_closed, false),
+        do: where(query, [i], i.status != "closed"),
+        else: query
+
+    Repo.all(query)
   end
 
   def list_issues_for_project(project_id) do
