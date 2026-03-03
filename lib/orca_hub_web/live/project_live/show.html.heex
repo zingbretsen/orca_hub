@@ -302,7 +302,7 @@
   </div>
 </div>
 
-<div class="mt-8">
+<div class={["mt-8", @selected_file && "breakout-wide"]}>
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">Markdown Files</h3>
     <button phx-click="new_file" class="btn btn-sm btn-primary">New File</button>
@@ -312,24 +312,20 @@
     No markdown files found in this project.
   </div>
 
-  <div :if={@md_files != [] || @new_file_name} class="flex flex-col md:flex-row gap-4">
+  <div :if={@md_files != [] || @new_file_name} class="flex flex-col md:flex-row gap-4" style="height: calc(100vh - 12rem);">
     <%!-- File tree sidebar --%>
-    <div class="md:w-64 shrink-0">
+    <div class="md:w-56 shrink-0 overflow-y-auto">
       <ul class="menu menu-sm bg-base-200 rounded-lg w-full">
-        <li :for={file <- @md_files}>
-          <button
-            phx-click="select_file"
-            phx-value-path={file}
-            class={[@selected_file == file && "active"]}
-          >
-            <span class="font-mono text-xs truncate">{file}</span>
-          </button>
-        </li>
+        <.file_tree_node
+          :for={node <- @file_tree}
+          node={node}
+          selected_file={@selected_file}
+        />
       </ul>
     </div>
 
     <%!-- File content area --%>
-    <div class="flex-1 min-w-0">
+    <div class="flex-1 min-w-0 overflow-y-auto">
       <%!-- New file form --%>
       <div :if={@new_file_name != nil && @file_editing} class="space-y-3">
         <form phx-submit="save_file" class="space-y-3">
@@ -352,21 +348,50 @@
         </form>
       </div>
 
-      <%!-- View selected file --%>
+      <%!-- View selected file (block-aware) --%>
       <div :if={@selected_file && !@file_editing && @new_file_name == nil}>
         <div class="flex items-center justify-between mb-3">
           <div class="flex items-center gap-2">
             <span class="font-mono text-sm text-base-content/70">{@selected_file}</span>
             <button phx-click="deselect_file" class="btn btn-ghost btn-xs">&times;</button>
           </div>
-          <button phx-click="edit_file" class="btn btn-sm">Edit</button>
+          <button phx-click="edit_file" class="btn btn-sm btn-ghost">Raw Edit</button>
         </div>
-        <div class="prose prose-sm max-w-none bg-base-200 rounded-lg p-4 overflow-auto">
-          {OrcaHubWeb.Markdown.render(@file_content)}
+        <div class="bg-base-200 rounded-lg p-4">
+          <div
+            :for={{index, block_text} <- @file_blocks}
+            class="group relative"
+          >
+            <%!-- Editing this block --%>
+            <div :if={@editing_block == index} class="my-2">
+              <form phx-submit="save_block" class="space-y-2">
+                <textarea
+                  name="content"
+                  class="textarea textarea-bordered w-full font-mono text-sm"
+                  rows={max(3, length(String.split(block_text, "\n")) + 1)}
+                  phx-hook="AutoFocus"
+                  id={"block-editor-#{index}"}
+                >{@block_edit_content}</textarea>
+                <div class="flex justify-end gap-2">
+                  <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">Cancel</button>
+                  <.button type="submit" class="btn-xs">Save</.button>
+                </div>
+              </form>
+            </div>
+            <%!-- Rendered block (clickable to edit) --%>
+            <div
+              :if={@editing_block != index}
+              phx-click="edit_block"
+              phx-value-index={index}
+              class="prose prose-sm max-w-none cursor-pointer rounded px-2 -mx-2 py-1 hover:bg-base-300/50 transition-colors"
+            >
+              {OrcaHubWeb.Markdown.render_block(block_text)}
+            </div>
+          </div>
         </div>
       </div>
 
-      <%!-- Edit selected file --%>
+      <%!-- Raw edit selected file --%>
       <div :if={@selected_file && @file_editing && @new_file_name == nil} class="space-y-3">
         <div class="flex items-center justify-between">
           <span class="font-mono text-sm text-base-content/70">{@selected_file}</span>

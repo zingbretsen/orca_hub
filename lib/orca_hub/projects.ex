@@ -68,6 +68,50 @@ defmodule OrcaHub.Projects do
     |> Enum.sort()
   end
 
+  @doc """
+  Builds a hierarchical tree from a flat list of relative paths.
+  Returns a list of nodes: %{name, path, type: :file} or %{name, type: :dir, children: [...]}.
+  Directories sorted first, then files, both alphabetical.
+  """
+  def build_file_tree(paths) do
+    paths
+    |> Enum.reduce(%{}, fn path, acc ->
+      parts = Path.split(path)
+      insert_path(acc, parts, path)
+    end)
+    |> map_to_tree()
+    |> sort_tree()
+  end
+
+  defp insert_path(tree, [name], full_path), do: Map.put(tree, name, full_path)
+
+  defp insert_path(tree, [dir | rest], full_path) do
+    subtree = Map.get(tree, dir, %{})
+    Map.put(tree, dir, insert_path(subtree, rest, full_path))
+  end
+
+  defp map_to_tree(map) do
+    Enum.map(map, fn
+      {name, path} when is_binary(path) ->
+        %{name: name, path: path, type: :file}
+
+      {name, children} when is_map(children) ->
+        %{name: name, type: :dir, children: map_to_tree(children)}
+    end)
+  end
+
+  defp sort_tree(nodes) do
+    nodes
+    |> Enum.sort_by(fn
+      %{type: :dir, name: name} -> {0, name}
+      %{type: :file, name: name} -> {1, name}
+    end)
+    |> Enum.map(fn
+      %{type: :dir, children: children} = node -> %{node | children: sort_tree(children)}
+      node -> node
+    end)
+  end
+
   defp find_md_files(base_dir, rel_dir) do
     full_dir = Path.join(base_dir, rel_dir)
 

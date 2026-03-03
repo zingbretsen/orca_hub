@@ -104,6 +104,18 @@
 
 /* This file is for your main application CSS */
 
+/* Full-width breakout from max-w-5xl container */
+.breakout-wide {
+  width: 100vw;
+  position: relative;
+  left: 50%;
+  right: 50%;
+  margin-left: -50vw;
+  margin-right: -50vw;
+  padding-left: max(1rem, calc((100vw - 80rem) / 2));
+  padding-right: max(1rem, calc((100vw - 80rem) / 2));
+}
+
 /* Prose styles for markdown-rendered content */
 .prose {
   line-height: 1.6;

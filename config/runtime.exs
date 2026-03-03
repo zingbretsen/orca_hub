@@ -29,6 +29,9 @@ config :orca_hub, OrcaHubWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
 config :orca_hub, :openai_api_key, System.get_env("OPENAI_API_KEY")
+config :orca_hub, :datarobot_api_token, System.get_env("DATAROBOT_API_TOKEN")
+config :orca_hub, :datarobot_endpoint, System.get_env("DATAROBOT_ENDPOINT")
+config :orca_hub, :title_model, System.get_env("TITLE_MODEL")
 config :orca_hub, :gotify_url, System.get_env("GOTIFY_URL")
 config :orca_hub, :gotify_token, System.get_env("GOTIFY_TOKEN")
 config :orca_hub, :elevenlabs_api_key, System.get_env("ELEVENLABS_API_KEY")

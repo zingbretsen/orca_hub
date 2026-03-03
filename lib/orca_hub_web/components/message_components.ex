@@ -433,13 +433,13 @@ defmodule OrcaHubWeb.MessageComponents do
   # Helpers
 
   defp format_tool_result_content(%{"content" => content}) when is_binary(content) do
-    truncate(content, 3000)
+    content |> maybe_pretty_json() |> truncate(3000)
   end
 
   defp format_tool_result_content(%{"content" => content}) when is_list(content) do
     content
     |> Enum.map_join("\n", fn
-      %{"type" => "text", "text" => text} -> text
+      %{"type" => "text", "text" => text} -> maybe_pretty_json(text)
       other -> inspect(other, pretty: true, limit: 200)
     end)
     |> truncate(3000)
@@ -447,14 +447,27 @@ defmodule OrcaHubWeb.MessageComponents do
 
   # tool_use_result from top-level has file.content or text directly
   defp format_tool_result_content(%{"type" => "text", "file" => %{"content" => content}}) do
-    truncate(content, 3000)
+    content |> maybe_pretty_json() |> truncate(3000)
   end
 
   defp format_tool_result_content(%{"type" => "text", "text" => text}) do
-    truncate(text, 3000)
+    text |> maybe_pretty_json() |> truncate(3000)
   end
 
   defp format_tool_result_content(_), do: ""
+
+  defp maybe_pretty_json(str) do
+    trimmed = String.trim(str)
+
+    if String.starts_with?(trimmed, ["{", "["]) do
+      case Jason.decode(trimmed) do
+        {:ok, decoded} -> Jason.encode!(decoded, pretty: true)
+        {:error, _} -> str
+      end
+    else
+      str
+    end
+  end
 
   defp truncate(str, max) do
     if String.length(str) > max, do: String.slice(str, 0, max) <> "\n…truncated", else: str

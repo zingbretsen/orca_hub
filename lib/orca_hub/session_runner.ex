@@ -251,13 +251,14 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp generate_title(summary) do
-    api_key = Application.get_env(:orca_hub, :openai_api_key)
+    {url, headers, model} = title_api_config()
+    Logger.info("Title generation using model=#{model} url=#{url}")
 
     resp =
-      Req.post!("https://api.openai.com/v1/chat/completions",
-        headers: [{"authorization", "Bearer #{api_key}"}],
+      Req.post!(url,
+        headers: headers,
         json: %{
-          model: "gpt-4.1-nano",
+          model: model,
           messages: [
             %{
               role: "system",
@@ -270,7 +271,7 @@ defmodule OrcaHub.SessionRunner do
         }
       )
 
-    Logger.info("OpenAI response: #{inspect(resp.body)}")
+    Logger.info("Title API response: #{inspect(resp.body)}")
 
     case resp.status do
       200 ->
@@ -278,7 +279,28 @@ defmodule OrcaHub.SessionRunner do
         {:ok, String.trim(title || "")}
 
       status ->
-        {:error, "OpenAI returned #{status}: #{inspect(resp.body)}"}
+        {:error, "Title API returned #{status}: #{inspect(resp.body)}"}
+    end
+  end
+
+  defp title_api_config do
+    dr_token = Application.get_env(:orca_hub, :datarobot_api_token)
+    dr_endpoint = Application.get_env(:orca_hub, :datarobot_endpoint)
+    custom_model = Application.get_env(:orca_hub, :title_model)
+
+    if dr_token && dr_endpoint do
+      Logger.info("Title API: using DataRobot gateway (endpoint=#{dr_endpoint}, token=#{if dr_token, do: "set", else: "MISSING"})")
+      url = String.trim_trailing(dr_endpoint, "/") <> "/chat/completions"
+      headers = [{"authorization", "Bearer #{dr_token}"}]
+      model = custom_model || "azure/gpt-4o-mini"
+      {url, headers, model}
+    else
+      api_key = Application.get_env(:orca_hub, :openai_api_key)
+      Logger.info("Title API: using OpenAI directly (api_key=#{if api_key, do: "set", else: "MISSING"})")
+      url = "https://api.openai.com/v1/chat/completions"
+      headers = [{"authorization", "Bearer #{api_key}"}]
+      model = custom_model || "gpt-4.1-nano"
+      {url, headers, model}
     end
   end
 

@@ -9,6 +9,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   def mount(%{"id" => id}, _session, socket) do
     project = Projects.get_project!(id)
     md_files = Projects.list_markdown_files(project)
+    file_tree = Projects.build_file_tree(md_files)
     commits = Projects.git_log(project)
     triggers = Triggers.list_triggers_for_project(project.id)
     current_branch = Projects.git_branch(project)
@@ -22,6 +23,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        page_title: project.name,
        commits: commits,
        md_files: md_files,
+       file_tree: file_tree,
        current_branch: current_branch,
        worktrees: worktrees,
        branches: branches,
@@ -29,6 +31,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        selected_file: nil,
        file_content: nil,
        file_editing: false,
+       file_blocks: [],
+       editing_block: nil,
+       block_edit_content: nil,
        new_file_name: nil,
        triggers: triggers,
        editing_trigger: nil,
@@ -111,11 +116,15 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     case Projects.load_markdown_file(project, path) do
       {:ok, content} ->
+        blocks = OrcaHubWeb.Markdown.split_blocks(content)
+
         {:noreply,
          assign(socket,
            selected_file: path,
            file_content: content,
+           file_blocks: blocks,
            file_editing: false,
+           editing_block: nil,
            new_file_name: nil
          )}
 
@@ -154,14 +163,19 @@ defmodule OrcaHubWeb.ProjectLive.Show do
       case Projects.save_markdown_file(project, path, content) do
       :ok ->
         md_files = Projects.list_markdown_files(project)
+        file_tree = Projects.build_file_tree(md_files)
+        blocks = OrcaHubWeb.Markdown.split_blocks(content)
 
         {:noreply,
          assign(socket,
            file_content: content,
+           file_blocks: blocks,
            file_editing: false,
+           editing_block: nil,
            selected_file: path,
            new_file_name: nil,
-           md_files: md_files
+           md_files: md_files,
+           file_tree: file_tree
          )}
 
       {:error, reason} ->
@@ -182,7 +196,53 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("deselect_file", _params, socket) do
     {:noreply,
-     assign(socket, selected_file: nil, file_content: nil, file_editing: false, new_file_name: nil)}
+     assign(socket,
+       selected_file: nil,
+       file_content: nil,
+       file_editing: false,
+       file_blocks: [],
+       editing_block: nil,
+       block_edit_content: nil,
+       new_file_name: nil
+     )}
+  end
+
+  def handle_event("edit_block", %{"index" => index_str}, socket) do
+    index = String.to_integer(index_str)
+    {_, text} = Enum.find(socket.assigns.file_blocks, fn {i, _} -> i == index end)
+    {:noreply, assign(socket, editing_block: index, block_edit_content: text)}
+  end
+
+  def handle_event("cancel_block_edit", _params, socket) do
+    {:noreply, assign(socket, editing_block: nil, block_edit_content: nil)}
+  end
+
+  def handle_event("save_block", %{"content" => content}, socket) do
+    index = socket.assigns.editing_block
+
+    blocks =
+      Enum.map(socket.assigns.file_blocks, fn
+        {^index, _} -> {index, String.trim(content)}
+        other -> other
+      end)
+
+    full_content = OrcaHubWeb.Markdown.join_blocks(blocks)
+    project = socket.assigns.project
+    path = socket.assigns.selected_file
+
+    case Projects.save_markdown_file(project, path, full_content) do
+      :ok ->
+        {:noreply,
+         assign(socket,
+           file_blocks: blocks,
+           file_content: full_content,
+           editing_block: nil,
+           block_edit_content: nil
+         )}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
+    end
   end
 
   def handle_event("create_session", _params, socket) do
@@ -428,6 +488,43 @@ defmodule OrcaHubWeb.ProjectLive.Show do
       {output, _} ->
         {:noreply, put_flash(socket, :error, "Remove failed: #{String.trim(output)}")}
     end
+  end
+
+  attr :node, :map, required: true
+  attr :selected_file, :string, default: nil
+
+  defp file_tree_node(%{node: %{type: :file}} = assigns) do
+    ~H"""
+    <li>
+      <button
+        phx-click="select_file"
+        phx-value-path={@node.path}
+        class={[@selected_file == @node.path && "active"]}
+      >
+        <span class="font-mono text-xs truncate">{@node.name}</span>
+      </button>
+    </li>
+    """
+  end
+
+  defp file_tree_node(%{node: %{type: :dir}} = assigns) do
+    ~H"""
+    <li>
+      <details open>
+        <summary class="font-mono text-xs">
+          <.icon name="hero-folder-micro" class="size-3 opacity-50" />
+          {@node.name}
+        </summary>
+        <ul>
+          <.file_tree_node
+            :for={child <- @node.children}
+            node={child}
+            selected_file={@selected_file}
+          />
+        </ul>
+      </details>
+    </li>
+    """
   end
 
   defp browse_to(socket, path) do
