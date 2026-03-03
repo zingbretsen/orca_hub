@@ -73,7 +73,8 @@
   <.table :if={@project.sessions != []} id="project-sessions" rows={@project.sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}>
     <:col :let={session} label="Title">{session.title || "Untitled"}</:col>
     <:col :let={session} label="Status">
-      <span class={[
+      <span :if={session.archived_at} class="badge badge-ghost">archived</span>
+      <span :if={!session.archived_at} class={[
         "badge",
         session.status == "idle" && "badge-ghost",
         session.status == "running" && "badge-warning",
