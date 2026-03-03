@@ -1,5 +1,11 @@
+<div id="queue-tts-listener" phx-hook="TTSAutoplay" class="hidden"></div>
 <.header>
   Queue
+  <:actions>
+    <button phx-click="toggle_tts" class={["btn btn-ghost btn-sm btn-circle", @tts_enabled && "text-primary"]} title={if @tts_enabled, do: "Disable TTS", else: "Enable TTS"}>
+      <.icon name="hero-speaker-wave" class="size-5" />
+    </button>
+  </:actions>
   <:subtitle>
     <span :if={@entries != [] || @feedback_requests != []}>
       {length(@feedback_requests)} feedback {if length(@feedback_requests) == 1, do: "request", else: "requests"},
@@ -82,8 +88,31 @@
 
       <%!-- Last assistant message --%>
       <% text = extract_assistant_text(message) %>
-      <div :if={text} class="prose prose-sm max-w-none bg-base-200 rounded-lg p-3 max-h-48 overflow-y-auto">
-        {Markdown.render(text)}
+      <div :if={text} data-tts-container>
+        <div class="prose prose-sm max-w-none bg-base-200 rounded-lg p-3 max-h-48 overflow-y-auto" data-tts-text>
+          {Markdown.render(text)}
+        </div>
+        <div :if={@tts_enabled} class="mt-1" id={"tts-queue-#{session.id}"} phx-hook="TTSPlayer" phx-update="ignore">
+          <div class="flex items-center gap-1">
+            <button data-tts-action="toggle" class="btn btn-ghost btn-xs btn-circle" title="Read aloud">
+              <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z"/>
+              </svg>
+            </button>
+            <div data-tts-controls class="hidden flex items-center gap-1">
+              <button data-tts-action="prev" class="btn btn-ghost btn-xs btn-circle" title="Previous">
+                <.icon name="hero-backward-micro" class="size-3" />
+              </button>
+              <span data-tts-counter class="text-xs opacity-60 tabular-nums min-w-[3ch] text-center"></span>
+              <button data-tts-action="next" class="btn btn-ghost btn-xs btn-circle" title="Next">
+                <.icon name="hero-forward-micro" class="size-3" />
+              </button>
+              <button data-tts-action="stop" class="btn btn-ghost btn-xs btn-circle" title="Stop">
+                <.icon name="hero-stop-micro" class="size-3" />
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
       <div :if={!text} class="text-sm text-base-content/40 italic">
         No assistant response yet

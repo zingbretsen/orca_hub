@@ -41,6 +41,11 @@ defmodule OrcaHubWeb.Router do
     live "/sessions/:id", SessionLive.Show, :show
   end
 
+  scope "/api", OrcaHubWeb do
+    pipe_through :api
+    post "/tts", TTSController, :create
+  end
+
   # MCP Streamable HTTP endpoint
   forward "/mcp", OrcaHub.MCP.Plug
 

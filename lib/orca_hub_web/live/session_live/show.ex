@@ -25,6 +25,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
      |> assign(:page_title, session.title || (session.project && session.project.name) || session.directory)
+     |> assign(:tts_enabled, false)
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
        max_entries: 5,
@@ -113,6 +114,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  def handle_event("toggle_tts", _params, socket) do
+    {:noreply, assign(socket, :tts_enabled, !socket.assigns.tts_enabled)}
+  end
+
   def handle_event("commit", _params, socket) do
     prompt = "Commit the changes you made in this session. Only stage files you actually modified — do not use `git add -A` or `git add .`. Use a descriptive commit message based on the diff."
 
@@ -132,7 +137,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   @impl true
   def handle_info({:status, status}, socket) do
-    {:noreply, assign(socket, :status, status)}
+    socket = assign(socket, :status, status)
+
+    socket =
+      if status == :idle && socket.assigns.tts_enabled do
+        push_event(socket, "tts-autoplay", %{})
+      else
+        socket
+      end
+
+    {:noreply, socket}
   end
 
   @impl true

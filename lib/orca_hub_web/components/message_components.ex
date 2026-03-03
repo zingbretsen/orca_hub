@@ -6,6 +6,7 @@ defmodule OrcaHubWeb.MessageComponents do
   alias OrcaHubWeb.Markdown
 
   attr :messages, :list, required: true
+  attr :tts_enabled, :boolean, default: false
 
   def message_feed(assigns) do
     ~H"""
@@ -14,7 +15,7 @@ defmodule OrcaHubWeb.MessageComponents do
         <% "user" -> %>
           <.user_message msg={msg} />
         <% "assistant" -> %>
-          <.assistant_message msg={msg} />
+          <.assistant_message msg={msg} tts_enabled={@tts_enabled} />
         <% "result" -> %>
           <.result_message msg={msg} />
         <% "system" -> %>
@@ -89,6 +90,7 @@ defmodule OrcaHubWeb.MessageComponents do
   end
 
   attr :msg, :map, required: true
+  attr :tts_enabled, :boolean, default: false
 
   defp assistant_message(assigns) do
     content_blocks = get_in(assigns.msg, ["message", "content"]) || []
@@ -108,14 +110,36 @@ defmodule OrcaHubWeb.MessageComponents do
       |> assign(:html, Markdown.render(text))
       |> assign(:has_text, text != "")
       |> assign(:tool_uses, tool_use_blocks)
+      |> assign(:msg_id, assigns.msg["id"] || System.unique_integer([:positive]))
 
     ~H"""
-    <div :if={@has_text} class="chat chat-start">
+    <div :if={@has_text} class="chat chat-start" data-tts-container>
       <div class="chat-header text-xs opacity-50 mb-1">
         <.icon name="hero-sparkles-micro" class="size-3" /> Assistant
       </div>
-      <div class="chat-bubble prose prose-sm prose-invert max-w-none">
+      <div class="chat-bubble prose prose-sm prose-invert max-w-none" data-tts-text>
         {@html}
+      </div>
+      <div :if={@tts_enabled} class="chat-footer mt-1" id={"tts-#{@msg_id}"} phx-hook="TTSPlayer" phx-update="ignore">
+        <div class="flex items-center gap-1">
+          <button data-tts-action="toggle" class="btn btn-ghost btn-xs btn-circle" title="Read aloud">
+            <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z"/>
+            </svg>
+          </button>
+          <div data-tts-controls class="hidden flex items-center gap-1">
+            <button data-tts-action="prev" class="btn btn-ghost btn-xs btn-circle" title="Previous">
+              <.icon name="hero-backward-micro" class="size-3" />
+            </button>
+            <span data-tts-counter class="text-xs opacity-60 tabular-nums min-w-[3ch] text-center"></span>
+            <button data-tts-action="next" class="btn btn-ghost btn-xs btn-circle" title="Next">
+              <.icon name="hero-forward-micro" class="size-3" />
+            </button>
+            <button data-tts-action="stop" class="btn btn-ghost btn-xs btn-circle" title="Stop">
+              <.icon name="hero-stop-micro" class="size-3" />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
     <div :for={tool <- @tool_uses}>

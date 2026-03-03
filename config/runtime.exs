@@ -31,6 +31,8 @@ config :orca_hub, OrcaHubWeb.Endpoint,
 config :orca_hub, :openai_api_key, System.get_env("OPENAI_API_KEY")
 config :orca_hub, :gotify_url, System.get_env("GOTIFY_URL")
 config :orca_hub, :gotify_token, System.get_env("GOTIFY_TOKEN")
+config :orca_hub, :elevenlabs_api_key, System.get_env("ELEVENLABS_API_KEY")
+config :orca_hub, :elevenlabs_voice_id, System.get_env("ELEVENLABS_VOICE_ID") || "JBFqnCBsd6RMkjVDRZzb"
 
 if config_env() == :prod do
   database_url =

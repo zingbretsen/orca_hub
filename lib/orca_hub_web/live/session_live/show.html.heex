@@ -18,10 +18,15 @@
       {@status}
     </span>
     <:subtitle>{@session.directory}</:subtitle>
+    <:actions>
+      <button phx-click="toggle_tts" class={["btn btn-ghost btn-sm btn-circle", @tts_enabled && "text-primary"]} title={if @tts_enabled, do: "Disable TTS", else: "Enable TTS"}>
+        <.icon name="hero-speaker-wave" class="size-5" />
+      </button>
+    </:actions>
   </.header>
 
   <div id="message-feed" phx-hook="ScrollToBottom" class="flex-1 overflow-y-auto space-y-1 p-4 bg-base-200 rounded-lg text-sm">
-    <MessageComponents.message_feed messages={@messages} />
+    <MessageComponents.message_feed messages={@messages} tts_enabled={@tts_enabled} />
   </div>
 
   <div class="mt-2 sm:mt-4 flex flex-col gap-2">
