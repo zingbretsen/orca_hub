@@ -213,6 +213,9 @@ let Hooks = {
         text = text.replace(new RegExp(`\\b${term}\\b`, "g"), replacement)
       }
 
+      // Symbols
+      text = text.replace(/->/g, " to ")
+
       // File paths with directories: extract just the filename
       text = text.replace(/(?:\/[\w.-]+)+\/([\w.-]+)/g, (match, filename) => {
         return filename

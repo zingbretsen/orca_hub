@@ -6,7 +6,6 @@ defmodule OrcaHubWeb.MessageComponents do
   alias OrcaHubWeb.Markdown
 
   attr :messages, :list, required: true
-  attr :tts_enabled, :boolean, default: false
 
   def message_feed(assigns) do
     ~H"""
@@ -15,7 +14,7 @@ defmodule OrcaHubWeb.MessageComponents do
         <% "user" -> %>
           <.user_message msg={msg} />
         <% "assistant" -> %>
-          <.assistant_message msg={msg} tts_enabled={@tts_enabled} />
+          <.assistant_message msg={msg} />
         <% "result" -> %>
           <.result_message msg={msg} />
         <% "system" -> %>
@@ -90,7 +89,6 @@ defmodule OrcaHubWeb.MessageComponents do
   end
 
   attr :msg, :map, required: true
-  attr :tts_enabled, :boolean, default: false
 
   defp assistant_message(assigns) do
     content_blocks = get_in(assigns.msg, ["message", "content"]) || []
@@ -120,7 +118,7 @@ defmodule OrcaHubWeb.MessageComponents do
       <div class="chat-bubble prose prose-sm prose-invert max-w-none" data-tts-text>
         {@html}
       </div>
-      <div :if={@tts_enabled} class="chat-footer mt-1" id={"tts-#{@msg_id}"} phx-hook="TTSPlayer" phx-update="ignore">
+      <div class="chat-footer mt-1" id={"tts-#{@msg_id}"} phx-hook="TTSPlayer" phx-update="ignore">
         <div class="flex items-center gap-1">
           <button data-tts-action="toggle" class="btn btn-ghost btn-xs btn-circle" title="Read aloud">
             <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor">

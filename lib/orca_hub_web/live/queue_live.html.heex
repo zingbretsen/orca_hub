@@ -1,7 +1,7 @@
 <.header>
   Queue
   <:actions>
-    <button phx-click="toggle_tts" class={["btn btn-ghost btn-sm btn-circle", @tts_enabled && "text-primary"]} title={if @tts_enabled, do: "Disable TTS", else: "Enable TTS"}>
+    <button phx-click="toggle_tts" class={["btn btn-ghost btn-sm btn-circle", @tts_autoplay && "text-primary"]} title={if @tts_autoplay, do: "Disable TTS autoplay", else: "Enable TTS autoplay"}>
       <.icon name="hero-speaker-wave" class="size-5" />
     </button>
   </:actions>
@@ -92,7 +92,7 @@
         <div class="prose prose-sm max-w-none bg-base-200 rounded-lg p-3 max-h-48 overflow-y-auto" data-tts-text>
           {Markdown.render(text)}
         </div>
-        <div :if={@tts_enabled} class="mt-1" id={"tts-queue-#{session.id}"} phx-hook="TTSPlayer" phx-update="ignore" data-tts-autoplay={idx == 0 && @tts_autoplay_pending}>
+        <div class="mt-1" id={"tts-queue-#{session.id}"} phx-hook="TTSPlayer" phx-update="ignore" data-tts-autoplay={idx == 0 && @tts_autoplay_pending}>
           <div class="flex items-center gap-1">
             <button data-tts-action="toggle" class="btn btn-ghost btn-xs btn-circle" title="Read aloud">
               <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor">

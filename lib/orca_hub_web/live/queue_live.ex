@@ -26,7 +26,7 @@ defmodule OrcaHubWeb.QueueLive do
      |> assign(:prompt, "")
      |> assign(:form_key, 0)
      |> assign(:show_all, false)
-     |> assign(:tts_enabled, false)
+     |> assign(:tts_autoplay, false)
      |> assign(:tts_autoplay_pending, false)
      |> assign(:page_title, "Queue")}
   end
@@ -165,7 +165,7 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   def handle_event("toggle_tts", _params, socket) do
-    {:noreply, assign(socket, :tts_enabled, !socket.assigns.tts_enabled)}
+    {:noreply, assign(socket, :tts_autoplay, !socket.assigns.tts_autoplay)}
   end
 
   def handle_event("show_all", _params, socket) do
@@ -207,7 +207,7 @@ defmodule OrcaHubWeb.QueueLive do
     socket =
       socket
       |> assign(:entries, entries)
-      |> assign(:tts_autoplay_pending, was_empty && now_has_entries && socket.assigns.tts_enabled)
+      |> assign(:tts_autoplay_pending, was_empty && now_has_entries && socket.assigns.tts_autoplay)
 
     {:noreply, socket}
   end

@@ -25,7 +25,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
      |> assign(:page_title, session.title || (session.project && session.project.name) || session.directory)
-     |> assign(:tts_enabled, false)
+     |> assign(:tts_autoplay, false)
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
        max_entries: 5,
@@ -115,7 +115,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("toggle_tts", _params, socket) do
-    {:noreply, assign(socket, :tts_enabled, !socket.assigns.tts_enabled)}
+    {:noreply, assign(socket, :tts_autoplay, !socket.assigns.tts_autoplay)}
   end
 
   def handle_event("commit", _params, socket) do
@@ -140,7 +140,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     socket = assign(socket, :status, status)
 
     socket =
-      if status == :idle && socket.assigns.tts_enabled do
+      if status == :idle && socket.assigns.tts_autoplay do
         push_event(socket, "tts-autoplay", %{})
       else
         socket
