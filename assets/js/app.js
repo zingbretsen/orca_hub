@@ -27,6 +27,62 @@ import topbar from "../vendor/topbar"
 
 let Hooks = {
   ...colocatedHooks,
+  CommandPalette: {
+    mounted() {
+      this.handler = (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+          e.preventDefault()
+          e.stopPropagation()
+          this.pushEventTo(this.el, "toggle", {})
+          return
+        }
+
+        // Only handle other keys when the palette is open
+        const results = this.el.querySelector("#command-palette-results")
+        if (!results) return
+
+        if (e.key === "Escape") {
+          e.preventDefault()
+          this.pushEventTo(this.el, "close", {})
+        } else if (e.key === "ArrowDown") {
+          e.preventDefault()
+          this.pushEventTo(this.el, "move", {direction: "down"})
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault()
+          this.pushEventTo(this.el, "move", {direction: "up"})
+        } else if (e.key === "Enter") {
+          e.preventDefault()
+          this.pushEventTo(this.el, "go", {})
+        } else if (e.key === "Backspace") {
+          const input = this.el.querySelector("#command-palette-input")
+          if (input && input.value === "") {
+            this.pushEventTo(this.el, "back", {})
+          }
+        }
+      }
+      window.addEventListener("keydown", this.handler)
+
+      this.handleEvent("focus-command-palette", () => {
+        requestAnimationFrame(() => {
+          const input = this.el.querySelector("#command-palette-input")
+          if (input) input.focus()
+        })
+      })
+
+      this.handleEvent("clear-command-palette-input", () => {
+        requestAnimationFrame(() => {
+          const input = this.el.querySelector("#command-palette-input")
+          if (input) {
+            input.value = ""
+            input.focus()
+          }
+        })
+      })
+    },
+    destroyed() {
+      window.removeEventListener("keydown", this.handler)
+    }
+  },
   AutoResize: {
     mounted() {
       this.resize()

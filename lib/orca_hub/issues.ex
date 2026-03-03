@@ -10,6 +10,18 @@ defmodule OrcaHub.Issues do
     Repo.all(from i in Issue, where: i.project_id == ^project_id, order_by: [desc: i.inserted_at])
   end
 
+  def search(query) do
+    like = "%#{query}%"
+
+    Repo.all(
+      from i in Issue,
+        where: ilike(i.title, ^like),
+        preload: [:project],
+        order_by: [desc: i.inserted_at],
+        limit: 5
+    )
+  end
+
   def get_issue!(id), do: Repo.get!(Issue, id) |> Repo.preload([:sessions, :project])
 
   def create_issue(attrs) do

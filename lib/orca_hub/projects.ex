@@ -9,6 +9,11 @@ defmodule OrcaHub.Projects do
     Repo.all(from p in Project, order_by: [asc: p.name])
   end
 
+  def search(query) do
+    like = "%#{query}%"
+    Repo.all(from p in Project, where: ilike(p.name, ^like), order_by: [asc: p.name], limit: 5)
+  end
+
   def get_project!(id) do
     Repo.get!(Project, id)
     |> Repo.preload([:issues, sessions: from(s in OrcaHub.Sessions.Session, order_by: [desc: s.updated_at])])

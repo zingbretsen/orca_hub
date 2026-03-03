@@ -53,6 +53,18 @@ defmodule OrcaHub.Sessions do
     |> Repo.insert()
   end
 
+  def search(query) do
+    like = "%#{query}%"
+
+    Repo.all(
+      from s in Session,
+        where: is_nil(s.archived_at) and (ilike(s.title, ^like) or ilike(s.directory, ^like)),
+        preload: [:project],
+        order_by: [desc: s.updated_at],
+        limit: 5
+    )
+  end
+
   def list_idle_sessions_with_last_assistant_message do
     last_messages =
       from m in Message,

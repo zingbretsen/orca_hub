@@ -75,6 +75,8 @@ defmodule OrcaHubWeb.Layouts do
     </main>
 
     <.flash_group flash={@flash} />
+
+    <.live_component module={OrcaHubWeb.CommandPaletteLive} id="command-palette" />
     """
   end
 
