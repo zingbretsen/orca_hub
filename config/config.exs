@@ -7,6 +7,8 @@
 # General application configuration
 import Config
 
+config :elixir, :time_zone_database, Tz.TimeZoneDatabase
+
 config :orca_hub,
   ecto_repos: [OrcaHub.Repo],
   generators: [timestamp_type: :utc_datetime],

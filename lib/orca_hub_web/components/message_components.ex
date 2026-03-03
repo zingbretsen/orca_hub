@@ -67,7 +67,7 @@ defmodule OrcaHubWeb.MessageComponents do
 
     ~H"""
     <div :if={@text != "" || @attachments != []} class="chat chat-end">
-      <div class="chat-header text-xs opacity-50 mb-1">You</div>
+      <div class="chat-header text-xs opacity-50 mb-1">You <.timestamp value={@msg["timestamp"]} /></div>
       <div class="chat-bubble chat-bubble-primary">
         <div :for={{type, path} <- @attachments} class="mb-2">
           <img :if={type == :image} src={image_data_uri(path)} class="max-w-xs max-h-48 rounded" />
@@ -113,7 +113,7 @@ defmodule OrcaHubWeb.MessageComponents do
     ~H"""
     <div :if={@has_text} class="chat chat-start" data-tts-container>
       <div class="chat-header text-xs opacity-50 mb-1">
-        <.icon name="hero-sparkles-micro" class="size-3" /> Assistant
+        <.icon name="hero-sparkles-micro" class="size-3" /> Assistant <.timestamp value={@msg["timestamp"]} />
       </div>
       <div class="chat-bubble prose prose-sm prose-invert max-w-none" data-tts-text>
         {@html}
@@ -459,6 +459,27 @@ defmodule OrcaHubWeb.MessageComponents do
   defp truncate(str, max) do
     if String.length(str) > max, do: String.slice(str, 0, max) <> "\n…truncated", else: str
   end
+
+  attr :value, :any, required: true
+
+  defp timestamp(assigns) do
+    assigns = assign(assigns, :formatted, format_timestamp(assigns.value))
+
+    ~H"""
+    <time :if={@formatted} class="opacity-70">{@formatted}</time>
+    """
+  end
+
+  defp format_timestamp(%NaiveDateTime{} = ts) do
+    utc = DateTime.from_naive!(ts, "Etc/UTC")
+
+    case DateTime.shift_zone(utc, "America/New_York") do
+      {:ok, local} -> Calendar.strftime(local, "%-I:%M %p")
+      {:error, _} -> Calendar.strftime(utc, "%-I:%M %p UTC")
+    end
+  end
+
+  defp format_timestamp(_), do: nil
 
   defp format_duration(nil), do: "?"
   defp format_duration(ms) when ms < 1000, do: "#{ms}ms"

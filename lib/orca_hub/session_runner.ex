@@ -30,7 +30,9 @@ defmodule OrcaHub.SessionRunner do
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
     session = Sessions.get_session!(session_id)
-    saved_messages = Sessions.list_messages(session_id) |> Enum.map(& &1.data)
+    saved_messages =
+      Sessions.list_messages(session_id)
+      |> Enum.map(fn msg -> Map.put(msg.data, "timestamp", msg.inserted_at) end)
 
     {:ok,
      %{
@@ -54,10 +56,11 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def handle_call({:send_message, prompt}, _from, state) do
-    user_event = %{
-      "type" => "user",
-      "message" => %{"role" => "user", "content" => [%{"type" => "text", "text" => prompt}]}
-    }
+    user_event =
+      stamp(%{
+        "type" => "user",
+        "message" => %{"role" => "user", "content" => [%{"type" => "text", "text" => prompt}]}
+      })
 
     persist_message(state.session_id, user_event)
     broadcast(state.session_id, {:event, user_event})
@@ -113,11 +116,12 @@ defmodule OrcaHub.SessionRunner do
 
     state =
       if code != 0 && error_text != "" do
-        error_event = %{
-          "type" => "cli_error",
-          "exit_code" => code,
-          "message" => error_text
-        }
+        error_event =
+          stamp(%{
+            "type" => "cli_error",
+            "exit_code" => code,
+            "message" => error_text
+          })
 
         persist_message(state.session_id, error_event)
         broadcast(state.session_id, {:event, error_event})
@@ -176,12 +180,14 @@ defmodule OrcaHub.SessionRunner do
       Sessions.update_session(Sessions.get_session!(state.session_id), %{claude_session_id: sid})
     end
 
+    event = stamp(event)
     persist_message(state.session_id, event)
     broadcast(state.session_id, {:event, event})
     %{state | claude_session_id: sid, messages: state.messages ++ [event]}
   end
 
   defp handle_event(event, state) do
+    event = stamp(event)
     persist_message(state.session_id, event)
     broadcast(state.session_id, {:event, event})
     %{state | messages: state.messages ++ [event]}
@@ -215,6 +221,8 @@ defmodule OrcaHub.SessionRunner do
   defp persist_message(session_id, event) do
     Sessions.create_message(%{session_id: session_id, data: event})
   end
+
+  defp stamp(event), do: Map.put(event, "timestamp", NaiveDateTime.utc_now())
 
   defp maybe_generate_title(session_id, nil) do
     Logger.warning("Skipping title generation for session #{session_id}: no first_prompt")
