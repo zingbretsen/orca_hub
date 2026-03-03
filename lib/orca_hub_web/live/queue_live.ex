@@ -27,6 +27,7 @@ defmodule OrcaHubWeb.QueueLive do
      |> assign(:form_key, 0)
      |> assign(:show_all, false)
      |> assign(:tts_enabled, false)
+     |> assign(:tts_autoplay_pending, false)
      |> assign(:page_title, "Queue")}
   end
 
@@ -200,14 +201,13 @@ defmodule OrcaHubWeb.QueueLive do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session.id}")
     end
 
-    socket = assign(socket, :entries, entries)
+    was_empty = Enum.empty?(socket.assigns.entries)
+    now_has_entries = entries != []
 
     socket =
-      if socket.assigns.tts_enabled do
-        push_event(socket, "tts-autoplay-queue", %{})
-      else
-        socket
-      end
+      socket
+      |> assign(:entries, entries)
+      |> assign(:tts_autoplay_pending, was_empty && now_has_entries && socket.assigns.tts_enabled)
 
     {:noreply, socket}
   end

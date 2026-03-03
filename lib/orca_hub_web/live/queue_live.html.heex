@@ -1,4 +1,3 @@
-<div id="queue-tts-listener" phx-hook="TTSAutoplay" class="hidden"></div>
 <.header>
   Queue
   <:actions>
@@ -62,9 +61,10 @@
 </div>
 
 <% visible_entries = if @show_all, do: @entries, else: Enum.take(@entries, 1) %>
+<% visible_entries = Enum.with_index(visible_entries) %>
 <div class="space-y-4 mt-4">
   <div
-    :for={{session, message} <- visible_entries}
+    :for={{{session, message}, idx} <- visible_entries}
     id={"queue-#{session.id}"}
     class="card bg-base-100 shadow-sm border border-base-300"
   >
@@ -92,7 +92,7 @@
         <div class="prose prose-sm max-w-none bg-base-200 rounded-lg p-3 max-h-48 overflow-y-auto" data-tts-text>
           {Markdown.render(text)}
         </div>
-        <div :if={@tts_enabled} class="mt-1" id={"tts-queue-#{session.id}"} phx-hook="TTSPlayer" phx-update="ignore">
+        <div :if={@tts_enabled} class="mt-1" id={"tts-queue-#{session.id}"} phx-hook="TTSPlayer" phx-update="ignore" data-tts-autoplay={idx == 0 && @tts_autoplay_pending}>
           <div class="flex items-center gap-1">
             <button data-tts-action="toggle" class="btn btn-ghost btn-xs btn-circle" title="Read aloud">
               <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor">

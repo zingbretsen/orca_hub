@@ -113,21 +113,6 @@ let Hooks = {
     scrollToBottom() { this.el.scrollTop = this.el.scrollHeight }
   },
 
-  TTSAutoplay: {
-    mounted() {
-      this.handleEvent("tts-autoplay-queue", () => {
-        setTimeout(() => {
-          const players = document.querySelectorAll("[phx-hook='TTSPlayer']")
-          if (players.length > 0) {
-            const first = players[0]
-            const toggleBtn = first.querySelector("[data-tts-action='toggle']")
-            if (toggleBtn) toggleBtn.click()
-          }
-        }, 300)
-      })
-    }
-  },
-
   TTSPlayer: {
     mounted() {
       this.audio = null
@@ -144,6 +129,11 @@ let Hooks = {
         else if (action === "next") this.next()
         else if (action === "stop") this.stop()
       })
+
+      // Auto-start if flagged for autoplay
+      if (this.el.hasAttribute("data-tts-autoplay")) {
+        this.start()
+      }
     },
 
     destroyed() {
