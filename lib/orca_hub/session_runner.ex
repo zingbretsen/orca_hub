@@ -290,7 +290,7 @@ defmodule OrcaHub.SessionRunner do
 
     if dr_token && dr_endpoint do
       Logger.info("Title API: using DataRobot gateway (endpoint=#{dr_endpoint}, token=#{if dr_token, do: "set", else: "MISSING"})")
-      url = String.trim_trailing(dr_endpoint, "/") <> "/chat/completions"
+      url = String.trim_trailing(dr_endpoint, "/") <> "/genai/llmgw/chat/completions"
       headers = [{"authorization", "Bearer #{dr_token}"}]
       model = custom_model || "azure/gpt-4o-mini"
       {url, headers, model}

@@ -217,6 +217,34 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     {:noreply, assign(socket, editing_block: nil, block_edit_content: nil)}
   end
 
+  def handle_event("delete_block", %{"index" => index_str}, socket) do
+    index = String.to_integer(index_str)
+
+    blocks =
+      socket.assigns.file_blocks
+      |> Enum.reject(fn {i, _} -> i == index end)
+      |> Enum.with_index()
+      |> Enum.map(fn {{_, text}, new_idx} -> {new_idx, text} end)
+
+    full_content = OrcaHubWeb.Markdown.join_blocks(blocks)
+    project = socket.assigns.project
+    path = socket.assigns.selected_file
+
+    case Projects.save_markdown_file(project, path, full_content) do
+      :ok ->
+        {:noreply,
+         assign(socket,
+           file_blocks: blocks,
+           file_content: full_content,
+           editing_block: nil,
+           block_edit_content: nil
+         )}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
+    end
+  end
+
   def handle_event("save_block", %{"content" => content}, socket) do
     index = socket.assigns.editing_block
 

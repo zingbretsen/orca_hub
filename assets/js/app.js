@@ -449,6 +449,17 @@ let Hooks = {
         }
       }
     }
+  },
+
+  FileTree: {
+    mounted() {
+      this.el.addEventListener("phx:expand-all", () => {
+        this.el.querySelectorAll("details").forEach(d => d.open = true)
+      })
+      this.el.addEventListener("phx:collapse-all", () => {
+        this.el.querySelectorAll("details").forEach(d => d.open = false)
+      })
+    }
   }
 }
 
