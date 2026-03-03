@@ -133,19 +133,46 @@
     <.form for={@trigger_form} phx-submit="save_trigger" phx-change="validate_trigger" class="space-y-3">
       <.input field={@trigger_form[:name]} type="text" label="Name" placeholder="Weekly k3s update check" />
       <.input field={@trigger_form[:prompt]} type="textarea" label="Prompt" placeholder="Check for updates to all services..." />
+
       <div>
-        <label class="label"><span class="label-text">Quick Schedule</span></label>
-        <select name="schedule_preset" phx-change="set_schedule_preset" class="select select-bordered w-full">
-          <option value="">Custom</option>
-          <option value="every_15m">Every 15 minutes</option>
-          <option value="hourly">Every hour</option>
-          <option value="daily_9am">Every day at 9am</option>
-          <option value="weekdays_9am">Every weekday at 9am</option>
-          <option value="weekly_mon_9am">Every Monday at 9am</option>
-          <option value="monthly_9am">Every 1st of the month at 9am</option>
-        </select>
+        <label class="label"><span class="label-text">Type</span></label>
+        <div class="flex flex-wrap gap-2 mb-3">
+          <button :for={type <- ["scheduled", "webhook"]}
+            type="button"
+            phx-click="set_trigger_type"
+            phx-value-type={type}
+            class={["btn btn-sm", if(@trigger_type == type, do: "btn-primary", else: "btn-ghost")]}>
+            {String.capitalize(type)}
+          </button>
+        </div>
       </div>
-      <.input field={@trigger_form[:cron_expression]} type="text" label="Cron Schedule" placeholder="0 9 * * 1  (Mondays at 9am)" />
+
+      <div :if={@trigger_type == "scheduled"}>
+        <div>
+          <label class="label"><span class="label-text">Quick Schedule</span></label>
+          <select name="schedule_preset" phx-change="set_schedule_preset" class="select select-bordered w-full">
+            <option value="">Custom</option>
+            <option value="every_15m">Every 15 minutes</option>
+            <option value="hourly">Every hour</option>
+            <option value="daily_9am">Every day at 9am</option>
+            <option value="weekdays_9am">Every weekday at 9am</option>
+            <option value="weekly_mon_9am">Every Monday at 9am</option>
+            <option value="monthly_9am">Every 1st of the month at 9am</option>
+          </select>
+        </div>
+        <.input field={@trigger_form[:cron_expression]} type="text" label="Cron Schedule" placeholder="0 9 * * 1  (Mondays at 9am)" />
+      </div>
+
+      <div :if={@trigger_type == "webhook" && @editing_trigger && @editing_trigger.webhook_secret} class="text-sm">
+        <label class="label"><span class="label-text">Webhook URL</span></label>
+        <code class="bg-base-300 px-3 py-2 rounded text-xs block break-all">{OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{@editing_trigger.webhook_secret}"}</code>
+        <p class="text-base-content/50 text-xs mt-1">POST JSON to this URL to fire the trigger. The payload will be included in the prompt.</p>
+      </div>
+
+      <div :if={@trigger_type == "webhook" && !@editing_trigger} class="text-sm text-base-content/50">
+        A webhook URL will be generated after creating the trigger.
+      </div>
+
       <div class="flex gap-6">
         <.input field={@trigger_form[:reuse_session]} type="checkbox" label="Reuse previous session" />
         <.input field={@trigger_form[:archive_on_complete]} type="checkbox" label="Hide from queue when done" />
@@ -168,17 +195,21 @@
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
           <span class="font-medium">{trigger.name}</span>
+          <span class={["badge badge-xs", if(trigger.type == "webhook", do: "badge-info", else: "badge-neutral")]}>
+            {trigger.type}
+          </span>
           <span class={["badge badge-xs", if(trigger.enabled, do: "badge-success", else: "badge-ghost")]}>
             {if trigger.enabled, do: "active", else: "disabled"}
           </span>
         </div>
-        <div class="text-base-content/50 text-xs mt-0.5 font-mono">{trigger.cron_expression}</div>
+        <div :if={trigger.type == "scheduled"} class="text-base-content/50 text-xs mt-0.5 font-mono">{trigger.cron_expression}</div>
+        <div :if={trigger.type == "webhook"} class="text-base-content/50 text-xs mt-0.5 font-mono truncate max-w-md">{OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"}</div>
         <div :if={trigger.last_fired_at} class="text-base-content/40 text-xs mt-0.5">
           Last fired: {Calendar.strftime(trigger.last_fired_at, "%Y-%m-%d %H:%M UTC")}
         </div>
       </div>
       <div class="flex items-center gap-1">
-        <button phx-click="fire_trigger" phx-value-id={trigger.id} class="btn btn-xs btn-ghost" title="Fire now">
+        <button :if={trigger.type == "scheduled"} phx-click="fire_trigger" phx-value-id={trigger.id} class="btn btn-xs btn-ghost" title="Fire now">
           <.icon name="hero-play-micro" class="size-4" />
         </button>
         <button phx-click="toggle_trigger" phx-value-id={trigger.id} class="btn btn-xs btn-ghost" title={if trigger.enabled, do: "Disable", else: "Enable"}>

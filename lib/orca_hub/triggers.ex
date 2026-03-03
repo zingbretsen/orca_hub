@@ -16,6 +16,10 @@ defmodule OrcaHub.Triggers do
 
   def get_trigger!(id), do: Repo.get!(Trigger, id) |> Repo.preload(:project)
 
+  def get_trigger_by_secret!(secret) do
+    Repo.get_by!(Trigger, webhook_secret: secret) |> Repo.preload(:project)
+  end
+
   def create_trigger(attrs) do
     result =
       %Trigger{}
@@ -24,7 +28,10 @@ defmodule OrcaHub.Triggers do
 
     with {:ok, trigger} <- result do
       trigger = Repo.preload(trigger, :project)
-      if trigger.enabled, do: OrcaHub.Scheduler.schedule_trigger(trigger)
+
+      if trigger.type == "scheduled" && trigger.enabled do
+        OrcaHub.Scheduler.schedule_trigger(trigger)
+      end
     end
 
     result
@@ -39,7 +46,10 @@ defmodule OrcaHub.Triggers do
     with {:ok, updated} <- result do
       OrcaHub.Scheduler.unschedule_trigger(updated.id)
       updated = Repo.preload(updated, :project)
-      if updated.enabled, do: OrcaHub.Scheduler.schedule_trigger(updated)
+
+      if updated.type == "scheduled" && updated.enabled do
+        OrcaHub.Scheduler.schedule_trigger(updated)
+      end
     end
 
     result

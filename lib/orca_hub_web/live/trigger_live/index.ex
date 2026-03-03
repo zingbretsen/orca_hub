@@ -15,6 +15,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
        triggers: Triggers.list_triggers(),
        show_trigger_form: false,
        editing_trigger: nil,
+       trigger_type: "scheduled",
        schedule_mode: "daily",
        trigger_form: to_form(Triggers.change_trigger(%Trigger{}))
      )}
@@ -37,6 +38,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       page_title: "New Trigger",
       show_trigger_form: true,
       editing_trigger: nil,
+      trigger_type: "scheduled",
       schedule_mode: "daily",
       trigger_form: to_form(changeset)
     )
@@ -51,33 +53,37 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       page_title: "Edit Trigger",
       show_trigger_form: true,
       editing_trigger: trigger,
+      trigger_type: trigger.type,
       schedule_mode: detect_schedule_mode(trigger.cron_expression),
       trigger_form: to_form(changeset)
     )
   end
 
-  @schedule_presets %{
-    "every_15m" => "*/15 * * * *",
-    "hourly" => "0 * * * *",
-    "daily_9am" => "0 9 * * *",
-    "weekdays_9am" => "0 9 * * 1-5",
-    "weekly_mon_9am" => "0 9 * * 1",
-    "monthly_9am" => "0 9 1 * *"
-  }
-
   @impl true
+  def handle_event("set_trigger_type", %{"type" => type}, socket) do
+    {:noreply, assign(socket, trigger_type: type)}
+  end
+
   def handle_event("set_schedule_mode", %{"mode" => mode}, socket) do
     {:noreply, assign(socket, schedule_mode: mode)}
   end
 
   def handle_event("validate_trigger", %{"trigger" => params}, socket) do
     trigger = socket.assigns.editing_trigger || %Trigger{}
+    params = Map.put(params, "type", socket.assigns.trigger_type)
     changeset = Triggers.change_trigger(trigger, params)
     {:noreply, assign(socket, trigger_form: to_form(changeset, action: :validate))}
   end
 
   def handle_event("save_trigger", %{"trigger" => params}, socket) do
-    params = maybe_build_cron(params, socket.assigns.schedule_mode)
+    params = Map.put(params, "type", socket.assigns.trigger_type)
+
+    params =
+      if socket.assigns.trigger_type == "scheduled" do
+        maybe_build_cron(params, socket.assigns.schedule_mode)
+      else
+        params
+      end
 
     result =
       case socket.assigns.editing_trigger do
@@ -154,6 +160,10 @@ defmodule OrcaHubWeb.TriggerLive.Index do
   end
 
   defp detect_schedule_mode(_), do: "daily"
+
+  def webhook_url(trigger) do
+    OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"
+  end
 
   def hours_options do
     Enum.map(0..23, fn h ->

@@ -168,6 +168,40 @@ defmodule OrcaHub.MCP.Tools do
           },
           "required" => ["name", "prompt", "project_id"]
         }
+      },
+      %{
+        "name" => "create_webhook_trigger",
+        "description" =>
+          "Create a webhook trigger with a unique URL endpoint. When the URL receives a POST request, it sends the configured prompt along with the request payload to a Claude Code session.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "name" => %{
+              "type" => "string",
+              "description" => "A short descriptive name for the trigger"
+            },
+            "prompt" => %{
+              "type" => "string",
+              "description" =>
+                "The prompt to send to the Claude Code session. The webhook payload will be appended as context."
+            },
+            "project_id" => %{
+              "type" => "string",
+              "description" => "The UUID of the project to run the trigger in"
+            },
+            "reuse_session" => %{
+              "type" => "boolean",
+              "description" =>
+                "If true, reuse the last session instead of creating a new one each time. Default: false"
+            },
+            "archive_on_complete" => %{
+              "type" => "boolean",
+              "description" =>
+                "If true, archive the session once it completes. Default: false"
+            }
+          },
+          "required" => ["name", "prompt", "project_id"]
+        }
       }
     ]
   end
@@ -348,6 +382,37 @@ defmodule OrcaHub.MCP.Tools do
           text(
             "Trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
               "Schedule: #{trigger.cron_expression}"
+          )
+
+        {:error, changeset} ->
+          error("Failed to create trigger: #{inspect(changeset.errors)}")
+      end
+    rescue
+      Ecto.NoResultsError ->
+        error("Project #{attrs.project_id} not found")
+    end
+  end
+
+  def call("create_webhook_trigger", args, _state) do
+    attrs = %{
+      name: args["name"],
+      prompt: args["prompt"],
+      type: "webhook",
+      project_id: args["project_id"],
+      reuse_session: args["reuse_session"] || false,
+      archive_on_complete: args["archive_on_complete"] || false
+    }
+
+    try do
+      _project = Projects.get_project!(attrs.project_id)
+
+      case Triggers.create_trigger(attrs) do
+        {:ok, trigger} ->
+          url = OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"
+
+          text(
+            "Webhook trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
+              "Webhook URL: #{url}"
           )
 
         {:error, changeset} ->

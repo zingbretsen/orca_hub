@@ -33,6 +33,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        triggers: triggers,
        editing_trigger: nil,
        show_trigger_form: false,
+       trigger_type: "scheduled",
        trigger_form: to_form(Triggers.change_trigger(%Trigger{project_id: project.id})),
        edit_form: nil,
        browsing: false,
@@ -204,7 +205,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     changeset = Triggers.change_trigger(%Trigger{project_id: socket.assigns.project.id})
 
     {:noreply,
-     assign(socket, show_trigger_form: true, editing_trigger: nil, trigger_form: to_form(changeset))}
+     assign(socket,
+       show_trigger_form: true,
+       editing_trigger: nil,
+       trigger_type: "scheduled",
+       trigger_form: to_form(changeset)
+     )}
   end
 
   def handle_event("edit_trigger", %{"id" => id}, socket) do
@@ -212,7 +218,16 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     changeset = Triggers.change_trigger(trigger)
 
     {:noreply,
-     assign(socket, show_trigger_form: true, editing_trigger: trigger, trigger_form: to_form(changeset))}
+     assign(socket,
+       show_trigger_form: true,
+       editing_trigger: trigger,
+       trigger_type: trigger.type,
+       trigger_form: to_form(changeset)
+     )}
+  end
+
+  def handle_event("set_trigger_type", %{"type" => type}, socket) do
+    {:noreply, assign(socket, trigger_type: type)}
   end
 
   def handle_event("cancel_trigger", _params, socket) do
@@ -244,6 +259,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("validate_trigger", %{"trigger" => params}, socket) do
     trigger = socket.assigns.editing_trigger || %Trigger{project_id: socket.assigns.project.id}
+    params = Map.put(params, "type", socket.assigns.trigger_type)
     changeset = Triggers.change_trigger(trigger, params)
     {:noreply, assign(socket, trigger_form: to_form(changeset, action: :validate))}
   end
@@ -251,6 +267,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   def handle_event("save_trigger", %{"trigger" => params}, socket) do
     project = socket.assigns.project
     attrs = Map.put(params, "project_id", project.id)
+    attrs = Map.put(attrs, "type", socket.assigns.trigger_type)
 
     result =
       case socket.assigns.editing_trigger do

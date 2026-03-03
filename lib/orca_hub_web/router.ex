@@ -44,6 +44,7 @@ defmodule OrcaHubWeb.Router do
   scope "/api", OrcaHubWeb do
     pipe_through :api
     post "/tts", TTSController, :create
+    post "/webhooks/:secret", WebhookController, :create
   end
 
   # MCP Streamable HTTP endpoint

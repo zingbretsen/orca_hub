@@ -17,6 +17,19 @@
     <.input field={@trigger_form[:prompt]} type="textarea" label="Prompt" placeholder="Check for updates to all services..." />
 
     <div>
+      <label class="label"><span class="label-text">Type</span></label>
+      <div class="flex flex-wrap gap-2 mb-3">
+        <button :for={type <- ["scheduled", "webhook"]}
+          type="button"
+          phx-click="set_trigger_type"
+          phx-value-type={type}
+          class={["btn btn-sm", if(@trigger_type == type, do: "btn-primary", else: "btn-ghost")]}>
+          {String.capitalize(type)}
+        </button>
+      </div>
+    </div>
+
+    <div :if={@trigger_type == "scheduled"}>
       <label class="label"><span class="label-text">Schedule</span></label>
       <div class="flex flex-wrap gap-2 mb-3">
         <button :for={mode <- ["hourly", "daily", "weekly", "custom"]}
@@ -55,6 +68,22 @@
       </div>
     </div>
 
+    <div :if={@trigger_type == "webhook" && @editing_trigger && @editing_trigger.webhook_secret} class="text-sm">
+      <label class="label"><span class="label-text">Webhook URL</span></label>
+      <div class="flex items-center gap-2">
+        <code class="bg-base-300 px-3 py-2 rounded text-xs flex-1 break-all">{webhook_url(@editing_trigger)}</code>
+        <button type="button" phx-click={JS.dispatch("phx:copy", to: "#webhook-url")} class="btn btn-sm btn-ghost" title="Copy">
+          <.icon name="hero-clipboard-micro" class="size-4" />
+        </button>
+      </div>
+      <input type="hidden" id="webhook-url" value={webhook_url(@editing_trigger)} phx-hook="Copy" />
+      <p class="text-base-content/50 text-xs mt-1">POST JSON to this URL to fire the trigger. The payload will be included in the prompt.</p>
+    </div>
+
+    <div :if={@trigger_type == "webhook" && !@editing_trigger} class="text-sm text-base-content/50">
+      A webhook URL will be generated after creating the trigger.
+    </div>
+
     <div class="flex gap-6">
       <.input field={@trigger_form[:reuse_session]} type="checkbox" label="Reuse previous session" />
       <.input field={@trigger_form[:archive_on_complete]} type="checkbox" label="Hide from queue when done" />
@@ -84,17 +113,21 @@
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2">
             <span class="font-medium">{trigger.name}</span>
+            <span class={["badge badge-xs", if(trigger.type == "webhook", do: "badge-info", else: "badge-neutral")]}>
+              {trigger.type}
+            </span>
             <span class={["badge badge-xs", if(trigger.enabled, do: "badge-success", else: "badge-ghost")]}>
               {if trigger.enabled, do: "active", else: "disabled"}
             </span>
           </div>
-          <div class="text-base-content/50 text-xs mt-0.5 font-mono">{trigger.cron_expression}</div>
+          <div :if={trigger.type == "scheduled"} class="text-base-content/50 text-xs mt-0.5 font-mono">{trigger.cron_expression}</div>
+          <div :if={trigger.type == "webhook"} class="text-base-content/50 text-xs mt-0.5 font-mono truncate max-w-md">{webhook_url(trigger)}</div>
           <div :if={trigger.last_fired_at} class="text-base-content/40 text-xs mt-0.5">
             Last fired: {Calendar.strftime(trigger.last_fired_at, "%Y-%m-%d %H:%M UTC")}
           </div>
         </div>
         <div class="flex items-center gap-1">
-          <button phx-click="fire_trigger" phx-value-id={trigger.id} class="btn btn-xs btn-ghost" title="Fire now">
+          <button :if={trigger.type == "scheduled"} phx-click="fire_trigger" phx-value-id={trigger.id} class="btn btn-xs btn-ghost" title="Fire now">
             <.icon name="hero-play-micro" class="size-4" />
           </button>
           <button phx-click="toggle_trigger" phx-value-id={trigger.id} class="btn btn-xs btn-ghost" title={if trigger.enabled, do: "Disable", else: "Enable"}>

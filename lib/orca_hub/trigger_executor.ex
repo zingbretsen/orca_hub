@@ -22,7 +22,7 @@ defmodule OrcaHub.TriggerExecutor do
         OrcaHub.SessionSupervisor.start_session(session_id)
       end
 
-      SessionRunner.send_message(session_id, trigger.prompt)
+      SessionRunner.send_message(session_id, build_prompt(trigger))
 
       if trigger.archive_on_complete do
         subscribe_for_completion(session_id)
@@ -34,6 +34,48 @@ defmodule OrcaHub.TriggerExecutor do
     e ->
       Logger.error("Trigger #{trigger_id} execution failed: #{Exception.message(e)}")
       :error
+  end
+
+  def execute_webhook(trigger_id, payload) do
+    trigger = Triggers.get_trigger!(trigger_id)
+
+    unless trigger.enabled do
+      Logger.info("Webhook trigger #{trigger_id} is disabled, skipping")
+      :ok
+    else
+      Logger.info("Firing webhook trigger #{trigger.name} (#{trigger_id})")
+
+      session_id = resolve_session(trigger)
+
+      Triggers.update_trigger(trigger, %{
+        last_fired_at: DateTime.utc_now() |> DateTime.truncate(:second),
+        last_session_id: session_id
+      })
+
+      unless OrcaHub.SessionSupervisor.session_alive?(session_id) do
+        OrcaHub.SessionSupervisor.start_session(session_id)
+      end
+
+      prompt = build_prompt(trigger, payload)
+      SessionRunner.send_message(session_id, prompt)
+
+      if trigger.archive_on_complete do
+        subscribe_for_completion(session_id)
+      end
+
+      {:ok, session_id}
+    end
+  rescue
+    e ->
+      Logger.error("Webhook trigger #{trigger_id} execution failed: #{Exception.message(e)}")
+      {:error, Exception.message(e)}
+  end
+
+  defp build_prompt(trigger), do: trigger.prompt
+
+  defp build_prompt(trigger, payload) do
+    payload_str = if is_binary(payload), do: payload, else: Jason.encode!(payload, pretty: true)
+    "#{trigger.prompt}\n\nWebhook payload:\n```json\n#{payload_str}\n```"
   end
 
   defp resolve_session(%{reuse_session: true, last_session_id: last_id} = trigger)
