@@ -52,3 +52,6 @@ upload_*
 
 # Screenshots
 /*.png
+
+# Claude local settings
+.claude/settings.local.json
