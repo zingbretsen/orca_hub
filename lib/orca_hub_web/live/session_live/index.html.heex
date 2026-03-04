@@ -46,9 +46,9 @@
   <div :if={sessions == []} class="text-sm text-base-content/50 p-4">
     No active sessions.
   </div>
-  <.table :if={sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}"} rows={sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}>
-    <:col :let={session} label="Title">{session.title}</:col>
-    <:col :let={session} label="Status">
+  <.table :if={sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}"} rows={sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
+    <:col :let={session} label="Title" class="w-3/5">{session.title}</:col>
+    <:col :let={session} label="Status" class="w-1/5">
       <span class={[
         "badge",
         session.status == "running" && "badge-warning",
@@ -59,7 +59,7 @@
       </span>
     </:col>
     <:action :let={session}>
-      <.link phx-click="archive" phx-value-id={session.id} data-confirm="Archive this session?">
+      <.link phx-click="archive" phx-value-id={session.id}>
         Archive
       </.link>
     </:action>
@@ -134,5 +134,13 @@
       <button type="button" phx-click="browse_close" class="btn btn-sm">Cancel</button>
       <button type="button" phx-click="browse_select" class="btn btn-sm btn-primary">Select this directory</button>
     </div>
+  </div>
+</div>
+
+<div :if={@undo_archive_session} class="toast toast-top toast-end z-50">
+  <div class="alert alert-info w-80 sm:w-96">
+    <.icon name="hero-archive-box" class="size-5 shrink-0" />
+    <span>Session archived</span>
+    <button phx-click="undo_archive" class="btn btn-sm btn-ghost">Undo</button>
   </div>
 </div>

@@ -28,14 +28,37 @@ defmodule OrcaHubWeb.QueueLive do
      |> assign(:show_all, false)
      |> assign(:tts_autoplay, false)
      |> assign(:tts_autoplay_pending, false)
-     |> assign(:page_title, "Queue")}
+     |> assign(:page_title, "Queue")
+     |> assign(:undo_archive_session, nil)
+     |> assign(:undo_archive_timer, nil)}
   end
 
   @impl true
   def handle_event("archive", %{"id" => id}, socket) do
     session = Sessions.get_session!(id)
     Sessions.archive_session(session)
-    {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
+
+    socket =
+      socket
+      |> assign(:entries, reject_session(socket.assigns.entries, id))
+      |> schedule_undo_archive(id)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("undo_archive", _params, socket) do
+    if session_id = socket.assigns.undo_archive_session do
+      session = Sessions.get_session!(session_id)
+      Sessions.unarchive_session(session)
+
+      {:noreply,
+       socket
+       |> cancel_undo_timer()
+       |> assign(undo_archive_session: nil)
+       |> assign(:entries, load_entries())}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_event("send_message", %{"prompt" => prompt}, socket) do
@@ -177,6 +200,10 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   @impl true
+  def handle_info(:clear_undo_archive, socket) do
+    {:noreply, assign(socket, undo_archive_session: nil, undo_archive_timer: nil)}
+  end
+
   def handle_info({:status, status}, socket) do
     handle_status_change(status, socket)
   end
@@ -213,6 +240,20 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   defp handle_status_change(_status, socket), do: {:noreply, socket}
+
+  defp schedule_undo_archive(socket, session_id) do
+    socket = cancel_undo_timer(socket)
+    timer = Process.send_after(self(), :clear_undo_archive, 5000)
+    assign(socket, undo_archive_session: session_id, undo_archive_timer: timer)
+  end
+
+  defp cancel_undo_timer(socket) do
+    if ref = socket.assigns.undo_archive_timer do
+      Process.cancel_timer(ref)
+    end
+
+    assign(socket, undo_archive_timer: nil)
+  end
 
   defp load_entries do
     Sessions.list_idle_sessions_with_last_assistant_message()

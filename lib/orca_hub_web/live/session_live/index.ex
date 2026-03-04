@@ -18,7 +18,9 @@ defmodule OrcaHubWeb.SessionLive.Index do
        browsing: false,
        browse_path: nil,
        browse_entries: [],
-       browse_show_hidden: false
+       browse_show_hidden: false,
+       undo_archive_session: nil,
+       undo_archive_timer: nil
      )}
   end
 
@@ -27,8 +29,13 @@ defmodule OrcaHubWeb.SessionLive.Index do
     {:noreply, apply_action(socket, socket.assigns.live_action, params)}
   end
 
-  defp apply_action(socket, :index, _params) do
-    assign(socket, page_title: "Sessions", form: nil)
+  defp apply_action(socket, :index, params) do
+    socket = assign(socket, page_title: "Sessions", form: nil)
+
+    case params["undo"] do
+      nil -> socket
+      id -> schedule_undo_archive(socket, id)
+    end
   end
 
   defp apply_action(socket, :new, params) do
@@ -91,7 +98,29 @@ defmodule OrcaHubWeb.SessionLive.Index do
     OrcaHub.SessionSupervisor.stop_session(id)
     {:ok, _} = Sessions.archive_session(session)
     filter = socket.assigns.session_filter
-    {:noreply, assign(socket, grouped_sessions: group_sessions(Sessions.list_sessions(filter), socket.assigns.projects))}
+
+    socket =
+      socket
+      |> assign(grouped_sessions: group_sessions(Sessions.list_sessions(filter), socket.assigns.projects))
+      |> schedule_undo_archive(id)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("undo_archive", _params, socket) do
+    if session_id = socket.assigns.undo_archive_session do
+      session = Sessions.get_session!(session_id)
+      Sessions.unarchive_session(session)
+      filter = socket.assigns.session_filter
+
+      {:noreply,
+       socket
+       |> cancel_undo_timer()
+       |> assign(undo_archive_session: nil)
+       |> assign(grouped_sessions: group_sessions(Sessions.list_sessions(filter), socket.assigns.projects))}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_event("validate", %{"session" => params}, socket) do
@@ -151,6 +180,25 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   def handle_event("browse_close", _params, socket) do
     {:noreply, assign(socket, browsing: false)}
+  end
+
+  @impl true
+  def handle_info(:clear_undo_archive, socket) do
+    {:noreply, assign(socket, undo_archive_session: nil, undo_archive_timer: nil)}
+  end
+
+  defp schedule_undo_archive(socket, session_id) do
+    socket = cancel_undo_timer(socket)
+    timer = Process.send_after(self(), :clear_undo_archive, 5000)
+    assign(socket, undo_archive_session: session_id, undo_archive_timer: timer)
+  end
+
+  defp cancel_undo_timer(socket) do
+    if ref = socket.assigns.undo_archive_timer do
+      Process.cancel_timer(ref)
+    end
+
+    assign(socket, undo_archive_timer: nil)
   end
 
   defp group_sessions(sessions, projects) do

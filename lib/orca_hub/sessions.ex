@@ -25,6 +25,12 @@ defmodule OrcaHub.Sessions do
     |> Repo.update()
   end
 
+  def unarchive_session(%Session{} = session) do
+    session
+    |> Session.changeset(%{archived_at: nil})
+    |> Repo.update()
+  end
+
   def get_session!(id), do: Repo.get!(Session, id) |> Repo.preload(:project)
 
   def get_session(id), do: Repo.get(Session, id)

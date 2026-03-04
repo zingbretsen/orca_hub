@@ -122,7 +122,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     session = socket.assigns.session
     SessionSupervisor.stop_session(session.id)
     {:ok, _} = Sessions.archive_session(session)
-    {:noreply, push_navigate(socket, to: ~p"/sessions")}
+    {:noreply, push_navigate(socket, to: ~p"/sessions?undo=#{session.id}")}
   end
 
   def handle_event("commit", _params, socket) do

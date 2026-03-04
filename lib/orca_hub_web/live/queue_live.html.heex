@@ -123,7 +123,7 @@
         <button phx-click="approve_session" phx-value-id={session.id} class="btn btn-sm btn-success">
           <.icon name="hero-hand-thumb-up-micro" class="size-4" /> Yes
         </button>
-        <button phx-click="archive" phx-value-id={session.id} class="btn btn-sm btn-ghost" data-confirm="Archive this session?">
+        <button phx-click="archive" phx-value-id={session.id} class="btn btn-sm btn-ghost">
           <.icon name="hero-archive-box-micro" class="size-4" /> Archive
         </button>
         <button phx-click="commit" phx-value-id={session.id} class="btn btn-sm btn-secondary">
@@ -170,5 +170,13 @@
         Send
       </.button>
     </.form>
+  </div>
+</div>
+
+<div :if={@undo_archive_session} class="toast toast-top toast-end z-50">
+  <div class="alert alert-info w-80 sm:w-96">
+    <.icon name="hero-archive-box" class="size-5 shrink-0" />
+    <span>Session archived</span>
+    <button phx-click="undo_archive" class="btn btn-sm btn-ghost">Undo</button>
   </div>
 </div>
