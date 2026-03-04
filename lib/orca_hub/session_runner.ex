@@ -84,8 +84,8 @@ defmodule OrcaHub.SessionRunner do
     broadcast(state.session_id, {:event, user_event})
 
     port = open_port(prompt, state)
-    broadcast(state.session_id, {:status, :running})
     Sessions.update_session(Sessions.get_session!(state.session_id), %{status: "running"})
+    broadcast(state.session_id, {:status, :running})
     first_prompt = state.first_prompt || prompt
     {:reply, :ok, %{state | port: port, status: :running, buffer: "", error_output: "", messages: state.messages ++ [user_event], first_prompt: first_prompt}}
   end
