@@ -63,14 +63,22 @@
 <div class="mt-8">
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">Sessions</h3>
-    <button phx-click="create_session" class="btn btn-sm btn-primary">New Session</button>
+    <div class="flex items-center gap-2">
+      <label class="label cursor-pointer gap-2">
+        <span class="label-text text-xs">Show archived</span>
+        <input type="checkbox" class="toggle toggle-xs" checked={@show_archived_sessions} phx-click="toggle_archived_sessions" />
+      </label>
+      <button phx-click="create_session" class="btn btn-sm btn-primary">New Session</button>
+    </div>
   </div>
 
-  <div :if={@project.sessions == []} class="text-sm text-base-content/50 p-4 text-center">
+  <% filtered_sessions = if @show_archived_sessions, do: @project.sessions, else: Enum.reject(@project.sessions, & &1.archived_at) %>
+
+  <div :if={filtered_sessions == []} class="text-sm text-base-content/50 p-4 text-center">
     No sessions yet.
   </div>
 
-  <.table :if={@project.sessions != []} id="project-sessions" rows={@project.sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}>
+  <.table :if={filtered_sessions != []} id="project-sessions" rows={filtered_sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}>
     <:col :let={session} label="Title">{session.title || "Untitled"}</:col>
     <:col :let={session} label="Status">
       <span :if={session.archived_at} class="badge badge-ghost">archived</span>

@@ -19,6 +19,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     {:ok,
      socket
      |> assign(
+       show_archived_sessions: false,
        project: project,
        page_title: project.name,
        commits: commits,
@@ -113,6 +114,10 @@ defmodule OrcaHubWeb.ProjectLive.Show do
       |> Map.put(:action, :validate)
 
     {:noreply, assign(socket, edit_form: to_form(changeset))}
+  end
+
+  def handle_event("toggle_archived_sessions", _params, socket) do
+    {:noreply, assign(socket, show_archived_sessions: !socket.assigns.show_archived_sessions)}
   end
 
   def handle_event("browse", _params, socket) do
