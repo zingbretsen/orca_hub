@@ -47,31 +47,9 @@
 <div class="mt-8">
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">Sessions</h3>
-    <button :if={@session_form == nil} phx-click="start_session" class="btn btn-sm btn-primary">
+    <button phx-click="start_session" class="btn btn-sm btn-primary">
       Start Session
     </button>
-  </div>
-
-  <div :if={@session_form} class="card bg-base-200 p-4 mb-4">
-    <h4 class="font-medium mb-3">New Session for this Issue</h4>
-    <.form for={@session_form} phx-submit="create_session" class="space-y-3">
-      <.input field={@session_form[:project_id]} type="hidden" />
-      <div class="flex gap-2 items-end">
-        <div class="flex-1">
-          <.input field={@session_form[:directory]} type="text" label="Directory" placeholder="/home/zach/my-project" />
-        </div>
-      </div>
-      <.input field={@session_form[:model]} type="select" label="Model" options={[
-        {"Default", ""},
-        {"Opus", "opus"},
-        {"Sonnet", "sonnet"},
-        {"Haiku", "haiku"}
-      ]} />
-      <div class="flex justify-end gap-2">
-        <button type="button" phx-click="cancel_session" class="btn btn-sm">Cancel</button>
-        <.button type="submit" class="btn-sm">Create & Start</.button>
-      </div>
-    </.form>
   </div>
 
   <div :if={@issue.sessions == []} class="text-sm text-base-content/50 p-4 text-center">

@@ -3,7 +3,6 @@ defmodule OrcaHubWeb.IssueLive.Show do
 
   alias OrcaHub.Issues
   alias OrcaHub.Sessions
-  alias OrcaHub.Sessions.Session
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -11,26 +10,14 @@ defmodule OrcaHubWeb.IssueLive.Show do
 
     {:ok,
      socket
-     |> assign(issue: issue, page_title: issue.title)
-     |> assign(session_form: nil)}
+     |> assign(issue: issue, page_title: issue.title)}
   end
 
   @impl true
   def handle_event("start_session", _params, socket) do
     issue = socket.assigns.issue
-    defaults = if issue.project, do: %{directory: issue.project.directory, project_id: issue.project.id}, else: %{}
-    changeset = Session.changeset(%Session{}, defaults)
-
-    {:noreply, assign(socket, session_form: to_form(changeset))}
-  end
-
-  def handle_event("cancel_session", _params, socket) do
-    {:noreply, assign(socket, session_form: nil)}
-  end
-
-  def handle_event("create_session", %{"session" => params}, socket) do
-    issue = socket.assigns.issue
-    params = Map.put(params, "issue_id", issue.id)
+    params = if issue.project, do: %{directory: issue.project.directory, project_id: issue.project.id}, else: %{}
+    params = Map.put(params, :issue_id, issue.id)
 
     case Sessions.create_session(params) do
       {:ok, session} ->
@@ -53,8 +40,8 @@ defmodule OrcaHubWeb.IssueLive.Show do
 
         {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
 
-      {:error, changeset} ->
-        {:noreply, assign(socket, session_form: to_form(changeset))}
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Could not create session. Make sure the issue has a project with a directory.")}
     end
   end
 
