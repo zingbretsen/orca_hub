@@ -20,15 +20,29 @@ defmodule OrcaHub.Sessions do
   end
 
   def archive_session(%Session{} = session) do
-    session
-    |> Session.changeset(%{archived_at: DateTime.utc_now() |> DateTime.truncate(:second)})
-    |> Repo.update()
+    result =
+      session
+      |> Session.changeset(%{archived_at: DateTime.utc_now() |> DateTime.truncate(:second)})
+      |> Repo.update()
+
+    with {:ok, _} <- result do
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session.id, {:status, :archived}})
+    end
+
+    result
   end
 
   def unarchive_session(%Session{} = session) do
-    session
-    |> Session.changeset(%{archived_at: nil})
-    |> Repo.update()
+    result =
+      session
+      |> Session.changeset(%{archived_at: nil})
+      |> Repo.update()
+
+    with {:ok, _} <- result do
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session.id, {:status, :unarchived}})
+    end
+
+    result
   end
 
   def get_session!(id), do: Repo.get!(Session, id) |> Repo.preload(:project)
