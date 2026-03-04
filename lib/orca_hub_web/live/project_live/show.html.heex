@@ -304,15 +304,15 @@
 
 <div class={["mt-8", @selected_file && "breakout-wide"]}>
   <div class="flex items-center justify-between mb-4">
-    <h3 class="text-lg font-semibold">Markdown Files</h3>
+    <h3 class="text-lg font-semibold">Files</h3>
     <button phx-click="new_file" class="btn btn-sm btn-primary">New File</button>
   </div>
 
-  <div :if={@md_files == [] && !@new_file_name} class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg">
-    No markdown files found in this project.
+  <div :if={@editable_files == [] && !@new_file_name} class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg">
+    No editable files found in this project.
   </div>
 
-  <div :if={@md_files != [] || @new_file_name} class="flex flex-col md:flex-row gap-4" style="height: calc(100vh - 12rem);">
+  <div :if={@editable_files != [] || @new_file_name} class="flex flex-col md:flex-row gap-4" style="height: calc(100vh - 12rem);">
     <%!-- File tree sidebar --%>
     <div class="md:w-56 shrink-0 overflow-y-auto">
       <div class="flex justify-end gap-1 mb-1">
@@ -341,7 +341,7 @@
             type="text"
             name="filename"
             value={@new_file_name}
-            placeholder="path/to/file.md"
+            placeholder="path/to/file.toml"
             class="input input-bordered input-sm w-full font-mono"
           />
           <textarea
@@ -356,8 +356,8 @@
         </form>
       </div>
 
-      <%!-- View selected file (block-aware) --%>
-      <div :if={@selected_file && !@file_editing && @new_file_name == nil}>
+      <%!-- View selected markdown file (block-aware) --%>
+      <div :if={@selected_file && !@file_editing && @new_file_name == nil && @file_blocks != []}>
         <div class="flex items-center justify-between mb-3">
           <div class="flex items-center gap-2">
             <span class="font-mono text-sm text-base-content/70">{@selected_file}</span>
@@ -408,6 +408,20 @@
               </button>
             </div>
           </div>
+        </div>
+      </div>
+
+      <%!-- View selected non-markdown file (raw display) --%>
+      <div :if={@selected_file && !@file_editing && @new_file_name == nil && @file_blocks == []}>
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <span class="font-mono text-sm text-base-content/70">{@selected_file}</span>
+            <button phx-click="deselect_file" class="btn btn-ghost btn-xs">&times;</button>
+          </div>
+          <button phx-click="edit_file" class="btn btn-sm btn-ghost">Edit</button>
+        </div>
+        <div class="bg-base-200 rounded-lg p-4">
+          <pre class="text-sm font-mono whitespace-pre-wrap break-words">{@file_content}</pre>
         </div>
       </div>
 

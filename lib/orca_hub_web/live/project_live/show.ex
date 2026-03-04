@@ -8,8 +8,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     project = Projects.get_project!(id)
-    md_files = Projects.list_markdown_files(project)
-    file_tree = Projects.build_file_tree(md_files)
+    editable_files = Projects.list_editable_files(project)
+    file_tree = Projects.build_file_tree(editable_files)
     commits = Projects.git_log(project)
     triggers = Triggers.list_triggers_for_project(project.id)
     current_branch = Projects.git_branch(project)
@@ -22,7 +22,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        project: project,
        page_title: project.name,
        commits: commits,
-       md_files: md_files,
+       editable_files: editable_files,
        file_tree: file_tree,
        current_branch: current_branch,
        worktrees: worktrees,
@@ -114,9 +114,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   def handle_event("select_file", %{"path" => path}, socket) do
     project = socket.assigns.project
 
-    case Projects.load_markdown_file(project, path) do
+    case Projects.load_file(project, path) do
       {:ok, content} ->
-        blocks = OrcaHubWeb.Markdown.split_blocks(content)
+        blocks =
+          if markdown_file?(path),
+            do: OrcaHubWeb.Markdown.split_blocks(content),
+            else: []
 
         {:noreply,
          assign(socket,
@@ -151,20 +154,23 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     path =
       if socket.assigns.new_file_name != nil do
-        filename = params["filename"] || ""
-        if String.ends_with?(filename, ".md"), do: filename, else: filename <> ".md"
+        String.trim(params["filename"] || "")
       else
         socket.assigns.selected_file
       end
 
-    if path == "" or path == ".md" do
+    if path == "" do
       {:noreply, put_flash(socket, :error, "Please enter a filename")}
     else
-      case Projects.save_markdown_file(project, path, content) do
+      case Projects.save_file(project, path, content) do
       :ok ->
-        md_files = Projects.list_markdown_files(project)
-        file_tree = Projects.build_file_tree(md_files)
-        blocks = OrcaHubWeb.Markdown.split_blocks(content)
+        editable_files = Projects.list_editable_files(project)
+        file_tree = Projects.build_file_tree(editable_files)
+
+        blocks =
+          if markdown_file?(path),
+            do: OrcaHubWeb.Markdown.split_blocks(content),
+            else: []
 
         {:noreply,
          assign(socket,
@@ -174,7 +180,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
            editing_block: nil,
            selected_file: path,
            new_file_name: nil,
-           md_files: md_files,
+           editable_files: editable_files,
            file_tree: file_tree
          )}
 
@@ -230,7 +236,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     project = socket.assigns.project
     path = socket.assigns.selected_file
 
-    case Projects.save_markdown_file(project, path, full_content) do
+    case Projects.save_file(project, path, full_content) do
       :ok ->
         {:noreply,
          assign(socket,
@@ -258,7 +264,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     project = socket.assigns.project
     path = socket.assigns.selected_file
 
-    case Projects.save_markdown_file(project, path, full_content) do
+    case Projects.save_file(project, path, full_content) do
       :ok ->
         {:noreply,
          assign(socket,
@@ -554,6 +560,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     </li>
     """
   end
+
+  defp markdown_file?(path), do: String.ends_with?(path, ".md")
 
   defp browse_to(socket, path) do
     entries =

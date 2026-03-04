@@ -46,13 +46,31 @@ defmodule OrcaHub.SessionRunner do
        issue_id: session.issue_id,
        status: :idle,
        messages: saved_messages,
-       first_prompt: nil
+       first_prompt: nil,
+       pending_prompts: []
      }}
   end
 
   @impl true
-  def handle_call({:send_message, _prompt}, _from, %{status: :running} = state) do
-    {:reply, {:error, :busy}, state}
+  def handle_call({:send_message, prompt}, _from, %{status: :running, port: port} = state) when not is_nil(port) do
+    user_event =
+      stamp(%{
+        "type" => "user",
+        "message" => %{"role" => "user", "content" => [%{"type" => "text", "text" => prompt}]}
+      })
+
+    persist_message(state.session_id, user_event)
+    broadcast(state.session_id, {:event, user_event})
+
+    # Interrupt the running CLI — SIGINT lets it finish in-progress tool calls gracefully
+    {:os_pid, os_pid} = Port.info(port, :os_pid)
+    System.cmd("kill", ["-INT", "#{os_pid}"])
+
+    {:reply, :ok,
+     %{state |
+       pending_prompts: state.pending_prompts ++ [prompt],
+       messages: state.messages ++ [user_event]
+     }}
   end
 
   def handle_call({:send_message, prompt}, _from, state) do
@@ -110,36 +128,47 @@ defmodule OrcaHub.SessionRunner do
 
   def handle_info({port, {:exit_status, code}}, %{port: port} = state) do
     Logger.info("Claude CLI exited (code #{code}) for session #{state.session_id}")
-    new_status = if code == 0, do: :idle, else: :error
 
-    error_text = String.trim(state.error_output <> state.buffer)
+    case state.pending_prompts do
+      [_ | _] = prompts ->
+        # Auto-resume with queued prompts bundled into a single message
+        combined_prompt = Enum.join(prompts, "\n\n\n")
+        Logger.info("Auto-resuming session #{state.session_id} with #{length(prompts)} pending prompt(s)")
+        new_port = open_port(combined_prompt, state)
+        {:noreply, %{state | port: new_port, buffer: "", error_output: "", pending_prompts: []}}
 
-    state =
-      if code != 0 && error_text != "" do
-        error_event =
-          stamp(%{
-            "type" => "cli_error",
-            "exit_code" => code,
-            "message" => error_text
-          })
+      [] ->
+        # Normal exit — no pending prompts
+        new_status = if code == 0, do: :idle, else: :error
+        error_text = String.trim(state.error_output <> state.buffer)
 
-        persist_message(state.session_id, error_event)
-        broadcast(state.session_id, {:event, error_event})
-        %{state | messages: state.messages ++ [error_event]}
-      else
-        state
-      end
+        state =
+          if code != 0 && error_text != "" do
+            error_event =
+              stamp(%{
+                "type" => "cli_error",
+                "exit_code" => code,
+                "message" => error_text
+              })
 
-    session = Sessions.get_session!(state.session_id)
-    Sessions.update_session(session, %{status: to_string(new_status)})
-    broadcast(state.session_id, {:status, new_status})
+            persist_message(state.session_id, error_event)
+            broadcast(state.session_id, {:event, error_event})
+            %{state | messages: state.messages ++ [error_event]}
+          else
+            state
+          end
 
-    if code == 0 && (session.title == nil || session.title == "") do
-      Logger.info("Attempting title generation for session #{state.session_id}, first_prompt: #{inspect(state.first_prompt)}")
-      maybe_generate_title(state.session_id, state.first_prompt)
+        session = Sessions.get_session!(state.session_id)
+        Sessions.update_session(session, %{status: to_string(new_status)})
+        broadcast(state.session_id, {:status, new_status})
+
+        if code == 0 && (session.title == nil || session.title == "") do
+          Logger.info("Attempting title generation for session #{state.session_id}, first_prompt: #{inspect(state.first_prompt)}")
+          maybe_generate_title(state.session_id, state.first_prompt)
+        end
+
+        {:noreply, %{state | port: nil, status: new_status}}
     end
-
-    {:noreply, %{state | port: nil, status: new_status}}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}

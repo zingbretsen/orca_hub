@@ -58,13 +58,16 @@ defmodule OrcaHub.Projects do
 
   @skip_dirs ~w(.git .claude node_modules deps _build .elixir_ls .hex .mix _deps vendor)
 
+  @editable_extensions ~w(.md .toml .yaml .yml .json .txt .ex .exs .eex .heex .css .js .ts .tsx .jsx .html .xml .env .cfg .ini .conf .sh .bash .zsh .fish .py .rb .rs .go .lua .sql .graphql .svg)
+  @editable_basenames ~w(Dockerfile Makefile Justfile Procfile Gemfile Rakefile)
+
   @doc """
-  Recursively lists all .md files in the project directory.
+  Recursively lists editable text files in the project directory.
   Returns sorted list of relative paths.
   """
-  def list_markdown_files(%Project{directory: dir}) do
+  def list_editable_files(%Project{directory: dir}) do
     dir
-    |> find_md_files("")
+    |> find_editable_files("")
     |> Enum.sort()
   end
 
@@ -112,7 +115,7 @@ defmodule OrcaHub.Projects do
     end)
   end
 
-  defp find_md_files(base_dir, rel_dir) do
+  defp find_editable_files(base_dir, rel_dir) do
     full_dir = Path.join(base_dir, rel_dir)
 
     case File.ls(full_dir) do
@@ -125,8 +128,8 @@ defmodule OrcaHub.Projects do
           full_path = Path.join(base_dir, rel_path)
 
           cond do
-            File.dir?(full_path) -> find_md_files(base_dir, rel_path)
-            String.ends_with?(entry, ".md") -> [rel_path]
+            File.dir?(full_path) -> find_editable_files(base_dir, rel_path)
+            editable_file?(entry) -> [rel_path]
             true -> []
           end
         end)
@@ -136,20 +139,25 @@ defmodule OrcaHub.Projects do
     end
   end
 
+  defp editable_file?(filename) do
+    ext = Path.extname(filename) |> String.downcase()
+    ext in @editable_extensions or filename in @editable_basenames
+  end
+
   @doc """
-  Loads a markdown file by relative path from the project directory.
+  Loads a file by relative path from the project directory.
   Returns {:ok, content} or {:error, reason}.
   """
-  def load_markdown_file(%Project{directory: dir}, rel_path) do
+  def load_file(%Project{directory: dir}, rel_path) do
     with :ok <- validate_path(rel_path) do
       File.read(Path.join(dir, rel_path))
     end
   end
 
   @doc """
-  Saves a markdown file by relative path in the project directory.
+  Saves a file by relative path in the project directory.
   """
-  def save_markdown_file(%Project{directory: dir}, rel_path, content) do
+  def save_file(%Project{directory: dir}, rel_path, content) do
     with :ok <- validate_path(rel_path) do
       full_path = Path.join(dir, rel_path)
       full_path |> Path.dirname() |> File.mkdir_p!()

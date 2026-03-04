@@ -63,19 +63,19 @@
         </div>
         <ul tabindex="0" class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg mb-2">
           <li>
-            <label class={@status == :running && "opacity-50 pointer-events-none"}>
+            <label>
               <.live_file_input upload={@uploads.image} class="hidden" />
               <.icon name="hero-photo" class="size-5" /> Upload image
             </label>
           </li>
           <li>
-            <label class={@status == :running && "opacity-50 pointer-events-none"}>
+            <label>
               <.live_file_input upload={@uploads.file} class="hidden" />
               <.icon name="hero-paper-clip" class="size-5" /> Attach file
             </label>
           </li>
           <li>
-            <button type="button" phx-click="commit" disabled={@status == :running}>
+            <button type="button" phx-click="commit">
               <.icon name="hero-check" class="size-5" /> Commit
             </button>
           </li>
@@ -95,13 +95,12 @@
           rows="1"
           phx-hook="AutoResize"
           id="prompt-input"
-          disabled={@status == :running}
         ></textarea>
       </div>
-      <button :if={@status == :running} type="button" phx-click="interrupt" class="btn btn-error btn-square">
+      <button :if={@status == :running} type="button" phx-click="interrupt" class="btn btn-error btn-square" title="Interrupt">
         <.icon name="hero-stop" class="size-5" />
       </button>
-      <.button :if={@status != :running} type="submit">
+      <.button type="submit">
         Send
       </.button>
     </.form>

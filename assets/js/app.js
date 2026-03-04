@@ -105,7 +105,7 @@ let Hooks = {
       })
     },
     updated() {
-      if (!this.el.disabled) this.el.focus()
+      this.el.focus()
     },
     resize() {
       this.el.style.height = "auto"
@@ -153,7 +153,16 @@ let Hooks = {
   },
   ScrollToBottom: {
     mounted() {
-      this.scrollToBottom()
+      this.following = true
+      this.scrollToBottom(false)
+
+      // When the user scrolls, check if they're at the bottom to toggle follow mode
+      this.el.addEventListener("scroll", () => {
+        const threshold = 30
+        const atBottom = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < threshold
+        this.following = atBottom
+      })
+
       this.handleEvent("tts-autoplay", () => {
         // Small delay to ensure LiveView has patched the DOM and hooks are mounted
         setTimeout(() => {
@@ -167,11 +176,14 @@ let Hooks = {
       })
     },
     updated() {
-      const threshold = 100
-      const atBottom = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < threshold
-      if (atBottom) this.scrollToBottom()
+      if (this.following) this.scrollToBottom(true)
     },
-    scrollToBottom() { this.el.scrollTop = this.el.scrollHeight }
+    scrollToBottom(smooth) {
+      this.el.scrollTo({
+        top: this.el.scrollHeight,
+        behavior: smooth ? "smooth" : "instant"
+      })
+    }
   },
 
   TTSPlayer: {
