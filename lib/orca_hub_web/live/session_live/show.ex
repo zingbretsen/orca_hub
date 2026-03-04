@@ -118,6 +118,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, assign(socket, :tts_autoplay, !socket.assigns.tts_autoplay)}
   end
 
+  def handle_event("archive", _params, socket) do
+    session = socket.assigns.session
+    SessionSupervisor.stop_session(session.id)
+    {:ok, _} = Sessions.archive_session(session)
+    {:noreply, push_navigate(socket, to: ~p"/sessions")}
+  end
+
   def handle_event("commit", _params, socket) do
     prompt = "Commit the changes you made in this session. Only stage files you actually modified — do not use `git add -A` or `git add .`. Use a descriptive commit message based on the diff."
 
