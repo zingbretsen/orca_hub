@@ -11,19 +11,19 @@ defmodule OrcaHubWeb.Layouts do
   # and other static content.
   embed_templates "layouts/*"
 
+  defp nav_links do
+    [
+      %{href: ~p"/queue", label: "Queue", badge: true},
+      %{href: ~p"/projects", label: "Projects"},
+      %{href: ~p"/issues", label: "Issues"},
+      %{href: ~p"/triggers", label: "Triggers"},
+      %{href: ~p"/sessions", label: "Sessions"},
+      %{href: ~p"/usage", label: "Usage"}
+    ]
+  end
+
   @doc """
   Renders your app layout.
-
-  This function is typically invoked from every template,
-  and it often contains your application menu, sidebar,
-  or similar.
-
-  ## Examples
-
-      <Layouts.app flash={@flash}>
-        <h1>Content</h1>
-      </Layouts.app>
-
   """
   attr :flash, :map, required: true, doc: "the map of flash messages"
 
@@ -34,17 +34,17 @@ defmodule OrcaHubWeb.Layouts do
   slot :inner_block
 
   def app(assigns) do
+    assigns = assign(assigns, :nav_links, nav_links())
+
     ~H"""
     <header class="flex items-center gap-2 px-4 py-2 sm:px-6 lg:px-8">
       <a href="/" class="font-semibold">OrcaHub</a>
 
       <nav class="hidden md:flex items-center gap-1 ml-4 mr-auto">
-        <a href={~p"/queue"} class="btn btn-ghost btn-sm">Queue</a>
-        <a href={~p"/projects"} class="btn btn-ghost btn-sm">Projects</a>
-        <a href={~p"/issues"} class="btn btn-ghost btn-sm">Issues</a>
-        <a href={~p"/triggers"} class="btn btn-ghost btn-sm">Triggers</a>
-        <a href={~p"/sessions"} class="btn btn-ghost btn-sm">Sessions</a>
-        <a href={~p"/usage"} class="btn btn-ghost btn-sm">Usage</a>
+        <a :for={link <- @nav_links} href={link.href} class="btn btn-ghost btn-sm">
+          {link.label}
+          <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-desktop" />
+        </a>
       </nav>
 
       <div class="hidden md:flex items-center ml-auto">
@@ -56,12 +56,12 @@ defmodule OrcaHubWeb.Layouts do
           <.icon name="hero-bars-3-micro" class="size-5" />
         </div>
         <ul tabindex="0" class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-52">
-          <li><a href={~p"/queue"}>Queue</a></li>
-          <li><a href={~p"/projects"}>Projects</a></li>
-          <li><a href={~p"/issues"}>Issues</a></li>
-          <li><a href={~p"/triggers"}>Triggers</a></li>
-          <li><a href={~p"/sessions"}>Sessions</a></li>
-          <li><a href={~p"/usage"}>Usage</a></li>
+          <li :for={link <- @nav_links}>
+            <a href={link.href}>
+              {link.label}
+              <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-mobile" />
+            </a>
+          </li>
           <li class="menu-title text-xs uppercase opacity-60 mt-2">Theme</li>
           <li><.theme_toggle /></li>
         </ul>
@@ -77,6 +77,12 @@ defmodule OrcaHubWeb.Layouts do
     <.flash_group flash={@flash} />
 
     <.live_component module={OrcaHubWeb.CommandPaletteLive} id="command-palette" />
+    """
+  end
+
+  defp idle_badge(assigns) do
+    ~H"""
+    {live_render(@socket, OrcaHubWeb.IdleBadgeLive, id: @id, sticky: true)}
     """
   end
 

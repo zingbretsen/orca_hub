@@ -71,6 +71,14 @@ defmodule OrcaHub.Sessions do
     )
   end
 
+  def count_idle_sessions do
+    Repo.one(
+      from s in Session,
+        where: is_nil(s.archived_at) and s.status == "idle",
+        select: count(s.id)
+    )
+  end
+
   def list_idle_sessions_with_last_assistant_message do
     last_messages =
       from m in Message,
