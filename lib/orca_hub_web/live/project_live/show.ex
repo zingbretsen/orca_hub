@@ -48,16 +48,48 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   @impl true
-  def handle_params(_params, _url, socket) do
-    case socket.assigns.live_action do
-      :edit ->
-        project = socket.assigns.project
-        changeset = Project.changeset(project, %{})
-        {:noreply, assign(socket, edit_form: to_form(changeset), page_title: "Edit #{project.name}")}
+  def handle_params(params, _url, socket) do
+    socket =
+      case socket.assigns.live_action do
+        :edit ->
+          project = socket.assigns.project
+          changeset = Project.changeset(project, %{})
+          assign(socket, edit_form: to_form(changeset), page_title: "Edit #{project.name}")
 
-      :show ->
-        {:noreply, assign(socket, edit_form: nil, page_title: socket.assigns.project.name)}
-    end
+        :show ->
+          assign(socket, edit_form: nil, page_title: socket.assigns.project.name)
+      end
+
+    socket =
+      case params["file"] do
+        nil ->
+          socket
+
+        path ->
+          project = socket.assigns.project
+
+          case Projects.load_file(project, path) do
+            {:ok, content} ->
+              blocks =
+                if markdown_file?(path),
+                  do: OrcaHubWeb.Markdown.split_blocks(content),
+                  else: []
+
+              assign(socket,
+                selected_file: path,
+                file_content: content,
+                file_blocks: blocks,
+                file_editing: false,
+                editing_block: nil,
+                new_file_name: nil
+              )
+
+            {:error, _} ->
+              put_flash(socket, :error, "Failed to load #{path}")
+          end
+      end
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -562,6 +594,10 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   defp markdown_file?(path), do: String.ends_with?(path, ".md")
+
+  defp file_disk_path(project, path) do
+    Path.join(project.directory, path)
+  end
 
   defp browse_to(socket, path) do
     entries =

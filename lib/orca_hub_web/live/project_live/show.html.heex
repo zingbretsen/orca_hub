@@ -362,6 +362,15 @@
           <div class="flex items-center gap-2">
             <span class="font-mono text-sm text-base-content/70">{@selected_file}</span>
             <button phx-click="deselect_file" class="btn btn-ghost btn-xs">&times;</button>
+            <button
+              type="button"
+              phx-click={JS.dispatch("phx:copy", to: "#file-link-url")}
+              class="btn btn-ghost btn-xs"
+              title="Copy file path"
+            >
+              <.icon name="hero-clipboard-micro" class="size-3" />
+            </button>
+            <input type="hidden" id="file-link-url" value={file_disk_path(@project, @selected_file)} phx-hook="Copy" />
           </div>
           <button phx-click="edit_file" class="btn btn-sm btn-ghost">Raw Edit</button>
         </div>
@@ -417,6 +426,15 @@
           <div class="flex items-center gap-2">
             <span class="font-mono text-sm text-base-content/70">{@selected_file}</span>
             <button phx-click="deselect_file" class="btn btn-ghost btn-xs">&times;</button>
+            <button
+              type="button"
+              phx-click={JS.dispatch("phx:copy", to: "#file-link-url-raw")}
+              class="btn btn-ghost btn-xs"
+              title="Copy file path"
+            >
+              <.icon name="hero-clipboard-micro" class="size-3" />
+            </button>
+            <input type="hidden" id="file-link-url-raw" value={file_disk_path(@project, @selected_file)} phx-hook="Copy" />
           </div>
           <button phx-click="edit_file" class="btn btn-sm btn-ghost">Edit</button>
         </div>
