@@ -499,17 +499,22 @@ defmodule OrcaHubWeb.MessageComponents do
   defp format_duration(ms), do: "#{Float.round(ms / 1000, 1)}s"
 
   defp extract_attachments(text) do
-    # Extract [Attached image: path] and [Attached file: path] tags
+    # Extract [Attached image: path ...] and [Attached file: path] tags
+    # Image paths may have a trailing hint after " — " that we strip
     image_matches = Regex.scan(~r/\[Attached image: (.+?)\]/, text)
     file_matches = Regex.scan(~r/\[Attached file: (.+?)\]/, text)
 
     attachments =
-      Enum.map(image_matches, fn [_, path] -> {:image, path} end) ++
+      Enum.map(image_matches, fn [_, raw] ->
+        path = raw |> String.split(" — ") |> hd() |> String.trim()
+        {:image, path}
+      end) ++
         Enum.map(file_matches, fn [_, path] -> {:file, path} end)
 
     clean_text =
       text
       |> String.replace(~r/\n*\[Attached (?:image|file): .+?\]/, "")
+      |> String.replace(~r/\n*\[Extracted text: .+?\]/, "")
       |> String.replace(~r/^I've attached files to the session directory\. Please review them\.\s*/, "")
       |> String.trim()
 
