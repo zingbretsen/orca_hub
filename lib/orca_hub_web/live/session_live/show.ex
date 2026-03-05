@@ -29,12 +29,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
        max_entries: 5,
-       max_file_size: 10_000_000
+       max_file_size: 20_000_000,
+       auto_upload: true
      )
      |> allow_upload(:file,
        accept: :any,
        max_entries: 5,
-       max_file_size: 50_000_000
+       max_file_size: 50_000_000,
+       auto_upload: true
      )}
   end
 
@@ -48,7 +50,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {file_entries, socket} = consume_uploaded_file_entries(socket)
     Logger.info("send_message: image_paths=#{inspect(image_paths)}, file_entries=#{inspect(file_entries)}")
 
-    image_attachments = Enum.map(image_paths, &"[Attached image: #{&1}]")
+    image_attachments = Enum.map(image_paths, &"[Attached image: #{&1} — use your Read tool to view it]")
 
     file_attachments =
       Enum.map(file_entries, fn {path, md_path} ->

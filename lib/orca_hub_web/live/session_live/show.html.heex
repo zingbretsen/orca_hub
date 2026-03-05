@@ -34,6 +34,10 @@
     <div :for={entry <- @uploads.image.entries} class="flex items-center gap-2 px-2">
       <.live_img_preview entry={entry} class="h-16 w-16 object-cover rounded" />
       <span class="text-xs truncate flex-1">{entry.client_name}</span>
+      <progress :if={entry.progress < 100} value={entry.progress} max="100" class="progress progress-primary w-16 h-2" />
+      <p :for={err <- upload_errors(@uploads.image, entry)} class="text-xs text-error">
+        {upload_error_to_string(err)}
+      </p>
       <button type="button" phx-click="cancel-upload" phx-value-ref={entry.ref} phx-value-upload="image" class="btn btn-ghost btn-xs">
         &times;
       </button>
@@ -41,6 +45,10 @@
     <div :for={entry <- @uploads.file.entries} class="flex items-center gap-2 px-2">
       <.icon name="hero-document" class="size-8 opacity-50" />
       <span class="text-xs truncate flex-1">{entry.client_name}</span>
+      <progress :if={entry.progress < 100} value={entry.progress} max="100" class="progress progress-primary w-16 h-2" />
+      <p :for={err <- upload_errors(@uploads.file, entry)} class="text-xs text-error">
+        {upload_error_to_string(err)}
+      </p>
       <button type="button" phx-click="cancel-upload" phx-value-ref={entry.ref} phx-value-upload="file" class="btn btn-ghost btn-xs">
         &times;
       </button>
@@ -86,7 +94,7 @@
           </li>
         </ul>
       </div>
-      <div class="flex-1 min-w-0">
+      <div class="flex-1 min-w-0" id="prompt-wrapper" phx-update="ignore">
         <textarea
           name="prompt"
           placeholder="Send a message..."
