@@ -107,29 +107,25 @@ defmodule OrcaHub.Projects do
   def filter_file_tree(tree, ""), do: tree
 
   def filter_file_tree(tree, query) do
-    query = String.downcase(query)
+    tokens =
+      query
+      |> String.downcase()
+      |> String.split(~r/\s+/, trim: true)
 
     tree
-    |> Enum.flat_map(&filter_node(&1, query))
-    |> sort_tree()
+    |> collect_paths()
+    |> Enum.filter(fn path ->
+      downcased = String.downcase(path)
+      Enum.all?(tokens, &String.contains?(downcased, &1))
+    end)
+    |> build_file_tree()
   end
 
-  defp filter_node(%{type: :file, name: name} = node, query) do
-    if String.contains?(String.downcase(name), query), do: [node], else: []
-  end
-
-  defp filter_node(%{type: :dir, name: name, children: children} = node, query) do
-    if String.contains?(String.downcase(name), query) do
-      [node]
-    else
-      filtered = Enum.flat_map(children, &filter_node(&1, query))
-
-      if filtered == [] do
-        []
-      else
-        [%{node | children: filtered}]
-      end
-    end
+  defp collect_paths(nodes) do
+    Enum.flat_map(nodes, fn
+      %{type: :file, path: path} -> [path]
+      %{type: :dir, children: children} -> collect_paths(children)
+    end)
   end
 
   defp sort_tree(nodes) do
