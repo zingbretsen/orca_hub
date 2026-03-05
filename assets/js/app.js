@@ -471,6 +471,25 @@ let Hooks = {
       this.el.addEventListener("phx:collapse-all", () => {
         this.el.querySelectorAll("details").forEach(d => d.open = false)
       })
+    },
+    beforeUpdate() {
+      this._detailsState = Array.from(this.el.querySelectorAll("details")).map(d => d.open)
+      this._hadFilter = !!this.el.dataset.filter
+    },
+    updated() {
+      const hasFilter = !!this.el.dataset.filter
+      if (hasFilter) {
+        // When filtering, expand all so results are visible
+        this.el.querySelectorAll("details").forEach(d => d.open = true)
+      } else if (this._hadFilter) {
+        // Filter was just cleared — expand all to restore default state
+        this.el.querySelectorAll("details").forEach(d => d.open = true)
+      } else if (this._detailsState) {
+        // No filter active — preserve user's collapse state
+        this.el.querySelectorAll("details").forEach((d, i) => {
+          if (i < this._detailsState.length) d.open = this._detailsState[i]
+        })
+      }
     }
   }
 }

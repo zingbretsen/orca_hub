@@ -25,6 +25,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        commits: commits,
        editable_files: editable_files,
        file_tree: file_tree,
+       filtered_file_tree: file_tree,
+       file_tree_filter: "",
        current_branch: current_branch,
        worktrees: worktrees,
        branches: branches,
@@ -148,6 +150,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   @impl true
+  def handle_event("filter_file_tree", %{"value" => query}, socket) do
+    filtered = Projects.filter_file_tree(socket.assigns.file_tree, query)
+    {:noreply, assign(socket, file_tree_filter: query, filtered_file_tree: filtered)}
+  end
+
+  @impl true
   def handle_event("select_file", %{"path" => path}, socket) do
     project = socket.assigns.project
 
@@ -218,7 +226,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
            selected_file: path,
            new_file_name: nil,
            editable_files: editable_files,
-           file_tree: file_tree
+           file_tree: file_tree,
+           filtered_file_tree: Projects.filter_file_tree(file_tree, socket.assigns.file_tree_filter)
          )}
 
       {:error, reason} ->

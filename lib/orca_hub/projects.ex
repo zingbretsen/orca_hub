@@ -103,6 +103,35 @@ defmodule OrcaHub.Projects do
     end)
   end
 
+  def filter_file_tree(tree, nil), do: tree
+  def filter_file_tree(tree, ""), do: tree
+
+  def filter_file_tree(tree, query) do
+    query = String.downcase(query)
+
+    tree
+    |> Enum.flat_map(&filter_node(&1, query))
+    |> sort_tree()
+  end
+
+  defp filter_node(%{type: :file, name: name} = node, query) do
+    if String.contains?(String.downcase(name), query), do: [node], else: []
+  end
+
+  defp filter_node(%{type: :dir, name: name, children: children} = node, query) do
+    if String.contains?(String.downcase(name), query) do
+      [node]
+    else
+      filtered = Enum.flat_map(children, &filter_node(&1, query))
+
+      if filtered == [] do
+        []
+      else
+        [%{node | children: filtered}]
+      end
+    end
+  end
+
   defp sort_tree(nodes) do
     nodes
     |> Enum.sort_by(fn

@@ -323,7 +323,15 @@
   <div :if={@editable_files != [] || @new_file_name} class="flex flex-col md:flex-row gap-4" style="height: calc(100vh - 12rem);">
     <%!-- File tree sidebar --%>
     <div class="md:w-56 shrink-0 overflow-y-auto">
-      <div class="flex justify-end gap-1 mb-1">
+      <div class="flex items-center gap-1 mb-1">
+        <input
+          type="text"
+          placeholder="Search files..."
+          value={@file_tree_filter}
+          phx-keyup="filter_file_tree"
+          phx-debounce="150"
+          class="input input-xs input-bordered w-full"
+        />
         <button phx-click={JS.dispatch("phx:expand-all", to: "#file-tree")} class="btn btn-ghost btn-xs" title="Expand all">
           <.icon name="hero-chevron-down-micro" class="size-3" />
         </button>
@@ -331,9 +339,9 @@
           <.icon name="hero-chevron-up-micro" class="size-3" />
         </button>
       </div>
-      <ul id="file-tree" class="menu menu-sm bg-base-200 rounded-lg w-full" phx-hook="FileTree">
+      <ul id="file-tree" class="menu menu-sm bg-base-200 rounded-lg w-full" phx-hook="FileTree" data-filter={@file_tree_filter}>
         <.file_tree_node
-          :for={node <- @file_tree}
+          :for={node <- @filtered_file_tree}
           node={node}
           selected_file={@selected_file}
         />
