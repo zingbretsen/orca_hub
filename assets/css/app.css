@@ -104,6 +104,12 @@
 
 /* This file is for your main application CSS */
 
+/* File tree keyboard navigation highlight */
+#file-tree .file-tree-focused {
+  background-color: oklch(50% 0 0 / 0.15);
+  border-radius: var(--radius-field);
+}
+
 /* Full-width breakout from max-w-5xl container */
 .breakout-wide {
   width: 100vw;

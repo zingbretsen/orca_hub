@@ -464,12 +464,68 @@ let Hooks = {
   },
 
   FileTree: {
+    _getVisibleItems() {
+      return Array.from(this.el.querySelectorAll("li > button[phx-click='select_file'], li > details > summary"))
+    },
+    _focusItem(item) {
+      if (!item) return
+      // Remove highlight from previous
+      this.el.querySelectorAll(".file-tree-focused").forEach(el => el.classList.remove("file-tree-focused"))
+      item.classList.add("file-tree-focused")
+      item.scrollIntoView({ block: "nearest" })
+    },
     mounted() {
       this.el.addEventListener("phx:expand-all", () => {
         this.el.querySelectorAll("details").forEach(d => d.open = true)
       })
       this.el.addEventListener("phx:collapse-all", () => {
         this.el.querySelectorAll("details").forEach(d => d.open = false)
+      })
+
+      // Tab from search input focuses first tree item
+      const search = document.getElementById("file-tree-search")
+      if (search) {
+        search.addEventListener("keydown", (e) => {
+          if (e.key === "Tab") {
+            e.preventDefault()
+            const items = this._getVisibleItems()
+            if (items.length > 0) {
+              this._focusItem(items[0])
+              this._focusedIndex = 0
+              this.el.focus()
+            }
+          }
+        })
+      }
+
+      // Make the tree container focusable for keyboard nav
+      this.el.setAttribute("tabindex", "-1")
+      this.el.style.outline = "none"
+
+      this.el.addEventListener("keydown", (e) => {
+        const items = this._getVisibleItems()
+        if (items.length === 0) return
+        if (this._focusedIndex == null) this._focusedIndex = -1
+
+        if (e.key === "j" || e.key === "ArrowDown") {
+          e.preventDefault()
+          this._focusedIndex = Math.min(this._focusedIndex + 1, items.length - 1)
+          this._focusItem(items[this._focusedIndex])
+        } else if (e.key === "k" || e.key === "ArrowUp") {
+          e.preventDefault()
+          this._focusedIndex = Math.max(this._focusedIndex - 1, 0)
+          this._focusItem(items[this._focusedIndex])
+        } else if (e.key === "Enter") {
+          e.preventDefault()
+          const item = items[this._focusedIndex]
+          if (item) item.click()
+        } else if (e.key === "/" || e.key === "Escape") {
+          e.preventDefault()
+          this.el.querySelectorAll(".file-tree-focused").forEach(el => el.classList.remove("file-tree-focused"))
+          this._focusedIndex = null
+          const search = document.getElementById("file-tree-search")
+          if (search) search.focus()
+        }
       })
     },
     beforeUpdate() {
@@ -479,16 +535,19 @@ let Hooks = {
     updated() {
       const hasFilter = !!this.el.dataset.filter
       if (hasFilter) {
-        // When filtering, expand all so results are visible
         this.el.querySelectorAll("details").forEach(d => d.open = true)
       } else if (this._hadFilter) {
-        // Filter was just cleared — expand all to restore default state
         this.el.querySelectorAll("details").forEach(d => d.open = true)
       } else if (this._detailsState) {
-        // No filter active — preserve user's collapse state
         this.el.querySelectorAll("details").forEach((d, i) => {
           if (i < this._detailsState.length) d.open = this._detailsState[i]
         })
+      }
+      // Re-apply focus highlight if index is still valid
+      if (this._focusedIndex != null) {
+        const items = this._getVisibleItems()
+        this._focusedIndex = Math.min(this._focusedIndex, items.length - 1)
+        if (this._focusedIndex >= 0) this._focusItem(items[this._focusedIndex])
       }
     }
   }
