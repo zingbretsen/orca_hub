@@ -22,11 +22,10 @@ If you already have PostgreSQL running locally, create a user and database match
 
 ## Getting Started
 
-1. **Clone both repositories** (OrcaHub depends on [ex_orca](https://github.com/zingbretsen/ex_orca) as a sibling directory):
+1. **Clone the repository:**
 
    ```bash
    git clone https://github.com/zingbretsen/orca_hub.git
-   git clone https://github.com/zingbretsen/ex_orca.git
    ```
 
 2. **Configure environment variables:**
