@@ -19,6 +19,16 @@
     </span>
     <:subtitle>{@session.directory}</:subtitle>
     <:actions>
+      <button
+        :if={@session.claude_session_id}
+        id="copy-terminal-cmd"
+        phx-hook="CopyToClipboard"
+        data-copy-text={"cd #{@session.directory} && claude --resume #{@session.claude_session_id}"}
+        class="btn btn-ghost btn-sm btn-circle"
+        title="Copy terminal command"
+      >
+        <.icon name="hero-command-line" class="size-5" />
+      </button>
       <button phx-click="archive" class="btn btn-ghost btn-sm btn-circle" title="Archive session">
         <.icon name="hero-archive-box" class="size-5" />
       </button>

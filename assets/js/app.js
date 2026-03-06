@@ -27,6 +27,13 @@ import topbar from "../vendor/topbar"
 
 let Hooks = {
   ...colocatedHooks,
+  Copy: {
+    mounted() {
+      this.el.addEventListener("phx:copy", () => {
+        navigator.clipboard.writeText(this.el.value)
+      })
+    }
+  },
   CommandPalette: {
     mounted() {
       this.handler = (e) => {
@@ -81,6 +88,18 @@ let Hooks = {
     },
     destroyed() {
       window.removeEventListener("keydown", this.handler)
+    }
+  },
+  CopyToClipboard: {
+    mounted() {
+      this.el.addEventListener("click", () => {
+        const text = this.el.dataset.copyText
+        if (!text) return
+        navigator.clipboard.writeText(text).then(() => {
+          this.el.classList.add("text-success")
+          setTimeout(() => this.el.classList.remove("text-success"), 1500)
+        })
+      })
     }
   },
   AutoFocus: {
