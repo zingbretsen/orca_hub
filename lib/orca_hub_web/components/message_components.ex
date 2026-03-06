@@ -408,7 +408,9 @@ defmodule OrcaHubWeb.MessageComponents do
   end
 
   defp tool_detail(%{name: "TodoWrite", input: input} = assigns) do
-    assigns = assign(assigns, :todos, input["todos"] || [])
+    todos = input["todos"] || []
+    todos = if is_binary(todos), do: Jason.decode!(todos), else: todos
+    assigns = assign(assigns, :todos, todos)
 
     ~H"""
     <div class="text-xs space-y-1">

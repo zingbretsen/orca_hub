@@ -3,7 +3,7 @@ defmodule OrcaHub.SessionRunner do
   require Logger
 
   alias ExOrca.{Config, StreamParser}
-  alias OrcaHub.Sessions
+  alias OrcaHub.{AgentPresence, Sessions}
 
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
@@ -33,6 +33,11 @@ defmodule OrcaHub.SessionRunner do
     saved_messages =
       Sessions.list_messages(session_id)
       |> Enum.map(fn msg -> Map.put(msg.data, "timestamp", msg.inserted_at) end)
+
+    AgentPresence.write(session.directory, session_id, %{
+      title: session.title,
+      status: "idle"
+    })
 
     {:ok,
      %{
@@ -86,6 +91,7 @@ defmodule OrcaHub.SessionRunner do
     port = open_port(prompt, state)
     Sessions.update_session(Sessions.get_session!(state.session_id), %{status: "running"})
     broadcast(state.session_id, {:status, :running})
+    AgentPresence.update_status(state.directory, state.session_id, "running")
     first_prompt = state.first_prompt || prompt
     {:reply, :ok, %{state | port: port, status: :running, buffer: "", error_output: "", messages: state.messages ++ [user_event], first_prompt: first_prompt}}
   end
@@ -161,6 +167,7 @@ defmodule OrcaHub.SessionRunner do
         session = Sessions.get_session!(state.session_id)
         Sessions.update_session(session, %{status: to_string(new_status)})
         broadcast(state.session_id, {:status, new_status})
+        AgentPresence.update_status(state.directory, state.session_id, to_string(new_status))
 
         if code == 0 && (session.title == nil || session.title == "") do
           Logger.info("Attempting title generation for session #{state.session_id}, first_prompt: #{inspect(state.first_prompt)}")
@@ -173,6 +180,12 @@ defmodule OrcaHub.SessionRunner do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
+  @impl true
+  def terminate(_reason, state) do
+    AgentPresence.remove(state.directory, state.session_id)
+    :ok
+  end
+
   # Private
 
   defp open_port(prompt, state) do
@@ -183,7 +196,7 @@ defmodule OrcaHub.SessionRunner do
       [cwd: state.directory]
       |> maybe_put(:session_id, state.claude_session_id)
       |> maybe_put(:model, state.model)
-      |> maybe_put(:system_prompt, issue_system_prompt(state.issue_id))
+      |> maybe_put(:system_prompt, build_system_prompt(state))
 
     {args, port_opts} = Config.build_args(prompt, opts)
 
@@ -230,6 +243,18 @@ defmodule OrcaHub.SessionRunner do
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, val), do: Keyword.put(opts, key, val)
 
+  defp build_system_prompt(state) do
+    parts =
+      [
+        "Your OrcaHub session ID is #{state.session_id}.",
+        issue_system_prompt(state.issue_id),
+        siblings_system_prompt(state.directory, state.session_id)
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    Enum.join(parts, "\n\n")
+  end
+
   defp issue_system_prompt(nil), do: nil
 
   defp issue_system_prompt(issue_id) do
@@ -245,6 +270,39 @@ defmodule OrcaHub.SessionRunner do
     When you make progress or finish, call `update_issue` to record what you attempted and your findings. This is append-only — never try to rewrite or remove previous entries. Only add information about your own approach and results.
     """
     |> String.trim()
+  end
+
+  defp siblings_system_prompt(directory, session_id) do
+    case AgentPresence.list_siblings(directory, session_id) do
+      [] ->
+        nil
+
+      siblings ->
+        sibling_lines =
+          Enum.map(siblings, fn {id, content} ->
+            # Extract status and task from the presence file
+            status = extract_field(content, "Status") || "unknown"
+            task = extract_field(content, "Task") || "unknown"
+            "- Session #{id} (#{status}): #{task}"
+          end)
+          |> Enum.join("\n")
+
+        """
+        Other active agent sessions in this directory:
+        #{sibling_lines}
+
+        You can send a message to another session using the `send_message_to_session` MCP tool.
+        Check the .agents/ directory for updated session statuses.
+        """
+        |> String.trim()
+    end
+  end
+
+  defp extract_field(content, field) do
+    case Regex.run(~r/\*\*#{field}:\*\* (.+)/, content) do
+      [_, value] -> value
+      _ -> nil
+    end
   end
 
   defp persist_message(session_id, event) do
@@ -266,6 +324,7 @@ defmodule OrcaHub.SessionRunner do
             session = Sessions.get_session!(session_id)
             Sessions.update_session(session, %{title: title})
             broadcast(session_id, {:title_updated, title})
+            AgentPresence.write(session.directory, session_id, %{title: title, status: session.status})
 
           {:error, reason} ->
             Logger.warning("Failed to generate title for session #{session_id}: #{inspect(reason)}")

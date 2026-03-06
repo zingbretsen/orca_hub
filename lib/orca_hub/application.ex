@@ -36,7 +36,12 @@ defmodule OrcaHub.Application do
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: OrcaHub.Supervisor]
-    Supervisor.start_link(children, opts)
+    result = Supervisor.start_link(children, opts)
+
+    # Clean up stale .agents/ presence files from previous runs
+    Task.start(fn -> OrcaHub.AgentPresence.cleanup_all_stale() end)
+
+    result
   end
 
   # Tell Phoenix to update the endpoint configuration

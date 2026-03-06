@@ -55,3 +55,4 @@ upload_*
 
 # Claude local settings
 .claude/settings.local.json
+.agents/

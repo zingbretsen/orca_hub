@@ -170,6 +170,30 @@ defmodule OrcaHub.MCP.Tools do
         }
       },
       %{
+        "name" => "send_message_to_session",
+        "description" =>
+          "Send a message to another active Claude Code session. The message will interrupt the target session and deliver your message. Your session ID will be included automatically so the recipient knows who sent it. Use this to coordinate with sibling sessions working in the same directory — check the .agents/ directory to discover active sessions and their IDs.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "session_id" => %{
+              "type" => "string",
+              "description" => "The OrcaHub session ID of the target session"
+            },
+            "message" => %{
+              "type" => "string",
+              "description" => "The message to send to the target session"
+            },
+            "sender_session_id" => %{
+              "type" => "string",
+              "description" =>
+                "Your own OrcaHub session ID, so the recipient knows who sent the message. Find this in your .agents/ presence file."
+            }
+          },
+          "required" => ["session_id", "message"]
+        }
+      },
+      %{
         "name" => "create_webhook_trigger",
         "description" =>
           "Create a webhook trigger with a unique URL endpoint. When the URL receives a POST request, it sends the configured prompt along with the request payload to a Claude Code session.",
@@ -390,6 +414,31 @@ defmodule OrcaHub.MCP.Tools do
     rescue
       Ecto.NoResultsError ->
         error("Project #{attrs.project_id} not found")
+    end
+  end
+
+  def call("send_message_to_session", args, _state) do
+    target_id = args["session_id"]
+    message = args["message"]
+    sender_id = args["sender_session_id"]
+
+    signed_message =
+      if sender_id do
+        "[Message from session #{sender_id}]\n\n#{message}"
+      else
+        "[Message from another session]\n\n#{message}"
+      end
+
+    if SessionSupervisor.session_alive?(target_id) do
+      case SessionRunner.send_message(target_id, signed_message) do
+        :ok ->
+          text("Message delivered to session #{target_id}")
+
+        {:error, reason} ->
+          error("Failed to send message to session #{target_id}: #{inspect(reason)}")
+      end
+    else
+      error("Session #{target_id} is not running. Check .agents/ for active sessions.")
     end
   end
 
