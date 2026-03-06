@@ -2,7 +2,7 @@ defmodule OrcaHub.SessionRunner do
   use GenServer
   require Logger
 
-  alias ExOrca.{Config, StreamParser}
+  alias OrcaHub.Claude.{Config, StreamParser}
   alias OrcaHub.{AgentPresence, Sessions}
 
   def start_link(opts) do
@@ -206,7 +206,7 @@ defmodule OrcaHub.SessionRunner do
           ["-q", "/dev/null", claude_path | args]
 
         _ ->
-          cmd = Enum.map_join([claude_path | args], " ", &shell_escape/1)
+          cmd = Enum.map_join([claude_path | args], " ", &Config.shell_escape/1)
           ["-qc", cmd, "/dev/null"]
       end
 
@@ -409,5 +409,4 @@ defmodule OrcaHub.SessionRunner do
     end)
   end
 
-  defp shell_escape(arg), do: "'" <> String.replace(arg, "'", "'\\''") <> "'"
 end

@@ -12,7 +12,7 @@ defmodule OrcaHubWeb.UsageLive do
   end
 
   defp fetch_usage(socket) do
-    case ExOrca.usage() do
+    case OrcaHub.Claude.Usage.fetch() do
       {:ok, usage} -> assign(socket, usage: usage, error: nil)
       {:error, reason} -> assign(socket, usage: nil, error: reason)
     end

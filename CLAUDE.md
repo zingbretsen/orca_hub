@@ -12,7 +12,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - **SessionRunner** (`lib/orca_hub/session_runner.ex`): GenServer that manages a Claude CLI session via a port. Sends prompts, parses streaming JSON output, persists messages, and broadcasts events via PubSub.
 - **SessionLive.Show** (`lib/orca_hub_web/live/session_live/show.ex`): LiveView for viewing/interacting with a session. Handles message sending, image uploads, and file uploads.
 - **MessageComponents** (`lib/orca_hub_web/components/message_components.ex`): Function components for rendering the message feed (user, assistant, tool use, results, system events).
-- **ExOrca** (`../ex_orca`): Local dependency that builds Claude CLI args and parses streaming output.
+- **OrcaHub.Claude** (`lib/orca_hub/claude/`): Modules for interacting with Claude CLI — builds CLI args (`Config`), parses streaming NDJSON output (`StreamParser`), and fetches usage metrics (`Usage`).
 
 ## Common issues
 

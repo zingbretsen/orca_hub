@@ -69,7 +69,6 @@ defmodule OrcaHub.MixProject do
       {:bandit, "~> 1.5"},
       {:dotenvy, "~> 1.0"},
       {:quantum, "~> 3.5"},
-      {:ex_orca, path: "../ex_orca"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:tz, "~> 0.28"}
     ]
