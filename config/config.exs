@@ -11,8 +11,7 @@ config :elixir, :time_zone_database, Tz.TimeZoneDatabase
 
 config :orca_hub,
   ecto_repos: [OrcaHub.Repo],
-  generators: [timestamp_type: :utc_datetime],
-  document_convert_url: "https://api.lab.ingbretsenhome.com/convert"
+  generators: [timestamp_type: :utc_datetime]
 
 config :orca_hub, OrcaHub.Scheduler,
   jobs: []

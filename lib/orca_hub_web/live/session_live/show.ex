@@ -40,7 +40,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
      )}
   end
 
-  @convert_url Application.compile_env(:orca_hub, :document_convert_url)
 
   @impl true
   def handle_event("send_message", %{"prompt" => prompt}, socket) do
@@ -52,14 +51,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     image_attachments = Enum.map(image_paths, &"[Attached image: #{&1} — use your Read tool to view it]")
 
-    file_attachments =
-      Enum.map(file_entries, fn {path, md_path} ->
-        if md_path do
-          "[Attached file: #{path}]\n[Extracted text: #{md_path}]"
-        else
-          "[Attached file: #{path}]"
-        end
-      end)
+    file_attachments = Enum.map(file_entries, &"[Attached file: #{&1}]")
 
     attachments = Enum.join(image_attachments ++ file_attachments, "\n\n")
 
@@ -214,9 +206,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
             dest = Path.join("/tmp", filename)
             Logger.info("file upload: #{entry.client_name} -> #{dest}")
             File.cp!(tmp_path, dest)
-            md_path = convert_document(dest, entry.client_name)
-            Logger.info("file upload: md_path=#{inspect(md_path)}")
-            {:ok, {dest, md_path}}
+            {:ok, dest}
           end)
 
         {entries, socket}
@@ -224,28 +214,5 @@ defmodule OrcaHubWeb.SessionLive.Show do
       _ ->
         {[], socket}
     end
-  end
-
-  defp convert_document(path, client_name) do
-    Logger.info("convert_document: path=#{path}, client_name=#{client_name}, url=#{@convert_url}")
-    content = File.read!(path)
-
-    case Req.post(@convert_url,
-           form_multipart: [file: {content, filename: client_name}],
-           receive_timeout: 60_000
-         ) do
-      {:ok, %{status: 200, body: %{"markdown" => markdown}}} ->
-        md_path = Path.rootname(path) <> ".md"
-        File.write!(md_path, markdown)
-        md_path
-
-      other ->
-        Logger.warning("Document conversion failed for #{client_name}: #{inspect(other)}")
-        nil
-    end
-  rescue
-    e ->
-      Logger.warning("Document conversion error for #{client_name}: #{Exception.message(e)}")
-      nil
   end
 end

@@ -20,6 +20,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
      socket
      |> assign(
        show_archived_sessions: false,
+       show_hidden_files: false,
        project: project,
        page_title: project.name,
        commits: commits,
@@ -150,6 +151,23 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   @impl true
+  def handle_event("toggle_hidden_files", _params, socket) do
+    show_hidden = !socket.assigns.show_hidden_files
+    project = socket.assigns.project
+    editable_files = Projects.list_editable_files(project, show_hidden: show_hidden)
+    file_tree = Projects.build_file_tree(editable_files)
+    filtered = Projects.filter_file_tree(file_tree, socket.assigns.file_tree_filter)
+
+    {:noreply,
+     assign(socket,
+       show_hidden_files: show_hidden,
+       editable_files: editable_files,
+       file_tree: file_tree,
+       filtered_file_tree: filtered
+     )}
+  end
+
+  @impl true
   def handle_event("filter_file_tree", %{"value" => query}, socket) do
     filtered = Projects.filter_file_tree(socket.assigns.file_tree, query)
     {:noreply, assign(socket, file_tree_filter: query, filtered_file_tree: filtered)}
@@ -209,7 +227,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     else
       case Projects.save_file(project, path, content) do
       :ok ->
-        editable_files = Projects.list_editable_files(project)
+        editable_files = Projects.list_editable_files(project, show_hidden: socket.assigns.show_hidden_files)
         file_tree = Projects.build_file_tree(editable_files)
 
         blocks =

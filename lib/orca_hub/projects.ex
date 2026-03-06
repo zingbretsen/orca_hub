@@ -64,10 +64,15 @@ defmodule OrcaHub.Projects do
   @doc """
   Recursively lists editable text files in the project directory.
   Returns sorted list of relative paths.
+
+  Options:
+    - `show_hidden` (boolean, default false): include hidden files/directories (dotfiles)
   """
-  def list_editable_files(%Project{directory: dir}) do
+  def list_editable_files(%Project{directory: dir}, opts \\ []) do
+    show_hidden = Keyword.get(opts, :show_hidden, false)
+
     dir
-    |> find_editable_files("")
+    |> find_editable_files("", show_hidden)
     |> Enum.sort()
   end
 
@@ -140,21 +145,23 @@ defmodule OrcaHub.Projects do
     end)
   end
 
-  defp find_editable_files(base_dir, rel_dir) do
+  defp find_editable_files(base_dir, rel_dir, show_hidden) do
     full_dir = Path.join(base_dir, rel_dir)
 
     case File.ls(full_dir) do
       {:ok, entries} ->
         entries
-        |> Enum.reject(&String.starts_with?(&1, "."))
+        |> then(fn entries ->
+          if show_hidden, do: entries, else: Enum.reject(entries, &String.starts_with?(&1, "."))
+        end)
         |> Enum.reject(&(&1 in @skip_dirs))
         |> Enum.flat_map(fn entry ->
           rel_path = if(rel_dir == "", do: entry, else: Path.join(rel_dir, entry))
           full_path = Path.join(base_dir, rel_path)
 
           cond do
-            File.dir?(full_path) -> find_editable_files(base_dir, rel_path)
-            editable_file?(entry) -> [rel_path]
+            File.dir?(full_path) -> find_editable_files(base_dir, rel_path, show_hidden)
+            editable_file?(entry, show_hidden) -> [rel_path]
             true -> []
           end
         end)
@@ -164,9 +171,10 @@ defmodule OrcaHub.Projects do
     end
   end
 
-  defp editable_file?(filename) do
+  defp editable_file?(filename, show_hidden) do
     ext = Path.extname(filename) |> String.downcase()
-    ext in @editable_extensions or filename in @editable_basenames
+    ext in @editable_extensions or filename in @editable_basenames or
+      (show_hidden and String.starts_with?(filename, ".") and ext == "")
   end
 
   @doc """

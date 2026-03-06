@@ -10,7 +10,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 ## Architecture
 
 - **SessionRunner** (`lib/orca_hub/session_runner.ex`): GenServer that manages a Claude CLI session via a port. Sends prompts, parses streaming JSON output, persists messages, and broadcasts events via PubSub.
-- **SessionLive.Show** (`lib/orca_hub_web/live/session_live/show.ex`): LiveView for viewing/interacting with a session. Handles message sending, image uploads, and file uploads with document conversion.
+- **SessionLive.Show** (`lib/orca_hub_web/live/session_live/show.ex`): LiveView for viewing/interacting with a session. Handles message sending, image uploads, and file uploads.
 - **MessageComponents** (`lib/orca_hub_web/components/message_components.ex`): Function components for rendering the message feed (user, assistant, tool use, results, system events).
 - **ExOrca** (`../ex_orca`): Local dependency that builds Claude CLI args and parses streaming output.
 
@@ -22,7 +22,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 
 - Messages are stored as flexible maps in a `data` column (no fixed schema for message content)
 - File uploads save to the session's working directory so Claude can access them via its Read tool
-- Document uploads (PDF, DOCX, etc.) are converted to markdown via `https://api.lab.ingbretsenhome.com/convert` and saved as `.md` files alongside the original
+- Document uploads are saved to the session's working directory for Claude to access
 - Index tables use `row_click` with `JS.navigate` to make rows clickable to the show page (no separate View/Edit action links). See projects and issues index pages for examples.
 - Sessions are grouped by directory in the index view, sorted by most recently updated
 - Title auto-generation uses OpenAI API (`gpt-5-nano`)

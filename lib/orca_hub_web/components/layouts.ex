@@ -38,7 +38,10 @@ defmodule OrcaHubWeb.Layouts do
 
     ~H"""
     <header class="flex items-center gap-2 px-4 py-2 sm:px-6 lg:px-8">
-      <a href="/" class="font-semibold">OrcaHub</a>
+      <a href="/" class="flex items-center gap-2 font-semibold">
+        <img src={~p"/images/logo.png"} alt="OrcaHub" class="h-8 w-auto" />
+        OrcaHub
+      </a>
 
       <nav class="hidden md:flex items-center gap-1 ml-4 mr-auto">
         <a :for={link <- @nav_links} href={link.href} class="btn btn-ghost btn-sm">
