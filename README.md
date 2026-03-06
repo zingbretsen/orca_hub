@@ -2,25 +2,49 @@
 
 A Phoenix LiveView web UI for managing [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions. Create, monitor, and interact with multiple Claude Code CLI sessions from your browser.
 
-## Prerequisites
+## Quick Start with Docker
+
+The fastest way to run OrcaHub — no Elixir or PostgreSQL installation needed.
+
+1. **Clone and start:**
+
+   ```bash
+   git clone https://github.com/zingbretsen/orca_hub.git
+   cd orca_hub
+   docker compose up -d
+   ```
+
+   This builds the app, starts PostgreSQL, runs migrations, and serves OrcaHub at [localhost:4000](http://localhost:4000).
+
+2. **Authenticate Claude Code** (one-time):
+
+   ```bash
+   docker compose exec app claude login
+   ```
+
+   Credentials are stored in a Docker volume and persist across restarts.
+
+3. **Mount your project directories** by editing `docker-compose.yml`:
+
+   ```yaml
+   volumes:
+     - claude_credentials:/home/orca/.claude
+     - /home/user/projects/my-app:/home/orca/projects/my-app
+   ```
+
+   Then restart with `docker compose up -d`. When creating sessions in OrcaHub, set the working directory to `/home/orca/projects/my-app`.
+
+## Local Development Setup
+
+If you prefer to run OrcaHub outside Docker (for development or customization):
+
+### Prerequisites
 
 - **Elixir & Erlang** — Install via [asdf](https://asdf-vm.com/) or see the [official Elixir installation guide](https://elixir-lang.org/install.html). OrcaHub requires Elixir ~> 1.15.
-- **PostgreSQL** — See [Database Setup](#database-setup) below.
+- **PostgreSQL** — Run via Docker (`docker compose up db -d`) or install locally.
 - **Claude Code CLI** — Install the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) and authenticate it. OrcaHub spawns Claude sessions via the CLI.
 
-## Database Setup
-
-The easiest way to run PostgreSQL is with Docker:
-
-```bash
-docker compose up -d
-```
-
-This starts a PostgreSQL 17 instance with the default credentials (see `docker-compose.yml`). Data is persisted in a Docker volume.
-
-If you already have PostgreSQL running locally, create a user and database matching your `.env` (see below) or adjust the credentials to match your setup.
-
-## Getting Started
+### Getting Started
 
 1. **Clone the repository:**
 
@@ -40,7 +64,7 @@ If you already have PostgreSQL running locally, create a user and database match
 3. **Start PostgreSQL** (if using Docker):
 
    ```bash
-   docker compose up -d
+   docker compose up db -d
    ```
 
 4. **Install dependencies and set up the database:**
@@ -63,10 +87,13 @@ If you already have PostgreSQL running locally, create a user and database match
 
 | Variable | Default | Description |
 |---|---|---|
-| `DB_USERNAME` | `orca_hub` | PostgreSQL username |
-| `DB_PASSWORD` | `postgres` | PostgreSQL password |
-| `DB_HOST` | `127.0.0.1` | PostgreSQL host |
-| `DB_NAME` | `orca_hub_dev` | Database name |
+| `DB_USERNAME` | `orca_hub` | PostgreSQL username (local dev only) |
+| `DB_PASSWORD` | `postgres` | PostgreSQL password (local dev only) |
+| `DB_HOST` | `127.0.0.1` | PostgreSQL host (local dev only) |
+| `DB_NAME` | `orca_hub_dev` | Database name (local dev only) |
+| `DATABASE_URL` | — | Full database URL (Docker/production, e.g. `ecto://USER:PASS@HOST/DB`) |
+| `SECRET_KEY_BASE` | auto-generated | Session signing key (Docker auto-generates and persists one) |
+| `PHX_HOST` | `localhost` | Hostname for URL generation |
 | `PORT` | `4000` | HTTP server port |
 | `OPENAI_API_KEY` | — | Enables auto-generated session titles (via OpenAI directly) |
 | `DATAROBOT_API_TOKEN` | — | DataRobot API token (alternative to OpenAI for title generation) |
