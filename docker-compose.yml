@@ -5,12 +5,12 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "${PORT:-4003}:4000"
+      - "${PORT:-4000}:4000"
     environment:
       DATABASE_URL: ecto://orca_hub:postgres@db/orca_hub
       # SECRET_KEY_BASE: <set to override auto-generated key>
       PHX_HOST: ${PHX_HOST:-localhost}
-      PHX_URL_PORT: ${PHX_URL_PORT:-${PORT:-4003}}
+      PHX_URL_PORT: ${PHX_URL_PORT:-${PORT:-4000}}
       # Optional: title generation
       # OPENAI_API_KEY: ${OPENAI_API_KEY}
       DATAROBOT_API_TOKEN: ${DATAROBOT_API_TOKEN}

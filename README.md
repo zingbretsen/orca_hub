@@ -6,17 +6,25 @@ A Phoenix LiveView web UI for managing [Claude Code](https://docs.anthropic.com/
 
 The fastest way to run OrcaHub — no Elixir or PostgreSQL installation needed.
 
-1. **Clone and start:**
+1. **Clone and configure:**
 
    ```bash
    git clone https://github.com/zingbretsen/orca_hub.git
    cd orca_hub
+   cp .env.example .env
+   ```
+
+   Edit `.env` to add API keys for title generation or other optional features (see [Environment Variables](#environment-variables)).
+
+2. **Start:**
+
+   ```bash
    docker compose up -d
    ```
 
    This builds the app, starts PostgreSQL, runs migrations, and serves OrcaHub at [localhost:4000](http://localhost:4000).
 
-2. **Authenticate Claude Code** (one-time):
+3. **Authenticate Claude Code** (one-time):
 
    ```bash
    docker compose exec app claude login
@@ -24,7 +32,7 @@ The fastest way to run OrcaHub — no Elixir or PostgreSQL installation needed.
 
    Credentials are stored in a Docker volume and persist across restarts.
 
-3. **Mount your project directories** by editing `docker-compose.yml`:
+4. **Mount your project directories** by editing `docker-compose.yml`:
 
    ```yaml
    volumes:
@@ -33,6 +41,8 @@ The fastest way to run OrcaHub — no Elixir or PostgreSQL installation needed.
    ```
 
    Then restart with `docker compose up -d`. When creating sessions in OrcaHub, set the working directory to `/home/orca/projects/my-app`.
+
+   > **Note:** Set `PORT` in your `.env` to change the default port.
 
 ## Local Development Setup
 
