@@ -25,8 +25,8 @@ If you already have PostgreSQL running locally, create a user and database match
 1. **Clone both repositories** (OrcaHub depends on [ex_orca](https://github.com/zingbretsen/ex_orca) as a sibling directory):
 
    ```bash
-   git clone git@github.com:zingbretsen/orca_hub.git
-   git clone git@github.com:zingbretsen/ex_orca.git
+   git clone https://github.com/zingbretsen/orca_hub.git
+   git clone https://github.com/zingbretsen/ex_orca.git
    ```
 
 2. **Configure environment variables:**
@@ -36,7 +36,7 @@ If you already have PostgreSQL running locally, create a user and database match
    cp .env.example .env
    ```
 
-   Edit `.env` if your database credentials differ from the defaults. Optionally add an `OPENAI_API_KEY` for automatic session title generation.
+   Edit `.env` if your database credentials differ from the defaults. Optionally add an `OPENAI_API_KEY` or DataRobot credentials for automatic session title generation.
 
 3. **Start PostgreSQL** (if using Docker):
 
@@ -69,7 +69,10 @@ If you already have PostgreSQL running locally, create a user and database match
 | `DB_HOST` | `127.0.0.1` | PostgreSQL host |
 | `DB_NAME` | `orca_hub_dev` | Database name |
 | `PORT` | `4000` | HTTP server port |
-| `OPENAI_API_KEY` | — | Enables auto-generated session titles |
+| `OPENAI_API_KEY` | — | Enables auto-generated session titles (via OpenAI directly) |
+| `DATAROBOT_API_TOKEN` | — | DataRobot API token (alternative to OpenAI for title generation) |
+| `DATAROBOT_ENDPOINT` | — | DataRobot API endpoint (required if using DataRobot) |
+| `TITLE_MODEL` | `azure/gpt-4o-mini` | LLM model for title generation (used with DataRobot LLM Gateway) |
 
 ## Development
 
