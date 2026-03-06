@@ -109,6 +109,8 @@ If you prefer to run OrcaHub outside Docker (for development or customization):
 | `DATAROBOT_API_TOKEN` | — | DataRobot API token (alternative to OpenAI for title generation) |
 | `DATAROBOT_ENDPOINT` | — | DataRobot API endpoint (required if using DataRobot) |
 | `TITLE_MODEL` | `azure/gpt-4o-mini` | LLM model for title generation (used with DataRobot LLM Gateway) |
+| `ELEVENLABS_API_KEY` | — | ElevenLabs API key for text-to-speech |
+| `ELEVENLABS_VOICE_ID` | `JBFqnCBsd6RMkjVDRZzb` | ElevenLabs voice ID for TTS |
 
 ## Development
 
