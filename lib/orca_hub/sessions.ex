@@ -1,6 +1,6 @@
 defmodule OrcaHub.Sessions do
   import Ecto.Query
-  alias OrcaHub.{Repo, Sessions.Session, Sessions.Message}
+  alias OrcaHub.{AgentPresence, Repo, Sessions.Session, Sessions.Message}
 
   def list_sessions(filter \\ :manual) do
     query =
@@ -27,6 +27,7 @@ defmodule OrcaHub.Sessions do
 
     with {:ok, _} <- result do
       Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session.id, {:status, :archived}})
+      AgentPresence.remove(session.directory, session.id)
     end
 
     result
