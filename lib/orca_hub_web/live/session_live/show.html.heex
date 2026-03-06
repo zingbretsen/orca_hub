@@ -29,7 +29,10 @@
       >
         <.icon name="hero-command-line" class="size-5" />
       </button>
-      <button phx-click="archive" class="btn btn-ghost btn-sm btn-circle" title="Archive session">
+      <button :if={@session.archived_at} phx-click="unarchive" class="btn btn-ghost btn-sm btn-circle" title="Unarchive session">
+        <.icon name="hero-archive-box-arrow-down" class="size-5" />
+      </button>
+      <button :if={!@session.archived_at} phx-click="archive" class="btn btn-ghost btn-sm btn-circle" title="Archive session">
         <.icon name="hero-archive-box" class="size-5" />
       </button>
     </:actions>
