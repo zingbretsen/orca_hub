@@ -7,6 +7,10 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
+    if connected?(socket) do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
+    end
+
     project = Projects.get_project!(id)
     editable_files = Projects.list_editable_files(project)
     file_tree = Projects.build_file_tree(editable_files)
@@ -586,6 +590,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
       {output, _} ->
         {:noreply, put_flash(socket, :error, "Remove failed: #{String.trim(output)}")}
     end
+  end
+
+  @impl true
+  def handle_info({_session_id, _payload}, socket) do
+    project = Projects.get_project!(socket.assigns.project.id)
+    {:noreply, assign(socket, project: project)}
   end
 
   attr :node, :map, required: true
