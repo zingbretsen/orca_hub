@@ -17,9 +17,9 @@ services:
       # TITLE_MODEL: ${TITLE_MODEL}
     volumes:
       - claude_credentials:/home/orca/.claude
-      # Mount your project directories here, e.g.:
-      # - ~/projects/my-app:/projects/my-app
-      # - ~/work:/projects/work
+      # Mount your project directories here (paths must be absolute), e.g.:
+      # - /home/user/projects/my-app:/home/orca/projects/my-app
+      # - /home/user/work:/home/orca/projects/work
     restart: unless-stopped
 
   db:
