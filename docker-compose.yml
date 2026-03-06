@@ -10,11 +10,12 @@ services:
       DATABASE_URL: ecto://orca_hub:postgres@db/orca_hub
       # SECRET_KEY_BASE: <set to override auto-generated key>
       PHX_HOST: ${PHX_HOST:-localhost}
+      PHX_URL_PORT: ${PHX_URL_PORT:-${PORT:-4003}}
       # Optional: title generation
       # OPENAI_API_KEY: ${OPENAI_API_KEY}
-      # DATAROBOT_API_TOKEN: ${DATAROBOT_API_TOKEN}
-      # DATAROBOT_ENDPOINT: ${DATAROBOT_ENDPOINT}
-      # TITLE_MODEL: ${TITLE_MODEL}
+      DATAROBOT_API_TOKEN: ${DATAROBOT_API_TOKEN}
+      DATAROBOT_ENDPOINT: ${DATAROBOT_ENDPOINT}
+      TITLE_MODEL: ${TITLE_MODEL}
     volumes:
       - claude_credentials:/home/orca/.claude
       # Mount your project directories here (paths must be absolute), e.g.:

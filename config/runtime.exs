@@ -75,6 +75,10 @@ if config_env() == :prod do
 
   config :orca_hub, OrcaHubWeb.Endpoint,
     url: [host: host, port: url_port, scheme: scheme],
+    check_origin: [
+      "#{scheme}://#{host}",
+      "#{scheme}://#{host}:#{url_port}"
+    ],
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
