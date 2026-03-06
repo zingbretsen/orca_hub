@@ -6,6 +6,10 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   @impl true
   def mount(_params, _session, socket) do
+    if connected?(socket) do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
+    end
+
     projects = Projects.list_projects()
     filter = :manual
 
@@ -185,6 +189,11 @@ defmodule OrcaHubWeb.SessionLive.Index do
   @impl true
   def handle_info(:clear_undo_archive, socket) do
     {:noreply, assign(socket, undo_archive_session: nil, undo_archive_timer: nil)}
+  end
+
+  def handle_info({_session_id, _payload}, socket) do
+    filter = socket.assigns.session_filter
+    {:noreply, assign(socket, grouped_sessions: group_sessions(Sessions.list_sessions(filter), socket.assigns.projects))}
   end
 
   defp schedule_undo_archive(socket, session_id) do
