@@ -1,15 +1,42 @@
 services:
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${PORT:-4003}:4000"
+    environment:
+      DATABASE_URL: ecto://orca_hub:postgres@db/orca_hub
+      # SECRET_KEY_BASE: <set to override auto-generated key>
+      PHX_HOST: ${PHX_HOST:-localhost}
+      # Optional: title generation
+      # OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # DATAROBOT_API_TOKEN: ${DATAROBOT_API_TOKEN}
+      # DATAROBOT_ENDPOINT: ${DATAROBOT_ENDPOINT}
+      # TITLE_MODEL: ${TITLE_MODEL}
+    volumes:
+      - claude_credentials:/home/orca/.claude
+      # Mount your project directories here, e.g.:
+      # - ~/projects/my-app:/projects/my-app
+      # - ~/work:/projects/work
+    restart: unless-stopped
+
   db:
     image: postgres:17
     restart: unless-stopped
     environment:
       POSTGRES_USER: orca_hub
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: orca_hub_dev
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: orca_hub
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orca_hub"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     volumes:
       - pgdata:/var/lib/postgresql/data
 
 volumes:
   pgdata:
+  claude_credentials:

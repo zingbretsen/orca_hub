@@ -1,0 +1,39 @@
+_build/
+deps/
+doc/
+cover/
+tmp/
+log/
+
+.env
+*.db
+*.db-*
+*.ez
+erl_crash.dump
+
+# Git
+.git/
+.gitignore
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Claude local settings
+.claude/
+.agents/
+plan.md
+
+# Test artifacts
+test-results/
+
+# Uploaded files / screenshots
+upload_*
+*.png
