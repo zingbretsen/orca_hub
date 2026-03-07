@@ -50,6 +50,17 @@ defmodule OrcaHubWeb.Endpoint do
 
   plug Plug.MethodOverride
   plug Plug.Head
+
+  plug :healthz
+
   plug Plug.Session, @session_options
   plug OrcaHubWeb.Router
+
+  defp healthz(%{request_path: "/healthz"} = conn, _opts) do
+    conn
+    |> Plug.Conn.send_resp(200, "ok")
+    |> Plug.Conn.halt()
+  end
+
+  defp healthz(conn, _opts), do: conn
 end
