@@ -11,6 +11,14 @@ defmodule OrcaHub.Feedback do
     )
   end
 
+  def list_pending_requests_for_session(session_id) do
+    Repo.all(
+      from r in FeedbackRequest,
+        where: r.status == "pending" and r.session_id == ^session_id,
+        order_by: [asc: r.inserted_at]
+    )
+  end
+
   def get_request!(id), do: Repo.get!(FeedbackRequest, id)
 
   def create_request(attrs) do

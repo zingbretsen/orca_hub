@@ -44,6 +44,32 @@
     <MessageComponents.message_feed messages={@messages} />
   </div>
 
+  <div :for={request <- @feedback_requests} class="mt-2 card bg-info/10 border border-info/30">
+    <div class="card-body p-3 gap-2">
+      <div class="flex items-center gap-2">
+        <span class="badge badge-info badge-sm">Feedback</span>
+      </div>
+      <div class="text-sm bg-base-200 rounded-lg p-3">{request.question}</div>
+      <div class="flex gap-2">
+        <button phx-click="approve_feedback" phx-value-id={request.id} class="btn btn-sm btn-success">
+          <.icon name="hero-hand-thumb-up-micro" class="size-4" /> Yes
+        </button>
+      </div>
+      <.form for={%{}} phx-submit="respond_feedback" class="flex gap-2">
+        <input type="hidden" name="feedback_id" value={request.id} />
+        <textarea
+          name="response"
+          placeholder="Type your response..."
+          class="textarea textarea-bordered flex-1 min-w-0 resize-none overflow-hidden leading-normal"
+          rows="1"
+          phx-hook="AutoResize"
+          id={"feedback-response-#{request.id}"}
+        ></textarea>
+        <.button type="submit">Respond</.button>
+      </.form>
+    </div>
+  </div>
+
   <div class="mt-2 sm:mt-4 flex flex-col gap-2">
     <%!-- Upload previews --%>
     <div :for={entry <- @uploads.image.entries} class="flex items-center gap-2 px-2">

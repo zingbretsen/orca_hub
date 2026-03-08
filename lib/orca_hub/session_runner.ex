@@ -3,7 +3,7 @@ defmodule OrcaHub.SessionRunner do
   require Logger
 
   alias OrcaHub.Claude.{Config, StreamParser}
-  alias OrcaHub.{AgentPresence, Sessions}
+  alias OrcaHub.{AgentPresence, Feedback, Sessions}
 
   # API
 
@@ -280,20 +280,26 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
-  def waiting(:cast, :feedback_answered, %{port: port} = data) when not is_nil(port) do
-    # Question answered but agent is still running — go back to :running
-    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "running"})
-    broadcast(data.session_id, {:status, :running})
-    AgentPresence.update_status(data.directory, data.session_id, "running")
-    {:next_state, :running, data}
-  end
-
   def waiting(:cast, :feedback_answered, data) do
-    # Question answered and agent already finished — go to :idle
-    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "idle"})
-    broadcast(data.session_id, {:status, :idle})
-    AgentPresence.update_status(data.directory, data.session_id, "idle")
-    {:next_state, :idle, data}
+    case Feedback.list_pending_requests_for_session(data.session_id) do
+      [_ | _] ->
+        # More questions pending — stay in :waiting
+        :keep_state_and_data
+
+      [] when data.port != nil ->
+        # All answered, agent still running — back to :running
+        Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "running"})
+        broadcast(data.session_id, {:status, :running})
+        AgentPresence.update_status(data.directory, data.session_id, "running")
+        {:next_state, :running, data}
+
+      [] ->
+        # All answered, agent finished — go to :idle
+        Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "idle"})
+        broadcast(data.session_id, {:status, :idle})
+        AgentPresence.update_status(data.directory, data.session_id, "idle")
+        {:next_state, :idle, data}
+    end
   end
 
   def waiting(:cast, :feedback_requested, _data), do: :keep_state_and_data

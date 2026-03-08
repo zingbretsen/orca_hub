@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Sessions, SessionSupervisor, SessionRunner}
+  alias OrcaHub.{Feedback, Sessions, SessionSupervisor, SessionRunner}
   alias OrcaHubWeb.MessageComponents
 
   @impl true
@@ -25,6 +25,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
      |> assign(:page_title, session.title || (session.project && session.project.name) || session.directory)
+     |> assign(:feedback_requests, Feedback.list_pending_requests_for_session(id))
      |> assign(:tts_autoplay, false)
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
@@ -108,6 +109,23 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  def handle_event("approve_feedback", %{"id" => id}, socket) do
+    Feedback.respond(String.to_integer(id), "That sounds great, go for it!")
+    {:noreply, assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == String.to_integer(id))))}
+  end
+
+  def handle_event("respond_feedback", %{"feedback_id" => id, "response" => response}, socket) do
+    response = String.trim(response)
+    id = String.to_integer(id)
+
+    if response == "" do
+      {:noreply, socket}
+    else
+      Feedback.respond(id, response)
+      {:noreply, assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
+    end
+  end
+
   def handle_event("toggle_tts", _params, socket) do
     {:noreply, assign(socket, :tts_autoplay, !socket.assigns.tts_autoplay)}
   end
@@ -147,8 +165,21 @@ defmodule OrcaHubWeb.SessionLive.Show do
     socket = assign(socket, :status, status)
 
     socket =
-      if status == :idle && socket.assigns.tts_autoplay do
-        push_event(socket, "tts-autoplay", %{})
+      if status == :waiting do
+        assign(socket, :feedback_requests, Feedback.list_pending_requests_for_session(socket.assigns.session.id))
+      else
+        socket
+      end
+
+    socket =
+      if status == :idle do
+        socket = assign(socket, :feedback_requests, [])
+
+        if socket.assigns.tts_autoplay do
+          push_event(socket, "tts-autoplay", %{})
+        else
+          socket
+        end
       else
         socket
       end
