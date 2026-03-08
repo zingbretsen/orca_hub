@@ -29,6 +29,10 @@ defmodule OrcaHub.Feedback do
       {:ok, request} ->
         Phoenix.PubSub.broadcast(OrcaHub.PubSub, "feedback:#{request.id}", {:feedback_response, request})
 
+        if request.session_id do
+          OrcaHub.SessionRunner.notify_feedback_answered(request.session_id)
+        end
+
       _ ->
         :ok
     end)

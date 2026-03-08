@@ -87,6 +87,7 @@
         session.status == "ready" && "badge-ghost",
         session.status == "idle" && "badge-ghost",
         session.status == "running" && "badge-warning",
+        session.status == "waiting" && "badge-info",
         session.status == "error" && "badge-error"
       ]}>
         {session.status}

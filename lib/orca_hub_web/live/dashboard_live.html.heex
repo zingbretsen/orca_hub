@@ -75,6 +75,7 @@
         <div class={[
           "badge badge-sm",
           session.status == "running" && "badge-info",
+          session.status == "waiting" && "badge-info",
           session.status == "idle" && "badge-warning",
           session.status == "ready" && "badge-ghost",
           session.status == "error" && "badge-error"

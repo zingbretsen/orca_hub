@@ -12,6 +12,7 @@
     <span class={[
       "badge ml-2",
       @status == :running && "badge-warning",
+      @status == :waiting && "badge-info",
       @status == :idle && "badge-success",
       @status == :ready && "badge-ghost",
       @status == :error && "badge-error"

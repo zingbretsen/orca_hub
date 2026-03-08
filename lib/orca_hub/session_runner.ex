@@ -26,6 +26,14 @@ defmodule OrcaHub.SessionRunner do
     GenStatem.call(via(session_id), :interrupt)
   end
 
+  def notify_feedback_requested(session_id) do
+    GenStatem.cast(via(session_id), :feedback_requested)
+  end
+
+  def notify_feedback_answered(session_id) do
+    GenStatem.cast(via(session_id), :feedback_answered)
+  end
+
   # Callbacks
 
   @impl true
@@ -79,6 +87,7 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:ready, data)}]}
   end
 
+  def ready(:cast, _msg, _data), do: :keep_state_and_data
   def ready(:info, _msg, _data), do: :keep_state_and_data
 
   # ── :idle state ──────────────────────────────────────────────────────
@@ -96,6 +105,7 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:idle, data)}]}
   end
 
+  def idle(:cast, _msg, _data), do: :keep_state_and_data
   def idle(:info, _msg, _data), do: :keep_state_and_data
 
   # ── :running state ──────────────────────────────────────────────────
@@ -160,23 +170,7 @@ defmodule OrcaHub.SessionRunner do
 
       [] ->
         new_status = if code == 0, do: :idle, else: :error
-        error_text = String.trim(data.error_output <> data.buffer)
-
-        data =
-          if code != 0 && error_text != "" do
-            error_event =
-              stamp(%{
-                "type" => "cli_error",
-                "exit_code" => code,
-                "message" => error_text
-              })
-
-            persist_message(data.session_id, error_event)
-            broadcast(data.session_id, {:event, error_event})
-            %{data | messages: data.messages ++ [error_event]}
-          else
-            data
-          end
+        data = handle_cli_error(code, data)
 
         session = Sessions.get_session!(data.session_id)
         Sessions.update_session(session, %{status: to_string(new_status)})
@@ -192,7 +186,119 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
+  def running(:cast, :feedback_requested, data) do
+    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "waiting"})
+    broadcast(data.session_id, {:status, :waiting})
+    AgentPresence.update_status(data.directory, data.session_id, "waiting")
+    {:next_state, :waiting, data}
+  end
+
   def running(:info, _msg, _data), do: :keep_state_and_data
+
+  # ── :waiting state ───────────────────────────────────────────────────
+  # Agent has asked a question via get_human_feedback. The port may still
+  # be open (agent keeps working) or may have already exited.
+
+  def waiting({:call, from}, {:send_message, prompt}, %{port: port} = data) when not is_nil(port) do
+    user_event = make_user_event(prompt)
+    persist_message(data.session_id, user_event)
+    broadcast(data.session_id, {:event, user_event})
+
+    {:os_pid, os_pid} = Port.info(port, :os_pid)
+    System.cmd("kill", ["-INT", "#{os_pid}"])
+
+    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "running"})
+    broadcast(data.session_id, {:status, :running})
+    AgentPresence.update_status(data.directory, data.session_id, "running")
+
+    {:next_state, :running,
+     %{data |
+       pending_prompts: data.pending_prompts ++ [prompt],
+       messages: data.messages ++ [user_event]
+     },
+     [{:reply, from, :ok}]}
+  end
+
+  def waiting({:call, from}, {:send_message, prompt}, data) do
+    start_running(from, prompt, data)
+  end
+
+  def waiting({:call, from}, :interrupt, %{port: port}) when not is_nil(port) do
+    {:os_pid, os_pid} = Port.info(port, :os_pid)
+    System.cmd("kill", ["-INT", "#{os_pid}"])
+    {:keep_state_and_data, [{:reply, from, :ok}]}
+  end
+
+  def waiting({:call, from}, :interrupt, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  end
+
+  def waiting({:call, from}, :get_state, data) do
+    {:keep_state_and_data, [{:reply, from, state_snapshot(:waiting, data)}]}
+  end
+
+  def waiting(:info, {port, {:data, raw}}, %{port: port} = data) do
+    {events, new_buffer} = StreamParser.parse(raw, data.buffer)
+    error_lines = extract_non_json_lines(raw, data.buffer)
+
+    error_output =
+      if error_lines != "" do
+        data.error_output <> error_lines
+      else
+        data.error_output
+      end
+
+    new_data =
+      Enum.reduce(events, %{data | buffer: new_buffer, error_output: error_output}, fn event, acc ->
+        handle_stream_event(event, acc)
+      end)
+
+    {:keep_state, new_data}
+  end
+
+  def waiting(:info, {port, {:exit_status, code}}, %{port: port} = data) do
+    Logger.info("Claude CLI exited (code #{code}) for session #{data.session_id} (waiting for feedback)")
+
+    case data.pending_prompts do
+      [_ | _] = prompts ->
+        combined_prompt = Enum.join(prompts, "\n\n\n")
+        Logger.info("Auto-resuming session #{data.session_id} with #{length(prompts)} pending prompt(s)")
+        new_port = open_port(combined_prompt, data)
+        {:keep_state, %{data | port: new_port, buffer: "", error_output: "", pending_prompts: []}}
+
+      [] ->
+        # CLI finished but question is still pending — stay in :waiting with port: nil
+        data = handle_cli_error(code, data)
+
+        session = Sessions.get_session!(data.session_id)
+
+        if code == 0 && (session.title == nil || session.title == "") do
+          maybe_generate_title(data.session_id, data.first_prompt)
+        end
+
+        {:keep_state, %{data | port: nil}}
+    end
+  end
+
+  def waiting(:cast, :feedback_answered, %{port: port} = data) when not is_nil(port) do
+    # Question answered but agent is still running — go back to :running
+    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "running"})
+    broadcast(data.session_id, {:status, :running})
+    AgentPresence.update_status(data.directory, data.session_id, "running")
+    {:next_state, :running, data}
+  end
+
+  def waiting(:cast, :feedback_answered, data) do
+    # Question answered and agent already finished — go to :idle
+    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "idle"})
+    broadcast(data.session_id, {:status, :idle})
+    AgentPresence.update_status(data.directory, data.session_id, "idle")
+    {:next_state, :idle, data}
+  end
+
+  def waiting(:cast, :feedback_requested, _data), do: :keep_state_and_data
+
+  def waiting(:info, _msg, _data), do: :keep_state_and_data
 
   # ── :error state ─────────────────────────────────────────────────────
   # Same as idle — accepts new messages to retry, rejects interrupts.
@@ -209,6 +315,7 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:error, data)}]}
   end
 
+  def error(:cast, _msg, _data), do: :keep_state_and_data
   def error(:info, _msg, _data), do: :keep_state_and_data
 
   # ── Terminate ────────────────────────────────────────────────────────
@@ -220,6 +327,27 @@ defmodule OrcaHub.SessionRunner do
   end
 
   # ── Private ──────────────────────────────────────────────────────────
+
+  defp handle_cli_error(code, data) when code != 0 do
+    error_text = String.trim(data.error_output <> data.buffer)
+
+    if error_text != "" do
+      error_event =
+        stamp(%{
+          "type" => "cli_error",
+          "exit_code" => code,
+          "message" => error_text
+        })
+
+      persist_message(data.session_id, error_event)
+      broadcast(data.session_id, {:event, error_event})
+      %{data | messages: data.messages ++ [error_event]}
+    else
+      data
+    end
+  end
+
+  defp handle_cli_error(_code, data), do: data
 
   defp start_running(from, prompt, data) do
     user_event = make_user_event(prompt)

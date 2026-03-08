@@ -305,6 +305,11 @@ defmodule OrcaHub.MCP.Tools do
     # Broadcast so the Queue UI picks it up
     Phoenix.PubSub.broadcast(OrcaHub.PubSub, "feedback_requests", {:new_feedback_request, request})
 
+    # Notify SessionRunner to transition to :waiting
+    if session_id do
+      OrcaHub.SessionRunner.notify_feedback_requested(session_id)
+    end
+
     # Subscribe and wait for the response
     Phoenix.PubSub.subscribe(OrcaHub.PubSub, "feedback:#{request.id}")
 
