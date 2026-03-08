@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orca-hub
+  namespace: orca-hub
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: orca-hub-cluster-admin
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+  - nonResourceURLs: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: orca-hub-cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: orca-hub
+    namespace: orca-hub
+roleRef:
+  kind: ClusterRole
+  name: orca-hub-cluster-admin
+  apiGroup: rbac.authorization.k8s.io
