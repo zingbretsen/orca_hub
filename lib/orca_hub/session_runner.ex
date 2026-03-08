@@ -1,154 +1,168 @@
 defmodule OrcaHub.SessionRunner do
-  use GenServer
+  use GenStatem
   require Logger
 
   alias OrcaHub.Claude.{Config, StreamParser}
   alias OrcaHub.{AgentPresence, Sessions}
 
+  # API
+
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
-    GenServer.start_link(__MODULE__, opts, name: via(session_id))
+    GenStatem.start_link(__MODULE__, opts, name: via(session_id))
   end
 
   def via(session_id), do: {:via, Registry, {OrcaHub.SessionRegistry, session_id}}
 
   def send_message(session_id, prompt) do
-    GenServer.call(via(session_id), {:send_message, prompt})
+    GenStatem.call(via(session_id), {:send_message, prompt})
   end
 
   def get_state(session_id) do
-    GenServer.call(via(session_id), :get_state)
+    GenStatem.call(via(session_id), :get_state)
   end
 
   def interrupt(session_id) do
-    GenServer.call(via(session_id), :interrupt)
+    GenStatem.call(via(session_id), :interrupt)
   end
 
   # Callbacks
 
   @impl true
+  def callback_mode, do: :state_functions
+
+  @impl true
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
     session = Sessions.get_session!(session_id)
+
     saved_messages =
       Sessions.list_messages(session_id)
       |> Enum.map(fn msg -> Map.put(msg.data, "timestamp", msg.inserted_at) end)
 
+    initial_state = if saved_messages == [], do: :ready, else: :idle
+
     AgentPresence.write(session.directory, session_id, %{
       title: session.title,
-      status: "idle"
+      status: to_string(initial_state)
     })
 
-    {:ok,
-     %{
-       session_id: session_id,
-       claude_session_id: session.claude_session_id,
-       directory: session.directory,
-       model: session.model,
-       port: nil,
-       buffer: "",
-       error_output: "",
-       issue_id: session.issue_id,
-       status: :idle,
-       messages: saved_messages,
-       first_prompt: nil,
-       pending_prompts: []
-     }}
+    data = %{
+      session_id: session_id,
+      claude_session_id: session.claude_session_id,
+      directory: session.directory,
+      model: session.model,
+      port: nil,
+      buffer: "",
+      error_output: "",
+      issue_id: session.issue_id,
+      messages: saved_messages,
+      first_prompt: nil,
+      pending_prompts: []
+    }
+
+    {:ok, initial_state, data}
   end
 
-  @impl true
-  def handle_call({:send_message, prompt}, _from, %{status: :running, port: port} = state) when not is_nil(port) do
-    user_event =
-      stamp(%{
-        "type" => "user",
-        "message" => %{"role" => "user", "content" => [%{"type" => "text", "text" => prompt}]}
-      })
+  # ── :ready state ─────────────────────────────────────────────────────
+  # Session has been created but no messages have been sent yet.
 
-    persist_message(state.session_id, user_event)
-    broadcast(state.session_id, {:event, user_event})
+  def ready({:call, from}, {:send_message, prompt}, data) do
+    start_running(from, prompt, data)
+  end
+
+  def ready({:call, from}, :interrupt, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  end
+
+  def ready({:call, from}, :get_state, data) do
+    {:keep_state_and_data, [{:reply, from, state_snapshot(:ready, data)}]}
+  end
+
+  def ready(:info, _msg, _data), do: :keep_state_and_data
+
+  # ── :idle state ──────────────────────────────────────────────────────
+  # Session has completed at least one run and is waiting for the next message.
+
+  def idle({:call, from}, {:send_message, prompt}, data) do
+    start_running(from, prompt, data)
+  end
+
+  def idle({:call, from}, :interrupt, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  end
+
+  def idle({:call, from}, :get_state, data) do
+    {:keep_state_and_data, [{:reply, from, state_snapshot(:idle, data)}]}
+  end
+
+  def idle(:info, _msg, _data), do: :keep_state_and_data
+
+  # ── :running state ──────────────────────────────────────────────────
+
+  def running({:call, from}, {:send_message, prompt}, %{port: port} = data) when not is_nil(port) do
+    user_event = make_user_event(prompt)
+    persist_message(data.session_id, user_event)
+    broadcast(data.session_id, {:event, user_event})
 
     # Interrupt the running CLI — SIGINT lets it finish in-progress tool calls gracefully
     {:os_pid, os_pid} = Port.info(port, :os_pid)
     System.cmd("kill", ["-INT", "#{os_pid}"])
 
-    {:reply, :ok,
-     %{state |
-       pending_prompts: state.pending_prompts ++ [prompt],
-       messages: state.messages ++ [user_event]
-     }}
+    {:keep_state,
+     %{data |
+       pending_prompts: data.pending_prompts ++ [prompt],
+       messages: data.messages ++ [user_event]
+     },
+     [{:reply, from, :ok}]}
   end
 
-  def handle_call({:send_message, prompt}, _from, state) do
-    user_event =
-      stamp(%{
-        "type" => "user",
-        "message" => %{"role" => "user", "content" => [%{"type" => "text", "text" => prompt}]}
-      })
-
-    persist_message(state.session_id, user_event)
-    broadcast(state.session_id, {:event, user_event})
-
-    port = open_port(prompt, state)
-    Sessions.update_session(Sessions.get_session!(state.session_id), %{status: "running"})
-    broadcast(state.session_id, {:status, :running})
-    AgentPresence.update_status(state.directory, state.session_id, "running")
-    first_prompt = state.first_prompt || prompt
-    {:reply, :ok, %{state | port: port, status: :running, buffer: "", error_output: "", messages: state.messages ++ [user_event], first_prompt: first_prompt}}
-  end
-
-  def handle_call(:interrupt, _from, %{status: :running, port: port} = state) when not is_nil(port) do
+  def running({:call, from}, :interrupt, %{port: port}) when not is_nil(port) do
     {:os_pid, os_pid} = Port.info(port, :os_pid)
     System.cmd("kill", ["-INT", "#{os_pid}"])
-    {:reply, :ok, state}
+    {:keep_state_and_data, [{:reply, from, :ok}]}
   end
 
-  def handle_call(:interrupt, _from, state) do
-    {:reply, {:error, :not_running}, state}
+  def running({:call, from}, :get_state, data) do
+    {:keep_state_and_data, [{:reply, from, state_snapshot(:running, data)}]}
   end
 
-  def handle_call(:get_state, _from, state) do
-    {:reply, Map.take(state, [:status, :messages, :claude_session_id]), state}
-  end
+  def running(:info, {port, {:data, raw}}, %{port: port} = data) do
+    {events, new_buffer} = StreamParser.parse(raw, data.buffer)
 
-  @impl true
-  def handle_info({port, {:data, data}}, %{port: port} = state) do
-    {events, new_buffer} = StreamParser.parse(data, state.buffer)
-
-    # Capture non-JSON lines as error output (StreamParser silently drops them)
-    error_lines = extract_non_json_lines(data, state.buffer)
+    error_lines = extract_non_json_lines(raw, data.buffer)
 
     error_output =
       if error_lines != "" do
-        state.error_output <> error_lines
+        data.error_output <> error_lines
       else
-        state.error_output
+        data.error_output
       end
 
-    new_state =
-      Enum.reduce(events, %{state | buffer: new_buffer, error_output: error_output}, fn event, acc ->
-        handle_event(event, acc)
+    new_data =
+      Enum.reduce(events, %{data | buffer: new_buffer, error_output: error_output}, fn event, acc ->
+        handle_stream_event(event, acc)
       end)
 
-    {:noreply, new_state}
+    {:keep_state, new_data}
   end
 
-  def handle_info({port, {:exit_status, code}}, %{port: port} = state) do
-    Logger.info("Claude CLI exited (code #{code}) for session #{state.session_id}")
+  def running(:info, {port, {:exit_status, code}}, %{port: port} = data) do
+    Logger.info("Claude CLI exited (code #{code}) for session #{data.session_id}")
 
-    case state.pending_prompts do
+    case data.pending_prompts do
       [_ | _] = prompts ->
         # Auto-resume with queued prompts bundled into a single message
         combined_prompt = Enum.join(prompts, "\n\n\n")
-        Logger.info("Auto-resuming session #{state.session_id} with #{length(prompts)} pending prompt(s)")
-        new_port = open_port(combined_prompt, state)
-        {:noreply, %{state | port: new_port, buffer: "", error_output: "", pending_prompts: []}}
+        Logger.info("Auto-resuming session #{data.session_id} with #{length(prompts)} pending prompt(s)")
+        new_port = open_port(combined_prompt, data)
+        {:keep_state, %{data | port: new_port, buffer: "", error_output: "", pending_prompts: []}}
 
       [] ->
-        # Normal exit — no pending prompts
         new_status = if code == 0, do: :idle, else: :error
-        error_text = String.trim(state.error_output <> state.buffer)
+        error_text = String.trim(data.error_output <> data.buffer)
 
-        state =
+        data =
           if code != 0 && error_text != "" do
             error_event =
               stamp(%{
@@ -157,46 +171,93 @@ defmodule OrcaHub.SessionRunner do
                 "message" => error_text
               })
 
-            persist_message(state.session_id, error_event)
-            broadcast(state.session_id, {:event, error_event})
-            %{state | messages: state.messages ++ [error_event]}
+            persist_message(data.session_id, error_event)
+            broadcast(data.session_id, {:event, error_event})
+            %{data | messages: data.messages ++ [error_event]}
           else
-            state
+            data
           end
 
-        session = Sessions.get_session!(state.session_id)
+        session = Sessions.get_session!(data.session_id)
         Sessions.update_session(session, %{status: to_string(new_status)})
-        broadcast(state.session_id, {:status, new_status})
-        AgentPresence.update_status(state.directory, state.session_id, to_string(new_status))
+        broadcast(data.session_id, {:status, new_status})
+        AgentPresence.update_status(data.directory, data.session_id, to_string(new_status))
 
         if code == 0 && (session.title == nil || session.title == "") do
-          Logger.info("Attempting title generation for session #{state.session_id}, first_prompt: #{inspect(state.first_prompt)}")
-          maybe_generate_title(state.session_id, state.first_prompt)
+          Logger.info("Attempting title generation for session #{data.session_id}, first_prompt: #{inspect(data.first_prompt)}")
+          maybe_generate_title(data.session_id, data.first_prompt)
         end
 
-        {:noreply, %{state | port: nil, status: new_status}}
+        {:next_state, new_status, %{data | port: nil}}
     end
   end
 
-  def handle_info(_msg, state), do: {:noreply, state}
+  def running(:info, _msg, _data), do: :keep_state_and_data
+
+  # ── :error state ─────────────────────────────────────────────────────
+  # Same as idle — accepts new messages to retry, rejects interrupts.
+
+  def error({:call, from}, {:send_message, prompt}, data) do
+    start_running(from, prompt, data)
+  end
+
+  def error({:call, from}, :interrupt, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  end
+
+  def error({:call, from}, :get_state, data) do
+    {:keep_state_and_data, [{:reply, from, state_snapshot(:error, data)}]}
+  end
+
+  def error(:info, _msg, _data), do: :keep_state_and_data
+
+  # ── Terminate ────────────────────────────────────────────────────────
 
   @impl true
-  def terminate(_reason, state) do
-    AgentPresence.remove(state.directory, state.session_id)
+  def terminate(_reason, _state, data) do
+    AgentPresence.remove(data.directory, data.session_id)
     :ok
   end
 
-  # Private
+  # ── Private ──────────────────────────────────────────────────────────
 
-  defp open_port(prompt, state) do
+  defp start_running(from, prompt, data) do
+    user_event = make_user_event(prompt)
+    persist_message(data.session_id, user_event)
+    broadcast(data.session_id, {:event, user_event})
+
+    port = open_port(prompt, data)
+    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "running"})
+    broadcast(data.session_id, {:status, :running})
+    AgentPresence.update_status(data.directory, data.session_id, "running")
+
+    first_prompt = data.first_prompt || prompt
+
+    {:next_state, :running,
+     %{data | port: port, buffer: "", error_output: "", messages: data.messages ++ [user_event], first_prompt: first_prompt},
+     [{:reply, from, :ok}]}
+  end
+
+  defp make_user_event(prompt) do
+    stamp(%{
+      "type" => "user",
+      "message" => %{"role" => "user", "content" => [%{"type" => "text", "text" => prompt}]}
+    })
+  end
+
+  defp state_snapshot(status, data) do
+    %{status: status, messages: data.messages, claude_session_id: data.claude_session_id}
+  end
+
+  defp open_port(prompt, data) do
     claude_path = System.find_executable("claude")
     script_path = System.find_executable("script")
 
     opts =
-      [cwd: state.directory]
-      |> maybe_put(:session_id, state.claude_session_id)
-      |> maybe_put(:model, state.model)
-      |> maybe_put(:system_prompt, build_system_prompt(state))
+      [cwd: data.directory]
+      |> maybe_put(:session_id, data.claude_session_id)
+      |> maybe_put(:model, data.model)
+      |> maybe_put(:system_prompt, build_system_prompt(data))
 
     {args, port_opts} = Config.build_args(prompt, opts)
 
@@ -217,22 +278,22 @@ defmodule OrcaHub.SessionRunner do
     )
   end
 
-  defp handle_event(%{"type" => "system", "session_id" => sid} = event, state) do
-    if state.claude_session_id == nil do
-      Sessions.update_session(Sessions.get_session!(state.session_id), %{claude_session_id: sid})
+  defp handle_stream_event(%{"type" => "system", "session_id" => sid} = event, data) do
+    if data.claude_session_id == nil do
+      Sessions.update_session(Sessions.get_session!(data.session_id), %{claude_session_id: sid})
     end
 
     event = stamp(event)
-    persist_message(state.session_id, event)
-    broadcast(state.session_id, {:event, event})
-    %{state | claude_session_id: sid, messages: state.messages ++ [event]}
+    persist_message(data.session_id, event)
+    broadcast(data.session_id, {:event, event})
+    %{data | claude_session_id: sid, messages: data.messages ++ [event]}
   end
 
-  defp handle_event(event, state) do
+  defp handle_stream_event(event, data) do
     event = stamp(event)
-    persist_message(state.session_id, event)
-    broadcast(state.session_id, {:event, event})
-    %{state | messages: state.messages ++ [event]}
+    persist_message(data.session_id, event)
+    broadcast(data.session_id, {:event, event})
+    %{data | messages: data.messages ++ [event]}
   end
 
   defp broadcast(session_id, payload) do
@@ -243,12 +304,12 @@ defmodule OrcaHub.SessionRunner do
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, val), do: Keyword.put(opts, key, val)
 
-  defp build_system_prompt(state) do
+  defp build_system_prompt(data) do
     parts =
       [
-        "Your OrcaHub session ID is #{state.session_id}.",
-        issue_system_prompt(state.issue_id),
-        siblings_system_prompt(state.directory, state.session_id)
+        "Your OrcaHub session ID is #{data.session_id}.",
+        issue_system_prompt(data.issue_id),
+        siblings_system_prompt(data.directory, data.session_id)
       ]
       |> Enum.reject(&is_nil/1)
 
@@ -280,7 +341,6 @@ defmodule OrcaHub.SessionRunner do
       siblings ->
         sibling_lines =
           Enum.map(siblings, fn {id, content} ->
-            # Extract status and task from the presence file
             status = extract_field(content, "Status") || "unknown"
             task = extract_field(content, "Task") || "unknown"
             "- Session #{id} (#{status}): #{task}"
@@ -408,5 +468,4 @@ defmodule OrcaHub.SessionRunner do
       text -> text <> "\n"
     end)
   end
-
 end

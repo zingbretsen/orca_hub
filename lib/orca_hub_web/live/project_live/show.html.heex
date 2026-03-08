@@ -84,6 +84,7 @@
       <span :if={session.archived_at} class="badge badge-ghost">archived</span>
       <span :if={!session.archived_at} class={[
         "badge",
+        session.status == "ready" && "badge-ghost",
         session.status == "idle" && "badge-ghost",
         session.status == "running" && "badge-warning",
         session.status == "error" && "badge-error"

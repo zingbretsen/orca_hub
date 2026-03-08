@@ -70,7 +70,8 @@ defmodule OrcaHub.MixProject do
       {:dotenvy, "~> 1.0"},
       {:quantum, "~> 3.5"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:tz, "~> 0.28"}
+      {:tz, "~> 0.28"},
+      {:gen_statem, "~> 0.1.0"}
     ]
   end
 

@@ -53,6 +53,7 @@
         "badge",
         session.status == "running" && "badge-warning",
         session.status == "idle" && "badge-success",
+        session.status == "ready" && "badge-ghost",
         session.status == "error" && "badge-error"
       ]}>
         {session.status}

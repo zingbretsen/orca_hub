@@ -10,7 +10,7 @@ defmodule OrcaHub.Sessions.Session do
     field :directory, :string
     field :claude_session_id, :string
     field :title, :string
-    field :status, :string, default: "idle"
+    field :status, :string, default: "ready"
     field :model, :string
     field :archived_at, :utc_datetime
     field :triggered, :boolean, default: false
@@ -27,6 +27,6 @@ defmodule OrcaHub.Sessions.Session do
     session
     |> cast(attrs, [:directory, :claude_session_id, :title, :status, :model, :issue_id, :project_id, :archived_at, :triggered, :priority])
     |> validate_required([:directory])
-    |> validate_inclusion(:status, ~w(idle running error))
+    |> validate_inclusion(:status, ~w(ready idle running error))
   end
 end

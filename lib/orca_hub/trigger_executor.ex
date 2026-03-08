@@ -81,7 +81,7 @@ defmodule OrcaHub.TriggerExecutor do
   defp resolve_session(%{reuse_session: true, last_session_id: last_id} = trigger)
        when not is_nil(last_id) do
     case OrcaHub.Repo.get(Sessions.Session, last_id) do
-      %{archived_at: nil, status: status} when status in ["idle", "error"] ->
+      %{archived_at: nil, status: status} when status in ["ready", "idle", "error"] ->
         last_id
 
       _ ->
@@ -97,7 +97,7 @@ defmodule OrcaHub.TriggerExecutor do
         directory: project.directory,
         project_id: project.id,
         title: "Trigger: #{name}",
-        status: "idle",
+        status: "ready",
         triggered: true
       })
 
