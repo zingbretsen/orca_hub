@@ -48,8 +48,8 @@ ENV LANG=en_US.UTF-8
 ENV LANGUAGE=en_US:en
 ENV LC_ALL=en_US.UTF-8
 
-# Create app user
-RUN groupadd -r orca && useradd -r -g orca -m -d /home/orca orca
+# Create app user (UID/GID 1000 to match host user for volume mounts)
+RUN groupadd -g 1000 orca && useradd -u 1000 -g orca -m -d /home/orca orca
 
 # Install Claude CLI (native binary, no Node.js needed)
 ENV HOME=/home/orca

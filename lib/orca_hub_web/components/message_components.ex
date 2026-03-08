@@ -76,7 +76,7 @@ defmodule OrcaHubWeb.MessageComponents do
             {Path.basename(path)}
           </div>
         </div>
-        <span :if={@text != ""}>{@text}</span>
+        <span :if={@text != ""} class="whitespace-pre-wrap">{@text}</span>
       </div>
     </div>
     <div :for={tr <- @tool_results} class="ml-4 my-1">
