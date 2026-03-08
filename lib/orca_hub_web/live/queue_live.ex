@@ -105,6 +105,48 @@ defmodule OrcaHubWeb.QueueLive do
     end
   end
 
+  def handle_event("defer", %{"id" => id}, socket) do
+    session = Sessions.get_session!(id)
+    Sessions.defer_session(session)
+
+    {:noreply, assign(socket, :entries, load_entries())}
+  end
+
+  def handle_event("delegate", %{"id" => id, "prompt" => prompt}, socket) do
+    session = Sessions.get_session!(id)
+    prompt = String.trim(prompt)
+
+    case Sessions.create_session(%{directory: session.directory, project_id: session.project_id}) do
+      {:ok, new_session} ->
+        {:ok, _} = SessionSupervisor.start_session(new_session.id)
+
+        # Tell the original session to delegate work to the new session
+        ensure_runner(id)
+
+        delegate_prompt =
+          "A new session has been created for you to delegate work to. " <>
+            "Its session ID is #{new_session.id}. " <>
+            "Use the send_message_to_session tool to tell it what to work on. " <>
+            "Give it enough context to work independently." <>
+            if(prompt != "", do: "\n\nThe user says: #{prompt}", else: "")
+
+        case SessionRunner.send_message(id, delegate_prompt) do
+          :ok ->
+            {:noreply,
+             socket
+             |> assign(:entries, reject_session(socket.assigns.entries, id))
+             |> assign(:prompt, "")
+             |> update(:form_key, &(&1 + 1))}
+
+          {:error, :busy} ->
+            {:noreply, put_flash(socket, :error, "Session is busy")}
+        end
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to create delegate session")}
+    end
+  end
+
   def handle_event("commit", %{"id" => id}, socket) do
     ensure_runner(id)
 
@@ -193,6 +235,10 @@ defmodule OrcaHubWeb.QueueLive do
 
   def handle_event("show_all", _params, socket) do
     {:noreply, assign(socket, :show_all, !socket.assigns.show_all)}
+  end
+
+  def handle_event("validate", %{"prompt" => prompt}, socket) do
+    {:noreply, assign(socket, :prompt, prompt)}
   end
 
   def handle_event("validate", _params, socket) do

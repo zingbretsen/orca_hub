@@ -79,6 +79,7 @@
             <.icon name="hero-folder-micro" class="size-3" />
             <span class="truncate">{session.directory}</span>
             <span :if={worktree?(session.directory)} class="badge badge-xs badge-outline">worktree</span>
+            <span :if={session.priority > 0} class="badge badge-xs badge-ghost">deferred</span>
           </div>
         </div>
         <span class="text-xs text-base-content/40 whitespace-nowrap">
@@ -122,6 +123,12 @@
       <div class="flex flex-wrap gap-2">
         <button phx-click="approve_session" phx-value-id={session.id} class="btn btn-sm btn-success">
           <.icon name="hero-hand-thumb-up-micro" class="size-4" /> Yes
+        </button>
+        <button phx-click="defer" phx-value-id={session.id} class="btn btn-sm btn-ghost">
+          <.icon name="hero-clock-micro" class="size-4" /> Defer
+        </button>
+        <button phx-click="delegate" phx-value-id={session.id} phx-value-prompt={@prompt} class="btn btn-sm btn-ghost">
+          <.icon name="hero-arrow-top-right-on-square-micro" class="size-4" /> Delegate
         </button>
         <button phx-click="archive" phx-value-id={session.id} class="btn btn-sm btn-ghost">
           <.icon name="hero-archive-box-micro" class="size-4" /> Archive

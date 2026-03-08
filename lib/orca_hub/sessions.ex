@@ -106,8 +106,14 @@ defmodule OrcaHub.Sessions do
         left_join: m in subquery(last_messages),
         on: m.session_id == s.id,
         where: is_nil(s.archived_at) and s.status == "idle",
-        order_by: [asc: s.updated_at],
+        order_by: [asc: s.priority, asc: s.updated_at],
         select: {s, m}
     )
+  end
+
+  def defer_session(%Session{} = session) do
+    session
+    |> Session.changeset(%{priority: (session.priority || 0) + 1})
+    |> Repo.update()
   end
 end
