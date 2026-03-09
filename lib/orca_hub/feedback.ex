@@ -45,4 +45,23 @@ defmodule OrcaHub.Feedback do
         :ok
     end)
   end
+
+  def cancel(id) do
+    request = get_request!(id)
+
+    request
+    |> FeedbackRequest.changeset(%{status: "cancelled"})
+    |> Repo.update()
+    |> tap(fn
+      {:ok, request} ->
+        Phoenix.PubSub.broadcast(OrcaHub.PubSub, "feedback:#{request.id}", {:feedback_cancelled, request})
+
+        if request.session_id do
+          OrcaHub.SessionRunner.notify_feedback_answered(request.session_id)
+        end
+
+      _ ->
+        :ok
+    end)
+  end
 end

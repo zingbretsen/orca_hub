@@ -38,6 +38,9 @@
       <button phx-click="approve_feedback" phx-value-id={request.id} class="btn btn-sm btn-success">
         <.icon name="hero-hand-thumb-up-micro" class="size-4" /> Yes
       </button>
+      <button phx-click="cancel_feedback" phx-value-id={request.id} class="btn btn-sm btn-ghost">
+        <.icon name="hero-x-mark-micro" class="size-4" /> Cancel
+      </button>
     </div>
     <.form for={%{}} phx-submit="respond_feedback" class="flex gap-2">
       <input type="hidden" name="feedback_id" value={request.id} />
@@ -77,7 +80,11 @@
           </.link>
           <div class="flex items-center gap-2 text-xs text-base-content/50 mt-0.5">
             <.icon name="hero-folder-micro" class="size-3" />
-            <span class="truncate">{session.directory}</span>
+            <.link :if={session.project} navigate={~p"/projects/#{session.project}"} class="truncate hover:underline">
+              {session.project.name}
+            </.link>
+            <span :if={session.project} class="truncate text-base-content/30">{session.directory}</span>
+            <span :if={!session.project} class="truncate">{session.directory}</span>
             <span :if={worktree?(session.directory)} class="badge badge-xs badge-outline">worktree</span>
             <span :if={session.priority > 0} class="badge badge-xs badge-ghost">deferred</span>
           </div>

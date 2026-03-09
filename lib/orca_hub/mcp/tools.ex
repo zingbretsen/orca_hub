@@ -313,15 +313,21 @@ defmodule OrcaHub.MCP.Tools do
     # Subscribe and wait for the response
     Phoenix.PubSub.subscribe(OrcaHub.PubSub, "feedback:#{request.id}")
 
-    response =
+    result =
       receive do
         {:feedback_response, responded_request} ->
-          responded_request.response
+          {:ok, responded_request.response}
+
+        {:feedback_cancelled, _request} ->
+          :cancelled
       end
 
     Phoenix.PubSub.unsubscribe(OrcaHub.PubSub, "feedback:#{request.id}")
 
-    text(response)
+    case result do
+      {:ok, response} -> text(response)
+      :cancelled -> error("The user cancelled this feedback request.")
+    end
   end
 
   def call("get_issue", args, _state) do

@@ -109,6 +109,7 @@ defmodule OrcaHub.Sessions do
         order_by: [asc: s.priority, asc: s.updated_at],
         select: {s, m}
     )
+    |> Enum.map(fn {session, message} -> {Repo.preload(session, :project), message} end)
   end
 
   def defer_session(%Session{} = session) do

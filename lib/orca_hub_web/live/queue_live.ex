@@ -215,6 +215,14 @@ defmodule OrcaHubWeb.QueueLive do
      assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
   end
 
+  def handle_event("cancel_feedback", %{"id" => id}, socket) do
+    id = String.to_integer(id)
+    Feedback.cancel(id)
+
+    {:noreply,
+     assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
+  end
+
   def handle_event("respond_feedback", %{"feedback_id" => id, "response" => response}, socket) do
     response = String.trim(response)
     id = String.to_integer(id)
