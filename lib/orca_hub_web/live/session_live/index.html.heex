@@ -52,6 +52,7 @@
       <span class={[
         "badge",
         session.status == "running" && "badge-warning",
+        session.status == "compacting" && "badge-warning",
         session.status == "waiting" && "badge-info",
         session.status == "idle" && "badge-success",
         session.status == "ready" && "badge-ghost",

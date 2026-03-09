@@ -412,6 +412,21 @@ defmodule OrcaHub.SessionRunner do
     )
   end
 
+  defp handle_stream_event(%{"type" => "system", "subtype" => "status", "status" => "compacting"}, data) do
+    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "compacting"})
+    broadcast(data.session_id, {:status, :compacting})
+    AgentPresence.update_status(data.directory, data.session_id, "compacting")
+    data
+  end
+
+  defp handle_stream_event(%{"type" => "system", "subtype" => "status", "status" => nil}, data) do
+    # Status cleared (e.g. compacting finished) — restore running state
+    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "running"})
+    broadcast(data.session_id, {:status, :running})
+    AgentPresence.update_status(data.directory, data.session_id, "running")
+    data
+  end
+
   defp handle_stream_event(%{"type" => "system", "session_id" => sid} = event, data) do
     if data.claude_session_id == nil do
       Sessions.update_session(Sessions.get_session!(data.session_id), %{claude_session_id: sid})

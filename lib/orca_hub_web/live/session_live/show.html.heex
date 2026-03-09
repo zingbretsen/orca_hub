@@ -12,6 +12,7 @@
     <span class={[
       "badge ml-2",
       @status == :running && "badge-warning",
+      @status == :compacting && "badge-warning",
       @status == :waiting && "badge-info",
       @status == :idle && "badge-success",
       @status == :ready && "badge-ghost",
@@ -19,7 +20,13 @@
     ]}>
       {@status}
     </span>
-    <:subtitle>{@session.directory}</:subtitle>
+    <:subtitle>
+      <.link :if={@session.project} navigate={~p"/projects/#{@session.project}"} class="hover:underline">
+        {@session.project.name}
+      </.link>
+      <span :if={@session.project} class="text-base-content/40 ml-1">{@session.directory}</span>
+      <span :if={!@session.project}>{@session.directory}</span>
+    </:subtitle>
     <:actions>
       <button
         :if={@session.claude_session_id}
@@ -146,7 +153,7 @@
           id="prompt-input"
         ></textarea>
       </div>
-      <button :if={@status == :running} type="button" phx-click="interrupt" class="btn btn-error btn-square" title="Interrupt">
+      <button :if={@status in [:running, :compacting]} type="button" phx-click="interrupt" class="btn btn-error btn-square" title="Interrupt">
         <.icon name="hero-stop" class="size-5" />
       </button>
       <.button type="submit">
