@@ -8,13 +8,27 @@ defmodule OrcaHubWeb.MessageComponents do
   attr :messages, :list, required: true
 
   def message_feed(assigns) do
+    # Group subagent messages by parent_tool_use_id
+    subagent_map =
+      assigns.messages
+      |> Enum.filter(&(&1["parent_tool_use_id"] != nil))
+      |> Enum.group_by(& &1["parent_tool_use_id"])
+
+    # Filter out subagent messages from main list
+    top_level = Enum.reject(assigns.messages, &(&1["parent_tool_use_id"] != nil))
+
+    assigns =
+      assigns
+      |> assign(:top_level, top_level)
+      |> assign(:subagent_map, subagent_map)
+
     ~H"""
-    <div :for={msg <- @messages}>
+    <div :for={msg <- @top_level}>
       <%= case msg["type"] do %>
         <% "user" -> %>
           <.user_message msg={msg} />
         <% "assistant" -> %>
-          <.assistant_message msg={msg} />
+          <.assistant_message msg={msg} subagent_map={@subagent_map} />
         <% "result" -> %>
           <.result_message msg={msg} />
         <% "system" -> %>
@@ -89,6 +103,7 @@ defmodule OrcaHubWeb.MessageComponents do
   end
 
   attr :msg, :map, required: true
+  attr :subagent_map, :map, default: %{}
 
   defp assistant_message(assigns) do
     content_blocks = get_in(assigns.msg, ["message", "content"]) || []
@@ -101,13 +116,18 @@ defmodule OrcaHubWeb.MessageComponents do
       content_blocks
       |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use"))
 
+    # Separate Agent tool uses from regular ones
+    {agent_tools, regular_tools} =
+      Enum.split_with(tool_use_blocks, &(&1["name"] == "Agent"))
+
     text = Enum.map_join(text_blocks, "\n", & &1["text"])
 
     assigns =
       assigns
       |> assign(:html, Markdown.render(text))
       |> assign(:has_text, text != "")
-      |> assign(:tool_uses, tool_use_blocks)
+      |> assign(:tool_uses, regular_tools)
+      |> assign(:agent_tools, agent_tools)
       |> assign(:msg_id, assigns.msg["id"] || System.unique_integer([:positive]))
 
     ~H"""
@@ -143,6 +163,9 @@ defmodule OrcaHubWeb.MessageComponents do
     <div :for={tool <- @tool_uses}>
       <.tool_use_block tool={tool} />
     </div>
+    <div :for={agent <- @agent_tools}>
+      <.subagent_block tool={agent} messages={Map.get(@subagent_map, agent["id"], [])} />
+    </div>
     """
   end
 
@@ -169,6 +192,42 @@ defmodule OrcaHubWeb.MessageComponents do
         </summary>
         <div class="mt-1 ml-2 pl-3 border-l-2 border-info/20">
           <.tool_detail name={@tool_name} input={@input} />
+        </div>
+      </details>
+    </div>
+    """
+  end
+
+  attr :tool, :map, required: true
+  attr :messages, :list, required: true
+
+  defp subagent_block(assigns) do
+    description = get_in(assigns.tool, ["input", "description"]) || "Subagent"
+    subagent_type = get_in(assigns.tool, ["input", "subagent_type"])
+    model = get_in(assigns.tool, ["input", "model"])
+
+    assigns =
+      assigns
+      |> assign(:description, description)
+      |> assign(:subagent_type, subagent_type)
+      |> assign(:model, model)
+
+    ~H"""
+    <div class="ml-4 my-2">
+      <details class="group">
+        <summary class="flex items-center gap-2 cursor-pointer text-xs font-medium opacity-70 hover:opacity-100 transition-opacity">
+          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-warning/10 text-warning">
+            <.icon name="hero-cpu-chip-micro" class="size-3" />
+            Agent
+          </span>
+          <span class="opacity-50 truncate max-w-md">{@description}</span>
+          <span :if={@subagent_type} class="opacity-40 text-[10px]">{@subagent_type}</span>
+          <span :if={@model} class="opacity-40 text-[10px]">{@model}</span>
+          <span :if={@messages != []} class="opacity-30 text-[10px]">{length(@messages)} msgs</span>
+          <.icon name="hero-chevron-right-micro" class="size-3 opacity-50 group-open:rotate-90 transition-transform" />
+        </summary>
+        <div class="mt-2 ml-2 pl-3 border-l-2 border-warning/30">
+          <.message_feed messages={@messages} />
         </div>
       </details>
     </div>
@@ -281,6 +340,12 @@ defmodule OrcaHubWeb.MessageComponents do
   defp tool_icon(%{name: name} = assigns) when name in ~w(Glob Grep) do
     ~H"""
     <.icon name="hero-magnifying-glass-micro" class="size-3" />
+    """
+  end
+
+  defp tool_icon(%{name: "Agent"} = assigns) do
+    ~H"""
+    <.icon name="hero-cpu-chip-micro" class="size-3" />
     """
   end
 
