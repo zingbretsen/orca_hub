@@ -95,6 +95,8 @@ defmodule OrcaHub.Sessions do
   end
 
   def list_idle_sessions_with_last_assistant_message do
+    reset_front_of_queue_priority()
+
     last_messages =
       from m in Message,
         where: fragment("? ->> 'type' = 'assistant'", m.data),
@@ -110,6 +112,23 @@ defmodule OrcaHub.Sessions do
         select: {s, m}
     )
     |> Enum.map(fn {session, message} -> {Repo.preload(session, :project), message} end)
+  end
+
+  defp reset_front_of_queue_priority do
+    min_priority_query =
+      from s in Session,
+        where: is_nil(s.archived_at) and s.status == "idle",
+        select: min(s.priority)
+
+    case Repo.one(min_priority_query) do
+      nil -> :ok
+      0 -> :ok
+      min_priority ->
+        from(s in Session,
+          where: is_nil(s.archived_at) and s.status == "idle" and s.priority == ^min_priority
+        )
+        |> Repo.update_all(set: [priority: 0])
+    end
   end
 
   def defer_session(%Session{} = session) do
