@@ -8,7 +8,12 @@ defmodule OrcaHubWeb.Markdown do
 
   def render(markdown) when is_binary(markdown) do
     markdown
-    |> Earmark.as_html!(code_class_prefix: "language-")
+    |> Earmark.as_html!(
+      code_class_prefix: "language-",
+      registered_processors: [
+        {"a", fn node -> Earmark.AstTools.merge_atts_in_node(node, target: "_blank", rel: "noopener noreferrer") end}
+      ]
+    )
     |> Phoenix.HTML.raw()
   end
 
