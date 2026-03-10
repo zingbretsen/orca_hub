@@ -14,8 +14,32 @@ defmodule OrcaHubWeb.MessageComponents do
       |> Enum.filter(&(&1["parent_tool_use_id"] != nil))
       |> Enum.group_by(& &1["parent_tool_use_id"])
 
-    # Filter out subagent messages from main list
-    top_level = Enum.reject(assigns.messages, &(&1["parent_tool_use_id"] != nil))
+    # Collect task_* system events by tool_use_id (these are subagent progress events)
+    task_event_subtypes = ~w(task_started task_progress task_notification)
+
+    task_events_map =
+      assigns.messages
+      |> Enum.filter(fn msg ->
+        msg["type"] == "system" and msg["subtype"] in task_event_subtypes and msg["tool_use_id"] != nil
+      end)
+      |> Enum.group_by(& &1["tool_use_id"])
+
+    # Merge task events into subagent map so they're available in the subagent block
+    subagent_map =
+      Map.merge(subagent_map, task_events_map, fn _k, msgs, tasks ->
+        msgs ++ tasks
+      end)
+
+    # Filter out subagent messages and task_* system events from main list
+    task_tool_use_ids = Map.keys(task_events_map) |> MapSet.new()
+
+    top_level =
+      assigns.messages
+      |> Enum.reject(&(&1["parent_tool_use_id"] != nil))
+      |> Enum.reject(fn msg ->
+        msg["type"] == "system" and msg["subtype"] in task_event_subtypes and
+          MapSet.member?(task_tool_use_ids, msg["tool_use_id"])
+      end)
 
     assigns =
       assigns
@@ -206,11 +230,33 @@ defmodule OrcaHubWeb.MessageComponents do
     subagent_type = get_in(assigns.tool, ["input", "subagent_type"])
     model = get_in(assigns.tool, ["input", "model"])
 
+    # Separate real messages from task_* progress events
+    task_event_subtypes = ~w(task_started task_progress task_notification)
+
+    {task_events, real_messages} =
+      Enum.split_with(assigns.messages, fn msg ->
+        msg["type"] == "system" and msg["subtype"] in task_event_subtypes
+      end)
+
+    # Get the latest progress description for the header
+    last_progress =
+      task_events
+      |> Enum.filter(fn e -> e["subtype"] == "task_progress" and e["description"] end)
+      |> List.last()
+
+    progress_text = if last_progress, do: last_progress["description"]
+
+    # Count real (non-task-event) messages
+    msg_count = length(real_messages)
+
     assigns =
       assigns
       |> assign(:description, description)
       |> assign(:subagent_type, subagent_type)
       |> assign(:model, model)
+      |> assign(:real_messages, real_messages)
+      |> assign(:msg_count, msg_count)
+      |> assign(:progress_text, progress_text)
 
     ~H"""
     <div class="ml-4 my-2">
@@ -223,11 +269,14 @@ defmodule OrcaHubWeb.MessageComponents do
           <span class="opacity-50 truncate max-w-md">{@description}</span>
           <span :if={@subagent_type} class="opacity-40 text-[10px]">{@subagent_type}</span>
           <span :if={@model} class="opacity-40 text-[10px]">{@model}</span>
-          <span :if={@messages != []} class="opacity-30 text-[10px]">{length(@messages)} msgs</span>
+          <span :if={@msg_count > 0} class="opacity-30 text-[10px]">{@msg_count} msgs</span>
           <.icon name="hero-chevron-right-micro" class="size-3 opacity-50 group-open:rotate-90 transition-transform" />
         </summary>
+        <div :if={@progress_text && @real_messages == []} class="mt-1 ml-6 text-xs opacity-40 italic">
+          {@progress_text}
+        </div>
         <div class="mt-2 ml-2 pl-3 border-l-2 border-warning/30">
-          <.message_feed messages={@messages} />
+          <.message_feed messages={@real_messages} />
         </div>
       </details>
     </div>
