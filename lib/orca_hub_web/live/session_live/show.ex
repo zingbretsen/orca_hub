@@ -467,14 +467,22 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp open_file_tab(socket, path) do
     dir = socket.assigns.session.directory
-    project = %Projects.Project{directory: dir}
 
-    # Normalize absolute paths to relative
-    path =
+    # Normalize: if absolute and inside the project dir, make relative
+    # If absolute and outside, keep absolute and mark read-only
+    {path, read_only} =
       if String.starts_with?(path, "/") do
-        Path.relative_to(path, dir)
+        relative = Path.relative_to(path, dir)
+
+        if relative != path do
+          # Successfully made relative — it's inside the project
+          {relative, false}
+        else
+          # Outside the project — keep absolute, read-only
+          {path, true}
+        end
       else
-        path
+        {path, false}
       end
 
     # If already open, just switch to it
@@ -485,11 +493,18 @@ defmodule OrcaHubWeb.SessionLive.Show do
       |> assign(:editing_block, nil)
       |> assign(:show_file_browser, false)
     else
-      case Projects.load_file(project, path) do
+      result =
+        if read_only do
+          File.read(path)
+        else
+          Projects.load_file(%Projects.Project{directory: dir}, path)
+        end
+
+      case result do
         {:ok, content} ->
           blocks = if markdown_file?(path), do: Markdown.split_blocks(content), else: []
-          tab = %{path: path, content: content, blocks: blocks}
-          full_path = Path.join(dir, path)
+          tab = %{path: path, content: content, blocks: blocks, read_only: read_only}
+          full_path = if read_only, do: path, else: Path.join(dir, path)
           mtime = file_mtime(full_path)
 
           socket
@@ -528,12 +543,19 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     {open_files, mtimes} =
       Enum.map_reduce(socket.assigns.open_files, socket.assigns.file_mtimes, fn tab, mtimes ->
-        full_path = Path.join(dir, tab.path)
+        full_path = if tab.read_only, do: tab.path, else: Path.join(dir, tab.path)
         current_mtime = file_mtime(full_path)
         stored_mtime = Map.get(mtimes, tab.path)
 
         if current_mtime != stored_mtime && current_mtime != nil do
-          case Projects.load_file(project, tab.path) do
+          result =
+            if tab.read_only do
+              File.read(tab.path)
+            else
+              Projects.load_file(project, tab.path)
+            end
+
+          case result do
             {:ok, content} ->
               blocks = if markdown_file?(tab.path), do: Markdown.split_blocks(content), else: []
               {%{tab | content: content, blocks: blocks}, Map.put(mtimes, tab.path, current_mtime)}

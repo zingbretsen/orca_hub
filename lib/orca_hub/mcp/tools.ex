@@ -230,14 +230,14 @@ defmodule OrcaHub.MCP.Tools do
       %{
         "name" => "open_file",
         "description" =>
-          "Open a file in the user's session file viewer. The file will appear in a side panel next to the chat. Use this to show the user a file you've written or modified, or to pull up a reference file for discussion. The file path should be relative to the project directory.",
+          "Open a file in the user's session file viewer. The file will appear in a side panel next to the chat. Use this to show the user a file you've written or modified, or to pull up a reference file for discussion. Supports relative paths (within the project) and absolute paths (opened read-only if outside the project directory).",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
             "file_path" => %{
               "type" => "string",
               "description" =>
-                "The file path relative to the project directory (e.g. \"lib/my_app/module.ex\" or \"README.md\")"
+                "The file path, either relative to the project directory (e.g. \"lib/my_app/module.ex\") or an absolute path (e.g. \"/home/user/other_project/file.ex\", opened read-only if outside project)"
             }
           },
           "required" => ["file_path"]

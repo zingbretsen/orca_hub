@@ -238,9 +238,12 @@
           <%= if tab = Enum.find(@open_files, & &1.path == @active_file_tab) do %>
             <%!-- File header --%>
             <div class="flex items-center justify-between mb-3">
-              <span class="font-mono text-xs text-base-content/70 truncate">{tab.path}</span>
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="font-mono text-xs text-base-content/70 truncate">{tab.path}</span>
+                <span :if={tab.read_only} class="badge badge-xs badge-ghost">read-only</span>
+              </div>
               <button
-                :if={!@file_editing}
+                :if={!@file_editing && !tab.read_only}
                 phx-click="edit_file"
                 class="btn btn-xs btn-ghost shrink-0"
               >
@@ -251,7 +254,7 @@
             <%!-- Markdown block view --%>
             <div :if={!@file_editing && tab.blocks != []}>
               <div :for={{index, block_text} <- tab.blocks} class="group relative">
-                <div :if={@editing_block == index} class="my-2">
+                <div :if={@editing_block == index && !tab.read_only} class="my-2">
                   <form phx-submit="save_block" class="space-y-2">
                     <textarea
                       name="content"
@@ -266,15 +269,16 @@
                     </div>
                   </form>
                 </div>
-                <div :if={@editing_block != index} class="relative group">
+                <div :if={@editing_block != index || tab.read_only} class="relative group">
                   <div
-                    phx-click="edit_block"
-                    phx-value-index={index}
-                    class="prose prose-sm max-w-none cursor-pointer rounded px-2 -mx-2 py-1 hover:bg-base-300/50 transition-colors"
+                    phx-click={unless tab.read_only, do: "edit_block"}
+                    phx-value-index={unless tab.read_only, do: index}
+                    class={["prose prose-sm max-w-none rounded px-2 -mx-2 py-1", !tab.read_only && "cursor-pointer hover:bg-base-300/50 transition-colors"]}
                   >
                     {Markdown.render_block(block_text)}
                   </div>
                   <button
+                    :if={!tab.read_only}
                     phx-click="delete_block"
                     phx-value-index={index}
                     class="absolute top-1 right-1 btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity text-error"
@@ -375,15 +379,18 @@
           <div class="flex-1 min-w-0 overflow-y-auto bg-base-200 rounded-lg p-3">
             <%= if tab = Enum.find(@open_files, & &1.path == @active_file_tab) do %>
               <div class="flex items-center justify-between mb-2">
-                <span class="font-mono text-xs text-base-content/70 truncate">{tab.path}</span>
-                <button :if={!@file_editing} phx-click="edit_file" class="btn btn-xs btn-ghost shrink-0">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="font-mono text-xs text-base-content/70 truncate">{tab.path}</span>
+                  <span :if={tab.read_only} class="badge badge-xs badge-ghost">read-only</span>
+                </div>
+                <button :if={!@file_editing && !tab.read_only} phx-click="edit_file" class="btn btn-xs btn-ghost shrink-0">
                   {if tab.blocks != [], do: "Raw Edit", else: "Edit"}
                 </button>
               </div>
 
               <div :if={!@file_editing && tab.blocks != []}>
                 <div :for={{index, block_text} <- tab.blocks} class="group relative">
-                  <div :if={@editing_block == index} class="my-2">
+                  <div :if={@editing_block == index && !tab.read_only} class="my-2">
                     <form phx-submit="save_block" class="space-y-2">
                       <textarea
                         name="content"
@@ -398,11 +405,11 @@
                       </div>
                     </form>
                   </div>
-                  <div :if={@editing_block != index}>
+                  <div :if={@editing_block != index || tab.read_only}>
                     <div
-                      phx-click="edit_block"
-                      phx-value-index={index}
-                      class="prose prose-sm max-w-none cursor-pointer rounded px-2 -mx-2 py-1 hover:bg-base-300/50"
+                      phx-click={unless tab.read_only, do: "edit_block"}
+                      phx-value-index={unless tab.read_only, do: index}
+                      class={["prose prose-sm max-w-none rounded px-2 -mx-2 py-1", !tab.read_only && "cursor-pointer hover:bg-base-300/50"]}
                     >
                       {Markdown.render_block(block_text)}
                     </div>
