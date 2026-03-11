@@ -19,6 +19,7 @@ defmodule OrcaHub.Claude.Config do
     * `:max_budget` - maximum budget in USD
     * `:system_prompt` - text appended to the system prompt
     * `:model` - model name to use
+    * `:mcp_config` - MCP server config JSON string
     * `:cwd` - working directory (returned in port opts, not CLI args)
 
   """
@@ -39,6 +40,7 @@ defmodule OrcaHub.Claude.Config do
       |> maybe_add_opt("--max-budget-usd", maybe_to_string(Keyword.get(opts, :max_budget)))
       |> maybe_add_opt("--append-system-prompt", Keyword.get(opts, :system_prompt))
       |> maybe_add_opt("--model", Keyword.get(opts, :model))
+      |> maybe_add_opt("--mcp-config", Keyword.get(opts, :mcp_config))
 
     port_opts =
       case Keyword.get(opts, :cwd) do

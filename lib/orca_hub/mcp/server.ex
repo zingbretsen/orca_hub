@@ -20,9 +20,16 @@ defmodule OrcaHub.MCP.Server do
   end
 
   # Start an MCP session (called from the Plug on initialize)
-  def start_session do
+  def start_session(opts \\ []) do
     session_id = generate_session_id()
-    {:ok, _pid} = DynamicSupervisor.start_child(OrcaHub.MCPSupervisor, {__MODULE__, session_id: session_id})
+    orca_session_id = Keyword.get(opts, :orca_session_id)
+
+    {:ok, _pid} =
+      DynamicSupervisor.start_child(
+        OrcaHub.MCPSupervisor,
+        {__MODULE__, session_id: session_id, orca_session_id: orca_session_id}
+      )
+
     {:ok, session_id}
   end
 
@@ -42,7 +49,8 @@ defmodule OrcaHub.MCP.Server do
   @impl true
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
-    {:ok, %{session_id: session_id, initialized: false}}
+    orca_session_id = Keyword.get(opts, :orca_session_id)
+    {:ok, %{session_id: session_id, orca_session_id: orca_session_id, initialized: false}}
   end
 
   @impl true

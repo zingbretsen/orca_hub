@@ -392,6 +392,7 @@ defmodule OrcaHub.SessionRunner do
       |> maybe_put(:session_id, data.claude_session_id)
       |> maybe_put(:model, data.model)
       |> maybe_put(:system_prompt, build_system_prompt(data))
+      |> Keyword.put(:mcp_config, mcp_config(data.session_id))
 
     {args, port_opts} = Config.build_args(prompt, opts)
 
@@ -452,6 +453,23 @@ defmodule OrcaHub.SessionRunner do
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, val), do: Keyword.put(opts, key, val)
+
+  defp mcp_config(session_id) do
+    port =
+      case OrcaHubWeb.Endpoint.config(:http) do
+        config when is_list(config) -> Keyword.get(config, :port, 4000)
+        _ -> 4000
+      end
+
+    Jason.encode!(%{
+      "mcpServers" => %{
+        "orca" => %{
+          "type" => "http",
+          "url" => "http://localhost:#{port}/mcp?orca_session_id=#{session_id}"
+        }
+      }
+    })
+  end
 
   defp build_system_prompt(data) do
     parts =

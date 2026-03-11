@@ -20,8 +20,10 @@ defmodule OrcaHub.MCP.Plug do
 
     case message do
       %{"method" => "initialize", "id" => _id} ->
-        # Start a new MCP session
-        {:ok, session_id} = OrcaHub.MCP.Server.start_session()
+        # Start a new MCP session, linking it to the OrcaHub session if provided
+        conn = fetch_query_params(conn)
+        orca_session_id = conn.query_params["orca_session_id"]
+        {:ok, session_id} = OrcaHub.MCP.Server.start_session(orca_session_id: orca_session_id)
         response = OrcaHub.MCP.Server.handle_jsonrpc(session_id, message)
 
         conn
