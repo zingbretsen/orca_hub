@@ -2,8 +2,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Feedback, Sessions, SessionSupervisor, SessionRunner}
-  alias OrcaHubWeb.MessageComponents
+  alias OrcaHub.{Feedback, Projects, Sessions, SessionSupervisor, SessionRunner}
+  alias OrcaHubWeb.{MessageComponents, Markdown}
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -27,6 +27,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:page_title, session.title || (session.project && session.project.name) || session.directory)
      |> assign(:feedback_requests, Feedback.list_pending_requests_for_session(id))
      |> assign(:tts_autoplay, false)
+     |> assign(:open_files, [])
+     |> assign(:active_file_tab, nil)
+     |> assign(:file_editing, false)
+     |> assign(:editing_block, nil)
+     |> assign(:block_edit_content, nil)
+     |> assign(:show_file_browser, false)
+     |> assign(:file_tree, [])
+     |> assign(:filtered_file_tree, [])
+     |> assign(:file_tree_filter, "")
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
        max_entries: 5,
@@ -161,6 +170,173 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  # -- File panel events --
+
+  def handle_event("toggle_file_browser", _params, socket) do
+    socket =
+      if socket.assigns.show_file_browser do
+        assign(socket, :show_file_browser, false)
+      else
+        socket = ensure_file_tree_loaded(socket)
+        assign(socket, :show_file_browser, true)
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("filter_file_tree", %{"value" => query}, socket) do
+    filtered = Projects.filter_file_tree(socket.assigns.file_tree, query)
+    {:noreply, assign(socket, file_tree_filter: query, filtered_file_tree: filtered)}
+  end
+
+  def handle_event("open_file", %{"path" => path}, socket) do
+    socket = open_file_tab(socket, path)
+    {:noreply, socket}
+  end
+
+  def handle_event("switch_tab", %{"path" => path}, socket) do
+    tab = Enum.find(socket.assigns.open_files, &(&1.path == path))
+
+    if tab do
+      {:noreply,
+       socket
+       |> assign(:active_file_tab, path)
+       |> assign(:file_editing, false)
+       |> assign(:editing_block, nil)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("close_tab", %{"path" => path}, socket) do
+    open_files = Enum.reject(socket.assigns.open_files, &(&1.path == path))
+
+    active =
+      cond do
+        open_files == [] -> nil
+        socket.assigns.active_file_tab == path -> hd(open_files).path
+        true -> socket.assigns.active_file_tab
+      end
+
+    {:noreply,
+     socket
+     |> assign(:open_files, open_files)
+     |> assign(:active_file_tab, active)
+     |> assign(:file_editing, false)
+     |> assign(:editing_block, nil)}
+  end
+
+  def handle_event("close_file_panel", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:open_files, [])
+     |> assign(:active_file_tab, nil)
+     |> assign(:file_editing, false)
+     |> assign(:editing_block, nil)
+     |> assign(:show_file_browser, false)}
+  end
+
+  def handle_event("edit_file", _params, socket) do
+    {:noreply, assign(socket, :file_editing, true)}
+  end
+
+  def handle_event("cancel_edit_file", _params, socket) do
+    {:noreply, assign(socket, file_editing: false, editing_block: nil)}
+  end
+
+  def handle_event("save_file", %{"content" => content}, socket) do
+    path = socket.assigns.active_file_tab
+    dir = socket.assigns.session.directory
+    project = %Projects.Project{directory: dir}
+
+    case Projects.save_file(project, path, content) do
+      :ok ->
+        blocks = if markdown_file?(path), do: Markdown.split_blocks(content), else: []
+
+        open_files =
+          Enum.map(socket.assigns.open_files, fn tab ->
+            if tab.path == path, do: %{tab | content: content, blocks: blocks}, else: tab
+          end)
+
+        {:noreply, assign(socket, open_files: open_files, file_editing: false, editing_block: nil)}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Save failed: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("edit_block", %{"index" => index}, socket) do
+    index = String.to_integer(index)
+    tab = get_active_tab(socket)
+
+    block_text =
+      case Enum.find(tab.blocks, fn {idx, _} -> idx == index end) do
+        {_, text} -> text
+        nil -> ""
+      end
+
+    {:noreply, assign(socket, editing_block: index, block_edit_content: block_text)}
+  end
+
+  def handle_event("cancel_block_edit", _params, socket) do
+    {:noreply, assign(socket, editing_block: nil, block_edit_content: nil)}
+  end
+
+  def handle_event("save_block", %{"content" => content}, socket) do
+    tab = get_active_tab(socket)
+    index = socket.assigns.editing_block
+
+    updated_blocks =
+      Enum.map(tab.blocks, fn {idx, text} ->
+        if idx == index, do: {idx, String.trim(content)}, else: {idx, text}
+      end)
+
+    full_content = Markdown.join_blocks(updated_blocks)
+    dir = socket.assigns.session.directory
+    project = %Projects.Project{directory: dir}
+
+    case Projects.save_file(project, tab.path, full_content) do
+      :ok ->
+        open_files =
+          Enum.map(socket.assigns.open_files, fn t ->
+            if t.path == tab.path, do: %{t | content: full_content, blocks: updated_blocks}, else: t
+          end)
+
+        {:noreply, assign(socket, open_files: open_files, editing_block: nil, block_edit_content: nil)}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Save failed: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("delete_block", %{"index" => index}, socket) do
+    tab = get_active_tab(socket)
+    index = String.to_integer(index)
+
+    updated_blocks = Enum.reject(tab.blocks, fn {idx, _} -> idx == index end)
+    full_content = Markdown.join_blocks(updated_blocks)
+    dir = socket.assigns.session.directory
+    project = %Projects.Project{directory: dir}
+
+    case Projects.save_file(project, tab.path, full_content) do
+      :ok ->
+        open_files =
+          Enum.map(socket.assigns.open_files, fn t ->
+            if t.path == tab.path, do: %{t | content: full_content, blocks: updated_blocks}, else: t
+          end)
+
+        {:noreply, assign(socket, open_files: open_files, editing_block: nil)}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Delete failed: #{inspect(reason)}")}
+    end
+  end
+
+  @impl true
+  def handle_info({:open_file, path}, socket) do
+    {:noreply, open_file_tab(socket, path)}
+  end
+
   @impl true
   def handle_info({:event, event}, socket) do
     {:noreply, assign(socket, :messages, socket.assigns.messages ++ [event])}
@@ -257,5 +433,85 @@ defmodule OrcaHubWeb.SessionLive.Show do
       _ ->
         {[], socket}
     end
+  end
+
+  # -- File panel helpers --
+
+  defp open_file_tab(socket, path) do
+    dir = socket.assigns.session.directory
+    project = %Projects.Project{directory: dir}
+
+    # If already open, just switch to it
+    if Enum.any?(socket.assigns.open_files, &(&1.path == path)) do
+      socket
+      |> assign(:active_file_tab, path)
+      |> assign(:file_editing, false)
+      |> assign(:editing_block, nil)
+      |> assign(:show_file_browser, false)
+    else
+      case Projects.load_file(project, path) do
+        {:ok, content} ->
+          blocks = if markdown_file?(path), do: Markdown.split_blocks(content), else: []
+          tab = %{path: path, content: content, blocks: blocks}
+
+          socket
+          |> assign(:open_files, socket.assigns.open_files ++ [tab])
+          |> assign(:active_file_tab, path)
+          |> assign(:file_editing, false)
+          |> assign(:editing_block, nil)
+          |> assign(:show_file_browser, false)
+
+        {:error, reason} ->
+          put_flash(socket, :error, "Could not open file: #{inspect(reason)}")
+      end
+    end
+  end
+
+  defp get_active_tab(socket) do
+    Enum.find(socket.assigns.open_files, &(&1.path == socket.assigns.active_file_tab))
+  end
+
+  defp ensure_file_tree_loaded(socket) do
+    if socket.assigns.file_tree == [] do
+      dir = socket.assigns.session.directory
+      project = %Projects.Project{directory: dir}
+      files = Projects.list_editable_files(project)
+      tree = Projects.build_file_tree(files)
+      assign(socket, file_tree: tree, filtered_file_tree: tree)
+    else
+      socket
+    end
+  end
+
+  defp markdown_file?(path), do: String.ends_with?(path, ".md")
+
+  # -- File tree components --
+
+  attr :node, :map, required: true
+
+  defp file_tree_node(%{node: %{type: :file}} = assigns) do
+    ~H"""
+    <li>
+      <button phx-click="open_file" phx-value-path={@node.path}>
+        <span class="font-mono text-xs truncate">{@node.name}</span>
+      </button>
+    </li>
+    """
+  end
+
+  defp file_tree_node(%{node: %{type: :dir}} = assigns) do
+    ~H"""
+    <li>
+      <details>
+        <summary class="font-mono text-xs">
+          <.icon name="hero-folder-micro" class="size-3 opacity-50" />
+          {@node.name}
+        </summary>
+        <ul>
+          <.file_tree_node :for={child <- @node.children} node={child} />
+        </ul>
+      </details>
+    </li>
+    """
   end
 end
