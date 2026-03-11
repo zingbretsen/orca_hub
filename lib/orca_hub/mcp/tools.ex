@@ -226,6 +226,22 @@ defmodule OrcaHub.MCP.Tools do
           },
           "required" => ["name", "prompt", "project_id"]
         }
+      },
+      %{
+        "name" => "open_file",
+        "description" =>
+          "Open a file in the user's session file viewer. The file will appear in a side panel next to the chat. Use this to show the user a file you've written or modified, or to pull up a reference file for discussion. The file path should be relative to the project directory.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "file_path" => %{
+              "type" => "string",
+              "description" =>
+                "The file path relative to the project directory (e.g. \"lib/my_app/module.ex\" or \"README.md\")"
+            }
+          },
+          "required" => ["file_path"]
+        }
       }
     ]
   end
@@ -481,6 +497,19 @@ defmodule OrcaHub.MCP.Tools do
     rescue
       Ecto.NoResultsError ->
         error("Project #{attrs.project_id} not found")
+    end
+  end
+
+  def call("open_file", args, state) do
+    file_path = args["file_path"]
+
+    case state.orca_session_id do
+      nil ->
+        error("No OrcaHub session linked to this MCP connection. Cannot open file in viewer.")
+
+      session_id ->
+        Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", {:open_file, file_path})
+        text("Opened #{file_path} in the session file viewer.")
     end
   end
 

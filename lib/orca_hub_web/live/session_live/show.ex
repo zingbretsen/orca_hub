@@ -15,6 +15,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     if connected?(socket) do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{id}")
+      Process.send_after(self(), :poll_file_changes, 2000)
     end
 
     runner_state = SessionRunner.get_state(id)
@@ -36,6 +37,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:file_tree, [])
      |> assign(:filtered_file_tree, [])
      |> assign(:file_tree_filter, "")
+     |> assign(:file_mtimes, %{})
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
        max_entries: 5,
@@ -223,7 +225,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:open_files, open_files)
      |> assign(:active_file_tab, active)
      |> assign(:file_editing, false)
-     |> assign(:editing_block, nil)}
+     |> assign(:editing_block, nil)
+     |> assign(:file_mtimes, Map.delete(socket.assigns.file_mtimes, path))}
   end
 
   def handle_event("close_file_panel", _params, socket) do
@@ -252,13 +255,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
     case Projects.save_file(project, path, content) do
       :ok ->
         blocks = if markdown_file?(path), do: Markdown.split_blocks(content), else: []
+        mtime = file_mtime(Path.join(dir, path))
 
         open_files =
           Enum.map(socket.assigns.open_files, fn tab ->
             if tab.path == path, do: %{tab | content: content, blocks: blocks}, else: tab
           end)
 
-        {:noreply, assign(socket, open_files: open_files, file_editing: false, editing_block: nil)}
+        {:noreply,
+         socket
+         |> assign(open_files: open_files, file_editing: false, editing_block: nil)
+         |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, path, mtime))}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Save failed: #{inspect(reason)}")}
@@ -297,12 +304,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     case Projects.save_file(project, tab.path, full_content) do
       :ok ->
+        mtime = file_mtime(Path.join(dir, tab.path))
+
         open_files =
           Enum.map(socket.assigns.open_files, fn t ->
             if t.path == tab.path, do: %{t | content: full_content, blocks: updated_blocks}, else: t
           end)
 
-        {:noreply, assign(socket, open_files: open_files, editing_block: nil, block_edit_content: nil)}
+        {:noreply,
+         socket
+         |> assign(open_files: open_files, editing_block: nil, block_edit_content: nil)
+         |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, tab.path, mtime))}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Save failed: #{inspect(reason)}")}
@@ -320,12 +332,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     case Projects.save_file(project, tab.path, full_content) do
       :ok ->
+        mtime = file_mtime(Path.join(dir, tab.path))
+
         open_files =
           Enum.map(socket.assigns.open_files, fn t ->
             if t.path == tab.path, do: %{t | content: full_content, blocks: updated_blocks}, else: t
           end)
 
-        {:noreply, assign(socket, open_files: open_files, editing_block: nil)}
+        {:noreply,
+         socket
+         |> assign(open_files: open_files, editing_block: nil)
+         |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, tab.path, mtime))}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Delete failed: #{inspect(reason)}")}
@@ -378,6 +395,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
   @impl true
   def handle_info({:title_error, reason}, socket) do
     {:noreply, put_flash(socket, :error, "Title generation failed: #{reason}")}
+  end
+
+  @impl true
+  def handle_info(:poll_file_changes, socket) do
+    Process.send_after(self(), :poll_file_changes, 2000)
+
+    if socket.assigns.open_files == [] do
+      {:noreply, socket}
+    else
+      {:noreply, refresh_changed_files(socket)}
+    end
   end
 
   @impl true
@@ -453,6 +481,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
         {:ok, content} ->
           blocks = if markdown_file?(path), do: Markdown.split_blocks(content), else: []
           tab = %{path: path, content: content, blocks: blocks}
+          full_path = Path.join(dir, path)
+          mtime = file_mtime(full_path)
 
           socket
           |> assign(:open_files, socket.assigns.open_files ++ [tab])
@@ -460,6 +490,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
           |> assign(:file_editing, false)
           |> assign(:editing_block, nil)
           |> assign(:show_file_browser, false)
+          |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, path, mtime))
 
         {:error, reason} ->
           put_flash(socket, :error, "Could not open file: #{inspect(reason)}")
@@ -480,6 +511,42 @@ defmodule OrcaHubWeb.SessionLive.Show do
       assign(socket, file_tree: tree, filtered_file_tree: tree)
     else
       socket
+    end
+  end
+
+  defp refresh_changed_files(socket) do
+    dir = socket.assigns.session.directory
+    project = %Projects.Project{directory: dir}
+
+    {open_files, mtimes} =
+      Enum.map_reduce(socket.assigns.open_files, socket.assigns.file_mtimes, fn tab, mtimes ->
+        full_path = Path.join(dir, tab.path)
+        current_mtime = file_mtime(full_path)
+        stored_mtime = Map.get(mtimes, tab.path)
+
+        if current_mtime != stored_mtime && current_mtime != nil do
+          case Projects.load_file(project, tab.path) do
+            {:ok, content} ->
+              blocks = if markdown_file?(tab.path), do: Markdown.split_blocks(content), else: []
+              {%{tab | content: content, blocks: blocks}, Map.put(mtimes, tab.path, current_mtime)}
+
+            {:error, _} ->
+              {tab, mtimes}
+          end
+        else
+          {tab, mtimes}
+        end
+      end)
+
+    socket
+    |> assign(:open_files, open_files)
+    |> assign(:file_mtimes, mtimes)
+  end
+
+  defp file_mtime(path) do
+    case File.stat(path) do
+      {:ok, %{mtime: mtime}} -> mtime
+      _ -> nil
     end
   end
 
