@@ -31,6 +31,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:open_files, [])
      |> assign(:active_file_tab, nil)
      |> assign(:file_editing, false)
+     |> assign(:file_edit_mode, false)
      |> assign(:editing_block, nil)
      |> assign(:block_edit_content, nil)
      |> assign(:show_file_browser, false)
@@ -204,6 +205,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
        socket
        |> assign(:active_file_tab, path)
        |> assign(:file_editing, false)
+       |> assign(:file_edit_mode, false)
        |> assign(:editing_block, nil)}
     else
       {:noreply, socket}
@@ -237,6 +239,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:file_editing, false)
      |> assign(:editing_block, nil)
      |> assign(:show_file_browser, false)}
+  end
+
+  def handle_event("toggle_edit_mode", _params, socket) do
+    {:noreply, assign(socket, file_edit_mode: !socket.assigns.file_edit_mode, file_editing: false, editing_block: nil)}
   end
 
   def handle_event("edit_file", _params, socket) do

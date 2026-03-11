@@ -242,19 +242,28 @@
                 <span class="font-mono text-xs text-base-content/70 truncate">{tab.path}</span>
                 <span :if={tab.read_only} class="badge badge-xs badge-ghost">read-only</span>
               </div>
-              <button
-                :if={!@file_editing && !tab.read_only}
-                phx-click="edit_file"
-                class="btn btn-xs btn-ghost shrink-0"
-              >
-                {if tab.blocks != [], do: "Raw Edit", else: "Edit"}
-              </button>
+              <div :if={!tab.read_only} class="flex items-center gap-1 shrink-0">
+                <button
+                  :if={!@file_editing && @file_edit_mode}
+                  phx-click="edit_file"
+                  class="btn btn-xs btn-ghost"
+                >
+                  Raw Edit
+                </button>
+                <button
+                  phx-click="toggle_edit_mode"
+                  class={["btn btn-xs", @file_edit_mode && "btn-primary", !@file_edit_mode && "btn-ghost"]}
+                >
+                  <.icon name="hero-pencil-micro" class="size-3" />
+                  Edit
+                </button>
+              </div>
             </div>
 
             <%!-- Markdown block view --%>
             <div :if={!@file_editing && tab.blocks != []}>
               <div :for={{index, block_text} <- tab.blocks} class="group relative">
-                <div :if={@editing_block == index && !tab.read_only} class="my-2">
+                <div :if={@editing_block == index && @file_edit_mode} class="my-2">
                   <form phx-submit="save_block" class="space-y-2">
                     <textarea
                       name="content"
@@ -269,16 +278,16 @@
                     </div>
                   </form>
                 </div>
-                <div :if={@editing_block != index || tab.read_only} class="relative group">
+                <div :if={@editing_block != index || !@file_edit_mode} class="relative group">
                   <div
-                    phx-click={unless tab.read_only, do: "edit_block"}
-                    phx-value-index={unless tab.read_only, do: index}
-                    class={["prose prose-sm max-w-none rounded px-2 -mx-2 py-1", !tab.read_only && "cursor-pointer hover:bg-base-300/50 transition-colors"]}
+                    phx-click={if @file_edit_mode, do: "edit_block"}
+                    phx-value-index={if @file_edit_mode, do: index}
+                    class={["prose prose-sm max-w-none rounded px-2 -mx-2 py-1", @file_edit_mode && "cursor-pointer hover:bg-base-300/50 transition-colors"]}
                   >
                     {Markdown.render_block(block_text)}
                   </div>
                   <button
-                    :if={!tab.read_only}
+                    :if={@file_edit_mode}
                     phx-click="delete_block"
                     phx-value-index={index}
                     class="absolute top-1 right-1 btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity text-error"
@@ -383,14 +392,27 @@
                   <span class="font-mono text-xs text-base-content/70 truncate">{tab.path}</span>
                   <span :if={tab.read_only} class="badge badge-xs badge-ghost">read-only</span>
                 </div>
-                <button :if={!@file_editing && !tab.read_only} phx-click="edit_file" class="btn btn-xs btn-ghost shrink-0">
-                  {if tab.blocks != [], do: "Raw Edit", else: "Edit"}
-                </button>
+                <div :if={!tab.read_only} class="flex items-center gap-1 shrink-0">
+                  <button
+                    :if={!@file_editing && @file_edit_mode}
+                    phx-click="edit_file"
+                    class="btn btn-xs btn-ghost"
+                  >
+                    Raw Edit
+                  </button>
+                  <button
+                    phx-click="toggle_edit_mode"
+                    class={["btn btn-xs", @file_edit_mode && "btn-primary", !@file_edit_mode && "btn-ghost"]}
+                  >
+                    <.icon name="hero-pencil-micro" class="size-3" />
+                    Edit
+                  </button>
+                </div>
               </div>
 
               <div :if={!@file_editing && tab.blocks != []}>
                 <div :for={{index, block_text} <- tab.blocks} class="group relative">
-                  <div :if={@editing_block == index && !tab.read_only} class="my-2">
+                  <div :if={@editing_block == index && @file_edit_mode} class="my-2">
                     <form phx-submit="save_block" class="space-y-2">
                       <textarea
                         name="content"
@@ -405,11 +427,11 @@
                       </div>
                     </form>
                   </div>
-                  <div :if={@editing_block != index || tab.read_only}>
+                  <div :if={@editing_block != index || !@file_edit_mode}>
                     <div
-                      phx-click={unless tab.read_only, do: "edit_block"}
-                      phx-value-index={unless tab.read_only, do: index}
-                      class={["prose prose-sm max-w-none rounded px-2 -mx-2 py-1", !tab.read_only && "cursor-pointer hover:bg-base-300/50"]}
+                      phx-click={if @file_edit_mode, do: "edit_block"}
+                      phx-value-index={if @file_edit_mode, do: index}
+                      class={["prose prose-sm max-w-none rounded px-2 -mx-2 py-1", @file_edit_mode && "cursor-pointer hover:bg-base-300/50"]}
                     >
                       {Markdown.render_block(block_text)}
                     </div>
