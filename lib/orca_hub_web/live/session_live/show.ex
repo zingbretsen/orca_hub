@@ -469,6 +469,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
     dir = socket.assigns.session.directory
     project = %Projects.Project{directory: dir}
 
+    # Normalize absolute paths to relative
+    path =
+      if String.starts_with?(path, "/") do
+        Path.relative_to(path, dir)
+      else
+        path
+      end
+
     # If already open, just switch to it
     if Enum.any?(socket.assigns.open_files, &(&1.path == path)) do
       socket
