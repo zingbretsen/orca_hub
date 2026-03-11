@@ -261,8 +261,17 @@
             </div>
 
             <%!-- Markdown block view --%>
-            <div :if={!@file_editing && tab.blocks != []}>
-              <div :for={{index, block_text} <- tab.blocks} class="group relative">
+            <div
+              :if={!@file_editing && tab.blocks != []}
+              id="file-blocks-desktop"
+              phx-hook="ScrollToLine"
+              data-line={@scroll_to_block}
+            >
+              <div
+                :for={{index, block_text} <- tab.blocks}
+                id={"file-block-#{index}"}
+                class={["group relative", @scroll_to_block == index && "ring-2 ring-warning/50 rounded"]}
+              >
                 <div :if={@editing_block == index && @file_edit_mode} class="my-2">
                   <form phx-submit="save_block" class="space-y-2">
                     <textarea
@@ -299,9 +308,25 @@
               </div>
             </div>
 
-            <%!-- Non-markdown view --%>
-            <div :if={!@file_editing && tab.blocks == []}>
-              <pre class="text-sm font-mono whitespace-pre-wrap break-words">{tab.content}</pre>
+            <%!-- Non-markdown view with line numbers --%>
+            <div
+              :if={!@file_editing && tab.blocks == []}
+              id="file-content-desktop"
+              phx-hook="ScrollToLine"
+              data-line={@scroll_to_line}
+            >
+              <table class="text-sm font-mono w-full border-collapse">
+                <tbody>
+                  <tr
+                    :for={{line_text, idx} <- Enum.with_index(String.split(tab.content, "\n"), 1)}
+                    id={"file-line-#{idx}"}
+                    class={if @scroll_to_line == idx, do: "bg-warning/20", else: ""}
+                  >
+                    <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">{idx}</td>
+                    <td class="whitespace-pre-wrap break-words">{line_text}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
 
             <%!-- Raw edit mode --%>
@@ -410,8 +435,17 @@
                 </div>
               </div>
 
-              <div :if={!@file_editing && tab.blocks != []}>
-                <div :for={{index, block_text} <- tab.blocks} class="group relative">
+              <div
+                :if={!@file_editing && tab.blocks != []}
+                id="file-blocks-mobile"
+                phx-hook="ScrollToLine"
+                data-line={@scroll_to_block}
+              >
+                <div
+                  :for={{index, block_text} <- tab.blocks}
+                  id={"mobile-file-block-#{index}"}
+                  class={["group relative", @scroll_to_block == index && "ring-2 ring-warning/50 rounded"]}
+                >
                   <div :if={@editing_block == index && @file_edit_mode} class="my-2">
                     <form phx-submit="save_block" class="space-y-2">
                       <textarea
@@ -439,8 +473,24 @@
                 </div>
               </div>
 
-              <div :if={!@file_editing && tab.blocks == []}>
-                <pre class="text-sm font-mono whitespace-pre-wrap break-words">{tab.content}</pre>
+              <div
+                :if={!@file_editing && tab.blocks == []}
+                id="file-content-mobile"
+                phx-hook="ScrollToLine"
+                data-line={@scroll_to_line}
+              >
+                <table class="text-sm font-mono w-full border-collapse">
+                  <tbody>
+                    <tr
+                      :for={{line_text, idx} <- Enum.with_index(String.split(tab.content, "\n"), 1)}
+                      id={"mobile-file-line-#{idx}"}
+                      class={if @scroll_to_line == idx, do: "bg-warning/20", else: ""}
+                    >
+                      <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">{idx}</td>
+                      <td class="whitespace-pre-wrap break-words">{line_text}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
 
               <div :if={@file_editing} class="space-y-3">

@@ -238,6 +238,11 @@ defmodule OrcaHub.MCP.Tools do
               "type" => "string",
               "description" =>
                 "The file path, either relative to the project directory (e.g. \"lib/my_app/module.ex\") or an absolute path (e.g. \"/home/user/other_project/file.ex\", opened read-only if outside project)"
+            },
+            "line" => %{
+              "type" => "integer",
+              "description" =>
+                "Optional line number to scroll to when opening the file. The file viewer will highlight and scroll to this line."
             }
           },
           "required" => ["file_path"]
@@ -502,14 +507,21 @@ defmodule OrcaHub.MCP.Tools do
 
   def call("open_file", args, state) do
     file_path = args["file_path"]
+    line = args["line"]
 
     case state.orca_session_id do
       nil ->
         error("No OrcaHub session linked to this MCP connection. Cannot open file in viewer.")
 
       session_id ->
-        Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", {:open_file, file_path})
-        text("Opened #{file_path} in the session file viewer.")
+        Phoenix.PubSub.broadcast(
+          OrcaHub.PubSub,
+          "session:#{session_id}",
+          {:open_file, file_path, line}
+        )
+
+        line_msg = if line, do: " at line #{line}", else: ""
+        text("Opened #{file_path}#{line_msg} in the session file viewer.")
     end
   end
 

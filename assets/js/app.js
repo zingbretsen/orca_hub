@@ -106,6 +106,23 @@ let Hooks = {
     mounted() { this.el.focus() },
     updated() { this.el.focus() }
   },
+  ScrollToLine: {
+    mounted() { this.scrollToTarget() },
+    updated() { this.scrollToTarget() },
+    scrollToTarget() {
+      const line = this.el.dataset.line
+      if (!line) return
+      const prefix = this.el.id.includes("mobile") ? "mobile-" : ""
+      const isBlock = this.el.id.includes("block")
+      const targetId = isBlock ? `${prefix}file-block-${line}` : `${prefix}file-line-${line}`
+      const target = this.el.querySelector(`#${targetId}`)
+      if (target) {
+        requestAnimationFrame(() => {
+          target.scrollIntoView({ behavior: "smooth", block: "center" })
+        })
+      }
+    }
+  },
   AutoResize: {
     mounted() {
       this.resize()

@@ -39,6 +39,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:filtered_file_tree, [])
      |> assign(:file_tree_filter, "")
      |> assign(:file_mtimes, %{})
+     |> assign(:scroll_to_line, nil)
+     |> assign(:scroll_to_block, nil)
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
        max_entries: 5,
@@ -206,7 +208,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
        |> assign(:active_file_tab, path)
        |> assign(:file_editing, false)
        |> assign(:file_edit_mode, false)
-       |> assign(:editing_block, nil)}
+       |> assign(:editing_block, nil)
+       |> assign(:scroll_to_line, nil)
+       |> assign(:scroll_to_block, nil)}
     else
       {:noreply, socket}
     end
@@ -356,6 +360,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   @impl true
+  def handle_info({:open_file, path, line}, socket) do
+    {:noreply, open_file_tab(socket, path, line)}
+  end
+
   def handle_info({:open_file, path}, socket) do
     {:noreply, open_file_tab(socket, path)}
   end
@@ -471,7 +479,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   # -- File panel helpers --
 
-  defp open_file_tab(socket, path) do
+  defp open_file_tab(socket, path, line \\ nil) do
     dir = socket.assigns.session.directory
 
     # Normalize: if absolute and inside the project dir, make relative
@@ -491,13 +499,22 @@ defmodule OrcaHubWeb.SessionLive.Show do
         {path, false}
       end
 
-    # If already open, just switch to it
+    # If already open, just switch to it (and update scroll target)
     if Enum.any?(socket.assigns.open_files, &(&1.path == path)) do
+      tab = Enum.find(socket.assigns.open_files, &(&1.path == path))
+
+      block_idx =
+        if line && markdown_file?(path) && tab,
+          do: line_to_block_index(tab.content, line),
+          else: nil
+
       socket
       |> assign(:active_file_tab, path)
       |> assign(:file_editing, false)
       |> assign(:editing_block, nil)
       |> assign(:show_file_browser, false)
+      |> assign(:scroll_to_line, line)
+      |> assign(:scroll_to_block, block_idx)
     else
       result =
         if read_only do
@@ -513,6 +530,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
           full_path = if read_only, do: path, else: Path.join(dir, path)
           mtime = file_mtime(full_path)
 
+          block_idx =
+            if line && markdown_file?(path),
+              do: line_to_block_index(content, line),
+              else: nil
+
           socket
           |> assign(:open_files, socket.assigns.open_files ++ [tab])
           |> assign(:active_file_tab, path)
@@ -520,6 +542,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
           |> assign(:editing_block, nil)
           |> assign(:show_file_browser, false)
           |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, path, mtime))
+          |> assign(:scroll_to_line, line)
+          |> assign(:scroll_to_block, block_idx)
 
         {:error, reason} ->
           put_flash(socket, :error, "Could not open file: #{inspect(reason)}")
@@ -587,6 +611,34 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp markdown_file?(path), do: String.ends_with?(path, ".md")
+
+  defp line_to_block_index(content, line) when is_integer(line) and line > 0 do
+    # Find which block contains the target line by tracking line offsets
+    lines = String.split(content, "\n")
+    # Build a prefix of the content up to the target line
+    target_text = lines |> Enum.take(line) |> Enum.join("\n")
+    blocks = Markdown.split_blocks(content)
+
+    # Find the block whose text appears in the content at or before the target line
+    # by checking cumulative character positions
+    Enum.reduce_while(blocks, {0, nil}, fn {idx, block_text}, {search_from, _} ->
+      case :binary.match(content, String.trim(block_text), [{:scope, {search_from, byte_size(content) - search_from}}]) do
+        {pos, len} ->
+          block_end = pos + len
+          if byte_size(target_text) <= block_end do
+            {:halt, {0, idx}}
+          else
+            {:cont, {pos + len, idx}}
+          end
+
+        :nomatch ->
+          {:cont, {search_from, idx}}
+      end
+    end)
+    |> elem(1)
+  end
+
+  defp line_to_block_index(_, _), do: nil
 
   # -- File tree components --
 
