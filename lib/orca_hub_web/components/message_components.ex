@@ -121,7 +121,7 @@ defmodule OrcaHubWeb.MessageComponents do
             {Path.basename(path)}
           </div>
         </div>
-        <span :if={@text != ""} class="whitespace-pre-wrap">{@text}</span>
+        <div :if={@text != ""} class="prose prose-sm prose-invert max-w-none">{Markdown.render(@text)}</div>
       </div>
     </div>
     <div :for={tr <- @tool_results} class="ml-4 my-1">
