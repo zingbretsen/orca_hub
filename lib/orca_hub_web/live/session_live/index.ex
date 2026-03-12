@@ -99,6 +99,19 @@ defmodule OrcaHubWeb.SessionLive.Index do
     end
   end
 
+  def handle_event("create_for_worktree", %{"project-id" => project_id, "directory" => directory}, socket) do
+    params = %{"project_id" => project_id, "directory" => directory}
+
+    case Sessions.create_session(params) do
+      {:ok, session} ->
+        {:ok, _} = OrcaHub.SessionSupervisor.start_session(session.id)
+        {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to create session")}
+    end
+  end
+
   def handle_event("set_filter", %{"filter" => filter}, socket) do
     filter = String.to_existing_atom(filter)
     tagged_sessions = Cluster.list_sessions(filter)
@@ -279,6 +292,10 @@ defmodule OrcaHubWeb.SessionLive.Index do
         {g1, _}, {g2, _} when g1 != g2 -> g1 <= g2
         {_, date_a}, {_, date_b} -> NaiveDateTime.compare(date_a, date_b) != :lt
       end)
+      |> Enum.map(fn {{node_name, project}, sessions} ->
+        {main_sessions, worktree_groups} = split_worktree_sessions(project, sessions)
+        {{node_name, project}, main_sessions, worktree_groups}
+      end)
     else
       # Single-node mode: group by project only (original behavior)
       groups = Enum.group_by(sessions, & &1.project)
@@ -304,7 +321,48 @@ defmodule OrcaHubWeb.SessionLive.Index do
         {g1, _}, {g2, _} when g1 != g2 -> g1 <= g2
         {_, date_a}, {_, date_b} -> NaiveDateTime.compare(date_a, date_b) != :lt
       end)
+      |> Enum.map(fn {{node_name, project}, sessions} ->
+        {main_sessions, worktree_groups} = split_worktree_sessions(project, sessions)
+        {{node_name, project}, main_sessions, worktree_groups}
+      end)
     end
+  end
+
+  # No worktree sub-grouping for unassigned sessions
+  defp split_worktree_sessions(nil, sessions), do: {sessions, []}
+
+  defp split_worktree_sessions(project, sessions) do
+    project_dir = Path.expand(project.directory)
+
+    {main, worktree} =
+      Enum.split_with(sessions, fn session ->
+        Path.expand(session.directory) == project_dir
+      end)
+
+    worktree_groups =
+      if worktree == [] do
+        []
+      else
+        # Look up git worktrees for branch name display
+        worktrees = Projects.git_worktree_list(project)
+        worktree_map = Map.new(worktrees, fn wt -> {Path.expand(wt[:path]), wt} end)
+
+        worktree
+        |> Enum.group_by(& &1.directory)
+        |> Enum.map(fn {dir, dir_sessions} ->
+          wt_info = worktree_map[Path.expand(dir)]
+          label = if wt_info, do: wt_info[:branch], else: Path.basename(dir)
+          {dir, label, dir_sessions}
+        end)
+        |> Enum.sort_by(
+          fn {_dir, _label, dir_sessions} ->
+            dir_sessions |> Enum.map(& &1.updated_at) |> Enum.max(NaiveDateTime)
+          end,
+          {:desc, NaiveDateTime}
+        )
+      end
+
+    {main, worktree_groups}
   end
 
   defp browse_to(socket, path) do

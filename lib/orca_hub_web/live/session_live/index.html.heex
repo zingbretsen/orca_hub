@@ -22,13 +22,13 @@
   No sessions yet.
 </div>
 
-<details :for={{{node_name, project}, sessions} <- @grouped_sessions} class="mb-4 group" {if(sessions != [], do: [open: true], else: [])}>
+<details :for={{{node_name, project}, main_sessions, worktree_groups} <- @grouped_sessions} class="mb-4 group" {if(main_sessions != [] || worktree_groups != [], do: [open: true], else: [])}>
   <summary class="flex items-center justify-between cursor-pointer list-none mb-2 rounded-lg px-2 py-1 -mx-2 hover:bg-base-200 transition-colors">
     <h3 class="text-sm font-semibold text-base-content/70 flex items-center gap-2">
       <.icon name="hero-chevron-right-micro" class="size-4 transition-transform group-open:rotate-90" />
       <.icon name={if(project, do: "hero-code-bracket-micro", else: "hero-folder-micro")} class="size-4" />
       {if project, do: project.name, else: "Unassigned"}
-      <span class="badge badge-sm badge-ghost">{length(sessions)}</span>
+      <span class="badge badge-sm badge-ghost">{length(main_sessions) + Enum.sum(Enum.map(worktree_groups, fn {_, _, s} -> length(s) end))}</span>
       <span :if={node_name} class="badge badge-sm badge-outline opacity-60">{node_name}</span>
     </h3>
     <button
@@ -44,10 +44,10 @@
     </.link>
   </summary>
 
-  <div :if={sessions == []} class="text-sm text-base-content/50 p-4">
+  <div :if={main_sessions == [] && worktree_groups == []} class="text-sm text-base-content/50 p-4">
     No active sessions.
   </div>
-  <.table :if={sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}-#{node_name || "local"}"} rows={sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
+  <.table :if={main_sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}-#{node_name || "local"}"} rows={main_sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
     <:col :let={session} label="Title" class="w-3/5">{session.title}</:col>
     <:col :let={session} label="Status" class="w-1/5">
       <span class={[
@@ -68,6 +68,45 @@
       </.link>
     </:action>
   </.table>
+
+  <div :for={{dir, branch, wt_sessions} <- worktree_groups} class="ml-6 mt-3">
+    <div class="flex items-center justify-between mb-1">
+      <h4 class="text-xs font-semibold text-base-content/50 flex items-center gap-2">
+        <.icon name="hero-arrow-path-micro" class="size-3.5" />
+        {branch}
+        <span class="badge badge-sm badge-ghost">{length(wt_sessions)}</span>
+      </h4>
+      <button
+        phx-click="create_for_worktree"
+        phx-value-project-id={project.id}
+        phx-value-directory={dir}
+        class="btn btn-xs btn-ghost"
+      >
+        + New
+      </button>
+    </div>
+    <.table id={"sessions-wt-#{project.id}-#{branch}"} rows={wt_sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
+      <:col :let={session} label="Title" class="w-3/5">{session.title}</:col>
+      <:col :let={session} label="Status" class="w-1/5">
+        <span class={[
+          "badge",
+          session.status == "running" && "badge-warning",
+          session.status == "compacting" && "badge-warning",
+          session.status == "waiting" && "badge-info",
+          session.status == "idle" && "badge-success",
+          session.status == "ready" && "badge-ghost",
+          session.status == "error" && "badge-error"
+        ]}>
+          {session.status}
+        </span>
+      </:col>
+      <:action :let={session}>
+        <.link phx-click="archive" phx-value-id={session.id}>
+          Archive
+        </.link>
+      </:action>
+    </.table>
+  </div>
 </details>
 
 <div :if={@live_action == :new} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
