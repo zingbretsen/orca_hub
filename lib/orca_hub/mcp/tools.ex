@@ -267,6 +267,30 @@ defmodule OrcaHub.MCP.Tools do
         }
       },
       %{
+        "name" => "start_session",
+        "description" =>
+          "Create a new Claude Code session in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "prompt" => %{
+              "type" => "string",
+              "description" => "The starting prompt to send to the new session"
+            },
+            "directory" => %{
+              "type" => "string",
+              "description" =>
+                "Override the working directory for the new session. Defaults to the calling session's directory."
+            },
+            "title" => %{
+              "type" => "string",
+              "description" => "Optional title for the new session. Auto-generated if not provided."
+            }
+          },
+          "required" => ["prompt"]
+        }
+      },
+      %{
         "name" => "open_file",
         "description" =>
           "Open a file in the user's session file viewer. The file will appear in a side panel next to the chat. Use this to show the user a file you've written or modified, or to pull up a reference file for discussion. Supports relative paths (within the project) and absolute paths (opened read-only if outside the project directory).",
@@ -616,6 +640,32 @@ defmodule OrcaHub.MCP.Tools do
         end)
 
       text(Jason.encode!(results))
+    end
+  end
+
+  def call("start_session", args, state) do
+    case state.orca_session_id do
+      nil ->
+        error("No OrcaHub session linked to this MCP connection. Cannot determine project.")
+
+      caller_session_id ->
+        caller = Sessions.get_session!(caller_session_id)
+        directory = args["directory"] || caller.directory
+        project_id = caller.project_id
+
+        session_attrs =
+          %{directory: directory, project_id: project_id}
+          |> maybe_put_field(:title, args["title"])
+
+        case Sessions.create_session(session_attrs) do
+          {:ok, session} ->
+            {:ok, _} = SessionSupervisor.start_session(session.id)
+            SessionRunner.send_message(session.id, args["prompt"])
+            text("Session #{session.id} started in #{directory}")
+
+          {:error, changeset} ->
+            error("Failed to create session: #{inspect(changeset.errors)}")
+        end
     end
   end
 
