@@ -25,6 +25,8 @@
     ]}>
       {@status}
     </span>
+    <span :if={@plan_mode == :planning} class="badge badge-warning badge-outline ml-1">planning</span>
+    <span :if={@plan_mode == :review} class="badge badge-info badge-outline ml-1">needs review</span>
     <:subtitle>
       <.link :if={@session.project} navigate={~p"/projects/#{@session.project}"} class="hover:underline">
         {@session.project.name}
