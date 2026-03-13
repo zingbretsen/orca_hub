@@ -55,12 +55,52 @@
     </:actions>
   </.header>
 
+  <div :if={@todos != []} class="mb-2">
+    <details open class="collapse collapse-arrow bg-base-200 rounded-lg">
+      <summary class="collapse-title text-sm font-medium py-2 min-h-0">
+        Tasks
+        <span class="badge badge-xs badge-ghost ml-1">
+          {Enum.count(@todos, & &1["status"] == "completed")}/{length(@todos)}
+        </span>
+      </summary>
+      <div class="collapse-content px-3 pb-2">
+        <ul class="space-y-1">
+          <li :for={todo <- @todos} class="flex items-start gap-2 text-sm">
+            <.icon :if={todo["status"] == "completed"} name="hero-check-circle-solid" class="size-4 text-success shrink-0 mt-0.5" />
+            <.icon :if={todo["status"] == "in_progress"} name="hero-arrow-path" class="size-4 text-warning shrink-0 mt-0.5" />
+            <.icon :if={todo["status"] == "pending"} name="hero-ellipsis-horizontal-circle" class="size-4 text-base-content/30 shrink-0 mt-0.5" />
+            <span class={[todo["status"] == "completed" && "line-through text-base-content/50"]}>
+              {todo["content"]}
+            </span>
+          </li>
+        </ul>
+      </div>
+    </details>
+  </div>
+
   <%!-- Main content area: side-by-side on desktop when files are open --%>
   <div class="flex flex-1 min-h-0 gap-4">
     <%!-- Chat column --%>
     <div class="flex flex-col min-w-0 flex-1">
       <div id="message-feed" phx-hook="ScrollToBottom" class="flex-1 overflow-y-auto space-y-1 p-4 bg-base-200 rounded-lg text-sm">
         <MessageComponents.message_feed messages={@messages} />
+      </div>
+
+      <div :if={@plan_mode == :review} class="mt-2 card bg-warning/10 border border-warning/30">
+        <div class="card-body p-3 gap-2">
+          <div class="flex items-center gap-2">
+            <span class="badge badge-warning badge-sm">Plan Review</span>
+            <span class="text-sm text-base-content/70">Claude has proposed a plan. Review it in the editor, make edits, then approve or provide feedback.</span>
+          </div>
+          <div class="flex gap-2">
+            <button phx-click="approve_plan" class="btn btn-sm btn-success">
+              <.icon name="hero-check-micro" class="size-4" /> Approve Plan
+            </button>
+            <button phx-click="reject_plan" class="btn btn-sm btn-ghost">
+              <.icon name="hero-x-mark-micro" class="size-4" /> Dismiss
+            </button>
+          </div>
+        </div>
       </div>
 
       <div :for={request <- @feedback_requests} class="mt-2 card bg-info/10 border border-info/30">

@@ -41,6 +41,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:file_mtimes, %{})
      |> assign(:scroll_to_line, nil)
      |> assign(:scroll_to_block, nil)
+     |> assign(:plan_mode, detect_plan_mode(runner_state.messages))
+     |> assign(:pending_plan_file, nil)
+     |> assign(:plan_file_path, nil)
+     |> assign(:plan_file_original_mtime, nil)
+     |> assign(:todos, [])
+     |> assign(:todo_mtime, nil)
+     |> load_session_todos()
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
        max_entries: 5,
@@ -161,6 +168,30 @@ defmodule OrcaHubWeb.SessionLive.Show do
     session = socket.assigns.session
     {:ok, session} = Sessions.unarchive_session(session)
     {:noreply, assign(socket, :session, session)}
+  end
+
+  def handle_event("approve_plan", _params, socket) do
+    plan_edited? = plan_file_was_edited?(socket)
+
+    prompt =
+      if plan_edited? do
+        "The plan has been edited by the user. Please re-read the plan file and review the changes before proceeding with implementation."
+      else
+        "The plan looks good. Please exit plan mode and proceed with implementation."
+      end
+
+    case SessionRunner.send_message(socket.assigns.session.id, prompt) do
+      :ok ->
+        {:noreply, assign(socket, plan_mode: false, plan_file_path: nil, plan_file_original_mtime: nil)}
+
+      {:error, :busy} ->
+        {:noreply, put_flash(socket, :error, "Session is busy")}
+    end
+  end
+
+  def handle_event("reject_plan", _params, socket) do
+    # Clear plan review — user can type their feedback in the prompt
+    {:noreply, assign(socket, plan_mode: false, plan_file_path: nil, plan_file_original_mtime: nil)}
   end
 
   def handle_event("commit", _params, socket) do
@@ -370,7 +401,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   @impl true
   def handle_info({:event, event}, socket) do
-    {:noreply, assign(socket, :messages, socket.assigns.messages ++ [event])}
+    socket = assign(socket, :messages, socket.assigns.messages ++ [event])
+    socket = handle_plan_events(socket, event)
+    {:noreply, socket}
   end
 
   @impl true
@@ -414,6 +447,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
   @impl true
   def handle_info(:poll_file_changes, socket) do
     Process.send_after(self(), :poll_file_changes, 2000)
+
+    socket = load_session_todos(socket)
 
     if socket.assigns.open_files == [] do
       {:noreply, socket}
@@ -639,6 +674,128 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp line_to_block_index(_, _), do: nil
+
+  # -- Todo helpers --
+
+  @todos_dir Path.join(System.user_home!(), ".claude/todos")
+
+  defp load_session_todos(socket) do
+    case todo_file_path(socket) do
+      nil -> socket
+      path ->
+        mtime = file_mtime(path)
+
+        if mtime == socket.assigns.todo_mtime do
+          socket
+        else
+          case File.read(path) do
+            {:ok, content} ->
+              case Jason.decode(content) do
+                {:ok, todos} when is_list(todos) ->
+                  assign(socket, todos: todos, todo_mtime: mtime)
+
+                _ ->
+                  socket
+              end
+
+            {:error, _} ->
+              socket
+          end
+        end
+    end
+  end
+
+  defp todo_file_path(socket) do
+    id = socket.assigns.session.claude_session_id
+
+    id =
+      if is_nil(id) do
+        try do
+          SessionRunner.get_state(socket.assigns.session.id).claude_session_id
+        rescue
+          _ -> nil
+        end
+      else
+        id
+      end
+
+    case id do
+      nil -> nil
+      _ -> Path.join(@todos_dir, "#{id}-agent-#{id}.json")
+    end
+  end
+
+  # -- Plan mode helpers --
+
+  @plans_dir Path.join(System.user_home!(), ".claude/plans")
+
+  defp handle_plan_events(socket, %{"type" => "assistant", "message" => %{"content" => content}}) when is_list(content) do
+    tool_uses = Enum.filter(content, &(is_map(&1) && &1["type"] == "tool_use"))
+
+    Enum.reduce(tool_uses, socket, fn tool_use, acc ->
+      case tool_use["name"] do
+        "EnterPlanMode" ->
+          assign(acc, :plan_mode, :planning)
+
+        "ExitPlanMode" ->
+          assign(acc, :plan_mode, :review)
+
+        "Write" when acc.assigns.plan_mode == :planning ->
+          file_path = get_in(tool_use, ["input", "file_path"]) || ""
+          if String.starts_with?(file_path, @plans_dir) do
+            assign(acc, :pending_plan_file, file_path)
+          else
+            acc
+          end
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  defp handle_plan_events(socket, %{"type" => "result"}) do
+    case socket.assigns.pending_plan_file do
+      nil ->
+        socket
+
+      path ->
+        socket
+        |> assign(:pending_plan_file, nil)
+        |> assign(:plan_file_path, path)
+        |> assign(:plan_file_original_mtime, file_mtime(path))
+        |> open_file_tab(path)
+        |> assign(:file_edit_mode, true)
+    end
+  end
+
+  defp handle_plan_events(socket, _event), do: socket
+
+  defp plan_file_was_edited?(socket) do
+    case {socket.assigns.plan_file_path, socket.assigns.plan_file_original_mtime} do
+      {nil, _} -> false
+      {_, nil} -> false
+      {path, original_mtime} -> file_mtime(path) != original_mtime
+    end
+  end
+
+  defp detect_plan_mode(messages) do
+    # Only reconstruct :planning from history — :review is transient
+    # and should only appear live when ExitPlanMode fires
+    Enum.reduce(messages, false, fn msg, state ->
+      case msg do
+        %{"type" => "assistant", "message" => %{"content" => content}} when is_list(content) ->
+          Enum.reduce(content, state, fn
+            %{"type" => "tool_use", "name" => "EnterPlanMode"}, _ -> :planning
+            %{"type" => "tool_use", "name" => "ExitPlanMode"}, _ -> false
+            _, acc -> acc
+          end)
+
+        _ ->
+          state
+      end
+    end)
+  end
 
   # -- File tree components --
 
