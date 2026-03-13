@@ -6,15 +6,16 @@ graph TB
 
     App --> Telemetry["OrcaHubWeb.Telemetry"]
     App --> Repo["OrcaHub.Repo\n(PostgreSQL)"]
+    App --> DNS["DNSCluster"]
     App --> PubSub["Phoenix.PubSub"]
     App --> SessionRegistry["Registry\n(SessionRegistry)"]
     App --> MCPRegistry["Registry\n(MCPRegistry)"]
     App --> TaskSupervisor["Task.Supervisor"]
-    App --> SessionSupervisor["DynamicSupervisor\n(SessionSupervisor)"]
+    App --> SessionSupervisor["OrcaHub.SessionSupervisor\n(DynamicSupervisor)"]
     App --> MCPSupervisor["DynamicSupervisor\n(MCPSupervisor)"]
     App --> UpstreamClient["MCP.UpstreamClient\n(GenServer)"]
     App --> Scheduler["Quantum Scheduler"]
-    App --> TriggerLoader["TriggerLoader\n(init cron jobs)"]
+    App --> TriggerLoader["TriggerLoader\n(GenServer, init cron jobs)"]
     App --> Endpoint["OrcaHubWeb.Endpoint"]
 
     SessionSupervisor -->|start_child| SR1["SessionRunner\n(GenStatem)"]

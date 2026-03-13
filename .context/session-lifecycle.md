@@ -1,6 +1,6 @@
 # Session Lifecycle
 
-SessionRunner is a GenStatem with 5 states.
+SessionRunner is a GenStatem with 4 states.
 
 ```mermaid
 stateDiagram-v2
@@ -14,23 +14,24 @@ stateDiagram-v2
     running --> idle: CLI exits (code 0)\nno pending prompts
     running --> running: CLI exits\npending prompts\n(auto-resume)
     running --> error: CLI exits (code ≠ 0)\nno pending prompts
-    running --> waiting: get_human_feedback\nMCP tool called
-    running --> compacting: context window full\n(auto-compact)
+    running --> waiting: feedback_requested cast
 
-    compacting --> running: compact complete
-
-    waiting --> running: feedback answered\n+ pending prompts
-    waiting --> idle: feedback answered\nno pending prompts
-    waiting --> running: CLI exits\npending feedback\n(auto-resume)
+    waiting --> running: feedback answered\nport still open
+    waiting --> idle: feedback answered\nport closed
+    waiting --> waiting: CLI exits\npending prompts\n(auto-resume, stays waiting)
 
     note right of running
         CLI process active via Port.
         Streams NDJSON events.
         Messages persisted and broadcast.
+        "compacting" status broadcast within
+        this state (no state transition).
     end note
 
     note right of waiting
         Blocks until human responds
         via MCP feedback tool.
+        Port may still be open or
+        may have already exited.
     end note
 ```

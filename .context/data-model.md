@@ -8,7 +8,7 @@ erDiagram
     Issue ||--o{ Session : "worked by"
     Session ||--o{ Message : contains
     Session ||--o{ FeedbackRequest : has
-    Trigger ||--o| Session : "last_session"
+    Trigger }o--o| Session : "last_session"
 
     Project {
         binary_id id PK
@@ -40,15 +40,15 @@ erDiagram
     Issue {
         binary_id id PK
         string title
-        text description
+        string description
         string status "open|in_progress|closed"
-        text approaches_tried "append-only"
-        text notes "append-only"
+        string approaches_tried "append-only"
+        string notes "append-only"
         binary_id project_id FK
     }
 
     FeedbackRequest {
-        binary_id id PK
+        integer id PK
         string question
         string response
         string status "pending|responded|cancelled"
@@ -59,14 +59,14 @@ erDiagram
     Trigger {
         binary_id id PK
         string name
-        text prompt
+        string prompt
         string type "scheduled|webhook"
         string cron_expression
         string webhook_secret "auto-generated"
         boolean reuse_session
         boolean archive_on_complete
         boolean enabled
-        binary_id last_session_id
+        binary_id last_session_id "plain field, not association"
         utc_datetime last_fired_at
         binary_id project_id FK
     }

@@ -7,15 +7,17 @@ graph TB
         Router["Router"]
         SessionShow["SessionLive.Show"]
         SessionIndex["SessionLive.Index"]
-        ProjectLive["ProjectLive"]
-        IssueLive["IssueLive"]
-        TriggerLive["TriggerLive"]
+        ProjectIndex["ProjectLive.Index"]
+        ProjectShow["ProjectLive.Show"]
+        IssueIndex["IssueLive.Index"]
+        IssueShow["IssueLive.Show"]
+        TriggerLive["TriggerLive.Index"]
         QueueLive["QueueLive"]
         UsageLive["UsageLive"]
         DashboardLive["DashboardLive"]
-        SettingsLive["SettingsLive"]
+        SettingsLive["SettingsLive.Index"]
         MCPPlug["MCP.Plug"]
-        WebhookPlug["WebhookController"]
+        WebhookCtrl["WebhookController"]
     end
 
     subgraph Core["Core"]
@@ -57,8 +59,8 @@ graph TB
     end
 
     Endpoint --> Router
-    Router --> SessionShow & SessionIndex & ProjectLive & IssueLive & TriggerLive & QueueLive & UsageLive & DashboardLive & SettingsLive
-    Router --> MCPPlug & WebhookPlug
+    Router --> SessionShow & SessionIndex & ProjectIndex & ProjectShow & IssueIndex & IssueShow & TriggerLive & QueueLive & UsageLive & DashboardLive & SettingsLive
+    Router --> MCPPlug & WebhookCtrl
 
     SessionShow -->|send_message| SessionRunner
     SessionRunner -->|broadcast| PubSub
@@ -79,15 +81,16 @@ graph TB
 
     MCPPlug --> MCPServer
     MCPServer --> MCPTools
-    MCPTools --> Sessions & Issues & Feedback & AgentPresence
+    MCPTools --> Sessions & Issues & Feedback & Triggers & Projects
     MCPServer --> UpstreamClient
     UpstreamClient --> UpstreamServers
 
     Scheduler --> TriggerExecutor
-    WebhookPlug --> TriggerExecutor
+    WebhookCtrl --> TriggerExecutor
     TriggerExecutor --> SessionSupervisor
     SessionSupervisor --> SessionRunner
 
     UsageLive --> Usage
-    TaskSupervisor -.->|title gen| OpenAI
+    SessionRunner -.->|title gen via| TaskSupervisor
+    TaskSupervisor -.-> OpenAI
 ```

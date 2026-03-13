@@ -7,17 +7,17 @@ sequenceDiagram
     participant User
     participant LiveView as SessionLive.Show
     participant Runner as SessionRunner<br>(GenStatem)
-    participant CLI as Claude CLI<br>(Port)
+    participant CLI as Claude CLI<br>(via script wrapper)
     participant Parser as StreamParser
     participant DB as PostgreSQL
     participant PubSub
 
     User->>LiveView: Type message + send
-    LiveView->>LiveView: Handle uploads<br>(files saved to session dir)
+    LiveView->>LiveView: Handle uploads<br>(files saved to /tmp)
     LiveView->>Runner: send_message(prompt)
-    Runner->>Runner: Queue prompt if running,<br>else start CLI
+    Runner->>Runner: If running: SIGINT + queue prompt.<br>If idle/ready/error: start CLI.
 
-    Runner->>CLI: open_port(script + claude args)
+    Runner->>CLI: open_port(script -qc "claude ...")
     Note over Runner,CLI: --append-system-prompt<br>--mcp-config<br>--output-format stream-json
 
     loop NDJSON stream
@@ -51,9 +51,11 @@ sequenceDiagram
     participant Server as MCP.Server<br>(GenServer)
     participant Tools as MCP.Tools
     participant Context as OrcaHub Contexts
-    participant Upstream as Upstream MCP<br>Servers
+    participant UpClient as MCP.UpstreamClient<br>(GenServer)
+    participant Upstream as External MCP<br>Servers
 
     CLI->>MCPPlug: HTTP POST /mcp<br>(JSON-RPC)
+    MCPPlug->>MCPPlug: initialize? Start new<br>MCP.Server under MCPSupervisor
     MCPPlug->>Server: route request
 
     alt OrcaHub tool
@@ -62,8 +64,10 @@ sequenceDiagram
         Context-->>Tools: result
         Tools-->>Server: response
     else Upstream tool
-        Server->>Upstream: proxy call
-        Upstream-->>Server: result
+        Server->>UpClient: call_tool(tool_name, args)
+        UpClient->>Upstream: proxy call
+        Upstream-->>UpClient: result
+        UpClient-->>Server: result
     end
 
     Server-->>MCPPlug: JSON-RPC response
