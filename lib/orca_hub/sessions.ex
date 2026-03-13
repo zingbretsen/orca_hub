@@ -5,8 +5,10 @@ defmodule OrcaHub.Sessions do
   def list_sessions(filter \\ :manual) do
     query =
       from s in Session,
+        left_join: p in assoc(s, :project),
         where: is_nil(s.archived_at),
-        preload: [:project],
+        where: is_nil(s.project_id) or is_nil(p.deleted_at),
+        preload: [project: p],
         order_by: [desc: s.updated_at]
 
     query =

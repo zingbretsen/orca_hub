@@ -27,6 +27,9 @@ defmodule OrcaHub.ClaudeImport do
     # Get all existing projects by directory for matching
     existing_projects = existing_projects_by_directory()
 
+    # Get directories of deleted projects so we don't recreate them
+    deleted_dirs = deleted_project_directories()
+
     # Scan all project directories
     project_dirs = list_project_dirs()
 
@@ -34,6 +37,13 @@ defmodule OrcaHub.ClaudeImport do
 
     Enum.reduce(project_dirs, summary, fn project_dir, acc ->
       project_path = decode_project_dir(Path.basename(project_dir))
+      resolved_path = resolve_worktree_parent(project_path)
+
+      # Skip directories whose projects were deleted
+      if MapSet.member?(deleted_dirs, resolved_path) do
+        if verbose, do: Logger.info("[skip] Project #{resolved_path} was deleted, skipping")
+        acc
+      else
 
       # Find or create project
       {project, acc} = find_or_create_project(project_path, existing_projects, acc, verbose)
@@ -64,6 +74,7 @@ defmodule OrcaHub.ClaudeImport do
           end
         end
       end)
+      end
     end)
   end
 
@@ -248,8 +259,13 @@ defmodule OrcaHub.ClaudeImport do
   end
 
   defp existing_projects_by_directory do
-    Repo.all(from p in Project, select: {p.directory, p})
+    Repo.all(from p in Project, where: is_nil(p.deleted_at), select: {p.directory, p})
     |> Map.new()
+  end
+
+  defp deleted_project_directories do
+    Repo.all(from p in Project, where: not is_nil(p.deleted_at), select: p.directory)
+    |> MapSet.new()
   end
 
   defp list_project_dirs do

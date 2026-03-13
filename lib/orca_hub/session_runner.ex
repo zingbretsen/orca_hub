@@ -479,7 +479,8 @@ defmodule OrcaHub.SessionRunner do
         "Your OrcaHub session ID is #{data.session_id}.",
         commit_trailer_prompt(data.session_id),
         issue_system_prompt(data.issue_id),
-        siblings_system_prompt(data.directory, data.session_id)
+        siblings_system_prompt(data.directory, data.session_id),
+        context_files_prompt(data.directory)
       ]
       |> Enum.reject(&is_nil/1)
 
@@ -538,6 +539,27 @@ defmodule OrcaHub.SessionRunner do
         Check the .agents/ directory for updated session statuses.
         """
         |> String.trim()
+    end
+  end
+
+  defp context_files_prompt(directory) do
+    context_dir = Path.join(directory, ".context")
+
+    if File.dir?(context_dir) do
+      context_dir
+      |> File.ls!()
+      |> Enum.filter(&(Path.extname(&1) in ~w(.md .mmd)))
+      |> Enum.sort()
+      |> Enum.map(fn filename ->
+        content = File.read!(Path.join(context_dir, filename))
+        "## #{Path.rootname(filename)}\n\n#{content}"
+      end)
+      |> case do
+        [] -> nil
+        parts -> "# Project Context\n\n#{Enum.join(parts, "\n\n")}"
+      end
+    else
+      nil
     end
   end
 

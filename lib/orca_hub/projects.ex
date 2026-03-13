@@ -6,12 +6,12 @@ defmodule OrcaHub.Projects do
   @instruction_files ~w(CLAUDE.md AGENTS.md)
 
   def list_projects do
-    Repo.all(from p in Project, order_by: [asc: p.name])
+    Repo.all(from p in Project, where: is_nil(p.deleted_at), order_by: [asc: p.name])
   end
 
   def search(query) do
     like = "%#{query}%"
-    Repo.all(from p in Project, where: ilike(p.name, ^like), order_by: [asc: p.name], limit: 5)
+    Repo.all(from p in Project, where: ilike(p.name, ^like) and is_nil(p.deleted_at), order_by: [asc: p.name], limit: 5)
   end
 
   def get_project!(id) do
@@ -31,7 +31,11 @@ defmodule OrcaHub.Projects do
     |> Repo.update()
   end
 
-  def delete_project(%Project{} = project), do: Repo.delete(project)
+  def delete_project(%Project{} = project) do
+    project
+    |> Project.changeset(%{deleted_at: DateTime.utc_now() |> DateTime.truncate(:second)})
+    |> Repo.update()
+  end
 
   @doc """
   Loads the first found instructions file (CLAUDE.md, AGENTS.md) from the project directory.
