@@ -211,8 +211,23 @@ let Hooks = {
         }, 200)
       })
     },
+    beforeUpdate() {
+      this._prevScrollTop = this.el.scrollTop
+      this._prevScrollHeight = this.el.scrollHeight
+      // Freeze scroll position during DOM patch to prevent reflow flash
+      this.el.style.overflowY = "hidden"
+    },
     updated() {
-      if (this.following) this.scrollToBottom(true)
+      const newContent = this.el.scrollHeight !== this._prevScrollHeight
+      // Restore overflow immediately
+      this.el.style.overflowY = "auto"
+
+      if (this.following) {
+        // Instant for layout shifts, smooth for new messages
+        this.scrollToBottom(newContent)
+      } else {
+        this.el.scrollTop = this._prevScrollTop
+      }
     },
     scrollToBottom(smooth) {
       this.el.scrollTo({

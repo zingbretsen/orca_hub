@@ -186,6 +186,18 @@ defmodule OrcaHub.Sessions do
     end
   end
 
+  @doc """
+  Returns the full commit body and diffstat for a given commit hash.
+  """
+  def get_commit_detail(directory, hash) do
+    with {body, 0} <- System.cmd("git", ["log", "-1", "--format=%b", hash], cd: directory, stderr_to_stdout: true),
+         {stat, 0} <- System.cmd("git", ["diff-tree", "--stat", "--no-commit-id", "-r", hash], cd: directory, stderr_to_stdout: true) do
+      %{body: String.trim(body), stat: String.trim(stat)}
+    else
+      _ -> %{body: "", stat: ""}
+    end
+  end
+
   defp parse_git_log_output(""), do: []
 
   defp parse_git_log_output(output) do

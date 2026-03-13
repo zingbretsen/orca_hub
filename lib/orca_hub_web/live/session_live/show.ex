@@ -46,7 +46,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:plan_file_path, nil)
      |> assign(:plan_file_original_mtime, nil)
      |> assign(:todos, [])
-     |> assign(:show_todos, true)
+     |> assign(:show_todos, false)
      |> assign(:show_commits, false)
      |> assign(:commits, [])
      |> assign(:expanded_commit, nil)

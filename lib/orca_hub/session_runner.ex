@@ -477,12 +477,26 @@ defmodule OrcaHub.SessionRunner do
     parts =
       [
         "Your OrcaHub session ID is #{data.session_id}.",
+        commit_trailer_prompt(data.session_id),
         issue_system_prompt(data.issue_id),
         siblings_system_prompt(data.directory, data.session_id)
       ]
       |> Enum.reject(&is_nil/1)
 
     Enum.join(parts, "\n\n")
+  end
+
+  defp commit_trailer_prompt(session_id) do
+    """
+    When making git commits, ALWAYS append this trailer to the commit message:
+
+    OrcaHub-Session: #{session_id}
+
+    This links the commit to your OrcaHub session. Add it as a git trailer \
+    (blank line after the commit body, then the trailer line). \
+    Never omit this trailer.\
+    """
+    |> String.trim()
   end
 
   defp issue_system_prompt(nil), do: nil
