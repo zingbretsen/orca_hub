@@ -228,6 +228,45 @@ defmodule OrcaHub.MCP.Tools do
         }
       },
       %{
+        "name" => "search_sessions",
+        "description" =>
+          "Search for other OrcaHub sessions. By default, searches for sessions in the same project directory as the calling session. You can optionally provide a different directory to search in, or a query string to filter by title. Use this to discover other sessions you may want to coordinate with or learn from.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "directory" => %{
+              "type" => "string",
+              "description" =>
+                "Directory to search for sessions in. Defaults to the current session's project directory. Provide an absolute path to search in a different project."
+            },
+            "query" => %{
+              "type" => "string",
+              "description" =>
+                "Optional text to filter sessions by title. Case-insensitive partial match."
+            },
+            "status" => %{
+              "type" => "string",
+              "enum" => ["running", "idle", "waiting", "error", "ready"],
+              "description" => "Optional filter by session status"
+            },
+            "include_archived" => %{
+              "type" => "boolean",
+              "description" =>
+                "Whether to include archived sessions in results. Default: false. When true, returns both active and archived sessions."
+            },
+            "archived_only" => %{
+              "type" => "boolean",
+              "description" =>
+                "If true, return ONLY archived sessions. Useful for browsing past session history. Default: false"
+            },
+            "limit" => %{
+              "type" => "integer",
+              "description" => "Maximum number of sessions to return. Default: 20"
+            }
+          }
+        }
+      },
+      %{
         "name" => "open_file",
         "description" =>
           "Open a file in the user's session file viewer. The file will appear in a side panel next to the chat. Use this to show the user a file you've written or modified, or to pull up a reference file for discussion. Supports relative paths (within the project) and absolute paths (opened read-only if outside the project directory).",
@@ -502,6 +541,58 @@ defmodule OrcaHub.MCP.Tools do
     rescue
       Ecto.NoResultsError ->
         error("Project #{attrs.project_id} not found")
+    end
+  end
+
+  def call("search_sessions", args, state) do
+    directory =
+      case args["directory"] do
+        nil ->
+          # Default to the current session's project directory
+          case state.orca_session_id do
+            nil -> nil
+            session_id ->
+              case Sessions.get_session(session_id) do
+                nil -> nil
+                session -> session.directory
+              end
+          end
+
+        dir ->
+          dir
+      end
+
+    if is_nil(directory) do
+      error(
+        "Could not determine project directory. Provide a 'directory' parameter, " <>
+          "or ensure this MCP connection is linked to an OrcaHub session."
+      )
+    else
+      limit = args["limit"] || 20
+
+      sessions = Sessions.search_sessions_by_directory(directory, %{
+        query: args["query"],
+        status: args["status"],
+        include_archived: args["include_archived"] || false,
+        archived_only: args["archived_only"] || false,
+        limit: limit
+      })
+
+      results =
+        Enum.map(sessions, fn session ->
+          %{
+            id: session.id,
+            title: session.title,
+            status: session.status,
+            archived: not is_nil(session.archived_at),
+            directory: session.directory,
+            project: if(session.project, do: session.project.name),
+            updated_at: session.updated_at,
+            inserted_at: session.inserted_at
+          }
+        end)
+
+      text(Jason.encode!(results))
     end
   end
 
