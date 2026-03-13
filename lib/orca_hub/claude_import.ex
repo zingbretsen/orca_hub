@@ -232,11 +232,11 @@ defmodule OrcaHub.ClaudeImport do
     end
   end
 
-  # Worktree paths like /foo/bar/.worktrees/branch -> /foo/bar
+  # Worktree paths like /foo/bar/.worktrees/branch or /foo/bar/worktrees/branch -> /foo/bar
   defp resolve_worktree_parent(path) do
     parts = Path.split(path)
 
-    case Enum.find_index(parts, &(&1 == ".worktrees")) do
+    case Enum.find_index(parts, &(&1 in [".worktrees", "worktrees"])) do
       nil -> path
       idx -> parts |> Enum.take(idx) |> Path.join()
     end
