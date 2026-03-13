@@ -307,7 +307,7 @@ defmodule OrcaHubWeb.MessageComponents do
           <.icon name="hero-chevron-right-micro" class="size-3 opacity-50 group-open:rotate-90 transition-transform" />
         </summary>
         <div class="mt-1 ml-2 pl-3 border-l-2 border-success/20">
-          <pre class="text-xs opacity-60 whitespace-pre-wrap overflow-x-auto max-h-64 overflow-y-auto">{@content}</pre>
+          <pre class="text-xs opacity-60 whitespace-pre-wrap overflow-x-auto max-h-64 overflow-y-auto">{linkify_session_ids(@content)}</pre>
         </div>
       </details>
     </div>
@@ -549,7 +549,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :json, Jason.encode!(input, pretty: true))
 
     ~H"""
-    <pre class="text-xs opacity-60 whitespace-pre-wrap overflow-x-auto">{@json}</pre>
+    <pre class="text-xs opacity-60 whitespace-pre-wrap overflow-x-auto">{linkify_session_ids(@json)}</pre>
     """
   end
 
@@ -590,6 +590,19 @@ defmodule OrcaHubWeb.MessageComponents do
     else
       str
     end
+  end
+
+  defp linkify_session_ids(text) do
+    text
+    |> Phoenix.HTML.html_escape()
+    |> Phoenix.HTML.safe_to_string()
+    |> String.replace(
+      ~r/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/,
+      fn uuid ->
+        ~s(<a href="/sessions/#{uuid}" class="link link-info" data-phx-link="redirect" data-phx-link-state="push">#{uuid}</a>)
+      end
+    )
+    |> Phoenix.HTML.raw()
   end
 
   defp truncate(str, max) do
