@@ -35,6 +35,16 @@
       <span :if={!@session.project}>{@session.directory}</span>
     </:subtitle>
     <:actions>
+      <button :if={@todos != []} phx-click="toggle_todos" class={["btn btn-ghost btn-sm btn-circle indicator", @show_todos && "text-primary"]} title="Tasks">
+        <.icon name="hero-clipboard-document-check" class="size-5" />
+        <span class="indicator-item badge badge-xs badge-primary">
+          {Enum.count(@todos, & &1["status"] == "completed")}/{length(@todos)}
+        </span>
+      </button>
+      <button :if={@commits != []} phx-click="toggle_commits" class={["btn btn-ghost btn-sm btn-circle indicator", @show_commits && "text-primary"]} title="Commits">
+        <.icon name="hero-code-bracket" class="size-5" />
+        <span class="indicator-item badge badge-xs badge-primary">{length(@commits)}</span>
+      </button>
       <button phx-click="toggle_file_browser" class={["btn btn-ghost btn-sm btn-circle", (@open_files != [] || @show_file_browser) && "text-primary"]} title="Browse files">
         <.icon name="hero-document-text" class="size-5" />
       </button>
@@ -57,28 +67,35 @@
     </:actions>
   </.header>
 
-  <div :if={@todos != []} class="mb-2">
-    <details open class="collapse collapse-arrow bg-base-200 rounded-lg">
-      <summary class="collapse-title text-sm font-medium py-2 min-h-0">
-        Tasks
-        <span class="badge badge-xs badge-ghost ml-1">
-          {Enum.count(@todos, & &1["status"] == "completed")}/{length(@todos)}
-        </span>
-      </summary>
-      <div class="collapse-content px-3 pb-2">
-        <ul class="space-y-1">
-          <li :for={todo <- @todos} class="flex items-start gap-2 text-sm">
-            <.icon :if={todo["status"] == "completed"} name="hero-check-circle-solid" class="size-4 text-success shrink-0 mt-0.5" />
-            <.icon :if={todo["status"] == "in_progress"} name="hero-arrow-path" class="size-4 text-warning shrink-0 mt-0.5" />
-            <.icon :if={todo["status"] == "pending"} name="hero-ellipsis-horizontal-circle" class="size-4 text-base-content/30 shrink-0 mt-0.5" />
-            <span class={[todo["status"] == "completed" && "line-through text-base-content/50"]}>
-              {todo["content"]}
-            </span>
-          </li>
-        </ul>
-      </div>
-    </details>
+  <div :if={@commits != [] && @show_commits} class="mb-2 bg-base-200 rounded-lg px-3 py-2">
+    <ul class="space-y-1">
+      <li :for={commit <- @commits}>
+        <button phx-click="toggle_commit_detail" phx-value-hash={commit.hash} class="flex items-start gap-2 text-sm w-full text-left hover:bg-base-300/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+          <code class="text-xs text-primary shrink-0">{commit.short_hash}</code>
+          <span class="truncate">{commit.subject}</span>
+          <span class="text-xs text-base-content/40 shrink-0 ml-auto whitespace-nowrap">{format_commit_date(commit.date)}</span>
+        </button>
+        <div :if={@expanded_commit == commit.hash && @commit_detail} class="ml-6 mt-1 mb-2 text-xs space-y-2">
+          <pre :if={@commit_detail.body != ""} class="whitespace-pre-wrap text-base-content/70">{@commit_detail.body}</pre>
+          <pre :if={@commit_detail.stat != ""} class="whitespace-pre-wrap text-base-content/50 font-mono">{@commit_detail.stat}</pre>
+        </div>
+      </li>
+    </ul>
   </div>
+
+  <div :if={@todos != [] && @show_todos} class="mb-2 bg-base-200 rounded-lg px-3 py-2">
+    <ul class="space-y-1">
+      <li :for={todo <- @todos} class="flex items-start gap-2 text-sm">
+        <.icon :if={todo["status"] == "completed"} name="hero-check-circle-solid" class="size-4 text-success shrink-0 mt-0.5" />
+        <.icon :if={todo["status"] == "in_progress"} name="hero-arrow-path" class="size-4 text-warning shrink-0 mt-0.5" />
+        <.icon :if={todo["status"] == "pending"} name="hero-ellipsis-horizontal-circle" class="size-4 text-base-content/30 shrink-0 mt-0.5" />
+        <span class={[todo["status"] == "completed" && "line-through text-base-content/50"]}>
+          {todo["content"]}
+        </span>
+      </li>
+    </ul>
+  </div>
+
 
   <%!-- Main content area: side-by-side on desktop when files are open --%>
   <div class="flex flex-1 min-h-0 gap-4">

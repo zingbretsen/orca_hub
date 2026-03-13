@@ -46,8 +46,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:plan_file_path, nil)
      |> assign(:plan_file_original_mtime, nil)
      |> assign(:todos, [])
-     |> assign(:todo_mtime, nil)
+     |> assign(:show_todos, true)
+     |> assign(:show_commits, false)
+     |> assign(:commits, [])
+     |> assign(:expanded_commit, nil)
+     |> assign(:commit_detail, nil)
      |> load_session_todos()
+     |> load_session_commits()
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
        max_entries: 5,
@@ -157,6 +162,23 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, assign(socket, :tts_autoplay, !socket.assigns.tts_autoplay)}
   end
 
+  def handle_event("toggle_todos", _params, socket) do
+    {:noreply, assign(socket, :show_todos, !socket.assigns.show_todos)}
+  end
+
+  def handle_event("toggle_commits", _params, socket) do
+    {:noreply, assign(socket, :show_commits, !socket.assigns.show_commits)}
+  end
+
+  def handle_event("toggle_commit_detail", %{"hash" => hash}, socket) do
+    if socket.assigns[:expanded_commit] == hash do
+      {:noreply, assign(socket, expanded_commit: nil, commit_detail: nil)}
+    else
+      detail = Sessions.get_commit_detail(socket.assigns.session.directory, hash)
+      {:noreply, assign(socket, expanded_commit: hash, commit_detail: detail)}
+    end
+  end
+
   def handle_event("archive", _params, socket) do
     session = socket.assigns.session
     SessionSupervisor.stop_session(session.id)
@@ -195,9 +217,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("commit", _params, socket) do
-    prompt = "Commit the changes you made in this session. Only stage files you actually modified — do not use `git add -A` or `git add .`. Use a descriptive commit message based on the diff."
+    session_id = socket.assigns.session.id
+    prompt = "Commit the changes you made in this session. Only stage files you actually modified — do not use `git add -A` or `git add .`. Use a descriptive commit message based on the diff. Remember to include the trailer: OrcaHub-Session: #{session_id}"
 
-    case SessionRunner.send_message(socket.assigns.session.id, prompt) do
+    case SessionRunner.send_message(session_id, prompt) do
       :ok ->
         {:noreply, socket}
 
@@ -403,6 +426,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def handle_info({:event, event}, socket) do
     socket = assign(socket, :messages, socket.assigns.messages ++ [event])
     socket = handle_plan_events(socket, event)
+    socket = handle_todo_events(socket, event)
     {:noreply, socket}
   end
 
@@ -420,6 +444,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     socket =
       if status == :idle do
         socket = assign(socket, :feedback_requests, [])
+        socket = load_session_commits(socket)
 
         if socket.assigns.tts_autoplay do
           push_event(socket, "tts-autoplay", %{})
@@ -447,8 +472,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
   @impl true
   def handle_info(:poll_file_changes, socket) do
     Process.send_after(self(), :poll_file_changes, 2000)
-
-    socket = load_session_todos(socket)
 
     if socket.assigns.open_files == [] do
       {:noreply, socket}
@@ -675,54 +698,47 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp line_to_block_index(_, _), do: nil
 
-  # -- Todo helpers --
+  # -- Commit helpers --
 
-  @todos_dir Path.join(System.user_home!(), ".claude/todos")
+  defp format_commit_date(iso_date) do
+    case DateTime.from_iso8601(iso_date) do
+      {:ok, dt, _} ->
+        Calendar.strftime(dt, "%b %d, %H:%M")
 
-  defp load_session_todos(socket) do
-    case todo_file_path(socket) do
-      nil -> socket
-      path ->
-        mtime = file_mtime(path)
-
-        if mtime == socket.assigns.todo_mtime do
-          socket
-        else
-          case File.read(path) do
-            {:ok, content} ->
-              case Jason.decode(content) do
-                {:ok, todos} when is_list(todos) ->
-                  assign(socket, todos: todos, todo_mtime: mtime)
-
-                _ ->
-                  socket
-              end
-
-            {:error, _} ->
-              socket
-          end
-        end
+      _ ->
+        iso_date
     end
   end
 
-  defp todo_file_path(socket) do
-    id = socket.assigns.session.claude_session_id
+  defp load_session_commits(socket) do
+    commits = Sessions.list_session_commits(
+      socket.assigns.session.directory,
+      socket.assigns.session.id
+    )
+    assign(socket, :commits, commits)
+  end
 
-    id =
-      if is_nil(id) do
-        try do
-          SessionRunner.get_state(socket.assigns.session.id).claude_session_id
-        rescue
+  # -- Todo helpers --
+
+  defp load_session_todos(socket) do
+    todos =
+      socket.assigns.messages
+      |> Enum.reverse()
+      |> Enum.find_value([], fn msg ->
+        with %{"type" => "assistant", "message" => %{"content" => content}} when is_list(content) <- msg do
+          content
+          |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use" && &1["name"] == "TodoWrite"))
+          |> List.last()
+          |> case do
+            nil -> nil
+            tool_use -> get_in(tool_use, ["input", "todos"]) || []
+          end
+        else
           _ -> nil
         end
-      else
-        id
-      end
+      end)
 
-    case id do
-      nil -> nil
-      _ -> Path.join(@todos_dir, "#{id}-agent-#{id}.json")
-    end
+    assign(socket, :todos, todos)
   end
 
   # -- Plan mode helpers --
@@ -770,6 +786,24 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp handle_plan_events(socket, _event), do: socket
+
+  # Extract todos from TodoWrite tool calls in the message stream
+  defp handle_todo_events(socket, %{"type" => "assistant", "message" => %{"content" => content}}) when is_list(content) do
+    tool_uses = Enum.filter(content, &(is_map(&1) && &1["type"] == "tool_use"))
+
+    Enum.reduce(tool_uses, socket, fn tool_use, acc ->
+      case tool_use["name"] do
+        "TodoWrite" ->
+          todos = get_in(tool_use, ["input", "todos"]) || []
+          assign(acc, :todos, todos)
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  defp handle_todo_events(socket, _event), do: socket
 
   defp plan_file_was_edited?(socket) do
     case {socket.assigns.plan_file_path, socket.assigns.plan_file_original_mtime} do
