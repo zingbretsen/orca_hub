@@ -1,6 +1,10 @@
 <.header>
   Projects
   <:actions>
+    <button phx-click="import_sessions" class="btn btn-outline" disabled={@importing}>
+      <span :if={@importing} class="loading loading-spinner loading-sm"></span>
+      {if @importing, do: "Importing…", else: "Import Sessions"}
+    </button>
     <.link patch={~p"/projects/new"}>
       <.button>New Project</.button>
     </.link>

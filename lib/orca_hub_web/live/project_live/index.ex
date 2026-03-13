@@ -3,13 +3,14 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
   alias OrcaHub.Projects
   alias OrcaHub.Projects.Project
+  alias OrcaHub.ClaudeImport
 
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
      socket
      |> stream(:projects, Projects.list_projects())
-     |> assign(browsing: false, browse_path: nil, browse_entries: [], browse_show_hidden: false)}
+     |> assign(browsing: false, browse_path: nil, browse_entries: [], browse_show_hidden: false, importing: false)}
   end
 
   @impl true
@@ -30,6 +31,17 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   end
 
   @impl true
+  def handle_event("import_sessions", _params, socket) do
+    pid = self()
+
+    Task.start(fn ->
+      result = ClaudeImport.import_all(verbose: true)
+      send(pid, {:import_done, result})
+    end)
+
+    {:noreply, assign(socket, importing: true)}
+  end
+
   def handle_event("save", %{"project" => params}, socket) do
     save_project(socket, socket.assigns.live_action, params)
   end
@@ -92,6 +104,18 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
   def handle_event("browse_close", _params, socket) do
     {:noreply, assign(socket, browsing: false)}
+  end
+
+  @impl true
+  def handle_info({:import_done, result}, socket) do
+    flash =
+      "Imported #{result.sessions_imported} sessions, skipped #{result.sessions_skipped}, created #{result.projects_created} projects."
+
+    {:noreply,
+     socket
+     |> assign(importing: false)
+     |> stream(:projects, Projects.list_projects(), reset: true)
+     |> put_flash(:info, flash)}
   end
 
   defp save_project(socket, :new, params) do

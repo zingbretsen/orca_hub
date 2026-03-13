@@ -28,6 +28,7 @@ defmodule OrcaHub.Application do
       {Task.Supervisor, name: OrcaHub.TaskSupervisor},
       OrcaHub.SessionSupervisor,
       {DynamicSupervisor, name: OrcaHub.MCPSupervisor, strategy: :one_for_one},
+      OrcaHub.MCP.UpstreamClient,
       OrcaHub.Scheduler,
       OrcaHub.TriggerLoader,
       OrcaHubWeb.Endpoint

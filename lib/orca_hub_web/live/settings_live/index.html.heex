@@ -1,0 +1,121 @@
+<.header>
+  Settings
+</.header>
+
+<div class="mt-8">
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">Upstream MCP Servers</h3>
+    <div class="flex gap-2">
+      <button phx-click="refresh_connections" class="btn btn-sm btn-ghost" title="Refresh connections">
+        <.icon name="hero-arrow-path-micro" class="size-4" />
+      </button>
+      <.link patch={~p"/settings/upstream/new"}>
+        <.button class="btn-sm">Add Server</.button>
+      </.link>
+    </div>
+  </div>
+
+  <p class="text-sm text-base-content/60 mb-4">
+    Connect to external MCP servers and aggregate their tools into OrcaHub's MCP endpoint.
+    Tools from upstream servers are namespaced with a prefix to avoid conflicts.
+  </p>
+
+  <div :if={@show_form} class="card bg-base-200 p-4 mb-6">
+    <h4 class="font-semibold mb-3">
+      {if @editing_server, do: "Edit Server", else: "Add Upstream Server"}
+    </h4>
+    <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-3">
+      <.input field={@form[:name]} type="text" label="Name" placeholder="My MCP Server" phx-debounce="blur" />
+      <.input field={@form[:url]} type="text" label="URL" placeholder="https://example.com/mcp" phx-debounce="blur" />
+      <.input field={@form[:prefix]} type="text" label="Tool prefix" placeholder="Auto-generated from name" phx-debounce="blur" />
+      <p class="text-xs text-base-content/50 -mt-2">
+        Tools will be exposed as <code class="bg-base-300 px-1 rounded">prefix__tool_name</code>
+      </p>
+
+      <div>
+        <label class="label"><span class="label-text">Headers</span></label>
+        <p class="text-xs text-base-content/50 mb-2">
+          Add authentication headers or other custom headers for the upstream server.
+        </p>
+        <div class="space-y-2">
+          <div :for={{pair, idx} <- Enum.with_index(@header_pairs)} class="flex items-center gap-2">
+            <input
+              type="text"
+              name={"header_keys[#{idx}]"}
+              value={pair.key}
+              placeholder="Header name"
+              phx-debounce="blur"
+              class="input input-sm input-bordered flex-1"
+            />
+            <input
+              type="text"
+              name={"header_values[#{idx}]"}
+              value={pair.value}
+              placeholder="Header value"
+              phx-debounce="blur"
+              class="input input-sm input-bordered flex-1"
+            />
+            <button type="button" phx-click="remove_header" phx-value-index={idx} class="btn btn-sm btn-ghost text-error">
+              <.icon name="hero-x-mark-micro" class="size-4" />
+            </button>
+          </div>
+        </div>
+        <button type="button" phx-click="add_header" class="btn btn-xs btn-ghost mt-2">
+          + Add header
+        </button>
+      </div>
+
+      <div class="flex justify-end gap-2 mt-4">
+        <.link patch={~p"/settings"} class="btn btn-sm">Cancel</.link>
+        <.button type="submit" class="btn-sm">
+          {if @editing_server, do: "Update", else: "Add"}
+        </.button>
+      </div>
+    </.form>
+  </div>
+
+  <div :if={@servers == [] && !@show_form} class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg">
+    No upstream MCP servers configured.
+  </div>
+
+  <div :if={@servers != []} class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
+    <div :for={server <- @servers} class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="font-medium">{server.name}</span>
+          <span class={["badge badge-xs", if(server.enabled, do: "badge-success", else: "badge-ghost")]}>
+            {if server.enabled, do: "connected", else: "disabled"}
+          </span>
+          <span :if={server.enabled} class="badge badge-xs badge-info">
+            {tool_count_for_server(@upstream_tools, server)} tools
+          </span>
+        </div>
+        <div class="text-base-content/50 text-xs mt-0.5 font-mono truncate">{server.url}</div>
+        <div class="text-base-content/40 text-xs mt-0.5">
+          Prefix: <code class="bg-base-300 px-1 rounded">{server.prefix}</code>
+        </div>
+      </div>
+      <div class="flex items-center gap-1">
+        <button phx-click="toggle" phx-value-id={server.id} class="btn btn-xs btn-ghost" title={if server.enabled, do: "Disable", else: "Enable"}>
+          <.icon name={if server.enabled, do: "hero-pause-micro", else: "hero-play-micro"} class="size-4" />
+        </button>
+        <.link patch={~p"/settings/upstream/#{server.id}/edit"} class="btn btn-xs btn-ghost" title="Edit">
+          <.icon name="hero-pencil-micro" class="size-4" />
+        </.link>
+        <button phx-click="delete" phx-value-id={server.id} data-confirm="Remove this upstream server?" class="btn btn-xs btn-ghost text-error" title="Delete">
+          <.icon name="hero-trash-micro" class="size-4" />
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div :if={@upstream_tools != []} class="mt-6">
+    <h4 class="text-sm font-semibold text-base-content/70 mb-2">Aggregated Tools ({length(@upstream_tools)})</h4>
+    <div class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
+      <div :for={tool <- @upstream_tools} class="px-4 py-2 text-sm">
+        <div class="font-mono text-xs">{tool["name"]}</div>
+        <div class="text-base-content/50 text-xs truncate">{tool["description"]}</div>
+      </div>
+    </div>
+  </div>
+</div>

@@ -39,6 +39,10 @@ defmodule OrcaHubWeb.Router do
     live "/sessions", SessionLive.Index, :index
     live "/sessions/new", SessionLive.Index, :new
     live "/sessions/:id", SessionLive.Show, :show
+
+    live "/settings", SettingsLive.Index, :index
+    live "/settings/upstream/new", SettingsLive.Index, :new
+    live "/settings/upstream/:id/edit", SettingsLive.Index, :edit
   end
 
   scope "/api", OrcaHubWeb do

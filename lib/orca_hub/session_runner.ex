@@ -361,7 +361,9 @@ defmodule OrcaHub.SessionRunner do
     broadcast(data.session_id, {:event, user_event})
 
     port = open_port(prompt, data)
-    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "running"})
+    session = Sessions.get_session!(data.session_id)
+    if session.archived_at, do: Sessions.unarchive_session(session)
+    Sessions.update_session(session, %{status: "running"})
     broadcast(data.session_id, {:status, :running})
     AgentPresence.update_status(data.directory, data.session_id, "running")
 

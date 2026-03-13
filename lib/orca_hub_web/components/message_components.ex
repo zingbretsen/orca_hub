@@ -73,7 +73,14 @@ defmodule OrcaHubWeb.MessageComponents do
   attr :msg, :map, required: true
 
   defp user_message(assigns) do
-    content_blocks = get_in(assigns.msg, ["message", "content"]) || []
+    raw_content = get_in(assigns.msg, ["message", "content"])
+
+    content_blocks =
+      case raw_content do
+        blocks when is_list(blocks) -> blocks
+        text when is_binary(text) -> [%{"type" => "text", "text" => text}]
+        _ -> []
+      end
 
     # Extract text blocks for the user's prompt display
     text =

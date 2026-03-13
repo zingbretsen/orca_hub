@@ -18,7 +18,8 @@ defmodule OrcaHubWeb.Layouts do
       %{href: ~p"/issues", label: "Issues"},
       %{href: ~p"/triggers", label: "Triggers"},
       %{href: ~p"/sessions", label: "Sessions"},
-      %{href: ~p"/usage", label: "Usage"}
+      %{href: ~p"/usage", label: "Usage"},
+      %{href: ~p"/settings", label: "Settings"}
     ]
   end
 

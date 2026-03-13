@@ -89,11 +89,13 @@ defmodule OrcaHub.MCP.Server do
   end
 
   defp dispatch(%{"method" => "tools/list", "id" => id}, state) do
+    upstream_tools = OrcaHub.MCP.UpstreamClient.list_tools()
+
     response = %{
       "jsonrpc" => "2.0",
       "id" => id,
       "result" => %{
-        "tools" => Tools.list()
+        "tools" => Tools.list() ++ upstream_tools
       }
     }
 
@@ -104,7 +106,12 @@ defmodule OrcaHub.MCP.Server do
     tool_name = params["name"]
     arguments = params["arguments"] || %{}
 
-    result = Tools.call(tool_name, arguments, state)
+    result =
+      if OrcaHub.MCP.UpstreamClient.upstream_tool?(tool_name) do
+        OrcaHub.MCP.UpstreamClient.call_tool(tool_name, arguments)
+      else
+        Tools.call(tool_name, arguments, state)
+      end
 
     response = %{
       "jsonrpc" => "2.0",
