@@ -11,7 +11,7 @@ flowchart TB
         ExecuteCron["TriggerExecutor.execute/1"]
         ExecuteWebhook["TriggerExecutor.execute_webhook/2"]
         Resolve{"reuse_session?"}
-        Reuse["Find last session\n(ready, idle, or error)"]
+        Reuse["Find last session\n(not archived, ready/idle/error)"]
         Create["Create new session"]
         Update["Update trigger\nlast_fired_at\nlast_session_id"]
         StartCheck{"session_alive?"}
@@ -21,11 +21,11 @@ flowchart TB
 
     subgraph Cleanup["Post-Execution"]
         Archive{"archive_on_complete?"}
-        ArchiveTask["Async task: subscribe to\nPubSub, wait for idle/error,\nthen archive session"]
+        ArchiveTask["Async task: subscribe to\nPubSub, wait for idle/error,\nthen archive session\n(4h timeout)"]
     end
 
     Cron --> ExecuteCron
-    Webhook -->|payload appended to prompt| ExecuteWebhook
+    Webhook -->|async via TaskSupervisor\npayload appended to prompt| ExecuteWebhook
 
     ExecuteCron --> Resolve
     ExecuteWebhook --> Resolve

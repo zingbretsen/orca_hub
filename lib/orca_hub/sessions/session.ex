@@ -27,6 +27,6 @@ defmodule OrcaHub.Sessions.Session do
     session
     |> cast(attrs, [:directory, :claude_session_id, :title, :status, :model, :issue_id, :project_id, :archived_at, :triggered, :priority])
     |> validate_required([:directory])
-    |> validate_inclusion(:status, ~w(ready idle running waiting error))
+    |> validate_inclusion(:status, ~w(ready idle running waiting error compacting))
   end
 end

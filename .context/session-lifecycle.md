@@ -24,8 +24,8 @@ stateDiagram-v2
         CLI process active via Port.
         Streams NDJSON events.
         Messages persisted and broadcast.
-        "compacting" status broadcast within
-        this state (no state transition).
+        "compacting" status persisted to DB
+        and broadcast (no state transition).
     end note
 
     note right of waiting

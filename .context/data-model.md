@@ -22,7 +22,7 @@ erDiagram
         string directory
         string claude_session_id "CLI resume ID"
         string title "auto-generated"
-        string status "ready|idle|running|waiting|error"
+        string status "ready|idle|running|waiting|error|compacting"
         string model
         boolean triggered
         integer priority "queue ordering"

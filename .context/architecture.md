@@ -18,6 +18,7 @@ graph TB
         SettingsLive["SettingsLive.Index"]
         MCPPlug["MCP.Plug"]
         WebhookCtrl["WebhookController"]
+        TTSCtrl["TTSController"]
     end
 
     subgraph Core["Core"]
@@ -27,6 +28,7 @@ graph TB
         Issues["Issues Context"]
         Feedback["Feedback Context"]
         Triggers["Triggers Context"]
+        UpstreamServers["UpstreamServers Context"]
         AgentPresence["AgentPresence"]
     end
 
@@ -54,13 +56,14 @@ graph TB
 
     subgraph External["External"]
         ClaudeCLI["Claude CLI\n(Port)"]
-        OpenAI["OpenAI API\n(Title Gen)"]
-        UpstreamServers["Upstream MCP\nServers"]
+        LLMApi["LLM API\n(Title Gen)"]
+        ElevenLabs["ElevenLabs API\n(TTS)"]
+        ExtMCPServers["Upstream MCP\nServers"]
     end
 
     Endpoint --> Router
     Router --> SessionShow & SessionIndex & ProjectIndex & ProjectShow & IssueIndex & IssueShow & TriggerLive & QueueLive & UsageLive & DashboardLive & SettingsLive
-    Router --> MCPPlug & WebhookCtrl
+    Router --> MCPPlug & WebhookCtrl & TTSCtrl
 
     SessionShow -->|send_message| SessionRunner
     SessionRunner -->|broadcast| PubSub
@@ -84,13 +87,15 @@ graph TB
     MCPTools --> Sessions & Issues & Feedback & Triggers & Projects
     MCPServer --> UpstreamClient
     UpstreamClient --> UpstreamServers
+    UpstreamClient --> ExtMCPServers
 
     Scheduler --> TriggerExecutor
-    WebhookCtrl --> TriggerExecutor
+    WebhookCtrl -->|async via TaskSupervisor| TriggerExecutor
     TriggerExecutor --> SessionSupervisor
     SessionSupervisor --> SessionRunner
 
     UsageLive --> Usage
+    TTSCtrl -.-> ElevenLabs
     SessionRunner -.->|title gen via| TaskSupervisor
-    TaskSupervisor -.-> OpenAI
+    TaskSupervisor -.-> LLMApi
 ```

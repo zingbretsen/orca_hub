@@ -25,7 +25,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - Document uploads are saved to the session's working directory for Claude to access
 - Index tables use `row_click` with `JS.navigate` to make rows clickable to the show page (no separate View/Edit action links). See projects and issues index pages for examples.
 - Sessions are grouped by directory in the index view, sorted by most recently updated
-- Title auto-generation uses OpenAI API (`gpt-5-nano`)
+- Title auto-generation uses LLM API (`gpt-4.1-nano` by default, or DataRobot gateway)
 
 ## Dependencies
 
