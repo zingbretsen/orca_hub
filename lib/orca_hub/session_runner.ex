@@ -116,8 +116,7 @@ defmodule OrcaHub.SessionRunner do
     broadcast(data.session_id, {:event, user_event})
 
     # Interrupt the running CLI — SIGINT lets it finish in-progress tool calls gracefully
-    {:os_pid, os_pid} = Port.info(port, :os_pid)
-    System.cmd("kill", ["-INT", "#{os_pid}"])
+    send_sigint(port)
 
     {:keep_state,
      %{data |
@@ -128,8 +127,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def running({:call, from}, :interrupt, %{port: port}) when not is_nil(port) do
-    {:os_pid, os_pid} = Port.info(port, :os_pid)
-    System.cmd("kill", ["-INT", "#{os_pid}"])
+    send_sigint(port)
     {:keep_state_and_data, [{:reply, from, :ok}]}
   end
 
@@ -204,8 +202,7 @@ defmodule OrcaHub.SessionRunner do
     persist_message(data.session_id, user_event)
     broadcast(data.session_id, {:event, user_event})
 
-    {:os_pid, os_pid} = Port.info(port, :os_pid)
-    System.cmd("kill", ["-INT", "#{os_pid}"])
+    send_sigint(port)
 
     Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "running"})
     broadcast(data.session_id, {:status, :running})
@@ -224,8 +221,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def waiting({:call, from}, :interrupt, %{port: port}) when not is_nil(port) do
-    {:os_pid, os_pid} = Port.info(port, :os_pid)
-    System.cmd("kill", ["-INT", "#{os_pid}"])
+    send_sigint(port)
     {:keep_state_and_data, [{:reply, from, :ok}]}
   end
 
@@ -567,6 +563,13 @@ defmodule OrcaHub.SessionRunner do
     case Regex.run(~r/\*\*#{field}:\*\* (.+)/, content) do
       [_, value] -> value
       _ -> nil
+    end
+  end
+
+  defp send_sigint(port) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, os_pid} -> System.cmd("kill", ["-INT", "#{os_pid}"])
+      nil -> :noop
     end
   end
 

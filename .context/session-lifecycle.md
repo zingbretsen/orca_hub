@@ -1,6 +1,6 @@
 # Session Lifecycle
 
-SessionRunner is a GenStatem with 4 states.
+SessionRunner is a GenStatem with 5 states.
 
 ```mermaid
 stateDiagram-v2
@@ -16,6 +16,7 @@ stateDiagram-v2
     running --> error: CLI exits (code ≠ 0)\nno pending prompts
     running --> waiting: feedback_requested cast
 
+    waiting --> running: send_message\n(SIGINT + queue if port open,\nnew CLI if port closed)
     waiting --> running: feedback answered\nport still open
     waiting --> idle: feedback answered\nport closed
     waiting --> waiting: CLI exits\npending prompts\n(auto-resume, stays waiting)

@@ -13,7 +13,7 @@ sequenceDiagram
     participant PubSub
 
     User->>LiveView: Type message + send
-    LiveView->>LiveView: Handle uploads<br>(files saved to /tmp)
+    LiveView->>LiveView: Handle uploads<br>(files saved to session directory)
     LiveView->>Runner: send_message(prompt)
     Runner->>Runner: If running: SIGINT + queue prompt.<br>If idle/ready/error: start CLI.
 
