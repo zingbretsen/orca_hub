@@ -37,6 +37,39 @@ config :orca_hub, :gotify_token, System.get_env("GOTIFY_TOKEN")
 config :orca_hub, :elevenlabs_api_key, System.get_env("ELEVENLABS_API_KEY")
 config :orca_hub, :elevenlabs_voice_id, System.get_env("ELEVENLABS_VOICE_ID") || "JBFqnCBsd6RMkjVDRZzb"
 
+# Libcluster topology configuration
+# Supports multiple strategies simultaneously:
+# - K8s DNS for in-cluster pod discovery (set CLUSTER_DNS_QUERY)
+# - Static EPMD for external nodes like laptops (set CLUSTER_NODES)
+cluster_topologies = []
+
+cluster_topologies =
+  case System.get_env("CLUSTER_DNS_QUERY") do
+    nil -> cluster_topologies
+    query ->
+      [{:k8s_dns, [
+        strategy: Cluster.Strategy.DNSPoll,
+        config: [
+          polling_interval: 5_000,
+          query: query,
+          node_basename: System.get_env("RELEASE_NODE_BASENAME", "orca")
+        ]
+      ]} | cluster_topologies]
+  end
+
+cluster_topologies =
+  case System.get_env("CLUSTER_NODES") do
+    nil -> cluster_topologies
+    nodes ->
+      hosts = nodes |> String.split(",") |> Enum.map(&String.to_atom(String.trim(&1)))
+      [{:static, [
+        strategy: Cluster.Strategy.Epmd,
+        config: [hosts: hosts]
+      ]} | cluster_topologies]
+  end
+
+config :libcluster, topologies: cluster_topologies
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

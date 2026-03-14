@@ -88,6 +88,17 @@ config :phoenix, :stacktrace_depth, 20
 # Initialize plugs at runtime for faster development compilation
 config :phoenix, :plug_init_mode, :runtime
 
+# Libcluster: static EPMD topology for local dev
+# Start with: elixir --sname orca1 -S mix phx.server
+# Second node: PORT=4001 elixir --sname orca2 -S mix phx.server
+config :libcluster,
+  topologies: [
+    local: [
+      strategy: Cluster.Strategy.Epmd,
+      config: [hosts: []]
+    ]
+  ]
+
 config :phoenix_live_view,
   # Include debug annotations and locations in rendered markup.
   # Changing this configuration will require mix clean and a full recompile.

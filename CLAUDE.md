@@ -27,6 +27,16 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - Sessions are grouped by directory in the index view, sorted by most recently updated
 - Title auto-generation uses LLM API (`gpt-4.1-nano` by default, or DataRobot gateway)
 
+## Deployment (k3s)
+
+- Deployment manifests live in `~/homelab/k3s/apps/orca-hub.yaml`, NOT in `k8s/` (which is a generic/standalone reference)
+- Secrets are in `~/homelab/k3s/secrets/orca-hub-secrets.yaml`
+- Runs in the `lab` namespace, pinned to `debian` node via `nodeSelector`
+- Uses external PostgreSQL at `192.168.1.177` (database `orca_hub_prod`)
+- Image registry: `registry.lab.ingbretsenhome.com`
+- Ingress: `orca.lab.ingbretsenhome.com` (HTTPS via Traefik, Authelia forward-auth)
+- To deploy: `docker build -t registry.lab.ingbretsenhome.com/orca-hub:latest . && docker push registry.lab.ingbretsenhome.com/orca-hub:latest && kubectl rollout restart deployment/orca-hub -n lab`
+
 ## Dependencies
 
 - Phoenix LiveView ~> 1.1

@@ -18,10 +18,13 @@ defmodule OrcaHub.Application do
         )
     })
 
+    topologies = Application.get_env(:libcluster, :topologies, [])
+
     children = [
       OrcaHubWeb.Telemetry,
       OrcaHub.Repo,
       {DNSCluster, query: Application.get_env(:orca_hub, :dns_cluster_query) || :ignore},
+      {Cluster.Supervisor, [topologies, [name: OrcaHub.ClusterSupervisor]]},
       {Phoenix.PubSub, name: OrcaHub.PubSub},
       {Registry, keys: :unique, name: OrcaHub.SessionRegistry},
       {Registry, keys: :unique, name: OrcaHub.MCPRegistry},

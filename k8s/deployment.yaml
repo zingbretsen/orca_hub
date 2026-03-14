@@ -37,8 +37,8 @@ spec:
               mountPath: /kubectl-bin
       containers:
         - name: orca-hub
-          image: 10.43.148.117:5000/orca-hub:latest
-          imagePullPolicy: Always
+          image: orca-hub:latest
+          imagePullPolicy: Never  # Use locally built image
           envFrom:
             - secretRef:
                 name: orca-hub-secrets
