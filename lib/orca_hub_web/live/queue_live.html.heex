@@ -23,6 +23,7 @@
           <span :if={request.session} class="text-xs text-base-content/50">
             Session: {request.session.title || "Untitled"}
           </span>
+          <span :if={@clustered && Map.get(@feedback_node_map, request.id)} class="badge badge-xs badge-outline badge-info">{OrcaHub.Cluster.node_name(Map.get(@feedback_node_map, request.id))}</span>
         </div>
       </div>
       <span class="text-xs text-base-content/40 whitespace-nowrap">
@@ -87,6 +88,7 @@
             <span :if={!session.project} class="truncate">{session.directory}</span>
             <span :if={worktree?(session.directory)} class="badge badge-xs badge-outline">worktree</span>
             <span :if={session.priority > 0} class="badge badge-xs badge-ghost">deferred</span>
+            <span :if={@clustered && Map.get(@node_map, session.id)} class="badge badge-xs badge-outline badge-info">{OrcaHub.Cluster.node_name(Map.get(@node_map, session.id))}</span>
           </div>
         </div>
         <span class="text-xs text-base-content/40 whitespace-nowrap">

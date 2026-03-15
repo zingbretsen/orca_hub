@@ -1,6 +1,9 @@
 <.header>
   <.link navigate={~p"/projects"} class="text-sm opacity-70">&larr; Projects</.link>
   <span class="ml-2">{@project.name}</span>
+  <span :if={@remote_project} class="badge badge-sm badge-outline opacity-60 ml-1">
+    {OrcaHub.Cluster.node_name(@project_node)}
+  </span>
   <:actions>
     <.link patch={~p"/projects/#{@project.id}/edit"} class="btn btn-sm btn-ghost">
       <.icon name="hero-pencil-micro" class="size-4" /> Edit
@@ -11,6 +14,11 @@
 <div class="mt-2 text-sm text-base-content/60 font-mono flex items-center gap-3">
   <span>{@project.directory}</span>
   <span :if={@current_branch} class="badge badge-outline badge-sm">{@current_branch}</span>
+</div>
+
+<div :if={@remote_project} class="alert alert-info mt-4">
+  <.icon name="hero-information-circle-micro" class="size-5" />
+  <span>This project is on a remote node. File browsing, git operations, and worktrees are not available.</span>
 </div>
 
 <div :if={@live_action == :edit} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
@@ -231,8 +239,8 @@
   </div>
 </div>
 
-<%!-- Worktrees --%>
-<div class="mt-8">
+<%!-- Worktrees (local only) --%>
+<div :if={!@remote_project} class="mt-8">
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">Worktrees</h3>
     <button phx-click="new_worktree" class="btn btn-sm btn-primary">New Worktree</button>
@@ -295,8 +303,8 @@
   </div>
 </div>
 
-<%!-- Recent Changes --%>
-<div :if={@commits != []} class="mt-8">
+<%!-- Recent Changes (local only) --%>
+<div :if={@commits != [] && !@remote_project} class="mt-8">
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">Recent Changes</h3>
     <button phx-click="git_pull" class="btn btn-sm btn-ghost">
@@ -312,7 +320,7 @@
   </div>
 </div>
 
-<div class={["mt-8", @selected_file && "breakout-wide"]}>
+<div :if={!@remote_project} class={["mt-8", @selected_file && "breakout-wide"]}>
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">Files</h3>
     <button phx-click="new_file" class="btn btn-sm btn-primary">New File</button>

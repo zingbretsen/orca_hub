@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.ProjectLive.Show do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Projects, Triggers}
+  alias OrcaHub.{Cluster, Projects, Triggers}
   alias OrcaHub.Projects.Project
   alias OrcaHub.Triggers.Trigger
 
@@ -11,14 +11,23 @@ defmodule OrcaHubWeb.ProjectLive.Show do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
     end
 
-    project = Projects.get_project!(id)
-    editable_files = Projects.list_editable_files(project)
-    file_tree = Projects.build_file_tree(editable_files)
-    commits = Projects.git_log(project)
-    triggers = Triggers.list_triggers_for_project(project.id)
-    current_branch = Projects.git_branch(project)
-    worktrees = Projects.git_worktree_list(project)
-    branches = Projects.git_branches(project)
+    {project_node, project} = find_project!(id)
+    remote? = project_node != node()
+
+    {editable_files, file_tree, commits, current_branch, worktrees, branches} =
+      if remote? do
+        {[], [], [], nil, [], []}
+      else
+        editable_files = Projects.list_editable_files(project)
+        file_tree = Projects.build_file_tree(editable_files)
+        commits = Projects.git_log(project)
+        current_branch = Projects.git_branch(project)
+        worktrees = Projects.git_worktree_list(project)
+        branches = Projects.git_branches(project)
+        {editable_files, file_tree, commits, current_branch, worktrees, branches}
+      end
+
+    triggers = Cluster.rpc(project_node, Triggers, :list_triggers_for_project, [project.id])
 
     {:ok,
      socket
@@ -26,6 +35,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        show_archived_sessions: false,
        show_hidden_files: false,
        project: project,
+       project_node: project_node,
+       remote_project: remote?,
        page_title: project.name,
        commits: commits,
        editable_files: editable_files,
@@ -102,7 +113,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   @impl true
   def handle_event("save_project", %{"project" => params}, socket) do
-    case Projects.update_project(socket.assigns.project, params) do
+    node = socket.assigns.project_node
+
+    case Cluster.rpc(node, Projects, :update_project, [socket.assigns.project, params]) do
       {:ok, project} ->
         {:noreply,
          socket
@@ -349,11 +362,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("create_session", _params, socket) do
     project = socket.assigns.project
+    node = socket.assigns.project_node
     params = %{"project_id" => project.id, "directory" => project.directory}
 
-    case OrcaHub.Sessions.create_session(params) do
+    case Cluster.rpc(node, OrcaHub.Sessions, :create_session, [params]) do
       {:ok, session} ->
-        {:ok, _} = OrcaHub.SessionSupervisor.start_session(session.id)
+        {:ok, _} = Cluster.rpc(node, OrcaHub.SessionSupervisor, :start_session, [session.id])
         {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
 
       {:error, _changeset} ->
@@ -376,7 +390,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   def handle_event("edit_trigger", %{"id" => id}, socket) do
-    trigger = Triggers.get_trigger!(id)
+    node = socket.assigns.project_node
+    trigger = Cluster.get_trigger!(node, id)
     changeset = Triggers.change_trigger(trigger)
 
     {:noreply,
@@ -428,18 +443,19 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("save_trigger", %{"trigger" => params}, socket) do
     project = socket.assigns.project
+    node = socket.assigns.project_node
     attrs = Map.put(params, "project_id", project.id)
     attrs = Map.put(attrs, "type", socket.assigns.trigger_type)
 
     result =
       case socket.assigns.editing_trigger do
-        nil -> Triggers.create_trigger(attrs)
-        trigger -> Triggers.update_trigger(trigger, attrs)
+        nil -> Cluster.rpc(node, Triggers, :create_trigger, [attrs])
+        trigger -> Cluster.rpc(node, Triggers, :update_trigger, [trigger, attrs])
       end
 
     case result do
       {:ok, _} ->
-        triggers = Triggers.list_triggers_for_project(project.id)
+        triggers = Cluster.rpc(node, Triggers, :list_triggers_for_project, [project.id])
 
         {:noreply,
          assign(socket, triggers: triggers, show_trigger_form: false, editing_trigger: nil)}
@@ -450,22 +466,26 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   def handle_event("delete_trigger", %{"id" => id}, socket) do
-    trigger = Triggers.get_trigger!(id)
-    {:ok, _} = Triggers.delete_trigger(trigger)
-    triggers = Triggers.list_triggers_for_project(socket.assigns.project.id)
+    node = socket.assigns.project_node
+    trigger = Cluster.get_trigger!(node, id)
+    {:ok, _} = Cluster.rpc(node, Triggers, :delete_trigger, [trigger])
+    triggers = Cluster.rpc(node, Triggers, :list_triggers_for_project, [socket.assigns.project.id])
     {:noreply, assign(socket, triggers: triggers)}
   end
 
   def handle_event("toggle_trigger", %{"id" => id}, socket) do
-    trigger = Triggers.get_trigger!(id)
-    {:ok, _} = Triggers.update_trigger(trigger, %{enabled: !trigger.enabled})
-    triggers = Triggers.list_triggers_for_project(socket.assigns.project.id)
+    node = socket.assigns.project_node
+    trigger = Cluster.get_trigger!(node, id)
+    {:ok, _} = Cluster.rpc(node, Triggers, :update_trigger, [trigger, %{enabled: !trigger.enabled}])
+    triggers = Cluster.rpc(node, Triggers, :list_triggers_for_project, [socket.assigns.project.id])
     {:noreply, assign(socket, triggers: triggers)}
   end
 
   def handle_event("fire_trigger", %{"id" => id}, socket) do
+    node = socket.assigns.project_node
+
     Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-      OrcaHub.TriggerExecutor.execute(id)
+      Cluster.rpc(node, OrcaHub.TriggerExecutor, :execute, [id])
     end)
 
     {:noreply, put_flash(socket, :info, "Trigger fired")}
@@ -533,11 +553,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("worktree_session", %{"path" => path}, socket) do
     project = socket.assigns.project
+    node = socket.assigns.project_node
     params = %{"project_id" => project.id, "directory" => path}
 
-    case OrcaHub.Sessions.create_session(params) do
+    case Cluster.rpc(node, OrcaHub.Sessions, :create_session, [params]) do
       {:ok, session} ->
-        {:ok, _} = OrcaHub.SessionSupervisor.start_session(session.id)
+        {:ok, _} = Cluster.rpc(node, OrcaHub.SessionSupervisor, :start_session, [session.id])
         {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
 
       {:error, _changeset} ->
@@ -594,7 +615,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   @impl true
   def handle_info({_session_id, _payload}, socket) do
-    project = Projects.get_project!(socket.assigns.project.id)
+    node = socket.assigns.project_node
+    project = Cluster.get_project!(node, socket.assigns.project.id)
     {:noreply, assign(socket, project: project)}
   end
 
@@ -641,13 +663,32 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     Path.join(project.directory, path)
   end
 
+  defp find_project!(id) do
+    case OrcaHub.Repo.get(OrcaHub.Projects.Project, id) do
+      nil ->
+        # Not found locally — fan out to other nodes
+        Cluster.fan_out(Projects, :list_projects)
+        |> Enum.find(fn {_node, p} -> p.id == id end)
+        |> case do
+          nil -> raise Ecto.NoResultsError, queryable: OrcaHub.Projects.Project
+          {node, _p} -> {node, Cluster.get_project!(node, id)}
+        end
+
+      _project ->
+        {node(), Projects.get_project!(id)}
+    end
+  end
+
   defp browse_to(socket, path) do
+    target = socket.assigns.project_node
+
     entries =
-      case File.ls(path) do
+      case Cluster.rpc(target, File, :ls, [path]) do
         {:ok, names} ->
-          names
-          |> Enum.map(&Path.join(path, &1))
-          |> Enum.filter(&File.dir?/1)
+          full_paths = Enum.map(names, &Path.join(path, &1))
+          dirs = Cluster.rpc(target, Enum, :filter, [full_paths, &File.dir?/1])
+
+          dirs
           |> Enum.reject(fn p -> String.starts_with?(Path.basename(p), ".") end)
           |> Enum.sort()
 

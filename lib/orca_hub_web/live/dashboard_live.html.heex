@@ -2,6 +2,22 @@
   Dashboard
 </.header>
 
+<%!-- Cluster section (only when clustered) --%>
+<div :if={@clustered} class="mt-6">
+  <h2 class="text-sm font-semibold text-base-content/70 mb-2 flex items-center gap-2">
+    <.icon name="hero-server-stack-micro" class="size-4" /> Cluster
+  </h2>
+  <div class="flex flex-wrap gap-2">
+    <div :for={info <- @cluster_nodes} class="badge badge-outline gap-1">
+      <span class="inline-block w-2 h-2 rounded-full bg-success"></span>
+      {info.name}
+      <span :for={{name, count} <- @node_session_counts} :if={name == info.name} class="text-base-content/50">
+        ({count})
+      </span>
+    </div>
+  </div>
+</div>
+
 <%!-- Stats grid --%>
 <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
   <.link navigate={~p"/sessions"} class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow">

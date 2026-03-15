@@ -12,7 +12,12 @@
 </.header>
 
 <.table id="projects" rows={@streams.projects} row_click={fn {_id, project} -> JS.navigate(~p"/projects/#{project.id}") end}>
-  <:col :let={{_id, project}} label="Name">{project.name}</:col>
+  <:col :let={{_id, project}} label="Name">
+    {project.name}
+    <span :if={@clustered && Map.get(@node_map, project.id)} class="badge badge-sm badge-outline opacity-60 ml-1">
+      {OrcaHub.Cluster.node_name(Map.get(@node_map, project.id))}
+    </span>
+  </:col>
   <:col :let={{_id, project}} label="Directory">
     <span class="font-mono text-sm">{project.directory}</span>
   </:col>
@@ -27,6 +32,16 @@
   <div class="card bg-base-100 shadow-xl w-full max-w-md p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
     <h2 class="text-lg font-semibold mb-4">New Project</h2>
     <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-4">
+      <div :if={length(@cluster_nodes) > 1} class="form-control">
+        <label class="label">
+          <span class="label-text">Node</span>
+        </label>
+        <select name="project[target_node]" class="select select-bordered w-full">
+          <option :for={n <- @cluster_nodes} value={n} selected={n == node()}>
+            {OrcaHub.Cluster.node_name(n)}
+          </option>
+        </select>
+      </div>
       <.input field={@form[:name]} type="text" label="Name" placeholder="My Project" />
       <div class="flex gap-2 items-end">
         <div class="flex-1">

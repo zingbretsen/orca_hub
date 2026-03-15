@@ -1,6 +1,9 @@
 <.header>
   <.link navigate={~p"/issues"} class="text-sm opacity-70">&larr; Issues</.link>
   <span class="ml-2">{@issue.title}</span>
+  <span :if={@issue_node != node()} class="badge badge-sm badge-outline opacity-60 ml-1">
+    {OrcaHub.Cluster.node_name(@issue_node)}
+  </span>
   <span class={[
     "badge ml-2",
     @issue.status == "open" && "badge-info",

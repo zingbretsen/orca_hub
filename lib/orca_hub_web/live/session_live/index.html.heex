@@ -22,13 +22,14 @@
   No sessions yet.
 </div>
 
-<details :for={{project, sessions} <- @grouped_sessions} class="mb-4 group" {if(sessions != [], do: [open: true], else: [])}>
+<details :for={{{node_name, project}, sessions} <- @grouped_sessions} class="mb-4 group" {if(sessions != [], do: [open: true], else: [])}>
   <summary class="flex items-center justify-between cursor-pointer list-none mb-2 rounded-lg px-2 py-1 -mx-2 hover:bg-base-200 transition-colors">
     <h3 class="text-sm font-semibold text-base-content/70 flex items-center gap-2">
       <.icon name="hero-chevron-right-micro" class="size-4 transition-transform group-open:rotate-90" />
       <.icon name={if(project, do: "hero-code-bracket-micro", else: "hero-folder-micro")} class="size-4" />
       {if project, do: project.name, else: "Unassigned"}
       <span class="badge badge-sm badge-ghost">{length(sessions)}</span>
+      <span :if={node_name} class="badge badge-sm badge-outline opacity-60">{node_name}</span>
     </h3>
     <button
       :if={project}
@@ -46,7 +47,7 @@
   <div :if={sessions == []} class="text-sm text-base-content/50 p-4">
     No active sessions.
   </div>
-  <.table :if={sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}"} rows={sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
+  <.table :if={sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}-#{node_name || "local"}"} rows={sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
     <:col :let={session} label="Title" class="w-3/5">{session.title}</:col>
     <:col :let={session} label="Status" class="w-1/5">
       <span class={[
@@ -78,13 +79,21 @@
         type="select"
         label="Project"
         prompt="None"
-        options={Enum.map(@projects, &{&1.name, &1.id})}
+        options={Enum.map(@projects, fn {_node, p} -> {p.name, p.id} end)}
       />
       <div class="flex gap-2 items-end">
         <div class="flex-1">
           <.input field={@form[:directory]} type="text" label="Directory" placeholder="/home/orca/projects/my-project" />
         </div>
         <button type="button" phx-click="browse" class="btn btn-outline mb-0.5">Browse</button>
+      </div>
+      <div :if={length(@cluster_nodes) > 1}>
+        <label class="label"><span class="label-text">Node</span></label>
+        <select name="session[target_node]" class="select select-bordered select-sm w-full">
+          <option :for={n <- @cluster_nodes} value={n} selected={n == node()}>
+            {OrcaHub.Cluster.node_name(n)}
+          </option>
+        </select>
       </div>
       <.input field={@form[:model]} type="select" label="Model" options={[
         {"Default", ""},

@@ -4,7 +4,7 @@ defmodule OrcaHub.MCP.Tools do
   """
   require Logger
 
-  alias OrcaHub.{Issues, Sessions, SessionSupervisor, SessionRunner, Feedback, Triggers, Projects}
+  alias OrcaHub.{Cluster, Issues, Sessions, SessionSupervisor, Feedback, Triggers}
 
   def list do
     [
@@ -293,34 +293,39 @@ defmodule OrcaHub.MCP.Tools do
   def call("start_session_from_issue", args, _state) do
     issue_id = args["issue_id"]
 
-    try do
-      issue = Issues.get_issue!(issue_id)
-      directory = if issue.project, do: issue.project.directory, else: File.cwd!()
+    # Find the issue across the cluster
+    tagged_result =
+      Cluster.fan_out(Issues, :list_issues)
+      |> Enum.find(fn {_node, i} -> to_string(i.id) == to_string(issue_id) end)
 
-      project_id = if issue.project, do: issue.project.id, else: nil
-
-      case Sessions.create_session(%{directory: directory, issue_id: issue.id, project_id: project_id}) do
-        {:ok, session} ->
-          {:ok, _} = SessionSupervisor.start_session(session.id)
-
-          if issue.status == "open" do
-            Issues.update_issue(issue, %{status: "in_progress"})
-          end
-
-          prompt =
-            "Issue: #{issue.title}\n\n#{issue.description || ""}" <>
-              if(args["prompt"], do: "\n\n#{args["prompt"]}", else: "")
-
-          SessionRunner.send_message(session.id, prompt)
-
-          text("Session #{session.id} started for issue ##{issue.id}: #{issue.title}")
-
-        {:error, changeset} ->
-          error("Failed to create session: #{inspect(changeset.errors)}")
-      end
-    rescue
-      Ecto.NoResultsError ->
+    case tagged_result do
+      nil ->
         error("Issue #{issue_id} not found")
+
+      {issue_node, _} ->
+        issue = Cluster.get_issue!(issue_node, issue_id)
+        directory = if issue.project, do: issue.project.directory, else: File.cwd!()
+        project_id = if issue.project, do: issue.project.id, else: nil
+
+        case Cluster.rpc(issue_node, Sessions, :create_session, [%{directory: directory, issue_id: issue.id, project_id: project_id}]) do
+          {:ok, session} ->
+            {:ok, _} = Cluster.rpc(issue_node, SessionSupervisor, :start_session, [session.id])
+
+            if issue.status == "open" do
+              Cluster.rpc(issue_node, Issues, :update_issue, [issue, %{status: "in_progress"}])
+            end
+
+            prompt =
+              "Issue: #{issue.title}\n\n#{issue.description || ""}" <>
+                if(args["prompt"], do: "\n\n#{args["prompt"]}", else: "")
+
+            Cluster.send_message(issue_node, session.id, prompt)
+
+            text("Session #{session.id} started for issue ##{issue.id}: #{issue.title}")
+
+          {:error, changeset} ->
+            error("Failed to create session: #{inspect(changeset.errors)}")
+        end
     end
   end
 
@@ -393,52 +398,54 @@ defmodule OrcaHub.MCP.Tools do
   def call("get_issue", args, _state) do
     issue_id = args["issue_id"]
 
-    try do
-      issue = Issues.get_issue!(issue_id)
-
-      response =
-        Jason.encode!(%{
-          id: issue.id,
-          title: issue.title,
-          description: issue.description,
-          status: issue.status,
-          approaches_tried: issue.approaches_tried,
-          notes: issue.notes,
-          project: if(issue.project, do: issue.project.name),
-          session_count: length(issue.sessions),
-          created_at: issue.inserted_at,
-          updated_at: issue.updated_at
-        })
-
-      text(response)
-    rescue
-      Ecto.NoResultsError ->
+    case find_issue_on_cluster(issue_id) do
+      nil ->
         error("Issue #{issue_id} not found")
+
+      {issue_node, _} ->
+        issue = Cluster.get_issue!(issue_node, issue_id)
+
+        response =
+          Jason.encode!(%{
+            id: issue.id,
+            title: issue.title,
+            description: issue.description,
+            status: issue.status,
+            approaches_tried: issue.approaches_tried,
+            notes: issue.notes,
+            project: if(issue.project, do: issue.project.name),
+            session_count: length(issue.sessions),
+            created_at: issue.inserted_at,
+            updated_at: issue.updated_at
+          })
+
+        text(response)
     end
   end
 
   def call("update_issue", args, _state) do
     issue_id = args["issue_id"]
 
-    try do
-      issue = Issues.get_issue!(issue_id)
-
-      attrs =
-        %{}
-        |> maybe_append_field(issue, :approaches_tried, args["approaches_tried"])
-        |> maybe_append_field(issue, :notes, args["notes"])
-        |> maybe_put_field(:status, args["status"])
-
-      case Issues.update_issue(issue, attrs) do
-        {:ok, _issue} ->
-          text("Issue #{issue_id} updated successfully.")
-
-        {:error, changeset} ->
-          error("Failed to update issue: #{inspect(changeset.errors)}")
-      end
-    rescue
-      Ecto.NoResultsError ->
+    case find_issue_on_cluster(issue_id) do
+      nil ->
         error("Issue #{issue_id} not found")
+
+      {issue_node, _} ->
+        issue = Cluster.get_issue!(issue_node, issue_id)
+
+        attrs =
+          %{}
+          |> maybe_append_field(issue, :approaches_tried, args["approaches_tried"])
+          |> maybe_append_field(issue, :notes, args["notes"])
+          |> maybe_put_field(:status, args["status"])
+
+        case Cluster.rpc(issue_node, Issues, :update_issue, [issue, attrs]) do
+          {:ok, _issue} ->
+            text("Issue #{issue_id} updated successfully.")
+
+          {:error, changeset} ->
+            error("Failed to update issue: #{inspect(changeset.errors)}")
+        end
     end
   end
 
@@ -468,23 +475,22 @@ defmodule OrcaHub.MCP.Tools do
       archive_on_complete: args["archive_on_complete"] || false
     }
 
-    # Verify the project exists
-    try do
-      _project = Projects.get_project!(attrs.project_id)
-
-      case Triggers.create_trigger(attrs) do
-        {:ok, trigger} ->
-          text(
-            "Trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
-              "Schedule: #{trigger.cron_expression}"
-          )
-
-        {:error, changeset} ->
-          error("Failed to create trigger: #{inspect(changeset.errors)}")
-      end
-    rescue
-      Ecto.NoResultsError ->
+    # Find the project across the cluster
+    case find_project_on_cluster(attrs.project_id) do
+      nil ->
         error("Project #{attrs.project_id} not found")
+
+      {project_node, _project} ->
+        case Cluster.rpc(project_node, Triggers, :create_trigger, [attrs]) do
+          {:ok, trigger} ->
+            text(
+              "Trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
+                "Schedule: #{trigger.cron_expression}"
+            )
+
+          {:error, changeset} ->
+            error("Failed to create trigger: #{inspect(changeset.errors)}")
+        end
     end
   end
 
@@ -500,16 +506,22 @@ defmodule OrcaHub.MCP.Tools do
         "[Message from another session]\n\n#{message}"
       end
 
-    if SessionSupervisor.session_alive?(target_id) do
-      case SessionRunner.send_message(target_id, signed_message) do
-        :ok ->
-          text("Message delivered to session #{target_id}")
+    case Cluster.find_session(target_id) do
+      {node, _session} ->
+        unless Cluster.session_alive?(node, target_id) do
+          Cluster.start_session(node, target_id)
+        end
 
-        {:error, reason} ->
-          error("Failed to send message to session #{target_id}: #{inspect(reason)}")
-      end
-    else
-      error("Session #{target_id} is not running. Check .agents/ for active sessions.")
+        case Cluster.send_message(node, target_id, signed_message) do
+          :ok ->
+            text("Message delivered to session #{target_id}")
+
+          {:error, reason} ->
+            error("Failed to send message to session #{target_id}: #{inspect(reason)}")
+        end
+
+      nil ->
+        error("Session #{target_id} not found on any node.")
     end
   end
 
@@ -523,24 +535,23 @@ defmodule OrcaHub.MCP.Tools do
       archive_on_complete: args["archive_on_complete"] || false
     }
 
-    try do
-      _project = Projects.get_project!(attrs.project_id)
-
-      case Triggers.create_trigger(attrs) do
-        {:ok, trigger} ->
-          url = OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"
-
-          text(
-            "Webhook trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
-              "Webhook URL: #{url}"
-          )
-
-        {:error, changeset} ->
-          error("Failed to create trigger: #{inspect(changeset.errors)}")
-      end
-    rescue
-      Ecto.NoResultsError ->
+    case find_project_on_cluster(attrs.project_id) do
+      nil ->
         error("Project #{attrs.project_id} not found")
+
+      {project_node, _project} ->
+        case Cluster.rpc(project_node, Triggers, :create_trigger, [attrs]) do
+          {:ok, trigger} ->
+            url = OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"
+
+            text(
+              "Webhook trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
+                "Webhook URL: #{url}"
+            )
+
+          {:error, changeset} ->
+            error("Failed to create trigger: #{inspect(changeset.errors)}")
+        end
     end
   end
 
@@ -552,9 +563,9 @@ defmodule OrcaHub.MCP.Tools do
           case state.orca_session_id do
             nil -> nil
             session_id ->
-              case Sessions.get_session(session_id) do
+              case Cluster.find_session(session_id) do
+                {_node, session} -> session.directory
                 nil -> nil
-                session -> session.directory
               end
           end
 
@@ -570,17 +581,23 @@ defmodule OrcaHub.MCP.Tools do
     else
       limit = args["limit"] || 20
 
-      sessions = Sessions.search_sessions_by_directory(directory, %{
+      search_opts = %{
         query: args["query"],
         status: args["status"],
         include_archived: args["include_archived"] || false,
         archived_only: args["archived_only"] || false,
         limit: limit
-      })
+      }
+
+      tagged_sessions = Cluster.fan_out(Sessions, :search_sessions_by_directory, [directory, search_opts])
+      clustered = length(Node.list()) > 0
 
       results =
-        Enum.map(sessions, fn session ->
-          %{
+        tagged_sessions
+        |> Enum.sort_by(fn {_n, s} -> s.updated_at end, {:desc, NaiveDateTime})
+        |> Enum.take(limit)
+        |> Enum.map(fn {node, session} ->
+          result = %{
             id: session.id,
             title: session.title,
             status: session.status,
@@ -590,6 +607,12 @@ defmodule OrcaHub.MCP.Tools do
             updated_at: session.updated_at,
             inserted_at: session.inserted_at
           }
+
+          if clustered do
+            Map.put(result, :node, Cluster.node_name(node))
+          else
+            result
+          end
         end)
 
       text(Jason.encode!(results))
@@ -637,6 +660,16 @@ defmodule OrcaHub.MCP.Tools do
 
   defp maybe_put_field(attrs, _key, nil), do: attrs
   defp maybe_put_field(attrs, key, val), do: Map.put(attrs, key, val)
+
+  defp find_issue_on_cluster(issue_id) do
+    Cluster.fan_out(Issues, :list_issues)
+    |> Enum.find(fn {_node, i} -> to_string(i.id) == to_string(issue_id) end)
+  end
+
+  defp find_project_on_cluster(project_id) do
+    Cluster.list_projects()
+    |> Enum.find(fn {_node, p} -> to_string(p.id) == to_string(project_id) end)
+  end
 
   defp text(content) do
     %{

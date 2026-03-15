@@ -50,7 +50,12 @@ defmodule OrcaHub.Sessions do
 
   def get_session!(id), do: Repo.get!(Session, id) |> Repo.preload(:project)
 
-  def get_session(id), do: Repo.get(Session, id)
+  def get_session(id) do
+    case Repo.get(Session, id) do
+      nil -> nil
+      session -> Repo.preload(session, :project)
+    end
+  end
 
   def create_session(attrs) do
     %Session{}

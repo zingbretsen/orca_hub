@@ -7,6 +7,7 @@ graph TB
     App --> Telemetry["OrcaHubWeb.Telemetry"]
     App --> Repo["OrcaHub.Repo\n(PostgreSQL)"]
     App --> DNS["DNSCluster"]
+    App --> LibCluster["Cluster.Supervisor\n(libcluster)"]
     App --> PubSub["Phoenix.PubSub"]
     App --> SessionRegistry["Registry\n(SessionRegistry)"]
     App --> MCPRegistry["Registry\n(MCPRegistry)"]

@@ -1,14 +1,16 @@
 defmodule OrcaHubWeb.QueueLive do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Sessions, SessionSupervisor, SessionRunner, Feedback}
+  alias OrcaHub.{Sessions, Feedback, Cluster}
   alias OrcaHubWeb.Markdown
 
   @impl true
   def mount(_params, _session, socket) do
-    entries = load_entries()
+    {entries, node_map} = load_entries_with_nodes()
 
-    feedback_requests = Feedback.list_pending_requests()
+    tagged_feedback = Cluster.list_pending_feedback()
+    feedback_requests = Enum.map(tagged_feedback, fn {_n, req} -> req end)
+    feedback_node_map = Cluster.build_node_map(tagged_feedback)
 
     if connected?(socket) do
       for {session, _msg} <- entries do
@@ -22,7 +24,10 @@ defmodule OrcaHubWeb.QueueLive do
     {:ok,
      socket
      |> assign(:entries, entries)
+     |> assign(:node_map, node_map)
      |> assign(:feedback_requests, feedback_requests)
+     |> assign(:feedback_node_map, feedback_node_map)
+     |> assign(:clustered, length(Node.list()) > 0)
      |> assign(:prompt, "")
      |> assign(:form_key, 0)
      |> assign(:show_all, false)
@@ -35,8 +40,9 @@ defmodule OrcaHubWeb.QueueLive do
 
   @impl true
   def handle_event("archive", %{"id" => id}, socket) do
-    session = Sessions.get_session!(id)
-    Sessions.archive_session(session)
+    node = Map.get(socket.assigns.node_map, id, node())
+    session = Cluster.get_session!(node, id)
+    Cluster.archive_session(node, session)
 
     socket =
       socket
@@ -48,14 +54,18 @@ defmodule OrcaHubWeb.QueueLive do
 
   def handle_event("undo_archive", _params, socket) do
     if session_id = socket.assigns.undo_archive_session do
-      session = Sessions.get_session!(session_id)
-      Sessions.unarchive_session(session)
+      node = Map.get(socket.assigns.node_map, session_id, node())
+      session = Cluster.get_session!(node, session_id)
+      Cluster.unarchive_session(node, session)
+
+      {entries, node_map} = load_entries_with_nodes()
 
       {:noreply,
        socket
        |> cancel_undo_timer()
        |> assign(undo_archive_session: nil)
-       |> assign(:entries, load_entries())}
+       |> assign(:entries, entries)
+       |> assign(:node_map, node_map)}
     else
       {:noreply, socket}
     end
@@ -72,9 +82,10 @@ defmodule OrcaHubWeb.QueueLive do
         {:noreply, put_flash(socket, :error, "No idle sessions")}
 
       {prompt, [{session, _msg} | _rest]} ->
-        ensure_runner(session.id)
+        node = Map.get(socket.assigns.node_map, session.id, node())
+        ensure_runner(node, session.id)
 
-        case SessionRunner.send_message(session.id, prompt) do
+        case Cluster.send_message(node, session.id, prompt) do
           :ok ->
             {:noreply,
              socket
@@ -93,9 +104,10 @@ defmodule OrcaHubWeb.QueueLive do
     if prompt == "" do
       {:noreply, socket}
     else
-      ensure_runner(id)
+      node = Map.get(socket.assigns.node_map, id, node())
+      ensure_runner(node, id)
 
-      case SessionRunner.send_message(id, prompt) do
+      case Cluster.send_message(node, id, prompt) do
         :ok ->
           {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
 
@@ -106,22 +118,26 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   def handle_event("defer", %{"id" => id}, socket) do
-    session = Sessions.get_session!(id)
-    Sessions.defer_session(session)
+    node = Map.get(socket.assigns.node_map, id, node())
+    session = Cluster.get_session!(node, id)
+    Cluster.defer_session(node, session)
 
-    {:noreply, assign(socket, :entries, load_entries())}
+    {entries, node_map} = load_entries_with_nodes()
+    {:noreply, socket |> assign(:entries, entries) |> assign(:node_map, node_map)}
   end
 
   def handle_event("delegate", %{"id" => id, "prompt" => prompt}, socket) do
-    session = Sessions.get_session!(id)
+    node = Map.get(socket.assigns.node_map, id, node())
+    session = Cluster.get_session!(node, id)
     prompt = String.trim(prompt)
 
-    case Sessions.create_session(%{directory: session.directory, project_id: session.project_id}) do
+    # Create the delegate session on the same node as the original
+    case Cluster.rpc(node, Sessions, :create_session, [%{directory: session.directory, project_id: session.project_id}]) do
       {:ok, new_session} ->
-        {:ok, _} = SessionSupervisor.start_session(new_session.id)
+        Cluster.start_session(node, new_session.id)
 
         # Tell the original session to delegate work to the new session
-        ensure_runner(id)
+        ensure_runner(node, id)
 
         delegate_prompt =
           "A new session has been created for you to delegate work to. " <>
@@ -130,7 +146,7 @@ defmodule OrcaHubWeb.QueueLive do
             "Give it enough context to work independently." <>
             if(prompt != "", do: "\n\nThe user says: #{prompt}", else: "")
 
-        case SessionRunner.send_message(id, delegate_prompt) do
+        case Cluster.send_message(node, id, delegate_prompt) do
           :ok ->
             {:noreply,
              socket
@@ -148,9 +164,10 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   def handle_event("commit", %{"id" => id}, socket) do
-    ensure_runner(id)
+    node = Map.get(socket.assigns.node_map, id, node())
+    ensure_runner(node, id)
 
-    case SessionRunner.send_message(id, "Commit all current changes. Use a descriptive commit message based on the diff.") do
+    case Cluster.send_message(node, id, "Commit all current changes. Use a descriptive commit message based on the diff.") do
       :ok ->
         {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
 
@@ -160,9 +177,10 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   def handle_event("add_tests", %{"id" => id}, socket) do
-    ensure_runner(id)
+    node = Map.get(socket.assigns.node_map, id, node())
+    ensure_runner(node, id)
 
-    case SessionRunner.send_message(id, "Check if there are tests for the recent changes. If there aren't any, add comprehensive tests.") do
+    case Cluster.send_message(node, id, "Check if there are tests for the recent changes. If there aren't any, add comprehensive tests.") do
       :ok ->
         {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
 
@@ -172,9 +190,10 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   def handle_event("rebase", %{"id" => id}, socket) do
-    ensure_runner(id)
+    node = Map.get(socket.assigns.node_map, id, node())
+    ensure_runner(node, id)
 
-    case SessionRunner.send_message(id, "Rebase this branch onto main. If there are conflicts, resolve them intelligently based on the intent of both changes.") do
+    case Cluster.send_message(node, id, "Rebase this branch onto main. If there are conflicts, resolve them intelligently based on the intent of both changes.") do
       :ok ->
         {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
 
@@ -184,9 +203,10 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   def handle_event("merge_to_main", %{"id" => id}, socket) do
-    ensure_runner(id)
+    node = Map.get(socket.assigns.node_map, id, node())
+    ensure_runner(node, id)
 
-    case SessionRunner.send_message(id, "Switch to the main branch, merge this worktree's branch in, and resolve any conflicts if they arise.") do
+    case Cluster.send_message(node, id, "Switch to the main branch, merge this worktree's branch in, and resolve any conflicts if they arise.") do
       :ok ->
         {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
 
@@ -196,9 +216,10 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   def handle_event("approve_session", %{"id" => id}, socket) do
-    ensure_runner(id)
+    node = Map.get(socket.assigns.node_map, id, node())
+    ensure_runner(node, id)
 
-    case SessionRunner.send_message(id, "That sounds great, go for it!") do
+    case Cluster.send_message(node, id, "That sounds great, go for it!") do
       :ok ->
         {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
 
@@ -209,7 +230,8 @@ defmodule OrcaHubWeb.QueueLive do
 
   def handle_event("approve_feedback", %{"id" => id}, socket) do
     id = String.to_integer(id)
-    Feedback.respond(id, "That sounds great, go for it!")
+    node = Map.get(socket.assigns.feedback_node_map, id, node())
+    Cluster.rpc(node, Feedback, :respond, [id, "That sounds great, go for it!"])
 
     {:noreply,
      assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
@@ -217,7 +239,8 @@ defmodule OrcaHubWeb.QueueLive do
 
   def handle_event("cancel_feedback", %{"id" => id}, socket) do
     id = String.to_integer(id)
-    Feedback.cancel(id)
+    node = Map.get(socket.assigns.feedback_node_map, id, node())
+    Cluster.rpc(node, Feedback, :cancel, [id])
 
     {:noreply,
      assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
@@ -230,7 +253,8 @@ defmodule OrcaHubWeb.QueueLive do
     if response == "" do
       {:noreply, socket}
     else
-      Feedback.respond(id, response)
+      node = Map.get(socket.assigns.feedback_node_map, id, node())
+      Cluster.rpc(node, Feedback, :respond, [id, response])
 
       {:noreply,
        assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
@@ -267,13 +291,20 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   def handle_info({:new_feedback_request, _request}, socket) do
-    {:noreply, assign(socket, :feedback_requests, Feedback.list_pending_requests())}
+    tagged_feedback = Cluster.list_pending_feedback()
+    feedback_requests = Enum.map(tagged_feedback, fn {_n, req} -> req end)
+    feedback_node_map = Cluster.build_node_map(tagged_feedback)
+
+    {:noreply,
+     socket
+     |> assign(:feedback_requests, feedback_requests)
+     |> assign(:feedback_node_map, feedback_node_map)}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   defp handle_status_change(:idle, socket) do
-    entries = load_entries()
+    {entries, node_map} = load_entries_with_nodes()
 
     # Subscribe to any new sessions we weren't tracking
     existing_ids = MapSet.new(socket.assigns.entries, fn {s, _} -> s.id end)
@@ -288,6 +319,7 @@ defmodule OrcaHubWeb.QueueLive do
     socket =
       socket
       |> assign(:entries, entries)
+      |> assign(:node_map, node_map)
       |> assign(:tts_autoplay_pending, was_empty && now_has_entries && socket.assigns.tts_autoplay)
 
     {:noreply, socket}
@@ -309,17 +341,21 @@ defmodule OrcaHubWeb.QueueLive do
     assign(socket, undo_archive_timer: nil)
   end
 
-  defp load_entries do
-    Sessions.list_idle_sessions_with_last_assistant_message()
+  defp load_entries_with_nodes do
+    tagged = Cluster.list_idle_sessions_with_last_assistant_message()
+    # tagged is [{node, {session, msg}}, ...]
+    node_map = Map.new(tagged, fn {n, {session, _msg}} -> {session.id, n} end)
+    entries = Enum.map(tagged, fn {_n, entry} -> entry end)
+    {entries, node_map}
   end
 
   defp reject_session(entries, id) do
     Enum.reject(entries, fn {session, _} -> session.id == id end)
   end
 
-  defp ensure_runner(session_id) do
-    unless SessionSupervisor.session_alive?(session_id) do
-      SessionSupervisor.start_session(session_id)
+  defp ensure_runner(target_node, session_id) do
+    unless Cluster.session_alive?(target_node, session_id) do
+      Cluster.start_session(target_node, session_id)
     end
   end
 

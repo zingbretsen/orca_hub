@@ -60,7 +60,9 @@ graph TB
         Runners -->|register| SR
         Runners -->|broadcast| PS
         Runners -->|persist| Repo
-        Sched -->|fire triggers| SS
+        TE["TriggerExecutor"]
+        Sched -->|fire triggers| TE
+        TE --> SS
         EP -->|LiveView| PS
     end
 ```

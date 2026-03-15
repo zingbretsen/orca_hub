@@ -25,7 +25,7 @@ flowchart TB
     end
 
     Cron --> ExecuteCron
-    Webhook -->|async via TaskSupervisor\npayload appended to prompt| ExecuteWebhook
+    Webhook -->|"async via TaskSupervisor\nCluster.rpc to owning node\npayload appended to prompt"| ExecuteWebhook
 
     ExecuteCron --> Resolve
     ExecuteWebhook --> Resolve

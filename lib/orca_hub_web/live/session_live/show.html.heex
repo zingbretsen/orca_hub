@@ -25,6 +25,9 @@
     ]}>
       {@status}
     </span>
+    <span :if={@remote_session && length(Node.list()) > 0} class="badge badge-ghost badge-outline ml-1" title={inspect(@session_node)}>
+      {OrcaHub.Cluster.node_name(@session_node)}
+    </span>
     <span :if={@plan_mode == :planning} class="badge badge-warning badge-outline ml-1">planning</span>
     <span :if={@plan_mode == :review} class="badge badge-info badge-outline ml-1">needs review</span>
     <:subtitle>
@@ -192,13 +195,13 @@
               <.icon name="hero-plus" class="size-5" />
             </div>
             <ul tabindex="0" class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg mb-2">
-              <li>
+              <li :if={!@remote_session}>
                 <label>
                   <.live_file_input upload={@uploads.image} class="hidden" />
                   <.icon name="hero-photo" class="size-5" /> Upload image
                 </label>
               </li>
-              <li>
+              <li :if={!@remote_session}>
                 <label>
                   <.live_file_input upload={@uploads.file} class="hidden" />
                   <.icon name="hero-paper-clip" class="size-5" /> Attach file

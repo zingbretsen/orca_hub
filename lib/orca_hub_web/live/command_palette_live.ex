@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.CommandPaletteLive do
   use OrcaHubWeb, :live_component
 
-  alias OrcaHub.{Sessions, Projects, Issues}
+  alias OrcaHub.{Sessions, Projects, Issues, Cluster}
 
   @nav_commands [
     %{name: "Dashboard", path: "/", category: "Navigation", icon: "hero-home"},
@@ -230,8 +230,8 @@ defmodule OrcaHubWeb.CommandPaletteLive do
         end)
 
       sessions =
-        Sessions.search(query)
-        |> Enum.map(fn s ->
+        Cluster.search(query)
+        |> Enum.map(fn {_node, s} ->
           %{
             name: s.title || Path.basename(s.directory),
             subtitle: if(s.project, do: s.project.name, else: s.directory),

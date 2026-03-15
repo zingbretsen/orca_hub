@@ -119,6 +119,9 @@
             <span class={["badge badge-xs", if(trigger.enabled, do: "badge-success", else: "badge-ghost")]}>
               {if trigger.enabled, do: "active", else: "disabled"}
             </span>
+            <span :if={@clustered && Map.get(@node_map, trigger.id)} class="badge badge-xs badge-outline opacity-60">
+              {OrcaHub.Cluster.node_name(Map.get(@node_map, trigger.id))}
+            </span>
           </div>
           <div :if={trigger.type == "scheduled"} class="text-base-content/50 text-xs mt-0.5 font-mono">{trigger.cron_expression}</div>
           <div :if={trigger.type == "webhook"} class="text-base-content/50 text-xs mt-0.5 font-mono truncate max-w-md">{webhook_url(trigger)}</div>

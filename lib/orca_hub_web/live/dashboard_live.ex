@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.DashboardLive do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Sessions, Projects, Issues, Triggers, Feedback}
+  alias OrcaHub.Cluster
 
   @impl true
   def mount(_params, _session, socket) do
@@ -14,16 +14,32 @@ defmodule OrcaHubWeb.DashboardLive do
   end
 
   defp load_data(socket) do
-    sessions = Sessions.list_sessions(:all)
+    tagged_sessions = Cluster.list_sessions(:all)
+    sessions = Enum.map(tagged_sessions, fn {_n, s} -> s end)
     running = Enum.count(sessions, &(&1.status == "running"))
     idle = Enum.count(sessions, &(&1.status == "idle"))
     errored = Enum.count(sessions, &(&1.status == "error"))
-    feedback_requests = Feedback.list_pending_requests()
-    open_issues = Issues.list_issues() |> Enum.count(&(&1.status != "closed"))
-    projects = Projects.list_projects()
-    triggers = Triggers.list_triggers()
+    feedback_requests = Cluster.list_pending_feedback()
+    open_issues = Cluster.list_issues() |> Enum.count(fn {_n, i} -> i.status != "closed" end)
+    tagged_projects = Cluster.list_projects()
+    tagged_triggers = Cluster.list_triggers()
+    triggers = Enum.map(tagged_triggers, fn {_n, t} -> t end)
     enabled_triggers = Enum.count(triggers, & &1.enabled)
     recent_sessions = Enum.take(sessions, 8)
+
+    clustered = length(Node.list()) > 0
+    cluster_nodes = if clustered, do: Cluster.node_info(), else: []
+
+    # Per-node session counts
+    node_session_counts =
+      if clustered do
+        tagged_sessions
+        |> Enum.group_by(fn {n, _s} -> n end)
+        |> Enum.map(fn {n, items} -> {Cluster.node_name(n), length(items)} end)
+        |> Enum.sort_by(fn {name, _} -> name end)
+      else
+        []
+      end
 
     assign(socket,
       running_count: running,
@@ -32,10 +48,13 @@ defmodule OrcaHubWeb.DashboardLive do
       total_sessions: length(sessions),
       feedback_count: length(feedback_requests),
       open_issues: open_issues,
-      project_count: length(projects),
+      project_count: length(tagged_projects),
       trigger_count: length(triggers),
       enabled_triggers: enabled_triggers,
-      recent_sessions: recent_sessions
+      recent_sessions: recent_sessions,
+      clustered: clustered,
+      cluster_nodes: cluster_nodes,
+      node_session_counts: node_session_counts
     )
   end
 

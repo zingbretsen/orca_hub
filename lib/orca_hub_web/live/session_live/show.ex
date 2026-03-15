@@ -2,27 +2,34 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Feedback, Projects, Sessions, SessionSupervisor, SessionRunner}
+  alias OrcaHub.{Cluster, Feedback, Projects, Sessions}
   alias OrcaHubWeb.{MessageComponents, Markdown}
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
-    session = Sessions.get_session!(id)
+    {session_node, session} = find_session!(id)
 
-    unless SessionSupervisor.session_alive?(id) do
-      SessionSupervisor.start_session(id)
+    unless Cluster.session_alive?(session_node, id) do
+      Cluster.start_session(session_node, id)
     end
+
+    remote? = session_node != node()
 
     if connected?(socket) do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{id}")
-      Process.send_after(self(), :poll_file_changes, 2000)
+
+      unless remote? do
+        Process.send_after(self(), :poll_file_changes, 2000)
+      end
     end
 
-    runner_state = SessionRunner.get_state(id)
+    runner_state = Cluster.get_state(session_node, id)
 
     {:ok,
      socket
      |> assign(:session, session)
+     |> assign(:session_node, session_node)
+     |> assign(:remote_session, remote?)
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
      |> assign(:page_title, session.title || (session.project && session.project.name) || session.directory)
@@ -71,10 +78,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
   @impl true
   def handle_event("send_message", %{"prompt" => prompt}, socket) do
     Logger.info("send_message: prompt=#{inspect(String.trim(prompt))}")
-    Logger.info("send_message: image entries=#{length(socket.assigns.uploads.image.entries)}, file entries=#{length(socket.assigns.uploads.file.entries)}")
-    {image_paths, socket} = consume_uploaded_entries_for(socket, :image)
-    {file_entries, socket} = consume_uploaded_file_entries(socket)
-    Logger.info("send_message: image_paths=#{inspect(image_paths)}, file_entries=#{inspect(file_entries)}")
+
+    {image_paths, file_entries, socket} =
+      if remote_session?(socket) do
+        {[], [], socket}
+      else
+        Logger.info("send_message: image entries=#{length(socket.assigns.uploads.image.entries)}, file entries=#{length(socket.assigns.uploads.file.entries)}")
+        {img, socket} = consume_uploaded_entries_for(socket, :image)
+        {files, socket} = consume_uploaded_file_entries(socket)
+        Logger.info("send_message: image_paths=#{inspect(img)}, file_entries=#{inspect(files)}")
+        {img, files, socket}
+      end
 
     image_attachments = Enum.map(image_paths, &"[Attached image: #{&1} — use your Read tool to view it]")
 
@@ -91,7 +105,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
       end
 
     if full_prompt do
-      case SessionRunner.send_message(socket.assigns.session.id, full_prompt) do
+      case Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, full_prompt) do
         :ok ->
           {:noreply, push_event(socket, "clear-prompt", %{})}
 
@@ -116,17 +130,18 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("interrupt", _params, socket) do
-    SessionRunner.interrupt(socket.assigns.session.id)
+    Cluster.interrupt(socket.assigns.session_node, socket.assigns.session.id)
     {:noreply, socket}
   end
 
   def handle_event("new_session", _params, socket) do
     session = socket.assigns.session
+    target_node = socket.assigns.session_node
     params = %{"directory" => session.directory, "project_id" => session.project_id}
 
-    case Sessions.create_session(params) do
+    case Cluster.rpc(target_node, Sessions, :create_session, [params]) do
       {:ok, new_session} ->
-        {:ok, _} = OrcaHub.SessionSupervisor.start_session(new_session.id)
+        Cluster.start_session(target_node, new_session.id)
 
         {:noreply, push_navigate(socket, to: ~p"/sessions/#{new_session.id}")}
 
@@ -174,21 +189,21 @@ defmodule OrcaHubWeb.SessionLive.Show do
     if socket.assigns[:expanded_commit] == hash do
       {:noreply, assign(socket, expanded_commit: nil, commit_detail: nil)}
     else
-      detail = Sessions.get_commit_detail(socket.assigns.session.directory, hash)
+      detail = Cluster.rpc(socket.assigns.session_node, Sessions, :get_commit_detail, [socket.assigns.session.directory, hash])
       {:noreply, assign(socket, expanded_commit: hash, commit_detail: detail)}
     end
   end
 
   def handle_event("archive", _params, socket) do
     session = socket.assigns.session
-    SessionSupervisor.stop_session(session.id)
-    {:ok, _} = Sessions.archive_session(session)
+    Cluster.stop_session(socket.assigns.session_node, session.id)
+    {:ok, _} = Cluster.archive_session(socket.assigns.session_node, session)
     {:noreply, push_navigate(socket, to: ~p"/sessions?undo=#{session.id}")}
   end
 
   def handle_event("unarchive", _params, socket) do
     session = socket.assigns.session
-    {:ok, session} = Sessions.unarchive_session(session)
+    {:ok, session} = Cluster.unarchive_session(socket.assigns.session_node, session)
     {:noreply, assign(socket, :session, session)}
   end
 
@@ -202,7 +217,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
         "The plan looks good. Please exit plan mode and proceed with implementation."
       end
 
-    case SessionRunner.send_message(socket.assigns.session.id, prompt) do
+    case Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, prompt) do
       :ok ->
         {:noreply, assign(socket, plan_mode: false, plan_file_path: nil, plan_file_original_mtime: nil)}
 
@@ -220,7 +235,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     session_id = socket.assigns.session.id
     prompt = "Commit the changes you made in this session. Only stage files you actually modified — do not use `git add -A` or `git add .`. Use a descriptive commit message based on the diff. Remember to include the trailer: OrcaHub-Session: #{session_id}"
 
-    case SessionRunner.send_message(session_id, prompt) do
+    case Cluster.send_message(socket.assigns.session_node, session_id, prompt) do
       :ok ->
         {:noreply, socket}
 
@@ -232,15 +247,19 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # -- File panel events --
 
   def handle_event("toggle_file_browser", _params, socket) do
-    socket =
-      if socket.assigns.show_file_browser do
-        assign(socket, :show_file_browser, false)
-      else
-        socket = ensure_file_tree_loaded(socket)
-        assign(socket, :show_file_browser, true)
-      end
+    if socket.assigns.remote_session do
+      {:noreply, put_flash(socket, :info, "File browsing is not available for remote sessions")}
+    else
+      socket =
+        if socket.assigns.show_file_browser do
+          assign(socket, :show_file_browser, false)
+        else
+          socket = ensure_file_tree_loaded(socket)
+          assign(socket, :show_file_browser, true)
+        end
 
-    {:noreply, socket}
+      {:noreply, socket}
+    end
   end
 
   def handle_event("filter_file_tree", %{"value" => query}, socket) do
@@ -471,21 +490,27 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   @impl true
   def handle_info(:poll_file_changes, socket) do
-    Process.send_after(self(), :poll_file_changes, 2000)
-
-    if socket.assigns.open_files == [] do
+    if socket.assigns.remote_session do
       {:noreply, socket}
     else
-      {:noreply, refresh_changed_files(socket)}
+      Process.send_after(self(), :poll_file_changes, 2000)
+
+      if socket.assigns.open_files == [] do
+        {:noreply, socket}
+      else
+        {:noreply, refresh_changed_files(socket)}
+      end
     end
   end
 
   @impl true
   def terminate(_reason, socket) do
     if session = socket.assigns[:session] do
-      if Enum.empty?(Sessions.list_messages(session.id)) do
-        SessionSupervisor.stop_session(session.id)
-        Sessions.archive_session(session)
+      session_node = socket.assigns[:session_node] || node()
+
+      if Enum.empty?(Cluster.list_messages(session_node, session.id)) do
+        Cluster.stop_session(session_node, session.id)
+        Cluster.archive_session(session_node, session)
       end
     end
   end
@@ -711,10 +736,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp load_session_commits(socket) do
-    commits = Sessions.list_session_commits(
-      socket.assigns.session.directory,
-      socket.assigns.session.id
-    )
+    session_node = socket.assigns[:session_node] || node()
+
+    commits =
+      Cluster.rpc(session_node, Sessions, :list_session_commits, [
+        socket.assigns.session.directory,
+        socket.assigns.session.id
+      ])
+
     assign(socket, :commits, commits)
   end
 
@@ -830,6 +859,23 @@ defmodule OrcaHubWeb.SessionLive.Show do
       end
     end)
   end
+
+  # -- Cluster helpers --
+
+  defp find_session!(id) do
+    case Sessions.get_session(id) do
+      %{} = _session ->
+        {node(), Sessions.get_session!(id)}
+
+      nil ->
+        case Cluster.find_session(id) do
+          {remote_node, session} -> {remote_node, session}
+          nil -> raise Ecto.NoResultsError, queryable: OrcaHub.Sessions.Session
+        end
+    end
+  end
+
+  defp remote_session?(socket), do: socket.assigns.remote_session
 
   # -- File tree components --
 

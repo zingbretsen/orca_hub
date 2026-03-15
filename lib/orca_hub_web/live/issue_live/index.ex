@@ -3,15 +3,22 @@ defmodule OrcaHubWeb.IssueLive.Index do
 
   alias OrcaHub.Issues
   alias OrcaHub.Issues.Issue
-  alias OrcaHub.Projects
+  alias OrcaHub.Cluster
 
   @impl true
   def mount(_params, _session, socket) do
+    tagged_issues = Cluster.list_issues(exclude_closed: true)
+    node_map = Cluster.build_node_map(tagged_issues)
+    issues = Enum.map(tagged_issues, fn {_node, issue} -> issue end)
+    tagged_projects = Cluster.list_projects()
+    projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
+    clustered = length(Node.list()) > 0
+
     {:ok,
      socket
-     |> assign(show_closed: false)
-     |> stream(:issues, Issues.list_issues(exclude_closed: true))
-     |> assign(projects: Projects.list_projects())}
+     |> assign(show_closed: false, node_map: node_map, clustered: clustered)
+     |> stream(:issues, issues)
+     |> assign(projects: projects)}
   end
 
   @impl true
@@ -36,7 +43,8 @@ defmodule OrcaHubWeb.IssueLive.Index do
   end
 
   defp apply_action(socket, :edit, %{"id" => id}) do
-    issue = Issues.get_issue!(id)
+    node = Map.get(socket.assigns.node_map, id, node())
+    issue = Cluster.get_issue!(node, id)
     changeset = Issue.changeset(issue, %{})
 
     socket
@@ -51,16 +59,20 @@ defmodule OrcaHubWeb.IssueLive.Index do
 
   def handle_event("toggle_closed", _params, socket) do
     show_closed = !socket.assigns.show_closed
+    tagged_issues = Cluster.list_issues(exclude_closed: !show_closed)
+    node_map = Cluster.build_node_map(tagged_issues)
+    issues = Enum.map(tagged_issues, fn {_node, issue} -> issue end)
 
     {:noreply,
      socket
-     |> assign(show_closed: show_closed)
-     |> stream(:issues, Issues.list_issues(exclude_closed: !show_closed), reset: true)}
+     |> assign(show_closed: show_closed, node_map: node_map)
+     |> stream(:issues, issues, reset: true)}
   end
 
   def handle_event("delete", %{"id" => id}, socket) do
-    issue = Issues.get_issue!(id)
-    {:ok, _} = Issues.delete_issue(issue)
+    node = Map.get(socket.assigns.node_map, id, node())
+    issue = Cluster.get_issue!(node, id)
+    {:ok, _} = Cluster.rpc(node, Issues, :delete_issue, [issue])
     {:noreply, stream_delete(socket, :issues, issue)}
   end
 
@@ -75,7 +87,10 @@ defmodule OrcaHubWeb.IssueLive.Index do
   end
 
   defp save_issue(socket, :edit, params) do
-    case Issues.update_issue(socket.assigns.issue, params) do
+    issue = socket.assigns.issue
+    node = Map.get(socket.assigns.node_map, issue.id, node())
+
+    case Cluster.rpc(node, Issues, :update_issue, [issue, params]) do
       {:ok, issue} ->
         {:noreply, push_navigate(socket, to: ~p"/issues/#{issue.id}")}
 

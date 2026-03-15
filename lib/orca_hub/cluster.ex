@@ -19,9 +19,28 @@ defmodule OrcaHub.Cluster do
   @doc "All nodes in the cluster, including this one."
   def nodes, do: [node() | Node.list()]
 
-  @doc "Human-readable node name (the part before @)."
+  @doc "Human-readable node name. Uses NODE_DISPLAY_NAME for local node, falls back to hostname."
   def node_name(n) when is_atom(n) do
-    n |> Atom.to_string() |> String.split("@") |> hd()
+    if n == node() do
+      display_name()
+    else
+      # Ask the remote node for its display name
+      try do
+        :erpc.call(n, __MODULE__, :display_name, [], 5_000)
+      catch
+        _, _ ->
+          n |> Atom.to_string() |> String.split("@") |> List.last()
+      end
+    end
+  end
+
+  @doc "This node's display name, from NODE_DISPLAY_NAME env var or hostname."
+  def display_name do
+    case System.get_env("NODE_DISPLAY_NAME") do
+      nil -> node() |> Atom.to_string() |> String.split("@") |> List.last()
+      "" -> node() |> Atom.to_string() |> String.split("@") |> List.last()
+      name -> name
+    end
   end
 
   @doc "Info about each connected node."
@@ -80,7 +99,7 @@ defmodule OrcaHub.Cluster do
 
   def list_idle_sessions_with_last_assistant_message do
     fan_out(Sessions, :list_idle_sessions_with_last_assistant_message)
-    |> Enum.sort_by(fn {_n, s} -> s.updated_at end, {:desc, NaiveDateTime})
+    |> Enum.sort_by(fn {_n, {s, _msg}} -> s.updated_at end, {:desc, NaiveDateTime})
   end
 
   def count_idle_sessions do
