@@ -21,6 +21,50 @@
   <:col :let={{_id, project}} label="Directory">
     <span class="font-mono text-sm">{project.directory}</span>
   </:col>
+  <:col :let={{_id, project}} label="Git">
+    <% status = Map.get(@git_statuses, project.id) %>
+    <div class="flex flex-wrap gap-1">
+      <span :if={is_nil(status)} class="loading loading-spinner loading-xs"></span>
+      <span :if={status == :syncing} class="loading loading-spinner loading-xs"></span>
+      <span :if={is_map(status) && status.error} class="badge badge-error badge-sm" title={status.error}>
+        error
+      </span>
+      <span :if={is_map(status) && status.conflicts} class="badge badge-error badge-sm">
+        conflicts
+      </span>
+      <span :if={is_map(status) && !status.error && !status.conflicts && !status.clean} class="badge badge-warning badge-sm">
+        dirty
+      </span>
+      <span :if={is_map(status) && status.behind > 0} class="badge badge-info badge-sm">
+        {status.behind} behind
+      </span>
+      <span :if={is_map(status) && status.ahead > 0} class="badge badge-info badge-sm">
+        {status.ahead} ahead
+      </span>
+      <span :if={is_map(status) && !status.error && !status.conflicts && status.clean && status.ahead == 0 && status.behind == 0} class="badge badge-success badge-sm">
+        clean
+      </span>
+    </div>
+  </:col>
+  <:action :let={{_id, project}}>
+    <% syncing = Map.get(@git_statuses, project.id) == :syncing %>
+    <div class="dropdown dropdown-end">
+      <div tabindex="0" role="button" class={["btn btn-xs btn-ghost", syncing && "btn-disabled"]}>
+        Sync
+      </div>
+      <ul tabindex="0" class="dropdown-content z-[1] menu menu-sm p-2 shadow bg-base-100 rounded-box w-36">
+        <li>
+          <button phx-click="git_pull" phx-value-id={project.id}>Pull</button>
+        </li>
+        <li>
+          <button phx-click="git_push" phx-value-id={project.id}>Push</button>
+        </li>
+        <li>
+          <button phx-click="git_pull_push" phx-value-id={project.id}>Pull & Push</button>
+        </li>
+      </ul>
+    </div>
+  </:action>
   <:action :let={{_id, project}}>
     <.link phx-click="delete" phx-value-id={project.id} data-confirm="Delete this project?">
       Delete

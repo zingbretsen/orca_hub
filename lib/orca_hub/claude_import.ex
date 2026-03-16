@@ -302,8 +302,10 @@ defmodule OrcaHub.ClaudeImport do
       candidates = [
         Path.join(current, segment),
         Path.join(current, String.replace(segment, "-", "_")),
+        Path.join(current, String.replace(segment, "-", ".")),
         Path.join(current, "." <> segment),
-        Path.join(current, "." <> String.replace(segment, "-", "_"))
+        Path.join(current, "." <> String.replace(segment, "-", "_")),
+        Path.join(current, "." <> String.replace(segment, "-", "."))
       ]
 
       Enum.find_value(candidates, fn candidate ->

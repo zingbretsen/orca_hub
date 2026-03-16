@@ -284,6 +284,55 @@ defmodule OrcaHub.Projects do
     end
   end
 
+  @doc "Runs git push in the project directory."
+  def git_push(%Project{directory: dir}) do
+    case System.cmd("git", ["push"], cd: dir, stderr_to_stdout: true) do
+      {output, 0} -> {:ok, String.trim(output)}
+      {output, _} -> {:error, String.trim(output)}
+    end
+  end
+
+  @doc """
+  Returns git status info for the project directory.
+
+  Returns a map with:
+  - `:clean` - whether the working tree has no uncommitted changes
+  - `:conflicts` - whether there are unmerged paths
+  - `:ahead` - number of commits ahead of upstream
+  - `:behind` - number of commits behind upstream
+  - `:error` - error message if git commands fail
+  """
+  def git_status(%Project{directory: dir}) do
+    with {porcelain, 0} <- System.cmd("git", ["status", "--porcelain"], cd: dir, stderr_to_stdout: true) do
+      lines = String.split(porcelain, "\n", trim: true)
+      conflicts = Enum.any?(lines, fn line -> String.match?(line, ~r/^(U.|.U|DD|AA)/) end)
+      clean = lines == []
+
+      {ahead, behind} =
+        case System.cmd("git", ["rev-list", "--count", "--left-right", "@{upstream}...HEAD"],
+               cd: dir,
+               stderr_to_stdout: true
+             ) do
+          {output, 0} ->
+            case String.split(String.trim(output), "\t") do
+              [behind_str, ahead_str] ->
+                {String.to_integer(ahead_str), String.to_integer(behind_str)}
+
+              _ ->
+                {0, 0}
+            end
+
+          _ ->
+            {0, 0}
+        end
+
+      %{clean: clean, conflicts: conflicts, ahead: ahead, behind: behind, error: nil}
+    else
+      {output, _} ->
+        %{clean: false, conflicts: false, ahead: 0, behind: 0, error: String.trim(output)}
+    end
+  end
+
   @doc "Lists git worktrees. Returns list of maps with :path, :branch, :head keys."
   def git_worktree_list(%Project{directory: dir}) do
     case System.cmd("git", ["worktree", "list", "--porcelain"], cd: dir, stderr_to_stdout: true) do

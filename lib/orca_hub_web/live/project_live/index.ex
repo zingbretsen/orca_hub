@@ -12,18 +12,25 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
     clustered = length(Node.list()) > 0
 
-    {:ok,
-     socket
-     |> stream(:projects, projects)
-     |> assign(
-       node_map: node_map,
-       clustered: clustered,
-       browsing: false,
-       browse_path: nil,
-       browse_entries: [],
-       browse_show_hidden: false,
-       importing: false
-     )}
+    socket =
+      socket
+      |> stream(:projects, projects)
+      |> assign(
+        node_map: node_map,
+        clustered: clustered,
+        browsing: false,
+        browse_path: nil,
+        browse_entries: [],
+        browse_show_hidden: false,
+        importing: false,
+        git_statuses: %{}
+      )
+
+    if connected?(socket) do
+      fetch_all_git_statuses(tagged_projects)
+    end
+
+    {:ok, socket}
   end
 
   @impl true
@@ -80,6 +87,18 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
     changeset = Project.changeset(project, Map.delete(params, "target_node"))
     {:noreply, assign(socket, form: to_form(changeset), target_node: target_node)}
+  end
+
+  def handle_event("git_pull", %{"id" => id}, socket) do
+    run_git_sync(socket, id, :pull)
+  end
+
+  def handle_event("git_push", %{"id" => id}, socket) do
+    run_git_sync(socket, id, :push)
+  end
+
+  def handle_event("git_pull_push", %{"id" => id}, socket) do
+    run_git_sync(socket, id, :pull_push)
   end
 
   def handle_event("browse", _params, socket) do
@@ -140,6 +159,28 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   end
 
   @impl true
+  def handle_info({:git_status, project_id, status}, socket) do
+    git_statuses = Map.put(socket.assigns.git_statuses, project_id, status)
+    {:noreply, assign(socket, git_statuses: git_statuses)}
+  end
+
+  def handle_info({:git_sync_done, project_id, result}, socket) do
+    socket =
+      case result do
+        {:ok, output} ->
+          put_flash(socket, :info, "Sync complete: #{output}")
+
+        {:error, output} ->
+          put_flash(socket, :error, "Sync failed: #{output}")
+      end
+
+    # Re-fetch status for this project
+    target_node = Map.get(socket.assigns.node_map, project_id, node())
+    fetch_git_status(target_node, project_id)
+
+    {:noreply, socket}
+  end
+
   def handle_info({:import_done, result}, socket) do
     flash =
       "Imported #{result.sessions_imported} sessions, skipped #{result.sessions_skipped}, created #{result.projects_created} projects."
@@ -195,5 +236,61 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
   defp browse_target_node(socket) do
     socket.assigns[:target_node] || node()
+  end
+
+  defp fetch_all_git_statuses(tagged_projects) do
+    pid = self()
+
+    for {target_node, project} <- tagged_projects do
+      Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+        status = Cluster.rpc(target_node, Projects, :git_status, [project])
+        send(pid, {:git_status, project.id, status})
+      end)
+    end
+  end
+
+  defp fetch_git_status(target_node, project_id) do
+    pid = self()
+
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      project = Cluster.rpc(target_node, Projects, :get_project!, [project_id])
+      status = Cluster.rpc(target_node, Projects, :git_status, [project])
+      send(pid, {:git_status, project_id, status})
+    end)
+  end
+
+  defp run_git_sync(socket, id, action) do
+    pid = self()
+    target_node = Map.get(socket.assigns.node_map, id, node())
+    git_statuses = Map.put(socket.assigns.git_statuses, id, :syncing)
+
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      project = Cluster.rpc(target_node, Projects, :get_project!, [id])
+
+      result =
+        case action do
+          :pull ->
+            Cluster.rpc(target_node, Projects, :git_pull, [project])
+
+          :push ->
+            Cluster.rpc(target_node, Projects, :git_push, [project])
+
+          :pull_push ->
+            case Cluster.rpc(target_node, Projects, :git_pull, [project]) do
+              {:ok, pull_output} ->
+                case Cluster.rpc(target_node, Projects, :git_push, [project]) do
+                  {:ok, push_output} -> {:ok, "pull: #{pull_output}, push: #{push_output}"}
+                  {:error, push_err} -> {:error, "pull ok, push failed: #{push_err}"}
+                end
+
+              {:error, _} = err ->
+                err
+            end
+        end
+
+      send(pid, {:git_sync_done, id, result})
+    end)
+
+    {:noreply, assign(socket, git_statuses: git_statuses)}
   end
 end

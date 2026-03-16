@@ -82,6 +82,9 @@ let Hooks = {
           if (input) {
             input.value = ""
             input.focus()
+            // Dispatch a synthetic keyup to reset the debounced phx-keyup search
+            // event, preventing a stale query from overwriting the new phase's results
+            input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }))
           }
         })
       })
