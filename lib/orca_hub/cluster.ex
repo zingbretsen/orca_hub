@@ -99,7 +99,7 @@ defmodule OrcaHub.Cluster do
 
   def list_idle_sessions_with_last_assistant_message do
     fan_out(Sessions, :list_idle_sessions_with_last_assistant_message)
-    |> Enum.sort_by(fn {_n, {s, _msg}} -> s.updated_at end, {:desc, NaiveDateTime})
+    |> Enum.sort_by(fn {_n, {s, _msg}} -> {s.priority || 0, s.updated_at} end)
   end
 
   def count_idle_sessions do
