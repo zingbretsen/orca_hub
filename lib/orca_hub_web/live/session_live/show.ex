@@ -79,15 +79,18 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def handle_event("send_message", %{"prompt" => prompt}, socket) do
     Logger.info("send_message: prompt=#{inspect(String.trim(prompt))}")
 
-    {image_paths, file_entries, socket} =
+    Logger.info("send_message: image entries=#{length(socket.assigns.uploads.image.entries)}, file entries=#{length(socket.assigns.uploads.file.entries)}")
+    {image_paths, socket} = consume_uploaded_entries_for(socket, :image)
+    {file_entries, socket} = consume_uploaded_file_entries(socket)
+    Logger.info("send_message: image_paths=#{inspect(image_paths)}, file_entries=#{inspect(file_entries)}")
+
+    # For remote sessions, transfer uploaded files to the remote node
+    {image_paths, file_entries} =
       if remote_session?(socket) do
-        {[], [], socket}
+        session_node = socket.assigns.session_node
+        {transfer_uploads(image_paths, session_node), transfer_uploads(file_entries, session_node)}
       else
-        Logger.info("send_message: image entries=#{length(socket.assigns.uploads.image.entries)}, file entries=#{length(socket.assigns.uploads.file.entries)}")
-        {img, socket} = consume_uploaded_entries_for(socket, :image)
-        {files, socket} = consume_uploaded_file_entries(socket)
-        Logger.info("send_message: image_paths=#{inspect(img)}, file_entries=#{inspect(files)}")
-        {img, files, socket}
+        {image_paths, file_entries}
       end
 
     image_attachments = Enum.map(image_paths, &"[Attached image: #{&1} — use your Read tool to view it]")
@@ -247,19 +250,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # -- File panel events --
 
   def handle_event("toggle_file_browser", _params, socket) do
-    if socket.assigns.remote_session do
-      {:noreply, put_flash(socket, :info, "File browsing is not available for remote sessions")}
-    else
-      socket =
-        if socket.assigns.show_file_browser do
-          assign(socket, :show_file_browser, false)
-        else
-          socket = ensure_file_tree_loaded(socket)
-          assign(socket, :show_file_browser, true)
-        end
+    socket =
+      if socket.assigns.show_file_browser do
+        assign(socket, :show_file_browser, false)
+      else
+        socket = ensure_file_tree_loaded(socket)
+        assign(socket, :show_file_browser, true)
+      end
 
-      {:noreply, socket}
-    end
+    {:noreply, socket}
   end
 
   def handle_event("filter_file_tree", %{"value" => query}, socket) do
@@ -334,11 +333,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
     path = socket.assigns.active_file_tab
     dir = socket.assigns.session.directory
     project = %Projects.Project{directory: dir}
+    session_node = socket.assigns[:session_node] || node()
 
-    case Projects.save_file(project, path, content) do
+    case Cluster.rpc(session_node, Projects, :save_file, [project, path, content]) do
       :ok ->
         blocks = if markdown_file?(path), do: Markdown.split_blocks(content), else: []
-        mtime = file_mtime(Path.join(dir, path))
+        mtime = remote_file_mtime(session_node, Path.join(dir, path))
 
         open_files =
           Enum.map(socket.assigns.open_files, fn tab ->
@@ -384,10 +384,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
     full_content = Markdown.join_blocks(updated_blocks)
     dir = socket.assigns.session.directory
     project = %Projects.Project{directory: dir}
+    session_node = socket.assigns[:session_node] || node()
 
-    case Projects.save_file(project, tab.path, full_content) do
+    case Cluster.rpc(session_node, Projects, :save_file, [project, tab.path, full_content]) do
       :ok ->
-        mtime = file_mtime(Path.join(dir, tab.path))
+        mtime = remote_file_mtime(session_node, Path.join(dir, tab.path))
 
         open_files =
           Enum.map(socket.assigns.open_files, fn t ->
@@ -412,10 +413,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
     full_content = Markdown.join_blocks(updated_blocks)
     dir = socket.assigns.session.directory
     project = %Projects.Project{directory: dir}
+    session_node = socket.assigns[:session_node] || node()
 
-    case Projects.save_file(project, tab.path, full_content) do
+    case Cluster.rpc(session_node, Projects, :save_file, [project, tab.path, full_content]) do
       :ok ->
-        mtime = file_mtime(Path.join(dir, tab.path))
+        mtime = remote_file_mtime(session_node, Path.join(dir, tab.path))
 
         open_files =
           Enum.map(socket.assigns.open_files, fn t ->
@@ -515,6 +517,25 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  defp transfer_uploads(paths, target_node) do
+    Enum.flat_map(paths, fn local_path ->
+      content = File.read!(local_path)
+      filename = Path.basename(local_path)
+      remote_path = "/tmp/#{filename}"
+
+      case Cluster.rpc(target_node, File, :write, [remote_path, content]) do
+        :ok ->
+          File.rm(local_path)
+          [remote_path]
+
+        error ->
+          Logger.warning("Failed to transfer upload #{filename} to #{target_node}: #{inspect(error)}")
+          File.rm(local_path)
+          []
+      end
+    end)
+  end
+
   defp upload_error_to_string(:too_large), do: "File is too large"
   defp upload_error_to_string(:not_accepted), do: "Invalid file type"
   defp upload_error_to_string(:too_many_files), do: "Too many files"
@@ -526,7 +547,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
         paths =
           consume_uploaded_entries(socket, upload_name, fn %{path: tmp_path}, entry ->
             ext = Path.extname(entry.client_name)
-            filename = "upload_#{System.os_time(:millisecond)}#{ext}"
+            filename = "upload_#{System.unique_integer([:positive, :monotonic])}#{ext}"
             dest = Path.join("/tmp", filename)
             Logger.info("#{upload_name} upload: #{entry.client_name} -> #{dest}")
             File.cp!(tmp_path, dest)
@@ -546,7 +567,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
         entries =
           consume_uploaded_entries(socket, :file, fn %{path: tmp_path}, entry ->
             ext = Path.extname(entry.client_name)
-            filename = "upload_#{System.os_time(:millisecond)}#{ext}"
+            filename = "upload_#{System.unique_integer([:positive, :monotonic])}#{ext}"
             dest = Path.join("/tmp", filename)
             Logger.info("file upload: #{entry.client_name} -> #{dest}")
             File.cp!(tmp_path, dest)
@@ -599,11 +620,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
       |> assign(:scroll_to_line, line)
       |> assign(:scroll_to_block, block_idx)
     else
+      session_node = socket.assigns[:session_node] || node()
+
       result =
         if read_only do
-          File.read(path)
+          Cluster.rpc(session_node, File, :read, [path])
         else
-          Projects.load_file(%Projects.Project{directory: dir}, path)
+          Cluster.rpc(session_node, Projects, :load_file, [%Projects.Project{directory: dir}, path])
         end
 
       case result do
@@ -611,7 +634,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
           blocks = if markdown_file?(path), do: Markdown.split_blocks(content), else: []
           tab = %{path: path, content: content, blocks: blocks, read_only: read_only}
           full_path = if read_only, do: path, else: Path.join(dir, path)
-          mtime = file_mtime(full_path)
+          mtime = remote_file_mtime(session_node, full_path)
 
           block_idx =
             if line && markdown_file?(path),
@@ -642,7 +665,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
     if socket.assigns.file_tree == [] do
       dir = socket.assigns.session.directory
       project = %Projects.Project{directory: dir}
-      files = Projects.list_editable_files(project)
+      session_node = socket.assigns[:session_node] || node()
+      files = Cluster.rpc(session_node, Projects, :list_editable_files, [project])
       tree = Projects.build_file_tree(files)
       assign(socket, file_tree: tree, filtered_file_tree: tree)
     else
@@ -688,6 +712,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp file_mtime(path) do
     case File.stat(path) do
+      {:ok, %{mtime: mtime}} -> mtime
+      _ -> nil
+    end
+  end
+
+  defp remote_file_mtime(target_node, path) do
+    case Cluster.rpc(target_node, File, :stat, [path]) do
       {:ok, %{mtime: mtime}} -> mtime
       _ -> nil
     end
@@ -805,10 +836,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
         socket
 
       path ->
+        session_node = socket.assigns[:session_node] || node()
+
         socket
         |> assign(:pending_plan_file, nil)
         |> assign(:plan_file_path, path)
-        |> assign(:plan_file_original_mtime, file_mtime(path))
+        |> assign(:plan_file_original_mtime, remote_file_mtime(session_node, path))
         |> open_file_tab(path)
         |> assign(:file_edit_mode, true)
     end
@@ -838,7 +871,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
     case {socket.assigns.plan_file_path, socket.assigns.plan_file_original_mtime} do
       {nil, _} -> false
       {_, nil} -> false
-      {path, original_mtime} -> file_mtime(path) != original_mtime
+      {path, original_mtime} ->
+        session_node = socket.assigns[:session_node] || node()
+        remote_file_mtime(session_node, path) != original_mtime
     end
   end
 

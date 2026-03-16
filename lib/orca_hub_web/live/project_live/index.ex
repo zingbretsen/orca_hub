@@ -32,7 +32,7 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   end
 
   defp apply_action(socket, :index, _params) do
-    assign(socket, page_title: "Projects", form: nil, project: nil, cluster_nodes: [])
+    assign(socket, page_title: "Projects", form: nil, project: nil, cluster_nodes: [], target_node: node())
   end
 
   defp apply_action(socket, :new, _params) do
@@ -41,6 +41,7 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     socket
     |> assign(page_title: "New Project", project: nil)
     |> assign(cluster_nodes: Cluster.nodes())
+    |> assign(target_node: node())
     |> assign(form: to_form(changeset))
   end
 
@@ -69,8 +70,16 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
   def handle_event("validate", %{"project" => params}, socket) do
     project = socket.assigns.project || %Project{}
-    changeset = Project.changeset(project, params)
-    {:noreply, assign(socket, form: to_form(changeset))}
+
+    target_node =
+      case params["target_node"] do
+        nil -> socket.assigns.target_node
+        "" -> socket.assigns.target_node
+        n -> String.to_existing_atom(n)
+      end
+
+    changeset = Project.changeset(project, Map.delete(params, "target_node"))
+    {:noreply, assign(socket, form: to_form(changeset), target_node: target_node)}
   end
 
   def handle_event("browse", _params, socket) do
@@ -147,7 +156,7 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   end
 
   defp save_project(socket, :new, params) do
-    target_node = params |> Map.get("target_node", Atom.to_string(node())) |> String.to_existing_atom()
+    target_node = socket.assigns.target_node
     clean_params = Map.delete(params, "target_node")
 
     case Cluster.rpc(target_node, Projects, :create_project, [clean_params]) do
@@ -185,14 +194,6 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   end
 
   defp browse_target_node(socket) do
-    case socket.assigns[:form] do
-      nil -> node()
-      form ->
-        case form.source.params["target_node"] do
-          nil -> node()
-          "" -> node()
-          n -> String.to_existing_atom(n)
-        end
-    end
+    socket.assigns[:target_node] || node()
   end
 end

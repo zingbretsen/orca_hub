@@ -37,7 +37,7 @@
           <span class="label-text">Node</span>
         </label>
         <select name="project[target_node]" class="select select-bordered w-full">
-          <option :for={n <- @cluster_nodes} value={n} selected={n == node()}>
+          <option :for={n <- @cluster_nodes} value={n} selected={n == @target_node}>
             {OrcaHub.Cluster.node_name(n)}
           </option>
         </select>

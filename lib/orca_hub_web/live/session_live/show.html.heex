@@ -195,13 +195,13 @@
               <.icon name="hero-plus" class="size-5" />
             </div>
             <ul tabindex="0" class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg mb-2">
-              <li :if={!@remote_session}>
+              <li>
                 <label>
                   <.live_file_input upload={@uploads.image} class="hidden" />
                   <.icon name="hero-photo" class="size-5" /> Upload image
                 </label>
               </li>
-              <li :if={!@remote_session}>
+              <li>
                 <label>
                   <.live_file_input upload={@uploads.file} class="hidden" />
                   <.icon name="hero-paper-clip" class="size-5" /> Attach file
@@ -416,7 +416,7 @@
   </div>
 
   <%!-- Mobile file panel (modal) --%>
-  <div :if={(@open_files != [] || @show_file_browser) && true} class="lg:hidden">
+  <div :if={@open_files != [] || @show_file_browser} class="lg:hidden">
     <input type="checkbox" id="file-panel-modal" class="modal-toggle" checked />
     <div class="modal modal-bottom" role="dialog">
       <div class="modal-box h-[80vh] max-h-[80vh] flex flex-col p-4">
