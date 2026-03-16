@@ -13,25 +13,20 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
     clustered = length(Node.list()) > 0
 
-    socket =
-      socket
-      |> stream(:projects, projects)
-      |> assign(
-        node_map: node_map,
-        clustered: clustered,
-        browsing: false,
-        browse_path: nil,
-        browse_entries: [],
-        browse_show_hidden: false,
-        importing: false,
-        git_statuses: %{}
-      )
-
-    if connected?(socket) do
-      fetch_all_git_statuses(tagged_projects)
-    end
-
-    {:ok, socket}
+    {:ok,
+     socket
+     |> stream(:projects, projects)
+     |> assign(
+       tagged_projects: tagged_projects,
+       node_map: node_map,
+       clustered: clustered,
+       browsing: false,
+       browse_path: nil,
+       browse_entries: [],
+       browse_show_hidden: false,
+       importing: false,
+       git_statuses: %{}
+     )}
   end
 
   @impl true
@@ -104,6 +99,16 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
     changeset = Project.changeset(project, Map.delete(params, "target_node"))
     {:noreply, assign(socket, form: to_form(changeset), target_node: target_node)}
+  end
+
+  def handle_event("check_git_status", _params, socket) do
+    loading =
+      socket.assigns.tagged_projects
+      |> Enum.map(fn {_node, project} -> {project.id, :loading} end)
+      |> Map.new()
+
+    fetch_all_git_statuses(socket.assigns.tagged_projects)
+    {:noreply, assign(socket, git_statuses: loading)}
   end
 
   def handle_event("git_pull", %{"id" => id}, socket) do
