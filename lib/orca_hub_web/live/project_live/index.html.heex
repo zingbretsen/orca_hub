@@ -53,9 +53,9 @@
   <:action :let={{_id, project}}>
     <% syncing = Map.get(@git_statuses, project.id) == :syncing %>
     <div class="dropdown dropdown-end">
-      <div tabindex="0" role="button" class={syncing && "pointer-events-none opacity-50"}>
+      <button tabindex="0" class={["btn btn-xs btn-ghost", syncing && "btn-disabled"]}>
         Sync
-      </div>
+      </button>
       <ul tabindex="0" class="dropdown-content z-[1] menu menu-sm p-2 shadow bg-base-100 rounded-box w-36">
         <li>
           <button phx-click={JS.push("git_pull", value: %{id: project.id}) |> JS.focus(to: "#projects")}>
@@ -76,9 +76,9 @@
     </div>
   </:action>
   <:action :let={{_id, project}}>
-    <.link phx-click="delete" phx-value-id={project.id} data-confirm="Delete this project?">
+    <button class="btn btn-xs btn-ghost" phx-click="delete" phx-value-id={project.id} data-confirm="Delete this project?">
       Delete
-    </.link>
+    </button>
   </:action>
 </.table>
 
