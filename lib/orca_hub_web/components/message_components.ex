@@ -245,6 +245,18 @@ defmodule OrcaHubWeb.MessageComponents do
         msg["type"] == "system" and msg["subtype"] in task_event_subtypes
       end)
 
+    # Clear parent_tool_use_id on messages belonging to THIS agent so the
+    # recursive message_feed treats them as top-level. Messages belonging to
+    # nested agents keep their parent_tool_use_id for proper sub-grouping.
+    agent_id = assigns.tool["id"]
+
+    real_messages =
+      Enum.map(real_messages, fn msg ->
+        if msg["parent_tool_use_id"] == agent_id,
+          do: Map.delete(msg, "parent_tool_use_id"),
+          else: msg
+      end)
+
     # Get the latest progress description for the header
     last_progress =
       task_events
