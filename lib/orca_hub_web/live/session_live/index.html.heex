@@ -140,9 +140,9 @@
       </div>
       <.input field={@form[:model]} type="select" label="Model" options={[
         {"Default", ""},
-        {"Opus", "opus"},
-        {"Sonnet", "sonnet"},
-        {"Haiku", "haiku"}
+        {"Opus 4.6", "claude-opus-4-6"},
+        {"Sonnet 4.6", "claude-sonnet-4-6"},
+        {"Haiku 4.5", "claude-haiku-4-5-20251001"}
       ]} />
       <div class="flex justify-end gap-2 mt-4">
         <.link patch={~p"/sessions"} class="btn">Cancel</.link>

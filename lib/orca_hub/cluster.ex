@@ -155,6 +155,7 @@ defmodule OrcaHub.Cluster do
   def send_message(n, session_id, prompt), do: rpc(n, SessionRunner, :send_message, [session_id, prompt])
   def interrupt(n, session_id), do: rpc(n, SessionRunner, :interrupt, [session_id])
   def get_state(n, session_id), do: rpc(n, SessionRunner, :get_state, [session_id])
+  def update_model(n, session_id, model), do: rpc(n, SessionRunner, :update_model, [session_id, model])
 
   # -------------------------------------------------------------------
   # Project queries

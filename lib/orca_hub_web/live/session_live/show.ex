@@ -249,6 +249,20 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  def handle_event("set_model", %{"model" => model}, socket) do
+    session = socket.assigns.session
+    model = if model == "", do: nil, else: model
+
+    case Sessions.update_session(session, %{model: model}) do
+      {:ok, updated_session} ->
+        Cluster.update_model(socket.assigns.session_node, session.id, model)
+        {:noreply, assign(socket, :session, updated_session)}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to update model")}
+    end
+  end
+
   def handle_event("archive", _params, socket) do
     session = socket.assigns.session
     Cluster.stop_session(socket.assigns.session_node, session.id)

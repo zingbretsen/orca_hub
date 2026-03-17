@@ -62,6 +62,18 @@
       <span :if={!@session.project}>{@session.directory}</span>
     </:subtitle>
     <:actions>
+      <div class="dropdown dropdown-end">
+        <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1" title="Model">
+          <.icon name="hero-cpu-chip" class="size-4" />
+          <span class="text-xs hidden sm:inline">{@session.model || "default"}</span>
+        </div>
+        <ul tabindex="0" class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg">
+          <li><button phx-click="set_model" phx-value-model="" class={[@session.model == nil && "active"]}>Default</button></li>
+          <li><button phx-click="set_model" phx-value-model="claude-opus-4-6" class={[@session.model == "claude-opus-4-6" && "active"]}>Opus 4.6</button></li>
+          <li><button phx-click="set_model" phx-value-model="claude-sonnet-4-6" class={[@session.model == "claude-sonnet-4-6" && "active"]}>Sonnet 4.6</button></li>
+          <li><button phx-click="set_model" phx-value-model="claude-haiku-4-5-20251001" class={[@session.model == "claude-haiku-4-5-20251001" && "active"]}>Haiku 4.5</button></li>
+        </ul>
+      </div>
       <button :if={@todos != []} phx-click="toggle_todos" class={["btn btn-ghost btn-sm btn-circle indicator", @show_todos && "text-primary"]} title="Tasks">
         <.icon name="hero-clipboard-document-check" class="size-5" />
         <span class="indicator-item badge badge-xs badge-primary">

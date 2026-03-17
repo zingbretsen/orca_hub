@@ -44,6 +44,10 @@ defmodule OrcaHub.SessionRunner do
     GenStatem.cast(via(session_id), :feedback_answered)
   end
 
+  def update_model(session_id, model) do
+    GenStatem.cast(via(session_id), {:update_model, model})
+  end
+
   # Callbacks
 
   @impl true
@@ -105,6 +109,7 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:ready, data)}]}
   end
 
+  def ready(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
   def ready(:cast, _msg, _data), do: :keep_state_and_data
   def ready(:info, _msg, _data), do: :keep_state_and_data
 
@@ -123,6 +128,7 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:idle, data)}]}
   end
 
+  def idle(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
   def idle(:cast, _msg, _data), do: :keep_state_and_data
   def idle(:info, _msg, _data), do: :keep_state_and_data
 
@@ -201,6 +207,8 @@ defmodule OrcaHub.SessionRunner do
         {:next_state, new_status, %{data | port: nil}}
     end
   end
+
+  def running(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
 
   def running(:cast, :feedback_requested, data) do
     db_call(data, :update_session, [db_call(data, :get_session!, [data.session_id]), %{status: "waiting"}])
@@ -294,6 +302,8 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
+  def waiting(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
+
   def waiting(:cast, :feedback_answered, data) do
     case db_call(data, :list_pending_feedback_for_session, [data.session_id]) do
       [_ | _] ->
@@ -335,6 +345,7 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:error, data)}]}
   end
 
+  def error(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
   def error(:cast, _msg, _data), do: :keep_state_and_data
   def error(:info, _msg, _data), do: :keep_state_and_data
 
