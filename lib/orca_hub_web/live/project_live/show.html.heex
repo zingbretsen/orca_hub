@@ -87,7 +87,9 @@
   </div>
 
   <.table :if={filtered_sessions != []} id="project-sessions" rows={filtered_sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}>
-    <:col :let={session} label="Title">{session.title || "Untitled"}</:col>
+    <:col :let={session} label="Title">
+      <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">{session.title || "Untitled"}</.link>
+    </:col>
     <:col :let={session} label="Status">
       <span :if={session.archived_at} class="badge badge-ghost">archived</span>
       <span :if={!session.archived_at} class={[
@@ -118,7 +120,9 @@
   </div>
 
   <.table :if={@project.issues != []} id="project-issues" rows={@project.issues} row_click={fn issue -> JS.navigate(~p"/issues/#{issue.id}") end}>
-    <:col :let={issue} label="Title">{issue.title}</:col>
+    <:col :let={issue} label="Title">
+      <.link navigate={~p"/issues/#{issue.id}"} class="link link-hover">{issue.title}</.link>
+    </:col>
     <:col :let={issue} label="Status">
       <span class={[
         "badge",

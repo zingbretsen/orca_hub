@@ -60,7 +60,9 @@
   </div>
 
   <.table :if={@issue.sessions != []} id="issue-sessions" rows={@issue.sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}>
-    <:col :let={session} label="Title">{session.title || session.directory}</:col>
+    <:col :let={session} label="Title">
+      <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">{session.title || session.directory}</.link>
+    </:col>
     <:col :let={session} label="Status">
       <span class={[
         "badge",

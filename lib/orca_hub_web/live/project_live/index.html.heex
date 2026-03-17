@@ -16,7 +16,9 @@
 
 <.table id="projects" rows={@streams.projects} row_click={fn {_id, project} -> JS.navigate(~p"/projects/#{project.id}") end}>
   <:col :let={{_id, project}} label="Name">
-    {project.name}
+    <.link navigate={~p"/projects/#{project.id}"} class="link link-hover">
+      {project.name}
+    </.link>
     <span :if={@clustered && Map.get(@node_map, project.id)} class="badge badge-sm badge-outline opacity-60 ml-1">
       {OrcaHub.Cluster.node_name(Map.get(@node_map, project.id))}
     </span>

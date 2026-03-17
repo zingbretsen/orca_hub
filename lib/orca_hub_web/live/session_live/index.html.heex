@@ -48,7 +48,9 @@
     No active sessions.
   </div>
   <.table :if={main_sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}-#{node_name || "local"}"} rows={main_sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
-    <:col :let={session} label="Title" class="w-3/5">{session.title}</:col>
+    <:col :let={session} label="Title" class="w-3/5">
+      <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">{session.title}</.link>
+    </:col>
     <:col :let={session} label="Status" class="w-1/5">
       <span class={[
         "badge",
@@ -86,7 +88,9 @@
       </button>
     </div>
     <.table id={"sessions-wt-#{project.id}-#{branch}"} rows={wt_sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
-      <:col :let={session} label="Title" class="w-3/5">{session.title}</:col>
+      <:col :let={session} label="Title" class="w-3/5">
+        <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">{session.title}</.link>
+      </:col>
       <:col :let={session} label="Status" class="w-1/5">
         <span class={[
           "badge",
