@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Cluster, Feedback, Projects, Sessions}
+  alias OrcaHub.{Cluster, Feedback, Projects, SessionRunner, Sessions}
   alias OrcaHubWeb.{MessageComponents, Markdown}
 
   @impl true
@@ -48,6 +48,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:file_mtimes, %{})
      |> assign(:scroll_to_line, nil)
      |> assign(:scroll_to_block, nil)
+     |> assign(:editing_title, false)
      |> assign(:plan_mode, detect_plan_mode(runner_state.messages))
      |> assign(:pending_plan_file, nil)
      |> assign(:plan_file_path, nil)
@@ -186,6 +187,36 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("toggle_commits", _params, socket) do
     {:noreply, assign(socket, :show_commits, !socket.assigns.show_commits)}
+  end
+
+  def handle_event("edit_title", _params, socket) do
+    {:noreply, assign(socket, :editing_title, true)}
+  end
+
+  def handle_event("cancel_title_edit", _params, socket) do
+    {:noreply, assign(socket, :editing_title, false)}
+  end
+
+  def handle_event("save_title", %{"title" => title}, socket) do
+    title = String.trim(title)
+    session = socket.assigns.session
+
+    case Cluster.rpc(socket.assigns.session_node, Sessions, :update_session, [session, %{title: title}]) do
+      {:ok, updated} ->
+        {:noreply,
+         socket
+         |> assign(:session, %{session | title: updated.title})
+         |> assign(:page_title, updated.title || session.directory)
+         |> assign(:editing_title, false)}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to update title")}
+    end
+  end
+
+  def handle_event("regenerate_title", _params, socket) do
+    Cluster.rpc(socket.assigns.session_node, SessionRunner, :regenerate_title, [socket.assigns.session.id])
+    {:noreply, socket}
   end
 
   def handle_event("toggle_commit_detail", %{"hash" => hash}, socket) do

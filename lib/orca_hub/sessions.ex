@@ -81,16 +81,20 @@ defmodule OrcaHub.Sessions do
     |> Repo.insert()
   end
 
-  def search(query) do
+  def search(query, opts \\ []) do
     like = "%#{query}%"
+    include_archived = Keyword.get(opts, :include_archived, false)
 
-    Repo.all(
-      from s in Session,
-        where: is_nil(s.archived_at) and (ilike(s.title, ^like) or ilike(s.directory, ^like)),
-        preload: [:project],
-        order_by: [desc: s.updated_at],
-        limit: 5
+    from(s in Session,
+      where: ilike(s.title, ^like) or ilike(s.directory, ^like),
+      preload: [:project],
+      order_by: [desc: s.updated_at],
+      limit: 5
     )
+    |> then(fn q ->
+      if include_archived, do: q, else: where(q, [s], is_nil(s.archived_at))
+    end)
+    |> Repo.all()
   end
 
   def search_sessions_by_directory(directory, opts \\ %{}) do

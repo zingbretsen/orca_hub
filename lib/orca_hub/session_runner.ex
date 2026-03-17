@@ -382,8 +382,8 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp open_port(prompt, data) do
-    claude_path = System.find_executable("claude")
-    script_path = System.find_executable("script")
+    claude_path = System.find_executable("claude") || raise "claude executable not found in PATH"
+    script_path = System.find_executable("script") || raise "script executable not found in PATH"
 
     opts =
       [cwd: data.directory]
@@ -579,6 +579,20 @@ defmodule OrcaHub.SessionRunner do
 
   defp stamp(event), do: Map.put(event, "timestamp", NaiveDateTime.utc_now())
 
+  def regenerate_title(session_id) do
+    messages = Sessions.list_messages(session_id)
+
+    first_prompt =
+      Enum.find_value(messages, fn msg ->
+        case msg.data do
+          %{"type" => "user", "content" => content} when is_binary(content) -> content
+          _ -> nil
+        end
+      end)
+
+    maybe_generate_title(session_id, first_prompt)
+  end
+
   defp maybe_generate_title(session_id, nil) do
     Logger.warning("Skipping title generation for session #{session_id}: no first_prompt")
   end
@@ -631,8 +645,12 @@ defmodule OrcaHub.SessionRunner do
 
     case resp.status do
       200 ->
-        title = get_in(resp.body, ["choices", Access.at(0), "message", "content"])
-        {:ok, String.trim(title || "")}
+        title =
+          (get_in(resp.body, ["choices", Access.at(0), "message", "content"]) || "")
+          |> String.trim()
+          |> String.slice(0, 255)
+
+        {:ok, title}
 
       status ->
         {:error, "Title API returned #{status}: #{inspect(resp.body)}"}

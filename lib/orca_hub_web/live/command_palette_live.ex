@@ -29,7 +29,8 @@ defmodule OrcaHubWeb.CommandPaletteLive do
        results: [],
        selected_index: 0,
        phase: :search,
-       selected_project: nil
+       selected_project: nil,
+       include_archived: false
      )}
   end
 
@@ -70,6 +71,17 @@ defmodule OrcaHubWeb.CommandPaletteLive do
               <kbd class="kbd kbd-xs opacity-50">Bksp</kbd>
               <span class="text-xs opacity-50">back</span>
             </div>
+            <button
+              :if={@phase == :search}
+              type="button"
+              class={"btn btn-xs gap-1 #{if @include_archived, do: "btn-primary", else: "btn-ghost opacity-50"}"}
+              phx-click="toggle-archived"
+              phx-target={@myself}
+              title="Include archived sessions"
+            >
+              <.icon name="hero-archive-box-mini" class="size-3.5" />
+              <span class="hidden sm:inline">Archived</span>
+            </button>
           </div>
 
           <%!-- Results --%>
@@ -128,11 +140,17 @@ defmodule OrcaHubWeb.CommandPaletteLive do
     {:noreply, close_palette(socket)}
   end
 
+  def handle_event("toggle-archived", _params, socket) do
+    include_archived = !socket.assigns.include_archived
+    results = build_results(socket.assigns.query, socket.assigns.phase, socket.assigns.selected_project, include_archived: include_archived)
+    {:noreply, assign(socket, include_archived: include_archived, results: results, selected_index: 0)}
+  end
+
   def handle_event("search", %{"value" => query}, socket) do
     if query == socket.assigns.query do
       {:noreply, socket}
     else
-      results = build_results(query, socket.assigns.phase, socket.assigns.selected_project)
+      results = build_results(query, socket.assigns.phase, socket.assigns.selected_project, include_archived: socket.assigns.include_archived)
       {:noreply, assign(socket, query: query, results: results, selected_index: 0)}
     end
   end
@@ -216,7 +234,9 @@ defmodule OrcaHubWeb.CommandPaletteLive do
     assign(socket, open: false, query: "", results: [], selected_index: 0, phase: :search, selected_project: nil)
   end
 
-  defp build_results(query, :search, _project) do
+  defp build_results(query, phase, project, opts \\ [])
+
+  defp build_results(query, :search, _project, opts) do
     query = String.trim(query)
     static = filter_commands(@nav_commands ++ @action_commands, query)
 
@@ -230,14 +250,15 @@ defmodule OrcaHubWeb.CommandPaletteLive do
         end)
 
       sessions =
-        Cluster.search(query)
+        Cluster.search(query, opts)
         |> Enum.map(fn {_node, s} ->
           %{
             name: s.title || Path.basename(s.directory),
             subtitle: if(s.project, do: s.project.name, else: s.directory),
             path: "/sessions/#{s.id}",
             category: "Sessions",
-            icon: "hero-chat-bubble-left-right"
+            icon: "hero-chat-bubble-left-right",
+            hint: if(s.archived_at, do: "archived")
           }
         end)
 
@@ -257,7 +278,7 @@ defmodule OrcaHubWeb.CommandPaletteLive do
     end
   end
 
-  defp build_results(query, :project_actions, project) do
+  defp build_results(query, :project_actions, project, _opts) do
     commands = [
       %{name: "Go to Project", path: "/projects/#{project.id}", category: "Navigate", icon: "hero-arrow-right", hint: "view"},
       %{name: "New Session", action: :create_session, project: project, category: "Actions", icon: "hero-chat-bubble-left-right", hint: "launch"},

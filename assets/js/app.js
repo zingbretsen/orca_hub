@@ -69,6 +69,9 @@ let Hooks = {
       }
       window.addEventListener("keydown", this.handler)
 
+      this.toggleHandler = () => this.pushEventTo(this.el, "toggle", {})
+      document.addEventListener("command-palette:toggle", this.toggleHandler)
+
       this.handleEvent("focus-command-palette", () => {
         requestAnimationFrame(() => {
           const input = this.el.querySelector("#command-palette-input")
@@ -91,6 +94,7 @@ let Hooks = {
     },
     destroyed() {
       window.removeEventListener("keydown", this.handler)
+      document.removeEventListener("command-palette:toggle", this.toggleHandler)
     }
   },
   CopyToClipboard: {

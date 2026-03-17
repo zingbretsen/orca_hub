@@ -9,7 +9,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 
 ## Architecture
 
-- **SessionRunner** (`lib/orca_hub/session_runner.ex`): GenServer that manages a Claude CLI session via a port. Sends prompts, parses streaming JSON output, persists messages, and broadcasts events via PubSub.
+- **SessionRunner** (`lib/orca_hub/session_runner.ex`): GenStatem that manages a Claude CLI session via a port. Sends prompts, parses streaming JSON output, persists messages, and broadcasts events via PubSub.
 - **SessionLive.Show** (`lib/orca_hub_web/live/session_live/show.ex`): LiveView for viewing/interacting with a session. Handles message sending, image uploads, and file uploads.
 - **MessageComponents** (`lib/orca_hub_web/components/message_components.ex`): Function components for rendering the message feed (user, assistant, tool use, results, system events).
 - **OrcaHub.Claude** (`lib/orca_hub/claude/`): Modules for interacting with Claude CLI — builds CLI args (`Config`), parses streaming NDJSON output (`StreamParser`), and fetches usage metrics (`Usage`).
@@ -31,11 +31,11 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 
 - Deployment manifests live in `~/homelab/k3s/apps/orca-hub.yaml`, NOT in `k8s/` (which is a generic/standalone reference)
 - Secrets are in `~/homelab/k3s/secrets/orca-hub-secrets.yaml`
-- Runs in the `lab` namespace, pinned to `debian` node via `nodeSelector`
-- Uses external PostgreSQL at `192.168.1.177` (database `orca_hub_prod`)
+- Two deployments: `orca-hub-debian` (pinned to `debian` node) and `orca-hub-mini` (pinned to `nuc` node), connected via Erlang clustering
+- Each node has its own PostgreSQL database; cross-node visibility via `OrcaHub.Cluster` fan-out
 - Image registry: `registry.lab.ingbretsenhome.com`
 - Ingress: `orca.lab.ingbretsenhome.com` (HTTPS via Traefik, Authelia forward-auth)
-- To deploy: `docker build -t registry.lab.ingbretsenhome.com/orca-hub:latest . && docker push registry.lab.ingbretsenhome.com/orca-hub:latest && kubectl rollout restart deployment/orca-hub -n lab`
+- To deploy: `docker build -t registry.lab.ingbretsenhome.com/orca-hub:latest . && docker push registry.lab.ingbretsenhome.com/orca-hub:latest && kubectl rollout restart deployment/orca-hub-debian deployment/orca-hub-mini -n lab`
 
 ## Dependencies
 

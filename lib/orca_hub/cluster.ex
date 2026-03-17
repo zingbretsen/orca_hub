@@ -108,8 +108,8 @@ defmodule OrcaHub.Cluster do
     |> Enum.sum()
   end
 
-  def search(query) do
-    fan_out(Sessions, :search, [query])
+  def search(query, opts \\ []) do
+    fan_out(Sessions, :search, [query, opts])
   end
 
   @doc """

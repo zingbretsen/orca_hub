@@ -55,7 +55,14 @@ defmodule OrcaHubWeb.Layouts do
         <.theme_toggle />
       </div>
 
-      <div class="dropdown dropdown-end md:hidden ml-auto">
+      <button
+        class="btn btn-ghost btn-sm btn-circle md:hidden ml-auto"
+        phx-click={JS.dispatch("command-palette:toggle", to: "body", bubbles: true)}
+      >
+        <.icon name="hero-magnifying-glass" class="size-5" />
+      </button>
+
+      <div class="dropdown dropdown-end md:hidden">
         <div tabindex="0" role="button" class="btn btn-ghost btn-sm btn-circle">
           <.icon name="hero-bars-3-micro" class="size-5" />
         </div>

@@ -13,7 +13,31 @@
 
   <.header>
     <.link navigate={~p"/sessions"} class="text-sm opacity-70">&larr; Sessions</.link>
-    <span class="ml-2">{@session.title || @session.directory}</span>
+    <%= if @editing_title do %>
+      <form phx-submit="save_title" class="inline-flex items-center gap-1 ml-2">
+        <input
+          type="text"
+          name="title"
+          value={@session.title || ""}
+          placeholder="Session title"
+          class="input input-sm input-bordered w-64"
+          autofocus
+          phx-key="Escape"
+          phx-keydown="cancel_title_edit"
+        />
+        <button type="submit" class="btn btn-ghost btn-sm btn-circle" title="Save">
+          <.icon name="hero-check-micro" class="size-4" />
+        </button>
+        <button type="button" phx-click="cancel_title_edit" class="btn btn-ghost btn-sm btn-circle" title="Cancel">
+          <.icon name="hero-x-mark-micro" class="size-4" />
+        </button>
+      </form>
+    <% else %>
+      <span class="ml-2 cursor-pointer hover:underline group" phx-click="edit_title" title="Click to edit title">
+        {@session.title || @session.directory}
+        <.icon name="hero-pencil-micro" class="size-3 opacity-0 group-hover:opacity-50 inline" />
+      </span>
+    <% end %>
     <span class={[
       "badge ml-2",
       @status == :running && "badge-warning",
@@ -47,6 +71,9 @@
       <button :if={@commits != []} phx-click="toggle_commits" class={["btn btn-ghost btn-sm btn-circle indicator", @show_commits && "text-primary"]} title="Commits">
         <.icon name="hero-code-bracket" class="size-5" />
         <span class="indicator-item badge badge-xs badge-primary">{length(@commits)}</span>
+      </button>
+      <button phx-click="regenerate_title" class="btn btn-ghost btn-sm btn-circle" title="Regenerate title">
+        <.icon name="hero-sparkles" class="size-5" />
       </button>
       <button phx-click="toggle_file_browser" class={["btn btn-ghost btn-sm btn-circle", (@open_files != [] || @show_file_browser) && "text-primary"]} title="Browse files">
         <.icon name="hero-document-text" class="size-5" />
