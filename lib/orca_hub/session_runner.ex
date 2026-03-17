@@ -585,8 +585,14 @@ defmodule OrcaHub.SessionRunner do
     first_prompt =
       Enum.find_value(messages, fn msg ->
         case msg.data do
-          %{"type" => "user", "content" => content} when is_binary(content) -> content
-          _ -> nil
+          %{"type" => "user", "message" => %{"content" => content}} when is_list(content) ->
+            Enum.find_value(content, fn
+              %{"type" => "text", "text" => text} -> text
+              _ -> nil
+            end)
+
+          _ ->
+            nil
         end
       end)
 
