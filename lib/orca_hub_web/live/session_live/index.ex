@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.SessionLive.Index do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Projects, Sessions, Cluster}
+  alias OrcaHub.{Projects, Sessions, Cluster, HubRPC}
   alias OrcaHub.Sessions.Session
 
   @impl true
@@ -70,9 +70,12 @@ defmodule OrcaHubWeb.SessionLive.Index do
   @impl true
   def handle_event("save", %{"session" => params}, socket) do
     target_node = params |> Map.get("target_node", Atom.to_string(node())) |> String.to_existing_atom()
-    session_params = Map.delete(params, "target_node")
+    session_params =
+      params
+      |> Map.delete("target_node")
+      |> Map.put("runner_node", Atom.to_string(target_node))
 
-    case Cluster.rpc(target_node, Sessions, :create_session, [session_params]) do
+    case HubRPC.create_session(session_params) do
       {:ok, session} ->
         Cluster.start_session(target_node, session.id)
 
@@ -85,10 +88,14 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   def handle_event("create_for_project", %{"project-id" => project_id}, socket) do
     target_node = Map.get(socket.assigns.project_node_map, project_id, node())
-    project = Cluster.get_project!(target_node, project_id)
-    params = %{"project_id" => project_id, "directory" => project.directory}
+    project = HubRPC.get_project!(project_id)
+    params = %{
+      "project_id" => project_id,
+      "directory" => project.directory,
+      "runner_node" => Atom.to_string(target_node)
+    }
 
-    case Cluster.rpc(target_node, Sessions, :create_session, [params]) do
+    case HubRPC.create_session(params) do
       {:ok, session} ->
         Cluster.start_session(target_node, session.id)
 

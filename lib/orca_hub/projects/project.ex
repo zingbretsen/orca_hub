@@ -9,6 +9,7 @@ defmodule OrcaHub.Projects.Project do
     field :name, :string
     field :directory, :string
     field :deleted_at, :utc_datetime
+    field :node, :string
 
     has_many :issues, OrcaHub.Issues.Issue
     has_many :sessions, OrcaHub.Sessions.Session
@@ -18,7 +19,7 @@ defmodule OrcaHub.Projects.Project do
 
   def changeset(project, attrs) do
     project
-    |> cast(attrs, [:name, :directory, :deleted_at])
+    |> cast(attrs, [:name, :directory, :deleted_at, :node])
     |> validate_required([:name, :directory])
   end
 end

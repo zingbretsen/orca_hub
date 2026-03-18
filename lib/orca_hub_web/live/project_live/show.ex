@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.ProjectLive.Show do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Cluster, Projects, Triggers}
+  alias OrcaHub.{Cluster, HubRPC, Projects, Triggers}
   alias OrcaHub.Projects.Project
   alias OrcaHub.Triggers.Trigger
 
@@ -27,7 +27,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
         {editable_files, file_tree, commits, current_branch, worktrees, branches}
       end
 
-    triggers = Cluster.rpc(project_node, Triggers, :list_triggers_for_project, [project.id])
+    triggers = HubRPC.list_triggers_for_project(project.id)
 
     {:ok,
      socket
@@ -113,9 +113,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   @impl true
   def handle_event("save_project", %{"project" => params}, socket) do
-    node = socket.assigns.project_node
-
-    case Cluster.rpc(node, Projects, :update_project, [socket.assigns.project, params]) do
+    case HubRPC.update_project(socket.assigns.project, params) do
       {:ok, project} ->
         {:noreply,
          socket
@@ -362,12 +360,16 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("create_session", _params, socket) do
     project = socket.assigns.project
-    node = socket.assigns.project_node
-    params = %{"project_id" => project.id, "directory" => project.directory}
+    runner_node = socket.assigns.project_node
+    params = %{
+      "project_id" => project.id,
+      "directory" => project.directory,
+      "runner_node" => Atom.to_string(runner_node)
+    }
 
-    case Cluster.rpc(node, OrcaHub.Sessions, :create_session, [params]) do
+    case HubRPC.create_session(params) do
       {:ok, session} ->
-        {:ok, _} = Cluster.rpc(node, OrcaHub.SessionSupervisor, :start_session, [session.id])
+        {:ok, _} = Cluster.start_session(runner_node, session.id)
         {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
 
       {:error, _changeset} ->
@@ -390,8 +392,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   def handle_event("edit_trigger", %{"id" => id}, socket) do
-    node = socket.assigns.project_node
-    trigger = Cluster.get_trigger!(node, id)
+    trigger = HubRPC.get_trigger!(id)
     changeset = Triggers.change_trigger(trigger)
 
     {:noreply,
@@ -443,19 +444,18 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("save_trigger", %{"trigger" => params}, socket) do
     project = socket.assigns.project
-    node = socket.assigns.project_node
     attrs = Map.put(params, "project_id", project.id)
     attrs = Map.put(attrs, "type", socket.assigns.trigger_type)
 
     result =
       case socket.assigns.editing_trigger do
-        nil -> Cluster.rpc(node, Triggers, :create_trigger, [attrs])
-        trigger -> Cluster.rpc(node, Triggers, :update_trigger, [trigger, attrs])
+        nil -> HubRPC.create_trigger(attrs)
+        trigger -> HubRPC.update_trigger(trigger, attrs)
       end
 
     case result do
       {:ok, _} ->
-        triggers = Cluster.rpc(node, Triggers, :list_triggers_for_project, [project.id])
+        triggers = HubRPC.list_triggers_for_project(project.id)
 
         {:noreply,
          assign(socket, triggers: triggers, show_trigger_form: false, editing_trigger: nil)}
@@ -466,26 +466,22 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   def handle_event("delete_trigger", %{"id" => id}, socket) do
-    node = socket.assigns.project_node
-    trigger = Cluster.get_trigger!(node, id)
-    {:ok, _} = Cluster.rpc(node, Triggers, :delete_trigger, [trigger])
-    triggers = Cluster.rpc(node, Triggers, :list_triggers_for_project, [socket.assigns.project.id])
+    trigger = HubRPC.get_trigger!(id)
+    {:ok, _} = HubRPC.delete_trigger(trigger)
+    triggers = HubRPC.list_triggers_for_project(socket.assigns.project.id)
     {:noreply, assign(socket, triggers: triggers)}
   end
 
   def handle_event("toggle_trigger", %{"id" => id}, socket) do
-    node = socket.assigns.project_node
-    trigger = Cluster.get_trigger!(node, id)
-    {:ok, _} = Cluster.rpc(node, Triggers, :update_trigger, [trigger, %{enabled: !trigger.enabled}])
-    triggers = Cluster.rpc(node, Triggers, :list_triggers_for_project, [socket.assigns.project.id])
+    trigger = HubRPC.get_trigger!(id)
+    {:ok, _} = HubRPC.update_trigger(trigger, %{enabled: !trigger.enabled})
+    triggers = HubRPC.list_triggers_for_project(socket.assigns.project.id)
     {:noreply, assign(socket, triggers: triggers)}
   end
 
   def handle_event("fire_trigger", %{"id" => id}, socket) do
-    node = socket.assigns.project_node
-
     Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-      Cluster.rpc(node, OrcaHub.TriggerExecutor, :execute, [id])
+      OrcaHub.TriggerExecutor.execute(id)
     end)
 
     {:noreply, put_flash(socket, :info, "Trigger fired")}
@@ -553,12 +549,16 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("worktree_session", %{"path" => path}, socket) do
     project = socket.assigns.project
-    node = socket.assigns.project_node
-    params = %{"project_id" => project.id, "directory" => path}
+    runner_node = socket.assigns.project_node
+    params = %{
+      "project_id" => project.id,
+      "directory" => path,
+      "runner_node" => Atom.to_string(runner_node)
+    }
 
-    case Cluster.rpc(node, OrcaHub.Sessions, :create_session, [params]) do
+    case HubRPC.create_session(params) do
       {:ok, session} ->
-        {:ok, _} = Cluster.rpc(node, OrcaHub.SessionSupervisor, :start_session, [session.id])
+        {:ok, _} = Cluster.start_session(runner_node, session.id)
         {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
 
       {:error, _changeset} ->
@@ -615,8 +615,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   @impl true
   def handle_info({_session_id, _payload}, socket) do
-    node = socket.assigns.project_node
-    project = Cluster.get_project!(node, socket.assigns.project.id)
+    project = HubRPC.get_project!(socket.assigns.project.id)
     {:noreply, assign(socket, project: project)}
   end
 
@@ -664,19 +663,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   defp find_project!(id) do
-    case OrcaHub.Repo.get(OrcaHub.Projects.Project, id) do
-      nil ->
-        # Not found locally — fan out to other nodes
-        Cluster.fan_out(Projects, :list_projects)
-        |> Enum.find(fn {_node, p} -> p.id == id end)
-        |> case do
-          nil -> raise Ecto.NoResultsError, queryable: OrcaHub.Projects.Project
-          {node, _p} -> {node, Cluster.get_project!(node, id)}
-        end
-
-      _project ->
-        {node(), Projects.get_project!(id)}
-    end
+    project = HubRPC.get_project!(id)
+    {Cluster.project_node_for(project), project}
   end
 
   defp browse_to(socket, path) do

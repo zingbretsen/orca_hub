@@ -1,5 +1,9 @@
 # Supervision Tree
 
+The supervision tree varies based on `OrcaHub.Mode` (hub vs agent).
+
+## Hub Mode (default)
+
 ```mermaid
 graph TB
     App["OrcaHub.Application\n(Supervisor, one_for_one)"]
@@ -30,4 +34,32 @@ graph TB
     MS1 -->|registered in| MCPRegistry
 
     UpstreamClient -->|connects to| ExtMCP["External MCP\nServers"]
+```
+
+## Agent Mode (ORCA_MODE=agent)
+
+Agent nodes omit Repo, Telemetry, UpstreamClient, Scheduler, and TriggerLoader.
+All database operations are proxied to the hub node via `HubRPC`.
+
+```mermaid
+graph TB
+    App["OrcaHub.Application\n(Supervisor, one_for_one)"]
+
+    App --> DNS["DNSCluster"]
+    App --> LibCluster["Cluster.Supervisor\n(libcluster)"]
+    App --> PubSub["Phoenix.PubSub"]
+    App --> SessionRegistry["Registry\n(SessionRegistry)"]
+    App --> MCPRegistry["Registry\n(MCPRegistry)"]
+    App --> TaskSupervisor["Task.Supervisor"]
+    App --> SessionSupervisor["OrcaHub.SessionSupervisor\n(DynamicSupervisor)"]
+    App --> MCPSupervisor["DynamicSupervisor\n(MCPSupervisor)"]
+    App --> Endpoint["OrcaHubWeb.Endpoint\n(MCP endpoint)"]
+
+    SessionSupervisor -->|start_child| SR1["SessionRunner\n(GenStatem)"]
+    SessionSupervisor -->|start_child| SRN["..."]
+
+    MCPSupervisor -->|start_child| MS1["MCP.Server\n(GenServer)"]
+
+    SR1 -->|registered in| SessionRegistry
+    MS1 -->|registered in| MCPRegistry
 ```

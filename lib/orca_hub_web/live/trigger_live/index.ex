@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.TriggerLive.Index do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Cluster, Triggers}
+  alias OrcaHub.{Cluster, HubRPC, Triggers}
   alias OrcaHub.Triggers.Trigger
 
   @impl true
@@ -58,8 +58,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
   end
 
   defp apply_action(socket, :edit, %{"id" => id}) do
-    node = Map.get(socket.assigns.node_map, id, node())
-    trigger = Cluster.get_trigger!(node, id)
+    trigger = HubRPC.get_trigger!(id)
     changeset = Triggers.change_trigger(trigger)
 
     socket
@@ -99,17 +98,10 @@ defmodule OrcaHubWeb.TriggerLive.Index do
         params
       end
 
-    # For edits, route to owning node; for creates, use local node
-    node =
-      case socket.assigns.editing_trigger do
-        nil -> node()
-        trigger -> Map.get(socket.assigns.node_map, trigger.id, node())
-      end
-
     result =
       case socket.assigns.editing_trigger do
-        nil -> Cluster.rpc(node, Triggers, :create_trigger, [params])
-        trigger -> Cluster.rpc(node, Triggers, :update_trigger, [trigger, params])
+        nil -> HubRPC.create_trigger(params)
+        trigger -> HubRPC.update_trigger(trigger, params)
       end
 
     case result do
@@ -129,9 +121,8 @@ defmodule OrcaHubWeb.TriggerLive.Index do
   end
 
   def handle_event("delete_trigger", %{"id" => id}, socket) do
-    node = Map.get(socket.assigns.node_map, id, node())
-    trigger = Cluster.get_trigger!(node, id)
-    {:ok, _} = Cluster.rpc(node, Triggers, :delete_trigger, [trigger])
+    trigger = HubRPC.get_trigger!(id)
+    {:ok, _} = HubRPC.delete_trigger(trigger)
 
     tagged_triggers = Cluster.list_triggers()
     node_map = Cluster.build_node_map(tagged_triggers)
@@ -140,9 +131,8 @@ defmodule OrcaHubWeb.TriggerLive.Index do
   end
 
   def handle_event("toggle_trigger", %{"id" => id}, socket) do
-    node = Map.get(socket.assigns.node_map, id, node())
-    trigger = Cluster.get_trigger!(node, id)
-    {:ok, _} = Cluster.rpc(node, Triggers, :update_trigger, [trigger, %{enabled: !trigger.enabled}])
+    trigger = HubRPC.get_trigger!(id)
+    {:ok, _} = HubRPC.update_trigger(trigger, %{enabled: !trigger.enabled})
 
     tagged_triggers = Cluster.list_triggers()
     node_map = Cluster.build_node_map(tagged_triggers)
@@ -151,10 +141,8 @@ defmodule OrcaHubWeb.TriggerLive.Index do
   end
 
   def handle_event("fire_trigger", %{"id" => id}, socket) do
-    node = Map.get(socket.assigns.node_map, id, node())
-
     Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-      Cluster.rpc(node, OrcaHub.TriggerExecutor, :execute, [id])
+      OrcaHub.TriggerExecutor.execute(id)
     end)
 
     {:noreply, put_flash(socket, :info, "Trigger fired")}

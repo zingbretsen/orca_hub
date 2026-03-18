@@ -14,6 +14,7 @@ erDiagram
         binary_id id PK
         string name
         string directory
+        string node "owning node for directory"
         utc_datetime deleted_at "soft delete"
     }
 
@@ -26,6 +27,7 @@ erDiagram
         string model
         boolean triggered
         integer priority "queue ordering"
+        string runner_node "node running this session"
         utc_datetime archived_at "soft archive"
         binary_id project_id FK
         binary_id issue_id FK

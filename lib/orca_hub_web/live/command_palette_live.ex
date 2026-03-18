@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.CommandPaletteLive do
   use OrcaHubWeb, :live_component
 
-  alias OrcaHub.{Sessions, Projects, Issues, Cluster}
+  alias OrcaHub.{HubRPC, Projects, Issues, Cluster}
 
   @nav_commands [
     %{name: "Dashboard", path: "/", category: "Navigation", icon: "hero-home"},
@@ -205,9 +205,15 @@ defmodule OrcaHubWeb.CommandPaletteLive do
          |> push_event("clear-command-palette-input", %{})}
 
       %{action: :create_session, project: project} ->
-        case Sessions.create_session(%{"project_id" => project.id, "directory" => project.directory}) do
+        runner_node = Cluster.project_node_for(project)
+
+        case HubRPC.create_session(%{
+          "project_id" => project.id,
+          "directory" => project.directory,
+          "runner_node" => Atom.to_string(runner_node)
+        }) do
           {:ok, session} ->
-            {:ok, _} = OrcaHub.SessionSupervisor.start_session(session.id)
+            {:ok, _} = Cluster.start_session(runner_node, session.id)
             {:noreply, socket |> close_palette() |> push_navigate(to: "/sessions/#{session.id}")}
 
           {:error, _} ->
@@ -244,7 +250,7 @@ defmodule OrcaHubWeb.CommandPaletteLive do
       static
     else
       projects =
-        Projects.search(query)
+        HubRPC.call(Projects, :search, [query])
         |> Enum.map(fn p ->
           %{name: p.name, subtitle: p.directory, category: "Projects", icon: "hero-folder", drillable: true, project: p}
         end)
@@ -263,7 +269,7 @@ defmodule OrcaHubWeb.CommandPaletteLive do
         end)
 
       issues =
-        Issues.search(query)
+        HubRPC.call(Issues, :search, [query])
         |> Enum.map(fn i ->
           %{
             name: i.title,

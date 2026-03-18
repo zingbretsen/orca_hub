@@ -1,27 +1,29 @@
 # Clustering Architecture
 
-OrcaHub nodes connect via Erlang distribution. Each node keeps its own database,
-registry, and supervisors. Cross-node visibility comes through `OrcaHub.Cluster`
-which fans out queries via `:erpc` and routes actions to the owning node.
+OrcaHub supports a **hub + agent** topology. One hub node owns the database
+and runs the full stack (scheduler, triggers, web UI). Agent nodes are
+lightweight — they run SessionRunner processes and forward all database
+operations to the hub via `HubRPC` (which uses `:erpc` under the hood).
 
-## Multi-Node Topology
+The mode is set via `ORCA_MODE=agent` (default: `hub`). `OrcaHub.Mode`
+exposes `hub?()` / `agent?()` and discovers the hub node at runtime.
+
+## Hub + Agent Topology
 
 ```mermaid
 graph TB
     subgraph K8s["Kubernetes Cluster"]
-        subgraph Node1["k8s Node: debian"]
-            OrcaA["OrcaHub Pod A<br/>orca@pod-ip-a"]
-            DBA[(PostgreSQL A)]
+        subgraph Node1["k8s Node: debian (hub)"]
+            OrcaA["OrcaHub Pod A<br/>orca@pod-ip-a<br/>ORCA_MODE=hub"]
+            DBA[(PostgreSQL)]
             CLIA["Claude CLI"]
             OrcaA --> DBA
             OrcaA --> CLIA
         end
 
-        subgraph Node2["k8s Node: nuc"]
-            OrcaB["OrcaHub Pod B<br/>orca@pod-ip-b"]
-            DBB[(PostgreSQL B)]
+        subgraph Node2["k8s Node: nuc (agent)"]
+            OrcaB["OrcaHub Pod B<br/>orca@pod-ip-b<br/>ORCA_MODE=agent"]
             CLIB["Claude CLI"]
-            OrcaB --> DBB
             OrcaB --> CLIB
         end
 
@@ -31,8 +33,8 @@ graph TB
     end
 
     subgraph LAN["Local Network"]
-        Laptop["Laptop<br/>orca@192.168.x.x"]
-        DBL[(PostgreSQL C)]
+        Laptop["Laptop<br/>orca@192.168.x.x<br/>ORCA_MODE=hub"]
+        DBL[(PostgreSQL)]
         CLIL["Claude CLI"]
         Laptop --> DBL
         Laptop --> CLIL
@@ -41,25 +43,28 @@ graph TB
     OrcaA <-->|"Erlang Distribution<br/>EPMD 4369 + ports 9100-9105"| OrcaB
     OrcaA <-->|"Erlang Distribution<br/>(static EPMD)"| Laptop
     OrcaB <-->|"Erlang Distribution"| Laptop
+    OrcaB -.->|"HubRPC (erpc)<br/>all DB operations"| OrcaA
 ```
 
-## Per-Node Architecture (unchanged)
+## Hub Node Architecture
 
 ```mermaid
 graph TB
-    subgraph EachNode["Each Node (independent)"]
-        Repo["Ecto.Repo<br/>(own PostgreSQL)"]
+    subgraph HubNode["Hub Node (full stack)"]
+        Repo["Ecto.Repo<br/>(PostgreSQL)"]
         SR["SessionRegistry<br/>(local Registry)"]
         SS["SessionSupervisor<br/>(local DynamicSupervisor)"]
         Runners["SessionRunner<br/>processes"]
         PS["Phoenix.PubSub<br/>(auto-distributes via :pg)"]
-        Sched["Quantum Scheduler<br/>(own triggers)"]
-        EP["Phoenix Endpoint<br/>(own web UI)"]
+        Sched["Quantum Scheduler"]
+        TL["TriggerLoader"]
+        EP["Phoenix Endpoint<br/>(web UI)"]
+        MCP["MCP.Server + UpstreamClient"]
 
         SS --> Runners
         Runners -->|register| SR
         Runners -->|broadcast| PS
-        Runners -->|persist| Repo
+        Runners -->|persist via HubRPC| Repo
         TE["TriggerExecutor"]
         Sched -->|fire triggers| TE
         TE --> SS
@@ -67,27 +72,49 @@ graph TB
     end
 ```
 
-## Cross-Node Query Flow
+## Agent Node Architecture
+
+```mermaid
+graph TB
+    subgraph AgentNode["Agent Node (lightweight)"]
+        SR2["SessionRegistry<br/>(local Registry)"]
+        SS2["SessionSupervisor<br/>(local DynamicSupervisor)"]
+        Runners2["SessionRunner<br/>processes"]
+        PS2["Phoenix.PubSub<br/>(auto-distributes via :pg)"]
+        EP2["Phoenix Endpoint<br/>(MCP endpoint)"]
+        HubRPC["HubRPC<br/>(erpc proxy to hub)"]
+
+        SS2 --> Runners2
+        Runners2 -->|register| SR2
+        Runners2 -->|broadcast| PS2
+        Runners2 -->|persist via| HubRPC
+        EP2 -->|MCP requests| PS2
+    end
+
+    HubNode["Hub Node"]
+    HubRPC -.->|":erpc.call"| HubNode
+```
+
+## Query Flow (Hub + Agent)
 
 ```mermaid
 sequenceDiagram
-    participant UI as LiveView<br/>(Node A)
-    participant Cluster as OrcaHub.Cluster<br/>(Node A)
-    participant NodeA as Sessions Context<br/>(Node A)
-    participant NodeB as Sessions Context<br/>(Node B)
-    participant Laptop as Sessions Context<br/>(Laptop)
+    participant UI as LiveView<br/>(Any Node)
+    participant Cluster as OrcaHub.Cluster
+    participant HubRPC as HubRPC
+    participant Hub as Hub Node<br/>(Sessions Context)
 
     UI->>Cluster: list_sessions(filter)
-    par Fan-out via :erpc
-        Cluster->>NodeA: Sessions.list_sessions(filter)
-        Cluster->>NodeB: Sessions.list_sessions(filter)
-        Cluster->>Laptop: Sessions.list_sessions(filter)
+    Cluster->>HubRPC: list_sessions(filter)
+    alt Hub node (local)
+        HubRPC->>Hub: Sessions.list_sessions(filter)
+    else Agent node
+        HubRPC->>Hub: :erpc.call(hub, Sessions, :list_sessions, [filter])
     end
-    NodeA-->>Cluster: [session1, session2]
-    NodeB-->>Cluster: [session3]
-    Laptop-->>Cluster: [session4, session5]
-    Cluster->>Cluster: Tag with origin node,<br/>sort by updated_at
-    Cluster-->>UI: [{nodeA, s1}, {nodeA, s2},<br/>{nodeB, s3}, {laptop, s4}, ...]
+    Hub-->>HubRPC: [session1, session2, session3]
+    HubRPC-->>Cluster: sessions
+    Cluster->>Cluster: Tag each session with<br/>runner_node_for(session),<br/>sort by updated_at
+    Cluster-->>UI: [{nodeA, s1}, {nodeB, s2}, ...]
 ```
 
 ## Cross-Node Action Routing

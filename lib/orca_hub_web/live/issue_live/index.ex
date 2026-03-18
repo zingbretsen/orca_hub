@@ -1,9 +1,8 @@
 defmodule OrcaHubWeb.IssueLive.Index do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.Issues
   alias OrcaHub.Issues.Issue
-  alias OrcaHub.Cluster
+  alias OrcaHub.{Cluster, HubRPC}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -43,8 +42,7 @@ defmodule OrcaHubWeb.IssueLive.Index do
   end
 
   defp apply_action(socket, :edit, %{"id" => id}) do
-    node = Map.get(socket.assigns.node_map, id, node())
-    issue = Cluster.get_issue!(node, id)
+    issue = HubRPC.get_issue!(id)
     changeset = Issue.changeset(issue, %{})
 
     socket
@@ -70,14 +68,13 @@ defmodule OrcaHubWeb.IssueLive.Index do
   end
 
   def handle_event("delete", %{"id" => id}, socket) do
-    node = Map.get(socket.assigns.node_map, id, node())
-    issue = Cluster.get_issue!(node, id)
-    {:ok, _} = Cluster.rpc(node, Issues, :delete_issue, [issue])
+    issue = HubRPC.get_issue!(id)
+    {:ok, _} = HubRPC.call(OrcaHub.Issues, :delete_issue, [issue])
     {:noreply, stream_delete(socket, :issues, issue)}
   end
 
   defp save_issue(socket, :new, params) do
-    case Issues.create_issue(params) do
+    case HubRPC.call(OrcaHub.Issues, :create_issue, [params]) do
       {:ok, issue} ->
         {:noreply, push_navigate(socket, to: ~p"/issues/#{issue.id}")}
 
@@ -88,9 +85,8 @@ defmodule OrcaHubWeb.IssueLive.Index do
 
   defp save_issue(socket, :edit, params) do
     issue = socket.assigns.issue
-    node = Map.get(socket.assigns.node_map, issue.id, node())
 
-    case Cluster.rpc(node, Issues, :update_issue, [issue, params]) do
+    case HubRPC.update_issue(issue, params) do
       {:ok, issue} ->
         {:noreply, push_navigate(socket, to: ~p"/issues/#{issue.id}")}
 

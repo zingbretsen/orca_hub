@@ -23,6 +23,8 @@ graph TB
 
     subgraph Core["Core"]
         SessionRunner["SessionRunner\n(GenStatem)"]
+        HubRPC["HubRPC\n(DB proxy)"]
+        Mode["Mode\n(hub/agent)"]
         Sessions["Sessions Context"]
         Projects["Projects Context"]
         Issues["Issues Context"]
@@ -46,10 +48,10 @@ graph TB
 
     subgraph Infra["Infrastructure"]
         PubSub["Phoenix.PubSub"]
-        Repo["Ecto.Repo\n(PostgreSQL)"]
+        Repo["Ecto.Repo\n(PostgreSQL, hub only)"]
         SessionSupervisor["SessionSupervisor\n(DynamicSupervisor)"]
         MCPSupervisor["MCPSupervisor\n(DynamicSupervisor)"]
-        Scheduler["Quantum Scheduler"]
+        Scheduler["Quantum Scheduler\n(hub only)"]
         TriggerExecutor["TriggerExecutor"]
         TaskSupervisor["Task.Supervisor"]
     end
@@ -70,12 +72,12 @@ graph TB
     PubSub -->|events| SessionShow
     PubSub -->|status| SessionIndex
 
-    SessionRunner -->|persist| Sessions
-    Sessions --> Repo
-    Projects --> Repo
-    Issues --> Repo
-    Feedback --> Repo
-    Triggers --> Repo
+    SessionRunner -->|persist via| HubRPC
+    HubRPC -->|hub: local call| Sessions & Projects & Issues & Feedback & Triggers
+    HubRPC -.->|agent: erpc to hub| Repo
+    Sessions & Projects & Issues & Feedback & Triggers --> Repo
+
+    MCPTools -->|persist via| HubRPC
 
     SessionRunner -->|build_args| Config
     SessionRunner -->|parse output| StreamParser
@@ -84,7 +86,6 @@ graph TB
 
     MCPPlug --> MCPServer
     MCPServer --> MCPTools
-    MCPTools --> Sessions & Issues & Feedback & Triggers & Projects
     MCPServer --> UpstreamClient
     UpstreamClient --> UpstreamServers
     UpstreamClient --> ExtMCPServers

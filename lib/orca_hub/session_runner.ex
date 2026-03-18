@@ -3,7 +3,7 @@ defmodule OrcaHub.SessionRunner do
   require Logger
 
   alias OrcaHub.Claude.{Config, StreamParser}
-  alias OrcaHub.{AgentPresence, Feedback, Sessions}
+  alias OrcaHub.{AgentPresence, HubRPC}
 
   # API
 
@@ -42,13 +42,16 @@ defmodule OrcaHub.SessionRunner do
   @impl true
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
-    session = Sessions.get_session!(session_id)
+    session = HubRPC.get_session!(session_id)
 
     saved_messages =
-      Sessions.list_messages(session_id)
+      HubRPC.list_messages(session_id)
       |> Enum.map(fn msg -> Map.put(msg.data, "timestamp", msg.inserted_at) end)
 
     initial_state = if saved_messages == [], do: :ready, else: :idle
+
+    # Record which node is running this session
+    HubRPC.update_session(session, %{runner_node: Atom.to_string(node())})
 
     AgentPresence.write(session.directory, session_id, %{
       title: session.title,
@@ -170,8 +173,8 @@ defmodule OrcaHub.SessionRunner do
         new_status = if code == 0, do: :idle, else: :error
         data = handle_cli_error(code, data)
 
-        session = Sessions.get_session!(data.session_id)
-        Sessions.update_session(session, %{status: to_string(new_status)})
+        session = HubRPC.get_session!(data.session_id)
+        HubRPC.update_session(session, %{status: to_string(new_status)})
         broadcast(data.session_id, {:status, new_status})
         AgentPresence.update_status(data.directory, data.session_id, to_string(new_status))
 
@@ -185,7 +188,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def running(:cast, :feedback_requested, data) do
-    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "waiting"})
+    HubRPC.update_session(HubRPC.get_session!(data.session_id), %{status: "waiting"})
     broadcast(data.session_id, {:status, :waiting})
     AgentPresence.update_status(data.directory, data.session_id, "waiting")
     {:next_state, :waiting, data}
@@ -204,7 +207,7 @@ defmodule OrcaHub.SessionRunner do
 
     send_sigint(port)
 
-    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "running"})
+    HubRPC.update_session(HubRPC.get_session!(data.session_id), %{status: "running"})
     broadcast(data.session_id, {:status, :running})
     AgentPresence.update_status(data.directory, data.session_id, "running")
 
@@ -266,7 +269,7 @@ defmodule OrcaHub.SessionRunner do
         # CLI finished but question is still pending — stay in :waiting with port: nil
         data = handle_cli_error(code, data)
 
-        session = Sessions.get_session!(data.session_id)
+        session = HubRPC.get_session!(data.session_id)
 
         if code == 0 && (session.title == nil || session.title == "") do
           maybe_generate_title(data.session_id, data.first_prompt)
@@ -277,21 +280,21 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def waiting(:cast, :feedback_answered, data) do
-    case Feedback.list_pending_requests_for_session(data.session_id) do
+    case HubRPC.list_pending_feedback_for_session(data.session_id) do
       [_ | _] ->
         # More questions pending — stay in :waiting
         :keep_state_and_data
 
       [] when data.port != nil ->
         # All answered, agent still running — back to :running
-        Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "running"})
+        HubRPC.update_session(HubRPC.get_session!(data.session_id), %{status: "running"})
         broadcast(data.session_id, {:status, :running})
         AgentPresence.update_status(data.directory, data.session_id, "running")
         {:next_state, :running, data}
 
       [] ->
         # All answered, agent finished — go to :idle
-        Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "idle"})
+        HubRPC.update_session(HubRPC.get_session!(data.session_id), %{status: "idle"})
         broadcast(data.session_id, {:status, :idle})
         AgentPresence.update_status(data.directory, data.session_id, "idle")
         {:next_state, :idle, data}
@@ -357,9 +360,9 @@ defmodule OrcaHub.SessionRunner do
     broadcast(data.session_id, {:event, user_event})
 
     port = open_port(prompt, data)
-    session = Sessions.get_session!(data.session_id)
-    if session.archived_at, do: Sessions.unarchive_session(session)
-    Sessions.update_session(session, %{status: "running"})
+    session = HubRPC.get_session!(data.session_id)
+    if session.archived_at, do: HubRPC.unarchive_session(session)
+    HubRPC.update_session(session, %{status: "running"})
     broadcast(data.session_id, {:status, :running})
     AgentPresence.update_status(data.directory, data.session_id, "running")
 
@@ -412,7 +415,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp handle_stream_event(%{"type" => "system", "subtype" => "status", "status" => "compacting"}, data) do
-    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "compacting"})
+    HubRPC.update_session(HubRPC.get_session!(data.session_id), %{status: "compacting"})
     broadcast(data.session_id, {:status, :compacting})
     AgentPresence.update_status(data.directory, data.session_id, "compacting")
     data
@@ -420,7 +423,7 @@ defmodule OrcaHub.SessionRunner do
 
   defp handle_stream_event(%{"type" => "system", "subtype" => "status", "status" => nil}, data) do
     # Status cleared (e.g. compacting finished) — restore running state
-    Sessions.update_session(Sessions.get_session!(data.session_id), %{status: "running"})
+    HubRPC.update_session(HubRPC.get_session!(data.session_id), %{status: "running"})
     broadcast(data.session_id, {:status, :running})
     AgentPresence.update_status(data.directory, data.session_id, "running")
     data
@@ -428,7 +431,7 @@ defmodule OrcaHub.SessionRunner do
 
   defp handle_stream_event(%{"type" => "system", "session_id" => sid} = event, data) do
     if data.claude_session_id == nil do
-      Sessions.update_session(Sessions.get_session!(data.session_id), %{claude_session_id: sid})
+      HubRPC.update_session(HubRPC.get_session!(data.session_id), %{claude_session_id: sid})
     end
 
     event = stamp(event)
@@ -574,13 +577,13 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp persist_message(session_id, event) do
-    Sessions.create_message(%{session_id: session_id, data: event})
+    HubRPC.create_message(%{session_id: session_id, data: event})
   end
 
   defp stamp(event), do: Map.put(event, "timestamp", NaiveDateTime.utc_now())
 
   def regenerate_title(session_id) do
-    messages = Sessions.list_messages(session_id)
+    messages = HubRPC.list_messages(session_id)
 
     first_prompt =
       Enum.find_value(messages, fn msg ->
@@ -609,8 +612,8 @@ defmodule OrcaHub.SessionRunner do
         case generate_title(prompt) do
           {:ok, title} ->
             Logger.info("Generated title for session #{session_id}: #{title}")
-            session = Sessions.get_session!(session_id)
-            Sessions.update_session(session, %{title: title})
+            session = HubRPC.get_session!(session_id)
+            HubRPC.update_session(session, %{title: title})
             broadcast(session_id, {:title_updated, title})
             AgentPresence.write(session.directory, session_id, %{title: title, status: session.status})
 

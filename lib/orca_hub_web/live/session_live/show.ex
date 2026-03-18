@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Cluster, Feedback, Projects, SessionRunner, Sessions}
+  alias OrcaHub.{Cluster, HubRPC, Projects, Sessions, SessionRunner}
   alias OrcaHubWeb.{MessageComponents, Markdown}
 
   @impl true
@@ -33,7 +33,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
      |> assign(:page_title, session.title || (session.project && session.project.name) || session.directory)
-     |> assign(:feedback_requests, Feedback.list_pending_requests_for_session(id))
+     |> assign(:feedback_requests, HubRPC.list_pending_feedback_for_session(id))
      |> assign(:tts_autoplay, false)
      |> assign(:open_files, [])
      |> assign(:active_file_tab, nil)
@@ -141,9 +141,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def handle_event("new_session", _params, socket) do
     session = socket.assigns.session
     target_node = socket.assigns.session_node
-    params = %{"directory" => session.directory, "project_id" => session.project_id}
+    params = %{
+      "directory" => session.directory,
+      "project_id" => session.project_id,
+      "runner_node" => Atom.to_string(target_node)
+    }
 
-    case Cluster.rpc(target_node, Sessions, :create_session, [params]) do
+    case HubRPC.create_session(params) do
       {:ok, new_session} ->
         Cluster.start_session(target_node, new_session.id)
 
@@ -155,13 +159,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("approve_feedback", %{"id" => id}, socket) do
-    Feedback.respond(String.to_integer(id), "That sounds great, go for it!")
+    HubRPC.respond_feedback(String.to_integer(id), "That sounds great, go for it!")
     {:noreply, assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == String.to_integer(id))))}
   end
 
   def handle_event("cancel_feedback", %{"id" => id}, socket) do
     id = String.to_integer(id)
-    Feedback.cancel(id)
+    HubRPC.cancel_feedback(id)
     {:noreply, assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
   end
 
@@ -172,7 +176,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     if response == "" do
       {:noreply, socket}
     else
-      Feedback.respond(id, response)
+      HubRPC.respond_feedback(id, response)
       {:noreply, assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
     end
   end
@@ -201,7 +205,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     title = String.trim(title)
     session = socket.assigns.session
 
-    case Cluster.rpc(socket.assigns.session_node, Sessions, :update_session, [session, %{title: title}]) do
+    case HubRPC.update_session(session, %{title: title}) do
       {:ok, updated} ->
         {:noreply,
          socket
@@ -488,7 +492,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     socket =
       if status == :waiting do
-        assign(socket, :feedback_requests, Feedback.list_pending_requests_for_session(socket.assigns.session.id))
+        assign(socket, :feedback_requests, HubRPC.list_pending_feedback_for_session(socket.assigns.session.id))
       else
         socket
       end
@@ -929,15 +933,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # -- Cluster helpers --
 
   defp find_session!(id) do
-    case Sessions.get_session(id) do
-      %{} = _session ->
-        {node(), Sessions.get_session!(id)}
-
-      nil ->
-        case Cluster.find_session(id) do
-          {remote_node, session} -> {remote_node, session}
-          nil -> raise Ecto.NoResultsError, queryable: OrcaHub.Sessions.Session
-        end
+    case HubRPC.get_session(id) do
+      nil -> raise Ecto.NoResultsError, queryable: OrcaHub.Sessions.Session
+      session -> {Cluster.runner_node_for(session), session}
     end
   end
 

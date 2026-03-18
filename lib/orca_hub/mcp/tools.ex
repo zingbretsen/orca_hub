@@ -4,7 +4,7 @@ defmodule OrcaHub.MCP.Tools do
   """
   require Logger
 
-  alias OrcaHub.{Cluster, Issues, Sessions, SessionSupervisor, Feedback, Triggers}
+  alias OrcaHub.{Sessions, SessionRunner, SessionSupervisor, Cluster, HubRPC}
 
   def list do
     [
@@ -317,40 +317,38 @@ defmodule OrcaHub.MCP.Tools do
   def call("start_session_from_issue", args, _state) do
     issue_id = args["issue_id"]
 
-    # Find the issue across the cluster
-    tagged_result =
-      Cluster.fan_out(Issues, :list_issues)
-      |> Enum.find(fn {_node, i} -> to_string(i.id) == to_string(issue_id) end)
+    issue = HubRPC.get_issue!(issue_id)
+    directory = if issue.project, do: issue.project.directory, else: File.cwd!()
+    project_id = if issue.project, do: issue.project.id, else: nil
+    runner_node = if issue.project, do: Cluster.project_node_for(issue.project), else: node()
 
-    case tagged_result do
-      nil ->
-        error("Issue #{issue_id} not found")
+    case HubRPC.create_session(%{
+           directory: directory,
+           issue_id: issue.id,
+           project_id: project_id,
+           runner_node: Atom.to_string(runner_node)
+         }) do
+      {:ok, session} ->
+        {:ok, _} = Cluster.start_session(runner_node, session.id)
 
-      {issue_node, _} ->
-        issue = Cluster.get_issue!(issue_node, issue_id)
-        directory = if issue.project, do: issue.project.directory, else: File.cwd!()
-        project_id = if issue.project, do: issue.project.id, else: nil
-
-        case Cluster.rpc(issue_node, Sessions, :create_session, [%{directory: directory, issue_id: issue.id, project_id: project_id}]) do
-          {:ok, session} ->
-            {:ok, _} = Cluster.rpc(issue_node, SessionSupervisor, :start_session, [session.id])
-
-            if issue.status == "open" do
-              Cluster.rpc(issue_node, Issues, :update_issue, [issue, %{status: "in_progress"}])
-            end
-
-            prompt =
-              "Issue: #{issue.title}\n\n#{issue.description || ""}" <>
-                if(args["prompt"], do: "\n\n#{args["prompt"]}", else: "")
-
-            Cluster.send_message(issue_node, session.id, prompt)
-
-            text("Session #{session.id} started for issue ##{issue.id}: #{issue.title}")
-
-          {:error, changeset} ->
-            error("Failed to create session: #{inspect(changeset.errors)}")
+        if issue.status == "open" do
+          HubRPC.update_issue(issue, %{status: "in_progress"})
         end
+
+        prompt =
+          "Issue: #{issue.title}\n\n#{issue.description || ""}" <>
+            if(args["prompt"], do: "\n\n#{args["prompt"]}", else: "")
+
+        Cluster.send_message(runner_node, session.id, prompt)
+
+        text("Session #{session.id} started for issue ##{issue.id}: #{issue.title}")
+
+      {:error, changeset} ->
+        error("Failed to create session: #{inspect(changeset.errors)}")
     end
+  rescue
+    Ecto.NoResultsError ->
+      error("Issue #{args["issue_id"]} not found")
   end
 
   def call("send_gotify_notification", args, _state) do
@@ -385,7 +383,7 @@ defmodule OrcaHub.MCP.Tools do
     session_id = args["session_id"]
 
     {:ok, request} =
-      Feedback.create_request(%{
+      HubRPC.create_feedback_request(%{
         question: question,
         session_id: session_id,
         mcp_session_id: state.session_id
@@ -394,9 +392,15 @@ defmodule OrcaHub.MCP.Tools do
     # Broadcast so the Queue UI picks it up
     Phoenix.PubSub.broadcast(OrcaHub.PubSub, "feedback_requests", {:new_feedback_request, request})
 
-    # Notify SessionRunner to transition to :waiting
+    # Notify SessionRunner to transition to :waiting (may be on a different node)
     if session_id do
-      OrcaHub.SessionRunner.notify_feedback_requested(session_id)
+      case Cluster.find_session(session_id) do
+        {runner_node, _} ->
+          Cluster.rpc(runner_node, OrcaHub.SessionRunner, :notify_feedback_requested, [session_id])
+
+        nil ->
+          OrcaHub.SessionRunner.notify_feedback_requested(session_id)
+      end
     end
 
     # Subscribe and wait for the response
@@ -422,55 +426,49 @@ defmodule OrcaHub.MCP.Tools do
   def call("get_issue", args, _state) do
     issue_id = args["issue_id"]
 
-    case find_issue_on_cluster(issue_id) do
-      nil ->
-        error("Issue #{issue_id} not found")
+    issue = HubRPC.get_issue!(issue_id)
 
-      {issue_node, _} ->
-        issue = Cluster.get_issue!(issue_node, issue_id)
+    response =
+      Jason.encode!(%{
+        id: issue.id,
+        title: issue.title,
+        description: issue.description,
+        status: issue.status,
+        approaches_tried: issue.approaches_tried,
+        notes: issue.notes,
+        project: if(issue.project, do: issue.project.name),
+        session_count: length(issue.sessions),
+        created_at: issue.inserted_at,
+        updated_at: issue.updated_at
+      })
 
-        response =
-          Jason.encode!(%{
-            id: issue.id,
-            title: issue.title,
-            description: issue.description,
-            status: issue.status,
-            approaches_tried: issue.approaches_tried,
-            notes: issue.notes,
-            project: if(issue.project, do: issue.project.name),
-            session_count: length(issue.sessions),
-            created_at: issue.inserted_at,
-            updated_at: issue.updated_at
-          })
-
-        text(response)
-    end
+    text(response)
+  rescue
+    Ecto.NoResultsError ->
+      error("Issue #{args["issue_id"]} not found")
   end
 
   def call("update_issue", args, _state) do
     issue_id = args["issue_id"]
 
-    case find_issue_on_cluster(issue_id) do
-      nil ->
-        error("Issue #{issue_id} not found")
+    issue = HubRPC.get_issue!(issue_id)
 
-      {issue_node, _} ->
-        issue = Cluster.get_issue!(issue_node, issue_id)
+    attrs =
+      %{}
+      |> maybe_append_field(issue, :approaches_tried, args["approaches_tried"])
+      |> maybe_append_field(issue, :notes, args["notes"])
+      |> maybe_put_field(:status, args["status"])
 
-        attrs =
-          %{}
-          |> maybe_append_field(issue, :approaches_tried, args["approaches_tried"])
-          |> maybe_append_field(issue, :notes, args["notes"])
-          |> maybe_put_field(:status, args["status"])
+    case HubRPC.update_issue(issue, attrs) do
+      {:ok, _issue} ->
+        text("Issue #{issue_id} updated successfully.")
 
-        case Cluster.rpc(issue_node, Issues, :update_issue, [issue, attrs]) do
-          {:ok, _issue} ->
-            text("Issue #{issue_id} updated successfully.")
-
-          {:error, changeset} ->
-            error("Failed to update issue: #{inspect(changeset.errors)}")
-        end
+      {:error, changeset} ->
+        error("Failed to update issue: #{inspect(changeset.errors)}")
     end
+  rescue
+    Ecto.NoResultsError ->
+      error("Issue #{args["issue_id"]} not found")
   end
 
   def call("create_scheduled_trigger", args, _state) do
@@ -499,22 +497,15 @@ defmodule OrcaHub.MCP.Tools do
       archive_on_complete: args["archive_on_complete"] || false
     }
 
-    # Find the project across the cluster
-    case find_project_on_cluster(attrs.project_id) do
-      nil ->
-        error("Project #{attrs.project_id} not found")
+    case HubRPC.create_trigger(attrs) do
+      {:ok, trigger} ->
+        text(
+          "Trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
+            "Schedule: #{trigger.cron_expression}"
+        )
 
-      {project_node, _project} ->
-        case Cluster.rpc(project_node, Triggers, :create_trigger, [attrs]) do
-          {:ok, trigger} ->
-            text(
-              "Trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
-                "Schedule: #{trigger.cron_expression}"
-            )
-
-          {:error, changeset} ->
-            error("Failed to create trigger: #{inspect(changeset.errors)}")
-        end
+      {:error, changeset} ->
+        error("Failed to create trigger: #{inspect(changeset.errors)}")
     end
   end
 
@@ -559,23 +550,17 @@ defmodule OrcaHub.MCP.Tools do
       archive_on_complete: args["archive_on_complete"] || false
     }
 
-    case find_project_on_cluster(attrs.project_id) do
-      nil ->
-        error("Project #{attrs.project_id} not found")
+    case HubRPC.create_trigger(attrs) do
+      {:ok, trigger} ->
+        url = OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"
 
-      {project_node, _project} ->
-        case Cluster.rpc(project_node, Triggers, :create_trigger, [attrs]) do
-          {:ok, trigger} ->
-            url = OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"
+        text(
+          "Webhook trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
+            "Webhook URL: #{url}"
+        )
 
-            text(
-              "Webhook trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
-                "Webhook URL: #{url}"
-            )
-
-          {:error, changeset} ->
-            error("Failed to create trigger: #{inspect(changeset.errors)}")
-        end
+      {:error, changeset} ->
+        error("Failed to create trigger: #{inspect(changeset.errors)}")
     end
   end
 
@@ -613,14 +598,14 @@ defmodule OrcaHub.MCP.Tools do
         limit: limit
       }
 
-      tagged_sessions = Cluster.fan_out(Sessions, :search_sessions_by_directory, [directory, search_opts])
+      sessions = HubRPC.search_sessions_by_directory(directory, search_opts)
       clustered = length(Node.list()) > 0
 
       results =
-        tagged_sessions
-        |> Enum.sort_by(fn {_n, s} -> s.updated_at end, {:desc, NaiveDateTime})
+        sessions
+        |> Enum.sort_by(fn s -> s.updated_at end, {:desc, NaiveDateTime})
         |> Enum.take(limit)
-        |> Enum.map(fn {node, session} ->
+        |> Enum.map(fn session ->
           result = %{
             id: session.id,
             title: session.title,
@@ -633,7 +618,7 @@ defmodule OrcaHub.MCP.Tools do
           }
 
           if clustered do
-            Map.put(result, :node, Cluster.node_name(node))
+            Map.put(result, :node, Cluster.node_name(Cluster.runner_node_for(session)))
           else
             result
           end
@@ -710,16 +695,6 @@ defmodule OrcaHub.MCP.Tools do
 
   defp maybe_put_field(attrs, _key, nil), do: attrs
   defp maybe_put_field(attrs, key, val), do: Map.put(attrs, key, val)
-
-  defp find_issue_on_cluster(issue_id) do
-    Cluster.fan_out(Issues, :list_issues)
-    |> Enum.find(fn {_node, i} -> to_string(i.id) == to_string(issue_id) end)
-  end
-
-  defp find_project_on_cluster(project_id) do
-    Cluster.list_projects()
-    |> Enum.find(fn {_node, p} -> to_string(p.id) == to_string(project_id) end)
-  end
 
   defp text(content) do
     %{

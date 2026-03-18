@@ -55,19 +55,21 @@ defmodule OrcaHub.AgentPresence do
   end
 
   def cleanup_all_stale do
-    import Ecto.Query
+    if OrcaHub.Mode.hub?() do
+      import Ecto.Query
 
-    directories =
-      OrcaHub.Repo.all(
-        from s in OrcaHub.Sessions.Session,
-          select: s.directory,
-          distinct: true
-      )
+      directories =
+        OrcaHub.Repo.all(
+          from s in OrcaHub.Sessions.Session,
+            select: s.directory,
+            distinct: true
+        )
 
-    # At app startup, no SessionRunners are alive yet, so all presence files are stale
-    Enum.each(directories, fn dir ->
-      cleanup_stale(dir, [])
-    end)
+      # At app startup, no SessionRunners are alive yet, so all presence files are stale
+      Enum.each(directories, fn dir ->
+        cleanup_stale(dir, [])
+      end)
+    end
   end
 
   def cleanup_stale(directory, alive_session_ids) do

@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.QueueLive do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Sessions, Feedback, Cluster}
+  alias OrcaHub.{HubRPC, Cluster}
   alias OrcaHubWeb.Markdown
 
   @impl true
@@ -132,7 +132,11 @@ defmodule OrcaHubWeb.QueueLive do
     prompt = String.trim(prompt)
 
     # Create the delegate session on the same node as the original
-    case Cluster.rpc(node, Sessions, :create_session, [%{directory: session.directory, project_id: session.project_id}]) do
+    case HubRPC.create_session(%{
+      directory: session.directory,
+      project_id: session.project_id,
+      runner_node: Atom.to_string(node)
+    }) do
       {:ok, new_session} ->
         Cluster.start_session(node, new_session.id)
 
@@ -230,8 +234,7 @@ defmodule OrcaHubWeb.QueueLive do
 
   def handle_event("approve_feedback", %{"id" => id}, socket) do
     id = String.to_integer(id)
-    node = Map.get(socket.assigns.feedback_node_map, id, node())
-    Cluster.rpc(node, Feedback, :respond, [id, "That sounds great, go for it!"])
+    HubRPC.respond_feedback(id, "That sounds great, go for it!")
 
     {:noreply,
      assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
@@ -239,8 +242,7 @@ defmodule OrcaHubWeb.QueueLive do
 
   def handle_event("cancel_feedback", %{"id" => id}, socket) do
     id = String.to_integer(id)
-    node = Map.get(socket.assigns.feedback_node_map, id, node())
-    Cluster.rpc(node, Feedback, :cancel, [id])
+    HubRPC.cancel_feedback(id)
 
     {:noreply,
      assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
@@ -253,8 +255,7 @@ defmodule OrcaHubWeb.QueueLive do
     if response == "" do
       {:noreply, socket}
     else
-      node = Map.get(socket.assigns.feedback_node_map, id, node())
-      Cluster.rpc(node, Feedback, :respond, [id, response])
+      HubRPC.respond_feedback(id, response)
 
       {:noreply,
        assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}

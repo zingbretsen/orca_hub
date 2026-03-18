@@ -1,9 +1,8 @@
 defmodule OrcaHubWeb.ProjectLive.Index do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.Projects
   alias OrcaHub.Projects.Project
-  alias OrcaHub.{Cluster, ClaudeImport}
+  alias OrcaHub.{Cluster, HubRPC, ClaudeImport}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -69,9 +68,8 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   end
 
   def handle_event("delete", %{"id" => id}, socket) do
-    node = Map.get(socket.assigns.node_map, id, node())
-    project = Cluster.get_project!(node, id)
-    {:ok, _} = Cluster.rpc(node, Projects, :delete_project, [project])
+    project = HubRPC.get_project!(id)
+    {:ok, _} = HubRPC.delete_project(project)
     {:noreply, stream_delete(socket, :projects, project)}
   end
 
@@ -198,9 +196,12 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
   defp save_project(socket, :new, params) do
     target_node = socket.assigns.target_node
-    clean_params = Map.delete(params, "target_node")
+    clean_params =
+      params
+      |> Map.delete("target_node")
+      |> Map.put("node", Atom.to_string(target_node))
 
-    case Cluster.rpc(target_node, Projects, :create_project, [clean_params]) do
+    case HubRPC.create_project(clean_params) do
       {:ok, project} ->
         {:noreply, push_navigate(socket, to: ~p"/projects/#{project.id}")}
 
