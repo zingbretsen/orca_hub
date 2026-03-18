@@ -78,7 +78,10 @@ if [ -z "$SECRET_KEY_BASE" ]; then
   export SECRET_KEY_BASE="$(cat "$secret_file")"
 fi
 
-/app/bin/migrate
+# Only run migrations in hub mode (agents have no database)
+if [ "${ORCA_MODE}" != "agent" ]; then
+  /app/bin/migrate
+fi
 exec /app/bin/server
 EOF
 RUN chmod +x /app/bin/entrypoint.sh
