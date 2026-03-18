@@ -19,6 +19,7 @@
 
 // Include phoenix_html to handle method=PUT/DELETE in forms and buttons.
 import "phoenix_html"
+import { TerminalHook } from "./terminal_hook"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
@@ -27,6 +28,7 @@ import topbar from "../vendor/topbar"
 
 let Hooks = {
   ...colocatedHooks,
+  Terminal: TerminalHook,
   Copy: {
     mounted() {
       this.el.addEventListener("phx:copy", () => {

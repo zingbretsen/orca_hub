@@ -1,0 +1,67 @@
+<.header>
+  <div class="flex items-center gap-3">
+    <.link navigate={~p"/terminals"} class="btn btn-ghost btn-sm btn-circle">
+      <.icon name="hero-arrow-left-micro" class="size-5" />
+    </.link>
+    {@terminal.name}
+    <span class={[
+      "badge badge-sm",
+      @terminal.status == "running" && "badge-success",
+      @terminal.status == "stopped" && "badge-ghost",
+      @terminal.status == "dead" && "badge-error"
+    ]}>
+      {@terminal.status}
+    </span>
+  </div>
+  <:actions>
+    <button
+      :if={@terminal.status != "running"}
+      phx-click="start_terminal"
+      class="btn btn-sm btn-success"
+    >
+      <.icon name="hero-play-micro" class="size-4" /> Start
+    </button>
+    <button
+      :if={@terminal.status == "running"}
+      phx-click="stop_terminal"
+      class="btn btn-sm btn-error"
+    >
+      <.icon name="hero-stop-micro" class="size-4" /> Stop
+    </button>
+    <button
+      phx-click="restart_terminal"
+      class="btn btn-sm"
+    >
+      <.icon name="hero-arrow-path-micro" class="size-4" /> Restart
+    </button>
+  </:actions>
+</.header>
+
+<div class="mt-4 text-xs text-base-content/50 flex items-center gap-4">
+  <span :if={@terminal.project} class="flex items-center gap-1">
+    <.icon name="hero-folder-micro" class="size-3" />
+    <.link navigate={~p"/projects/#{@terminal.project.id}"} class="hover:underline">{@terminal.project.name}</.link>
+  </span>
+  <span class="flex items-center gap-1 font-mono">
+    <.icon name="hero-command-line-micro" class="size-3" />
+    {@terminal.directory}
+  </span>
+</div>
+
+<div
+  :if={@terminal.status == "running"}
+  id={"terminal-#{@terminal.id}"}
+  phx-hook="Terminal"
+  data-terminal-id={@terminal.id}
+  class="mt-4 w-full rounded-lg overflow-hidden"
+  style="height: calc(100vh - 260px);"
+  phx-update="ignore"
+>
+</div>
+
+<div :if={@terminal.status != "running"} class="mt-4 bg-base-200 rounded-lg p-8 text-center text-base-content/50">
+  <p class="text-sm">Terminal is not running.</p>
+  <button phx-click="start_terminal" class="btn btn-sm btn-success mt-3">
+    <.icon name="hero-play-micro" class="size-4" /> Start Terminal
+  </button>
+</div>

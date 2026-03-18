@@ -1,0 +1,97 @@
+<.header>
+  Terminals
+  <:actions>
+    <.link patch={~p"/terminals/new"}>
+      <.button>New Terminal</.button>
+    </.link>
+  </:actions>
+</.header>
+
+<div :if={@show_form} class="card bg-base-200 p-4 mt-6">
+  <h4 class="font-semibold mb-3">New Terminal</h4>
+  <.form for={@terminal_form} phx-submit="save_terminal" phx-change="validate_terminal" class="space-y-3">
+    <.input field={@terminal_form[:name]} type="text" label="Name" placeholder="backend server" phx-hook="AutoFocus" />
+    <.input field={@terminal_form[:project_id]} type="select" label="Project" prompt="(none)" options={Enum.map(@projects, &{&1.name, &1.id})} />
+    <.input field={@terminal_form[:directory]} type="text" label="Directory" placeholder="Leave blank to use project directory" />
+    <.input field={@terminal_form[:shell]} type="text" label="Shell" value="/bin/bash" />
+    <div class="flex justify-end gap-2">
+      <.link patch={~p"/terminals"} class="btn btn-sm">Cancel</.link>
+      <.button type="submit" class="btn-sm">Create</.button>
+    </div>
+  </.form>
+</div>
+
+<div :if={@terminals == [] && !@show_form} class="text-sm text-base-content/50 p-8 text-center mt-6">
+  No terminals yet.
+</div>
+
+<div :if={@terminals != []} class="mt-6">
+  <div :for={{project, project_terminals} <- group_by_project(@terminals)} class="mb-6">
+    <div class="flex items-center gap-2 mb-2">
+      <h3 class="text-sm font-semibold text-base-content/70">
+        <span :if={project}><.link navigate={~p"/projects/#{project.id}"} class="hover:underline">{project.name}</.link></span>
+        <span :if={!project}>Unassigned</span>
+      </h3>
+    </div>
+    <div class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
+      <div
+        :for={terminal <- project_terminals}
+        class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50 cursor-pointer"
+        phx-click={JS.navigate(~p"/terminals/#{terminal.id}")}
+      >
+        <div class={[
+          "w-2 h-2 rounded-full",
+          terminal.status == "running" && "bg-success",
+          terminal.status == "stopped" && "bg-base-content/30",
+          terminal.status == "dead" && "bg-error"
+        ]} />
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="font-medium">{terminal.name}</span>
+            <span class={[
+              "badge badge-xs",
+              terminal.status == "running" && "badge-success",
+              terminal.status == "stopped" && "badge-ghost",
+              terminal.status == "dead" && "badge-error"
+            ]}>
+              {terminal.status}
+            </span>
+            <span :if={@clustered && Map.get(@node_map, terminal.id)} class="badge badge-xs badge-outline opacity-60">
+              {OrcaHub.Cluster.node_name(Map.get(@node_map, terminal.id))}
+            </span>
+          </div>
+          <div class="text-base-content/50 text-xs mt-0.5 font-mono truncate">{terminal.directory}</div>
+        </div>
+        <div class="flex items-center gap-1" phx-click-away="">
+          <button
+            :if={terminal.status != "running"}
+            phx-click="start_terminal"
+            phx-value-id={terminal.id}
+            class="btn btn-xs btn-ghost"
+            title="Start"
+          >
+            <.icon name="hero-play-micro" class="size-4" />
+          </button>
+          <button
+            :if={terminal.status == "running"}
+            phx-click="stop_terminal"
+            phx-value-id={terminal.id}
+            class="btn btn-xs btn-ghost"
+            title="Stop"
+          >
+            <.icon name="hero-stop-micro" class="size-4" />
+          </button>
+          <button
+            phx-click="delete_terminal"
+            phx-value-id={terminal.id}
+            data-confirm="Delete this terminal?"
+            class="btn btn-xs btn-ghost text-error"
+            title="Delete"
+          >
+            <.icon name="hero-trash-micro" class="size-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

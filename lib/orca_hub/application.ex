@@ -49,8 +49,10 @@ defmodule OrcaHub.Application do
       {Phoenix.PubSub, name: OrcaHub.PubSub},
       {Registry, keys: :unique, name: OrcaHub.SessionRegistry},
       {Registry, keys: :unique, name: OrcaHub.MCPRegistry},
+      {Registry, keys: :unique, name: OrcaHub.TerminalRegistry},
       {Task.Supervisor, name: OrcaHub.TaskSupervisor},
       OrcaHub.SessionSupervisor,
+      OrcaHub.TerminalSupervisor,
       {DynamicSupervisor, name: OrcaHub.MCPSupervisor, strategy: :one_for_one},
       OrcaHub.MCP.UpstreamClient,
       OrcaHub.Scheduler,
@@ -66,8 +68,10 @@ defmodule OrcaHub.Application do
       {Phoenix.PubSub, name: OrcaHub.PubSub},
       {Registry, keys: :unique, name: OrcaHub.SessionRegistry},
       {Registry, keys: :unique, name: OrcaHub.MCPRegistry},
+      {Registry, keys: :unique, name: OrcaHub.TerminalRegistry},
       {Task.Supervisor, name: OrcaHub.TaskSupervisor},
       OrcaHub.SessionSupervisor,
+      OrcaHub.TerminalSupervisor,
       {DynamicSupervisor, name: OrcaHub.MCPSupervisor, strategy: :one_for_one},
       # Agent needs a local HTTP endpoint for MCP (Claude CLI connects to it)
       OrcaHubWeb.Endpoint

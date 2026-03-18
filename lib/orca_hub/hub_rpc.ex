@@ -96,4 +96,18 @@ defmodule OrcaHub.HubRPC do
 
   def list_triggers_for_project(project_id),
     do: call(OrcaHub.Triggers, :list_triggers_for_project, [project_id])
+
+  # -------------------------------------------------------------------
+  # Terminals
+  # -------------------------------------------------------------------
+
+  def list_terminals, do: call(OrcaHub.Terminals, :list_terminals, [])
+  def get_terminal!(id), do: call(OrcaHub.Terminals, :get_terminal!, [id])
+  def get_terminal(id), do: call(OrcaHub.Terminals, :get_terminal, [id])
+  def create_terminal(attrs), do: call(OrcaHub.Terminals, :create_terminal, [attrs])
+  def update_terminal(terminal, attrs), do: call(OrcaHub.Terminals, :update_terminal, [terminal, attrs])
+  def delete_terminal(terminal), do: call(OrcaHub.Terminals, :delete_terminal, [terminal])
+
+  def list_terminals_for_project(project_id),
+    do: call(OrcaHub.Terminals, :list_terminals_for_project, [project_id])
 end

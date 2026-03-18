@@ -10,7 +10,7 @@ defmodule OrcaHub.Cluster do
   we use hub+agent routing. Otherwise, we use legacy fan-out.
   """
 
-  alias OrcaHub.{HubRPC, SessionRunner, SessionSupervisor}
+  alias OrcaHub.{HubRPC, SessionRunner, SessionSupervisor, TerminalSupervisor}
 
   @timeout 10_000
 
@@ -233,4 +233,27 @@ defmodule OrcaHub.Cluster do
   end
 
   def project_node_for(_), do: node()
+
+  # -------------------------------------------------------------------
+  # Terminal queries and actions
+  # -------------------------------------------------------------------
+
+  def list_terminals do
+    terminals = HubRPC.list_terminals()
+    Enum.map(terminals, fn t -> {runner_node_for(t), t} end)
+  end
+
+  def list_terminals_for_project(project_id) do
+    terminals = HubRPC.list_terminals_for_project(project_id)
+    Enum.map(terminals, fn t -> {runner_node_for(t), t} end)
+  end
+
+  def get_terminal!(_n, terminal_id), do: HubRPC.get_terminal!(terminal_id)
+  def create_terminal(attrs), do: HubRPC.create_terminal(attrs)
+  def update_terminal(terminal, attrs), do: HubRPC.update_terminal(terminal, attrs)
+  def delete_terminal(_n, terminal), do: HubRPC.delete_terminal(terminal)
+
+  def start_terminal(n, terminal_id), do: rpc(n, TerminalSupervisor, :start_terminal, [terminal_id])
+  def stop_terminal(n, terminal_id), do: rpc(n, TerminalSupervisor, :stop_terminal, [terminal_id])
+  def terminal_alive?(n, terminal_id), do: rpc(n, TerminalSupervisor, :terminal_alive?, [terminal_id])
 end
