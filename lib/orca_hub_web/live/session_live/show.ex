@@ -366,6 +366,50 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  def handle_event("resume_in_terminal", _params, socket) do
+    session = socket.assigns.session
+
+    unless session.claude_session_id do
+      {:noreply, put_flash(socket, :error, "No Claude session to resume")}
+    else
+      session_node = socket.assigns.session_node
+      cmd = "claude --resume #{session.claude_session_id}\n"
+
+      # Create a dedicated terminal for this Claude session
+      name =
+        if session.title do
+          "claude: #{session.title}"
+        else
+          "claude resume"
+        end
+
+      case HubRPC.create_terminal(%{
+             name: name,
+             directory: session.directory,
+             project_id: session.project_id
+           }) do
+        {:ok, terminal} ->
+          Cluster.start_terminal(session_node, terminal.id)
+          terminal = HubRPC.get_terminal!(terminal.id)
+
+          # Send the resume command after a brief delay for the shell to initialize
+          Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+            Process.sleep(500)
+            OrcaHub.TerminalRunner.write(terminal.id, cmd)
+          end)
+
+          {:noreply,
+           socket
+           |> assign(:show_terminal, true)
+           |> assign(:open_terminals, socket.assigns.open_terminals ++ [terminal])
+           |> assign(:active_terminal_id, terminal.id)}
+
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Failed to create terminal")}
+      end
+    end
+  end
+
   defp open_or_create_terminal(socket, session, session_node) do
     terminals = HubRPC.list_terminals_for_project(session.project_id)
 
