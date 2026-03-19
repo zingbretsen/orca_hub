@@ -29,6 +29,102 @@ import topbar from "../vendor/topbar"
 let Hooks = {
   ...colocatedHooks,
   Terminal: TerminalHook,
+  ResizeHandle: {
+    mounted() {
+      this._setupResize()
+    },
+    updated() {
+      // Re-apply saved ratio after LiveView patches reset inline styles
+      this._applyRatio()
+    },
+    destroyed() {
+      if (this._cleanup) this._cleanup()
+    },
+    _setupResize() {
+      const container = this.el.parentElement
+      let dragging = false
+      // Store ratio as fraction of container width for the left panel
+      this._ratio = null
+
+      const getPanels = () => {
+        const left = container.querySelector("[data-resize-panel='left']")
+        const right = container.querySelector("[data-resize-panel='right']")
+        return (left && right) ? { left, right } : null
+      }
+
+      const applySize = (panels, ratio) => {
+        const rect = container.getBoundingClientRect()
+        const gap = 16
+        const leftWidth = Math.round(ratio * (rect.width - gap))
+        const rightWidth = rect.width - gap - leftWidth
+        panels.left.style.flex = "none"
+        panels.left.style.width = leftWidth + "px"
+        panels.right.style.flex = "none"
+        panels.right.style.width = rightWidth + "px"
+      }
+
+      this._applyRatio = () => {
+        if (this._ratio == null) return
+        const panels = getPanels()
+        if (panels) {
+          applySize(panels, this._ratio)
+          window.dispatchEvent(new Event("resize"))
+        }
+      }
+
+      const onMouseDown = (e) => {
+        e.preventDefault()
+        dragging = true
+        document.body.style.cursor = "col-resize"
+        document.body.style.userSelect = "none"
+      }
+
+      const onMouseMove = (e) => {
+        if (!dragging) return
+        const panels = getPanels()
+        if (!panels) return
+
+        const rect = container.getBoundingClientRect()
+        const x = e.clientX - rect.left
+        const gap = 16
+        const minPx = 300
+        const leftWidth = Math.max(minPx, Math.min(x, rect.width - minPx - gap))
+
+        this._ratio = leftWidth / (rect.width - gap)
+        applySize(panels, this._ratio)
+        window.dispatchEvent(new Event("resize"))
+      }
+
+      const onMouseUp = () => {
+        if (!dragging) return
+        dragging = false
+        document.body.style.cursor = ""
+        document.body.style.userSelect = ""
+      }
+
+      this.el.addEventListener("mousedown", onMouseDown)
+      document.addEventListener("mousemove", onMouseMove)
+      document.addEventListener("mouseup", onMouseUp)
+
+      // Re-apply ratio after LiveView DOM patches (which reset inline styles)
+      this._observer = new MutationObserver(() => {
+        if (this._ratio != null && !dragging) {
+          const panels = getPanels()
+          if (panels && !panels.left.style.width) {
+            requestAnimationFrame(() => this._applyRatio())
+          }
+        }
+      })
+      this._observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ["style"] })
+
+      this._cleanup = () => {
+        this.el.removeEventListener("mousedown", onMouseDown)
+        document.removeEventListener("mousemove", onMouseMove)
+        document.removeEventListener("mouseup", onMouseUp)
+        if (this._observer) this._observer.disconnect()
+      }
+    }
+  },
   Copy: {
     mounted() {
       this.el.addEventListener("phx:copy", () => {
