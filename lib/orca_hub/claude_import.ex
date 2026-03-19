@@ -5,21 +5,29 @@ defmodule OrcaHub.ClaudeImport do
   Scans ~/.claude/projects/ for session transcript .jsonl files,
   creates projects as needed, and imports sessions with their messages.
   Skips sessions that are already managed by OrcaHub (matched by claude_session_id).
+
+  Can import from remote agent nodes by passing the `node` option —
+  file reads happen on the target node via RPC, DB writes go through HubRPC.
   """
 
   import Ecto.Query
   alias OrcaHub.{Repo, Projects, Projects.Project, Sessions, Sessions.Session, Sessions.Message}
   require Logger
 
-  @claude_dir Path.expand("~/.claude")
-  @projects_dir Path.join(@claude_dir, "projects")
-
   @doc """
   Imports all Claude Code sessions found in ~/.claude/projects/.
   Returns a summary map with counts of imported/skipped sessions and created projects.
+
+  Options:
+    - `verbose` - log progress (default: false)
+    - `node` - the Erlang node to read files from (default: local node)
   """
   def import_all(opts \\ []) do
     verbose = Keyword.get(opts, :verbose, false)
+    target_node = Keyword.get(opts, :node, node())
+
+    claude_dir = resolve_claude_dir(target_node)
+    projects_dir = Path.join(claude_dir, "projects")
 
     # Get all existing claude_session_ids so we know what to skip
     existing_session_ids = existing_claude_session_ids()
@@ -30,13 +38,13 @@ defmodule OrcaHub.ClaudeImport do
     # Get directories of deleted projects so we don't recreate them
     deleted_dirs = deleted_project_directories()
 
-    # Scan all project directories
-    project_dirs = list_project_dirs()
+    # Scan all project directories (on the target node)
+    project_dirs = list_project_dirs(target_node, projects_dir)
 
     summary = %{sessions_imported: 0, sessions_skipped: 0, projects_created: 0, errors: []}
 
     Enum.reduce(project_dirs, summary, fn project_dir, acc ->
-      project_path = decode_project_dir(Path.basename(project_dir))
+      project_path = decode_project_dir(target_node, Path.basename(project_dir))
       resolved_path = resolve_worktree_parent(project_path)
 
       # Skip directories whose projects were deleted
@@ -46,10 +54,10 @@ defmodule OrcaHub.ClaudeImport do
       else
 
       # Find or create project
-      {project, acc} = find_or_create_project(project_path, existing_projects, acc, verbose)
+      {project, acc} = find_or_create_project(project_path, target_node, existing_projects, acc, verbose)
 
       # Import sessions from this project dir
-      transcript_files = Path.wildcard(Path.join(project_dir, "*.jsonl"))
+      transcript_files = rpc_call(target_node, Path, :wildcard, [Path.join(project_dir, "*.jsonl")])
 
       Enum.reduce(transcript_files, acc, fn file, acc ->
         session_id = Path.basename(file, ".jsonl")
@@ -59,7 +67,7 @@ defmodule OrcaHub.ClaudeImport do
           %{acc | sessions_skipped: acc.sessions_skipped + 1}
         else
           try do
-            case import_session(file, session_id, project, verbose) do
+            case import_session(target_node, file, session_id, project, verbose) do
               {:ok, _session} ->
                 %{acc | sessions_imported: acc.sessions_imported + 1}
 
@@ -78,8 +86,8 @@ defmodule OrcaHub.ClaudeImport do
     end)
   end
 
-  defp import_session(file, claude_session_id, project, verbose) do
-    entries = read_transcript(file)
+  defp import_session(target_node, file, claude_session_id, project, verbose) do
+    entries = read_transcript(target_node, file)
 
     if entries == [] do
       {:error, :empty_transcript}
@@ -110,6 +118,7 @@ defmodule OrcaHub.ClaudeImport do
           status: "idle",
           model: model,
           project_id: project && project.id,
+          runner_node: Atom.to_string(target_node),
           archived_at: DateTime.utc_now() |> DateTime.truncate(:second)
         }
 
@@ -154,9 +163,12 @@ defmodule OrcaHub.ClaudeImport do
     end
   end
 
-  defp read_transcript(file) do
-    file
-    |> File.stream!()
+  defp read_transcript(target_node, file) do
+    # Read file content from the target node
+    content = rpc_call(target_node, File, :read!, [file])
+
+    content
+    |> String.split("\n", trim: true)
     |> Enum.reduce([], fn line, acc ->
       # Remove null bytes that PostgreSQL can't store in text/jsonb
       clean_line = String.replace(line, <<0>>, "")
@@ -220,7 +232,7 @@ defmodule OrcaHub.ClaudeImport do
     |> String.slice(0, 120)
   end
 
-  defp find_or_create_project(project_path, existing_projects, acc, verbose) do
+  defp find_or_create_project(project_path, target_node, existing_projects, acc, verbose) do
     # If this is a worktree path, resolve to the parent project directory
     project_path = resolve_worktree_parent(project_path)
 
@@ -228,7 +240,7 @@ defmodule OrcaHub.ClaudeImport do
       nil ->
         name = project_path |> Path.basename() |> String.replace(~r/[-_]/, " ") |> String.split() |> Enum.map(&String.capitalize/1) |> Enum.join(" ")
 
-        case Projects.create_project(%{name: name, directory: project_path}) do
+        case Projects.create_project(%{name: name, directory: project_path, node: Atom.to_string(target_node)}) do
           {:ok, project} ->
             if verbose, do: Logger.info("[create] Project #{name} (#{project_path})")
             {project, %{acc | projects_created: acc.projects_created + 1}}
@@ -268,37 +280,31 @@ defmodule OrcaHub.ClaudeImport do
     |> MapSet.new()
   end
 
-  defp list_project_dirs do
-    case File.ls(@projects_dir) do
+  defp list_project_dirs(target_node, projects_dir) do
+    case rpc_call(target_node, File, :ls, [projects_dir]) do
       {:ok, entries} ->
         entries
-        |> Enum.map(&Path.join(@projects_dir, &1))
-        |> Enum.filter(&File.dir?/1)
+        |> Enum.map(&Path.join(projects_dir, &1))
+        |> Enum.filter(fn path -> rpc_call(target_node, File, :dir?, [path]) end)
 
       {:error, _} ->
         []
     end
   end
 
-  defp decode_project_dir(encoded) do
-    # Claude Code encodes project paths by replacing /, _, and . with -
-    # e.g., "-home-zach-ex_orca" -> "home-zach-ex-orca" -> "/home/zach/ex_orca"
-    # ".worktrees" -> "-worktrees" so "zmux/.worktrees" -> "zmux--worktrees"
-    # We reconstruct by trying segment combinations and checking the filesystem.
+  defp decode_project_dir(target_node, encoded) do
     parts = String.split(encoded, "-", trim: true)
-    find_valid_path(parts, "/")
+    find_valid_path(target_node, parts, "/")
   end
 
-  defp find_valid_path([], current), do: current
+  defp find_valid_path(_target_node, [], current), do: current
 
-  defp find_valid_path(parts, current) do
-    # Try progressively longer dash-joined segments, with _, -, and . variants
+  defp find_valid_path(target_node, parts, current) do
     1..length(parts)
     |> Enum.find_value(fn n ->
       segment = Enum.take(parts, n) |> Enum.join("-")
       remaining = Enum.drop(parts, n)
 
-      # Try different separators: as-is (dash), underscore, and dot-prefixed
       candidates = [
         Path.join(current, segment),
         Path.join(current, String.replace(segment, "-", "_")),
@@ -310,25 +316,25 @@ defmodule OrcaHub.ClaudeImport do
 
       Enum.find_value(candidates, fn candidate ->
         cond do
-          remaining == [] and File.dir?(candidate) ->
+          remaining == [] and rpc_call(target_node, File, :dir?, [candidate]) ->
             candidate
 
           remaining == [] ->
             nil
 
-          File.dir?(candidate) ->
-            find_valid_path(remaining, candidate)
+          rpc_call(target_node, File, :dir?, [candidate]) ->
+            find_valid_path(target_node, remaining, candidate)
 
           true ->
             nil
         end
       end)
-    end) || fallback_path(parts, current)
+    end) || fallback_path(target_node, parts, current)
   end
 
-  defp fallback_path(parts, current) do
+  defp fallback_path(target_node, parts, current) do
     fallback = "/" <> Enum.join(parts, "/")
-    if File.dir?(fallback), do: fallback, else: Path.join(current, Enum.join(parts, "-"))
+    if rpc_call(target_node, File, :dir?, [fallback]), do: fallback, else: Path.join(current, Enum.join(parts, "-"))
   end
 
   defp project_directory(nil), do: "/"
@@ -352,4 +358,13 @@ defmodule OrcaHub.ClaudeImport do
   end
 
   defp parse_naive_timestamp(ts), do: parse_timestamp(ts)
+
+  defp resolve_claude_dir(target_node) do
+    home = rpc_call(target_node, System, :user_home!, [])
+    Path.join(home, ".claude")
+  end
+
+  # RPC helper — local passthrough, remote via :erpc
+  defp rpc_call(n, mod, fun, args) when n == node(), do: apply(mod, fun, args)
+  defp rpc_call(n, mod, fun, args), do: :erpc.call(n, mod, fun, args, 30_000)
 end

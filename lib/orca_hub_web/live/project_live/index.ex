@@ -57,7 +57,24 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     pid = self()
 
     Task.start(fn ->
-      result = ClaudeImport.import_all(verbose: true)
+      # Import from all connected nodes (each node has its own ~/.claude)
+      results =
+        Cluster.nodes()
+        |> Enum.map(fn n ->
+          ClaudeImport.import_all(verbose: true, node: n)
+        end)
+
+      # Merge results
+      result =
+        Enum.reduce(results, %{sessions_imported: 0, sessions_skipped: 0, projects_created: 0, errors: []}, fn r, acc ->
+          %{
+            sessions_imported: acc.sessions_imported + r.sessions_imported,
+            sessions_skipped: acc.sessions_skipped + r.sessions_skipped,
+            projects_created: acc.projects_created + r.projects_created,
+            errors: acc.errors ++ r.errors
+          }
+        end)
+
       send(pid, {:import_done, result})
     end)
 
