@@ -34,7 +34,11 @@ export const TerminalHook = {
     this.fitAddon = new FitAddon()
     this.term.loadAddon(this.fitAddon)
     this.term.open(this.el)
-    this.fitAddon.fit()
+
+    // Only fit if visible (invisible terminals have zero dimensions)
+    if (!this.el.classList.contains("invisible")) {
+      this.fitAddon.fit()
+    }
 
     // Use a shared socket so we don't open multiple WebSocket connections
     if (!window.__terminalSocket) {
@@ -85,15 +89,32 @@ export const TerminalHook = {
 
     // Handle resize
     this.resizeObserver = new ResizeObserver(() => {
-      this.fitAddon.fit()
-      if (this.channel && this.channel.state === "joined") {
-        this.channel.push("resize", {
-          cols: this.term.cols,
-          rows: this.term.rows,
-        })
+      if (!this.el.classList.contains("invisible") && this.el.offsetWidth > 0) {
+        this.fitAddon.fit()
+        if (this.channel && this.channel.state === "joined") {
+          this.channel.push("resize", {
+            cols: this.term.cols,
+            rows: this.term.rows,
+          })
+        }
       }
     })
     this.resizeObserver.observe(this.el)
+
+    // Watch for visibility changes (tab switching uses invisible class)
+    this.mutationObserver = new MutationObserver(() => {
+      if (!this.el.classList.contains("invisible") && this.el.offsetWidth > 0) {
+        // Just became visible — re-fit and focus
+        requestAnimationFrame(() => {
+          this.fitAddon.fit()
+          this.term.focus()
+        })
+      }
+    })
+    this.mutationObserver.observe(this.el, {
+      attributes: true,
+      attributeFilter: ["class"],
+    })
   },
 
   destroyed() {
@@ -108,6 +129,10 @@ export const TerminalHook = {
     if (this.resizeObserver) {
       this.resizeObserver.disconnect()
       this.resizeObserver = null
+    }
+    if (this.mutationObserver) {
+      this.mutationObserver.disconnect()
+      this.mutationObserver = null
     }
     if (this.term) {
       this.term.dispose()

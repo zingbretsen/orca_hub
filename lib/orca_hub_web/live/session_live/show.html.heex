@@ -271,23 +271,50 @@
     </div>
 
     <%!-- Terminal panel column (desktop only) --%>
-    <div :if={@show_terminal && @terminal} class="hidden lg:flex flex-col min-w-0 w-1/2 max-w-2xl">
+    <div :if={@show_terminal && @open_terminals != []} class="hidden lg:flex flex-col min-w-0 w-1/2 max-w-2xl">
+      <%!-- Tab bar --%>
       <div class="flex items-center gap-1 mb-2">
-        <span class="text-xs font-medium opacity-70 flex-1">{@terminal.name}</span>
-        <.link navigate={~p"/terminals/#{@terminal.id}"} class="btn btn-ghost btn-xs btn-circle" title="Open in full page">
+        <div class="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
+          <button
+            :for={term <- @open_terminals}
+            phx-click="switch_terminal"
+            phx-value-id={term.id}
+            class={[
+              "btn btn-xs gap-1 shrink-0",
+              term.id == @active_terminal_id && "btn-primary",
+              term.id != @active_terminal_id && "btn-ghost"
+            ]}
+          >
+            <span class="truncate max-w-24">{term.name}</span>
+            <span phx-click="close_terminal_tab" phx-value-id={term.id} class="hover:text-error" title="Close">
+              &times;
+            </span>
+          </button>
+        </div>
+        <button phx-click="new_terminal" class="btn btn-ghost btn-xs btn-circle" title="New terminal">
+          <.icon name="hero-plus-micro" class="size-4" />
+        </button>
+        <button :if={@active_terminal_id} phx-click="pop_out_terminal" class="btn btn-ghost btn-xs btn-circle" title="Open in full page">
           <.icon name="hero-arrow-top-right-on-square-micro" class="size-4" />
-        </.link>
-        <button phx-click="close_terminal" class="btn btn-ghost btn-xs btn-circle" title="Close panel">
+        </button>
+        <button phx-click="close_terminal_panel" class="btn btn-ghost btn-xs btn-circle" title="Close panel">
           <.icon name="hero-x-mark-micro" class="size-4" />
         </button>
       </div>
-      <div
-        id={"terminal-#{@terminal.id}"}
-        phx-hook="Terminal"
-        data-terminal-id={@terminal.id}
-        class="flex-1 min-h-0 rounded-lg overflow-hidden"
-        phx-update="ignore"
-      >
+      <%!-- Terminal instances (all stay in DOM, only active is visible) --%>
+      <div class="flex-1 min-h-0 relative">
+        <div
+          :for={term <- @open_terminals}
+          id={"terminal-#{term.id}"}
+          phx-hook="Terminal"
+          data-terminal-id={term.id}
+          class={[
+            "absolute inset-0 rounded-lg overflow-hidden",
+            term.id != @active_terminal_id && "invisible"
+          ]}
+          phx-update="ignore"
+        >
+        </div>
       </div>
     </div>
 

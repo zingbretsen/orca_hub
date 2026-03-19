@@ -60,7 +60,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:expanded_commit, nil)
      |> assign(:commit_detail, nil)
      |> assign(:show_terminal, false)
-     |> assign(:terminal, nil)
+     |> assign(:open_terminals, [])
+     |> assign(:active_terminal_id, nil)
      |> load_session_todos()
      |> load_session_commits()
      |> allow_upload(:image,
@@ -286,67 +287,129 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("open_terminal", _params, socket) do
     if socket.assigns.show_terminal do
-      {:noreply, assign(socket, show_terminal: false, terminal: nil)}
+      {:noreply, assign(socket, show_terminal: false)}
     else
       session = socket.assigns.session
       session_node = socket.assigns.session_node
 
-      # Find an existing running terminal for this directory, or create one
-      terminals = HubRPC.list_terminals_for_project(session.project_id)
-
-      terminal =
-        Enum.find(terminals, fn t ->
-          t.directory == session.directory && t.status == "running"
-        end)
-
-      case terminal do
-        nil ->
-          name =
-            if session.project do
-              "#{session.project.name} shell"
-            else
-              "shell"
-            end
-
-          case HubRPC.create_terminal(%{
-                 name: name,
-                 directory: session.directory,
-                 project_id: session.project_id
-               }) do
-            {:ok, terminal} ->
-              Cluster.start_terminal(session_node, terminal.id)
-              terminal = HubRPC.get_terminal!(terminal.id)
-              {:noreply, assign(socket, show_terminal: true, terminal: terminal)}
-
-            {:error, _} ->
-              {:noreply, put_flash(socket, :error, "Failed to create terminal")}
-          end
-
-        terminal ->
-          # Start it if not already running
-          unless Cluster.terminal_alive?(session_node, terminal.id) do
-            Cluster.start_terminal(session_node, terminal.id)
-          end
-
-          {:noreply, assign(socket, show_terminal: true, terminal: terminal)}
+      if socket.assigns.open_terminals != [] do
+        # Panel was just hidden, show it again
+        {:noreply, assign(socket, show_terminal: true)}
+      else
+        # Find or create a terminal
+        {:noreply, open_or_create_terminal(socket, session, session_node)}
       end
     end
   end
 
-  def handle_event("close_terminal", _params, socket) do
-    {:noreply, assign(socket, show_terminal: false, terminal: nil)}
+  def handle_event("new_terminal", _params, socket) do
+    session = socket.assigns.session
+    session_node = socket.assigns.session_node
+    count = length(socket.assigns.open_terminals) + 1
+
+    name =
+      if session.project do
+        "#{session.project.name} shell #{count}"
+      else
+        "shell #{count}"
+      end
+
+    case HubRPC.create_terminal(%{
+           name: name,
+           directory: session.directory,
+           project_id: session.project_id
+         }) do
+      {:ok, terminal} ->
+        Cluster.start_terminal(session_node, terminal.id)
+        terminal = HubRPC.get_terminal!(terminal.id)
+
+        {:noreply,
+         socket
+         |> assign(:open_terminals, socket.assigns.open_terminals ++ [terminal])
+         |> assign(:active_terminal_id, terminal.id)}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to create terminal")}
+    end
+  end
+
+  def handle_event("switch_terminal", %{"id" => id}, socket) do
+    {:noreply, assign(socket, :active_terminal_id, id)}
+  end
+
+  def handle_event("close_terminal_tab", %{"id" => id}, socket) do
+    open = Enum.reject(socket.assigns.open_terminals, &(&1.id == id))
+
+    active =
+      cond do
+        open == [] -> nil
+        socket.assigns.active_terminal_id == id -> hd(open).id
+        true -> socket.assigns.active_terminal_id
+      end
+
+    socket = assign(socket, open_terminals: open, active_terminal_id: active)
+    socket = if open == [], do: assign(socket, show_terminal: false), else: socket
+    {:noreply, socket}
+  end
+
+  def handle_event("close_terminal_panel", _params, socket) do
+    {:noreply, assign(socket, show_terminal: false)}
   end
 
   def handle_event("pop_out_terminal", _params, socket) do
-    terminal = socket.assigns.terminal
+    active_id = socket.assigns.active_terminal_id
 
-    if terminal do
-      {:noreply,
-       socket
-       |> assign(show_terminal: false, terminal: nil)
-       |> push_navigate(to: ~p"/terminals/#{terminal.id}")}
+    if active_id do
+      {:noreply, push_navigate(socket, to: ~p"/terminals/#{active_id}")}
     else
       {:noreply, socket}
+    end
+  end
+
+  defp open_or_create_terminal(socket, session, session_node) do
+    terminals = HubRPC.list_terminals_for_project(session.project_id)
+
+    terminal =
+      Enum.find(terminals, fn t ->
+        t.directory == session.directory && t.status == "running"
+      end)
+
+    case terminal do
+      nil ->
+        name =
+          if session.project do
+            "#{session.project.name} shell"
+          else
+            "shell"
+          end
+
+        case HubRPC.create_terminal(%{
+               name: name,
+               directory: session.directory,
+               project_id: session.project_id
+             }) do
+          {:ok, terminal} ->
+            Cluster.start_terminal(session_node, terminal.id)
+            terminal = HubRPC.get_terminal!(terminal.id)
+
+            socket
+            |> assign(:show_terminal, true)
+            |> assign(:open_terminals, [terminal])
+            |> assign(:active_terminal_id, terminal.id)
+
+          {:error, _} ->
+            put_flash(socket, :error, "Failed to create terminal")
+        end
+
+      terminal ->
+        unless Cluster.terminal_alive?(session_node, terminal.id) do
+          Cluster.start_terminal(session_node, terminal.id)
+        end
+
+        socket
+        |> assign(:show_terminal, true)
+        |> assign(:open_terminals, [terminal])
+        |> assign(:active_terminal_id, terminal.id)
     end
   end
 
