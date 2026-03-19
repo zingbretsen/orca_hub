@@ -2,6 +2,7 @@ defmodule OrcaHubWeb.DashboardLive do
   use OrcaHubWeb, :live_view
 
   alias OrcaHub.Cluster
+  alias OrcaHubWeb.NodeFilter
 
   @impl true
   def mount(_params, _session, socket) do
@@ -14,15 +15,16 @@ defmodule OrcaHubWeb.DashboardLive do
   end
 
   defp load_data(socket) do
-    tagged_sessions = Cluster.list_sessions(:all)
+    node_filter = socket.assigns[:node_filter] || :all
+    tagged_sessions = Cluster.list_sessions(:all) |> NodeFilter.filter_tagged(node_filter)
     sessions = Enum.map(tagged_sessions, fn {_n, s} -> s end)
     running = Enum.count(sessions, &(&1.status == "running"))
     idle = Enum.count(sessions, &(&1.status == "idle"))
     errored = Enum.count(sessions, &(&1.status == "error"))
-    feedback_requests = Cluster.list_pending_feedback()
-    open_issues = Cluster.list_issues() |> Enum.count(fn {_n, i} -> i.status != "closed" end)
-    tagged_projects = Cluster.list_projects()
-    tagged_triggers = Cluster.list_triggers()
+    feedback_requests = Cluster.list_pending_feedback() |> NodeFilter.filter_tagged(node_filter)
+    open_issues = Cluster.list_issues() |> NodeFilter.filter_tagged(node_filter) |> Enum.count(fn {_n, i} -> i.status != "closed" end)
+    tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(node_filter)
+    tagged_triggers = Cluster.list_triggers() |> NodeFilter.filter_tagged(node_filter)
     triggers = Enum.map(tagged_triggers, fn {_n, t} -> t end)
     enabled_triggers = Enum.count(triggers, & &1.enabled)
     recent_sessions = Enum.take(sessions, 8)
@@ -57,6 +59,8 @@ defmodule OrcaHubWeb.DashboardLive do
       node_session_counts: node_session_counts
     )
   end
+
+  def reload_for_node_filter(socket), do: {:noreply, load_data(socket)}
 
   @impl true
   def handle_info(_msg, socket) do

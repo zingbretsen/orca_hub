@@ -52,7 +52,12 @@ defmodule OrcaHubWeb.Layouts do
         </a>
       </nav>
 
-      <div class="hidden md:flex items-center ml-auto">
+      <div class="hidden md:flex items-center gap-2 ml-auto">
+        <.node_filter_dropdown
+          :if={assigns[:node_filter_visible]}
+          nodes={assigns[:node_filter_nodes] || []}
+          filter={assigns[:node_filter] || :all}
+        />
         <.theme_toggle />
       </div>
 
@@ -73,6 +78,13 @@ defmodule OrcaHubWeb.Layouts do
               {link.label}
               <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-mobile" />
             </a>
+          </li>
+          <li :if={assigns[:node_filter_visible]} class="menu-title text-xs uppercase opacity-60 mt-2">Nodes</li>
+          <li :if={assigns[:node_filter_visible]}>
+            <.node_filter_items
+              nodes={assigns[:node_filter_nodes] || []}
+              filter={assigns[:node_filter] || :all}
+            />
           </li>
           <li class="menu-title text-xs uppercase opacity-60 mt-2">Theme</li>
           <li><.theme_toggle /></li>
@@ -137,6 +149,63 @@ defmodule OrcaHubWeb.Layouts do
         {gettext("Attempting to reconnect")}
         <.icon name="hero-arrow-path" class="ml-1 size-3 motion-safe:animate-spin" />
       </.flash>
+    </div>
+    """
+  end
+
+  defp node_filter_dropdown(assigns) do
+    ~H"""
+    <div id="node-filter" phx-hook="NodeFilter" class="dropdown dropdown-end">
+      <div tabindex="0" role="button" class={"btn btn-sm gap-1 #{if @filter == :all, do: "btn-ghost", else: "btn-soft btn-primary"}"}>
+        <.icon name="hero-server-stack-micro" class="size-4" />
+        <span class="text-xs">
+          <%= if @filter == :all do %>
+            All nodes
+          <% else %>
+            {MapSet.size(@filter)}/{length(@nodes)} nodes
+          <% end %>
+        </span>
+        <.icon name="hero-chevron-down-micro" class="size-3" />
+      </div>
+      <ul tabindex="0" class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-56">
+        <li>
+          <button phx-click="node_filter_select_all" class="flex items-center gap-2">
+            <span class={"size-4 flex items-center justify-center #{if @filter == :all, do: "text-primary", else: "opacity-0"}"}>
+              <.icon name="hero-check-micro" class="size-4" />
+            </span>
+            All nodes
+          </button>
+        </li>
+        <li class="menu-title text-xs uppercase opacity-60">Nodes</li>
+        <li :for={node <- @nodes}>
+          <button phx-click="toggle_node_filter" phx-value-node={node.name} class="flex items-center gap-2">
+            <span class={"size-4 flex items-center justify-center #{if OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name), do: "text-primary", else: "opacity-0"}"}>
+              <.icon name="hero-check-micro" class="size-4" />
+            </span>
+            {node.name}
+          </button>
+        </li>
+      </ul>
+    </div>
+    """
+  end
+
+  defp node_filter_items(assigns) do
+    ~H"""
+    <div id="node-filter-mobile" phx-hook="NodeFilter" class="flex flex-col gap-1">
+      <button phx-click="node_filter_select_all" class={"btn btn-xs gap-1 #{if @filter == :all, do: "btn-active", else: "btn-ghost"}"}>
+        <.icon :if={@filter == :all} name="hero-check-micro" class="size-3" />
+        All nodes
+      </button>
+      <button
+        :for={node <- @nodes}
+        phx-click="toggle_node_filter"
+        phx-value-node={node.name}
+        class={"btn btn-xs gap-1 #{if OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name), do: "btn-active", else: "btn-ghost"}"}
+      >
+        <.icon :if={OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name)} name="hero-check-micro" class="size-3" />
+        {node.name}
+      </button>
     </div>
     """
   end

@@ -3,6 +3,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   alias OrcaHub.{Projects, Sessions, Cluster, HubRPC}
   alias OrcaHub.Sessions.Session
+  alias OrcaHubWeb.NodeFilter
 
   @impl true
   def mount(_params, _session, socket) do
@@ -14,16 +15,18 @@ defmodule OrcaHubWeb.SessionLive.Index do
     filter = :manual
 
     tagged_sessions = Cluster.list_sessions(filter)
-    node_map = Cluster.build_node_map(tagged_sessions)
-    project_node_map = Map.new(projects, fn {n, p} -> {p.id, n} end)
+    filtered_sessions = NodeFilter.filter_tagged(tagged_sessions, socket.assigns.node_filter)
+    filtered_projects = NodeFilter.filter_tagged(projects, socket.assigns.node_filter)
+    node_map = Cluster.build_node_map(filtered_sessions)
+    project_node_map = Map.new(filtered_projects, fn {n, p} -> {p.id, n} end)
     clustered = length(Node.list()) > 0
 
     {:ok,
      socket
      |> assign(
-       projects: projects,
+       projects: filtered_projects,
        session_filter: filter,
-       grouped_sessions: group_sessions(tagged_sessions, projects, clustered),
+       grouped_sessions: group_sessions(filtered_sessions, filtered_projects, clustered),
        node_map: node_map,
        project_node_map: project_node_map,
        clustered: clustered,
@@ -121,7 +124,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   def handle_event("set_filter", %{"filter" => filter}, socket) do
     filter = String.to_existing_atom(filter)
-    tagged_sessions = Cluster.list_sessions(filter)
+    tagged_sessions = Cluster.list_sessions(filter) |> NodeFilter.filter_tagged(socket.assigns.node_filter)
     node_map = Cluster.build_node_map(tagged_sessions)
     clustered = socket.assigns.clustered
 
@@ -242,17 +245,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
   end
 
   def handle_info({_session_id, _payload}, socket) do
-    filter = socket.assigns.session_filter
-    tagged_sessions = Cluster.list_sessions(filter)
-    node_map = Cluster.build_node_map(tagged_sessions)
-    clustered = length(Node.list()) > 0
-
-    {:noreply,
-     assign(socket,
-       grouped_sessions: group_sessions(tagged_sessions, socket.assigns.projects, clustered),
-       node_map: node_map,
-       clustered: clustered
-     )}
+    {:noreply, reload_session_data(socket)}
   end
 
   defp schedule_undo_archive(socket, session_id) do
@@ -267,6 +260,23 @@ defmodule OrcaHubWeb.SessionLive.Index do
     end
 
     assign(socket, undo_archive_timer: nil)
+  end
+
+  def reload_for_node_filter(socket), do: {:noreply, reload_session_data(socket)}
+
+  defp reload_session_data(socket) do
+    filter = socket.assigns.session_filter
+    projects = Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+    tagged_sessions = Cluster.list_sessions(filter) |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+    node_map = Cluster.build_node_map(tagged_sessions)
+    clustered = length(Node.list()) > 0
+
+    assign(socket,
+      projects: projects,
+      grouped_sessions: group_sessions(tagged_sessions, projects, clustered),
+      node_map: node_map,
+      clustered: clustered
+    )
   end
 
   defp group_sessions(tagged_sessions, tagged_projects, clustered) do

@@ -1,3 +1,4 @@
 ## Pin the Erlang distribution port range so it can be exposed in k8s/firewalls
--kernel inet_dist_listen_min 9100
--kernel inet_dist_listen_max 9105
+## Override with DIST_PORT_MIN / DIST_PORT_MAX env vars to avoid conflicts
+-kernel inet_dist_listen_min <%= System.get_env("DIST_PORT_MIN", "9100") %>
+-kernel inet_dist_listen_max <%= System.get_env("DIST_PORT_MAX", "9105") %>

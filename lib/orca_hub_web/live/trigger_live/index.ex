@@ -3,12 +3,14 @@ defmodule OrcaHubWeb.TriggerLive.Index do
 
   alias OrcaHub.{Cluster, HubRPC, Triggers}
   alias OrcaHub.Triggers.Trigger
+  alias OrcaHubWeb.NodeFilter
 
   @impl true
   def mount(_params, _session, socket) do
-    tagged_projects = Cluster.list_projects()
+    node_filter = socket.assigns.node_filter
+    tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(node_filter)
     projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
-    tagged_triggers = Cluster.list_triggers()
+    tagged_triggers = Cluster.list_triggers() |> NodeFilter.filter_tagged(node_filter)
     node_map = Cluster.build_node_map(tagged_triggers)
     triggers = Enum.map(tagged_triggers, fn {_node, trigger} -> trigger end)
     clustered = length(Node.list()) > 0
@@ -146,6 +148,17 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     end)
 
     {:noreply, put_flash(socket, :info, "Trigger fired")}
+  end
+
+  def reload_for_node_filter(socket) do
+    node_filter = socket.assigns.node_filter
+    tagged_triggers = Cluster.list_triggers() |> NodeFilter.filter_tagged(node_filter)
+    node_map = Cluster.build_node_map(tagged_triggers)
+    triggers = Enum.map(tagged_triggers, fn {_n, t} -> t end)
+    tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(node_filter)
+    projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
+
+    {:noreply, assign(socket, triggers: triggers, node_map: node_map, projects: projects)}
   end
 
   def handle_event("cancel_trigger", _params, socket) do

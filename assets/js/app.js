@@ -29,6 +29,21 @@ import topbar from "../vendor/topbar"
 let Hooks = {
   ...colocatedHooks,
   Terminal: TerminalHook,
+  NodeFilter: {
+    mounted() {
+      const stored = localStorage.getItem("orca:node_filter")
+      const nodes = stored ? JSON.parse(stored) : []
+      this.pushEvent("node_filter_init", { nodes })
+
+      this.handleEvent("node_filter_updated", ({ nodes }) => {
+        if (nodes.length === 0) {
+          localStorage.removeItem("orca:node_filter")
+        } else {
+          localStorage.setItem("orca:node_filter", JSON.stringify(nodes))
+        }
+      })
+    }
+  },
   ResizeHandle: {
     mounted() {
       this._setupResize()

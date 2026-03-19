@@ -3,6 +3,7 @@ defmodule OrcaHubWeb.TerminalLive.Index do
 
   alias OrcaHub.{Cluster, HubRPC, Terminals}
   alias OrcaHub.Terminals.Terminal
+  alias OrcaHubWeb.NodeFilter
 
   @impl true
   def mount(_params, _session, socket) do
@@ -10,9 +11,10 @@ defmodule OrcaHubWeb.TerminalLive.Index do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "terminals")
     end
 
-    tagged_projects = Cluster.list_projects()
+    node_filter = socket.assigns.node_filter
+    tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(node_filter)
     projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
-    tagged_terminals = Cluster.list_terminals()
+    tagged_terminals = Cluster.list_terminals() |> NodeFilter.filter_tagged(node_filter)
     node_map = Cluster.build_node_map(tagged_terminals)
     terminals = Enum.map(tagged_terminals, fn {_node, terminal} -> terminal end)
 
@@ -126,6 +128,8 @@ defmodule OrcaHubWeb.TerminalLive.Index do
      |> push_patch(to: ~p"/terminals")}
   end
 
+  def reload_for_node_filter(socket), do: {:noreply, refresh_terminals(socket)}
+
   @impl true
   def handle_info({_terminal_id, _payload}, socket) do
     {:noreply, refresh_terminals(socket)}
@@ -138,7 +142,7 @@ defmodule OrcaHubWeb.TerminalLive.Index do
   end
 
   defp refresh_terminals(socket) do
-    tagged_terminals = Cluster.list_terminals()
+    tagged_terminals = Cluster.list_terminals() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
     node_map = Cluster.build_node_map(tagged_terminals)
     terminals = Enum.map(tagged_terminals, fn {_node, terminal} -> terminal end)
     assign(socket, terminals: terminals, node_map: node_map)

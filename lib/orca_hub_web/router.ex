@@ -17,36 +17,38 @@ defmodule OrcaHubWeb.Router do
   scope "/", OrcaHubWeb do
     pipe_through :browser
 
-    live "/", DashboardLive, :index
+    live_session :default, on_mount: [{OrcaHubWeb.NodeFilter, :default}] do
+      live "/", DashboardLive, :index
 
-    live "/issues", IssueLive.Index, :index
-    live "/issues/new", IssueLive.Index, :new
-    live "/issues/:id", IssueLive.Show, :show
-    live "/issues/:id/edit", IssueLive.Index, :edit
+      live "/issues", IssueLive.Index, :index
+      live "/issues/new", IssueLive.Index, :new
+      live "/issues/:id", IssueLive.Show, :show
+      live "/issues/:id/edit", IssueLive.Index, :edit
 
-    live "/projects", ProjectLive.Index, :index
-    live "/projects/new", ProjectLive.Index, :new
-    live "/projects/:id", ProjectLive.Show, :show
-    live "/projects/:id/edit", ProjectLive.Show, :edit
+      live "/projects", ProjectLive.Index, :index
+      live "/projects/new", ProjectLive.Index, :new
+      live "/projects/:id", ProjectLive.Show, :show
+      live "/projects/:id/edit", ProjectLive.Show, :edit
 
-    live "/triggers", TriggerLive.Index, :index
-    live "/triggers/new", TriggerLive.Index, :new
-    live "/triggers/:id/edit", TriggerLive.Index, :edit
+      live "/triggers", TriggerLive.Index, :index
+      live "/triggers/new", TriggerLive.Index, :new
+      live "/triggers/:id/edit", TriggerLive.Index, :edit
 
-    live "/queue", QueueLive, :index
-    live "/usage", UsageLive, :index
+      live "/queue", QueueLive, :index
+      live "/usage", UsageLive, :index
 
-    live "/terminals", TerminalLive.Index, :index
-    live "/terminals/new", TerminalLive.Index, :new
-    live "/terminals/:id", TerminalLive.Show, :show
+      live "/terminals", TerminalLive.Index, :index
+      live "/terminals/new", TerminalLive.Index, :new
+      live "/terminals/:id", TerminalLive.Show, :show
 
-    live "/sessions", SessionLive.Index, :index
-    live "/sessions/new", SessionLive.Index, :new
-    live "/sessions/:id", SessionLive.Show, :show
+      live "/sessions", SessionLive.Index, :index
+      live "/sessions/new", SessionLive.Index, :new
+      live "/sessions/:id", SessionLive.Show, :show
 
-    live "/settings", SettingsLive.Index, :index
-    live "/settings/upstream/new", SettingsLive.Index, :new
-    live "/settings/upstream/:id/edit", SettingsLive.Index, :edit
+      live "/settings", SettingsLive.Index, :index
+      live "/settings/upstream/new", SettingsLive.Index, :new
+      live "/settings/upstream/:id/edit", SettingsLive.Index, :edit
+    end
   end
 
   scope "/api", OrcaHubWeb do

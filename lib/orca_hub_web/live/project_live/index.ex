@@ -3,10 +3,11 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
   alias OrcaHub.Projects.Project
   alias OrcaHub.{Cluster, HubRPC, ClaudeImport}
+  alias OrcaHubWeb.NodeFilter
 
   @impl true
   def mount(_params, _session, socket) do
-    tagged_projects = Cluster.list_projects()
+    tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
     node_map = Cluster.build_node_map(tagged_projects)
     projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
     clustered = length(Node.list()) > 0
@@ -154,6 +155,17 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
   def handle_event("browse_close", _params, socket) do
     {:noreply, assign(socket, browsing: false)}
+  end
+
+  def reload_for_node_filter(socket) do
+    tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+    node_map = Cluster.build_node_map(tagged_projects)
+    projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
+
+    {:noreply,
+     socket
+     |> assign(node_map: node_map)
+     |> stream(:projects, projects, reset: true)}
   end
 
   @impl true
