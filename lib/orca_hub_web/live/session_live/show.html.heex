@@ -78,15 +78,18 @@
       <button phx-click="toggle_file_browser" class={["btn btn-ghost btn-sm btn-circle", (@open_files != [] || @show_file_browser) && "text-primary"]} title="Browse files">
         <.icon name="hero-document-text" class="size-5" />
       </button>
+      <button phx-click="open_terminal" class="btn btn-ghost btn-sm btn-circle" title="Open terminal">
+        <.icon name="hero-command-line" class="size-5" />
+      </button>
       <button
         :if={@session.claude_session_id}
         id="copy-terminal-cmd"
         phx-hook="CopyToClipboard"
         data-copy-text={"cd #{@session.directory} && claude --resume #{@session.claude_session_id}"}
         class="btn btn-ghost btn-sm btn-circle"
-        title="Copy terminal command"
+        title="Copy CLI resume command"
       >
-        <.icon name="hero-command-line" class="size-5" />
+        <.icon name="hero-clipboard" class="size-5" />
       </button>
       <button :if={@session.archived_at} phx-click="unarchive" class="btn btn-ghost btn-sm btn-circle" title="Unarchive session">
         <.icon name="hero-archive-box-arrow-down" class="size-5" />

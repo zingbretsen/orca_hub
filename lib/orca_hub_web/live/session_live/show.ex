@@ -282,6 +282,46 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  def handle_event("open_terminal", _params, socket) do
+    session = socket.assigns.session
+    session_node = socket.assigns.session_node
+
+    # Find an existing running terminal for this directory, or create one
+    terminals = HubRPC.list_terminals_for_project(session.project_id)
+
+    terminal =
+      Enum.find(terminals, fn t ->
+        t.directory == session.directory && t.status == "running"
+      end)
+
+    case terminal do
+      nil ->
+        # Create a new terminal
+        name =
+          if session.project do
+            "#{session.project.name} shell"
+          else
+            "shell"
+          end
+
+        case HubRPC.create_terminal(%{
+               name: name,
+               directory: session.directory,
+               project_id: session.project_id
+             }) do
+          {:ok, terminal} ->
+            Cluster.start_terminal(session_node, terminal.id)
+            {:noreply, push_navigate(socket, to: ~p"/terminals/#{terminal.id}")}
+
+          {:error, _} ->
+            {:noreply, put_flash(socket, :error, "Failed to create terminal")}
+        end
+
+      terminal ->
+        {:noreply, push_navigate(socket, to: ~p"/terminals/#{terminal.id}")}
+    end
+  end
+
   # -- File panel events --
 
   def handle_event("toggle_file_browser", _params, socket) do
