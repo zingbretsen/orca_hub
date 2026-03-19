@@ -122,6 +122,13 @@ defmodule OrcaHubWeb.SettingsLive.Index do
     {:noreply, assign(socket, servers: UpstreamServers.list_upstream_servers())}
   end
 
+  def handle_event("toggle_global", %{"id" => id}, socket) do
+    server = UpstreamServers.get_upstream_server!(id)
+    {:ok, _} = UpstreamServers.update_upstream_server(server, %{global: !server.global})
+
+    {:noreply, assign(socket, servers: UpstreamServers.list_upstream_servers())}
+  end
+
   def handle_event("add_header", _params, socket) do
     pairs = socket.assigns.header_pairs ++ [%{key: "", value: ""}]
     {:noreply, assign(socket, header_pairs: pairs)}

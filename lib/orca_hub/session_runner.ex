@@ -3,7 +3,7 @@ defmodule OrcaHub.SessionRunner do
   require Logger
 
   alias OrcaHub.Claude.{Config, StreamParser}
-  alias OrcaHub.{AgentPresence, HubRPC}
+  alias OrcaHub.{AgentPresence, HubRPC, UpstreamServers}
 
   # Route a HubRPC call through the node that owns the session's DB record.
   # In multi-hub mode, the runner may be on a different node than the DB.
@@ -78,6 +78,7 @@ defmodule OrcaHub.SessionRunner do
 
     data = %{
       session_id: session_id,
+      project_id: session.project_id,
       claude_session_id: session.claude_session_id,
       directory: session.directory,
       model: session.model,
@@ -419,7 +420,7 @@ defmodule OrcaHub.SessionRunner do
       |> maybe_put(:session_id, data.claude_session_id)
       |> maybe_put(:model, data.model)
       |> maybe_put(:system_prompt, build_system_prompt(data))
-      |> Keyword.put(:mcp_config, mcp_config(data.session_id))
+      |> Keyword.put(:mcp_config, mcp_config(data))
 
     {args, port_opts} = Config.build_args(prompt, opts)
 
@@ -481,21 +482,35 @@ defmodule OrcaHub.SessionRunner do
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, val), do: Keyword.put(opts, key, val)
 
-  defp mcp_config(session_id) do
+  defp mcp_config(data) do
     port =
       case OrcaHubWeb.Endpoint.config(:http) do
         config when is_list(config) -> Keyword.get(config, :port, 4000)
         _ -> 4000
       end
 
-    Jason.encode!(%{
-      "mcpServers" => %{
-        "orca" => %{
-          "type" => "http",
-          "url" => "http://localhost:#{port}/mcp?orca_session_id=#{session_id}"
-        }
-      }
-    })
+    orca_server = %{
+      "type" => "http",
+      "url" => "http://localhost:#{port}/mcp?orca_session_id=#{data.session_id}"
+    }
+
+    project_servers =
+      if data.project_id,
+        do: UpstreamServers.list_enabled_servers_for_project(data.project_id),
+        else: []
+
+    session_servers = UpstreamServers.list_enabled_servers_for_session(data.session_id)
+
+    scoped_servers =
+      (project_servers ++ session_servers)
+      |> Enum.uniq_by(& &1.id)
+      |> Map.new(fn server ->
+        entry = %{"type" => "http", "url" => server.url}
+        entry = if map_size(server.headers) > 0, do: Map.put(entry, "headers", server.headers), else: entry
+        {server.name, entry}
+      end)
+
+    Jason.encode!(%{"mcpServers" => Map.merge(scoped_servers, %{"orca" => orca_server})})
   end
 
   defp build_system_prompt(data) do

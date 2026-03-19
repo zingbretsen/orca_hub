@@ -101,6 +101,9 @@
       >
         <.icon name="hero-play" class="size-5" />
       </button>
+      <button phx-click="toggle_mcp_modal" class={["btn btn-ghost btn-sm btn-circle", @show_mcp_modal && "text-primary"]} title="MCP servers">
+        <.icon name="hero-server-stack" class="size-5" />
+      </button>
       <button
         :if={@session.claude_session_id}
         id="copy-terminal-cmd"
@@ -149,6 +152,87 @@
     </ul>
   </div>
 
+
+  <%!-- MCP servers modal --%>
+  <div :if={@show_mcp_modal} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
+    <div class="card bg-base-100 shadow-xl w-full max-w-lg p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl max-h-[80vh] overflow-y-auto">
+      <div>
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-semibold">Session MCP Servers</h2>
+          <button phx-click="toggle_mcp_modal" class="btn btn-ghost btn-sm btn-circle">
+            <.icon name="hero-x-mark" class="size-5" />
+          </button>
+        </div>
+
+        <p class="text-sm text-base-content/60 mb-4">
+          These servers will be added to this session's MCP config on the next run, in addition to global and project-level servers.
+        </p>
+
+        <div :if={@session_mcp_servers != []} class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden mb-4">
+          <div :for={server <- @session_mcp_servers} class="flex items-center gap-3 px-3 py-2 text-sm">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="font-medium">{server.name}</span>
+                <span class={["badge badge-xs", if(server.enabled, do: "badge-success", else: "badge-ghost")]}>
+                  {if server.enabled, do: "enabled", else: "disabled"}
+                </span>
+              </div>
+              <div class="text-base-content/50 text-xs font-mono truncate">{server.url}</div>
+            </div>
+            <button
+              phx-click="remove_mcp_server"
+              phx-value-id={server.id}
+              class="btn btn-xs btn-ghost text-error"
+              title="Remove"
+            >
+              <.icon name="hero-x-mark-micro" class="size-4" />
+            </button>
+          </div>
+        </div>
+
+        <div :if={@session_mcp_servers == [] && !@show_mcp_server_picker} class="text-sm text-base-content/50 text-center py-4 mb-4">
+          No session-specific MCP servers.
+        </div>
+
+        <div :if={!@show_mcp_server_picker} class="flex justify-between items-center">
+          <.link navigate={~p"/settings"} class="link text-sm text-base-content/50">Manage server definitions</.link>
+          <button phx-click="toggle_mcp_server_picker" class="btn btn-sm btn-primary">Add Server</button>
+        </div>
+
+        <div :if={@show_mcp_server_picker} class="mt-2">
+          <h4 class="font-semibold text-sm mb-2">Add MCP Server</h4>
+          <div :if={@all_upstream_servers == []} class="text-sm text-base-content/50">
+            No servers defined. <.link navigate={~p"/settings"} class="link">Add one in Settings</.link>.
+          </div>
+          <div :if={@all_upstream_servers != []} class="space-y-2">
+            <div :for={server <- @all_upstream_servers} class="flex items-center justify-between text-sm bg-base-200 rounded px-3 py-2">
+              <div class="min-w-0 flex-1">
+                <span class="font-medium">{server.name}</span>
+                <span class={["badge badge-xs ml-2", if(server.enabled, do: "badge-success", else: "badge-ghost")]}>
+                  {if server.enabled, do: "enabled", else: "disabled"}
+                </span>
+                <div class="text-base-content/50 text-xs font-mono truncate">{server.url}</div>
+              </div>
+              <div class="shrink-0 ml-2">
+                <span :if={UpstreamServers.server_in_session?(@session.id, server.id)} class="text-xs text-base-content/40">added</span>
+                <button
+                  :if={!UpstreamServers.server_in_session?(@session.id, server.id)}
+                  phx-click="add_mcp_server"
+                  phx-value-id={server.id}
+                  class="btn btn-xs btn-primary"
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="flex justify-end mt-3">
+            <button phx-click="toggle_mcp_server_picker" class="btn btn-sm">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <%!-- Main content area: side-by-side on desktop when files are open --%>
   <div class="flex flex-1 min-h-0 gap-4" id="session-split-container">

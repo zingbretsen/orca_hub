@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Cluster, HubRPC, Projects, Sessions, SessionRunner}
+  alias OrcaHub.{Cluster, HubRPC, Projects, Sessions, SessionRunner, UpstreamServers}
   alias OrcaHubWeb.{MessageComponents, Markdown}
 
   @impl true
@@ -76,6 +76,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:show_terminal, false)
      |> assign(:open_terminals, [])
      |> assign(:active_terminal_id, nil)
+     |> assign(:show_mcp_modal, false)
+     |> assign(:session_mcp_servers, UpstreamServers.list_servers_for_session(id))
+     |> assign(:all_upstream_servers, UpstreamServers.list_upstream_servers())
+     |> assign(:show_mcp_server_picker, false)
      |> load_session_todos()
      |> load_session_commits()
      |> allow_upload(:image,
@@ -261,6 +265,39 @@ defmodule OrcaHubWeb.SessionLive.Show do
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "Failed to update model")}
     end
+  end
+
+  # MCP server events
+
+  def handle_event("toggle_mcp_modal", _params, socket) do
+    {:noreply, assign(socket, show_mcp_modal: !socket.assigns.show_mcp_modal, show_mcp_server_picker: false)}
+  end
+
+  def handle_event("toggle_mcp_server_picker", _params, socket) do
+    {:noreply, assign(socket, show_mcp_server_picker: !socket.assigns.show_mcp_server_picker)}
+  end
+
+  def handle_event("add_mcp_server", %{"id" => server_id}, socket) do
+    session_id = socket.assigns.session.id
+    UpstreamServers.add_server_to_session(session_id, server_id)
+
+    {:noreply,
+     socket
+     |> assign(
+       session_mcp_servers: UpstreamServers.list_servers_for_session(session_id),
+       show_mcp_server_picker: false
+     )
+     |> put_flash(:info, "MCP server added — takes effect on next run")}
+  end
+
+  def handle_event("remove_mcp_server", %{"id" => server_id}, socket) do
+    session_id = socket.assigns.session.id
+    UpstreamServers.remove_server_from_session(session_id, server_id)
+
+    {:noreply,
+     socket
+     |> assign(session_mcp_servers: UpstreamServers.list_servers_for_session(session_id))
+     |> put_flash(:info, "MCP server removed")}
   end
 
   def handle_event("archive", _params, socket) do

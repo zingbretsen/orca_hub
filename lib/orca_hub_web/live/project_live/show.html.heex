@@ -138,6 +138,77 @@
 
 <div class="mt-8">
   <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">MCP Servers</h3>
+    <button phx-click="toggle_mcp_server_picker" class="btn btn-sm btn-primary">Add Server</button>
+  </div>
+
+  <p class="text-sm text-base-content/60 mb-3">
+    These MCP servers will be available to all sessions in this project, in addition to any global servers.
+  </p>
+
+  <%!-- Server picker --%>
+  <div :if={@show_mcp_server_picker} class="card bg-base-200 p-4 mb-4">
+    <h4 class="font-semibold mb-3">Add MCP Server</h4>
+    <div :if={@all_upstream_servers == []} class="text-sm text-base-content/50">
+      No MCP servers defined yet. <.link navigate={~p"/settings"} class="link">Configure servers in Settings</.link>.
+    </div>
+    <div :if={@all_upstream_servers != []} class="space-y-2">
+      <div :for={server <- @all_upstream_servers} class="flex items-center justify-between text-sm bg-base-100 rounded px-3 py-2">
+        <div>
+          <span class="font-medium">{server.name}</span>
+          <span class={["badge badge-xs ml-2", if(server.enabled, do: "badge-success", else: "badge-ghost")]}>
+            {if server.enabled, do: "enabled", else: "disabled"}
+          </span>
+          <div class="text-base-content/50 text-xs font-mono">{server.url}</div>
+        </div>
+        <div>
+          <span :if={UpstreamServers.server_in_project?(@project.id, server.id)} class="text-xs text-base-content/40">already added</span>
+          <button
+            :if={!UpstreamServers.server_in_project?(@project.id, server.id)}
+            phx-click="add_mcp_server"
+            phx-value-id={server.id}
+            class="btn btn-xs btn-primary"
+          >
+            Add
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="flex justify-end mt-3">
+      <button phx-click="toggle_mcp_server_picker" class="btn btn-sm">Close</button>
+    </div>
+  </div>
+
+  <div :if={@project_mcp_servers == [] && !@show_mcp_server_picker} class="text-sm text-base-content/50 p-4 text-center">
+    No project-specific MCP servers.
+  </div>
+
+  <div :if={@project_mcp_servers != []} class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
+    <div :for={server <- @project_mcp_servers} class="flex items-center gap-3 px-4 py-3 text-sm">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="font-medium">{server.name}</span>
+          <span class={["badge badge-xs", if(server.enabled, do: "badge-success", else: "badge-ghost")]}>
+            {if server.enabled, do: "enabled", else: "disabled"}
+          </span>
+        </div>
+        <div class="text-base-content/50 text-xs mt-0.5 font-mono truncate">{server.url}</div>
+      </div>
+      <button
+        phx-click="remove_mcp_server"
+        phx-value-id={server.id}
+        data-confirm="Remove this MCP server from the project?"
+        class="btn btn-xs btn-ghost text-error"
+        title="Remove from project"
+      >
+        <.icon name="hero-x-mark-micro" class="size-4" />
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="mt-8">
+  <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">Triggers</h3>
     <button phx-click="new_trigger" class="btn btn-sm btn-primary">New Trigger</button>
   </div>

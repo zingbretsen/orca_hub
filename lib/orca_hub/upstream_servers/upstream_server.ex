@@ -10,14 +10,21 @@ defmodule OrcaHub.UpstreamServers.UpstreamServer do
     field :url, :string
     field :headers, :map, default: %{}
     field :enabled, :boolean, default: true
+    field :global, :boolean, default: true
     field :prefix, :string
+
+    many_to_many :projects, OrcaHub.Projects.Project,
+      join_through: OrcaHub.UpstreamServers.ProjectUpstreamServer
+
+    many_to_many :sessions, OrcaHub.Sessions.Session,
+      join_through: OrcaHub.UpstreamServers.SessionUpstreamServer
 
     timestamps()
   end
 
   def changeset(server, attrs) do
     server
-    |> cast(attrs, [:name, :url, :headers, :enabled, :prefix])
+    |> cast(attrs, [:name, :url, :headers, :enabled, :global, :prefix])
     |> validate_required([:name, :url])
     |> validate_format(:url, ~r{^https?://}, message: "must start with http:// or https://")
     |> unique_constraint(:url)

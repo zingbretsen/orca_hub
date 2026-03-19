@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Cluster, HubRPC, Projects, Triggers}
+  alias OrcaHub.{Cluster, HubRPC, Projects, Triggers, UpstreamServers}
   alias OrcaHub.Projects.Project
   alias OrcaHub.Triggers.Trigger
 
@@ -60,6 +60,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        show_trigger_form: false,
        trigger_type: "scheduled",
        trigger_form: to_form(Triggers.change_trigger(%Trigger{project_id: project.id})),
+       project_mcp_servers: UpstreamServers.list_servers_for_project(project.id),
+       all_upstream_servers: UpstreamServers.list_upstream_servers(),
+       show_mcp_server_picker: false,
        edit_form: nil,
        browsing: false,
        browse_path: nil,
@@ -477,6 +480,35 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     {:ok, _} = HubRPC.delete_trigger(trigger)
     triggers = HubRPC.list_triggers_for_project(socket.assigns.project.id)
     {:noreply, assign(socket, triggers: triggers)}
+  end
+
+  # MCP server events
+
+  def handle_event("toggle_mcp_server_picker", _params, socket) do
+    {:noreply, assign(socket, show_mcp_server_picker: !socket.assigns.show_mcp_server_picker)}
+  end
+
+  def handle_event("add_mcp_server", %{"id" => server_id}, socket) do
+    project_id = socket.assigns.project.id
+    UpstreamServers.add_server_to_project(project_id, server_id)
+
+    {:noreply,
+     socket
+     |> assign(
+       project_mcp_servers: UpstreamServers.list_servers_for_project(project_id),
+       show_mcp_server_picker: false
+     )
+     |> put_flash(:info, "MCP server added to project")}
+  end
+
+  def handle_event("remove_mcp_server", %{"id" => server_id}, socket) do
+    project_id = socket.assigns.project.id
+    UpstreamServers.remove_server_from_project(project_id, server_id)
+
+    {:noreply,
+     socket
+     |> assign(project_mcp_servers: UpstreamServers.list_servers_for_project(project_id))
+     |> put_flash(:info, "MCP server removed from project")}
   end
 
   def handle_event("toggle_trigger", %{"id" => id}, socket) do

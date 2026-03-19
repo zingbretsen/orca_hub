@@ -4,7 +4,7 @@
 
 <div class="mt-8">
   <div class="flex items-center justify-between mb-4">
-    <h3 class="text-lg font-semibold">Upstream MCP Servers</h3>
+    <h3 class="text-lg font-semibold">MCP Servers</h3>
     <div class="flex gap-2">
       <button phx-click="refresh_connections" class="btn btn-sm btn-ghost" title="Refresh connections">
         <.icon name="hero-arrow-path-micro" class="size-4" />
@@ -16,13 +16,14 @@
   </div>
 
   <p class="text-sm text-base-content/60 mb-4">
-    Connect to external MCP servers and aggregate their tools into OrcaHub's MCP endpoint.
-    Tools from upstream servers are namespaced with a prefix to avoid conflicts.
+    Define MCP servers here and add them to specific projects or sessions from their pages.
+    Servers marked as <strong>global</strong> are also aggregated into OrcaHub's MCP endpoint and available to every session automatically.
+    Tools from global servers are namespaced with a prefix to avoid conflicts.
   </p>
 
   <div :if={@show_form} class="card bg-base-200 p-4 mb-6">
     <h4 class="font-semibold mb-3">
-      {if @editing_server, do: "Edit Server", else: "Add Upstream Server"}
+      {if @editing_server, do: "Edit Server", else: "Add MCP Server"}
     </h4>
     <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-3">
       <.input field={@form[:name]} type="text" label="Name" placeholder="My MCP Server" phx-debounce="blur" />
@@ -30,6 +31,11 @@
       <.input field={@form[:prefix]} type="text" label="Tool prefix" placeholder="Auto-generated from name" phx-debounce="blur" />
       <p class="text-xs text-base-content/50 -mt-2">
         Tools will be exposed as <code class="bg-base-300 px-1 rounded">prefix__tool_name</code>
+      </p>
+      <.input field={@form[:global]} type="checkbox" label="Available to all sessions (global)" />
+      <p class="text-xs text-base-content/50 -mt-2">
+        When enabled, this server is automatically included in every session via OrcaHub's MCP proxy.
+        Uncheck to only use this server in specific projects or sessions.
       </p>
 
       <div>
@@ -75,7 +81,7 @@
   </div>
 
   <div :if={@servers == [] && !@show_form} class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg">
-    No upstream MCP servers configured.
+    No MCP servers configured.
   </div>
 
   <div :if={@servers != []} class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
@@ -84,9 +90,10 @@
         <div class="flex items-center gap-2">
           <span class="font-medium">{server.name}</span>
           <span class={["badge badge-xs", if(server.enabled, do: "badge-success", else: "badge-ghost")]}>
-            {if server.enabled, do: "connected", else: "disabled"}
+            {if server.enabled, do: "enabled", else: "disabled"}
           </span>
-          <span :if={server.enabled} class="badge badge-xs badge-info">
+          <span :if={server.global} class="badge badge-xs badge-neutral">global</span>
+          <span :if={server.enabled && server.global} class="badge badge-xs badge-info">
             {tool_count_for_server(@upstream_tools, server)} tools
           </span>
         </div>
@@ -98,6 +105,9 @@
       <div class="flex items-center gap-1">
         <button phx-click="toggle" phx-value-id={server.id} class="btn btn-xs btn-ghost" title={if server.enabled, do: "Disable", else: "Enable"}>
           <.icon name={if server.enabled, do: "hero-pause-micro", else: "hero-play-micro"} class="size-4" />
+        </button>
+        <button phx-click="toggle_global" phx-value-id={server.id} class="btn btn-xs btn-ghost" title={if server.global, do: "Make project/session-only", else: "Make global"}>
+          <.icon name={if server.global, do: "hero-globe-alt-micro", else: "hero-lock-closed-micro"} class="size-4" />
         </button>
         <.link patch={~p"/settings/upstream/#{server.id}/edit"} class="btn btn-xs btn-ghost" title="Edit">
           <.icon name="hero-pencil-micro" class="size-4" />
