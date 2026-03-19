@@ -2,7 +2,7 @@
   id="drop-target"
   phx-hook="DropTarget"
   class="relative flex flex-col h-[calc(100vh-6rem)] sm:h-[calc(100vh-8rem)]"
-  style={if @open_files != [] || @show_file_browser, do: "margin-left: calc(-50vw + 50%); width: 100vw; padding-left: 2rem; padding-right: 2rem;"}
+  style={if @open_files != [] || @show_file_browser || @show_terminal, do: "margin-left: calc(-50vw + 50%); width: 100vw; padding-left: 2rem; padding-right: 2rem;"}
 >
   <div data-drop-overlay class="hidden absolute inset-0 z-50 bg-base-300/80 rounded-lg flex items-center justify-center pointer-events-none">
     <div class="border-2 border-dashed border-primary rounded-xl p-8 text-center">
@@ -78,7 +78,7 @@
       <button phx-click="toggle_file_browser" class={["btn btn-ghost btn-sm btn-circle", (@open_files != [] || @show_file_browser) && "text-primary"]} title="Browse files">
         <.icon name="hero-document-text" class="size-5" />
       </button>
-      <button phx-click="open_terminal" class="btn btn-ghost btn-sm btn-circle" title="Open terminal">
+      <button phx-click="open_terminal" class={["btn btn-ghost btn-sm btn-circle", @show_terminal && "text-primary"]} title="Open terminal">
         <.icon name="hero-command-line" class="size-5" />
       </button>
       <button
@@ -267,6 +267,27 @@
             Send
           </.button>
         </.form>
+      </div>
+    </div>
+
+    <%!-- Terminal panel column (desktop only) --%>
+    <div :if={@show_terminal && @terminal} class="hidden lg:flex flex-col min-w-0 w-1/2 max-w-2xl">
+      <div class="flex items-center gap-1 mb-2">
+        <span class="text-xs font-medium opacity-70 flex-1">{@terminal.name}</span>
+        <.link navigate={~p"/terminals/#{@terminal.id}"} class="btn btn-ghost btn-xs btn-circle" title="Open in full page">
+          <.icon name="hero-arrow-top-right-on-square-micro" class="size-4" />
+        </.link>
+        <button phx-click="close_terminal" class="btn btn-ghost btn-xs btn-circle" title="Close panel">
+          <.icon name="hero-x-mark-micro" class="size-4" />
+        </button>
+      </div>
+      <div
+        id={"terminal-#{@terminal.id}"}
+        phx-hook="Terminal"
+        data-terminal-id={@terminal.id}
+        class="flex-1 min-h-0 rounded-lg overflow-hidden"
+        phx-update="ignore"
+      >
       </div>
     </div>
 

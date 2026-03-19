@@ -59,6 +59,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:commits, [])
      |> assign(:expanded_commit, nil)
      |> assign(:commit_detail, nil)
+     |> assign(:show_terminal, false)
+     |> assign(:terminal, nil)
      |> load_session_todos()
      |> load_session_commits()
      |> allow_upload(:image,
@@ -283,42 +285,68 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("open_terminal", _params, socket) do
-    session = socket.assigns.session
-    session_node = socket.assigns.session_node
+    if socket.assigns.show_terminal do
+      {:noreply, assign(socket, show_terminal: false, terminal: nil)}
+    else
+      session = socket.assigns.session
+      session_node = socket.assigns.session_node
 
-    # Find an existing running terminal for this directory, or create one
-    terminals = HubRPC.list_terminals_for_project(session.project_id)
+      # Find an existing running terminal for this directory, or create one
+      terminals = HubRPC.list_terminals_for_project(session.project_id)
 
-    terminal =
-      Enum.find(terminals, fn t ->
-        t.directory == session.directory && t.status == "running"
-      end)
+      terminal =
+        Enum.find(terminals, fn t ->
+          t.directory == session.directory && t.status == "running"
+        end)
 
-    case terminal do
-      nil ->
-        # Create a new terminal
-        name =
-          if session.project do
-            "#{session.project.name} shell"
-          else
-            "shell"
+      case terminal do
+        nil ->
+          name =
+            if session.project do
+              "#{session.project.name} shell"
+            else
+              "shell"
+            end
+
+          case HubRPC.create_terminal(%{
+                 name: name,
+                 directory: session.directory,
+                 project_id: session.project_id
+               }) do
+            {:ok, terminal} ->
+              Cluster.start_terminal(session_node, terminal.id)
+              terminal = HubRPC.get_terminal!(terminal.id)
+              {:noreply, assign(socket, show_terminal: true, terminal: terminal)}
+
+            {:error, _} ->
+              {:noreply, put_flash(socket, :error, "Failed to create terminal")}
           end
 
-        case HubRPC.create_terminal(%{
-               name: name,
-               directory: session.directory,
-               project_id: session.project_id
-             }) do
-          {:ok, terminal} ->
+        terminal ->
+          # Start it if not already running
+          unless Cluster.terminal_alive?(session_node, terminal.id) do
             Cluster.start_terminal(session_node, terminal.id)
-            {:noreply, push_navigate(socket, to: ~p"/terminals/#{terminal.id}")}
+          end
 
-          {:error, _} ->
-            {:noreply, put_flash(socket, :error, "Failed to create terminal")}
-        end
+          {:noreply, assign(socket, show_terminal: true, terminal: terminal)}
+      end
+    end
+  end
 
-      terminal ->
-        {:noreply, push_navigate(socket, to: ~p"/terminals/#{terminal.id}")}
+  def handle_event("close_terminal", _params, socket) do
+    {:noreply, assign(socket, show_terminal: false, terminal: nil)}
+  end
+
+  def handle_event("pop_out_terminal", _params, socket) do
+    terminal = socket.assigns.terminal
+
+    if terminal do
+      {:noreply,
+       socket
+       |> assign(show_terminal: false, terminal: nil)
+       |> push_navigate(to: ~p"/terminals/#{terminal.id}")}
+    else
+      {:noreply, socket}
     end
   end
 
