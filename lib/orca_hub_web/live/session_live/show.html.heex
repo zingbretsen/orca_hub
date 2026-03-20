@@ -114,6 +114,15 @@
       >
         <.icon name="hero-clipboard" class="size-5" />
       </button>
+      <button
+        id="copy-session-id"
+        phx-hook="CopyToClipboard"
+        data-copy-text={@session.id}
+        class="btn btn-ghost btn-sm btn-circle"
+        title="Copy session ID"
+      >
+        <.icon name="hero-identification" class="size-5" />
+      </button>
       <button :if={@session.archived_at} phx-click="unarchive" class="btn btn-ghost btn-sm btn-circle" title="Unarchive session">
         <.icon name="hero-archive-box-arrow-down" class="size-5" />
       </button>

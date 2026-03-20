@@ -62,7 +62,7 @@
           </div>
           <div class="text-base-content/50 text-xs mt-0.5 font-mono truncate">{terminal.directory}</div>
         </div>
-        <div class="flex items-center gap-1" phx-click-away="">
+        <div class="flex items-center gap-1">
           <button
             :if={terminal.status != "running"}
             phx-click="start_terminal"
