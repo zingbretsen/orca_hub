@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.TerminalChannel do
   use Phoenix.Channel
   require Logger
 
-  alias OrcaHub.TerminalRunner
+  alias OrcaHub.{Cluster, HubRPC, TerminalRunner}
 
   @impl true
   def join("terminal:" <> terminal_id, _params, socket) do
@@ -11,24 +11,27 @@ defmodule OrcaHubWeb.TerminalChannel do
     # Channel's internal PubSub subscription on "terminal:" topic.
     Phoenix.PubSub.subscribe(OrcaHub.PubSub, "term_output:#{terminal_id}")
 
-    scrollback =
-      case Registry.lookup(OrcaHub.TerminalRegistry, terminal_id) do
-        [{_pid, _}] ->
-          TerminalRunner.get_scrollback(terminal_id)
+    terminal = find_terminal!(terminal_id)
+    runner_node = Cluster.runner_node_for(terminal)
 
-        [] ->
-          <<>>
+    scrollback =
+      if Cluster.terminal_alive?(runner_node, terminal_id) do
+        Cluster.rpc(runner_node, TerminalRunner, :get_scrollback, [terminal_id])
+      else
+        <<>>
       end
 
     {:ok, %{scrollback: Base.encode64(scrollback)},
-     assign(socket, :terminal_id, terminal_id)}
+     socket
+     |> assign(:terminal_id, terminal_id)
+     |> assign(:runner_node, runner_node)}
   end
 
   @impl true
   def handle_in("input", %{"data" => data}, socket) do
     case Base.decode64(data) do
       {:ok, bytes} ->
-        TerminalRunner.write(socket.assigns.terminal_id, bytes)
+        Cluster.rpc(socket.assigns.runner_node, TerminalRunner, :write, [socket.assigns.terminal_id, bytes])
 
       :error ->
         Logger.warning("Invalid base64 input for terminal #{socket.assigns.terminal_id}")
@@ -38,7 +41,7 @@ defmodule OrcaHubWeb.TerminalChannel do
   end
 
   def handle_in("resize", %{"cols" => cols, "rows" => rows}, socket) do
-    TerminalRunner.resize(socket.assigns.terminal_id, cols, rows)
+    Cluster.rpc(socket.assigns.runner_node, TerminalRunner, :resize, [socket.assigns.terminal_id, cols, rows])
     {:noreply, socket}
   end
 
@@ -59,4 +62,13 @@ defmodule OrcaHubWeb.TerminalChannel do
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
+
+  defp find_terminal!(id) do
+    results = Cluster.fan_out(HubRPC, :get_terminal, [id])
+
+    case Enum.find(results, fn {_n, t} -> t != nil end) do
+      {_n, terminal} -> terminal
+      nil -> raise Ecto.NoResultsError, queryable: OrcaHub.Terminals.Terminal
+    end
+  end
 end

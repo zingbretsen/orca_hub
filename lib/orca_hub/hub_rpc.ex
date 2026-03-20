@@ -60,6 +60,7 @@ defmodule OrcaHub.HubRPC do
 
   def list_projects, do: call(OrcaHub.Projects, :list_projects, [])
   def get_project!(id), do: call(OrcaHub.Projects, :get_project!, [id])
+  def get_project_by_directory(dir), do: call(OrcaHub.Projects, :get_project_by_directory, [dir])
   def create_project(attrs), do: call(OrcaHub.Projects, :create_project, [attrs])
   def update_project(project, attrs), do: call(OrcaHub.Projects, :update_project, [project, attrs])
   def delete_project(project), do: call(OrcaHub.Projects, :delete_project, [project])

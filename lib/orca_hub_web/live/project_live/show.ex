@@ -13,20 +13,13 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     end
 
     {project_node, project} = find_project!(id)
-    remote? = project_node != node()
 
-    {editable_files, file_tree, commits, current_branch, worktrees, branches} =
-      if remote? do
-        {[], [], [], nil, [], []}
-      else
-        editable_files = Projects.list_editable_files(project)
-        file_tree = Projects.build_file_tree(editable_files)
-        commits = Projects.git_log(project)
-        current_branch = Projects.git_branch(project)
-        worktrees = Projects.git_worktree_list(project)
-        branches = Projects.git_branches(project)
-        {editable_files, file_tree, commits, current_branch, worktrees, branches}
-      end
+    editable_files = rpc(project_node, Projects, :list_editable_files, [project])
+    file_tree = Projects.build_file_tree(editable_files)
+    commits = rpc(project_node, Projects, :git_log, [project])
+    current_branch = rpc(project_node, Projects, :git_branch, [project])
+    worktrees = rpc(project_node, Projects, :git_worktree_list, [project])
+    branches = rpc(project_node, Projects, :git_branches, [project])
 
     triggers = HubRPC.list_triggers_for_project(project.id)
 
@@ -37,7 +30,6 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        show_hidden_files: false,
        project: project,
        project_node: project_node,
-       remote_project: remote?,
        page_title: project.name,
        commits: commits,
        editable_files: editable_files,
@@ -91,7 +83,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
         path ->
           project = socket.assigns.project
 
-          case Projects.load_file(project, path) do
+          case rpc(socket.assigns.project_node, Projects, :load_file, [project, path]) do
             {:ok, content} ->
               blocks =
                 if markdown_file?(path),
@@ -173,7 +165,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   def handle_event("toggle_hidden_files", _params, socket) do
     show_hidden = !socket.assigns.show_hidden_files
     project = socket.assigns.project
-    editable_files = Projects.list_editable_files(project, show_hidden: show_hidden)
+    editable_files = rpc(socket.assigns.project_node, Projects, :list_editable_files, [project, [show_hidden: show_hidden]])
     file_tree = Projects.build_file_tree(editable_files)
     filtered = Projects.filter_file_tree(file_tree, socket.assigns.file_tree_filter)
 
@@ -196,7 +188,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   def handle_event("select_file", %{"path" => path}, socket) do
     project = socket.assigns.project
 
-    case Projects.load_file(project, path) do
+    case rpc(socket.assigns.project_node, Projects, :load_file, [project, path]) do
       {:ok, content} ->
         blocks =
           if markdown_file?(path),
@@ -244,9 +236,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     if path == "" do
       {:noreply, put_flash(socket, :error, "Please enter a filename")}
     else
-      case Projects.save_file(project, path, content) do
+      case rpc(socket.assigns.project_node, Projects, :save_file, [project, path, content]) do
       :ok ->
-        editable_files = Projects.list_editable_files(project, show_hidden: socket.assigns.show_hidden_files)
+        editable_files = rpc(socket.assigns.project_node, Projects, :list_editable_files, [project, [show_hidden: socket.assigns.show_hidden_files]])
         file_tree = Projects.build_file_tree(editable_files)
 
         blocks =
@@ -319,7 +311,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     project = socket.assigns.project
     path = socket.assigns.selected_file
 
-    case Projects.save_file(project, path, full_content) do
+    case rpc(socket.assigns.project_node, Projects, :save_file, [project, path, full_content]) do
       :ok ->
         {:noreply,
          assign(socket,
@@ -347,7 +339,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     project = socket.assigns.project
     path = socket.assigns.selected_file
 
-    case Projects.save_file(project, path, full_content) do
+    case rpc(socket.assigns.project_node, Projects, :save_file, [project, path, full_content]) do
       :ok ->
         {:noreply,
          assign(socket,
@@ -530,11 +522,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("git_pull", _params, socket) do
     project = socket.assigns.project
+    target = socket.assigns.project_node
 
-    case Projects.git_pull(project) do
+    case rpc(target, Projects, :git_pull, [project]) do
       {:ok, output} ->
-        commits = Projects.git_log(project)
-        current_branch = Projects.git_branch(project)
+        commits = rpc(target, Projects, :git_log, [project])
+        current_branch = rpc(target, Projects, :git_branch, [project])
 
         {:noreply,
          socket
@@ -570,10 +563,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     else
       project = socket.assigns.project
 
-      case Projects.git_create_worktree(project, branch, opts) do
+      target = socket.assigns.project_node
+
+      case rpc(target, Projects, :git_create_worktree, [project, branch, opts]) do
         {:ok, _worktree_path} ->
-          worktrees = Projects.git_worktree_list(project)
-          branches = Projects.git_branches(project)
+          worktrees = rpc(target, Projects, :git_worktree_list, [project])
+          branches = rpc(target, Projects, :git_branches, [project])
 
           {:noreply,
            socket
@@ -613,10 +608,11 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("worktree_rebase", %{"path" => path}, socket) do
     project = socket.assigns.project
+    target = socket.assigns.project_node
 
-    case Projects.git_rebase_worktree(project, path) do
+    case rpc(target, Projects, :git_rebase_worktree, [project, path]) do
       {:ok, output} ->
-        commits = Projects.git_log(project)
+        commits = rpc(target, Projects, :git_log, [project])
         {:noreply, socket |> assign(commits: commits) |> put_flash(:info, "Rebase successful: #{output}")}
 
       {:error, output} ->
@@ -626,11 +622,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("worktree_merge", %{"branch" => branch}, socket) do
     project = socket.assigns.project
+    target = socket.assigns.project_node
 
-    case Projects.git_merge_worktree(project, branch) do
+    case rpc(target, Projects, :git_merge_worktree, [project, branch]) do
       {:ok, output} ->
-        commits = Projects.git_log(project)
-        current_branch = Projects.git_branch(project)
+        commits = rpc(target, Projects, :git_log, [project])
+        current_branch = rpc(target, Projects, :git_branch, [project])
 
         {:noreply,
          socket
@@ -644,13 +641,14 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("worktree_remove", %{"path" => path, "branch" => branch}, socket) do
     project = socket.assigns.project
+    target = socket.assigns.project_node
     dir = project.directory
 
-    case System.cmd("git", ["worktree", "remove", path], cd: dir, stderr_to_stdout: true) do
+    case Cluster.rpc(target, System, :cmd, ["git", ["worktree", "remove", path], [cd: dir, stderr_to_stdout: true]]) do
       {_, 0} ->
         # Also delete the branch
-        System.cmd("git", ["branch", "-d", branch], cd: dir, stderr_to_stdout: true)
-        worktrees = Projects.git_worktree_list(project)
+        Cluster.rpc(target, System, :cmd, ["git", ["branch", "-d", branch], [cd: dir, stderr_to_stdout: true]])
+        worktrees = rpc(target, Projects, :git_worktree_list, [project])
         {:noreply, socket |> assign(worktrees: worktrees) |> put_flash(:info, "Worktree removed")}
 
       {output, _} ->
@@ -712,14 +710,16 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     {Cluster.project_node_for(project), project}
   end
 
+  defp rpc(target, mod, fun, args), do: Cluster.rpc(target, mod, fun, args)
+
   defp browse_to(socket, path) do
     target = socket.assigns.project_node
 
     entries =
-      case Cluster.rpc(target, File, :ls, [path]) do
+      case rpc(target, File, :ls, [path]) do
         {:ok, names} ->
           full_paths = Enum.map(names, &Path.join(path, &1))
-          dirs = Cluster.rpc(target, Enum, :filter, [full_paths, &File.dir?/1])
+          dirs = rpc(target, Enum, :filter, [full_paths, &File.dir?/1])
 
           dirs
           |> Enum.reject(fn p -> String.starts_with?(Path.basename(p), ".") end)

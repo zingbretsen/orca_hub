@@ -248,19 +248,43 @@ defmodule OrcaHub.Cluster do
   # -------------------------------------------------------------------
 
   def list_terminals do
-    terminals = HubRPC.list_terminals()
-    Enum.map(terminals, fn t -> {runner_node_for(t), t} end)
+    fan_out(HubRPC, :list_terminals, [])
+    |> dedup_tagged()
   end
 
   def list_terminals_for_project(project_id) do
-    terminals = HubRPC.list_terminals_for_project(project_id)
-    Enum.map(terminals, fn t -> {runner_node_for(t), t} end)
+    fan_out(HubRPC, :list_terminals_for_project, [project_id])
+    |> dedup_tagged()
   end
 
-  def get_terminal!(_n, terminal_id), do: HubRPC.get_terminal!(terminal_id)
-  def create_terminal(attrs), do: HubRPC.create_terminal(attrs)
-  def update_terminal(terminal, attrs), do: HubRPC.update_terminal(terminal, attrs)
-  def delete_terminal(_n, terminal), do: HubRPC.delete_terminal(terminal)
+  defp dedup_tagged(tagged_results) do
+    tagged_results
+    |> Enum.uniq_by(fn {_n, item} -> item.id end)
+    |> Enum.map(fn {_n, item} -> {runner_node_for(item), item} end)
+  end
+
+  def get_terminal!(n, terminal_id), do: rpc(n, HubRPC, :get_terminal!, [terminal_id])
+  def create_terminal(n, attrs) do
+    # Only remap project_id when the target is a different hub (separate DB).
+    # Agents share the hub's DB, so the original project_id is valid.
+    attrs =
+      if n != node() && rpc(n, OrcaHub.Mode, :hub?, []) do
+        dir = attrs[:directory] || attrs["directory"]
+        remote_project = if dir, do: rpc(n, HubRPC, :get_project_by_directory, [dir])
+        project_id = if remote_project, do: remote_project.id
+
+        attrs
+        |> Map.delete(:project_id)
+        |> Map.delete("project_id")
+        |> then(fn a -> if project_id, do: Map.put(a, :project_id, project_id), else: a end)
+      else
+        attrs
+      end
+
+    rpc(n, HubRPC, :create_terminal, [attrs])
+  end
+  def update_terminal(n, terminal, attrs), do: rpc(n, HubRPC, :update_terminal, [terminal, attrs])
+  def delete_terminal(n, terminal), do: rpc(n, HubRPC, :delete_terminal, [terminal])
 
   def start_terminal(n, terminal_id), do: rpc(n, TerminalSupervisor, :start_terminal, [terminal_id])
   def stop_terminal(n, terminal_id), do: rpc(n, TerminalSupervisor, :stop_terminal, [terminal_id])

@@ -379,14 +379,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
         "shell #{count}"
       end
 
-    case HubRPC.create_terminal(%{
-           name: name,
-           directory: session.directory,
-           project_id: session.project_id
-         }) do
+    terminal_attrs = build_terminal_attrs(name, session, session_node)
+
+    case Cluster.create_terminal(session_node, terminal_attrs) do
       {:ok, terminal} ->
         Cluster.start_terminal(session_node, terminal.id)
-        terminal = HubRPC.get_terminal!(terminal.id)
+        terminal = Cluster.get_terminal!(session_node, terminal.id)
 
         {:noreply,
          socket
@@ -448,19 +446,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
           "claude resume"
         end
 
-      case HubRPC.create_terminal(%{
-             name: name,
-             directory: session.directory,
-             project_id: session.project_id
-           }) do
+      case Cluster.create_terminal(session_node, build_terminal_attrs(name, session, session_node)) do
         {:ok, terminal} ->
           Cluster.start_terminal(session_node, terminal.id)
-          terminal = HubRPC.get_terminal!(terminal.id)
+          terminal = Cluster.get_terminal!(session_node, terminal.id)
 
           # Send the resume command after a brief delay for the shell to initialize
           Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
             Process.sleep(500)
-            OrcaHub.TerminalRunner.write(terminal.id, cmd)
+            Cluster.rpc(session_node, OrcaHub.TerminalRunner, :write, [terminal.id, cmd])
           end)
 
           {:noreply,
@@ -662,8 +656,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  defp build_terminal_attrs(name, session, session_node) do
+    %{name: name, directory: session.directory, project_id: session.project_id, runner_node: Atom.to_string(session_node)}
+  end
+
   defp open_or_create_terminal(socket, session, session_node) do
-    terminals = HubRPC.list_terminals_for_project(session.project_id)
+    tagged = Cluster.list_terminals_for_project(session.project_id)
+    terminals = Enum.map(tagged, fn {_n, t} -> t end)
 
     terminal =
       Enum.find(terminals, fn t ->
@@ -679,14 +678,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
             "shell"
           end
 
-        case HubRPC.create_terminal(%{
-               name: name,
-               directory: session.directory,
-               project_id: session.project_id
-             }) do
+        case Cluster.create_terminal(session_node, build_terminal_attrs(name, session, session_node)) do
           {:ok, terminal} ->
             Cluster.start_terminal(session_node, terminal.id)
-            terminal = HubRPC.get_terminal!(terminal.id)
+            terminal = Cluster.get_terminal!(session_node, terminal.id)
 
             socket
             |> assign(:show_terminal, true)

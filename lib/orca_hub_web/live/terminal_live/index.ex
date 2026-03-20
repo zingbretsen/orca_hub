@@ -63,21 +63,31 @@ defmodule OrcaHubWeb.TerminalLive.Index do
   end
 
   def handle_event("save_terminal", %{"terminal" => params}, socket) do
-    # Default directory from project if not set
+    # Default directory and runner_node from project if not set
     params =
-      if (params["directory"] || "") == "" do
-        case params["project_id"] do
-          nil -> params
-          "" -> params
-          project_id ->
-            project = HubRPC.get_project!(project_id)
-            Map.put(params, "directory", project.directory)
-        end
-      else
-        params
+      case params["project_id"] do
+        nil -> params
+        "" -> params
+        project_id ->
+          project = HubRPC.get_project!(project_id)
+          project_node = Cluster.project_node_for(project)
+
+          params
+          |> then(fn p ->
+            if (p["directory"] || "") == "", do: Map.put(p, "directory", project.directory), else: p
+          end)
+          |> Map.put("runner_node", Atom.to_string(project_node))
       end
 
-    case HubRPC.create_terminal(params) do
+    # Route DB creation to the runner node so the record lands in the right DB
+    runner_node =
+      case params["runner_node"] do
+        nil -> node()
+        "" -> node()
+        rn -> String.to_existing_atom(rn)
+      end
+
+    case Cluster.create_terminal(runner_node, params) do
       {:ok, _terminal} ->
         {:noreply,
          socket
@@ -92,12 +102,6 @@ defmodule OrcaHubWeb.TerminalLive.Index do
 
   def handle_event("start_terminal", %{"id" => id}, socket) do
     n = Map.get(socket.assigns.node_map, id, node())
-    terminal = HubRPC.get_terminal!(id)
-    n = if terminal.runner_node do
-      String.to_existing_atom(terminal.runner_node)
-    else
-      n
-    end
 
     case Cluster.start_terminal(n, id) do
       {:ok, _pid} -> {:noreply, refresh_terminals(socket)}
@@ -113,15 +117,20 @@ defmodule OrcaHubWeb.TerminalLive.Index do
   end
 
   def handle_event("delete_terminal", %{"id" => id}, socket) do
-    terminal = HubRPC.get_terminal!(id)
+    n = Map.get(socket.assigns.node_map, id, node())
 
-    # Stop if running
-    if terminal.status == "running" do
-      n = Map.get(socket.assigns.node_map, id, node())
-      Cluster.stop_terminal(n, id)
+    # Use already-loaded terminal from the list to avoid cross-DB lookup issues
+    terminal = Enum.find(socket.assigns.terminals, &(&1.id == id))
+
+    if terminal do
+      # Stop if running
+      if terminal.status == "running" do
+        Cluster.stop_terminal(n, id)
+      end
+
+      Cluster.delete_terminal(n, terminal)
     end
 
-    {:ok, _} = HubRPC.delete_terminal(terminal)
     {:noreply, refresh_terminals(socket)}
   end
 

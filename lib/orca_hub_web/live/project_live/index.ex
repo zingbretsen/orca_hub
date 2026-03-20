@@ -123,6 +123,7 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     run_git_sync(socket, id, :pull_push)
   end
 
+
   def handle_event("browse", _params, socket) do
     target = browse_target_node(socket)
     home = Cluster.rpc(target, System, :user_home!, [])
