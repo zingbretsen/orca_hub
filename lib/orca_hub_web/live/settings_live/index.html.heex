@@ -129,3 +129,112 @@
     </div>
   </div>
 </div>
+
+<div class="mt-10">
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">Cluster Code Sync</h3>
+    <div class="flex gap-2">
+      <button phx-click="check_drift" class="btn btn-sm btn-ghost" title="Check for code drift">
+        <.icon name="hero-magnifying-glass-micro" class="size-4" /> Check Drift
+      </button>
+      <button phx-click="push_changed_code" class="btn btn-sm btn-ghost" disabled={@code_sync_loading}>
+        <.icon name="hero-arrow-up-tray-micro" class="size-4" /> Push Changed
+      </button>
+      <button phx-click="push_all_code" class="btn btn-sm btn-primary" disabled={@code_sync_loading}>
+        <.icon name="hero-arrow-up-tray-micro" class="size-4" /> Push All
+      </button>
+    </div>
+  </div>
+
+  <p class="text-sm text-base-content/60 mb-4">
+    Hot-load compiled beam files from this node onto remote agent nodes without restarting.
+  </p>
+
+  <div :if={@code_sync_loading} class="flex items-center gap-2 text-sm text-base-content/60 mb-4">
+    <span class="loading loading-spinner loading-sm"></span> Pushing code...
+  </div>
+
+  <%!-- Result display --%>
+  <div :if={@code_sync_result && !@code_sync_loading} class="mb-4">
+    <div class={[
+      "alert text-sm",
+      if(@code_sync_result[:errors] == [], do: "alert-success", else: "alert-warning")
+    ]}>
+      <div>
+        <div>
+          Pushed <strong>{@code_sync_result.modules_pushed}</strong> modules
+          to <strong>{@code_sync_result.nodes_updated}</strong> node(s).
+          <%= if @code_sync_result[:skipped] do %>
+            <span class="text-base-content/60">({@code_sync_result.skipped})</span>
+          <% end %>
+        </div>
+        <div :if={@code_sync_result[:errors] != []} class="mt-1 text-xs text-error">
+          <div :for={err <- @code_sync_result.errors}>{err}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <%!-- Connected nodes --%>
+  <div class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
+    <div class="px-4 py-2 text-xs font-semibold text-base-content/50 uppercase tracking-wide">
+      Connected Nodes ({length(@cluster_nodes)})
+    </div>
+    <div :for={info <- @cluster_nodes} class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="font-medium">{info.name}</span>
+          <span :if={info.node == node()} class="badge badge-xs badge-primary">this node</span>
+          <span :if={info.node != node()} class="badge badge-xs badge-success">connected</span>
+        </div>
+        <div class="text-base-content/50 text-xs mt-0.5 font-mono">{info.node}</div>
+      </div>
+      <div :if={info.node != node()} class="flex items-center gap-1">
+        <button
+          phx-click="push_to_node"
+          phx-value-node={info.node}
+          class="btn btn-xs btn-ghost"
+          title="Push code to this node"
+          disabled={@code_sync_loading}
+        >
+          <.icon name="hero-arrow-up-tray-micro" class="size-4" />
+        </button>
+        <button
+          phx-click="restart_supervisor"
+          phx-value-node={info.node}
+          phx-value-supervisor="OrcaHub.SessionSupervisor"
+          data-confirm={"Restart SessionSupervisor on #{info.name}? This will stop all running sessions on that node."}
+          class="btn btn-xs btn-ghost text-warning"
+          title="Restart SessionSupervisor"
+        >
+          <.icon name="hero-arrow-path-micro" class="size-4" />
+        </button>
+      </div>
+    </div>
+    <div :if={length(@cluster_nodes) <= 1} class="px-4 py-3 text-sm text-base-content/50">
+      No remote nodes connected.
+    </div>
+  </div>
+
+  <%!-- Drift check results --%>
+  <div :if={@drift_results} class="mt-4">
+    <h4 class="text-sm font-semibold text-base-content/70 mb-2">Code Drift Report</h4>
+    <div class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
+      <div :for={dr <- @drift_results} class="px-4 py-3 text-sm">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="font-medium font-mono text-xs">{dr.node}</span>
+          <span :if={dr.drifted == [] && dr.missing == []} class="badge badge-xs badge-success">in sync</span>
+          <span :if={dr.drifted != [] || dr.missing != []} class="badge badge-xs badge-warning">
+            {length(dr.drifted)} drifted, {length(dr.missing)} missing
+          </span>
+        </div>
+        <div :if={dr.drifted != []} class="text-xs text-base-content/60 mt-1">
+          Drifted: {dr.drifted |> Enum.map(&inspect/1) |> Enum.join(", ")}
+        </div>
+        <div :if={dr.missing != []} class="text-xs text-base-content/60 mt-1">
+          Missing: {dr.missing |> Enum.map(&inspect/1) |> Enum.join(", ")}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

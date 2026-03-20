@@ -3,6 +3,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
 
   alias OrcaHub.UpstreamServers
   alias OrcaHub.UpstreamServers.UpstreamServer
+  alias OrcaHub.Cluster
+  alias OrcaHub.Cluster.CodeSync
 
   @impl true
   def mount(_params, _session, socket) do
@@ -21,7 +23,11 @@ defmodule OrcaHubWeb.SettingsLive.Index do
        show_form: false,
        editing_server: nil,
        form: to_form(UpstreamServers.change_upstream_server(%UpstreamServer{})),
-       header_pairs: [%{key: "", value: ""}]
+       header_pairs: [%{key: "", value: ""}],
+       cluster_nodes: Cluster.node_info(),
+       code_sync_result: nil,
+       code_sync_loading: false,
+       drift_results: nil
      )}
   end
 
@@ -148,6 +154,43 @@ defmodule OrcaHubWeb.SettingsLive.Index do
      |> push_patch(to: ~p"/settings")}
   end
 
+  def handle_event("push_all_code", _params, socket) do
+    socket = assign(socket, code_sync_loading: true)
+    send(self(), :do_push_all)
+    {:noreply, socket}
+  end
+
+  def handle_event("push_changed_code", _params, socket) do
+    socket = assign(socket, code_sync_loading: true)
+    send(self(), :do_push_changed)
+    {:noreply, socket}
+  end
+
+  def handle_event("push_to_node", %{"node" => node_str}, socket) do
+    target = String.to_existing_atom(node_str)
+    socket = assign(socket, code_sync_loading: true)
+    send(self(), {:do_push_to, target})
+    {:noreply, socket}
+  end
+
+  def handle_event("check_drift", _params, socket) do
+    drift = CodeSync.check_drift()
+    {:noreply, assign(socket, drift_results: drift)}
+  end
+
+  def handle_event("restart_supervisor", %{"node" => node_str, "supervisor" => sup_str}, socket) do
+    target = String.to_existing_atom(node_str)
+    supervisor = String.to_existing_atom("Elixir." <> sup_str)
+
+    case CodeSync.restart_supervisor(target, supervisor) do
+      {:ok, _} ->
+        {:noreply, put_flash(socket, :info, "Restarted #{sup_str} on #{Cluster.node_name(target)}")}
+
+      {:error, msg} ->
+        {:noreply, put_flash(socket, :error, "Failed to restart #{sup_str}: #{msg}")}
+    end
+  end
+
   def handle_event("refresh_connections", _params, socket) do
     OrcaHub.MCP.UpstreamClient.refresh()
     upstream_tools = OrcaHub.MCP.UpstreamClient.list_tools()
@@ -159,6 +202,21 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   end
 
   @impl true
+  def handle_info(:do_push_all, socket) do
+    result = CodeSync.push_all()
+    {:noreply, assign(socket, code_sync_result: result, code_sync_loading: false, cluster_nodes: Cluster.node_info())}
+  end
+
+  def handle_info(:do_push_changed, socket) do
+    result = CodeSync.push_changed()
+    {:noreply, assign(socket, code_sync_result: result, code_sync_loading: false, cluster_nodes: Cluster.node_info())}
+  end
+
+  def handle_info({:do_push_to, target}, socket) do
+    result = CodeSync.push_to(target)
+    {:noreply, assign(socket, code_sync_result: result, code_sync_loading: false, cluster_nodes: Cluster.node_info())}
+  end
+
   def handle_info(:upstream_servers_changed, socket) do
     upstream_tools = OrcaHub.MCP.UpstreamClient.list_tools()
 
