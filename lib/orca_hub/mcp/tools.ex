@@ -4,7 +4,7 @@ defmodule OrcaHub.MCP.Tools do
   """
   require Logger
 
-  alias OrcaHub.{Sessions, SessionRunner, SessionSupervisor, Cluster, HubRPC}
+  alias OrcaHub.{SessionRunner, SessionSupervisor, Cluster, HubRPC}
 
   def list do
     [
@@ -638,7 +638,7 @@ defmodule OrcaHub.MCP.Tools do
         error("No OrcaHub session linked to this MCP connection. Cannot determine project.")
 
       caller_session_id ->
-        caller = Sessions.get_session!(caller_session_id)
+        caller = HubRPC.get_session!(caller_session_id)
         directory = args["directory"] || caller.directory
         project_id = caller.project_id
 
@@ -646,7 +646,7 @@ defmodule OrcaHub.MCP.Tools do
           %{directory: directory, project_id: project_id}
           |> maybe_put_field(:title, args["title"])
 
-        case Sessions.create_session(session_attrs) do
+        case HubRPC.create_session(session_attrs) do
           {:ok, session} ->
             {:ok, _} = SessionSupervisor.start_session(session.id)
             SessionRunner.send_message(session.id, args["prompt"])
