@@ -213,7 +213,7 @@ defmodule OrcaHubWeb.CommandPaletteLive do
           "runner_node" => Atom.to_string(runner_node)
         }) do
           {:ok, session} ->
-            {:ok, _} = Cluster.start_session(runner_node, session.id)
+            {:ok, _} = Cluster.start_session(runner_node, session.id, session)
             {:noreply, socket |> close_palette() |> push_navigate(to: "/sessions/#{session.id}")}
 
           {:error, _} ->

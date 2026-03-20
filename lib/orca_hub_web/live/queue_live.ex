@@ -139,7 +139,7 @@ defmodule OrcaHubWeb.QueueLive do
       runner_node: Atom.to_string(node)
     }) do
       {:ok, new_session} ->
-        Cluster.start_session(node, new_session.id)
+        Cluster.start_session(node, new_session.id, new_session)
 
         # Tell the original session to delegate work to the new session
         ensure_runner(node, id)
@@ -303,6 +303,8 @@ defmodule OrcaHubWeb.QueueLive do
      |> assign(:feedback_node_map, feedback_node_map)}
   end
 
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
   def reload_for_node_filter(socket) do
     {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter)
     tagged_feedback = Cluster.list_pending_feedback() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
@@ -316,8 +318,6 @@ defmodule OrcaHubWeb.QueueLive do
      |> assign(:feedback_requests, feedback_requests)
      |> assign(:feedback_node_map, feedback_node_map)}
   end
-
-  def handle_info(_msg, socket), do: {:noreply, socket}
 
   defp handle_status_change(:idle, socket) do
     {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter)
@@ -371,7 +371,8 @@ defmodule OrcaHubWeb.QueueLive do
 
   defp ensure_runner(target_node, session_id) do
     unless Cluster.session_alive?(target_node, session_id) do
-      Cluster.start_session(target_node, session_id)
+      session = HubRPC.get_session(session_id)
+      Cluster.start_session(target_node, session_id, session)
     end
   end
 

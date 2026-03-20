@@ -1,6 +1,7 @@
 defmodule OrcaHubWeb.ProjectLive.Index do
   use OrcaHubWeb, :live_view
 
+  alias OrcaHub.Projects
   alias OrcaHub.Projects.Project
   alias OrcaHub.{Cluster, HubRPC, ClaudeImport}
   alias OrcaHubWeb.NodeFilter
@@ -273,7 +274,13 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
     for {target_node, project} <- tagged_projects do
       Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-        status = Cluster.rpc(target_node, Projects, :git_status, [project])
+        status =
+          try do
+            Cluster.rpc(target_node, Projects, :git_status, [project])
+          rescue
+            _ -> nil
+          end
+
         send(pid, {:git_status, project.id, status})
       end)
     end
@@ -283,8 +290,14 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     pid = self()
 
     Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-      project = Cluster.rpc(target_node, Projects, :get_project!, [project_id])
-      status = Cluster.rpc(target_node, Projects, :git_status, [project])
+      status =
+        try do
+          project = Cluster.rpc(target_node, Projects, :get_project!, [project_id])
+          Cluster.rpc(target_node, Projects, :git_status, [project])
+        rescue
+          _ -> nil
+        end
+
       send(pid, {:git_status, project_id, status})
     end)
   end

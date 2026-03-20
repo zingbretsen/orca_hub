@@ -22,7 +22,7 @@ defmodule OrcaHubWeb.IssueLive.Show do
 
     case HubRPC.create_session(params) do
       {:ok, session} ->
-        {:ok, _} = Cluster.start_session(runner_node, session.id)
+        {:ok, _} = Cluster.start_session(runner_node, session.id, session)
 
         # Auto-send the issue as the first message
         prompt =

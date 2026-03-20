@@ -1,5 +1,6 @@
 defmodule OrcaHubWeb.ProjectLive.Show do
   use OrcaHubWeb, :live_view
+  require Logger
 
   alias OrcaHub.{Cluster, HubRPC, Projects, Triggers}
   alias OrcaHub.Projects.Project
@@ -369,8 +370,14 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     case HubRPC.create_session(params) do
       {:ok, session} ->
-        {:ok, _} = Cluster.start_session(runner_node, session.id)
-        {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
+        case Cluster.start_session(runner_node, session.id, session) do
+          {:ok, _} ->
+            {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
+
+          {:error, reason} ->
+            Logger.error("Failed to start session runner: #{inspect(reason)}")
+            {:noreply, put_flash(socket, :error, "Session created but failed to start runner")}
+        end
 
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Failed to create session")}
@@ -558,8 +565,14 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     case HubRPC.create_session(params) do
       {:ok, session} ->
-        {:ok, _} = Cluster.start_session(runner_node, session.id)
-        {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
+        case Cluster.start_session(runner_node, session.id, session) do
+          {:ok, _} ->
+            {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
+
+          {:error, reason} ->
+            Logger.error("Failed to start session runner: #{inspect(reason)}")
+            {:noreply, put_flash(socket, :error, "Session created but failed to start runner")}
+        end
 
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Failed to create session")}

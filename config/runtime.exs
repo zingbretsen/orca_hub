@@ -72,7 +72,7 @@ cluster_topologies =
       hosts = nodes |> String.split(",") |> Enum.map(&String.to_atom(String.trim(&1)))
       [{:static, [
         strategy: Cluster.Strategy.Epmd,
-        config: [hosts: hosts]
+        config: [hosts: hosts, timeout: 5_000]
       ]} | cluster_topologies]
   end
 

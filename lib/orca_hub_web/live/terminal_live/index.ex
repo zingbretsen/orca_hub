@@ -93,7 +93,11 @@ defmodule OrcaHubWeb.TerminalLive.Index do
   def handle_event("start_terminal", %{"id" => id}, socket) do
     n = Map.get(socket.assigns.node_map, id, node())
     terminal = HubRPC.get_terminal!(id)
-    n = if terminal.runner_node, do: String.to_atom(terminal.runner_node), else: n
+    n = if terminal.runner_node do
+      String.to_existing_atom(terminal.runner_node)
+    else
+      n
+    end
 
     case Cluster.start_terminal(n, id) do
       {:ok, _pid} -> {:noreply, refresh_terminals(socket)}

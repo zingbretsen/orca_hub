@@ -150,6 +150,13 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     {:noreply, put_flash(socket, :info, "Trigger fired")}
   end
 
+  def handle_event("cancel_trigger", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(show_trigger_form: false, editing_trigger: nil)
+     |> push_patch(to: ~p"/triggers")}
+  end
+
   def reload_for_node_filter(socket) do
     node_filter = socket.assigns.node_filter
     tagged_triggers = Cluster.list_triggers() |> NodeFilter.filter_tagged(node_filter)
@@ -159,13 +166,6 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
 
     {:noreply, assign(socket, triggers: triggers, node_map: node_map, projects: projects)}
-  end
-
-  def handle_event("cancel_trigger", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(show_trigger_form: false, editing_trigger: nil)
-     |> push_patch(to: ~p"/triggers")}
   end
 
   defp maybe_build_cron(params, "hourly") do

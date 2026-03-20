@@ -10,8 +10,13 @@ defmodule OrcaHub.SessionSupervisor do
     DynamicSupervisor.init(strategy: :one_for_one)
   end
 
-  def start_session(session_id) do
-    spec = {OrcaHub.SessionRunner, session_id: session_id}
+  def start_session(session_id, session_data \\ nil, db_node \\ nil) do
+    opts =
+      [session_id: session_id]
+      |> then(fn o -> if session_data, do: o ++ [session_data: session_data], else: o end)
+      |> then(fn o -> if db_node, do: o ++ [db_node: db_node], else: o end)
+
+    spec = {OrcaHub.SessionRunner, opts}
     DynamicSupervisor.start_child(__MODULE__, spec)
   end
 

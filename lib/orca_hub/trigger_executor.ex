@@ -20,7 +20,8 @@ defmodule OrcaHub.TriggerExecutor do
       })
 
       unless Cluster.session_alive?(runner_node, session_id) do
-        Cluster.start_session(runner_node, session_id)
+        session = HubRPC.get_session(session_id)
+        Cluster.start_session(runner_node, session_id, session)
       end
 
       Cluster.send_message(runner_node, session_id, build_prompt(trigger))
@@ -55,7 +56,8 @@ defmodule OrcaHub.TriggerExecutor do
       })
 
       unless Cluster.session_alive?(runner_node, session_id) do
-        Cluster.start_session(runner_node, session_id)
+        session = HubRPC.get_session(session_id)
+        Cluster.start_session(runner_node, session_id, session)
       end
 
       prompt = build_prompt(trigger, payload)

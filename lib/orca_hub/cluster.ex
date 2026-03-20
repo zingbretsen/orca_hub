@@ -144,7 +144,11 @@ defmodule OrcaHub.Cluster do
   def delete_session(_n, session), do: HubRPC.delete_session(session)
   def defer_session(_n, session), do: HubRPC.defer_session(session)
 
-  def start_session(n, session_id), do: rpc(n, SessionSupervisor, :start_session, [session_id])
+  def start_session(n, session_id, session_data \\ nil) do
+    # Pass the calling node as db_node so the runner can route DB calls back
+    db_node = if n != node(), do: node(), else: nil
+    rpc(n, SessionSupervisor, :start_session, [session_id, session_data, db_node])
+  end
   def stop_session(n, session_id), do: rpc(n, SessionSupervisor, :stop_session, [session_id])
   def session_alive?(n, session_id), do: rpc(n, SessionSupervisor, :session_alive?, [session_id])
 
@@ -217,8 +221,10 @@ defmodule OrcaHub.Cluster do
   Falls back to this node if not set.
   """
   def runner_node_for(%{runner_node: runner_node}) when is_binary(runner_node) and runner_node != "" do
-    node_atom = String.to_atom(runner_node)
+    node_atom = String.to_existing_atom(runner_node)
     if node_atom in nodes(), do: node_atom, else: node()
+  rescue
+    ArgumentError -> node()
   end
 
   def runner_node_for(_), do: node()
@@ -228,8 +234,10 @@ defmodule OrcaHub.Cluster do
   Falls back to this node if not set.
   """
   def project_node_for(%{node: project_node}) when is_binary(project_node) and project_node != "" do
-    node_atom = String.to_atom(project_node)
+    node_atom = String.to_existing_atom(project_node)
     if node_atom in nodes(), do: node_atom, else: node()
+  rescue
+    ArgumentError -> node()
   end
 
   def project_node_for(_), do: node()

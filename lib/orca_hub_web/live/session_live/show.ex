@@ -9,8 +9,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def mount(%{"id" => id}, _session, socket) do
     {session_node, session} = find_session!(id)
 
-    unless Cluster.session_alive?(session_node, id) do
-      Cluster.start_session(session_node, id)
+    runner_alive? = Cluster.session_alive?(session_node, id)
+
+    if !runner_alive? do
+      case Cluster.start_session(session_node, id, session) do
+        {:ok, _} -> :ok
+        {:error, reason} -> Logger.error("Failed to start session runner for #{id}: #{inspect(reason)}")
+      end
     end
 
     remote? = session_node != node()
@@ -23,7 +28,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
       end
     end
 
-    runner_state = Cluster.get_state(session_node, id)
+    runner_state =
+      if Cluster.session_alive?(session_node, id) do
+        Cluster.get_state(session_node, id)
+      else
+        saved_messages =
+          HubRPC.list_messages(id)
+          |> Enum.map(fn msg -> Map.put(msg.data, "timestamp", msg.inserted_at) end)
+
+        %{status: session.status || "error", messages: saved_messages}
+      end
 
     {:ok,
      socket
@@ -152,7 +166,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     case HubRPC.create_session(params) do
       {:ok, new_session} ->
-        Cluster.start_session(target_node, new_session.id)
+        Cluster.start_session(target_node, new_session.id, new_session)
 
         {:noreply, push_navigate(socket, to: ~p"/sessions/#{new_session.id}")}
 
@@ -410,53 +424,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
-  defp open_or_create_terminal(socket, session, session_node) do
-    terminals = HubRPC.list_terminals_for_project(session.project_id)
-
-    terminal =
-      Enum.find(terminals, fn t ->
-        t.directory == session.directory && t.status == "running"
-      end)
-
-    case terminal do
-      nil ->
-        name =
-          if session.project do
-            "#{session.project.name} shell"
-          else
-            "shell"
-          end
-
-        case HubRPC.create_terminal(%{
-               name: name,
-               directory: session.directory,
-               project_id: session.project_id
-             }) do
-          {:ok, terminal} ->
-            Cluster.start_terminal(session_node, terminal.id)
-            terminal = HubRPC.get_terminal!(terminal.id)
-
-            socket
-            |> assign(:show_terminal, true)
-            |> assign(:open_terminals, [terminal])
-            |> assign(:active_terminal_id, terminal.id)
-
-          {:error, _} ->
-            put_flash(socket, :error, "Failed to create terminal")
-        end
-
-      terminal ->
-        unless Cluster.terminal_alive?(session_node, terminal.id) do
-          Cluster.start_terminal(session_node, terminal.id)
-        end
-
-        socket
-        |> assign(:show_terminal, true)
-        |> assign(:open_terminals, [terminal])
-        |> assign(:active_terminal_id, terminal.id)
-    end
-  end
-
   # -- File panel events --
 
   def handle_event("toggle_file_browser", _params, socket) do
@@ -641,6 +608,53 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Delete failed: #{inspect(reason)}")}
+    end
+  end
+
+  defp open_or_create_terminal(socket, session, session_node) do
+    terminals = HubRPC.list_terminals_for_project(session.project_id)
+
+    terminal =
+      Enum.find(terminals, fn t ->
+        t.directory == session.directory && t.status == "running"
+      end)
+
+    case terminal do
+      nil ->
+        name =
+          if session.project do
+            "#{session.project.name} shell"
+          else
+            "shell"
+          end
+
+        case HubRPC.create_terminal(%{
+               name: name,
+               directory: session.directory,
+               project_id: session.project_id
+             }) do
+          {:ok, terminal} ->
+            Cluster.start_terminal(session_node, terminal.id)
+            terminal = HubRPC.get_terminal!(terminal.id)
+
+            socket
+            |> assign(:show_terminal, true)
+            |> assign(:open_terminals, [terminal])
+            |> assign(:active_terminal_id, terminal.id)
+
+          {:error, _} ->
+            put_flash(socket, :error, "Failed to create terminal")
+        end
+
+      terminal ->
+        unless Cluster.terminal_alive?(session_node, terminal.id) do
+          Cluster.start_terminal(session_node, terminal.id)
+        end
+
+        socket
+        |> assign(:show_terminal, true)
+        |> assign(:open_terminals, [terminal])
+        |> assign(:active_terminal_id, terminal.id)
     end
   end
 

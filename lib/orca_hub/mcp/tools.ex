@@ -329,7 +329,7 @@ defmodule OrcaHub.MCP.Tools do
            runner_node: Atom.to_string(runner_node)
          }) do
       {:ok, session} ->
-        {:ok, _} = Cluster.start_session(runner_node, session.id)
+        {:ok, _} = Cluster.start_session(runner_node, session.id, session)
 
         if issue.status == "open" do
           HubRPC.update_issue(issue, %{status: "in_progress"})
@@ -413,6 +413,9 @@ defmodule OrcaHub.MCP.Tools do
 
         {:feedback_cancelled, _request} ->
           :cancelled
+      after
+        :timer.hours(4) ->
+          :timeout
       end
 
     Phoenix.PubSub.unsubscribe(OrcaHub.PubSub, "feedback:#{request.id}")
@@ -420,6 +423,7 @@ defmodule OrcaHub.MCP.Tools do
     case result do
       {:ok, response} -> text(response)
       :cancelled -> error("The user cancelled this feedback request.")
+      :timeout -> error("Feedback request timed out after 4 hours with no response.")
     end
   end
 
@@ -522,9 +526,9 @@ defmodule OrcaHub.MCP.Tools do
       end
 
     case Cluster.find_session(target_id) do
-      {node, _session} ->
+      {node, session} ->
         unless Cluster.session_alive?(node, target_id) do
-          Cluster.start_session(node, target_id)
+          Cluster.start_session(node, target_id, session)
         end
 
         case Cluster.send_message(node, target_id, signed_message) do

@@ -80,7 +80,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
     case HubRPC.create_session(session_params) do
       {:ok, session} ->
-        Cluster.start_session(target_node, session.id)
+        Cluster.start_session(target_node, session.id, session)
 
         {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
 
@@ -100,7 +100,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
     case HubRPC.create_session(params) do
       {:ok, session} ->
-        Cluster.start_session(target_node, session.id)
+        Cluster.start_session(target_node, session.id, session)
 
         {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
 
