@@ -35,7 +35,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - Each node has its own PostgreSQL database; cross-node visibility via `OrcaHub.Cluster` fan-out
 - Image registry: `registry.lab.ingbretsenhome.com`
 - Ingress: `orca.lab.ingbretsenhome.com` (HTTPS via Traefik, Authelia forward-auth)
-- To deploy: `docker build -t registry.lab.ingbretsenhome.com/orca-hub:latest . && docker push registry.lab.ingbretsenhome.com/orca-hub:latest && kubectl rollout restart deployment/orca-hub-debian deployment/orca-hub-mini -n lab`
+- To deploy: `docker build -t registry.lab.ingbretsenhome.com/orca-hub:latest . && docker push registry.lab.ingbretsenhome.com/orca-hub:latest && kubectl rollout restart deployment/orca-hub -n lab`
 
 ## Dependencies
 
