@@ -1066,7 +1066,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
           |> List.last()
           |> case do
             nil -> nil
-            tool_use -> get_in(tool_use, ["input", "todos"]) || []
+            tool_use -> parse_todos(get_in(tool_use, ["input", "todos"]))
           end
         else
           _ -> nil
@@ -1131,7 +1131,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     Enum.reduce(tool_uses, socket, fn tool_use, acc ->
       case tool_use["name"] do
         "TodoWrite" ->
-          todos = get_in(tool_use, ["input", "todos"]) || []
+          todos = parse_todos(get_in(tool_use, ["input", "todos"]))
           assign(acc, :todos, todos)
 
         _ ->
@@ -1141,6 +1141,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp handle_todo_events(socket, _event), do: socket
+
+  defp parse_todos(todos) when is_list(todos), do: todos
+  defp parse_todos(todos) when is_binary(todos) do
+    case Jason.decode(todos) do
+      {:ok, list} when is_list(list) -> list
+      _ -> []
+    end
+  end
+  defp parse_todos(_), do: []
 
   defp plan_file_was_edited?(socket) do
     case {socket.assigns.plan_file_path, socket.assigns.plan_file_original_mtime} do
