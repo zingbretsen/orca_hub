@@ -4,7 +4,7 @@ defmodule OrcaHub.MCP.Tools do
   """
   require Logger
 
-  alias OrcaHub.{SessionRunner, SessionSupervisor, Cluster, HubRPC}
+  alias OrcaHub.{Cluster, HubRPC}
 
   def list do
     [
@@ -641,15 +641,16 @@ defmodule OrcaHub.MCP.Tools do
         caller = HubRPC.get_session!(caller_session_id)
         directory = args["directory"] || caller.directory
         project_id = caller.project_id
+        runner_node = if caller.project, do: Cluster.project_node_for(caller.project), else: node()
 
         session_attrs =
-          %{directory: directory, project_id: project_id}
+          %{directory: directory, project_id: project_id, runner_node: Atom.to_string(runner_node)}
           |> maybe_put_field(:title, args["title"])
 
         case HubRPC.create_session(session_attrs) do
           {:ok, session} ->
-            {:ok, _} = SessionSupervisor.start_session(session.id)
-            SessionRunner.send_message(session.id, args["prompt"])
+            {:ok, _} = Cluster.start_session(runner_node, session.id, session)
+            Cluster.send_message(runner_node, session.id, args["prompt"])
             text("Session #{session.id} started in #{directory}")
 
           {:error, changeset} ->
