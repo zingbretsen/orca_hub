@@ -43,7 +43,8 @@ defmodule OrcaHubWeb.NodeFilter do
     view = socket.view
 
     if function_exported?(view, :reload_for_node_filter, 1) do
-      {:halt, view.reload_for_node_filter(socket)}
+      {:noreply, updated_socket} = view.reload_for_node_filter(socket)
+      {:halt, updated_socket}
     else
       {:halt, socket}
     end
