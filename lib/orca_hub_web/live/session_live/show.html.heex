@@ -789,4 +789,56 @@
       <label class="modal-backdrop" phx-click="close_file_panel"></label>
     </div>
   </div>
+
+  <%!-- Mobile terminal panel (modal) --%>
+  <div :if={@show_terminal && @open_terminals != []} class="lg:hidden">
+    <input type="checkbox" id="terminal-panel-modal" class="modal-toggle" checked />
+    <div class="modal modal-bottom" role="dialog">
+      <div class="modal-box h-[80vh] max-h-[80vh] flex flex-col p-4">
+        <div class="flex items-center gap-1 mb-2 shrink-0">
+          <div class="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
+            <button
+              :for={term <- @open_terminals}
+              phx-click="switch_terminal"
+              phx-value-id={term.id}
+              class={[
+                "btn btn-xs gap-1 shrink-0",
+                term.id == @active_terminal_id && "btn-primary",
+                term.id != @active_terminal_id && "btn-ghost"
+              ]}
+            >
+              <span class="truncate max-w-24">{term.name}</span>
+              <span phx-click="close_terminal_tab" phx-value-id={term.id} class="hover:text-error" title="Close">
+                &times;
+              </span>
+            </button>
+          </div>
+          <button phx-click="new_terminal" class="btn btn-ghost btn-xs btn-circle" title="New terminal">
+            <.icon name="hero-plus-micro" class="size-4" />
+          </button>
+          <button :if={@active_terminal_id} phx-click="pop_out_terminal" class="btn btn-ghost btn-xs btn-circle" title="Open in full page">
+            <.icon name="hero-arrow-top-right-on-square-micro" class="size-4" />
+          </button>
+          <button phx-click="close_terminal_panel" class="btn btn-ghost btn-xs btn-circle" title="Close">
+            <.icon name="hero-x-mark-micro" class="size-4" />
+          </button>
+        </div>
+        <div class="flex-1 min-h-0 relative">
+          <div
+            :for={term <- @open_terminals}
+            id={"mobile-terminal-#{term.id}"}
+            phx-hook="Terminal"
+            data-terminal-id={term.id}
+            class={[
+              "absolute inset-0 rounded-lg overflow-hidden",
+              term.id != @active_terminal_id && "invisible"
+            ]}
+            phx-update="ignore"
+          >
+          </div>
+        </div>
+      </div>
+      <label class="modal-backdrop" phx-click="close_terminal_panel"></label>
+    </div>
+  </div>
 </div>

@@ -42,8 +42,18 @@ defmodule OrcaHub.TerminalRunner do
   @impl true
   def init(opts) do
     terminal_id = Keyword.fetch!(opts, :terminal_id)
-    terminal = HubRPC.get_terminal!(terminal_id)
 
+    case HubRPC.get_terminal(terminal_id) do
+      nil ->
+        Logger.warning("Terminal #{terminal_id} not found in database, stopping runner")
+        {:stop, :normal}
+
+      terminal ->
+        init_terminal(terminal_id, terminal)
+    end
+  end
+
+  defp init_terminal(terminal_id, terminal) do
     HubRPC.update_terminal(terminal, %{
       status: "running",
       runner_node: Atom.to_string(node())
