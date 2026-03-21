@@ -178,7 +178,7 @@ defmodule OrcaHubWeb.Layouts do
         </li>
         <li class="menu-title text-xs uppercase opacity-60">Nodes</li>
         <li :for={node <- @nodes}>
-          <button phx-click="toggle_node_filter" phx-value-node={node.name} class="flex items-center gap-2">
+          <button phx-click="toggle_node_filter" phx-value-node={node.name} data-solo-node={node.name} class="flex items-center gap-2">
             <span class={"size-4 flex items-center justify-center #{if OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name), do: "text-primary", else: "opacity-0"}"}>
               <.icon name="hero-check-micro" class="size-4" />
             </span>
@@ -201,6 +201,7 @@ defmodule OrcaHubWeb.Layouts do
         :for={node <- @nodes}
         phx-click="toggle_node_filter"
         phx-value-node={node.name}
+        data-solo-node={node.name}
         class={"btn btn-xs gap-1 #{if OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name), do: "btn-active", else: "btn-ghost"}"}
       >
         <.icon :if={OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name)} name="hero-check-micro" class="size-3" />

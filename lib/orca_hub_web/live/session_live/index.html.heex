@@ -65,7 +65,10 @@
       </span>
     </:col>
     <:action :let={session}>
-      <.link phx-click="archive" phx-value-id={session.id}>
+      <.link :if={session.status in ~w(running waiting compacting)} phx-click="stop_session" phx-value-id={session.id} data-confirm="Stop this session?">
+        Stop
+      </.link>
+      <.link phx-click="archive" phx-value-id={session.id} data-confirm="Archive this session?">
         Archive
       </.link>
     </:action>

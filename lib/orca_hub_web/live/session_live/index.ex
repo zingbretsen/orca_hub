@@ -136,6 +136,12 @@ defmodule OrcaHubWeb.SessionLive.Index do
      )}
   end
 
+  def handle_event("stop_session", %{"id" => id}, socket) do
+    node = Map.get(socket.assigns.node_map, id, node())
+    Cluster.stop_session(node, id)
+    {:noreply, socket}
+  end
+
   def handle_event("archive", %{"id" => id}, socket) do
     node = Map.get(socket.assigns.node_map, id, node())
     session = Cluster.get_session!(node, id)

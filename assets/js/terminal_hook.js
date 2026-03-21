@@ -35,9 +35,20 @@ export const TerminalHook = {
     this.term.loadAddon(this.fitAddon)
     this.term.open(this.el)
 
+    // Prevent the browser from intercepting special keys (Ctrl+C, Escape, etc.)
+    // Return true = xterm handles it; false = browser handles it
+    this.term.attachCustomKeyEventHandler((ev) => {
+      // Let browser handle Ctrl+Shift+C/V (copy/paste with shift) and F5/F12
+      if (ev.ctrlKey && ev.shiftKey && (ev.key === "C" || ev.key === "V")) return false
+      if (ev.key === "F5" || ev.key === "F12") return false
+      // xterm handles everything else: Ctrl+C, Ctrl+D, Ctrl+Z, Escape, arrows, etc.
+      return true
+    })
+
     // Only fit if visible (invisible terminals have zero dimensions)
     if (!this.el.classList.contains("invisible")) {
       this.fitAddon.fit()
+      this.term.focus()
     }
 
     // Use a shared socket so we don't open multiple WebSocket connections

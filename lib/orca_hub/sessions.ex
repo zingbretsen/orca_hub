@@ -144,11 +144,12 @@ defmodule OrcaHub.Sessions do
       from s in Session,
         left_join: m in subquery(last_messages),
         on: m.session_id == s.id,
+        left_join: p in assoc(s, :project),
         where: is_nil(s.archived_at) and s.status == "idle",
         order_by: [asc: s.priority, asc: s.updated_at],
+        preload: [project: p],
         select: {s, m}
     )
-    |> Enum.map(fn {session, message} -> {Repo.preload(session, :project), message} end)
   end
 
   defp reset_front_of_queue_priority do

@@ -100,6 +100,25 @@ defmodule OrcaHubWeb.NodeFilter do
     {:halt, socket}
   end
 
+  defp handle_event("solo_node_filter", %{"node" => node_name}, socket) do
+    all_node_names = Enum.map(socket.assigns.node_filter_nodes, & &1.name)
+
+    new_filter =
+      if length(all_node_names) <= 1 do
+        :all
+      else
+        MapSet.new([node_name])
+      end
+
+    socket =
+      socket
+      |> assign(:node_filter, new_filter)
+      |> push_event("node_filter_updated", %{nodes: selected_node_names(new_filter)})
+
+    send(self(), :node_filter_changed)
+    {:halt, socket}
+  end
+
   defp handle_event("node_filter_select_all", _params, socket) do
     socket =
       socket

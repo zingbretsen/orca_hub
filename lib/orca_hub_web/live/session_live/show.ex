@@ -267,6 +267,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  def handle_event("stop_session", _params, socket) do
+    Cluster.stop_session(socket.assigns.session_node, socket.assigns.session.id)
+    {:noreply, socket}
+  end
+
   # MCP server events
 
   def handle_event("toggle_mcp_modal", _params, socket) do

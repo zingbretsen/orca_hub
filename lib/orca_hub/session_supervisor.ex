@@ -21,9 +21,30 @@ defmodule OrcaHub.SessionSupervisor do
   end
 
   def stop_session(session_id) do
-    case Registry.lookup(OrcaHub.SessionRegistry, session_id) do
-      [{pid, _}] -> DynamicSupervisor.terminate_child(__MODULE__, pid)
-      [] -> {:error, :not_found}
+    result =
+      case Registry.lookup(OrcaHub.SessionRegistry, session_id) do
+        [{pid, _}] -> DynamicSupervisor.terminate_child(__MODULE__, pid)
+        [] -> {:error, :not_found}
+      end
+
+    # Update DB status and broadcast so LiveViews update immediately
+    case result do
+      :ok ->
+        try do
+          session = OrcaHub.HubRPC.get_session!(session_id)
+
+          if session.status in ~w(running waiting compacting) do
+            OrcaHub.HubRPC.update_session(session, %{status: "error"})
+          end
+        rescue
+          _ -> :ok
+        end
+
+        Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", {:status, :error})
+        :ok
+
+      error ->
+        error
     end
   end
 

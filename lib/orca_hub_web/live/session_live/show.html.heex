@@ -123,10 +123,13 @@
       >
         <.icon name="hero-identification" class="size-5" />
       </button>
+      <button :if={@status in [:running, :waiting, :compacting] && !@session.archived_at} phx-click="stop_session" data-confirm="Stop this session? The Claude process will be terminated." class="btn btn-ghost btn-sm btn-circle text-error" title="Stop session">
+        <.icon name="hero-stop-circle" class="size-5" />
+      </button>
       <button :if={@session.archived_at} phx-click="unarchive" class="btn btn-ghost btn-sm btn-circle" title="Unarchive session">
         <.icon name="hero-archive-box-arrow-down" class="size-5" />
       </button>
-      <button :if={!@session.archived_at} phx-click="archive" class="btn btn-ghost btn-sm btn-circle" title="Archive session">
+      <button :if={!@session.archived_at} phx-click="archive" data-confirm="Archive this session? It will be stopped and hidden from the session list." class="btn btn-ghost btn-sm btn-circle" title="Archive session">
         <.icon name="hero-archive-box" class="size-5" />
       </button>
     </:actions>

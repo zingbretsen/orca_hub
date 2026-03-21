@@ -42,6 +42,15 @@ let Hooks = {
           localStorage.setItem("orca:node_filter", JSON.stringify(nodes))
         }
       })
+
+      this.el.addEventListener("dblclick", (e) => {
+        const btn = e.target.closest("[data-solo-node]")
+        if (btn) {
+          e.preventDefault()
+          e.stopPropagation()
+          this.pushEvent("solo_node_filter", { node: btn.dataset.soloNode })
+        }
+      })
     }
   },
   ResizeHandle: {
