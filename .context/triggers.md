@@ -40,3 +40,33 @@ flowchart TB
     Send --> Archive
     Archive -->|yes| ArchiveTask
 ```
+
+## Cluster Compatibility
+
+Triggers are fully compatible with remote agent nodes. Node routing is
+derived from the trigger's associated project (`trigger → project → project.node`).
+
+- **Scheduling** is hub-only: `Quantum Scheduler` and `TriggerLoader` only
+  run on the hub node (see `Application.hub_children/1`).
+- **Execution** is distributed: when a trigger fires, `TriggerExecutor`
+  resolves the target node via `Cluster.project_node_for(project)` and
+  routes session creation and messaging to that node.
+- **Webhook triggers** received on any node are dispatched to the correct
+  runner node via `Cluster.rpc(runner_node, TriggerExecutor, :execute_webhook, ...)`.
+- **New sessions** created by triggers are tagged with the correct
+  `runner_node` from the project.
+
+```mermaid
+sequenceDiagram
+    participant Scheduler as Quantum Scheduler<br/>(Hub only)
+    participant Executor as TriggerExecutor<br/>(Hub)
+    participant Cluster as Cluster
+    participant Agent as SessionRunner<br/>(Agent Node)
+
+    Scheduler->>Executor: execute(trigger_id)
+    Executor->>Executor: runner_node = Cluster.project_node_for(project)
+    Executor->>Cluster: send_message(runner_node, session_id, prompt)
+    Cluster->>Agent: :erpc.call(agent_node, SessionRunner, :send_message, ...)
+    Agent->>Agent: Opens port, runs Claude CLI
+    Note over Scheduler,Agent: PubSub events flow back<br/>automatically via :pg
+```

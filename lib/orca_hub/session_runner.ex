@@ -15,6 +15,12 @@ defmodule OrcaHub.SessionRunner do
     apply(HubRPC, fun, args)
   end
 
+  # Fetch the session and update it in one logical step, avoiding nested db_call.
+  defp update_session_status(data, attrs) do
+    session = db_call(data, :get_session!, [data.session_id])
+    db_call(data, :update_session, [session, attrs])
+  end
+
   # API
 
   def start_link(opts) do
@@ -212,7 +218,7 @@ defmodule OrcaHub.SessionRunner do
   def running(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
 
   def running(:cast, :feedback_requested, data) do
-    db_call(data, :update_session, [db_call(data, :get_session!, [data.session_id]), %{status: "waiting"}])
+    update_session_status(data, %{status: "waiting"})
     broadcast(data.session_id, {:status, :waiting})
     AgentPresence.update_status(data.directory, data.session_id, "waiting")
     {:next_state, :waiting, data}
@@ -231,7 +237,7 @@ defmodule OrcaHub.SessionRunner do
 
     send_sigint(port)
 
-    db_call(data, :update_session, [db_call(data, :get_session!, [data.session_id]), %{status: "running"}])
+    update_session_status(data, %{status: "running"})
     broadcast(data.session_id, {:status, :running})
     AgentPresence.update_status(data.directory, data.session_id, "running")
 
@@ -313,14 +319,14 @@ defmodule OrcaHub.SessionRunner do
 
       [] when data.port != nil ->
         # All answered, agent still running — back to :running
-        db_call(data, :update_session, [db_call(data, :get_session!, [data.session_id]), %{status: "running"}])
+        update_session_status(data, %{status: "running"})
         broadcast(data.session_id, {:status, :running})
         AgentPresence.update_status(data.directory, data.session_id, "running")
         {:next_state, :running, data}
 
       [] ->
         # All answered, agent finished — go to :idle
-        db_call(data, :update_session, [db_call(data, :get_session!, [data.session_id]), %{status: "idle"}])
+        update_session_status(data, %{status: "idle"})
         broadcast(data.session_id, {:status, :idle})
         AgentPresence.update_status(data.directory, data.session_id, "idle")
         {:next_state, :idle, data}
@@ -442,7 +448,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp handle_stream_event(%{"type" => "system", "subtype" => "status", "status" => "compacting"}, data) do
-    db_call(data, :update_session, [db_call(data, :get_session!, [data.session_id]), %{status: "compacting"}])
+    update_session_status(data, %{status: "compacting"})
     broadcast(data.session_id, {:status, :compacting})
     AgentPresence.update_status(data.directory, data.session_id, "compacting")
     data
@@ -450,7 +456,7 @@ defmodule OrcaHub.SessionRunner do
 
   defp handle_stream_event(%{"type" => "system", "subtype" => "status", "status" => nil}, data) do
     # Status cleared (e.g. compacting finished) — restore running state
-    db_call(data, :update_session, [db_call(data, :get_session!, [data.session_id]), %{status: "running"}])
+    update_session_status(data, %{status: "running"})
     broadcast(data.session_id, {:status, :running})
     AgentPresence.update_status(data.directory, data.session_id, "running")
     data
@@ -458,7 +464,7 @@ defmodule OrcaHub.SessionRunner do
 
   defp handle_stream_event(%{"type" => "system", "session_id" => sid} = event, data) do
     if data.claude_session_id == nil do
-      db_call(data, :update_session, [db_call(data, :get_session!, [data.session_id]), %{claude_session_id: sid}])
+      update_session_status(data, %{claude_session_id: sid})
     end
 
     event = stamp(event)

@@ -107,8 +107,11 @@ defmodule OrcaHub.TerminalRunner do
   def handle_info({port, {:exit_status, code}}, %{port: port} = state) do
     Logger.info("Terminal #{state.terminal_id} exited with code #{code}")
 
-    terminal = HubRPC.get_terminal!(state.terminal_id)
-    HubRPC.update_terminal(terminal, %{status: "dead"})
+    case HubRPC.get_terminal(state.terminal_id) do
+      nil -> :ok
+      terminal -> HubRPC.update_terminal(terminal, %{status: "dead"})
+    end
+
     broadcast(state.terminal_id, {:terminal_exit, code})
 
     {:stop, :normal, %{state | port: nil}}
@@ -126,8 +129,11 @@ defmodule OrcaHub.TerminalRunner do
       end
     end
 
-    terminal = HubRPC.get_terminal!(state.terminal_id)
-    HubRPC.update_terminal(terminal, %{status: "stopped", runner_node: nil})
+    case HubRPC.get_terminal(state.terminal_id) do
+      nil -> :ok
+      terminal -> HubRPC.update_terminal(terminal, %{status: "stopped", runner_node: nil})
+    end
+
     broadcast(state.terminal_id, {:terminal_status, :stopped})
     :ok
   end

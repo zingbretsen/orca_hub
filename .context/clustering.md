@@ -132,6 +132,51 @@ sequenceDiagram
     Note over Runner,UI: PubSub events flow back<br/>automatically via :pg
 ```
 
+## Hub vs Agent: Component Comparison
+
+| Component | Hub | Agent | Notes |
+|-----------|-----|-------|-------|
+| **Ecto.Repo (PostgreSQL)** | Yes | No | Agent proxies all DB ops via HubRPC |
+| **Phoenix Endpoint** | Full web UI | MCP endpoint only | Agent needs HTTP for Claude CLI MCP |
+| **Telemetry** | Yes | No | |
+| **SessionSupervisor** | Yes | Yes | Both nodes run Claude CLI sessions |
+| **SessionRegistry** | Yes | Yes | Local registry per node |
+| **TerminalSupervisor** | Yes | Yes | Both nodes run terminal PTYs |
+| **TerminalRegistry** | Yes | Yes | Local registry per node |
+| **MCPSupervisor** | Yes | Yes | Per-session MCP servers |
+| **MCP.UpstreamClient** | Yes | No | Upstream MCP connections hub-only |
+| **Quantum Scheduler** | Yes | No | Cron triggers fire on hub only |
+| **TriggerLoader** | Yes | No | Syncs triggers into scheduler on boot |
+| **PubSub** | Yes | Yes | Auto-distributes via `:pg` |
+| **Task.Supervisor** | Yes | Yes | Async work (title gen, archival) |
+| **libcluster** | Yes | Yes | Both participate in discovery |
+| **AgentPresence** | Cleanup on boot | Write only | Hub cleans stale `.agents/` files |
+
+### Key Modules
+
+- **`OrcaHub.Mode`**: Returns `:hub` or `:agent` based on `ORCA_MODE` env var (default: `:hub`). `hub_node/0` returns self on hub, discovers hub via `:erpc` on agent.
+- **`OrcaHub.HubRPC`**: Transparent proxy — calls locally on hub, forwards via `:erpc.call/5` on agent. Wraps all context modules (Sessions, Projects, Issues, Feedback, Triggers, Terminals).
+- **`OrcaHub.Cluster`**: Routing layer used by LiveViews and other callers. Queries go through HubRPC (single DB), actions route to the correct runner node via `rpc/5`.
+
+### Node Routing
+
+All entities are routed to their owning node through two fields:
+
+- **Sessions/Terminals**: `runner_node` field (string) on the record itself. Resolved by `Cluster.runner_node_for/1`.
+- **Projects/Issues/Triggers**: `node` field on the associated project. Resolved by `Cluster.project_node_for/1`. Triggers inherit routing from their project (`trigger → project → project.node`).
+
+If the stored node is not in the current cluster, routing falls back to the local node.
+
+### What Agents Cannot Do
+
+Agent nodes are intentionally limited:
+
+- **No direct DB access** — all reads/writes go through HubRPC to the hub
+- **No trigger scheduling** — cron jobs only fire on the hub (but execution routes to the correct agent)
+- **No upstream MCP connections** — `MCP.UpstreamClient` is hub-only
+- **No web UI** — the Endpoint runs but only serves the MCP HTTP endpoint for Claude CLI
+- **No agent presence cleanup** — hub handles stale `.agents/` file cleanup on boot
+
 ## Discovery Strategies
 
 ```mermaid
