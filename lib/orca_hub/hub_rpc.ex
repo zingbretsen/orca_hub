@@ -99,6 +99,16 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.Triggers, :list_triggers_for_project, [project_id])
 
   # -------------------------------------------------------------------
+  # Upstream Servers
+  # -------------------------------------------------------------------
+
+  def list_enabled_servers_for_project(project_id),
+    do: call(OrcaHub.UpstreamServers, :list_enabled_servers_for_project, [project_id])
+
+  def list_enabled_servers_for_session(session_id),
+    do: call(OrcaHub.UpstreamServers, :list_enabled_servers_for_session, [session_id])
+
+  # -------------------------------------------------------------------
   # Terminals
   # -------------------------------------------------------------------
 

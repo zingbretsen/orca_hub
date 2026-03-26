@@ -3,7 +3,7 @@ defmodule OrcaHub.SessionRunner do
   require Logger
 
   alias OrcaHub.Claude.{Config, StreamParser}
-  alias OrcaHub.{AgentPresence, HubRPC, UpstreamServers}
+  alias OrcaHub.{AgentPresence, HubRPC}
 
   # Route a HubRPC call through the node that owns the session's DB record.
   # In multi-hub mode, the runner may be on a different node than the DB.
@@ -502,10 +502,10 @@ defmodule OrcaHub.SessionRunner do
 
     project_servers =
       if data.project_id,
-        do: UpstreamServers.list_enabled_servers_for_project(data.project_id),
+        do: db_call(data, :list_enabled_servers_for_project, [data.project_id]),
         else: []
 
-    session_servers = UpstreamServers.list_enabled_servers_for_session(data.session_id)
+    session_servers = db_call(data, :list_enabled_servers_for_session, [data.session_id])
 
     scoped_servers =
       (project_servers ++ session_servers)
