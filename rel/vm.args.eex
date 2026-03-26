@@ -2,3 +2,7 @@
 ## Override with DIST_PORT_MIN / DIST_PORT_MAX env vars to avoid conflicts
 -kernel inet_dist_listen_min <%= System.get_env("DIST_PORT_MIN", "9100") %>
 -kernel inet_dist_listen_max <%= System.get_env("DIST_PORT_MAX", "9105") %>
+
+## Disable automatic full-mesh clustering. Agents connect to the hub only;
+## they don't need to reach each other directly.
+-kernel connect_all false
