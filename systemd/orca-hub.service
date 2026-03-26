@@ -7,7 +7,7 @@ Type=simple
 User=zach
 WorkingDirectory=/home/zach/orca_hub
 EnvironmentFile=/home/zach/orca_hub/.env
-ExecStart=/usr/bin/elixir --erl "-kernel connect_all false" --name debian_agent@192.168.1.177 --cookie ${RELEASE_COOKIE} -S mix phx.server
+ExecStart=/usr/bin/elixir --erl "-kernel connect_all false" --name ${NODE_DISPLAY_NAME}@${IP} --cookie ${RELEASE_COOKIE} -S mix phx.server
 Restart=on-failure
 RestartSec=5
 
