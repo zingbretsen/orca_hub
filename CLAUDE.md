@@ -31,8 +31,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 
 - Deployment manifests live in `~/homelab/k3s/apps/orca-hub.yaml`, NOT in `k8s/` (which is a generic/standalone reference)
 - Secrets are in `~/homelab/k3s/secrets/orca-hub-secrets.yaml`
-- Two deployments: `orca-hub-debian` (pinned to `debian` node) and `orca-hub-mini` (pinned to `nuc` node), connected via Erlang clustering
-- Each node has its own PostgreSQL database; cross-node visibility via `OrcaHub.Cluster` fan-out
+- Single deployment: `orca-hub` in the `lab` namespace
 - Image registry: `registry.lab.ingbretsenhome.com`
 - Ingress: `orca.lab.ingbretsenhome.com` (HTTPS via Traefik, Authelia forward-auth)
 - To deploy: `docker build -t registry.lab.ingbretsenhome.com/orca-hub:latest . && docker push registry.lab.ingbretsenhome.com/orca-hub:latest && kubectl rollout restart deployment/orca-hub -n lab`

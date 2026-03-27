@@ -729,7 +729,7 @@ defmodule OrcaHub.MCP.Tools do
             # Prefix the message to make it clear it's a heartbeat
             prefixed_message = "[Heartbeat]\n\n#{message}"
 
-            case OrcaHub.SessionHeartbeat.schedule(session_id, interval, prefixed_message) do
+            case HubRPC.schedule_heartbeat(session_id, interval, prefixed_message) do
               :ok ->
                 text(
                   "Heartbeat scheduled: your session will receive a wake-up message every #{interval} seconds. " <>
@@ -749,12 +749,12 @@ defmodule OrcaHub.MCP.Tools do
         error("No OrcaHub session linked to this MCP connection.")
 
       session_id ->
-        case OrcaHub.SessionHeartbeat.get(session_id) do
+        case HubRPC.get_heartbeat(session_id) do
           nil ->
             text("No active heartbeat to cancel.")
 
           _info ->
-            OrcaHub.SessionHeartbeat.cancel(session_id)
+            HubRPC.cancel_heartbeat(session_id)
             text("Heartbeat cancelled. Your session will no longer receive periodic wake-up messages.")
         end
     end
