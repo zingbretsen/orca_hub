@@ -96,7 +96,9 @@ defmodule OrcaHub.Cluster.CodeSync do
     Enum.map(nodes, fn n ->
       md5 =
         try do
-          :erpc.call(n, :code, :module_md5, [module], 5_000) |> Base.encode16(case: :lower)
+          # Use :erlang.get_module_info/2 instead of :code.module_md5/1 because
+          # the latter only works in embedded mode (releases), not interactive mode (mix).
+          :erpc.call(n, :erlang, :get_module_info, [module, :md5], 5_000) |> Base.encode16(case: :lower)
         catch
           _, _ -> "unavailable"
         end
@@ -108,14 +110,17 @@ defmodule OrcaHub.Cluster.CodeSync do
   @doc "Check which modules differ between this node and remote nodes."
   def check_drift do
     local_beams = load_all_beams()
-    local_md5s = Map.new(local_beams, fn {mod, binary, _} -> {mod, :erlang.md5(binary)} end)
+    # Use module_info(:md5) for local comparison - this is the MD5 embedded at compile time,
+    # which matches what we'll get from the remote node. Using :erlang.md5(binary) would give
+    # a different value (hash of entire .beam file vs just the module metadata).
+    local_md5s = Map.new(local_beams, fn {mod, _binary, _} -> {mod, mod.module_info(:md5)} end)
 
     Enum.map(Node.list(), fn n ->
       drifted =
         Enum.filter(local_md5s, fn {mod, local_md5} ->
           remote_md5 =
             try do
-              :erpc.call(n, :code, :module_md5, [mod], 5_000)
+              :erpc.call(n, :erlang, :get_module_info, [mod, :md5], 5_000)
             catch
               _, _ -> nil
             end
@@ -127,7 +132,7 @@ defmodule OrcaHub.Cluster.CodeSync do
       missing =
         Enum.filter(local_md5s, fn {mod, _} ->
           try do
-            :erpc.call(n, :code, :module_md5, [mod], 5_000)
+            :erpc.call(n, :erlang, :get_module_info, [mod, :md5], 5_000)
           catch
             _, _ -> :missing
           end == :missing
