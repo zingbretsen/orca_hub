@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Cluster, HubRPC, Projects, Sessions, SessionRunner, UpstreamServers}
+  alias OrcaHub.{Cluster, HubRPC, Projects, Sessions, SessionHeartbeat, SessionRunner, UpstreamServers}
   alias OrcaHubWeb.{MessageComponents, Markdown}
 
   @impl true
@@ -80,6 +80,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:session_mcp_servers, UpstreamServers.list_servers_for_session(id))
      |> assign(:all_upstream_servers, UpstreamServers.list_upstream_servers())
      |> assign(:show_mcp_server_picker, false)
+     |> assign(:show_heartbeat_modal, false)
+     |> assign(:heartbeat_info, SessionHeartbeat.get(id))
      |> load_session_todos()
      |> load_session_commits()
      |> allow_upload(:image,
@@ -303,6 +305,41 @@ defmodule OrcaHubWeb.SessionLive.Show do
      socket
      |> assign(session_mcp_servers: UpstreamServers.list_servers_for_session(session_id))
      |> put_flash(:info, "MCP server removed")}
+  end
+
+  # Heartbeat events
+
+  def handle_event("toggle_heartbeat_modal", _params, socket) do
+    {:noreply, assign(socket, show_heartbeat_modal: !socket.assigns.show_heartbeat_modal)}
+  end
+
+  def handle_event("schedule_heartbeat", %{"interval" => interval_str, "message" => message}, socket) do
+    session_id = socket.assigns.session.id
+
+    with {interval, ""} <- Integer.parse(interval_str),
+         :ok <- SessionHeartbeat.schedule(session_id, interval, "[Heartbeat]\n\n#{message}") do
+      {:noreply,
+       socket
+       |> assign(heartbeat_info: SessionHeartbeat.get(session_id))
+       |> assign(show_heartbeat_modal: false)
+       |> put_flash(:info, "Heartbeat scheduled: every #{format_interval(interval)}")}
+    else
+      :error ->
+        {:noreply, put_flash(socket, :error, "Invalid interval")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to schedule heartbeat: #{reason}")}
+    end
+  end
+
+  def handle_event("cancel_heartbeat", _params, socket) do
+    session_id = socket.assigns.session.id
+    SessionHeartbeat.cancel(session_id)
+
+    {:noreply,
+     socket
+     |> assign(heartbeat_info: nil)
+     |> put_flash(:info, "Heartbeat cancelled")}
   end
 
   def handle_event("archive", _params, socket) do
@@ -1028,6 +1065,31 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp line_to_block_index(_, _), do: nil
+
+  # -- Heartbeat helpers --
+
+  defp format_interval(seconds) when seconds >= 3600 do
+    hours = div(seconds, 3600)
+    remaining = rem(seconds, 3600)
+    mins = div(remaining, 60)
+
+    cond do
+      mins == 0 -> "#{hours}h"
+      true -> "#{hours}h #{mins}m"
+    end
+  end
+
+  defp format_interval(seconds) when seconds >= 60 do
+    mins = div(seconds, 60)
+    secs = rem(seconds, 60)
+
+    cond do
+      secs == 0 -> "#{mins}m"
+      true -> "#{mins}m #{secs}s"
+    end
+  end
+
+  defp format_interval(seconds), do: "#{seconds}s"
 
   # -- Commit helpers --
 

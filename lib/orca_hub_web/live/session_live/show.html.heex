@@ -101,6 +101,10 @@
       >
         <.icon name="hero-play" class="size-5" />
       </button>
+      <button phx-click="toggle_heartbeat_modal" class={["btn btn-ghost btn-sm btn-circle indicator", @show_heartbeat_modal && "text-primary"]} title="Heartbeat">
+        <.icon name="hero-heart" class="size-5" />
+        <span :if={@heartbeat_info} class="indicator-item badge badge-xs badge-success"></span>
+      </button>
       <button phx-click="toggle_mcp_modal" class={["btn btn-ghost btn-sm btn-circle", @show_mcp_modal && "text-primary"]} title="MCP servers">
         <.icon name="hero-server-stack" class="size-5" />
       </button>
@@ -243,6 +247,91 @@
           </div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <%!-- Heartbeat modal --%>
+  <div :if={@show_heartbeat_modal} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
+    <div class="card bg-base-100 shadow-xl w-full max-w-md p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold">Session Heartbeat</h2>
+        <button phx-click="toggle_heartbeat_modal" class="btn btn-ghost btn-sm btn-circle">
+          <.icon name="hero-x-mark" class="size-5" />
+        </button>
+      </div>
+
+      <p class="text-sm text-base-content/60 mb-4">
+        Schedule periodic wake-up messages to keep this session active. Useful for orchestrator sessions waiting on other sessions.
+      </p>
+
+      <%= if @heartbeat_info do %>
+        <div class="bg-base-200 rounded-lg p-4 mb-4">
+          <div class="flex items-center gap-2 mb-2">
+            <.icon name="hero-heart" class="size-5 text-success" />
+            <span class="font-medium">Heartbeat Active</span>
+          </div>
+          <div class="text-sm space-y-1">
+            <div class="flex justify-between">
+              <span class="text-base-content/60">Interval:</span>
+              <span class="font-mono">{format_interval(@heartbeat_info.interval_seconds)}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-base-content/60">Scheduled:</span>
+              <span>{Calendar.strftime(@heartbeat_info.scheduled_at, "%b %d, %H:%M")}</span>
+            </div>
+            <div class="mt-2">
+              <span class="text-base-content/60">Message:</span>
+              <div class="mt-1 text-xs bg-base-300 rounded p-2 font-mono whitespace-pre-wrap max-h-24 overflow-y-auto">
+                {String.replace(@heartbeat_info.message, "[Heartbeat]\n\n", "")}
+              </div>
+            </div>
+          </div>
+          <div class="mt-4">
+            <button phx-click="cancel_heartbeat" class="btn btn-error btn-sm w-full">
+              <.icon name="hero-stop-micro" class="size-4" /> Cancel Heartbeat
+            </button>
+          </div>
+        </div>
+      <% else %>
+        <.form for={%{}} phx-submit="schedule_heartbeat" class="space-y-4">
+          <div class="form-control">
+            <label class="label">
+              <span class="label-text">Interval (seconds)</span>
+            </label>
+            <input
+              type="number"
+              name="interval"
+              min="30"
+              value="300"
+              class="input input-bordered w-full"
+              placeholder="e.g., 300 for 5 minutes"
+            />
+            <label class="label">
+              <span class="label-text-alt text-base-content/50">Minimum 30 seconds</span>
+            </label>
+          </div>
+          <div class="form-control">
+            <label class="label">
+              <span class="label-text">Message</span>
+            </label>
+            <textarea
+              name="message"
+              rows="3"
+              class="textarea textarea-bordered w-full"
+              placeholder="Check on sibling sessions. Review their status in .agents/ and continue coordinating until the task is complete."
+            ></textarea>
+            <label class="label">
+              <span class="label-text-alt text-base-content/50">This message will wake up the session</span>
+            </label>
+          </div>
+          <div class="flex justify-end gap-2">
+            <button type="button" phx-click="toggle_heartbeat_modal" class="btn btn-ghost">Cancel</button>
+            <button type="submit" class="btn btn-primary">
+              <.icon name="hero-heart-micro" class="size-4" /> Schedule Heartbeat
+            </button>
+          </div>
+        </.form>
+      <% end %>
     </div>
   </div>
 

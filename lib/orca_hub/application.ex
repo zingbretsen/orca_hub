@@ -51,6 +51,7 @@ defmodule OrcaHub.Application do
       {Registry, keys: :unique, name: OrcaHub.MCPRegistry},
       {Registry, keys: :unique, name: OrcaHub.TerminalRegistry},
       {Task.Supervisor, name: OrcaHub.TaskSupervisor},
+      OrcaHub.SessionHeartbeat,
       OrcaHub.SessionSupervisor,
       OrcaHub.TerminalSupervisor,
       {DynamicSupervisor, name: OrcaHub.MCPSupervisor, strategy: :one_for_one},
