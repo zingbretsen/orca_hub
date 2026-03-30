@@ -133,6 +133,24 @@
         <input type="checkbox" class="checkbox checkbox-sm" phx-click="browse_toggle_hidden" checked={@browse_show_hidden} />
         Show hidden
       </label>
+      <div class="flex-1"></div>
+      <button type="button" phx-click="browse_new_folder_start" class="btn btn-sm btn-ghost">
+        + New Folder
+      </button>
+    </div>
+    <div :if={@browse_new_folder} class="flex items-center gap-2 mb-3">
+      <form phx-submit="browse_new_folder_create" class="flex items-center gap-2 flex-1">
+        <input
+          type="text"
+          name="name"
+          placeholder="Folder name"
+          class="input input-sm input-bordered flex-1"
+          autofocus
+          phx-mounted={JS.focus()}
+        />
+        <button type="submit" class="btn btn-sm btn-primary">Create</button>
+        <button type="button" phx-click="browse_new_folder_cancel" class="btn btn-sm btn-ghost">Cancel</button>
+      </form>
     </div>
     <div class="overflow-y-auto max-h-64 border border-base-300 rounded">
       <div :if={@browse_entries == []} class="p-3 text-sm text-base-content/50">No subdirectories</div>

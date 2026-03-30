@@ -24,6 +24,7 @@ defmodule OrcaHubWeb.ProjectLive.Index do
        browse_path: nil,
        browse_entries: [],
        browse_show_hidden: false,
+       browse_new_folder: false,
        importing: false,
        git_statuses: %{}
      )}
@@ -178,7 +179,37 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   end
 
   def handle_event("browse_close", _params, socket) do
-    {:noreply, assign(socket, browsing: false)}
+    {:noreply, assign(socket, browsing: false, browse_new_folder: false)}
+  end
+
+  def handle_event("browse_new_folder_start", _params, socket) do
+    {:noreply, assign(socket, browse_new_folder: true)}
+  end
+
+  def handle_event("browse_new_folder_cancel", _params, socket) do
+    {:noreply, assign(socket, browse_new_folder: false)}
+  end
+
+  def handle_event("browse_new_folder_create", %{"name" => name}, socket) do
+    name = String.trim(name)
+
+    if name == "" do
+      {:noreply, socket}
+    else
+      target = browse_target_node(socket)
+      new_path = Path.join(socket.assigns.browse_path, name)
+
+      case Cluster.rpc(target, File, :mkdir_p, [new_path]) do
+        :ok ->
+          {:noreply,
+           socket
+           |> assign(browse_new_folder: false)
+           |> browse_to(new_path)}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Failed to create folder: #{reason}")}
+      end
+    end
   end
 
   def reload_for_node_filter(socket) do
@@ -268,7 +299,7 @@ defmodule OrcaHubWeb.ProjectLive.Index do
           []
       end
 
-    assign(socket, browsing: true, browse_path: path, browse_entries: entries)
+    assign(socket, browsing: true, browse_path: path, browse_entries: entries, browse_new_folder: false)
   end
 
   defp browse_target_node(socket) do
