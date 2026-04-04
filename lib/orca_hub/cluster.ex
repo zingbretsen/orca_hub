@@ -21,7 +21,12 @@ defmodule OrcaHub.Cluster do
   @doc "All nodes in the cluster, including this one."
   def nodes, do: [node() | Node.list()]
 
-  @doc "Human-readable node name. Uses NODE_DISPLAY_NAME for local node, falls back to hostname."
+  @doc """
+  Human-readable node name
+
+  - For atoms: Uses NODE_DISPLAY_NAME for local node, calls remote for display_name, falls back to hostname.
+  - For strings: Preserves disconnected node identity by extracting hostname from node string.
+  """
   def node_name(n) when is_atom(n) do
     if n == node() do
       display_name()
@@ -32,6 +37,24 @@ defmodule OrcaHub.Cluster do
         _, _ ->
           n |> Atom.to_string() |> String.split("@") |> List.last()
       end
+    end
+  end
+
+  def node_name(n) when is_binary(n) do
+    # Try to convert to atom and get display name from connected node
+    try do
+      node_atom = String.to_existing_atom(n)
+
+      if node_atom in nodes() do
+        node_name(node_atom)
+      else
+        # Disconnected node - extract hostname from node string
+        n |> String.split("@") |> List.last()
+      end
+    rescue
+      # Atom doesn't exist - extract hostname from string
+      ArgumentError ->
+        n |> String.split("@") |> List.last()
     end
   end
 

@@ -138,8 +138,16 @@ defmodule OrcaHubWeb.NodeFilter do
   def filter_tagged(tagged_results, :all), do: tagged_results
 
   def filter_tagged(tagged_results, %MapSet{} = selected_names) do
-    Enum.filter(tagged_results, fn {node, _item} ->
-      Cluster.node_name(node) in selected_names
+    Enum.filter(tagged_results, fn {node, item} ->
+      # Use the item's runner_node field if available (preserves disconnected node identity)
+      # Otherwise fall back to the tuple's node atom
+      node_name =
+        case item do
+          %{runner_node: rn} when is_binary(rn) and rn != "" -> Cluster.node_name(rn)
+          _ -> Cluster.node_name(node)
+        end
+
+      node_name in selected_names
     end)
   end
 

@@ -123,6 +123,32 @@ defmodule OrcaHub.Sessions do
     Repo.all(q)
   end
 
+  @doc """
+  Returns the IDs of the previous and next sessions within the same project,
+  ordered by updated_at desc. Returns {prev_id, next_id} where either may be nil.
+  """
+  def get_adjacent_session_ids(session) do
+    project_id = session.project_id
+
+    if is_nil(project_id) do
+      {nil, nil}
+    else
+      sessions =
+        from(s in Session,
+          where: s.project_id == ^project_id and is_nil(s.archived_at),
+          select: s.id,
+          order_by: [desc: s.updated_at]
+        )
+        |> Repo.all()
+
+      case Enum.find_index(sessions, &(&1 == session.id)) do
+        nil -> {nil, nil}
+        0 -> {nil, Enum.at(sessions, 1)}
+        idx -> {Enum.at(sessions, idx - 1), Enum.at(sessions, idx + 1)}
+      end
+    end
+  end
+
   def count_idle_sessions do
     Repo.one(
       from s in Session,

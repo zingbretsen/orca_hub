@@ -49,8 +49,8 @@
     ]}>
       {@status}
     </span>
-    <span :if={@remote_session && length(Node.list()) > 0} class="badge badge-ghost badge-outline ml-1" title={inspect(@session_node)}>
-      {OrcaHub.Cluster.node_name(@session_node)}
+    <span :if={@remote_session && length(Node.list()) > 0} class="badge badge-ghost badge-outline ml-1" title={@session.runner_node}>
+      {@session_node_name}
     </span>
     <span :if={@plan_mode == :planning} class="badge badge-warning badge-outline ml-1">planning</span>
     <span :if={@plan_mode == :review} class="badge badge-info badge-outline ml-1">needs review</span>
@@ -62,6 +62,27 @@
       <span :if={!@session.project}>{@session.directory}</span>
     </:subtitle>
     <:actions>
+      <%!-- Mobile session navigation --%>
+      <div :if={@prev_session_id || @next_session_id} class="sm:hidden flex items-center mr-1">
+        <.link
+          :if={@prev_session_id}
+          navigate={~p"/sessions/#{@prev_session_id}"}
+          class="btn btn-ghost btn-sm btn-circle"
+          title="Previous session (newer)"
+        >
+          <.icon name="hero-chevron-left" class="size-5" />
+        </.link>
+        <div :if={!@prev_session_id} class="w-8"></div>
+        <.link
+          :if={@next_session_id}
+          navigate={~p"/sessions/#{@next_session_id}"}
+          class="btn btn-ghost btn-sm btn-circle"
+          title="Next session (older)"
+        >
+          <.icon name="hero-chevron-right" class="size-5" />
+        </.link>
+        <div :if={!@next_session_id} class="w-8"></div>
+      </div>
       <div class="dropdown dropdown-end">
         <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1" title="Model">
           <.icon name="hero-cpu-chip" class="size-4" />
@@ -318,8 +339,7 @@
               name="message"
               rows="3"
               class="textarea textarea-bordered w-full"
-              placeholder="Check on sibling sessions. Review their status in .agents/ and continue coordinating until the task is complete."
-            ></textarea>
+            >Check on sibling sessions. Review their status in .agents/ and continue coordinating until the task is complete.</textarea>
             <label class="label">
               <span class="label-text-alt text-base-content/50">This message will wake up the session</span>
             </label>
@@ -337,6 +357,17 @@
 
   <%!-- Main content area: side-by-side on desktop when files are open --%>
   <div class="flex flex-1 min-h-0 gap-4" id="session-split-container">
+    <%!-- Previous session nav button --%>
+    <.link
+      :if={@prev_session_id}
+      navigate={~p"/sessions/#{@prev_session_id}"}
+      class="hidden sm:flex items-center justify-center w-8 shrink-0 opacity-30 hover:opacity-70 transition-opacity"
+      title="Previous session (newer)"
+    >
+      <.icon name="hero-chevron-left" class="size-6" />
+    </.link>
+    <div :if={!@prev_session_id} class="hidden sm:block w-8 shrink-0"></div>
+
     <%!-- Chat column --%>
     <div class="flex flex-col min-w-0 flex-1" data-resize-panel="left">
       <div id="message-feed" phx-hook="ScrollToBottom" class="flex-1 overflow-y-auto space-y-1 p-4 bg-base-200 rounded-lg text-sm">
@@ -712,6 +743,17 @@
         </div>
       </div>
     </div>
+
+    <%!-- Next session nav button --%>
+    <.link
+      :if={@next_session_id}
+      navigate={~p"/sessions/#{@next_session_id}"}
+      class="hidden sm:flex items-center justify-center w-8 shrink-0 opacity-30 hover:opacity-70 transition-opacity"
+      title="Next session (older)"
+    >
+      <.icon name="hero-chevron-right" class="size-6" />
+    </.link>
+    <div :if={!@next_session_id} class="hidden sm:block w-8 shrink-0"></div>
   </div>
 
   <%!-- Mobile file panel (modal) --%>

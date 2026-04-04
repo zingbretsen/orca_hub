@@ -7,6 +7,7 @@ Type=simple
 User={{USER}}
 WorkingDirectory={{ORCA_HUB_DIR}}
 EnvironmentFile={{ORCA_HUB_DIR}}/.env
+Environment="PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin"
 ExecStart={{ELIXIR_PATH}} --erl "-kernel connect_all false" --name ${NODE_DISPLAY_NAME}@${IP} --cookie ${RELEASE_COOKIE} -S mix phx.server
 Restart=on-failure
 RestartSec=5

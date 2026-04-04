@@ -14,6 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORCA_HUB_DIR="$(dirname "$SCRIPT_DIR")"
 USER="$(whoami)"
 ELIXIR_PATH="$(which elixir 2>/dev/null || echo "/usr/bin/elixir")"
+HOME_DIR="$(eval echo ~$USER)"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -71,12 +72,14 @@ echo "Installing orca-hub.service..."
 echo "  User: $USER"
 echo "  Directory: $ORCA_HUB_DIR"
 echo "  Elixir: $ELIXIR_PATH"
+echo "  Home: $HOME_DIR"
 
 # Generate the service file from template
 SERVICE_CONTENT=$(sed \
     -e "s|{{USER}}|$USER|g" \
     -e "s|{{ORCA_HUB_DIR}}|$ORCA_HUB_DIR|g" \
     -e "s|{{ELIXIR_PATH}}|$ELIXIR_PATH|g" \
+    -e "s|{{HOME}}|$HOME_DIR|g" \
     "$TEMPLATE")
 
 # Install to systemd (requires sudo)

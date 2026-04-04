@@ -48,6 +48,9 @@ defmodule OrcaHub.HubRPC do
   def search_sessions_by_directory(directory, opts \\ %{}),
     do: call(OrcaHub.Sessions, :search_sessions_by_directory, [directory, opts])
 
+  def get_adjacent_session_ids(session),
+    do: call(OrcaHub.Sessions, :get_adjacent_session_ids, [session])
+
   def list_session_commits(directory, session_id),
     do: call(OrcaHub.Sessions, :list_session_commits, [directory, session_id])
 

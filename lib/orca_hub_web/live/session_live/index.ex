@@ -293,9 +293,10 @@ defmodule OrcaHubWeb.SessionLive.Index do
     if clustered do
       # In cluster mode, group by {node_name, project}
       # First, build a map of session_id -> node_name
+      # Use session.runner_node directly to preserve disconnected node identity
       session_node_names =
-        Map.new(tagged_sessions, fn {node, session} ->
-          {session.id, Cluster.node_name(node)}
+        Map.new(tagged_sessions, fn {_node, session} ->
+          {session.id, Cluster.node_name(session.runner_node || node())}
         end)
 
       # Group sessions by {node_name, project}

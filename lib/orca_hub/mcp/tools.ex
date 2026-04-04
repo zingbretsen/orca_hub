@@ -652,7 +652,7 @@ defmodule OrcaHub.MCP.Tools do
           }
 
           if clustered do
-            Map.put(result, :node, Cluster.node_name(Cluster.runner_node_for(session)))
+            Map.put(result, :node, Cluster.node_name(session.runner_node || node()))
           else
             result
           end

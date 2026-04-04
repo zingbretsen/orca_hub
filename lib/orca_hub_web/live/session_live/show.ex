@@ -18,7 +18,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
       end
     end
 
-    remote? = session_node != node()
+    # Check if session is remote based on original runner_node (not the fallback)
+    remote? = session.runner_node != nil && session.runner_node != Atom.to_string(node())
 
     if connected?(socket) do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{id}")
@@ -39,14 +40,22 @@ defmodule OrcaHubWeb.SessionLive.Show do
         %{status: session.status || "error", messages: saved_messages}
       end
 
+    {prev_session_id, next_session_id} = HubRPC.get_adjacent_session_ids(session)
+
+    # Display the original node name even if disconnected
+    session_node_name = Cluster.node_name(session.runner_node || node())
+
     {:ok,
      socket
      |> assign(:session, session)
      |> assign(:session_node, session_node)
+     |> assign(:session_node_name, session_node_name)
      |> assign(:remote_session, remote?)
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
      |> assign(:page_title, session.title || (session.project && session.project.name) || session.directory)
+     |> assign(:prev_session_id, prev_session_id)
+     |> assign(:next_session_id, next_session_id)
      |> assign(:feedback_requests, HubRPC.list_pending_feedback_for_session(id))
      |> assign(:tts_autoplay, false)
      |> assign(:open_files, [])
