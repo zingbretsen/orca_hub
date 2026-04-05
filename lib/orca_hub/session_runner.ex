@@ -88,6 +88,7 @@ defmodule OrcaHub.SessionRunner do
       claude_session_id: session.claude_session_id,
       directory: session.directory,
       model: session.model,
+      orchestrator: session.orchestrator || false,
       db_node: db_node,
       port: nil,
       buffer: "",
@@ -426,6 +427,7 @@ defmodule OrcaHub.SessionRunner do
       |> maybe_put(:session_id, data.claude_session_id)
       |> maybe_put(:model, data.model)
       |> maybe_put(:system_prompt, build_system_prompt(data))
+      |> maybe_put(:tools, orchestrator_tools(data.orchestrator))
       |> Keyword.put(:mcp_config, mcp_config(data))
 
     {args, port_opts} = Config.build_args(prompt, opts)
@@ -488,6 +490,11 @@ defmodule OrcaHub.SessionRunner do
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, val), do: Keyword.put(opts, key, val)
 
+  # Orchestrator sessions get a restricted toolset: read-only file access plus web
+  @orchestrator_tools "Read,Glob,Grep,WebFetch,WebSearch"
+  defp orchestrator_tools(true), do: @orchestrator_tools
+  defp orchestrator_tools(_), do: nil
+
   defp mcp_config(data) do
     port =
       case OrcaHubWeb.Endpoint.config(:http) do
@@ -523,7 +530,8 @@ defmodule OrcaHub.SessionRunner do
     parts =
       [
         "Your OrcaHub session ID is #{data.session_id}.",
-        commit_trailer_prompt(data.session_id),
+        orchestrator_system_prompt(data.orchestrator, data.session_id),
+        if(!data.orchestrator, do: commit_trailer_prompt(data.session_id)),
         issue_system_prompt(data.issue_id),
         siblings_system_prompt(data.directory, data.session_id),
         context_files_prompt(data.directory)
@@ -531,6 +539,49 @@ defmodule OrcaHub.SessionRunner do
       |> Enum.reject(&is_nil/1)
 
     Enum.join(parts, "\n\n")
+  end
+
+  defp orchestrator_system_prompt(false, _session_id), do: nil
+  defp orchestrator_system_prompt(nil, _session_id), do: nil
+
+  defp orchestrator_system_prompt(true, session_id) do
+    """
+    # Orchestrator Session
+
+    You are an **orchestrator session**. Your role is to coordinate work across multiple worker sessions, NOT to do the work yourself.
+
+    ## Your Capabilities
+
+    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You CANNOT edit files, run shell commands, or make changes directly.
+
+    ## How to Work
+
+    1. **Delegate all implementation work** to other sessions using:
+       - `start_session` — spawn a new worker session with a detailed prompt
+       - `send_message_to_session` — direct an existing session
+
+    2. **Request callbacks** — When delegating work, explicitly ask the worker session to message you back when done:
+       > "When you have completed this task, use `send_message_to_session` to notify session #{session_id} with a summary of what you did."
+
+    3. **Set up monitoring** — After spawning workers, use `schedule_heartbeat` to wake yourself up periodically (e.g., every 2-5 minutes) to check on progress:
+       > "Check on worker sessions. Use `search_sessions` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
+
+    4. **Check in proactively** — If you don't hear back from a worker session within a reasonable time, send it a message asking for a status update.
+
+    5. **Clean up** — When all delegated work is complete, use `cancel_heartbeat` to stop monitoring.
+
+    ## Example Flow
+
+    1. Analyze the task and break it into subtasks
+    2. Spawn worker sessions for each subtask, requesting they message back when done
+    3. Set a heartbeat to check on progress
+    4. When workers report back or heartbeat fires, check status
+    5. If issues arise, provide guidance or spawn additional workers
+    6. When all work is complete, cancel heartbeat and summarize results
+
+    Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+    """
+    |> String.trim()
   end
 
   defp commit_trailer_prompt(session_id) do

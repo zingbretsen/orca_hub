@@ -14,7 +14,8 @@ defmodule OrcaHub.Claude.Config do
     * `:verbose` - enable verbose output (default: `true`)
     * `:skip_permissions` - skip permission prompts (default: `true`)
     * `:session_id` - resume a session by ID
-    * `:allowed_tools` - list of allowed tool names
+    * `:allowed_tools` - list of allowed tool names (permission-style filtering)
+    * `:tools` - restrict built-in tools to this list (e.g. "Read,Glob,Grep")
     * `:max_turns` - maximum number of turns
     * `:max_budget` - maximum budget in USD
     * `:system_prompt` - text appended to the system prompt
@@ -36,6 +37,7 @@ defmodule OrcaHub.Claude.Config do
       )
       |> maybe_add_opt("--resume", Keyword.get(opts, :session_id))
       |> maybe_add_opt("--allowedTools", maybe_join(Keyword.get(opts, :allowed_tools)))
+      |> maybe_add_opt("--tools", Keyword.get(opts, :tools))
       |> maybe_add_opt("--max-turns", maybe_to_string(Keyword.get(opts, :max_turns)))
       |> maybe_add_opt("--max-budget-usd", maybe_to_string(Keyword.get(opts, :max_budget)))
       |> maybe_add_opt("--append-system-prompt", Keyword.get(opts, :system_prompt))

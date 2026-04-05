@@ -16,6 +16,7 @@ defmodule OrcaHub.Sessions.Session do
     field :triggered, :boolean, default: false
     field :priority, :integer, default: 0
     field :runner_node, :string
+    field :orchestrator, :boolean, default: false
 
     has_many :messages, OrcaHub.Sessions.Message
     belongs_to :issue, OrcaHub.Issues.Issue
@@ -26,7 +27,7 @@ defmodule OrcaHub.Sessions.Session do
 
   def changeset(session, attrs) do
     session
-    |> cast(attrs, [:directory, :claude_session_id, :title, :status, :model, :issue_id, :project_id, :archived_at, :triggered, :priority, :runner_node])
+    |> cast(attrs, [:directory, :claude_session_id, :title, :status, :model, :issue_id, :project_id, :archived_at, :triggered, :priority, :runner_node, :orchestrator])
     |> validate_required([:directory])
     |> validate_inclusion(:status, ~w(ready idle running waiting error compacting))
   end

@@ -52,6 +52,7 @@
     <span :if={@remote_session && length(Node.list()) > 0} class="badge badge-ghost badge-outline ml-1" title={@session.runner_node}>
       {@session_node_name}
     </span>
+    <span :if={@session.orchestrator} class="badge badge-primary badge-outline ml-1" title="Orchestrator mode: read-only, delegates work to other sessions">orchestrator</span>
     <span :if={@plan_mode == :planning} class="badge badge-warning badge-outline ml-1">planning</span>
     <span :if={@plan_mode == :review} class="badge badge-info badge-outline ml-1">needs review</span>
     <:subtitle>

@@ -147,6 +147,16 @@
         {"Sonnet 4.6", "claude-sonnet-4-6"},
         {"Haiku 4.5", "claude-haiku-4-5-20251001"}
       ]} />
+      <div class="form-control">
+        <label class="label cursor-pointer justify-start gap-3">
+          <input type="hidden" name="session[orchestrator]" value="false" />
+          <input type="checkbox" name="session[orchestrator]" value="true" class="checkbox checkbox-sm checkbox-primary" />
+          <div>
+            <span class="label-text">Orchestrator mode</span>
+            <p class="text-xs text-base-content/50 mt-0.5">Read-only session that delegates work to other sessions</p>
+          </div>
+        </label>
+      </div>
       <div class="flex justify-end gap-2 mt-4">
         <.link patch={~p"/sessions"} class="btn">Cancel</.link>
         <.button type="submit">Create</.button>
