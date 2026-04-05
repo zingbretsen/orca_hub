@@ -179,6 +179,7 @@ defmodule OrcaHub.Cluster do
   def interrupt(n, session_id), do: rpc(n, SessionRunner, :interrupt, [session_id])
   def get_state(n, session_id), do: rpc(n, SessionRunner, :get_state, [session_id])
   def update_model(n, session_id, model), do: rpc(n, SessionRunner, :update_model, [session_id, model])
+  def update_orchestrator(n, session_id, orchestrator), do: rpc(n, SessionRunner, :update_orchestrator, [session_id, orchestrator])
 
   # -------------------------------------------------------------------
   # Project queries

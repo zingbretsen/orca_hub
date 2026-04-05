@@ -284,7 +284,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     case Sessions.update_session(session, %{orchestrator: new_value}) do
       {:ok, updated_session} ->
-        flash_msg = if new_value, do: "Orchestrator mode enabled", else: "Orchestrator mode disabled"
+        Cluster.update_orchestrator(socket.assigns.session_node, session.id, new_value)
+        flash_msg = if new_value, do: "Orchestrator mode enabled (takes effect on next message)", else: "Orchestrator mode disabled (takes effect on next message)"
         {:noreply, socket |> assign(:session, updated_session) |> put_flash(:info, flash_msg)}
 
       {:error, _} ->

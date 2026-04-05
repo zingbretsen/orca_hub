@@ -54,6 +54,10 @@ defmodule OrcaHub.SessionRunner do
     GenStatem.cast(via(session_id), {:update_model, model})
   end
 
+  def update_orchestrator(session_id, orchestrator) do
+    GenStatem.cast(via(session_id), {:update_orchestrator, orchestrator})
+  end
+
   # Callbacks
 
   @impl true
@@ -118,6 +122,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def ready(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
+  def ready(:cast, {:update_orchestrator, orchestrator}, data), do: {:keep_state, %{data | orchestrator: orchestrator}}
   def ready(:cast, _msg, _data), do: :keep_state_and_data
   def ready(:info, _msg, _data), do: :keep_state_and_data
 
@@ -137,6 +142,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def idle(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
+  def idle(:cast, {:update_orchestrator, orchestrator}, data), do: {:keep_state, %{data | orchestrator: orchestrator}}
   def idle(:cast, _msg, _data), do: :keep_state_and_data
   def idle(:info, _msg, _data), do: :keep_state_and_data
 
@@ -217,6 +223,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def running(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
+  def running(:cast, {:update_orchestrator, orchestrator}, data), do: {:keep_state, %{data | orchestrator: orchestrator}}
 
   def running(:cast, :feedback_requested, data) do
     update_session_status(data, %{status: "waiting"})
@@ -311,6 +318,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def waiting(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
+  def waiting(:cast, {:update_orchestrator, orchestrator}, data), do: {:keep_state, %{data | orchestrator: orchestrator}}
 
   def waiting(:cast, :feedback_answered, data) do
     case db_call(data, :list_pending_feedback_for_session, [data.session_id]) do
@@ -354,6 +362,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def error(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
+  def error(:cast, {:update_orchestrator, orchestrator}, data), do: {:keep_state, %{data | orchestrator: orchestrator}}
   def error(:cast, _msg, _data), do: :keep_state_and_data
   def error(:info, _msg, _data), do: :keep_state_and_data
 
