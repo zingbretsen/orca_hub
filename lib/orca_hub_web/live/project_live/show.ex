@@ -355,31 +355,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   def handle_event("create_session", _params, socket) do
-    project = socket.assigns.project
-    runner_node = socket.assigns.project_node
-    params = %{
-      "project_id" => project.id,
-      "directory" => project.directory,
-      "runner_node" => Atom.to_string(runner_node)
-    }
-
-    case HubRPC.create_session(params) do
-      {:ok, session} ->
-        case Cluster.start_session(runner_node, session.id, session) do
-          {:ok, _} ->
-            {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
-
-          {:error, reason} ->
-            Logger.error("Failed to start session runner: #{inspect(reason)}")
-            {:noreply, put_flash(socket, :error, "Session created but failed to start runner")}
-        end
-
-      {:error, _changeset} ->
-        {:noreply, put_flash(socket, :error, "Failed to create session")}
-    end
+    create_session_with_opts(socket, orchestrator: false)
   end
 
-  # Trigger events
+  def handle_event("create_orchestrator", _params, socket) do
+    create_session_with_opts(socket, orchestrator: true)
+  end
 
   def handle_event("new_trigger", _params, socket) do
     changeset = Triggers.change_trigger(%Trigger{project_id: socket.assigns.project.id})
@@ -730,5 +711,31 @@ defmodule OrcaHubWeb.ProjectLive.Show do
       end
 
     assign(socket, browsing: true, browse_path: path, browse_entries: entries)
+  end
+
+  defp create_session_with_opts(socket, opts) do
+    project = socket.assigns.project
+    runner_node = socket.assigns.project_node
+    params = %{
+      "project_id" => project.id,
+      "directory" => project.directory,
+      "runner_node" => Atom.to_string(runner_node),
+      "orchestrator" => Keyword.get(opts, :orchestrator, false)
+    }
+
+    case HubRPC.create_session(params) do
+      {:ok, session} ->
+        case Cluster.start_session(runner_node, session.id, session) do
+          {:ok, _} ->
+            {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
+
+          {:error, reason} ->
+            Logger.error("Failed to start session runner: #{inspect(reason)}")
+            {:noreply, put_flash(socket, :error, "Session created but failed to start runner")}
+        end
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to create session")}
+    end
   end
 end

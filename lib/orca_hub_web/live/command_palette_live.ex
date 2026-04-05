@@ -204,6 +204,23 @@ defmodule OrcaHubWeb.CommandPaletteLive do
          )
          |> push_event("clear-command-palette-input", %{})}
 
+      %{action: :create_session, project: project, orchestrator: orchestrator} ->
+        runner_node = Cluster.project_node_for(project)
+
+        case HubRPC.create_session(%{
+          "project_id" => project.id,
+          "directory" => project.directory,
+          "runner_node" => Atom.to_string(runner_node),
+          "orchestrator" => orchestrator || false
+        }) do
+          {:ok, session} ->
+            {:ok, _} = Cluster.start_session(runner_node, session.id, session)
+            {:noreply, socket |> close_palette() |> push_navigate(to: "/sessions/#{session.id}")}
+
+          {:error, _} ->
+            {:noreply, socket |> close_palette() |> put_flash(:error, "Failed to create session")}
+        end
+
       %{action: :create_session, project: project} ->
         runner_node = Cluster.project_node_for(project)
 
@@ -288,6 +305,7 @@ defmodule OrcaHubWeb.CommandPaletteLive do
     commands = [
       %{name: "Go to Project", path: "/projects/#{project.id}", category: "Navigate", icon: "hero-arrow-right", hint: "view"},
       %{name: "New Session", action: :create_session, project: project, category: "Actions", icon: "hero-chat-bubble-left-right", hint: "launch"},
+      %{name: "New Orchestrator", action: :create_session, project: project, orchestrator: true, category: "Actions", icon: "hero-users", hint: "delegate"},
       %{name: "New Issue", path: "/issues/new?project_id=#{project.id}", category: "Actions", icon: "hero-bug-ant", hint: "create"},
       %{name: "New Trigger", path: "/triggers/new?project_id=#{project.id}", category: "Actions", icon: "hero-bolt", hint: "create"}
     ]

@@ -278,6 +278,20 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  def handle_event("toggle_orchestrator", _params, socket) do
+    session = socket.assigns.session
+    new_value = !session.orchestrator
+
+    case Sessions.update_session(session, %{orchestrator: new_value}) do
+      {:ok, updated_session} ->
+        flash_msg = if new_value, do: "Orchestrator mode enabled", else: "Orchestrator mode disabled"
+        {:noreply, socket |> assign(:session, updated_session) |> put_flash(:info, flash_msg)}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to update orchestrator mode")}
+    end
+  end
+
   def handle_event("stop_session", _params, socket) do
     Cluster.stop_session(socket.assigns.session_node, socket.assigns.session.id)
     {:noreply, socket}
