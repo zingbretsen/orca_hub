@@ -230,14 +230,19 @@ defmodule OrcaHub.MCP.Tools do
       %{
         "name" => "search_sessions",
         "description" =>
-          "Search for other OrcaHub sessions. By default, searches for sessions in the same project directory as the calling session. You can optionally provide a different directory to search in, or a query string to filter by title. Use this to discover other sessions you may want to coordinate with or learn from.",
+          "Search for other OrcaHub sessions. By default, searches for sessions in the same project directory as the calling session. You can optionally provide a different directory to search in, search across all projects, or filter by title. Use this to discover other sessions you may want to coordinate with or learn from.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
             "directory" => %{
               "type" => "string",
               "description" =>
-                "Directory to search for sessions in. Defaults to the current session's project directory. Provide an absolute path to search in a different project."
+                "Directory to search for sessions in. Defaults to the current session's project directory. Provide an absolute path to search in a different project. Ignored if all_projects is true."
+            },
+            "all_projects" => %{
+              "type" => "boolean",
+              "description" =>
+                "If true, search across ALL projects instead of just the current directory. Useful for cross-project coordination. Default: false"
             },
             "query" => %{
               "type" => "string",
@@ -599,66 +604,80 @@ defmodule OrcaHub.MCP.Tools do
   end
 
   def call("search_sessions", args, state) do
-    directory =
-      case args["directory"] do
-        nil ->
-          # Default to the current session's project directory
-          case state.orca_session_id do
-            nil -> nil
-            session_id ->
-              case Cluster.find_session(session_id) do
-                {_node, session} -> session.directory
+    all_projects = args["all_projects"] || false
+    limit = args["limit"] || 20
+
+    search_opts = %{
+      query: args["query"],
+      status: args["status"],
+      include_archived: args["include_archived"] || false,
+      archived_only: args["archived_only"] || false,
+      limit: limit
+    }
+
+    sessions =
+      if all_projects do
+        HubRPC.search_all_sessions(search_opts)
+      else
+        directory =
+          case args["directory"] do
+            nil ->
+              # Default to the current session's project directory
+              case state.orca_session_id do
                 nil -> nil
+
+                session_id ->
+                  case Cluster.find_session(session_id) do
+                    {_node, session} -> session.directory
+                    nil -> nil
+                  end
               end
+
+            dir ->
+              dir
           end
 
-        dir ->
-          dir
+        if is_nil(directory) do
+          {:error,
+           "Could not determine project directory. Provide a 'directory' parameter, " <>
+             "use 'all_projects: true' to search across all projects, " <>
+             "or ensure this MCP connection is linked to an OrcaHub session."}
+        else
+          HubRPC.search_sessions_by_directory(directory, search_opts)
+        end
       end
 
-    if is_nil(directory) do
-      error(
-        "Could not determine project directory. Provide a 'directory' parameter, " <>
-          "or ensure this MCP connection is linked to an OrcaHub session."
-      )
-    else
-      limit = args["limit"] || 20
+    case sessions do
+      {:error, msg} ->
+        error(msg)
 
-      search_opts = %{
-        query: args["query"],
-        status: args["status"],
-        include_archived: args["include_archived"] || false,
-        archived_only: args["archived_only"] || false,
-        limit: limit
-      }
+      sessions when is_list(sessions) ->
+        clustered = length(Node.list()) > 0
 
-      sessions = HubRPC.search_sessions_by_directory(directory, search_opts)
-      clustered = length(Node.list()) > 0
+        results =
+          sessions
+          |> Enum.sort_by(fn s -> s.updated_at end, {:desc, NaiveDateTime})
+          |> Enum.take(limit)
+          |> Enum.map(fn session ->
+            result = %{
+              id: session.id,
+              title: session.title,
+              status: session.status,
+              archived: not is_nil(session.archived_at),
+              directory: session.directory,
+              project: if(session.project, do: session.project.name),
+              updated_at: session.updated_at,
+              inserted_at: session.inserted_at
+            }
 
-      results =
-        sessions
-        |> Enum.sort_by(fn s -> s.updated_at end, {:desc, NaiveDateTime})
-        |> Enum.take(limit)
-        |> Enum.map(fn session ->
-          result = %{
-            id: session.id,
-            title: session.title,
-            status: session.status,
-            archived: not is_nil(session.archived_at),
-            directory: session.directory,
-            project: if(session.project, do: session.project.name),
-            updated_at: session.updated_at,
-            inserted_at: session.inserted_at
-          }
+            if clustered do
+              Map.put(result, :node, Cluster.node_name(session.runner_node || node()))
+            else
+              result
+            end
+          end)
 
-          if clustered do
-            Map.put(result, :node, Cluster.node_name(session.runner_node || node()))
-          else
-            result
-          end
-        end)
-
-      text(Jason.encode!(results))
+        text(Jason.encode!(results))
     end
   end
 

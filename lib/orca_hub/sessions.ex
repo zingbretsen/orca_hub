@@ -16,6 +16,9 @@ defmodule OrcaHub.Sessions do
         :all -> query
         :manual -> from s in query, where: s.triggered == false
         :automated -> from s in query, where: s.triggered == true
+        :orchestrator -> from s in query, where: s.orchestrator == true
+        # :heartbeat filter is handled in-memory by the LiveView since heartbeats are ephemeral
+        :heartbeat -> query
       end
 
     Repo.all(query)
@@ -117,6 +120,34 @@ defmodule OrcaHub.Sessions do
         include_archived -> q
         true -> from(s in q, where: is_nil(s.archived_at))
       end
+    q = if query, do: from(s in q, where: ilike(s.title, ^"%#{query}%")), else: q
+    q = if status, do: from(s in q, where: s.status == ^status), else: q
+
+    Repo.all(q)
+  end
+
+  def search_all_sessions(opts \\ %{}) do
+    query = opts[:query]
+    status = opts[:status]
+    include_archived = opts[:include_archived] || false
+    archived_only = opts[:archived_only] || false
+    limit = opts[:limit] || 20
+
+    q =
+      from s in Session,
+        left_join: p in assoc(s, :project),
+        where: is_nil(s.project_id) or is_nil(p.deleted_at),
+        preload: [project: p],
+        order_by: [desc: s.updated_at],
+        limit: ^limit
+
+    q =
+      cond do
+        archived_only -> from(s in q, where: not is_nil(s.archived_at))
+        include_archived -> q
+        true -> from(s in q, where: is_nil(s.archived_at))
+      end
+
     q = if query, do: from(s in q, where: ilike(s.title, ^"%#{query}%")), else: q
     q = if status, do: from(s in q, where: s.status == ^status), else: q
 
