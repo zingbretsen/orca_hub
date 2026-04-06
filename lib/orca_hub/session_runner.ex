@@ -542,7 +542,7 @@ defmodule OrcaHub.SessionRunner do
         orchestrator_system_prompt(data.orchestrator, data.session_id),
         if(!data.orchestrator, do: commit_trailer_prompt(data.session_id)),
         issue_system_prompt(data.issue_id),
-        siblings_system_prompt(data.directory, data.session_id),
+        "Other agent sessions may be active in this directory. Use the `search_sessions` MCP tool to discover sibling sessions you may want to coordinate with.",
         context_files_prompt(data.directory)
       ]
       |> Enum.reject(&is_nil/1)
@@ -623,31 +623,6 @@ defmodule OrcaHub.SessionRunner do
     |> String.trim()
   end
 
-  defp siblings_system_prompt(directory, session_id) do
-    case AgentPresence.list_siblings(directory, session_id) do
-      [] ->
-        nil
-
-      siblings ->
-        sibling_lines =
-          Enum.map(siblings, fn {id, content} ->
-            status = extract_field(content, "Status") || "unknown"
-            task = extract_field(content, "Task") || "unknown"
-            "- Session #{id} (#{status}): #{task}"
-          end)
-          |> Enum.join("\n")
-
-        """
-        Other active agent sessions in this directory:
-        #{sibling_lines}
-
-        You can send a message to another session using the `send_message_to_session` MCP tool.
-        Check the .agents/ directory for updated session statuses.
-        """
-        |> String.trim()
-    end
-  end
-
   defp context_files_prompt(directory) do
     context_dir = Path.join(directory, ".context")
 
@@ -666,13 +641,6 @@ defmodule OrcaHub.SessionRunner do
       end
     else
       nil
-    end
-  end
-
-  defp extract_field(content, field) do
-    case Regex.run(~r/\*\*#{field}:\*\* (.+)/, content) do
-      [_, value] -> value
-      _ -> nil
     end
   end
 

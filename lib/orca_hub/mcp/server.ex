@@ -90,12 +90,13 @@ defmodule OrcaHub.MCP.Server do
 
   defp dispatch(%{"method" => "tools/list", "id" => id}, state) do
     upstream_tools = OrcaHub.MCP.UpstreamClient.list_tools()
+    all_tools = (Tools.list() ++ upstream_tools) |> Enum.sort_by(& &1["name"])
 
     response = %{
       "jsonrpc" => "2.0",
       "id" => id,
       "result" => %{
-        "tools" => Tools.list() ++ upstream_tools
+        "tools" => all_tools
       }
     }
 

@@ -98,6 +98,7 @@ defmodule OrcaHub.MCP.UpstreamClient do
   def handle_call(:list_tools, _from, state) do
     tools =
       state.connections
+      |> Enum.sort_by(fn {id, _conn} -> id end)
       |> Enum.flat_map(fn {_id, conn} ->
         Enum.map(conn.tools, fn tool ->
           prefixed_name = "#{conn.prefix}__#{tool["name"]}"
