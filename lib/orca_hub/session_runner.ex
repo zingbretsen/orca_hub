@@ -713,7 +713,7 @@ defmodule OrcaHub.SessionRunner do
 
     {json_body, extract_fn} = title_request_body(model, summary, api_type)
 
-    resp = Req.post!(url, headers: headers, json: json_body)
+    resp = Req.post!(url, headers: headers, json: json_body, receive_timeout: 60_000)
 
     Logger.info("Title API response: #{inspect(resp.body)}")
 
