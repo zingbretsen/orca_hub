@@ -734,9 +734,14 @@ defmodule OrcaHub.SessionRunner do
   defp title_request_body(model, summary, :responses) do
     json = %{
       model: model,
-      instructions:
-        "Generate a short title (max 6 words) for this coding session. Return only the title, no quotes or punctuation.",
-      input: [%{role: "user", content: summary}],
+      input: [
+        %{
+          role: "developer",
+          content:
+            "Generate a short title (max 6 words) for this coding session. Return only the title, no quotes or punctuation."
+        },
+        %{role: "user", content: "Generate a title for this session. First message: #{summary}"}
+      ],
       reasoning: %{effort: "minimal"}
     }
 
