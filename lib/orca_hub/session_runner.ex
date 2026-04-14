@@ -708,33 +708,19 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp generate_title(summary) do
-    {url, headers, model} = title_api_config()
-    Logger.info("Title generation using model=#{model} url=#{url}")
+    {url, headers, model, api_type} = title_api_config()
+    Logger.info("Title generation using model=#{model} url=#{url} api_type=#{api_type}")
 
-    resp =
-      Req.post!(url,
-        headers: headers,
-        json: %{
-          model: model,
-          messages: [
-            %{
-              role: "system",
-              content:
-                "Generate a short title (max 6 words) for this coding session. Return only the title, no quotes or punctuation."
-            },
-            %{role: "user", content: summary}
-          ],
-          max_completion_tokens: 200,
-          reasoning: %{effort: "none"}
-        }
-      )
+    {json_body, extract_fn} = title_request_body(model, summary, api_type)
+
+    resp = Req.post!(url, headers: headers, json: json_body)
 
     Logger.info("Title API response: #{inspect(resp.body)}")
 
     case resp.status do
       200 ->
         title =
-          (get_in(resp.body, ["choices", Access.at(0), "message", "content"]) || "")
+          extract_fn.(resp.body)
           |> String.trim()
           |> String.slice(0, 255)
 
@@ -745,6 +731,50 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
+  defp title_request_body(model, summary, :responses) do
+    json = %{
+      model: model,
+      instructions:
+        "Generate a short title (max 6 words) for this coding session. Return only the title, no quotes or punctuation.",
+      input: [%{role: "user", content: summary}],
+      reasoning: %{effort: "minimal"}
+    }
+
+    extract_fn = fn body ->
+      # Responses API: output is a list, find the message type and extract text
+      outputs = body["output"] || []
+
+      Enum.find_value(outputs, "", fn item ->
+        if item["type"] == "message" do
+          get_in(item, ["content", Access.at(0), "text"]) || ""
+        end
+      end)
+    end
+
+    {json, extract_fn}
+  end
+
+  defp title_request_body(model, summary, :chat_completions) do
+    json = %{
+      model: model,
+      messages: [
+        %{
+          role: "system",
+          content:
+            "Generate a short title (max 6 words) for this coding session. Return only the title, no quotes or punctuation."
+        },
+        %{role: "user", content: summary}
+      ],
+      max_completion_tokens: 200
+    }
+
+    extract_fn = fn body ->
+      get_in(body, ["choices", Access.at(0), "message", "content"]) || ""
+    end
+
+    {json, extract_fn}
+  end
+
   defp title_api_config do
     dr_token = Application.get_env(:orca_hub, :datarobot_api_token)
     dr_endpoint = Application.get_env(:orca_hub, :datarobot_endpoint)
@@ -752,17 +782,17 @@ defmodule OrcaHub.SessionRunner do
 
     if dr_token && dr_endpoint do
       Logger.info("Title API: using DataRobot gateway (endpoint=#{dr_endpoint}, token=#{if dr_token, do: "set", else: "MISSING"})")
-      url = String.trim_trailing(dr_endpoint, "/") <> "/genai/llmgw/chat/completions"
+      url = String.trim_trailing(dr_endpoint, "/") <> "/genai/llmgw/responses"
       headers = [{"authorization", "Bearer #{dr_token}"}]
       model = custom_model || "azure/gpt-5-nano-2025-08-07"
-      {url, headers, model}
+      {url, headers, model, :responses}
     else
       api_key = Application.get_env(:orca_hub, :openai_api_key)
       Logger.info("Title API: using OpenAI directly (api_key=#{if api_key, do: "set", else: "MISSING"})")
       url = "https://api.openai.com/v1/chat/completions"
       headers = [{"authorization", "Bearer #{api_key}"}]
       model = custom_model || "gpt-4.1-nano"
-      {url, headers, model}
+      {url, headers, model, :chat_completions}
     end
   end
 
