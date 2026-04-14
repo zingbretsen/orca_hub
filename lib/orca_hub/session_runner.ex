@@ -724,7 +724,8 @@ defmodule OrcaHub.SessionRunner do
             },
             %{role: "user", content: summary}
           ],
-          max_completion_tokens: 200
+          max_completion_tokens: 200,
+          reasoning: %{effort: "none"}
         }
       )
 
