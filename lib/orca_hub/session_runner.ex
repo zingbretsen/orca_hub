@@ -79,7 +79,11 @@ defmodule OrcaHub.SessionRunner do
     initial_state = if saved_messages == [], do: :ready, else: :idle
 
     # Record which node is running this session
-    db_call(init_data, :update_session, [session, %{runner_node: Atom.to_string(node())}])
+    # Set original_node only if not already set (preserves the first node that ran the session)
+    current_node = Atom.to_string(node())
+    node_updates = %{runner_node: current_node}
+    node_updates = if session.original_node, do: node_updates, else: Map.put(node_updates, :original_node, current_node)
+    db_call(init_data, :update_session, [session, node_updates])
 
     AgentPresence.write(session.directory, session_id, %{
       title: session.title,

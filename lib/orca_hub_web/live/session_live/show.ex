@@ -51,6 +51,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:session_node, session_node)
      |> assign(:session_node_name, session_node_name)
      |> assign(:remote_session, remote?)
+     |> assign(:cluster_nodes, Cluster.node_info())
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
      |> assign(:page_title, session.title || (session.project && session.project.name) || session.directory)
@@ -121,7 +122,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {image_paths, file_entries} =
       if remote_session?(socket) do
         session_node = socket.assigns.session_node
-        {transfer_uploads(image_paths, session_node), transfer_uploads(file_entries, session_node)}
+        session_dir = socket.assigns.session.directory
+        {transfer_uploads(image_paths, session_node, session_dir), transfer_uploads(file_entries, session_node, session_dir)}
       else
         {image_paths, file_entries}
       end
@@ -290,6 +292,35 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "Failed to update orchestrator mode")}
+    end
+  end
+
+  def handle_event("change_node", %{"node" => new_node}, socket) do
+    session = socket.assigns.session
+
+    # Stop the session on the current node if it's running
+    if Cluster.session_alive?(socket.assigns.session_node, session.id) do
+      Cluster.stop_session(socket.assigns.session_node, session.id)
+    end
+
+    # Update the runner_node in the database
+    case HubRPC.update_session(session, %{runner_node: new_node}) do
+      {:ok, updated_session} ->
+        # Compute the new session_node for routing
+        new_session_node = Cluster.runner_node_for(updated_session)
+        new_remote? = new_node != Atom.to_string(node())
+        new_node_name = Cluster.node_name(new_node)
+
+        {:noreply,
+         socket
+         |> assign(:session, updated_session)
+         |> assign(:session_node, new_session_node)
+         |> assign(:session_node_name, new_node_name)
+         |> assign(:remote_session, new_remote?)
+         |> put_flash(:info, "Session moved to #{new_node_name}")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to change node")}
     end
   end
 
@@ -853,11 +884,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
-  defp transfer_uploads(paths, target_node) do
+  defp transfer_uploads(paths, target_node, session_dir) do
+    upload_dir = Path.join(session_dir, ".orca_uploads")
+
+    # Create upload directory on remote node
+    Cluster.rpc(target_node, File, :mkdir_p, [upload_dir])
+
     Enum.flat_map(paths, fn local_path ->
       content = File.read!(local_path)
       filename = Path.basename(local_path)
-      remote_path = "/tmp/#{filename}"
+      remote_path = Path.join(upload_dir, filename)
 
       case Cluster.rpc(target_node, File, :write, [remote_path, content]) do
         :ok ->
@@ -880,11 +916,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
   defp consume_uploaded_entries_for(socket, upload_name) do
     case uploaded_entries(socket, upload_name) do
       {[_ | _], _} ->
+        upload_dir = uploads_dir(socket)
+
         paths =
           consume_uploaded_entries(socket, upload_name, fn %{path: tmp_path}, entry ->
             ext = Path.extname(entry.client_name)
             filename = "upload_#{System.unique_integer([:positive, :monotonic])}#{ext}"
-            dest = Path.join("/tmp", filename)
+            dest = Path.join(upload_dir, filename)
             Logger.info("#{upload_name} upload: #{entry.client_name} -> #{dest}")
             File.cp!(tmp_path, dest)
             {:ok, dest}
@@ -900,11 +938,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
   defp consume_uploaded_file_entries(socket) do
     case uploaded_entries(socket, :file) do
       {[_ | _], _} ->
+        upload_dir = uploads_dir(socket)
+
         entries =
           consume_uploaded_entries(socket, :file, fn %{path: tmp_path}, entry ->
             ext = Path.extname(entry.client_name)
             filename = "upload_#{System.unique_integer([:positive, :monotonic])}#{ext}"
-            dest = Path.join("/tmp", filename)
+            dest = Path.join(upload_dir, filename)
             Logger.info("file upload: #{entry.client_name} -> #{dest}")
             File.cp!(tmp_path, dest)
             {:ok, dest}
@@ -914,6 +954,20 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
       _ ->
         {[], socket}
+    end
+  end
+
+  # Returns the uploads directory for the session, creating it if necessary.
+  # For remote sessions, this returns a local temp path; files are transferred
+  # to the remote node's persistent uploads dir by transfer_uploads/3.
+  defp uploads_dir(socket) do
+    if remote_session?(socket) do
+      # For remote sessions, save locally first - transfer_uploads will move to remote
+      "/tmp"
+    else
+      dir = Path.join(socket.assigns.session.directory, ".orca_uploads")
+      File.mkdir_p!(dir)
+      dir
     end
   end
 

@@ -7,15 +7,24 @@
   </:actions>
 </.header>
 
-<div class="flex gap-1 mt-4">
-  <button
-    :for={{label, value} <- [{"Manual", :manual}, {"Automated", :automated}, {"All", :all}]}
-    phx-click="set_filter"
-    phx-value-filter={value}
-    class={["btn btn-sm", @session_filter == value && "btn-active"]}
-  >
-    {label}
-  </button>
+<div class="flex flex-wrap items-center gap-2 mt-4">
+  <div class="flex gap-1">
+    <button
+      :for={{label, value} <- [{"Manual", :manual}, {"Automated", :automated}, {"Orchestrator", :orchestrator}, {"Heartbeat", :heartbeat}, {"All", :all}]}
+      phx-click="set_filter"
+      phx-value-filter={value}
+      class={["btn btn-sm", @session_filter == value && "btn-active"]}
+    >
+      {label}
+    </button>
+  </div>
+  <div :if={MapSet.size(@selected_sessions) > 0} class="flex items-center gap-2 ml-auto">
+    <span class="text-sm text-base-content/70">{MapSet.size(@selected_sessions)} selected</span>
+    <button phx-click="clear_selection" class="btn btn-sm btn-ghost">Clear</button>
+    <button phx-click="archive_selected" class="btn btn-sm btn-error btn-soft" data-confirm={"Archive #{MapSet.size(@selected_sessions)} session(s)?"}>
+      <.icon name="hero-archive-box" class="size-4" /> Archive Selected
+    </button>
+  </div>
 </div>
 
 <div :if={@grouped_sessions == []} class="text-sm text-base-content/50 p-4 text-center">
@@ -47,22 +56,42 @@
   <div :if={main_sessions == [] && worktree_groups == []} class="text-sm text-base-content/50 p-4">
     No active sessions.
   </div>
-  <.table :if={main_sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}-#{node_name || "local"}"} rows={main_sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
+  <.table :if={main_sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}-#{node_name || "local"}"} rows={main_sessions} row_click={MapSet.size(@selected_sessions) == 0 && fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
+    <:col :let={session} label="" class="w-8">
+      <input
+        type="checkbox"
+        class="checkbox checkbox-sm"
+        checked={MapSet.member?(@selected_sessions, session.id)}
+        phx-click="toggle_session"
+        phx-value-id={session.id}
+      />
+    </:col>
     <:col :let={session} label="Title" class="w-3/5">
       <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">{session.title}</.link>
     </:col>
     <:col :let={session} label="Status" class="w-1/5">
-      <span class={[
-        "badge",
-        session.status == "running" && "badge-warning",
-        session.status == "compacting" && "badge-warning",
-        session.status == "waiting" && "badge-info",
-        session.status == "idle" && "badge-success",
-        session.status == "ready" && "badge-ghost",
-        session.status == "error" && "badge-error"
-      ]}>
-        {session.status}
-      </span>
+      <div class="flex flex-wrap gap-1">
+        <span class={[
+          "badge",
+          session.status == "running" && "badge-warning",
+          session.status == "compacting" && "badge-warning",
+          session.status == "waiting" && "badge-info",
+          session.status == "idle" && "badge-success",
+          session.status == "ready" && "badge-ghost",
+          session.status == "error" && "badge-error"
+        ]}>
+          {session.status}
+        </span>
+        <span :if={session.orchestrator} class="badge badge-secondary badge-sm">orchestrator</span>
+        <span :if={MapSet.member?(@heartbeat_session_ids, session.id)} class="badge badge-accent badge-sm animate-pulse">heartbeat</span>
+        <span
+          :if={session.original_node && session.original_node != session.runner_node}
+          class="badge badge-warning badge-sm"
+          title={"Moved from #{OrcaHub.Cluster.node_name(session.original_node)}"}
+        >
+          moved
+        </span>
+      </div>
     </:col>
     <:action :let={session}>
       <.link :if={session.status in ~w(running waiting compacting)} phx-click="stop_session" phx-value-id={session.id} data-confirm="Stop this session?">
@@ -90,22 +119,42 @@
         + New
       </button>
     </div>
-    <.table id={"sessions-wt-#{project.id}-#{branch}"} rows={wt_sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
+    <.table id={"sessions-wt-#{project.id}-#{branch}"} rows={wt_sessions} row_click={MapSet.size(@selected_sessions) == 0 && fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
+      <:col :let={session} label="" class="w-8">
+        <input
+          type="checkbox"
+          class="checkbox checkbox-sm"
+          checked={MapSet.member?(@selected_sessions, session.id)}
+          phx-click="toggle_session"
+          phx-value-id={session.id}
+        />
+      </:col>
       <:col :let={session} label="Title" class="w-3/5">
         <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">{session.title}</.link>
       </:col>
       <:col :let={session} label="Status" class="w-1/5">
-        <span class={[
-          "badge",
-          session.status == "running" && "badge-warning",
-          session.status == "compacting" && "badge-warning",
-          session.status == "waiting" && "badge-info",
-          session.status == "idle" && "badge-success",
-          session.status == "ready" && "badge-ghost",
-          session.status == "error" && "badge-error"
-        ]}>
-          {session.status}
-        </span>
+        <div class="flex flex-wrap gap-1">
+          <span class={[
+            "badge",
+            session.status == "running" && "badge-warning",
+            session.status == "compacting" && "badge-warning",
+            session.status == "waiting" && "badge-info",
+            session.status == "idle" && "badge-success",
+            session.status == "ready" && "badge-ghost",
+            session.status == "error" && "badge-error"
+          ]}>
+            {session.status}
+          </span>
+          <span :if={session.orchestrator} class="badge badge-secondary badge-sm">orchestrator</span>
+          <span :if={MapSet.member?(@heartbeat_session_ids, session.id)} class="badge badge-accent badge-sm animate-pulse">heartbeat</span>
+          <span
+            :if={session.original_node && session.original_node != session.runner_node}
+            class="badge badge-warning badge-sm"
+            title={"Moved from #{OrcaHub.Cluster.node_name(session.original_node)}"}
+          >
+            moved
+          </span>
+        </div>
       </:col>
       <:action :let={session}>
         <.link phx-click="archive" phx-value-id={session.id}>
@@ -205,7 +254,7 @@
   </div>
 </div>
 
-<div :if={@undo_archive_session} class="toast toast-top toast-end z-50">
+<div :if={@undo_archive_session} class="toast toast-bottom toast-end z-50">
   <div class="alert alert-info w-80 sm:w-96">
     <.icon name="hero-archive-box" class="size-5 shrink-0" />
     <span>Session archived</span>

@@ -49,7 +49,44 @@
     ]}>
       {@status}
     </span>
-    <span :if={@remote_session && length(Node.list()) > 0} class="badge badge-ghost badge-outline ml-1" title={@session.runner_node}>
+    <%!-- Node badge with dropdown for switching nodes --%>
+    <div :if={length(@cluster_nodes) > 1} class="dropdown dropdown-end ml-1">
+      <div
+        tabindex="0"
+        role="button"
+        class={[
+          "badge badge-ghost badge-outline cursor-pointer hover:badge-primary",
+          @session.original_node && @session.original_node != @session.runner_node && "badge-warning"
+        ]}
+        title={if @session.original_node && @session.original_node != @session.runner_node,
+          do: "Original: #{Cluster.node_name(@session.original_node)} → Current: #{@session_node_name}",
+          else: @session.runner_node}
+      >
+        {@session_node_name}
+        <.icon name="hero-chevron-down-micro" class="size-3 ml-0.5" />
+      </div>
+      <ul tabindex="0" class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg">
+        <li class="menu-title text-xs">Move session to:</li>
+        <li :for={node_info <- @cluster_nodes}>
+          <button
+            phx-click="change_node"
+            phx-value-node={node_info.node}
+            class={[Atom.to_string(node_info.node) == @session.runner_node && "active"]}
+          >
+            {node_info.name}
+            <span :if={Atom.to_string(node_info.node) == @session.runner_node} class="badge badge-xs">current</span>
+            <span :if={@session.original_node && Atom.to_string(node_info.node) == @session.original_node && @session.original_node != @session.runner_node} class="badge badge-xs badge-warning">original</span>
+          </button>
+        </li>
+        <li :if={@session.original_node && @session.original_node != @session.runner_node} class="mt-2 border-t border-base-content/10 pt-2">
+          <button phx-click="change_node" phx-value-node={@session.original_node} class="text-warning">
+            <.icon name="hero-arrow-uturn-left-micro" class="size-4" />
+            Restore to original node
+          </button>
+        </li>
+      </ul>
+    </div>
+    <span :if={length(@cluster_nodes) == 1 && @remote_session} class="badge badge-ghost badge-outline ml-1" title={@session.runner_node}>
       {@session_node_name}
     </span>
     <span :if={@session.orchestrator} class="badge badge-primary badge-outline ml-1" title="Orchestrator mode: read-only, delegates work to other sessions">orchestrator</span>
@@ -379,7 +416,7 @@
     <%!-- Chat column --%>
     <div class="flex flex-col min-w-0 flex-1" data-resize-panel="left">
       <div id="message-feed" phx-hook="ScrollToBottom" class="flex-1 overflow-y-auto space-y-1 p-4 bg-base-200 rounded-lg text-sm">
-        <MessageComponents.message_feed messages={@messages} />
+        <MessageComponents.message_feed messages={@messages} session_node={@session_node} />
       </div>
 
       <div :if={@plan_mode == :review} class="mt-2 card bg-warning/10 border border-warning/30">
