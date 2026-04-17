@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.SessionLive.Index do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Projects, Sessions, Cluster, HubRPC}
+  alias OrcaHub.{Projects, Sessions, Cluster, HubRPC, SessionHeartbeat}
   alias OrcaHub.Sessions.Session
   alias OrcaHubWeb.NodeFilter
 
@@ -14,8 +14,10 @@ defmodule OrcaHubWeb.SessionLive.Index do
     projects = Cluster.list_projects()
     filter = :manual
 
+    heartbeat_session_ids = get_heartbeat_session_ids()
     tagged_sessions = Cluster.list_sessions(filter)
     filtered_sessions = NodeFilter.filter_tagged(tagged_sessions, socket.assigns.node_filter)
+    filtered_sessions = filter_by_heartbeat(filtered_sessions, filter, heartbeat_session_ids)
     filtered_projects = NodeFilter.filter_tagged(projects, socket.assigns.node_filter)
     node_map = Cluster.build_node_map(filtered_sessions)
     project_node_map = Map.new(filtered_projects, fn {n, p} -> {p.id, n} end)
@@ -35,7 +37,9 @@ defmodule OrcaHubWeb.SessionLive.Index do
        browse_entries: [],
        browse_show_hidden: false,
        undo_archive_session: nil,
-       undo_archive_timer: nil
+       undo_archive_timer: nil,
+       heartbeat_session_ids: heartbeat_session_ids,
+       selected_sessions: MapSet.new()
      )}
   end
 
@@ -124,7 +128,11 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   def handle_event("set_filter", %{"filter" => filter}, socket) do
     filter = String.to_existing_atom(filter)
-    tagged_sessions = Cluster.list_sessions(filter) |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+    heartbeat_session_ids = get_heartbeat_session_ids()
+    tagged_sessions =
+      Cluster.list_sessions(filter)
+      |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+      |> filter_by_heartbeat(filter, heartbeat_session_ids)
     node_map = Cluster.build_node_map(tagged_sessions)
     clustered = socket.assigns.clustered
 
@@ -132,7 +140,9 @@ defmodule OrcaHubWeb.SessionLive.Index do
      assign(socket,
        session_filter: filter,
        grouped_sessions: group_sessions(tagged_sessions, socket.assigns.projects, clustered),
-       node_map: node_map
+       node_map: node_map,
+       heartbeat_session_ids: heartbeat_session_ids,
+       selected_sessions: MapSet.new()
      )}
   end
 
@@ -245,6 +255,63 @@ defmodule OrcaHubWeb.SessionLive.Index do
     {:noreply, assign(socket, browsing: false)}
   end
 
+  def handle_event("toggle_session", %{"id" => id}, socket) do
+    selected = socket.assigns.selected_sessions
+
+    new_selected =
+      if MapSet.member?(selected, id) do
+        MapSet.delete(selected, id)
+      else
+        MapSet.put(selected, id)
+      end
+
+    {:noreply, assign(socket, selected_sessions: new_selected)}
+  end
+
+  def handle_event("toggle_all_sessions", _params, socket) do
+    all_session_ids = get_all_session_ids(socket.assigns.grouped_sessions)
+    selected = socket.assigns.selected_sessions
+
+    new_selected =
+      if MapSet.size(selected) == length(all_session_ids) do
+        MapSet.new()
+      else
+        MapSet.new(all_session_ids)
+      end
+
+    {:noreply, assign(socket, selected_sessions: new_selected)}
+  end
+
+  def handle_event("clear_selection", _params, socket) do
+    {:noreply, assign(socket, selected_sessions: MapSet.new())}
+  end
+
+  def handle_event("archive_selected", _params, socket) do
+    selected = socket.assigns.selected_sessions
+    node_map = socket.assigns.node_map
+
+    for session_id <- selected do
+      node = Map.get(node_map, session_id, node())
+      session = Cluster.get_session!(node, session_id)
+      Cluster.stop_session(node, session_id)
+      Cluster.archive_session(node, session)
+    end
+
+    filter = socket.assigns.session_filter
+    tagged_sessions = Cluster.list_sessions(filter)
+    node_map = Cluster.build_node_map(tagged_sessions)
+    clustered = socket.assigns.clustered
+
+    {:noreply,
+     socket
+     |> assign(
+       grouped_sessions: group_sessions(tagged_sessions, socket.assigns.projects, clustered),
+       node_map: node_map,
+       selected_sessions: MapSet.new()
+     )
+     |> put_flash(:info, "Archived #{MapSet.size(selected)} session(s)")}
+  end
+
   @impl true
   def handle_info(:clear_undo_archive, socket) do
     {:noreply, assign(socket, undo_archive_session: nil, undo_archive_timer: nil)}
@@ -272,8 +339,12 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   defp reload_session_data(socket) do
     filter = socket.assigns.session_filter
+    heartbeat_session_ids = get_heartbeat_session_ids()
     projects = Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
-    tagged_sessions = Cluster.list_sessions(filter) |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+    tagged_sessions =
+      Cluster.list_sessions(filter)
+      |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+      |> filter_by_heartbeat(filter, heartbeat_session_ids)
     node_map = Cluster.build_node_map(tagged_sessions)
     clustered = length(Node.list()) > 0
 
@@ -281,7 +352,8 @@ defmodule OrcaHubWeb.SessionLive.Index do
       projects: projects,
       grouped_sessions: group_sessions(tagged_sessions, projects, clustered),
       node_map: node_map,
-      clustered: clustered
+      clustered: clustered,
+      heartbeat_session_ids: heartbeat_session_ids
     )
   end
 
@@ -408,5 +480,29 @@ defmodule OrcaHubWeb.SessionLive.Index do
       end
 
     assign(socket, browsing: true, browse_path: path, browse_entries: entries)
+  end
+
+  defp get_heartbeat_session_ids do
+    SessionHeartbeat.list_all()
+    |> Enum.map(fn {session_id, _info} -> session_id end)
+    |> MapSet.new()
+  end
+
+  defp filter_by_heartbeat(tagged_sessions, :heartbeat, heartbeat_session_ids) do
+    Enum.filter(tagged_sessions, fn {_node, session} ->
+      MapSet.member?(heartbeat_session_ids, session.id)
+    end)
+  end
+
+  defp filter_by_heartbeat(tagged_sessions, _other_filter, _heartbeat_session_ids) do
+    tagged_sessions
+  end
+
+  defp get_all_session_ids(grouped_sessions) do
+    Enum.flat_map(grouped_sessions, fn {{_node_name, _project}, main_sessions, worktree_groups} ->
+      main_ids = Enum.map(main_sessions, & &1.id)
+      worktree_ids = Enum.flat_map(worktree_groups, fn {_dir, _label, sessions} -> Enum.map(sessions, & &1.id) end)
+      main_ids ++ worktree_ids
+    end)
   end
 end

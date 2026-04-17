@@ -6,6 +6,7 @@ defmodule OrcaHubWeb.MessageComponents do
   alias OrcaHubWeb.Markdown
 
   attr :messages, :list, required: true
+  attr :session_node, :atom, default: nil
 
   def message_feed(assigns) do
     # Group subagent messages by parent_tool_use_id
@@ -50,9 +51,9 @@ defmodule OrcaHubWeb.MessageComponents do
     <div :for={msg <- @top_level}>
       <%= case msg["type"] do %>
         <% "user" -> %>
-          <.user_message msg={msg} />
+          <.user_message msg={msg} session_node={@session_node} />
         <% "assistant" -> %>
-          <.assistant_message msg={msg} subagent_map={@subagent_map} />
+          <.assistant_message msg={msg} subagent_map={@subagent_map} session_node={@session_node} />
         <% "result" -> %>
           <.result_message msg={msg} />
         <% "system" -> %>
@@ -71,6 +72,7 @@ defmodule OrcaHubWeb.MessageComponents do
   end
 
   attr :msg, :map, required: true
+  attr :session_node, :atom, default: nil
 
   defp user_message(assigns) do
     raw_content = get_in(assigns.msg, ["message", "content"])
@@ -115,7 +117,7 @@ defmodule OrcaHubWeb.MessageComponents do
       <div class="chat-header text-xs opacity-50 mb-1">You <.timestamp value={@msg["timestamp"]} /></div>
       <div class="chat-bubble chat-bubble-primary">
         <div :for={{type, path} <- @attachments} class="mb-2">
-          <img :if={type == :image} src={image_data_uri(path)} class="max-w-xs max-h-48 rounded" />
+          <img :if={type == :image} src={image_data_uri(path, @session_node)} class="max-w-xs max-h-48 rounded" />
           <div :if={type == :file} class="flex items-center gap-2 text-xs opacity-80 bg-primary-content/10 rounded px-2 py-1">
             <.icon name="hero-paper-clip-micro" class="size-3" />
             {Path.basename(path)}
@@ -135,6 +137,7 @@ defmodule OrcaHubWeb.MessageComponents do
 
   attr :msg, :map, required: true
   attr :subagent_map, :map, default: %{}
+  attr :session_node, :atom, default: nil
 
   defp assistant_message(assigns) do
     content_blocks = get_in(assigns.msg, ["message", "content"]) || []
@@ -195,7 +198,7 @@ defmodule OrcaHubWeb.MessageComponents do
       <.tool_use_block tool={tool} />
     </div>
     <div :for={agent <- @agent_tools}>
-      <.subagent_block tool={agent} messages={Map.get(@subagent_map, agent["id"], [])} />
+      <.subagent_block tool={agent} messages={Map.get(@subagent_map, agent["id"], [])} session_node={@session_node} />
     </div>
     """
   end
@@ -231,6 +234,7 @@ defmodule OrcaHubWeb.MessageComponents do
 
   attr :tool, :map, required: true
   attr :messages, :list, required: true
+  attr :session_node, :atom, default: nil
 
   defp subagent_block(assigns) do
     description = get_in(assigns.tool, ["input", "description"]) || "Subagent"
@@ -295,7 +299,7 @@ defmodule OrcaHubWeb.MessageComponents do
           {@progress_text}
         </div>
         <div class="mt-2 ml-2 pl-3 border-l-2 border-warning/30">
-          <.message_feed messages={@real_messages} />
+          <.message_feed messages={@real_messages} session_node={@session_node} />
         </div>
       </details>
     </div>
@@ -669,8 +673,16 @@ defmodule OrcaHubWeb.MessageComponents do
     {clean_text, attachments}
   end
 
-  defp image_data_uri(path) do
-    case File.read(path) do
+  defp image_data_uri(path, session_node) do
+    # Read file locally or via RPC for remote sessions
+    result =
+      if session_node == nil || session_node == node() do
+        File.read(path)
+      else
+        OrcaHub.Cluster.rpc(session_node, File, :read, [path])
+      end
+
+    case result do
       {:ok, data} ->
         ext = path |> Path.extname() |> String.downcase()
 
