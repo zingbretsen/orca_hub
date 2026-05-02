@@ -51,25 +51,6 @@ defmodule OrcaHub.MCP.Tools do
         }
       },
       %{
-        "name" => "get_human_feedback",
-        "description" =>
-          "Ask a human operator a question and wait for their response. The question appears in the OrcaHub queue for a human to answer. This call blocks until the human responds.\n\nUse this tool when you need specific feedback or a decision from the user about your implementation — for example, choosing between approaches, clarifying requirements, or confirming a design choice. The human will only see the question you send, with no other context, so make your question self-contained and include any relevant details they'd need to answer. Do NOT use this tool for general status updates or thinking out loud — those can be regular assistant messages.",
-        "inputSchema" => %{
-          "type" => "object",
-          "properties" => %{
-            "question" => %{
-              "type" => "string",
-              "description" => "The question to ask the human operator"
-            },
-            "session_id" => %{
-              "type" => "integer",
-              "description" => "Optional OrcaHub session ID to associate the feedback request with"
-            }
-          },
-          "required" => ["question"]
-        }
-      },
-      %{
         "name" => "get_issue",
         "description" =>
           "Get the current state of an issue, including its description, approaches tried by previous sessions, and notes. Use this at the start of a session to understand what has already been attempted before starting work.",
@@ -410,55 +391,6 @@ defmodule OrcaHub.MCP.Tools do
         {:error, reason} ->
           error("Failed to send Gotify notification: #{inspect(reason)}")
       end
-    end
-  end
-
-  def call("get_human_feedback", args, state) do
-    question = args["question"]
-    session_id = args["session_id"]
-
-    {:ok, request} =
-      HubRPC.create_feedback_request(%{
-        question: question,
-        session_id: session_id,
-        mcp_session_id: state.session_id
-      })
-
-    # Broadcast so the Queue UI picks it up
-    Phoenix.PubSub.broadcast(OrcaHub.PubSub, "feedback_requests", {:new_feedback_request, request})
-
-    # Notify SessionRunner to transition to :waiting (may be on a different node)
-    if session_id do
-      case Cluster.find_session(session_id) do
-        {runner_node, _} ->
-          Cluster.rpc(runner_node, OrcaHub.SessionRunner, :notify_feedback_requested, [session_id])
-
-        nil ->
-          OrcaHub.SessionRunner.notify_feedback_requested(session_id)
-      end
-    end
-
-    # Subscribe and wait for the response
-    Phoenix.PubSub.subscribe(OrcaHub.PubSub, "feedback:#{request.id}")
-
-    result =
-      receive do
-        {:feedback_response, responded_request} ->
-          {:ok, responded_request.response}
-
-        {:feedback_cancelled, _request} ->
-          :cancelled
-      after
-        :timer.hours(4) ->
-          :timeout
-      end
-
-    Phoenix.PubSub.unsubscribe(OrcaHub.PubSub, "feedback:#{request.id}")
-
-    case result do
-      {:ok, response} -> text(response)
-      :cancelled -> error("The user cancelled this feedback request.")
-      :timeout -> error("Feedback request timed out after 4 hours with no response.")
     end
   end
 

@@ -21,7 +21,7 @@
   <div :if={MapSet.size(@selected_sessions) > 0} class="flex items-center gap-2 ml-auto">
     <span class="text-sm text-base-content/70">{MapSet.size(@selected_sessions)} selected</span>
     <button phx-click="clear_selection" class="btn btn-sm btn-ghost">Clear</button>
-    <button phx-click="archive_selected" class="btn btn-sm btn-error btn-soft" data-confirm={"Archive #{MapSet.size(@selected_sessions)} session(s)?"}>
+    <button phx-click="archive_selected" class="btn btn-sm btn-error btn-soft">
       <.icon name="hero-archive-box" class="size-4" /> Archive Selected
     </button>
   </div>
@@ -97,7 +97,7 @@
       <.link :if={session.status in ~w(running waiting compacting)} phx-click="stop_session" phx-value-id={session.id} data-confirm="Stop this session?">
         Stop
       </.link>
-      <.link phx-click="archive" phx-value-id={session.id} data-confirm="Archive this session?">
+      <.link phx-click="archive" phx-value-id={session.id}>
         Archive
       </.link>
     </:action>

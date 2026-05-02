@@ -70,6 +70,7 @@ defmodule OrcaHub.HubRPC do
   def create_project(attrs), do: call(OrcaHub.Projects, :create_project, [attrs])
   def update_project(project, attrs), do: call(OrcaHub.Projects, :update_project, [project, attrs])
   def delete_project(project), do: call(OrcaHub.Projects, :delete_project, [project])
+  def search_projects(query), do: call(OrcaHub.Projects, :search, [query])
 
   # -------------------------------------------------------------------
   # Issues

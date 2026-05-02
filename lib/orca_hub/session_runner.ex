@@ -42,14 +42,6 @@ defmodule OrcaHub.SessionRunner do
     GenStatem.call(via(session_id), :interrupt)
   end
 
-  def notify_feedback_requested(session_id) do
-    GenStatem.cast(via(session_id), :feedback_requested)
-  end
-
-  def notify_feedback_answered(session_id) do
-    GenStatem.cast(via(session_id), :feedback_answered)
-  end
-
   def update_model(session_id, model) do
     GenStatem.cast(via(session_id), {:update_model, model})
   end
@@ -228,127 +220,8 @@ defmodule OrcaHub.SessionRunner do
 
   def running(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
   def running(:cast, {:update_orchestrator, orchestrator}, data), do: {:keep_state, %{data | orchestrator: orchestrator}}
-
-  def running(:cast, :feedback_requested, data) do
-    update_session_status(data, %{status: "waiting"})
-    broadcast(data.session_id, {:status, :waiting})
-    AgentPresence.update_status(data.directory, data.session_id, "waiting")
-    {:next_state, :waiting, data}
-  end
-
+  def running(:cast, _msg, _data), do: :keep_state_and_data
   def running(:info, _msg, _data), do: :keep_state_and_data
-
-  # ── :waiting state ───────────────────────────────────────────────────
-  # Agent has asked a question via get_human_feedback. The port may still
-  # be open (agent keeps working) or may have already exited.
-
-  def waiting({:call, from}, {:send_message, prompt}, %{port: port} = data) when not is_nil(port) do
-    user_event = make_user_event(prompt)
-    persist_message(data,user_event)
-    broadcast(data.session_id, {:event, user_event})
-
-    send_sigint(port)
-
-    update_session_status(data, %{status: "running"})
-    broadcast(data.session_id, {:status, :running})
-    AgentPresence.update_status(data.directory, data.session_id, "running")
-
-    {:next_state, :running,
-     %{data |
-       pending_prompts: data.pending_prompts ++ [prompt],
-       messages: data.messages ++ [user_event]
-     },
-     [{:reply, from, :ok}]}
-  end
-
-  def waiting({:call, from}, {:send_message, prompt}, data) do
-    start_running(from, prompt, data)
-  end
-
-  def waiting({:call, from}, :interrupt, %{port: port}) when not is_nil(port) do
-    send_sigint(port)
-    {:keep_state_and_data, [{:reply, from, :ok}]}
-  end
-
-  def waiting({:call, from}, :interrupt, _data) do
-    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
-  end
-
-  def waiting({:call, from}, :get_state, data) do
-    {:keep_state_and_data, [{:reply, from, state_snapshot(:waiting, data)}]}
-  end
-
-  def waiting(:info, {port, {:data, raw}}, %{port: port} = data) do
-    {events, new_buffer} = StreamParser.parse(raw, data.buffer)
-    error_lines = extract_non_json_lines(raw, data.buffer)
-
-    error_output =
-      if error_lines != "" do
-        data.error_output <> error_lines
-      else
-        data.error_output
-      end
-
-    new_data =
-      Enum.reduce(events, %{data | buffer: new_buffer, error_output: error_output}, fn event, acc ->
-        handle_stream_event(event, acc)
-      end)
-
-    {:keep_state, new_data}
-  end
-
-  def waiting(:info, {port, {:exit_status, code}}, %{port: port} = data) do
-    Logger.info("Claude CLI exited (code #{code}) for session #{data.session_id} (waiting for feedback)")
-
-    case data.pending_prompts do
-      [_ | _] = prompts ->
-        combined_prompt = Enum.join(prompts, "\n\n\n")
-        Logger.info("Auto-resuming session #{data.session_id} with #{length(prompts)} pending prompt(s)")
-        new_port = open_port(combined_prompt, data)
-        {:keep_state, %{data | port: new_port, buffer: "", error_output: "", pending_prompts: []}}
-
-      [] ->
-        # CLI finished but question is still pending — stay in :waiting with port: nil
-        data = handle_cli_error(code, data)
-
-        session = db_call(data, :get_session!, [data.session_id])
-
-        if code == 0 && (session.title == nil || session.title == "") do
-          maybe_generate_title(data, data.first_prompt)
-        end
-
-        {:keep_state, %{data | port: nil}}
-    end
-  end
-
-  def waiting(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
-  def waiting(:cast, {:update_orchestrator, orchestrator}, data), do: {:keep_state, %{data | orchestrator: orchestrator}}
-
-  def waiting(:cast, :feedback_answered, data) do
-    case db_call(data, :list_pending_feedback_for_session, [data.session_id]) do
-      [_ | _] ->
-        # More questions pending — stay in :waiting
-        :keep_state_and_data
-
-      [] when data.port != nil ->
-        # All answered, agent still running — back to :running
-        update_session_status(data, %{status: "running"})
-        broadcast(data.session_id, {:status, :running})
-        AgentPresence.update_status(data.directory, data.session_id, "running")
-        {:next_state, :running, data}
-
-      [] ->
-        # All answered, agent finished — go to :idle
-        update_session_status(data, %{status: "idle"})
-        broadcast(data.session_id, {:status, :idle})
-        AgentPresence.update_status(data.directory, data.session_id, "idle")
-        {:next_state, :idle, data}
-    end
-  end
-
-  def waiting(:cast, :feedback_requested, _data), do: :keep_state_and_data
-
-  def waiting(:info, _msg, _data), do: :keep_state_and_data
 
   # ── :error state ─────────────────────────────────────────────────────
   # Same as idle — accepts new messages to retry, rejects interrupts.

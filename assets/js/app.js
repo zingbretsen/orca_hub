@@ -277,6 +277,280 @@ let Hooks = {
       this.el.style.height = this.el.scrollHeight + "px"
     }
   },
+  Autocomplete: {
+    mounted() {
+      this.dropdown = document.getElementById("autocomplete-dropdown")
+      this.selectedIndex = 0
+      this.items = []
+      this.trigger = null
+      this.triggerPos = 0
+      this.debounceTimer = null
+
+      // Initialize textarea resize (same as AutoResize hook)
+      this.resize()
+      this.el.focus()
+
+      this.el.addEventListener("input", (e) => {
+        this.resize()
+        this.onInput(e)
+      })
+      this.el.addEventListener("keydown", (e) => {
+        // Handle Ctrl/Cmd+Enter or Shift+Enter to submit (from AutoResize)
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey || e.shiftKey)) {
+          e.preventDefault()
+          this.el.closest("form").dispatchEvent(new Event("submit", {bubbles: true, cancelable: true}))
+          return
+        }
+        this.onKeydown(e)
+      })
+      this.el.addEventListener("blur", () => {
+        // Delay hide to allow click on dropdown items
+        setTimeout(() => this.hideDropdown(), 150)
+      })
+
+      this.handleEvent("clear-prompt", () => {
+        this.el.value = ""
+        this.resize()
+        this.el.focus()
+        this.hideDropdown()
+      })
+
+      this.handleEvent("autocomplete_results", ({ items, type }) => {
+        this.items = items || []
+        this.selectedIndex = 0
+        if (this.items.length > 0) {
+          this.showDropdown(type)
+        } else {
+          this.hideDropdown()
+        }
+      })
+    },
+
+    updated() {
+      this.el.focus()
+    },
+
+    resize() {
+      this.el.style.height = "auto"
+      this.el.style.height = this.el.scrollHeight + "px"
+    },
+
+    onInput(e) {
+      const value = this.el.value
+      const cursorPos = this.el.selectionStart
+
+      // Clear pending debounce
+      if (this.debounceTimer) clearTimeout(this.debounceTimer)
+
+      // Check for triggers at cursor position
+      const beforeCursor = value.substring(0, cursorPos)
+
+      // Check for /command at start of message
+      if (beforeCursor.startsWith("/") && !beforeCursor.includes(" ")) {
+        this.trigger = "/"
+        this.triggerPos = 0
+        const query = beforeCursor.substring(1)
+        this.debounceTimer = setTimeout(() => {
+          this.pushEvent("autocomplete", { type: "command", query })
+        }, 50)
+        return
+      }
+
+      // Check for ## (project) - must check before # (session)
+      const projectMatch = beforeCursor.match(/##(\S*)$/)
+      if (projectMatch) {
+        this.trigger = "##"
+        this.triggerPos = cursorPos - projectMatch[0].length
+        const query = projectMatch[1]
+        this.debounceTimer = setTimeout(() => {
+          this.pushEvent("autocomplete", { type: "project", query })
+        }, 150)
+        return
+      }
+
+      // Check for # (session)
+      const sessionMatch = beforeCursor.match(/#(\S*)$/)
+      if (sessionMatch && !beforeCursor.match(/##\S*$/)) {
+        this.trigger = "#"
+        this.triggerPos = cursorPos - sessionMatch[0].length
+        const query = sessionMatch[1]
+        this.debounceTimer = setTimeout(() => {
+          this.pushEvent("autocomplete", { type: "session", query })
+        }, 150)
+        return
+      }
+
+      // Check for @ (file)
+      const fileMatch = beforeCursor.match(/@(\S*)$/)
+      if (fileMatch) {
+        this.trigger = "@"
+        this.triggerPos = cursorPos - fileMatch[0].length
+        const query = fileMatch[1]
+        this.debounceTimer = setTimeout(() => {
+          this.pushEvent("autocomplete", { type: "file", query })
+        }, 150)
+        return
+      }
+
+      // No trigger found
+      this.hideDropdown()
+    },
+
+    onKeydown(e) {
+      if (!this.dropdown || this.dropdown.classList.contains("hidden")) return
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault()
+        this.selectedIndex = Math.min(this.selectedIndex + 1, this.items.length - 1)
+        this.renderDropdown()
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault()
+        this.selectedIndex = Math.max(this.selectedIndex - 1, 0)
+        this.renderDropdown()
+      } else if (e.key === "Enter" || e.key === "Tab") {
+        if (this.items.length > 0) {
+          e.preventDefault()
+          this.selectItem(this.items[this.selectedIndex])
+        }
+      } else if (e.key === "Escape") {
+        e.preventDefault()
+        this.hideDropdown()
+      }
+    },
+
+    selectItem(item) {
+      if (!item) return
+
+      const value = this.el.value
+      const cursorPos = this.el.selectionStart
+      const beforeTrigger = value.substring(0, this.triggerPos)
+      const afterCursor = value.substring(cursorPos)
+
+      let insertion = item.value
+      // Add a space after the insertion if there isn't one
+      if (!afterCursor.startsWith(" ") && !afterCursor.startsWith("\n")) {
+        insertion += " "
+      }
+
+      // For commands, replace from start
+      if (this.trigger === "/") {
+        this.el.value = insertion + afterCursor
+        this.el.selectionStart = this.el.selectionEnd = insertion.length
+      } else {
+        this.el.value = beforeTrigger + insertion + afterCursor
+        this.el.selectionStart = this.el.selectionEnd = beforeTrigger.length + insertion.length
+      }
+
+      // Trigger resize and hide dropdown
+      this.el.dispatchEvent(new Event("input", { bubbles: true }))
+      this.hideDropdown()
+      this.el.focus()
+
+      // Handle special command actions
+      if (this.trigger === "/" && item.action) {
+        this.pushEvent("autocomplete_action", { action: item.action })
+        // Clear the input since we're executing an action
+        this.el.value = ""
+        this.el.dispatchEvent(new Event("input", { bubbles: true }))
+      }
+    },
+
+    showDropdown(type) {
+      if (!this.dropdown) return
+      this.renderDropdown()
+      this.dropdown.classList.remove("hidden")
+    },
+
+    hideDropdown() {
+      if (!this.dropdown) return
+      this.dropdown.classList.add("hidden")
+      this.items = []
+      this.trigger = null
+    },
+
+    renderDropdown() {
+      if (!this.dropdown) return
+
+      const typeLabels = {
+        "command": "Commands",
+        "file": "Files",
+        "session": "Sessions",
+        "project": "Projects"
+      }
+
+      const typeIcons = {
+        "command": "hero-command-line",
+        "file": "hero-document",
+        "session": "hero-chat-bubble-left-right",
+        "project": "hero-folder"
+      }
+
+      let html = `<div class="px-2 py-1 text-xs text-base-content/50 border-b border-base-300">${typeLabels[this.items[0]?.type] || "Suggestions"}</div>`
+      html += '<div class="max-h-48 overflow-y-auto">'
+
+      this.items.forEach((item, idx) => {
+        const isSelected = idx === this.selectedIndex
+        const bgClass = isSelected ? "bg-primary/10 text-primary" : "hover:bg-base-300/50"
+        const icon = item.icon || typeIcons[item.type] || "hero-sparkles"
+
+        html += `
+          <button
+            type="button"
+            class="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-left ${bgClass} transition-colors"
+            data-index="${idx}"
+          >
+            <span class="size-4 shrink-0 opacity-60">
+              <svg class="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                ${this.getIconPath(icon)}
+              </svg>
+            </span>
+            <span class="flex-1 truncate">${this.escapeHtml(item.label)}</span>
+            ${item.hint ? `<span class="text-xs text-base-content/40 truncate">${this.escapeHtml(item.hint)}</span>` : ""}
+          </button>
+        `
+      })
+
+      html += '</div>'
+      html += `<div class="flex items-center gap-3 px-2 py-1 border-t border-base-300 text-xs opacity-40">
+        <span><kbd class="kbd kbd-xs">↑↓</kbd> navigate</span>
+        <span><kbd class="kbd kbd-xs">↵</kbd> select</span>
+        <span><kbd class="kbd kbd-xs">esc</kbd> close</span>
+      </div>`
+
+      this.dropdown.innerHTML = html
+
+      // Add click handlers
+      this.dropdown.querySelectorAll("button[data-index]").forEach(btn => {
+        btn.addEventListener("mousedown", (e) => {
+          e.preventDefault()
+          const idx = parseInt(btn.dataset.index, 10)
+          this.selectItem(this.items[idx])
+        })
+      })
+    },
+
+    getIconPath(iconName) {
+      // Simple SVG paths for common icons
+      const paths = {
+        "hero-command-line": '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z"/>',
+        "hero-document": '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>',
+        "hero-chat-bubble-left-right": '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 0 1-.825-.242m9.345-8.334a2.126 2.126 0 0 0-.476-.095 48.64 48.64 0 0 0-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0 0 11.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155"/>',
+        "hero-folder": '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/>',
+        "hero-sparkles": '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/>',
+        "hero-check": '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m4.5 12.75 6 6 9-13.5"/>',
+        "hero-plus-circle": '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v6m3-3H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>',
+        "hero-trash": '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/>',
+        "hero-cpu-chip": '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h10.5a2.25 2.25 0 0 0 2.25-2.25V6.75a2.25 2.25 0 0 0-2.25-2.25H6.75A2.25 2.25 0 0 0 4.5 6.75v10.5a2.25 2.25 0 0 0 2.25 2.25Zm.75-12h9v9h-9v-9Z"/>'
+      }
+      return paths[iconName] || paths["hero-sparkles"]
+    },
+
+    escapeHtml(text) {
+      const div = document.createElement("div")
+      div.textContent = text
+      return div.innerHTML
+    }
+  },
   DropTarget: {
     mounted() {
       const imageTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"]

@@ -13,6 +13,17 @@
   </:subtitle>
 </.header>
 
+<div class="flex gap-1 mt-4">
+  <button
+    :for={{label, value} <- [{"Orchestrators", :orchestrator}, {"All", :all}]}
+    phx-click="set_filter"
+    phx-value-filter={value}
+    class={["btn btn-sm", @queue_filter == value && "btn-active"]}
+  >
+    {label}
+  </button>
+</div>
+
 <%!-- Feedback requests --%>
 <div :for={request <- @feedback_requests} id={"feedback-#{request.id}"} class="card bg-warning/10 shadow-sm border border-warning/30 mt-4">
   <div class="card-body p-4 gap-3">

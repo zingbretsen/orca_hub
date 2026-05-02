@@ -447,6 +447,132 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  # -- Autocomplete events --
+
+  def handle_event("autocomplete", %{"type" => "command", "query" => query}, socket) do
+    commands = [
+      %{label: "/commit", value: "/commit", hint: "Commit changes", action: "commit", type: "command", icon: "hero-check"},
+      %{label: "/new", value: "/new", hint: "New session in same directory", action: "new_session", type: "command", icon: "hero-plus-circle"},
+      %{label: "/clear", value: "/clear", hint: "Clear conversation", action: "clear", type: "command", icon: "hero-trash"},
+      %{label: "/model", value: "/model ", hint: "Change model", type: "command", icon: "hero-cpu-chip"}
+    ]
+
+    filtered =
+      if query == "" do
+        commands
+      else
+        query_lower = String.downcase(query)
+        Enum.filter(commands, fn cmd ->
+          String.contains?(String.downcase(cmd.label), query_lower)
+        end)
+      end
+
+    {:noreply, push_event(socket, "autocomplete_results", %{items: filtered, type: "command"})}
+  end
+
+  def handle_event("autocomplete", %{"type" => "file", "query" => query}, socket) do
+    socket = ensure_file_tree_loaded(socket)
+    dir = socket.assigns.session.directory
+    project = %Projects.Project{directory: dir}
+
+    # Get flat file list and filter
+    session_node = socket.assigns[:session_node] || node()
+    files = Cluster.rpc(session_node, Projects, :list_editable_files, [project])
+
+    filtered =
+      if query == "" do
+        Enum.take(files, 10)
+      else
+        query_lower = String.downcase(query)
+        files
+        |> Enum.filter(fn path ->
+          String.contains?(String.downcase(path), query_lower)
+        end)
+        |> Enum.take(10)
+      end
+
+    items = Enum.map(filtered, fn path ->
+      %{
+        label: path,
+        value: "@#{path}",
+        hint: Path.dirname(path),
+        type: "file"
+      }
+    end)
+
+    {:noreply, push_event(socket, "autocomplete_results", %{items: items, type: "file"})}
+  end
+
+  def handle_event("autocomplete", %{"type" => "session", "query" => query}, socket) do
+    # Search sessions, preferring same project
+    opts = %{limit: 10, include_archived: false}
+
+    sessions =
+      if query == "" do
+        # When no query, show sessions from the same project/directory
+        HubRPC.search_sessions_by_directory(socket.assigns.session.directory, opts)
+      else
+        HubRPC.search_all_sessions(Map.put(opts, :query, query))
+      end
+
+    # Filter out current session
+    current_id = socket.assigns.session.id
+
+    items =
+      sessions
+      |> Enum.reject(&(&1.id == current_id))
+      |> Enum.map(fn s ->
+        label = s.title || Path.basename(s.directory)
+        hint = if s.project, do: s.project.name, else: Path.basename(s.directory)
+
+        %{
+          label: label,
+          value: s.id,
+          hint: hint,
+          type: "session"
+        }
+      end)
+
+    {:noreply, push_event(socket, "autocomplete_results", %{items: items, type: "session"})}
+  end
+
+  def handle_event("autocomplete", %{"type" => "project", "query" => query}, socket) do
+    projects =
+      if query == "" do
+        HubRPC.list_projects() |> Enum.take(10)
+      else
+        HubRPC.search_projects(query)
+      end
+
+    items = Enum.map(projects, fn p ->
+      %{
+        label: p.name,
+        value: "###{p.name}",
+        hint: Path.basename(p.directory),
+        type: "project"
+      }
+    end)
+
+    {:noreply, push_event(socket, "autocomplete_results", %{items: items, type: "project"})}
+  end
+
+  def handle_event("autocomplete_action", %{"action" => "commit"}, socket) do
+    handle_event("commit", %{}, socket)
+  end
+
+  def handle_event("autocomplete_action", %{"action" => "new_session"}, socket) do
+    handle_event("new_session", %{}, socket)
+  end
+
+  def handle_event("autocomplete_action", %{"action" => "clear"}, socket) do
+    # Clear is a no-op for now - would need to implement message clearing
+    {:noreply, put_flash(socket, :info, "Clear not implemented yet")}
+  end
+
+  def handle_event("autocomplete_action", _params, socket) do
+    {:noreply, socket}
+  end
+
   def handle_event("open_terminal", _params, socket) do
     if socket.assigns.show_terminal do
       {:noreply, assign(socket, show_terminal: false)}

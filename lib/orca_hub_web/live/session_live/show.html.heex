@@ -199,7 +199,7 @@
       <button :if={@session.archived_at} phx-click="unarchive" class="btn btn-ghost btn-sm btn-circle" title="Unarchive session">
         <.icon name="hero-archive-box-arrow-down" class="size-5" />
       </button>
-      <button :if={!@session.archived_at} phx-click="archive" data-confirm="Archive this session? It will be stopped and hidden from the session list." class="btn btn-ghost btn-sm btn-circle" title="Archive session">
+      <button :if={!@session.archived_at} phx-click="archive" class="btn btn-ghost btn-sm btn-circle" title="Archive session">
         <.icon name="hero-archive-box" class="size-5" />
       </button>
     </:actions>
@@ -530,16 +530,20 @@
               </li>
             </ul>
           </div>
-          <div class="flex-1 min-w-0" id="prompt-wrapper" phx-update="ignore">
+          <div class="flex-1 min-w-0 relative" id="prompt-wrapper" phx-update="ignore">
             <textarea
               name="prompt"
-              placeholder="Send a message..."
+              placeholder="Send a message... (@ files, # sessions, ## projects, / commands)"
               class="textarea textarea-bordered w-full resize-none overflow-y-auto leading-normal max-h-[7.5rem]"
               autofocus
               rows="1"
-              phx-hook="AutoResize"
+              phx-hook="Autocomplete"
               id="prompt-input"
             ></textarea>
+            <div
+              id="autocomplete-dropdown"
+              class="hidden absolute bottom-full left-0 right-0 mb-1 bg-base-100 rounded-lg shadow-xl border border-base-300 overflow-hidden z-50"
+            ></div>
           </div>
           <button :if={@status in [:running, :compacting]} type="button" phx-click="interrupt" class="btn btn-error btn-square" title="Interrupt">
             <.icon name="hero-stop" class="size-5" />

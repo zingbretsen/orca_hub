@@ -7,7 +7,8 @@ defmodule OrcaHubWeb.QueueLive do
   @impl true
   def mount(_params, _session, socket) do
     node_filter = socket.assigns.node_filter
-    {entries, node_map} = load_entries_with_nodes(node_filter)
+    queue_filter = :all
+    {entries, node_map} = load_entries_with_nodes(node_filter, queue_filter)
 
     tagged_feedback = Cluster.list_pending_feedback() |> NodeFilter.filter_tagged(node_filter)
     feedback_requests = Enum.map(tagged_feedback, fn {_n, req} -> req end)
@@ -36,7 +37,8 @@ defmodule OrcaHubWeb.QueueLive do
      |> assign(:tts_autoplay_pending, false)
      |> assign(:page_title, "Queue")
      |> assign(:undo_archive_session, nil)
-     |> assign(:undo_archive_timer, nil)}
+     |> assign(:undo_archive_timer, nil)
+     |> assign(:queue_filter, queue_filter)}
   end
 
   @impl true
@@ -59,7 +61,7 @@ defmodule OrcaHubWeb.QueueLive do
       session = Cluster.get_session!(node, session_id)
       Cluster.unarchive_session(node, session)
 
-      {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter)
+      {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
 
       {:noreply,
        socket
@@ -123,7 +125,7 @@ defmodule OrcaHubWeb.QueueLive do
     session = Cluster.get_session!(node, id)
     Cluster.defer_session(node, session)
 
-    {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter)
+    {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
     {:noreply, socket |> assign(:entries, entries) |> assign(:node_map, node_map)}
   end
 
@@ -271,6 +273,17 @@ defmodule OrcaHubWeb.QueueLive do
     {:noreply, assign(socket, :show_all, !socket.assigns.show_all)}
   end
 
+  def handle_event("set_filter", %{"filter" => filter}, socket) do
+    filter = String.to_existing_atom(filter)
+    {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter, filter)
+
+    {:noreply,
+     socket
+     |> assign(:queue_filter, filter)
+     |> assign(:entries, entries)
+     |> assign(:node_map, node_map)}
+  end
+
   def handle_event("validate", %{"prompt" => prompt}, socket) do
     {:noreply, assign(socket, :prompt, prompt)}
   end
@@ -306,7 +319,7 @@ defmodule OrcaHubWeb.QueueLive do
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   def reload_for_node_filter(socket) do
-    {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter)
+    {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
     tagged_feedback = Cluster.list_pending_feedback() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
     feedback_requests = Enum.map(tagged_feedback, fn {_n, req} -> req end)
     feedback_node_map = Cluster.build_node_map(tagged_feedback)
@@ -320,7 +333,7 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   defp handle_status_change(:idle, socket) do
-    {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter)
+    {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
 
     # Subscribe to any new sessions we weren't tracking
     existing_ids = MapSet.new(socket.assigns.entries, fn {s, _} -> s.id end)
@@ -357,9 +370,17 @@ defmodule OrcaHubWeb.QueueLive do
     assign(socket, undo_archive_timer: nil)
   end
 
-  defp load_entries_with_nodes(node_filter) do
+  defp load_entries_with_nodes(node_filter, queue_filter) do
     tagged = Cluster.list_idle_sessions_with_last_assistant_message() |> NodeFilter.filter_tagged(node_filter)
     # tagged is [{node, {session, msg}}, ...]
+
+    # Apply queue filter
+    tagged =
+      case queue_filter do
+        :orchestrator -> Enum.filter(tagged, fn {_n, {session, _msg}} -> session.orchestrator end)
+        :all -> tagged
+      end
+
     node_map = Map.new(tagged, fn {n, {session, _msg}} -> {session.id, n} end)
     entries = Enum.map(tagged, fn {_n, entry} -> entry end)
     {entries, node_map}
