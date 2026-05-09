@@ -14,6 +14,15 @@ defmodule OrcaHub.TerminalRunner do
 
   # API
 
+  def child_spec(opts) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [opts]},
+      restart: :temporary,
+      shutdown: 5_000
+    }
+  end
+
   def start_link(opts) do
     terminal_id = Keyword.fetch!(opts, :terminal_id)
     GenServer.start_link(__MODULE__, opts, name: via(terminal_id))

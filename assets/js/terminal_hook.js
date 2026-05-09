@@ -14,7 +14,7 @@ export const TerminalHook = {
     this.term = new Terminal({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
       theme: {
         background: "#1d232a",
         foreground: "#a6adbb",
@@ -45,10 +45,20 @@ export const TerminalHook = {
       return true
     })
 
-    // Only fit if visible (invisible terminals have zero dimensions)
-    if (!this.el.classList.contains("invisible")) {
-      this.fitAddon.fit()
-      this.term.focus()
+    // Wait for fonts before measuring cell width — otherwise the FitAddon
+    // measures with fallback metrics and characters land at wrong positions
+    // once the real font finally loads.
+    const doFit = () => {
+      if (!this.el.classList.contains("invisible") && this.el.offsetWidth > 0) {
+        this.fitAddon.fit()
+        this.term.focus()
+      }
+    }
+
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(doFit)
+    } else {
+      doFit()
     }
 
     // Use a shared socket so we don't open multiple WebSocket connections

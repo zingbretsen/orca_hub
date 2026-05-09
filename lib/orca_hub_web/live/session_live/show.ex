@@ -885,14 +885,18 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp open_or_create_terminal(socket, session, session_node) do
     tagged = Cluster.list_terminals_for_project(session.project_id)
-    terminals = Enum.map(tagged, fn {_n, t} -> t end)
 
-    terminal =
-      Enum.find(terminals, fn t ->
-        t.directory == session.directory && t.status == "running"
+    candidates =
+      Enum.filter(tagged, fn {_n, t} ->
+        t.directory == session.directory && t.status != "stopped"
       end)
 
-    case terminal do
+    live =
+      Enum.find(candidates, fn {n, t} ->
+        Cluster.terminal_alive?(n, t.id)
+      end)
+
+    case live || List.first(candidates) do
       nil ->
         name =
           if session.project do
@@ -915,10 +919,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
             put_flash(socket, :error, "Failed to create terminal")
         end
 
-      terminal ->
-        unless Cluster.terminal_alive?(session_node, terminal.id) do
-          Cluster.start_terminal(session_node, terminal.id)
-        end
+      {n, terminal} ->
+        runner_node = Cluster.runner_node_for(terminal)
+
+        terminal =
+          if Cluster.terminal_alive?(runner_node, terminal.id) do
+            terminal
+          else
+            Cluster.start_terminal(runner_node, terminal.id)
+            Cluster.get_terminal!(n, terminal.id)
+          end
 
         socket
         |> assign(:show_terminal, true)
