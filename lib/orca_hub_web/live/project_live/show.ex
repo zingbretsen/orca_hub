@@ -14,7 +14,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     {project_node, project} = find_project!(id)
 
-    file_tree = rpc(project_node, Projects, :list_dir_entries, [project, "", [prefetch: true]])
+    file_tree = load_root_tree(project_node, project, show_hidden: false)
     commits = rpc(project_node, Projects, :git_log, [project])
     current_branch = rpc(project_node, Projects, :git_branch, [project])
     worktrees = rpc(project_node, Projects, :git_worktree_list, [project])
@@ -164,13 +164,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     show_hidden = !socket.assigns.show_hidden_files
     project = socket.assigns.project
 
-    file_tree =
-      rpc(socket.assigns.project_node, Projects, :list_dir_entries, [
-        project,
-        "",
-        [show_hidden: show_hidden, prefetch: true]
-      ])
-
+    file_tree = load_root_tree(socket.assigns.project_node, project, show_hidden: show_hidden)
     filtered = filtered_tree(socket, file_tree, socket.assigns.file_tree_filter, show_hidden)
 
     {:noreply,
@@ -193,21 +187,75 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     if dir_loaded?(socket.assigns.file_tree, path) do
       {:noreply, socket}
     else
-      children =
-        rpc(socket.assigns.project_node, Projects, :list_dir_entries, [
-          socket.assigns.project,
-          path,
-          [show_hidden: socket.assigns.show_hidden_files, prefetch: true]
-        ])
+      case load_dir_children(
+             socket.assigns.project_node,
+             socket.assigns.project,
+             path,
+             show_hidden: socket.assigns.show_hidden_files
+           ) do
+        {:ok, children} ->
+          file_tree = Projects.merge_loaded_children(socket.assigns.file_tree, path, children)
 
-      file_tree = Projects.merge_loaded_children(socket.assigns.file_tree, path, children)
+          filtered =
+            filtered_tree(socket, file_tree, socket.assigns.file_tree_filter, socket.assigns.show_hidden_files)
 
-      filtered =
-        filtered_tree(socket, file_tree, socket.assigns.file_tree_filter, socket.assigns.show_hidden_files)
+          {:noreply, assign(socket, file_tree: file_tree, filtered_file_tree: filtered)}
 
-      {:noreply, assign(socket, file_tree: file_tree, filtered_file_tree: filtered)}
+        :unsupported ->
+          {:noreply, socket}
+      end
     end
   end
+
+  defp load_root_tree(project_node, project, opts) do
+    show_hidden = Keyword.get(opts, :show_hidden, false)
+
+    try do
+      Cluster.rpc(project_node, Projects, :list_dir_entries, [
+        project,
+        "",
+        [show_hidden: show_hidden, prefetch: true]
+      ])
+    rescue
+      e in ErlangError ->
+        if undef_error?(e) do
+          eager_tree(project_node, project, show_hidden)
+        else
+          reraise e, __STACKTRACE__
+        end
+    end
+  end
+
+  defp load_dir_children(project_node, project, path, opts) do
+    show_hidden = Keyword.get(opts, :show_hidden, false)
+
+    try do
+      children =
+        Cluster.rpc(project_node, Projects, :list_dir_entries, [
+          project,
+          path,
+          [show_hidden: show_hidden, prefetch: true]
+        ])
+
+      {:ok, children}
+    rescue
+      e in ErlangError ->
+        if undef_error?(e), do: :unsupported, else: reraise(e, __STACKTRACE__)
+    end
+  end
+
+  defp eager_tree(project_node, project, show_hidden) do
+    files =
+      Cluster.rpc(project_node, Projects, :list_editable_files, [
+        project,
+        [show_hidden: show_hidden]
+      ])
+
+    Projects.build_file_tree(files)
+  end
+
+  defp undef_error?(%ErlangError{original: {:exception, :undef, _}}), do: true
+  defp undef_error?(_), do: false
 
   defp filtered_tree(_socket, file_tree, "", _show_hidden), do: file_tree
   defp filtered_tree(_socket, file_tree, nil, _show_hidden), do: file_tree
@@ -287,11 +335,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
       case rpc(socket.assigns.project_node, Projects, :save_file, [project, path, content]) do
       :ok ->
         file_tree =
-          rpc(socket.assigns.project_node, Projects, :list_dir_entries, [
-            project,
-            "",
-            [show_hidden: socket.assigns.show_hidden_files, prefetch: true]
-          ])
+          load_root_tree(socket.assigns.project_node, project,
+            show_hidden: socket.assigns.show_hidden_files
+          )
 
         blocks =
           if markdown_file?(path),
