@@ -195,7 +195,7 @@ defmodule OrcaHubWeb.MessageComponents do
       </div>
     </div>
     <div :for={tool <- @tool_uses}>
-      <.tool_use_block tool={tool} />
+      <.tool_use_block tool={tool} session_node={@session_node} />
     </div>
     <div :for={agent <- @agent_tools}>
       <.subagent_block tool={agent} messages={Map.get(@subagent_map, agent["id"], [])} session_node={@session_node} />
@@ -204,6 +204,7 @@ defmodule OrcaHubWeb.MessageComponents do
   end
 
   attr :tool, :map, required: true
+  attr :session_node, :atom, default: nil
 
   defp tool_use_block(assigns) do
     assigns =
@@ -225,7 +226,7 @@ defmodule OrcaHubWeb.MessageComponents do
           <.icon name="hero-chevron-right-micro" class="size-3 opacity-50 group-open:rotate-90 transition-transform" />
         </summary>
         <div class="mt-1 ml-2 pl-3 border-l-2 border-info/20">
-          <.tool_detail name={@tool_name} input={@input} />
+          <.tool_detail name={@tool_name} input={@input} session_node={@session_node} />
         </div>
       </details>
     </div>
@@ -513,6 +514,7 @@ defmodule OrcaHubWeb.MessageComponents do
 
   attr :name, :string, required: true
   attr :input, :map, required: true
+  attr :session_node, :atom, default: nil
 
   defp tool_detail(%{name: "Bash", input: input} = assigns) do
     assigns = assign(assigns, :command, input["command"] || "")
@@ -520,6 +522,54 @@ defmodule OrcaHubWeb.MessageComponents do
     ~H"""
     <div class="bg-base-300 rounded p-2 font-mono text-xs overflow-x-auto">
       <pre class="whitespace-pre-wrap">{@command}</pre>
+    </div>
+    """
+  end
+
+  defp tool_detail(%{name: "Read", input: input} = assigns) do
+    path = input["file_path"] || ""
+
+    assigns =
+      assigns
+      |> assign(:path, path)
+      |> assign(:is_image, image_path?(path))
+
+    ~H"""
+    <div class="text-xs space-y-2">
+      <div :if={@is_image} class="font-mono text-xs break-all opacity-70">{@path}</div>
+      <button
+        :if={!@is_image}
+        type="button"
+        phx-click="open_file"
+        phx-value-path={@path}
+        class="link link-info font-mono text-xs break-all text-left"
+      >
+        {@path}
+      </button>
+      <div :if={@is_image}>
+        <img
+          src={image_data_uri(@path, @session_node)}
+          class="max-w-md max-h-96 rounded border border-base-300"
+          loading="lazy"
+        />
+      </div>
+    </div>
+    """
+  end
+
+  defp tool_detail(%{name: name, input: input} = assigns) when name in ~w(Write) do
+    assigns = assign(assigns, :path, input["file_path"] || "")
+
+    ~H"""
+    <div class="text-xs">
+      <button
+        type="button"
+        phx-click="open_file"
+        phx-value-path={@path}
+        class="link link-info font-mono text-xs break-all text-left"
+      >
+        {@path}
+      </button>
     </div>
     """
   end
@@ -533,7 +583,14 @@ defmodule OrcaHubWeb.MessageComponents do
 
     ~H"""
     <div class="text-xs space-y-1">
-      <div class="font-mono opacity-70">{@path}</div>
+      <button
+        type="button"
+        phx-click="open_file"
+        phx-value-path={@path}
+        class="link link-info font-mono break-all text-left"
+      >
+        {@path}
+      </button>
       <div :if={@old != ""} class="bg-error/10 text-error rounded p-2 font-mono overflow-x-auto">
         <pre class="whitespace-pre-wrap">- {@old}</pre>
       </div>
@@ -672,6 +729,13 @@ defmodule OrcaHubWeb.MessageComponents do
 
     {clean_text, attachments}
   end
+
+  defp image_path?(path) when is_binary(path) do
+    ext = path |> Path.extname() |> String.downcase()
+    ext in ~w(.png .jpg .jpeg .gif .webp .bmp .ico)
+  end
+
+  defp image_path?(_), do: false
 
   defp image_data_uri(path, session_node) do
     # Read file locally or via RPC for remote sessions

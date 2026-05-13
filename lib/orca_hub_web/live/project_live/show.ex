@@ -663,7 +663,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   defp file_tree_node(%{node: %{type: :dir}} = assigns) do
     ~H"""
     <li>
-      <details open>
+      <details>
         <summary class="font-mono text-xs">
           <.icon name="hero-folder-micro" class="size-3 opacity-50" />
           {@node.name}
