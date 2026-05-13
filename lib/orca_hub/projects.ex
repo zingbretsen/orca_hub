@@ -85,6 +85,79 @@ defmodule OrcaHub.Projects do
   end
 
   @doc """
+  Lists immediate children of `rel_path` under the project directory.
+  Returns nodes shaped like `build_file_tree/1`, with `children: nil` for
+  unloaded sub-directories.
+
+  Options:
+    - `show_hidden` (boolean, default false): include dotfiles
+    - `prefetch` (boolean, default false): also load one level deeper into
+      sub-directories so the first click on them does not need a roundtrip
+  """
+  def list_dir_entries(%Project{directory: dir}, rel_path, opts \\ []) do
+    show_hidden = Keyword.get(opts, :show_hidden, false)
+    prefetch = Keyword.get(opts, :prefetch, false)
+    list_dir_level(dir, rel_path || "", show_hidden, prefetch)
+  end
+
+  defp list_dir_level(base, rel, show_hidden, prefetch_children) do
+    full = Path.join(base, rel)
+
+    case File.ls(full) do
+      {:ok, entries} ->
+        entries
+        |> filter_dotfiles(show_hidden)
+        |> Enum.reject(&(&1 in @skip_dirs))
+        |> Enum.flat_map(fn entry ->
+          rel_child = if rel == "", do: entry, else: Path.join(rel, entry)
+          full_child = Path.join(base, rel_child)
+
+          cond do
+            File.dir?(full_child) ->
+              children =
+                if prefetch_children,
+                  do: list_dir_level(base, rel_child, show_hidden, false),
+                  else: nil
+
+              [%{name: entry, path: rel_child, type: :dir, children: children}]
+
+            editable_file?(entry, show_hidden) ->
+              [%{name: entry, path: rel_child, type: :file}]
+
+            true ->
+              []
+          end
+        end)
+        |> Enum.sort_by(fn
+          %{type: :dir, name: name} -> {0, name}
+          %{type: :file, name: name} -> {1, name}
+        end)
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  defp filter_dotfiles(entries, true), do: entries
+  defp filter_dotfiles(entries, false), do: Enum.reject(entries, &String.starts_with?(&1, "."))
+
+  @doc """
+  Replaces the `children` of the dir node at `path` in a lazy tree.
+  """
+  def merge_loaded_children(tree, path, children) when is_list(tree) do
+    Enum.map(tree, fn
+      %{type: :dir, path: ^path} = node ->
+        %{node | children: children}
+
+      %{type: :dir, children: kids} = node when is_list(kids) ->
+        %{node | children: merge_loaded_children(kids, path, children)}
+
+      node ->
+        node
+    end)
+  end
+
+  @doc """
   Builds a hierarchical tree from a flat list of relative paths.
   Returns a list of nodes: %{name, path, type: :file} or %{name, type: :dir, children: [...]}.
   Directories sorted first, then files, both alphabetical.

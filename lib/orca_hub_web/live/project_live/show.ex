@@ -14,8 +14,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     {project_node, project} = find_project!(id)
 
-    editable_files = rpc(project_node, Projects, :list_editable_files, [project])
-    file_tree = Projects.build_file_tree(editable_files)
+    file_tree = rpc(project_node, Projects, :list_dir_entries, [project, "", [prefetch: true]])
     commits = rpc(project_node, Projects, :git_log, [project])
     current_branch = rpc(project_node, Projects, :git_branch, [project])
     worktrees = rpc(project_node, Projects, :git_worktree_list, [project])
@@ -32,7 +31,6 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        project_node: project_node,
        page_title: project.name,
        commits: commits,
-       editable_files: editable_files,
        file_tree: file_tree,
        filtered_file_tree: file_tree,
        file_tree_filter: "",
@@ -165,14 +163,19 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   def handle_event("toggle_hidden_files", _params, socket) do
     show_hidden = !socket.assigns.show_hidden_files
     project = socket.assigns.project
-    editable_files = rpc(socket.assigns.project_node, Projects, :list_editable_files, [project, [show_hidden: show_hidden]])
-    file_tree = Projects.build_file_tree(editable_files)
-    filtered = Projects.filter_file_tree(file_tree, socket.assigns.file_tree_filter)
+
+    file_tree =
+      rpc(socket.assigns.project_node, Projects, :list_dir_entries, [
+        project,
+        "",
+        [show_hidden: show_hidden, prefetch: true]
+      ])
+
+    filtered = filtered_tree(socket, file_tree, socket.assigns.file_tree_filter, show_hidden)
 
     {:noreply,
      assign(socket,
        show_hidden_files: show_hidden,
-       editable_files: editable_files,
        file_tree: file_tree,
        filtered_file_tree: filtered
      )}
@@ -180,8 +183,53 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   @impl true
   def handle_event("filter_file_tree", %{"value" => query}, socket) do
-    filtered = Projects.filter_file_tree(socket.assigns.file_tree, query)
+    filtered =
+      filtered_tree(socket, socket.assigns.file_tree, query, socket.assigns.show_hidden_files)
+
     {:noreply, assign(socket, file_tree_filter: query, filtered_file_tree: filtered)}
+  end
+
+  def handle_event("expand_dir", %{"path" => path}, socket) do
+    if dir_loaded?(socket.assigns.file_tree, path) do
+      {:noreply, socket}
+    else
+      children =
+        rpc(socket.assigns.project_node, Projects, :list_dir_entries, [
+          socket.assigns.project,
+          path,
+          [show_hidden: socket.assigns.show_hidden_files, prefetch: true]
+        ])
+
+      file_tree = Projects.merge_loaded_children(socket.assigns.file_tree, path, children)
+
+      filtered =
+        filtered_tree(socket, file_tree, socket.assigns.file_tree_filter, socket.assigns.show_hidden_files)
+
+      {:noreply, assign(socket, file_tree: file_tree, filtered_file_tree: filtered)}
+    end
+  end
+
+  defp filtered_tree(_socket, file_tree, "", _show_hidden), do: file_tree
+  defp filtered_tree(_socket, file_tree, nil, _show_hidden), do: file_tree
+
+  defp filtered_tree(socket, _file_tree, query, show_hidden) do
+    files =
+      rpc(socket.assigns.project_node, Projects, :list_editable_files, [
+        socket.assigns.project,
+        [show_hidden: show_hidden]
+      ])
+
+    files
+    |> Projects.build_file_tree()
+    |> Projects.filter_file_tree(query)
+  end
+
+  defp dir_loaded?(tree, path) do
+    Enum.any?(tree, fn
+      %{type: :dir, path: ^path, children: kids} -> is_list(kids)
+      %{type: :dir, children: kids} when is_list(kids) -> dir_loaded?(kids, path)
+      _ -> false
+    end)
   end
 
   @impl true
@@ -238,8 +286,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     else
       case rpc(socket.assigns.project_node, Projects, :save_file, [project, path, content]) do
       :ok ->
-        editable_files = rpc(socket.assigns.project_node, Projects, :list_editable_files, [project, [show_hidden: socket.assigns.show_hidden_files]])
-        file_tree = Projects.build_file_tree(editable_files)
+        file_tree =
+          rpc(socket.assigns.project_node, Projects, :list_dir_entries, [
+            project,
+            "",
+            [show_hidden: socket.assigns.show_hidden_files, prefetch: true]
+          ])
 
         blocks =
           if markdown_file?(path),
@@ -254,9 +306,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
            editing_block: nil,
            selected_file: path,
            new_file_name: nil,
-           editable_files: editable_files,
            file_tree: file_tree,
-           filtered_file_tree: Projects.filter_file_tree(file_tree, socket.assigns.file_tree_filter)
+           filtered_file_tree:
+             filtered_tree(socket, file_tree, socket.assigns.file_tree_filter, socket.assigns.show_hidden_files)
          )}
 
       {:error, reason} ->
@@ -664,11 +716,17 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     ~H"""
     <li>
       <details>
-        <summary class="font-mono text-xs">
+        <summary
+          class="font-mono text-xs"
+          phx-click={@node.children == nil && JS.push("expand_dir", value: %{path: @node.path})}
+        >
           <.icon name="hero-folder-micro" class="size-3 opacity-50" />
           {@node.name}
         </summary>
-        <ul>
+        <ul :if={@node.children == nil}>
+          <li class="text-base-content/50 text-xs px-2 py-1">Loading…</li>
+        </ul>
+        <ul :if={is_list(@node.children)}>
           <.file_tree_node
             :for={child <- @node.children}
             node={child}

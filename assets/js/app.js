@@ -990,8 +990,6 @@ let Hooks = {
       const hasFilter = !!this.el.dataset.filter
       if (hasFilter) {
         this.el.querySelectorAll("details").forEach(d => d.open = true)
-      } else if (this._hadFilter) {
-        this.el.querySelectorAll("details").forEach(d => d.open = true)
       } else if (this._detailsState) {
         this.el.querySelectorAll("details").forEach((d, i) => {
           if (i < this._detailsState.length) d.open = this._detailsState[i]
