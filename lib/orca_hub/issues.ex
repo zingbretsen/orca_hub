@@ -13,10 +13,6 @@ defmodule OrcaHub.Issues do
     Repo.all(query)
   end
 
-  def list_issues_for_project(project_id) do
-    Repo.all(from i in Issue, where: i.project_id == ^project_id, order_by: [desc: i.inserted_at])
-  end
-
   def search(query) do
     like = "%#{query}%"
 

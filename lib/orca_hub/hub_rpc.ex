@@ -130,15 +130,6 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.Terminals, :list_terminals_for_project, [project_id])
 
   # -------------------------------------------------------------------
-  # Settings
-  # -------------------------------------------------------------------
-
-  def get_setting(key), do: call(OrcaHub.Settings, :get, [key])
-  def get_setting(key, default), do: call(OrcaHub.Settings, :get, [key, default])
-  def put_setting(key, value), do: call(OrcaHub.Settings, :put, [key, value])
-  def delete_setting(key), do: call(OrcaHub.Settings, :delete, [key])
-
-  # -------------------------------------------------------------------
   # Session Heartbeat (hub-only GenServer)
   # -------------------------------------------------------------------
 
