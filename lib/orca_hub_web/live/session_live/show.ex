@@ -66,9 +66,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:editing_block, nil)
      |> assign(:block_edit_content, nil)
      |> assign(:show_file_browser, false)
-     |> assign(:file_tree, [])
-     |> assign(:filtered_file_tree, [])
-     |> assign(:file_tree_filter, "")
      |> assign(:file_mtimes, %{})
      |> assign(:scroll_to_line, nil)
      |> assign(:scroll_to_block, nil)
@@ -471,7 +468,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("autocomplete", %{"type" => "file", "query" => query}, socket) do
-    socket = ensure_file_tree_loaded(socket)
     dir = socket.assigns.session.directory
     project = %Projects.Project{directory: dir}
 
@@ -695,25 +691,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # -- File panel events --
 
   def handle_event("toggle_file_browser", _params, socket) do
-    socket =
-      if socket.assigns.show_file_browser do
-        assign(socket, :show_file_browser, false)
-      else
-        socket = ensure_file_tree_loaded(socket)
-        assign(socket, :show_file_browser, true)
-      end
-
-    {:noreply, socket}
-  end
-
-  def handle_event("filter_file_tree", %{"value" => query}, socket) do
-    filtered = Projects.filter_file_tree(socket.assigns.file_tree, query)
-    {:noreply, assign(socket, file_tree_filter: query, filtered_file_tree: filtered)}
-  end
-
-  def handle_event("open_file", %{"path" => path}, socket) do
-    socket = open_file_tab(socket, path)
-    {:noreply, socket}
+    {:noreply, assign(socket, :show_file_browser, !socket.assigns.show_file_browser)}
   end
 
   def handle_event("switch_tab", %{"path" => path}, socket) do
@@ -782,7 +760,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     case Cluster.rpc(session_node, Projects, :save_file, [project, path, content]) do
       :ok ->
-        blocks = if markdown_file?(path), do: Markdown.split_blocks(content), else: []
+        blocks = if Projects.markdown_file?(path), do: Markdown.split_blocks(content), else: []
         mtime = remote_file_mtime(session_node, Path.join(dir, path))
 
         open_files =
@@ -943,6 +921,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_info({:open_file, path}, socket) do
+    {:noreply, open_file_tab(socket, path)}
+  end
+
+  def handle_info({:file_selected, path}, socket) do
     {:noreply, open_file_tab(socket, path)}
   end
 
@@ -1134,7 +1116,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
       tab = Enum.find(socket.assigns.open_files, &(&1.path == path))
 
       block_idx =
-        if line && markdown_file?(path) && tab,
+        if line && Projects.markdown_file?(path) && tab,
           do: line_to_block_index(tab.content, line),
           else: nil
 
@@ -1157,13 +1139,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
       case result do
         {:ok, content} ->
-          blocks = if markdown_file?(path), do: Markdown.split_blocks(content), else: []
+          blocks = if Projects.markdown_file?(path), do: Markdown.split_blocks(content), else: []
           tab = %{path: path, content: content, blocks: blocks, read_only: read_only}
           full_path = if read_only, do: path, else: Path.join(dir, path)
           mtime = remote_file_mtime(session_node, full_path)
 
           block_idx =
-            if line && markdown_file?(path),
+            if line && Projects.markdown_file?(path),
               do: line_to_block_index(content, line),
               else: nil
 
@@ -1187,19 +1169,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
     Enum.find(socket.assigns.open_files, &(&1.path == socket.assigns.active_file_tab))
   end
 
-  defp ensure_file_tree_loaded(socket) do
-    if socket.assigns.file_tree == [] do
-      dir = socket.assigns.session.directory
-      project = %Projects.Project{directory: dir}
-      session_node = socket.assigns[:session_node] || node()
-      files = Cluster.rpc(session_node, Projects, :list_editable_files, [project])
-      tree = Projects.build_file_tree(files)
-      assign(socket, file_tree: tree, filtered_file_tree: tree)
-    else
-      socket
-    end
-  end
-
   defp refresh_changed_files(socket) do
     dir = socket.assigns.session.directory
     project = %Projects.Project{directory: dir}
@@ -1220,7 +1189,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
           case result do
             {:ok, content} ->
-              blocks = if markdown_file?(tab.path), do: Markdown.split_blocks(content), else: []
+              blocks = if Projects.markdown_file?(tab.path), do: Markdown.split_blocks(content), else: []
               {%{tab | content: content, blocks: blocks}, Map.put(mtimes, tab.path, current_mtime)}
 
             {:error, _} ->
@@ -1249,8 +1218,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
       _ -> nil
     end
   end
-
-  defp markdown_file?(path), do: String.ends_with?(path, ".md")
 
   defp line_to_block_index(content, line) when is_integer(line) and line > 0 do
     # Find which block contains the target line by tracking line offsets
@@ -1465,34 +1432,4 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp remote_session?(socket), do: socket.assigns.remote_session
-
-  # -- File tree components --
-
-  attr :node, :map, required: true
-
-  defp file_tree_node(%{node: %{type: :file}} = assigns) do
-    ~H"""
-    <li>
-      <button phx-click="open_file" phx-value-path={@node.path}>
-        <span class="font-mono text-xs truncate">{@node.name}</span>
-      </button>
-    </li>
-    """
-  end
-
-  defp file_tree_node(%{node: %{type: :dir}} = assigns) do
-    ~H"""
-    <li>
-      <details>
-        <summary class="font-mono text-xs">
-          <.icon name="hero-folder-micro" class="size-3 opacity-50" />
-          {@node.name}
-        </summary>
-        <ul>
-          <.file_tree_node :for={child <- @node.children} node={child} />
-        </ul>
-      </details>
-    </li>
-    """
-  end
 end

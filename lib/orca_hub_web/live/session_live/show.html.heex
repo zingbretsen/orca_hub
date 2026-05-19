@@ -651,27 +651,14 @@
       <div class="flex flex-1 min-h-0 gap-2">
         <%!-- File browser sidebar --%>
         <div :if={@show_file_browser} class="w-52 shrink-0 flex flex-col min-h-0 overflow-hidden">
-          <div class="flex items-center gap-1 mb-1 shrink-0">
-            <input
-              type="text"
-              placeholder="Search files..."
-              value={@file_tree_filter}
-              phx-keyup="filter_file_tree"
-              phx-debounce="150"
-              class="input input-xs input-bordered flex-1 min-w-0"
-            />
-            <button phx-click={JS.dispatch("phx:expand-all", to: "#session-file-tree")} class="btn btn-ghost btn-xs" title="Expand all">
-              <.icon name="hero-chevron-down-micro" class="size-3" />
-            </button>
-            <button phx-click={JS.dispatch("phx:collapse-all", to: "#session-file-tree")} class="btn btn-ghost btn-xs" title="Collapse all">
-              <.icon name="hero-chevron-up-micro" class="size-3" />
-            </button>
-          </div>
-          <div class="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
-            <ul id="session-file-tree" class="menu menu-xs bg-base-200 rounded-lg w-full" phx-hook="FileTree" data-filter={@file_tree_filter}>
-              <.file_tree_node :for={node <- @filtered_file_tree} node={node} />
-            </ul>
-          </div>
+          <.live_component
+            module={OrcaHubWeb.FileTreeComponent}
+            id="session-file-tree-desktop"
+            tree_id="session-file-tree"
+            target_node={@session_node}
+            project={%OrcaHub.Projects.Project{directory: @session.directory}}
+            selected_path={@active_file_tab}
+          />
         </div>
 
         <%!-- File content area --%>
@@ -838,27 +825,14 @@
         <div class="flex flex-1 min-h-0 gap-2">
           <%!-- File browser --%>
           <div :if={@show_file_browser} class="w-44 shrink-0 flex flex-col min-h-0 overflow-hidden">
-            <div class="flex items-center gap-1 mb-1 shrink-0">
-              <input
-                type="text"
-                placeholder="Search..."
-                value={@file_tree_filter}
-                phx-keyup="filter_file_tree"
-                phx-debounce="150"
-                class="input input-xs input-bordered flex-1 min-w-0"
-              />
-              <button phx-click={JS.dispatch("phx:expand-all", to: "#mobile-file-tree")} class="btn btn-ghost btn-xs" title="Expand all">
-                <.icon name="hero-chevron-down-micro" class="size-3" />
-              </button>
-              <button phx-click={JS.dispatch("phx:collapse-all", to: "#mobile-file-tree")} class="btn btn-ghost btn-xs" title="Collapse all">
-                <.icon name="hero-chevron-up-micro" class="size-3" />
-              </button>
-            </div>
-            <div class="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
-              <ul id="mobile-file-tree" class="menu menu-xs bg-base-200 rounded-lg w-full" phx-hook="FileTree" data-filter={@file_tree_filter}>
-                <.file_tree_node :for={node <- @filtered_file_tree} node={node} />
-              </ul>
-            </div>
+            <.live_component
+              module={OrcaHubWeb.FileTreeComponent}
+              id="session-file-tree-mobile"
+              tree_id="mobile-file-tree"
+              target_node={@session_node}
+              project={%OrcaHub.Projects.Project{directory: @session.directory}}
+              selected_path={@active_file_tab}
+            />
           </div>
 
           <%!-- File content --%>

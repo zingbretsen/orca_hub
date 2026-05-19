@@ -189,6 +189,8 @@ defmodule OrcaHub.Projects do
     end)
   end
 
+  def markdown_file?(path), do: String.ends_with?(path, ".md")
+
   def filter_file_tree(tree, nil), do: tree
   def filter_file_tree(tree, ""), do: tree
 

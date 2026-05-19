@@ -398,40 +398,18 @@
     <button phx-click="new_file" class="btn btn-sm btn-primary">New File</button>
   </div>
 
-  <div :if={@file_tree == [] && !@new_file_name} class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg">
-    No editable files found in this project.
-  </div>
-
-  <div :if={@file_tree != [] || @new_file_name} class="flex flex-col md:flex-row gap-4" style="height: calc(100vh - 12rem);">
+  <div class="flex flex-col md:flex-row gap-4" style="height: calc(100vh - 12rem);">
     <%!-- File tree sidebar --%>
     <div class="md:w-56 shrink-0 overflow-y-auto">
-      <div class="flex items-center gap-1 mb-1">
-        <input
-          id="file-tree-search"
-          type="text"
-          placeholder="Search files..."
-          value={@file_tree_filter}
-          phx-keyup="filter_file_tree"
-          phx-debounce="150"
-          class="input input-xs input-bordered w-full"
-        />
-        <button phx-click="toggle_hidden_files" class={["btn btn-xs", if(@show_hidden_files, do: "btn-primary", else: "btn-ghost")]} title={if @show_hidden_files, do: "Hide hidden files", else: "Show hidden files"}>
-          <.icon name="hero-eye-micro" class="size-3" />
-        </button>
-        <button phx-click={JS.dispatch("phx:expand-all", to: "#file-tree")} class="btn btn-ghost btn-xs" title="Expand all">
-          <.icon name="hero-chevron-down-micro" class="size-3" />
-        </button>
-        <button phx-click={JS.dispatch("phx:collapse-all", to: "#file-tree")} class="btn btn-ghost btn-xs" title="Collapse all">
-          <.icon name="hero-chevron-up-micro" class="size-3" />
-        </button>
-      </div>
-      <ul id="file-tree" class="menu menu-sm bg-base-200 rounded-lg w-full" phx-hook="FileTree" data-filter={@file_tree_filter}>
-        <.file_tree_node
-          :for={node <- @filtered_file_tree}
-          node={node}
-          selected_file={@selected_file}
-        />
-      </ul>
+      <.live_component
+        module={OrcaHubWeb.FileTreeComponent}
+        id="project-file-tree"
+        tree_id="file-tree"
+        search_input_id="file-tree-search"
+        target_node={@project_node}
+        project={@project}
+        selected_path={@selected_file}
+      />
     </div>
 
     <%!-- File content area --%>

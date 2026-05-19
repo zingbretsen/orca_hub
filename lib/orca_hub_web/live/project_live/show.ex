@@ -14,7 +14,6 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     {project_node, project} = find_project!(id)
 
-    file_tree = load_root_tree(project_node, project, show_hidden: false)
     commits = rpc(project_node, Projects, :git_log, [project])
     current_branch = rpc(project_node, Projects, :git_branch, [project])
     worktrees = rpc(project_node, Projects, :git_worktree_list, [project])
@@ -26,14 +25,10 @@ defmodule OrcaHubWeb.ProjectLive.Show do
      socket
      |> assign(
        show_archived_sessions: false,
-       show_hidden_files: false,
        project: project,
        project_node: project_node,
        page_title: project.name,
        commits: commits,
-       file_tree: file_tree,
-       filtered_file_tree: file_tree,
-       file_tree_filter: "",
        current_branch: current_branch,
        worktrees: worktrees,
        branches: branches,
@@ -84,7 +79,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
           case rpc(socket.assigns.project_node, Projects, :load_file, [project, path]) do
             {:ok, content} ->
               blocks =
-                if markdown_file?(path),
+                if Projects.markdown_file?(path),
                   do: OrcaHubWeb.Markdown.split_blocks(content),
                   else: []
 
@@ -159,153 +154,6 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     {:noreply, assign(socket, browsing: false)}
   end
 
-  @impl true
-  def handle_event("toggle_hidden_files", _params, socket) do
-    show_hidden = !socket.assigns.show_hidden_files
-    project = socket.assigns.project
-
-    file_tree = load_root_tree(socket.assigns.project_node, project, show_hidden: show_hidden)
-    filtered = filtered_tree(socket, file_tree, socket.assigns.file_tree_filter, show_hidden)
-
-    {:noreply,
-     assign(socket,
-       show_hidden_files: show_hidden,
-       file_tree: file_tree,
-       filtered_file_tree: filtered
-     )}
-  end
-
-  @impl true
-  def handle_event("filter_file_tree", %{"value" => query}, socket) do
-    filtered =
-      filtered_tree(socket, socket.assigns.file_tree, query, socket.assigns.show_hidden_files)
-
-    {:noreply, assign(socket, file_tree_filter: query, filtered_file_tree: filtered)}
-  end
-
-  def handle_event("expand_dir", %{"path" => path}, socket) do
-    if dir_loaded?(socket.assigns.file_tree, path) do
-      {:noreply, socket}
-    else
-      case load_dir_children(
-             socket.assigns.project_node,
-             socket.assigns.project,
-             path,
-             show_hidden: socket.assigns.show_hidden_files
-           ) do
-        {:ok, children} ->
-          file_tree = Projects.merge_loaded_children(socket.assigns.file_tree, path, children)
-
-          filtered =
-            filtered_tree(socket, file_tree, socket.assigns.file_tree_filter, socket.assigns.show_hidden_files)
-
-          {:noreply, assign(socket, file_tree: file_tree, filtered_file_tree: filtered)}
-
-        :unsupported ->
-          {:noreply, socket}
-      end
-    end
-  end
-
-  defp load_root_tree(project_node, project, opts) do
-    show_hidden = Keyword.get(opts, :show_hidden, false)
-
-    try do
-      Cluster.rpc(project_node, Projects, :list_dir_entries, [
-        project,
-        "",
-        [show_hidden: show_hidden, prefetch: true]
-      ])
-    rescue
-      e in ErlangError ->
-        if undef_error?(e) do
-          eager_tree(project_node, project, show_hidden)
-        else
-          reraise e, __STACKTRACE__
-        end
-    end
-  end
-
-  defp load_dir_children(project_node, project, path, opts) do
-    show_hidden = Keyword.get(opts, :show_hidden, false)
-
-    try do
-      children =
-        Cluster.rpc(project_node, Projects, :list_dir_entries, [
-          project,
-          path,
-          [show_hidden: show_hidden, prefetch: true]
-        ])
-
-      {:ok, children}
-    rescue
-      e in ErlangError ->
-        if undef_error?(e), do: :unsupported, else: reraise(e, __STACKTRACE__)
-    end
-  end
-
-  defp eager_tree(project_node, project, show_hidden) do
-    files =
-      Cluster.rpc(project_node, Projects, :list_editable_files, [
-        project,
-        [show_hidden: show_hidden]
-      ])
-
-    Projects.build_file_tree(files)
-  end
-
-  defp undef_error?(%ErlangError{original: {:exception, :undef, _}}), do: true
-  defp undef_error?(_), do: false
-
-  defp filtered_tree(_socket, file_tree, "", _show_hidden), do: file_tree
-  defp filtered_tree(_socket, file_tree, nil, _show_hidden), do: file_tree
-
-  defp filtered_tree(socket, _file_tree, query, show_hidden) do
-    files =
-      rpc(socket.assigns.project_node, Projects, :list_editable_files, [
-        socket.assigns.project,
-        [show_hidden: show_hidden]
-      ])
-
-    files
-    |> Projects.build_file_tree()
-    |> Projects.filter_file_tree(query)
-  end
-
-  defp dir_loaded?(tree, path) do
-    Enum.any?(tree, fn
-      %{type: :dir, path: ^path, children: kids} -> is_list(kids)
-      %{type: :dir, children: kids} when is_list(kids) -> dir_loaded?(kids, path)
-      _ -> false
-    end)
-  end
-
-  @impl true
-  def handle_event("select_file", %{"path" => path}, socket) do
-    project = socket.assigns.project
-
-    case rpc(socket.assigns.project_node, Projects, :load_file, [project, path]) do
-      {:ok, content} ->
-        blocks =
-          if markdown_file?(path),
-            do: OrcaHubWeb.Markdown.split_blocks(content),
-            else: []
-
-        {:noreply,
-         assign(socket,
-           selected_file: path,
-           file_content: content,
-           file_blocks: blocks,
-           file_editing: false,
-           editing_block: nil,
-           new_file_name: nil
-         )}
-
-      {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to load #{path}")}
-    end
-  end
-
   def handle_event("edit_file", _params, socket) do
     {:noreply, assign(socket, file_editing: true)}
   end
@@ -333,32 +181,26 @@ defmodule OrcaHubWeb.ProjectLive.Show do
       {:noreply, put_flash(socket, :error, "Please enter a filename")}
     else
       case rpc(socket.assigns.project_node, Projects, :save_file, [project, path, content]) do
-      :ok ->
-        file_tree =
-          load_root_tree(socket.assigns.project_node, project,
-            show_hidden: socket.assigns.show_hidden_files
-          )
+        :ok ->
+          send_update(OrcaHubWeb.FileTreeComponent, id: "project-file-tree", reload: true)
 
-        blocks =
-          if markdown_file?(path),
-            do: OrcaHubWeb.Markdown.split_blocks(content),
-            else: []
+          blocks =
+            if Projects.markdown_file?(path),
+              do: OrcaHubWeb.Markdown.split_blocks(content),
+              else: []
 
-        {:noreply,
-         assign(socket,
-           file_content: content,
-           file_blocks: blocks,
-           file_editing: false,
-           editing_block: nil,
-           selected_file: path,
-           new_file_name: nil,
-           file_tree: file_tree,
-           filtered_file_tree:
-             filtered_tree(socket, file_tree, socket.assigns.file_tree_filter, socket.assigns.show_hidden_files)
-         )}
+          {:noreply,
+           assign(socket,
+             file_content: content,
+             file_blocks: blocks,
+             file_editing: false,
+             editing_block: nil,
+             selected_file: path,
+             new_file_name: nil
+           )}
 
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
       end
     end
   end
@@ -736,55 +578,35 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   @impl true
+  def handle_info({:file_selected, path}, socket) do
+    project = socket.assigns.project
+
+    case rpc(socket.assigns.project_node, Projects, :load_file, [project, path]) do
+      {:ok, content} ->
+        blocks =
+          if Projects.markdown_file?(path),
+            do: OrcaHubWeb.Markdown.split_blocks(content),
+            else: []
+
+        {:noreply,
+         assign(socket,
+           selected_file: path,
+           file_content: content,
+           file_blocks: blocks,
+           file_editing: false,
+           editing_block: nil,
+           new_file_name: nil
+         )}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to load #{path}")}
+    end
+  end
+
   def handle_info({_session_id, _payload}, socket) do
     project = HubRPC.get_project!(socket.assigns.project.id)
     {:noreply, assign(socket, project: project)}
   end
-
-  attr :node, :map, required: true
-  attr :selected_file, :string, default: nil
-
-  defp file_tree_node(%{node: %{type: :file}} = assigns) do
-    ~H"""
-    <li>
-      <button
-        phx-click="select_file"
-        phx-value-path={@node.path}
-        class={[@selected_file == @node.path && "active"]}
-      >
-        <span class="font-mono text-xs truncate">{@node.name}</span>
-      </button>
-    </li>
-    """
-  end
-
-  defp file_tree_node(%{node: %{type: :dir}} = assigns) do
-    ~H"""
-    <li>
-      <details>
-        <summary
-          class="font-mono text-xs"
-          phx-click={@node.children == nil && JS.push("expand_dir", value: %{path: @node.path})}
-        >
-          <.icon name="hero-folder-micro" class="size-3 opacity-50" />
-          {@node.name}
-        </summary>
-        <ul :if={@node.children == nil}>
-          <li class="text-base-content/50 text-xs px-2 py-1">Loading…</li>
-        </ul>
-        <ul :if={is_list(@node.children)}>
-          <.file_tree_node
-            :for={child <- @node.children}
-            node={child}
-            selected_file={@selected_file}
-          />
-        </ul>
-      </details>
-    </li>
-    """
-  end
-
-  defp markdown_file?(path), do: String.ends_with?(path, ".md")
 
   defp file_disk_path(project, path) do
     Path.join(project.directory, path)
