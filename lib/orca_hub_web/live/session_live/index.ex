@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.SessionLive.Index do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Projects, Sessions, Cluster, HubRPC, SessionHeartbeat}
+  alias OrcaHub.{Projects, Cluster, HubRPC, SessionHeartbeat}
   alias OrcaHub.Sessions.Session
   alias OrcaHubWeb.NodeFilter
 
@@ -114,11 +114,16 @@ defmodule OrcaHubWeb.SessionLive.Index do
   end
 
   def handle_event("create_for_worktree", %{"project-id" => project_id, "directory" => directory}, socket) do
-    params = %{"project_id" => project_id, "directory" => directory}
+    target_node = Map.get(socket.assigns.project_node_map, project_id, node())
+    params = %{
+      "project_id" => project_id,
+      "directory" => directory,
+      "runner_node" => Atom.to_string(target_node)
+    }
 
-    case Sessions.create_session(params) do
+    case HubRPC.create_session(params) do
       {:ok, session} ->
-        {:ok, _} = OrcaHub.SessionSupervisor.start_session(session.id)
+        Cluster.start_session(target_node, session.id, session)
         {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
 
       {:error, _changeset} ->
