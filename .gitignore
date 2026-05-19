@@ -45,6 +45,9 @@ npm-debug.log
 # Environment variables
 .env
 
+# Generated systemd unit (rendered from systemd/orca-hub.service.template via install.sh)
+/systemd/orca-hub.service
+
 test-results/
 
 # Dev database

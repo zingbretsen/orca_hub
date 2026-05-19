@@ -24,11 +24,16 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=orca-hub
 
+# Memory limits — BEAM peaks observed around 2.2G
+MemoryHigh=2500M
+MemoryMax=3G
+
 # Basic hardening. Further hardening (ProtectSystem=strict, ProtectHome=read-only,
 # ReadWritePaths=...) is deferred — the app writes to ~/.claude, project
 # directories, and other paths that need careful enumeration first.
 NoNewPrivileges=yes
 PrivateTmp=yes
+PrivateDevices=yes
 
 [Install]
 WantedBy=multi-user.target

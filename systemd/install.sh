@@ -13,7 +13,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORCA_HUB_DIR="$(dirname "$SCRIPT_DIR")"
 USER="$(whoami)"
-ELIXIR_PATH="$(which elixir 2>/dev/null || echo "/usr/bin/elixir")"
 HOME_DIR="$(eval echo ~$USER)"
 
 # Parse arguments
@@ -27,19 +26,14 @@ while [[ $# -gt 0 ]]; do
             ORCA_HUB_DIR="$2"
             shift 2
             ;;
-        --elixir)
-            ELIXIR_PATH="$2"
-            shift 2
-            ;;
         -h|--help)
-            echo "Usage: $0 [--user USER] [--dir DIR] [--elixir PATH]"
+            echo "Usage: $0 [--user USER] [--dir DIR]"
             echo ""
             echo "Install the orca-hub systemd service."
             echo ""
             echo "Options:"
             echo "  --user USER     User to run the service as (default: current user)"
             echo "  --dir DIR       OrcaHub directory (default: repo root)"
-            echo "  --elixir PATH   Path to elixir binary (default: auto-detected via 'which')"
             exit 0
             ;;
         *)
@@ -51,6 +45,7 @@ done
 
 TEMPLATE="$SCRIPT_DIR/orca-hub.service.template"
 DEST="/etc/systemd/system/orca-hub.service"
+RELEASE_BIN="$ORCA_HUB_DIR/_build/prod/rel/orca_hub/bin/orca_hub"
 
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "Error: Template file not found: $TEMPLATE"
@@ -62,23 +57,15 @@ if [[ ! -d "$ORCA_HUB_DIR" ]]; then
     exit 1
 fi
 
-if [[ ! -x "$ELIXIR_PATH" ]]; then
-    echo "Error: Elixir not found at: $ELIXIR_PATH"
-    echo "Specify the path with --elixir or ensure elixir is in your PATH"
-    exit 1
-fi
-
 echo "Installing orca-hub.service..."
 echo "  User: $USER"
 echo "  Directory: $ORCA_HUB_DIR"
-echo "  Elixir: $ELIXIR_PATH"
 echo "  Home: $HOME_DIR"
 
 # Generate the service file from template
 SERVICE_CONTENT=$(sed \
     -e "s|{{USER}}|$USER|g" \
     -e "s|{{ORCA_HUB_DIR}}|$ORCA_HUB_DIR|g" \
-    -e "s|{{ELIXIR_PATH}}|$ELIXIR_PATH|g" \
     -e "s|{{HOME}}|$HOME_DIR|g" \
     "$TEMPLATE")
 
@@ -89,7 +76,22 @@ echo "Reloading systemd daemon..."
 sudo systemctl daemon-reload
 
 echo ""
+if [[ ! -x "$RELEASE_BIN" ]]; then
+    echo "WARNING: release binary not found at:"
+    echo "  $RELEASE_BIN"
+    echo ""
+    echo "Build it before starting the service:"
+    echo "  cd $ORCA_HUB_DIR"
+    echo "  MIX_ENV=prod mix deps.get --only prod"
+    echo "  MIX_ENV=prod mix assets.deploy"
+    echo "  MIX_ENV=prod mix release"
+    echo ""
+fi
+
 echo "Done! You can now:"
 echo "  sudo systemctl enable orca-hub   # Enable on boot"
 echo "  sudo systemctl start orca-hub    # Start the service"
 echo "  sudo systemctl status orca-hub   # Check status"
+echo ""
+echo "After rebuilding the release, restart with:"
+echo "  sudo systemctl restart orca-hub"
