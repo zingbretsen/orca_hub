@@ -109,11 +109,50 @@ defmodule OrcaHub.HubRPC do
   # Upstream Servers
   # -------------------------------------------------------------------
 
+  def list_upstream_servers, do: call(OrcaHub.UpstreamServers, :list_upstream_servers, [])
+  def get_upstream_server!(id), do: call(OrcaHub.UpstreamServers, :get_upstream_server!, [id])
+
+  def create_upstream_server(attrs),
+    do: call(OrcaHub.UpstreamServers, :create_upstream_server, [attrs])
+
+  def update_upstream_server(server, attrs),
+    do: call(OrcaHub.UpstreamServers, :update_upstream_server, [server, attrs])
+
+  def delete_upstream_server(server),
+    do: call(OrcaHub.UpstreamServers, :delete_upstream_server, [server])
+
+  def change_upstream_server(server, attrs \\ %{}),
+    do: call(OrcaHub.UpstreamServers, :change_upstream_server, [server, attrs])
+
+  def list_servers_for_project(project_id),
+    do: call(OrcaHub.UpstreamServers, :list_servers_for_project, [project_id])
+
   def list_enabled_servers_for_project(project_id),
     do: call(OrcaHub.UpstreamServers, :list_enabled_servers_for_project, [project_id])
 
+  def add_server_to_project(project_id, server_id),
+    do: call(OrcaHub.UpstreamServers, :add_server_to_project, [project_id, server_id])
+
+  def remove_server_from_project(project_id, server_id),
+    do: call(OrcaHub.UpstreamServers, :remove_server_from_project, [project_id, server_id])
+
+  def server_in_project?(project_id, server_id),
+    do: call(OrcaHub.UpstreamServers, :server_in_project?, [project_id, server_id])
+
+  def list_servers_for_session(session_id),
+    do: call(OrcaHub.UpstreamServers, :list_servers_for_session, [session_id])
+
   def list_enabled_servers_for_session(session_id),
     do: call(OrcaHub.UpstreamServers, :list_enabled_servers_for_session, [session_id])
+
+  def add_server_to_session(session_id, server_id),
+    do: call(OrcaHub.UpstreamServers, :add_server_to_session, [session_id, server_id])
+
+  def remove_server_from_session(session_id, server_id),
+    do: call(OrcaHub.UpstreamServers, :remove_server_from_session, [session_id, server_id])
+
+  def server_in_session?(session_id, server_id),
+    do: call(OrcaHub.UpstreamServers, :server_in_session?, [session_id, server_id])
 
   # -------------------------------------------------------------------
   # Terminals

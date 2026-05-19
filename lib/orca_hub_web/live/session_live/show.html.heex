@@ -296,9 +296,9 @@
                 <div class="text-base-content/50 text-xs font-mono truncate">{server.url}</div>
               </div>
               <div class="shrink-0 ml-2">
-                <span :if={UpstreamServers.server_in_session?(@session.id, server.id)} class="text-xs text-base-content/40">added</span>
+                <span :if={HubRPC.server_in_session?(@session.id, server.id)} class="text-xs text-base-content/40">added</span>
                 <button
-                  :if={!UpstreamServers.server_in_session?(@session.id, server.id)}
+                  :if={!HubRPC.server_in_session?(@session.id, server.id)}
                   phx-click="add_mcp_server"
                   phx-value-id={server.id}
                   class="btn btn-xs btn-primary"

@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Cluster, HubRPC, Projects, Sessions, SessionRunner, UpstreamServers}
+  alias OrcaHub.{Cluster, HubRPC, Projects, Sessions, SessionRunner}
   alias OrcaHubWeb.{MessageComponents, Markdown}
 
   @impl true
@@ -84,8 +84,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:open_terminals, [])
      |> assign(:active_terminal_id, nil)
      |> assign(:show_mcp_modal, false)
-     |> assign(:session_mcp_servers, UpstreamServers.list_servers_for_session(id))
-     |> assign(:all_upstream_servers, UpstreamServers.list_upstream_servers())
+     |> assign(:session_mcp_servers, HubRPC.list_servers_for_session(id))
+     |> assign(:all_upstream_servers, HubRPC.list_upstream_servers())
      |> assign(:show_mcp_server_picker, false)
      |> assign(:show_heartbeat_modal, false)
      |> assign(:heartbeat_info, HubRPC.get_heartbeat(id))
@@ -338,12 +338,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("add_mcp_server", %{"id" => server_id}, socket) do
     session_id = socket.assigns.session.id
-    UpstreamServers.add_server_to_session(session_id, server_id)
+    HubRPC.add_server_to_session(session_id, server_id)
 
     {:noreply,
      socket
      |> assign(
-       session_mcp_servers: UpstreamServers.list_servers_for_session(session_id),
+       session_mcp_servers: HubRPC.list_servers_for_session(session_id),
        show_mcp_server_picker: false
      )
      |> put_flash(:info, "MCP server added — takes effect on next run")}
@@ -351,11 +351,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("remove_mcp_server", %{"id" => server_id}, socket) do
     session_id = socket.assigns.session.id
-    UpstreamServers.remove_server_from_session(session_id, server_id)
+    HubRPC.remove_server_from_session(session_id, server_id)
 
     {:noreply,
      socket
-     |> assign(session_mcp_servers: UpstreamServers.list_servers_for_session(session_id))
+     |> assign(session_mcp_servers: HubRPC.list_servers_for_session(session_id))
      |> put_flash(:info, "MCP server removed")}
   end
 

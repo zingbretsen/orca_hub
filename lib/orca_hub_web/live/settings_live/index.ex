@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.SettingsLive.Index do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.UpstreamServers
+  alias OrcaHub.HubRPC
   alias OrcaHub.UpstreamServers.UpstreamServer
   alias OrcaHub.Cluster
   alias OrcaHub.Cluster.CodeSync
@@ -18,11 +18,11 @@ defmodule OrcaHubWeb.SettingsLive.Index do
      socket
      |> assign(
        page_title: "Settings",
-       servers: UpstreamServers.list_upstream_servers(),
+       servers: HubRPC.list_upstream_servers(),
        upstream_tools: upstream_tools,
        show_form: false,
        editing_server: nil,
-       form: to_form(UpstreamServers.change_upstream_server(%UpstreamServer{})),
+       form: to_form(HubRPC.change_upstream_server(%UpstreamServer{})),
        header_pairs: [%{key: "", value: ""}],
        cluster_nodes: Cluster.node_info(),
        code_sync_result: nil,
@@ -41,7 +41,7 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   end
 
   defp apply_action(socket, :new, _params) do
-    changeset = UpstreamServers.change_upstream_server(%UpstreamServer{})
+    changeset = HubRPC.change_upstream_server(%UpstreamServer{})
 
     socket
     |> assign(
@@ -53,8 +53,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   end
 
   defp apply_action(socket, :edit, %{"id" => id}) do
-    server = UpstreamServers.get_upstream_server!(id)
-    changeset = UpstreamServers.change_upstream_server(server)
+    server = HubRPC.get_upstream_server!(id)
+    changeset = HubRPC.change_upstream_server(server)
 
     header_pairs =
       case server.headers do
@@ -80,7 +80,7 @@ defmodule OrcaHubWeb.SettingsLive.Index do
     header_pairs = extract_header_pairs(all_params)
     headers = headers_from_pairs(header_pairs)
     params = Map.put(params, "headers", headers)
-    changeset = UpstreamServers.change_upstream_server(server, params)
+    changeset = HubRPC.change_upstream_server(server, params)
     {:noreply, assign(socket, form: to_form(changeset, action: :validate), header_pairs: header_pairs)}
   end
 
@@ -90,8 +90,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
 
     result =
       case socket.assigns.editing_server do
-        nil -> UpstreamServers.create_upstream_server(params)
-        server -> UpstreamServers.update_upstream_server(server, params)
+        nil -> HubRPC.create_upstream_server(params)
+        server -> HubRPC.update_upstream_server(server, params)
       end
 
     case result do
@@ -99,7 +99,7 @@ defmodule OrcaHubWeb.SettingsLive.Index do
         {:noreply,
          socket
          |> assign(
-           servers: UpstreamServers.list_upstream_servers(),
+           servers: HubRPC.list_upstream_servers(),
            show_form: false,
            editing_server: nil
          )
@@ -112,27 +112,27 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   end
 
   def handle_event("delete", %{"id" => id}, socket) do
-    server = UpstreamServers.get_upstream_server!(id)
-    {:ok, _} = UpstreamServers.delete_upstream_server(server)
+    server = HubRPC.get_upstream_server!(id)
+    {:ok, _} = HubRPC.delete_upstream_server(server)
 
     {:noreply,
      socket
-     |> assign(servers: UpstreamServers.list_upstream_servers())
+     |> assign(servers: HubRPC.list_upstream_servers())
      |> put_flash(:info, "Upstream server deleted")}
   end
 
   def handle_event("toggle", %{"id" => id}, socket) do
-    server = UpstreamServers.get_upstream_server!(id)
-    {:ok, _} = UpstreamServers.update_upstream_server(server, %{enabled: !server.enabled})
+    server = HubRPC.get_upstream_server!(id)
+    {:ok, _} = HubRPC.update_upstream_server(server, %{enabled: !server.enabled})
 
-    {:noreply, assign(socket, servers: UpstreamServers.list_upstream_servers())}
+    {:noreply, assign(socket, servers: HubRPC.list_upstream_servers())}
   end
 
   def handle_event("toggle_global", %{"id" => id}, socket) do
-    server = UpstreamServers.get_upstream_server!(id)
-    {:ok, _} = UpstreamServers.update_upstream_server(server, %{global: !server.global})
+    server = HubRPC.get_upstream_server!(id)
+    {:ok, _} = HubRPC.update_upstream_server(server, %{global: !server.global})
 
-    {:noreply, assign(socket, servers: UpstreamServers.list_upstream_servers())}
+    {:noreply, assign(socket, servers: HubRPC.list_upstream_servers())}
   end
 
   def handle_event("add_header", _params, socket) do
@@ -223,7 +223,7 @@ defmodule OrcaHubWeb.SettingsLive.Index do
     {:noreply,
      socket
      |> assign(
-       servers: UpstreamServers.list_upstream_servers(),
+       servers: HubRPC.list_upstream_servers(),
        upstream_tools: upstream_tools
      )}
   end

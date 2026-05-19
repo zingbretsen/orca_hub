@@ -159,9 +159,9 @@
           <div class="text-base-content/50 text-xs font-mono">{server.url}</div>
         </div>
         <div>
-          <span :if={UpstreamServers.server_in_project?(@project.id, server.id)} class="text-xs text-base-content/40">already added</span>
+          <span :if={HubRPC.server_in_project?(@project.id, server.id)} class="text-xs text-base-content/40">already added</span>
           <button
-            :if={!UpstreamServers.server_in_project?(@project.id, server.id)}
+            :if={!HubRPC.server_in_project?(@project.id, server.id)}
             phx-click="add_mcp_server"
             phx-value-id={server.id}
             class="btn btn-xs btn-primary"

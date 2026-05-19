@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Cluster, HubRPC, Projects, Triggers, UpstreamServers}
+  alias OrcaHub.{Cluster, HubRPC, Projects, Triggers}
   alias OrcaHub.Projects.Project
   alias OrcaHub.Triggers.Trigger
 
@@ -45,8 +45,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        show_trigger_form: false,
        trigger_type: "scheduled",
        trigger_form: to_form(Triggers.change_trigger(%Trigger{project_id: project.id})),
-       project_mcp_servers: UpstreamServers.list_servers_for_project(project.id),
-       all_upstream_servers: UpstreamServers.list_upstream_servers(),
+       project_mcp_servers: HubRPC.list_servers_for_project(project.id),
+       all_upstream_servers: HubRPC.list_upstream_servers(),
        show_mcp_server_picker: false,
        edit_form: nil,
        browsing: false,
@@ -403,12 +403,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("add_mcp_server", %{"id" => server_id}, socket) do
     project_id = socket.assigns.project.id
-    UpstreamServers.add_server_to_project(project_id, server_id)
+    HubRPC.add_server_to_project(project_id, server_id)
 
     {:noreply,
      socket
      |> assign(
-       project_mcp_servers: UpstreamServers.list_servers_for_project(project_id),
+       project_mcp_servers: HubRPC.list_servers_for_project(project_id),
        show_mcp_server_picker: false
      )
      |> put_flash(:info, "MCP server added to project")}
@@ -416,11 +416,11 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   def handle_event("remove_mcp_server", %{"id" => server_id}, socket) do
     project_id = socket.assigns.project.id
-    UpstreamServers.remove_server_from_project(project_id, server_id)
+    HubRPC.remove_server_from_project(project_id, server_id)
 
     {:noreply,
      socket
-     |> assign(project_mcp_servers: UpstreamServers.list_servers_for_project(project_id))
+     |> assign(project_mcp_servers: HubRPC.list_servers_for_project(project_id))
      |> put_flash(:info, "MCP server removed from project")}
   end
 

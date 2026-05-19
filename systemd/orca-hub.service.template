@@ -1,6 +1,9 @@
 [Unit]
-Description=OrcaHub (Phoenix dev server)
-After=network.target postgresql.service
+Description=OrcaHub (compiled OTP release)
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=3
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
@@ -8,7 +11,8 @@ User={{USER}}
 WorkingDirectory={{ORCA_HUB_DIR}}
 EnvironmentFile={{ORCA_HUB_DIR}}/.env
 Environment="PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart={{ELIXIR_PATH}} --erl "-kernel connect_all false" --name ${NODE_DISPLAY_NAME}@${IP} --cookie ${RELEASE_COOKIE} -S mix phx.server
+Environment="PHX_SERVER=true"
+ExecStart={{ORCA_HUB_DIR}}/_build/prod/rel/orca_hub/bin/orca_hub start
 Restart=on-failure
 RestartSec=5
 
@@ -19,6 +23,12 @@ TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=orca-hub
+
+# Basic hardening. Further hardening (ProtectSystem=strict, ProtectHome=read-only,
+# ReadWritePaths=...) is deferred — the app writes to ~/.claude, project
+# directories, and other paths that need careful enumeration first.
+NoNewPrivileges=yes
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target
