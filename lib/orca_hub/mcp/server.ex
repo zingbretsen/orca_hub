@@ -128,7 +128,7 @@ defmodule OrcaHub.MCP.Server do
       "jsonrpc" => "2.0",
       "id" => id,
       "error" => %{
-        "code" => -32601,
+        "code" => -32_601,
         "message" => "Method not found: #{method}"
       }
     }

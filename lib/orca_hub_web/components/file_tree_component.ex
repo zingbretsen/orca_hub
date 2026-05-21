@@ -1,4 +1,8 @@
 defmodule OrcaHubWeb.FileTreeComponent do
+  @moduledoc """
+  LiveComponent that renders a collapsible file tree for a project
+  directory, supporting lazy expansion and hidden-file toggling.
+  """
   use OrcaHubWeb, :live_component
 
   alias OrcaHub.{Cluster, Projects}

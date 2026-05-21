@@ -4,7 +4,7 @@ defmodule OrcaHub.Sessions do
   """
 
   import Ecto.Query
-  alias OrcaHub.{AgentPresence, Repo, Sessions.Session, Sessions.Message}
+  alias OrcaHub.{AgentPresence, Repo, Sessions.Message, Sessions.Session}
 
   def list_sessions(filter \\ :manual) do
     query =

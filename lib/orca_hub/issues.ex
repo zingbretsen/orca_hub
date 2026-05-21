@@ -4,7 +4,7 @@ defmodule OrcaHub.Issues do
   """
 
   import Ecto.Query
-  alias OrcaHub.{Repo, Issues.Issue}
+  alias OrcaHub.{Issues.Issue, Repo}
 
   def list_issues(opts \\ []) do
     query = from i in Issue, order_by: [desc: i.inserted_at], preload: [:project]

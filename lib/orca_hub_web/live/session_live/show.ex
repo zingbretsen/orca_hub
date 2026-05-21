@@ -2,8 +2,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Cluster, HubRPC, Projects, Sessions, SessionRunner}
-  alias OrcaHubWeb.{MessageComponents, Markdown}
+  alias OrcaHub.{Cluster, HubRPC, Projects, SessionRunner, Sessions}
+  alias OrcaHubWeb.{Markdown, MessageComponents}
   alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Todos}
 
   @impl true

@@ -4,7 +4,7 @@ defmodule OrcaHub.Claude.StreamParserTest do
   alias OrcaHub.Claude.StreamParser
 
   test "parses complete JSON line" do
-    {events, buffer} = StreamParser.parse("{\"type\":\"text\"}\n")
+    {events, buffer} = StreamParser.parse(~s({"type":"text"}\n))
     assert events == [%{"type" => "text"}]
     assert buffer == ""
   end

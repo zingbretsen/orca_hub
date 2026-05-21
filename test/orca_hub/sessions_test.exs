@@ -1,7 +1,7 @@
 defmodule OrcaHub.SessionsTest do
   use OrcaHub.DataCase
 
-  alias OrcaHub.{Sessions, Projects}
+  alias OrcaHub.{Projects, Sessions}
 
   setup do
     {:ok, project} = Projects.create_project(%{name: "Test", directory: "/tmp/test-sessions"})

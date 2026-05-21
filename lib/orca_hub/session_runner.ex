@@ -9,8 +9,8 @@ defmodule OrcaHub.SessionRunner do
   use GenStatem
   require Logger
 
-  alias OrcaHub.Claude.{Config, StreamParser}
   alias OrcaHub.{AgentPresence, HubRPC}
+  alias OrcaHub.Claude.{Config, StreamParser}
 
   # Route a HubRPC call through the node that owns the session's DB record.
   # In multi-hub mode, the runner may be on a different node than the DB.
@@ -746,10 +746,9 @@ defmodule OrcaHub.SessionRunner do
     {complete_lines, _remainder} = combined |> String.split("\n") |> Enum.split(-1)
 
     complete_lines
-    |> Enum.reject(&(&1 == ""))
     |> Enum.reject(fn line ->
       stripped = Regex.replace(~r/\e\[[0-9;]*m/, line, "")
-      match?({:ok, _}, Jason.decode(stripped))
+      line == "" or match?({:ok, _}, Jason.decode(stripped))
     end)
     |> Enum.join("\n")
     |> then(fn

@@ -8,9 +8,9 @@ defmodule OrcaHub.UpstreamServers do
 
   alias OrcaHub.{
     Repo,
-    UpstreamServers.UpstreamServer,
     UpstreamServers.ProjectUpstreamServer,
-    UpstreamServers.SessionUpstreamServer
+    UpstreamServers.SessionUpstreamServer,
+    UpstreamServers.UpstreamServer
   }
 
   # ── Global server CRUD ────────────────────────────────────────────────

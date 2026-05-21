@@ -11,7 +11,7 @@ defmodule OrcaHub.ClaudeImport do
   """
 
   import Ecto.Query
-  alias OrcaHub.{Repo, Projects, Projects.Project, Sessions, Sessions.Session, Sessions.Message}
+  alias OrcaHub.{Projects, Projects.Project, Repo, Sessions, Sessions.Message, Sessions.Session}
   require Logger
 
   @doc """
@@ -253,8 +253,7 @@ defmodule OrcaHub.ClaudeImport do
           |> Path.basename()
           |> String.replace(~r/[-_]/, " ")
           |> String.split()
-          |> Enum.map(&String.capitalize/1)
-          |> Enum.join(" ")
+          |> Enum.map_join(" ", &String.capitalize/1)
 
         case Projects.create_project(%{
                name: name,

@@ -4,8 +4,8 @@ defmodule OrcaHub.Projects do
   """
 
   import Ecto.Query
-  alias OrcaHub.Repo
   alias OrcaHub.Projects.Project
+  alias OrcaHub.Repo
 
   @instruction_files ~w(CLAUDE.md AGENTS.md)
 

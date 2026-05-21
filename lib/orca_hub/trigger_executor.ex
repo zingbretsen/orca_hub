@@ -10,10 +10,7 @@ defmodule OrcaHub.TriggerExecutor do
   def execute(trigger_id) do
     trigger = HubRPC.get_trigger!(trigger_id)
 
-    unless trigger.enabled do
-      Logger.info("Trigger #{trigger_id} is disabled, skipping")
-      :ok
-    else
+    if trigger.enabled do
       Logger.info("Firing trigger #{trigger.name} (#{trigger_id})")
 
       session_id = resolve_session(trigger)
@@ -36,6 +33,9 @@ defmodule OrcaHub.TriggerExecutor do
       end
 
       :ok
+    else
+      Logger.info("Trigger #{trigger_id} is disabled, skipping")
+      :ok
     end
   rescue
     # Defensive boundary: triggers run from the scheduler or a background
@@ -49,10 +49,7 @@ defmodule OrcaHub.TriggerExecutor do
   def execute_webhook(trigger_id, payload) do
     trigger = HubRPC.get_trigger!(trigger_id)
 
-    unless trigger.enabled do
-      Logger.info("Webhook trigger #{trigger_id} is disabled, skipping")
-      :ok
-    else
+    if trigger.enabled do
       Logger.info("Firing webhook trigger #{trigger.name} (#{trigger_id})")
 
       session_id = resolve_session(trigger)
@@ -76,6 +73,9 @@ defmodule OrcaHub.TriggerExecutor do
       end
 
       {:ok, session_id}
+    else
+      Logger.info("Webhook trigger #{trigger_id} is disabled, skipping")
+      :ok
     end
   rescue
     # Defensive boundary: webhook execution runs from a background task; any

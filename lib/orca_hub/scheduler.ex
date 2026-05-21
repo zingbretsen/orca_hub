@@ -5,7 +5,7 @@ defmodule OrcaHub.Scheduler do
 
   use Quantum, otp_app: :orca_hub
 
-  alias OrcaHub.{Triggers, TriggerExecutor}
+  alias OrcaHub.{TriggerExecutor, Triggers}
 
   def sync_triggers do
     jobs() |> Enum.each(fn job -> delete_job(job.name) end)

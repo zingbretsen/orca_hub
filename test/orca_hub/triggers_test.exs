@@ -1,7 +1,7 @@
 defmodule OrcaHub.TriggersTest do
   use OrcaHub.DataCase, async: true
 
-  alias OrcaHub.{Triggers, Triggers.Trigger, Projects}
+  alias OrcaHub.{Projects, Triggers, Triggers.Trigger}
 
   setup do
     {:ok, project} = Projects.create_project(%{name: "Test Project", directory: "/tmp/test"})

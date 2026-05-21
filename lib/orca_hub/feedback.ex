@@ -4,7 +4,7 @@ defmodule OrcaHub.Feedback do
   """
 
   import Ecto.Query
-  alias OrcaHub.{Repo, Feedback.FeedbackRequest}
+  alias OrcaHub.{Feedback.FeedbackRequest, Repo}
 
   def list_pending_requests do
     Repo.all(
