@@ -1,4 +1,9 @@
 defmodule OrcaHub.TriggerExecutor do
+  @moduledoc """
+  Executes triggers — resolves or creates a session, routes it to the
+  owning node, and sends the trigger prompt.
+  """
+
   require Logger
   alias OrcaHub.{Cluster, HubRPC}
 
@@ -33,6 +38,9 @@ defmodule OrcaHub.TriggerExecutor do
       :ok
     end
   rescue
+    # Defensive boundary: triggers run from the scheduler or a background
+    # task, so any failure (DB, RPC, missing project) must be logged and
+    # contained rather than crashing the caller.
     e ->
       Logger.error("Trigger #{trigger_id} execution failed: #{Exception.message(e)}")
       :error
@@ -70,6 +78,8 @@ defmodule OrcaHub.TriggerExecutor do
       {:ok, session_id}
     end
   rescue
+    # Defensive boundary: webhook execution runs from a background task; any
+    # failure must be returned as an error rather than crashing the caller.
     e ->
       Logger.error("Webhook trigger #{trigger_id} execution failed: #{Exception.message(e)}")
       {:error, Exception.message(e)}

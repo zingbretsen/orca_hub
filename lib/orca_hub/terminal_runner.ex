@@ -134,7 +134,9 @@ defmodule OrcaHub.TerminalRunner do
       try do
         Port.close(state.port)
       rescue
-        _ -> :ok
+        # Port.close/1 raises ArgumentError when the port is already closed
+        # (e.g. the PTY exited first) — harmless during teardown.
+        ArgumentError -> :ok
       end
     end
 
@@ -169,14 +171,18 @@ defmodule OrcaHub.TerminalRunner do
 
     Port.open(
       {:spawn_executable, script_path},
-      [:binary, :exit_status,
-       {:args, script_args},
-       {:cd, directory},
-       {:env, [
-         {~c"TERM", ~c"xterm-256color"},
-         {~c"COLUMNS", ~c"#{cols}"},
-         {~c"LINES", ~c"#{rows}"}
-       ]}]
+      [
+        :binary,
+        :exit_status,
+        {:args, script_args},
+        {:cd, directory},
+        {:env,
+         [
+           {~c"TERM", ~c"xterm-256color"},
+           {~c"COLUMNS", ~c"#{cols}"},
+           {~c"LINES", ~c"#{rows}"}
+         ]}
+      ]
     )
   end
 

@@ -1,4 +1,8 @@
 defmodule OrcaHub.Projects do
+  @moduledoc """
+  Context for managing projects.
+  """
+
   import Ecto.Query
   alias OrcaHub.Repo
   alias OrcaHub.Projects.Project
@@ -11,16 +15,27 @@ defmodule OrcaHub.Projects do
 
   def search(query) do
     like = "%#{query}%"
-    Repo.all(from p in Project, where: ilike(p.name, ^like) and is_nil(p.deleted_at), order_by: [asc: p.name], limit: 5)
+
+    Repo.all(
+      from p in Project,
+        where: ilike(p.name, ^like) and is_nil(p.deleted_at),
+        order_by: [asc: p.name],
+        limit: 5
+    )
   end
 
   def get_project!(id) do
     Repo.get!(Project, id)
-    |> Repo.preload([:issues, sessions: from(s in OrcaHub.Sessions.Session, order_by: [desc: s.updated_at])])
+    |> Repo.preload([
+      :issues,
+      sessions: from(s in OrcaHub.Sessions.Session, order_by: [desc: s.updated_at])
+    ])
   end
 
   def get_project_by_directory(directory) do
-    Repo.one(from p in Project, where: p.directory == ^directory and is_nil(p.deleted_at), limit: 1)
+    Repo.one(
+      from p in Project, where: p.directory == ^directory and is_nil(p.deleted_at), limit: 1
+    )
   end
 
   def create_project(attrs) do
@@ -256,6 +271,7 @@ defmodule OrcaHub.Projects do
 
   defp editable_file?(filename, show_hidden) do
     ext = Path.extname(filename) |> String.downcase()
+
     ext in @editable_extensions or filename in @editable_basenames or
       (show_hidden and String.starts_with?(filename, ".") and ext == "")
   end
@@ -333,7 +349,10 @@ defmodule OrcaHub.Projects do
 
   @doc "Returns list of local branch names."
   def git_branches(%Project{directory: dir}) do
-    case System.cmd("git", ["branch", "--format=%(refname:short)"], cd: dir, stderr_to_stdout: true) do
+    case System.cmd("git", ["branch", "--format=%(refname:short)"],
+           cd: dir,
+           stderr_to_stdout: true
+         ) do
       {output, 0} ->
         output |> String.split("\n", trim: true) |> Enum.map(&String.trim/1) |> Enum.sort()
 
@@ -346,7 +365,9 @@ defmodule OrcaHub.Projects do
   def git_main_branch(%Project{directory: dir}) do
     # Check which of main/master exists
     case System.cmd("git", ["branch", "--list", "main"], cd: dir, stderr_to_stdout: true) do
-      {output, 0} when output != "" -> "main"
+      {output, 0} when output != "" ->
+        "main"
+
       _ ->
         case System.cmd("git", ["branch", "--list", "master"], cd: dir, stderr_to_stdout: true) do
           {output, 0} when output != "" -> "master"
@@ -382,7 +403,8 @@ defmodule OrcaHub.Projects do
   - `:error` - error message if git commands fail
   """
   def git_status(%Project{directory: dir}) do
-    with {porcelain, 0} <- System.cmd("git", ["status", "--porcelain"], cd: dir, stderr_to_stdout: true) do
+    with {porcelain, 0} <-
+           System.cmd("git", ["status", "--porcelain"], cd: dir, stderr_to_stdout: true) do
       lines = String.split(porcelain, "\n", trim: true)
       conflicts = Enum.any?(lines, fn line -> String.match?(line, ~r/^(U.|.U|DD|AA)/) end)
       clean = lines == []
@@ -423,11 +445,20 @@ defmodule OrcaHub.Projects do
 
           Enum.reduce(lines, %{}, fn line, acc ->
             cond do
-              String.starts_with?(line, "worktree ") -> Map.put(acc, :path, String.trim_leading(line, "worktree "))
-              String.starts_with?(line, "HEAD ") -> Map.put(acc, :head, String.trim_leading(line, "HEAD "))
-              String.starts_with?(line, "branch ") -> Map.put(acc, :branch, String.trim_leading(line, "branch refs/heads/"))
-              line == "bare" -> Map.put(acc, :bare, true)
-              true -> acc
+              String.starts_with?(line, "worktree ") ->
+                Map.put(acc, :path, String.trim_leading(line, "worktree "))
+
+              String.starts_with?(line, "HEAD ") ->
+                Map.put(acc, :head, String.trim_leading(line, "HEAD "))
+
+              String.starts_with?(line, "branch ") ->
+                Map.put(acc, :branch, String.trim_leading(line, "branch refs/heads/"))
+
+              line == "bare" ->
+                Map.put(acc, :bare, true)
+
+              true ->
+                acc
             end
           end)
         end)
@@ -471,7 +502,11 @@ defmodule OrcaHub.Projects do
       end
 
     unless String.contains?(existing, ".worktrees") do
-      addition = if String.ends_with?(existing, "\n") or existing == "", do: ".worktrees/\n", else: "\n.worktrees/\n"
+      addition =
+        if String.ends_with?(existing, "\n") or existing == "",
+          do: ".worktrees/\n",
+          else: "\n.worktrees/\n"
+
       File.write(gitignore_path, existing <> addition)
     end
   end
@@ -483,8 +518,13 @@ defmodule OrcaHub.Projects do
     # First fetch to make sure we have latest
     System.cmd("git", ["fetch", "origin"], cd: worktree_path, stderr_to_stdout: true)
 
-    case System.cmd("git", ["rebase", "origin/#{main}"], cd: worktree_path, stderr_to_stdout: true) do
-      {output, 0} -> {:ok, String.trim(output)}
+    case System.cmd("git", ["rebase", "origin/#{main}"],
+           cd: worktree_path,
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        {:ok, String.trim(output)}
+
       {output, _} ->
         # Abort the failed rebase
         System.cmd("git", ["rebase", "--abort"], cd: worktree_path, stderr_to_stdout: true)

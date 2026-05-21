@@ -1,4 +1,8 @@
 defmodule OrcaHub.Feedback do
+  @moduledoc """
+  Context for managing human feedback requests raised by sessions.
+  """
+
   import Ecto.Query
   alias OrcaHub.{Repo, Feedback.FeedbackRequest}
 
@@ -35,7 +39,11 @@ defmodule OrcaHub.Feedback do
     |> Repo.update()
     |> tap(fn
       {:ok, request} ->
-        Phoenix.PubSub.broadcast(OrcaHub.PubSub, "feedback:#{request.id}", {:feedback_response, request})
+        Phoenix.PubSub.broadcast(
+          OrcaHub.PubSub,
+          "feedback:#{request.id}",
+          {:feedback_response, request}
+        )
 
         if request.session_id do
           notify_runner(:notify_feedback_answered, request.session_id)
@@ -54,7 +62,11 @@ defmodule OrcaHub.Feedback do
     |> Repo.update()
     |> tap(fn
       {:ok, request} ->
-        Phoenix.PubSub.broadcast(OrcaHub.PubSub, "feedback:#{request.id}", {:feedback_cancelled, request})
+        Phoenix.PubSub.broadcast(
+          OrcaHub.PubSub,
+          "feedback:#{request.id}",
+          {:feedback_cancelled, request}
+        )
 
         if request.session_id do
           notify_runner(:notify_feedback_answered, request.session_id)

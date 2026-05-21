@@ -1,4 +1,6 @@
 defmodule OrcaHub.Sessions.Session do
+  @moduledoc "Schema for a Claude session."
+
   use Ecto.Schema
   import Ecto.Changeset
 
@@ -28,7 +30,21 @@ defmodule OrcaHub.Sessions.Session do
 
   def changeset(session, attrs) do
     session
-    |> cast(attrs, [:directory, :claude_session_id, :title, :status, :model, :issue_id, :project_id, :archived_at, :triggered, :priority, :runner_node, :original_node, :orchestrator])
+    |> cast(attrs, [
+      :directory,
+      :claude_session_id,
+      :title,
+      :status,
+      :model,
+      :issue_id,
+      :project_id,
+      :archived_at,
+      :triggered,
+      :priority,
+      :runner_node,
+      :original_node,
+      :orchestrator
+    ])
     |> validate_required([:directory])
     |> validate_inclusion(:status, ~w(ready idle running waiting error compacting))
   end

@@ -1,4 +1,8 @@
 defmodule OrcaHub.Terminals do
+  @moduledoc """
+  Context for managing embedded web terminals.
+  """
+
   import Ecto.Query
   alias OrcaHub.{Repo, Terminals.Terminal}
 

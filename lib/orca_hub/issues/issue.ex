@@ -1,4 +1,6 @@
 defmodule OrcaHub.Issues.Issue do
+  @moduledoc "Schema for an issue."
+
   use Ecto.Schema
   import Ecto.Changeset
 

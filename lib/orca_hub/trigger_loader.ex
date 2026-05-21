@@ -1,4 +1,8 @@
 defmodule OrcaHub.TriggerLoader do
+  @moduledoc """
+  Loads enabled scheduled triggers into the Quantum scheduler on boot.
+  """
+
   use GenServer
 
   def start_link(_), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)

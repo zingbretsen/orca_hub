@@ -1,6 +1,17 @@
 defmodule OrcaHub.UpstreamServers do
+  @moduledoc """
+  Context for managing upstream MCP server configurations and their
+  associations to projects and sessions.
+  """
+
   import Ecto.Query
-  alias OrcaHub.{Repo, UpstreamServers.UpstreamServer, UpstreamServers.ProjectUpstreamServer, UpstreamServers.SessionUpstreamServer}
+
+  alias OrcaHub.{
+    Repo,
+    UpstreamServers.UpstreamServer,
+    UpstreamServers.ProjectUpstreamServer,
+    UpstreamServers.SessionUpstreamServer
+  }
 
   # ── Global server CRUD ────────────────────────────────────────────────
 
@@ -9,7 +20,11 @@ defmodule OrcaHub.UpstreamServers do
   end
 
   def list_enabled_upstream_servers do
-    Repo.all(from s in UpstreamServer, where: s.enabled == true and s.global == true, order_by: [asc: s.name])
+    Repo.all(
+      from s in UpstreamServer,
+        where: s.enabled == true and s.global == true,
+        order_by: [asc: s.name]
+    )
   end
 
   def get_upstream_server!(id), do: Repo.get!(UpstreamServer, id)

@@ -58,6 +58,9 @@ defmodule OrcaHub.MCP.UpstreamClient do
       try do
         connect_all_upstreams()
       rescue
+        # Defensive boundary: connecting touches the DB and remote HTTP
+        # servers, both of which can fail in many ways. A failure here must
+        # not crash the GenServer — it just leaves connections empty.
         e ->
           Logger.warning("Failed to connect to upstream servers: #{inspect(e)}")
           %{}
@@ -67,11 +70,13 @@ defmodule OrcaHub.MCP.UpstreamClient do
     {:noreply, %{state | connections: connections}}
   end
 
+  @impl true
   def handle_info(:refresh, state) do
     connections =
       try do
         connect_all_upstreams()
       rescue
+        # Defensive boundary: keep prior connections on any refresh failure.
         e ->
           Logger.warning("Failed to refresh upstream connections: #{inspect(e)}")
           state.connections
@@ -81,11 +86,13 @@ defmodule OrcaHub.MCP.UpstreamClient do
     {:noreply, %{state | connections: connections}}
   end
 
+  @impl true
   def handle_info(:upstream_servers_changed, state) do
     connections =
       try do
         connect_all_upstreams()
       rescue
+        # Defensive boundary: keep prior connections on any reconnect failure.
         e ->
           Logger.warning("Failed to connect upstream servers: #{inspect(e)}")
           state.connections
@@ -123,14 +130,18 @@ defmodule OrcaHub.MCP.UpstreamClient do
 
   def handle_call({:call_tool, tool_name, arguments}, _from, state) do
     result =
-      Enum.find_value(state.connections, {:error, "No upstream server found for tool: #{tool_name}"}, fn {_id, conn} ->
-        prefix = "#{conn.prefix}__"
+      Enum.find_value(
+        state.connections,
+        {:error, "No upstream server found for tool: #{tool_name}"},
+        fn {_id, conn} ->
+          prefix = "#{conn.prefix}__"
 
-        if String.starts_with?(tool_name, prefix) do
-          original_name = String.replace_prefix(tool_name, prefix, "")
-          {:ok, proxy_tool_call(conn, original_name, arguments)}
+          if String.starts_with?(tool_name, prefix) do
+            original_name = String.replace_prefix(tool_name, prefix, "")
+            {:ok, proxy_tool_call(conn, original_name, arguments)}
+          end
         end
-      end)
+      )
 
     case result do
       {:ok, response} -> {:reply, response, state}
@@ -144,6 +155,7 @@ defmodule OrcaHub.MCP.UpstreamClient do
       try do
         connect_all_upstreams()
       rescue
+        # Defensive boundary: keep prior connections on any refresh failure.
         e ->
           Logger.warning("Failed to refresh upstream connections: #{inspect(e)}")
           state.connections
@@ -159,11 +171,17 @@ defmodule OrcaHub.MCP.UpstreamClient do
     |> Enum.reduce(%{}, fn server, acc ->
       case connect_upstream(server) do
         {:ok, conn} ->
-          Logger.info("Connected to upstream MCP server: #{server.name} (#{length(conn.tools)} tools)")
+          Logger.info(
+            "Connected to upstream MCP server: #{server.name} (#{length(conn.tools)} tools)"
+          )
+
           Map.put(acc, server.id, conn)
 
         {:error, reason} ->
-          Logger.warning("Failed to connect to upstream MCP server #{server.name}: #{inspect(reason)}")
+          Logger.warning(
+            "Failed to connect to upstream MCP server #{server.name}: #{inspect(reason)}"
+          )
+
           acc
       end
     end)

@@ -1,4 +1,8 @@
 defmodule OrcaHub.Scheduler do
+  @moduledoc """
+  Quantum scheduler for firing scheduled (cron) triggers.
+  """
+
   use Quantum, otp_app: :orca_hub
 
   alias OrcaHub.{Triggers, TriggerExecutor}

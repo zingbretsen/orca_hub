@@ -1,4 +1,6 @@
 defmodule OrcaHub.UpstreamServers.ProjectUpstreamServer do
+  @moduledoc "Join schema associating a project with an upstream MCP server."
+
   use Ecto.Schema
   import Ecto.Changeset
 

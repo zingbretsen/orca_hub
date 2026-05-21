@@ -1,4 +1,6 @@
 defmodule OrcaHub.Terminals.Terminal do
+  @moduledoc "Schema for an embedded web terminal."
+
   use Ecto.Schema
   import Ecto.Changeset
 

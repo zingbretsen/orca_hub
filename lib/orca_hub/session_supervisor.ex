@@ -1,4 +1,8 @@
 defmodule OrcaHub.SessionSupervisor do
+  @moduledoc """
+  DynamicSupervisor for `SessionRunner` processes.
+  """
+
   use DynamicSupervisor
 
   def start_link(_opts) do
@@ -37,6 +41,9 @@ defmodule OrcaHub.SessionSupervisor do
             OrcaHub.HubRPC.update_session(session, %{status: "error"})
           end
         rescue
+          # Defensive boundary: this is a best-effort status sync after the
+          # session is already terminated. The DB record may be gone, or the
+          # hub node unreachable — neither should fail stop_session/1.
           _ -> :ok
         end
 

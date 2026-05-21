@@ -1,4 +1,8 @@
 defmodule OrcaHub.Sessions do
+  @moduledoc """
+  Context for managing Claude sessions and their messages.
+  """
+
   import Ecto.Query
   alias OrcaHub.{AgentPresence, Repo, Sessions.Session, Sessions.Message}
 
@@ -75,7 +79,9 @@ defmodule OrcaHub.Sessions do
   def delete_session(%Session{} = session), do: Repo.delete(session)
 
   def list_messages(session_id) do
-    Repo.all(from m in Message, where: m.session_id == ^session_id, order_by: [asc: m.inserted_at])
+    Repo.all(
+      from m in Message, where: m.session_id == ^session_id, order_by: [asc: m.inserted_at]
+    )
   end
 
   def create_message(attrs) do
@@ -101,58 +107,55 @@ defmodule OrcaHub.Sessions do
   end
 
   def search_sessions_by_directory(directory, opts \\ %{}) do
-    query = opts[:query]
-    status = opts[:status]
-    include_archived = opts[:include_archived] || false
-    archived_only = opts[:archived_only] || false
     limit = opts[:limit] || 20
 
-    q =
-      from s in Session,
-        where: s.directory == ^directory,
-        preload: [:project],
-        order_by: [desc: s.updated_at],
-        limit: ^limit
-
-    q =
-      cond do
-        archived_only -> from(s in q, where: not is_nil(s.archived_at))
-        include_archived -> q
-        true -> from(s in q, where: is_nil(s.archived_at))
-      end
-    q = if query, do: from(s in q, where: ilike(s.title, ^"%#{query}%")), else: q
-    q = if status, do: from(s in q, where: s.status == ^status), else: q
-
-    Repo.all(q)
+    from(s in Session,
+      where: s.directory == ^directory,
+      preload: [:project],
+      order_by: [desc: s.updated_at],
+      limit: ^limit
+    )
+    |> apply_search_filters(opts)
+    |> Repo.all()
   end
 
   def search_all_sessions(opts \\ %{}) do
-    query = opts[:query]
-    status = opts[:status]
-    include_archived = opts[:include_archived] || false
-    archived_only = opts[:archived_only] || false
     limit = opts[:limit] || 20
 
-    q =
-      from s in Session,
-        left_join: p in assoc(s, :project),
-        where: is_nil(s.project_id) or is_nil(p.deleted_at),
-        preload: [project: p],
-        order_by: [desc: s.updated_at],
-        limit: ^limit
-
-    q =
-      cond do
-        archived_only -> from(s in q, where: not is_nil(s.archived_at))
-        include_archived -> q
-        true -> from(s in q, where: is_nil(s.archived_at))
-      end
-
-    q = if query, do: from(s in q, where: ilike(s.title, ^"%#{query}%")), else: q
-    q = if status, do: from(s in q, where: s.status == ^status), else: q
-
-    Repo.all(q)
+    from(s in Session,
+      left_join: p in assoc(s, :project),
+      where: is_nil(s.project_id) or is_nil(p.deleted_at),
+      preload: [project: p],
+      order_by: [desc: s.updated_at],
+      limit: ^limit
+    )
+    |> apply_search_filters(opts)
+    |> Repo.all()
   end
+
+  # Applies the archive/query/status filters shared by the session search
+  # functions. `opts` is a map with optional :archived_only, :include_archived,
+  # :query and :status keys.
+  defp apply_search_filters(query, opts) do
+    query
+    |> filter_by_archive(opts)
+    |> filter_by_query(opts[:query])
+    |> filter_by_status(opts[:status])
+  end
+
+  defp filter_by_archive(q, opts) do
+    cond do
+      opts[:archived_only] -> from(s in q, where: not is_nil(s.archived_at))
+      opts[:include_archived] -> q
+      true -> from(s in q, where: is_nil(s.archived_at))
+    end
+  end
+
+  defp filter_by_query(q, nil), do: q
+  defp filter_by_query(q, query), do: from(s in q, where: ilike(s.title, ^"%#{query}%"))
+
+  defp filter_by_status(q, nil), do: q
+  defp filter_by_status(q, status), do: from(s in q, where: s.status == ^status)
 
   @doc """
   Returns the IDs of the previous and next sessions within the same project,
@@ -216,8 +219,12 @@ defmodule OrcaHub.Sessions do
         select: min(s.priority)
 
     case Repo.one(min_priority_query) do
-      nil -> :ok
-      0 -> :ok
+      nil ->
+        :ok
+
+      0 ->
+        :ok
+
       min_priority ->
         from(s in Session,
           where: is_nil(s.archived_at) and s.status == "idle" and s.priority == ^min_priority
@@ -238,7 +245,8 @@ defmodule OrcaHub.Sessions do
   """
   def list_session_commits(directory, session_id) do
     args = [
-      "log", "--all",
+      "log",
+      "--all",
       "--grep=OrcaHub-Session: #{session_id}",
       "--format=%H%n%h%n%s%n%an%n%aI",
       "--max-count=50"
@@ -259,8 +267,16 @@ defmodule OrcaHub.Sessions do
   Returns the full commit body and diffstat for a given commit hash.
   """
   def get_commit_detail(directory, hash) do
-    with {body, 0} <- System.cmd("git", ["log", "-1", "--format=%b", hash], cd: directory, stderr_to_stdout: true),
-         {stat, 0} <- System.cmd("git", ["diff-tree", "--stat", "--no-commit-id", "-r", hash], cd: directory, stderr_to_stdout: true) do
+    with {body, 0} <-
+           System.cmd("git", ["log", "-1", "--format=%b", hash],
+             cd: directory,
+             stderr_to_stdout: true
+           ),
+         {stat, 0} <-
+           System.cmd("git", ["diff-tree", "--stat", "--no-commit-id", "-r", hash],
+             cd: directory,
+             stderr_to_stdout: true
+           ) do
       %{body: String.trim(body), stat: String.trim(stat)}
     else
       _ -> %{body: "", stat: ""}

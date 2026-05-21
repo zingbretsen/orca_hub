@@ -1,4 +1,8 @@
 defmodule OrcaHub.Issues do
+  @moduledoc """
+  Context for managing issues.
+  """
+
   import Ecto.Query
   alias OrcaHub.{Repo, Issues.Issue}
 

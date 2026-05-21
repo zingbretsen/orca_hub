@@ -1,4 +1,6 @@
 defmodule OrcaHub.UpstreamServers.SessionUpstreamServer do
+  @moduledoc "Join schema associating a session with an upstream MCP server."
+
   use Ecto.Schema
   import Ecto.Changeset
 

@@ -21,7 +21,8 @@ defmodule OrcaHub.MCP.Tools do
             },
             "prompt" => %{
               "type" => "string",
-              "description" => "Optional additional instructions to append to the issue description"
+              "description" =>
+                "Optional additional instructions to append to the issue description"
             }
           },
           "required" => ["issue_id"]
@@ -44,7 +45,8 @@ defmodule OrcaHub.MCP.Tools do
             },
             "priority" => %{
               "type" => "integer",
-              "description" => "Notification priority (0-10). Default is 5. Higher values are more urgent."
+              "description" =>
+                "Notification priority (0-10). Default is 5. Higher values are more urgent."
             }
           },
           "required" => ["title", "message"]
@@ -78,11 +80,13 @@ defmodule OrcaHub.MCP.Tools do
             },
             "approaches_tried" => %{
               "type" => "string",
-              "description" => "Text to append to the approaches log. Describe what you tried and whether it worked."
+              "description" =>
+                "Text to append to the approaches log. Describe what you tried and whether it worked."
             },
             "notes" => %{
               "type" => "string",
-              "description" => "Text to append to the notes. Use for theories, observations, or context for future sessions."
+              "description" =>
+                "Text to append to the notes. Use for theories, observations, or context for future sessions."
             },
             "status" => %{
               "type" => "string",
@@ -102,11 +106,13 @@ defmodule OrcaHub.MCP.Tools do
           "properties" => %{
             "name" => %{
               "type" => "string",
-              "description" => "A short descriptive name for the trigger (e.g. \"Daily test run\")"
+              "description" =>
+                "A short descriptive name for the trigger (e.g. \"Daily test run\")"
             },
             "prompt" => %{
               "type" => "string",
-              "description" => "The prompt to send to the Claude Code session each time the trigger fires"
+              "description" =>
+                "The prompt to send to the Claude Code session each time the trigger fires"
             },
             "schedule" => %{
               "type" => "string",
@@ -143,8 +149,7 @@ defmodule OrcaHub.MCP.Tools do
             },
             "archive_on_complete" => %{
               "type" => "boolean",
-              "description" =>
-                "If true, archive the session once it completes. Default: false"
+              "description" => "If true, archive the session once it completes. Default: false"
             }
           },
           "required" => ["name", "prompt", "project_id"]
@@ -201,8 +206,7 @@ defmodule OrcaHub.MCP.Tools do
             },
             "archive_on_complete" => %{
               "type" => "boolean",
-              "description" =>
-                "If true, archive the session once it completes. Default: false"
+              "description" => "If true, archive the session once it completes. Default: false"
             }
           },
           "required" => ["name", "prompt", "project_id"]
@@ -270,7 +274,8 @@ defmodule OrcaHub.MCP.Tools do
             },
             "title" => %{
               "type" => "string",
-              "description" => "Optional title for the new session. Auto-generated if not provided."
+              "description" =>
+                "Optional title for the new session. Auto-generated if not provided."
             }
           },
           "required" => ["prompt"]
@@ -443,26 +448,10 @@ defmodule OrcaHub.MCP.Tools do
   end
 
   def call("create_scheduled_trigger", args, _state) do
-    cron =
-      cond do
-        args["cron_expression"] ->
-          args["cron_expression"]
-
-        args["schedule"] == "hourly" ->
-          "#{args["minute"] || 0} * * * *"
-
-        args["schedule"] == "weekly" ->
-          "#{args["minute"] || 0} #{args["hour"] || 9} * * #{args["day_of_week"] || 1}"
-
-        true ->
-          # Default to daily
-          "#{args["minute"] || 0} #{args["hour"] || 9} * * *"
-      end
-
     attrs = %{
       name: args["name"],
       prompt: args["prompt"],
-      cron_expression: cron,
+      cron_expression: build_cron(args),
       project_id: args["project_id"],
       reuse_session: args["reuse_session"] || false,
       archive_on_complete: args["archive_on_complete"] || false
@@ -536,7 +525,6 @@ defmodule OrcaHub.MCP.Tools do
   end
 
   def call("search_sessions", args, state) do
-    all_projects = args["all_projects"] || false
     limit = args["limit"] || 20
 
     search_opts = %{
@@ -547,69 +535,12 @@ defmodule OrcaHub.MCP.Tools do
       limit: limit
     }
 
-    sessions =
-      if all_projects do
-        HubRPC.search_all_sessions(search_opts)
-      else
-        directory =
-          case args["directory"] do
-            nil ->
-              # Default to the current session's project directory
-              case state.orca_session_id do
-                nil -> nil
-
-                session_id ->
-                  case Cluster.find_session(session_id) do
-                    {_node, session} -> session.directory
-                    nil -> nil
-                  end
-              end
-
-            dir ->
-              dir
-          end
-
-        if is_nil(directory) do
-          {:error,
-           "Could not determine project directory. Provide a 'directory' parameter, " <>
-             "use 'all_projects: true' to search across all projects, " <>
-             "or ensure this MCP connection is linked to an OrcaHub session."}
-        else
-          HubRPC.search_sessions_by_directory(directory, search_opts)
-        end
-      end
-
-    case sessions do
+    case search_sessions_for(args, state, search_opts) do
       {:error, msg} ->
         error(msg)
 
       sessions when is_list(sessions) ->
-        clustered = length(Node.list()) > 0
-
-        results =
-          sessions
-          |> Enum.sort_by(fn s -> s.updated_at end, {:desc, NaiveDateTime})
-          |> Enum.take(limit)
-          |> Enum.map(fn session ->
-            result = %{
-              id: session.id,
-              title: session.title,
-              status: session.status,
-              archived: not is_nil(session.archived_at),
-              directory: session.directory,
-              project: if(session.project, do: session.project.name),
-              updated_at: session.updated_at,
-              inserted_at: session.inserted_at
-            }
-
-            if clustered do
-              Map.put(result, :node, Cluster.node_name(session.runner_node || node()))
-            else
-              result
-            end
-          end)
-
-        text(Jason.encode!(results))
+        text(Jason.encode!(format_session_results(sessions, limit)))
     end
   end
 
@@ -622,10 +553,16 @@ defmodule OrcaHub.MCP.Tools do
         caller = HubRPC.get_session!(caller_session_id)
         directory = args["directory"] || caller.directory
         project_id = caller.project_id
-        runner_node = if caller.project, do: Cluster.project_node_for(caller.project), else: node()
+
+        runner_node =
+          if caller.project, do: Cluster.project_node_for(caller.project), else: node()
 
         session_attrs =
-          %{directory: directory, project_id: project_id, runner_node: Atom.to_string(runner_node)}
+          %{
+            directory: directory,
+            project_id: project_id,
+            runner_node: Atom.to_string(runner_node)
+          }
           |> maybe_put_field(:title, args["title"])
 
         case HubRPC.create_session(session_attrs) do
@@ -666,31 +603,7 @@ defmodule OrcaHub.MCP.Tools do
         error("No OrcaHub session linked to this MCP connection.")
 
       session_id ->
-        interval = args["interval_seconds"]
-        message = args["message"]
-
-        cond do
-          is_nil(interval) or not is_integer(interval) ->
-            error("interval_seconds is required and must be an integer.")
-
-          is_nil(message) or message == "" ->
-            error("message is required and cannot be empty.")
-
-          true ->
-            # Prefix the message to make it clear it's a heartbeat
-            prefixed_message = "[Heartbeat]\n\n#{message}"
-
-            case HubRPC.schedule_heartbeat(session_id, interval, prefixed_message) do
-              :ok ->
-                text(
-                  "Heartbeat scheduled: your session will receive a wake-up message every #{interval} seconds. " <>
-                    "Remember to call cancel_heartbeat when you're done with your task."
-                )
-
-              {:error, reason} ->
-                error("Failed to schedule heartbeat: #{reason}")
-            end
-        end
+        do_schedule_heartbeat(session_id, args["interval_seconds"], args["message"])
     end
   end
 
@@ -706,13 +619,112 @@ defmodule OrcaHub.MCP.Tools do
 
           _info ->
             HubRPC.cancel_heartbeat(session_id)
-            text("Heartbeat cancelled. Your session will no longer receive periodic wake-up messages.")
+
+            text(
+              "Heartbeat cancelled. Your session will no longer receive periodic wake-up messages."
+            )
         end
     end
   end
 
   def call(name, _args, _state) do
     error("Unknown tool: #{name}")
+  end
+
+  # ── create_scheduled_trigger helpers ──────────────────────────────────
+
+  defp build_cron(%{"cron_expression" => cron}) when not is_nil(cron), do: cron
+
+  defp build_cron(%{"schedule" => "hourly"} = args), do: "#{args["minute"] || 0} * * * *"
+
+  defp build_cron(%{"schedule" => "weekly"} = args) do
+    "#{args["minute"] || 0} #{args["hour"] || 9} * * #{args["day_of_week"] || 1}"
+  end
+
+  defp build_cron(args), do: "#{args["minute"] || 0} #{args["hour"] || 9} * * *"
+
+  # ── search_sessions helpers ───────────────────────────────────────────
+
+  defp search_sessions_for(%{"all_projects" => true}, _state, search_opts) do
+    HubRPC.search_all_sessions(search_opts)
+  end
+
+  defp search_sessions_for(args, state, search_opts) do
+    case resolve_search_directory(args, state) do
+      nil ->
+        {:error,
+         "Could not determine project directory. Provide a 'directory' parameter, " <>
+           "use 'all_projects: true' to search across all projects, " <>
+           "or ensure this MCP connection is linked to an OrcaHub session."}
+
+      directory ->
+        HubRPC.search_sessions_by_directory(directory, search_opts)
+    end
+  end
+
+  defp resolve_search_directory(%{"directory" => dir}, _state) when not is_nil(dir), do: dir
+  defp resolve_search_directory(_args, %{orca_session_id: nil}), do: nil
+
+  defp resolve_search_directory(_args, %{orca_session_id: session_id}) do
+    case Cluster.find_session(session_id) do
+      {_node, session} -> session.directory
+      nil -> nil
+    end
+  end
+
+  defp format_session_results(sessions, limit) do
+    clustered = Node.list() != []
+
+    sessions
+    |> Enum.sort_by(fn s -> s.updated_at end, {:desc, NaiveDateTime})
+    |> Enum.take(limit)
+    |> Enum.map(&format_session_result(&1, clustered))
+  end
+
+  defp format_session_result(session, clustered) do
+    result = %{
+      id: session.id,
+      title: session.title,
+      status: session.status,
+      archived: not is_nil(session.archived_at),
+      directory: session.directory,
+      project: if(session.project, do: session.project.name),
+      updated_at: session.updated_at,
+      inserted_at: session.inserted_at
+    }
+
+    if clustered do
+      Map.put(result, :node, Cluster.node_name(session.runner_node || node()))
+    else
+      result
+    end
+  end
+
+  # ── schedule_heartbeat helpers ────────────────────────────────────────
+
+  defp do_schedule_heartbeat(_session_id, interval, _message) when not is_integer(interval) do
+    error("interval_seconds is required and must be an integer.")
+  end
+
+  defp do_schedule_heartbeat(_session_id, _interval, message)
+       when is_nil(message) or message == "" do
+    error("message is required and cannot be empty.")
+  end
+
+  defp do_schedule_heartbeat(session_id, interval, message) do
+    # Prefix the message to make it clear it's a heartbeat
+    prefixed_message = "[Heartbeat]\n\n#{message}"
+
+    case HubRPC.schedule_heartbeat(session_id, interval, prefixed_message) do
+      :ok ->
+        text(
+          "Heartbeat scheduled: your session will receive a wake-up message every #{interval} seconds. " <>
+            "Remember to call cancel_heartbeat when you're done with your task."
+        )
+
+      {:error, reason} ->
+        error("Failed to schedule heartbeat: #{reason}")
+    end
   end
 
   defp maybe_append_field(attrs, _issue, _field, nil), do: attrs

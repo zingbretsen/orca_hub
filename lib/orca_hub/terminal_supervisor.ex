@@ -1,4 +1,8 @@
 defmodule OrcaHub.TerminalSupervisor do
+  @moduledoc """
+  DynamicSupervisor for `TerminalRunner` processes.
+  """
+
   use DynamicSupervisor
 
   def start_link(_opts) do

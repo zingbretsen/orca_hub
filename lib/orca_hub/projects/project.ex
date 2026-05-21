@@ -1,4 +1,6 @@
 defmodule OrcaHub.Projects.Project do
+  @moduledoc "Schema for a project."
+
   use Ecto.Schema
   import Ecto.Changeset
 

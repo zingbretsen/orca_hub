@@ -1,4 +1,11 @@
 defmodule OrcaHub.SessionRunner do
+  @moduledoc """
+  GenStatem that manages a Claude CLI session via a port.
+
+  Sends prompts, parses streaming JSON output, persists messages, and
+  broadcasts session events via PubSub.
+  """
+
   use GenStatem
   require Logger
 
@@ -74,7 +81,12 @@ defmodule OrcaHub.SessionRunner do
     # Set original_node only if not already set (preserves the first node that ran the session)
     current_node = Atom.to_string(node())
     node_updates = %{runner_node: current_node}
-    node_updates = if session.original_node, do: node_updates, else: Map.put(node_updates, :original_node, current_node)
+
+    node_updates =
+      if session.original_node,
+        do: node_updates,
+        else: Map.put(node_updates, :original_node, current_node)
+
     db_call(init_data, :update_session, [session, node_updates])
 
     AgentPresence.write(session.directory, session_id, %{
@@ -118,7 +130,10 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def ready(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
-  def ready(:cast, {:update_orchestrator, orchestrator}, data), do: {:keep_state, %{data | orchestrator: orchestrator}}
+
+  def ready(:cast, {:update_orchestrator, orchestrator}, data),
+    do: {:keep_state, %{data | orchestrator: orchestrator}}
+
   def ready(:cast, _msg, _data), do: :keep_state_and_data
   def ready(:info, _msg, _data), do: :keep_state_and_data
 
@@ -138,26 +153,30 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def idle(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
-  def idle(:cast, {:update_orchestrator, orchestrator}, data), do: {:keep_state, %{data | orchestrator: orchestrator}}
+
+  def idle(:cast, {:update_orchestrator, orchestrator}, data),
+    do: {:keep_state, %{data | orchestrator: orchestrator}}
+
   def idle(:cast, _msg, _data), do: :keep_state_and_data
   def idle(:info, _msg, _data), do: :keep_state_and_data
 
   # ── :running state ──────────────────────────────────────────────────
 
-  def running({:call, from}, {:send_message, prompt}, %{port: port} = data) when not is_nil(port) do
+  def running({:call, from}, {:send_message, prompt}, %{port: port} = data)
+      when not is_nil(port) do
     user_event = make_user_event(prompt)
-    persist_message(data,user_event)
+    persist_message(data, user_event)
     broadcast(data.session_id, {:event, user_event})
 
     # Interrupt the running CLI — SIGINT lets it finish in-progress tool calls gracefully
     send_sigint(port)
 
     {:keep_state,
-     %{data |
-       pending_prompts: data.pending_prompts ++ [prompt],
-       messages: data.messages ++ [user_event]
-     },
-     [{:reply, from, :ok}]}
+     %{
+       data
+       | pending_prompts: data.pending_prompts ++ [prompt],
+         messages: data.messages ++ [user_event]
+     }, [{:reply, from, :ok}]}
   end
 
   def running({:call, from}, :interrupt, %{port: port}) when not is_nil(port) do
@@ -182,7 +201,8 @@ defmodule OrcaHub.SessionRunner do
       end
 
     new_data =
-      Enum.reduce(events, %{data | buffer: new_buffer, error_output: error_output}, fn event, acc ->
+      Enum.reduce(events, %{data | buffer: new_buffer, error_output: error_output}, fn event,
+                                                                                       acc ->
         handle_stream_event(event, acc)
       end)
 
@@ -196,7 +216,11 @@ defmodule OrcaHub.SessionRunner do
       [_ | _] = prompts ->
         # Auto-resume with queued prompts bundled into a single message
         combined_prompt = Enum.join(prompts, "\n\n\n")
-        Logger.info("Auto-resuming session #{data.session_id} with #{length(prompts)} pending prompt(s)")
+
+        Logger.info(
+          "Auto-resuming session #{data.session_id} with #{length(prompts)} pending prompt(s)"
+        )
+
         new_port = open_port(combined_prompt, data)
         {:keep_state, %{data | port: new_port, buffer: "", error_output: "", pending_prompts: []}}
 
@@ -210,7 +234,10 @@ defmodule OrcaHub.SessionRunner do
         AgentPresence.update_status(data.directory, data.session_id, to_string(new_status))
 
         if code == 0 && (session.title == nil || session.title == "") do
-          Logger.info("Attempting title generation for session #{data.session_id}, first_prompt: #{inspect(data.first_prompt)}")
+          Logger.info(
+            "Attempting title generation for session #{data.session_id}, first_prompt: #{inspect(data.first_prompt)}"
+          )
+
           maybe_generate_title(data, data.first_prompt)
         end
 
@@ -219,7 +246,10 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def running(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
-  def running(:cast, {:update_orchestrator, orchestrator}, data), do: {:keep_state, %{data | orchestrator: orchestrator}}
+
+  def running(:cast, {:update_orchestrator, orchestrator}, data),
+    do: {:keep_state, %{data | orchestrator: orchestrator}}
+
   def running(:cast, _msg, _data), do: :keep_state_and_data
   def running(:info, _msg, _data), do: :keep_state_and_data
 
@@ -239,7 +269,10 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def error(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
-  def error(:cast, {:update_orchestrator, orchestrator}, data), do: {:keep_state, %{data | orchestrator: orchestrator}}
+
+  def error(:cast, {:update_orchestrator, orchestrator}, data),
+    do: {:keep_state, %{data | orchestrator: orchestrator}}
+
   def error(:cast, _msg, _data), do: :keep_state_and_data
   def error(:info, _msg, _data), do: :keep_state_and_data
 
@@ -264,7 +297,7 @@ defmodule OrcaHub.SessionRunner do
           "message" => error_text
         })
 
-      persist_message(data,error_event)
+      persist_message(data, error_event)
       broadcast(data.session_id, {:event, error_event})
       %{data | messages: data.messages ++ [error_event]}
     else
@@ -276,7 +309,7 @@ defmodule OrcaHub.SessionRunner do
 
   defp start_running(from, prompt, data) do
     user_event = make_user_event(prompt)
-    persist_message(data,user_event)
+    persist_message(data, user_event)
     broadcast(data.session_id, {:event, user_event})
 
     port = open_port(prompt, data)
@@ -289,8 +322,14 @@ defmodule OrcaHub.SessionRunner do
     first_prompt = data.first_prompt || prompt
 
     {:next_state, :running,
-     %{data | port: port, buffer: "", error_output: "", messages: data.messages ++ [user_event], first_prompt: first_prompt},
-     [{:reply, from, :ok}]}
+     %{
+       data
+       | port: port,
+         buffer: "",
+         error_output: "",
+         messages: data.messages ++ [user_event],
+         first_prompt: first_prompt
+     }, [{:reply, from, :ok}]}
   end
 
   defp make_user_event(prompt) do
@@ -330,12 +369,14 @@ defmodule OrcaHub.SessionRunner do
 
     Port.open(
       {:spawn_executable, script_path},
-      [:binary, :exit_status, :stderr_to_stdout,
-       {:args, script_args}] ++ port_opts
+      [:binary, :exit_status, :stderr_to_stdout, {:args, script_args}] ++ port_opts
     )
   end
 
-  defp handle_stream_event(%{"type" => "system", "subtype" => "status", "status" => "compacting"}, data) do
+  defp handle_stream_event(
+         %{"type" => "system", "subtype" => "status", "status" => "compacting"},
+         data
+       ) do
     update_session_status(data, %{status: "compacting"})
     broadcast(data.session_id, {:status, :compacting})
     AgentPresence.update_status(data.directory, data.session_id, "compacting")
@@ -356,14 +397,14 @@ defmodule OrcaHub.SessionRunner do
     end
 
     event = stamp(event)
-    persist_message(data,event)
+    persist_message(data, event)
     broadcast(data.session_id, {:event, event})
     %{data | claude_session_id: sid, messages: data.messages ++ [event]}
   end
 
   defp handle_stream_event(event, data) do
     event = stamp(event)
-    persist_message(data,event)
+    persist_message(data, event)
     broadcast(data.session_id, {:event, event})
     %{data | messages: data.messages ++ [event]}
   end
@@ -405,7 +446,12 @@ defmodule OrcaHub.SessionRunner do
       |> Enum.uniq_by(& &1.id)
       |> Map.new(fn server ->
         entry = %{"type" => "http", "url" => server.url}
-        entry = if map_size(server.headers) > 0, do: Map.put(entry, "headers", server.headers), else: entry
+
+        entry =
+          if map_size(server.headers) > 0,
+            do: Map.put(entry, "headers", server.headers),
+            else: entry
+
         {server.name, entry}
       end)
 
@@ -570,15 +616,25 @@ defmodule OrcaHub.SessionRunner do
             session = db_call(data, :get_session!, [session_id])
             db_call(data, :update_session, [session, %{title: title}])
             broadcast(session_id, {:title_updated, title})
-            AgentPresence.write(session.directory, session_id, %{title: title, status: session.status})
+
+            AgentPresence.write(session.directory, session_id, %{
+              title: title,
+              status: session.status
+            })
 
           {:error, reason} ->
-            Logger.warning("Failed to generate title for session #{session_id}: #{inspect(reason)}")
+            Logger.warning(
+              "Failed to generate title for session #{session_id}: #{inspect(reason)}"
+            )
+
             broadcast(session_id, {:title_error, reason})
         end
       rescue
         e ->
-          Logger.error("Title generation crashed for session #{session_id}: #{Exception.message(e)}")
+          Logger.error(
+            "Title generation crashed for session #{session_id}: #{Exception.message(e)}"
+          )
+
           broadcast(session_id, {:title_error, Exception.message(e)})
       end
     end)
@@ -663,14 +719,21 @@ defmodule OrcaHub.SessionRunner do
     custom_model = Application.get_env(:orca_hub, :title_model)
 
     if dr_token && dr_endpoint do
-      Logger.info("Title API: using DataRobot gateway (endpoint=#{dr_endpoint}, token=#{if dr_token, do: "set", else: "MISSING"})")
+      Logger.info(
+        "Title API: using DataRobot gateway (endpoint=#{dr_endpoint}, token=#{if dr_token, do: "set", else: "MISSING"})"
+      )
+
       url = String.trim_trailing(dr_endpoint, "/") <> "/genai/llmgw/responses"
       headers = [{"authorization", "Bearer #{dr_token}"}]
       model = custom_model || "azure/gpt-5-nano-2025-08-07"
       {url, headers, model, :responses}
     else
       api_key = Application.get_env(:orca_hub, :openai_api_key)
-      Logger.info("Title API: using OpenAI directly (api_key=#{if api_key, do: "set", else: "MISSING"})")
+
+      Logger.info(
+        "Title API: using OpenAI directly (api_key=#{if api_key, do: "set", else: "MISSING"})"
+      )
+
       url = "https://api.openai.com/v1/chat/completions"
       headers = [{"authorization", "Bearer #{api_key}"}]
       model = custom_model || "gpt-4.1-nano"

@@ -1,4 +1,6 @@
 defmodule OrcaHub.Triggers.Trigger do
+  @moduledoc "Schema for a scheduled or webhook trigger."
+
   use Ecto.Schema
   import Ecto.Changeset
 

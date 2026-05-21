@@ -1,4 +1,8 @@
 defmodule OrcaHub.Triggers do
+  @moduledoc """
+  Context for managing scheduled and webhook triggers.
+  """
+
   import Ecto.Query
   alias OrcaHub.{Repo, Triggers.Trigger}
 

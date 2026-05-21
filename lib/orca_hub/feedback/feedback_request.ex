@@ -1,4 +1,6 @@
 defmodule OrcaHub.Feedback.FeedbackRequest do
+  @moduledoc "Schema for a human feedback request."
+
   use Ecto.Schema
   import Ecto.Changeset
 

@@ -1,4 +1,6 @@
 defmodule OrcaHub.Sessions.Message do
+  @moduledoc "Schema for a message belonging to a session."
+
   use Ecto.Schema
   import Ecto.Changeset
 

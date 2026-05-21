@@ -1,4 +1,6 @@
 defmodule OrcaHub.UpstreamServers.UpstreamServer do
+  @moduledoc "Schema for an upstream MCP server configuration."
+
   use Ecto.Schema
   import Ecto.Changeset
 
@@ -35,8 +37,15 @@ defmodule OrcaHub.UpstreamServers.UpstreamServer do
     case get_field(changeset, :prefix) do
       nil ->
         case get_field(changeset, :name) do
-          nil -> changeset
-          name -> put_change(changeset, :prefix, name |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "_"))
+          nil ->
+            changeset
+
+          name ->
+            put_change(
+              changeset,
+              :prefix,
+              name |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "_")
+            )
         end
 
       _ ->
