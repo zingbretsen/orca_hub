@@ -16,11 +16,18 @@
   <span :if={@current_branch} class="badge badge-outline badge-sm">{@current_branch}</span>
 </div>
 
-
-<div :if={@live_action == :edit} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
+<div
+  :if={@live_action == :edit}
+  class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
+>
   <div class="card bg-base-100 shadow-xl w-full max-w-md p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
     <h2 class="text-lg font-semibold mb-4">Edit Project</h2>
-    <.form for={@edit_form} phx-submit="save_project" phx-change="validate_project" class="space-y-4">
+    <.form
+      for={@edit_form}
+      phx-submit="save_project"
+      phx-change="validate_project"
+      class="space-y-4"
+    >
       <.input field={@edit_form[:name]} type="text" label="Name" />
       <div class="flex gap-2 items-end">
         <div class="flex-1">
@@ -36,17 +43,27 @@
   </div>
 </div>
 
-<div :if={@browsing} class="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50">
+<div
+  :if={@browsing}
+  class="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50"
+>
   <div class="card bg-base-100 shadow-xl w-full max-w-lg p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
     <h2 class="text-lg font-semibold mb-2">Select Directory</h2>
     <div class="flex items-center gap-2 mb-3 text-sm">
-      <button type="button" phx-click="browse_up" class="btn btn-sm btn-ghost" disabled={@browse_path == "/"}>
+      <button
+        type="button"
+        phx-click="browse_up"
+        class="btn btn-sm btn-ghost"
+        disabled={@browse_path == "/"}
+      >
         &uarr; Up
       </button>
       <code class="flex-1 truncate bg-base-200 rounded px-2 py-1">{@browse_path}</code>
     </div>
     <div class="overflow-y-auto max-h-64 border border-base-300 rounded">
-      <div :if={@browse_entries == []} class="p-3 text-sm text-base-content/50">No subdirectories</div>
+      <div :if={@browse_entries == []} class="p-3 text-sm text-base-content/50">
+        No subdirectories
+      </div>
       <button
         :for={entry <- @browse_entries}
         type="button"
@@ -59,7 +76,9 @@
     </div>
     <div class="flex justify-end gap-2 mt-4">
       <button type="button" phx-click="browse_close" class="btn btn-sm">Cancel</button>
-      <button type="button" phx-click="browse_select" class="btn btn-sm btn-primary">Select this directory</button>
+      <button type="button" phx-click="browse_select" class="btn btn-sm btn-primary">
+        Select this directory
+      </button>
     </div>
   </div>
 </div>
@@ -70,33 +89,57 @@
     <div class="flex items-center gap-2">
       <label class="label cursor-pointer gap-2">
         <span class="label-text text-xs">Show archived</span>
-        <input type="checkbox" class="toggle toggle-xs" checked={@show_archived_sessions} phx-click="toggle_archived_sessions" />
+        <input
+          type="checkbox"
+          class="toggle toggle-xs"
+          checked={@show_archived_sessions}
+          phx-click="toggle_archived_sessions"
+        />
       </label>
       <button phx-click="create_session" class="btn btn-sm btn-primary">New Session</button>
-      <button phx-click="create_orchestrator" class="btn btn-sm btn-outline" title="Read-only session that delegates work">New Orchestrator</button>
+      <button
+        phx-click="create_orchestrator"
+        class="btn btn-sm btn-outline"
+        title="Read-only session that delegates work"
+      >
+        New Orchestrator
+      </button>
     </div>
   </div>
 
-  <% filtered_sessions = if @show_archived_sessions, do: @project.sessions, else: Enum.reject(@project.sessions, & &1.archived_at) %>
+  <% filtered_sessions =
+    if @show_archived_sessions,
+      do: @project.sessions,
+      else: Enum.reject(@project.sessions, & &1.archived_at) %>
 
   <div :if={filtered_sessions == []} class="text-sm text-base-content/50 p-4 text-center">
     No sessions yet.
   </div>
 
-  <.table :if={filtered_sessions != []} id="project-sessions" rows={filtered_sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}>
+  <.table
+    :if={filtered_sessions != []}
+    id="project-sessions"
+    rows={filtered_sessions}
+    row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}
+  >
     <:col :let={session} label="Title">
-      <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">{session.title || "Untitled"}</.link>
+      <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">
+        {session.title || "Untitled"}
+      </.link>
     </:col>
     <:col :let={session} label="Status">
       <span :if={session.archived_at} class="badge badge-ghost">archived</span>
-      <span :if={!session.archived_at} class={[
-        "badge",
-        session.status == "ready" && "badge-ghost",
-        session.status == "idle" && "badge-ghost",
-        session.status == "running" && "badge-warning",
-        session.status == "waiting" && "badge-info",
-        session.status == "error" && "badge-error"
-      ]}>
+      <span
+        :if={!session.archived_at}
+        class={[
+          "badge",
+          session.status == "ready" && "badge-ghost",
+          session.status == "idle" && "badge-ghost",
+          session.status == "running" && "badge-warning",
+          session.status == "waiting" && "badge-info",
+          session.status == "error" && "badge-error"
+        ]}
+      >
         {session.status}
       </span>
     </:col>
@@ -109,14 +152,21 @@
 <div class="mt-8">
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">Issues</h3>
-    <.link navigate={~p"/issues/new?project_id=#{@project.id}"} class="btn btn-sm btn-primary">New Issue</.link>
+    <.link navigate={~p"/issues/new?project_id=#{@project.id}"} class="btn btn-sm btn-primary">
+      New Issue
+    </.link>
   </div>
 
   <div :if={@project.issues == []} class="text-sm text-base-content/50 p-4 text-center">
     No issues yet.
   </div>
 
-  <.table :if={@project.issues != []} id="project-issues" rows={@project.issues} row_click={fn issue -> JS.navigate(~p"/issues/#{issue.id}") end}>
+  <.table
+    :if={@project.issues != []}
+    id="project-issues"
+    rows={@project.issues}
+    row_click={fn issue -> JS.navigate(~p"/issues/#{issue.id}") end}
+  >
     <:col :let={issue} label="Title">
       <.link navigate={~p"/issues/#{issue.id}"} class="link link-hover">{issue.title}</.link>
     </:col>
@@ -136,7 +186,9 @@
 <div class="mt-8">
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">MCP Servers</h3>
-    <button phx-click="toggle_mcp_server_picker" class="btn btn-sm btn-primary">Add Server</button>
+    <button phx-click="toggle_mcp_server_picker" class="btn btn-sm btn-primary">
+      Add Server
+    </button>
   </div>
 
   <p class="text-sm text-base-content/60 mb-3">
@@ -150,16 +202,27 @@
       No MCP servers defined yet. <.link navigate={~p"/settings"} class="link">Configure servers in Settings</.link>.
     </div>
     <div :if={@all_upstream_servers != []} class="space-y-2">
-      <div :for={server <- @all_upstream_servers} class="flex items-center justify-between text-sm bg-base-100 rounded px-3 py-2">
+      <div
+        :for={server <- @all_upstream_servers}
+        class="flex items-center justify-between text-sm bg-base-100 rounded px-3 py-2"
+      >
         <div>
           <span class="font-medium">{server.name}</span>
-          <span class={["badge badge-xs ml-2", if(server.enabled, do: "badge-success", else: "badge-ghost")]}>
+          <span class={[
+            "badge badge-xs ml-2",
+            if(server.enabled, do: "badge-success", else: "badge-ghost")
+          ]}>
             {if server.enabled, do: "enabled", else: "disabled"}
           </span>
           <div class="text-base-content/50 text-xs font-mono">{server.url}</div>
         </div>
         <div>
-          <span :if={HubRPC.server_in_project?(@project.id, server.id)} class="text-xs text-base-content/40">already added</span>
+          <span
+            :if={HubRPC.server_in_project?(@project.id, server.id)}
+            class="text-xs text-base-content/40"
+          >
+            already added
+          </span>
           <button
             :if={!HubRPC.server_in_project?(@project.id, server.id)}
             phx-click="add_mcp_server"
@@ -176,16 +239,25 @@
     </div>
   </div>
 
-  <div :if={@project_mcp_servers == [] && !@show_mcp_server_picker} class="text-sm text-base-content/50 p-4 text-center">
+  <div
+    :if={@project_mcp_servers == [] && !@show_mcp_server_picker}
+    class="text-sm text-base-content/50 p-4 text-center"
+  >
     No project-specific MCP servers.
   </div>
 
-  <div :if={@project_mcp_servers != []} class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
+  <div
+    :if={@project_mcp_servers != []}
+    class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
+  >
     <div :for={server <- @project_mcp_servers} class="flex items-center gap-3 px-4 py-3 text-sm">
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
           <span class="font-medium">{server.name}</span>
-          <span class={["badge badge-xs", if(server.enabled, do: "badge-success", else: "badge-ghost")]}>
+          <span class={[
+            "badge badge-xs",
+            if(server.enabled, do: "badge-success", else: "badge-ghost")
+          ]}>
             {if server.enabled, do: "enabled", else: "disabled"}
           </span>
         </div>
@@ -215,18 +287,35 @@
     <h4 class="font-semibold mb-3">
       {if @editing_trigger, do: "Edit Trigger", else: "New Trigger"}
     </h4>
-    <.form for={@trigger_form} phx-submit="save_trigger" phx-change="validate_trigger" class="space-y-3">
-      <.input field={@trigger_form[:name]} type="text" label="Name" placeholder="Weekly k3s update check" />
-      <.input field={@trigger_form[:prompt]} type="textarea" label="Prompt" placeholder="Check for updates to all services..." />
+    <.form
+      for={@trigger_form}
+      phx-submit="save_trigger"
+      phx-change="validate_trigger"
+      class="space-y-3"
+    >
+      <.input
+        field={@trigger_form[:name]}
+        type="text"
+        label="Name"
+        placeholder="Weekly k3s update check"
+      />
+      <.input
+        field={@trigger_form[:prompt]}
+        type="textarea"
+        label="Prompt"
+        placeholder="Check for updates to all services..."
+      />
 
       <div>
         <label class="label"><span class="label-text">Type</span></label>
         <div class="flex flex-wrap gap-2 mb-3">
-          <button :for={type <- ["scheduled", "webhook"]}
+          <button
+            :for={type <- ["scheduled", "webhook"]}
             type="button"
             phx-click="set_trigger_type"
             phx-value-type={type}
-            class={["btn btn-sm", if(@trigger_type == type, do: "btn-primary", else: "btn-ghost")]}>
+            class={["btn btn-sm", if(@trigger_type == type, do: "btn-primary", else: "btn-ghost")]}
+          >
             {String.capitalize(type)}
           </button>
         </div>
@@ -235,7 +324,11 @@
       <div :if={@trigger_type == "scheduled"}>
         <div>
           <label class="label"><span class="label-text">Quick Schedule</span></label>
-          <select name="schedule_preset" phx-change="set_schedule_preset" class="select select-bordered w-full">
+          <select
+            name="schedule_preset"
+            phx-change="set_schedule_preset"
+            class="select select-bordered w-full"
+          >
             <option value="">Custom</option>
             <option value="every_15m">Every 15 minutes</option>
             <option value="hourly">Every hour</option>
@@ -245,22 +338,45 @@
             <option value="monthly_9am">Every 1st of the month at 9am</option>
           </select>
         </div>
-        <.input field={@trigger_form[:cron_expression]} type="text" label="Cron Schedule" placeholder="0 9 * * 1  (Mondays at 9am)" />
+        <.input
+          field={@trigger_form[:cron_expression]}
+          type="text"
+          label="Cron Schedule"
+          placeholder="0 9 * * 1  (Mondays at 9am)"
+        />
       </div>
 
-      <div :if={@trigger_type == "webhook" && @editing_trigger && @editing_trigger.webhook_secret} class="text-sm">
+      <div
+        :if={@trigger_type == "webhook" && @editing_trigger && @editing_trigger.webhook_secret}
+        class="text-sm"
+      >
         <label class="label"><span class="label-text">Webhook URL</span></label>
-        <code class="bg-base-300 px-3 py-2 rounded text-xs block break-all">{OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{@editing_trigger.webhook_secret}"}</code>
-        <p class="text-base-content/50 text-xs mt-1">POST JSON to this URL to fire the trigger. The payload will be included in the prompt.</p>
+        <code class="bg-base-300 px-3 py-2 rounded text-xs block break-all">
+          {OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{@editing_trigger.webhook_secret}"}
+        </code>
+        <p class="text-base-content/50 text-xs mt-1">
+          POST JSON to this URL to fire the trigger. The payload will be included in the prompt.
+        </p>
       </div>
 
-      <div :if={@trigger_type == "webhook" && !@editing_trigger} class="text-sm text-base-content/50">
+      <div
+        :if={@trigger_type == "webhook" && !@editing_trigger}
+        class="text-sm text-base-content/50"
+      >
         A webhook URL will be generated after creating the trigger.
       </div>
 
       <div class="flex gap-6">
-        <.input field={@trigger_form[:reuse_session]} type="checkbox" label="Reuse previous session" />
-        <.input field={@trigger_form[:archive_on_complete]} type="checkbox" label="Hide from queue when done" />
+        <.input
+          field={@trigger_form[:reuse_session]}
+          type="checkbox"
+          label="Reuse previous session"
+        />
+        <.input
+          field={@trigger_form[:archive_on_complete]}
+          type="checkbox"
+          label="Hide from queue when done"
+        />
       </div>
       <div class="flex justify-end gap-2">
         <button type="button" phx-click="cancel_trigger" class="btn btn-sm">Cancel</button>
@@ -271,39 +387,86 @@
     </.form>
   </div>
 
-  <div :if={@triggers == [] && !@show_trigger_form} class="text-sm text-base-content/50 p-4 text-center">
+  <div
+    :if={@triggers == [] && !@show_trigger_form}
+    class="text-sm text-base-content/50 p-4 text-center"
+  >
     No triggers yet.
   </div>
 
-  <div :if={@triggers != []} class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
+  <div
+    :if={@triggers != []}
+    class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
+  >
     <div :for={trigger <- @triggers} class="flex items-center gap-3 px-4 py-3 text-sm">
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
           <span class="font-medium">{trigger.name}</span>
-          <span class={["badge badge-xs", if(trigger.type == "webhook", do: "badge-info", else: "badge-neutral")]}>
+          <span class={[
+            "badge badge-xs",
+            if(trigger.type == "webhook", do: "badge-info", else: "badge-neutral")
+          ]}>
             {trigger.type}
           </span>
-          <span class={["badge badge-xs", if(trigger.enabled, do: "badge-success", else: "badge-ghost")]}>
+          <span class={[
+            "badge badge-xs",
+            if(trigger.enabled, do: "badge-success", else: "badge-ghost")
+          ]}>
             {if trigger.enabled, do: "active", else: "disabled"}
           </span>
         </div>
-        <div :if={trigger.type == "scheduled"} class="text-base-content/50 text-xs mt-0.5 font-mono">{trigger.cron_expression}</div>
-        <div :if={trigger.type == "webhook"} class="text-base-content/50 text-xs mt-0.5 font-mono truncate max-w-md">{OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"}</div>
+        <div
+          :if={trigger.type == "scheduled"}
+          class="text-base-content/50 text-xs mt-0.5 font-mono"
+        >
+          {trigger.cron_expression}
+        </div>
+        <div
+          :if={trigger.type == "webhook"}
+          class="text-base-content/50 text-xs mt-0.5 font-mono truncate max-w-md"
+        >
+          {OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"}
+        </div>
         <div :if={trigger.last_fired_at} class="text-base-content/40 text-xs mt-0.5">
           Last fired: {Calendar.strftime(trigger.last_fired_at, "%Y-%m-%d %H:%M UTC")}
         </div>
       </div>
       <div class="flex items-center gap-1">
-        <button :if={trigger.type == "scheduled"} phx-click="fire_trigger" phx-value-id={trigger.id} class="btn btn-xs btn-ghost" title="Fire now">
+        <button
+          :if={trigger.type == "scheduled"}
+          phx-click="fire_trigger"
+          phx-value-id={trigger.id}
+          class="btn btn-xs btn-ghost"
+          title="Fire now"
+        >
           <.icon name="hero-play-micro" class="size-4" />
         </button>
-        <button phx-click="toggle_trigger" phx-value-id={trigger.id} class="btn btn-xs btn-ghost" title={if trigger.enabled, do: "Disable", else: "Enable"}>
-          <.icon name={if trigger.enabled, do: "hero-pause-micro", else: "hero-play-micro"} class="size-4" />
+        <button
+          phx-click="toggle_trigger"
+          phx-value-id={trigger.id}
+          class="btn btn-xs btn-ghost"
+          title={if trigger.enabled, do: "Disable", else: "Enable"}
+        >
+          <.icon
+            name={if trigger.enabled, do: "hero-pause-micro", else: "hero-play-micro"}
+            class="size-4"
+          />
         </button>
-        <button phx-click="edit_trigger" phx-value-id={trigger.id} class="btn btn-xs btn-ghost" title="Edit">
+        <button
+          phx-click="edit_trigger"
+          phx-value-id={trigger.id}
+          class="btn btn-xs btn-ghost"
+          title="Edit"
+        >
           <.icon name="hero-pencil-micro" class="size-4" />
         </button>
-        <button phx-click="delete_trigger" phx-value-id={trigger.id} data-confirm="Delete this trigger?" class="btn btn-xs btn-ghost text-error" title="Delete">
+        <button
+          phx-click="delete_trigger"
+          phx-value-id={trigger.id}
+          data-confirm="Delete this trigger?"
+          class="btn btn-xs btn-ghost text-error"
+          title="Delete"
+        >
           <.icon name="hero-trash-micro" class="size-4" />
         </button>
       </div>
@@ -331,7 +494,12 @@
       <div class="divider text-xs text-base-content/40 my-1">OR create new</div>
       <div>
         <label class="label"><span class="label-text">New branch name</span></label>
-        <input type="text" name="new_branch" placeholder="feature/my-branch" class="input input-bordered w-full font-mono" />
+        <input
+          type="text"
+          name="new_branch"
+          placeholder="feature/my-branch"
+          class="input input-bordered w-full font-mono"
+        />
       </div>
       <div class="flex justify-end gap-2">
         <button type="button" phx-click="cancel_worktree" class="btn btn-sm">Cancel</button>
@@ -340,24 +508,45 @@
     </form>
   </div>
 
-  <div :if={@worktrees == [] && !@show_worktree_form} class="text-sm text-base-content/50 p-4 text-center">
+  <div
+    :if={@worktrees == [] && !@show_worktree_form}
+    class="text-sm text-base-content/50 p-4 text-center"
+  >
     No worktrees.
   </div>
 
-  <div :if={@worktrees != []} class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
+  <div
+    :if={@worktrees != []}
+    class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
+  >
     <div :for={wt <- @worktrees} class="flex items-center gap-3 px-4 py-3 text-sm">
       <div class="flex-1 min-w-0">
         <div class="font-medium">{wt[:branch]}</div>
         <div class="text-base-content/50 text-xs font-mono mt-0.5 truncate">{wt[:path]}</div>
       </div>
       <div class="flex items-center gap-1">
-        <button phx-click="worktree_session" phx-value-path={wt[:path]} class="btn btn-xs btn-ghost" title="Start session">
+        <button
+          phx-click="worktree_session"
+          phx-value-path={wt[:path]}
+          class="btn btn-xs btn-ghost"
+          title="Start session"
+        >
           <.icon name="hero-play-micro" class="size-4" />
         </button>
-        <button phx-click="worktree_rebase" phx-value-path={wt[:path]} class="btn btn-xs btn-ghost" title="Rebase onto main">
+        <button
+          phx-click="worktree_rebase"
+          phx-value-path={wt[:path]}
+          class="btn btn-xs btn-ghost"
+          title="Rebase onto main"
+        >
           <.icon name="hero-arrow-path-micro" class="size-4" />
         </button>
-        <button phx-click="worktree_merge" phx-value-branch={wt[:branch]} class="btn btn-xs btn-ghost" title="Merge into main">
+        <button
+          phx-click="worktree_merge"
+          phx-value-branch={wt[:branch]}
+          class="btn btn-xs btn-ghost"
+          title="Merge into main"
+        >
           <.icon name="hero-arrow-down-on-square-micro" class="size-4" />
         </button>
         <button
@@ -450,7 +639,12 @@
             >
               <.icon name="hero-clipboard-micro" class="size-3" />
             </button>
-            <input type="hidden" id="file-link-url" value={file_disk_path(@project, @selected_file)} phx-hook="Copy" />
+            <input
+              type="hidden"
+              id="file-link-url"
+              value={file_disk_path(@project, @selected_file)}
+              phx-hook="Copy"
+            />
           </div>
           <button phx-click="edit_file" class="btn btn-sm btn-ghost">Raw Edit</button>
         </div>
@@ -470,7 +664,9 @@
                   id={"block-editor-#{index}"}
                 >{@block_edit_content}</textarea>
                 <div class="flex justify-end gap-2">
-                  <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">Cancel</button>
+                  <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">
+                    Cancel
+                  </button>
                   <button type="submit" class="btn btn-xs btn-primary">Save</button>
                 </div>
               </form>
@@ -514,7 +710,12 @@
             >
               <.icon name="hero-clipboard-micro" class="size-3" />
             </button>
-            <input type="hidden" id="file-link-url-raw" value={file_disk_path(@project, @selected_file)} phx-hook="Copy" />
+            <input
+              type="hidden"
+              id="file-link-url-raw"
+              value={file_disk_path(@project, @selected_file)}
+              phx-hook="Copy"
+            />
           </div>
           <button phx-click="edit_file" class="btn btn-sm btn-ghost">Edit</button>
         </div>
@@ -542,7 +743,10 @@
       </div>
 
       <%!-- No file selected --%>
-      <div :if={!@selected_file && @new_file_name == nil} class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg">
+      <div
+        :if={!@selected_file && @new_file_name == nil}
+        class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg"
+      >
         Select a file to view its contents.
       </div>
     </div>

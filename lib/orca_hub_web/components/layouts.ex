@@ -41,8 +41,7 @@ defmodule OrcaHubWeb.Layouts do
     ~H"""
     <header class="flex items-center gap-2 px-4 py-2 sm:px-6 lg:px-8">
       <a href="/" class="flex items-center gap-2 font-semibold">
-        <img src={~p"/images/logo.png"} alt="OrcaHub" class="h-8 w-auto" />
-        OrcaHub
+        <img src={~p"/images/logo.png"} alt="OrcaHub" class="h-8 w-auto" /> OrcaHub
       </a>
 
       <nav class="hidden md:flex items-center gap-1 ml-4 mr-auto">
@@ -72,14 +71,19 @@ defmodule OrcaHubWeb.Layouts do
         <div tabindex="0" role="button" class="btn btn-ghost btn-sm btn-circle">
           <.icon name="hero-bars-3-micro" class="size-5" />
         </div>
-        <ul tabindex="0" class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-52">
+        <ul
+          tabindex="0"
+          class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-52"
+        >
           <li :for={link <- @nav_links}>
             <a href={link.href}>
               {link.label}
               <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-mobile" />
             </a>
           </li>
-          <li :if={assigns[:node_filter_visible]} class="menu-title text-xs uppercase opacity-60 mt-2">Nodes</li>
+          <li :if={assigns[:node_filter_visible]} class="menu-title text-xs uppercase opacity-60 mt-2">
+            Nodes
+          </li>
           <li :if={assigns[:node_filter_visible]}>
             <.node_filter_items
               nodes={assigns[:node_filter_nodes] || []}
@@ -156,7 +160,11 @@ defmodule OrcaHubWeb.Layouts do
   defp node_filter_dropdown(assigns) do
     ~H"""
     <div id="node-filter" phx-hook="NodeFilter" class="dropdown dropdown-end">
-      <div tabindex="0" role="button" class={"btn btn-sm gap-1 #{if @filter == :all, do: "btn-ghost", else: "btn-soft btn-primary"}"}>
+      <div
+        tabindex="0"
+        role="button"
+        class={"btn btn-sm gap-1 #{if @filter == :all, do: "btn-ghost", else: "btn-soft btn-primary"}"}
+      >
         <.icon name="hero-server-stack-micro" class="size-4" />
         <span class="text-xs">
           <%= if @filter == :all do %>
@@ -178,7 +186,12 @@ defmodule OrcaHubWeb.Layouts do
         </li>
         <li class="menu-title text-xs uppercase opacity-60">Nodes</li>
         <li :for={node <- @nodes}>
-          <button phx-click="toggle_node_filter" phx-value-node={node.name} data-solo-node={node.name} class="flex items-center gap-2">
+          <button
+            phx-click="toggle_node_filter"
+            phx-value-node={node.name}
+            data-solo-node={node.name}
+            class="flex items-center gap-2"
+          >
             <span class={"size-4 flex items-center justify-center #{if OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name), do: "text-primary", else: "opacity-0"}"}>
               <.icon name="hero-check-micro" class="size-4" />
             </span>
@@ -193,9 +206,11 @@ defmodule OrcaHubWeb.Layouts do
   defp node_filter_items(assigns) do
     ~H"""
     <div id="node-filter-mobile" phx-hook="NodeFilter" class="flex flex-col gap-1">
-      <button phx-click="node_filter_select_all" class={"btn btn-xs gap-1 #{if @filter == :all, do: "btn-active", else: "btn-ghost"}"}>
-        <.icon :if={@filter == :all} name="hero-check-micro" class="size-3" />
-        All nodes
+      <button
+        phx-click="node_filter_select_all"
+        class={"btn btn-xs gap-1 #{if @filter == :all, do: "btn-active", else: "btn-ghost"}"}
+      >
+        <.icon :if={@filter == :all} name="hero-check-micro" class="size-3" /> All nodes
       </button>
       <button
         :for={node <- @nodes}
@@ -204,7 +219,11 @@ defmodule OrcaHubWeb.Layouts do
         data-solo-node={node.name}
         class={"btn btn-xs gap-1 #{if OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name), do: "btn-active", else: "btn-ghost"}"}
       >
-        <.icon :if={OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name)} name="hero-check-micro" class="size-3" />
+        <.icon
+          :if={OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name)}
+          name="hero-check-micro"
+          class="size-3"
+        />
         {node.name}
       </button>
     </div>

@@ -14,12 +14,19 @@
   </:actions>
 </.header>
 
-<.table id="projects" rows={@streams.projects} row_click={fn {_id, project} -> JS.navigate(~p"/projects/#{project.id}") end}>
+<.table
+  id="projects"
+  rows={@streams.projects}
+  row_click={fn {_id, project} -> JS.navigate(~p"/projects/#{project.id}") end}
+>
   <:col :let={{_id, project}} label="Name">
     <.link navigate={~p"/projects/#{project.id}"} class="link link-hover">
       {project.name}
     </.link>
-    <span :if={@clustered && Map.get(@node_map, project.id)} class="badge badge-sm badge-outline opacity-60 ml-1">
+    <span
+      :if={@clustered && Map.get(@node_map, project.id)}
+      class="badge badge-sm badge-outline opacity-60 ml-1"
+    >
       {OrcaHub.Cluster.node_name(Map.get(@node_map, project.id))}
     </span>
   </:col>
@@ -32,13 +39,20 @@
       <span :if={is_nil(status)} class="text-base-content/30">--</span>
       <span :if={status == :loading} class="loading loading-spinner loading-xs"></span>
       <span :if={status == :syncing} class="loading loading-spinner loading-xs"></span>
-      <span :if={is_map(status) && status.error} class="badge badge-error badge-sm" title={status.error}>
+      <span
+        :if={is_map(status) && status.error}
+        class="badge badge-error badge-sm"
+        title={status.error}
+      >
         error
       </span>
       <span :if={is_map(status) && status.conflicts} class="badge badge-error badge-sm">
         conflicts
       </span>
-      <span :if={is_map(status) && !status.error && !status.conflicts && !status.clean} class="badge badge-warning badge-sm">
+      <span
+        :if={is_map(status) && !status.error && !status.conflicts && !status.clean}
+        class="badge badge-warning badge-sm"
+      >
         dirty
       </span>
       <span :if={is_map(status) && status.behind > 0} class="badge badge-info badge-sm">
@@ -47,7 +61,13 @@
       <span :if={is_map(status) && status.ahead > 0} class="badge badge-info badge-sm">
         {status.ahead} ahead
       </span>
-      <span :if={is_map(status) && !status.error && !status.conflicts && status.clean && status.ahead == 0 && status.behind == 0} class="badge badge-success badge-sm">
+      <span
+        :if={
+          is_map(status) && !status.error && !status.conflicts && status.clean &&
+            status.ahead == 0 && status.behind == 0
+        }
+        class="badge badge-success badge-sm"
+      >
         clean
       </span>
     </div>
@@ -58,19 +78,28 @@
       <button tabindex="0" class={["btn btn-xs btn-ghost", syncing && "btn-disabled"]}>
         Sync
       </button>
-      <ul tabindex="0" class="dropdown-content z-[1] menu menu-sm p-2 shadow bg-base-100 rounded-box w-36">
+      <ul
+        tabindex="0"
+        class="dropdown-content z-[1] menu menu-sm p-2 shadow bg-base-100 rounded-box w-36"
+      >
         <li>
-          <button phx-click={JS.push("git_pull", value: %{id: project.id}) |> JS.focus(to: "#projects")}>
+          <button phx-click={
+            JS.push("git_pull", value: %{id: project.id}) |> JS.focus(to: "#projects")
+          }>
             Pull
           </button>
         </li>
         <li>
-          <button phx-click={JS.push("git_push", value: %{id: project.id}) |> JS.focus(to: "#projects")}>
+          <button phx-click={
+            JS.push("git_push", value: %{id: project.id}) |> JS.focus(to: "#projects")
+          }>
             Push
           </button>
         </li>
         <li>
-          <button phx-click={JS.push("git_pull_push", value: %{id: project.id}) |> JS.focus(to: "#projects")}>
+          <button phx-click={
+            JS.push("git_pull_push", value: %{id: project.id}) |> JS.focus(to: "#projects")
+          }>
             Pull & Push
           </button>
         </li>
@@ -78,13 +107,21 @@
     </div>
   </:action>
   <:action :let={{_id, project}}>
-    <button class="btn btn-xs btn-ghost" phx-click="delete" phx-value-id={project.id} data-confirm="Delete this project?">
+    <button
+      class="btn btn-xs btn-ghost"
+      phx-click="delete"
+      phx-value-id={project.id}
+      data-confirm="Delete this project?"
+    >
       Delete
     </button>
   </:action>
 </.table>
 
-<div :if={@live_action == :new} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
+<div
+  :if={@live_action == :new}
+  class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
+>
   <div class="card bg-base-100 shadow-xl w-full max-w-md p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
     <h2 class="text-lg font-semibold mb-4">New Project</h2>
     <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-4">
@@ -101,7 +138,12 @@
       <.input field={@form[:name]} type="text" label="Name" placeholder="My Project" />
       <div class="flex gap-2 items-end">
         <div class="flex-1">
-          <.input field={@form[:directory]} type="text" label="Directory" placeholder="/home/orca/projects/my-project" />
+          <.input
+            field={@form[:directory]}
+            type="text"
+            label="Directory"
+            placeholder="/home/orca/projects/my-project"
+          />
         </div>
         <button type="button" phx-click="browse" class="btn btn-outline mb-0.5">Browse</button>
       </div>
@@ -113,11 +155,19 @@
   </div>
 </div>
 
-<div :if={@browsing} class="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50">
+<div
+  :if={@browsing}
+  class="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50"
+>
   <div class="card bg-base-100 shadow-xl w-full max-w-lg p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
     <h2 class="text-lg font-semibold mb-2">Select Directory</h2>
     <form phx-submit="browse_go" class="flex items-center gap-2 mb-3 text-sm">
-      <button type="button" phx-click="browse_up" class="btn btn-sm btn-ghost" disabled={@browse_path == "/"}>
+      <button
+        type="button"
+        phx-click="browse_up"
+        class="btn btn-sm btn-ghost"
+        disabled={@browse_path == "/"}
+      >
         ↑ Up
       </button>
       <input
@@ -130,8 +180,12 @@
     </form>
     <div class="flex items-center gap-2 mb-3">
       <label class="label cursor-pointer gap-2 text-sm">
-        <input type="checkbox" class="checkbox checkbox-sm" phx-click="browse_toggle_hidden" checked={@browse_show_hidden} />
-        Show hidden
+        <input
+          type="checkbox"
+          class="checkbox checkbox-sm"
+          phx-click="browse_toggle_hidden"
+          checked={@browse_show_hidden}
+        /> Show hidden
       </label>
       <div class="flex-1"></div>
       <button type="button" phx-click="browse_new_folder_start" class="btn btn-sm btn-ghost">
@@ -149,11 +203,15 @@
           phx-mounted={JS.focus()}
         />
         <button type="submit" class="btn btn-sm btn-primary">Create</button>
-        <button type="button" phx-click="browse_new_folder_cancel" class="btn btn-sm btn-ghost">Cancel</button>
+        <button type="button" phx-click="browse_new_folder_cancel" class="btn btn-sm btn-ghost">
+          Cancel
+        </button>
       </form>
     </div>
     <div class="overflow-y-auto max-h-64 border border-base-300 rounded">
-      <div :if={@browse_entries == []} class="p-3 text-sm text-base-content/50">No subdirectories</div>
+      <div :if={@browse_entries == []} class="p-3 text-sm text-base-content/50">
+        No subdirectories
+      </div>
       <button
         :for={entry <- @browse_entries}
         type="button"
@@ -166,7 +224,9 @@
     </div>
     <div class="flex justify-end gap-2 mt-4">
       <button type="button" phx-click="browse_close" class="btn btn-sm">Cancel</button>
-      <button type="button" phx-click="browse_select" class="btn btn-sm btn-primary">Select this directory</button>
+      <button type="button" phx-click="browse_select" class="btn btn-sm btn-primary">
+        Select this directory
+      </button>
     </div>
   </div>
 </div>

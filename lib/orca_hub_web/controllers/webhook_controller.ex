@@ -13,7 +13,9 @@ defmodule OrcaHubWeb.WebhookController do
 
       trigger ->
         payload = Map.drop(params, ["secret"])
-        runner_node = if trigger.project, do: Cluster.project_node_for(trigger.project), else: node()
+
+        runner_node =
+          if trigger.project, do: Cluster.project_node_for(trigger.project), else: node()
 
         Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
           Cluster.rpc(runner_node, TriggerExecutor, :execute_webhook, [trigger.id, payload])

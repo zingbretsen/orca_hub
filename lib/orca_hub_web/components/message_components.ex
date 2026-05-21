@@ -519,7 +519,7 @@ defmodule OrcaHubWeb.MessageComponents do
 
     ~H"""
     <code class="text-xs">{@pattern}</code>
-    <span :if={@path} class="text-xs"> in  {@path}</span>
+    <span :if={@path} class="text-xs"> in   {@path}</span>
     """
   end
 

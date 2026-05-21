@@ -6,7 +6,11 @@
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">MCP Servers</h3>
     <div class="flex gap-2">
-      <button phx-click="refresh_connections" class="btn btn-sm btn-ghost" title="Refresh connections">
+      <button
+        phx-click="refresh_connections"
+        class="btn btn-sm btn-ghost"
+        title="Refresh connections"
+      >
         <.icon name="hero-arrow-path-micro" class="size-4" />
       </button>
       <.link patch={~p"/settings/upstream/new"}>
@@ -17,7 +21,8 @@
 
   <p class="text-sm text-base-content/60 mb-4">
     Define MCP servers here and add them to specific projects or sessions from their pages.
-    Servers marked as <strong>global</strong> are also aggregated into OrcaHub's MCP endpoint and available to every session automatically.
+    Servers marked as <strong>global</strong>
+    are also aggregated into OrcaHub's MCP endpoint and available to every session automatically.
     Tools from global servers are namespaced with a prefix to avoid conflicts.
   </p>
 
@@ -26,9 +31,27 @@
       {if @editing_server, do: "Edit Server", else: "Add MCP Server"}
     </h4>
     <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-3">
-      <.input field={@form[:name]} type="text" label="Name" placeholder="My MCP Server" phx-debounce="blur" />
-      <.input field={@form[:url]} type="text" label="URL" placeholder="https://example.com/mcp" phx-debounce="blur" />
-      <.input field={@form[:prefix]} type="text" label="Tool prefix" placeholder="Auto-generated from name" phx-debounce="blur" />
+      <.input
+        field={@form[:name]}
+        type="text"
+        label="Name"
+        placeholder="My MCP Server"
+        phx-debounce="blur"
+      />
+      <.input
+        field={@form[:url]}
+        type="text"
+        label="URL"
+        placeholder="https://example.com/mcp"
+        phx-debounce="blur"
+      />
+      <.input
+        field={@form[:prefix]}
+        type="text"
+        label="Tool prefix"
+        placeholder="Auto-generated from name"
+        phx-debounce="blur"
+      />
       <p class="text-xs text-base-content/50 -mt-2">
         Tools will be exposed as <code class="bg-base-300 px-1 rounded">prefix__tool_name</code>
       </p>
@@ -44,7 +67,10 @@
           Add authentication headers or other custom headers for the upstream server.
         </p>
         <div class="space-y-2">
-          <div :for={{pair, idx} <- Enum.with_index(@header_pairs)} class="flex items-center gap-2">
+          <div
+            :for={{pair, idx} <- Enum.with_index(@header_pairs)}
+            class="flex items-center gap-2"
+          >
             <input
               type="text"
               name={"header_keys[#{idx}]"}
@@ -61,7 +87,12 @@
               phx-debounce="blur"
               class="input input-sm input-bordered flex-1"
             />
-            <button type="button" phx-click="remove_header" phx-value-index={idx} class="btn btn-sm btn-ghost text-error">
+            <button
+              type="button"
+              phx-click="remove_header"
+              phx-value-index={idx}
+              class="btn btn-sm btn-ghost text-error"
+            >
               <.icon name="hero-x-mark-micro" class="size-4" />
             </button>
           </div>
@@ -80,16 +111,28 @@
     </.form>
   </div>
 
-  <div :if={@servers == [] && !@show_form} class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg">
+  <div
+    :if={@servers == [] && !@show_form}
+    class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg"
+  >
     No MCP servers configured.
   </div>
 
-  <div :if={@servers != []} class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
-    <div :for={server <- @servers} class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50">
+  <div
+    :if={@servers != []}
+    class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
+  >
+    <div
+      :for={server <- @servers}
+      class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50"
+    >
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
           <span class="font-medium">{server.name}</span>
-          <span class={["badge badge-xs", if(server.enabled, do: "badge-success", else: "badge-ghost")]}>
+          <span class={[
+            "badge badge-xs",
+            if(server.enabled, do: "badge-success", else: "badge-ghost")
+          ]}>
             {if server.enabled, do: "enabled", else: "disabled"}
           </span>
           <span :if={server.global} class="badge badge-xs badge-neutral">global</span>
@@ -103,16 +146,42 @@
         </div>
       </div>
       <div class="flex items-center gap-1">
-        <button phx-click="toggle" phx-value-id={server.id} class="btn btn-xs btn-ghost" title={if server.enabled, do: "Disable", else: "Enable"}>
-          <.icon name={if server.enabled, do: "hero-pause-micro", else: "hero-play-micro"} class="size-4" />
+        <button
+          phx-click="toggle"
+          phx-value-id={server.id}
+          class="btn btn-xs btn-ghost"
+          title={if server.enabled, do: "Disable", else: "Enable"}
+        >
+          <.icon
+            name={if server.enabled, do: "hero-pause-micro", else: "hero-play-micro"}
+            class="size-4"
+          />
         </button>
-        <button phx-click="toggle_global" phx-value-id={server.id} class="btn btn-xs btn-ghost" title={if server.global, do: "Make project/session-only", else: "Make global"}>
-          <.icon name={if server.global, do: "hero-globe-alt-micro", else: "hero-lock-closed-micro"} class="size-4" />
+        <button
+          phx-click="toggle_global"
+          phx-value-id={server.id}
+          class="btn btn-xs btn-ghost"
+          title={if server.global, do: "Make project/session-only", else: "Make global"}
+        >
+          <.icon
+            name={if server.global, do: "hero-globe-alt-micro", else: "hero-lock-closed-micro"}
+            class="size-4"
+          />
         </button>
-        <.link patch={~p"/settings/upstream/#{server.id}/edit"} class="btn btn-xs btn-ghost" title="Edit">
+        <.link
+          patch={~p"/settings/upstream/#{server.id}/edit"}
+          class="btn btn-xs btn-ghost"
+          title="Edit"
+        >
           <.icon name="hero-pencil-micro" class="size-4" />
         </.link>
-        <button phx-click="delete" phx-value-id={server.id} data-confirm="Remove this upstream server?" class="btn btn-xs btn-ghost text-error" title="Delete">
+        <button
+          phx-click="delete"
+          phx-value-id={server.id}
+          data-confirm="Remove this upstream server?"
+          class="btn btn-xs btn-ghost text-error"
+          title="Delete"
+        >
           <.icon name="hero-trash-micro" class="size-4" />
         </button>
       </div>
@@ -120,7 +189,9 @@
   </div>
 
   <div :if={@upstream_tools != []} class="mt-6">
-    <h4 class="text-sm font-semibold text-base-content/70 mb-2">Aggregated Tools ({length(@upstream_tools)})</h4>
+    <h4 class="text-sm font-semibold text-base-content/70 mb-2">
+      Aggregated Tools ({length(@upstream_tools)})
+    </h4>
     <div class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
       <div :for={tool <- @upstream_tools} class="px-4 py-2 text-sm">
         <div class="font-mono text-xs">{tool["name"]}</div>
@@ -137,10 +208,18 @@
       <button phx-click="check_drift" class="btn btn-sm btn-ghost" title="Check for code drift">
         <.icon name="hero-magnifying-glass-micro" class="size-4" /> Check Drift
       </button>
-      <button phx-click="push_changed_code" class="btn btn-sm btn-ghost" disabled={@code_sync_loading}>
+      <button
+        phx-click="push_changed_code"
+        class="btn btn-sm btn-ghost"
+        disabled={@code_sync_loading}
+      >
         <.icon name="hero-arrow-up-tray-micro" class="size-4" /> Push Changed
       </button>
-      <button phx-click="push_all_code" class="btn btn-sm btn-primary" disabled={@code_sync_loading}>
+      <button
+        phx-click="push_all_code"
+        class="btn btn-sm btn-primary"
+        disabled={@code_sync_loading}
+      >
         <.icon name="hero-arrow-up-tray-micro" class="size-4" /> Push All
       </button>
     </div>
@@ -162,8 +241,10 @@
     ]}>
       <div>
         <div>
-          Pushed <strong>{@code_sync_result.modules_pushed}</strong> modules
-          to <strong>{@code_sync_result.nodes_updated}</strong> node(s).
+          Pushed <strong>{@code_sync_result.modules_pushed}</strong>
+          modules
+          to <strong>{@code_sync_result.nodes_updated}</strong>
+          node(s).
           <%= if @code_sync_result[:skipped] do %>
             <span class="text-base-content/60">({@code_sync_result.skipped})</span>
           <% end %>
@@ -180,7 +261,10 @@
     <div class="px-4 py-2 text-xs font-semibold text-base-content/50 uppercase tracking-wide">
       Connected Nodes ({length(@cluster_nodes)})
     </div>
-    <div :for={info <- @cluster_nodes} class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50">
+    <div
+      :for={info <- @cluster_nodes}
+      class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50"
+    >
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
           <span class="font-medium">{info.name}</span>
@@ -223,7 +307,9 @@
       <div :for={dr <- @drift_results} class="px-4 py-3 text-sm">
         <div class="flex items-center gap-2 mb-1">
           <span class="font-medium font-mono text-xs">{dr.node}</span>
-          <span :if={dr.drifted == [] && dr.missing == []} class="badge badge-xs badge-success">in sync</span>
+          <span :if={dr.drifted == [] && dr.missing == []} class="badge badge-xs badge-success">
+            in sync
+          </span>
           <span :if={dr.drifted != [] || dr.missing != []} class="badge badge-xs badge-warning">
             {length(dr.drifted)} drifted, {length(dr.missing)} missing
           </span>

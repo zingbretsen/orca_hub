@@ -40,7 +40,9 @@
 <div class="mt-4 text-xs text-base-content/50 flex items-center gap-4">
   <span :if={@terminal.project} class="flex items-center gap-1">
     <.icon name="hero-folder-micro" class="size-3" />
-    <.link navigate={~p"/projects/#{@terminal.project.id}"} class="hover:underline">{@terminal.project.name}</.link>
+    <.link navigate={~p"/projects/#{@terminal.project.id}"} class="hover:underline">
+      {@terminal.project.name}
+    </.link>
   </span>
   <span class="flex items-center gap-1 font-mono">
     <.icon name="hero-command-line-micro" class="size-3" />
@@ -59,7 +61,10 @@
 >
 </div>
 
-<div :if={@terminal.status != "running"} class="mt-4 bg-base-200 rounded-lg p-8 text-center text-base-content/50">
+<div
+  :if={@terminal.status != "running"}
+  class="mt-4 bg-base-200 rounded-lg p-8 text-center text-base-content/50"
+>
   <p class="text-sm">Terminal is not running.</p>
   <button phx-click="start_terminal" class="btn btn-sm btn-success mt-3">
     <.icon name="hero-play-micro" class="size-4" /> Start Terminal

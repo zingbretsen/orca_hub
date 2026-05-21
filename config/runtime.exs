@@ -39,11 +39,22 @@ config :orca_hub, OrcaHubWeb.Endpoint,
 config :orca_hub, :openai_api_key, System.get_env("OPENAI_API_KEY")
 config :orca_hub, :datarobot_api_token, System.get_env("DATAROBOT_API_TOKEN")
 config :orca_hub, :datarobot_endpoint, System.get_env("DATAROBOT_ENDPOINT")
-config :orca_hub, :title_model, System.get_env("TITLE_MODEL") |> then(fn "" -> nil; v -> v end)
+
+config :orca_hub,
+       :title_model,
+       System.get_env("TITLE_MODEL")
+       |> then(fn
+         "" -> nil
+         v -> v
+       end)
+
 config :orca_hub, :gotify_url, System.get_env("GOTIFY_URL")
 config :orca_hub, :gotify_token, System.get_env("GOTIFY_TOKEN")
 config :orca_hub, :elevenlabs_api_key, System.get_env("ELEVENLABS_API_KEY")
-config :orca_hub, :elevenlabs_voice_id, System.get_env("ELEVENLABS_VOICE_ID") || "JBFqnCBsd6RMkjVDRZzb"
+
+config :orca_hub,
+       :elevenlabs_voice_id,
+       System.get_env("ELEVENLABS_VOICE_ID") || "JBFqnCBsd6RMkjVDRZzb"
 
 # Libcluster topology configuration
 # Supports multiple strategies simultaneously:
@@ -53,27 +64,40 @@ cluster_topologies = []
 
 cluster_topologies =
   case System.get_env("CLUSTER_DNS_QUERY") do
-    nil -> cluster_topologies
+    nil ->
+      cluster_topologies
+
     query ->
-      [{:k8s_dns, [
-        strategy: Cluster.Strategy.DNSPoll,
-        config: [
-          polling_interval: 5_000,
-          query: query,
-          node_basename: System.get_env("RELEASE_NODE_BASENAME", "orca")
-        ]
-      ]} | cluster_topologies]
+      [
+        {:k8s_dns,
+         [
+           strategy: Cluster.Strategy.DNSPoll,
+           config: [
+             polling_interval: 5_000,
+             query: query,
+             node_basename: System.get_env("RELEASE_NODE_BASENAME", "orca")
+           ]
+         ]}
+        | cluster_topologies
+      ]
   end
 
 cluster_topologies =
   case System.get_env("CLUSTER_NODES") do
-    nil -> cluster_topologies
+    nil ->
+      cluster_topologies
+
     nodes ->
       hosts = nodes |> String.split(",") |> Enum.map(&String.to_atom(String.trim(&1)))
-      [{:static, [
-        strategy: Cluster.Strategy.Epmd,
-        config: [hosts: hosts, timeout: 5_000]
-      ]} | cluster_topologies]
+
+      [
+        {:static,
+         [
+           strategy: Cluster.Strategy.Epmd,
+           config: [hosts: hosts, timeout: 5_000]
+         ]}
+        | cluster_topologies
+      ]
   end
 
 config :libcluster, topologies: cluster_topologies
@@ -112,7 +136,11 @@ if config_env() == :prod do
 
   host = System.get_env("PHX_HOST") || "example.com"
   scheme = System.get_env("PHX_SCHEME") || "http"
-  url_port = String.to_integer(System.get_env("PHX_URL_PORT") || if(scheme == "https", do: "443", else: "80"))
+
+  url_port =
+    String.to_integer(
+      System.get_env("PHX_URL_PORT") || if(scheme == "https", do: "443", else: "80")
+    )
 
   config :orca_hub, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 

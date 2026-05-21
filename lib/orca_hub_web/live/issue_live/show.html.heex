@@ -14,10 +14,20 @@
   </span>
   <:actions>
     <div class="flex gap-2">
-      <button :if={@issue.status != "closed"} phx-click="update_status" phx-value-status="closed" class="btn btn-sm btn-success">
+      <button
+        :if={@issue.status != "closed"}
+        phx-click="update_status"
+        phx-value-status="closed"
+        class="btn btn-sm btn-success"
+      >
         Close
       </button>
-      <button :if={@issue.status == "closed"} phx-click="update_status" phx-value-status="open" class="btn btn-sm btn-info">
+      <button
+        :if={@issue.status == "closed"}
+        phx-click="update_status"
+        phx-value-status="open"
+        class="btn btn-sm btn-info"
+      >
         Reopen
       </button>
       <.link patch={~p"/issues/#{@issue.id}/edit"} class="btn btn-sm">Edit</.link>
@@ -59,9 +69,16 @@
     No sessions yet. Start one to begin working on this issue.
   </div>
 
-  <.table :if={@issue.sessions != []} id="issue-sessions" rows={@issue.sessions} row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}>
+  <.table
+    :if={@issue.sessions != []}
+    id="issue-sessions"
+    rows={@issue.sessions}
+    row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}
+  >
     <:col :let={session} label="Title">
-      <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">{session.title || session.directory}</.link>
+      <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">
+        {session.title || session.directory}
+      </.link>
     </:col>
     <:col :let={session} label="Status">
       <span class={[

@@ -52,36 +52,41 @@ defmodule OrcaHub.ClaudeImport do
         if verbose, do: Logger.info("[skip] Project #{resolved_path} was deleted, skipping")
         acc
       else
+        # Find or create project
+        {project, acc} =
+          find_or_create_project(project_path, target_node, existing_projects, acc, verbose)
 
-      # Find or create project
-      {project, acc} = find_or_create_project(project_path, target_node, existing_projects, acc, verbose)
+        # Import sessions from this project dir
+        transcript_files =
+          rpc_call(target_node, Path, :wildcard, [Path.join(project_dir, "*.jsonl")])
 
-      # Import sessions from this project dir
-      transcript_files = rpc_call(target_node, Path, :wildcard, [Path.join(project_dir, "*.jsonl")])
+        Enum.reduce(transcript_files, acc, fn file, acc ->
+          session_id = Path.basename(file, ".jsonl")
 
-      Enum.reduce(transcript_files, acc, fn file, acc ->
-        session_id = Path.basename(file, ".jsonl")
+          if MapSet.member?(existing_session_ids, session_id) do
+            if verbose, do: Logger.info("[skip] Session #{session_id} already exists")
+            %{acc | sessions_skipped: acc.sessions_skipped + 1}
+          else
+            try do
+              case import_session(target_node, file, session_id, project, verbose) do
+                {:ok, _session} ->
+                  %{acc | sessions_imported: acc.sessions_imported + 1}
 
-        if MapSet.member?(existing_session_ids, session_id) do
-          if verbose, do: Logger.info("[skip] Session #{session_id} already exists")
-          %{acc | sessions_skipped: acc.sessions_skipped + 1}
-        else
-          try do
-            case import_session(target_node, file, session_id, project, verbose) do
-              {:ok, _session} ->
-                %{acc | sessions_imported: acc.sessions_imported + 1}
+                {:error, reason} ->
+                  if verbose,
+                    do: Logger.warning("[error] Session #{session_id}: #{inspect(reason)}")
 
-              {:error, reason} ->
-                if verbose, do: Logger.warning("[error] Session #{session_id}: #{inspect(reason)}")
-                %{acc | errors: [{session_id, reason} | acc.errors]}
+                  %{acc | errors: [{session_id, reason} | acc.errors]}
+              end
+            rescue
+              e ->
+                if verbose,
+                  do: Logger.warning("[error] Session #{session_id}: #{Exception.message(e)}")
+
+                %{acc | errors: [{session_id, Exception.message(e)} | acc.errors]}
             end
-          rescue
-            e ->
-              if verbose, do: Logger.warning("[error] Session #{session_id}: #{Exception.message(e)}")
-              %{acc | errors: [{session_id, Exception.message(e)} | acc.errors]}
           end
-        end
-      end)
+        end)
       end
     end)
   end
@@ -106,7 +111,9 @@ defmodule OrcaHub.ClaudeImport do
       messages = Enum.filter(entries, &(&1["type"] in ["user", "assistant", "system"]))
 
       if verbose do
-        Logger.info("[import] Session #{claude_session_id} (#{length(messages)} messages) - #{title || "untitled"}")
+        Logger.info(
+          "[import] Session #{claude_session_id} (#{length(messages)} messages) - #{title || "untitled"}"
+        )
       end
 
       Repo.transaction(fn ->
@@ -127,10 +134,12 @@ defmodule OrcaHub.ClaudeImport do
         # Override timestamps to match the original session
         if first_ts do
           from(s in Session, where: s.id == ^session.id)
-          |> Repo.update_all(set: [
-            inserted_at: first_ts,
-            updated_at: last_ts || first_ts
-          ])
+          |> Repo.update_all(
+            set: [
+              inserted_at: first_ts,
+              updated_at: last_ts || first_ts
+            ]
+          )
         end
 
         # Bulk insert messages
@@ -140,7 +149,8 @@ defmodule OrcaHub.ClaudeImport do
           messages
           |> Enum.with_index()
           |> Enum.map(fn {entry, idx} ->
-            msg_ts = parse_naive_timestamp(entry["timestamp"]) || NaiveDateTime.add(now, idx, :second)
+            msg_ts =
+              parse_naive_timestamp(entry["timestamp"]) || NaiveDateTime.add(now, idx, :second)
 
             %{
               id: Ecto.UUID.generate(),
@@ -238,9 +248,19 @@ defmodule OrcaHub.ClaudeImport do
 
     case Map.get(existing_projects, project_path) do
       nil ->
-        name = project_path |> Path.basename() |> String.replace(~r/[-_]/, " ") |> String.split() |> Enum.map(&String.capitalize/1) |> Enum.join(" ")
+        name =
+          project_path
+          |> Path.basename()
+          |> String.replace(~r/[-_]/, " ")
+          |> String.split()
+          |> Enum.map(&String.capitalize/1)
+          |> Enum.join(" ")
 
-        case Projects.create_project(%{name: name, directory: project_path, node: Atom.to_string(target_node)}) do
+        case Projects.create_project(%{
+               name: name,
+               directory: project_path,
+               node: Atom.to_string(target_node)
+             }) do
           {:ok, project} ->
             if verbose, do: Logger.info("[create] Project #{name} (#{project_path})")
             {project, %{acc | projects_created: acc.projects_created + 1}}
@@ -266,7 +286,9 @@ defmodule OrcaHub.ClaudeImport do
   end
 
   defp existing_claude_session_ids do
-    Repo.all(from s in Session, where: not is_nil(s.claude_session_id), select: s.claude_session_id)
+    Repo.all(
+      from s in Session, where: not is_nil(s.claude_session_id), select: s.claude_session_id
+    )
     |> MapSet.new()
   end
 
@@ -334,7 +356,10 @@ defmodule OrcaHub.ClaudeImport do
 
   defp fallback_path(target_node, parts, current) do
     fallback = "/" <> Enum.join(parts, "/")
-    if rpc_call(target_node, File, :dir?, [fallback]), do: fallback, else: Path.join(current, Enum.join(parts, "-"))
+
+    if rpc_call(target_node, File, :dir?, [fallback]),
+      do: fallback,
+      else: Path.join(current, Enum.join(parts, "-"))
   end
 
   defp project_directory(nil), do: "/"

@@ -5,7 +5,10 @@ defmodule OrcaHubWeb.FileTreeComponent do
 
   @impl true
   def update(%{reload: true}, socket) do
-    tree = load_root_tree(socket.assigns.target_node, socket.assigns.project, show_hidden: socket.assigns.show_hidden_files)
+    tree =
+      load_root_tree(socket.assigns.target_node, socket.assigns.project,
+        show_hidden: socket.assigns.show_hidden_files
+      )
 
     filtered =
       filtered_tree(
@@ -24,7 +27,18 @@ defmodule OrcaHubWeb.FileTreeComponent do
 
     socket =
       socket
-      |> assign(Map.take(assigns, [:id, :target_node, :project, :selected_path, :tree_id, :on_select, :show_hidden_toggle, :search_input_id]))
+      |> assign(
+        Map.take(assigns, [
+          :id,
+          :target_node,
+          :project,
+          :selected_path,
+          :tree_id,
+          :on_select,
+          :show_hidden_toggle,
+          :search_input_id
+        ])
+      )
       |> assign_new(:show_hidden_toggle, fn -> true end)
       |> assign_new(:tree_id, fn -> "file-tree-#{assigns.id}" end)
       |> assign_new(:on_select, fn -> :file_selected end)
@@ -32,7 +46,8 @@ defmodule OrcaHubWeb.FileTreeComponent do
 
     socket =
       if initial do
-        tree = load_root_tree(socket.assigns.target_node, socket.assigns.project, show_hidden: false)
+        tree =
+          load_root_tree(socket.assigns.target_node, socket.assigns.project, show_hidden: false)
 
         assign(socket,
           file_tree: tree,
@@ -99,7 +114,8 @@ defmodule OrcaHubWeb.FileTreeComponent do
   def handle_event("toggle_hidden_files", _params, socket) do
     show_hidden = !socket.assigns.show_hidden_files
 
-    tree = load_root_tree(socket.assigns.target_node, socket.assigns.project, show_hidden: show_hidden)
+    tree =
+      load_root_tree(socket.assigns.target_node, socket.assigns.project, show_hidden: show_hidden)
 
     filtered =
       filtered_tree(

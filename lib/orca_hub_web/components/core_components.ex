@@ -314,7 +314,10 @@ defmodule OrcaHubWeb.CoreComponents do
 
   def header(assigns) do
     ~H"""
-    <header class={[@actions != [] && "flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-6", "pb-4"]}>
+    <header class={[
+      @actions != [] && "flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-6",
+      "pb-4"
+    ]}>
       <div>
         <h1 class="text-lg font-semibold leading-8">
           {render_slot(@inner_block)}
@@ -364,34 +367,37 @@ defmodule OrcaHubWeb.CoreComponents do
 
     ~H"""
     <div class="overflow-x-auto">
-    <table class={["table", @class]}>
-      <thead>
-        <tr>
-          <th :for={col <- @col} class={col[:class]}>{col[:label]}</th>
-          <th :if={@action != []}>
-            <span class="sr-only">{gettext("Actions")}</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
-        <tr :for={row <- @rows} id={@row_id && @row_id.(row)} class="row-hover group">
-          <td
-            :for={col <- @col}
-            phx-click={@row_click && @row_click.(row)}
-            class={[col[:class], @row_click && "hover:cursor-pointer"]}
-          >
-            {render_slot(col, @row_item.(row))}
-          </td>
-          <td :if={@action != []} class="w-0 font-semibold opacity-0 group-hover:opacity-100 transition-opacity">
-            <div class="flex gap-4">
-              <%= for action <- @action do %>
-                {render_slot(action, @row_item.(row))}
-              <% end %>
-            </div>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+      <table class={["table", @class]}>
+        <thead>
+          <tr>
+            <th :for={col <- @col} class={col[:class]}>{col[:label]}</th>
+            <th :if={@action != []}>
+              <span class="sr-only">{gettext("Actions")}</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
+          <tr :for={row <- @rows} id={@row_id && @row_id.(row)} class="row-hover group">
+            <td
+              :for={col <- @col}
+              phx-click={@row_click && @row_click.(row)}
+              class={[col[:class], @row_click && "hover:cursor-pointer"]}
+            >
+              {render_slot(col, @row_item.(row))}
+            </td>
+            <td
+              :if={@action != []}
+              class="w-0 font-semibold opacity-0 group-hover:opacity-100 transition-opacity"
+            >
+              <div class="flex gap-4">
+                <%= for action <- @action do %>
+                  {render_slot(action, @row_item.(row))}
+                <% end %>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
     """
   end

@@ -10,7 +10,15 @@
 <div class="flex flex-wrap items-center gap-2 mt-4">
   <div class="flex gap-1">
     <button
-      :for={{label, value} <- [{"Manual", :manual}, {"Automated", :automated}, {"Orchestrator", :orchestrator}, {"Heartbeat", :heartbeat}, {"All", :all}]}
+      :for={
+        {label, value} <- [
+          {"Manual", :manual},
+          {"Automated", :automated},
+          {"Orchestrator", :orchestrator},
+          {"Heartbeat", :heartbeat},
+          {"All", :all}
+        ]
+      }
       phx-click="set_filter"
       phx-value-filter={value}
       class={["btn btn-sm", @session_filter == value && "btn-active"]}
@@ -31,13 +39,26 @@
   No sessions yet.
 </div>
 
-<details :for={{{node_name, project}, main_sessions, worktree_groups} <- @grouped_sessions} class="mb-4 group" {if(main_sessions != [] || worktree_groups != [], do: [open: true], else: [])}>
+<details
+  :for={{{node_name, project}, main_sessions, worktree_groups} <- @grouped_sessions}
+  class="mb-4 group"
+  {if(main_sessions != [] || worktree_groups != [], do: [open: true], else: [])}
+>
   <summary class="flex items-center justify-between cursor-pointer list-none mb-2 rounded-lg px-2 py-1 -mx-2 hover:bg-base-200 transition-colors">
     <h3 class="text-sm font-semibold text-base-content/70 flex items-center gap-2">
-      <.icon name="hero-chevron-right-micro" class="size-4 transition-transform group-open:rotate-90" />
-      <.icon name={if(project, do: "hero-code-bracket-micro", else: "hero-folder-micro")} class="size-4" />
+      <.icon
+        name="hero-chevron-right-micro"
+        class="size-4 transition-transform group-open:rotate-90"
+      />
+      <.icon
+        name={if(project, do: "hero-code-bracket-micro", else: "hero-folder-micro")}
+        class="size-4"
+      />
       {if project, do: project.name, else: "Unassigned"}
-      <span class="badge badge-sm badge-ghost">{length(main_sessions) + Enum.sum(Enum.map(worktree_groups, fn {_, _, s} -> length(s) end))}</span>
+      <span class="badge badge-sm badge-ghost">
+        {length(main_sessions) +
+          Enum.sum(Enum.map(worktree_groups, fn {_, _, s} -> length(s) end))}
+      </span>
       <span :if={node_name} class="badge badge-sm badge-outline opacity-60">{node_name}</span>
     </h3>
     <button
@@ -56,7 +77,16 @@
   <div :if={main_sessions == [] && worktree_groups == []} class="text-sm text-base-content/50 p-4">
     No active sessions.
   </div>
-  <.table :if={main_sessions != []} id={"sessions-#{if project, do: project.id, else: "unassigned"}-#{node_name || "local"}"} rows={main_sessions} row_click={MapSet.size(@selected_sessions) == 0 && fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
+  <.table
+    :if={main_sessions != []}
+    id={"sessions-#{if project, do: project.id, else: "unassigned"}-#{node_name || "local"}"}
+    rows={main_sessions}
+    row_click={
+      MapSet.size(@selected_sessions) == 0 &&
+        fn session -> JS.navigate(~p"/sessions/#{session.id}") end
+    }
+    class="table-fixed"
+  >
     <:col :let={session} label="" class="w-8">
       <input
         type="checkbox"
@@ -67,7 +97,9 @@
       />
     </:col>
     <:col :let={session} label="Title" class="w-3/5">
-      <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">{session.title}</.link>
+      <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">
+        {session.title}
+      </.link>
     </:col>
     <:col :let={session} label="Status" class="w-1/5">
       <div class="flex flex-wrap gap-1">
@@ -82,8 +114,15 @@
         ]}>
           {session.status}
         </span>
-        <span :if={session.orchestrator} class="badge badge-secondary badge-sm">orchestrator</span>
-        <span :if={MapSet.member?(@heartbeat_session_ids, session.id)} class="badge badge-accent badge-sm animate-pulse">heartbeat</span>
+        <span :if={session.orchestrator} class="badge badge-secondary badge-sm">
+          orchestrator
+        </span>
+        <span
+          :if={MapSet.member?(@heartbeat_session_ids, session.id)}
+          class="badge badge-accent badge-sm animate-pulse"
+        >
+          heartbeat
+        </span>
         <span
           :if={session.original_node && session.original_node != session.runner_node}
           class="badge badge-warning badge-sm"
@@ -94,7 +133,12 @@
       </div>
     </:col>
     <:action :let={session}>
-      <.link :if={session.status in ~w(running waiting compacting)} phx-click="stop_session" phx-value-id={session.id} data-confirm="Stop this session?">
+      <.link
+        :if={session.status in ~w(running waiting compacting)}
+        phx-click="stop_session"
+        phx-value-id={session.id}
+        data-confirm="Stop this session?"
+      >
         Stop
       </.link>
       <.link phx-click="archive" phx-value-id={session.id}>
@@ -119,7 +163,15 @@
         + New
       </button>
     </div>
-    <.table id={"sessions-wt-#{project.id}-#{branch}"} rows={wt_sessions} row_click={MapSet.size(@selected_sessions) == 0 && fn session -> JS.navigate(~p"/sessions/#{session.id}") end} class="table-fixed">
+    <.table
+      id={"sessions-wt-#{project.id}-#{branch}"}
+      rows={wt_sessions}
+      row_click={
+        MapSet.size(@selected_sessions) == 0 &&
+          fn session -> JS.navigate(~p"/sessions/#{session.id}") end
+      }
+      class="table-fixed"
+    >
       <:col :let={session} label="" class="w-8">
         <input
           type="checkbox"
@@ -130,7 +182,9 @@
         />
       </:col>
       <:col :let={session} label="Title" class="w-3/5">
-        <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">{session.title}</.link>
+        <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">
+          {session.title}
+        </.link>
       </:col>
       <:col :let={session} label="Status" class="w-1/5">
         <div class="flex flex-wrap gap-1">
@@ -145,8 +199,15 @@
           ]}>
             {session.status}
           </span>
-          <span :if={session.orchestrator} class="badge badge-secondary badge-sm">orchestrator</span>
-          <span :if={MapSet.member?(@heartbeat_session_ids, session.id)} class="badge badge-accent badge-sm animate-pulse">heartbeat</span>
+          <span :if={session.orchestrator} class="badge badge-secondary badge-sm">
+            orchestrator
+          </span>
+          <span
+            :if={MapSet.member?(@heartbeat_session_ids, session.id)}
+            class="badge badge-accent badge-sm animate-pulse"
+          >
+            heartbeat
+          </span>
           <span
             :if={session.original_node && session.original_node != session.runner_node}
             class="badge badge-warning badge-sm"
@@ -165,7 +226,10 @@
   </div>
 </details>
 
-<div :if={@live_action == :new} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
+<div
+  :if={@live_action == :new}
+  class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
+>
   <div class="card bg-base-100 shadow-xl w-full max-w-md p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
     <h2 class="text-lg font-semibold mb-4">New Session</h2>
     <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-4">
@@ -178,7 +242,12 @@
       />
       <div class="flex gap-2 items-end">
         <div class="flex-1">
-          <.input field={@form[:directory]} type="text" label="Directory" placeholder="/home/orca/projects/my-project" />
+          <.input
+            field={@form[:directory]}
+            type="text"
+            label="Directory"
+            placeholder="/home/orca/projects/my-project"
+          />
         </div>
         <button type="button" phx-click="browse" class="btn btn-outline mb-0.5">Browse</button>
       </div>
@@ -190,19 +259,31 @@
           </option>
         </select>
       </div>
-      <.input field={@form[:model]} type="select" label="Model" options={[
-        {"Default", ""},
-        {"Opus 4.6", "claude-opus-4-6"},
-        {"Sonnet 4.6", "claude-sonnet-4-6"},
-        {"Haiku 4.5", "claude-haiku-4-5-20251001"}
-      ]} />
+      <.input
+        field={@form[:model]}
+        type="select"
+        label="Model"
+        options={[
+          {"Default", ""},
+          {"Opus 4.6", "claude-opus-4-6"},
+          {"Sonnet 4.6", "claude-sonnet-4-6"},
+          {"Haiku 4.5", "claude-haiku-4-5-20251001"}
+        ]}
+      />
       <div class="form-control">
         <label class="label cursor-pointer justify-start gap-3">
           <input type="hidden" name="session[orchestrator]" value="false" />
-          <input type="checkbox" name="session[orchestrator]" value="true" class="checkbox checkbox-sm checkbox-primary" />
+          <input
+            type="checkbox"
+            name="session[orchestrator]"
+            value="true"
+            class="checkbox checkbox-sm checkbox-primary"
+          />
           <div>
             <span class="label-text">Orchestrator mode</span>
-            <p class="text-xs text-base-content/50 mt-0.5">Read-only session that delegates work to other sessions</p>
+            <p class="text-xs text-base-content/50 mt-0.5">
+              Read-only session that delegates work to other sessions
+            </p>
           </div>
         </label>
       </div>
@@ -214,11 +295,19 @@
   </div>
 </div>
 
-<div :if={@browsing} class="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50">
+<div
+  :if={@browsing}
+  class="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50"
+>
   <div class="card bg-base-100 shadow-xl w-full max-w-lg p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
     <h2 class="text-lg font-semibold mb-2">Select Directory</h2>
     <form phx-submit="browse_go" class="flex items-center gap-2 mb-3 text-sm">
-      <button type="button" phx-click="browse_up" class="btn btn-sm btn-ghost" disabled={@browse_path == "/"}>
+      <button
+        type="button"
+        phx-click="browse_up"
+        class="btn btn-sm btn-ghost"
+        disabled={@browse_path == "/"}
+      >
         ↑ Up
       </button>
       <input
@@ -231,12 +320,18 @@
     </form>
     <div class="flex items-center gap-2 mb-3">
       <label class="label cursor-pointer gap-2 text-sm">
-        <input type="checkbox" class="checkbox checkbox-sm" phx-click="browse_toggle_hidden" checked={@browse_show_hidden} />
-        Show hidden
+        <input
+          type="checkbox"
+          class="checkbox checkbox-sm"
+          phx-click="browse_toggle_hidden"
+          checked={@browse_show_hidden}
+        /> Show hidden
       </label>
     </div>
     <div class="overflow-y-auto max-h-64 border border-base-300 rounded">
-      <div :if={@browse_entries == []} class="p-3 text-sm text-base-content/50">No subdirectories</div>
+      <div :if={@browse_entries == []} class="p-3 text-sm text-base-content/50">
+        No subdirectories
+      </div>
       <button
         :for={entry <- @browse_entries}
         type="button"
@@ -249,7 +344,9 @@
     </div>
     <div class="flex justify-end gap-2 mt-4">
       <button type="button" phx-click="browse_close" class="btn btn-sm">Cancel</button>
-      <button type="button" phx-click="browse_select" class="btn btn-sm btn-primary">Select this directory</button>
+      <button type="button" phx-click="browse_select" class="btn btn-sm btn-primary">
+        Select this directory
+      </button>
     </div>
   </div>
 </div>

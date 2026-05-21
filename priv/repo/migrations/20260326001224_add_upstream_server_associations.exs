@@ -10,8 +10,13 @@ defmodule OrcaHub.Repo.Migrations.AddUpstreamServerAssociations do
     # Create project_upstream_servers join table
     create table(:project_upstream_servers, primary_key: false) do
       add :id, :binary_id, primary_key: true
-      add :project_id, references(:projects, type: :binary_id, on_delete: :delete_all), null: false
-      add :upstream_server_id, references(:upstream_servers, type: :binary_id, on_delete: :delete_all), null: false
+
+      add :project_id, references(:projects, type: :binary_id, on_delete: :delete_all),
+        null: false
+
+      add :upstream_server_id,
+          references(:upstream_servers, type: :binary_id, on_delete: :delete_all),
+          null: false
 
       timestamps()
     end
@@ -21,8 +26,13 @@ defmodule OrcaHub.Repo.Migrations.AddUpstreamServerAssociations do
     # Create session_upstream_servers join table
     create table(:session_upstream_servers, primary_key: false) do
       add :id, :binary_id, primary_key: true
-      add :session_id, references(:sessions, type: :binary_id, on_delete: :delete_all), null: false
-      add :upstream_server_id, references(:upstream_servers, type: :binary_id, on_delete: :delete_all), null: false
+
+      add :session_id, references(:sessions, type: :binary_id, on_delete: :delete_all),
+        null: false
+
+      add :upstream_server_id,
+          references(:upstream_servers, type: :binary_id, on_delete: :delete_all),
+          null: false
 
       timestamps()
     end

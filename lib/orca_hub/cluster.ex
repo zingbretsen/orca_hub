@@ -172,14 +172,21 @@ defmodule OrcaHub.Cluster do
     db_node = if n != node(), do: node(), else: nil
     rpc(n, SessionSupervisor, :start_session, [session_id, session_data, db_node])
   end
+
   def stop_session(n, session_id), do: rpc(n, SessionSupervisor, :stop_session, [session_id])
   def session_alive?(n, session_id), do: rpc(n, SessionSupervisor, :session_alive?, [session_id])
 
-  def send_message(n, session_id, prompt), do: rpc(n, SessionRunner, :send_message, [session_id, prompt])
+  def send_message(n, session_id, prompt),
+    do: rpc(n, SessionRunner, :send_message, [session_id, prompt])
+
   def interrupt(n, session_id), do: rpc(n, SessionRunner, :interrupt, [session_id])
   def get_state(n, session_id), do: rpc(n, SessionRunner, :get_state, [session_id])
-  def update_model(n, session_id, model), do: rpc(n, SessionRunner, :update_model, [session_id, model])
-  def update_orchestrator(n, session_id, orchestrator), do: rpc(n, SessionRunner, :update_orchestrator, [session_id, orchestrator])
+
+  def update_model(n, session_id, model),
+    do: rpc(n, SessionRunner, :update_model, [session_id, model])
+
+  def update_orchestrator(n, session_id, orchestrator),
+    do: rpc(n, SessionRunner, :update_orchestrator, [session_id, orchestrator])
 
   # -------------------------------------------------------------------
   # Project queries
@@ -198,6 +205,7 @@ defmodule OrcaHub.Cluster do
 
   def list_issues(opts \\ []) do
     issues = HubRPC.list_issues(opts)
+
     Enum.map(issues, fn i ->
       n = if i.project, do: project_node_for(i.project), else: node()
       {n, i}
@@ -212,6 +220,7 @@ defmodule OrcaHub.Cluster do
 
   def list_triggers do
     triggers = HubRPC.list_triggers()
+
     Enum.map(triggers, fn t ->
       n = if t.project, do: project_node_for(t.project), else: node()
       {n, t}
@@ -245,7 +254,8 @@ defmodule OrcaHub.Cluster do
   Determine which node should run a session, based on its runner_node field.
   Falls back to this node if not set.
   """
-  def runner_node_for(%{runner_node: runner_node}) when is_binary(runner_node) and runner_node != "" do
+  def runner_node_for(%{runner_node: runner_node})
+      when is_binary(runner_node) and runner_node != "" do
     node_atom = String.to_existing_atom(runner_node)
     if node_atom in nodes(), do: node_atom, else: node()
   rescue
@@ -258,7 +268,8 @@ defmodule OrcaHub.Cluster do
   Determine which node a project's directory lives on, based on its node field.
   Falls back to this node if not set.
   """
-  def project_node_for(%{node: project_node}) when is_binary(project_node) and project_node != "" do
+  def project_node_for(%{node: project_node})
+      when is_binary(project_node) and project_node != "" do
     node_atom = String.to_existing_atom(project_node)
     if node_atom in nodes(), do: node_atom, else: node()
   rescue
@@ -288,6 +299,7 @@ defmodule OrcaHub.Cluster do
   end
 
   def get_terminal!(n, terminal_id), do: rpc(n, HubRPC, :get_terminal!, [terminal_id])
+
   def create_terminal(n, attrs) do
     # Only remap project_id when the target is a different hub (separate DB).
     # Agents share the hub's DB, so the original project_id is valid.
@@ -307,10 +319,15 @@ defmodule OrcaHub.Cluster do
 
     rpc(n, HubRPC, :create_terminal, [attrs])
   end
+
   def update_terminal(n, terminal, attrs), do: rpc(n, HubRPC, :update_terminal, [terminal, attrs])
   def delete_terminal(n, terminal), do: rpc(n, HubRPC, :delete_terminal, [terminal])
 
-  def start_terminal(n, terminal_id), do: rpc(n, TerminalSupervisor, :start_terminal, [terminal_id])
+  def start_terminal(n, terminal_id),
+    do: rpc(n, TerminalSupervisor, :start_terminal, [terminal_id])
+
   def stop_terminal(n, terminal_id), do: rpc(n, TerminalSupervisor, :stop_terminal, [terminal_id])
-  def terminal_alive?(n, terminal_id), do: rpc(n, TerminalSupervisor, :terminal_alive?, [terminal_id])
+
+  def terminal_alive?(n, terminal_id),
+    do: rpc(n, TerminalSupervisor, :terminal_alive?, [terminal_id])
 end

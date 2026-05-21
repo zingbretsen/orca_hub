@@ -62,7 +62,10 @@ defmodule OrcaHubWeb.NodeFilter do
 
         names when is_list(names) ->
           valid = Enum.filter(names, &(&1 in all_node_names))
-          if valid == [] or length(valid) == length(all_node_names), do: :all, else: MapSet.new(valid)
+
+          if valid == [] or length(valid) == length(all_node_names),
+            do: :all,
+            else: MapSet.new(valid)
       end
 
     socket = assign(socket, :node_filter, filter)

@@ -9,10 +9,32 @@
 
 <div :if={@show_form} class="card bg-base-200 p-4 mt-6">
   <h4 class="font-semibold mb-3">New Terminal</h4>
-  <.form for={@terminal_form} phx-submit="save_terminal" phx-change="validate_terminal" class="space-y-3">
-    <.input field={@terminal_form[:name]} type="text" label="Name" placeholder="backend server" phx-hook="AutoFocus" />
-    <.input field={@terminal_form[:project_id]} type="select" label="Project" prompt="(none)" options={Enum.map(@projects, &{&1.name, &1.id})} />
-    <.input field={@terminal_form[:directory]} type="text" label="Directory" placeholder="Leave blank to use project directory" />
+  <.form
+    for={@terminal_form}
+    phx-submit="save_terminal"
+    phx-change="validate_terminal"
+    class="space-y-3"
+  >
+    <.input
+      field={@terminal_form[:name]}
+      type="text"
+      label="Name"
+      placeholder="backend server"
+      phx-hook="AutoFocus"
+    />
+    <.input
+      field={@terminal_form[:project_id]}
+      type="select"
+      label="Project"
+      prompt="(none)"
+      options={Enum.map(@projects, &{&1.name, &1.id})}
+    />
+    <.input
+      field={@terminal_form[:directory]}
+      type="text"
+      label="Directory"
+      placeholder="Leave blank to use project directory"
+    />
     <.input field={@terminal_form[:shell]} type="text" label="Shell" value="/bin/bash" />
     <div class="flex justify-end gap-2">
       <.link patch={~p"/terminals"} class="btn btn-sm">Cancel</.link>
@@ -21,7 +43,10 @@
   </.form>
 </div>
 
-<div :if={@terminals == [] && !@show_form} class="text-sm text-base-content/50 p-8 text-center mt-6">
+<div
+  :if={@terminals == [] && !@show_form}
+  class="text-sm text-base-content/50 p-8 text-center mt-6"
+>
   No terminals yet.
 </div>
 
@@ -29,7 +54,11 @@
   <div :for={{project, project_terminals} <- group_by_project(@terminals)} class="mb-6">
     <div class="flex items-center gap-2 mb-2">
       <h3 class="text-sm font-semibold text-base-content/70">
-        <span :if={project}><.link navigate={~p"/projects/#{project.id}"} class="hover:underline">{project.name}</.link></span>
+        <span :if={project}>
+          <.link navigate={~p"/projects/#{project.id}"} class="hover:underline">
+            {project.name}
+          </.link>
+        </span>
         <span :if={!project}>Unassigned</span>
       </h3>
     </div>
@@ -56,11 +85,16 @@
             ]}>
               {terminal.status}
             </span>
-            <span :if={@clustered && Map.get(@node_map, terminal.id)} class="badge badge-xs badge-outline opacity-60">
+            <span
+              :if={@clustered && Map.get(@node_map, terminal.id)}
+              class="badge badge-xs badge-outline opacity-60"
+            >
               {OrcaHub.Cluster.node_name(Map.get(@node_map, terminal.id))}
             </span>
           </div>
-          <div class="text-base-content/50 text-xs mt-0.5 font-mono truncate">{terminal.directory}</div>
+          <div class="text-base-content/50 text-xs mt-0.5 font-mono truncate">
+            {terminal.directory}
+          </div>
         </div>
         <div class="flex items-center gap-1">
           <button

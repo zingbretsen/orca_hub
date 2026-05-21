@@ -113,7 +113,9 @@ defmodule OrcaHub.Claude.Usage do
   defp read_credentials_keychain do
     user = System.get_env("USER") || ""
 
-    case System.cmd("security", ["find-generic-password", "-s", "Claude Code-credentials", "-a", user, "-w"],
+    case System.cmd(
+           "security",
+           ["find-generic-password", "-s", "Claude Code-credentials", "-a", user, "-w"],
            stderr_to_stdout: true
          ) do
       {json, 0} ->

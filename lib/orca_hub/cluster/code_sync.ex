@@ -72,8 +72,21 @@ defmodule OrcaHub.Cluster.CodeSync do
                       else: parent
 
                   # Terminate and restart under the parent
-                  :erpc.call(target_node, Supervisor, :terminate_child, [parent_pid, supervisor_name], 10_000)
-                  :erpc.call(target_node, Supervisor, :restart_child, [parent_pid, supervisor_name], 10_000)
+                  :erpc.call(
+                    target_node,
+                    Supervisor,
+                    :terminate_child,
+                    [parent_pid, supervisor_name],
+                    10_000
+                  )
+
+                  :erpc.call(
+                    target_node,
+                    Supervisor,
+                    :restart_child,
+                    [parent_pid, supervisor_name],
+                    10_000
+                  )
 
                 _ ->
                   {:error, "Could not determine parent supervisor for #{supervisor_name}"}
@@ -98,7 +111,8 @@ defmodule OrcaHub.Cluster.CodeSync do
         try do
           # Use :erlang.get_module_info/2 instead of :code.module_md5/1 because
           # the latter only works in embedded mode (releases), not interactive mode (mix).
-          :erpc.call(n, :erlang, :get_module_info, [module, :md5], 5_000) |> Base.encode16(case: :lower)
+          :erpc.call(n, :erlang, :get_module_info, [module, :md5], 5_000)
+          |> Base.encode16(case: :lower)
         catch
           _, _ -> "unavailable"
         end

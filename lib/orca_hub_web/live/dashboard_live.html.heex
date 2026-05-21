@@ -11,7 +11,11 @@
     <div :for={info <- @cluster_nodes} class="badge badge-outline gap-1">
       <span class="inline-block w-2 h-2 rounded-full bg-success"></span>
       {info.name}
-      <span :for={{name, count} <- @node_session_counts} :if={name == info.name} class="text-base-content/50">
+      <span
+        :for={{name, count} <- @node_session_counts}
+        :if={name == info.name}
+        class="text-base-content/50"
+      >
         ({count})
       </span>
     </div>
@@ -20,19 +24,29 @@
 
 <%!-- Stats grid --%>
 <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
-  <.link navigate={~p"/sessions"} class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow">
+  <.link
+    navigate={~p"/sessions"}
+    class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow"
+  >
     <div class="card-body p-4">
       <div class="text-2xl font-bold">{@total_sessions}</div>
       <div class="text-sm text-base-content/60">Sessions</div>
       <div class="flex gap-2 mt-1 flex-wrap">
-        <span :if={@running_count > 0} class="badge badge-info badge-sm">{@running_count} running</span>
+        <span :if={@running_count > 0} class="badge badge-info badge-sm">
+          {@running_count} running
+        </span>
         <span :if={@idle_count > 0} class="badge badge-warning badge-sm">{@idle_count} idle</span>
-        <span :if={@error_count > 0} class="badge badge-error badge-sm">{@error_count} error</span>
+        <span :if={@error_count > 0} class="badge badge-error badge-sm">
+          {@error_count} error
+        </span>
       </div>
     </div>
   </.link>
 
-  <.link navigate={~p"/queue"} class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow">
+  <.link
+    navigate={~p"/queue"}
+    class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow"
+  >
     <div class="card-body p-4">
       <div class="text-2xl font-bold">{@feedback_count}</div>
       <div class="text-sm text-base-content/60">Pending Feedback</div>
@@ -42,14 +56,20 @@
     </div>
   </.link>
 
-  <.link navigate={~p"/issues"} class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow">
+  <.link
+    navigate={~p"/issues"}
+    class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow"
+  >
     <div class="card-body p-4">
       <div class="text-2xl font-bold">{@open_issues}</div>
       <div class="text-sm text-base-content/60">Open Issues</div>
     </div>
   </.link>
 
-  <.link navigate={~p"/projects"} class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow">
+  <.link
+    navigate={~p"/projects"}
+    class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow"
+  >
     <div class="card-body p-4">
       <div class="text-2xl font-bold">{@project_count}</div>
       <div class="text-sm text-base-content/60">Projects</div>
@@ -112,7 +132,11 @@
     </.link>
   </div>
 
-  <.link :if={@total_sessions > 8} navigate={~p"/sessions"} class="btn btn-ghost btn-sm w-full mt-2">
+  <.link
+    :if={@total_sessions > 8}
+    navigate={~p"/sessions"}
+    class="btn btn-ghost btn-sm w-full mt-2"
+  >
     View all sessions
   </.link>
 </div>

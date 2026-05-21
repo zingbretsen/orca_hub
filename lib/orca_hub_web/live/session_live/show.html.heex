@@ -2,9 +2,15 @@
   id="drop-target"
   phx-hook="DropTarget"
   class="relative flex flex-col h-[calc(100vh-6rem)] sm:h-[calc(100vh-8rem)]"
-  style={if @open_files != [] || @show_file_browser || @show_terminal, do: "margin-left: calc(-50vw + 50%); width: 100vw; padding-left: 2rem; padding-right: 2rem;"}
+  style={
+    if @open_files != [] || @show_file_browser || @show_terminal,
+      do: "margin-left: calc(-50vw + 50%); width: 100vw; padding-left: 2rem; padding-right: 2rem;"
+  }
 >
-  <div data-drop-overlay class="hidden absolute inset-0 z-50 bg-base-300/80 rounded-lg flex items-center justify-center pointer-events-none">
+  <div
+    data-drop-overlay
+    class="hidden absolute inset-0 z-50 bg-base-300/80 rounded-lg flex items-center justify-center pointer-events-none"
+  >
     <div class="border-2 border-dashed border-primary rounded-xl p-8 text-center">
       <.icon name="hero-arrow-down-tray" class="size-8 text-primary mb-2" />
       <p class="text-lg font-medium text-primary">Drop files here</p>
@@ -28,12 +34,21 @@
         <button type="submit" class="btn btn-ghost btn-sm btn-circle" title="Save">
           <.icon name="hero-check-micro" class="size-4" />
         </button>
-        <button type="button" phx-click="cancel_title_edit" class="btn btn-ghost btn-sm btn-circle" title="Cancel">
+        <button
+          type="button"
+          phx-click="cancel_title_edit"
+          class="btn btn-ghost btn-sm btn-circle"
+          title="Cancel"
+        >
           <.icon name="hero-x-mark-micro" class="size-4" />
         </button>
       </form>
     <% else %>
-      <span class="ml-2 cursor-pointer hover:underline group" phx-click="edit_title" title="Click to edit title">
+      <span
+        class="ml-2 cursor-pointer hover:underline group"
+        phx-click="edit_title"
+        title="Click to edit title"
+      >
         {@session.title || @session.directory}
         <.icon name="hero-pencil-micro" class="size-3 opacity-0 group-hover:opacity-50 inline" />
       </span>
@@ -56,16 +71,23 @@
         role="button"
         class={[
           "badge badge-ghost badge-outline cursor-pointer hover:badge-primary",
-          @session.original_node && @session.original_node != @session.runner_node && "badge-warning"
+          @session.original_node && @session.original_node != @session.runner_node &&
+            "badge-warning"
         ]}
-        title={if @session.original_node && @session.original_node != @session.runner_node,
-          do: "Original: #{Cluster.node_name(@session.original_node)} → Current: #{@session_node_name}",
-          else: @session.runner_node}
+        title={
+          if @session.original_node && @session.original_node != @session.runner_node,
+            do:
+              "Original: #{Cluster.node_name(@session.original_node)} → Current: #{@session_node_name}",
+            else: @session.runner_node
+        }
       >
         {@session_node_name}
         <.icon name="hero-chevron-down-micro" class="size-3 ml-0.5" />
       </div>
-      <ul tabindex="0" class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg">
+      <ul
+        tabindex="0"
+        class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg"
+      >
         <li class="menu-title text-xs">Move session to:</li>
         <li :for={node_info <- @cluster_nodes}>
           <button
@@ -74,26 +96,63 @@
             class={[Atom.to_string(node_info.node) == @session.runner_node && "active"]}
           >
             {node_info.name}
-            <span :if={Atom.to_string(node_info.node) == @session.runner_node} class="badge badge-xs">current</span>
-            <span :if={@session.original_node && Atom.to_string(node_info.node) == @session.original_node && @session.original_node != @session.runner_node} class="badge badge-xs badge-warning">original</span>
+            <span
+              :if={Atom.to_string(node_info.node) == @session.runner_node}
+              class="badge badge-xs"
+            >
+              current
+            </span>
+            <span
+              :if={
+                @session.original_node && Atom.to_string(node_info.node) == @session.original_node &&
+                  @session.original_node != @session.runner_node
+              }
+              class="badge badge-xs badge-warning"
+            >
+              original
+            </span>
           </button>
         </li>
-        <li :if={@session.original_node && @session.original_node != @session.runner_node} class="mt-2 border-t border-base-content/10 pt-2">
-          <button phx-click="change_node" phx-value-node={@session.original_node} class="text-warning">
-            <.icon name="hero-arrow-uturn-left-micro" class="size-4" />
-            Restore to original node
+        <li
+          :if={@session.original_node && @session.original_node != @session.runner_node}
+          class="mt-2 border-t border-base-content/10 pt-2"
+        >
+          <button
+            phx-click="change_node"
+            phx-value-node={@session.original_node}
+            class="text-warning"
+          >
+            <.icon name="hero-arrow-uturn-left-micro" class="size-4" /> Restore to original node
           </button>
         </li>
       </ul>
     </div>
-    <span :if={length(@cluster_nodes) == 1 && @remote_session} class="badge badge-ghost badge-outline ml-1" title={@session.runner_node}>
+    <span
+      :if={length(@cluster_nodes) == 1 && @remote_session}
+      class="badge badge-ghost badge-outline ml-1"
+      title={@session.runner_node}
+    >
       {@session_node_name}
     </span>
-    <span :if={@session.orchestrator} class="badge badge-primary badge-outline ml-1" title="Orchestrator mode: read-only, delegates work to other sessions">orchestrator</span>
-    <span :if={@plan_mode == :planning} class="badge badge-warning badge-outline ml-1">planning</span>
-    <span :if={@plan_mode == :review} class="badge badge-info badge-outline ml-1">needs review</span>
+    <span
+      :if={@session.orchestrator}
+      class="badge badge-primary badge-outline ml-1"
+      title="Orchestrator mode: read-only, delegates work to other sessions"
+    >
+      orchestrator
+    </span>
+    <span :if={@plan_mode == :planning} class="badge badge-warning badge-outline ml-1">
+      planning
+    </span>
+    <span :if={@plan_mode == :review} class="badge badge-info badge-outline ml-1">
+      needs review
+    </span>
     <:subtitle>
-      <.link :if={@session.project} navigate={~p"/projects/#{@session.project}"} class="hover:underline">
+      <.link
+        :if={@session.project}
+        navigate={~p"/projects/#{@session.project}"}
+        class="hover:underline"
+      >
         {@session.project.name}
       </.link>
       <span :if={@session.project} class="text-base-content/40 ml-1">{@session.directory}</span>
@@ -126,37 +185,101 @@
           <.icon name="hero-cpu-chip" class="size-4" />
           <span class="text-xs hidden sm:inline">{@session.model || "default"}</span>
         </div>
-        <ul tabindex="0" class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg">
-          <li><button phx-click="set_model" phx-value-model="" class={[@session.model == nil && "active"]}>Default</button></li>
-          <li><button phx-click="set_model" phx-value-model="claude-opus-4-6" class={[@session.model == "claude-opus-4-6" && "active"]}>Opus 4.6</button></li>
-          <li><button phx-click="set_model" phx-value-model="claude-sonnet-4-6" class={[@session.model == "claude-sonnet-4-6" && "active"]}>Sonnet 4.6</button></li>
-          <li><button phx-click="set_model" phx-value-model="claude-haiku-4-5-20251001" class={[@session.model == "claude-haiku-4-5-20251001" && "active"]}>Haiku 4.5</button></li>
+        <ul
+          tabindex="0"
+          class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg"
+        >
+          <li>
+            <button
+              phx-click="set_model"
+              phx-value-model=""
+              class={[@session.model == nil && "active"]}
+            >
+              Default
+            </button>
+          </li>
+          <li>
+            <button
+              phx-click="set_model"
+              phx-value-model="claude-opus-4-6"
+              class={[@session.model == "claude-opus-4-6" && "active"]}
+            >
+              Opus 4.6
+            </button>
+          </li>
+          <li>
+            <button
+              phx-click="set_model"
+              phx-value-model="claude-sonnet-4-6"
+              class={[@session.model == "claude-sonnet-4-6" && "active"]}
+            >
+              Sonnet 4.6
+            </button>
+          </li>
+          <li>
+            <button
+              phx-click="set_model"
+              phx-value-model="claude-haiku-4-5-20251001"
+              class={[@session.model == "claude-haiku-4-5-20251001" && "active"]}
+            >
+              Haiku 4.5
+            </button>
+          </li>
         </ul>
       </div>
       <button
         phx-click="toggle_orchestrator"
         class={["btn btn-ghost btn-sm btn-circle", @session.orchestrator && "text-primary"]}
-        title={if @session.orchestrator, do: "Disable orchestrator mode", else: "Enable orchestrator mode (read-only, delegates work)"}
+        title={
+          if @session.orchestrator,
+            do: "Disable orchestrator mode",
+            else: "Enable orchestrator mode (read-only, delegates work)"
+        }
       >
         <.icon name="hero-users" class="size-5" />
       </button>
-      <button :if={@todos != []} phx-click="toggle_todos" class={["btn btn-ghost btn-sm btn-circle indicator", @show_todos && "text-primary"]} title="Tasks">
+      <button
+        :if={@todos != []}
+        phx-click="toggle_todos"
+        class={["btn btn-ghost btn-sm btn-circle indicator", @show_todos && "text-primary"]}
+        title="Tasks"
+      >
         <.icon name="hero-clipboard-document-check" class="size-5" />
         <span class="indicator-item badge badge-xs badge-primary">
-          {Enum.count(@todos, & &1["status"] == "completed")}/{length(@todos)}
+          {Enum.count(@todos, &(&1["status"] == "completed"))}/{length(@todos)}
         </span>
       </button>
-      <button :if={@commits != []} phx-click="toggle_commits" class={["btn btn-ghost btn-sm btn-circle indicator", @show_commits && "text-primary"]} title="Commits">
+      <button
+        :if={@commits != []}
+        phx-click="toggle_commits"
+        class={["btn btn-ghost btn-sm btn-circle indicator", @show_commits && "text-primary"]}
+        title="Commits"
+      >
         <.icon name="hero-code-bracket" class="size-5" />
         <span class="indicator-item badge badge-xs badge-primary">{length(@commits)}</span>
       </button>
-      <button phx-click="regenerate_title" class="btn btn-ghost btn-sm btn-circle" title="Regenerate title">
+      <button
+        phx-click="regenerate_title"
+        class="btn btn-ghost btn-sm btn-circle"
+        title="Regenerate title"
+      >
         <.icon name="hero-sparkles" class="size-5" />
       </button>
-      <button phx-click="toggle_file_browser" class={["btn btn-ghost btn-sm btn-circle", (@open_files != [] || @show_file_browser) && "text-primary"]} title="Browse files">
+      <button
+        phx-click="toggle_file_browser"
+        class={[
+          "btn btn-ghost btn-sm btn-circle",
+          (@open_files != [] || @show_file_browser) && "text-primary"
+        ]}
+        title="Browse files"
+      >
         <.icon name="hero-document-text" class="size-5" />
       </button>
-      <button phx-click="open_terminal" class={["btn btn-ghost btn-sm btn-circle", @show_terminal && "text-primary"]} title="Open terminal">
+      <button
+        phx-click="open_terminal"
+        class={["btn btn-ghost btn-sm btn-circle", @show_terminal && "text-primary"]}
+        title="Open terminal"
+      >
         <.icon name="hero-command-line" class="size-5" />
       </button>
       <button
@@ -167,11 +290,22 @@
       >
         <.icon name="hero-play" class="size-5" />
       </button>
-      <button phx-click="toggle_heartbeat_modal" class={["btn btn-ghost btn-sm btn-circle indicator", @show_heartbeat_modal && "text-primary"]} title="Heartbeat">
+      <button
+        phx-click="toggle_heartbeat_modal"
+        class={[
+          "btn btn-ghost btn-sm btn-circle indicator",
+          @show_heartbeat_modal && "text-primary"
+        ]}
+        title="Heartbeat"
+      >
         <.icon name="hero-heart" class="size-5" />
         <span :if={@heartbeat_info} class="indicator-item badge badge-xs badge-success"></span>
       </button>
-      <button phx-click="toggle_mcp_modal" class={["btn btn-ghost btn-sm btn-circle", @show_mcp_modal && "text-primary"]} title="MCP servers">
+      <button
+        phx-click="toggle_mcp_modal"
+        class={["btn btn-ghost btn-sm btn-circle", @show_mcp_modal && "text-primary"]}
+        title="MCP servers"
+      >
         <.icon name="hero-server-stack" class="size-5" />
       </button>
       <button
@@ -193,13 +327,29 @@
       >
         <.icon name="hero-identification" class="size-5" />
       </button>
-      <button :if={@status in [:running, :waiting, :compacting] && !@session.archived_at} phx-click="stop_session" data-confirm="Stop this session? The Claude process will be terminated." class="btn btn-ghost btn-sm btn-circle text-error" title="Stop session">
+      <button
+        :if={@status in [:running, :waiting, :compacting] && !@session.archived_at}
+        phx-click="stop_session"
+        data-confirm="Stop this session? The Claude process will be terminated."
+        class="btn btn-ghost btn-sm btn-circle text-error"
+        title="Stop session"
+      >
         <.icon name="hero-stop-circle" class="size-5" />
       </button>
-      <button :if={@session.archived_at} phx-click="unarchive" class="btn btn-ghost btn-sm btn-circle" title="Unarchive session">
+      <button
+        :if={@session.archived_at}
+        phx-click="unarchive"
+        class="btn btn-ghost btn-sm btn-circle"
+        title="Unarchive session"
+      >
         <.icon name="hero-archive-box-arrow-down" class="size-5" />
       </button>
-      <button :if={!@session.archived_at} phx-click="archive" class="btn btn-ghost btn-sm btn-circle" title="Archive session">
+      <button
+        :if={!@session.archived_at}
+        phx-click="archive"
+        class="btn btn-ghost btn-sm btn-circle"
+        title="Archive session"
+      >
         <.icon name="hero-archive-box" class="size-5" />
       </button>
     </:actions>
@@ -208,14 +358,26 @@
   <div :if={@commits != [] && @show_commits} class="mb-2 bg-base-200 rounded-lg px-3 py-2">
     <ul class="space-y-1">
       <li :for={commit <- @commits}>
-        <button phx-click="toggle_commit_detail" phx-value-hash={commit.hash} class="flex items-start gap-2 text-sm w-full text-left hover:bg-base-300/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+        <button
+          phx-click="toggle_commit_detail"
+          phx-value-hash={commit.hash}
+          class="flex items-start gap-2 text-sm w-full text-left hover:bg-base-300/50 rounded px-1 -mx-1 py-0.5 transition-colors"
+        >
           <code class="text-xs text-primary shrink-0">{commit.short_hash}</code>
           <span class="truncate">{commit.subject}</span>
-          <span class="text-xs text-base-content/40 shrink-0 ml-auto whitespace-nowrap">{format_commit_date(commit.date)}</span>
+          <span class="text-xs text-base-content/40 shrink-0 ml-auto whitespace-nowrap">
+            {format_commit_date(commit.date)}
+          </span>
         </button>
-        <div :if={@expanded_commit == commit.hash && @commit_detail} class="ml-6 mt-1 mb-2 text-xs space-y-2">
+        <div
+          :if={@expanded_commit == commit.hash && @commit_detail}
+          class="ml-6 mt-1 mb-2 text-xs space-y-2"
+        >
           <pre :if={@commit_detail.body != ""} class="whitespace-pre-wrap text-base-content/70">{@commit_detail.body}</pre>
-          <pre :if={@commit_detail.stat != ""} class="whitespace-pre-wrap text-base-content/50 font-mono">{@commit_detail.stat}</pre>
+          <pre
+            :if={@commit_detail.stat != ""}
+            class="whitespace-pre-wrap text-base-content/50 font-mono"
+          >{@commit_detail.stat}</pre>
         </div>
       </li>
     </ul>
@@ -224,9 +386,21 @@
   <div :if={@todos != [] && @show_todos} class="mb-2 bg-base-200 rounded-lg px-3 py-2">
     <ul class="space-y-1">
       <li :for={todo <- @todos} class="flex items-start gap-2 text-sm">
-        <.icon :if={todo["status"] == "completed"} name="hero-check-circle-solid" class="size-4 text-success shrink-0 mt-0.5" />
-        <.icon :if={todo["status"] == "in_progress"} name="hero-arrow-path" class="size-4 text-warning shrink-0 mt-0.5" />
-        <.icon :if={todo["status"] == "pending"} name="hero-ellipsis-horizontal-circle" class="size-4 text-base-content/30 shrink-0 mt-0.5" />
+        <.icon
+          :if={todo["status"] == "completed"}
+          name="hero-check-circle-solid"
+          class="size-4 text-success shrink-0 mt-0.5"
+        />
+        <.icon
+          :if={todo["status"] == "in_progress"}
+          name="hero-arrow-path"
+          class="size-4 text-warning shrink-0 mt-0.5"
+        />
+        <.icon
+          :if={todo["status"] == "pending"}
+          name="hero-ellipsis-horizontal-circle"
+          class="size-4 text-base-content/30 shrink-0 mt-0.5"
+        />
         <span class={[todo["status"] == "completed" && "line-through text-base-content/50"]}>
           {todo["content"]}
         </span>
@@ -234,9 +408,11 @@
     </ul>
   </div>
 
-
   <%!-- MCP servers modal --%>
-  <div :if={@show_mcp_modal} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
+  <div
+    :if={@show_mcp_modal}
+    class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
+  >
     <div class="card bg-base-100 shadow-xl w-full max-w-lg p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl max-h-[80vh] overflow-y-auto">
       <div>
         <div class="flex items-center justify-between mb-3">
@@ -250,12 +426,21 @@
           These servers will be added to this session's MCP config on the next run, in addition to global and project-level servers.
         </p>
 
-        <div :if={@session_mcp_servers != []} class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden mb-4">
-          <div :for={server <- @session_mcp_servers} class="flex items-center gap-3 px-3 py-2 text-sm">
+        <div
+          :if={@session_mcp_servers != []}
+          class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden mb-4"
+        >
+          <div
+            :for={server <- @session_mcp_servers}
+            class="flex items-center gap-3 px-3 py-2 text-sm"
+          >
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2">
                 <span class="font-medium">{server.name}</span>
-                <span class={["badge badge-xs", if(server.enabled, do: "badge-success", else: "badge-ghost")]}>
+                <span class={[
+                  "badge badge-xs",
+                  if(server.enabled, do: "badge-success", else: "badge-ghost")
+                ]}>
                   {if server.enabled, do: "enabled", else: "disabled"}
                 </span>
               </div>
@@ -272,13 +457,20 @@
           </div>
         </div>
 
-        <div :if={@session_mcp_servers == [] && !@show_mcp_server_picker} class="text-sm text-base-content/50 text-center py-4 mb-4">
+        <div
+          :if={@session_mcp_servers == [] && !@show_mcp_server_picker}
+          class="text-sm text-base-content/50 text-center py-4 mb-4"
+        >
           No session-specific MCP servers.
         </div>
 
         <div :if={!@show_mcp_server_picker} class="flex justify-between items-center">
-          <.link navigate={~p"/settings"} class="link text-sm text-base-content/50">Manage server definitions</.link>
-          <button phx-click="toggle_mcp_server_picker" class="btn btn-sm btn-primary">Add Server</button>
+          <.link navigate={~p"/settings"} class="link text-sm text-base-content/50">
+            Manage server definitions
+          </.link>
+          <button phx-click="toggle_mcp_server_picker" class="btn btn-sm btn-primary">
+            Add Server
+          </button>
         </div>
 
         <div :if={@show_mcp_server_picker} class="mt-2">
@@ -287,16 +479,27 @@
             No servers defined. <.link navigate={~p"/settings"} class="link">Add one in Settings</.link>.
           </div>
           <div :if={@all_upstream_servers != []} class="space-y-2">
-            <div :for={server <- @all_upstream_servers} class="flex items-center justify-between text-sm bg-base-200 rounded px-3 py-2">
+            <div
+              :for={server <- @all_upstream_servers}
+              class="flex items-center justify-between text-sm bg-base-200 rounded px-3 py-2"
+            >
               <div class="min-w-0 flex-1">
                 <span class="font-medium">{server.name}</span>
-                <span class={["badge badge-xs ml-2", if(server.enabled, do: "badge-success", else: "badge-ghost")]}>
+                <span class={[
+                  "badge badge-xs ml-2",
+                  if(server.enabled, do: "badge-success", else: "badge-ghost")
+                ]}>
                   {if server.enabled, do: "enabled", else: "disabled"}
                 </span>
                 <div class="text-base-content/50 text-xs font-mono truncate">{server.url}</div>
               </div>
               <div class="shrink-0 ml-2">
-                <span :if={HubRPC.server_in_session?(@session.id, server.id)} class="text-xs text-base-content/40">added</span>
+                <span
+                  :if={HubRPC.server_in_session?(@session.id, server.id)}
+                  class="text-xs text-base-content/40"
+                >
+                  added
+                </span>
                 <button
                   :if={!HubRPC.server_in_session?(@session.id, server.id)}
                   phx-click="add_mcp_server"
@@ -317,7 +520,10 @@
   </div>
 
   <%!-- Heartbeat modal --%>
-  <div :if={@show_heartbeat_modal} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
+  <div
+    :if={@show_heartbeat_modal}
+    class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
+  >
     <div class="card bg-base-100 shadow-xl w-full max-w-md p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-semibold">Session Heartbeat</h2>
@@ -386,11 +592,15 @@
               class="textarea textarea-bordered w-full"
             >Check on sibling sessions. Review their status in .agents/ and continue coordinating until the task is complete.</textarea>
             <label class="label">
-              <span class="label-text-alt text-base-content/50">This message will wake up the session</span>
+              <span class="label-text-alt text-base-content/50">
+                This message will wake up the session
+              </span>
             </label>
           </div>
           <div class="flex justify-end gap-2">
-            <button type="button" phx-click="toggle_heartbeat_modal" class="btn btn-ghost">Cancel</button>
+            <button type="button" phx-click="toggle_heartbeat_modal" class="btn btn-ghost">
+              Cancel
+            </button>
             <button type="submit" class="btn btn-primary">
               <.icon name="hero-heart-micro" class="size-4" /> Schedule Heartbeat
             </button>
@@ -415,7 +625,11 @@
 
     <%!-- Chat column --%>
     <div class="flex flex-col min-w-0 flex-1" data-resize-panel="left">
-      <div id="message-feed" phx-hook="ScrollToBottom" class="flex-1 overflow-y-auto space-y-1 p-4 bg-base-200 rounded-lg text-sm">
+      <div
+        id="message-feed"
+        phx-hook="ScrollToBottom"
+        class="flex-1 overflow-y-auto space-y-1 p-4 bg-base-200 rounded-lg text-sm"
+      >
         <MessageComponents.message_feed messages={@messages} session_node={@session_node} />
       </div>
 
@@ -423,7 +637,9 @@
         <div class="card-body p-3 gap-2">
           <div class="flex items-center gap-2">
             <span class="badge badge-warning badge-sm">Plan Review</span>
-            <span class="text-sm text-base-content/70">Claude has proposed a plan. Review it in the editor, make edits, then approve or provide feedback.</span>
+            <span class="text-sm text-base-content/70">
+              Claude has proposed a plan. Review it in the editor, make edits, then approve or provide feedback.
+            </span>
           </div>
           <div class="flex gap-2">
             <button phx-click="approve_plan" class="btn btn-sm btn-success">
@@ -443,10 +659,18 @@
           </div>
           <div class="text-sm bg-base-200 rounded-lg p-3">{request.question}</div>
           <div class="flex gap-2">
-            <button phx-click="approve_feedback" phx-value-id={request.id} class="btn btn-sm btn-success">
+            <button
+              phx-click="approve_feedback"
+              phx-value-id={request.id}
+              class="btn btn-sm btn-success"
+            >
               <.icon name="hero-hand-thumb-up-micro" class="size-4" /> Yes
             </button>
-            <button phx-click="cancel_feedback" phx-value-id={request.id} class="btn btn-sm btn-ghost">
+            <button
+              phx-click="cancel_feedback"
+              phx-value-id={request.id}
+              class="btn btn-sm btn-ghost"
+            >
               <.icon name="hero-x-mark-micro" class="size-4" /> Cancel
             </button>
           </div>
@@ -470,22 +694,44 @@
         <div :for={entry <- @uploads.image.entries} class="flex items-center gap-2 px-2">
           <.live_img_preview entry={entry} class="h-16 w-16 object-cover rounded" />
           <span class="text-xs truncate flex-1">{entry.client_name}</span>
-          <progress :if={entry.progress < 100} value={entry.progress} max="100" class="progress progress-primary w-16 h-2" />
+          <progress
+            :if={entry.progress < 100}
+            value={entry.progress}
+            max="100"
+            class="progress progress-primary w-16 h-2"
+          />
           <p :for={err <- upload_errors(@uploads.image, entry)} class="text-xs text-error">
             {upload_error_to_string(err)}
           </p>
-          <button type="button" phx-click="cancel-upload" phx-value-ref={entry.ref} phx-value-upload="image" class="btn btn-ghost btn-xs">
+          <button
+            type="button"
+            phx-click="cancel-upload"
+            phx-value-ref={entry.ref}
+            phx-value-upload="image"
+            class="btn btn-ghost btn-xs"
+          >
             &times;
           </button>
         </div>
         <div :for={entry <- @uploads.file.entries} class="flex items-center gap-2 px-2">
           <.icon name="hero-document" class="size-8 opacity-50" />
           <span class="text-xs truncate flex-1">{entry.client_name}</span>
-          <progress :if={entry.progress < 100} value={entry.progress} max="100" class="progress progress-primary w-16 h-2" />
+          <progress
+            :if={entry.progress < 100}
+            value={entry.progress}
+            max="100"
+            class="progress progress-primary w-16 h-2"
+          />
           <p :for={err <- upload_errors(@uploads.file, entry)} class="text-xs text-error">
             {upload_error_to_string(err)}
           </p>
-          <button type="button" phx-click="cancel-upload" phx-value-ref={entry.ref} phx-value-upload="file" class="btn btn-ghost btn-xs">
+          <button
+            type="button"
+            phx-click="cancel-upload"
+            phx-value-ref={entry.ref}
+            phx-value-upload="file"
+            class="btn btn-ghost btn-xs"
+          >
             &times;
           </button>
         </div>
@@ -497,15 +743,29 @@
           {upload_error_to_string(err)}
         </p>
 
-        <.form for={%{}} phx-submit="send_message" phx-change="validate" class="flex gap-2" multipart>
-          <button type="button" phx-click="toggle_tts" class={["btn btn-ghost btn-square", @tts_autoplay && "text-primary"]} title={if @tts_autoplay, do: "Disable TTS autoplay", else: "Enable TTS autoplay"}>
+        <.form
+          for={%{}}
+          phx-submit="send_message"
+          phx-change="validate"
+          class="flex gap-2"
+          multipart
+        >
+          <button
+            type="button"
+            phx-click="toggle_tts"
+            class={["btn btn-ghost btn-square", @tts_autoplay && "text-primary"]}
+            title={if @tts_autoplay, do: "Disable TTS autoplay", else: "Enable TTS autoplay"}
+          >
             <.icon name="hero-speaker-wave" class="size-5" />
           </button>
           <div class="dropdown dropdown-top">
             <div tabindex="0" role="button" class="btn btn-ghost btn-square">
               <.icon name="hero-plus" class="size-5" />
             </div>
-            <ul tabindex="0" class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg mb-2">
+            <ul
+              tabindex="0"
+              class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg mb-2"
+            >
               <li>
                 <label>
                   <.live_file_input upload={@uploads.image} class="hidden" />
@@ -543,9 +803,16 @@
             <div
               id="autocomplete-dropdown"
               class="hidden absolute bottom-full left-0 right-0 mb-1 bg-base-100 rounded-lg shadow-xl border border-base-300 overflow-hidden z-50"
-            ></div>
+            >
+            </div>
           </div>
-          <button :if={@status in [:running, :compacting]} type="button" phx-click="interrupt" class="btn btn-error btn-square" title="Interrupt">
+          <button
+            :if={@status in [:running, :compacting]}
+            type="button"
+            phx-click="interrupt"
+            class="btn btn-error btn-square"
+            title="Interrupt"
+          >
             <.icon name="hero-stop" class="size-5" />
           </button>
           <.button type="submit">
@@ -572,7 +839,11 @@
     </div>
 
     <%!-- Terminal panel column (desktop only) --%>
-    <div :if={@show_terminal && @open_terminals != []} class="hidden lg:flex flex-col min-w-0 w-1/2" data-resize-panel="right">
+    <div
+      :if={@show_terminal && @open_terminals != []}
+      class="hidden lg:flex flex-col min-w-0 w-1/2"
+      data-resize-panel="right"
+    >
       <%!-- Tab bar --%>
       <div class="flex items-center gap-1 mb-2">
         <div class="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
@@ -587,18 +858,36 @@
             ]}
           >
             <span class="truncate max-w-24">{term.name}</span>
-            <span phx-click="close_terminal_tab" phx-value-id={term.id} class="hover:text-error" title="Close">
+            <span
+              phx-click="close_terminal_tab"
+              phx-value-id={term.id}
+              class="hover:text-error"
+              title="Close"
+            >
               &times;
             </span>
           </button>
         </div>
-        <button phx-click="new_terminal" class="btn btn-ghost btn-xs btn-circle" title="New terminal">
+        <button
+          phx-click="new_terminal"
+          class="btn btn-ghost btn-xs btn-circle"
+          title="New terminal"
+        >
           <.icon name="hero-plus-micro" class="size-4" />
         </button>
-        <button :if={@active_terminal_id} phx-click="pop_out_terminal" class="btn btn-ghost btn-xs btn-circle" title="Open in full page">
+        <button
+          :if={@active_terminal_id}
+          phx-click="pop_out_terminal"
+          class="btn btn-ghost btn-xs btn-circle"
+          title="Open in full page"
+        >
           <.icon name="hero-arrow-top-right-on-square-micro" class="size-4" />
         </button>
-        <button phx-click="close_terminal_panel" class="btn btn-ghost btn-xs btn-circle" title="Close panel">
+        <button
+          phx-click="close_terminal_panel"
+          class="btn btn-ghost btn-xs btn-circle"
+          title="Close panel"
+        >
           <.icon name="hero-x-mark-micro" class="size-4" />
         </button>
       </div>
@@ -620,7 +909,11 @@
     </div>
 
     <%!-- File panel column (desktop: side-by-side, mobile: modal) --%>
-    <div :if={@open_files != [] || @show_file_browser} class="hidden lg:flex flex-col min-w-0 w-1/2" data-resize-panel="right">
+    <div
+      :if={@open_files != [] || @show_file_browser}
+      class="hidden lg:flex flex-col min-w-0 w-1/2"
+      data-resize-panel="right"
+    >
       <%!-- Tab bar --%>
       <div class="flex items-center gap-1 mb-2">
         <div class="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
@@ -635,15 +928,28 @@
             ]}
           >
             <span class="font-mono truncate max-w-32">{Path.basename(tab.path)}</span>
-            <span phx-click="close_tab" phx-value-path={tab.path} class="hover:text-error" title="Close">
+            <span
+              phx-click="close_tab"
+              phx-value-path={tab.path}
+              class="hover:text-error"
+              title="Close"
+            >
               &times;
             </span>
           </button>
         </div>
-        <button phx-click="toggle_file_browser" class={["btn btn-ghost btn-xs btn-circle", @show_file_browser && "text-primary"]} title="Browse files">
+        <button
+          phx-click="toggle_file_browser"
+          class={["btn btn-ghost btn-xs btn-circle", @show_file_browser && "text-primary"]}
+          title="Browse files"
+        >
           <.icon name="hero-plus-micro" class="size-4" />
         </button>
-        <button phx-click="close_file_panel" class="btn btn-ghost btn-xs btn-circle" title="Close panel">
+        <button
+          phx-click="close_file_panel"
+          class="btn btn-ghost btn-xs btn-circle"
+          title="Close panel"
+        >
           <.icon name="hero-x-mark-micro" class="size-4" />
         </button>
       </div>
@@ -680,10 +986,13 @@
                 </button>
                 <button
                   phx-click="toggle_edit_mode"
-                  class={["btn btn-xs", @file_edit_mode && "btn-primary", !@file_edit_mode && "btn-ghost"]}
+                  class={[
+                    "btn btn-xs",
+                    @file_edit_mode && "btn-primary",
+                    !@file_edit_mode && "btn-ghost"
+                  ]}
                 >
-                  <.icon name="hero-pencil-micro" class="size-3" />
-                  Edit
+                  <.icon name="hero-pencil-micro" class="size-3" /> Edit
                 </button>
               </div>
             </div>
@@ -698,7 +1007,10 @@
               <div
                 :for={{index, block_text} <- tab.blocks}
                 id={"file-block-#{index}"}
-                class={["group relative", @scroll_to_block == index && "ring-2 ring-warning/50 rounded"]}
+                class={[
+                  "group relative",
+                  @scroll_to_block == index && "ring-2 ring-warning/50 rounded"
+                ]}
               >
                 <div :if={@editing_block == index && @file_edit_mode} class="my-2">
                   <form phx-submit="save_block" class="space-y-2">
@@ -710,7 +1022,9 @@
                       id={"block-editor-#{index}"}
                     >{@block_edit_content}</textarea>
                     <div class="flex justify-end gap-2">
-                      <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">Cancel</button>
+                      <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">
+                        Cancel
+                      </button>
                       <button type="submit" class="btn btn-xs btn-primary">Save</button>
                     </div>
                   </form>
@@ -719,7 +1033,10 @@
                   <div
                     phx-click={if @file_edit_mode, do: "edit_block"}
                     phx-value-index={if @file_edit_mode, do: index}
-                    class={["prose prose-sm max-w-none rounded px-2 -mx-2 py-1", @file_edit_mode && "cursor-pointer hover:bg-base-300/50 transition-colors"]}
+                    class={[
+                      "prose prose-sm max-w-none rounded px-2 -mx-2 py-1",
+                      @file_edit_mode && "cursor-pointer hover:bg-base-300/50 transition-colors"
+                    ]}
                   >
                     {Markdown.render_block(block_text)}
                   </div>
@@ -750,7 +1067,9 @@
                     id={"file-line-#{idx}"}
                     class={if @scroll_to_line == idx, do: "bg-warning/20", else: ""}
                   >
-                    <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">{idx}</td>
+                    <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">
+                      {idx}
+                    </td>
                     <td class="whitespace-pre-wrap break-words">{line_text}</td>
                   </tr>
                 </tbody>
@@ -766,7 +1085,9 @@
                   rows="20"
                 >{tab.content}</textarea>
                 <div class="flex justify-end gap-2">
-                  <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">Cancel</button>
+                  <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">
+                    Cancel
+                  </button>
                   <.button type="submit" class="btn-sm">Save</.button>
                 </div>
               </form>
@@ -811,20 +1132,33 @@
               ]}
             >
               <span class="font-mono truncate max-w-32">{Path.basename(tab.path)}</span>
-              <span phx-click="close_tab" phx-value-path={tab.path} class="hover:text-error">&times;</span>
+              <span phx-click="close_tab" phx-value-path={tab.path} class="hover:text-error">
+                &times;
+              </span>
             </button>
           </div>
-          <button phx-click="toggle_file_browser" class={["btn btn-ghost btn-xs btn-circle", @show_file_browser && "text-primary"]} title="Browse files">
+          <button
+            phx-click="toggle_file_browser"
+            class={["btn btn-ghost btn-xs btn-circle", @show_file_browser && "text-primary"]}
+            title="Browse files"
+          >
             <.icon name="hero-plus-micro" class="size-4" />
           </button>
-          <button phx-click="close_file_panel" class="btn btn-ghost btn-xs btn-circle" title="Close">
+          <button
+            phx-click="close_file_panel"
+            class="btn btn-ghost btn-xs btn-circle"
+            title="Close"
+          >
             <.icon name="hero-x-mark-micro" class="size-4" />
           </button>
         </div>
 
         <div class="flex flex-1 min-h-0 gap-2">
           <%!-- File browser --%>
-          <div :if={@show_file_browser} class="w-44 shrink-0 flex flex-col min-h-0 overflow-hidden">
+          <div
+            :if={@show_file_browser}
+            class="w-44 shrink-0 flex flex-col min-h-0 overflow-hidden"
+          >
             <.live_component
               module={OrcaHubWeb.FileTreeComponent}
               id="session-file-tree-mobile"
@@ -853,10 +1187,13 @@
                   </button>
                   <button
                     phx-click="toggle_edit_mode"
-                    class={["btn btn-xs", @file_edit_mode && "btn-primary", !@file_edit_mode && "btn-ghost"]}
+                    class={[
+                      "btn btn-xs",
+                      @file_edit_mode && "btn-primary",
+                      !@file_edit_mode && "btn-ghost"
+                    ]}
                   >
-                    <.icon name="hero-pencil-micro" class="size-3" />
-                    Edit
+                    <.icon name="hero-pencil-micro" class="size-3" /> Edit
                   </button>
                 </div>
               </div>
@@ -870,7 +1207,10 @@
                 <div
                   :for={{index, block_text} <- tab.blocks}
                   id={"mobile-file-block-#{index}"}
-                  class={["group relative", @scroll_to_block == index && "ring-2 ring-warning/50 rounded"]}
+                  class={[
+                    "group relative",
+                    @scroll_to_block == index && "ring-2 ring-warning/50 rounded"
+                  ]}
                 >
                   <div :if={@editing_block == index && @file_edit_mode} class="my-2">
                     <form phx-submit="save_block" class="space-y-2">
@@ -882,7 +1222,9 @@
                         id={"mobile-block-editor-#{index}"}
                       >{@block_edit_content}</textarea>
                       <div class="flex justify-end gap-2">
-                        <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">Cancel</button>
+                        <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">
+                          Cancel
+                        </button>
                         <button type="submit" class="btn btn-xs btn-primary">Save</button>
                       </div>
                     </form>
@@ -891,7 +1233,10 @@
                     <div
                       phx-click={if @file_edit_mode, do: "edit_block"}
                       phx-value-index={if @file_edit_mode, do: index}
-                      class={["prose prose-sm max-w-none rounded px-2 -mx-2 py-1", @file_edit_mode && "cursor-pointer hover:bg-base-300/50"]}
+                      class={[
+                        "prose prose-sm max-w-none rounded px-2 -mx-2 py-1",
+                        @file_edit_mode && "cursor-pointer hover:bg-base-300/50"
+                      ]}
                     >
                       {Markdown.render_block(block_text)}
                     </div>
@@ -908,11 +1253,15 @@
                 <table class="text-sm font-mono w-full border-collapse">
                   <tbody>
                     <tr
-                      :for={{line_text, idx} <- Enum.with_index(String.split(tab.content, "\n"), 1)}
+                      :for={
+                        {line_text, idx} <- Enum.with_index(String.split(tab.content, "\n"), 1)
+                      }
                       id={"mobile-file-line-#{idx}"}
                       class={if @scroll_to_line == idx, do: "bg-warning/20", else: ""}
                     >
-                      <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">{idx}</td>
+                      <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">
+                        {idx}
+                      </td>
                       <td class="whitespace-pre-wrap break-words">{line_text}</td>
                     </tr>
                   </tbody>
@@ -927,7 +1276,9 @@
                     rows="15"
                   >{tab.content}</textarea>
                   <div class="flex justify-end gap-2">
-                    <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">Cancel</button>
+                    <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">
+                      Cancel
+                    </button>
                     <.button type="submit" class="btn-sm">Save</.button>
                   </div>
                 </form>
@@ -962,18 +1313,36 @@
               ]}
             >
               <span class="truncate max-w-24">{term.name}</span>
-              <span phx-click="close_terminal_tab" phx-value-id={term.id} class="hover:text-error" title="Close">
+              <span
+                phx-click="close_terminal_tab"
+                phx-value-id={term.id}
+                class="hover:text-error"
+                title="Close"
+              >
                 &times;
               </span>
             </button>
           </div>
-          <button phx-click="new_terminal" class="btn btn-ghost btn-xs btn-circle" title="New terminal">
+          <button
+            phx-click="new_terminal"
+            class="btn btn-ghost btn-xs btn-circle"
+            title="New terminal"
+          >
             <.icon name="hero-plus-micro" class="size-4" />
           </button>
-          <button :if={@active_terminal_id} phx-click="pop_out_terminal" class="btn btn-ghost btn-xs btn-circle" title="Open in full page">
+          <button
+            :if={@active_terminal_id}
+            phx-click="pop_out_terminal"
+            class="btn btn-ghost btn-xs btn-circle"
+            title="Open in full page"
+          >
             <.icon name="hero-arrow-top-right-on-square-micro" class="size-4" />
           </button>
-          <button phx-click="close_terminal_panel" class="btn btn-ghost btn-xs btn-circle" title="Close">
+          <button
+            phx-click="close_terminal_panel"
+            class="btn btn-ghost btn-xs btn-circle"
+            title="Close"
+          >
             <.icon name="hero-x-mark-micro" class="size-4" />
           </button>
         </div>

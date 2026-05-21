@@ -1,14 +1,21 @@
 <.header>
   Queue
   <:actions>
-    <button phx-click="toggle_tts" class={["btn btn-ghost btn-sm btn-circle", @tts_autoplay && "text-primary"]} title={if @tts_autoplay, do: "Disable TTS autoplay", else: "Enable TTS autoplay"}>
+    <button
+      phx-click="toggle_tts"
+      class={["btn btn-ghost btn-sm btn-circle", @tts_autoplay && "text-primary"]}
+      title={if @tts_autoplay, do: "Disable TTS autoplay", else: "Enable TTS autoplay"}
+    >
       <.icon name="hero-speaker-wave" class="size-5" />
     </button>
   </:actions>
   <:subtitle>
     <span :if={@entries != [] || @feedback_requests != []}>
-      {length(@feedback_requests)} feedback {if length(@feedback_requests) == 1, do: "request", else: "requests"},
-      {length(@entries)} idle {if length(@entries) == 1, do: "session", else: "sessions"}
+      {length(@feedback_requests)} feedback {if length(@feedback_requests) == 1,
+        do: "request",
+        else: "requests"}, {length(@entries)} idle {if length(@entries) == 1,
+        do: "session",
+        else: "sessions"}
     </span>
   </:subtitle>
 </.header>
@@ -25,7 +32,11 @@
 </div>
 
 <%!-- Feedback requests --%>
-<div :for={request <- @feedback_requests} id={"feedback-#{request.id}"} class="card bg-warning/10 shadow-sm border border-warning/30 mt-4">
+<div
+  :for={request <- @feedback_requests}
+  id={"feedback-#{request.id}"}
+  class="card bg-warning/10 shadow-sm border border-warning/30 mt-4"
+>
   <div class="card-body p-4 gap-3">
     <div class="flex items-start justify-between gap-2">
       <div class="min-w-0">
@@ -34,7 +45,12 @@
           <span :if={request.session} class="text-xs text-base-content/50">
             Session: {request.session.title || "Untitled"}
           </span>
-          <span :if={@clustered && Map.get(@feedback_node_map, request.id)} class="badge badge-xs badge-outline badge-info">{OrcaHub.Cluster.node_name(Map.get(@feedback_node_map, request.id))}</span>
+          <span
+            :if={@clustered && Map.get(@feedback_node_map, request.id)}
+            class="badge badge-xs badge-outline badge-info"
+          >
+            {OrcaHub.Cluster.node_name(Map.get(@feedback_node_map, request.id))}
+          </span>
         </div>
       </div>
       <span class="text-xs text-base-content/40 whitespace-nowrap">
@@ -47,7 +63,11 @@
     </div>
 
     <div class="flex gap-2">
-      <button phx-click="approve_feedback" phx-value-id={request.id} class="btn btn-sm btn-success">
+      <button
+        phx-click="approve_feedback"
+        phx-value-id={request.id}
+        class="btn btn-sm btn-success"
+      >
         <.icon name="hero-hand-thumb-up-micro" class="size-4" /> Yes
       </button>
       <button phx-click="cancel_feedback" phx-value-id={request.id} class="btn btn-sm btn-ghost">
@@ -71,7 +91,10 @@
   </div>
 </div>
 
-<div :if={@entries == [] && @feedback_requests == []} class="text-sm text-base-content/50 p-8 text-center">
+<div
+  :if={@entries == [] && @feedback_requests == []}
+  class="text-sm text-base-content/50 p-8 text-center"
+>
   No pending items. All caught up!
 </div>
 
@@ -87,19 +110,35 @@
       <%!-- Header: title, directory, time --%>
       <div class="flex items-start justify-between gap-2">
         <div class="min-w-0">
-          <.link navigate={~p"/sessions/#{session.id}"} class="font-semibold hover:underline truncate block">
+          <.link
+            navigate={~p"/sessions/#{session.id}"}
+            class="font-semibold hover:underline truncate block"
+          >
             {session.title || "Untitled"}
           </.link>
           <div class="flex items-center gap-2 text-xs text-base-content/50 mt-0.5">
             <.icon name="hero-folder-micro" class="size-3" />
-            <.link :if={session.project} navigate={~p"/projects/#{session.project}"} class="truncate hover:underline">
+            <.link
+              :if={session.project}
+              navigate={~p"/projects/#{session.project}"}
+              class="truncate hover:underline"
+            >
               {session.project.name}
             </.link>
-            <span :if={session.project} class="truncate text-base-content/30">{session.directory}</span>
+            <span :if={session.project} class="truncate text-base-content/30">
+              {session.directory}
+            </span>
             <span :if={!session.project} class="truncate">{session.directory}</span>
-            <span :if={worktree?(session.directory)} class="badge badge-xs badge-outline">worktree</span>
+            <span :if={worktree?(session.directory)} class="badge badge-xs badge-outline">
+              worktree
+            </span>
             <span :if={session.priority > 0} class="badge badge-xs badge-ghost">deferred</span>
-            <span :if={@clustered && Map.get(@node_map, session.id)} class="badge badge-xs badge-outline badge-info">{OrcaHub.Cluster.node_name(Map.get(@node_map, session.id))}</span>
+            <span
+              :if={@clustered && Map.get(@node_map, session.id)}
+              class="badge badge-xs badge-outline badge-info"
+            >
+              {OrcaHub.Cluster.node_name(Map.get(@node_map, session.id))}
+            </span>
           </div>
         </div>
         <span class="text-xs text-base-content/40 whitespace-nowrap">
@@ -110,21 +149,47 @@
       <%!-- Last assistant message --%>
       <% text = extract_assistant_text(message) %>
       <div :if={text} data-tts-container>
-        <div class="prose prose-sm max-w-none bg-base-200 rounded-lg p-3 max-h-48 overflow-y-auto" data-tts-text>
+        <div
+          class="prose prose-sm max-w-none bg-base-200 rounded-lg p-3 max-h-48 overflow-y-auto"
+          data-tts-text
+        >
           {Markdown.render(text)}
         </div>
-        <div class="mt-1" id={"tts-queue-#{session.id}"} phx-hook="TTSPlayer" phx-update="ignore" data-tts-autoplay={idx == 0 && @tts_autoplay_pending}>
+        <div
+          class="mt-1"
+          id={"tts-queue-#{session.id}"}
+          phx-hook="TTSPlayer"
+          phx-update="ignore"
+          data-tts-autoplay={idx == 0 && @tts_autoplay_pending}
+        >
           <div class="flex items-center gap-1">
-            <button data-tts-action="toggle" class="btn btn-ghost btn-xs btn-circle" title="Read aloud">
-              <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor">
-                <path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z"/>
+            <button
+              data-tts-action="toggle"
+              class="btn btn-ghost btn-xs btn-circle"
+              title="Read aloud"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="size-4"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z" />
               </svg>
             </button>
             <div data-tts-controls class="hidden flex items-center gap-1">
-              <button data-tts-action="prev" class="btn btn-ghost btn-xs btn-circle" title="Previous">
+              <button
+                data-tts-action="prev"
+                class="btn btn-ghost btn-xs btn-circle"
+                title="Previous"
+              >
                 <.icon name="hero-backward-micro" class="size-3" />
               </button>
-              <span data-tts-counter class="text-xs opacity-60 tabular-nums min-w-[3ch] text-center"></span>
+              <span
+                data-tts-counter
+                class="text-xs opacity-60 tabular-nums min-w-[3ch] text-center"
+              >
+              </span>
               <button data-tts-action="next" class="btn btn-ghost btn-xs btn-circle" title="Next">
                 <.icon name="hero-forward-micro" class="size-3" />
               </button>
@@ -141,13 +206,22 @@
 
       <%!-- Actions --%>
       <div class="flex flex-wrap gap-2">
-        <button phx-click="approve_session" phx-value-id={session.id} class="btn btn-sm btn-success">
+        <button
+          phx-click="approve_session"
+          phx-value-id={session.id}
+          class="btn btn-sm btn-success"
+        >
           <.icon name="hero-hand-thumb-up-micro" class="size-4" /> Yes
         </button>
         <button phx-click="defer" phx-value-id={session.id} class="btn btn-sm btn-ghost">
           <.icon name="hero-clock-micro" class="size-4" /> Defer
         </button>
-        <button phx-click="delegate" phx-value-id={session.id} phx-value-prompt={@prompt} class="btn btn-sm btn-ghost">
+        <button
+          phx-click="delegate"
+          phx-value-id={session.id}
+          phx-value-prompt={@prompt}
+          class="btn btn-sm btn-ghost"
+        >
           <.icon name="hero-arrow-top-right-on-square-micro" class="size-4" /> Delegate
         </button>
         <button phx-click="archive" phx-value-id={session.id} class="btn btn-sm btn-ghost">
@@ -163,7 +237,12 @@
           <button phx-click="rebase" phx-value-id={session.id} class="btn btn-sm btn-outline">
             <.icon name="hero-arrow-path-micro" class="size-4" /> Rebase
           </button>
-          <button phx-click="merge_to_main" phx-value-id={session.id} class="btn btn-sm btn-primary" data-confirm="Merge this branch into main?">
+          <button
+            phx-click="merge_to_main"
+            phx-value-id={session.id}
+            class="btn btn-sm btn-primary"
+            data-confirm="Merge this branch into main?"
+          >
             <.icon name="hero-arrow-right-circle-micro" class="size-4" /> Merge to Main
           </button>
         </div>
@@ -181,7 +260,8 @@
   <div class="card bg-base-100 shadow-lg border border-base-300 p-4">
     <% {first_session, _} = hd(@entries) %>
     <div class="text-xs text-base-content/50 mb-2">
-      Sending to: <span class="font-semibold">{first_session.title || first_session.directory}</span>
+      Sending to:
+      <span class="font-semibold">{first_session.title || first_session.directory}</span>
     </div>
     <.form for={%{}} phx-submit="send_message" phx-change="validate" class="flex gap-2">
       <textarea

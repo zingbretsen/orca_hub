@@ -13,8 +13,7 @@ config :orca_hub,
   ecto_repos: [OrcaHub.Repo],
   generators: [timestamp_type: :utc_datetime]
 
-config :orca_hub, OrcaHub.Scheduler,
-  jobs: []
+config :orca_hub, OrcaHub.Scheduler, jobs: []
 
 # Configure the endpoint
 config :orca_hub, OrcaHubWeb.Endpoint,

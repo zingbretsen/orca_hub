@@ -30,7 +30,10 @@ defmodule OrcaHub.HubRPC do
   def get_session!(id), do: call(OrcaHub.Sessions, :get_session!, [id])
   def get_session(id), do: call(OrcaHub.Sessions, :get_session, [id])
   def create_session(attrs), do: call(OrcaHub.Sessions, :create_session, [attrs])
-  def update_session(session, attrs), do: call(OrcaHub.Sessions, :update_session, [session, attrs])
+
+  def update_session(session, attrs),
+    do: call(OrcaHub.Sessions, :update_session, [session, attrs])
+
   def delete_session(session), do: call(OrcaHub.Sessions, :delete_session, [session])
   def archive_session(session), do: call(OrcaHub.Sessions, :archive_session, [session])
   def unarchive_session(session), do: call(OrcaHub.Sessions, :unarchive_session, [session])
@@ -68,7 +71,10 @@ defmodule OrcaHub.HubRPC do
   def get_project!(id), do: call(OrcaHub.Projects, :get_project!, [id])
   def get_project_by_directory(dir), do: call(OrcaHub.Projects, :get_project_by_directory, [dir])
   def create_project(attrs), do: call(OrcaHub.Projects, :create_project, [attrs])
-  def update_project(project, attrs), do: call(OrcaHub.Projects, :update_project, [project, attrs])
+
+  def update_project(project, attrs),
+    do: call(OrcaHub.Projects, :update_project, [project, attrs])
+
   def delete_project(project), do: call(OrcaHub.Projects, :delete_project, [project])
   def search_projects(query), do: call(OrcaHub.Projects, :search, [query])
 
@@ -99,7 +105,10 @@ defmodule OrcaHub.HubRPC do
   def list_triggers, do: call(OrcaHub.Triggers, :list_triggers, [])
   def get_trigger!(id), do: call(OrcaHub.Triggers, :get_trigger!, [id])
   def create_trigger(attrs), do: call(OrcaHub.Triggers, :create_trigger, [attrs])
-  def update_trigger(trigger, attrs), do: call(OrcaHub.Triggers, :update_trigger, [trigger, attrs])
+
+  def update_trigger(trigger, attrs),
+    do: call(OrcaHub.Triggers, :update_trigger, [trigger, attrs])
+
   def delete_trigger(trigger), do: call(OrcaHub.Triggers, :delete_trigger, [trigger])
 
   def list_triggers_for_project(project_id),
@@ -162,7 +171,10 @@ defmodule OrcaHub.HubRPC do
   def get_terminal!(id), do: call(OrcaHub.Terminals, :get_terminal!, [id])
   def get_terminal(id), do: call(OrcaHub.Terminals, :get_terminal, [id])
   def create_terminal(attrs), do: call(OrcaHub.Terminals, :create_terminal, [attrs])
-  def update_terminal(terminal, attrs), do: call(OrcaHub.Terminals, :update_terminal, [terminal, attrs])
+
+  def update_terminal(terminal, attrs),
+    do: call(OrcaHub.Terminals, :update_terminal, [terminal, attrs])
+
   def delete_terminal(terminal), do: call(OrcaHub.Terminals, :delete_terminal, [terminal])
 
   def list_terminals_for_project(project_id),

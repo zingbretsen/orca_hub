@@ -350,7 +350,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
         {:noreply, socket}
 
       cron ->
-        trigger = socket.assigns.editing_trigger || %Trigger{project_id: socket.assigns.project.id}
+        trigger =
+          socket.assigns.editing_trigger || %Trigger{project_id: socket.assigns.project.id}
+
         current_params = socket.assigns.trigger_form.params || %{}
         updated_params = Map.put(current_params, "cron_expression", cron)
         changeset = Triggers.change_trigger(trigger, updated_params)
@@ -505,6 +507,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   def handle_event("worktree_session", %{"path" => path}, socket) do
     project = socket.assigns.project
     runner_node = socket.assigns.project_node
+
     params = %{
       "project_id" => project.id,
       "directory" => path,
@@ -534,7 +537,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     case rpc(target, Projects, :git_rebase_worktree, [project, path]) do
       {:ok, output} ->
         commits = rpc(target, Projects, :git_log, [project])
-        {:noreply, socket |> assign(commits: commits) |> put_flash(:info, "Rebase successful: #{output}")}
+
+        {:noreply,
+         socket |> assign(commits: commits) |> put_flash(:info, "Rebase successful: #{output}")}
 
       {:error, output} ->
         {:noreply, put_flash(socket, :error, "Rebase failed (auto-aborted): #{output}")}
@@ -565,10 +570,19 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     target = socket.assigns.project_node
     dir = project.directory
 
-    case Cluster.rpc(target, System, :cmd, ["git", ["worktree", "remove", path], [cd: dir, stderr_to_stdout: true]]) do
+    case Cluster.rpc(target, System, :cmd, [
+           "git",
+           ["worktree", "remove", path],
+           [cd: dir, stderr_to_stdout: true]
+         ]) do
       {_, 0} ->
         # Also delete the branch
-        Cluster.rpc(target, System, :cmd, ["git", ["branch", "-d", branch], [cd: dir, stderr_to_stdout: true]])
+        Cluster.rpc(target, System, :cmd, [
+          "git",
+          ["branch", "-d", branch],
+          [cd: dir, stderr_to_stdout: true]
+        ])
+
         worktrees = rpc(target, Projects, :git_worktree_list, [project])
         {:noreply, socket |> assign(worktrees: worktrees) |> put_flash(:info, "Worktree removed")}
 
@@ -642,6 +656,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   defp create_session_with_opts(socket, opts) do
     project = socket.assigns.project
     runner_node = socket.assigns.project_node
+
     params = %{
       "project_id" => project.id,
       "directory" => project.directory,

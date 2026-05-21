@@ -10,12 +10,19 @@
   </:actions>
 </.header>
 
-<.table id="issues" rows={@streams.issues} row_click={fn {_id, issue} -> JS.navigate(~p"/issues/#{issue.id}") end}>
+<.table
+  id="issues"
+  rows={@streams.issues}
+  row_click={fn {_id, issue} -> JS.navigate(~p"/issues/#{issue.id}") end}
+>
   <:col :let={{_id, issue}} label="Title">
     <.link navigate={~p"/issues/#{issue.id}"} class="link link-hover">
       {issue.title}
     </.link>
-    <span :if={@clustered && Map.get(@node_map, issue.id)} class="badge badge-sm badge-outline opacity-60 ml-1">
+    <span
+      :if={@clustered && Map.get(@node_map, issue.id)}
+      class="badge badge-sm badge-outline opacity-60 ml-1"
+    >
       {OrcaHub.Cluster.node_name(Map.get(@node_map, issue.id))}
     </span>
   </:col>
@@ -41,12 +48,22 @@
   </:action>
 </.table>
 
-<div :if={@live_action in [:new, :edit]} class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
+<div
+  :if={@live_action in [:new, :edit]}
+  class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
+>
   <div class="card bg-base-100 shadow-xl w-full max-w-md p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
-    <h2 class="text-lg font-semibold mb-4">{if @live_action == :new, do: "New Issue", else: "Edit Issue"}</h2>
+    <h2 class="text-lg font-semibold mb-4">
+      {if @live_action == :new, do: "New Issue", else: "Edit Issue"}
+    </h2>
     <.form for={@form} phx-submit="save" class="space-y-4">
       <.input field={@form[:title]} type="text" label="Title" placeholder="Describe the issue" />
-      <.input field={@form[:description]} type="textarea" label="Description" placeholder="Details about the issue..." />
+      <.input
+        field={@form[:description]}
+        type="textarea"
+        label="Description"
+        placeholder="Details about the issue..."
+      />
       <.input
         field={@form[:project_id]}
         type="select"
