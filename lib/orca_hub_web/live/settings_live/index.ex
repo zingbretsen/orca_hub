@@ -1,10 +1,10 @@
 defmodule OrcaHubWeb.SettingsLive.Index do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.HubRPC
-  alias OrcaHub.UpstreamServers.UpstreamServer
   alias OrcaHub.Cluster
   alias OrcaHub.Cluster.CodeSync
+  alias OrcaHub.HubRPC
+  alias OrcaHub.UpstreamServers.UpstreamServer
 
   @impl true
   def mount(_params, _session, socket) do
@@ -81,7 +81,9 @@ defmodule OrcaHubWeb.SettingsLive.Index do
     headers = headers_from_pairs(header_pairs)
     params = Map.put(params, "headers", headers)
     changeset = HubRPC.change_upstream_server(server, params)
-    {:noreply, assign(socket, form: to_form(changeset, action: :validate), header_pairs: header_pairs)}
+
+    {:noreply,
+     assign(socket, form: to_form(changeset, action: :validate), header_pairs: header_pairs)}
   end
 
   def handle_event("save", %{"upstream_server" => params} = all_params, socket) do
@@ -184,7 +186,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
 
     case CodeSync.restart_supervisor(target, supervisor) do
       {:ok, _} ->
-        {:noreply, put_flash(socket, :info, "Restarted #{sup_str} on #{Cluster.node_name(target)}")}
+        {:noreply,
+         put_flash(socket, :info, "Restarted #{sup_str} on #{Cluster.node_name(target)}")}
 
       {:error, msg} ->
         {:noreply, put_flash(socket, :error, "Failed to restart #{sup_str}: #{msg}")}
@@ -204,17 +207,35 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   @impl true
   def handle_info(:do_push_all, socket) do
     result = CodeSync.push_all()
-    {:noreply, assign(socket, code_sync_result: result, code_sync_loading: false, cluster_nodes: Cluster.node_info())}
+
+    {:noreply,
+     assign(socket,
+       code_sync_result: result,
+       code_sync_loading: false,
+       cluster_nodes: Cluster.node_info()
+     )}
   end
 
   def handle_info(:do_push_changed, socket) do
     result = CodeSync.push_changed()
-    {:noreply, assign(socket, code_sync_result: result, code_sync_loading: false, cluster_nodes: Cluster.node_info())}
+
+    {:noreply,
+     assign(socket,
+       code_sync_result: result,
+       code_sync_loading: false,
+       cluster_nodes: Cluster.node_info()
+     )}
   end
 
   def handle_info({:do_push_to, target}, socket) do
     result = CodeSync.push_to(target)
-    {:noreply, assign(socket, code_sync_result: result, code_sync_loading: false, cluster_nodes: Cluster.node_info())}
+
+    {:noreply,
+     assign(socket,
+       code_sync_result: result,
+       code_sync_loading: false,
+       cluster_nodes: Cluster.node_info()
+     )}
   end
 
   def handle_info(:upstream_servers_changed, socket) do

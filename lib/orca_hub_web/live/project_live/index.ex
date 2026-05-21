@@ -1,17 +1,19 @@
 defmodule OrcaHubWeb.ProjectLive.Index do
   use OrcaHubWeb, :live_view
 
+  alias OrcaHub.{ClaudeImport, Cluster, HubRPC}
   alias OrcaHub.Projects
   alias OrcaHub.Projects.Project
-  alias OrcaHub.{Cluster, HubRPC, ClaudeImport}
   alias OrcaHubWeb.NodeFilter
 
   @impl true
   def mount(_params, _session, socket) do
-    tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+    tagged_projects =
+      Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+
     node_map = Cluster.build_node_map(tagged_projects)
     projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
-    clustered = length(Node.list()) > 0
+    clustered = Node.list() != []
 
     {:ok,
      socket
@@ -36,7 +38,13 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   end
 
   defp apply_action(socket, :index, _params) do
-    assign(socket, page_title: "Projects", form: nil, project: nil, cluster_nodes: [], target_node: node())
+    assign(socket,
+      page_title: "Projects",
+      form: nil,
+      project: nil,
+      cluster_nodes: [],
+      target_node: node()
+    )
   end
 
   defp apply_action(socket, :new, _params) do
@@ -63,14 +71,18 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
       # Merge results
       result =
-        Enum.reduce(results, %{sessions_imported: 0, sessions_skipped: 0, projects_created: 0, errors: []}, fn r, acc ->
-          %{
-            sessions_imported: acc.sessions_imported + r.sessions_imported,
-            sessions_skipped: acc.sessions_skipped + r.sessions_skipped,
-            projects_created: acc.projects_created + r.projects_created,
-            errors: acc.errors ++ r.errors
-          }
-        end)
+        Enum.reduce(
+          results,
+          %{sessions_imported: 0, sessions_skipped: 0, projects_created: 0, errors: []},
+          fn r, acc ->
+            %{
+              sessions_imported: acc.sessions_imported + r.sessions_imported,
+              sessions_skipped: acc.sessions_skipped + r.sessions_skipped,
+              projects_created: acc.projects_created + r.projects_created,
+              errors: acc.errors ++ r.errors
+            }
+          end
+        )
 
       send(pid, {:import_done, result})
     end)
@@ -124,7 +136,6 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     run_git_sync(socket, id, :pull_push)
   end
 
-
   def handle_event("browse", _params, socket) do
     target = browse_target_node(socket)
     home = Cluster.rpc(target, System, :user_home!, [])
@@ -175,7 +186,9 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
   def handle_event("browse_toggle_hidden", _params, socket) do
     show_hidden = !socket.assigns.browse_show_hidden
-    {:noreply, socket |> assign(browse_show_hidden: show_hidden) |> browse_to(socket.assigns.browse_path)}
+
+    {:noreply,
+     socket |> assign(browse_show_hidden: show_hidden) |> browse_to(socket.assigns.browse_path)}
   end
 
   def handle_event("browse_close", _params, socket) do
@@ -213,7 +226,9 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   end
 
   def reload_for_node_filter(socket) do
-    tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+    tagged_projects =
+      Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+
     node_map = Cluster.build_node_map(tagged_projects)
     projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
 
@@ -263,6 +278,7 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
   defp save_project(socket, :new, params) do
     target_node = socket.assigns.target_node
+
     clean_params =
       params
       |> Map.delete("target_node")
@@ -291,7 +307,9 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
           dirs
           |> then(fn dirs ->
-            if show_hidden, do: dirs, else: Enum.reject(dirs, fn p -> String.starts_with?(Path.basename(p), ".") end)
+            if show_hidden,
+              do: dirs,
+              else: Enum.reject(dirs, fn p -> String.starts_with?(Path.basename(p), ".") end)
           end)
           |> Enum.sort()
 
@@ -299,7 +317,12 @@ defmodule OrcaHubWeb.ProjectLive.Index do
           []
       end
 
-    assign(socket, browsing: true, browse_path: path, browse_entries: entries, browse_new_folder: false)
+    assign(socket,
+      browsing: true,
+      browse_path: path,
+      browse_entries: entries,
+      browse_new_folder: false
+    )
   end
 
   defp browse_target_node(socket) do
@@ -311,6 +334,9 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
     for {target_node, project} <- tagged_projects do
       Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+        # Broad rescue is intentional: this runs in a background task and any
+        # failure (remote node down / :erpc error, git command failure, missing
+        # repo) should degrade gracefully to "no status" rather than crash.
         status =
           try do
             Cluster.rpc(target_node, Projects, :git_status, [project])
@@ -327,6 +353,9 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     pid = self()
 
     Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      # Broad rescue is intentional: any failure (remote node down / :erpc
+      # error, missing project, git command failure) should degrade gracefully
+      # to "no status" rather than crash this background task.
       status =
         try do
           project = Cluster.rpc(target_node, Projects, :get_project!, [project_id])

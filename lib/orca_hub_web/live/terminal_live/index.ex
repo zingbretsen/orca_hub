@@ -24,7 +24,7 @@ defmodule OrcaHubWeb.TerminalLive.Index do
        projects: projects,
        terminals: terminals,
        node_map: node_map,
-       clustered: length(Node.list()) > 0,
+       clustered: Node.list() != [],
        show_form: false,
        terminal_form: to_form(Terminals.change_terminal(%Terminal{}))
      )}
@@ -63,29 +63,9 @@ defmodule OrcaHubWeb.TerminalLive.Index do
   end
 
   def handle_event("save_terminal", %{"terminal" => params}, socket) do
-    # Default directory and runner_node from project if not set
-    params =
-      case params["project_id"] do
-        nil -> params
-        "" -> params
-        project_id ->
-          project = HubRPC.get_project!(project_id)
-          project_node = Cluster.project_node_for(project)
-
-          params
-          |> then(fn p ->
-            if (p["directory"] || "") == "", do: Map.put(p, "directory", project.directory), else: p
-          end)
-          |> Map.put("runner_node", Atom.to_string(project_node))
-      end
-
+    params = apply_project_defaults(params)
     # Route DB creation to the runner node so the record lands in the right DB
-    runner_node =
-      case params["runner_node"] do
-        nil -> node()
-        "" -> node()
-        rn -> String.to_existing_atom(rn)
-      end
+    runner_node = resolve_runner_node(params["runner_node"])
 
     case Cluster.create_terminal(runner_node, params) do
       {:ok, _terminal} ->
@@ -104,9 +84,14 @@ defmodule OrcaHubWeb.TerminalLive.Index do
     n = Map.get(socket.assigns.node_map, id, node())
 
     case Cluster.start_terminal(n, id) do
-      {:ok, _pid} -> {:noreply, refresh_terminals(socket)}
-      {:error, {:already_started, _}} -> {:noreply, socket}
-      {:error, reason} -> {:noreply, put_flash(socket, :error, "Failed to start: #{inspect(reason)}")}
+      {:ok, _pid} ->
+        {:noreply, refresh_terminals(socket)}
+
+      {:error, {:already_started, _}} ->
+        {:noreply, socket}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to start: #{inspect(reason)}")}
     end
   end
 
@@ -148,6 +133,24 @@ defmodule OrcaHubWeb.TerminalLive.Index do
     {:noreply, refresh_terminals(socket)}
   end
 
+  # Default directory and runner_node from the selected project if not set
+  defp apply_project_defaults(%{"project_id" => project_id} = params)
+       when project_id not in [nil, ""] do
+    project = HubRPC.get_project!(project_id)
+    project_node = Cluster.project_node_for(project)
+
+    params
+    |> then(fn p ->
+      if (p["directory"] || "") == "", do: Map.put(p, "directory", project.directory), else: p
+    end)
+    |> Map.put("runner_node", Atom.to_string(project_node))
+  end
+
+  defp apply_project_defaults(params), do: params
+
+  defp resolve_runner_node(rn) when rn in [nil, ""], do: node()
+  defp resolve_runner_node(rn), do: String.to_existing_atom(rn)
+
   defp group_by_project(terminals) do
     terminals
     |> Enum.group_by(& &1.project)
@@ -155,7 +158,9 @@ defmodule OrcaHubWeb.TerminalLive.Index do
   end
 
   defp refresh_terminals(socket) do
-    tagged_terminals = Cluster.list_terminals() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+    tagged_terminals =
+      Cluster.list_terminals() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+
     node_map = Cluster.build_node_map(tagged_terminals)
     terminals = Enum.map(tagged_terminals, fn {_node, terminal} -> terminal end)
     assign(socket, terminals: terminals, node_map: node_map)

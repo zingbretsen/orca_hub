@@ -1,4 +1,10 @@
 defmodule OrcaHubWeb.TerminalChannel do
+  @moduledoc """
+  Phoenix Channel bridging the browser xterm.js terminal and the
+  `OrcaHub.TerminalRunner` PTY process. Forwards keystrokes and resize
+  events to the runner (routed across nodes via `OrcaHub.Cluster`) and
+  streams PTY output, exit, and status events back to the client.
+  """
   use Phoenix.Channel
   require Logger
 
@@ -31,7 +37,10 @@ defmodule OrcaHubWeb.TerminalChannel do
   def handle_in("input", %{"data" => data}, socket) do
     case Base.decode64(data) do
       {:ok, bytes} ->
-        Cluster.rpc(socket.assigns.runner_node, TerminalRunner, :write, [socket.assigns.terminal_id, bytes])
+        Cluster.rpc(socket.assigns.runner_node, TerminalRunner, :write, [
+          socket.assigns.terminal_id,
+          bytes
+        ])
 
       :error ->
         Logger.warning("Invalid base64 input for terminal #{socket.assigns.terminal_id}")
@@ -41,7 +50,12 @@ defmodule OrcaHubWeb.TerminalChannel do
   end
 
   def handle_in("resize", %{"cols" => cols, "rows" => rows}, socket) do
-    Cluster.rpc(socket.assigns.runner_node, TerminalRunner, :resize, [socket.assigns.terminal_id, cols, rows])
+    Cluster.rpc(socket.assigns.runner_node, TerminalRunner, :resize, [
+      socket.assigns.terminal_id,
+      cols,
+      rows
+    ])
+
     {:noreply, socket}
   end
 

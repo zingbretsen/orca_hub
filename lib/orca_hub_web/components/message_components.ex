@@ -1,4 +1,9 @@
 defmodule OrcaHubWeb.MessageComponents do
+  @moduledoc """
+  Function components for rendering the session message feed — user and
+  assistant messages, tool use and results, system events, and subagent
+  blocks. Used by `OrcaHubWeb.SessionLive.Show`.
+  """
   use Phoenix.Component
 
   import OrcaHubWeb.CoreComponents, only: [icon: 1]
@@ -21,7 +26,8 @@ defmodule OrcaHubWeb.MessageComponents do
     task_events_map =
       assigns.messages
       |> Enum.filter(fn msg ->
-        msg["type"] == "system" and msg["subtype"] in task_event_subtypes and msg["tool_use_id"] != nil
+        msg["type"] == "system" and msg["subtype"] in task_event_subtypes and
+          msg["tool_use_id"] != nil
       end)
       |> Enum.group_by(& &1["tool_use_id"])
 
@@ -35,11 +41,10 @@ defmodule OrcaHubWeb.MessageComponents do
     task_tool_use_ids = Map.keys(task_events_map) |> MapSet.new()
 
     top_level =
-      assigns.messages
-      |> Enum.reject(&(&1["parent_tool_use_id"] != nil))
-      |> Enum.reject(fn msg ->
-        msg["type"] == "system" and msg["subtype"] in task_event_subtypes and
-          MapSet.member?(task_tool_use_ids, msg["tool_use_id"])
+      Enum.reject(assigns.messages, fn msg ->
+        msg["parent_tool_use_id"] != nil or
+          (msg["type"] == "system" and msg["subtype"] in task_event_subtypes and
+             MapSet.member?(task_tool_use_ids, msg["tool_use_id"]))
       end)
 
     assigns =
@@ -114,16 +119,27 @@ defmodule OrcaHubWeb.MessageComponents do
 
     ~H"""
     <div :if={@text != "" || @attachments != []} class="chat chat-end">
-      <div class="chat-header text-xs opacity-50 mb-1">You <.timestamp value={@msg["timestamp"]} /></div>
+      <div class="chat-header text-xs opacity-50 mb-1">
+        You <.timestamp value={@msg["timestamp"]} />
+      </div>
       <div class="chat-bubble chat-bubble-primary">
         <div :for={{type, path} <- @attachments} class="mb-2">
-          <img :if={type == :image} src={image_data_uri(path, @session_node)} class="max-w-xs max-h-48 rounded" />
-          <div :if={type == :file} class="flex items-center gap-2 text-xs opacity-80 bg-primary-content/10 rounded px-2 py-1">
+          <img
+            :if={type == :image}
+            src={image_data_uri(path, @session_node)}
+            class="max-w-xs max-h-48 rounded"
+          />
+          <div
+            :if={type == :file}
+            class="flex items-center gap-2 text-xs opacity-80 bg-primary-content/10 rounded px-2 py-1"
+          >
             <.icon name="hero-paper-clip-micro" class="size-3" />
             {Path.basename(path)}
           </div>
         </div>
-        <div :if={@text != ""} class="prose prose-sm prose-invert max-w-none">{Markdown.render(@text)}</div>
+        <div :if={@text != ""} class="prose prose-sm prose-invert max-w-none">
+          {Markdown.render(@text)}
+        </div>
       </div>
     </div>
     <div :for={tr <- @tool_results} class="ml-4 my-1">
@@ -167,7 +183,8 @@ defmodule OrcaHubWeb.MessageComponents do
     ~H"""
     <div :if={@has_text} class="chat chat-start" data-tts-container>
       <div class="chat-header text-xs opacity-50 mb-1">
-        <.icon name="hero-sparkles-micro" class="size-3" /> Assistant <.timestamp value={@msg["timestamp"]} />
+        <.icon name="hero-sparkles-micro" class="size-3" /> Assistant
+        <.timestamp value={@msg["timestamp"]} />
       </div>
       <div class="chat-bubble prose prose-sm prose-invert max-w-none" data-tts-text>
         {@html}
@@ -175,15 +192,21 @@ defmodule OrcaHubWeb.MessageComponents do
       <div class="chat-footer mt-1" id={"tts-#{@msg_id}"} phx-hook="TTSPlayer" phx-update="ignore">
         <div class="flex items-center gap-1">
           <button data-tts-action="toggle" class="btn btn-ghost btn-xs btn-circle" title="Read aloud">
-            <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z"/>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="size-4"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z" />
             </svg>
           </button>
           <div data-tts-controls class="hidden flex items-center gap-1">
             <button data-tts-action="prev" class="btn btn-ghost btn-xs btn-circle" title="Previous">
               <.icon name="hero-backward-micro" class="size-3" />
             </button>
-            <span data-tts-counter class="text-xs opacity-60 tabular-nums min-w-[3ch] text-center"></span>
+            <span data-tts-counter class="text-xs opacity-60 tabular-nums min-w-[3ch] text-center">
+            </span>
             <button data-tts-action="next" class="btn btn-ghost btn-xs btn-circle" title="Next">
               <.icon name="hero-forward-micro" class="size-3" />
             </button>
@@ -198,7 +221,11 @@ defmodule OrcaHubWeb.MessageComponents do
       <.tool_use_block tool={tool} session_node={@session_node} />
     </div>
     <div :for={agent <- @agent_tools}>
-      <.subagent_block tool={agent} messages={Map.get(@subagent_map, agent["id"], [])} session_node={@session_node} />
+      <.subagent_block
+        tool={agent}
+        messages={Map.get(@subagent_map, agent["id"], [])}
+        session_node={@session_node}
+      />
     </div>
     """
   end
@@ -223,7 +250,10 @@ defmodule OrcaHubWeb.MessageComponents do
           <span class="opacity-50 truncate max-w-md">
             <.tool_summary name={@tool_name} input={@input} />
           </span>
-          <.icon name="hero-chevron-right-micro" class="size-3 opacity-50 group-open:rotate-90 transition-transform" />
+          <.icon
+            name="hero-chevron-right-micro"
+            class="size-3 opacity-50 group-open:rotate-90 transition-transform"
+          />
         </summary>
         <div class="mt-1 ml-2 pl-3 border-l-2 border-info/20">
           <.tool_detail name={@tool_name} input={@input} session_node={@session_node} />
@@ -287,14 +317,16 @@ defmodule OrcaHubWeb.MessageComponents do
       <details class="group">
         <summary class="flex items-center gap-2 cursor-pointer text-xs font-medium opacity-70 hover:opacity-100 transition-opacity">
           <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-warning/10 text-warning">
-            <.icon name="hero-cpu-chip-micro" class="size-3" />
-            Agent
+            <.icon name="hero-cpu-chip-micro" class="size-3" /> Agent
           </span>
           <span class="opacity-50 truncate max-w-md">{@description}</span>
           <span :if={@subagent_type} class="opacity-40 text-[10px]">{@subagent_type}</span>
           <span :if={@model} class="opacity-40 text-[10px]">{@model}</span>
           <span :if={@msg_count > 0} class="opacity-30 text-[10px]">{@msg_count} msgs</span>
-          <.icon name="hero-chevron-right-micro" class="size-3 opacity-50 group-open:rotate-90 transition-transform" />
+          <.icon
+            name="hero-chevron-right-micro"
+            class="size-3 opacity-50 group-open:rotate-90 transition-transform"
+          />
         </summary>
         <div :if={@progress_text && @real_messages == []} class="mt-1 ml-6 text-xs opacity-40 italic">
           {@progress_text}
@@ -318,10 +350,12 @@ defmodule OrcaHubWeb.MessageComponents do
       <details class="group">
         <summary class="flex items-center gap-2 cursor-pointer text-xs font-medium opacity-70 hover:opacity-100 transition-opacity">
           <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-success/10 text-success">
-            <.icon name="hero-check-circle-micro" class="size-3" />
-            Result
+            <.icon name="hero-check-circle-micro" class="size-3" /> Result
           </span>
-          <.icon name="hero-chevron-right-micro" class="size-3 opacity-50 group-open:rotate-90 transition-transform" />
+          <.icon
+            name="hero-chevron-right-micro"
+            class="size-3 opacity-50 group-open:rotate-90 transition-transform"
+          />
         </summary>
         <div class="mt-1 ml-2 pl-3 border-l-2 border-success/20">
           <pre class="text-xs opacity-60 whitespace-pre-wrap overflow-x-auto max-h-64 overflow-y-auto">{linkify_session_ids(@content)}</pre>
@@ -485,7 +519,7 @@ defmodule OrcaHubWeb.MessageComponents do
 
     ~H"""
     <code class="text-xs">{@pattern}</code>
-    <span :if={@path} class="text-xs"> in {@path}</span>
+    <span :if={@path} class="text-xs"> in  {@path}</span>
     """
   end
 
@@ -724,7 +758,10 @@ defmodule OrcaHubWeb.MessageComponents do
       text
       |> String.replace(~r/\n*\[Attached (?:image|file): .+?\]/, "")
       |> String.replace(~r/\n*\[Extracted text: .+?\]/, "")
-      |> String.replace(~r/^I've attached files to the session directory\. Please review them\.\s*/, "")
+      |> String.replace(
+        ~r/^I've attached files to the session directory\. Please review them\.\s*/,
+        ""
+      )
       |> String.trim()
 
     {clean_text, attachments}
@@ -748,22 +785,22 @@ defmodule OrcaHubWeb.MessageComponents do
 
     case result do
       {:ok, data} ->
-        ext = path |> Path.extname() |> String.downcase()
-
-        mime =
-          case ext do
-            ".jpg" -> "image/jpeg"
-            ".jpeg" -> "image/jpeg"
-            ".png" -> "image/png"
-            ".gif" -> "image/gif"
-            ".webp" -> "image/webp"
-            _ -> "image/png"
-          end
-
+        mime = mime_for_path(path)
         "data:#{mime};base64,#{Base.encode64(data)}"
 
       {:error, _} ->
         ""
+    end
+  end
+
+  defp mime_for_path(path) do
+    case path |> Path.extname() |> String.downcase() do
+      ".jpg" -> "image/jpeg"
+      ".jpeg" -> "image/jpeg"
+      ".png" -> "image/png"
+      ".gif" -> "image/gif"
+      ".webp" -> "image/webp"
+      _ -> "image/png"
     end
   end
 end

@@ -11,7 +11,10 @@ defmodule OrcaHubWeb.Markdown do
     |> Earmark.as_html!(
       code_class_prefix: "language-",
       registered_processors: [
-        {"a", fn node -> Earmark.AstTools.merge_atts_in_node(node, target: "_blank", rel: "noopener noreferrer") end}
+        {"a",
+         fn node ->
+           Earmark.AstTools.merge_atts_in_node(node, target: "_blank", rel: "noopener noreferrer")
+         end}
       ]
     )
     |> Phoenix.HTML.raw()
@@ -67,7 +70,6 @@ defmodule OrcaHubWeb.Markdown do
   def join_blocks(blocks) do
     blocks
     |> Enum.sort_by(fn {idx, _} -> idx end)
-    |> Enum.map(fn {_, text} -> text end)
-    |> Enum.join("\n\n")
+    |> Enum.map_join("\n\n", fn {_, text} -> text end)
   end
 end

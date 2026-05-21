@@ -22,14 +22,19 @@ defmodule OrcaHubWeb.DashboardLive do
     idle = Enum.count(sessions, &(&1.status == "idle"))
     errored = Enum.count(sessions, &(&1.status == "error"))
     feedback_requests = Cluster.list_pending_feedback() |> NodeFilter.filter_tagged(node_filter)
-    open_issues = Cluster.list_issues() |> NodeFilter.filter_tagged(node_filter) |> Enum.count(fn {_n, i} -> i.status != "closed" end)
+
+    open_issues =
+      Cluster.list_issues()
+      |> NodeFilter.filter_tagged(node_filter)
+      |> Enum.count(fn {_n, i} -> i.status != "closed" end)
+
     tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(node_filter)
     tagged_triggers = Cluster.list_triggers() |> NodeFilter.filter_tagged(node_filter)
     triggers = Enum.map(tagged_triggers, fn {_n, t} -> t end)
     enabled_triggers = Enum.count(triggers, & &1.enabled)
     recent_sessions = Enum.take(sessions, 8)
 
-    clustered = length(Node.list()) > 0
+    clustered = Node.list() != []
     cluster_nodes = if clustered, do: Cluster.node_info(), else: []
 
     # Per-node session counts
@@ -80,8 +85,8 @@ defmodule OrcaHubWeb.DashboardLive do
     cond do
       diff < 60 -> "#{diff}s ago"
       diff < 3600 -> "#{div(diff, 60)}m ago"
-      diff < 86400 -> "#{div(diff, 3600)}h ago"
-      true -> "#{div(diff, 86400)}d ago"
+      diff < 86_400 -> "#{div(diff, 3600)}h ago"
+      true -> "#{div(diff, 86_400)}d ago"
     end
   end
 end

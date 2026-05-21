@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.CommandPaletteLive do
   use OrcaHubWeb, :live_component
 
-  alias OrcaHub.{HubRPC, Projects, Issues, Cluster}
+  alias OrcaHub.{Cluster, HubRPC, Issues, Projects}
 
   @nav_commands [
     %{name: "Dashboard", path: "/", category: "Navigation", icon: "hero-home"},
@@ -9,7 +9,12 @@ defmodule OrcaHubWeb.CommandPaletteLive do
     %{name: "Projects", path: "/projects", category: "Navigation", icon: "hero-folder"},
     %{name: "Issues", path: "/issues", category: "Navigation", icon: "hero-bug-ant"},
     %{name: "Triggers", path: "/triggers", category: "Navigation", icon: "hero-bolt"},
-    %{name: "Sessions", path: "/sessions", category: "Navigation", icon: "hero-chat-bubble-left-right"},
+    %{
+      name: "Sessions",
+      path: "/sessions",
+      category: "Navigation",
+      icon: "hero-chat-bubble-left-right"
+    },
     %{name: "Usage", path: "/usage", category: "Navigation", icon: "hero-chart-bar"}
   ]
 
@@ -52,7 +57,10 @@ defmodule OrcaHubWeb.CommandPaletteLive do
         <div class="relative w-full max-w-lg bg-base-100 rounded-xl shadow-2xl border border-base-300 overflow-hidden">
           <%!-- Search input --%>
           <div class="flex items-center gap-3 px-4 py-3 border-b border-base-300">
-            <.icon name={if @phase == :project_actions, do: "hero-folder", else: "hero-magnifying-glass"} class="size-5 opacity-50 shrink-0" />
+            <.icon
+              name={if @phase == :project_actions, do: "hero-folder", else: "hero-magnifying-glass"}
+              class="size-5 opacity-50 shrink-0"
+            />
             <div :if={@phase == :project_actions} class="badge badge-sm badge-primary shrink-0">
               {@selected_project.name}
             </div>
@@ -105,10 +113,16 @@ defmodule OrcaHubWeb.CommandPaletteLive do
                     <.icon name={item.icon} class="size-4 shrink-0 opacity-60" />
                     <div class="flex-1 min-w-0">
                       <div class="truncate">{item.name}</div>
-                      <div :if={item[:subtitle]} class="text-xs opacity-50 truncate">{item.subtitle}</div>
+                      <div :if={item[:subtitle]} class="text-xs opacity-50 truncate">
+                        {item.subtitle}
+                      </div>
                     </div>
                     <div :if={item[:hint]} class="text-xs opacity-40 shrink-0">{item.hint}</div>
-                    <.icon :if={item[:drillable]} name="hero-chevron-right-mini" class="size-4 opacity-30 shrink-0" />
+                    <.icon
+                      :if={item[:drillable]}
+                      name="hero-chevron-right-mini"
+                      class="size-4 opacity-30 shrink-0"
+                    />
                   </button>
                 <% end %>
               <% end %>
@@ -142,15 +156,25 @@ defmodule OrcaHubWeb.CommandPaletteLive do
 
   def handle_event("toggle-archived", _params, socket) do
     include_archived = !socket.assigns.include_archived
-    results = build_results(socket.assigns.query, socket.assigns.phase, socket.assigns.selected_project, include_archived: include_archived)
-    {:noreply, assign(socket, include_archived: include_archived, results: results, selected_index: 0)}
+
+    results =
+      build_results(socket.assigns.query, socket.assigns.phase, socket.assigns.selected_project,
+        include_archived: include_archived
+      )
+
+    {:noreply,
+     assign(socket, include_archived: include_archived, results: results, selected_index: 0)}
   end
 
   def handle_event("search", %{"value" => query}, socket) do
     if query == socket.assigns.query do
       {:noreply, socket}
     else
-      results = build_results(query, socket.assigns.phase, socket.assigns.selected_project, include_archived: socket.assigns.include_archived)
+      results =
+        build_results(query, socket.assigns.phase, socket.assigns.selected_project,
+          include_archived: socket.assigns.include_archived
+        )
+
       {:noreply, assign(socket, query: query, results: results, selected_index: 0)}
     end
   end
@@ -161,7 +185,13 @@ defmodule OrcaHubWeb.CommandPaletteLive do
 
       {:noreply,
        socket
-       |> assign(phase: :search, selected_project: nil, query: "", results: results, selected_index: 0)
+       |> assign(
+         phase: :search,
+         selected_project: nil,
+         query: "",
+         results: results,
+         selected_index: 0
+       )
        |> push_event("clear-command-palette-input", %{})}
     else
       {:noreply, socket}
@@ -204,38 +234,8 @@ defmodule OrcaHubWeb.CommandPaletteLive do
          )
          |> push_event("clear-command-palette-input", %{})}
 
-      %{action: :create_session, project: project, orchestrator: orchestrator} ->
-        runner_node = Cluster.project_node_for(project)
-
-        case HubRPC.create_session(%{
-          "project_id" => project.id,
-          "directory" => project.directory,
-          "runner_node" => Atom.to_string(runner_node),
-          "orchestrator" => orchestrator || false
-        }) do
-          {:ok, session} ->
-            {:ok, _} = Cluster.start_session(runner_node, session.id, session)
-            {:noreply, socket |> close_palette() |> push_navigate(to: "/sessions/#{session.id}")}
-
-          {:error, _} ->
-            {:noreply, socket |> close_palette() |> put_flash(:error, "Failed to create session")}
-        end
-
-      %{action: :create_session, project: project} ->
-        runner_node = Cluster.project_node_for(project)
-
-        case HubRPC.create_session(%{
-          "project_id" => project.id,
-          "directory" => project.directory,
-          "runner_node" => Atom.to_string(runner_node)
-        }) do
-          {:ok, session} ->
-            {:ok, _} = Cluster.start_session(runner_node, session.id, session)
-            {:noreply, socket |> close_palette() |> push_navigate(to: "/sessions/#{session.id}")}
-
-          {:error, _} ->
-            {:noreply, socket |> close_palette() |> put_flash(:error, "Failed to create session")}
-        end
+      %{action: :create_session, project: project} = item ->
+        create_palette_session(socket, project, item[:orchestrator])
 
       %{path: path} when is_binary(path) ->
         {:noreply, socket |> close_palette() |> push_navigate(to: path)}
@@ -245,16 +245,54 @@ defmodule OrcaHubWeb.CommandPaletteLive do
     end
   end
 
+  defp create_palette_session(socket, project, orchestrator) do
+    runner_node = Cluster.project_node_for(project)
+
+    attrs = %{
+      "project_id" => project.id,
+      "directory" => project.directory,
+      "runner_node" => Atom.to_string(runner_node)
+    }
+
+    attrs =
+      if is_nil(orchestrator),
+        do: attrs,
+        else: Map.put(attrs, "orchestrator", orchestrator || false)
+
+    case HubRPC.create_session(attrs) do
+      {:ok, session} ->
+        {:ok, _} = Cluster.start_session(runner_node, session.id, session)
+        {:noreply, socket |> close_palette() |> push_navigate(to: "/sessions/#{session.id}")}
+
+      {:error, _} ->
+        {:noreply, socket |> close_palette() |> put_flash(:error, "Failed to create session")}
+    end
+  end
+
   defp open_palette(socket) do
     results = build_results("", :search, nil)
 
     socket
-    |> assign(open: true, query: "", results: results, selected_index: 0, phase: :search, selected_project: nil)
+    |> assign(
+      open: true,
+      query: "",
+      results: results,
+      selected_index: 0,
+      phase: :search,
+      selected_project: nil
+    )
     |> push_event("focus-command-palette", %{})
   end
 
   defp close_palette(socket) do
-    assign(socket, open: false, query: "", results: [], selected_index: 0, phase: :search, selected_project: nil)
+    assign(socket,
+      open: false,
+      query: "",
+      results: [],
+      selected_index: 0,
+      phase: :search,
+      selected_project: nil
+    )
   end
 
   defp build_results(query, phase, project, opts \\ [])
@@ -269,7 +307,14 @@ defmodule OrcaHubWeb.CommandPaletteLive do
       projects =
         HubRPC.call(Projects, :search, [query])
         |> Enum.map(fn p ->
-          %{name: p.name, subtitle: p.directory, category: "Projects", icon: "hero-folder", drillable: true, project: p}
+          %{
+            name: p.name,
+            subtitle: p.directory,
+            category: "Projects",
+            icon: "hero-folder",
+            drillable: true,
+            project: p
+          }
         end)
 
       sessions =
@@ -303,11 +348,44 @@ defmodule OrcaHubWeb.CommandPaletteLive do
 
   defp build_results(query, :project_actions, project, _opts) do
     commands = [
-      %{name: "Go to Project", path: "/projects/#{project.id}", category: "Navigate", icon: "hero-arrow-right", hint: "view"},
-      %{name: "New Session", action: :create_session, project: project, category: "Actions", icon: "hero-chat-bubble-left-right", hint: "launch"},
-      %{name: "New Orchestrator", action: :create_session, project: project, orchestrator: true, category: "Actions", icon: "hero-users", hint: "delegate"},
-      %{name: "New Issue", path: "/issues/new?project_id=#{project.id}", category: "Actions", icon: "hero-bug-ant", hint: "create"},
-      %{name: "New Trigger", path: "/triggers/new?project_id=#{project.id}", category: "Actions", icon: "hero-bolt", hint: "create"}
+      %{
+        name: "Go to Project",
+        path: "/projects/#{project.id}",
+        category: "Navigate",
+        icon: "hero-arrow-right",
+        hint: "view"
+      },
+      %{
+        name: "New Session",
+        action: :create_session,
+        project: project,
+        category: "Actions",
+        icon: "hero-chat-bubble-left-right",
+        hint: "launch"
+      },
+      %{
+        name: "New Orchestrator",
+        action: :create_session,
+        project: project,
+        orchestrator: true,
+        category: "Actions",
+        icon: "hero-users",
+        hint: "delegate"
+      },
+      %{
+        name: "New Issue",
+        path: "/issues/new?project_id=#{project.id}",
+        category: "Actions",
+        icon: "hero-bug-ant",
+        hint: "create"
+      },
+      %{
+        name: "New Trigger",
+        path: "/triggers/new?project_id=#{project.id}",
+        category: "Actions",
+        icon: "hero-bolt",
+        hint: "create"
+      }
     ]
 
     filter_commands(commands, query)

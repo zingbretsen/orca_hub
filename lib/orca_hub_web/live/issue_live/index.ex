@@ -1,18 +1,24 @@
 defmodule OrcaHubWeb.IssueLive.Index do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.Issues.Issue
   alias OrcaHub.{Cluster, HubRPC}
+  alias OrcaHub.Issues.Issue
   alias OrcaHubWeb.NodeFilter
 
   @impl true
   def mount(_params, _session, socket) do
-    tagged_issues = Cluster.list_issues(exclude_closed: true) |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+    tagged_issues =
+      Cluster.list_issues(exclude_closed: true)
+      |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+
     node_map = Cluster.build_node_map(tagged_issues)
     issues = Enum.map(tagged_issues, fn {_node, issue} -> issue end)
-    tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+
+    tagged_projects =
+      Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+
     projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
-    clustered = length(Node.list()) > 0
+    clustered = Node.list() != []
 
     {:ok,
      socket
@@ -31,10 +37,12 @@ defmodule OrcaHubWeb.IssueLive.Index do
   end
 
   defp apply_action(socket, :new, params) do
-    attrs = case params do
-      %{"project_id" => project_id} -> %{project_id: project_id}
-      _ -> %{}
-    end
+    attrs =
+      case params do
+        %{"project_id" => project_id} -> %{project_id: project_id}
+        _ -> %{}
+      end
+
     changeset = Issue.changeset(%Issue{}, attrs)
 
     socket
@@ -53,7 +61,11 @@ defmodule OrcaHubWeb.IssueLive.Index do
 
   def reload_for_node_filter(socket) do
     show_closed = socket.assigns.show_closed
-    tagged_issues = Cluster.list_issues(exclude_closed: !show_closed) |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+
+    tagged_issues =
+      Cluster.list_issues(exclude_closed: !show_closed)
+      |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+
     node_map = Cluster.build_node_map(tagged_issues)
     issues = Enum.map(tagged_issues, fn {_node, issue} -> issue end)
 
@@ -70,7 +82,11 @@ defmodule OrcaHubWeb.IssueLive.Index do
 
   def handle_event("toggle_closed", _params, socket) do
     show_closed = !socket.assigns.show_closed
-    tagged_issues = Cluster.list_issues(exclude_closed: !show_closed) |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+
+    tagged_issues =
+      Cluster.list_issues(exclude_closed: !show_closed)
+      |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+
     node_map = Cluster.build_node_map(tagged_issues)
     issues = Enum.map(tagged_issues, fn {_node, issue} -> issue end)
 

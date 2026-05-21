@@ -13,7 +13,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     tagged_triggers = Cluster.list_triggers() |> NodeFilter.filter_tagged(node_filter)
     node_map = Cluster.build_node_map(tagged_triggers)
     triggers = Enum.map(tagged_triggers, fn {_node, trigger} -> trigger end)
-    clustered = length(Node.list()) > 0
+    clustered = Node.list() != []
 
     {:ok,
      socket
@@ -114,7 +114,12 @@ defmodule OrcaHubWeb.TriggerLive.Index do
 
         {:noreply,
          socket
-         |> assign(triggers: triggers, node_map: node_map, show_trigger_form: false, editing_trigger: nil)
+         |> assign(
+           triggers: triggers,
+           node_map: node_map,
+           show_trigger_form: false,
+           editing_trigger: nil
+         )
          |> push_patch(to: ~p"/triggers")}
 
       {:error, changeset} ->

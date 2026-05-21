@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.QueueLive do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{HubRPC, Cluster}
+  alias OrcaHub.{Cluster, HubRPC}
   alias OrcaHubWeb.{Markdown, NodeFilter}
 
   @impl true
@@ -29,7 +29,7 @@ defmodule OrcaHubWeb.QueueLive do
      |> assign(:node_map, node_map)
      |> assign(:feedback_requests, feedback_requests)
      |> assign(:feedback_node_map, feedback_node_map)
-     |> assign(:clustered, length(Node.list()) > 0)
+     |> assign(:clustered, Node.list() != [])
      |> assign(:prompt, "")
      |> assign(:form_key, 0)
      |> assign(:show_all, false)
@@ -61,7 +61,8 @@ defmodule OrcaHubWeb.QueueLive do
       session = Cluster.get_session!(node, session_id)
       Cluster.unarchive_session(node, session)
 
-      {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
+      {entries, node_map} =
+        load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
 
       {:noreply,
        socket
@@ -104,6 +105,7 @@ defmodule OrcaHubWeb.QueueLive do
 
   def handle_event("send_to", %{"id" => id, "prompt" => prompt}, socket) do
     prompt = String.trim(prompt)
+
     if prompt == "" do
       {:noreply, socket}
     else
@@ -125,7 +127,9 @@ defmodule OrcaHubWeb.QueueLive do
     session = Cluster.get_session!(node, id)
     Cluster.defer_session(node, session)
 
-    {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
+    {entries, node_map} =
+      load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
+
     {:noreply, socket |> assign(:entries, entries) |> assign(:node_map, node_map)}
   end
 
@@ -136,10 +140,10 @@ defmodule OrcaHubWeb.QueueLive do
 
     # Create the delegate session on the same node as the original
     case HubRPC.create_session(%{
-      directory: session.directory,
-      project_id: session.project_id,
-      runner_node: Atom.to_string(node)
-    }) do
+           directory: session.directory,
+           project_id: session.project_id,
+           runner_node: Atom.to_string(node)
+         }) do
       {:ok, new_session} ->
         Cluster.start_session(node, new_session.id, new_session)
 
@@ -174,7 +178,11 @@ defmodule OrcaHubWeb.QueueLive do
     node = Map.get(socket.assigns.node_map, id, node())
     ensure_runner(node, id)
 
-    case Cluster.send_message(node, id, "Commit all current changes. Use a descriptive commit message based on the diff.") do
+    case Cluster.send_message(
+           node,
+           id,
+           "Commit all current changes. Use a descriptive commit message based on the diff."
+         ) do
       :ok ->
         {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
 
@@ -187,7 +195,11 @@ defmodule OrcaHubWeb.QueueLive do
     node = Map.get(socket.assigns.node_map, id, node())
     ensure_runner(node, id)
 
-    case Cluster.send_message(node, id, "Check if there are tests for the recent changes. If there aren't any, add comprehensive tests.") do
+    case Cluster.send_message(
+           node,
+           id,
+           "Check if there are tests for the recent changes. If there aren't any, add comprehensive tests."
+         ) do
       :ok ->
         {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
 
@@ -200,7 +212,11 @@ defmodule OrcaHubWeb.QueueLive do
     node = Map.get(socket.assigns.node_map, id, node())
     ensure_runner(node, id)
 
-    case Cluster.send_message(node, id, "Rebase this branch onto main. If there are conflicts, resolve them intelligently based on the intent of both changes.") do
+    case Cluster.send_message(
+           node,
+           id,
+           "Rebase this branch onto main. If there are conflicts, resolve them intelligently based on the intent of both changes."
+         ) do
       :ok ->
         {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
 
@@ -213,7 +229,11 @@ defmodule OrcaHubWeb.QueueLive do
     node = Map.get(socket.assigns.node_map, id, node())
     ensure_runner(node, id)
 
-    case Cluster.send_message(node, id, "Switch to the main branch, merge this worktree's branch in, and resolve any conflicts if they arise.") do
+    case Cluster.send_message(
+           node,
+           id,
+           "Switch to the main branch, merge this worktree's branch in, and resolve any conflicts if they arise."
+         ) do
       :ok ->
         {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
 
@@ -240,7 +260,11 @@ defmodule OrcaHubWeb.QueueLive do
     HubRPC.respond_feedback(id, "That sounds great, go for it!")
 
     {:noreply,
-     assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
+     assign(
+       socket,
+       :feedback_requests,
+       Enum.reject(socket.assigns.feedback_requests, &(&1.id == id))
+     )}
   end
 
   def handle_event("cancel_feedback", %{"id" => id}, socket) do
@@ -248,7 +272,11 @@ defmodule OrcaHubWeb.QueueLive do
     HubRPC.cancel_feedback(id)
 
     {:noreply,
-     assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
+     assign(
+       socket,
+       :feedback_requests,
+       Enum.reject(socket.assigns.feedback_requests, &(&1.id == id))
+     )}
   end
 
   def handle_event("respond_feedback", %{"feedback_id" => id, "response" => response}, socket) do
@@ -261,7 +289,11 @@ defmodule OrcaHubWeb.QueueLive do
       HubRPC.respond_feedback(id, response)
 
       {:noreply,
-       assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
+       assign(
+         socket,
+         :feedback_requests,
+         Enum.reject(socket.assigns.feedback_requests, &(&1.id == id))
+       )}
     end
   end
 
@@ -319,8 +351,12 @@ defmodule OrcaHubWeb.QueueLive do
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   def reload_for_node_filter(socket) do
-    {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
-    tagged_feedback = Cluster.list_pending_feedback() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+    {entries, node_map} =
+      load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
+
+    tagged_feedback =
+      Cluster.list_pending_feedback() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+
     feedback_requests = Enum.map(tagged_feedback, fn {_n, req} -> req end)
     feedback_node_map = Cluster.build_node_map(tagged_feedback)
 
@@ -333,7 +369,8 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   defp handle_status_change(:idle, socket) do
-    {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
+    {entries, node_map} =
+      load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
 
     # Subscribe to any new sessions we weren't tracking
     existing_ids = MapSet.new(socket.assigns.entries, fn {s, _} -> s.id end)
@@ -349,7 +386,10 @@ defmodule OrcaHubWeb.QueueLive do
       socket
       |> assign(:entries, entries)
       |> assign(:node_map, node_map)
-      |> assign(:tts_autoplay_pending, was_empty && now_has_entries && socket.assigns.tts_autoplay)
+      |> assign(
+        :tts_autoplay_pending,
+        was_empty && now_has_entries && socket.assigns.tts_autoplay
+      )
 
     {:noreply, socket}
   end
@@ -371,7 +411,10 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   defp load_entries_with_nodes(node_filter, queue_filter) do
-    tagged = Cluster.list_idle_sessions_with_last_assistant_message() |> NodeFilter.filter_tagged(node_filter)
+    tagged =
+      Cluster.list_idle_sessions_with_last_assistant_message()
+      |> NodeFilter.filter_tagged(node_filter)
+
     # tagged is [{node, {session, msg}}, ...]
 
     # Apply queue filter
@@ -412,14 +455,19 @@ defmodule OrcaHubWeb.QueueLive do
 
   def time_ago(datetime) do
     now = DateTime.utc_now()
-    datetime = if is_struct(datetime, NaiveDateTime), do: DateTime.from_naive!(datetime, "Etc/UTC"), else: datetime
+
+    datetime =
+      if is_struct(datetime, NaiveDateTime),
+        do: DateTime.from_naive!(datetime, "Etc/UTC"),
+        else: datetime
+
     diff = DateTime.diff(now, datetime, :second)
 
     cond do
       diff < 60 -> "#{diff}s ago"
       diff < 3600 -> "#{div(diff, 60)}m ago"
-      diff < 86400 -> "#{div(diff, 3600)}h ago"
-      true -> "#{div(diff, 86400)}d ago"
+      diff < 86_400 -> "#{div(diff, 3600)}h ago"
+      true -> "#{div(diff, 86_400)}d ago"
     end
   end
 

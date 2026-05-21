@@ -48,17 +48,13 @@ defmodule OrcaHubWeb.TerminalLive.Show do
     n = socket.assigns.runner_node
 
     if terminal.status == "running" do
+      # Stop, then give the PTY a moment to release before starting again.
+      # Non-blocking: continue in the :restart_terminal handle_info clause.
       Cluster.stop_terminal(n, terminal.id)
-      Process.sleep(200)
-    end
-
-    case Cluster.start_terminal(n, terminal.id) do
-      {:ok, _pid} ->
-        terminal = Cluster.get_terminal!(n, terminal.id)
-        {:noreply, assign(socket, terminal: terminal)}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to restart: #{inspect(reason)}")}
+      Process.send_after(self(), :restart_terminal, 200)
+      {:noreply, socket}
+    else
+      {:noreply, start_terminal_for_restart(socket)}
     end
   end
 
@@ -74,6 +70,24 @@ defmodule OrcaHubWeb.TerminalLive.Show do
     n = socket.assigns.runner_node
     terminal = Cluster.get_terminal!(n, socket.assigns.terminal.id)
     {:noreply, assign(socket, terminal: terminal)}
+  end
+
+  @impl true
+  def handle_info(:restart_terminal, socket) do
+    {:noreply, start_terminal_for_restart(socket)}
+  end
+
+  defp start_terminal_for_restart(socket) do
+    terminal = socket.assigns.terminal
+    n = socket.assigns.runner_node
+
+    case Cluster.start_terminal(n, terminal.id) do
+      {:ok, _pid} ->
+        assign(socket, terminal: Cluster.get_terminal!(n, terminal.id))
+
+      {:error, reason} ->
+        put_flash(socket, :error, "Failed to restart: #{inspect(reason)}")
+    end
   end
 
   defp find_terminal!(id) do

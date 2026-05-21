@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.SessionLive.Index do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Projects, Cluster, HubRPC, SessionHeartbeat}
+  alias OrcaHub.{Cluster, HubRPC, Projects, SessionHeartbeat}
   alias OrcaHub.Sessions.Session
   alias OrcaHubWeb.NodeFilter
 
@@ -21,7 +21,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
     filtered_projects = NodeFilter.filter_tagged(projects, socket.assigns.node_filter)
     node_map = Cluster.build_node_map(filtered_sessions)
     project_node_map = Map.new(filtered_projects, fn {n, p} -> {p.id, n} end)
-    clustered = length(Node.list()) > 0
+    clustered = Node.list() != []
 
     {:ok,
      socket
@@ -60,7 +60,9 @@ defmodule OrcaHubWeb.SessionLive.Index do
   defp apply_action(socket, :new, params) do
     initial =
       case params["project_id"] do
-        nil -> %{}
+        nil ->
+          %{}
+
         id ->
           project = Projects.get_project!(id)
           %{"project_id" => id, "directory" => project.directory}
@@ -76,7 +78,9 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   @impl true
   def handle_event("save", %{"session" => params}, socket) do
-    target_node = params |> Map.get("target_node", Atom.to_string(node())) |> String.to_existing_atom()
+    target_node =
+      params |> Map.get("target_node", Atom.to_string(node())) |> String.to_existing_atom()
+
     session_params =
       params
       |> Map.delete("target_node")
@@ -96,6 +100,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
   def handle_event("create_for_project", %{"project-id" => project_id}, socket) do
     target_node = Map.get(socket.assigns.project_node_map, project_id, node())
     project = HubRPC.get_project!(project_id)
+
     params = %{
       "project_id" => project_id,
       "directory" => project.directory,
@@ -113,8 +118,13 @@ defmodule OrcaHubWeb.SessionLive.Index do
     end
   end
 
-  def handle_event("create_for_worktree", %{"project-id" => project_id, "directory" => directory}, socket) do
+  def handle_event(
+        "create_for_worktree",
+        %{"project-id" => project_id, "directory" => directory},
+        socket
+      ) do
     target_node = Map.get(socket.assigns.project_node_map, project_id, node())
+
     params = %{
       "project_id" => project_id,
       "directory" => directory,
@@ -134,10 +144,12 @@ defmodule OrcaHubWeb.SessionLive.Index do
   def handle_event("set_filter", %{"filter" => filter}, socket) do
     filter = String.to_existing_atom(filter)
     heartbeat_session_ids = get_heartbeat_session_ids()
+
     tagged_sessions =
       Cluster.list_sessions(filter)
       |> NodeFilter.filter_tagged(socket.assigns.node_filter)
       |> filter_by_heartbeat(filter, heartbeat_session_ids)
+
     node_map = Cluster.build_node_map(tagged_sessions)
     clustered = socket.assigns.clustered
 
@@ -205,8 +217,12 @@ defmodule OrcaHubWeb.SessionLive.Index do
     # When project changes, update directory to project's directory
     form_params =
       case params["project_id"] do
-        "" -> params
-        nil -> params
+        "" ->
+          params
+
+        nil ->
+          params
+
         project_id ->
           project = Projects.get_project!(project_id)
           Map.put(params, "directory", project.directory)
@@ -253,7 +269,9 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   def handle_event("browse_toggle_hidden", _params, socket) do
     show_hidden = !socket.assigns.browse_show_hidden
-    {:noreply, socket |> assign(browse_show_hidden: show_hidden) |> browse_to(socket.assigns.browse_path)}
+
+    {:noreply,
+     socket |> assign(browse_show_hidden: show_hidden) |> browse_to(socket.assigns.browse_path)}
   end
 
   def handle_event("browse_close", _params, socket) do
@@ -346,12 +364,14 @@ defmodule OrcaHubWeb.SessionLive.Index do
     filter = socket.assigns.session_filter
     heartbeat_session_ids = get_heartbeat_session_ids()
     projects = Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
+
     tagged_sessions =
       Cluster.list_sessions(filter)
       |> NodeFilter.filter_tagged(socket.assigns.node_filter)
       |> filter_by_heartbeat(filter, heartbeat_session_ids)
+
     node_map = Cluster.build_node_map(tagged_sessions)
-    clustered = length(Node.list()) > 0
+    clustered = Node.list() != []
 
     assign(socket,
       projects: projects,
@@ -385,14 +405,22 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
       # Sort: projects with most recent session first, empty projects last, unassigned at end
       groups
-      |> Enum.sort_by(fn
-        {{_node_name, nil}, _} -> {2, ~N[0000-01-01 00:00:00]}
-        {{_node_name, _project}, []} -> {1, ~N[0000-01-01 00:00:00]}
-        {{_node_name, _project}, sessions} -> {0, sessions |> Enum.map(& &1.updated_at) |> Enum.max(NaiveDateTime)}
-      end, fn
-        {g1, _}, {g2, _} when g1 != g2 -> g1 <= g2
-        {_, date_a}, {_, date_b} -> NaiveDateTime.compare(date_a, date_b) != :lt
-      end)
+      |> Enum.sort_by(
+        fn
+          {{_node_name, nil}, _} ->
+            {2, ~N[0000-01-01 00:00:00]}
+
+          {{_node_name, _project}, []} ->
+            {1, ~N[0000-01-01 00:00:00]}
+
+          {{_node_name, _project}, sessions} ->
+            {0, sessions |> Enum.map(& &1.updated_at) |> Enum.max(NaiveDateTime)}
+        end,
+        fn
+          {g1, _}, {g2, _} when g1 != g2 -> g1 <= g2
+          {_, date_a}, {_, date_b} -> NaiveDateTime.compare(date_a, date_b) != :lt
+        end
+      )
       |> Enum.map(fn {{node_name, project}, sessions} ->
         {main_sessions, worktree_groups} = split_worktree_sessions(project, sessions)
         {{node_name, project}, main_sessions, worktree_groups}
@@ -414,14 +442,22 @@ defmodule OrcaHubWeb.SessionLive.Index do
       # Wrap keys in {nil, project} for consistent template format
       all_groups
       |> Enum.map(fn {project, sessions} -> {{nil, project}, sessions} end)
-      |> Enum.sort_by(fn
-        {{_, nil}, _} -> {2, ~N[0000-01-01 00:00:00]}
-        {{_, _project}, []} -> {1, ~N[0000-01-01 00:00:00]}
-        {{_, _project}, sessions} -> {0, sessions |> Enum.map(& &1.updated_at) |> Enum.max(NaiveDateTime)}
-      end, fn
-        {g1, _}, {g2, _} when g1 != g2 -> g1 <= g2
-        {_, date_a}, {_, date_b} -> NaiveDateTime.compare(date_a, date_b) != :lt
-      end)
+      |> Enum.sort_by(
+        fn
+          {{_, nil}, _} ->
+            {2, ~N[0000-01-01 00:00:00]}
+
+          {{_, _project}, []} ->
+            {1, ~N[0000-01-01 00:00:00]}
+
+          {{_, _project}, sessions} ->
+            {0, sessions |> Enum.map(& &1.updated_at) |> Enum.max(NaiveDateTime)}
+        end,
+        fn
+          {g1, _}, {g2, _} when g1 != g2 -> g1 <= g2
+          {_, date_a}, {_, date_b} -> NaiveDateTime.compare(date_a, date_b) != :lt
+        end
+      )
       |> Enum.map(fn {{node_name, project}, sessions} ->
         {main_sessions, worktree_groups} = split_worktree_sessions(project, sessions)
         {{node_name, project}, main_sessions, worktree_groups}
@@ -476,7 +512,9 @@ defmodule OrcaHubWeb.SessionLive.Index do
           |> Enum.map(&Path.join(path, &1))
           |> Enum.filter(&File.dir?/1)
           |> then(fn dirs ->
-            if show_hidden, do: dirs, else: Enum.reject(dirs, fn p -> String.starts_with?(Path.basename(p), ".") end)
+            if show_hidden,
+              do: dirs,
+              else: Enum.reject(dirs, fn p -> String.starts_with?(Path.basename(p), ".") end)
           end)
           |> Enum.sort()
 
@@ -506,7 +544,12 @@ defmodule OrcaHubWeb.SessionLive.Index do
   defp get_all_session_ids(grouped_sessions) do
     Enum.flat_map(grouped_sessions, fn {{_node_name, _project}, main_sessions, worktree_groups} ->
       main_ids = Enum.map(main_sessions, & &1.id)
-      worktree_ids = Enum.flat_map(worktree_groups, fn {_dir, _label, sessions} -> Enum.map(sessions, & &1.id) end)
+
+      worktree_ids =
+        Enum.flat_map(worktree_groups, fn {_dir, _label, sessions} ->
+          Enum.map(sessions, & &1.id)
+        end)
+
       main_ids ++ worktree_ids
     end)
   end
