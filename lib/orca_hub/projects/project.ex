@@ -13,7 +13,6 @@ defmodule OrcaHub.Projects.Project do
     field :deleted_at, :utc_datetime
     field :node, :string
 
-    has_many :issues, OrcaHub.Issues.Issue
     has_many :sessions, OrcaHub.Sessions.Session
 
     timestamps()

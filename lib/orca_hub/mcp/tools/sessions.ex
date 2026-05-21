@@ -9,26 +9,6 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   def list do
     [
       %{
-        "name" => "start_session_from_issue",
-        "description" =>
-          "Start a new Claude Code session for a given issue. Creates a session in the issue's project directory, starts the Claude CLI, and sends the issue description as the initial prompt.",
-        "inputSchema" => %{
-          "type" => "object",
-          "properties" => %{
-            "issue_id" => %{
-              "type" => "integer",
-              "description" => "The ID of the issue to start a session for"
-            },
-            "prompt" => %{
-              "type" => "string",
-              "description" =>
-                "Optional additional instructions to append to the issue description"
-            }
-          },
-          "required" => ["issue_id"]
-        }
-      },
-      %{
         "name" => "send_message_to_session",
         "description" =>
           "Send a message to another active Claude Code session. The message will interrupt the target session and deliver your message. Your session ID will be included automatically so the recipient knows who sent it. Use this to coordinate with sibling sessions working in the same directory — check the .agents/ directory to discover active sessions and their IDs.",
@@ -122,43 +102,6 @@ defmodule OrcaHub.MCP.Tools.Sessions do
         }
       }
     ]
-  end
-
-  def call("start_session_from_issue", args, _state) do
-    issue_id = args["issue_id"]
-
-    issue = HubRPC.get_issue!(issue_id)
-    directory = if issue.project, do: issue.project.directory, else: File.cwd!()
-    project_id = if issue.project, do: issue.project.id, else: nil
-    runner_node = if issue.project, do: Cluster.project_node_for(issue.project), else: node()
-
-    case HubRPC.create_session(%{
-           directory: directory,
-           issue_id: issue.id,
-           project_id: project_id,
-           runner_node: Atom.to_string(runner_node)
-         }) do
-      {:ok, session} ->
-        {:ok, _} = Cluster.start_session(runner_node, session.id, session)
-
-        if issue.status == "open" do
-          HubRPC.update_issue(issue, %{status: "in_progress"})
-        end
-
-        prompt =
-          "Issue: #{issue.title}\n\n#{issue.description || ""}" <>
-            if(args["prompt"], do: "\n\n#{args["prompt"]}", else: "")
-
-        Cluster.send_message(runner_node, session.id, prompt)
-
-        text("Session #{session.id} started for issue ##{issue.id}: #{issue.title}")
-
-      {:error, changeset} ->
-        error("Failed to create session: #{inspect(changeset.errors)}")
-    end
-  rescue
-    Ecto.NoResultsError ->
-      error("Issue #{args["issue_id"]} not found")
   end
 
   def call("send_message_to_session", args, _state) do

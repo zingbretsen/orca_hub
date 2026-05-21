@@ -1,13 +1,12 @@
 defmodule OrcaHubWeb.CommandPaletteLive do
   use OrcaHubWeb, :live_component
 
-  alias OrcaHub.{Cluster, HubRPC, Issues, Projects}
+  alias OrcaHub.{Cluster, HubRPC, Projects}
 
   @nav_commands [
     %{name: "Dashboard", path: "/", category: "Navigation", icon: "hero-home"},
     %{name: "Queue", path: "/queue", category: "Navigation", icon: "hero-queue-list"},
     %{name: "Projects", path: "/projects", category: "Navigation", icon: "hero-folder"},
-    %{name: "Issues", path: "/issues", category: "Navigation", icon: "hero-bug-ant"},
     %{name: "Triggers", path: "/triggers", category: "Navigation", icon: "hero-bolt"},
     %{
       name: "Sessions",
@@ -21,7 +20,6 @@ defmodule OrcaHubWeb.CommandPaletteLive do
   @action_commands [
     %{name: "New Session", path: "/sessions/new", category: "Actions", icon: "hero-plus"},
     %{name: "New Project", path: "/projects/new", category: "Actions", icon: "hero-plus"},
-    %{name: "New Issue", path: "/issues/new", category: "Actions", icon: "hero-plus"},
     %{name: "New Trigger", path: "/triggers/new", category: "Actions", icon: "hero-plus"}
   ]
 
@@ -330,19 +328,7 @@ defmodule OrcaHubWeb.CommandPaletteLive do
           }
         end)
 
-      issues =
-        HubRPC.call(Issues, :search, [query])
-        |> Enum.map(fn i ->
-          %{
-            name: i.title,
-            subtitle: if(i.project, do: i.project.name),
-            path: "/issues/#{i.id}",
-            category: "Issues",
-            icon: "hero-bug-ant"
-          }
-        end)
-
-      static ++ projects ++ sessions ++ issues
+      static ++ projects ++ sessions
     end
   end
 
@@ -371,13 +357,6 @@ defmodule OrcaHubWeb.CommandPaletteLive do
         category: "Actions",
         icon: "hero-users",
         hint: "delegate"
-      },
-      %{
-        name: "New Issue",
-        path: "/issues/new?project_id=#{project.id}",
-        category: "Actions",
-        icon: "hero-bug-ant",
-        hint: "create"
       },
       %{
         name: "New Trigger",
@@ -414,7 +393,6 @@ defmodule OrcaHubWeb.CommandPaletteLive do
         "Actions" -> 1
         "Projects" -> 2
         "Sessions" -> 3
-        "Issues" -> 4
         _ -> 5
       end
     end)

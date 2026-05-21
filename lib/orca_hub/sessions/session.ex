@@ -22,7 +22,6 @@ defmodule OrcaHub.Sessions.Session do
     field :orchestrator, :boolean, default: false
 
     has_many :messages, OrcaHub.Sessions.Message
-    belongs_to :issue, OrcaHub.Issues.Issue
     belongs_to :project, OrcaHub.Projects.Project
 
     timestamps()
@@ -36,7 +35,6 @@ defmodule OrcaHub.Sessions.Session do
       :title,
       :status,
       :model,
-      :issue_id,
       :project_id,
       :archived_at,
       :triggered,

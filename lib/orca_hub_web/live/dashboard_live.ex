@@ -21,11 +21,6 @@ defmodule OrcaHubWeb.DashboardLive do
     idle = Enum.count(sessions, &(&1.status == "idle"))
     errored = Enum.count(sessions, &(&1.status == "error"))
 
-    open_issues =
-      Cluster.list_issues()
-      |> NodeFilter.filter_tagged(node_filter)
-      |> Enum.count(fn {_n, i} -> i.status != "closed" end)
-
     tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(node_filter)
     tagged_triggers = Cluster.list_triggers() |> NodeFilter.filter_tagged(node_filter)
     triggers = Enum.map(tagged_triggers, fn {_n, t} -> t end)
@@ -51,7 +46,6 @@ defmodule OrcaHubWeb.DashboardLive do
       idle_count: idle,
       error_count: errored,
       total_sessions: length(sessions),
-      open_issues: open_issues,
       project_count: length(tagged_projects),
       trigger_count: length(triggers),
       enabled_triggers: enabled_triggers,

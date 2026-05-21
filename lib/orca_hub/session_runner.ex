@@ -105,7 +105,6 @@ defmodule OrcaHub.SessionRunner do
       port: nil,
       buffer: "",
       error_output: "",
-      issue_id: session.issue_id,
       messages: saved_messages,
       first_prompt: nil,
       pending_prompts: []
@@ -464,7 +463,6 @@ defmodule OrcaHub.SessionRunner do
         "Your OrcaHub session ID is #{data.session_id}.",
         orchestrator_system_prompt(data.orchestrator, data.session_id),
         if(!data.orchestrator, do: commit_trailer_prompt(data.session_id)),
-        issue_system_prompt(data.issue_id),
         "Other agent sessions may be active in this directory. Use the `search_sessions` MCP tool to discover sibling sessions you may want to coordinate with.",
         context_files_prompt(data.directory)
       ]
@@ -525,23 +523,6 @@ defmodule OrcaHub.SessionRunner do
     This links the commit to your OrcaHub session. Add it as a git trailer \
     (blank line after the commit body, then the trailer line). \
     Never omit this trailer.\
-    """
-    |> String.trim()
-  end
-
-  defp issue_system_prompt(nil), do: nil
-
-  defp issue_system_prompt(issue_id) do
-    """
-    You are working on OrcaHub issue #{issue_id}.
-
-    You have MCP tools to interact with this issue:
-    - `get_issue`: Read the issue's current state including previous approaches and notes
-    - `update_issue`: Append to the issue's approaches_tried and notes fields
-
-    Before starting work, call `get_issue` with issue_id "#{issue_id}" to see what previous sessions have tried.
-
-    When you make progress or finish, call `update_issue` to record what you attempted and your findings. This is append-only — never try to rewrite or remove previous entries. Only add information about your own approach and results.
     """
     |> String.trim()
   end

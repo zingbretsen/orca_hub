@@ -200,21 +200,6 @@ defmodule OrcaHub.Cluster do
   def get_project!(_n, project_id), do: HubRPC.get_project!(project_id)
 
   # -------------------------------------------------------------------
-  # Issue queries
-  # -------------------------------------------------------------------
-
-  def list_issues(opts \\ []) do
-    issues = HubRPC.list_issues(opts)
-
-    Enum.map(issues, fn i ->
-      n = if i.project, do: project_node_for(i.project), else: node()
-      {n, i}
-    end)
-  end
-
-  def get_issue!(_n, issue_id), do: HubRPC.get_issue!(issue_id)
-
-  # -------------------------------------------------------------------
   # Trigger queries
   # -------------------------------------------------------------------
 

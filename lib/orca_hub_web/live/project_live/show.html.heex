@@ -151,40 +151,6 @@
 
 <div class="mt-8">
   <div class="flex items-center justify-between mb-4">
-    <h3 class="text-lg font-semibold">Issues</h3>
-    <.link navigate={~p"/issues/new?project_id=#{@project.id}"} class="btn btn-sm btn-primary">
-      New Issue
-    </.link>
-  </div>
-
-  <div :if={@project.issues == []} class="text-sm text-base-content/50 p-4 text-center">
-    No issues yet.
-  </div>
-
-  <.table
-    :if={@project.issues != []}
-    id="project-issues"
-    rows={@project.issues}
-    row_click={fn issue -> JS.navigate(~p"/issues/#{issue.id}") end}
-  >
-    <:col :let={issue} label="Title">
-      <.link navigate={~p"/issues/#{issue.id}"} class="link link-hover">{issue.title}</.link>
-    </:col>
-    <:col :let={issue} label="Status">
-      <span class={[
-        "badge",
-        issue.status == "open" && "badge-info",
-        issue.status == "in_progress" && "badge-warning",
-        issue.status == "closed" && "badge-success"
-      ]}>
-        {issue.status}
-      </span>
-    </:col>
-  </.table>
-</div>
-
-<div class="mt-8">
-  <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">MCP Servers</h3>
     <button phx-click="toggle_mcp_server_picker" class="btn btn-sm btn-primary">
       Add Server

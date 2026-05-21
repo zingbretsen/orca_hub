@@ -15,7 +15,6 @@ defmodule OrcaHubWeb.Layouts do
     [
       %{href: ~p"/queue", label: "Queue", badge: true},
       %{href: ~p"/projects", label: "Projects"},
-      %{href: ~p"/issues", label: "Issues"},
       %{href: ~p"/triggers", label: "Triggers"},
       %{href: ~p"/terminals", label: "Terminals"},
       %{href: ~p"/sessions", label: "Sessions"},

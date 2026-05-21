@@ -20,11 +20,6 @@ defmodule OrcaHubWeb.Router do
     live_session :default, on_mount: [{OrcaHubWeb.NodeFilter, :default}] do
       live "/", DashboardLive, :index
 
-      live "/issues", IssueLive.Index, :index
-      live "/issues/new", IssueLive.Index, :new
-      live "/issues/:id", IssueLive.Show, :show
-      live "/issues/:id/edit", IssueLive.Index, :edit
-
       live "/projects", ProjectLive.Index, :index
       live "/projects/new", ProjectLive.Index, :new
       live "/projects/:id", ProjectLive.Show, :show

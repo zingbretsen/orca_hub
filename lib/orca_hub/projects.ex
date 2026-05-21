@@ -26,10 +26,7 @@ defmodule OrcaHub.Projects do
 
   def get_project!(id) do
     Repo.get!(Project, id)
-    |> Repo.preload([
-      :issues,
-      sessions: from(s in OrcaHub.Sessions.Session, order_by: [desc: s.updated_at])
-    ])
+    |> Repo.preload(sessions: from(s in OrcaHub.Sessions.Session, order_by: [desc: s.updated_at]))
   end
 
   def get_project_by_directory(directory) do

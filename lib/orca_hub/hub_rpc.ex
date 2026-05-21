@@ -79,14 +79,6 @@ defmodule OrcaHub.HubRPC do
   def search_projects(query), do: call(OrcaHub.Projects, :search, [query])
 
   # -------------------------------------------------------------------
-  # Issues
-  # -------------------------------------------------------------------
-
-  def list_issues(opts \\ []), do: call(OrcaHub.Issues, :list_issues, [opts])
-  def get_issue!(id), do: call(OrcaHub.Issues, :get_issue!, [id])
-  def update_issue(issue, attrs), do: call(OrcaHub.Issues, :update_issue, [issue, attrs])
-
-  # -------------------------------------------------------------------
   # Triggers
   # -------------------------------------------------------------------
 
