@@ -830,28 +830,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("save_file", %{"content" => content}, socket) do
     path = socket.assigns.active_file_tab
-    dir = socket.assigns.session.directory
-    project = %Projects.Project{directory: dir}
-    session_node = socket.assigns[:session_node] || node()
+    blocks = if Projects.markdown_file?(path), do: Markdown.split_blocks(content), else: []
 
-    case Cluster.rpc(session_node, Projects, :save_file, [project, path, content]) do
-      :ok ->
-        blocks = if Projects.markdown_file?(path), do: Markdown.split_blocks(content), else: []
-        mtime = remote_file_mtime(session_node, Path.join(dir, path))
-
-        open_files =
-          Enum.map(socket.assigns.open_files, fn tab ->
-            if tab.path == path, do: %{tab | content: content, blocks: blocks}, else: tab
-          end)
-
-        {:noreply,
-         socket
-         |> assign(open_files: open_files, file_editing: false, editing_block: nil)
-         |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, path, mtime))}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Save failed: #{inspect(reason)}")}
-    end
+    save_file_and_update(
+      socket,
+      path,
+      content,
+      blocks,
+      [file_editing: false, editing_block: nil],
+      "Save failed"
+    )
   end
 
   def handle_event("edit_block", %{"index" => index}, socket) do
@@ -881,29 +869,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
       end)
 
     full_content = Markdown.join_blocks(updated_blocks)
-    dir = socket.assigns.session.directory
-    project = %Projects.Project{directory: dir}
-    session_node = socket.assigns[:session_node] || node()
 
-    case Cluster.rpc(session_node, Projects, :save_file, [project, tab.path, full_content]) do
-      :ok ->
-        mtime = remote_file_mtime(session_node, Path.join(dir, tab.path))
-
-        open_files =
-          Enum.map(socket.assigns.open_files, fn t ->
-            if t.path == tab.path,
-              do: %{t | content: full_content, blocks: updated_blocks},
-              else: t
-          end)
-
-        {:noreply,
-         socket
-         |> assign(open_files: open_files, editing_block: nil, block_edit_content: nil)
-         |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, tab.path, mtime))}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Save failed: #{inspect(reason)}")}
-    end
+    save_file_and_update(
+      socket,
+      tab.path,
+      full_content,
+      updated_blocks,
+      [editing_block: nil, block_edit_content: nil],
+      "Save failed"
+    )
   end
 
   def handle_event("delete_block", %{"index" => index}, socket) do
@@ -912,29 +886,47 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     updated_blocks = Enum.reject(tab.blocks, fn {idx, _} -> idx == index end)
     full_content = Markdown.join_blocks(updated_blocks)
+
+    save_file_and_update(
+      socket,
+      tab.path,
+      full_content,
+      updated_blocks,
+      [editing_block: nil],
+      "Delete failed"
+    )
+  end
+
+  # Persists `content` to `path` on the session's node, then either updates the
+  # matching open-file tab (content, blocks, mtime) plus `success_assigns`, or
+  # flashes an error prefixed with `error_label`. Shared by the save_file,
+  # save_block, and delete_block events.
+  defp save_file_and_update(socket, path, content, blocks, success_assigns, error_label) do
     dir = socket.assigns.session.directory
     project = %Projects.Project{directory: dir}
     session_node = socket.assigns[:session_node] || node()
 
-    case Cluster.rpc(session_node, Projects, :save_file, [project, tab.path, full_content]) do
+    case Cluster.rpc(session_node, Projects, :save_file, [project, path, content]) do
       :ok ->
-        mtime = remote_file_mtime(session_node, Path.join(dir, tab.path))
-
-        open_files =
-          Enum.map(socket.assigns.open_files, fn t ->
-            if t.path == tab.path,
-              do: %{t | content: full_content, blocks: updated_blocks},
-              else: t
-          end)
+        mtime = remote_file_mtime(session_node, Path.join(dir, path))
+        open_files = update_open_file_tab(socket.assigns.open_files, path, content, blocks)
 
         {:noreply,
          socket
-         |> assign(open_files: open_files, editing_block: nil)
-         |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, tab.path, mtime))}
+         |> assign(Keyword.put(success_assigns, :open_files, open_files))
+         |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, path, mtime))}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Delete failed: #{inspect(reason)}")}
+        {:noreply, put_flash(socket, :error, "#{error_label}: #{inspect(reason)}")}
     end
+  end
+
+  # Returns `open_files` with the tab matching `path` updated to the new
+  # content and blocks; other tabs are left unchanged.
+  defp update_open_file_tab(open_files, path, content, blocks) do
+    Enum.map(open_files, fn tab ->
+      if tab.path == path, do: %{tab | content: content, blocks: blocks}, else: tab
+    end)
   end
 
   defp resume_session_in_terminal(socket, session) do
