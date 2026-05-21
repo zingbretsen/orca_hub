@@ -8,9 +8,9 @@ defmodule OrcaHub.MCP.Tools do
   owning category module by tool name.
   """
 
-  alias OrcaHub.MCP.Tools.{Files, Heartbeat, Issues, Notifications, Result, Sessions, Triggers}
+  alias OrcaHub.MCP.Tools.{Files, Heartbeat, Result, Sessions, Triggers}
 
-  @categories [Sessions, Issues, Triggers, Notifications, Files, Heartbeat]
+  @categories [Sessions, Triggers, Files, Heartbeat]
 
   @doc "Return all MCP tool definition maps across every category."
   def list do
