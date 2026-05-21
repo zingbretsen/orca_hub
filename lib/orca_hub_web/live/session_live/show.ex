@@ -4,41 +4,20 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   alias OrcaHub.{Cluster, HubRPC, Projects, Sessions, SessionRunner}
   alias OrcaHubWeb.{MessageComponents, Markdown}
+  alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Todos}
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     {session_node, session} = find_session!(id)
 
-    runner_alive? = Cluster.session_alive?(session_node, id)
-
-    if !runner_alive? do
-      case Cluster.start_session(session_node, id, session) do
-        {:ok, _} -> :ok
-        {:error, reason} -> Logger.error("Failed to start session runner for #{id}: #{inspect(reason)}")
-      end
-    end
+    ensure_runner_started(session_node, id, session)
 
     # Check if session is remote based on original runner_node (not the fallback)
     remote? = session.runner_node != nil && session.runner_node != Atom.to_string(node())
 
-    if connected?(socket) do
-      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{id}")
+    maybe_subscribe(socket, id, remote?)
 
-      unless remote? do
-        Process.send_after(self(), :poll_file_changes, 2000)
-      end
-    end
-
-    runner_state =
-      if Cluster.session_alive?(session_node, id) do
-        Cluster.get_state(session_node, id)
-      else
-        saved_messages =
-          HubRPC.list_messages(id)
-          |> Enum.map(fn msg -> Map.put(msg.data, "timestamp", msg.inserted_at) end)
-
-        %{status: session.status || "error", messages: saved_messages}
-      end
+    runner_state = load_runner_state(session_node, id, session)
 
     {prev_session_id, next_session_id} = HubRPC.get_adjacent_session_ids(session)
 
@@ -54,7 +33,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:cluster_nodes, Cluster.node_info())
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
-     |> assign(:page_title, session.title || (session.project && session.project.name) || session.directory)
+     |> assign(
+       :page_title,
+       session.title || (session.project && session.project.name) || session.directory
+     )
      |> assign(:prev_session_id, prev_session_id)
      |> assign(:next_session_id, next_session_id)
      |> assign(:feedback_requests, HubRPC.list_pending_feedback_for_session(id))
@@ -70,7 +52,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:scroll_to_line, nil)
      |> assign(:scroll_to_block, nil)
      |> assign(:editing_title, false)
-     |> assign(:plan_mode, detect_plan_mode(runner_state.messages))
+     |> assign(:plan_mode, PlanMode.detect(runner_state.messages))
      |> assign(:pending_plan_file, nil)
      |> assign(:plan_file_path, nil)
      |> assign(:plan_file_original_mtime, nil)
@@ -105,27 +87,70 @@ defmodule OrcaHubWeb.SessionLive.Show do
      )}
   end
 
+  # -- mount helpers --
+
+  defp ensure_runner_started(session_node, id, session) do
+    unless Cluster.session_alive?(session_node, id) do
+      case Cluster.start_session(session_node, id, session) do
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.error("Failed to start session runner for #{id}: #{inspect(reason)}")
+      end
+    end
+  end
+
+  defp maybe_subscribe(socket, id, remote?) do
+    if connected?(socket) do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{id}")
+      unless remote?, do: Process.send_after(self(), :poll_file_changes, 2000)
+    end
+  end
+
+  defp load_runner_state(session_node, id, session) do
+    if Cluster.session_alive?(session_node, id) do
+      Cluster.get_state(session_node, id)
+    else
+      saved_messages =
+        id
+        |> HubRPC.list_messages()
+        |> Enum.map(fn msg -> Map.put(msg.data, "timestamp", msg.inserted_at) end)
+
+      %{status: session.status || "error", messages: saved_messages}
+    end
+  end
 
   @impl true
   def handle_event("send_message", %{"prompt" => prompt}, socket) do
     Logger.info("send_message: prompt=#{inspect(String.trim(prompt))}")
 
-    Logger.info("send_message: image entries=#{length(socket.assigns.uploads.image.entries)}, file entries=#{length(socket.assigns.uploads.file.entries)}")
+    Logger.info(
+      "send_message: image entries=#{length(socket.assigns.uploads.image.entries)}, " <>
+        "file entries=#{length(socket.assigns.uploads.file.entries)}"
+    )
+
     {image_paths, socket} = consume_uploaded_entries_for(socket, :image)
     {file_entries, socket} = consume_uploaded_file_entries(socket)
-    Logger.info("send_message: image_paths=#{inspect(image_paths)}, file_entries=#{inspect(file_entries)}")
+
+    Logger.info(
+      "send_message: image_paths=#{inspect(image_paths)}, file_entries=#{inspect(file_entries)}"
+    )
 
     # For remote sessions, transfer uploaded files to the remote node
     {image_paths, file_entries} =
       if remote_session?(socket) do
         session_node = socket.assigns.session_node
         session_dir = socket.assigns.session.directory
-        {transfer_uploads(image_paths, session_node, session_dir), transfer_uploads(file_entries, session_node, session_dir)}
+
+        {transfer_uploads(image_paths, session_node, session_dir),
+         transfer_uploads(file_entries, session_node, session_dir)}
       else
         {image_paths, file_entries}
       end
 
-    image_attachments = Enum.map(image_paths, &"[Attached image: #{&1} — use your Read tool to view it]")
+    image_attachments =
+      Enum.map(image_paths, &"[Attached image: #{&1} — use your Read tool to view it]")
 
     file_attachments = Enum.map(file_entries, &"[Attached file: #{&1}]")
 
@@ -140,7 +165,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
       end
 
     if full_prompt do
-      case Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, full_prompt) do
+      case Cluster.send_message(
+             socket.assigns.session_node,
+             socket.assigns.session.id,
+             full_prompt
+           ) do
         :ok ->
           {:noreply, push_event(socket, "clear-prompt", %{})}
 
@@ -172,6 +201,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def handle_event("new_session", _params, socket) do
     session = socket.assigns.session
     target_node = socket.assigns.session_node
+
     params = %{
       "directory" => session.directory,
       "project_id" => session.project_id,
@@ -191,13 +221,25 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("approve_feedback", %{"id" => id}, socket) do
     HubRPC.respond_feedback(String.to_integer(id), "That sounds great, go for it!")
-    {:noreply, assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == String.to_integer(id))))}
+
+    {:noreply,
+     assign(
+       socket,
+       :feedback_requests,
+       Enum.reject(socket.assigns.feedback_requests, &(&1.id == String.to_integer(id)))
+     )}
   end
 
   def handle_event("cancel_feedback", %{"id" => id}, socket) do
     id = String.to_integer(id)
     HubRPC.cancel_feedback(id)
-    {:noreply, assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
+
+    {:noreply,
+     assign(
+       socket,
+       :feedback_requests,
+       Enum.reject(socket.assigns.feedback_requests, &(&1.id == id))
+     )}
   end
 
   def handle_event("respond_feedback", %{"feedback_id" => id, "response" => response}, socket) do
@@ -208,7 +250,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
       {:noreply, socket}
     else
       HubRPC.respond_feedback(id, response)
-      {:noreply, assign(socket, :feedback_requests, Enum.reject(socket.assigns.feedback_requests, &(&1.id == id)))}
+
+      {:noreply,
+       assign(
+         socket,
+         :feedback_requests,
+         Enum.reject(socket.assigns.feedback_requests, &(&1.id == id))
+       )}
     end
   end
 
@@ -250,7 +298,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("regenerate_title", _params, socket) do
-    Cluster.rpc(socket.assigns.session_node, SessionRunner, :regenerate_title, [socket.assigns.session.id])
+    Cluster.rpc(socket.assigns.session_node, SessionRunner, :regenerate_title, [
+      socket.assigns.session.id
+    ])
+
     {:noreply, socket}
   end
 
@@ -258,7 +309,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
     if socket.assigns[:expanded_commit] == hash do
       {:noreply, assign(socket, expanded_commit: nil, commit_detail: nil)}
     else
-      detail = Cluster.rpc(socket.assigns.session_node, Sessions, :get_commit_detail, [socket.assigns.session.directory, hash])
+      detail =
+        Cluster.rpc(socket.assigns.session_node, Sessions, :get_commit_detail, [
+          socket.assigns.session.directory,
+          hash
+        ])
+
       {:noreply, assign(socket, expanded_commit: hash, commit_detail: detail)}
     end
   end
@@ -284,7 +340,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
     case Sessions.update_session(session, %{orchestrator: new_value}) do
       {:ok, updated_session} ->
         Cluster.update_orchestrator(socket.assigns.session_node, session.id, new_value)
-        flash_msg = if new_value, do: "Orchestrator mode enabled (takes effect on next message)", else: "Orchestrator mode disabled (takes effect on next message)"
+
+        flash_msg =
+          if new_value,
+            do: "Orchestrator mode enabled (takes effect on next message)",
+            else: "Orchestrator mode disabled (takes effect on next message)"
+
         {:noreply, socket |> assign(:session, updated_session) |> put_flash(:info, flash_msg)}
 
       {:error, _} ->
@@ -329,7 +390,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # MCP server events
 
   def handle_event("toggle_mcp_modal", _params, socket) do
-    {:noreply, assign(socket, show_mcp_modal: !socket.assigns.show_mcp_modal, show_mcp_server_picker: false)}
+    {:noreply,
+     assign(socket, show_mcp_modal: !socket.assigns.show_mcp_modal, show_mcp_server_picker: false)}
   end
 
   def handle_event("toggle_mcp_server_picker", _params, socket) do
@@ -365,7 +427,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, assign(socket, show_heartbeat_modal: !socket.assigns.show_heartbeat_modal)}
   end
 
-  def handle_event("schedule_heartbeat", %{"interval" => interval_str, "message" => message}, socket) do
+  def handle_event(
+        "schedule_heartbeat",
+        %{"interval" => interval_str, "message" => message},
+        socket
+      ) do
     session_id = socket.assigns.session.id
 
     with {interval, ""} <- Integer.parse(interval_str),
@@ -419,7 +485,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     case Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, prompt) do
       :ok ->
-        {:noreply, assign(socket, plan_mode: false, plan_file_path: nil, plan_file_original_mtime: nil)}
+        {:noreply,
+         assign(socket, plan_mode: false, plan_file_path: nil, plan_file_original_mtime: nil)}
 
       {:error, :busy} ->
         {:noreply, put_flash(socket, :error, "Session is busy")}
@@ -428,12 +495,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("reject_plan", _params, socket) do
     # Clear plan review — user can type their feedback in the prompt
-    {:noreply, assign(socket, plan_mode: false, plan_file_path: nil, plan_file_original_mtime: nil)}
+    {:noreply,
+     assign(socket, plan_mode: false, plan_file_path: nil, plan_file_original_mtime: nil)}
   end
 
   def handle_event("commit", _params, socket) do
     session_id = socket.assigns.session.id
-    prompt = "Commit the changes you made in this session. Only stage files you actually modified — do not use `git add -A` or `git add .`. Use a descriptive commit message based on the diff. Remember to include the trailer: OrcaHub-Session: #{session_id}"
+
+    prompt =
+      "Commit the changes you made in this session. Only stage files you actually modified — do not use `git add -A` or `git add .`. Use a descriptive commit message based on the diff. Remember to include the trailer: OrcaHub-Session: #{session_id}"
 
     case Cluster.send_message(socket.assigns.session_node, session_id, prompt) do
       :ok ->
@@ -448,10 +518,37 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("autocomplete", %{"type" => "command", "query" => query}, socket) do
     commands = [
-      %{label: "/commit", value: "/commit", hint: "Commit changes", action: "commit", type: "command", icon: "hero-check"},
-      %{label: "/new", value: "/new", hint: "New session in same directory", action: "new_session", type: "command", icon: "hero-plus-circle"},
-      %{label: "/clear", value: "/clear", hint: "Clear conversation", action: "clear", type: "command", icon: "hero-trash"},
-      %{label: "/model", value: "/model ", hint: "Change model", type: "command", icon: "hero-cpu-chip"}
+      %{
+        label: "/commit",
+        value: "/commit",
+        hint: "Commit changes",
+        action: "commit",
+        type: "command",
+        icon: "hero-check"
+      },
+      %{
+        label: "/new",
+        value: "/new",
+        hint: "New session in same directory",
+        action: "new_session",
+        type: "command",
+        icon: "hero-plus-circle"
+      },
+      %{
+        label: "/clear",
+        value: "/clear",
+        hint: "Clear conversation",
+        action: "clear",
+        type: "command",
+        icon: "hero-trash"
+      },
+      %{
+        label: "/model",
+        value: "/model ",
+        hint: "Change model",
+        type: "command",
+        icon: "hero-cpu-chip"
+      }
     ]
 
     filtered =
@@ -459,6 +556,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
         commands
       else
         query_lower = String.downcase(query)
+
         Enum.filter(commands, fn cmd ->
           String.contains?(String.downcase(cmd.label), query_lower)
         end)
@@ -480,6 +578,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
         Enum.take(files, 10)
       else
         query_lower = String.downcase(query)
+
         files
         |> Enum.filter(fn path ->
           String.contains?(String.downcase(path), query_lower)
@@ -487,14 +586,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
         |> Enum.take(10)
       end
 
-    items = Enum.map(filtered, fn path ->
-      %{
-        label: path,
-        value: "@#{path}",
-        hint: Path.dirname(path),
-        type: "file"
-      }
-    end)
+    items =
+      Enum.map(filtered, fn path ->
+        %{
+          label: path,
+          value: "@#{path}",
+          hint: Path.dirname(path),
+          type: "file"
+        }
+      end)
 
     {:noreply, push_event(socket, "autocomplete_results", %{items: items, type: "file"})}
   end
@@ -540,14 +640,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
         HubRPC.search_projects(query)
       end
 
-    items = Enum.map(projects, fn p ->
-      %{
-        label: p.name,
-        value: "###{p.name}",
-        hint: Path.basename(p.directory),
-        type: "project"
-      }
-    end)
+    items =
+      Enum.map(projects, fn p ->
+        %{
+          label: p.name,
+          value: "###{p.name}",
+          hint: Path.basename(p.directory),
+          type: "project"
+        }
+      end)
 
     {:noreply, push_event(socket, "autocomplete_results", %{items: items, type: "project"})}
   end
@@ -651,40 +752,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def handle_event("resume_in_terminal", _params, socket) do
     session = socket.assigns.session
 
-    unless session.claude_session_id do
-      {:noreply, put_flash(socket, :error, "No Claude session to resume")}
+    if session.claude_session_id do
+      {:noreply, resume_session_in_terminal(socket, session)}
     else
-      session_node = socket.assigns.session_node
-      cmd = "claude --resume #{session.claude_session_id}\n"
-
-      # Create a dedicated terminal for this Claude session
-      name =
-        if session.title do
-          "claude: #{session.title}"
-        else
-          "claude resume"
-        end
-
-      case Cluster.create_terminal(session_node, build_terminal_attrs(name, session, session_node)) do
-        {:ok, terminal} ->
-          Cluster.start_terminal(session_node, terminal.id)
-          terminal = Cluster.get_terminal!(session_node, terminal.id)
-
-          # Send the resume command after a brief delay for the shell to initialize
-          Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-            Process.sleep(500)
-            Cluster.rpc(session_node, OrcaHub.TerminalRunner, :write, [terminal.id, cmd])
-          end)
-
-          {:noreply,
-           socket
-           |> assign(:show_terminal, true)
-           |> assign(:open_terminals, socket.assigns.open_terminals ++ [terminal])
-           |> assign(:active_terminal_id, terminal.id)}
-
-        {:error, _} ->
-          {:noreply, put_flash(socket, :error, "Failed to create terminal")}
-      end
+      {:noreply, put_flash(socket, :error, "No Claude session to resume")}
     end
   end
 
@@ -741,7 +812,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("toggle_edit_mode", _params, socket) do
-    {:noreply, assign(socket, file_edit_mode: !socket.assigns.file_edit_mode, file_editing: false, editing_block: nil)}
+    {:noreply,
+     assign(socket,
+       file_edit_mode: !socket.assigns.file_edit_mode,
+       file_editing: false,
+       editing_block: nil
+     )}
   end
 
   def handle_event("edit_file", _params, socket) do
@@ -815,7 +891,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
         open_files =
           Enum.map(socket.assigns.open_files, fn t ->
-            if t.path == tab.path, do: %{t | content: full_content, blocks: updated_blocks}, else: t
+            if t.path == tab.path,
+              do: %{t | content: full_content, blocks: updated_blocks},
+              else: t
           end)
 
         {:noreply,
@@ -844,7 +922,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
         open_files =
           Enum.map(socket.assigns.open_files, fn t ->
-            if t.path == tab.path, do: %{t | content: full_content, blocks: updated_blocks}, else: t
+            if t.path == tab.path,
+              do: %{t | content: full_content, blocks: updated_blocks},
+              else: t
           end)
 
         {:noreply,
@@ -857,8 +937,43 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  defp resume_session_in_terminal(socket, session) do
+    session_node = socket.assigns.session_node
+    cmd = "claude --resume #{session.claude_session_id}\n"
+
+    # Create a dedicated terminal for this Claude session
+    name = if session.title, do: "claude: #{session.title}", else: "claude resume"
+
+    case Cluster.create_terminal(session_node, build_terminal_attrs(name, session, session_node)) do
+      {:ok, terminal} ->
+        Cluster.start_terminal(session_node, terminal.id)
+        terminal = Cluster.get_terminal!(session_node, terminal.id)
+
+        # Send the resume command after a brief delay for the shell to
+        # initialize. Scheduled non-blocking so the LiveView stays responsive.
+        Process.send_after(
+          self(),
+          {:resume_terminal_write, session_node, terminal.id, cmd},
+          500
+        )
+
+        socket
+        |> assign(:show_terminal, true)
+        |> assign(:open_terminals, socket.assigns.open_terminals ++ [terminal])
+        |> assign(:active_terminal_id, terminal.id)
+
+      {:error, _} ->
+        put_flash(socket, :error, "Failed to create terminal")
+    end
+  end
+
   defp build_terminal_attrs(name, session, session_node) do
-    %{name: name, directory: session.directory, project_id: session.project_id, runner_node: Atom.to_string(session_node)}
+    %{
+      name: name,
+      directory: session.directory,
+      project_id: session.project_id,
+      runner_node: Atom.to_string(session_node)
+    }
   end
 
   defp open_or_create_terminal(socket, session, session_node) do
@@ -883,7 +998,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
             "shell"
           end
 
-        case Cluster.create_terminal(session_node, build_terminal_attrs(name, session, session_node)) do
+        case Cluster.create_terminal(
+               session_node,
+               build_terminal_attrs(name, session, session_node)
+             ) do
           {:ok, terminal} ->
             Cluster.start_terminal(session_node, terminal.id)
             terminal = Cluster.get_terminal!(session_node, terminal.id)
@@ -942,7 +1060,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     socket =
       if status == :waiting do
-        assign(socket, :feedback_requests, HubRPC.list_pending_feedback_for_session(socket.assigns.session.id))
+        assign(
+          socket,
+          :feedback_requests,
+          HubRPC.list_pending_feedback_for_session(socket.assigns.session.id)
+        )
       else
         socket
       end
@@ -991,6 +1113,20 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   @impl true
+  def handle_info({:resume_terminal_write, session_node, terminal_id, cmd}, socket) do
+    # Offload the RPC write so the LiveView process is never blocked.
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      Cluster.rpc(session_node, OrcaHub.TerminalRunner, :write, [terminal_id, cmd])
+    end)
+
+    {:noreply, socket}
+  end
+
+  # Catch-all: ignore unexpected messages so the LiveView never crashes.
+  @impl true
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
+  @impl true
   def terminate(_reason, socket) do
     if session = socket.assigns[:session] do
       session_node = socket.assigns[:session_node] || node()
@@ -1019,7 +1155,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
           [remote_path]
 
         error ->
-          Logger.warning("Failed to transfer upload #{filename} to #{target_node}: #{inspect(error)}")
+          Logger.warning(
+            "Failed to transfer upload #{filename} to #{target_node}: #{inspect(error)}"
+          )
+
           File.rm(local_path)
           []
       end
@@ -1093,76 +1232,80 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp open_file_tab(socket, path, line \\ nil) do
     dir = socket.assigns.session.directory
+    {path, read_only} = normalize_file_path(path, dir)
 
-    # Normalize: if absolute and inside the project dir, make relative
-    # If absolute and outside, keep absolute and mark read-only
-    {path, read_only} =
-      if String.starts_with?(path, "/") do
-        relative = Path.relative_to(path, dir)
-
-        if relative != path do
-          # Successfully made relative — it's inside the project
-          {relative, false}
-        else
-          # Outside the project — keep absolute, read-only
-          {path, true}
-        end
-      else
-        {path, false}
-      end
-
-    # If already open, just switch to it (and update scroll target)
-    if Enum.any?(socket.assigns.open_files, &(&1.path == path)) do
-      tab = Enum.find(socket.assigns.open_files, &(&1.path == path))
-
-      block_idx =
-        if line && Projects.markdown_file?(path) && tab,
-          do: line_to_block_index(tab.content, line),
-          else: nil
-
-      socket
-      |> assign(:active_file_tab, path)
-      |> assign(:file_editing, false)
-      |> assign(:editing_block, nil)
-      |> assign(:show_file_browser, false)
-      |> assign(:scroll_to_line, line)
-      |> assign(:scroll_to_block, block_idx)
-    else
-      session_node = socket.assigns[:session_node] || node()
-
-      result =
-        if read_only do
-          Cluster.rpc(session_node, File, :read, [path])
-        else
-          Cluster.rpc(session_node, Projects, :load_file, [%Projects.Project{directory: dir}, path])
-        end
-
-      case result do
-        {:ok, content} ->
-          blocks = if Projects.markdown_file?(path), do: Markdown.split_blocks(content), else: []
-          tab = %{path: path, content: content, blocks: blocks, read_only: read_only}
-          full_path = if read_only, do: path, else: Path.join(dir, path)
-          mtime = remote_file_mtime(session_node, full_path)
-
-          block_idx =
-            if line && Projects.markdown_file?(path),
-              do: line_to_block_index(content, line),
-              else: nil
-
-          socket
-          |> assign(:open_files, socket.assigns.open_files ++ [tab])
-          |> assign(:active_file_tab, path)
-          |> assign(:file_editing, false)
-          |> assign(:editing_block, nil)
-          |> assign(:show_file_browser, false)
-          |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, path, mtime))
-          |> assign(:scroll_to_line, line)
-          |> assign(:scroll_to_block, block_idx)
-
-        {:error, reason} ->
-          put_flash(socket, :error, "Could not open file: #{inspect(reason)}")
-      end
+    case Enum.find(socket.assigns.open_files, &(&1.path == path)) do
+      nil -> open_new_file_tab(socket, path, line, read_only)
+      tab -> switch_to_loaded_tab(socket, tab, path, line)
     end
+  end
+
+  # Normalize a file path against the project directory.
+  # Absolute paths inside the project are made relative; absolute paths
+  # outside the project are kept absolute and marked read-only.
+  defp normalize_file_path(path, dir) do
+    if String.starts_with?(path, "/") do
+      relative = Path.relative_to(path, dir)
+      if relative != path, do: {relative, false}, else: {path, true}
+    else
+      {path, false}
+    end
+  end
+
+  # File is already open — switch to its tab and update the scroll target.
+  defp switch_to_loaded_tab(socket, tab, path, line) do
+    block_idx =
+      if line && Projects.markdown_file?(path),
+        do: MarkdownBlocks.line_to_block_index(tab.content, line),
+        else: nil
+
+    socket
+    |> assign(:active_file_tab, path)
+    |> assign(:file_editing, false)
+    |> assign(:editing_block, nil)
+    |> assign(:show_file_browser, false)
+    |> assign(:scroll_to_line, line)
+    |> assign(:scroll_to_block, block_idx)
+  end
+
+  # File is not open yet — load it from the (possibly remote) node.
+  defp open_new_file_tab(socket, path, line, read_only) do
+    dir = socket.assigns.session.directory
+    session_node = socket.assigns[:session_node] || node()
+
+    case load_file_content(session_node, dir, path, read_only) do
+      {:ok, content} ->
+        blocks = if Projects.markdown_file?(path), do: Markdown.split_blocks(content), else: []
+        tab = %{path: path, content: content, blocks: blocks, read_only: read_only}
+        full_path = if read_only, do: path, else: Path.join(dir, path)
+        mtime = remote_file_mtime(session_node, full_path)
+
+        block_idx =
+          if line && Projects.markdown_file?(path),
+            do: MarkdownBlocks.line_to_block_index(content, line),
+            else: nil
+
+        socket
+        |> assign(:open_files, socket.assigns.open_files ++ [tab])
+        |> assign(:active_file_tab, path)
+        |> assign(:file_editing, false)
+        |> assign(:editing_block, nil)
+        |> assign(:show_file_browser, false)
+        |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, path, mtime))
+        |> assign(:scroll_to_line, line)
+        |> assign(:scroll_to_block, block_idx)
+
+      {:error, reason} ->
+        put_flash(socket, :error, "Could not open file: #{inspect(reason)}")
+    end
+  end
+
+  defp load_file_content(session_node, _dir, path, true) do
+    Cluster.rpc(session_node, File, :read, [path])
+  end
+
+  defp load_file_content(session_node, dir, path, false) do
+    Cluster.rpc(session_node, Projects, :load_file, [%Projects.Project{directory: dir}, path])
   end
 
   defp get_active_tab(socket) do
@@ -1175,34 +1318,41 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     {open_files, mtimes} =
       Enum.map_reduce(socket.assigns.open_files, socket.assigns.file_mtimes, fn tab, mtimes ->
-        full_path = if tab.read_only, do: tab.path, else: Path.join(dir, tab.path)
-        current_mtime = file_mtime(full_path)
-        stored_mtime = Map.get(mtimes, tab.path)
-
-        if current_mtime != stored_mtime && current_mtime != nil do
-          result =
-            if tab.read_only do
-              File.read(tab.path)
-            else
-              Projects.load_file(project, tab.path)
-            end
-
-          case result do
-            {:ok, content} ->
-              blocks = if Projects.markdown_file?(tab.path), do: Markdown.split_blocks(content), else: []
-              {%{tab | content: content, blocks: blocks}, Map.put(mtimes, tab.path, current_mtime)}
-
-            {:error, _} ->
-              {tab, mtimes}
-          end
-        else
-          {tab, mtimes}
-        end
+        refresh_tab(tab, mtimes, dir, project)
       end)
 
     socket
     |> assign(:open_files, open_files)
     |> assign(:file_mtimes, mtimes)
+  end
+
+  # Reloads a single open file tab if its on-disk mtime has changed.
+  defp refresh_tab(tab, mtimes, dir, project) do
+    full_path = if tab.read_only, do: tab.path, else: Path.join(dir, tab.path)
+    current_mtime = file_mtime(full_path)
+    stored_mtime = Map.get(mtimes, tab.path)
+
+    if current_mtime != stored_mtime && current_mtime != nil do
+      reload_tab(tab, mtimes, project, current_mtime)
+    else
+      {tab, mtimes}
+    end
+  end
+
+  defp reload_tab(tab, mtimes, project, current_mtime) do
+    result =
+      if tab.read_only, do: File.read(tab.path), else: Projects.load_file(project, tab.path)
+
+    case result do
+      {:ok, content} ->
+        blocks =
+          if Projects.markdown_file?(tab.path), do: Markdown.split_blocks(content), else: []
+
+        {%{tab | content: content, blocks: blocks}, Map.put(mtimes, tab.path, current_mtime)}
+
+      {:error, _} ->
+        {tab, mtimes}
+    end
   end
 
   defp file_mtime(path) do
@@ -1219,34 +1369,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
-  defp line_to_block_index(content, line) when is_integer(line) and line > 0 do
-    # Find which block contains the target line by tracking line offsets
-    lines = String.split(content, "\n")
-    # Build a prefix of the content up to the target line
-    target_text = lines |> Enum.take(line) |> Enum.join("\n")
-    blocks = Markdown.split_blocks(content)
-
-    # Find the block whose text appears in the content at or before the target line
-    # by checking cumulative character positions
-    Enum.reduce_while(blocks, {0, nil}, fn {idx, block_text}, {search_from, _} ->
-      case :binary.match(content, String.trim(block_text), [{:scope, {search_from, byte_size(content) - search_from}}]) do
-        {pos, len} ->
-          block_end = pos + len
-          if byte_size(target_text) <= block_end do
-            {:halt, {0, idx}}
-          else
-            {:cont, {pos + len, idx}}
-          end
-
-        :nomatch ->
-          {:cont, {search_from, idx}}
-      end
-    end)
-    |> elem(1)
-  end
-
-  defp line_to_block_index(_, _), do: nil
-
   # -- Heartbeat helpers --
 
   defp format_interval(seconds) when seconds >= 3600 do
@@ -1254,20 +1376,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
     remaining = rem(seconds, 3600)
     mins = div(remaining, 60)
 
-    cond do
-      mins == 0 -> "#{hours}h"
-      true -> "#{hours}h #{mins}m"
-    end
+    if mins == 0, do: "#{hours}h", else: "#{hours}h #{mins}m"
   end
 
   defp format_interval(seconds) when seconds >= 60 do
     mins = div(seconds, 60)
     secs = rem(seconds, 60)
 
-    cond do
-      secs == 0 -> "#{mins}m"
-      true -> "#{mins}m #{secs}s"
-    end
+    if secs == 0, do: "#{mins}m", else: "#{mins}m #{secs}s"
   end
 
   defp format_interval(seconds), do: "#{seconds}s"
@@ -1299,53 +1415,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # -- Todo helpers --
 
   defp load_session_todos(socket) do
-    todos =
-      socket.assigns.messages
-      |> Enum.reverse()
-      |> Enum.find_value([], fn msg ->
-        with %{"type" => "assistant", "message" => %{"content" => content}} when is_list(content) <- msg do
-          content
-          |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use" && &1["name"] == "TodoWrite"))
-          |> List.last()
-          |> case do
-            nil -> nil
-            tool_use -> parse_todos(get_in(tool_use, ["input", "todos"]))
-          end
-        else
-          _ -> nil
-        end
-      end)
-
-    assign(socket, :todos, todos)
+    assign(socket, :todos, Todos.from_messages(socket.assigns.messages))
   end
 
   # -- Plan mode helpers --
 
-  @plans_dir Path.join(System.user_home!(), ".claude/plans")
-
-  defp handle_plan_events(socket, %{"type" => "assistant", "message" => %{"content" => content}}) when is_list(content) do
-    tool_uses = Enum.filter(content, &(is_map(&1) && &1["type"] == "tool_use"))
-
-    Enum.reduce(tool_uses, socket, fn tool_use, acc ->
-      case tool_use["name"] do
-        "EnterPlanMode" ->
-          assign(acc, :plan_mode, :planning)
-
-        "ExitPlanMode" ->
-          assign(acc, :plan_mode, :review)
-
-        "Write" when acc.assigns.plan_mode == :planning ->
-          file_path = get_in(tool_use, ["input", "file_path"]) || ""
-          if String.starts_with?(file_path, @plans_dir) do
-            assign(acc, :pending_plan_file, file_path)
-          else
-            acc
-          end
-
-        _ ->
-          acc
-      end
-    end)
+  defp handle_plan_events(socket, %{"type" => "assistant", "message" => %{"content" => content}})
+       when is_list(content) do
+    content
+    |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use"))
+    |> Enum.reduce(socket, &apply_plan_tool_use(&2, &1))
   end
 
   defp handle_plan_events(socket, %{"type" => "result"}) do
@@ -1367,59 +1446,52 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp handle_plan_events(socket, _event), do: socket
 
-  # Extract todos from TodoWrite tool calls in the message stream
-  defp handle_todo_events(socket, %{"type" => "assistant", "message" => %{"content" => content}}) when is_list(content) do
-    tool_uses = Enum.filter(content, &(is_map(&1) && &1["type"] == "tool_use"))
+  defp apply_plan_tool_use(acc, tool_use) do
+    case tool_use["name"] do
+      "EnterPlanMode" ->
+        assign(acc, :plan_mode, :planning)
 
-    Enum.reduce(tool_uses, socket, fn tool_use, acc ->
-      case tool_use["name"] do
-        "TodoWrite" ->
-          todos = parse_todos(get_in(tool_use, ["input", "todos"]))
-          assign(acc, :todos, todos)
+      "ExitPlanMode" ->
+        assign(acc, :plan_mode, :review)
 
-        _ ->
-          acc
-      end
-    end)
-  end
+      "Write" when acc.assigns.plan_mode == :planning ->
+        maybe_track_plan_file(acc, tool_use)
 
-  defp handle_todo_events(socket, _event), do: socket
-
-  defp parse_todos(todos) when is_list(todos), do: todos
-  defp parse_todos(todos) when is_binary(todos) do
-    case Jason.decode(todos) do
-      {:ok, list} when is_list(list) -> list
-      _ -> []
+      _ ->
+        acc
     end
   end
-  defp parse_todos(_), do: []
+
+  defp maybe_track_plan_file(acc, tool_use) do
+    file_path = get_in(tool_use, ["input", "file_path"]) || ""
+
+    if String.starts_with?(file_path, PlanMode.plans_dir()) do
+      assign(acc, :pending_plan_file, file_path)
+    else
+      acc
+    end
+  end
+
+  # Extract todos from TodoWrite tool calls in the message stream
+  defp handle_todo_events(socket, event) do
+    case Todos.from_event(event) do
+      nil -> socket
+      todos -> assign(socket, :todos, todos)
+    end
+  end
 
   defp plan_file_was_edited?(socket) do
     case {socket.assigns.plan_file_path, socket.assigns.plan_file_original_mtime} do
-      {nil, _} -> false
-      {_, nil} -> false
+      {nil, _} ->
+        false
+
+      {_, nil} ->
+        false
+
       {path, original_mtime} ->
         session_node = socket.assigns[:session_node] || node()
         remote_file_mtime(session_node, path) != original_mtime
     end
-  end
-
-  defp detect_plan_mode(messages) do
-    # Only reconstruct :planning from history — :review is transient
-    # and should only appear live when ExitPlanMode fires
-    Enum.reduce(messages, false, fn msg, state ->
-      case msg do
-        %{"type" => "assistant", "message" => %{"content" => content}} when is_list(content) ->
-          Enum.reduce(content, state, fn
-            %{"type" => "tool_use", "name" => "EnterPlanMode"}, _ -> :planning
-            %{"type" => "tool_use", "name" => "ExitPlanMode"}, _ -> false
-            _, acc -> acc
-          end)
-
-        _ ->
-          state
-      end
-    end)
   end
 
   # -- Cluster helpers --
