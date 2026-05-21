@@ -10,16 +10,11 @@ defmodule OrcaHubWeb.QueueLive do
     queue_filter = :all
     {entries, node_map} = load_entries_with_nodes(node_filter, queue_filter)
 
-    tagged_feedback = Cluster.list_pending_feedback() |> NodeFilter.filter_tagged(node_filter)
-    feedback_requests = Enum.map(tagged_feedback, fn {_n, req} -> req end)
-    feedback_node_map = Cluster.build_node_map(tagged_feedback)
-
     if connected?(socket) do
       for {session, _msg} <- entries do
         Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session.id}")
       end
 
-      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "feedback_requests")
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
     end
 
@@ -27,8 +22,6 @@ defmodule OrcaHubWeb.QueueLive do
      socket
      |> assign(:entries, entries)
      |> assign(:node_map, node_map)
-     |> assign(:feedback_requests, feedback_requests)
-     |> assign(:feedback_node_map, feedback_node_map)
      |> assign(:clustered, Node.list() != [])
      |> assign(:prompt, "")
      |> assign(:form_key, 0)
@@ -255,48 +248,6 @@ defmodule OrcaHubWeb.QueueLive do
     end
   end
 
-  def handle_event("approve_feedback", %{"id" => id}, socket) do
-    id = String.to_integer(id)
-    HubRPC.respond_feedback(id, "That sounds great, go for it!")
-
-    {:noreply,
-     assign(
-       socket,
-       :feedback_requests,
-       Enum.reject(socket.assigns.feedback_requests, &(&1.id == id))
-     )}
-  end
-
-  def handle_event("cancel_feedback", %{"id" => id}, socket) do
-    id = String.to_integer(id)
-    HubRPC.cancel_feedback(id)
-
-    {:noreply,
-     assign(
-       socket,
-       :feedback_requests,
-       Enum.reject(socket.assigns.feedback_requests, &(&1.id == id))
-     )}
-  end
-
-  def handle_event("respond_feedback", %{"feedback_id" => id, "response" => response}, socket) do
-    response = String.trim(response)
-    id = String.to_integer(id)
-
-    if response == "" do
-      {:noreply, socket}
-    else
-      HubRPC.respond_feedback(id, response)
-
-      {:noreply,
-       assign(
-         socket,
-         :feedback_requests,
-         Enum.reject(socket.assigns.feedback_requests, &(&1.id == id))
-       )}
-    end
-  end
-
   def handle_event("toggle_tts", _params, socket) do
     {:noreply, assign(socket, :tts_autoplay, !socket.assigns.tts_autoplay)}
   end
@@ -337,35 +288,16 @@ defmodule OrcaHubWeb.QueueLive do
     handle_status_change(status, socket)
   end
 
-  def handle_info({:new_feedback_request, _request}, socket) do
-    tagged_feedback = Cluster.list_pending_feedback()
-    feedback_requests = Enum.map(tagged_feedback, fn {_n, req} -> req end)
-    feedback_node_map = Cluster.build_node_map(tagged_feedback)
-
-    {:noreply,
-     socket
-     |> assign(:feedback_requests, feedback_requests)
-     |> assign(:feedback_node_map, feedback_node_map)}
-  end
-
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   def reload_for_node_filter(socket) do
     {entries, node_map} =
       load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
 
-    tagged_feedback =
-      Cluster.list_pending_feedback() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
-
-    feedback_requests = Enum.map(tagged_feedback, fn {_n, req} -> req end)
-    feedback_node_map = Cluster.build_node_map(tagged_feedback)
-
     {:noreply,
      socket
      |> assign(:entries, entries)
-     |> assign(:node_map, node_map)
-     |> assign(:feedback_requests, feedback_requests)
-     |> assign(:feedback_node_map, feedback_node_map)}
+     |> assign(:node_map, node_map)}
   end
 
   defp handle_status_change(:idle, socket) do

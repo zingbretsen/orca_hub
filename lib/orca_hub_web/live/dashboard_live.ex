@@ -8,7 +8,6 @@ defmodule OrcaHubWeb.DashboardLive do
   def mount(_params, _session, socket) do
     if connected?(socket) do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
-      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "feedback_requests")
     end
 
     {:ok, assign(socket, page_title: "Dashboard") |> load_data()}
@@ -21,7 +20,6 @@ defmodule OrcaHubWeb.DashboardLive do
     running = Enum.count(sessions, &(&1.status == "running"))
     idle = Enum.count(sessions, &(&1.status == "idle"))
     errored = Enum.count(sessions, &(&1.status == "error"))
-    feedback_requests = Cluster.list_pending_feedback() |> NodeFilter.filter_tagged(node_filter)
 
     open_issues =
       Cluster.list_issues()
@@ -53,7 +51,6 @@ defmodule OrcaHubWeb.DashboardLive do
       idle_count: idle,
       error_count: errored,
       total_sessions: length(sessions),
-      feedback_count: length(feedback_requests),
       open_issues: open_issues,
       project_count: length(tagged_projects),
       trigger_count: length(triggers),

@@ -230,15 +230,6 @@ defmodule OrcaHub.Cluster do
   def get_trigger!(_n, trigger_id), do: HubRPC.get_trigger!(trigger_id)
 
   # -------------------------------------------------------------------
-  # Feedback queries
-  # -------------------------------------------------------------------
-
-  def list_pending_feedback do
-    requests = HubRPC.list_pending_feedback()
-    Enum.map(requests, fn r -> {node(), r} end)
-  end
-
-  # -------------------------------------------------------------------
   # Utility
   # -------------------------------------------------------------------
 

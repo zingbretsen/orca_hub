@@ -87,18 +87,6 @@ defmodule OrcaHub.HubRPC do
   def update_issue(issue, attrs), do: call(OrcaHub.Issues, :update_issue, [issue, attrs])
 
   # -------------------------------------------------------------------
-  # Feedback
-  # -------------------------------------------------------------------
-
-  def create_feedback_request(attrs), do: call(OrcaHub.Feedback, :create_request, [attrs])
-  def respond_feedback(id, response), do: call(OrcaHub.Feedback, :respond, [id, response])
-  def cancel_feedback(id), do: call(OrcaHub.Feedback, :cancel, [id])
-  def list_pending_feedback, do: call(OrcaHub.Feedback, :list_pending_requests, [])
-
-  def list_pending_feedback_for_session(session_id),
-    do: call(OrcaHub.Feedback, :list_pending_requests_for_session, [session_id])
-
-  # -------------------------------------------------------------------
   # Triggers
   # -------------------------------------------------------------------
 

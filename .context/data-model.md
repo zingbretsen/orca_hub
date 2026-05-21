@@ -7,7 +7,6 @@ erDiagram
     Project ||--o{ Trigger : has
     Issue ||--o{ Session : "worked by"
     Session ||--o{ Message : contains
-    Session ||--o{ FeedbackRequest : has
     Trigger }o--o| Session : "last_session"
 
     Project {
@@ -47,15 +46,6 @@ erDiagram
         string approaches_tried "append-only"
         string notes "append-only"
         binary_id project_id FK
-    }
-
-    FeedbackRequest {
-        integer id PK
-        string question
-        string response
-        string status "pending|responded|cancelled"
-        string mcp_session_id
-        binary_id session_id FK
     }
 
     Trigger {

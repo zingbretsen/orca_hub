@@ -155,7 +155,7 @@ sequenceDiagram
 ### Key Modules
 
 - **`OrcaHub.Mode`**: Returns `:hub` or `:agent` based on `ORCA_MODE` env var (default: `:hub`). `hub_node/0` returns self on hub, discovers hub via `:erpc` on agent.
-- **`OrcaHub.HubRPC`**: Transparent proxy — calls locally on hub, forwards via `:erpc.call/5` on agent. Wraps all context modules (Sessions, Projects, Issues, Feedback, Triggers, Terminals).
+- **`OrcaHub.HubRPC`**: Transparent proxy — calls locally on hub, forwards via `:erpc.call/5` on agent. Wraps all context modules (Sessions, Projects, Issues, Triggers, Terminals).
 - **`OrcaHub.Cluster`**: Routing layer used by LiveViews and other callers. Queries go through HubRPC (single DB), actions route to the correct runner node via `rpc/5`.
 
 ### Node Routing

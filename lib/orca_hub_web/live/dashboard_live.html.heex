@@ -44,19 +44,6 @@
   </.link>
 
   <.link
-    navigate={~p"/queue"}
-    class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow"
-  >
-    <div class="card-body p-4">
-      <div class="text-2xl font-bold">{@feedback_count}</div>
-      <div class="text-sm text-base-content/60">Pending Feedback</div>
-      <div :if={@feedback_count > 0} class="mt-1">
-        <span class="badge badge-warning badge-sm">needs attention</span>
-      </div>
-    </div>
-  </.link>
-
-  <.link
     navigate={~p"/issues"}
     class="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow"
   >

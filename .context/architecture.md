@@ -28,7 +28,6 @@ graph TB
         Sessions["Sessions Context"]
         Projects["Projects Context"]
         Issues["Issues Context"]
-        Feedback["Feedback Context"]
         Triggers["Triggers Context"]
         UpstreamServers["UpstreamServers Context"]
         AgentPresence["AgentPresence"]
@@ -73,9 +72,9 @@ graph TB
     PubSub -->|status| SessionIndex
 
     SessionRunner -->|persist via| HubRPC
-    HubRPC -->|hub: local call| Sessions & Projects & Issues & Feedback & Triggers
+    HubRPC -->|hub: local call| Sessions & Projects & Issues & Triggers
     HubRPC -.->|agent: erpc to hub| Repo
-    Sessions & Projects & Issues & Feedback & Triggers --> Repo
+    Sessions & Projects & Issues & Triggers --> Repo
 
     MCPTools -->|persist via| HubRPC
 

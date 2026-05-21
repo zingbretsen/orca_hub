@@ -39,7 +39,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
      )
      |> assign(:prev_session_id, prev_session_id)
      |> assign(:next_session_id, next_session_id)
-     |> assign(:feedback_requests, HubRPC.list_pending_feedback_for_session(id))
      |> assign(:tts_autoplay, false)
      |> assign(:open_files, [])
      |> assign(:active_file_tab, nil)
@@ -216,47 +215,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Failed to create session")}
-    end
-  end
-
-  def handle_event("approve_feedback", %{"id" => id}, socket) do
-    HubRPC.respond_feedback(String.to_integer(id), "That sounds great, go for it!")
-
-    {:noreply,
-     assign(
-       socket,
-       :feedback_requests,
-       Enum.reject(socket.assigns.feedback_requests, &(&1.id == String.to_integer(id)))
-     )}
-  end
-
-  def handle_event("cancel_feedback", %{"id" => id}, socket) do
-    id = String.to_integer(id)
-    HubRPC.cancel_feedback(id)
-
-    {:noreply,
-     assign(
-       socket,
-       :feedback_requests,
-       Enum.reject(socket.assigns.feedback_requests, &(&1.id == id))
-     )}
-  end
-
-  def handle_event("respond_feedback", %{"feedback_id" => id, "response" => response}, socket) do
-    response = String.trim(response)
-    id = String.to_integer(id)
-
-    if response == "" do
-      {:noreply, socket}
-    else
-      HubRPC.respond_feedback(id, response)
-
-      {:noreply,
-       assign(
-         socket,
-         :feedback_requests,
-         Enum.reject(socket.assigns.feedback_requests, &(&1.id == id))
-       )}
     end
   end
 
@@ -1051,19 +1009,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     socket = assign(socket, :status, status)
 
     socket =
-      if status == :waiting do
-        assign(
-          socket,
-          :feedback_requests,
-          HubRPC.list_pending_feedback_for_session(socket.assigns.session.id)
-        )
-      else
-        socket
-      end
-
-    socket =
       if status == :idle do
-        socket = assign(socket, :feedback_requests, [])
         socket = load_session_commits(socket)
 
         if socket.assigns.tts_autoplay do
