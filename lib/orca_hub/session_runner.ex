@@ -463,7 +463,7 @@ defmodule OrcaHub.SessionRunner do
         "Your OrcaHub session ID is #{data.session_id}.",
         orchestrator_system_prompt(data.orchestrator, data.session_id),
         if(!data.orchestrator, do: commit_trailer_prompt(data.session_id)),
-        "Other agent sessions may be active in this directory. Use the `search_sessions` MCP tool to discover sibling sessions you may want to coordinate with.",
+        sibling_sessions_prompt(data.orchestrator),
         context_files_prompt(data.directory)
       ]
       |> Enum.reject(&is_nil/1)
@@ -512,6 +512,16 @@ defmodule OrcaHub.SessionRunner do
     Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
     """
     |> String.trim()
+  end
+
+  # Orchestrator sessions can use `search_sessions`; regular sessions cannot,
+  # so point them at the `.agents/` directory to discover sibling session IDs.
+  defp sibling_sessions_prompt(true) do
+    "Other agent sessions may be active in this directory. Use the `search_sessions` MCP tool to discover sibling sessions you may want to coordinate with."
+  end
+
+  defp sibling_sessions_prompt(_orchestrator) do
+    "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then use the `send_message_to_session` MCP tool to coordinate with them."
   end
 
   defp commit_trailer_prompt(session_id) do
