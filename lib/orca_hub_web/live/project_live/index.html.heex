@@ -14,11 +14,35 @@
   </:actions>
 </.header>
 
+<div :if={MapSet.size(@selected_projects) > 0} class="flex items-center gap-2 mt-4">
+  <span class="text-sm text-base-content/70">{MapSet.size(@selected_projects)} selected</span>
+  <button phx-click="clear_selection" class="btn btn-sm btn-ghost">Clear</button>
+  <button
+    phx-click="delete_selected"
+    class="btn btn-sm btn-error btn-soft"
+    data-confirm={"Delete #{MapSet.size(@selected_projects)} selected project(s)? This cannot be undone."}
+  >
+    <.icon name="hero-trash" class="size-4" /> Delete Selected
+  </button>
+</div>
+
 <.table
   id="projects"
   rows={@streams.projects}
-  row_click={fn {_id, project} -> JS.navigate(~p"/projects/#{project.id}") end}
+  row_click={
+    MapSet.size(@selected_projects) == 0 &&
+      fn {_id, project} -> JS.navigate(~p"/projects/#{project.id}") end
+  }
 >
+  <:col :let={{_id, project}} label="" class="w-8">
+    <input
+      type="checkbox"
+      class="checkbox checkbox-sm"
+      checked={MapSet.member?(@selected_projects, project.id)}
+      phx-click="toggle_project"
+      phx-value-id={project.id}
+    />
+  </:col>
   <:col :let={{_id, project}} label="Name">
     <.link navigate={~p"/projects/#{project.id}"} class="link link-hover">
       {project.name}

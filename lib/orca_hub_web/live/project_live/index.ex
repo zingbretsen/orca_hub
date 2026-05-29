@@ -28,7 +28,8 @@ defmodule OrcaHubWeb.ProjectLive.Index do
        browse_show_hidden: false,
        browse_new_folder: false,
        importing: false,
-       git_statuses: %{}
+       git_statuses: %{},
+       selected_projects: MapSet.new()
      )}
   end
 
@@ -98,6 +99,58 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     project = HubRPC.get_project!(id)
     {:ok, _} = HubRPC.delete_project(project)
     {:noreply, stream_delete(socket, :projects, project)}
+  end
+
+  def handle_event("toggle_project", %{"id" => id}, socket) do
+    selected = socket.assigns.selected_projects
+
+    new_selected =
+      if MapSet.member?(selected, id) do
+        MapSet.delete(selected, id)
+      else
+        MapSet.put(selected, id)
+      end
+
+    {:noreply, assign(socket, selected_projects: new_selected)}
+  end
+
+  def handle_event("toggle_all_projects", _params, socket) do
+    all_ids = Enum.map(socket.assigns.tagged_projects, fn {_node, project} -> project.id end)
+    selected = socket.assigns.selected_projects
+
+    new_selected =
+      if MapSet.size(selected) == length(all_ids) do
+        MapSet.new()
+      else
+        MapSet.new(all_ids)
+      end
+
+    {:noreply, assign(socket, selected_projects: new_selected)}
+  end
+
+  def handle_event("clear_selection", _params, socket) do
+    {:noreply, assign(socket, selected_projects: MapSet.new())}
+  end
+
+  def handle_event("delete_selected", _params, socket) do
+    selected = socket.assigns.selected_projects
+
+    socket =
+      Enum.reduce(selected, socket, fn id, acc ->
+        project = HubRPC.get_project!(id)
+        {:ok, _} = HubRPC.delete_project(project)
+        stream_delete(acc, :projects, project)
+      end)
+
+    tagged_projects =
+      Enum.reject(socket.assigns.tagged_projects, fn {_node, project} ->
+        MapSet.member?(selected, project.id)
+      end)
+
+    {:noreply,
+     socket
+     |> assign(tagged_projects: tagged_projects, selected_projects: MapSet.new())
+     |> put_flash(:info, "Deleted #{MapSet.size(selected)} project(s)")}
   end
 
   def handle_event("validate", %{"project" => params}, socket) do
@@ -234,7 +287,11 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
     {:noreply,
      socket
-     |> assign(node_map: node_map)
+     |> assign(
+       node_map: node_map,
+       tagged_projects: tagged_projects,
+       selected_projects: MapSet.new()
+     )
      |> stream(:projects, projects, reset: true)}
   end
 
@@ -271,7 +328,12 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
     {:noreply,
      socket
-     |> assign(importing: false, node_map: node_map)
+     |> assign(
+       importing: false,
+       node_map: node_map,
+       tagged_projects: tagged_projects,
+       selected_projects: MapSet.new()
+     )
      |> stream(:projects, projects, reset: true)
      |> put_flash(:info, flash)}
   end
