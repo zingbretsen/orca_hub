@@ -14,16 +14,23 @@
   </:actions>
 </.header>
 
-<div :if={MapSet.size(@selected_projects) > 0} class="flex items-center gap-2 mt-4">
-  <span class="text-sm text-base-content/70">{MapSet.size(@selected_projects)} selected</span>
-  <button phx-click="clear_selection" class="btn btn-sm btn-ghost">Clear</button>
-  <button
-    phx-click="delete_selected"
-    class="btn btn-sm btn-error btn-soft"
-    data-confirm={"Delete #{MapSet.size(@selected_projects)} selected project(s)? This cannot be undone."}
-  >
-    <.icon name="hero-trash" class="size-4" /> Delete Selected
+<div :if={@tagged_projects != []} class="flex items-center gap-2 mt-4">
+  <button phx-click="toggle_all_projects" class="btn btn-sm btn-ghost">
+    {if MapSet.size(@selected_projects) == length(@tagged_projects),
+      do: "Deselect All",
+      else: "Select All"}
   </button>
+  <div :if={MapSet.size(@selected_projects) > 0} class="flex items-center gap-2 ml-auto">
+    <span class="text-sm text-base-content/70">{MapSet.size(@selected_projects)} selected</span>
+    <button phx-click="clear_selection" class="btn btn-sm btn-ghost">Clear</button>
+    <button
+      phx-click="delete_selected"
+      class="btn btn-sm btn-error btn-soft"
+      data-confirm={"Delete #{MapSet.size(@selected_projects)} selected project(s)? This cannot be undone."}
+    >
+      <.icon name="hero-trash" class="size-4" /> Delete Selected
+    </button>
+  </div>
 </div>
 
 <.table
