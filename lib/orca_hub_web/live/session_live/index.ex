@@ -305,6 +305,22 @@ defmodule OrcaHubWeb.SessionLive.Index do
     {:noreply, assign(socket, selected_sessions: new_selected)}
   end
 
+  def handle_event("toggle_group_sessions", %{"project-id" => project_id, "node" => node}, socket) do
+    group_ids = group_session_ids(socket.assigns.grouped_sessions, project_id, node)
+    selected = socket.assigns.selected_sessions
+
+    all_selected? = group_ids != [] and Enum.all?(group_ids, &MapSet.member?(selected, &1))
+
+    new_selected =
+      if all_selected? do
+        Enum.reduce(group_ids, selected, &MapSet.delete(&2, &1))
+      else
+        Enum.reduce(group_ids, selected, &MapSet.put(&2, &1))
+      end
+
+    {:noreply, assign(socket, selected_sessions: new_selected)}
+  end
+
   def handle_event("clear_selection", _params, socket) do
     {:noreply, assign(socket, selected_sessions: MapSet.new())}
   end
@@ -551,6 +567,26 @@ defmodule OrcaHubWeb.SessionLive.Index do
         end)
 
       main_ids ++ worktree_ids
+    end)
+  end
+
+  defp group_session_ids(grouped_sessions, project_id, node) do
+    Enum.find_value(grouped_sessions, [], fn {{node_name, project}, main, worktrees} ->
+      matches_project? =
+        case project do
+          nil -> project_id == "unassigned"
+          %{id: id} -> id == project_id
+        end
+
+      matches_node? = (node_name || "local") == node
+
+      if matches_project? and matches_node? do
+        main_ids = Enum.map(main, & &1.id)
+        wt_ids = Enum.flat_map(worktrees, fn {_d, _b, s} -> Enum.map(s, & &1.id) end)
+        main_ids ++ wt_ids
+      else
+        false
+      end
     end)
   end
 end

@@ -61,17 +61,35 @@
       </span>
       <span :if={node_name} class="badge badge-sm badge-outline opacity-60">{node_name}</span>
     </h3>
-    <button
-      :if={project}
-      phx-click="create_for_project"
-      phx-value-project-id={project.id}
-      class="btn btn-xs btn-ghost"
-    >
-      + New
-    </button>
-    <.link :if={!project} patch={~p"/sessions/new"} class="btn btn-xs btn-ghost">
-      + New
-    </.link>
+    <div class="flex items-center gap-1">
+      <% group_ids =
+        Enum.map(main_sessions, & &1.id) ++
+          Enum.flat_map(worktree_groups, fn {_d, _b, s} -> Enum.map(s, & &1.id) end)
+
+      all_selected? =
+        group_ids != [] and Enum.all?(group_ids, &MapSet.member?(@selected_sessions, &1)) %>
+      <button
+        :if={group_ids != []}
+        phx-click="toggle_group_sessions"
+        phx-value-project-id={if project, do: project.id, else: "unassigned"}
+        phx-value-node={node_name || "local"}
+        onclick="event.stopPropagation()"
+        class="btn btn-xs btn-ghost"
+      >
+        {if all_selected?, do: "Deselect All", else: "Select All"}
+      </button>
+      <button
+        :if={project}
+        phx-click="create_for_project"
+        phx-value-project-id={project.id}
+        class="btn btn-xs btn-ghost"
+      >
+        + New
+      </button>
+      <.link :if={!project} patch={~p"/sessions/new"} class="btn btn-xs btn-ghost">
+        + New
+      </.link>
+    </div>
   </summary>
 
   <div :if={main_sessions == [] && worktree_groups == []} class="text-sm text-base-content/50 p-4">
