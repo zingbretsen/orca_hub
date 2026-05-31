@@ -17,7 +17,7 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
     {:ok,
      socket
-     |> stream(:projects, projects)
+     |> assign(:projects, projects)
      |> assign(
        tagged_projects: tagged_projects,
        node_map: node_map,
@@ -98,7 +98,13 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   def handle_event("delete", %{"id" => id}, socket) do
     project = HubRPC.get_project!(id)
     {:ok, _} = HubRPC.delete_project(project)
-    {:noreply, stream_delete(socket, :projects, project)}
+
+    {:noreply,
+     socket
+     |> assign(
+       projects: Enum.reject(socket.assigns.projects, &(&1.id == id)),
+       tagged_projects: Enum.reject(socket.assigns.tagged_projects, fn {_n, p} -> p.id == id end)
+     )}
   end
 
   def handle_event("toggle_project", %{"id" => id}, socket) do
@@ -135,12 +141,12 @@ defmodule OrcaHubWeb.ProjectLive.Index do
   def handle_event("delete_selected", _params, socket) do
     selected = socket.assigns.selected_projects
 
-    socket =
-      Enum.reduce(selected, socket, fn id, acc ->
-        project = HubRPC.get_project!(id)
-        {:ok, _} = HubRPC.delete_project(project)
-        stream_delete(acc, :projects, project)
-      end)
+    for id <- selected do
+      project = HubRPC.get_project!(id)
+      {:ok, _} = HubRPC.delete_project(project)
+    end
+
+    projects = Enum.reject(socket.assigns.projects, &MapSet.member?(selected, &1.id))
 
     tagged_projects =
       Enum.reject(socket.assigns.tagged_projects, fn {_node, project} ->
@@ -149,7 +155,11 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
     {:noreply,
      socket
-     |> assign(tagged_projects: tagged_projects, selected_projects: MapSet.new())
+     |> assign(
+       projects: projects,
+       tagged_projects: tagged_projects,
+       selected_projects: MapSet.new()
+     )
      |> put_flash(:info, "Deleted #{MapSet.size(selected)} project(s)")}
   end
 
@@ -290,9 +300,9 @@ defmodule OrcaHubWeb.ProjectLive.Index do
      |> assign(
        node_map: node_map,
        tagged_projects: tagged_projects,
+       projects: projects,
        selected_projects: MapSet.new()
-     )
-     |> stream(:projects, projects, reset: true)}
+     )}
   end
 
   @impl true
@@ -332,9 +342,9 @@ defmodule OrcaHubWeb.ProjectLive.Index do
        importing: false,
        node_map: node_map,
        tagged_projects: tagged_projects,
+       projects: projects,
        selected_projects: MapSet.new()
      )
-     |> stream(:projects, projects, reset: true)
      |> put_flash(:info, flash)}
   end
 

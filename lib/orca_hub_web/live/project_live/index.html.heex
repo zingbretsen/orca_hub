@@ -35,13 +35,13 @@
 
 <.table
   id="projects"
-  rows={@streams.projects}
+  rows={@projects}
   row_click={
     MapSet.size(@selected_projects) == 0 &&
-      fn {_id, project} -> JS.navigate(~p"/projects/#{project.id}") end
+      fn project -> JS.navigate(~p"/projects/#{project.id}") end
   }
 >
-  <:col :let={{_id, project}} label="" class="w-8">
+  <:col :let={project} label="" class="w-8">
     <input
       type="checkbox"
       class="checkbox checkbox-sm"
@@ -50,7 +50,7 @@
       phx-value-id={project.id}
     />
   </:col>
-  <:col :let={{_id, project}} label="Name">
+  <:col :let={project} label="Name">
     <.link navigate={~p"/projects/#{project.id}"} class="link link-hover">
       {project.name}
     </.link>
@@ -61,10 +61,10 @@
       {OrcaHub.Cluster.node_name(Map.get(@node_map, project.id))}
     </span>
   </:col>
-  <:col :let={{_id, project}} label="Directory">
+  <:col :let={project} label="Directory">
     <span class="font-mono text-sm">{project.directory}</span>
   </:col>
-  <:col :let={{_id, project}} label="Git">
+  <:col :let={project} label="Git">
     <% status = Map.get(@git_statuses, project.id) %>
     <div class="flex flex-wrap gap-1">
       <span :if={is_nil(status)} class="text-base-content/30">--</span>
@@ -103,7 +103,7 @@
       </span>
     </div>
   </:col>
-  <:action :let={{_id, project}}>
+  <:action :let={project}>
     <% syncing = Map.get(@git_statuses, project.id) == :syncing %>
     <div class="dropdown dropdown-end">
       <button tabindex="0" class={["btn btn-xs btn-ghost", syncing && "btn-disabled"]}>
@@ -137,7 +137,7 @@
       </ul>
     </div>
   </:action>
-  <:action :let={{_id, project}}>
+  <:action :let={project}>
     <button
       class="btn btn-xs btn-ghost"
       phx-click="delete"
