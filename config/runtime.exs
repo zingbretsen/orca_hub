@@ -144,12 +144,20 @@ if config_env() == :prod do
 
   config :orca_hub, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
+  extra_origins =
+    case System.get_env("PHX_EXTRA_ORIGINS") do
+      nil -> []
+      "" -> []
+      str -> str |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+    end
+
   config :orca_hub, OrcaHubWeb.Endpoint,
     url: [host: host, port: url_port, scheme: scheme],
-    check_origin: [
-      "#{scheme}://#{host}",
-      "#{scheme}://#{host}:#{url_port}"
-    ],
+    check_origin:
+      [
+        "#{scheme}://#{host}",
+        "#{scheme}://#{host}:#{url_port}"
+      ] ++ extra_origins,
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
