@@ -73,7 +73,7 @@
         phx-click="toggle_group_sessions"
         phx-value-project-id={if project, do: project.id, else: "unassigned"}
         phx-value-node={node_name || "local"}
-        onclick="event.stopPropagation()"
+        onclick="event.preventDefault()"
         class="btn btn-xs btn-ghost"
       >
         {if all_selected?, do: "Deselect All", else: "Select All"}
