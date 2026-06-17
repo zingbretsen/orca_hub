@@ -14,9 +14,11 @@ defmodule OrcaHubWeb.MessageComponents do
   attr :session_node, :atom, default: nil
 
   def message_feed(assigns) do
+    messages = Enum.reject(assigns.messages, &hidden_message?/1)
+
     # Group subagent messages by parent_tool_use_id
     subagent_map =
-      assigns.messages
+      messages
       |> Enum.filter(&(&1["parent_tool_use_id"] != nil))
       |> Enum.group_by(& &1["parent_tool_use_id"])
 
@@ -24,7 +26,7 @@ defmodule OrcaHubWeb.MessageComponents do
     task_event_subtypes = ~w(task_started task_progress task_notification)
 
     task_events_map =
-      assigns.messages
+      messages
       |> Enum.filter(fn msg ->
         msg["type"] == "system" and msg["subtype"] in task_event_subtypes and
           msg["tool_use_id"] != nil
@@ -41,7 +43,7 @@ defmodule OrcaHubWeb.MessageComponents do
     task_tool_use_ids = Map.keys(task_events_map) |> MapSet.new()
 
     top_level =
-      Enum.reject(assigns.messages, fn msg ->
+      Enum.reject(messages, fn msg ->
         msg["parent_tool_use_id"] != nil or
           (msg["type"] == "system" and msg["subtype"] in task_event_subtypes and
              MapSet.member?(task_tool_use_ids, msg["tool_use_id"]))
@@ -49,31 +51,77 @@ defmodule OrcaHubWeb.MessageComponents do
 
     assigns =
       assigns
-      |> assign(:top_level, top_level)
+      |> assign(:feed_items, build_feed_items(top_level))
       |> assign(:subagent_map, subagent_map)
 
     ~H"""
-    <div :for={msg <- @top_level}>
-      <%= case msg["type"] do %>
-        <% "user" -> %>
-          <.user_message msg={msg} session_node={@session_node} />
-        <% "assistant" -> %>
-          <.assistant_message msg={msg} subagent_map={@subagent_map} session_node={@session_node} />
-        <% "result" -> %>
-          <.result_message msg={msg} />
-        <% "system" -> %>
-          <.system_message msg={msg} />
-        <% "cli_error" -> %>
-          <.cli_error_message msg={msg} />
-        <% type when type in ~w(rate_limit_event) -> %>
-          <% # Hide noisy internal events %>
-        <% _ -> %>
-          <div class="text-xs opacity-40">
-            <pre class="whitespace-pre-wrap">{Jason.encode!(msg, pretty: true)}</pre>
-          </div>
+    <div :for={item <- @feed_items}>
+      <%= case item do %>
+        <% {:thinking_group, id, blocks} -> %>
+          <.thinking_block id={id} blocks={blocks} />
+        <% {:msg, msg} -> %>
+          <%= case msg["type"] do %>
+            <% "user" -> %>
+              <.user_message msg={msg} session_node={@session_node} />
+            <% "assistant" -> %>
+              <.assistant_message
+                msg={msg}
+                subagent_map={@subagent_map}
+                session_node={@session_node}
+              />
+            <% "result" -> %>
+              <.result_message msg={msg} />
+            <% "system" -> %>
+              <.system_message msg={msg} />
+            <% "cli_error" -> %>
+              <.cli_error_message msg={msg} />
+            <% type when type in ~w(rate_limit_event) -> %>
+              <% # Hide noisy internal events %>
+            <% _ -> %>
+              <div class="text-xs opacity-40">
+                <pre class="whitespace-pre-wrap">{Jason.encode!(msg, pretty: true)}</pre>
+              </div>
+          <% end %>
       <% end %>
     </div>
     """
+  end
+
+  defp hidden_message?(%{"type" => "system", "subtype" => "thinking_tokens"}), do: true
+  defp hidden_message?(_), do: false
+
+  defp build_feed_items(messages) do
+    messages
+    |> Enum.chunk_by(&thinking_message?/1)
+    |> Enum.flat_map(fn
+      [first | _] = chunk ->
+        if thinking_message?(first) do
+          blocks = Enum.flat_map(chunk, &extract_thinking_blocks/1)
+          group_id = first["uuid"] || first["id"] || "0"
+          [{:thinking_group, group_id, blocks} | Enum.map(chunk, &{:msg, &1})]
+        else
+          Enum.map(chunk, &{:msg, &1})
+        end
+
+      [] ->
+        []
+    end)
+  end
+
+  defp thinking_message?(%{"type" => "assistant"} = msg) do
+    msg
+    |> get_in(["message", "content"])
+    |> List.wrap()
+    |> Enum.any?(&(is_map(&1) && &1["type"] == "thinking"))
+  end
+
+  defp thinking_message?(_), do: false
+
+  defp extract_thinking_blocks(msg) do
+    msg
+    |> get_in(["message", "content"])
+    |> List.wrap()
+    |> Enum.filter(&(is_map(&1) && &1["type"] == "thinking"))
   end
 
   attr :msg, :map, required: true
@@ -226,6 +274,55 @@ defmodule OrcaHubWeb.MessageComponents do
         messages={Map.get(@subagent_map, agent["id"], [])}
         session_node={@session_node}
       />
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :blocks, :list, required: true
+
+  defp thinking_block(assigns) do
+    rendered =
+      Enum.map(assigns.blocks, fn block ->
+        case String.trim(block["thinking"] || "") do
+          "" -> {:redacted, true}
+          text -> {:markdown, Markdown.render(text)}
+        end
+      end)
+
+    assigns =
+      assigns
+      |> assign(:count, length(assigns.blocks))
+      |> assign(:rendered, rendered)
+
+    ~H"""
+    <div class="ml-4 my-1">
+      <details id={"thinking-group-#{@id}"} class="group">
+        <summary class="flex items-center gap-2 cursor-pointer text-xs font-medium opacity-70 hover:opacity-100 transition-opacity">
+          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-info/10 text-info">
+            <.icon name="hero-sparkles-micro" class="size-3" /> Thinking
+          </span>
+          <span :if={@count > 0} class="opacity-40 text-[10px]">
+            {@count} {if @count == 1, do: "thought", else: "thoughts"}
+          </span>
+          <.icon
+            name="hero-chevron-right-micro"
+            class="size-3 opacity-50 group-open:rotate-90 transition-transform"
+          />
+        </summary>
+        <div class="mt-2 ml-2 pl-3 border-l-2 border-info/30 space-y-2 text-sm">
+          <%= for item <- @rendered do %>
+            <%= case item do %>
+              <% {:markdown, html} -> %>
+                <div class="prose prose-sm max-w-none opacity-70">{html}</div>
+              <% {:redacted, _} -> %>
+                <div class="text-xs italic opacity-40 flex items-center gap-1.5">
+                  <.icon name="hero-lock-closed-micro" class="size-3" /> Encrypted thought
+                </div>
+            <% end %>
+          <% end %>
+        </div>
+      </details>
     </div>
     """
   end
