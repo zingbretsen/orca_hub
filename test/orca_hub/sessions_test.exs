@@ -102,4 +102,24 @@ defmodule OrcaHub.SessionsTest do
       assert session.triggered == true
     end
   end
+
+  describe "list_idle_sessions_with_last_assistant_message/0" do
+    test "includes top-level idle sessions but excludes orchestrator-spawned children",
+         %{project: project} do
+      parent = create_session(project, %{title: "Parent", status: "idle"})
+
+      child =
+        create_session(project, %{
+          title: "Child",
+          status: "idle",
+          parent_session_id: parent.id
+        })
+
+      results = Sessions.list_idle_sessions_with_last_assistant_message()
+      ids = Enum.map(results, fn {s, _msg} -> s.id end)
+
+      assert parent.id in ids
+      refute child.id in ids
+    end
+  end
 end

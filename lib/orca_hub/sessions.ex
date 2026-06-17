@@ -205,7 +205,7 @@ defmodule OrcaHub.Sessions do
         left_join: m in subquery(last_messages),
         on: m.session_id == s.id,
         left_join: p in assoc(s, :project),
-        where: is_nil(s.archived_at) and s.status == "idle",
+        where: is_nil(s.archived_at) and s.status == "idle" and is_nil(s.parent_session_id),
         order_by: [asc: s.priority, asc: s.updated_at],
         preload: [project: p],
         select: {s, m}

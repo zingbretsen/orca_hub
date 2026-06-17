@@ -74,4 +74,10 @@ defmodule OrcaHub.Claude.ConfigTest do
     {args, _} = Config.build_args("hello", skip_permissions: false)
     refute "--dangerously-skip-permissions" in args
   end
+
+  test "tools restricts built-in toolset via --tools" do
+    {args, _} = Config.build_args("hello", tools: "Read,Grep,Write,Edit")
+    assert "--tools" in args
+    assert "Read,Grep,Write,Edit" in args
+  end
 end

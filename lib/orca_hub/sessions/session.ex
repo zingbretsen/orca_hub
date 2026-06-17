@@ -20,6 +20,7 @@ defmodule OrcaHub.Sessions.Session do
     field :runner_node, :string
     field :original_node, :string
     field :orchestrator, :boolean, default: false
+    field :parent_session_id, :binary_id
 
     has_many :messages, OrcaHub.Sessions.Message
     belongs_to :project, OrcaHub.Projects.Project
@@ -41,7 +42,8 @@ defmodule OrcaHub.Sessions.Session do
       :priority,
       :runner_node,
       :original_node,
-      :orchestrator
+      :orchestrator,
+      :parent_session_id
     ])
     |> validate_required([:directory])
     |> validate_inclusion(:status, ~w(ready idle running waiting error compacting))

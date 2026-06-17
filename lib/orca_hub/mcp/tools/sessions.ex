@@ -175,6 +175,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             runner_node: Atom.to_string(runner_node)
           }
           |> maybe_put_field(:title, args["title"])
+          |> maybe_link_parent(caller, caller_session_id)
 
         case HubRPC.create_session(session_attrs) do
           {:ok, session} ->
@@ -187,6 +188,14 @@ defmodule OrcaHub.MCP.Tools.Sessions do
         end
     end
   end
+
+  # A non-nil parent_session_id always means "spawned by an orchestrator", so only
+  # set it when the caller is itself an orchestrator.
+  defp maybe_link_parent(attrs, %{orchestrator: true}, caller_session_id) do
+    Map.put(attrs, :parent_session_id, caller_session_id)
+  end
+
+  defp maybe_link_parent(attrs, _caller, _caller_session_id), do: attrs
 
   # ── search_sessions helpers ───────────────────────────────────────────
 

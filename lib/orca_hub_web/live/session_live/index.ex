@@ -482,7 +482,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
   end
 
   # No worktree sub-grouping for unassigned sessions
-  defp split_worktree_sessions(nil, sessions), do: {sessions, []}
+  defp split_worktree_sessions(nil, sessions), do: {order_with_children(sessions), []}
 
   defp split_worktree_sessions(project, sessions) do
     project_dir = Path.expand(project.directory)
@@ -491,6 +491,8 @@ defmodule OrcaHubWeb.SessionLive.Index do
       Enum.split_with(sessions, fn session ->
         Path.expand(session.directory) == project_dir
       end)
+
+    main = order_with_children(main)
 
     worktree_groups =
       if worktree == [] do
@@ -505,7 +507,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
         |> Enum.map(fn {dir, dir_sessions} ->
           wt_info = worktree_map[Path.expand(dir)]
           label = if wt_info, do: wt_info[:branch], else: Path.basename(dir)
-          {dir, label, dir_sessions}
+          {dir, label, order_with_children(dir_sessions)}
         end)
         |> Enum.sort_by(
           fn {_dir, _label, dir_sessions} ->
@@ -516,6 +518,25 @@ defmodule OrcaHubWeb.SessionLive.Index do
       end
 
     {main, worktree_groups}
+  end
+
+  # Reorder a flat list of sessions so that orchestrator-spawned children render
+  # directly beneath their parent. A child whose parent is NOT in this same list
+  # (e.g. filtered out, or in a different group) stays at the top level. Children
+  # are kept in the list so selection/bulk-archive still includes them.
+  defp order_with_children(sessions) do
+    ids = MapSet.new(sessions, & &1.id)
+
+    {children, tops} =
+      Enum.split_with(sessions, fn s ->
+        s.parent_session_id && MapSet.member?(ids, s.parent_session_id)
+      end)
+
+    children_by_parent = Enum.group_by(children, & &1.parent_session_id)
+
+    Enum.flat_map(tops, fn parent ->
+      [parent | Map.get(children_by_parent, parent.id, [])]
+    end)
   end
 
   defp browse_to(socket, path) do

@@ -115,9 +115,16 @@
       />
     </:col>
     <:col :let={session} label="Title" class="w-3/5">
-      <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">
-        {session.title}
-      </.link>
+      <div class={["flex items-center gap-1", session.parent_session_id && "pl-6"]}>
+        <.icon
+          :if={session.parent_session_id}
+          name="hero-arrow-turn-down-right-micro"
+          class="size-3.5 text-base-content/40 shrink-0"
+        />
+        <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">
+          {session.title}
+        </.link>
+      </div>
     </:col>
     <:col :let={session} label="Status" class="w-1/5">
       <div class="flex flex-wrap gap-1">

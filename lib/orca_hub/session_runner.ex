@@ -416,8 +416,12 @@ defmodule OrcaHub.SessionRunner do
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, val), do: Keyword.put(opts, key, val)
 
-  # Orchestrator sessions get a restricted toolset: read-only file access plus web
-  @orchestrator_tools "Read,Glob,Grep,WebFetch,WebSearch"
+  # Orchestrator sessions get a restricted toolset: read-only file access plus web,
+  # plus Write/Edit so they can persist their file-based memory under `.claude`.
+  # Writes are NOT path-enforced (skip-permissions stays on); the system prompt
+  # instructs orchestrators to confine their direct writes to `.claude` and to
+  # delegate all other implementation work to worker sessions.
+  @orchestrator_tools "Read,Glob,Grep,WebFetch,WebSearch,Write,Edit"
   defp orchestrator_tools(true), do: @orchestrator_tools
   defp orchestrator_tools(_), do: nil
 
@@ -482,7 +486,7 @@ defmodule OrcaHub.SessionRunner do
 
     ## Your Capabilities
 
-    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You CANNOT edit files, run shell commands, or make changes directly.
+    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
     ## How to Work
 
@@ -509,7 +513,7 @@ defmodule OrcaHub.SessionRunner do
     5. If issues arise, provide guidance or spawn additional workers
     6. When all work is complete, cancel heartbeat and summarize results
 
-    Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+    Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
     """
     |> String.trim()
   end
