@@ -11,7 +11,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "send_message_to_session",
         "description" =>
-          "Send a message to another active Claude Code session. The message will interrupt the target session and deliver your message. Your session ID will be included automatically so the recipient knows who sent it. Use this to coordinate with sibling sessions working in the same directory — check the .agents/ directory to discover active sessions and their IDs.",
+          "Send a message to another active Claude Code session. The message will interrupt the target session and deliver your message. Your session ID will be included automatically so the recipient knows who sent it. Use this to coordinate with sibling sessions working in the same directory — check the .agents/ directory to discover active sessions and their IDs. If the target session is archived, it will be automatically unarchived.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -100,6 +100,21 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           },
           "required" => ["prompt"]
         }
+      },
+      %{
+        "name" => "archive_session",
+        "description" =>
+          "Archive a session. Orchestrators should call this after a child session has finished its task to keep the queue and UI clean. Archived sessions are automatically unarchived when you send them a message via `send_message_to_session`, so it's safe to archive a session and resume the conversation later.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "session_id" => %{
+              "type" => "string",
+              "description" => "The OrcaHub session ID of the session to archive"
+            }
+          },
+          "required" => ["session_id"]
+        }
       }
     ]
   end
@@ -128,6 +143,26 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
           {:error, reason} ->
             error("Failed to send message to session #{target_id}: #{inspect(reason)}")
+        end
+
+      nil ->
+        error("Session #{target_id} not found on any node.")
+    end
+  end
+
+  def call("archive_session", args, _state) do
+    target_id = args["session_id"]
+
+    case Cluster.find_session(target_id) do
+      {node, session} ->
+        case Cluster.archive_session(node, session) do
+          {:ok, _} ->
+            text(
+              "Session #{target_id} archived. Send it a message to resume — it will be automatically unarchived."
+            )
+
+          {:error, changeset} ->
+            error("Failed to archive session #{target_id}: #{inspect(changeset.errors)}")
         end
 
       nil ->

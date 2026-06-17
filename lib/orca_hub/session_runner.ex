@@ -502,7 +502,9 @@ defmodule OrcaHub.SessionRunner do
 
     4. **Check in proactively** — If you don't hear back from a worker session within a reasonable time, send it a message asking for a status update.
 
-    5. **Clean up** — When all delegated work is complete, use `cancel_heartbeat` to stop monitoring.
+    5. **Archive completed children** — When a worker session has finished its task, use `archive_session` to archive it. This keeps the session list tidy. If you need to continue the conversation later, just send a message to the archived session — it will be automatically unarchived.
+
+    6. **Cancel monitoring** — When all delegated work is complete, use `cancel_heartbeat` to stop monitoring.
 
     ## Example Flow
 
@@ -511,7 +513,8 @@ defmodule OrcaHub.SessionRunner do
     3. Set a heartbeat to check on progress
     4. When workers report back or heartbeat fires, check status
     5. If issues arise, provide guidance or spawn additional workers
-    6. When all work is complete, cancel heartbeat and summarize results
+    6. As each worker finishes, archive its session to keep the list clean
+    7. When all work is complete, cancel heartbeat and summarize results
 
     Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
     """
