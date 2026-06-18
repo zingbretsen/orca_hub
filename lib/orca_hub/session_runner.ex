@@ -490,21 +490,23 @@ defmodule OrcaHub.SessionRunner do
 
     ## How to Work
 
+    **Important:** The OrcaHub MCP tools must be called by their full namespaced name — the MCP prefix followed by the tool name, e.g. `mcp__orca__start_session` (not just `start_session`). The same applies to every tool below (`mcp__orca__send_message_to_session`, `mcp__orca__schedule_heartbeat`, `mcp__orca__search_sessions`, `mcp__orca__archive_session`, `mcp__orca__cancel_heartbeat`, etc.).
+
     1. **Delegate all implementation work** to other sessions using:
-       - `start_session` — spawn a new worker session with a detailed prompt
-       - `send_message_to_session` — direct an existing session
+       - `mcp__orca__start_session` — spawn a new worker session with a detailed prompt
+       - `mcp__orca__send_message_to_session` — direct an existing session
 
     2. **Request callbacks** — When delegating work, explicitly ask the worker session to message you back when done:
-       > "When you have completed this task, use `send_message_to_session` to notify session #{session_id} with a summary of what you did."
+       > "When you have completed this task, use `mcp__orca__send_message_to_session` to notify session #{session_id} with a summary of what you did."
 
-    3. **Set up monitoring** — After spawning workers, use `schedule_heartbeat` to wake yourself up periodically (e.g., every 2-5 minutes) to check on progress:
-       > "Check on worker sessions. Use `search_sessions` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
+    3. **Set up monitoring** — After spawning workers, use `mcp__orca__schedule_heartbeat` to wake yourself up periodically (e.g., every 2-5 minutes) to check on progress:
+       > "Check on worker sessions. Use `mcp__orca__search_sessions` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
 
     4. **Check in proactively** — If you don't hear back from a worker session within a reasonable time, send it a message asking for a status update.
 
-    5. **Archive completed children** — When a worker session has finished its task, use `archive_session` to archive it. This keeps the session list tidy. If you need to continue the conversation later, just send a message to the archived session — it will be automatically unarchived.
+    5. **Archive completed children** — When a worker session has finished its task, use `mcp__orca__archive_session` to archive it. This keeps the session list tidy. If you need to continue the conversation later, just send a message to the archived session — it will be automatically unarchived.
 
-    6. **Cancel monitoring** — When all delegated work is complete, use `cancel_heartbeat` to stop monitoring.
+    6. **Cancel monitoring** — When all delegated work is complete, use `mcp__orca__cancel_heartbeat` to stop monitoring.
 
     ## Example Flow
 
@@ -524,11 +526,11 @@ defmodule OrcaHub.SessionRunner do
   # Orchestrator sessions can use `search_sessions`; regular sessions cannot,
   # so point them at the `.agents/` directory to discover sibling session IDs.
   defp sibling_sessions_prompt(true) do
-    "Other agent sessions may be active in this directory. Use the `search_sessions` MCP tool to discover sibling sessions you may want to coordinate with."
+    "Other agent sessions may be active in this directory. Use the `mcp__orca__search_sessions` MCP tool to discover sibling sessions you may want to coordinate with."
   end
 
   defp sibling_sessions_prompt(_orchestrator) do
-    "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then use the `send_message_to_session` MCP tool to coordinate with them."
+    "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then use the `mcp__orca__send_message_to_session` MCP tool to coordinate with them."
   end
 
   defp commit_trailer_prompt(session_id) do
