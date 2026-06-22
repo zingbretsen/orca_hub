@@ -50,7 +50,20 @@ defmodule OrcaHub.MCP.Server do
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
     orca_session_id = Keyword.get(opts, :orca_session_id)
-    {:ok, %{session_id: session_id, orca_session_id: orca_session_id, initialized: false}}
+
+    # Resolve orchestrator status once, here, while the orca session row is
+    # already present — rather than on every tools/list and tools/call, where
+    # a transient hub/DB failure would silently strip the orchestrator tool
+    # set for the whole (CLI-cached) connection.
+    orchestrator = Tools.resolve_orchestrator(orca_session_id)
+
+    {:ok,
+     %{
+       session_id: session_id,
+       orca_session_id: orca_session_id,
+       orchestrator: orchestrator,
+       initialized: false
+     }}
   end
 
   @impl true
