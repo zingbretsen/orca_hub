@@ -567,18 +567,37 @@ defmodule OrcaHub.SessionRunner do
     Jason.encode!(%{"mcpServers" => Map.merge(scoped_servers, %{"orca" => orca_server})})
   end
 
-  defp build_system_prompt(data) do
+  @doc false
+  # Public for testing. Builds the --append-system-prompt text for a session.
+  def build_system_prompt(data) do
     parts =
       [
         "Your OrcaHub session ID is #{data.session_id}.",
         orchestrator_system_prompt(data.orchestrator, data.session_id),
         if(!data.orchestrator, do: commit_trailer_prompt(data.session_id)),
+        if(!data.orchestrator, do: ask_user_question_prompt()),
         sibling_sessions_prompt(data.orchestrator),
         context_files_prompt(data.directory)
       ]
       |> Enum.reject(&is_nil/1)
 
     Enum.join(parts, "\n\n")
+  end
+
+  # Only non-orchestrator sessions have the AskUserQuestion tool. Headless runs
+  # auto-return a placeholder/denial tool result for it, and the model tends to
+  # continue as if answered — so we explicitly instruct it to stop and wait.
+  defp ask_user_question_prompt do
+    """
+    When you use the AskUserQuestion tool to ask the user something, the \
+    environment will immediately return an automatic placeholder tool result \
+    (it may look like an error or a denial such as "Answer questions?"). That \
+    placeholder is NOT the user's answer — do not treat it as a response and do \
+    not continue based on it. After calling AskUserQuestion, stop and end your \
+    turn. The user's real answer will arrive as a separate follow-up message; \
+    only act on the question once the user has actually responded.\
+    """
+    |> String.trim()
   end
 
   defp orchestrator_system_prompt(false, _session_id), do: nil
