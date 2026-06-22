@@ -1,14 +1,16 @@
 defmodule OrcaHubWeb.QueueLive do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Cluster, HubRPC}
+  alias OrcaHub.{AskUserQuestion, Cluster, HubRPC}
   alias OrcaHubWeb.{Markdown, NodeFilter}
+
+  import OrcaHubWeb.AskUserQuestionComponent
 
   @impl true
   def mount(_params, _session, socket) do
     node_filter = socket.assigns.node_filter
     queue_filter = :all
-    {entries, node_map} = load_entries_with_nodes(node_filter, queue_filter)
+    {entries, node_map, aq_questions} = load_entries_with_nodes(node_filter, queue_filter)
 
     if connected?(socket) do
       for {session, _msg} <- entries do
@@ -22,6 +24,8 @@ defmodule OrcaHubWeb.QueueLive do
      socket
      |> assign(:entries, entries)
      |> assign(:node_map, node_map)
+     |> assign(:aq_questions, aq_questions)
+     |> assign(:aq_state, %{})
      |> assign(:clustered, Node.list() != [])
      |> assign(:prompt, "")
      |> assign(:form_key, 0)
@@ -54,7 +58,7 @@ defmodule OrcaHubWeb.QueueLive do
       session = Cluster.get_session!(node, session_id)
       Cluster.unarchive_session(node, session)
 
-      {entries, node_map} =
+      {entries, node_map, aq_questions} =
         load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
 
       {:noreply,
@@ -62,7 +66,8 @@ defmodule OrcaHubWeb.QueueLive do
        |> cancel_undo_timer()
        |> assign(undo_archive_session: nil)
        |> assign(:entries, entries)
-       |> assign(:node_map, node_map)}
+       |> assign(:node_map, node_map)
+       |> assign(:aq_questions, aq_questions)}
     else
       {:noreply, socket}
     end
@@ -120,10 +125,14 @@ defmodule OrcaHubWeb.QueueLive do
     session = Cluster.get_session!(node, id)
     Cluster.defer_session(node, session)
 
-    {entries, node_map} =
+    {entries, node_map, aq_questions} =
       load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
 
-    {:noreply, socket |> assign(:entries, entries) |> assign(:node_map, node_map)}
+    {:noreply,
+     socket
+     |> assign(:entries, entries)
+     |> assign(:node_map, node_map)
+     |> assign(:aq_questions, aq_questions)}
   end
 
   def handle_event("delegate", %{"id" => id, "prompt" => prompt}, socket) do
@@ -248,6 +257,47 @@ defmodule OrcaHubWeb.QueueLive do
     end
   end
 
+  # AskUserQuestion wizard events (per-session state keyed by id)
+
+  def handle_event("aq_select", %{"id" => id, "q" => q, "label" => label} = params, socket) do
+    page = String.to_integer(q)
+    multi = params["multi"] == "true"
+    state = aq_state_for(socket, id)
+    selections = AskUserQuestion.toggle_selection(state.selections, page, label, multi)
+    {:noreply, put_aq_state(socket, id, %{state | selections: selections})}
+  end
+
+  def handle_event("aq_prev", %{"id" => id}, socket) do
+    state = aq_state_for(socket, id)
+    {:noreply, put_aq_state(socket, id, %{state | page: max(state.page - 1, 0)})}
+  end
+
+  def handle_event("aq_next", %{"id" => id}, socket) do
+    state = aq_state_for(socket, id)
+    max_page = length(Map.get(socket.assigns.aq_questions, id, [])) - 1
+    {:noreply, put_aq_state(socket, id, %{state | page: min(state.page + 1, max_page)})}
+  end
+
+  def handle_event("aq_submit", %{"id" => id}, socket) do
+    questions = Map.get(socket.assigns.aq_questions, id, [])
+    state = aq_state_for(socket, id)
+    node = Map.get(socket.assigns.node_map, id, node())
+    ensure_runner(node, id)
+
+    prompt = AskUserQuestion.format_answers(questions, state.selections)
+
+    case Cluster.send_message(node, id, prompt) do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(:entries, reject_session(socket.assigns.entries, id))
+         |> assign(:aq_state, Map.delete(socket.assigns.aq_state, id))}
+
+      {:error, :busy} ->
+        {:noreply, put_flash(socket, :error, "Session is busy")}
+    end
+  end
+
   def handle_event("toggle_tts", _params, socket) do
     {:noreply, assign(socket, :tts_autoplay, !socket.assigns.tts_autoplay)}
   end
@@ -258,13 +308,16 @@ defmodule OrcaHubWeb.QueueLive do
 
   def handle_event("set_filter", %{"filter" => filter}, socket) do
     filter = String.to_existing_atom(filter)
-    {entries, node_map} = load_entries_with_nodes(socket.assigns.node_filter, filter)
+
+    {entries, node_map, aq_questions} =
+      load_entries_with_nodes(socket.assigns.node_filter, filter)
 
     {:noreply,
      socket
      |> assign(:queue_filter, filter)
      |> assign(:entries, entries)
-     |> assign(:node_map, node_map)}
+     |> assign(:node_map, node_map)
+     |> assign(:aq_questions, aq_questions)}
   end
 
   def handle_event("validate", %{"prompt" => prompt}, socket) do
@@ -291,17 +344,19 @@ defmodule OrcaHubWeb.QueueLive do
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   def reload_for_node_filter(socket) do
-    {entries, node_map} =
+    {entries, node_map, aq_questions} =
       load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
 
     {:noreply,
      socket
      |> assign(:entries, entries)
-     |> assign(:node_map, node_map)}
+     |> assign(:node_map, node_map)
+     |> assign(:aq_questions, aq_questions)}
   end
 
-  defp handle_status_change(:idle, socket) do
-    {entries, node_map} =
+  # Both idle and waiting sessions belong in the queue; reload on either.
+  defp handle_status_change(status, socket) when status in [:idle, :waiting] do
+    {entries, node_map, aq_questions} =
       load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
 
     # Subscribe to any new sessions we weren't tracking
@@ -318,6 +373,7 @@ defmodule OrcaHubWeb.QueueLive do
       socket
       |> assign(:entries, entries)
       |> assign(:node_map, node_map)
+      |> assign(:aq_questions, aq_questions)
       |> assign(
         :tts_autoplay_pending,
         was_empty && now_has_entries && socket.assigns.tts_autoplay
@@ -358,11 +414,38 @@ defmodule OrcaHubWeb.QueueLive do
 
     node_map = Map.new(tagged, fn {n, {session, _msg}} -> {session.id, n} end)
     entries = Enum.map(tagged, fn {_n, entry} -> entry end)
-    {entries, node_map}
+    {entries, node_map, load_aq_questions(entries)}
+  end
+
+  # For each waiting session, derive its pending AskUserQuestion from full
+  # history (the last assistant message in `entries` is the model's follow-up
+  # text, not the tool_use). Only waiting sessions are queried.
+  defp load_aq_questions(entries) do
+    entries
+    |> Enum.filter(fn {session, _msg} -> session.status == "waiting" end)
+    |> Enum.reduce(%{}, fn {session, _msg}, acc ->
+      messages =
+        session.id
+        |> HubRPC.list_messages()
+        |> Enum.map(& &1.data)
+
+      case AskUserQuestion.pending_questions(messages) do
+        %{questions: questions} -> Map.put(acc, session.id, questions)
+        nil -> acc
+      end
+    end)
   end
 
   defp reject_session(entries, id) do
     Enum.reject(entries, fn {session, _} -> session.id == id end)
+  end
+
+  defp aq_state_for(socket, id) do
+    Map.get(socket.assigns.aq_state, id, %{page: 0, selections: %{}})
+  end
+
+  defp put_aq_state(socket, id, state) do
+    assign(socket, :aq_state, Map.put(socket.assigns.aq_state, id, state))
   end
 
   defp ensure_runner(target_node, session_id) do

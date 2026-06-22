@@ -2,9 +2,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Cluster, HubRPC, Projects, SessionRunner, Sessions}
+  alias OrcaHub.{AskUserQuestion, Cluster, HubRPC, Projects, SessionRunner, Sessions}
   alias OrcaHubWeb.{Markdown, MessageComponents}
   alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Todos}
+
+  import OrcaHubWeb.AskUserQuestionComponent
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -70,6 +72,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:show_mcp_server_picker, false)
      |> assign(:show_heartbeat_modal, false)
      |> assign(:heartbeat_info, HubRPC.get_heartbeat(id))
+     |> assign_ask_user_question(runner_state.status, runner_state.messages)
      |> load_session_todos()
      |> load_session_commits()
      |> allow_upload(:image,
@@ -117,6 +120,52 @@ defmodule OrcaHubWeb.SessionLive.Show do
         |> Enum.map(fn msg -> Map.put(msg.data, "timestamp", msg.inserted_at) end)
 
       %{status: session.status || "error", messages: saved_messages}
+    end
+  end
+
+  # Derive the pending AskUserQuestion from history and open the modal when the
+  # session is waiting on the user. Resets wizard page/selection state.
+  defp assign_ask_user_question(socket, status, messages) do
+    pending = AskUserQuestion.pending_questions(messages)
+
+    socket
+    |> assign(:pending_questions, pending)
+    |> assign(:aq_open, status == :waiting && pending != nil)
+    |> assign(:aq_page, 0)
+    |> assign(:aq_selections, %{})
+  end
+
+  # Refresh just the pending questions (keep wizard page/selection state).
+  defp refresh_pending_questions(socket) do
+    assign(socket, :pending_questions, AskUserQuestion.pending_questions(socket.assigns.messages))
+  end
+
+  # Open the modal (resetting the wizard) when the session is waiting and a
+  # question is present; close it once the session is no longer waiting. The
+  # runner broadcasts :waiting before the tool_use event, so we re-check on both
+  # status and event updates.
+  defp sync_question_modal(socket) do
+    %{status: status, pending_questions: pending, aq_open: open?} = socket.assigns
+
+    cond do
+      status == :waiting && pending && !open? ->
+        socket
+        |> assign(:aq_open, true)
+        |> assign(:aq_page, 0)
+        |> assign(:aq_selections, %{})
+
+      status != :waiting && open? ->
+        assign(socket, :aq_open, false)
+
+      true ->
+        socket
+    end
+  end
+
+  defp pending_question_list(socket) do
+    case socket.assigns.pending_questions do
+      %{questions: questions} -> questions
+      _ -> []
     end
   end
 
@@ -343,6 +392,48 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def handle_event("stop_session", _params, socket) do
     Cluster.stop_session(socket.assigns.session_node, socket.assigns.session.id)
     {:noreply, socket}
+  end
+
+  # AskUserQuestion wizard events
+
+  def handle_event("aq_select", %{"q" => q, "label" => label} = params, socket) do
+    page = String.to_integer(q)
+    multi = params["multi"] == "true"
+
+    selections =
+      AskUserQuestion.toggle_selection(socket.assigns.aq_selections, page, label, multi)
+
+    {:noreply, assign(socket, :aq_selections, selections)}
+  end
+
+  def handle_event("aq_prev", _params, socket) do
+    {:noreply, assign(socket, :aq_page, max(socket.assigns.aq_page - 1, 0))}
+  end
+
+  def handle_event("aq_next", _params, socket) do
+    max_page = length(pending_question_list(socket)) - 1
+    {:noreply, assign(socket, :aq_page, min(socket.assigns.aq_page + 1, max_page))}
+  end
+
+  def handle_event("aq_cancel", _params, socket) do
+    {:noreply, assign(socket, :aq_open, false)}
+  end
+
+  def handle_event("aq_submit", _params, socket) do
+    case socket.assigns.pending_questions do
+      %{questions: questions} ->
+        prompt = AskUserQuestion.format_answers(questions, socket.assigns.aq_selections)
+        Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, prompt)
+
+        {:noreply,
+         socket
+         |> assign(:aq_open, false)
+         |> assign(:aq_page, 0)
+         |> assign(:aq_selections, %{})}
+
+      _ ->
+        {:noreply, assign(socket, :aq_open, false)}
+    end
   end
 
   # MCP server events
@@ -1001,12 +1092,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
     socket = assign(socket, :messages, socket.assigns.messages ++ [event])
     socket = handle_plan_events(socket, event)
     socket = handle_todo_events(socket, event)
+    socket = socket |> refresh_pending_questions() |> sync_question_modal()
     {:noreply, socket}
   end
 
   @impl true
   def handle_info({:status, status}, socket) do
-    socket = assign(socket, :status, status)
+    socket =
+      socket |> assign(:status, status) |> refresh_pending_questions() |> sync_question_modal()
 
     socket =
       if status == :idle do

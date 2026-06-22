@@ -9,7 +9,7 @@ defmodule OrcaHub.SessionRunner do
   use GenStatem
   require Logger
 
-  alias OrcaHub.{AgentPresence, HubRPC}
+  alias OrcaHub.{AgentPresence, AskUserQuestion, HubRPC}
   alias OrcaHub.Claude.{Config, StreamParser}
 
   # Route a HubRPC call through the node that owns the session's DB record.
@@ -77,6 +77,15 @@ defmodule OrcaHub.SessionRunner do
 
     initial_state = if saved_messages == [], do: :ready, else: :idle
 
+    # If the session was persisted as "waiting" (an unanswered AskUserQuestion),
+    # rebuild the pending questions from history so the UI can render them after
+    # a runner restart. DB status — not message history — is the source of truth:
+    # the synthetic is_error tool_result means history ALWAYS looks "unanswered".
+    pending_questions =
+      if session.status == "waiting",
+        do: AskUserQuestion.pending_questions(saved_messages),
+        else: nil
+
     # Record which node is running this session
     # Set original_node only if not already set (preserves the first node that ran the session)
     current_node = Atom.to_string(node())
@@ -107,7 +116,8 @@ defmodule OrcaHub.SessionRunner do
       error_output: "",
       messages: saved_messages,
       first_prompt: nil,
-      pending_prompts: []
+      pending_prompts: [],
+      pending_questions: pending_questions
     }
 
     {:ok, initial_state, data}
@@ -220,17 +230,38 @@ defmodule OrcaHub.SessionRunner do
           "Auto-resuming session #{data.session_id} with #{length(prompts)} pending prompt(s)"
         )
 
+        # A queued answer/prompt resumes the run; we're no longer waiting on the user.
+        data = resume_clears_waiting(data)
+
         new_port = open_port(combined_prompt, data)
-        {:keep_state, %{data | port: new_port, buffer: "", error_output: "", pending_prompts: []}}
+
+        {:keep_state,
+         %{
+           data
+           | port: new_port,
+             buffer: "",
+             error_output: "",
+             pending_prompts: [],
+             pending_questions: nil
+         }}
 
       [] ->
-        new_status = if code == 0, do: :idle, else: :error
         data = handle_cli_error(code, data)
-
         session = db_call(data, :get_session!, [data.session_id])
-        db_call(data, :update_session, [session, %{status: to_string(new_status)}])
-        broadcast(data.session_id, {:status, new_status})
-        AgentPresence.update_status(data.directory, data.session_id, to_string(new_status))
+
+        # On a clean exit with an unanswered AskUserQuestion, persist/broadcast
+        # "waiting" instead of "idle". The state machine still moves to :idle so
+        # the next message (the user's answer) resumes normally.
+        {db_status, broadcast_status} =
+          cond do
+            code == 0 and data.pending_questions != nil -> {"waiting", :waiting}
+            code == 0 -> {"idle", :idle}
+            true -> {"error", :error}
+          end
+
+        db_call(data, :update_session, [session, %{status: db_status}])
+        broadcast(data.session_id, {:status, broadcast_status})
+        AgentPresence.update_status(data.directory, data.session_id, db_status)
 
         if code == 0 && (session.title == nil || session.title == "") do
           Logger.info(
@@ -240,7 +271,8 @@ defmodule OrcaHub.SessionRunner do
           maybe_generate_title(data, data.first_prompt)
         end
 
-        {:next_state, new_status, %{data | port: nil}}
+        next_state = if code == 0, do: :idle, else: :error
+        {:next_state, next_state, %{data | port: nil}}
     end
   end
 
@@ -327,8 +359,20 @@ defmodule OrcaHub.SessionRunner do
          buffer: "",
          error_output: "",
          messages: data.messages ++ [user_event],
-         first_prompt: first_prompt
+         first_prompt: first_prompt,
+         pending_questions: nil
      }, [{:reply, from, :ok}]}
+  end
+
+  # When a hung run is resumed by a queued answer, leave "waiting" behind and
+  # reflect that the session is running again.
+  defp resume_clears_waiting(%{pending_questions: nil} = data), do: data
+
+  defp resume_clears_waiting(data) do
+    update_session_status(data, %{status: "running"})
+    broadcast(data.session_id, {:status, :running})
+    AgentPresence.update_status(data.directory, data.session_id, "running")
+    data
   end
 
   defp make_user_event(prompt) do
@@ -339,7 +383,16 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp state_snapshot(status, data) do
-    %{status: status, messages: data.messages, claude_session_id: data.claude_session_id}
+    # An unanswered AskUserQuestion surfaces as the "waiting" status even though
+    # the GenStatem state is :idle (clean exit) or :running (hung run).
+    effective = if data.pending_questions != nil, do: :waiting, else: status
+
+    %{
+      status: effective,
+      messages: data.messages,
+      claude_session_id: data.claude_session_id,
+      pending_questions: data.pending_questions
+    }
   end
 
   defp open_port(prompt, data) do
@@ -401,12 +454,65 @@ defmodule OrcaHub.SessionRunner do
     %{data | claude_session_id: sid, messages: data.messages ++ [event]}
   end
 
+  # Assistant turn — may contain an AskUserQuestion tool_use that puts the
+  # session into the "waiting" status until the user answers.
+  defp handle_stream_event(%{"type" => "assistant", "message" => %{"content" => c}} = event, data)
+       when is_list(c) do
+    data = maybe_mark_waiting(event, data)
+    event = stamp(event)
+    persist_message(data, event)
+    broadcast(data.session_id, {:event, event})
+    %{data | messages: data.messages ++ [event]}
+  end
+
+  # User turn — a NON-error tool_result for the pending question means it was
+  # actually answered (the synthetic is_error result does NOT count).
+  defp handle_stream_event(%{"type" => "user", "message" => %{"content" => c}} = event, data)
+       when is_list(c) do
+    data = maybe_clear_waiting(event, data)
+    event = stamp(event)
+    persist_message(data, event)
+    broadcast(data.session_id, {:event, event})
+    %{data | messages: data.messages ++ [event]}
+  end
+
   defp handle_stream_event(event, data) do
     event = stamp(event)
     persist_message(data, event)
     broadcast(data.session_id, {:event, event})
     %{data | messages: data.messages ++ [event]}
   end
+
+  defp maybe_mark_waiting(event, data) do
+    case AskUserQuestion.pending_questions([event]) do
+      %{} = pending ->
+        update_session_status(data, %{status: "waiting"})
+        broadcast(data.session_id, {:status, :waiting})
+        AgentPresence.update_status(data.directory, data.session_id, "waiting")
+        %{data | pending_questions: pending}
+
+      nil ->
+        data
+    end
+  end
+
+  defp maybe_clear_waiting(
+         %{"message" => %{"content" => content}},
+         %{
+           pending_questions: %{tool_use_id: id}
+         } = data
+       )
+       when is_list(content) do
+    answered? =
+      Enum.any?(content, fn
+        %{"type" => "tool_result", "tool_use_id" => ^id} = r -> r["is_error"] != true
+        _ -> false
+      end)
+
+    if answered?, do: %{data | pending_questions: nil}, else: data
+  end
+
+  defp maybe_clear_waiting(_event, data), do: data
 
   defp broadcast(session_id, payload) do
     Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", payload)

@@ -1327,4 +1327,13 @@
       <label class="modal-backdrop" phx-click="close_terminal_panel"></label>
     </div>
   </div>
+
+  <.ask_user_question
+    :if={@status == :waiting && @aq_open && @pending_questions}
+    session_id={@session.id}
+    questions={@pending_questions.questions}
+    page={@aq_page}
+    selections={@aq_selections}
+    variant={:modal}
+  />
 </div>

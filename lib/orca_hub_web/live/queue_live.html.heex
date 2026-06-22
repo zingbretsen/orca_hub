@@ -82,107 +82,127 @@
         </span>
       </div>
 
-      <%!-- Last assistant message --%>
-      <% text = extract_assistant_text(message) %>
-      <div :if={text} data-tts-container>
-        <div
-          class="prose prose-sm max-w-none bg-base-200 rounded-lg p-3 max-h-48 overflow-y-auto"
-          data-tts-text
-        >
-          {Markdown.render(text)}
-        </div>
-        <div
-          class="mt-1"
-          id={"tts-queue-#{session.id}"}
-          phx-hook="TTSPlayer"
-          phx-update="ignore"
-          data-tts-autoplay={idx == 0 && @tts_autoplay_pending}
-        >
-          <div class="flex items-center gap-1">
-            <button
-              data-tts-action="toggle"
-              class="btn btn-ghost btn-xs btn-circle"
-              title="Read aloud"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                class="size-4"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z" />
-              </svg>
-            </button>
-            <div data-tts-controls class="hidden flex items-center gap-1">
+      <% pending_q = session.status == "waiting" && Map.get(@aq_questions, session.id) %>
+      <%= if pending_q do %>
+        <% st = Map.get(@aq_state, session.id, %{page: 0, selections: %{}}) %>
+        <.ask_user_question
+          session_id={session.id}
+          questions={pending_q}
+          page={st.page}
+          selections={st.selections}
+          variant={:inline}
+        />
+      <% else %>
+        <%!-- Last assistant message --%>
+        <% text = extract_assistant_text(message) %>
+        <div :if={text} data-tts-container>
+          <div
+            class="prose prose-sm max-w-none bg-base-200 rounded-lg p-3 max-h-48 overflow-y-auto"
+            data-tts-text
+          >
+            {Markdown.render(text)}
+          </div>
+          <div
+            class="mt-1"
+            id={"tts-queue-#{session.id}"}
+            phx-hook="TTSPlayer"
+            phx-update="ignore"
+            data-tts-autoplay={idx == 0 && @tts_autoplay_pending}
+          >
+            <div class="flex items-center gap-1">
               <button
-                data-tts-action="prev"
+                data-tts-action="toggle"
                 class="btn btn-ghost btn-xs btn-circle"
-                title="Previous"
+                title="Read aloud"
               >
-                <.icon name="hero-backward-micro" class="size-3" />
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="size-4"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
+                  <path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z" />
+                </svg>
               </button>
-              <span
-                data-tts-counter
-                class="text-xs opacity-60 tabular-nums min-w-[3ch] text-center"
-              >
-              </span>
-              <button data-tts-action="next" class="btn btn-ghost btn-xs btn-circle" title="Next">
-                <.icon name="hero-forward-micro" class="size-3" />
-              </button>
-              <button data-tts-action="stop" class="btn btn-ghost btn-xs btn-circle" title="Stop">
-                <.icon name="hero-stop-micro" class="size-3" />
-              </button>
+              <div data-tts-controls class="hidden flex items-center gap-1">
+                <button
+                  data-tts-action="prev"
+                  class="btn btn-ghost btn-xs btn-circle"
+                  title="Previous"
+                >
+                  <.icon name="hero-backward-micro" class="size-3" />
+                </button>
+                <span
+                  data-tts-counter
+                  class="text-xs opacity-60 tabular-nums min-w-[3ch] text-center"
+                >
+                </span>
+                <button
+                  data-tts-action="next"
+                  class="btn btn-ghost btn-xs btn-circle"
+                  title="Next"
+                >
+                  <.icon name="hero-forward-micro" class="size-3" />
+                </button>
+                <button
+                  data-tts-action="stop"
+                  class="btn btn-ghost btn-xs btn-circle"
+                  title="Stop"
+                >
+                  <.icon name="hero-stop-micro" class="size-3" />
+                </button>
+              </div>
             </div>
           </div>
         </div>
-      </div>
-      <div :if={!text} class="text-sm text-base-content/40 italic">
-        No assistant response yet
-      </div>
+        <div :if={!text} class="text-sm text-base-content/40 italic">
+          No assistant response yet
+        </div>
 
-      <%!-- Actions --%>
-      <div class="flex flex-wrap gap-2">
-        <button
-          phx-click="approve_session"
-          phx-value-id={session.id}
-          class="btn btn-sm btn-success"
-        >
-          <.icon name="hero-hand-thumb-up-micro" class="size-4" /> Yes
-        </button>
-        <button phx-click="defer" phx-value-id={session.id} class="btn btn-sm btn-ghost">
-          <.icon name="hero-clock-micro" class="size-4" /> Defer
-        </button>
-        <button
-          phx-click="delegate"
-          phx-value-id={session.id}
-          phx-value-prompt={@prompt}
-          class="btn btn-sm btn-ghost"
-        >
-          <.icon name="hero-arrow-top-right-on-square-micro" class="size-4" /> Delegate
-        </button>
-        <button phx-click="archive" phx-value-id={session.id} class="btn btn-sm btn-ghost">
-          <.icon name="hero-archive-box-micro" class="size-4" /> Archive
-        </button>
-        <button phx-click="commit" phx-value-id={session.id} class="btn btn-sm btn-secondary">
-          <.icon name="hero-check-circle-micro" class="size-4" /> Commit
-        </button>
-        <button phx-click="add_tests" phx-value-id={session.id} class="btn btn-sm btn-ghost">
-          <.icon name="hero-beaker-micro" class="size-4" /> Add Tests
-        </button>
-        <div :if={worktree?(session.directory)} class="flex gap-2">
-          <button phx-click="rebase" phx-value-id={session.id} class="btn btn-sm btn-outline">
-            <.icon name="hero-arrow-path-micro" class="size-4" /> Rebase
+        <%!-- Actions --%>
+        <div class="flex flex-wrap gap-2">
+          <button
+            phx-click="approve_session"
+            phx-value-id={session.id}
+            class="btn btn-sm btn-success"
+          >
+            <.icon name="hero-hand-thumb-up-micro" class="size-4" /> Yes
+          </button>
+          <button phx-click="defer" phx-value-id={session.id} class="btn btn-sm btn-ghost">
+            <.icon name="hero-clock-micro" class="size-4" /> Defer
           </button>
           <button
-            phx-click="merge_to_main"
+            phx-click="delegate"
             phx-value-id={session.id}
-            class="btn btn-sm btn-primary"
-            data-confirm="Merge this branch into main?"
+            phx-value-prompt={@prompt}
+            class="btn btn-sm btn-ghost"
           >
-            <.icon name="hero-arrow-right-circle-micro" class="size-4" /> Merge to Main
+            <.icon name="hero-arrow-top-right-on-square-micro" class="size-4" /> Delegate
           </button>
+          <button phx-click="archive" phx-value-id={session.id} class="btn btn-sm btn-ghost">
+            <.icon name="hero-archive-box-micro" class="size-4" /> Archive
+          </button>
+          <button phx-click="commit" phx-value-id={session.id} class="btn btn-sm btn-secondary">
+            <.icon name="hero-check-circle-micro" class="size-4" /> Commit
+          </button>
+          <button phx-click="add_tests" phx-value-id={session.id} class="btn btn-sm btn-ghost">
+            <.icon name="hero-beaker-micro" class="size-4" /> Add Tests
+          </button>
+          <div :if={worktree?(session.directory)} class="flex gap-2">
+            <button phx-click="rebase" phx-value-id={session.id} class="btn btn-sm btn-outline">
+              <.icon name="hero-arrow-path-micro" class="size-4" /> Rebase
+            </button>
+            <button
+              phx-click="merge_to_main"
+              phx-value-id={session.id}
+              class="btn btn-sm btn-primary"
+              data-confirm="Merge this branch into main?"
+            >
+              <.icon name="hero-arrow-right-circle-micro" class="size-4" /> Merge to Main
+            </button>
+          </div>
         </div>
-      </div>
+      <% end %>
     </div>
   </div>
 

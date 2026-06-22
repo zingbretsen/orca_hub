@@ -565,6 +565,12 @@ defmodule OrcaHubWeb.MessageComponents do
     """
   end
 
+  defp tool_icon(%{name: "AskUserQuestion"} = assigns) do
+    ~H"""
+    <.icon name="hero-question-mark-circle-micro" class="size-3" />
+    """
+  end
+
   defp tool_icon(assigns) do
     ~H"""
     <.icon name="hero-wrench-screwdriver-micro" class="size-3" />
@@ -633,6 +639,22 @@ defmodule OrcaHubWeb.MessageComponents do
 
     ~H"""
     <span class="text-xs">{@query}</span>
+    """
+  end
+
+  defp tool_summary(%{name: "AskUserQuestion", input: input} = assigns) do
+    questions = input["questions"] || []
+
+    summary =
+      questions
+      |> Enum.map(&(&1["header"] || &1["question"] || ""))
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join(", ")
+
+    assigns = assign(assigns, :summary, summary)
+
+    ~H"""
+    <span class="text-xs">{@summary}</span>
     """
   end
 
