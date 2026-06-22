@@ -23,11 +23,13 @@ defmodule OrcaHub.MCP.Server do
   def start_session(opts \\ []) do
     session_id = generate_session_id()
     orca_session_id = Keyword.get(opts, :orca_session_id)
+    orchestrator = Keyword.get(opts, :orchestrator, false)
 
     {:ok, _pid} =
       DynamicSupervisor.start_child(
         OrcaHub.MCPSupervisor,
-        {__MODULE__, session_id: session_id, orca_session_id: orca_session_id}
+        {__MODULE__,
+         session_id: session_id, orca_session_id: orca_session_id, orchestrator: orchestrator}
       )
 
     {:ok, session_id}
@@ -50,13 +52,14 @@ defmodule OrcaHub.MCP.Server do
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
     orca_session_id = Keyword.get(opts, :orca_session_id)
+    orchestrator = Keyword.get(opts, :orchestrator, false)
 
-    # Resolve orchestrator status once, here, while the orca session row is
-    # already present — rather than on every tools/list and tools/call, where
-    # a transient hub/DB failure would silently strip the orchestrator tool
-    # set for the whole (CLI-cached) connection.
-    orchestrator = Tools.resolve_orchestrator(orca_session_id)
-
+    # `initialize` does NO hub work. The connection role (orchestrator?) is
+    # carried by the MCP connection itself (a query param set by
+    # SessionRunner) rather than resolved via a hub/DB lookup. This keeps the
+    # MCP handshake fast — no erpc, no DB — so tools/list is ready before the
+    # model emits its first tool call, and a hub outage can't strip the
+    # orchestrator tool set.
     {:ok,
      %{
        session_id: session_id,

@@ -540,7 +540,9 @@ defmodule OrcaHub.SessionRunner do
 
     orca_server = %{
       "type" => "http",
-      "url" => "http://localhost:#{port}/mcp?orca_session_id=#{data.session_id}"
+      "url" =>
+        "http://localhost:#{port}/mcp?orca_session_id=#{data.session_id}" <>
+          "&orchestrator=#{data.orchestrator == true}"
     }
 
     project_servers =
