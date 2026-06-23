@@ -1010,6 +1010,17 @@ const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
   hooks: Hooks,
+  dom: {
+    // Preserve the user-toggled `open` state on <details> elements across
+    // LiveView patches. The server never renders `open`, so morphdom would
+    // otherwise collapse any expanded <details> (tool results, thinking
+    // groups, subagent blocks) whenever the message feed re-renders.
+    onBeforeElUpdated(from, to) {
+      if (from.nodeName === "DETAILS" && from.hasAttribute("open")) {
+        to.setAttribute("open", "")
+      }
+    },
+  },
 })
 
 // Show progress bar on live navigation and form submits
