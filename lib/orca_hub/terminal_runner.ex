@@ -177,11 +177,11 @@ defmodule OrcaHub.TerminalRunner do
         {:args, script_args},
         {:cd, directory},
         {:env,
-         [
+         OrcaHub.Env.sanitized_env([
            {~c"TERM", ~c"xterm-256color"},
            {~c"COLUMNS", ~c"#{cols}"},
            {~c"LINES", ~c"#{rows}"}
-         ]}
+         ])}
       ]
     )
   end

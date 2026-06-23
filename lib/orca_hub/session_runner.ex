@@ -421,7 +421,14 @@ defmodule OrcaHub.SessionRunner do
 
     Port.open(
       {:spawn_executable, script_path},
-      [:binary, :exit_status, :stderr_to_stdout, {:args, script_args}] ++ port_opts
+      [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        {:args, script_args},
+        {:env, OrcaHub.Env.sanitized_env()}
+      ] ++
+        port_opts
     )
   end
 
