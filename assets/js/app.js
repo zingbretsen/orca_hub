@@ -26,6 +26,37 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/orca_hub"
 import topbar from "../vendor/topbar"
 
+// Copy text to the clipboard with a fallback for non-secure contexts (e.g. plain
+// HTTP) and stricter browsers (e.g. Edge requiring document focus / transient
+// activation). Returns a Promise that resolves on success.
+function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => legacyCopy(text))
+  }
+  return legacyCopy(text)
+}
+
+function legacyCopy(text) {
+  return new Promise((resolve, reject) => {
+    const textarea = document.createElement("textarea")
+    textarea.value = text
+    // Keep it out of view and avoid scrolling/zoom side effects
+    textarea.style.position = "fixed"
+    textarea.style.top = "-9999px"
+    textarea.style.left = "-9999px"
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      const ok = document.execCommand("copy")
+      ok ? resolve() : reject(new Error("execCommand copy failed"))
+    } catch (err) {
+      reject(err)
+    } finally {
+      document.body.removeChild(textarea)
+    }
+  })
+}
+
 let Hooks = {
   ...colocatedHooks,
   Terminal: TerminalHook,
@@ -152,7 +183,7 @@ let Hooks = {
   Copy: {
     mounted() {
       this.el.addEventListener("phx:copy", () => {
-        navigator.clipboard.writeText(this.el.value)
+        copyTextToClipboard(this.el.value)
       })
     }
   },
@@ -224,10 +255,10 @@ let Hooks = {
       this.el.addEventListener("click", () => {
         const text = this.el.dataset.copyText
         if (!text) return
-        navigator.clipboard.writeText(text).then(() => {
+        copyTextToClipboard(text).then(() => {
           this.el.classList.add("text-success")
           setTimeout(() => this.el.classList.remove("text-success"), 1500)
-        })
+        }).catch(() => {})
       })
     }
   },
