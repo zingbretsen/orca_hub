@@ -11,15 +11,27 @@ defmodule OrcaHub.MCP.UpstreamClient do
 
   @refresh_interval :timer.minutes(5)
 
+  # ETS cache of derived, read-only data (the prefixed tool list and the set of
+  # upstream prefixes). Reads go straight to ETS so the hot MCP paths
+  # (`tools/list`, `tools/call`) are NEVER gated on this GenServer — which can
+  # be blocked for seconds inside a synchronous `connect_all_upstreams/0`
+  # refresh doing HTTP to upstream servers. The GenServer owns/writes the table;
+  # everyone else reads.
+  @tools_cache :orca_upstream_tools_cache
+
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc "Returns all tools from all connected upstream servers, namespaced with their prefix."
   def list_tools do
-    GenServer.call(__MODULE__, :list_tools)
-  catch
-    :exit, _ -> []
+    case :ets.lookup(@tools_cache, :tools) do
+      [{:tools, tools}] -> tools
+      _ -> []
+    end
+  rescue
+    # Table not created yet (GenServer not started / mid-restart).
+    ArgumentError -> []
   end
 
   @doc "Calls a tool on an upstream server. Returns the tool result or {:error, reason}."
@@ -31,9 +43,12 @@ defmodule OrcaHub.MCP.UpstreamClient do
 
   @doc "Check if a tool name belongs to an upstream server."
   def upstream_tool?(tool_name) do
-    GenServer.call(__MODULE__, {:upstream_tool?, tool_name})
-  catch
-    :exit, _ -> false
+    case :ets.lookup(@tools_cache, :prefixes) do
+      [{:prefixes, prefixes}] -> Enum.any?(prefixes, &String.starts_with?(tool_name, &1))
+      _ -> false
+    end
+  rescue
+    ArgumentError -> false
   end
 
   @doc "Force refresh all upstream connections."
@@ -47,6 +62,11 @@ defmodule OrcaHub.MCP.UpstreamClient do
 
   @impl true
   def init(_opts) do
+    # `:protected` (default) — owner writes, any process reads; `read_concurrency`
+    # because reads (MCP hot path) vastly outnumber the ~5-min writes.
+    :ets.new(@tools_cache, [:named_table, :protected, read_concurrency: true])
+    put_cache(%{})
+
     Phoenix.PubSub.subscribe(OrcaHub.PubSub, "upstream_servers")
     send(self(), :connect_all)
     {:ok, %{connections: %{}}}
@@ -66,6 +86,7 @@ defmodule OrcaHub.MCP.UpstreamClient do
           %{}
       end
 
+    put_cache(connections)
     schedule_refresh()
     {:noreply, %{state | connections: connections}}
   end
@@ -82,6 +103,7 @@ defmodule OrcaHub.MCP.UpstreamClient do
           state.connections
       end
 
+    put_cache(connections)
     schedule_refresh()
     {:noreply, %{state | connections: connections}}
   end
@@ -98,36 +120,11 @@ defmodule OrcaHub.MCP.UpstreamClient do
           state.connections
       end
 
+    put_cache(connections)
     {:noreply, %{state | connections: connections}}
   end
 
   @impl true
-  def handle_call(:list_tools, _from, state) do
-    tools =
-      state.connections
-      |> Enum.sort_by(fn {id, _conn} -> id end)
-      |> Enum.flat_map(fn {_id, conn} ->
-        Enum.map(conn.tools, fn tool ->
-          prefixed_name = "#{conn.prefix}__#{tool["name"]}"
-
-          tool
-          |> Map.put("name", prefixed_name)
-          |> Map.put("description", "[#{conn.name}] #{tool["description"] || ""}")
-        end)
-      end)
-
-    {:reply, tools, state}
-  end
-
-  def handle_call({:upstream_tool?, tool_name}, _from, state) do
-    result =
-      Enum.any?(state.connections, fn {_id, conn} ->
-        String.starts_with?(tool_name, "#{conn.prefix}__")
-      end)
-
-    {:reply, result, state}
-  end
-
   def handle_call({:call_tool, tool_name, arguments}, _from, state) do
     result =
       Enum.find_value(
@@ -165,6 +162,29 @@ defmodule OrcaHub.MCP.UpstreamClient do
   end
 
   # Private
+
+  # Recompute the derived read-only data from the live connections and publish
+  # it to the ETS cache that `list_tools/0` and `upstream_tool?/1` read.
+  defp put_cache(connections) do
+    tools =
+      connections
+      |> Enum.sort_by(fn {id, _conn} -> id end)
+      |> Enum.flat_map(fn {_id, conn} ->
+        Enum.map(conn.tools, fn tool ->
+          prefixed_name = "#{conn.prefix}__#{tool["name"]}"
+
+          tool
+          |> Map.put("name", prefixed_name)
+          |> Map.put("description", "[#{conn.name}] #{tool["description"] || ""}")
+        end)
+      end)
+
+    prefixes = Enum.map(connections, fn {_id, conn} -> "#{conn.prefix}__" end)
+
+    :ets.insert(@tools_cache, {:tools, tools})
+    :ets.insert(@tools_cache, {:prefixes, prefixes})
+    :ok
+  end
 
   defp connect_all_upstreams do
     OrcaHub.UpstreamServers.list_enabled_upstream_servers()
