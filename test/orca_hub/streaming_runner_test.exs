@@ -42,6 +42,93 @@ defmodule OrcaHub.StreamingRunnerTest do
     end
   end
 
+  describe "resolve_engine/1 — runtime kill switch is ABSOLUTE" do
+    @kill_key {OrcaHub.Streaming, :runtime_kill}
+
+    setup do
+      Application.put_env(:orca_hub, :disable_streaming, false)
+      :persistent_term.erase(@kill_key)
+
+      on_exit(fn ->
+        :persistent_term.erase(@kill_key)
+        Application.put_env(:orca_hub, :disable_streaming, false)
+      end)
+
+      :ok
+    end
+
+    test "kill switch engaged forces :one_shot even over per-session streaming: true" do
+      :persistent_term.put(@kill_key, true)
+      assert SessionRunner.resolve_engine(%{streaming: true}) == :one_shot
+      assert SessionRunner.resolve_engine(%{streaming: nil}) == :one_shot
+      assert SessionRunner.resolve_engine(%{streaming: false}) == :one_shot
+    end
+
+    test "with kill switch off, the per-session column still wins as before" do
+      :persistent_term.erase(@kill_key)
+      assert SessionRunner.resolve_engine(%{streaming: true}) == :streaming
+      assert SessionRunner.resolve_engine(%{streaming: nil}) == :streaming
+    end
+  end
+
+  describe "OrcaHub.Streaming kill switch API" do
+    setup do
+      on_exit(fn -> OrcaHub.Streaming.enable!() end)
+      :ok
+    end
+
+    test "disable!/enable! toggle kill_engaged? and status/0 effective_default" do
+      OrcaHub.Streaming.enable!()
+      refute OrcaHub.Streaming.kill_engaged?()
+      assert OrcaHub.Streaming.status().effective_default == :streaming
+
+      OrcaHub.Streaming.disable!()
+      assert OrcaHub.Streaming.kill_engaged?()
+      status = OrcaHub.Streaming.status()
+      assert status.runtime_kill == true
+      assert status.effective_default == :one_shot
+
+      OrcaHub.Streaming.enable!()
+      refute OrcaHub.Streaming.kill_engaged?()
+    end
+
+    test "disable! rejects unknown modes" do
+      assert_raise FunctionClauseError, fn -> OrcaHub.Streaming.disable!(:bogus) end
+    end
+
+    test "warm_cap/0 + set_warm_cap/1 round-trip; nil reverts to default 6" do
+      assert OrcaHub.Streaming.warm_cap() == 6
+      OrcaHub.Streaming.set_warm_cap(3)
+      assert OrcaHub.Streaming.warm_cap() == 3
+      OrcaHub.Streaming.set_warm_cap(nil)
+      assert OrcaHub.Streaming.warm_cap() == 6
+    end
+  end
+
+  describe "downgrade_target/4 — per-state kill-switch downgrade table" do
+    test "one-shot runners are already downgraded" do
+      assert SessionRunner.downgrade_target(:one_shot, true, true, :graceful) == :already_one_shot
+
+      assert SessionRunner.downgrade_target(:one_shot, false, false, :interrupt) ==
+               :already_one_shot
+    end
+
+    test "mid-turn: graceful waits, interrupt ends the turn first" do
+      assert SessionRunner.downgrade_target(:streaming, true, true, :graceful) ==
+               :pending_after_turn
+
+      assert SessionRunner.downgrade_target(:streaming, true, true, :interrupt) ==
+               :pending_interrupt
+    end
+
+    test "no turn in flight: warm port tears down, cold just flips" do
+      assert SessionRunner.downgrade_target(:streaming, true, false, :graceful) ==
+               :teardown_one_shot
+
+      assert SessionRunner.downgrade_target(:streaming, false, false, :graceful) == :flip_one_shot
+    end
+  end
+
   describe "ORCA_DISABLE_STREAMING env parsing (mirrors config/runtime.exs)" do
     # runtime.exs uses: System.get_env("ORCA_DISABLE_STREAMING") in ~w(1 true)
     test "truthy strings enable the kill switch" do

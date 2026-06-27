@@ -9,7 +9,7 @@ defmodule OrcaHub.SessionRunner do
   use GenStatem
   require Logger
 
-  alias OrcaHub.{AgentPresence, AskUserQuestion, HubRPC}
+  alias OrcaHub.{AgentPresence, AskUserQuestion, HubRPC, Streaming}
   alias OrcaHub.Claude.{Config, StreamParser}
 
   # Route a HubRPC call through the node that owns the session's DB record.
@@ -120,8 +120,13 @@ defmodule OrcaHub.SessionRunner do
       pending_questions: pending_questions,
       # Streaming engine fields (inert when engine == :one_shot)
       engine: resolve_engine(session),
+      # cached per-session override so :reresolve_engine can re-decide w/o a DB hit
+      streaming_override: Map.get(session, :streaming),
       warming_up: false,
       interrupting: false,
+      # set when a runtime kill-switch downgrade is requested mid-turn; consumed
+      # when the current turn's result arrives (see finalize_downgrade/1)
+      downgrade_pending: false,
       req_counter: 0,
       turn_result: nil
     }
@@ -129,28 +134,29 @@ defmodule OrcaHub.SessionRunner do
     {:ok, initial_state, data}
   end
 
-  # Resolve which runner engine to use. Streaming is now the DEFAULT; the global
-  # env var ORCA_DISABLE_STREAMING (config key :disable_streaming) is a kill switch
-  # that flips the default back to one-shot.
+  # Resolve which runner engine to use. Streaming is the DEFAULT.
   #
-  # Precedence (per-session column wins):
-  #   streaming == true  -> :streaming   (explicit opt-in)
-  #   streaming == false -> :one_shot    (explicit opt-out)
-  #   streaming == nil   -> global default: :one_shot if the kill switch is set,
-  #                         else :streaming
+  # Precedence (ABSOLUTE runtime kill switch wins over everything):
+  #   1. runtime kill switch (OrcaHub.Streaming, per-node, :persistent_term)
+  #      -> :one_shot, overriding even a per-session `streaming: true`.
+  #   2. per-session column: true -> :streaming, false -> :one_shot
+  #   3. env default ORCA_DISABLE_STREAMING (:disable_streaming) -> :one_shot
+  #   4. otherwise -> :streaming
   #
-  # CAVEAT (flagged intentionally): per requirement, an explicit `streaming: true`
-  # column WINS even when the kill switch is set. So ORCA_DISABLE_STREAMING is NOT
-  # a true emergency kill for sessions whose column is explicitly true — an
-  # operator wanting to force ALL sessions onto one-shot must also clear those
-  # columns (set them to nil/false). The kill switch only governs nil-column
-  # (default-inheriting) sessions.
+  # The runtime kill switch is the emergency stop: it forces one-shot for ALL
+  # sessions on this node regardless of their column (see OrcaHub.Streaming).
   @doc false
-  def resolve_engine(session) do
-    case Map.get(session, :streaming) do
+  def resolve_engine(session), do: engine_for(Map.get(session, :streaming))
+
+  # Core precedence, keyed on the per-session override (true/false/nil). Shared by
+  # resolve_engine/1 (init) and the :reresolve_engine cast (runtime re-enable).
+  defp engine_for(override) do
+    cond do
+      Streaming.kill_engaged?() -> :one_shot
+      override == true -> :streaming
+      override == false -> :one_shot
+      streaming_disabled?() -> :one_shot
       true -> :streaming
-      false -> :one_shot
-      _ -> if streaming_disabled?(), do: :one_shot, else: :streaming
     end
   end
 
@@ -192,6 +198,9 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:ready, data)}]}
   end
 
+  def ready({:call, from}, {:downgrade, _mode}, data), do: downgrade_no_turn(from, data)
+  def ready(:cast, :reresolve_engine, data), do: reresolve_no_turn(data)
+
   def ready(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
 
   def ready(:cast, {:update_orchestrator, orchestrator}, data),
@@ -231,6 +240,9 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def idle(:state_timeout, :idle_teardown, data), do: {:keep_state, data}
+
+  def idle({:call, from}, {:downgrade, _mode}, data), do: downgrade_no_turn(from, data)
+  def idle(:cast, :reresolve_engine, data), do: reresolve_no_turn(data)
 
   def idle(:info, {port, {:exit_status, code}}, %{engine: :streaming, port: port} = data) do
     handle_streaming_exit(code, :idle, data)
@@ -298,6 +310,23 @@ defmodule OrcaHub.SessionRunner do
 
   def running({:call, from}, :get_state, data) do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:running, data)}]}
+  end
+
+  # Runtime kill-switch downgrade while a turn is in flight. We can't drop to
+  # one-shot mid-turn without losing the turn, so we mark it pending and convert
+  # when the turn's `result` arrives (finalize_downgrade/1). :interrupt ends the
+  # current turn promptly via control_request; :graceful lets it finish.
+  def running({:call, from}, {:downgrade, _mode}, %{engine: :one_shot}) do
+    {:keep_state_and_data, [{:reply, from, :already_one_shot}]}
+  end
+
+  def running({:call, from}, {:downgrade, mode}, data) do
+    data =
+      if mode == :interrupt and not is_nil(data.port) and not data.warming_up,
+        do: send_control_interrupt(data),
+        else: data
+
+    {:keep_state, %{data | downgrade_pending: true}, [{:reply, from, :pending_after_turn}]}
   end
 
   def running(:info, {port, {:data, raw}}, %{port: port} = data) do
@@ -429,6 +458,9 @@ defmodule OrcaHub.SessionRunner do
 
   def error(:state_timeout, :idle_teardown, data), do: {:keep_state, data}
 
+  def error({:call, from}, {:downgrade, _mode}, data), do: downgrade_no_turn(from, data)
+  def error(:cast, :reresolve_engine, data), do: reresolve_no_turn(data)
+
   def error(:info, {port, {:exit_status, code}}, %{engine: :streaming, port: port} = data) do
     handle_streaming_exit(code, :error, data)
   end
@@ -519,6 +551,32 @@ defmodule OrcaHub.SessionRunner do
     data
   end
 
+  # ── Runtime kill-switch downgrade (no turn in flight) ────────────────
+  # Shared by :ready / :idle / :error. Converts a streaming runner to one-shot.
+
+  defp downgrade_no_turn(from, %{engine: :one_shot}) do
+    {:keep_state_and_data, [{:reply, from, :already_one_shot}]}
+  end
+
+  defp downgrade_no_turn(from, %{port: nil} = data) do
+    # Cold (no warm process) — just flip the engine.
+    {:keep_state, %{data | engine: :one_shot}, [{:reply, from, :torn_down_now}]}
+  end
+
+  defp downgrade_no_turn(from, data) do
+    # Warm idle/error process — tear the port down now and cancel the idle timer.
+    data = %{teardown_port(data) | engine: :one_shot}
+
+    {:keep_state, data,
+     [{:reply, from, :torn_down_now}, {:state_timeout, :infinity, :idle_teardown}]}
+  end
+
+  # Runtime re-enable: re-decide the engine from the cached override. Lazy — no
+  # port is opened; a re-upgraded session cold-opens streaming on its next turn.
+  defp reresolve_no_turn(data) do
+    {:keep_state, %{data | engine: engine_for(data.streaming_override)}}
+  end
+
   # ── Streaming engine ─────────────────────────────────────────────────
   # Long-lived `claude -p --input-format stream-json --output-format stream-json`
   # process per session. MCP initializes ONCE per process instead of per turn.
@@ -567,14 +625,57 @@ defmodule OrcaHub.SessionRunner do
   # the `result` stream event instead of a port exit.
   defp handle_streaming_progress(%{turn_result: nil} = data), do: {:keep_state, data}
 
+  defp handle_streaming_progress(%{turn_result: :warmup_done, downgrade_pending: true} = data) do
+    # Kill-switch downgrade requested during warm-up: drop to one-shot now and
+    # re-route the queued real prompt(s) instead of starting a streaming turn.
+    finalize_downgrade(%{data | warming_up: false, turn_result: nil})
+  end
+
   defp handle_streaming_progress(%{turn_result: :warmup_done} = data) do
     # Warm-up turn done — MCP is connected. Flush the queued real prompt(s).
     data = flush_pending_to_stdin(%{data | warming_up: false, turn_result: nil})
     {:keep_state, data}
   end
 
+  defp handle_streaming_progress(%{turn_result: {:complete, _ev}, downgrade_pending: true} = data) do
+    # The turn we were waiting on (graceful kill-switch downgrade) finished.
+    finalize_downgrade(%{data | turn_result: nil})
+  end
+
   defp handle_streaming_progress(%{turn_result: {:complete, result_ev}} = data) do
     finalize_streaming_turn(result_ev, %{data | turn_result: nil})
+  end
+
+  # Convert a streaming runner to one-shot after a kill-switch downgrade. Tears
+  # the persistent port down and re-routes any queued prompts through the
+  # one-shot engine. Continuity is preserved via claude_session_id/--resume.
+  defp finalize_downgrade(data) do
+    prompts = data.pending_prompts
+    data = teardown_port(%{data | downgrade_pending: false, interrupting: false})
+    data = %{data | engine: :one_shot, pending_prompts: []}
+
+    case prompts do
+      [] ->
+        session = db_call(data, :get_session!, [data.session_id])
+        db_call(data, :update_session, [session, %{status: "idle"}])
+        broadcast(data.session_id, {:status, :idle})
+        AgentPresence.update_status(data.directory, data.session_id, "idle")
+        {:next_state, :idle, data}
+
+      _ ->
+        # Deliver the queued prompt(s) via the one-shot engine (mirrors the
+        # one-shot auto-resume combine).
+        combined = Enum.join(prompts, "\n\n\n")
+        data = resume_clears_waiting(data)
+        new_port = open_port(combined, data)
+        session = db_call(data, :get_session!, [data.session_id])
+        db_call(data, :update_session, [session, %{status: "running"}])
+        broadcast(data.session_id, {:status, :running})
+        AgentPresence.update_status(data.directory, data.session_id, "running")
+
+        {:next_state, :running,
+         %{data | port: new_port, buffer: "", error_output: "", pending_questions: nil}}
+    end
   end
 
   defp finalize_streaming_turn(result_ev, data) do
@@ -607,6 +708,21 @@ defmodule OrcaHub.SessionRunner do
         finalize_streaming_idle(data, true)
     end
   end
+
+  # Pure model of the kill-switch downgrade decision (mirrors the {:downgrade,_}
+  # handlers across :ready/:idle/:error/:running). Exposed for testing the table
+  # without a live runner:
+  #   already one-shot              -> :already_one_shot
+  #   turn in flight + :interrupt   -> :pending_interrupt   (control_request, then drop)
+  #   turn in flight + :graceful    -> :pending_after_turn  (finish, then drop)
+  #   no turn, warm port            -> :teardown_one_shot
+  #   no turn, cold                 -> :flip_one_shot
+  @doc false
+  def downgrade_target(:one_shot, _has_port?, _running?, _mode), do: :already_one_shot
+  def downgrade_target(:streaming, _has_port?, true, :interrupt), do: :pending_interrupt
+  def downgrade_target(:streaming, _has_port?, true, :graceful), do: :pending_after_turn
+  def downgrade_target(:streaming, true, false, _mode), do: :teardown_one_shot
+  def downgrade_target(:streaming, false, false, _mode), do: :flip_one_shot
 
   # Pure transition decision for a completed streaming turn. Exposed for testing
   # (stream-event injection through the state machine without a live CLI).
