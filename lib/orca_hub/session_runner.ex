@@ -129,19 +129,32 @@ defmodule OrcaHub.SessionRunner do
     {:ok, initial_state, data}
   end
 
-  # Resolve which runner engine to use. Per-session `streaming` override wins
-  # (true/false); otherwise fall back to the global :streaming_runner default
-  # (ORCA_STREAMING_RUNNER). Default OFF — the one-shot engine stays the default.
+  # Resolve which runner engine to use. Streaming is now the DEFAULT; the global
+  # env var ORCA_DISABLE_STREAMING (config key :disable_streaming) is a kill switch
+  # that flips the default back to one-shot.
+  #
+  # Precedence (per-session column wins):
+  #   streaming == true  -> :streaming   (explicit opt-in)
+  #   streaming == false -> :one_shot    (explicit opt-out)
+  #   streaming == nil   -> global default: :one_shot if the kill switch is set,
+  #                         else :streaming
+  #
+  # CAVEAT (flagged intentionally): per requirement, an explicit `streaming: true`
+  # column WINS even when the kill switch is set. So ORCA_DISABLE_STREAMING is NOT
+  # a true emergency kill for sessions whose column is explicitly true — an
+  # operator wanting to force ALL sessions onto one-shot must also clear those
+  # columns (set them to nil/false). The kill switch only governs nil-column
+  # (default-inheriting) sessions.
   @doc false
   def resolve_engine(session) do
     case Map.get(session, :streaming) do
       true -> :streaming
       false -> :one_shot
-      _ -> if streaming_default?(), do: :streaming, else: :one_shot
+      _ -> if streaming_disabled?(), do: :one_shot, else: :streaming
     end
   end
 
-  defp streaming_default?, do: Application.get_env(:orca_hub, :streaming_runner, false)
+  defp streaming_disabled?, do: Application.get_env(:orca_hub, :disable_streaming, false)
 
   # How long a warm (process-alive, awaiting input) streaming session may sit
   # idle before its claude process is torn down to reclaim memory. The session

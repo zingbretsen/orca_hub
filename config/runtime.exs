@@ -29,13 +29,15 @@ orca_mode =
 
 config :orca_hub, :mode, orca_mode
 
-# Long-lived streaming SessionRunner engine — opt-in, default OFF.
-# Set ORCA_STREAMING_RUNNER=1 (or "true") to make it the default for new
-# runners. A per-session `streaming` override (see Sessions.Session) still
-# takes precedence over this global default.
+# Long-lived streaming SessionRunner engine — now the DEFAULT (ON).
+# ORCA_DISABLE_STREAMING is a global KILL SWITCH: set it to "1"/"true" to flip
+# the default back to the one-shot engine for new runners. Unset/anything-else
+# leaves streaming ON. A per-session `streaming` column (see Sessions.Session)
+# still overrides this default — including `streaming: true` winning over the
+# kill switch (see SessionRunner.resolve_engine/1 for the documented caveat).
 config :orca_hub,
-       :streaming_runner,
-       System.get_env("ORCA_STREAMING_RUNNER") in ~w(1 true)
+       :disable_streaming,
+       System.get_env("ORCA_DISABLE_STREAMING") in ~w(1 true)
 
 if System.get_env("PHX_SERVER") do
   config :orca_hub, OrcaHubWeb.Endpoint, server: true

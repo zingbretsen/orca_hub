@@ -21,7 +21,8 @@ defmodule OrcaHub.Sessions.Session do
     field :original_node, :string
     field :orchestrator, :boolean, default: false
     field :parent_session_id, :binary_id
-    # nil = inherit global :streaming_runner default; true/false force the engine
+    # nil = inherit global default (streaming unless ORCA_DISABLE_STREAMING set);
+    # true/false force the engine for this session
     field :streaming, :boolean
 
     has_many :messages, OrcaHub.Sessions.Message

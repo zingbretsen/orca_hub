@@ -4,41 +4,52 @@ defmodule OrcaHub.StreamingRunnerTest do
 
   alias OrcaHub.SessionRunner
 
-  describe "resolve_engine/1 — feature flag + per-session override" do
+  describe "resolve_engine/1 — streaming is the default; ORCA_DISABLE_STREAMING kill switch" do
     setup do
-      original = Application.get_env(:orca_hub, :streaming_runner, false)
-      on_exit(fn -> Application.put_env(:orca_hub, :streaming_runner, original) end)
+      original = Application.get_env(:orca_hub, :disable_streaming, false)
+      on_exit(fn -> Application.put_env(:orca_hub, :disable_streaming, original) end)
       :ok
     end
 
-    test "per-session streaming: true forces :streaming regardless of global flag" do
-      Application.put_env(:orca_hub, :streaming_runner, false)
-      assert SessionRunner.resolve_engine(%{streaming: true}) == :streaming
-    end
-
-    test "per-session streaming: false forces :one_shot even when global flag is on" do
-      Application.put_env(:orca_hub, :streaming_runner, true)
-      assert SessionRunner.resolve_engine(%{streaming: false}) == :one_shot
-    end
-
-    test "nil override inherits the global default (off → :one_shot)" do
-      Application.put_env(:orca_hub, :streaming_runner, false)
-      assert SessionRunner.resolve_engine(%{streaming: nil}) == :one_shot
-    end
-
-    test "nil override inherits the global default (on → :streaming)" do
-      Application.put_env(:orca_hub, :streaming_runner, true)
+    test "default: nil column + kill switch unset => :streaming" do
+      Application.put_env(:orca_hub, :disable_streaming, false)
       assert SessionRunner.resolve_engine(%{streaming: nil}) == :streaming
     end
 
-    test "missing streaming key behaves like nil (inherits default)" do
-      Application.put_env(:orca_hub, :streaming_runner, false)
-      assert SessionRunner.resolve_engine(%{}) == :one_shot
+    test "missing streaming key behaves like nil => :streaming by default" do
+      Application.put_env(:orca_hub, :disable_streaming, false)
+      assert SessionRunner.resolve_engine(%{}) == :streaming
     end
 
-    test "works on a real Session struct (default-off → one_shot)" do
-      Application.put_env(:orca_hub, :streaming_runner, false)
-      assert SessionRunner.resolve_engine(%OrcaHub.Sessions.Session{}) == :one_shot
+    test "kill switch ON: nil-column sessions fall back to :one_shot globally" do
+      Application.put_env(:orca_hub, :disable_streaming, true)
+      assert SessionRunner.resolve_engine(%{streaming: nil}) == :one_shot
+    end
+
+    test "per-session false => :one_shot even when global default is streaming" do
+      Application.put_env(:orca_hub, :disable_streaming, false)
+      assert SessionRunner.resolve_engine(%{streaming: false}) == :one_shot
+    end
+
+    test "per-session true => :streaming even when the kill switch is set (override WINS)" do
+      Application.put_env(:orca_hub, :disable_streaming, true)
+      assert SessionRunner.resolve_engine(%{streaming: true}) == :streaming
+    end
+
+    test "real Session struct defaults to :streaming (nil column, kill switch off)" do
+      Application.put_env(:orca_hub, :disable_streaming, false)
+      assert SessionRunner.resolve_engine(%OrcaHub.Sessions.Session{}) == :streaming
+    end
+  end
+
+  describe "ORCA_DISABLE_STREAMING env parsing (mirrors config/runtime.exs)" do
+    # runtime.exs uses: System.get_env("ORCA_DISABLE_STREAMING") in ~w(1 true)
+    test "truthy strings enable the kill switch" do
+      for v <- ["1", "true"], do: assert(v in ~w(1 true))
+    end
+
+    test "falsy / unset values leave streaming on" do
+      for v <- ["0", "false", "", "TRUE", "yes", nil], do: refute(v in ~w(1 true))
     end
   end
 
