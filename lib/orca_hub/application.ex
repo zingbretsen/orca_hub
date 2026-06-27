@@ -52,6 +52,9 @@ defmodule OrcaHub.Application do
       {Registry, keys: :unique, name: OrcaHub.TerminalRegistry},
       {Task.Supervisor, name: OrcaHub.TaskSupervisor},
       OrcaHub.SessionHeartbeat,
+      # Warm-process admission control — must start before SessionSupervisor so
+      # streaming runners can request_slot at port-open.
+      OrcaHub.Streaming.WarmPool,
       OrcaHub.SessionSupervisor,
       OrcaHub.TerminalSupervisor,
       {DynamicSupervisor, name: OrcaHub.MCPSupervisor, strategy: :one_for_one},
@@ -71,6 +74,8 @@ defmodule OrcaHub.Application do
       {Registry, keys: :unique, name: OrcaHub.MCPRegistry},
       {Registry, keys: :unique, name: OrcaHub.TerminalRegistry},
       {Task.Supervisor, name: OrcaHub.TaskSupervisor},
+      # Warm-process admission control — must start before SessionSupervisor.
+      OrcaHub.Streaming.WarmPool,
       OrcaHub.SessionSupervisor,
       OrcaHub.TerminalSupervisor,
       {DynamicSupervisor, name: OrcaHub.MCPSupervisor, strategy: :one_for_one},

@@ -92,6 +92,7 @@ defmodule OrcaHub.Streaming do
       env_default_disabled: env_disabled?(),
       effective_default: if(kill_engaged?() or env_disabled?(), do: :one_shot, else: :streaming),
       live_runners: length(live_runners()),
+      warm_count: __MODULE__.WarmPool.warm_count(),
       warm_cap: warm_cap()
     }
   end

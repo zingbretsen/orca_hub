@@ -199,6 +199,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def ready({:call, from}, {:downgrade, _mode}, data), do: downgrade_no_turn(from, data)
+  def ready({:call, from}, :evict_warm, _data), do: {:keep_state_and_data, [{:reply, from, :ok}]}
   def ready(:cast, :reresolve_engine, data), do: reresolve_no_turn(data)
 
   def ready(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
@@ -242,6 +243,7 @@ defmodule OrcaHub.SessionRunner do
   def idle(:state_timeout, :idle_teardown, data), do: {:keep_state, data}
 
   def idle({:call, from}, {:downgrade, _mode}, data), do: downgrade_no_turn(from, data)
+  def idle({:call, from}, :evict_warm, data), do: evict_warm_idle(from, data)
   def idle(:cast, :reresolve_engine, data), do: reresolve_no_turn(data)
 
   def idle(:info, {port, {:exit_status, code}}, %{engine: :streaming, port: port} = data) do
@@ -327,6 +329,11 @@ defmodule OrcaHub.SessionRunner do
         else: data
 
     {:keep_state, %{data | downgrade_pending: true}, [{:reply, from, :pending_after_turn}]}
+  end
+
+  # Never evict a runner that's mid-turn — the WarmPool tries the next LRU victim.
+  def running({:call, from}, :evict_warm, _data) do
+    {:keep_state_and_data, [{:reply, from, :busy}]}
   end
 
   def running(:info, {port, {:data, raw}}, %{port: port} = data) do
@@ -459,6 +466,7 @@ defmodule OrcaHub.SessionRunner do
   def error(:state_timeout, :idle_teardown, data), do: {:keep_state, data}
 
   def error({:call, from}, {:downgrade, _mode}, data), do: downgrade_no_turn(from, data)
+  def error({:call, from}, :evict_warm, data), do: evict_warm_idle(from, data)
   def error(:cast, :reresolve_engine, data), do: reresolve_no_turn(data)
 
   def error(:info, {port, {:exit_status, code}}, %{engine: :streaming, port: port} = data) do
@@ -487,6 +495,7 @@ defmodule OrcaHub.SessionRunner do
       end
     end
 
+    Streaming.WarmPool.release(data.session_id)
     AgentPresence.remove(data.directory, data.session_id)
     :ok
   end
@@ -577,6 +586,17 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state, %{data | engine: engine_for(data.streaming_override)}}
   end
 
+  # LRU warm-cap eviction of an idle/error runner: tear the port down (releasing
+  # the slot), cancel the idle timer, and ack. Cold runners ack immediately.
+  defp evict_warm_idle(from, %{port: nil}) do
+    {:keep_state_and_data, [{:reply, from, :ok}]}
+  end
+
+  defp evict_warm_idle(from, data) do
+    {:keep_state, teardown_port(data),
+     [{:reply, from, :ok}, {:state_timeout, :infinity, :idle_teardown}]}
+  end
+
   # ── Streaming engine ─────────────────────────────────────────────────
   # Long-lived `claude -p --input-format stream-json --output-format stream-json`
   # process per session. MCP initializes ONCE per process instead of per turn.
@@ -607,13 +627,16 @@ defmodule OrcaHub.SessionRunner do
 
     data =
       if base.port == nil do
-        # Cold start: open the process, run a hidden warm-up turn to force the MCP
-        # handshake, and queue the real prompt to flush once warm-up completes.
+        # Cold start: claim a warm slot (may evict an LRU idle peer), then open the
+        # process, run a hidden warm-up turn to force the MCP handshake, and queue
+        # the real prompt to flush once warm-up completes.
+        Streaming.WarmPool.request_slot(base.session_id, self())
         port = open_port_streaming(base)
         write_warmup_turn(port)
         %{base | port: port, warming_up: true, pending_prompts: base.pending_prompts ++ [prompt]}
       else
         # Warm process: write the real turn straight to the already-open stdin.
+        Streaming.WarmPool.touch(base.session_id, :running)
         write_user_turn(base.port, prompt)
         base
       end
@@ -702,6 +725,8 @@ defmodule OrcaHub.SessionRunner do
         db_call(data, :update_session, [session, %{status: "error"}])
         broadcast(data.session_id, {:status, :error})
         AgentPresence.update_status(data.directory, data.session_id, "error")
+        # Process stays warm after a turn error — mark it idle-in-pool (evictable).
+        Streaming.WarmPool.touch(data.session_id, :error)
         {:next_state, :error, %{data | interrupting: false}, idle_actions(data)}
 
       :success ->
@@ -754,6 +779,8 @@ defmodule OrcaHub.SessionRunner do
       maybe_generate_title(data, data.first_prompt)
     end
 
+    # Turn done, process stays warm awaiting input — evictable by the LRU cap.
+    Streaming.WarmPool.touch(data.session_id, :idle)
     {:next_state, :idle, %{data | interrupting: false}, idle_actions(data)}
   end
 
@@ -764,6 +791,9 @@ defmodule OrcaHub.SessionRunner do
       "[streaming] claude process exited unexpectedly (code #{code}) for session " <>
         "#{data.session_id} in state #{state}"
     )
+
+    # The warm process is gone — free its slot (idempotent).
+    Streaming.WarmPool.release(data.session_id)
 
     data = %{
       data
@@ -849,6 +879,7 @@ defmodule OrcaHub.SessionRunner do
 
   defp flush_pending_to_stdin(%{pending_prompts: prompts, port: port} = data) do
     combined = Enum.join(prompts, "\n\n\n")
+    Streaming.WarmPool.touch(data.session_id, :running)
     write_user_turn(port, combined)
     %{data | pending_prompts: [], buffer: "", error_output: ""}
   end
@@ -860,6 +891,8 @@ defmodule OrcaHub.SessionRunner do
       _, _ -> :ok
     end
 
+    # The warm process is gone — free its slot (idempotent).
+    Streaming.WarmPool.release(data.session_id)
     %{data | port: nil, buffer: "", error_output: "", warming_up: false, turn_result: nil}
   end
 
