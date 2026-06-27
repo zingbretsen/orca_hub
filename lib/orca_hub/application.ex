@@ -58,6 +58,9 @@ defmodule OrcaHub.Application do
       OrcaHub.SessionSupervisor,
       OrcaHub.TerminalSupervisor,
       {DynamicSupervisor, name: OrcaHub.MCPSupervisor, strategy: :one_for_one},
+      # Serializes (re)generation of the global `Tools` surface for code-exec
+      # sessions. Idle until the first run_elixir on this node.
+      OrcaHub.MCP.CodeExec.Generator,
       OrcaHub.MCP.UpstreamClient,
       OrcaHub.Scheduler,
       OrcaHub.TriggerLoader,
@@ -79,6 +82,9 @@ defmodule OrcaHub.Application do
       OrcaHub.SessionSupervisor,
       OrcaHub.TerminalSupervisor,
       {DynamicSupervisor, name: OrcaHub.MCPSupervisor, strategy: :one_for_one},
+      # Serializes (re)generation of the global `Tools` surface for code-exec
+      # sessions. Idle until the first run_elixir on this node.
+      OrcaHub.MCP.CodeExec.Generator,
       # Agent needs a local HTTP endpoint for MCP (Claude CLI connects to it)
       OrcaHubWeb.Endpoint
     ]

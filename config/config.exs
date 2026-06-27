@@ -21,6 +21,12 @@ config :orca_hub, OrcaHub.Scheduler, jobs: []
 # column still overrides this default (see SessionRunner.resolve_engine/1).
 config :orca_hub, :disable_streaming, false
 
+# "Code execution with MCP" is an opt-in, per-session feature (the
+# sessions.code_exec column). It is DARK BY DEFAULT. The ORCA_DISABLE_CODE_EXEC
+# env var (see config/runtime.exs) is a global kill switch that force-disables
+# it node-wide regardless of any per-session opt-in (see OrcaHub.MCP.CodeExec).
+config :orca_hub, :disable_code_exec, false
+
 # Configure the endpoint
 config :orca_hub, OrcaHubWeb.Endpoint,
   url: [host: "localhost"],

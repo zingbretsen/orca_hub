@@ -39,6 +39,13 @@ config :orca_hub,
        :disable_streaming,
        System.get_env("ORCA_DISABLE_STREAMING") in ~w(1 true)
 
+# "Code execution with MCP" is opt-in per session and DARK BY DEFAULT.
+# ORCA_DISABLE_CODE_EXEC is a global KILL SWITCH: set it to "1"/"true" to
+# force-disable the feature node-wide regardless of any per-session opt-in.
+config :orca_hub,
+       :disable_code_exec,
+       System.get_env("ORCA_DISABLE_CODE_EXEC") in ~w(1 true)
+
 if System.get_env("PHX_SERVER") do
   config :orca_hub, OrcaHubWeb.Endpoint, server: true
 end

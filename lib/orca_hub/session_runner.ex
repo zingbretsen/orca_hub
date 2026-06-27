@@ -57,6 +57,10 @@ defmodule OrcaHub.SessionRunner do
     GenStatem.cast(via(session_id), {:update_orchestrator, orchestrator})
   end
 
+  def update_code_exec(session_id, code_exec) do
+    GenStatem.cast(via(session_id), {:update_code_exec, code_exec})
+  end
+
   # Callbacks
 
   @impl true
@@ -110,6 +114,7 @@ defmodule OrcaHub.SessionRunner do
       directory: session.directory,
       model: session.model,
       orchestrator: session.orchestrator || false,
+      code_exec: session.code_exec || false,
       db_node: db_node,
       port: nil,
       buffer: "",
@@ -207,6 +212,9 @@ defmodule OrcaHub.SessionRunner do
   def ready(:cast, {:update_orchestrator, orchestrator}, data),
     do: {:keep_state, %{data | orchestrator: orchestrator}}
 
+  def ready(:cast, {:update_code_exec, code_exec}, data),
+    do: {:keep_state, %{data | code_exec: code_exec}}
+
   def ready(:cast, _msg, _data), do: :keep_state_and_data
   def ready(:info, _msg, _data), do: :keep_state_and_data
 
@@ -254,6 +262,9 @@ defmodule OrcaHub.SessionRunner do
 
   def idle(:cast, {:update_orchestrator, orchestrator}, data),
     do: {:keep_state, %{data | orchestrator: orchestrator}}
+
+  def idle(:cast, {:update_code_exec, code_exec}, data),
+    do: {:keep_state, %{data | code_exec: code_exec}}
 
   def idle(:cast, _msg, _data), do: :keep_state_and_data
   def idle(:info, _msg, _data), do: :keep_state_and_data
@@ -430,6 +441,9 @@ defmodule OrcaHub.SessionRunner do
   def running(:cast, {:update_orchestrator, orchestrator}, data),
     do: {:keep_state, %{data | orchestrator: orchestrator}}
 
+  def running(:cast, {:update_code_exec, code_exec}, data),
+    do: {:keep_state, %{data | code_exec: code_exec}}
+
   def running(:cast, _msg, _data), do: :keep_state_and_data
   def running(:info, _msg, _data), do: :keep_state_and_data
 
@@ -477,6 +491,9 @@ defmodule OrcaHub.SessionRunner do
 
   def error(:cast, {:update_orchestrator, orchestrator}, data),
     do: {:keep_state, %{data | orchestrator: orchestrator}}
+
+  def error(:cast, {:update_code_exec, code_exec}, data),
+    do: {:keep_state, %{data | code_exec: code_exec}}
 
   def error(:cast, _msg, _data), do: :keep_state_and_data
   def error(:info, _msg, _data), do: :keep_state_and_data
@@ -1107,16 +1124,22 @@ defmodule OrcaHub.SessionRunner do
         _ -> 4000
       end
 
+    # Honor the env kill switch at bake time so a disabled node never advertises
+    # code-exec mode (and a stale URL can't re-enable it).
+    code_exec = OrcaHub.MCP.CodeExec.enabled?(data.code_exec)
+
     Logger.info(
       "[MCP] mcp_config: baking orca_session_id=#{inspect(data.session_id)} " <>
-        "orchestrator=#{data.orchestrator == true} into /mcp URL at port-open time"
+        "orchestrator=#{data.orchestrator == true} code_exec=#{code_exec} " <>
+        "into /mcp URL at port-open time"
     )
 
     orca_server = %{
       "type" => "http",
       "url" =>
         "http://localhost:#{port}/mcp?orca_session_id=#{data.session_id}" <>
-          "&orchestrator=#{data.orchestrator == true}"
+          "&orchestrator=#{data.orchestrator == true}" <>
+          "&code_exec=#{code_exec}"
     }
 
     project_servers =
@@ -1150,6 +1173,7 @@ defmodule OrcaHub.SessionRunner do
       [
         "Your OrcaHub session ID is #{data.session_id}.",
         orchestrator_system_prompt(data.orchestrator, data.session_id),
+        code_exec_system_prompt(OrcaHub.MCP.CodeExec.enabled?(Map.get(data, :code_exec, false))),
         if(!data.orchestrator, do: commit_trailer_prompt(data.session_id)),
         if(!data.orchestrator, do: ask_user_question_prompt()),
         sibling_sessions_prompt(data.orchestrator),
@@ -1172,6 +1196,43 @@ defmodule OrcaHub.SessionRunner do
     not continue based on it. After calling AskUserQuestion, stop and end your \
     turn. The user's real answer will arrive as a separate follow-up message; \
     only act on the question once the user has actually responded.\
+    """
+    |> String.trim()
+  end
+
+  # Teaches a code-exec session its collapsed tool surface. Only added when the
+  # feature is enabled for the session (and not killed node-wide).
+  defp code_exec_system_prompt(false), do: nil
+
+  defp code_exec_system_prompt(true) do
+    """
+    # Code Execution Mode
+
+    Your MCP tool list is intentionally small: `run_elixir`, `search_tools`, and \
+    `read_tool`. Every other OrcaHub and upstream tool is reachable from inside \
+    `run_elixir` as a named `Tools.*` function — call several tools and stitch \
+    their results together with the Elixir standard library in ONE snippet \
+    instead of many separate tool calls.
+
+    - **Discover tools** with `search_tools`/`read_tool`, or from inside code \
+      with `Tools.search("query")`, `Tools.list()`, and `Tools.schema("name")`.
+    - **Call a tool** as `Tools.<raw_mcp_name>(args)`, e.g. \
+      `Tools.open_file(%{"file_path" => "lib/foo.ex"})` or \
+      `Tools.github__get_issue(%{"number" => 7})`. Named functions \
+      **auto-unwrap** the result (text → string; JSON → decoded map/list) and \
+      **raise `Tools.Error`** if the tool fails — so they compose with `|>` and \
+      `Enum`:
+
+          Tools.github__list_issues(%{"repo" => "o/r"})
+          |> Enum.filter(& &1["state"] == "open")
+          |> Enum.map(& &1["title"])
+
+    - For explicit error handling use `Tools.try_call("name", args)` which \
+      returns `{:ok, value} | {:error, reason}`; for the faithful raw MCP \
+      envelope use `Tools.call("name", args)`.
+    - The value of the last expression (and any stdout) is returned to you. \
+      Keep return values slim — filter/project before returning. Pure stdlib is \
+      available; OrcaHub internals, File, and System are blocked.
     """
     |> String.trim()
   end

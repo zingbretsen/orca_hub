@@ -24,12 +24,16 @@ defmodule OrcaHub.MCP.Server do
     session_id = generate_session_id()
     orca_session_id = Keyword.get(opts, :orca_session_id)
     orchestrator = Keyword.get(opts, :orchestrator, false)
+    code_exec = Keyword.get(opts, :code_exec, false)
 
     {:ok, _pid} =
       DynamicSupervisor.start_child(
         OrcaHub.MCPSupervisor,
         {__MODULE__,
-         session_id: session_id, orca_session_id: orca_session_id, orchestrator: orchestrator}
+         session_id: session_id,
+         orca_session_id: orca_session_id,
+         orchestrator: orchestrator,
+         code_exec: code_exec}
       )
 
     {:ok, session_id}
@@ -53,10 +57,14 @@ defmodule OrcaHub.MCP.Server do
     session_id = Keyword.fetch!(opts, :session_id)
     orca_session_id = Keyword.get(opts, :orca_session_id)
     orchestrator = Keyword.get(opts, :orchestrator, false)
+    # The kill switch is honored at resolution time so a stale code_exec=true
+    # query param can never re-enable the feature node-wide.
+    code_exec = OrcaHub.MCP.CodeExec.enabled?(Keyword.get(opts, :code_exec, false))
 
     Logger.info(
       "[MCP] session start: mcp_session_id=#{session_id} " <>
-        "orca_session_id=#{inspect(orca_session_id)} orchestrator=#{orchestrator}"
+        "orca_session_id=#{inspect(orca_session_id)} orchestrator=#{orchestrator} " <>
+        "code_exec=#{code_exec}"
     )
 
     # `initialize` does NO hub work. The connection role (orchestrator?) is
@@ -70,6 +78,7 @@ defmodule OrcaHub.MCP.Server do
        session_id: session_id,
        orca_session_id: orca_session_id,
        orchestrator: orchestrator,
+       code_exec: code_exec,
        initialized: false
      }}
   end
@@ -113,6 +122,25 @@ defmodule OrcaHub.MCP.Server do
   # connections — used as a smoking-gun check in the tools/list log line.
   @orchestrator_only_tools ~w(cancel_heartbeat archive_session start_session schedule_heartbeat)
 
+  # Code-exec mode: collapse the surface to just the meta-tools (run_elixir,
+  # search_tools, read_tool). First-party + upstream tools are no longer
+  # flattened here — they're reachable only as `Tools.*` functions inside
+  # run_elixir. When the flag is OFF this clause never matches and tools/list
+  # behaves exactly as before.
+  defp dispatch(%{"method" => "tools/list", "id" => id}, %{code_exec: true} = state) do
+    all_tools = OrcaHub.MCP.CodeExec.MetaTools.list()
+
+    log_tools_list_size("code_exec", state, all_tools)
+
+    response = %{
+      "jsonrpc" => "2.0",
+      "id" => id,
+      "result" => %{"tools" => all_tools}
+    }
+
+    {response, state}
+  end
+
   defp dispatch(%{"method" => "tools/list", "id" => id}, state) do
     upstream_tools = OrcaHub.MCP.UpstreamClient.list_tools()
     orca_tools = Tools.list(state)
@@ -127,6 +155,8 @@ defmodule OrcaHub.MCP.Server do
         "orchestrator_tools_present=#{orchestrator_tools_present?} " <>
         "upstream_tool_count=#{length(upstream_tools)}"
     )
+
+    log_tools_list_size("standard", state, all_tools)
 
     Logger.debug("[MCP] tools/list orca tools: #{inspect(orca_tool_names)}")
 
@@ -156,10 +186,17 @@ defmodule OrcaHub.MCP.Server do
     # the suspect "Invalid or missing session" 400s on subsequent requests.
     result =
       try do
-        if upstream? do
-          OrcaHub.MCP.UpstreamClient.call_tool(tool_name, arguments)
-        else
-          Tools.call(tool_name, arguments, state)
+        cond do
+          # Code-exec mode: only the meta-tools are dispatchable here; every
+          # other tool is reachable as Tools.<name> inside run_elixir.
+          state.code_exec ->
+            OrcaHub.MCP.CodeExec.MetaTools.call(tool_name, arguments, state)
+
+          upstream? ->
+            OrcaHub.MCP.UpstreamClient.call_tool(tool_name, arguments)
+
+          true ->
+            Tools.call(tool_name, arguments, state)
         end
       rescue
         e ->
@@ -222,6 +259,17 @@ defmodule OrcaHub.MCP.Server do
   # Notification we don't handle — just accept
   defp dispatch(%{"method" => _}, state) do
     {:accepted, state}
+  end
+
+  # Token instrumentation: log the serialized payload size + tool count so the
+  # before/after savings of code-exec mode can be measured.
+  defp log_tools_list_size(mode, state, tools) do
+    bytes = tools |> Jason.encode!() |> byte_size()
+
+    Logger.info(
+      "[MCP] tools/list payload: mode=#{mode} orca_session_id=#{inspect(state.orca_session_id)} " <>
+        "tool_count=#{length(tools)} payload_bytes=#{bytes}"
+    )
   end
 
   defp generate_session_id do

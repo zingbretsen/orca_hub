@@ -20,6 +20,11 @@ defmodule OrcaHub.Sessions.Session do
     field :runner_node, :string
     field :original_node, :string
     field :orchestrator, :boolean, default: false
+    # Opt-in "code execution with MCP" mode — collapses this session's MCP
+    # tools/list to the meta-tools (run_elixir/search_tools/read_tool) and
+    # exposes every other tool as a generated `Tools.*` function. Dark by
+    # default; globally killable via ORCA_DISABLE_CODE_EXEC.
+    field :code_exec, :boolean, default: false
     field :parent_session_id, :binary_id
     # nil = inherit global default (streaming unless ORCA_DISABLE_STREAMING set);
     # true/false force the engine for this session
@@ -46,6 +51,7 @@ defmodule OrcaHub.Sessions.Session do
       :runner_node,
       :original_node,
       :orchestrator,
+      :code_exec,
       :parent_session_id,
       :streaming
     ])
