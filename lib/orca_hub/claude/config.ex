@@ -11,6 +11,9 @@ defmodule OrcaHub.Claude.Config do
   ## Options
 
     * `:output_format` - output format (default: `"stream-json"`)
+    * `:input_format` - input format. When `"stream-json"`, the prompt is sent
+      over stdin as newline-delimited JSON user messages instead of as the
+      positional `-p` argument (long-lived streaming engine). Default: text.
     * `:verbose` - enable verbose output (default: `true`)
     * `:skip_permissions` - skip permission prompts (default: `true`)
     * `:session_id` - resume a session by ID
@@ -28,8 +31,20 @@ defmodule OrcaHub.Claude.Config do
   def build_args(prompt, opts \\ []) do
     format = Keyword.get(opts, :output_format, "stream-json")
 
+    # Streaming engine: prompt is delivered over stdin as NDJSON, so we omit the
+    # positional prompt and add --input-format stream-json. Text engine keeps the
+    # positional `-p <prompt>` form, byte-for-byte unchanged.
+    base_args =
+      case Keyword.get(opts, :input_format) do
+        "stream-json" ->
+          ["-p", "--input-format", "stream-json", "--output-format", format]
+
+        _ ->
+          ["-p", prompt, "--output-format", format]
+      end
+
     args =
-      ["-p", prompt, "--output-format", format]
+      base_args
       |> maybe_add_flag("--verbose", Keyword.get(opts, :verbose, true))
       |> maybe_add_flag(
         "--dangerously-skip-permissions",

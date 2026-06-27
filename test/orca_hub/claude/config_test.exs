@@ -80,4 +80,44 @@ defmodule OrcaHub.Claude.ConfigTest do
     assert "--tools" in args
     assert "Read,Grep,Write,Edit" in args
   end
+
+  describe "streaming engine (input_format: stream-json)" do
+    test "omits the positional prompt and adds --input-format stream-json" do
+      {args, _} = Config.build_args(nil, input_format: "stream-json")
+
+      assert args == [
+               "-p",
+               "--input-format",
+               "stream-json",
+               "--output-format",
+               "stream-json",
+               "--verbose",
+               "--dangerously-skip-permissions"
+             ]
+
+      # the prompt is delivered over stdin, never as an arg
+      refute "nil" in args
+    end
+
+    test "keeps --resume / --model / --mcp-config flags alongside stream-json input" do
+      {args, _} =
+        Config.build_args(nil,
+          input_format: "stream-json",
+          session_id: "claude-123",
+          model: "opus",
+          mcp_config: ~s({"mcpServers":{}})
+        )
+
+      assert "--input-format" in args
+      assert "--resume" in args and "claude-123" in args
+      assert "--model" in args and "opus" in args
+      assert "--mcp-config" in args
+    end
+
+    test "text engine (no input_format) is unchanged — positional prompt retained" do
+      {args, _} = Config.build_args("hello")
+      assert args == @base_args
+      refute "--input-format" in args
+    end
+  end
 end

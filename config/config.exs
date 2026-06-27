@@ -15,6 +15,10 @@ config :orca_hub,
 
 config :orca_hub, OrcaHub.Scheduler, jobs: []
 
+# Long-lived streaming SessionRunner engine. OFF by default; opt-in via the
+# ORCA_STREAMING_RUNNER env var (see config/runtime.exs) or a per-session override.
+config :orca_hub, :streaming_runner, false
+
 # Configure the endpoint
 config :orca_hub, OrcaHubWeb.Endpoint,
   url: [host: "localhost"],

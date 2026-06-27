@@ -117,14 +117,55 @@ defmodule OrcaHub.SessionRunner do
       messages: saved_messages,
       first_prompt: nil,
       pending_prompts: [],
-      pending_questions: pending_questions
+      pending_questions: pending_questions,
+      # Streaming engine fields (inert when engine == :one_shot)
+      engine: resolve_engine(session),
+      warming_up: false,
+      interrupting: false,
+      req_counter: 0,
+      turn_result: nil
     }
 
     {:ok, initial_state, data}
   end
 
+  # Resolve which runner engine to use. Per-session `streaming` override wins
+  # (true/false); otherwise fall back to the global :streaming_runner default
+  # (ORCA_STREAMING_RUNNER). Default OFF — the one-shot engine stays the default.
+  @doc false
+  def resolve_engine(session) do
+    case Map.get(session, :streaming) do
+      true -> :streaming
+      false -> :one_shot
+      _ -> if streaming_default?(), do: :streaming, else: :one_shot
+    end
+  end
+
+  defp streaming_default?, do: Application.get_env(:orca_hub, :streaming_runner, false)
+
+  # How long a warm (process-alive, awaiting input) streaming session may sit
+  # idle before its claude process is torn down to reclaim memory. The session
+  # goes "cold" (port: nil) and re-opens with --resume on the next message.
+  @idle_timeout_ms 15 * 60 * 1000
+
+  # Throwaway first turn that forces the async MCP handshake to complete before
+  # the user's real first turn runs. The orca server shows `orca:pending` (0
+  # tools) on turn 1; completing one no-tool turn lets it reach `orca:connected`
+  # so the real first turn sees all tools. This is the fix for the intermittent
+  # "No such tool available" client-side registration race.
+  #
+  # FUTURE (documented follow-up, intentionally NOT in this change): replace this
+  # warm-up turn with a zero-token, in-BEAM "MCP ready" gate — have the per-session
+  # orca MCP server PubSub-signal the runner once the CLI completes tools/list, and
+  # gate the first real turn on that signal. See streaming_runner_design.md §5.
+  @warmup_prompt "Respond with the single word: ready"
+
   # ── :ready state ─────────────────────────────────────────────────────
   # Session has been created but no messages have been sent yet.
+
+  def ready({:call, from}, {:send_message, prompt}, %{engine: :streaming} = data) do
+    start_streaming(from, prompt, data)
+  end
 
   def ready({:call, from}, {:send_message, prompt}, data) do
     start_running(from, prompt, data)
@@ -149,6 +190,10 @@ defmodule OrcaHub.SessionRunner do
   # ── :idle state ──────────────────────────────────────────────────────
   # Session has completed at least one run and is waiting for the next message.
 
+  def idle({:call, from}, {:send_message, prompt}, %{engine: :streaming} = data) do
+    start_streaming(from, prompt, data)
+  end
+
   def idle({:call, from}, {:send_message, prompt}, data) do
     start_running(from, prompt, data)
   end
@@ -161,6 +206,23 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:idle, data)}]}
   end
 
+  # Streaming: warm process timed out → tear it down (go cold). Crash detection
+  # below.
+  def idle(:state_timeout, :idle_teardown, %{engine: :streaming, port: port} = data)
+      when not is_nil(port) do
+    Logger.info(
+      "[streaming] idle timeout — tearing down warm process for session #{data.session_id}"
+    )
+
+    {:keep_state, teardown_port(data)}
+  end
+
+  def idle(:state_timeout, :idle_teardown, data), do: {:keep_state, data}
+
+  def idle(:info, {port, {:exit_status, code}}, %{engine: :streaming, port: port} = data) do
+    handle_streaming_exit(code, :idle, data)
+  end
+
   def idle(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
 
   def idle(:cast, {:update_orchestrator, orchestrator}, data),
@@ -170,6 +232,28 @@ defmodule OrcaHub.SessionRunner do
   def idle(:info, _msg, _data), do: :keep_state_and_data
 
   # ── :running state ──────────────────────────────────────────────────
+
+  # Streaming: a new message while a turn is in flight queues the prompt and
+  # interrupts the current turn via a control_request (NOT SIGINT — that would
+  # kill the long-lived process). The queued prompt is flushed to the same stdin
+  # when the interrupt's `result` arrives. During warm-up we don't interrupt;
+  # the warm-up turn finishes and the queue (incl. this prompt) is flushed then.
+  def running({:call, from}, {:send_message, prompt}, %{engine: :streaming, port: port} = data)
+      when not is_nil(port) do
+    user_event = make_user_event(prompt)
+    persist_message(data, user_event)
+    broadcast(data.session_id, {:event, user_event})
+
+    data = %{
+      data
+      | pending_prompts: data.pending_prompts ++ [prompt],
+        messages: data.messages ++ [user_event]
+    }
+
+    data = if data.warming_up, do: data, else: send_control_interrupt(data)
+
+    {:keep_state, data, [{:reply, from, :ok}]}
+  end
 
   def running({:call, from}, {:send_message, prompt}, %{port: port} = data)
       when not is_nil(port) do
@@ -186,6 +270,12 @@ defmodule OrcaHub.SessionRunner do
        | pending_prompts: data.pending_prompts ++ [prompt],
          messages: data.messages ++ [user_event]
      }, [{:reply, from, :ok}]}
+  end
+
+  # Streaming: explicit stop button — control_request interrupt, process survives.
+  def running({:call, from}, :interrupt, %{engine: :streaming, port: port} = data)
+      when not is_nil(port) do
+    {:keep_state, send_control_interrupt(data), [{:reply, from, :ok}]}
   end
 
   def running({:call, from}, :interrupt, %{port: port}) when not is_nil(port) do
@@ -215,7 +305,17 @@ defmodule OrcaHub.SessionRunner do
         handle_stream_event(event, acc)
       end)
 
-    {:keep_state, new_data}
+    case new_data.engine do
+      :streaming -> handle_streaming_progress(new_data)
+      _ -> {:keep_state, new_data}
+    end
+  end
+
+  # Streaming: the long-lived process does NOT exit between turns. An exit here
+  # means a crash (or an exit we didn't initiate — teardown sets port: nil first,
+  # so a matching port means it was unexpected).
+  def running(:info, {port, {:exit_status, code}}, %{engine: :streaming, port: port} = data) do
+    handle_streaming_exit(code, :running, data)
   end
 
   def running(:info, {port, {:exit_status, code}}, %{port: port} = data) do
@@ -287,6 +387,10 @@ defmodule OrcaHub.SessionRunner do
   # ── :error state ─────────────────────────────────────────────────────
   # Same as idle — accepts new messages to retry, rejects interrupts.
 
+  def error({:call, from}, {:send_message, prompt}, %{engine: :streaming} = data) do
+    start_streaming(from, prompt, data)
+  end
+
   def error({:call, from}, {:send_message, prompt}, data) do
     start_running(from, prompt, data)
   end
@@ -297,6 +401,23 @@ defmodule OrcaHub.SessionRunner do
 
   def error({:call, from}, :get_state, data) do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:error, data)}]}
+  end
+
+  # Streaming: a genuine turn error leaves the process ALIVE, so :error can hold a
+  # warm port that the idle timeout should still reap, and a crash can still occur.
+  def error(:state_timeout, :idle_teardown, %{engine: :streaming, port: port} = data)
+      when not is_nil(port) do
+    Logger.info(
+      "[streaming] idle timeout — tearing down warm process for session #{data.session_id}"
+    )
+
+    {:keep_state, teardown_port(data)}
+  end
+
+  def error(:state_timeout, :idle_teardown, data), do: {:keep_state, data}
+
+  def error(:info, {port, {:exit_status, code}}, %{engine: :streaming, port: port} = data) do
+    handle_streaming_exit(code, :error, data)
   end
 
   def error(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
@@ -311,6 +432,16 @@ defmodule OrcaHub.SessionRunner do
 
   @impl true
   def terminate(_reason, _state, data) do
+    # Close a warm streaming process if one is open (linked ports auto-close, but
+    # be explicit so the child claude process is reaped promptly).
+    if data[:port] do
+      try do
+        Port.close(data.port)
+      catch
+        _, _ -> :ok
+      end
+    end
+
     AgentPresence.remove(data.directory, data.session_id)
     :ok
   end
@@ -375,6 +506,243 @@ defmodule OrcaHub.SessionRunner do
     data
   end
 
+  # ── Streaming engine ─────────────────────────────────────────────────
+  # Long-lived `claude -p --input-format stream-json --output-format stream-json`
+  # process per session. MCP initializes ONCE per process instead of per turn.
+
+  defp start_streaming(from, prompt, data) do
+    user_event = make_user_event(prompt)
+    persist_message(data, user_event)
+    broadcast(data.session_id, {:event, user_event})
+
+    session = db_call(data, :get_session!, [data.session_id])
+    if session.archived_at, do: db_call(data, :unarchive_session, [session])
+    db_call(data, :update_session, [session, %{status: "running"}])
+    broadcast(data.session_id, {:status, :running})
+    AgentPresence.update_status(data.directory, data.session_id, "running")
+
+    first_prompt = data.first_prompt || prompt
+
+    base = %{
+      data
+      | buffer: "",
+        error_output: "",
+        messages: data.messages ++ [user_event],
+        first_prompt: first_prompt,
+        pending_questions: nil,
+        interrupting: false,
+        turn_result: nil
+    }
+
+    data =
+      if base.port == nil do
+        # Cold start: open the process, run a hidden warm-up turn to force the MCP
+        # handshake, and queue the real prompt to flush once warm-up completes.
+        port = open_port_streaming(base)
+        write_warmup_turn(port)
+        %{base | port: port, warming_up: true, pending_prompts: base.pending_prompts ++ [prompt]}
+      else
+        # Warm process: write the real turn straight to the already-open stdin.
+        write_user_turn(base.port, prompt)
+        base
+      end
+
+    {:next_state, :running, data, [{:reply, from, :ok}]}
+  end
+
+  # Called after each event reduce in :running (streaming). Drives transitions off
+  # the `result` stream event instead of a port exit.
+  defp handle_streaming_progress(%{turn_result: nil} = data), do: {:keep_state, data}
+
+  defp handle_streaming_progress(%{turn_result: :warmup_done} = data) do
+    # Warm-up turn done — MCP is connected. Flush the queued real prompt(s).
+    data = flush_pending_to_stdin(%{data | warming_up: false, turn_result: nil})
+    {:keep_state, data}
+  end
+
+  defp handle_streaming_progress(%{turn_result: {:complete, result_ev}} = data) do
+    finalize_streaming_turn(result_ev, %{data | turn_result: nil})
+  end
+
+  defp finalize_streaming_turn(result_ev, data) do
+    decision =
+      streaming_turn_decision(%{
+        pending_prompts: data.pending_prompts,
+        interrupting: data.interrupting,
+        is_error: result_ev["is_error"] == true
+      })
+
+    case decision do
+      :flush_queue ->
+        # Interrupt or queued message(s): resume on the SAME warm process.
+        data = resume_clears_waiting(data)
+        data = flush_pending_to_stdin(%{data | interrupting: false, pending_questions: nil})
+        {:keep_state, %{data | buffer: "", error_output: ""}}
+
+      :idle_stop ->
+        # Explicit interrupt with nothing queued — a user stop, not an error.
+        finalize_streaming_idle(data, false)
+
+      :error ->
+        session = db_call(data, :get_session!, [data.session_id])
+        db_call(data, :update_session, [session, %{status: "error"}])
+        broadcast(data.session_id, {:status, :error})
+        AgentPresence.update_status(data.directory, data.session_id, "error")
+        {:next_state, :error, %{data | interrupting: false}, idle_actions(data)}
+
+      :success ->
+        finalize_streaming_idle(data, true)
+    end
+  end
+
+  # Pure transition decision for a completed streaming turn. Exposed for testing
+  # (stream-event injection through the state machine without a live CLI).
+  @doc false
+  def streaming_turn_decision(%{
+        pending_prompts: pending,
+        interrupting: interrupting,
+        is_error: is_error
+      }) do
+    cond do
+      pending != [] -> :flush_queue
+      interrupting -> :idle_stop
+      is_error -> :error
+      true -> :success
+    end
+  end
+
+  defp finalize_streaming_idle(data, generate_title?) do
+    session = db_call(data, :get_session!, [data.session_id])
+
+    {db_status, broadcast_status} =
+      if data.pending_questions != nil, do: {"waiting", :waiting}, else: {"idle", :idle}
+
+    db_call(data, :update_session, [session, %{status: db_status}])
+    broadcast(data.session_id, {:status, broadcast_status})
+    AgentPresence.update_status(data.directory, data.session_id, db_status)
+
+    if generate_title? and (session.title == nil or session.title == "") do
+      maybe_generate_title(data, data.first_prompt)
+    end
+
+    {:next_state, :idle, %{data | interrupting: false}, idle_actions(data)}
+  end
+
+  # Graceful teardown (idle timeout) sets port: nil BEFORE any exit arrives, so an
+  # exit_status we still hold the port for is always an unexpected crash.
+  defp handle_streaming_exit(code, state, data) do
+    Logger.warning(
+      "[streaming] claude process exited unexpectedly (code #{code}) for session " <>
+        "#{data.session_id} in state #{state}"
+    )
+
+    data = %{
+      data
+      | port: nil,
+        warming_up: false,
+        interrupting: false,
+        pending_prompts: [],
+        turn_result: nil
+    }
+
+    if state == :running do
+      # Crash mid-turn: surface the failure; do NOT auto-resend (avoids duplicate
+      # side effects). The next message re-opens cold with --resume.
+      data = handle_cli_error(code, data)
+      session = db_call(data, :get_session!, [data.session_id])
+      db_call(data, :update_session, [session, %{status: "error"}])
+      broadcast(data.session_id, {:status, :error})
+      AgentPresence.update_status(data.directory, data.session_id, "error")
+      {:next_state, :error, data}
+    else
+      # Crash while idle/errored (no turn in flight): silently go cold; the next
+      # message re-opens with --resume. Stay in the current state.
+      {:keep_state, data}
+    end
+  end
+
+  defp open_port_streaming(data) do
+    claude_path = System.find_executable("claude") || raise "claude executable not found in PATH"
+
+    opts =
+      [cwd: data.directory, input_format: "stream-json"]
+      |> maybe_put(:session_id, data.claude_session_id)
+      |> maybe_put(:model, data.model)
+      |> maybe_put(:system_prompt, build_system_prompt(data))
+      |> maybe_put(:tools, orchestrator_tools(data.orchestrator))
+      |> Keyword.put(:mcp_config, mcp_config(data))
+
+    {args, port_opts} = Config.build_args(nil, opts)
+
+    # Direct spawn — NO `script -qc` PTY wrapper. The streaming protocol writes
+    # newline-delimited JSON to stdin; a PTY runs canonical mode (input echo, \n
+    # translation) that would corrupt the NDJSON framing. Verified in the spike.
+    Port.open(
+      {:spawn_executable, claude_path},
+      [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        {:args, args},
+        {:env, OrcaHub.Env.sanitized_env()}
+      ] ++ port_opts
+    )
+  end
+
+  defp write_user_turn(port, prompt), do: Port.command(port, user_turn_json(prompt))
+  defp write_warmup_turn(port), do: Port.command(port, user_turn_json(@warmup_prompt))
+
+  # NDJSON framing for a user turn over stdin. Public for testing.
+  @doc false
+  def user_turn_json(prompt) do
+    Jason.encode!(%{
+      "type" => "user",
+      "message" => %{"role" => "user", "content" => [%{"type" => "text", "text" => prompt}]}
+    }) <> "\n"
+  end
+
+  defp send_control_interrupt(%{port: port, req_counter: n} = data) do
+    Port.command(port, control_interrupt_json("int_#{n}"))
+    %{data | req_counter: n + 1, interrupting: true}
+  end
+
+  # NDJSON framing for a control_request interrupt over stdin. Public for testing.
+  @doc false
+  def control_interrupt_json(req_id) do
+    Jason.encode!(%{
+      "type" => "control_request",
+      "request_id" => req_id,
+      "request" => %{"subtype" => "interrupt"}
+    }) <> "\n"
+  end
+
+  defp flush_pending_to_stdin(%{pending_prompts: []} = data), do: data
+
+  defp flush_pending_to_stdin(%{pending_prompts: prompts, port: port} = data) do
+    combined = Enum.join(prompts, "\n\n\n")
+    write_user_turn(port, combined)
+    %{data | pending_prompts: [], buffer: "", error_output: ""}
+  end
+
+  defp teardown_port(%{port: port} = data) when not is_nil(port) do
+    try do
+      Port.close(port)
+    catch
+      _, _ -> :ok
+    end
+
+    %{data | port: nil, buffer: "", error_output: "", warming_up: false, turn_result: nil}
+  end
+
+  defp teardown_port(data), do: data
+
+  # Arm the idle teardown timer only for a warm streaming process.
+  defp idle_actions(%{engine: :streaming, port: port}) when not is_nil(port) do
+    [{:state_timeout, @idle_timeout_ms, :idle_teardown}]
+  end
+
+  defp idle_actions(_), do: []
+
   defp make_user_event(prompt) do
     stamp(%{
       "type" => "user",
@@ -432,6 +800,28 @@ defmodule OrcaHub.SessionRunner do
     )
   end
 
+  # Streaming warm-up: suppress every event of the hidden warm-up turn from the
+  # feed. Still capture the claude_session_id (for crash recovery / --resume) and
+  # detect the warm-up turn's end so the queued real prompt can be flushed.
+  defp handle_stream_event(event, %{warming_up: true} = data) do
+    data =
+      case event do
+        %{"type" => "system", "session_id" => sid} when is_binary(sid) ->
+          if is_nil(data.claude_session_id),
+            do: update_session_status(data, %{claude_session_id: sid})
+
+          %{data | claude_session_id: sid}
+
+        _ ->
+          data
+      end
+
+    case event do
+      %{"type" => "result"} -> %{data | turn_result: :warmup_done}
+      _ -> data
+    end
+  end
+
   defp handle_stream_event(
          %{"type" => "system", "subtype" => "status", "status" => "compacting"},
          data
@@ -481,6 +871,16 @@ defmodule OrcaHub.SessionRunner do
     persist_message(data, event)
     broadcast(data.session_id, {:event, event})
     %{data | messages: data.messages ++ [event]}
+  end
+
+  # Streaming: the `result` event is the turn-completion signal (replacing the
+  # one-shot port exit). Persist/broadcast it like any message AND stash it so the
+  # running info handler can drive the state transition after the event reduce.
+  defp handle_stream_event(%{"type" => "result"} = event, %{engine: :streaming} = data) do
+    event = stamp(event)
+    persist_message(data, event)
+    broadcast(data.session_id, {:event, event})
+    %{data | messages: data.messages ++ [event], turn_result: {:complete, event}}
   end
 
   defp handle_stream_event(event, data) do
