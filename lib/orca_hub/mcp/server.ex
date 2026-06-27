@@ -54,6 +54,11 @@ defmodule OrcaHub.MCP.Server do
     orca_session_id = Keyword.get(opts, :orca_session_id)
     orchestrator = Keyword.get(opts, :orchestrator, false)
 
+    Logger.info(
+      "[MCP] session start: mcp_session_id=#{session_id} " <>
+        "orca_session_id=#{inspect(orca_session_id)} orchestrator=#{orchestrator}"
+    )
+
     # `initialize` does NO hub work. The connection role (orchestrator?) is
     # carried by the MCP connection itself (a query param set by
     # SessionRunner) rather than resolved via a hub/DB lookup. This keeps the
@@ -104,9 +109,26 @@ defmodule OrcaHub.MCP.Server do
     {%{"jsonrpc" => "2.0", "id" => id, "result" => %{}}, state}
   end
 
+  # Orchestrator-only tools we explicitly assert are present for orchestrator
+  # connections — used as a smoking-gun check in the tools/list log line.
+  @orchestrator_only_tools ~w(cancel_heartbeat archive_session start_session schedule_heartbeat)
+
   defp dispatch(%{"method" => "tools/list", "id" => id}, state) do
     upstream_tools = OrcaHub.MCP.UpstreamClient.list_tools()
-    all_tools = (Tools.list(state) ++ upstream_tools) |> Enum.sort_by(& &1["name"])
+    orca_tools = Tools.list(state)
+    all_tools = (orca_tools ++ upstream_tools) |> Enum.sort_by(& &1["name"])
+
+    orca_tool_names = Enum.map(orca_tools, & &1["name"])
+    orchestrator_tools_present? = Enum.all?(@orchestrator_only_tools, &(&1 in orca_tool_names))
+
+    Logger.info(
+      "[MCP] tools/list: orca_session_id=#{inspect(state.orca_session_id)} " <>
+        "orchestrator=#{state.orchestrator} orca_tool_count=#{length(orca_tools)} " <>
+        "orchestrator_tools_present=#{orchestrator_tools_present?} " <>
+        "upstream_tool_count=#{length(upstream_tools)}"
+    )
+
+    Logger.debug("[MCP] tools/list orca tools: #{inspect(orca_tool_names)}")
 
     response = %{
       "jsonrpc" => "2.0",
@@ -122,13 +144,54 @@ defmodule OrcaHub.MCP.Server do
   defp dispatch(%{"method" => "tools/call", "id" => id, "params" => params}, state) do
     tool_name = params["name"]
     arguments = params["arguments"] || %{}
+    upstream? = OrcaHub.MCP.UpstreamClient.upstream_tool?(tool_name)
 
+    Logger.info(
+      "[MCP] tools/call: name=#{inspect(tool_name)} orchestrator=#{state.orchestrator} " <>
+        "orca_session_id=#{inspect(state.orca_session_id)} path=#{if upstream?, do: "upstream", else: "local"}"
+    )
+
+    # Defensive wrapper: an exception/exit inside a tool implementation would
+    # otherwise crash this GenServer, orphaning the MCP session and producing
+    # the suspect "Invalid or missing session" 400s on subsequent requests.
     result =
-      if OrcaHub.MCP.UpstreamClient.upstream_tool?(tool_name) do
-        OrcaHub.MCP.UpstreamClient.call_tool(tool_name, arguments)
-      else
-        Tools.call(tool_name, arguments, state)
+      try do
+        if upstream? do
+          OrcaHub.MCP.UpstreamClient.call_tool(tool_name, arguments)
+        else
+          Tools.call(tool_name, arguments, state)
+        end
+      rescue
+        e ->
+          Logger.error(
+            "[MCP] tools/call raised for name=#{inspect(tool_name)}: " <>
+              Exception.format(:error, e, __STACKTRACE__)
+          )
+
+          OrcaHub.MCP.Tools.Result.error("Tool #{tool_name} raised: #{Exception.message(e)}")
+      catch
+        kind, reason ->
+          Logger.error(
+            "[MCP] tools/call #{kind} for name=#{inspect(tool_name)}: " <>
+              Exception.format(kind, reason, __STACKTRACE__)
+          )
+
+          OrcaHub.MCP.Tools.Result.error("Tool #{tool_name} failed: #{inspect(reason)}")
       end
+
+    if is_map(result) and result["isError"] == true do
+      error_text =
+        case result["content"] do
+          [%{"text" => text} | _] -> text
+          _ -> inspect(result["content"])
+        end
+
+      Logger.warning(
+        "[MCP] tools/call result: name=#{inspect(tool_name)} isError=true error=#{inspect(error_text)}"
+      )
+    else
+      Logger.info("[MCP] tools/call result: name=#{inspect(tool_name)} isError=false")
+    end
 
     response = %{
       "jsonrpc" => "2.0",
@@ -140,6 +203,10 @@ defmodule OrcaHub.MCP.Server do
   end
 
   defp dispatch(%{"method" => method, "id" => id}, state) do
+    Logger.warning(
+      "[MCP] unknown method=#{inspect(method)} orca_session_id=#{inspect(state.orca_session_id)}"
+    )
+
     response = %{
       "jsonrpc" => "2.0",
       "id" => id,

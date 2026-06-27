@@ -20,6 +20,8 @@ defmodule OrcaHub.MCP.Tools do
   genuinely-unknown tool names are rejected.
   """
 
+  require Logger
+
   alias OrcaHub.MCP.Tools.{Files, Heartbeat, Result, Sessions, Triggers}
 
   @categories [Sessions, Triggers, Files, Heartbeat]
@@ -40,11 +42,19 @@ defmodule OrcaHub.MCP.Tools do
   hub lookup.
   """
   def list(state) do
-    if orchestrator?(state) do
-      list()
-    else
-      Enum.filter(list(), &(&1["name"] in @regular_session_tools))
-    end
+    tools =
+      if orchestrator?(state) do
+        list()
+      else
+        Enum.filter(list(), &(&1["name"] in @regular_session_tools))
+      end
+
+    Logger.info(
+      "[MCP] Tools.list: role=#{if orchestrator?(state), do: "orchestrator (full set)", else: "regular (filtered)"} " <>
+        "tool_count=#{length(tools)}"
+    )
+
+    tools
   end
 
   @doc """
@@ -54,8 +64,12 @@ defmodule OrcaHub.MCP.Tools do
   """
   def call(name, args, state) do
     case category_for(name) do
-      nil -> Result.error("Unknown tool: #{name}")
-      module -> module.call(name, args, state)
+      nil ->
+        Logger.warning("[MCP] Tools.call: unknown tool name=#{inspect(name)}")
+        Result.error("Unknown tool: #{name}")
+
+      module ->
+        module.call(name, args, state)
     end
   end
 

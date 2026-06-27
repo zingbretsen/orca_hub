@@ -545,6 +545,11 @@ defmodule OrcaHub.SessionRunner do
         _ -> 4000
       end
 
+    Logger.info(
+      "[MCP] mcp_config: baking orca_session_id=#{inspect(data.session_id)} " <>
+        "orchestrator=#{data.orchestrator == true} into /mcp URL at port-open time"
+    )
+
     orca_server = %{
       "type" => "http",
       "url" =>

@@ -33,32 +33,45 @@ defmodule OrcaHub.MCP.Plug do
             orchestrator: orchestrator
           )
 
+        Logger.info(
+          "[MCP] initialize: mcp_session_id=#{session_id} orca_session_id=#{inspect(orca_session_id)} " <>
+            "orchestrator=#{orchestrator} query=#{inspect(conn.query_string)}"
+        )
+
         response = OrcaHub.MCP.Server.handle_jsonrpc(session_id, message)
 
         conn
         |> put_resp_header("mcp-session-id", session_id)
         |> json_response(200, response)
 
-      %{"method" => "notifications/" <> _} ->
+      %{"method" => "notifications/" <> _ = method} ->
         # Notifications — need a session
         with {:ok, session_id} <- get_session_id(conn),
              true <- OrcaHub.MCP.Server.session_exists?(session_id) do
+          Logger.info("[MCP] #{method}: mcp_session_id=#{session_id}")
           OrcaHub.MCP.Server.handle_jsonrpc(session_id, message)
 
           conn
           |> send_resp(202, "")
         else
-          _ -> send_resp(conn, 400, Jason.encode!(%{"error" => "Invalid or missing session"}))
+          other ->
+            log_invalid_session(conn, method, other)
+            send_resp(conn, 400, Jason.encode!(%{"error" => "Invalid or missing session"}))
         end
 
-      %{"id" => _id} ->
+      %{"id" => _id} = request ->
         # Request — needs a session, returns JSON
+        method = request["method"] || "unknown"
+
         with {:ok, session_id} <- get_session_id(conn),
              true <- OrcaHub.MCP.Server.session_exists?(session_id) do
+          Logger.info("[MCP] #{method}: mcp_session_id=#{session_id}")
           response = OrcaHub.MCP.Server.handle_jsonrpc(session_id, message)
           json_response(conn, 200, response)
         else
-          _ -> send_resp(conn, 400, Jason.encode!(%{"error" => "Invalid or missing session"}))
+          other ->
+            log_invalid_session(conn, method, other)
+            send_resp(conn, 400, Jason.encode!(%{"error" => "Invalid or missing session"}))
         end
     end
   end
@@ -80,6 +93,32 @@ defmodule OrcaHub.MCP.Plug do
 
   def call(conn, _opts) do
     send_resp(conn, 405, "")
+  end
+
+  # Logs the smoking-gun "Invalid or missing session" path, distinguishing a
+  # missing mcp-session-id header from a header present but no live MCP server.
+  defp log_invalid_session(conn, method, with_result) do
+    case with_result do
+      :error ->
+        Logger.warning(
+          "[MCP] invalid/missing session for method=#{method}: no mcp-session-id header"
+        )
+
+      false ->
+        session_id =
+          case get_session_id(conn) do
+            {:ok, id} -> id
+            :error -> nil
+          end
+
+        Logger.warning(
+          "[MCP] invalid/missing session for method=#{method}: " <>
+            "mcp_session_id=#{inspect(session_id)} present but no live MCP server"
+        )
+
+      other ->
+        Logger.warning("[MCP] invalid/missing session for method=#{method}: #{inspect(other)}")
+    end
   end
 
   defp get_session_id(conn) do
