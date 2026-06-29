@@ -41,7 +41,9 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
         |> Enum.map(& &1["title"])
 
     Discover tools from inside code with `Tools.search("query")`, \
-    `Tools.list()`, and `Tools.schema("name")`. For explicit error handling use \
+    `Tools.list()`, and `Tools.schema("name")`. `search`/`list` return \
+    `{name, description}` TUPLES (match the tuple, don't index with `["name"]`); \
+    `schema` returns a map. For explicit error handling use \
     `Tools.try_call("name", args)` -> `{:ok, value} | {:error, reason}`, or \
     `Tools.call("name", args)` for the faithful MCP envelope. Pure stdlib \
     (Enum, Map, String, Jason, ...) is available; OrcaHub internals, File, \
