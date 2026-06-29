@@ -132,6 +132,10 @@ defmodule OrcaHub.SessionRunner do
       # set when a runtime kill-switch downgrade is requested mid-turn; consumed
       # when the current turn's result arrives (see finalize_downgrade/1)
       downgrade_pending: false,
+      # set when a per-session /mcp flag (orchestrator/code_exec) changes mid-turn;
+      # consumed at the running→idle/error transition to evict the now-stale warm
+      # port so the NEXT turn cold-reopens with the re-baked /mcp URL
+      pending_rebake: false,
       req_counter: 0,
       turn_result: nil
     }
@@ -210,10 +214,10 @@ defmodule OrcaHub.SessionRunner do
   def ready(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
 
   def ready(:cast, {:update_orchestrator, orchestrator}, data),
-    do: {:keep_state, %{data | orchestrator: orchestrator}}
+    do: apply_flag_change_no_turn(data, :orchestrator, orchestrator)
 
   def ready(:cast, {:update_code_exec, code_exec}, data),
-    do: {:keep_state, %{data | code_exec: code_exec}}
+    do: apply_flag_change_no_turn(data, :code_exec, code_exec)
 
   def ready(:cast, _msg, _data), do: :keep_state_and_data
   def ready(:info, _msg, _data), do: :keep_state_and_data
@@ -261,10 +265,10 @@ defmodule OrcaHub.SessionRunner do
   def idle(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
 
   def idle(:cast, {:update_orchestrator, orchestrator}, data),
-    do: {:keep_state, %{data | orchestrator: orchestrator}}
+    do: apply_flag_change_no_turn(data, :orchestrator, orchestrator)
 
   def idle(:cast, {:update_code_exec, code_exec}, data),
-    do: {:keep_state, %{data | code_exec: code_exec}}
+    do: apply_flag_change_no_turn(data, :code_exec, code_exec)
 
   def idle(:cast, _msg, _data), do: :keep_state_and_data
   def idle(:info, _msg, _data), do: :keep_state_and_data
@@ -439,10 +443,10 @@ defmodule OrcaHub.SessionRunner do
   def running(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
 
   def running(:cast, {:update_orchestrator, orchestrator}, data),
-    do: {:keep_state, %{data | orchestrator: orchestrator}}
+    do: apply_flag_change_running(data, :orchestrator, orchestrator)
 
   def running(:cast, {:update_code_exec, code_exec}, data),
-    do: {:keep_state, %{data | code_exec: code_exec}}
+    do: apply_flag_change_running(data, :code_exec, code_exec)
 
   def running(:cast, _msg, _data), do: :keep_state_and_data
   def running(:info, _msg, _data), do: :keep_state_and_data
@@ -490,10 +494,10 @@ defmodule OrcaHub.SessionRunner do
   def error(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
 
   def error(:cast, {:update_orchestrator, orchestrator}, data),
-    do: {:keep_state, %{data | orchestrator: orchestrator}}
+    do: apply_flag_change_no_turn(data, :orchestrator, orchestrator)
 
   def error(:cast, {:update_code_exec, code_exec}, data),
-    do: {:keep_state, %{data | code_exec: code_exec}}
+    do: apply_flag_change_no_turn(data, :code_exec, code_exec)
 
   def error(:cast, _msg, _data), do: :keep_state_and_data
   def error(:info, _msg, _data), do: :keep_state_and_data
@@ -610,9 +614,57 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp evict_warm_idle(from, data) do
-    {:keep_state, teardown_port(data),
-     [{:reply, from, :ok}, {:state_timeout, :infinity, :idle_teardown}]}
+    {new_data, actions} = evict_warm_now(data)
+    {:keep_state, new_data, [{:reply, from, :ok} | actions]}
   end
+
+  # Core warm-port eviction shared by the LRU :evict_warm handlers and the
+  # self-applying /mcp flag-change casts: close the port (releasing the WarmPool
+  # slot), set port: nil, and cancel the idle-teardown timer. The runner stays
+  # alive but cold; its next turn re-opens the port (re-baking the /mcp URL).
+  # Returns {new_data, actions} so callers can prepend their own reply.
+  defp evict_warm_now(data) do
+    {teardown_port(data), [{:state_timeout, :infinity, :idle_teardown}]}
+  end
+
+  # Self-applying per-session /mcp flag change (orchestrator/code_exec) while NOT
+  # mid-turn (ready/idle/error). The flag is baked into the /mcp URL only at
+  # port-open, so when the value actually CHANGES we evict the warm port now to
+  # force a cold re-open (and URL re-bake) on the next turn. A no-op (same value)
+  # must NOT tear the port down. Cold runners (port: nil) just store the value.
+  defp apply_flag_change_no_turn(data, key, value) do
+    changed? = Map.get(data, key) != value
+    new_data = Map.put(data, key, value)
+
+    if changed? and not is_nil(data.port) do
+      {td, actions} = evict_warm_now(new_data)
+      {:keep_state, td, actions}
+    else
+      {:keep_state, new_data}
+    end
+  end
+
+  # Self-applying /mcp flag change while a turn is in flight (:running). We must
+  # NOT disrupt the active port, so we store the new value and (if it changed)
+  # mark a pending rebake; the warm port is evicted at the running→idle/error
+  # transition (see consume_pending_rebake/1), so the SUBSEQUENT turn re-bakes the
+  # URL. An already-set marker is preserved across a no-op change.
+  defp apply_flag_change_running(data, key, value) do
+    changed? = Map.get(data, key) != value
+    new_data = Map.put(data, key, value)
+    {:keep_state, %{new_data | pending_rebake: new_data.pending_rebake or changed?}}
+  end
+
+  # At the running→idle/error transition, honor a /mcp flag rebake requested
+  # mid-turn: evict the now-stale warm port so the next turn cold-reopens with the
+  # new URL. Returns {data, actions}; with no pending rebake, arms the normal idle
+  # timer instead. Public (@doc false) as a test seam.
+  @doc false
+  def consume_pending_rebake(%{pending_rebake: true} = data) do
+    evict_warm_now(%{data | pending_rebake: false})
+  end
+
+  def consume_pending_rebake(data), do: {data, idle_actions(data)}
 
   # ── Streaming engine ─────────────────────────────────────────────────
   # Long-lived `claude -p --input-format stream-json --output-format stream-json`
@@ -650,7 +702,15 @@ defmodule OrcaHub.SessionRunner do
         Streaming.WarmPool.request_slot(base.session_id, self())
         port = open_port_streaming(base)
         write_warmup_turn(port)
-        %{base | port: port, warming_up: true, pending_prompts: base.pending_prompts ++ [prompt]}
+        # Fresh port bakes the current flags into the /mcp URL — any pending rebake
+        # is satisfied by this cold open.
+        %{
+          base
+          | port: port,
+            warming_up: true,
+            pending_rebake: false,
+            pending_prompts: base.pending_prompts ++ [prompt]
+        }
       else
         # Warm process: write the real turn straight to the already-open stdin.
         Streaming.WarmPool.touch(base.session_id, :running)
@@ -744,7 +804,8 @@ defmodule OrcaHub.SessionRunner do
         AgentPresence.update_status(data.directory, data.session_id, "error")
         # Process stays warm after a turn error — mark it idle-in-pool (evictable).
         Streaming.WarmPool.touch(data.session_id, :error)
-        {:next_state, :error, %{data | interrupting: false}, idle_actions(data)}
+        {next_data, actions} = consume_pending_rebake(%{data | interrupting: false})
+        {:next_state, :error, next_data, actions}
 
       :success ->
         finalize_streaming_idle(data, true)
@@ -798,7 +859,8 @@ defmodule OrcaHub.SessionRunner do
 
     # Turn done, process stays warm awaiting input — evictable by the LRU cap.
     Streaming.WarmPool.touch(data.session_id, :idle)
-    {:next_state, :idle, %{data | interrupting: false}, idle_actions(data)}
+    {next_data, actions} = consume_pending_rebake(%{data | interrupting: false})
+    {:next_state, :idle, next_data, actions}
   end
 
   # Graceful teardown (idle timeout) sets port: nil BEFORE any exit arrives, so an
@@ -1215,7 +1277,11 @@ defmodule OrcaHub.SessionRunner do
     instead of many separate tool calls.
 
     - **Discover tools** with `search_tools`/`read_tool`, or from inside code \
-      with `Tools.search("query")`, `Tools.list()`, and `Tools.schema("name")`.
+      with `Tools.search("query")`, `Tools.list()`, and `Tools.schema("name")`. \
+      `Tools.search/1` and `Tools.list/0` return `{name, description}` TUPLES — \
+      match the tuple (`Enum.map(fn {name, _} -> name end)`), do NOT index with \
+      `["name"]`. `Tools.schema/1` returns a map (or nil). Only tool \
+      *invocations* (below) auto-unwrap to maps/lists.
     - **Call a tool** as `Tools.<raw_mcp_name>(args)`, e.g. \
       `Tools.open_file(%{"file_path" => "lib/foo.ex"})` or \
       `Tools.github__get_issue(%{"number" => 7})`. Named functions \

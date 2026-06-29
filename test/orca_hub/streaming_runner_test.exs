@@ -181,6 +181,135 @@ defmodule OrcaHub.StreamingRunnerTest do
     end
   end
 
+  describe "self-applying /mcp flag toggles (orchestrator/code_exec) under streaming" do
+    # Minimal data map carrying just the fields the flag-change handlers and the
+    # warm-port teardown touch. A real OS port lets us assert it actually closes.
+    defp flag_data(overrides) do
+      Map.merge(
+        %{
+          session_id: "sess-#{System.unique_integer([:positive])}",
+          port: nil,
+          code_exec: false,
+          orchestrator: false,
+          pending_rebake: false,
+          engine: :streaming,
+          buffer: "",
+          error_output: "",
+          warming_up: false,
+          turn_result: nil
+        },
+        Map.new(overrides)
+      )
+    end
+
+    defp open_port, do: Port.open({:spawn, "cat"}, [:binary])
+
+    test "(a) changing the flag while idle with a warm port evicts it (port: nil)" do
+      port = open_port()
+      data = flag_data(port: port, code_exec: false)
+
+      assert {:keep_state, new_data, actions} =
+               SessionRunner.idle(:cast, {:update_code_exec, true}, data)
+
+      assert new_data.port == nil
+      assert new_data.code_exec == true
+      # idle-teardown timer is cancelled on eviction
+      assert {:state_timeout, :infinity, :idle_teardown} in actions
+      # the OS port was actually closed
+      assert Port.info(port) == nil
+    end
+
+    test "(a) orchestrator change while idle with a warm port also evicts" do
+      port = open_port()
+      data = flag_data(port: port, orchestrator: false)
+
+      assert {:keep_state, new_data, _actions} =
+               SessionRunner.idle(:cast, {:update_orchestrator, true}, data)
+
+      assert new_data.port == nil
+      assert new_data.orchestrator == true
+      assert Port.info(port) == nil
+    end
+
+    test "(b) a no-op cast (same value) does NOT evict the warm port" do
+      port = open_port()
+      data = flag_data(port: port, code_exec: true)
+
+      # idle/3 returns a 2-tuple (no actions) and leaves the port intact
+      assert {:keep_state, new_data} =
+               SessionRunner.idle(:cast, {:update_code_exec, true}, data)
+
+      assert new_data.port == port
+      assert new_data.code_exec == true
+      assert Port.info(port) != nil
+
+      Port.close(port)
+    end
+
+    test "(b) cold runner (port: nil) just stores the changed value, no teardown" do
+      data = flag_data(port: nil, code_exec: false)
+
+      assert {:keep_state, new_data} =
+               SessionRunner.idle(:cast, {:update_code_exec, true}, data)
+
+      assert new_data.port == nil
+      assert new_data.code_exec == true
+    end
+
+    test "(c) changing the flag while running does NOT tear down the active port" do
+      port = open_port()
+      data = flag_data(port: port, code_exec: false, pending_rebake: false)
+
+      assert {:keep_state, new_data} =
+               SessionRunner.running(:cast, {:update_code_exec, true}, data)
+
+      # active turn is untouched; the change is recorded as a pending rebake
+      assert new_data.port == port
+      assert new_data.code_exec == true
+      assert new_data.pending_rebake == true
+      assert Port.info(port) != nil
+
+      Port.close(port)
+    end
+
+    test "(c) a no-op cast while running does not set the rebake marker" do
+      port = open_port()
+      data = flag_data(port: port, code_exec: true, pending_rebake: false)
+
+      assert {:keep_state, new_data} =
+               SessionRunner.running(:cast, {:update_code_exec, true}, data)
+
+      assert new_data.pending_rebake == false
+      Port.close(port)
+    end
+
+    test "(c) the pending rebake is consumed on the running→idle transition" do
+      port = open_port()
+      data = flag_data(port: port, pending_rebake: true)
+
+      assert {new_data, actions} = SessionRunner.consume_pending_rebake(data)
+
+      assert new_data.port == nil
+      assert new_data.pending_rebake == false
+      assert {:state_timeout, :infinity, :idle_teardown} in actions
+      assert Port.info(port) == nil
+    end
+
+    test "no pending rebake arms the normal idle-teardown timer (no eviction)" do
+      port = open_port()
+      data = flag_data(port: port, pending_rebake: false)
+
+      assert {new_data, actions} = SessionRunner.consume_pending_rebake(data)
+
+      assert new_data.port == port
+      # idle_actions/1 arms the teardown timer for a warm streaming process
+      assert [{:state_timeout, _ms, :idle_teardown}] = actions
+      assert Port.info(port) != nil
+
+      Port.close(port)
+    end
+  end
+
   describe "stdin framing" do
     test "user_turn_json/1 is newline-terminated stream-json with a text content block" do
       json = SessionRunner.user_turn_json("hello world")
