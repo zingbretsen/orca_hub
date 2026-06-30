@@ -27,14 +27,44 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - Sessions are grouped by directory in the index view, sorted by most recently updated
 - Title auto-generation uses LLM API (`gpt-4.1-nano` by default, or DataRobot gateway)
 
-## Deployment (k3s)
+## Deployment
+
+There are TWO prod instances; a full deploy updates both:
+
+1. **Local systemd service `orca-hub`** — runs an OTP release from
+   `_build/prod/rel/orca_hub`. Updating it = build a prod release, then
+   `sudo systemctl restart orca-hub`.
+2. **k3s deployment `orca-hub`** (namespace `lab`) — runs a Docker image from
+   `registry.lab.ingbretsenhome.com`.
+
+### Canonical deploy: `scripts/deploy.sh`
+
+`scripts/deploy.sh` is the canonical deploy path. It runs, in order:
+
+1. Build local prod OTP release (`mix deps.get --only prod`, `mix assets.deploy`,
+   `mix release --overwrite`).
+2. Build + push the Docker image and `kubectl rollout restart` the k3s deployment.
+3. `sudo systemctl restart orca-hub`.
+
+Flags let you target one instance: `--skip-k3s` (local release + systemd only),
+`--skip-local --skip-release` (k3s image roll only), `--skip-release`,
+`--skip-local`. Run `scripts/deploy.sh --help` for details.
+
+**Passwordless sudo requirement:** Step 3 runs `sudo systemctl restart orca-hub`.
+To avoid a password prompt, install the sudoers drop-in at
+`/etc/sudoers.d/orca-hub` (root:root, mode 0440). A reference copy lives at
+`scripts/orca-hub.sudoers` with install instructions in its header; it grants
+`zach` NOPASSWD for start/stop/status/restart of the `orca-hub` unit only.
+Validate after installing with `sudo visudo -cf /etc/sudoers.d/orca-hub`.
+
+### k3s reference
 
 - Deployment manifests live in `~/homelab/k3s/apps/orca-hub.yaml`, NOT in `k8s/` (which is a generic/standalone reference)
 - Secrets are in `~/homelab/k3s/secrets/orca-hub-secrets.yaml`
 - Single deployment: `orca-hub` in the `lab` namespace
 - Image registry: `registry.lab.ingbretsenhome.com`
 - Ingress: `orca.lab.ingbretsenhome.com` (HTTPS via Traefik, Authelia forward-auth)
-- To deploy: `docker build -t registry.lab.ingbretsenhome.com/orca-hub:latest . && docker push registry.lab.ingbretsenhome.com/orca-hub:latest && kubectl rollout restart deployment/orca-hub -n lab`
+- Manual deploy (reference): `docker build -t registry.lab.ingbretsenhome.com/orca-hub:latest . && docker push registry.lab.ingbretsenhome.com/orca-hub:latest && kubectl rollout restart deployment/orca-hub -n lab`
 
 ## Dependencies
 

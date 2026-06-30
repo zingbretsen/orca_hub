@@ -1,0 +1,16 @@
+# OrcaHub passwordless sudo drop-in.
+#
+# INSTALL TO:  /etc/sudoers.d/orca-hub
+# OWNER/MODE:  root:root 0440
+#
+# Install (as root):
+#   sudo install -o root -g root -m 0440 scripts/orca-hub.sudoers /etc/sudoers.d/orca-hub
+#   sudo visudo -cf /etc/sudoers.d/orca-hub   # validate before trusting it
+#
+# Grants user `zach` NOPASSWD sudo for managing ONLY the orca-hub systemd unit,
+# so scripts/deploy.sh can run `sudo systemctl restart orca-hub` without a
+# password prompt. Scoped to the orca-hub unit only — NOT blanket systemctl.
+# sudoers requires absolute command paths; systemctl is /usr/bin/systemctl on
+# this host (verify with `command -v systemctl`).
+
+zach ALL=(root) NOPASSWD: /usr/bin/systemctl restart orca-hub, /usr/bin/systemctl restart orca-hub.service, /usr/bin/systemctl start orca-hub, /usr/bin/systemctl start orca-hub.service, /usr/bin/systemctl stop orca-hub, /usr/bin/systemctl stop orca-hub.service, /usr/bin/systemctl status orca-hub, /usr/bin/systemctl status orca-hub.service
