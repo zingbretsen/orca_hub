@@ -27,7 +27,13 @@ defmodule OrcaHubWeb.SettingsLive.Index do
        cluster_nodes: Cluster.node_info(),
        code_sync_result: nil,
        code_sync_loading: false,
-       drift_results: nil
+       drift_results: nil,
+       logged_in_nodes: HubRPC.list_logged_in_nodes(),
+       login_node: nil,
+       login_output: "",
+       login_url: nil,
+       login_status: nil,
+       login_error: nil
      )}
   end
 
@@ -204,7 +210,89 @@ defmodule OrcaHubWeb.SettingsLive.Index do
      |> put_flash(:info, "Refreshed upstream connections")}
   end
 
+  # ── Node login (Claude Code OAuth) ──────────────────────────────────
+
+  def handle_event("login_node", %{"node" => node_str}, socket) do
+    target = String.to_existing_atom(node_str)
+
+    socket = unsubscribe_login(socket)
+    Phoenix.PubSub.subscribe(OrcaHub.PubSub, "node_login:#{node_str}")
+
+    socket =
+      assign(socket,
+        login_node: target,
+        login_output: "",
+        login_url: nil,
+        login_status: :running,
+        login_error: nil
+      )
+
+    case Cluster.login_node(target) do
+      {:ok, _pid} ->
+        {:noreply, socket}
+
+      error ->
+        {:noreply, assign(socket, login_status: :error, login_error: inspect(error))}
+    end
+  end
+
+  def handle_event("submit_login_code", %{"code" => code}, socket) do
+    if socket.assigns.login_node do
+      Cluster.submit_login_code(socket.assigns.login_node, code)
+    end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("cancel_login", _params, socket) do
+    if socket.assigns.login_node do
+      Cluster.cancel_login(socket.assigns.login_node)
+    end
+
+    {:noreply, close_login(socket)}
+  end
+
+  def handle_event("close_login", _params, socket) do
+    {:noreply, close_login(socket)}
+  end
+
+  def handle_event("logout_node", %{"node" => node_str}, socket) do
+    {:ok, _} = HubRPC.delete_node_token(node_str)
+
+    {:noreply,
+     socket
+     |> assign(logged_in_nodes: HubRPC.list_logged_in_nodes())
+     |> put_flash(:info, "Removed stored credential for #{Cluster.node_name(node_str)}")}
+  end
+
   @impl true
+  def handle_info({:login_output, text}, socket) do
+    {:noreply, assign(socket, login_output: text)}
+  end
+
+  def handle_info({:login_url, url}, socket) do
+    {:noreply, assign(socket, login_url: url, login_status: :awaiting_code)}
+  end
+
+  def handle_info({:login_status, status}, socket) do
+    # Don't downgrade a terminal status (success/error) from a late event.
+    if socket.assigns.login_status in [:success, :error] do
+      {:noreply, socket}
+    else
+      {:noreply, assign(socket, login_status: status)}
+    end
+  end
+
+  def handle_info({:login_done, :success}, socket) do
+    {:noreply,
+     socket
+     |> assign(login_status: :success, logged_in_nodes: HubRPC.list_logged_in_nodes())}
+  end
+
+  def handle_info({:login_done, {:error, msg}}, socket) do
+    {:noreply, assign(socket, login_status: :error, login_error: msg)}
+  end
+
   def handle_info(:do_push_all, socket) do
     result = CodeSync.push_all()
 
@@ -247,6 +335,27 @@ defmodule OrcaHubWeb.SettingsLive.Index do
        servers: HubRPC.list_upstream_servers(),
        upstream_tools: upstream_tools
      )}
+  end
+
+  defp unsubscribe_login(socket) do
+    if node = socket.assigns[:login_node] do
+      Phoenix.PubSub.unsubscribe(OrcaHub.PubSub, "node_login:#{node}")
+    end
+
+    socket
+  end
+
+  defp close_login(socket) do
+    socket
+    |> unsubscribe_login()
+    |> assign(
+      login_node: nil,
+      login_output: "",
+      login_url: nil,
+      login_status: nil,
+      login_error: nil,
+      logged_in_nodes: HubRPC.list_logged_in_nodes()
+    )
   end
 
   defp extract_header_pairs(params) do

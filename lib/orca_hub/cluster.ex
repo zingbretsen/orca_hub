@@ -306,4 +306,17 @@ defmodule OrcaHub.Cluster do
 
   def terminal_alive?(n, terminal_id),
     do: rpc(n, TerminalSupervisor, :terminal_alive?, [terminal_id])
+
+  # -------------------------------------------------------------------
+  # Node login (Claude Code OAuth, per-node)
+  # -------------------------------------------------------------------
+
+  @doc "Start the `claude setup-token` login flow on node `n`."
+  def login_node(n), do: rpc(n, OrcaHub.LoginRunner, :start_login, [])
+
+  @doc "Submit a pasted OAuth code to the in-progress login flow on node `n`."
+  def submit_login_code(n, code), do: rpc(n, OrcaHub.LoginRunner, :submit_code, [code])
+
+  @doc "Cancel the in-progress login flow on node `n`."
+  def cancel_login(n), do: rpc(n, OrcaHub.LoginRunner, :cancel, [])
 end

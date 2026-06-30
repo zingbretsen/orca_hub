@@ -270,11 +270,37 @@
           <span class="font-medium">{info.name}</span>
           <span :if={info.node == node()} class="badge badge-xs badge-primary">this node</span>
           <span :if={info.node != node()} class="badge badge-xs badge-success">connected</span>
+          <span
+            :if={"#{info.node}" in @logged_in_nodes}
+            class="badge badge-xs badge-info gap-1"
+            title="A Claude Code OAuth token is stored for this node"
+          >
+            <.icon name="hero-key-micro" class="size-3" /> logged in
+          </span>
         </div>
         <div class="text-base-content/50 text-xs mt-0.5 font-mono">{info.node}</div>
       </div>
-      <div :if={info.node != node()} class="flex items-center gap-1">
+      <div class="flex items-center gap-1">
         <button
+          phx-click="login_node"
+          phx-value-node={info.node}
+          class="btn btn-xs btn-ghost"
+          title="Log this node into Claude Code"
+        >
+          <.icon name="hero-arrow-right-on-rectangle-micro" class="size-4" /> Log in
+        </button>
+        <button
+          :if={"#{info.node}" in @logged_in_nodes}
+          phx-click="logout_node"
+          phx-value-node={info.node}
+          data-confirm={"Remove the stored Claude Code token for #{info.name}?"}
+          class="btn btn-xs btn-ghost text-warning"
+          title="Remove stored credential"
+        >
+          <.icon name="hero-trash-micro" class="size-4" />
+        </button>
+        <button
+          :if={info.node != node()}
           phx-click="push_to_node"
           phx-value-node={info.node}
           class="btn btn-xs btn-ghost"
@@ -284,6 +310,7 @@
           <.icon name="hero-arrow-up-tray-micro" class="size-4" />
         </button>
         <button
+          :if={info.node != node()}
           phx-click="restart_supervisor"
           phx-value-node={info.node}
           phx-value-supervisor="OrcaHub.SessionSupervisor"
@@ -320,6 +347,102 @@
         <div :if={dr.missing != []} class="text-xs text-base-content/60 mt-1">
           Missing: {dr.missing |> Enum.map(&inspect/1) |> Enum.join(", ")}
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%!-- Node login flow (claude setup-token) --%>
+<div
+  :if={@login_node}
+  class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+  phx-window-keydown="cancel_login"
+  phx-key="escape"
+>
+  <div class="bg-base-100 rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+    <div class="flex items-center justify-between px-5 py-3 border-b border-base-300">
+      <h3 class="text-lg font-semibold">
+        Log in {Cluster.node_name(@login_node)}
+      </h3>
+      <button phx-click="cancel_login" class="btn btn-sm btn-ghost btn-circle">
+        <.icon name="hero-x-mark-micro" class="size-4" />
+      </button>
+    </div>
+
+    <div class="px-5 py-4 space-y-4">
+      <%= case @login_status do %>
+        <% :success -> %>
+          <div class="alert alert-success text-sm">
+            <.icon name="hero-check-circle-micro" class="size-5" />
+            <span>{Cluster.node_name(@login_node)} is now logged in to Claude Code.</span>
+          </div>
+        <% :error -> %>
+          <div class="alert alert-error text-sm">
+            <.icon name="hero-exclamation-triangle-micro" class="size-5" />
+            <span>Login failed: {@login_error}</span>
+          </div>
+        <% _ -> %>
+          <p class="text-sm text-base-content/70">
+            Open the authorize URL below, sign in, then paste the resulting code here.
+          </p>
+      <% end %>
+
+      <div :if={@login_url && @login_status != :success}>
+        <div class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-1">
+          Authorize URL
+        </div>
+        <a
+          href={@login_url}
+          target="_blank"
+          rel="noopener"
+          class="link link-primary text-sm break-all"
+        >
+          {@login_url}
+        </a>
+      </div>
+
+      <form
+        :if={@login_status not in [:success, :error]}
+        phx-submit="submit_login_code"
+        class="flex items-end gap-2"
+      >
+        <div class="flex-1">
+          <label class="text-xs font-semibold text-base-content/50 uppercase tracking-wide">
+            Paste code
+          </label>
+          <input
+            type="text"
+            name="code"
+            autocomplete="off"
+            placeholder="Paste the code from the browser"
+            class="input input-bordered input-sm w-full mt-1"
+          />
+        </div>
+        <button type="submit" class="btn btn-sm btn-primary">Submit</button>
+      </form>
+
+      <div>
+        <div class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-1">
+          Output
+        </div>
+        <pre class="bg-base-300 rounded p-3 text-xs overflow-x-auto max-h-64 whitespace-pre-wrap">{if @login_output == "", do: "Starting…", else: @login_output}</pre>
+      </div>
+
+      <div class="flex justify-end gap-2 pt-2">
+        <button
+          :if={@login_status in [:success, :error]}
+          phx-click="close_login"
+          class="btn btn-sm btn-primary"
+        >
+          Close
+        </button>
+        <button
+          :if={@login_status not in [:success, :error]}
+          phx-click="cancel_login"
+          class="btn btn-sm btn-ghost"
+        >
+          Cancel
+        </button>
       </div>
     </div>
   </div>

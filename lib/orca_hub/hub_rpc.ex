@@ -161,6 +161,21 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.Terminals, :list_terminals_for_project, [project_id])
 
   # -------------------------------------------------------------------
+  # Node Credentials (per-node Claude OAuth tokens)
+  # -------------------------------------------------------------------
+
+  def get_node_token(node_name),
+    do: call(OrcaHub.NodeCredentials, :get_token_for_node, [node_name])
+
+  def put_node_token(node_name, token),
+    do: call(OrcaHub.NodeCredentials, :put_token_for_node, [node_name, token])
+
+  def delete_node_token(node_name),
+    do: call(OrcaHub.NodeCredentials, :delete_for_node, [node_name])
+
+  def list_logged_in_nodes, do: call(OrcaHub.NodeCredentials, :list_logged_in_nodes, [])
+
+  # -------------------------------------------------------------------
   # Session Heartbeat (hub-only GenServer)
   # -------------------------------------------------------------------
 

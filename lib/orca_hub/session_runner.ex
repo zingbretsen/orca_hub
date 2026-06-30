@@ -899,6 +899,21 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
+  # If this node has been logged into Claude Code via the web UI
+  # ("Log in this node" → `claude setup-token`), inject the captured OAuth
+  # token so spawned `claude` ports authenticate. Returns `[]` when no token
+  # is stored, leaving nodes that use `credentials.json` untouched.
+  defp node_oauth_env do
+    node()
+    |> Atom.to_string()
+    |> HubRPC.get_node_token()
+    |> OrcaHub.NodeCredentials.token_env()
+  rescue
+    # Token lookup must never block opening a session port. If the hub is
+    # briefly unreachable, fall back to the node's own credentials.
+    _ -> []
+  end
+
   defp open_port_streaming(data) do
     claude_path = System.find_executable("claude") || raise "claude executable not found in PATH"
 
@@ -922,7 +937,7 @@ defmodule OrcaHub.SessionRunner do
         :exit_status,
         :stderr_to_stdout,
         {:args, args},
-        {:env, OrcaHub.Env.sanitized_env()}
+        {:env, OrcaHub.Env.sanitized_env(node_oauth_env())}
       ] ++ port_opts
     )
   end
@@ -1035,7 +1050,7 @@ defmodule OrcaHub.SessionRunner do
         :exit_status,
         :stderr_to_stdout,
         {:args, script_args},
-        {:env, OrcaHub.Env.sanitized_env()}
+        {:env, OrcaHub.Env.sanitized_env(node_oauth_env())}
       ] ++
         port_opts
     )
