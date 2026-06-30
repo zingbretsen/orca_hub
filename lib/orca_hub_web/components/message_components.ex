@@ -622,7 +622,7 @@ defmodule OrcaHubWeb.MessageComponents do
 
     ~H"""
     <code class="text-xs">{@pattern}</code>
-    <span :if={@path} class="text-xs"> in   {@path}</span>
+    <span :if={@path} class="text-xs"> in    {@path}</span>
     """
   end
 
@@ -655,6 +655,41 @@ defmodule OrcaHubWeb.MessageComponents do
 
     ~H"""
     <span class="text-xs">{@summary}</span>
+    """
+  end
+
+  # Code-execution meta-tools (namespaced by the CLI as mcp__orca__*).
+  defp tool_summary(%{name: name, input: input} = assigns)
+       when name in ~w(mcp__orca__run_elixir run_elixir) do
+    preview =
+      (input["code"] || "")
+      |> String.split("\n", trim: true)
+      |> List.first()
+      |> Kernel.||("")
+      |> truncate(80)
+
+    assigns = assign(assigns, :preview, preview)
+
+    ~H"""
+    <code class="text-xs">{@preview}</code>
+    """
+  end
+
+  defp tool_summary(%{name: name, input: input} = assigns)
+       when name in ~w(mcp__orca__search_tools search_tools) do
+    assigns = assign(assigns, :query, input["query"] || "")
+
+    ~H"""
+    <code class="text-xs">{@query}</code>
+    """
+  end
+
+  defp tool_summary(%{name: name, input: input} = assigns)
+       when name in ~w(mcp__orca__read_tool read_tool) do
+    assigns = assign(assigns, :tool, input["name"] || "")
+
+    ~H"""
+    <code class="text-xs">{@tool}</code>
     """
   end
 
@@ -767,6 +802,19 @@ defmodule OrcaHubWeb.MessageComponents do
         <span :if={todo["status"] not in ["completed", "in_progress"]}>[ ]</span>
         <span>{todo["content"]}</span>
       </div>
+    </div>
+    """
+  end
+
+  # run_elixir: render the model-authored code as a monospace code block,
+  # preserving whitespace/newlines, styled like the Bash command block.
+  defp tool_detail(%{name: name, input: input} = assigns)
+       when name in ~w(mcp__orca__run_elixir run_elixir) do
+    assigns = assign(assigns, :code, input["code"] || "")
+
+    ~H"""
+    <div class="bg-base-300 rounded p-2 font-mono text-xs overflow-x-auto">
+      <pre class="whitespace-pre-wrap"><code>{@code}</code></pre>
     </div>
     """
   end
