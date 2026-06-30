@@ -17,15 +17,16 @@ defmodule OrcaHub.MCP.CodeExec do
     * **run/2** — ensure the live `Tools` surface is generated, then evaluate a
       snippet in the sandbox with the given MCP state installed.
 
-  ## Why dark by default
+  ## On by default, opt-out per session
 
   Code-exec collapses a session's `tools/list` down to three meta-tools
   (`run_elixir`, `search_tools`, `read_tool`) and routes everything else through
-  generated Elixir. That is a behavior change, so it is **opt-in per session**
-  (the `sessions.code_exec` column, carried into the `/mcp` URL by
-  `SessionRunner`, exactly like the `orchestrator` flag) and globally killable
-  via `ORCA_DISABLE_CODE_EXEC`. When OFF, `tools/list` / `tools/call` behave
-  exactly as before.
+  generated Elixir. This is **on by default for new sessions** but remains a
+  per-session setting you can turn **off** (opt-out) — the `sessions.code_exec`
+  column, carried into the `/mcp` URL by `SessionRunner`, exactly like the
+  `orchestrator` flag. It is globally killable via `ORCA_DISABLE_CODE_EXEC`,
+  which force-disables it node-wide regardless of any per-session setting. When
+  OFF, `tools/list` / `tools/call` behave exactly as before.
 
   See `OrcaHub.MCP.CodeExec.Sandbox` for the evaluator, `…ToolGen` /
   `…Generator` for the generated `Tools` surface, and `…MetaTools` for the
