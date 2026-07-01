@@ -67,3 +67,6 @@ upload_*
 .claude/settings.local.json
 .agents/
 .playwright-mcp/
+
+# Environment-specific local deploy script (kept on disk, not tracked)
+scripts/deploy.sh
