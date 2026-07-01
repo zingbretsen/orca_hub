@@ -399,13 +399,47 @@ defmodule OrcaHub.Discord.Bridge do
     Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
       try do
         channel_id = String.to_integer(msg.channel_id)
-        Nostrum.Api.Message.react(channel_id, message_id, "✅")
+        # react/3 is NON-bang: it RETURNS {:ok} on success or {:error, reason}
+        # on failure (it does NOT raise), so we must match the return value —
+        # a try/rescue alone would silently drop the failure reason.
+        channel_id
+        |> Nostrum.Api.Message.react(message_id, "✅")
+        |> log_ack_result(channel_id, message_id)
       rescue
-        e -> Logger.warning("Discord ack reaction failed: #{Exception.message(e)}")
+        # Belt-and-suspenders: react/3 shouldn't raise, but a bad arg (e.g. a
+        # non-integer channel_id) or a nostrum crash could still blow up here.
+        e -> Logger.warning("Discord ack reaction crashed: #{Exception.message(e)}")
       end
     end)
 
     :ok
+  end
+
+  # Surface the outcome of the react/3 call. Success is quiet (debug); any
+  # failure is a warning with as much Discord detail as we can extract — an
+  # ApiError carries the HTTP status and Discord's error code/message, which is
+  # what tells a 403 Missing Permissions (grant the bot "Add Reactions") apart
+  # from a transient Discord server error.
+  defp log_ack_result({:ok}, channel_id, message_id) do
+    Logger.debug("Discord ack reaction ok: channel=#{channel_id} message=#{message_id}")
+  end
+
+  defp log_ack_result(
+         {:error, %Nostrum.Error.ApiError{status_code: status, response: response}},
+         channel_id,
+         message_id
+       ) do
+    Logger.warning(
+      "Discord ack reaction failed: channel=#{channel_id} message=#{message_id} " <>
+        "http_status=#{inspect(status)} discord_error=#{inspect(response)}"
+    )
+  end
+
+  defp log_ack_result({:error, reason}, channel_id, message_id) do
+    Logger.warning(
+      "Discord ack reaction failed: channel=#{channel_id} message=#{message_id} " <>
+        "reason=#{inspect(reason)}"
+    )
   end
 
   # ------------------------------------------------------------------
