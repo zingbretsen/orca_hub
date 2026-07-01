@@ -214,6 +214,35 @@ defmodule OrcaHub.Sessions do
     )
   end
 
+  @doc """
+  Return the text of the most recent assistant message for a session, or `nil`
+  if there is none (or it carried no text blocks — e.g. only tool_use).
+
+  Used by the Discord worker to post a session's reply back to the channel.
+  """
+  def last_assistant_text(session_id) do
+    from(m in Message,
+      where: m.session_id == ^session_id and fragment("? ->> 'type' = 'assistant'", m.data),
+      order_by: [desc: m.inserted_at],
+      limit: 1
+    )
+    |> Repo.one()
+    |> extract_assistant_text()
+  end
+
+  defp extract_assistant_text(nil), do: nil
+
+  defp extract_assistant_text(%Message{data: data}) do
+    text =
+      data
+      |> get_in(["message", "content"])
+      |> List.wrap()
+      |> Enum.filter(&(is_map(&1) && &1["type"] == "text"))
+      |> Enum.map_join("\n", & &1["text"])
+
+    if text == "", do: nil, else: text
+  end
+
   defp reset_front_of_queue_priority do
     min_priority_query =
       from s in Session,

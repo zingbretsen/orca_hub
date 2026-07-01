@@ -15,6 +15,23 @@ config :orca_hub,
 
 config :orca_hub, OrcaHub.Scheduler, jobs: []
 
+# Discord worker is OFF by default; runtime.exs flips it on for the dedicated
+# Discord agent (DISCORD_BOT=true + DISCORD_BOT_TOKEN).
+config :orca_hub, :discord_bot, false
+
+# nostrum runs as an "included application" — it does NOT auto-start (see the
+# `runtime: false` dep in mix.exs); OrcaHub.Application starts it only when the
+# Discord worker is enabled. These are inert compile-time defaults:
+#   - the gateway intents we need to read @-mentions (message_content is a
+#     PRIVILEGED intent and must be enabled in the Discord dev portal)
+#   - voice tooling disabled to suppress ffmpeg/youtube-dl startup warnings
+# The bot token is supplied only at runtime, and only when enabled.
+config :nostrum,
+  gateway_intents: [:guilds, :guild_messages, :message_content, :direct_messages],
+  ffmpeg: false,
+  youtubedl: false,
+  streamlink: false
+
 # Long-lived streaming SessionRunner engine is the DEFAULT. The
 # ORCA_DISABLE_STREAMING env var (see config/runtime.exs) is a global kill switch
 # that flips the default back to the one-shot engine. A per-session `streaming`

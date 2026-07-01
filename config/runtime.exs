@@ -50,6 +50,27 @@ if System.get_env("PHX_SERVER") do
   config :orca_hub, OrcaHubWeb.Endpoint, server: true
 end
 
+# All-in-one Discord worker. INERT BY DEFAULT: nostrum is a `runtime: false`
+# dep (see mix.exs) so it never auto-connects, and OrcaHub.Application only
+# starts it when BOTH of these are set. On every other node (hub, LAN agents,
+# dev) the flag is off, no token is configured, and nothing dials Discord.
+discord_bot? = System.get_env("DISCORD_BOT") in ~w(1 true)
+config :orca_hub, :discord_bot, discord_bot?
+
+if discord_bot? do
+  case System.get_env("DISCORD_BOT_TOKEN") do
+    token when is_binary(token) and token != "" ->
+      config :nostrum, token: token
+
+    _ ->
+      raise """
+      DISCORD_BOT=true but DISCORD_BOT_TOKEN is missing/empty.
+      Set DISCORD_BOT_TOKEN (from the Discord dev portal Bot tab) or unset
+      DISCORD_BOT to disable the Discord worker.
+      """
+  end
+end
+
 config :orca_hub, OrcaHubWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 

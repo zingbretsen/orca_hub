@@ -20,12 +20,17 @@ defmodule OrcaHub.Application do
 
     topologies = Application.get_env(:libcluster, :topologies, [])
 
-    children =
+    base_children =
       if OrcaHub.Mode.hub?() do
         hub_children(topologies)
       else
         agent_children(topologies)
       end
+
+    # The Discord worker is gated behind DISCORD_BOT + DISCORD_BOT_TOKEN, so
+    # this is `[]` on every node except the dedicated Discord agent. Appending
+    # to the tail keeps nostrum inert everywhere else (see OrcaHub.Discord).
+    children = base_children ++ OrcaHub.Discord.children()
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options

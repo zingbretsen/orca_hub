@@ -46,6 +46,9 @@ defmodule OrcaHub.HubRPC do
   def list_idle_sessions_with_last_assistant_message,
     do: call(OrcaHub.Sessions, :list_idle_sessions_with_last_assistant_message, [])
 
+  def last_assistant_text(session_id),
+    do: call(OrcaHub.Sessions, :last_assistant_text, [session_id])
+
   def search(query, opts \\ []), do: call(OrcaHub.Sessions, :search, [query, opts])
 
   def search_sessions_by_directory(directory, opts \\ %{}),
@@ -159,6 +162,27 @@ defmodule OrcaHub.HubRPC do
 
   def list_terminals_for_project(project_id),
     do: call(OrcaHub.Terminals, :list_terminals_for_project, [project_id])
+
+  # -------------------------------------------------------------------
+  # Discord Channels (Discord channel -> project/session mappings)
+  # -------------------------------------------------------------------
+
+  def list_discord_channels, do: call(OrcaHub.DiscordChannels, :list_discord_channels, [])
+
+  def get_discord_channel_by_channel_id(discord_channel_id),
+    do: call(OrcaHub.DiscordChannels, :get_by_channel_id, [discord_channel_id])
+
+  def create_discord_channel(attrs),
+    do: call(OrcaHub.DiscordChannels, :create_discord_channel, [attrs])
+
+  def update_discord_channel(channel, attrs),
+    do: call(OrcaHub.DiscordChannels, :update_discord_channel, [channel, attrs])
+
+  def delete_discord_channel(channel),
+    do: call(OrcaHub.DiscordChannels, :delete_discord_channel, [channel])
+
+  def set_discord_channel_session(channel, session_id),
+    do: call(OrcaHub.DiscordChannels, :set_session, [channel, session_id])
 
   # -------------------------------------------------------------------
   # Node Credentials (per-node Claude OAuth tokens)

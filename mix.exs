@@ -21,7 +21,13 @@ defmodule OrcaHub.MixProject do
   def application do
     [
       mod: {OrcaHub.Application, []},
-      extra_applications: [:logger, :runtime_tools]
+      extra_applications: [:logger, :runtime_tools],
+      # nostrum is an INCLUDED application: shipped in the release and loaded,
+      # but NOT auto-started by OTP. This keeps it inert (no Discord connection,
+      # no missing-token crash) on every node. OrcaHub.Application starts it
+      # manually, gated behind DISCORD_BOT + DISCORD_BOT_TOKEN. See
+      # lib/orca_hub/discord.ex.
+      included_applications: [:nostrum]
     ]
   end
 
@@ -73,7 +79,13 @@ defmodule OrcaHub.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:tz, "~> 0.28"},
       {:gen_statem, "~> 0.1.0"},
-      {:libcluster, "~> 3.4"}
+      {:libcluster, "~> 3.4"},
+      # Discord gateway client for the all-in-one Discord worker. Declared as
+      # an `included_applications` entry (see `application/0`) so it ships in
+      # the release but does NOT auto-start — nostrum would otherwise connect
+      # to Discord (or raise on a missing token) on EVERY node at boot. We
+      # start it manually, gated behind DISCORD_BOT, in OrcaHub.Application.
+      {:nostrum, "~> 0.10"}
     ]
   end
 
