@@ -55,6 +55,13 @@ defmodule OrcaHub.Discord.Bridge do
     * `:guild_id` — the guild snowflake (integer), for provisioning metadata
     * `:author` — the mention author's `Nostrum.Struct.User` (for the backfill
       prompt); optional
+    * `:attachments` — the message's attachments (list of
+      `%Nostrum.Struct.Message.Attachment{}`); may be empty
+
+  Attachments are ALWAYS copied into the project's `inbox/` directory. The
+  session is only invoked when there is non-empty text after the mention is
+  stripped — a file-only mention just saves the files (and provisions the
+  project if needed) without starting a conversation.
 
   Returns `:ok` when dispatched, `:ignore` when the mapping is disabled or
   provisioning fails. Safe to call from the gateway consumer — never raises.
@@ -104,21 +111,30 @@ defmodule OrcaHub.Discord.Bridge do
   end
 
   defp drive(%{project: %{} = project} = mapping, %{message_id: message_id} = msg) do
-    session_id = resolve_session(mapping, project)
-    runner_node = Cluster.project_node_for(project)
+    # Always save attachments first so a file-only mention still lands the files.
+    saved = save_attachments(project, msg, message_id)
 
-    HubRPC.set_discord_channel_session(mapping, session_id)
+    if String.trim(msg[:text] || "") == "" do
+      # File-only mention: no conversation. Do NOT advance the watermark, so the
+      # backfill window stays open for the next text mention.
+      :ok
+    else
+      session_id = resolve_session(mapping, project)
+      runner_node = Cluster.project_node_for(project)
 
-    unless Cluster.session_alive?(runner_node, session_id) do
-      session = HubRPC.get_session(session_id)
-      Cluster.start_session(runner_node, session_id, session)
+      HubRPC.set_discord_channel_session(mapping, session_id)
+
+      unless Cluster.session_alive?(runner_node, session_id) do
+        session = HubRPC.get_session(session_id)
+        Cluster.start_session(runner_node, session_id, session)
+      end
+
+      Cluster.send_message(runner_node, session_id, build_prompt(mapping, msg, saved))
+      capture_reply(session_id, mapping.discord_channel_id, message_id)
+      # Advance the watermark only after a successful dispatch, so a failed send
+      # (which raises out of here) leaves the backfill window open for a retry.
+      update_watermark(mapping, message_id)
     end
-
-    Cluster.send_message(runner_node, session_id, build_prompt(mapping, msg))
-    capture_reply(session_id, mapping.discord_channel_id, message_id)
-    # Advance the watermark only after a successful dispatch, so a failed send
-    # (which raises out of here) leaves the backfill window open for a retry.
-    update_watermark(mapping, message_id)
   end
 
   # ------------------------------------------------------------------
@@ -130,15 +146,31 @@ defmodule OrcaHub.Discord.Bridge do
   # said untagged, then "@bot what should you call me?"). Bounded and defensive:
   # any Discord API failure falls back to sending just the mention text.
 
-  defp build_prompt(mapping, %{text: text} = msg) do
-    case fetch_history(mapping, msg) do
-      [] -> text
-      history -> format_prompt(history, msg)
-    end
+  defp build_prompt(mapping, %{text: text} = msg, saved) do
+    base =
+      case fetch_history(mapping, msg) do
+        [] -> text
+        history -> format_prompt(history, msg)
+      end
+
+    append_saved_files(base, saved)
   rescue
     e ->
       Logger.warning("Discord history backfill failed: #{Exception.message(e)}")
-      msg.text
+      append_saved_files(msg.text, saved)
+  end
+
+  # Tack the saved inbox paths onto the prompt so Claude knows the files landed.
+  defp append_saved_files(prompt, []), do: prompt
+
+  defp append_saved_files(prompt, saved) do
+    """
+    #{prompt}
+
+    [Files saved to inbox/]
+    #{Enum.join(saved, "\n")}
+    """
+    |> String.trim_trailing()
   end
 
   # Fetch the intervening messages via nostrum. We always page BACKWARDS from the
@@ -247,6 +279,114 @@ defmodule OrcaHub.Discord.Bridge do
       })
 
     session.id
+  end
+
+  # ------------------------------------------------------------------
+  # Attachments → inbox/
+  # ------------------------------------------------------------------
+  #
+  # Copy every attachment on the mention into `<project.directory>/inbox/` so a
+  # session can read them later. Runs on the Discord agent node, which owns the
+  # shared mount, so local File writes + Req downloads work here. Each download
+  # is isolated: a failure logs and is skipped, never crashing dispatch. On any
+  # successful save we react ✅ to the triggering message as feedback.
+  #
+  # Returns the list of saved relative paths (e.g. "inbox/report.pdf").
+
+  defp save_attachments(project, msg, message_id) do
+    attachments = msg[:attachments] || []
+
+    case attachments do
+      [] ->
+        []
+
+      list ->
+        inbox = Path.join(project.directory, "inbox")
+        File.mkdir_p!(inbox)
+
+        saved =
+          Enum.reduce(list, [], fn attachment, acc ->
+            case save_one(inbox, attachment, acc) do
+              {:ok, rel} -> [rel | acc]
+              :error -> acc
+            end
+          end)
+          |> Enum.reverse()
+
+        if saved != [], do: ack_reaction(msg, message_id)
+        saved
+    end
+  end
+
+  # Download a single attachment into `inbox`, avoiding collisions with anything
+  # already saved this dispatch (`taken`, a list of "inbox/<name>" rel paths).
+  # Returns {:ok, rel_path} or :error (logged) — never raises.
+  defp save_one(inbox, attachment, taken) do
+    name = unique_name(inbox, sanitize_filename(attachment.filename), attachment.id, taken)
+    path = Path.join(inbox, name)
+
+    %{body: body} = Req.get!(attachment.url)
+    File.write!(path, body)
+    {:ok, Path.join("inbox", name)}
+  rescue
+    e ->
+      Logger.warning(
+        "Discord attachment save failed (#{inspect(attachment.filename)}): " <>
+          Exception.message(e)
+      )
+
+      :error
+  end
+
+  # Pick a name that collides with neither an existing file on disk nor one we
+  # just wrote this dispatch. First tries the sanitized name, then appends the
+  # Discord attachment id, then a numeric counter as a last resort.
+  defp unique_name(inbox, base, attachment_id, taken) do
+    candidates =
+      [base, disambiguate(base, to_string(attachment_id))] ++
+        Enum.map(1..50, fn n -> disambiguate(base, Integer.to_string(n)) end)
+
+    Enum.find(candidates, fn name ->
+      not File.exists?(Path.join(inbox, name)) and Path.join("inbox", name) not in taken
+    end) || disambiguate(base, "#{attachment_id}-#{System.unique_integer([:positive])}")
+  end
+
+  # Insert `suffix` before the extension: "report.pdf" + "12" -> "report-12.pdf".
+  defp disambiguate(base, suffix) do
+    ext = Path.extname(base)
+    stem = Path.basename(base, ext)
+    "#{stem}-#{suffix}#{ext}"
+  end
+
+  @doc """
+  Sanitize a Discord attachment filename into a safe `inbox/` basename.
+
+  Takes the basename only (drops any path), whitelists alphanumerics plus
+  `-`, `_`, and `.`, collapses every other run of characters to a single `-`,
+  and strips leading/trailing separators. Falls back to `"file"` when the
+  result is empty. The output can never be absolute or escape `inbox/`.
+  """
+  def sanitize_filename(name) when is_binary(name) do
+    name
+    |> Path.basename()
+    |> String.replace(~r/[^A-Za-z0-9._-]+/u, "-")
+    |> String.trim("-")
+    |> String.trim(".")
+    |> case do
+      "" -> "file"
+      sanitized -> sanitized
+    end
+  end
+
+  def sanitize_filename(_), do: "file"
+
+  # React ✅ to acknowledge saved files. Defensive: a failed reaction (missing
+  # permission, deleted message) must never break dispatch.
+  defp ack_reaction(msg, message_id) do
+    channel_id = String.to_integer(msg.channel_id)
+    Nostrum.Api.Message.react(channel_id, message_id, "✅")
+  rescue
+    e -> Logger.warning("Discord ack reaction failed: #{Exception.message(e)}")
   end
 
   # ------------------------------------------------------------------

@@ -33,7 +33,8 @@ defmodule OrcaHub.Discord.Bot do
         message_id: msg.id,
         text: clean_content(msg.content, bot_id()),
         guild_id: msg.guild_id,
-        author: msg.author
+        author: msg.author,
+        attachments: msg.attachments
       })
     end
 
@@ -45,7 +46,8 @@ defmodule OrcaHub.Discord.Bot do
   #     checked FIRST so an untrusted guild never reaches auto-provisioning
   #   - our own messages / other bots (avoid loops)
   #   - messages that don't @-mention us
-  #   - messages with no usable text once the mention is stripped
+  #   - messages with neither usable text (once the mention is stripped) nor any
+  #     attachment — a file-only mention still passes so the files get saved
   def handle_event(_event), do: :noop
 
   defp handle?(msg) do
@@ -55,7 +57,7 @@ defmodule OrcaHub.Discord.Bot do
       not is_nil(id) and
       not from_bot?(msg) and
       mentions_bot?(msg, id) and
-      String.trim(clean_content(msg.content, id)) != ""
+      (String.trim(clean_content(msg.content, id)) != "" or msg.attachments != [])
   end
 
   defp bot_id do
