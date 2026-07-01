@@ -50,10 +50,11 @@ if System.get_env("PHX_SERVER") do
   config :orca_hub, OrcaHubWeb.Endpoint, server: true
 end
 
-# All-in-one Discord worker. INERT BY DEFAULT: nostrum is a `runtime: false`
-# dep (see mix.exs) so it never auto-connects, and OrcaHub.Application only
-# starts it when BOTH of these are set. On every other node (hub, LAN agents,
-# dev) the flag is off, no token is configured, and nothing dials Discord.
+# All-in-one Discord worker. INERT BY DEFAULT: nostrum is an
+# `included_applications` entry (see mix.exs) — shipped/loaded but not
+# auto-started — and OrcaHub.Application only starts it when BOTH the flag and a
+# token are set. On every other node (hub, LAN agents, dev) the flag is off, no
+# token is configured, and nothing dials Discord.
 discord_bot? = System.get_env("DISCORD_BOT") in ~w(1 true)
 config :orca_hub, :discord_bot, discord_bot?
 
@@ -70,6 +71,19 @@ if discord_bot? do
       """
   end
 end
+
+# Guild allowlist for the Discord worker (comma-separated guild/server
+# snowflakes). These are NOT secret — plain env, not the k8s secret. The gate
+# FAILS CLOSED: an empty/unset list means the worker ignores every message
+# (see OrcaHub.Discord.guild_allowed?/1).
+discord_guild_ids =
+  case System.get_env("DISCORD_GUILD_IDS") do
+    nil -> []
+    "" -> []
+    str -> str |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+  end
+
+config :orca_hub, :discord_guild_ids, discord_guild_ids
 
 config :orca_hub, OrcaHubWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]

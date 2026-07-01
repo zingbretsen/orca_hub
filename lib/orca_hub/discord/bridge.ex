@@ -3,18 +3,42 @@ defmodule OrcaHub.Discord.Bridge do
   Maps a Discord channel to an OrcaHub session and drives it.
 
   When the Discord worker sees an @-mention (see `OrcaHub.Discord.Bot`), it
-  calls `dispatch/1`. We look up the channel → project mapping, resolve or
-  create a session for that project (mirroring `OrcaHub.TriggerExecutor`),
-  send the message, then capture the assistant's reply in a supervised task
-  and post it back to the channel.
+  calls `dispatch/1`. We look up the channel → project mapping (auto-provisioning
+  one if the channel is unmapped), resolve or create a session for that project
+  (mirroring `OrcaHub.TriggerExecutor`), send the message, then capture the
+  assistant's reply in a supervised task and post it back to the channel.
+
+  ## Auto-provisioning
+
+  The guild allowlist is enforced upstream in `OrcaHub.Discord.Bot`, so any
+  message reaching here is from a trusted guild. An @-mention in an UNMAPPED
+  channel provisions it lazily:
+
+    * **Top-level channel** → create a directory under `/home/orca/discord`
+      named `<slug>-<channel_id>`, a Project tagged to THIS Discord node, and an
+      enabled mapping.
+    * **Thread** → ensure the PARENT channel is provisioned first, then create a
+      mapping for the thread that REUSES the parent's project (shared directory)
+      but gets its own session — a separate conversation in the same project.
+
+  A channel that is explicitly mapped with `enabled: false` stays ignored and is
+  NOT re-provisioned.
 
   All database access goes through `OrcaHub.HubRPC` so this works from the
-  Discord agent node (which has no local database).
+  Discord agent node (which has no local database). Directory creation happens
+  locally, since the bridge runs on the node that owns the shared mount.
   """
 
   require Logger
 
   alias OrcaHub.{Cluster, HubRPC}
+
+  # Root of the isolated shared subtree for Discord-provisioned projects. Must
+  # match the container mountPath in the orca-agent-discord k3s manifest.
+  @discord_root "/home/orca/discord"
+
+  # Discord channel `type` values that denote a thread (news/public/private).
+  @thread_types [10, 11, 12]
 
   # Discord's hard limit on a single message's content length.
   @discord_max_len 2000
@@ -28,23 +52,24 @@ defmodule OrcaHub.Discord.Bridge do
     * `:channel_id` — Discord channel snowflake, as a string
     * `:message_id` — the triggering message id (for the reply reference)
     * `:text` — the message content with the bot mention stripped
+    * `:guild_id` — the guild snowflake (integer), for provisioning metadata
 
-  Returns `:ok` when dispatched, `:ignore` when there is no enabled mapping.
-  Safe to call from the gateway consumer — never raises.
+  Returns `:ok` when dispatched, `:ignore` when the mapping is disabled or
+  provisioning fails. Safe to call from the gateway consumer — never raises.
   """
-  def dispatch(%{channel_id: channel_id, message_id: message_id, text: text}) do
+  def dispatch(%{channel_id: channel_id} = msg) do
     case HubRPC.get_discord_channel_by_channel_id(channel_id) do
-      %{enabled: true, project: %{} = project} = mapping ->
-        drive(mapping, project, message_id, text)
+      %{enabled: true, project: %{}} = mapping ->
+        drive(mapping, msg)
         :ok
 
       %{enabled: false} ->
         Logger.debug("Discord channel #{channel_id} mapping is disabled, ignoring")
         :ignore
 
-      _ ->
-        Logger.debug("No Discord channel mapping for #{channel_id}, ignoring")
-        :ignore
+      nil ->
+        drive(provision(msg), msg)
+        :ok
     end
   rescue
     e ->
@@ -52,7 +77,7 @@ defmodule OrcaHub.Discord.Bridge do
       :ignore
   end
 
-  defp drive(mapping, project, message_id, text) do
+  defp drive(%{project: %{} = project} = mapping, %{message_id: message_id, text: text}) do
     session_id = resolve_session(mapping, project)
     runner_node = Cluster.project_node_for(project)
 
@@ -95,6 +120,135 @@ defmodule OrcaHub.Discord.Bridge do
       })
 
     session.id
+  end
+
+  # ------------------------------------------------------------------
+  # Auto-provisioning
+  # ------------------------------------------------------------------
+
+  # Provision an unmapped channel and return its mapping (with :project set).
+  # Threads reuse the parent channel's project; top-level channels get their own.
+  defp provision(%{channel_id: channel_id, guild_id: guild_id}) do
+    info = channel_info(channel_id)
+
+    if info.thread? and not is_nil(info.parent_id) do
+      provision_thread(channel_id, info, guild_id)
+    else
+      provision_channel(channel_id, info, guild_id)
+    end
+  end
+
+  defp provision_channel(channel_id, info, guild_id) do
+    dir = channel_dir(info.name, channel_id)
+    File.mkdir_p!(dir)
+
+    {:ok, project} =
+      HubRPC.create_project(%{
+        name: project_name(info, guild_id),
+        directory: dir,
+        node: Atom.to_string(node())
+      })
+
+    case HubRPC.create_discord_channel(%{
+           discord_channel_id: channel_id,
+           project_id: project.id,
+           enabled: true
+         }) do
+      {:ok, mapping} ->
+        %{mapping | project: project}
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        # Lost a create race: a concurrent mention provisioned this channel
+        # first. Roll back our now-orphaned project and use the winner's mapping.
+        if unique_conflict?(cs, :discord_channel_id) do
+          HubRPC.delete_project(project)
+          HubRPC.get_discord_channel_by_channel_id(channel_id)
+        else
+          raise "discord_channels insert failed: #{inspect(cs.errors)}"
+        end
+    end
+  end
+
+  defp provision_thread(channel_id, info, guild_id) do
+    parent_id = to_string(info.parent_id)
+
+    parent_mapping =
+      case HubRPC.get_discord_channel_by_channel_id(parent_id) do
+        %{} = mapping -> mapping
+        nil -> provision_channel(parent_id, channel_info(parent_id), guild_id)
+      end
+
+    case HubRPC.create_discord_channel(%{
+           discord_channel_id: channel_id,
+           project_id: parent_mapping.project_id,
+           parent_channel_id: parent_id,
+           enabled: true
+         }) do
+      {:ok, mapping} ->
+        %{mapping | project: parent_mapping.project}
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        if unique_conflict?(cs, :discord_channel_id) do
+          HubRPC.get_discord_channel_by_channel_id(channel_id)
+        else
+          raise "discord_channels (thread) insert failed: #{inspect(cs.errors)}"
+        end
+    end
+  end
+
+  # Fetch channel type/parent/name from Discord. Falls back to a safe top-level
+  # shape if the lookup fails so provisioning can still proceed.
+  defp channel_info(channel_id) do
+    case Nostrum.Api.Channel.get(String.to_integer(channel_id)) do
+      {:ok, %{type: type, parent_id: parent_id, name: name}} ->
+        %{name: name, thread?: type in @thread_types, parent_id: parent_id}
+
+      _ ->
+        %{name: nil, thread?: false, parent_id: nil}
+    end
+  end
+
+  # Stable per-channel directory: <slug>-<channel_id>. The channel_id suffix
+  # guarantees uniqueness and survives channel renames.
+  defp channel_dir(name, channel_id) do
+    Path.join(@discord_root, "#{slug(name)}-#{channel_id}")
+  end
+
+  defp project_name(%{name: name}, guild_id) do
+    channel = if name in [nil, ""], do: "#discord", else: "##{name}"
+
+    case guild_name(guild_id) do
+      nil -> channel
+      gname -> "#{gname} / #{channel}"
+    end
+  end
+
+  defp guild_name(nil), do: nil
+
+  defp guild_name(guild_id) do
+    Nostrum.Cache.GuildCache.get!(guild_id).name
+  rescue
+    _ -> nil
+  end
+
+  defp slug(nil), do: "channel"
+
+  defp slug(name) do
+    name
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/u, "-")
+    |> String.trim("-")
+    |> case do
+      "" -> "channel"
+      s -> s
+    end
+  end
+
+  defp unique_conflict?(%Ecto.Changeset{errors: errors}, field) do
+    case errors[field] do
+      {_msg, opts} -> Keyword.get(opts, :constraint) == :unique
+      _ -> false
+    end
   end
 
   # Subscribe to the session's PubSub topic in a supervised task and post the

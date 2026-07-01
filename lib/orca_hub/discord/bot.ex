@@ -8,6 +8,10 @@ defmodule OrcaHub.Discord.Bot do
   message to `OrcaHub.Discord.Bridge`, which drives an OrcaHub session and
   posts the reply back.
 
+  Every message is first screened against the guild allowlist
+  (`OrcaHub.Discord.guild_allowed?/1`), which fails closed. This gate runs
+  before dispatch, so it also protects the bridge's auto-provisioning.
+
   This process is a singleton across the cluster — it only runs on the node
   that has `DISCORD_BOT=true` (the dedicated Discord agent pod). See
   `OrcaHub.Application` for how it is gated into the supervision tree, and
@@ -27,7 +31,8 @@ defmodule OrcaHub.Discord.Bot do
       Bridge.dispatch(%{
         channel_id: to_string(msg.channel_id),
         message_id: msg.id,
-        text: clean_content(msg.content, bot_id())
+        text: clean_content(msg.content, bot_id()),
+        guild_id: msg.guild_id
       })
     end
 
@@ -35,6 +40,8 @@ defmodule OrcaHub.Discord.Bot do
   end
 
   # Ignore anything we shouldn't act on:
+  #   - messages from a guild not in the allowlist, or DMs (guild_id nil) —
+  #     checked FIRST so an untrusted guild never reaches auto-provisioning
   #   - our own messages / other bots (avoid loops)
   #   - messages that don't @-mention us
   #   - messages with no usable text once the mention is stripped
@@ -43,7 +50,8 @@ defmodule OrcaHub.Discord.Bot do
   defp handle?(msg) do
     id = bot_id()
 
-    not is_nil(id) and
+    OrcaHub.Discord.guild_allowed?(msg.guild_id) and
+      not is_nil(id) and
       not from_bot?(msg) and
       mentions_bot?(msg, id) and
       String.trim(clean_content(msg.content, id)) != ""
