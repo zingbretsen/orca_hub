@@ -28,6 +28,10 @@ defmodule OrcaHub.Discord.Bot do
   @impl true
   def handle_event({:MESSAGE_CREATE, msg, _ws_state}) do
     if handle?(msg) do
+      Logger.info(
+        "Discord mention accepted: channel=#{msg.channel_id} raw_len=#{String.length(msg.content || "")} attachments=#{length(msg.attachments)}"
+      )
+
       Bridge.dispatch(%{
         channel_id: to_string(msg.channel_id),
         message_id: msg.id,

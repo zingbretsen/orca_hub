@@ -114,6 +114,13 @@ defmodule OrcaHub.Discord.Bridge do
     # Always save attachments first so a file-only mention still lands the files.
     saved = save_attachments(project, msg, message_id)
 
+    text_len = String.length(String.trim(msg[:text] || ""))
+    branch = if text_len == 0, do: "file_only", else: "converse"
+
+    Logger.info(
+      "Discord dispatch: channel=#{mapping.discord_channel_id} saved=#{length(saved)} text_len=#{text_len} branch=#{branch}"
+    )
+
     if String.trim(msg[:text] || "") == "" do
       # File-only mention: no conversation. Do NOT advance the watermark, so the
       # backfill window stays open for the next text mention.
