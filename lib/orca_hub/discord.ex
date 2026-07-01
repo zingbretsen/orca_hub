@@ -40,20 +40,31 @@ defmodule OrcaHub.Discord do
   @doc """
   Supervision children for the Discord worker, or `[]` when disabled.
 
-  We start nostrum's own application tree manually (via its `child_spec/1`) so
-  it never auto-connects on other nodes — nostrum is an `included_applications`
-  entry in `mix.exs` (shipped in the release and loaded, but NOT auto-started by
-  OTP). The consumer starts after nostrum so `Nostrum.ConsumerGroup` is
-  available to join.
+  We start nostrum manually here so it never auto-connects on other nodes —
+  nostrum is an `included_applications` entry in `mix.exs` (shipped in the
+  release and loaded, but NOT auto-started by OTP). We use
+  `Application.ensure_all_started/1` rather than supervising `Nostrum.Application`
+  directly, because the latter starts nostrum's supervision tree WITHOUT
+  starting its OTP application dependencies (notably `gun`, the HTTP/WebSocket
+  client). Without `gun` running, `Nostrum.Shard.Supervisor` crashes when it
+  dials the gateway (`gun_conns_sup` has no process). `ensure_all_started/1`
+  boots gun and the rest of nostrum's deps in the correct order. The consumer
+  (`OrcaHub.Discord.Bot`) is then supervised by us so `Nostrum.ConsumerGroup`
+  is available to join.
   """
   def children do
     if enabled?() do
       warn_if_allowlist_empty()
 
-      [
-        Nostrum.Application,
-        OrcaHub.Discord.Bot
-      ]
+      case Application.ensure_all_started(:nostrum) do
+        {:ok, _apps} ->
+          :ok
+
+        {:error, reason} ->
+          raise "nostrum failed to start for Discord worker: #{inspect(reason)}"
+      end
+
+      [OrcaHub.Discord.Bot]
     else
       []
     end
