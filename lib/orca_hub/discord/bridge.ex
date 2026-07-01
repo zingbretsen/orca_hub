@@ -380,13 +380,25 @@ defmodule OrcaHub.Discord.Bridge do
 
   def sanitize_filename(_), do: "file"
 
-  # React ✅ to acknowledge saved files. Defensive: a failed reaction (missing
-  # permission, deleted message) must never break dispatch.
+  # React ✅ to acknowledge saved files. Fire-and-forget in a supervised task:
+  # `save_attachments/3` runs on the critical path in `drive/2` BEFORE the session
+  # is dispatched, and `Nostrum.Api.Message.react/3` is a synchronous call that can
+  # BLOCK the caller when the reaction bucket's ratelimiter stalls (e.g. a Discord
+  # server error → nostrum "holds off request queue pipelining"). Offloading it
+  # keeps a slow/erroring reaction API from delaying or preventing the text+file
+  # dispatch. Defensive inside the task too: a failed reaction (missing permission,
+  # deleted message) must never crash anything.
   defp ack_reaction(msg, message_id) do
-    channel_id = String.to_integer(msg.channel_id)
-    Nostrum.Api.Message.react(channel_id, message_id, "✅")
-  rescue
-    e -> Logger.warning("Discord ack reaction failed: #{Exception.message(e)}")
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      try do
+        channel_id = String.to_integer(msg.channel_id)
+        Nostrum.Api.Message.react(channel_id, message_id, "✅")
+      rescue
+        e -> Logger.warning("Discord ack reaction failed: #{Exception.message(e)}")
+      end
+    end)
+
+    :ok
   end
 
   # ------------------------------------------------------------------
