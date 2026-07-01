@@ -34,23 +34,30 @@ There are TWO prod instances; a full deploy updates both:
 1. **Local systemd service `orca-hub`** — runs an OTP release from
    `_build/prod/rel/orca_hub`. Updating it = build a prod release, then
    `sudo systemctl restart orca-hub`.
-2. **k3s deployment `orca-hub`** (namespace `lab`) — runs a Docker image from
-   `registry.lab.ingbretsenhome.com`.
+2. **k3s deployments `orca-hub` and `orca-agent-discord`** (namespace `lab`) —
+   both run the same Docker image from `registry.lab.ingbretsenhome.com`.
 
-### Canonical deploy: `scripts/deploy.sh`
+### Canonical deploy: `~/homelab/scripts/deploy-orca-hub.sh`
 
-`scripts/deploy.sh` is the canonical deploy path. It runs, in order:
+The canonical deploy script is a LOCAL/PRIVATE script that lives in the homelab
+repo at `~/homelab/scripts/deploy-orca-hub.sh` — it is intentionally NOT checked
+into this repo (`scripts/deploy.sh` is gitignored here as a guard against
+accidental re-add). It builds from this checkout (`ORCA_REPO`, default
+`/home/zach/orca_hub`) and runs, in order:
 
-1. Build local prod OTP release (`mix deps.get --only prod`, `mix assets.deploy`,
+1. `git push` the deployed commit to origin.
+2. Build local prod OTP release (`mix deps.get --only prod`, `mix assets.deploy`,
    `mix release --overwrite`).
-2. Build + push the Docker image and `kubectl rollout restart` the k3s deployment.
-3. `sudo systemctl restart orca-hub`.
+3. Build + push the Docker image, then `kubectl rollout restart` BOTH k3s
+   deployments (`orca-hub` and `orca-agent-discord`) — they share the one image.
+4. `sudo systemctl restart orca-hub`.
 
 Flags let you target one instance: `--skip-k3s` (local release + systemd only),
 `--skip-local --skip-release` (k3s image roll only), `--skip-release`,
-`--skip-local`. Run `scripts/deploy.sh --help` for details.
+`--skip-local`, `--skip-push`. Run `~/homelab/scripts/deploy-orca-hub.sh --help`
+for details.
 
-**Passwordless sudo requirement:** Step 3 runs `sudo systemctl restart orca-hub`.
+**Passwordless sudo requirement:** the systemd step runs `sudo systemctl restart orca-hub`.
 To avoid a password prompt, install the sudoers drop-in at
 `/etc/sudoers.d/orca-hub` (root:root, mode 0440). A reference copy lives at
 `scripts/orca-hub.sudoers` with install instructions in its header; it grants
@@ -61,10 +68,10 @@ Validate after installing with `sudo visudo -cf /etc/sudoers.d/orca-hub`.
 
 - Deployment manifests live in `~/homelab/k3s/apps/orca-hub.yaml`, NOT in `k8s/` (which is a generic/standalone reference)
 - Secrets are in `~/homelab/k3s/secrets/orca-hub-secrets.yaml`
-- Single deployment: `orca-hub` in the `lab` namespace
+- Two deployments in the `lab` namespace: `orca-hub` (DB-owning hub) and `orca-agent-discord` (Discord agent); both run the same image
 - Image registry: `registry.lab.ingbretsenhome.com`
 - Ingress: `orca.lab.ingbretsenhome.com` (HTTPS via Traefik, Authelia forward-auth)
-- Manual deploy (reference): `docker build -t registry.lab.ingbretsenhome.com/orca-hub:latest . && docker push registry.lab.ingbretsenhome.com/orca-hub:latest && kubectl rollout restart deployment/orca-hub -n lab`
+- Manual deploy (reference): `docker build -t registry.lab.ingbretsenhome.com/orca-hub:latest . && docker push registry.lab.ingbretsenhome.com/orca-hub:latest && kubectl rollout restart deployment/orca-hub deployment/orca-agent-discord -n lab`
 
 ## Dependencies
 
