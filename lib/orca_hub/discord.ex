@@ -21,8 +21,9 @@ defmodule OrcaHub.Discord do
   Supervision children for the Discord worker, or `[]` when disabled.
 
   We start nostrum's own application tree manually (via its `child_spec/1`) so
-  it never auto-connects on other nodes — see the `runtime: false` note in
-  `mix.exs`. The consumer starts after nostrum so `Nostrum.ConsumerGroup` is
+  it never auto-connects on other nodes — nostrum is an `included_applications`
+  entry in `mix.exs` (shipped in the release and loaded, but NOT auto-started by
+  OTP). The consumer starts after nostrum so `Nostrum.ConsumerGroup` is
   available to join.
   """
   def children do
