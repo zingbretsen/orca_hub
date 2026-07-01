@@ -60,21 +60,45 @@ defmodule OrcaHub.Discord.Bridge do
   def dispatch(%{channel_id: channel_id} = msg) do
     case HubRPC.get_discord_channel_by_channel_id(channel_id) do
       %{enabled: true, project: %{}} = mapping ->
-        drive(mapping, msg)
-        :ok
+        # Cascade-block: a thread is silenced when its parent channel mapping is
+        # disabled. Uses the stored parent_channel_id (no Discord REST call).
+        if parent_disabled?(mapping.parent_channel_id) do
+          Logger.debug("Discord thread #{channel_id} parent is disabled, ignoring")
+          :ignore
+        else
+          drive(mapping, msg)
+          :ok
+        end
 
       %{enabled: false} ->
         Logger.debug("Discord channel #{channel_id} mapping is disabled, ignoring")
         :ignore
 
       nil ->
-        drive(provision(msg), msg)
-        :ok
+        case provision(msg) do
+          :ignore ->
+            :ignore
+
+          mapping ->
+            drive(mapping, msg)
+            :ok
+        end
     end
   rescue
     e ->
       Logger.error("Discord bridge dispatch failed: #{Exception.message(e)}")
       :ignore
+  end
+
+  # True only when the parent channel HAS a mapping and it is disabled. A nil
+  # parent_channel_id (top-level channel) or an unmapped parent is NOT blocked.
+  defp parent_disabled?(nil), do: false
+
+  defp parent_disabled?(parent_channel_id) do
+    case HubRPC.get_discord_channel_by_channel_id(parent_channel_id) do
+      %{enabled: false} -> true
+      _ -> false
+    end
   end
 
   defp drive(%{project: %{} = project} = mapping, %{message_id: message_id, text: text}) do
@@ -126,7 +150,8 @@ defmodule OrcaHub.Discord.Bridge do
   # Auto-provisioning
   # ------------------------------------------------------------------
 
-  # Provision an unmapped channel and return its mapping (with :project set).
+  # Provision an unmapped channel and return its mapping (with :project set), or
+  # `:ignore` if a thread's parent channel is mapped-but-disabled (cascade-block).
   # Threads reuse the parent channel's project; top-level channels get their own.
   defp provision(%{channel_id: channel_id, guild_id: guild_id}) do
     info = channel_info(channel_id)
@@ -169,15 +194,26 @@ defmodule OrcaHub.Discord.Bridge do
     end
   end
 
+  # Returns the thread mapping, or `:ignore` when the parent channel is mapped
+  # but disabled (cascade-block — a disabled parent silences its threads). An
+  # unmapped parent is provisioned (enabled) first, then the thread.
   defp provision_thread(channel_id, info, guild_id) do
     parent_id = to_string(info.parent_id)
 
-    parent_mapping =
-      case HubRPC.get_discord_channel_by_channel_id(parent_id) do
-        %{} = mapping -> mapping
-        nil -> provision_channel(parent_id, channel_info(parent_id), guild_id)
-      end
+    case HubRPC.get_discord_channel_by_channel_id(parent_id) do
+      %{enabled: false} ->
+        :ignore
 
+      %{} = parent_mapping ->
+        create_thread_mapping(channel_id, parent_id, parent_mapping)
+
+      nil ->
+        parent_mapping = provision_channel(parent_id, channel_info(parent_id), guild_id)
+        create_thread_mapping(channel_id, parent_id, parent_mapping)
+    end
+  end
+
+  defp create_thread_mapping(channel_id, parent_id, parent_mapping) do
     case HubRPC.create_discord_channel(%{
            discord_channel_id: channel_id,
            project_id: parent_mapping.project_id,
