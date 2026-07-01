@@ -32,7 +32,8 @@ defmodule OrcaHub.Discord.Bot do
         channel_id: to_string(msg.channel_id),
         message_id: msg.id,
         text: clean_content(msg.content, bot_id()),
-        guild_id: msg.guild_id
+        guild_id: msg.guild_id,
+        author: msg.author
       })
     end
 

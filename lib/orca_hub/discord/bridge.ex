@@ -53,6 +53,8 @@ defmodule OrcaHub.Discord.Bridge do
     * `:message_id` — the triggering message id (for the reply reference)
     * `:text` — the message content with the bot mention stripped
     * `:guild_id` — the guild snowflake (integer), for provisioning metadata
+    * `:author` — the mention author's `Nostrum.Struct.User` (for the backfill
+      prompt); optional
 
   Returns `:ok` when dispatched, `:ignore` when the mapping is disabled or
   provisioning fails. Safe to call from the gateway consumer — never raises.
@@ -101,7 +103,7 @@ defmodule OrcaHub.Discord.Bridge do
     end
   end
 
-  defp drive(%{project: %{} = project} = mapping, %{message_id: message_id, text: text}) do
+  defp drive(%{project: %{} = project} = mapping, %{message_id: message_id} = msg) do
     session_id = resolve_session(mapping, project)
     runner_node = Cluster.project_node_for(project)
 
@@ -112,8 +114,109 @@ defmodule OrcaHub.Discord.Bridge do
       Cluster.start_session(runner_node, session_id, session)
     end
 
-    Cluster.send_message(runner_node, session_id, text)
+    Cluster.send_message(runner_node, session_id, build_prompt(mapping, msg))
     capture_reply(session_id, mapping.discord_channel_id, message_id)
+    # Advance the watermark only after a successful dispatch, so a failed send
+    # (which raises out of here) leaves the backfill window open for a retry.
+    update_watermark(mapping, message_id)
+  end
+
+  # ------------------------------------------------------------------
+  # Raw backfill on mention
+  # ------------------------------------------------------------------
+  #
+  # Give the session the untagged channel messages posted since we last replied,
+  # so it can answer questions that reference earlier context ("Call me Ishmael"
+  # said untagged, then "@bot what should you call me?"). Bounded and defensive:
+  # any Discord API failure falls back to sending just the mention text.
+
+  defp build_prompt(mapping, %{text: text} = msg) do
+    case fetch_history(mapping, msg) do
+      [] -> text
+      history -> format_prompt(history, msg)
+    end
+  rescue
+    e ->
+      Logger.warning("Discord history backfill failed: #{Exception.message(e)}")
+      msg.text
+  end
+
+  # Fetch the intervening messages via nostrum. We always page BACKWARDS from the
+  # current mention (`{:before, message_id}`) so we get the messages closest to
+  # it — the most recent `limit` when the gap is larger than the cap — then keep
+  # only those newer than the watermark. Returns [] on any API error.
+  #
+  #   * watermark set  → cap 50, keep messages with id > watermark
+  #   * watermark nil  → cap 20 (first mention: last 20 before this one)
+  defp fetch_history(mapping, %{message_id: message_id}) do
+    channel_id = String.to_integer(mapping.discord_channel_id)
+
+    {limit, watermark} =
+      case mapping.last_seen_message_id do
+        nil -> {20, nil}
+        wm -> {50, String.to_integer(wm)}
+      end
+
+    case Nostrum.Api.Channel.messages(channel_id, limit, {:before, message_id}) do
+      {:ok, messages} ->
+        messages
+        |> filter_history(message_id, watermark)
+        |> Enum.sort_by(& &1.id)
+
+      {:error, reason} ->
+        Logger.warning(
+          "Discord history fetch failed for channel #{channel_id}: #{inspect(reason)}"
+        )
+
+        []
+    end
+  end
+
+  # Drop our own bot's messages, the current mention itself, anything at/below
+  # the watermark, and content-less messages (attachments/embeds) that would add
+  # blank transcript lines.
+  defp filter_history(messages, current_message_id, watermark) do
+    bot_id = bot_id()
+
+    Enum.filter(messages, fn m ->
+      m.id != current_message_id and
+        m.author.id != bot_id and
+        (is_nil(watermark) or m.id > watermark) and
+        String.trim(m.content || "") != ""
+    end)
+  end
+
+  defp format_prompt(history, %{text: text} = msg) do
+    transcript =
+      history
+      |> Enum.map_join("\n", fn m -> "#{display_name(m.author)}: #{m.content}" end)
+
+    """
+    [Channel messages since your last reply]
+    #{transcript}
+
+    [#{display_name(msg[:author])} mentioned you]: #{text}
+    """
+    |> String.trim_trailing()
+  end
+
+  # Prefer the Discord display name, fall back to username, then a neutral label.
+  defp display_name(%{global_name: name}) when is_binary(name) and name != "", do: name
+  defp display_name(%{username: name}) when is_binary(name) and name != "", do: name
+  defp display_name(_), do: "someone"
+
+  defp bot_id do
+    case Nostrum.Cache.Me.get() do
+      %{id: id} -> id
+      _ -> nil
+    end
+  end
+
+  # Never let a watermark write break dispatch — the reply is already on its way.
+  defp update_watermark(mapping, message_id) do
+    HubRPC.set_discord_channel_watermark(mapping, to_string(message_id))
+  rescue
+    e -> Logger.warning("Discord watermark update failed: #{Exception.message(e)}")
   end
 
   # Reuse the current session if it exists and is in a resumable state,
@@ -375,8 +478,11 @@ defmodule OrcaHub.Discord.Bridge do
     |> Enum.map(&Enum.join/1)
   end
 
-  # TODO: phase 2 periodic-read — a separate module/cron would poll mapped
-  # channels for new messages (without an @-mention) and feed them in here via
-  # the same resolve/send/capture path. Hook it in by calling `dispatch/1`
-  # (or a sibling function) with the polled message.
+  # Raw backfill on mention now exists (see build_prompt/2): each @-mention
+  # includes the untagged messages posted since our last reply here.
+  #
+  # TODO: phase 2 periodic-read — the REMAINING phase-2 work is an agent-local
+  # ROLLING SUMMARY: a separate module/cron would poll mapped channels for new
+  # messages (without an @-mention) and maintain a running summary/context,
+  # rather than only backfilling raw messages at mention time.
 end

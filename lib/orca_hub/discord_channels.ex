@@ -57,4 +57,15 @@ defmodule OrcaHub.DiscordChannels do
     |> DiscordChannel.changeset(%{session_id: session_id})
     |> Repo.update()
   end
+
+  @doc """
+  Advance the mention watermark (`last_seen_message_id`) for a channel mapping.
+  Called by the bridge after dispatching an @-mention so the next mention only
+  backfills messages posted since this one.
+  """
+  def set_watermark(%DiscordChannel{} = channel, message_id) do
+    channel
+    |> DiscordChannel.changeset(%{last_seen_message_id: message_id})
+    |> Repo.update()
+  end
 end

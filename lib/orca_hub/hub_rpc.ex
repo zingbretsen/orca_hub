@@ -184,6 +184,9 @@ defmodule OrcaHub.HubRPC do
   def set_discord_channel_session(channel, session_id),
     do: call(OrcaHub.DiscordChannels, :set_session, [channel, session_id])
 
+  def set_discord_channel_watermark(channel, message_id),
+    do: call(OrcaHub.DiscordChannels, :set_watermark, [channel, message_id])
+
   # -------------------------------------------------------------------
   # Node Credentials (per-node Claude OAuth tokens)
   # -------------------------------------------------------------------
