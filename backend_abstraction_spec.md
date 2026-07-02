@@ -550,9 +550,22 @@ Mapping command/file/mcp items to the existing tool-name icons means
   contract extended (`on_open/1`, `pending_writes`, `:jsonrpc` framing/message
   routing — §3.2) with the Phase 0 Claude conformance tests staying green
   unchanged. Gated by: full test suite (Claude regression + new Codex
-  normalization fixtures + a stub-app-server SessionRunner integration test)
-  and a live smoke run against the real CLI — see the Phase 2 commit(s) for
-  exact scope and the live-smoke outcome.
+  normalization fixtures + a stub-app-server SessionRunner integration test —
+  254 tests, 1 pre-existing unrelated failure) and a live smoke run against
+  the real CLI. **Live smoke outcome:** handshake + MCP config materialization
+  + `turn/interrupt` (mid-turn, against a real `codex app-server` process)
+  all verified live; the actual model turn itself was BLOCKED by the
+  configured `OPENAI_API_KEY` getting a consistent `401 Unauthorized: Missing
+  bearer or basic authentication in header` from `/v1/responses` (websocket
+  AND HTTPS fallback) — reproduced identically via a bare manual
+  `codex exec --json` invocation (not an OrcaHub bug) and after
+  `codex login --with-api-key`; the same key succeeds against `/v1/models`,
+  so this looks like an account/key scope restriction on the Responses API
+  rather than a broken key. Not retried further per the live-smoke budget.
+  A real assistant-text/tool_use/tool_result turn therefore remains
+  unverified against a live model call (fully covered by the fixture +
+  stub-integration tests instead). Also surfaced a pre-existing
+  (not Codex-specific) gap — see §10 Q5's addendum on `trap_exit`.
 - **Phase 3 — Peripherals.** Usage/plan-mode/AskUserQuestion capability gating;
   renderer icons for Codex tool items; model-picker names; auth handling; docs.
   Commit.
@@ -608,6 +621,21 @@ Mapping command/file/mcp items to the existing tool-name icons means
   create/destroy the directory. `backend_state` (the in-memory protocol FSM)
   is separately reset to `%{}` on every port teardown/crash (§3.2) — that's
   independent of the on-disk `CODEX_HOME`, which persists across those cycles.
+  ⚠ **Known gap, found during the Phase 2 live smoke test (pre-existing,
+  NOT introduced by Codex):** `SessionRunner` never calls
+  `Process.flag(:trap_exit, true)`, and `GenStatem`/`:gen_statem` does not do
+  so automatically. `terminate/3` DOES run on a crash or an internal
+  `{:stop, reason}` return (both go through `:gen_statem`'s own loop), but
+  `SessionSupervisor.stop_session/1` → `DynamicSupervisor.terminate_child/2`
+  sends a raw `exit(pid, :shutdown)`, which — since the process isn't
+  trapping exits — kills it immediately WITHOUT running `terminate/3`.
+  Live-verified: a session stopped via `stop_session/1` left its
+  `CODEX_HOME` directory on disk. Pre-existing for the `Port.close/1` call in
+  `terminate/3` too (harmless there — a dying process's ports auto-close
+  regardless), but genuinely leaks `cleanup_session/1`'s on-disk state on
+  this path. Not fixed here: adding `trap_exit` changes shutdown semantics
+  for every backend, not just Codex, and deserves review on its own —
+  tracked as a follow-up, not folded into this phase.
 - ~~Q6: `turn/steer` vs interrupt-then-resend for queued prompts?~~ **RESOLVED —
   interrupt-then-resend for v1.** It matches the existing queued-prompt semantics
   exactly; `steer` is a later optimization behind a capability if wanted.
