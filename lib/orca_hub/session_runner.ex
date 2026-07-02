@@ -125,6 +125,10 @@ defmodule OrcaHub.SessionRunner do
       backend: Backend.resolve(session.backend),
       backend_state: %{},
       port: nil,
+      # Decode layer for the current port (spec.framing at last spawn). :ndjson
+      # until a port has been opened; re-set on every open_port*/1 call from
+      # the resolved backend's spawn_spec/2 (see spec §3.2/§5).
+      framing: :ndjson,
       buffer: "",
       error_output: "",
       messages: saved_messages,
@@ -360,7 +364,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def running(:info, {port, {:data, raw}}, %{port: port} = data) do
-    {events, new_buffer} = StreamParser.parse(raw, data.buffer)
+    {events, new_buffer} = decode_frames(data.framing, raw, data.buffer)
 
     error_lines = extract_non_json_lines(raw, data.buffer)
 
@@ -372,17 +376,11 @@ defmodule OrcaHub.SessionRunner do
       end
 
     new_data =
-      Enum.reduce(events, %{data | buffer: new_buffer, error_output: error_output}, fn event,
-                                                                                       acc ->
-        # Decoded native event -> Claude-shaped event(s) + updated (opaque) ctx.
-        # Identity for Claude; `ctx` here is the runner's own `data`/`acc` map,
-        # so a stateful backend's returned ctx becomes the new accumulator.
-        {normalized_events, acc} = acc.backend.normalize(event, acc)
-
-        Enum.reduce(normalized_events, acc, fn norm_event, acc2 ->
-          handle_stream_event(norm_event, acc2)
-        end)
-      end)
+      Enum.reduce(
+        events,
+        %{data | buffer: new_buffer, error_output: error_output},
+        &route_frame/2
+      )
 
     case new_data.engine do
       :streaming -> handle_streaming_progress(new_data)
@@ -412,12 +410,13 @@ defmodule OrcaHub.SessionRunner do
         # A queued answer/prompt resumes the run; we're no longer waiting on the user.
         data = resume_clears_waiting(data)
 
-        new_port = open_port(combined_prompt, data)
+        {new_port, framing} = open_port(combined_prompt, data)
 
         {:keep_state,
          %{
            data
            | port: new_port,
+             framing: framing,
              buffer: "",
              error_output: "",
              pending_prompts: [],
@@ -531,6 +530,18 @@ defmodule OrcaHub.SessionRunner do
       end
     end
 
+    # Runner is going away for good (not just an idle-timeout port teardown —
+    # this fires on process exit) — let the backend clean up whatever
+    # prepare_session/1 materialized (e.g. Codex's CODEX_HOME dir). Never let
+    # this block shutdown.
+    if data[:backend] do
+      try do
+        data.backend.cleanup_session(data)
+      rescue
+        _ -> :ok
+      end
+    end
+
     Streaming.WarmPool.release(data.session_id)
     AgentPresence.remove(data.directory, data.session_id)
     :ok
@@ -564,7 +575,7 @@ defmodule OrcaHub.SessionRunner do
     persist_message(data, user_event)
     broadcast(data.session_id, {:event, user_event})
 
-    port = open_port(prompt, data)
+    {port, framing} = open_port(prompt, data)
     session = db_call(data, :get_session!, [data.session_id])
     if session.archived_at, do: db_call(data, :unarchive_session, [session])
     db_call(data, :update_session, [session, %{status: "running"}])
@@ -577,6 +588,7 @@ defmodule OrcaHub.SessionRunner do
      %{
        data
        | port: port,
+         framing: framing,
          buffer: "",
          error_output: "",
          messages: data.messages ++ [user_event],
@@ -712,16 +724,19 @@ defmodule OrcaHub.SessionRunner do
     data =
       if base.port == nil do
         # Cold start: claim a warm slot (may evict an LRU idle peer), then open
-        # the process. Backends that need a hidden warm-up turn to force their
-        # MCP handshake (capabilities.warmup_turn) run one and queue the real
-        # prompt to flush once it completes; others (none in Phase 0) write
-        # the real turn immediately.
+        # the process and run any open-time handshake (Backend.on_open/1 —
+        # Codex's `initialize` request; a no-op for Claude, see spec §3.2).
+        # Backends that need a hidden warm-up turn to force their MCP
+        # handshake (capabilities.warmup_turn) run one and queue the real
+        # prompt to flush once it completes; others (Codex included — its
+        # handshake is the on_open/1 leg above, not a warm-up turn) write the
+        # real turn immediately.
         Streaming.WarmPool.request_slot(base.session_id, self())
-        port = open_port_streaming(base)
-        base = %{base | port: port}
+        {port, framing} = open_port_streaming(base)
+        base = run_on_open(%{base | port: port, framing: framing})
 
         if base.backend.capabilities().warmup_turn do
-          write_warmup_turn(base)
+          base = write_warmup_turn(base)
           # Fresh port bakes the current flags into the /mcp URL — any pending
           # rebake is satisfied by this cold open.
           %{
@@ -731,14 +746,13 @@ defmodule OrcaHub.SessionRunner do
               pending_prompts: base.pending_prompts ++ [prompt]
           }
         else
-          write_user_turn(base, prompt)
+          base = write_user_turn(base, prompt)
           %{base | warming_up: false, pending_rebake: false}
         end
       else
         # Warm process: write the real turn straight to the already-open stdin.
         Streaming.WarmPool.touch(base.session_id, :running)
         write_user_turn(base, prompt)
-        base
       end
 
     {:next_state, :running, data, [{:reply, from, :ok}]}
@@ -790,14 +804,21 @@ defmodule OrcaHub.SessionRunner do
         # one-shot auto-resume combine).
         combined = Enum.join(prompts, "\n\n\n")
         data = resume_clears_waiting(data)
-        new_port = open_port(combined, data)
+        {new_port, framing} = open_port(combined, data)
         session = db_call(data, :get_session!, [data.session_id])
         db_call(data, :update_session, [session, %{status: "running"}])
         broadcast(data.session_id, {:status, :running})
         AgentPresence.update_status(data.directory, data.session_id, "running")
 
         {:next_state, :running,
-         %{data | port: new_port, buffer: "", error_output: "", pending_questions: nil}}
+         %{
+           data
+           | port: new_port,
+             framing: framing,
+             buffer: "",
+             error_output: "",
+             pending_questions: nil
+         }}
     end
   end
 
@@ -903,7 +924,10 @@ defmodule OrcaHub.SessionRunner do
         warming_up: false,
         interrupting: false,
         pending_prompts: [],
-        turn_result: nil
+        turn_result: nil,
+        # A fresh cold spawn always starts a stateful backend's FSM from
+        # scratch (on_open/1 again) — see spec §3.2.
+        backend_state: %{}
     }
 
     if state == :running do
@@ -922,28 +946,110 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
+  # Decode layer selected by the port's framing (spec §3.2/§5) — NOT
+  # hardcoded per backend, so a third framing is additive. `:ndjson` is
+  # StreamParser's existing path (Claude, and Codex's `:one_shot` fallback);
+  # `:jsonrpc` is Codex `app-server`'s newline-delimited JSON-RPC frames.
+  defp decode_frames(:ndjson, raw, buffer), do: StreamParser.parse(raw, buffer)
+
+  defp decode_frames(:jsonrpc, raw, buffer),
+    do: OrcaHub.Backend.JsonRpcFraming.parse(raw, buffer)
+
+  # Per decoded frame (spec §3.2 message routing): a shape with BOTH "id" and
+  # "method" is a server-initiated peer request (e.g. a Codex approval) that
+  # must be answered on the port with the same id — route to
+  # handle_peer_request/2. Everything else (Claude's entire vocabulary; Codex
+  # notifications and request/response frames) routes to normalize/2. Both
+  # branches flush any pending_writes the callback queued (see
+  # flush_pending_writes/1) before feeding the returned Claude-shaped events
+  # into handle_stream_event/2. For `:ndjson`/Claude frames this branch never
+  # matches (Claude never emits id+method together), so Claude's path
+  # degenerates to exactly the pre-Phase-2 normalize -> handle_stream_event
+  # flow.
+  defp route_frame(%{"id" => _id, "method" => _method} = frame, acc) do
+    {reply, events, acc} = acc.backend.handle_peer_request(frame, acc)
+    if acc.port, do: Port.command(acc.port, reply)
+    acc = flush_pending_writes(acc)
+    Enum.reduce(events, acc, &handle_stream_event/2)
+  end
+
+  defp route_frame(frame, acc) do
+    {normalized_events, acc} = acc.backend.normalize(frame, acc)
+    acc = flush_pending_writes(acc)
+    Enum.reduce(normalized_events, acc, &handle_stream_event/2)
+  end
+
   # Spawn a warm streaming process via the resolved backend. Direct spawn — NO
   # `script -qc` PTY wrapper (the streaming protocol writes newline-delimited
   # JSON to stdin; a PTY runs canonical mode that would corrupt the framing).
   # `Backend.Claude.spawn_spec/2` preserves this distinction per mode.
+  # Returns `{port, framing}` — the caller stores both on `data` (see spec
+  # §3.2/§5: `framing` picks the decode layer for this port's whole lifetime).
   defp open_port_streaming(data) do
+    extra_env = call_prepare_session(data)
     spec = data.backend.spawn_spec(:streaming, data)
 
-    Port.open(
-      {:spawn_executable, spec.executable},
-      [
-        :binary,
-        :exit_status,
-        :stderr_to_stdout,
-        {:args, spec.args},
-        {:env, spec.env}
-      ] ++ spec.port_opts
-    )
+    port =
+      Port.open(
+        {:spawn_executable, spec.executable},
+        [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          {:args, spec.args},
+          {:env, spec.env ++ extra_env}
+        ] ++ spec.port_opts
+      )
+
+    {port, spec.framing}
+  end
+
+  # Materializes per-session on-disk state (e.g. Codex's CODEX_HOME +
+  # config.toml) before every spawn, and returns any extra port env the
+  # backend wants layered on top of spawn_spec/2's own env (empty for
+  # backends — like Codex — whose spawn_spec/2 computes the same path itself;
+  # see spec §6.3(2)). Called for BOTH streaming and one-shot spawns since
+  # both engines' child processes need to see the materialized state.
+  defp call_prepare_session(data) do
+    case data.backend.prepare_session(data) do
+      {:ok, extra_env} when is_list(extra_env) -> extra_env
+      _ -> []
+    end
+  end
+
+  # Runs Backend.on_open/1 right after a streaming port opens (Codex's
+  # `initialize` request; a no-op for Claude) and flushes any pending_writes
+  # it queued — see spec §3.2. `data.port` must already be set.
+  defp run_on_open(%{backend: backend, port: port} = data) do
+    {iodata, ctx} = backend.on_open(data)
+    Port.command(port, iodata)
+    flush_pending_writes(ctx)
+  end
+
+  # Flushes `backend_state.pending_writes` (queued by normalize/2,
+  # handle_peer_request/2, encode_user_turn/2, or on_open/1 — see spec §3.2)
+  # to the port in order, then clears the queue. Implemented exactly once so
+  # every backend callback site shares the same flush semantics. A closed/nil
+  # port silently drops the queue rather than crashing the runner.
+  defp flush_pending_writes(%{backend_state: backend_state} = data) do
+    case Map.get(backend_state, :pending_writes, []) do
+      [] ->
+        data
+
+      writes ->
+        case data.port do
+          nil -> :ok
+          port -> Enum.each(writes, &Port.command(port, &1))
+        end
+
+        %{data | backend_state: Map.put(backend_state, :pending_writes, [])}
+    end
   end
 
   defp write_user_turn(%{port: port, backend: backend} = data, prompt) do
-    {iodata, _ctx} = backend.encode_user_turn(prompt, data)
+    {iodata, ctx} = backend.encode_user_turn(prompt, data)
     Port.command(port, iodata)
+    flush_pending_writes(ctx)
   end
 
   defp write_warmup_turn(data), do: write_user_turn(data, @warmup_prompt)
@@ -991,7 +1097,7 @@ defmodule OrcaHub.SessionRunner do
   defp flush_pending_to_stdin(%{pending_prompts: prompts} = data) do
     combined = Enum.join(prompts, "\n\n\n")
     Streaming.WarmPool.touch(data.session_id, :running)
-    write_user_turn(data, combined)
+    data = write_user_turn(data, combined)
     %{data | pending_prompts: [], buffer: "", error_output: ""}
   end
 
@@ -1004,7 +1110,18 @@ defmodule OrcaHub.SessionRunner do
 
     # The warm process is gone — free its slot (idempotent).
     Streaming.WarmPool.release(data.session_id)
-    %{data | port: nil, buffer: "", error_output: "", warming_up: false, turn_result: nil}
+
+    %{
+      data
+      | port: nil,
+        buffer: "",
+        error_output: "",
+        warming_up: false,
+        turn_result: nil,
+        # A fresh cold spawn always starts a stateful backend's FSM from
+        # scratch (on_open/1 again) — see spec §3.2.
+        backend_state: %{}
+    }
   end
 
   defp teardown_port(data), do: data
@@ -1036,20 +1153,25 @@ defmodule OrcaHub.SessionRunner do
     }
   end
 
+  # Returns `{port, framing}` — see open_port_streaming/1.
   defp open_port(prompt, data) do
+    extra_env = call_prepare_session(data)
     spec = data.backend.spawn_spec(:one_shot, Map.put(data, :prompt, prompt))
 
-    Port.open(
-      {:spawn_executable, spec.executable},
-      [
-        :binary,
-        :exit_status,
-        :stderr_to_stdout,
-        {:args, spec.args},
-        {:env, spec.env}
-      ] ++
-        spec.port_opts
-    )
+    port =
+      Port.open(
+        {:spawn_executable, spec.executable},
+        [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          {:args, spec.args},
+          {:env, spec.env ++ extra_env}
+        ] ++
+          spec.port_opts
+      )
+
+    {port, spec.framing}
   end
 
   # Streaming warm-up: suppress every event of the hidden warm-up turn from the

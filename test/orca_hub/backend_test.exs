@@ -1,7 +1,8 @@
 defmodule OrcaHub.BackendTest do
   @moduledoc """
-  Phase 1 coverage for `OrcaHub.Backend.resolve/1` and `available/0`
-  (backend_abstraction_spec.md §4/§8).
+  Coverage for `OrcaHub.Backend.resolve/1` and `available/0`
+  (backend_abstraction_spec.md §4/§8). Phase 1 landed Claude only; Phase 2
+  registers Codex.
   """
 
   use ExUnit.Case, async: true
@@ -17,22 +18,20 @@ defmodule OrcaHub.BackendTest do
       assert Backend.resolve(nil) == OrcaHub.Backend.Claude
     end
 
-    test "raises loudly on an unregistered backend instead of silently falling back" do
-      assert_raise RuntimeError, ~r/unknown backend/i, fn ->
-        Backend.resolve("codex")
-      end
+    test "resolves \"codex\" to Backend.Codex" do
+      assert Backend.resolve("codex") == OrcaHub.Backend.Codex
     end
 
-    test "raises loudly on garbage input" do
-      assert_raise RuntimeError, fn ->
+    test "raises loudly on garbage input instead of silently falling back" do
+      assert_raise RuntimeError, ~r/unknown backend/i, fn ->
         Backend.resolve("not-a-real-backend")
       end
     end
   end
 
   describe "available/0" do
-    test "returns only Claude in Phase 1" do
-      assert Backend.available() == [{"claude", "Claude"}]
+    test "returns Claude and Codex in Phase 2" do
+      assert Backend.available() == [{"claude", "Claude"}, {"codex", "Codex"}]
     end
   end
 end

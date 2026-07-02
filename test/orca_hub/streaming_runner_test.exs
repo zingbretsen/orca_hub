@@ -196,7 +196,8 @@ defmodule OrcaHub.StreamingRunnerTest do
           buffer: "",
           error_output: "",
           warming_up: false,
-          turn_result: nil
+          turn_result: nil,
+          backend_state: %{}
         },
         Map.new(overrides)
       )

@@ -1,10 +1,12 @@
 defmodule OrcaHubWeb.SessionLive.IndexTest do
   @moduledoc """
-  Minimal Phase 1 coverage (backend_abstraction_spec.md §7/§9): the backend
-  picker is invisible with only one backend registered
-  (`OrcaHub.Backend.available/0` returns a single entry), so this just
-  asserts the new-session form still creates a session and that it defaults
-  to backend "claude".
+  Backend picker coverage (backend_abstraction_spec.md §7/§9). The
+  new-session form's `<select>` (index.html.heex ~292) is conditionally
+  rendered off `OrcaHub.Backend.available/0`'s length — Phase 1 (Claude only)
+  kept it hidden; Phase 2 registers Codex, so `available/0` now returns two
+  entries and the picker becomes visible automatically (no template change
+  needed). Asserts both: the picker is now shown, AND the default submit
+  (no explicit backend selection) still creates a "claude" session.
   """
 
   # async: false — "save" starts a real SessionRunner (GenStatem) child under
@@ -17,14 +19,15 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
 
   alias OrcaHub.Projects
 
-  test "new-session form creates a session with backend \"claude\"", %{conn: conn} do
+  test "new-session form shows the backend picker and defaults to \"claude\"", %{conn: conn} do
     {:ok, project} =
-      Projects.create_project(%{name: "Phase 1 Project", directory: "/tmp/backend-phase-1"})
+      Projects.create_project(%{name: "Phase 2 Project", directory: "/tmp/backend-phase-2"})
 
     {:ok, view, html} = live(conn, ~p"/sessions/new")
 
-    # Single-backend Phase 1: no visible backend picker.
-    refute html =~ "Backend"
+    # Two backends registered (Claude + Codex) — the picker is now visible.
+    assert html =~ "Backend"
+    assert html =~ "Codex"
 
     {:ok, _view, _html} =
       view

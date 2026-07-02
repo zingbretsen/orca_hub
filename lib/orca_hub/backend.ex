@@ -25,9 +25,24 @@ defmodule OrcaHub.Backend do
   carries every field a backend needs (`session_id`, `directory`, `model`,
   `orchestrator`, `code_exec`, `claude_session_id`, `project_id`, `db_node`,
   `engine`, …) plus a `backend_state` map reserved for adapter-owned state
-  threaded through `normalize/2`, `encode_*/2`, and `handle_peer_request/2`
-  (unused by Claude's identity implementation). `SessionRunner` treats
-  `backend_state` as opaque.
+  threaded through `normalize/2`, `encode_*/2`, `on_open/1`, and
+  `handle_peer_request/2` (unused by Claude's identity implementation).
+  `SessionRunner` treats `backend_state` as opaque, with ONE exception (Phase
+  2, spec §3.2): the reserved key `backend_state.pending_writes` — a list of
+  iodata frames an adapter wants written to the port as a REACTION to
+  something it just saw (e.g. Codex's `normalize/2` seeing the `initialize`
+  response and wanting to immediately send `initialized` + `thread/start`,
+  even though `normalize/2`'s own return shape has no direct iodata slot).
+
+  After every callback below that returns `ctx` (`normalize/2`,
+  `handle_peer_request/2`, `encode_user_turn/2`, `on_open/1`), the runner
+  flushes `ctx.backend_state.pending_writes` to the port (in list order) and
+  resets it to `[]` — implemented once, in `SessionRunner`'s private
+  `flush_pending_writes/1`. Backends that never populate this key (Claude) pay
+  no cost: the flush is a no-op on an empty/absent list. Any DIRECT iodata a
+  callback returns (`on_open/1`'s `{iodata, ctx}`, `encode_user_turn/2`'s
+  `{iodata, ctx}`, `handle_peer_request/2`'s `{reply, events, ctx}`) is written
+  first, then the pending-writes queue is flushed on top of it.
   """
 
   defmodule Capabilities do
@@ -81,6 +96,17 @@ defmodule OrcaHub.Backend do
                 port_opts: keyword,
                 framing: :ndjson | :jsonrpc
               }
+
+  @doc """
+  Bytes to write to the port immediately after it opens (streaming backends
+  only — never called for `:one_shot` spawns).
+
+  Codex: the mandatory `initialize` request (the first leg of its
+  `initialize` → await result → `initialized` handshake — the rest of the
+  handshake reacts to the response in `normalize/2` via `pending_writes`, see
+  the moduledoc). Claude has no open-time handshake: returns `{"", ctx}`.
+  """
+  @callback on_open(ctx) :: {iodata, ctx}
 
   @doc "Bytes to write to stdin to start/append a user turn (streaming backends)."
   @callback encode_user_turn(prompt :: String.t(), ctx) :: {iodata, ctx}
@@ -142,6 +168,7 @@ defmodule OrcaHub.Backend do
   @spec resolve(String.t() | nil) :: module
   def resolve(nil), do: OrcaHub.Backend.Claude
   def resolve("claude"), do: OrcaHub.Backend.Claude
+  def resolve("codex"), do: OrcaHub.Backend.Codex
 
   def resolve(other) do
     raise "OrcaHub.Backend.resolve/1: unknown backend #{inspect(other)} " <>
@@ -151,10 +178,10 @@ defmodule OrcaHub.Backend do
   @doc """
   Backends selectable in the UI, as `{value, label}` pairs for a `<select>`.
 
-  Phase 1: only Claude. Phase 2 appends Codex once `Backend.Codex` lands —
-  callers should render nothing (or a hidden field) when this list has a
-  single entry, and only show a picker once it grows past one.
+  Phase 2: Claude + Codex. Callers should render nothing (or a hidden field)
+  when this list has a single entry, and only show a picker once it grows
+  past one.
   """
   @spec available() :: [{String.t(), String.t()}]
-  def available, do: [{"claude", "Claude"}]
+  def available, do: [{"claude", "Claude"}, {"codex", "Codex"}]
 end

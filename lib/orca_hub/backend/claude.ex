@@ -16,6 +16,7 @@ defmodule OrcaHub.Backend.Claude do
 
   require Logger
 
+  alias OrcaHub.Backend.SharedPrompts
   alias OrcaHub.Claude.Config
   alias OrcaHub.HubRPC
 
@@ -116,6 +117,11 @@ defmodule OrcaHub.Backend.Claude do
 
   # ── stdin framing ────────────────────────────────────────────────────
 
+  # No open-time handshake — Claude's stream-json protocol accepts a user
+  # turn as the first write. Nothing to send when the port opens.
+  @impl true
+  def on_open(ctx), do: {"", ctx}
+
   @impl true
   def encode_user_turn(prompt, ctx) do
     {user_turn_json(prompt), ctx}
@@ -179,11 +185,13 @@ defmodule OrcaHub.Backend.Claude do
       [
         "Your OrcaHub session ID is #{ctx.session_id}.",
         orchestrator_system_prompt(ctx.orchestrator, ctx.session_id),
-        code_exec_system_prompt(OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))),
-        if(!ctx.orchestrator, do: commit_trailer_prompt(ctx.session_id)),
+        SharedPrompts.code_exec_prompt(
+          OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
+        ),
+        if(!ctx.orchestrator, do: SharedPrompts.commit_trailer_prompt(ctx.session_id)),
         if(!ctx.orchestrator, do: ask_user_question_prompt()),
         sibling_sessions_prompt(ctx.orchestrator),
-        context_files_prompt(ctx.directory)
+        SharedPrompts.context_files_prompt(ctx.directory)
       ]
       |> Enum.reject(&is_nil/1)
 
@@ -202,47 +210,6 @@ defmodule OrcaHub.Backend.Claude do
     not continue based on it. After calling AskUserQuestion, stop and end your \
     turn. The user's real answer will arrive as a separate follow-up message; \
     only act on the question once the user has actually responded.\
-    """
-    |> String.trim()
-  end
-
-  # Teaches a code-exec session its collapsed tool surface. Only added when the
-  # feature is enabled for the session (and not killed node-wide).
-  defp code_exec_system_prompt(false), do: nil
-
-  defp code_exec_system_prompt(true) do
-    """
-    # Code Execution Mode
-
-    Your MCP tool list is intentionally small: `run_elixir`, `search_tools`, and \
-    `read_tool`. Every other OrcaHub and upstream tool is reachable from inside \
-    `run_elixir` as a named `Tools.*` function — call several tools and stitch \
-    their results together with the Elixir standard library in ONE snippet \
-    instead of many separate tool calls.
-
-    - **Discover tools** with `search_tools`/`read_tool`, or from inside code \
-      with `Tools.search("query")`, `Tools.list()`, and `Tools.schema("name")`. \
-      `Tools.search/1` and `Tools.list/0` return `{name, description}` TUPLES — \
-      match the tuple (`Enum.map(fn {name, _} -> name end)`), do NOT index with \
-      `["name"]`. `Tools.schema/1` returns a map (or nil). Only tool \
-      *invocations* (below) auto-unwrap to maps/lists.
-    - **Call a tool** as `Tools.<raw_mcp_name>(args)`, e.g. \
-      `Tools.open_file(%{"file_path" => "lib/foo.ex"})` or \
-      `Tools.github__get_issue(%{"number" => 7})`. Named functions \
-      **auto-unwrap** the result (text → string; JSON → decoded map/list) and \
-      **raise `Tools.Error`** if the tool fails — so they compose with `|>` and \
-      `Enum`:
-
-          Tools.github__list_issues(%{"repo" => "o/r"})
-          |> Enum.filter(& &1["state"] == "open")
-          |> Enum.map(& &1["title"])
-
-    - For explicit error handling use `Tools.try_call("name", args)` which \
-      returns `{:ok, value} | {:error, reason}`; for the faithful raw MCP \
-      envelope use `Tools.call("name", args)`.
-    - The value of the last expression (and any stdout) is returned to you. \
-      Keep return values slim — filter/project before returning. Pure stdlib is \
-      available; OrcaHub internals, File, and System are blocked.
     """
     |> String.trim()
   end
@@ -305,40 +272,6 @@ defmodule OrcaHub.Backend.Claude do
     "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then use the `mcp__orca__send_message_to_session` MCP tool to coordinate with them."
   end
 
-  defp commit_trailer_prompt(session_id) do
-    """
-    When making git commits, ALWAYS append this trailer to the commit message:
-
-    OrcaHub-Session: #{session_id}
-
-    This links the commit to your OrcaHub session. Add it as a git trailer \
-    (blank line after the commit body, then the trailer line). \
-    Never omit this trailer.\
-    """
-    |> String.trim()
-  end
-
-  defp context_files_prompt(directory) do
-    context_dir = Path.join(directory, ".context")
-
-    if File.dir?(context_dir) do
-      context_dir
-      |> File.ls!()
-      |> Enum.filter(&(Path.extname(&1) in ~w(.md .mmd)))
-      |> Enum.sort()
-      |> Enum.map(fn filename ->
-        content = File.read!(Path.join(context_dir, filename))
-        "## #{Path.rootname(filename)}\n\n#{content}"
-      end)
-      |> case do
-        [] -> nil
-        parts -> "# Project Context\n\n#{Enum.join(parts, "\n\n")}"
-      end
-    else
-      nil
-    end
-  end
-
   # ── MCP config (inline --mcp-config JSON) ────────────────────────────
   # Verbatim move of SessionRunner.mcp_config/1. Needs the same DB-node
   # routing as SessionRunner's private db_call/3 (a session's MCP servers may
@@ -354,28 +287,16 @@ defmodule OrcaHub.Backend.Claude do
   end
 
   defp mcp_config_json(ctx) do
-    port =
-      case OrcaHubWeb.Endpoint.config(:http) do
-        config when is_list(config) -> Keyword.get(config, :port, 4000)
-        _ -> 4000
-      end
-
-    # Honor the env kill switch at bake time so a disabled node never advertises
-    # code-exec mode (and a stale URL can't re-enable it).
-    code_exec = OrcaHub.MCP.CodeExec.enabled?(ctx.code_exec)
-
     Logger.info(
       "[MCP] mcp_config: baking orca_session_id=#{inspect(ctx.session_id)} " <>
-        "orchestrator=#{ctx.orchestrator == true} code_exec=#{code_exec} " <>
+        "orchestrator=#{ctx.orchestrator == true} " <>
+        "code_exec=#{OrcaHub.MCP.CodeExec.enabled?(ctx.code_exec)} " <>
         "into /mcp URL at port-open time"
     )
 
     orca_server = %{
       "type" => "http",
-      "url" =>
-        "http://localhost:#{port}/mcp?orca_session_id=#{ctx.session_id}" <>
-          "&orchestrator=#{ctx.orchestrator == true}" <>
-          "&code_exec=#{code_exec}"
+      "url" => OrcaHub.Backend.McpUrl.orca_url(ctx)
     }
 
     project_servers =

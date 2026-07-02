@@ -375,6 +375,13 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
   # ── stdin framing ────────────────────────────────────────────────────
 
+  describe "on_open/1" do
+    test "no open-time handshake: empty iodata, ctx unchanged" do
+      ctx = %{some: :state}
+      assert Backend.on_open(ctx) == {"", ctx}
+    end
+  end
+
   describe "encode_user_turn/2" do
     test "matches the old user_turn_json/1 NDJSON frame exactly" do
       {iodata, ctx_out} = Backend.encode_user_turn("hello world", %{})
