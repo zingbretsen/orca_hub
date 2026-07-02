@@ -9,8 +9,8 @@ defmodule OrcaHub.SessionRunner do
   use GenStatem
   require Logger
 
-  alias OrcaHub.{AgentPresence, AskUserQuestion, HubRPC, Streaming}
-  alias OrcaHub.Claude.{Config, StreamParser}
+  alias OrcaHub.{AgentPresence, AskUserQuestion, Backend, HubRPC, Streaming}
+  alias OrcaHub.Claude.StreamParser
 
   # Route a HubRPC call through the node that owns the session's DB record.
   # In multi-hub mode, the runner may be on a different node than the DB.
@@ -116,6 +116,12 @@ defmodule OrcaHub.SessionRunner do
       orchestrator: session.orchestrator || false,
       code_exec: session.code_exec || false,
       db_node: db_node,
+      # Phase 0 (backend_abstraction_spec.md): unconditionally Claude — no
+      # `backend` DB column yet. `backend_state` is an opaque map owned by the
+      # adapter, threaded through normalize/encode_*/handle_peer_request; the
+      # Claude adapter's identity implementations never touch it.
+      backend: Backend.resolve(nil),
+      backend_state: %{},
       port: nil,
       buffer: "",
       error_output: "",
@@ -304,7 +310,7 @@ defmodule OrcaHub.SessionRunner do
     broadcast(data.session_id, {:event, user_event})
 
     # Interrupt the running CLI — SIGINT lets it finish in-progress tool calls gracefully
-    send_sigint(port)
+    interrupt_port(data, port)
 
     {:keep_state,
      %{
@@ -320,8 +326,8 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state, send_control_interrupt(data), [{:reply, from, :ok}]}
   end
 
-  def running({:call, from}, :interrupt, %{port: port}) when not is_nil(port) do
-    send_sigint(port)
+  def running({:call, from}, :interrupt, %{port: port} = data) when not is_nil(port) do
+    interrupt_port(data, port)
     {:keep_state_and_data, [{:reply, from, :ok}]}
   end
 
@@ -366,7 +372,14 @@ defmodule OrcaHub.SessionRunner do
     new_data =
       Enum.reduce(events, %{data | buffer: new_buffer, error_output: error_output}, fn event,
                                                                                        acc ->
-        handle_stream_event(event, acc)
+        # Decoded native event -> Claude-shaped event(s) + updated (opaque) ctx.
+        # Identity for Claude; `ctx` here is the runner's own `data`/`acc` map,
+        # so a stateful backend's returned ctx becomes the new accumulator.
+        {normalized_events, acc} = acc.backend.normalize(event, acc)
+
+        Enum.reduce(normalized_events, acc, fn norm_event, acc2 ->
+          handle_stream_event(norm_event, acc2)
+        end)
       end)
 
     case new_data.engine do
@@ -696,25 +709,33 @@ defmodule OrcaHub.SessionRunner do
 
     data =
       if base.port == nil do
-        # Cold start: claim a warm slot (may evict an LRU idle peer), then open the
-        # process, run a hidden warm-up turn to force the MCP handshake, and queue
-        # the real prompt to flush once warm-up completes.
+        # Cold start: claim a warm slot (may evict an LRU idle peer), then open
+        # the process. Backends that need a hidden warm-up turn to force their
+        # MCP handshake (capabilities.warmup_turn) run one and queue the real
+        # prompt to flush once it completes; others (none in Phase 0) write
+        # the real turn immediately.
         Streaming.WarmPool.request_slot(base.session_id, self())
         port = open_port_streaming(base)
-        write_warmup_turn(port)
-        # Fresh port bakes the current flags into the /mcp URL — any pending rebake
-        # is satisfied by this cold open.
-        %{
-          base
-          | port: port,
-            warming_up: true,
-            pending_rebake: false,
-            pending_prompts: base.pending_prompts ++ [prompt]
-        }
+        base = %{base | port: port}
+
+        if base.backend.capabilities().warmup_turn do
+          write_warmup_turn(base)
+          # Fresh port bakes the current flags into the /mcp URL — any pending
+          # rebake is satisfied by this cold open.
+          %{
+            base
+            | warming_up: true,
+              pending_rebake: false,
+              pending_prompts: base.pending_prompts ++ [prompt]
+          }
+        else
+          write_user_turn(base, prompt)
+          %{base | warming_up: false, pending_rebake: false}
+        end
       else
         # Warm process: write the real turn straight to the already-open stdin.
         Streaming.WarmPool.touch(base.session_id, :running)
-        write_user_turn(base.port, prompt)
+        write_user_turn(base, prompt)
         base
       end
 
@@ -899,82 +920,76 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
-  # If this node has been logged into Claude Code via the web UI
-  # ("Log in this node" → `claude setup-token`), inject the captured OAuth
-  # token so spawned `claude` ports authenticate. Returns `[]` when no token
-  # is stored, leaving nodes that use `credentials.json` untouched.
-  defp node_oauth_env do
-    node()
-    |> Atom.to_string()
-    |> HubRPC.get_node_token()
-    |> OrcaHub.NodeCredentials.token_env()
-  rescue
-    # Token lookup must never block opening a session port. If the hub is
-    # briefly unreachable, fall back to the node's own credentials.
-    _ -> []
-  end
-
+  # Spawn a warm streaming process via the resolved backend. Direct spawn — NO
+  # `script -qc` PTY wrapper (the streaming protocol writes newline-delimited
+  # JSON to stdin; a PTY runs canonical mode that would corrupt the framing).
+  # `Backend.Claude.spawn_spec/2` preserves this distinction per mode.
   defp open_port_streaming(data) do
-    claude_path = System.find_executable("claude") || raise "claude executable not found in PATH"
+    spec = data.backend.spawn_spec(:streaming, data)
 
-    opts =
-      [cwd: data.directory, input_format: "stream-json"]
-      |> maybe_put(:session_id, data.claude_session_id)
-      |> maybe_put(:model, data.model)
-      |> maybe_put(:system_prompt, build_system_prompt(data))
-      |> maybe_put(:tools, orchestrator_tools(data.orchestrator))
-      |> Keyword.put(:mcp_config, mcp_config(data))
-
-    {args, port_opts} = Config.build_args(nil, opts)
-
-    # Direct spawn — NO `script -qc` PTY wrapper. The streaming protocol writes
-    # newline-delimited JSON to stdin; a PTY runs canonical mode (input echo, \n
-    # translation) that would corrupt the NDJSON framing. Verified in the spike.
     Port.open(
-      {:spawn_executable, claude_path},
+      {:spawn_executable, spec.executable},
       [
         :binary,
         :exit_status,
         :stderr_to_stdout,
-        {:args, args},
-        {:env, OrcaHub.Env.sanitized_env(node_oauth_env())}
-      ] ++ port_opts
+        {:args, spec.args},
+        {:env, spec.env}
+      ] ++ spec.port_opts
     )
   end
 
-  defp write_user_turn(port, prompt), do: Port.command(port, user_turn_json(prompt))
-  defp write_warmup_turn(port), do: Port.command(port, user_turn_json(@warmup_prompt))
-
-  # NDJSON framing for a user turn over stdin. Public for testing.
-  @doc false
-  def user_turn_json(prompt) do
-    Jason.encode!(%{
-      "type" => "user",
-      "message" => %{"role" => "user", "content" => [%{"type" => "text", "text" => prompt}]}
-    }) <> "\n"
+  defp write_user_turn(%{port: port, backend: backend} = data, prompt) do
+    {iodata, _ctx} = backend.encode_user_turn(prompt, data)
+    Port.command(port, iodata)
   end
 
-  defp send_control_interrupt(%{port: port, req_counter: n} = data) do
-    Port.command(port, control_interrupt_json("int_#{n}"))
+  defp write_warmup_turn(data), do: write_user_turn(data, @warmup_prompt)
+
+  # NDJSON framing for a user turn over stdin. Public for testing — delegates
+  # to Backend.Claude so the JSON shape is asserted in exactly one place.
+  @doc false
+  def user_turn_json(prompt) do
+    {iodata, _ctx} = Backend.Claude.encode_user_turn(prompt, %{})
+    IO.iodata_to_binary(iodata)
+  end
+
+  defp send_control_interrupt(%{port: port, backend: backend, req_counter: n} = data) do
+    case backend.encode_interrupt("int_#{n}", data) do
+      :signal -> send_sigint(port)
+      iodata -> Port.command(port, iodata)
+    end
+
     %{data | req_counter: n + 1, interrupting: true}
   end
 
-  # NDJSON framing for a control_request interrupt over stdin. Public for testing.
+  # One-shot's plain interrupt path (new message mid-turn, or explicit
+  # :interrupt call): route through the backend's encode_interrupt/2 the same
+  # way the streaming path does — `:signal` (Claude one-shot's only outcome)
+  # falls back to SIGINT, matching pre-refactor behavior exactly.
+  defp interrupt_port(%{backend: backend, req_counter: n} = data, port) do
+    case backend.encode_interrupt("int_#{n}", data) do
+      :signal -> send_sigint(port)
+      iodata -> Port.command(port, iodata)
+    end
+  end
+
+  # NDJSON framing for a control_request interrupt over stdin. Public for
+  # testing — delegates to Backend.Claude, which always returns the framed
+  # iodata for a non-`:one_shot` ctx (no `:engine` key here matches that).
   @doc false
   def control_interrupt_json(req_id) do
-    Jason.encode!(%{
-      "type" => "control_request",
-      "request_id" => req_id,
-      "request" => %{"subtype" => "interrupt"}
-    }) <> "\n"
+    case Backend.Claude.encode_interrupt(req_id, %{}) do
+      iodata when is_bitstring(iodata) or is_list(iodata) -> IO.iodata_to_binary(iodata)
+    end
   end
 
   defp flush_pending_to_stdin(%{pending_prompts: []} = data), do: data
 
-  defp flush_pending_to_stdin(%{pending_prompts: prompts, port: port} = data) do
+  defp flush_pending_to_stdin(%{pending_prompts: prompts} = data) do
     combined = Enum.join(prompts, "\n\n\n")
     Streaming.WarmPool.touch(data.session_id, :running)
-    write_user_turn(port, combined)
+    write_user_turn(data, combined)
     %{data | pending_prompts: [], buffer: "", error_output: ""}
   end
 
@@ -1020,39 +1035,18 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp open_port(prompt, data) do
-    claude_path = System.find_executable("claude") || raise "claude executable not found in PATH"
-    script_path = System.find_executable("script") || raise "script executable not found in PATH"
-
-    opts =
-      [cwd: data.directory]
-      |> maybe_put(:session_id, data.claude_session_id)
-      |> maybe_put(:model, data.model)
-      |> maybe_put(:system_prompt, build_system_prompt(data))
-      |> maybe_put(:tools, orchestrator_tools(data.orchestrator))
-      |> Keyword.put(:mcp_config, mcp_config(data))
-
-    {args, port_opts} = Config.build_args(prompt, opts)
-
-    script_args =
-      case :os.type() do
-        {:unix, :darwin} ->
-          ["-q", "/dev/null", claude_path | args]
-
-        _ ->
-          cmd = Enum.map_join([claude_path | args], " ", &Config.shell_escape/1)
-          ["-qc", cmd, "/dev/null"]
-      end
+    spec = data.backend.spawn_spec(:one_shot, Map.put(data, :prompt, prompt))
 
     Port.open(
-      {:spawn_executable, script_path},
+      {:spawn_executable, spec.executable},
       [
         :binary,
         :exit_status,
         :stderr_to_stdout,
-        {:args, script_args},
-        {:env, OrcaHub.Env.sanitized_env(node_oauth_env())}
+        {:args, spec.args},
+        {:env, spec.env}
       ] ++
-        port_opts
+        spec.port_opts
     )
   end
 
@@ -1061,14 +1055,14 @@ defmodule OrcaHub.SessionRunner do
   # detect the warm-up turn's end so the queued real prompt can be flushed.
   defp handle_stream_event(event, %{warming_up: true} = data) do
     data =
-      case event do
-        %{"type" => "system", "session_id" => sid} when is_binary(sid) ->
+      case data.backend.session_id(event) do
+        sid when is_binary(sid) ->
           if is_nil(data.claude_session_id),
             do: update_session_status(data, %{claude_session_id: sid})
 
           %{data | claude_session_id: sid}
 
-        _ ->
+        nil ->
           data
       end
 
@@ -1096,15 +1090,29 @@ defmodule OrcaHub.SessionRunner do
     data
   end
 
-  defp handle_stream_event(%{"type" => "system", "session_id" => sid} = event, data) do
-    if data.claude_session_id == nil do
-      update_session_status(data, %{claude_session_id: sid})
-    end
+  # Any other "system" event: capture the backend session id (via the backend
+  # callback rather than a hardcoded "session_id" key — see spec §5) when
+  # present, then persist/broadcast like any other event. A "system" event
+  # with no extractable session id falls through to the same persist/broadcast
+  # shape as the catch-all clause below.
+  defp handle_stream_event(%{"type" => "system"} = event, data) do
+    case data.backend.session_id(event) do
+      sid when is_binary(sid) ->
+        if data.claude_session_id == nil do
+          update_session_status(data, %{claude_session_id: sid})
+        end
 
-    event = stamp(event)
-    persist_message(data, event)
-    broadcast(data.session_id, {:event, event})
-    %{data | claude_session_id: sid, messages: data.messages ++ [event]}
+        event = stamp(event)
+        persist_message(data, event)
+        broadcast(data.session_id, {:event, event})
+        %{data | claude_session_id: sid, messages: data.messages ++ [event]}
+
+      nil ->
+        event = stamp(event)
+        persist_message(data, event)
+        broadcast(data.session_id, {:event, event})
+        %{data | messages: data.messages ++ [event]}
+    end
   end
 
   # Assistant turn — may contain an AskUserQuestion tool_use that puts the
@@ -1182,233 +1190,12 @@ defmodule OrcaHub.SessionRunner do
     Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session_id, payload})
   end
 
-  defp maybe_put(opts, _key, nil), do: opts
-  defp maybe_put(opts, key, val), do: Keyword.put(opts, key, val)
-
-  # Orchestrator sessions get a restricted toolset: read-only file access plus web,
-  # plus Write/Edit so they can persist their file-based memory under `.claude`.
-  # Writes are NOT path-enforced (skip-permissions stays on); the system prompt
-  # instructs orchestrators to confine their direct writes to `.claude` and to
-  # delegate all other implementation work to worker sessions.
-  @orchestrator_tools "Read,Glob,Grep,WebFetch,WebSearch,Write,Edit"
-  defp orchestrator_tools(true), do: @orchestrator_tools
-  defp orchestrator_tools(_), do: nil
-
-  defp mcp_config(data) do
-    port =
-      case OrcaHubWeb.Endpoint.config(:http) do
-        config when is_list(config) -> Keyword.get(config, :port, 4000)
-        _ -> 4000
-      end
-
-    # Honor the env kill switch at bake time so a disabled node never advertises
-    # code-exec mode (and a stale URL can't re-enable it).
-    code_exec = OrcaHub.MCP.CodeExec.enabled?(data.code_exec)
-
-    Logger.info(
-      "[MCP] mcp_config: baking orca_session_id=#{inspect(data.session_id)} " <>
-        "orchestrator=#{data.orchestrator == true} code_exec=#{code_exec} " <>
-        "into /mcp URL at port-open time"
-    )
-
-    orca_server = %{
-      "type" => "http",
-      "url" =>
-        "http://localhost:#{port}/mcp?orca_session_id=#{data.session_id}" <>
-          "&orchestrator=#{data.orchestrator == true}" <>
-          "&code_exec=#{code_exec}"
-    }
-
-    project_servers =
-      if data.project_id,
-        do: db_call(data, :list_enabled_servers_for_project, [data.project_id]),
-        else: []
-
-    session_servers = db_call(data, :list_enabled_servers_for_session, [data.session_id])
-
-    scoped_servers =
-      (project_servers ++ session_servers)
-      |> Enum.uniq_by(& &1.id)
-      |> Map.new(fn server ->
-        entry = %{"type" => "http", "url" => server.url}
-
-        entry =
-          if map_size(server.headers) > 0,
-            do: Map.put(entry, "headers", server.headers),
-            else: entry
-
-        {server.name, entry}
-      end)
-
-    Jason.encode!(%{"mcpServers" => Map.merge(scoped_servers, %{"orca" => orca_server})})
-  end
-
   @doc false
-  # Public for testing. Builds the --append-system-prompt text for a session.
-  def build_system_prompt(data) do
-    parts =
-      [
-        "Your OrcaHub session ID is #{data.session_id}.",
-        orchestrator_system_prompt(data.orchestrator, data.session_id),
-        code_exec_system_prompt(OrcaHub.MCP.CodeExec.enabled?(Map.get(data, :code_exec, false))),
-        if(!data.orchestrator, do: commit_trailer_prompt(data.session_id)),
-        if(!data.orchestrator, do: ask_user_question_prompt()),
-        sibling_sessions_prompt(data.orchestrator),
-        context_files_prompt(data.directory)
-      ]
-      |> Enum.reject(&is_nil/1)
-
-    Enum.join(parts, "\n\n")
-  end
-
-  # Only non-orchestrator sessions have the AskUserQuestion tool. Headless runs
-  # auto-return a placeholder/denial tool result for it, and the model tends to
-  # continue as if answered — so we explicitly instruct it to stop and wait.
-  defp ask_user_question_prompt do
-    """
-    When you use the AskUserQuestion tool to ask the user something, the \
-    environment will immediately return an automatic placeholder tool result \
-    (it may look like an error or a denial such as "Answer questions?"). That \
-    placeholder is NOT the user's answer — do not treat it as a response and do \
-    not continue based on it. After calling AskUserQuestion, stop and end your \
-    turn. The user's real answer will arrive as a separate follow-up message; \
-    only act on the question once the user has actually responded.\
-    """
-    |> String.trim()
-  end
-
-  # Teaches a code-exec session its collapsed tool surface. Only added when the
-  # feature is enabled for the session (and not killed node-wide).
-  defp code_exec_system_prompt(false), do: nil
-
-  defp code_exec_system_prompt(true) do
-    """
-    # Code Execution Mode
-
-    Your MCP tool list is intentionally small: `run_elixir`, `search_tools`, and \
-    `read_tool`. Every other OrcaHub and upstream tool is reachable from inside \
-    `run_elixir` as a named `Tools.*` function — call several tools and stitch \
-    their results together with the Elixir standard library in ONE snippet \
-    instead of many separate tool calls.
-
-    - **Discover tools** with `search_tools`/`read_tool`, or from inside code \
-      with `Tools.search("query")`, `Tools.list()`, and `Tools.schema("name")`. \
-      `Tools.search/1` and `Tools.list/0` return `{name, description}` TUPLES — \
-      match the tuple (`Enum.map(fn {name, _} -> name end)`), do NOT index with \
-      `["name"]`. `Tools.schema/1` returns a map (or nil). Only tool \
-      *invocations* (below) auto-unwrap to maps/lists.
-    - **Call a tool** as `Tools.<raw_mcp_name>(args)`, e.g. \
-      `Tools.open_file(%{"file_path" => "lib/foo.ex"})` or \
-      `Tools.github__get_issue(%{"number" => 7})`. Named functions \
-      **auto-unwrap** the result (text → string; JSON → decoded map/list) and \
-      **raise `Tools.Error`** if the tool fails — so they compose with `|>` and \
-      `Enum`:
-
-          Tools.github__list_issues(%{"repo" => "o/r"})
-          |> Enum.filter(& &1["state"] == "open")
-          |> Enum.map(& &1["title"])
-
-    - For explicit error handling use `Tools.try_call("name", args)` which \
-      returns `{:ok, value} | {:error, reason}`; for the faithful raw MCP \
-      envelope use `Tools.call("name", args)`.
-    - The value of the last expression (and any stdout) is returned to you. \
-      Keep return values slim — filter/project before returning. Pure stdlib is \
-      available; OrcaHub internals, File, and System are blocked.
-    """
-    |> String.trim()
-  end
-
-  defp orchestrator_system_prompt(false, _session_id), do: nil
-  defp orchestrator_system_prompt(nil, _session_id), do: nil
-
-  defp orchestrator_system_prompt(true, session_id) do
-    """
-    # Orchestrator Session
-
-    You are an **orchestrator session**. Your role is to coordinate work across multiple worker sessions, NOT to do the work yourself.
-
-    ## Your Capabilities
-
-    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
-
-    ## How to Work
-
-    **Important:** The OrcaHub MCP tools must be called by their full namespaced name — the MCP prefix followed by the tool name, e.g. `mcp__orca__start_session` (not just `start_session`). The same applies to every tool below (`mcp__orca__send_message_to_session`, `mcp__orca__schedule_heartbeat`, `mcp__orca__search_sessions`, `mcp__orca__archive_session`, `mcp__orca__cancel_heartbeat`, etc.).
-
-    1. **Delegate all implementation work** to other sessions using:
-       - `mcp__orca__start_session` — spawn a new worker session with a detailed prompt
-       - `mcp__orca__send_message_to_session` — direct an existing session
-
-    2. **Request callbacks** — When delegating work, explicitly ask the worker session to message you back when done:
-       > "When you have completed this task, use `mcp__orca__send_message_to_session` to notify session #{session_id} with a summary of what you did."
-
-    3. **Set up monitoring** — After spawning workers, use `mcp__orca__schedule_heartbeat` to wake yourself up periodically (e.g., every 2-5 minutes) to check on progress:
-       > "Check on worker sessions. Use `mcp__orca__search_sessions` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
-
-    4. **Check in proactively** — If you don't hear back from a worker session within a reasonable time, send it a message asking for a status update.
-
-    5. **Archive completed children** — When a worker session has finished its task, use `mcp__orca__archive_session` to archive it. This keeps the session list tidy. If you need to continue the conversation later, just send a message to the archived session — it will be automatically unarchived.
-
-    6. **Cancel monitoring** — When all delegated work is complete, use `mcp__orca__cancel_heartbeat` to stop monitoring.
-
-    ## Example Flow
-
-    1. Analyze the task and break it into subtasks
-    2. Spawn worker sessions for each subtask, requesting they message back when done
-    3. Set a heartbeat to check on progress
-    4. When workers report back or heartbeat fires, check status
-    5. If issues arise, provide guidance or spawn additional workers
-    6. As each worker finishes, archive its session to keep the list clean
-    7. When all work is complete, cancel heartbeat and summarize results
-
-    Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
-    """
-    |> String.trim()
-  end
-
-  # Orchestrator sessions can use `search_sessions`; regular sessions cannot,
-  # so point them at the `.agents/` directory to discover sibling session IDs.
-  defp sibling_sessions_prompt(true) do
-    "Other agent sessions may be active in this directory. Use the `mcp__orca__search_sessions` MCP tool to discover sibling sessions you may want to coordinate with."
-  end
-
-  defp sibling_sessions_prompt(_orchestrator) do
-    "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then use the `mcp__orca__send_message_to_session` MCP tool to coordinate with them."
-  end
-
-  defp commit_trailer_prompt(session_id) do
-    """
-    When making git commits, ALWAYS append this trailer to the commit message:
-
-    OrcaHub-Session: #{session_id}
-
-    This links the commit to your OrcaHub session. Add it as a git trailer \
-    (blank line after the commit body, then the trailer line). \
-    Never omit this trailer.\
-    """
-    |> String.trim()
-  end
-
-  defp context_files_prompt(directory) do
-    context_dir = Path.join(directory, ".context")
-
-    if File.dir?(context_dir) do
-      context_dir
-      |> File.ls!()
-      |> Enum.filter(&(Path.extname(&1) in ~w(.md .mmd)))
-      |> Enum.sort()
-      |> Enum.map(fn filename ->
-        content = File.read!(Path.join(context_dir, filename))
-        "## #{Path.rootname(filename)}\n\n#{content}"
-      end)
-      |> case do
-        [] -> nil
-        parts -> "# Project Context\n\n#{Enum.join(parts, "\n\n")}"
-      end
-    else
-      nil
-    end
-  end
+  # Public for testing. Builds the --append-system-prompt text for a session —
+  # delegates to Backend.Claude so the prompt copy is asserted in exactly one
+  # place. `data` here only needs the fields Backend.Claude.system_prompt/1
+  # reads (:session_id, :orchestrator, :directory, optionally :code_exec).
+  def build_system_prompt(data), do: Backend.Claude.system_prompt(data)
 
   defp send_sigint(port) do
     case Port.info(port, :os_pid) do
