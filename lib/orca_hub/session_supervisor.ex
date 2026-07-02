@@ -5,6 +5,8 @@ defmodule OrcaHub.SessionSupervisor do
 
   use DynamicSupervisor
 
+  alias OrcaHub.Backend
+
   def start_link(_opts) do
     DynamicSupervisor.start_link(__MODULE__, [], name: __MODULE__)
   end
@@ -40,6 +42,8 @@ defmodule OrcaHub.SessionSupervisor do
           if session.status in ~w(running waiting compacting) do
             OrcaHub.HubRPC.update_session(session, %{status: "error"})
           end
+
+          cleanup_backend_state(session)
         rescue
           # Defensive boundary: this is a best-effort status sync after the
           # session is already terminated. The DB record may be gone, or the
@@ -53,6 +57,30 @@ defmodule OrcaHub.SessionSupervisor do
       error ->
         error
     end
+  end
+
+  # `DynamicSupervisor.terminate_child/2` above sends the child a raw exit
+  # signal; `SessionRunner` (a `:gen_statem`) never calls
+  # `Process.flag(:trap_exit, true)`, so its `terminate/3` callback — which
+  # normally runs `backend.cleanup_session/1` (e.g. Codex's per-session
+  # `CODEX_HOME` removal) — never fires on THIS path (backend_abstraction_spec.md
+  # §10 Q5's trap_exit addendum). `terminate/3` DOES still run for a crash or
+  # an internal `{:stop, reason}` return, so this gap is specific to an
+  # explicit `stop_session/1` call.
+  #
+  # Fixed the narrow way instead of flipping `trap_exit` globally (which would
+  # change shutdown semantics for every crash/exit path, not just this one):
+  # `cleanup_session/1` only needs `directory`/`session_id` off the DB record
+  # — no live runner process required — so call it directly here, once the
+  # child is confirmed terminated. A no-op for Claude (`cleanup_session/1` is
+  # `:ok`); for Codex it removes the `CODEX_HOME` directory.
+  defp cleanup_backend_state(session) do
+    Backend.resolve(session.backend).cleanup_session(%{
+      directory: session.directory,
+      session_id: session.id
+    })
+
+    :ok
   end
 
   def session_alive?(session_id) do
