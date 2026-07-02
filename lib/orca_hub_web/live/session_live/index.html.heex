@@ -284,6 +284,23 @@
           </option>
         </select>
       </div>
+      <%!-- Backend picker: only shown once a second backend is registered
+           (backend_abstraction_spec.md §7/§8 Phase 1). With a single
+           backend available, submit a hidden field so the changeset default
+           ("claude") still round-trips explicitly. --%>
+      <.input
+        :if={length(OrcaHub.Backend.available()) > 1}
+        field={@form[:backend]}
+        type="select"
+        label="Backend"
+        options={OrcaHub.Backend.available() |> Enum.map(fn {value, label} -> {label, value} end)}
+      />
+      <input
+        :if={length(OrcaHub.Backend.available()) == 1}
+        type="hidden"
+        name="session[backend]"
+        value={elem(hd(OrcaHub.Backend.available()), 0)}
+      />
       <.input
         field={@form[:model]}
         type="select"

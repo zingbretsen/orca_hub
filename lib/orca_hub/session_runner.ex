@@ -116,11 +116,13 @@ defmodule OrcaHub.SessionRunner do
       orchestrator: session.orchestrator || false,
       code_exec: session.code_exec || false,
       db_node: db_node,
-      # Phase 0 (backend_abstraction_spec.md): unconditionally Claude — no
-      # `backend` DB column yet. `backend_state` is an opaque map owned by the
-      # adapter, threaded through normalize/encode_*/handle_peer_request; the
-      # Claude adapter's identity implementations never touch it.
-      backend: Backend.resolve(nil),
+      # Phase 1 (backend_abstraction_spec.md §4/§5): resolve from the
+      # session's persisted `backend` column. Unknown values raise (loud
+      # failure, no silent Claude fallback) — see Backend.resolve/1.
+      # `backend_state` is an opaque map owned by the adapter, threaded
+      # through normalize/encode_*/handle_peer_request; the Claude adapter's
+      # identity implementations never touch it.
+      backend: Backend.resolve(session.backend),
       backend_state: %{},
       port: nil,
       buffer: "",

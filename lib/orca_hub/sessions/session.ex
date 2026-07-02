@@ -14,6 +14,10 @@ defmodule OrcaHub.Sessions.Session do
     field :title, :string
     field :status, :string, default: "ready"
     field :model, :string
+    # Which agent-CLI backend runs this session (backend_abstraction_spec.md
+    # §4). "codex" is a valid data-layer value ahead of its Phase 2 adapter;
+    # the UI only offers backends from `OrcaHub.Backend.available/0`.
+    field :backend, :string, default: "claude"
     field :archived_at, :utc_datetime
     field :triggered, :boolean, default: false
     field :priority, :integer, default: 0
@@ -45,6 +49,7 @@ defmodule OrcaHub.Sessions.Session do
       :title,
       :status,
       :model,
+      :backend,
       :project_id,
       :archived_at,
       :triggered,
@@ -58,5 +63,6 @@ defmodule OrcaHub.Sessions.Session do
     ])
     |> validate_required([:directory])
     |> validate_inclusion(:status, ~w(ready idle running waiting error compacting))
+    |> validate_inclusion(:backend, ~w(claude codex))
   end
 end

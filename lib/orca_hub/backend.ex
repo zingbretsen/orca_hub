@@ -130,14 +130,31 @@ defmodule OrcaHub.Backend do
   @callback system_prompt(ctx) :: String.t() | nil
 
   @doc """
-  Resolves a backend identifier (the `sessions.backend` DB column value, once
-  it exists) to its implementing module.
+  Resolves a backend identifier (the `sessions.backend` DB column value) to
+  its implementing module.
 
-  Phase 0: the `backend` column doesn't exist yet, so every input — `"claude"`
-  or otherwise (including `nil`) — resolves to `OrcaHub.Backend.Claude`. Later
-  phases add non-Claude modules for `"codex"` etc.
+  Phase 1: only `"claude"` (and `nil`, for rows/paths that predate the
+  `backend` column default) resolve. Any other value — including `"codex"`,
+  which is accepted at the data layer ahead of its Phase 2 adapter — fails
+  loudly here rather than silently falling back to Claude, so a
+  not-yet-implemented backend can never be run by accident.
   """
   @spec resolve(String.t() | nil) :: module
+  def resolve(nil), do: OrcaHub.Backend.Claude
   def resolve("claude"), do: OrcaHub.Backend.Claude
-  def resolve(_other), do: OrcaHub.Backend.Claude
+
+  def resolve(other) do
+    raise "OrcaHub.Backend.resolve/1: unknown backend #{inspect(other)} " <>
+            "(no adapter registered yet)"
+  end
+
+  @doc """
+  Backends selectable in the UI, as `{value, label}` pairs for a `<select>`.
+
+  Phase 1: only Claude. Phase 2 appends Codex once `Backend.Codex` lands —
+  callers should render nothing (or a hidden field) when this list has a
+  single entry, and only show a picker once it grows past one.
+  """
+  @spec available() :: [{String.t(), String.t()}]
+  def available, do: [{"claude", "Claude"}]
 end

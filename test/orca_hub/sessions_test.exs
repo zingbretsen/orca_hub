@@ -2,6 +2,7 @@ defmodule OrcaHub.SessionsTest do
   use OrcaHub.DataCase
 
   alias OrcaHub.{Projects, Sessions}
+  alias OrcaHub.Sessions.Session
 
   setup do
     {:ok, project} = Projects.create_project(%{name: "Test", directory: "/tmp/test-sessions"})
@@ -100,6 +101,43 @@ defmodule OrcaHub.SessionsTest do
     test "can be set to true on creation", %{project: project} do
       session = create_session(project, %{triggered: true})
       assert session.triggered == true
+    end
+  end
+
+  describe "backend field" do
+    test "defaults to \"claude\"", %{project: project} do
+      session = create_session(project)
+      assert session.backend == "claude"
+    end
+
+    test "accepts \"claude\" explicitly", %{project: project} do
+      session = create_session(project, %{backend: "claude"})
+      assert session.backend == "claude"
+    end
+
+    test "accepts \"codex\" at the data layer (adapter lands in Phase 2)", %{project: project} do
+      session = create_session(project, %{backend: "codex"})
+      assert session.backend == "codex"
+    end
+
+    test "rejects an unrecognized backend value", %{project: project} do
+      attrs = %{directory: project.directory, project_id: project.id, backend: "not-a-backend"}
+      changeset = Session.changeset(%Session{}, attrs)
+
+      refute changeset.valid?
+      assert %{backend: ["is invalid"]} = errors_on(changeset)
+    end
+
+    test "round-trips through create_session same as other fields", %{project: project} do
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: project.directory,
+          project_id: project.id,
+          backend: "claude"
+        })
+
+      reloaded = Sessions.get_session(session.id)
+      assert reloaded.backend == "claude"
     end
   end
 
