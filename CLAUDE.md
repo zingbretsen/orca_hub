@@ -9,9 +9,10 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 
 ## Architecture
 
-- **SessionRunner** (`lib/orca_hub/session_runner.ex`): GenStatem that manages a Claude CLI session via a port. Sends prompts, parses streaming JSON output, persists messages, and broadcasts events via PubSub.
-- **SessionLive.Show** (`lib/orca_hub_web/live/session_live/show.ex`): LiveView for viewing/interacting with a session. Handles message sending, image uploads, and file uploads.
-- **MessageComponents** (`lib/orca_hub_web/components/message_components.ex`): Function components for rendering the message feed (user, assistant, tool use, results, system events).
+- **SessionRunner** (`lib/orca_hub/session_runner.ex`): GenStatem that manages an agent-CLI session via a port. Sends prompts, parses streaming JSON output, persists messages, and broadcasts events via PubSub. Delegates every CLI-specific concern (spawn args, stdin framing, event normalization) to `data.backend`.
+- **OrcaHub.Backend** (`lib/orca_hub/backend.ex`, `backend/claude.ex`, `backend/codex.ex`): behaviour + adapters for pluggable agent CLIs (Claude, Codex — see `backend_abstraction_spec.md`). Each session persists its backend in the `sessions.backend` column, resolved once at runner init. Non-Claude backends normalize their native output into Claude's `stream-json` event shape so persistence/rendering stay backend-agnostic. A `Capabilities` struct per backend (`usage`, `mcp`, `plan_mode`, `ask_user_question`, …) gates UI chrome and model lists — the UI branches on capability fields, never on the backend name string. Codex auth is env-based (`OPENAI_API_KEY`, or a prior `codex login`) rather than the node-login flow Claude uses.
+- **SessionLive.Show** (`lib/orca_hub_web/live/session_live/show.ex`): LiveView for viewing/interacting with a session. Handles message sending, image uploads, file uploads, and capability-gated chrome (usage panel, plan mode, AskUserQuestion, MCP toggles, model picker) via `Backend.capabilities_for/1`.
+- **MessageComponents** (`lib/orca_hub_web/components/message_components.ex`): Function components for rendering the message feed (user, assistant, tool use, results, system events). Backend-agnostic — every backend normalizes onto Claude's existing tool names (Bash/Write/Edit/mcp__*/WebSearch/TodoWrite), so no per-backend rendering code exists.
 - **OrcaHub.Claude** (`lib/orca_hub/claude/`): Modules for interacting with Claude CLI — builds CLI args (`Config`), parses streaming NDJSON output (`StreamParser`), and fetches usage metrics (`Usage`).
 
 ## Common issues

@@ -1,6 +1,8 @@
 # Backend Abstraction Spec — Pluggable Agent CLIs (Claude, Codex, grok, pi, …)
 
-**Status:** Draft / design (reviewed)
+**Status:** Implemented — all four phases (§8) landed. Claude + Codex are both
+selectable per-session with capability-gated UI; grok/pi remain
+research-only (§12, adapters deferred).
 **Goal:** Decouple OrcaHub from the Claude Code CLI so a session can be driven by
 any headless coding-agent CLI. First non-Claude target: **OpenAI Codex CLI**
 (via `codex app-server`). Named future targets: **grok CLI** and **pi** (Mario
@@ -97,13 +99,15 @@ the backend name.
 
 ```elixir
 %OrcaHub.Backend.Capabilities{
-  streaming:       true,          # long-lived port w/ multi-turn stdin
-  interrupt:       :protocol,     # :protocol | :signal | :none
-  mcp:             true,          # can consume the orca MCP server
-  resume:          true,          # session continuity across cold reopen
-  usage:           true,          # headless usage/quota query available
-  system_prompt:   :flag,         # :flag | :leading_message | :session_param | :none
-  warmup_turn:     true           # needs a throwaway turn to settle MCP
+  streaming:         true,          # long-lived port w/ multi-turn stdin
+  interrupt:         :protocol,     # :protocol | :signal | :none
+  mcp:               true,          # can consume the orca MCP server
+  resume:            true,          # session continuity across cold reopen
+  usage:             true,          # headless usage/quota query available
+  system_prompt:     :flag,         # :flag | :leading_message | :session_param | :none
+  warmup_turn:       true,          # needs a throwaway turn to settle MCP
+  plan_mode:         true,          # EnterPlanMode/ExitPlanMode tool pair (Phase 3)
+  ask_user_question: true           # built-in AskUserQuestion tool + waiting-status tracking (Phase 3)
 }
 ```
 
@@ -116,6 +120,8 @@ the backend name.
 | usage | ✅ | ❌ (`:none`) → panel hidden |
 | system_prompt | `:flag` | `:leading_message` |
 | warmup_turn | ✅ | ❌ — explicit `initialize`/`initialized` handshake; no MCP race |
+| plan_mode | ✅ | ❌ — plan-mode badges/review card hidden; plan items still render via TodoWrite |
+| ask_user_question | ✅ | ❌ — interactive wizard never initiates; falls back to plain assistant text |
 
 ### 3.2 Behaviour callbacks (as implemented, Phase 2)
 
@@ -173,6 +179,12 @@ defmodule OrcaHub.Backend do
   # :leading_message -> prepended to the first user turn's text
   # :session_param   -> included in the backend's session-create message (grok ACP)
   @callback system_prompt(ctx :: map) :: String.t() | nil
+
+  # Phase 3: selectable models as {id, label} pairs. `id` is the exact
+  # passthrough string sent to the CLI — no enum validation; the UI also
+  # accepts free text (§7). `Backend.models_for/1` resolves a session (or a
+  # bare backend string) to this list.
+  @callback models() :: [{String.t(), String.t()}]
 end
 ```
 
@@ -533,6 +545,53 @@ Mapping command/file/mcp items to the existing tool-name icons means
   creation for backends without MCP support (pi, unless/until an extension
   bridges it — §12.2).
 
+**IMPLEMENTED as-built (Phase 3):**
+
+- `OrcaHub.Backend.capabilities_for/1` and `OrcaHub.Backend.models_for/1`
+  (`lib/orca_hub/backend.ex`) resolve a session (or a bare `backend` column
+  value) to its `Capabilities` struct / `{id, label}` model list. Both accept
+  `nil` without raising (legacy rows → Claude); templates and LiveViews call
+  these, never the backend name string.
+- `SessionLive.Show` assigns `:capabilities` once at mount
+  (`Backend.capabilities_for(session)`) and every template gate below reads
+  off that struct.
+- **Usage:** the global "Usage" nav link (`OrcaHubWeb.Layouts.app/1`,
+  `lib/orca_hub_web/components/layouts.ex`) — the only UI backed by
+  `OrcaHub.Claude.Usage` — is hidden while viewing a session whose
+  capabilities have `usage: false`. It's a node-level page, not
+  session-scoped, so this is "hidden while looking at an incapable session,"
+  not a per-session widget (none existed to gate).
+- **Plan mode:** the "planning"/"needs review" header badges and the plan
+  review card (`session_live/show.html.heex`) are gated on
+  `@capabilities.plan_mode`, on top of the fact that `@plan_mode` can
+  structurally never become non-`false` for Codex (it only flips on the
+  Claude-only `EnterPlanMode`/`ExitPlanMode` tool names).
+- **AskUserQuestion:** the interactive wizard modal, and the `aq_open`
+  flag that opens it (`assign_ask_user_question/3`, `sync_question_modal/1`
+  in `session_live/show.ex`), are gated on `@capabilities.ask_user_question`.
+  Persisted question messages still render in the feed via the normal
+  tool_use/tool_result path (unaffected — MessageComponents doesn't
+  special-case AskUserQuestion beyond generic tool rendering).
+- **MCP toggles:** the orchestrator-mode checkbox (new-session form) /
+  toggle button (session header) and the MCP-servers modal + its header
+  button are hidden when `capabilities.mcp == false`. Both current backends
+  have `mcp: true`, so this is inert wiring today, asserted by tests that it
+  still shows for both.
+- **Model picker:** `Backend.Claude.models/0` returns the exact pre-Phase-3
+  hardcoded list (Opus 4.8 / Sonnet 4.6 / Haiku 4.5).
+  `Backend.Codex.models/0` returns a small default list
+  (`gpt-5-codex`, `gpt-5.3-Codex-Spark`, `gpt-5.5` — the latter two are this
+  section's own example passthrough strings). The new-session form's model
+  field is a single text input + `<datalist>` of backend-scoped suggestions
+  (native free-text entry, no enum); it re-renders on the existing
+  `"validate"` LiveView event (already firing on every field change,
+  including the backend `<select>`) — no new event was needed. The in-session
+  model switcher (`session_live/show.html.heex`) iterates
+  `Backend.models_for(@session.backend)` plus a small custom-model form.
+- **Backend badge:** the session header shows a subtle badge with the
+  capitalized backend name, but ONLY when `@session.backend != "claude"` — no
+  visual change for the (still overwhelmingly common) Claude case.
+
 ---
 
 ## 8. Phasing & deliverables
@@ -566,9 +625,22 @@ Mapping command/file/mcp items to the existing tool-name icons means
   unverified against a live model call (fully covered by the fixture +
   stub-integration tests instead). Also surfaced a pre-existing
   (not Codex-specific) gap — see §10 Q5's addendum on `trap_exit`.
-- **Phase 3 — Peripherals.** Usage/plan-mode/AskUserQuestion capability gating;
-  renderer icons for Codex tool items; model-picker names; auth handling; docs.
-  Commit.
+- **Phase 3 — Peripherals. LANDED.** `Capabilities` grew `plan_mode` and
+  `ask_user_question` fields; `capabilities_for/1`/`models_for/1` helpers;
+  `SessionLive.Show` assigns `:capabilities` once at mount and every
+  capability-gated chrome element (§7) branches on it. Backend-scoped model
+  picker (new-session `<datalist>` + in-session switcher) replaces the
+  hardcoded Claude-only lists; free-text entry for passthrough Codex model
+  ids. Cleanup-on-stop fix (§10 Q5 addendum, resolved below) —
+  `SessionSupervisor.stop_session/1` now calls `backend.cleanup_session/1`
+  directly, so Codex's `CODEX_HOME` is removed on an explicit stop too, not
+  just on runner-process death. Renderer check: zero `MessageComponents`
+  changes needed (confirmed by feeding real `Backend.Codex.normalize/2`
+  output through `message_feed/1` in a test — §6.2's tool-name mapping onto
+  Bash/Write/Edit/mcp__*/WebSearch/TodoWrite already renders with existing
+  icon/summary code). Docs updated (`CLAUDE.md`, this spec). Gated by: full
+  test suite (283 tests, the same 1 pre-existing unrelated `TriggersTest`
+  failure as Phase 0-2's baseline). Commit.
 
 ---
 
@@ -621,8 +693,8 @@ Mapping command/file/mcp items to the existing tool-name icons means
   create/destroy the directory. `backend_state` (the in-memory protocol FSM)
   is separately reset to `%{}` on every port teardown/crash (§3.2) — that's
   independent of the on-disk `CODEX_HOME`, which persists across those cycles.
-  ⚠ **Known gap, found during the Phase 2 live smoke test (pre-existing,
-  NOT introduced by Codex):** `SessionRunner` never calls
+  ⚠ **Gap found during the Phase 2 live smoke test (pre-existing, NOT
+  introduced by Codex):** `SessionRunner` never calls
   `Process.flag(:trap_exit, true)`, and `GenStatem`/`:gen_statem` does not do
   so automatically. `terminate/3` DOES run on a crash or an internal
   `{:stop, reason}` return (both go through `:gen_statem`'s own loop), but
@@ -633,9 +705,25 @@ Mapping command/file/mcp items to the existing tool-name icons means
   `CODEX_HOME` directory on disk. Pre-existing for the `Port.close/1` call in
   `terminate/3` too (harmless there — a dying process's ports auto-close
   regardless), but genuinely leaks `cleanup_session/1`'s on-disk state on
-  this path. Not fixed here: adding `trap_exit` changes shutdown semantics
-  for every backend, not just Codex, and deserves review on its own —
-  tracked as a follow-up, not folded into this phase.
+  this path.
+
+  **RESOLVED, Phase 3 as-built:** fixed the narrow way instead of flipping
+  `trap_exit` globally (which would change shutdown semantics for every
+  crash/exit path across every backend, not just this one).
+  `SessionSupervisor.stop_session/1` (`lib/orca_hub/session_supervisor.ex`)
+  calls `Backend.resolve(session.backend).cleanup_session/1` directly, once
+  `DynamicSupervisor.terminate_child/2` confirms the child is gone.
+  `cleanup_session/1` only ever needed `directory`/`session_id` — never a
+  live runner process — so this works purely off the DB record, with no
+  changes to `SessionRunner`, `terminate/3`, port teardown, or WarmPool
+  semantics. Blast radius: one new private function in
+  `SessionSupervisor`, called only from the existing `stop_session/1`
+  success path, wrapped in the same `try/rescue` that already guards the
+  post-termination status sync (a cleanup failure can't fail
+  `stop_session/1`'s return value). No-op for Claude
+  (`cleanup_session/1` is `:ok`). Covered by
+  `test/orca_hub/session_supervisor_test.exs`, which stops a real
+  stub-app-server-backed Codex session and asserts `CODEX_HOME` is gone.
 - ~~Q6: `turn/steer` vs interrupt-then-resend for queued prompts?~~ **RESOLVED —
   interrupt-then-resend for v1.** It matches the existing queued-prompt semantics
   exactly; `steer` is a later optimization behind a capability if wanted.

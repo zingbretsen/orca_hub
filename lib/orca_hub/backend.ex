@@ -61,7 +61,9 @@ defmodule OrcaHub.Backend do
             resume: boolean,
             usage: boolean,
             system_prompt: system_prompt,
-            warmup_turn: boolean
+            warmup_turn: boolean,
+            plan_mode: boolean,
+            ask_user_question: boolean
           }
 
     defstruct streaming: true,
@@ -70,7 +72,15 @@ defmodule OrcaHub.Backend do
               resume: true,
               usage: true,
               system_prompt: :flag,
-              warmup_turn: true
+              warmup_turn: true,
+              # Phase 3 (backend_abstraction_spec.md §7/§8): whether this
+              # backend supports the `EnterPlanMode`/`ExitPlanMode` plan-mode
+              # tool pair, and whether it has a built-in `AskUserQuestion`
+              # tool the runner can track `waiting` status against. Both are
+              # Claude-only today; Codex falls back to plain assistant text
+              # for both (spec §6.3(4)/(5)).
+              plan_mode: true,
+              ask_user_question: true
   end
 
   @typedoc "Long-lived streaming port vs. a per-turn one-shot process."
@@ -156,6 +166,14 @@ defmodule OrcaHub.Backend do
   @callback system_prompt(ctx) :: String.t() | nil
 
   @doc """
+  Selectable models for this backend, as `{id, label}` pairs (Phase 3, spec
+  §7). `id` is the exact passthrough string sent to the CLI — there is no
+  enum validation, callers may also submit an arbitrary free-text id the UI
+  didn't list.
+  """
+  @callback models() :: [{String.t(), String.t()}]
+
+  @doc """
   Resolves a backend identifier (the `sessions.backend` DB column value) to
   its implementing module.
 
@@ -184,4 +202,35 @@ defmodule OrcaHub.Backend do
   """
   @spec available() :: [{String.t(), String.t()}]
   def available, do: [{"claude", "Claude"}, {"codex", "Codex"}]
+
+  @doc """
+  Resolves a session (or a bare `backend` column value) to its
+  `Capabilities` struct (Phase 3, spec §7/§9). The UI branches on the
+  returned struct's fields, never on the backend name string.
+
+  Accepts anything with a `:backend` key (a `Session` struct, a runner `ctx`
+  map, ...) as well as a bare backend string/`nil`. Never raises on a
+  legacy/nil backend — that resolves to Claude's capabilities, same as
+  `resolve/1`.
+  """
+  @spec capabilities_for(%{optional(any) => any, backend: String.t() | nil} | String.t() | nil) ::
+          Capabilities.t()
+  def capabilities_for(%{backend: backend}), do: capabilities_for(backend)
+
+  def capabilities_for(backend) when is_binary(backend) or is_nil(backend) do
+    resolve(backend).capabilities()
+  end
+
+  @doc """
+  Selectable models for a session's (or a bare `backend` column value's)
+  backend, as `{id, label}` pairs (Phase 3, spec §7). Scopes the model
+  picker/switcher to the backend actually driving the session.
+  """
+  @spec models_for(%{optional(any) => any, backend: String.t() | nil} | String.t() | nil) ::
+          [{String.t(), String.t()}]
+  def models_for(%{backend: backend}), do: models_for(backend)
+
+  def models_for(backend) when is_binary(backend) or is_nil(backend) do
+    resolve(backend).models()
+  end
 end

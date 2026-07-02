@@ -31,8 +31,24 @@ defmodule OrcaHub.Backend.Claude do
       resume: true,
       usage: true,
       system_prompt: :flag,
-      warmup_turn: true
+      warmup_turn: true,
+      plan_mode: true,
+      ask_user_question: true
     }
+  end
+
+  # ── Models ───────────────────────────────────────────────────────────
+  # Verbatim of the model ids previously hardcoded in show.html.heex (~204)
+  # and index.html.heex (~293) — Phase 3 (spec §7) moves them behind the
+  # backend so the picker can be scoped per-session.
+
+  @impl true
+  def models do
+    [
+      {"claude-opus-4-8", "Opus 4.8"},
+      {"claude-sonnet-4-6", "Sonnet 4.6"},
+      {"claude-haiku-4-5-20251001", "Haiku 4.5"}
+    ]
   end
 
   # ── Spawn ────────────────────────────────────────────────────────────

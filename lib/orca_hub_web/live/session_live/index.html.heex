@@ -301,18 +301,39 @@
         name="session[backend]"
         value={elem(hd(OrcaHub.Backend.available()), 0)}
       />
-      <.input
-        field={@form[:model]}
-        type="select"
-        label="Model"
-        options={[
-          {"Default", ""},
-          {"Opus 4.8", "claude-opus-4-8"},
-          {"Sonnet 4.6", "claude-sonnet-4-6"},
-          {"Haiku 4.5", "claude-haiku-4-5-20251001"}
-        ]}
-      />
-      <div class="form-control">
+      <%!-- Model list scoped to the selected backend (backend_abstraction_spec.md
+           §7): re-renders on every "validate" (already fired on any form
+           field change, including the backend select), no extra event
+           needed. A `<datalist>` of backend-scoped suggestions plus free
+           text in one field — Codex models are passthrough strings with no
+           enum to validate against. --%>
+      <div>
+        <label class="label"><span class="label-text">Model</span></label>
+        <input
+          type="text"
+          name="session[model]"
+          value={@form[:model].value}
+          list="model-options"
+          placeholder="Default"
+          class="input input-bordered w-full"
+        />
+        <datalist id="model-options">
+          <option
+            :for={{id, label} <- OrcaHub.Backend.models_for(selected_backend(@form))}
+            value={id}
+          >
+            {label}
+          </option>
+        </datalist>
+      </div>
+      <%!-- Orchestrator mode delegates via MCP tools (mcp__orca__start_session
+           etc.) — hidden for a backend without MCP (spec §7's mcp: false
+           gating; both current backends have mcp: true, this is wiring for
+           a future backend like pi). --%>
+      <div
+        :if={OrcaHub.Backend.capabilities_for(selected_backend(@form)).mcp}
+        class="form-control"
+      >
         <label class="label cursor-pointer justify-start gap-3">
           <input type="hidden" name="session[orchestrator]" value="false" />
           <input

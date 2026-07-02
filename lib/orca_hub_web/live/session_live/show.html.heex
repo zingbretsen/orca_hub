@@ -135,16 +135,29 @@
       {@session_node_name}
     </span>
     <span
+      :if={@session.backend != "claude"}
+      class="badge badge-ghost badge-outline ml-1"
+      title="Agent backend"
+    >
+      {String.capitalize(@session.backend)}
+    </span>
+    <span
       :if={@session.orchestrator}
       class="badge badge-primary badge-outline ml-1"
       title="Orchestrator mode: read-only, delegates work to other sessions"
     >
       orchestrator
     </span>
-    <span :if={@plan_mode == :planning} class="badge badge-warning badge-outline ml-1">
+    <span
+      :if={@capabilities.plan_mode && @plan_mode == :planning}
+      class="badge badge-warning badge-outline ml-1"
+    >
       planning
     </span>
-    <span :if={@plan_mode == :review} class="badge badge-info badge-outline ml-1">
+    <span
+      :if={@capabilities.plan_mode && @plan_mode == :review}
+      class="badge badge-info badge-outline ml-1"
+    >
       needs review
     </span>
     <:subtitle>
@@ -187,7 +200,7 @@
         </div>
         <ul
           tabindex="0"
-          class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg"
+          class="dropdown-content menu bg-base-300 rounded-box z-10 w-64 p-2 shadow-lg"
         >
           <li>
             <button
@@ -198,36 +211,31 @@
               Default
             </button>
           </li>
-          <li>
+          <li :for={{model_id, label} <- OrcaHub.Backend.models_for(@session.backend)}>
             <button
               phx-click="set_model"
-              phx-value-model="claude-opus-4-8"
-              class={[@session.model == "claude-opus-4-8" && "active"]}
+              phx-value-model={model_id}
+              class={[@session.model == model_id && "active"]}
             >
-              Opus 4.8
+              {label}
             </button>
           </li>
+          <li class="menu-title text-xs uppercase opacity-60 mt-1">Custom model</li>
           <li>
-            <button
-              phx-click="set_model"
-              phx-value-model="claude-sonnet-4-6"
-              class={[@session.model == "claude-sonnet-4-6" && "active"]}
-            >
-              Sonnet 4.6
-            </button>
-          </li>
-          <li>
-            <button
-              phx-click="set_model"
-              phx-value-model="claude-haiku-4-5-20251001"
-              class={[@session.model == "claude-haiku-4-5-20251001" && "active"]}
-            >
-              Haiku 4.5
-            </button>
+            <form phx-submit="set_model" class="flex gap-1 px-1 py-1">
+              <input
+                type="text"
+                name="model"
+                placeholder="passthrough model id"
+                class="input input-xs input-bordered flex-1"
+              />
+              <button type="submit" class="btn btn-xs btn-primary">Set</button>
+            </form>
           </li>
         </ul>
       </div>
       <button
+        :if={@capabilities.mcp}
         phx-click="toggle_orchestrator"
         class={["btn btn-ghost btn-sm btn-circle", @session.orchestrator && "text-primary"]}
         title={
@@ -302,6 +310,7 @@
         <span :if={@heartbeat_info} class="indicator-item badge badge-xs badge-success"></span>
       </button>
       <button
+        :if={@capabilities.mcp}
         phx-click="toggle_mcp_modal"
         class={["btn btn-ghost btn-sm btn-circle", @show_mcp_modal && "text-primary"]}
         title="MCP servers"
@@ -410,7 +419,7 @@
 
   <%!-- MCP servers modal --%>
   <div
-    :if={@show_mcp_modal}
+    :if={@capabilities.mcp && @show_mcp_modal}
     class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
   >
     <div class="card bg-base-100 shadow-xl w-full max-w-lg p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl max-h-[80vh] overflow-y-auto">
@@ -633,7 +642,10 @@
         <MessageComponents.message_feed messages={@messages} session_node={@session_node} />
       </div>
 
-      <div :if={@plan_mode == :review} class="mt-2 card bg-warning/10 border border-warning/30">
+      <div
+        :if={@capabilities.plan_mode && @plan_mode == :review}
+        class="mt-2 card bg-warning/10 border border-warning/30"
+      >
         <div class="card-body p-3 gap-2">
           <div class="flex items-center gap-2">
             <span class="badge badge-warning badge-sm">Plan Review</span>
@@ -1329,7 +1341,7 @@
   </div>
 
   <.ask_user_question
-    :if={@status == :waiting && @aq_open && @pending_questions}
+    :if={@capabilities.ask_user_question && @status == :waiting && @aq_open && @pending_questions}
     session_id={@session.id}
     questions={@pending_questions.questions}
     page={@aq_page}

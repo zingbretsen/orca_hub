@@ -11,16 +11,32 @@ defmodule OrcaHubWeb.Layouts do
   # and other static content.
   embed_templates "layouts/*"
 
-  defp nav_links do
+  # `capabilities` is an optional assign set by SessionLive.Show (Phase 3,
+  # spec §7) — the layout receives the current LiveView's full assign set
+  # (same pattern as `node_filter_visible` below), so a session page can hide
+  # chrome that doesn't apply to its backend without every other page having
+  # to know about capabilities at all. `OrcaHub.Claude.Usage.fetch/0` scrapes
+  # this NODE's local Claude credentials — nothing session-specific — but
+  # while viewing a session whose backend has no usage capability (Codex),
+  # the link is still the wrong thing to dangle in front of the user.
+  defp nav_links(assigns) do
     [
       %{href: ~p"/queue", label: "Queue", badge: true},
       %{href: ~p"/projects", label: "Projects"},
       %{href: ~p"/triggers", label: "Triggers"},
       %{href: ~p"/terminals", label: "Terminals"},
       %{href: ~p"/sessions", label: "Sessions"},
-      %{href: ~p"/usage", label: "Usage"},
+      %{href: ~p"/usage", label: "Usage", visible: usage_nav_visible?(assigns)},
       %{href: ~p"/settings", label: "Settings"}
     ]
+    |> Enum.filter(&Map.get(&1, :visible, true))
+  end
+
+  defp usage_nav_visible?(assigns) do
+    case assigns[:capabilities] do
+      %OrcaHub.Backend.Capabilities{usage: usage} -> usage
+      _ -> true
+    end
   end
 
   @doc """
@@ -35,7 +51,7 @@ defmodule OrcaHubWeb.Layouts do
   slot :inner_block
 
   def app(assigns) do
-    assigns = assign(assigns, :nav_links, nav_links())
+    assigns = assign(assigns, :nav_links, nav_links(assigns))
 
     ~H"""
     <header class="flex items-center gap-2 px-4 py-2 sm:px-6 lg:px-8">

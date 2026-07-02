@@ -42,4 +42,38 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
     assert session
     assert session.backend == "claude"
   end
+
+  test "new-session form scopes the model datalist to the selected backend", %{conn: conn} do
+    {:ok, view, html} = live(conn, ~p"/sessions/new")
+
+    # Defaults to Claude's model list before any backend selection.
+    assert html =~ "Opus 4.8"
+    refute html =~ "GPT-5"
+
+    html =
+      view
+      |> form("form", session: %{"backend" => "codex"})
+      |> render_change()
+
+    assert html =~ "GPT-5 Codex"
+    refute html =~ "Opus 4.8"
+  end
+
+  test "new-session form shows the orchestrator (MCP-dependent) toggle for both backends", %{
+    conn: conn
+  } do
+    {:ok, view, html} = live(conn, ~p"/sessions/new")
+
+    # Claude (default): mcp: true -> shown.
+    assert html =~ "Orchestrator mode"
+
+    # Codex: also mcp: true -> still shown (spec §7's mcp: false gating is
+    # wiring for a future backend like pi; both current backends show it).
+    html =
+      view
+      |> form("form", session: %{"backend" => "codex"})
+      |> render_change()
+
+    assert html =~ "Orchestrator mode"
+  end
 end

@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{AskUserQuestion, Cluster, HubRPC, Projects, SessionRunner, Sessions}
+  alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, Projects, SessionRunner, Sessions}
   alias OrcaHubWeb.{Markdown, MessageComponents}
   alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Todos}
 
@@ -29,6 +29,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:ok,
      socket
      |> assign(:session, session)
+     # Resolved once from session.backend (never nil/raises — legacy rows
+     # default to Claude's capabilities, spec §7). Templates branch on these
+     # fields, never on the backend name string.
+     |> assign(:capabilities, Backend.capabilities_for(session))
      |> assign(:session_node, session_node)
      |> assign(:session_node_name, session_node_name)
      |> assign(:remote_session, remote?)
@@ -125,12 +129,18 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   # Derive the pending AskUserQuestion from history and open the modal when the
   # session is waiting on the user. Resets wizard page/selection state.
+  #
+  # Capability-gated (spec §7/§6.3(5)): backends without `AskUserQuestion`
+  # (Codex) never emit that tool name, so `pending` is naturally always nil
+  # for them — but the modal-open flag is gated explicitly too, so the
+  # interactive wizard can never initiate off a foreign tool name.
   defp assign_ask_user_question(socket, status, messages) do
     pending = AskUserQuestion.pending_questions(messages)
+    aq_capable? = socket.assigns.capabilities.ask_user_question
 
     socket
     |> assign(:pending_questions, pending)
-    |> assign(:aq_open, status == :waiting && pending != nil)
+    |> assign(:aq_open, aq_capable? && status == :waiting && pending != nil)
     |> assign(:aq_page, 0)
     |> assign(:aq_selections, %{})
   end
@@ -145,10 +155,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # runner broadcasts :waiting before the tool_use event, so we re-check on both
   # status and event updates.
   defp sync_question_modal(socket) do
-    %{status: status, pending_questions: pending, aq_open: open?} = socket.assigns
+    %{status: status, pending_questions: pending, aq_open: open?, capabilities: caps} =
+      socket.assigns
 
     cond do
-      status == :waiting && pending && !open? ->
+      caps.ask_user_question && status == :waiting && pending && !open? ->
         socket
         |> assign(:aq_open, true)
         |> assign(:aq_page, 0)

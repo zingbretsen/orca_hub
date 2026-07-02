@@ -56,8 +56,29 @@ defmodule OrcaHub.Backend.Codex do
       resume: true,
       usage: false,
       system_prompt: :leading_message,
-      warmup_turn: false
+      warmup_turn: false,
+      # No `~/.claude/plans` / `EnterPlanMode`/`ExitPlanMode` tool pair, and
+      # no built-in `AskUserQuestion` tool (spec §6.3(4)/(5)) — both fall
+      # back to plain assistant text with no status tracking.
+      plan_mode: false,
+      ask_user_question: false
     }
+  end
+
+  # ── Models ───────────────────────────────────────────────────────────
+  # Codex model ids are passthrough strings — codex-cli 0.142.5 has no
+  # queryable model enum (spec §7). This is a small default list, not a
+  # hardcoded enum: the UI also offers free-text entry for any other id.
+  # `gpt-5.5` / `gpt-5.3-Codex-Spark` are spec §7's own example passthrough
+  # strings; `gpt-5-codex` is the well-known baseline Codex model id.
+
+  @impl true
+  def models do
+    [
+      {"gpt-5-codex", "GPT-5 Codex"},
+      {"gpt-5.3-Codex-Spark", "GPT-5.3 Codex Spark"},
+      {"gpt-5.5", "GPT-5.5"}
+    ]
   end
 
   # ── Spawn ────────────────────────────────────────────────────────────

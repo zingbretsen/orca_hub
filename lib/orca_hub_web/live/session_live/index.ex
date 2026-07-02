@@ -360,6 +360,17 @@ defmodule OrcaHubWeb.SessionLive.Index do
     {:noreply, reload_session_data(socket)}
   end
 
+  # New-session form's currently-selected backend, for scoping the model
+  # datalist and the MCP-dependent toggles (backend_abstraction_spec.md §7).
+  # Blank/nil (form not yet touched, or the backend picker is hidden behind
+  # a single-entry `available/0`) falls back to the changeset default.
+  defp selected_backend(form) do
+    case form[:backend].value do
+      v when v in [nil, ""] -> "claude"
+      v -> v
+    end
+  end
+
   defp schedule_undo_archive(socket, session_id) do
     socket = cancel_undo_timer(socket)
     timer = Process.send_after(self(), :clear_undo_archive, 5000)
