@@ -63,7 +63,8 @@ defmodule OrcaHub.Backend do
             system_prompt: system_prompt,
             warmup_turn: boolean,
             plan_mode: boolean,
-            ask_user_question: boolean
+            ask_user_question: boolean,
+            steering: boolean
           }
 
     defstruct streaming: true,
@@ -80,7 +81,14 @@ defmodule OrcaHub.Backend do
               # Claude-only today; Codex falls back to plain assistant text
               # for both (spec §6.3(4)/(5)).
               plan_mode: true,
-              ask_user_question: true
+              ask_user_question: true,
+              # spec §12.6: whether a message sent while a turn is in flight
+              # (:running) is delivered as an in-place STEER of that turn
+              # (`Backend.encode_steer_turn/2`) instead of the default
+              # interrupt-then-resend queueing every other backend uses.
+              # Defaults false so Claude/Codex need no code change here — only
+              # `Backend.Pi` overrides it (pi's native `steer` command).
+              steering: false
   end
 
   @typedoc "Long-lived streaming port vs. a per-turn one-shot process."
@@ -120,6 +128,16 @@ defmodule OrcaHub.Backend do
 
   @doc "Bytes to write to stdin to start/append a user turn (streaming backends)."
   @callback encode_user_turn(prompt :: String.t(), ctx) :: {iodata, ctx}
+
+  @doc """
+  OPTIONAL (spec §12.6). Bytes to write to stdin to STEER an in-flight turn
+  in place, instead of interrupting it. Only meaningful — and only ever
+  called — when `capabilities().steering` is true; `SessionRunner` checks
+  `function_exported?/3` before calling it, so a backend can flip
+  `steering: true` without a hard compile-time requirement to implement this.
+  `Backend.Pi` is the only implementor today (`{"type":"steer","message":…}`).
+  """
+  @callback encode_steer_turn(prompt :: String.t(), ctx) :: {iodata, ctx}
 
   @doc "Bytes for a graceful interrupt, or `:signal` to fall back to SIGINT."
   @callback encode_interrupt(req_id :: String.t(), ctx) :: iodata | :signal
@@ -184,6 +202,13 @@ defmodule OrcaHub.Backend do
   pickers, while `resolve/1`/changeset validation stay node-agnostic.
   """
   @callback installed?() :: boolean
+
+  # encode_steer_turn/2 is opt-in (spec §12.6) — only backends advertising
+  # `capabilities().steering: true` need to implement it; SessionRunner
+  # guards every call site with `function_exported?/3` rather than relying on
+  # this alone, but declaring it optional keeps every existing `@behaviour
+  # OrcaHub.Backend` adopter (Claude, Codex) compiling without a stub clause.
+  @optional_callbacks encode_steer_turn: 2
 
   @doc """
   Resolves a backend identifier (the `sessions.backend` DB column value) to

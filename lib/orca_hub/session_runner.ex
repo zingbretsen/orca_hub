@@ -309,26 +309,37 @@ defmodule OrcaHub.SessionRunner do
 
   # ── :running state ──────────────────────────────────────────────────
 
-  # Streaming: a new message while a turn is in flight queues the prompt and
-  # interrupts the current turn via a control_request (NOT SIGINT — that would
-  # kill the long-lived process). The queued prompt is flushed to the same stdin
-  # when the interrupt's `result` arrives. During warm-up we don't interrupt;
-  # the warm-up turn finishes and the queue (incl. this prompt) is flushed then.
+  # Streaming: a new message while a turn is in flight. Two behaviors,
+  # branched on the backend's `steering` capability (spec §12.6):
+  #
+  #   - Steering-capable (pi): STEER the running turn in place via
+  #     `Backend.encode_steer_turn/2` — the CLI itself delivers it after the
+  #     current tool calls, before the next LLM call. The turn is never
+  #     interrupted and no pending_prompts bookkeeping is needed; the backend
+  #     surfaces queue state itself (normalize/2's `queue_update` handling).
+  #   - Default (Claude/Codex): queue the prompt and interrupt the current
+  #     turn via a control_request (NOT SIGINT — that would kill the
+  #     long-lived process). The queued prompt is flushed to the same stdin
+  #     when the interrupt's `result` arrives.
+  #
+  # During warm-up we never steer or interrupt; the warm-up turn finishes and
+  # the queue (incl. this prompt) is flushed then. Steering-capable backends
+  # never warm up in practice (capabilities.warmup_turn is false everywhere
+  # steering is true today), but the guard is kept for symmetry.
   def running({:call, from}, {:send_message, prompt}, %{engine: :streaming, port: port} = data)
       when not is_nil(port) do
     user_event = make_user_event(prompt)
     persist_message(data, user_event)
     broadcast(data.session_id, {:event, user_event})
+    data = %{data | messages: data.messages ++ [user_event]}
 
-    data = %{
-      data
-      | pending_prompts: data.pending_prompts ++ [prompt],
-        messages: data.messages ++ [user_event]
-    }
-
-    data = if data.warming_up, do: data, else: send_control_interrupt(data)
-
-    {:keep_state, data, [{:reply, from, :ok}]}
+    if not data.warming_up and steerable?(data) do
+      {:keep_state, write_steer_turn(data, prompt), [{:reply, from, :ok}]}
+    else
+      data = %{data | pending_prompts: data.pending_prompts ++ [prompt]}
+      data = if data.warming_up, do: data, else: send_control_interrupt(data)
+      {:keep_state, data, [{:reply, from, :ok}]}
+    end
   end
 
   def running({:call, from}, {:send_message, prompt}, %{port: port} = data)
@@ -1156,6 +1167,21 @@ defmodule OrcaHub.SessionRunner do
     flush_pending_writes(ctx)
   end
 
+  # spec §12.6 — whether the current backend supports mid-turn steering
+  # (capability-gated AND actually implements the optional
+  # `encode_steer_turn/2` callback, so a backend that flips `steering: true`
+  # without implementing it safely falls back to the default
+  # interrupt-then-resend path instead of raising UndefinedFunctionError).
+  defp steerable?(%{backend: backend}) do
+    backend.capabilities().steering and function_exported?(backend, :encode_steer_turn, 2)
+  end
+
+  defp write_steer_turn(%{port: port, backend: backend} = data, prompt) do
+    {iodata, ctx} = backend.encode_steer_turn(prompt, data)
+    Port.command(port, iodata)
+    flush_pending_writes(ctx)
+  end
+
   defp write_warmup_turn(data), do: write_user_turn(data, @warmup_prompt)
 
   # NDJSON framing for a user turn over stdin. Public for testing — delegates
@@ -1298,6 +1324,19 @@ defmodule OrcaHub.SessionRunner do
       %{"type" => "result"} -> %{data | turn_result: :warmup_done}
       _ -> data
     end
+  end
+
+  # spec §12.6 — pi's steering/follow-up queue changed. Broadcast-only, like
+  # the "status"/"compacting" clause below: ephemeral live state (what's
+  # currently queued for the in-flight turn), not a feed entry — persisting
+  # it would spam message history since it fires on every queue change.
+  # SessionLive.Show holds the latest snapshot in a transient assign.
+  defp handle_stream_event(
+         %{"type" => "system", "subtype" => "queue_update", "steering" => steering} = event,
+         data
+       ) do
+    broadcast(data.session_id, {:queue_update, steering, event["follow_up"] || []})
+    data
   end
 
   defp handle_stream_event(

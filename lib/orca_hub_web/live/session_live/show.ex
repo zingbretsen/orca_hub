@@ -39,6 +39,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:cluster_nodes, Cluster.node_info())
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
+     # spec §12.6 — latest pending steer/follow-up queue (pi only; stays
+     # empty and unused for backends without `capabilities.steering`).
+     # Transient live state, not persisted — refreshed by the runner's
+     # {:queue_update, ...} broadcast (SessionRunner's "queue_update"
+     # system-event clause), never carried in @messages.
+     |> assign(:pi_queue, %{steering: [], follow_up: []})
      |> assign(
        :page_title,
        session.title || (session.project && session.project.name) || session.directory
@@ -1161,6 +1167,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
     socket = handle_todo_events(socket, event)
     socket = socket |> refresh_pending_questions() |> sync_question_modal()
     {:noreply, socket}
+  end
+
+  # spec §12.6 — pi's pending steer/follow-up queue changed. Transient
+  # display state only (see the :pi_queue assign in mount/2) — never touches
+  # @messages.
+  @impl true
+  def handle_info({:queue_update, steering, follow_up}, socket) do
+    {:noreply, assign(socket, :pi_queue, %{steering: steering, follow_up: follow_up})}
   end
 
   @impl true

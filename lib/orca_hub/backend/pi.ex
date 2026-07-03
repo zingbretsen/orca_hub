@@ -109,7 +109,11 @@ defmodule OrcaHub.Backend.Pi do
       # No `~/.claude/plans` / EnterPlanMode/ExitPlanMode tool pair.
       plan_mode: false,
       # No built-in AskUserQuestion tool.
-      ask_user_question: false
+      ask_user_question: false,
+      # spec §12.6: pi's native `steer` command delivers a mid-turn message
+      # in place (after the current tool calls, before the next LLM call)
+      # instead of interrupting the running turn — see encode_steer_turn/2.
+      steering: true
     }
   end
 
@@ -268,6 +272,19 @@ defmodule OrcaHub.Backend.Pi do
     {Jason.encode!(%{"type" => "prompt", "message" => prompt}) <> "\n", ctx}
   end
 
+  # spec §12.6 — pi's native mid-turn steering command (docs/rpc.md's `steer`,
+  # NOT `prompt` + `streamingBehavior`, which is the alternative the docs
+  # offer but which this adapter doesn't use). Delivered by pi after the
+  # in-flight assistant turn finishes its current tool calls, before the next
+  # LLM call — the turn keeps running, unlike Claude/Codex's
+  # interrupt-then-resend. Only called by SessionRunner while :running
+  # (capabilities().steering: true gates it) — never at open/idle, so no
+  # handshake/ordering concerns beyond what encode_user_turn/2 already has.
+  @impl true
+  def encode_steer_turn(prompt, ctx) do
+    {Jason.encode!(%{"type" => "steer", "message" => prompt}) <> "\n", ctx}
+  end
+
   @impl true
   def encode_interrupt(_req_id, %{engine: :one_shot}), do: :signal
   def encode_interrupt(_req_id, _ctx), do: Jason.encode!(%{"type" => "abort"}) <> "\n"
@@ -300,6 +317,16 @@ defmodule OrcaHub.Backend.Pi do
   def normalize(%{"type" => "response", "command" => "prompt", "success" => false} = resp, ctx) do
     message = resp["error"] || "pi rejected the prompt"
     {[%{"type" => "result", "is_error" => true, "result" => message}], ctx}
+  end
+
+  # Defensive, spec §12.6, mirrors the "prompt" rejection clause above — a
+  # rejected `steer` (e.g. steering was disabled) must NOT synthesize a
+  # `result` event (that would end the still-running turn); surface it as a
+  # non-terminal persisted system note instead so it's visible but the turn
+  # keeps going.
+  def normalize(%{"type" => "response", "command" => "steer", "success" => false} = resp, ctx) do
+    message = resp["error"] || "pi rejected the steer message"
+    {[%{"type" => "system", "subtype" => "steer_failed", "message" => message}], ctx}
   end
 
   # Every other command response (abort ack, a get_state failure, …) — no
@@ -339,12 +366,55 @@ defmodule OrcaHub.Backend.Pi do
     {[event], %{ctx | backend_state: bs}}
   end
 
+  # spec §12.6 — pending steer/follow-up queue changed. Synthesized as a
+  # `system`/`queue_update` event: SessionRunner special-cases this exact
+  # subtype (mirroring the pre-existing "system"/"status" Claude-compacting
+  # clause) to broadcast it WITHOUT persisting to message history — it's
+  # ephemeral live state (what's currently queued), not a feed entry, and
+  # fires every time the queue changes so persisting it would spam the feed.
+  def normalize(%{"type" => "queue_update"} = ev, ctx) do
+    event = %{
+      "type" => "system",
+      "subtype" => "queue_update",
+      "steering" => ev["steering"] || [],
+      "follow_up" => ev["followUp"] || []
+    }
+
+    {[event], ctx}
+  end
+
+  # spec §12.6 — compaction lifecycle. Unlike queue_update these ARE
+  # persisted feed events (falls through to the generic "system" handling in
+  # SessionRunner, same as the synthesized "init" event) — a one-off
+  # occurrence worth keeping in history, rendered via MessageComponents'
+  # existing system_message/1 path.
+  def normalize(%{"type" => "compaction_start", "reason" => reason}, ctx) do
+    {[%{"type" => "system", "subtype" => "compaction_start", "reason" => reason}], ctx}
+  end
+
+  def normalize(%{"type" => "compaction_end"} = ev, ctx) do
+    result = ev["result"] || %{}
+
+    event =
+      %{
+        "type" => "system",
+        "subtype" => "compaction_end",
+        "reason" => ev["reason"],
+        "aborted" => ev["aborted"] == true
+      }
+      |> put_if_present("tokens_before", result["tokensBefore"])
+      |> put_if_present("estimated_tokens_after", result["estimatedTokensAfter"])
+      |> put_if_present("error_message", ev["errorMessage"])
+
+    {[event], ctx}
+  end
+
   # Deltas and everything else (turn_start/turn_end, message_start,
-  # message_update, tool_execution_start/update, queue_update, compaction_*,
-  # auto_retry_*, extension_error, …) — drop rather than emit a foreign shape
-  # (spec §3.3 invariant). turn_end/agent_end embed the same assistant/tool
-  # content as message_end/tool_execution_end already emitted from, so
-  # re-emitting here would duplicate the feed.
+  # message_update, tool_execution_start/update, auto_retry_*,
+  # extension_error, …) — drop rather than emit a foreign shape (spec §3.3
+  # invariant). turn_end/agent_end embed the same assistant/tool content as
+  # message_end/tool_execution_end already emitted from, so re-emitting here
+  # would duplicate the feed.
   def normalize(_frame, ctx), do: {[], ctx}
 
   defp system_init_event(sid),

@@ -490,15 +490,55 @@ defmodule OrcaHubWeb.MessageComponents do
   attr :msg, :map, required: true
 
   defp system_message(assigns) do
-    assigns = assign(assigns, :subtype, assigns.msg["subtype"])
+    assigns = assign(assigns, :label, system_message_label(assigns.msg))
 
     ~H"""
     <div class="flex items-center gap-1.5 text-xs opacity-40 italic py-1">
       <.icon name="hero-cog-6-tooth-micro" class="size-3" />
-      {@subtype}
+      {@label}
     </div>
     """
   end
+
+  # spec §12.6 — pi's compaction_start/compaction_end normalize onto this
+  # same generic "system" rendering path (no new component), with a couple of
+  # friendlier labels for the subtypes that carry extra data worth surfacing;
+  # every other subtype (incl. "init") falls back to the raw subtype string,
+  # unchanged from before.
+  defp system_message_label(%{"subtype" => "compaction_start"} = msg) do
+    "Compacting context" <> reason_suffix(msg["reason"])
+  end
+
+  defp system_message_label(%{"subtype" => "compaction_end", "aborted" => true}) do
+    "Compaction aborted"
+  end
+
+  # pi's own errorMessage is often already self-describing (live-verified:
+  # "Compaction failed: Nothing to compact (session too small)") — only add
+  # our own "Compaction failed:" prefix when the message doesn't already say
+  # so, to avoid a stuttering "Compaction failed: Compaction failed: …".
+  defp system_message_label(%{"subtype" => "compaction_end", "error_message" => message})
+       when is_binary(message) do
+    if String.starts_with?(String.downcase(message), "compaction"),
+      do: message,
+      else: "Compaction failed: #{message}"
+  end
+
+  defp system_message_label(%{"subtype" => "compaction_end"} = msg) do
+    "Compacted context" <> token_suffix(msg)
+  end
+
+  defp system_message_label(%{"subtype" => subtype}), do: subtype
+
+  defp reason_suffix(reason) when is_binary(reason), do: " (#{reason})"
+  defp reason_suffix(_), do: ""
+
+  defp token_suffix(%{"tokens_before" => before, "estimated_tokens_after" => after_})
+       when is_integer(before) and is_integer(after_) do
+    " (#{before} → #{after_} tokens)"
+  end
+
+  defp token_suffix(_), do: ""
 
   attr :msg, :map, required: true
 
