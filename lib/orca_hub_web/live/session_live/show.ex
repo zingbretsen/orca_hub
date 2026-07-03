@@ -77,6 +77,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:show_heartbeat_modal, false)
      |> assign(:heartbeat_info, HubRPC.get_heartbeat(id))
      |> assign_ask_user_question(runner_state.status, runner_state.messages)
+     # pi's extension-UI reply loop (spec §12.3): reconstructed purely from
+     # message history (a "pi_ui_request" with no later matching
+     # "pi_ui_response") rather than tracked as separate runner state, so a
+     # page reload — even against a dead runner falling back to
+     # HubRPC.list_messages/1 below — still shows the pending card. Kept
+     # independent of the AskUserQuestion wizard's status/aq_open dance:
+     # pi's dialog blocks the port directly, so the session status stays
+     # "running" the whole time (no "waiting" transition to key off).
+     |> assign(:pending_ui_request, pending_ui_request_from_messages(runner_state.messages))
      |> load_session_todos()
      |> load_session_commits()
      |> allow_upload(:image,
@@ -181,6 +190,39 @@ defmodule OrcaHubWeb.SessionLive.Show do
       %{questions: questions} -> questions
       _ -> []
     end
+  end
+
+  # -- pi extension-UI dialog helpers (spec §12.3) --
+
+  defp piui_payload("confirm", value), do: %{"confirmed" => value in ["true", "Yes", "yes"]}
+  defp piui_payload(_select_or_input, value), do: %{"value" => value}
+
+  defp handle_pi_ui_events(socket, %{"type" => "pi_ui_request"} = event),
+    do: assign(socket, :pending_ui_request, event)
+
+  defp handle_pi_ui_events(socket, %{"type" => "pi_ui_response"}),
+    do: assign(socket, :pending_ui_request, nil)
+
+  defp handle_pi_ui_events(socket, _event), do: socket
+
+  # Reconstructs the pending pi extension-UI dialog (if any) from message
+  # history: the most recent "pi_ui_request" whose id has no later matching
+  # "pi_ui_response". Used at mount so a page reload — including against a
+  # dead runner, whose fallback message source is HubRPC.list_messages/1 —
+  # still shows the card.
+  defp pending_ui_request_from_messages(messages) do
+    responded_ids =
+      messages
+      |> Enum.filter(&(&1["type"] == "pi_ui_response"))
+      |> Enum.map(& &1["id"])
+      |> MapSet.new()
+
+    messages
+    |> Enum.reverse()
+    |> Enum.find(fn
+      %{"type" => "pi_ui_request", "id" => id} -> not MapSet.member?(responded_ids, id)
+      _ -> false
+    end)
   end
 
   @impl true
@@ -478,6 +520,44 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("aq_cancel", _params, socket) do
     {:noreply, assign(socket, :aq_open, false)}
+  end
+
+  # pi extension-UI dialog events (spec §12.3 — the pi analogue of the
+  # aq_* handlers above, but answering through SessionRunner.answer_ui_request/3
+  # — a direct port write of `extension_ui_response` — instead of a plain
+  # chat message, since that's the wire protocol pi's blocked `ctx.ui.select`/
+  # `ctx.ui.input` call is actually waiting on). Fired either by clicking one
+  # of the option buttons (`phx-value-*` attrs, all flat string params) or by
+  # submitting the free-form text form (same param shape, "value" from the
+  # text input). Clears `:pending_ui_request` optimistically — the
+  # authoritative clear still arrives via the runner's "pi_ui_response"
+  # broadcast (handle_pi_ui_events/2), so a mismatched/late click is harmless.
+  def handle_event(
+        "piui_answer",
+        %{"request_id" => request_id, "method" => method, "value" => value},
+        socket
+      ) do
+    payload = piui_payload(method, value)
+
+    Cluster.answer_ui_request(
+      socket.assigns.session_node,
+      socket.assigns.session.id,
+      request_id,
+      payload
+    )
+
+    {:noreply, assign(socket, :pending_ui_request, nil)}
+  end
+
+  def handle_event("piui_cancel", %{"request_id" => request_id}, socket) do
+    Cluster.answer_ui_request(
+      socket.assigns.session_node,
+      socket.assigns.session.id,
+      request_id,
+      %{"cancelled" => true}
+    )
+
+    {:noreply, assign(socket, :pending_ui_request, nil)}
   end
 
   def handle_event("aq_submit", _params, socket) do
@@ -1159,6 +1239,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     socket = assign(socket, :messages, socket.assigns.messages ++ [event])
     socket = handle_plan_events(socket, event)
     socket = handle_todo_events(socket, event)
+    socket = handle_pi_ui_events(socket, event)
     socket = socket |> refresh_pending_questions() |> sync_question_modal()
     {:noreply, socket}
   end

@@ -209,6 +209,16 @@ defmodule OrcaHub.Cluster do
   def update_backend(n, session_id, backend),
     do: rpc(n, SessionRunner, :update_backend, [session_id, backend])
 
+  # Answers a backend-native mid-turn UI dialog (pi's extension-UI reply
+  # loop — "pi backend groundwork" slice). Mirrors update_backend/3's plain
+  # RPC-through pattern (no ensure-started dance like send_message/3: a
+  # dialog can only be pending on an ALREADY-running turn, so a dead/restarted
+  # runner has nothing to answer — SessionRunner.answer_ui_request/3 returns
+  # {:error, :not_running} in every non-:running state, including via a
+  # freshly-started runner that never saw the dialog).
+  def answer_ui_request(n, session_id, request_id, payload),
+    do: rpc(n, SessionRunner, :answer_ui_request, [session_id, request_id, payload])
+
   # -------------------------------------------------------------------
   # Project queries
   # -------------------------------------------------------------------

@@ -129,6 +129,84 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
     assert Enum.map(state.messages, & &1["type"]) |> Enum.member?("result")
   end
 
+  test "extension-UI reply loop: a dialog request answered via answer_ui_request/3 completes the turn",
+       %{session: session} do
+    assert {:ok, _pid} = SessionSupervisor.start_session(session.id)
+    assert SessionRunner.send_message(session.id, "ask a question") == :ok
+
+    # The stub blocks mid-turn on the extension_ui_response — wait for the
+    # normalized "pi_ui_request" event (Backend.Pi.handle_peer_request/2) to
+    # land before answering, exactly like a real user would only see (and
+    # only be able to answer) the dialog once it's actually pending.
+    state = wait_until_message(session.id, "pi_ui_request")
+    assert state.status == :running
+
+    ui_request = Enum.find(state.messages, &(&1["type"] == "pi_ui_request"))
+    assert ui_request["id"] == "ui-req-1"
+    assert ui_request["method"] == "select"
+    assert ui_request["options"] == ["Red", "Blue"]
+
+    assert SessionRunner.answer_ui_request(session.id, "ui-req-1", %{"value" => "Blue"}) == :ok
+
+    final = wait_until_terminal(session.id)
+    assert final.status == :idle
+
+    # The answer round-tripped through the port and back: the stub's
+    # tool_result and follow-up assistant text both reflect "Blue".
+    tool_results = tool_blocks(final.messages, "user", "tool_result")
+    question_result = Enum.find(tool_results, &(&1["tool_use_id"] == "call-question-1"))
+    assert question_result["content"] == [%{"type" => "text", "text" => "User answered: Blue"}]
+
+    texts =
+      final.messages
+      |> Enum.filter(&(&1["type"] == "assistant"))
+      |> Enum.flat_map(&get_in(&1, ["message", "content"]))
+      |> Enum.filter(&(&1["type"] == "text"))
+      |> Enum.map(& &1["text"])
+
+    assert "You picked Blue." in texts
+
+    # A confirmation was persisted to the feed and the pending marker cleared.
+    ui_response = Enum.find(final.messages, &(&1["type"] == "pi_ui_response"))
+    assert ui_response["id"] == "ui-req-1"
+    assert ui_response["answer"] == %{"value" => "Blue"}
+
+    # A stale/duplicate answer for the same (now-resolved) request id no-ops
+    # rather than writing anything else to a port that's since moved on.
+    assert SessionRunner.answer_ui_request(session.id, "ui-req-1", %{"value" => "Red"}) ==
+             {:error, :not_running}
+  end
+
+  test "answer_ui_request/3 for an unknown request id no-ops while a DIFFERENT turn is running",
+       %{session: session} do
+    assert {:ok, _pid} = SessionSupervisor.start_session(session.id)
+    assert SessionRunner.send_message(session.id, "say hi") == :ok
+
+    assert SessionRunner.answer_ui_request(session.id, "never-requested", %{"value" => "x"}) ==
+             {:error, :not_pending}
+
+    wait_until_terminal(session.id)
+  end
+
+  test "session stats: a pi_session_stats event is appended after each completed turn",
+       %{session: session} do
+    assert {:ok, _pid} = SessionSupervisor.start_session(session.id)
+    assert SessionRunner.send_message(session.id, "say hi") == :ok
+
+    wait_until_terminal(session.id)
+    # The get_session_stats round trip is written the moment agent_end is
+    # normalized but its response is a separate async port message — it can
+    # (and in practice usually does) arrive after the turn has already gone
+    # :idle, exercising the idle(:info, {port, {:data, raw}}, ...) fallback
+    # added alongside this feature so the response isn't silently dropped.
+    state = wait_until_message(session.id, "pi_session_stats")
+
+    stats = Enum.find(state.messages, &(&1["type"] == "pi_session_stats"))
+    assert stats["tokens"]["total"] == 162
+    assert_in_delta stats["cost"], 0.00015, 0.0000001
+    assert stats["context_usage"]["percent"] == 1
+  end
+
   test "a spawn failure lands as a cli_error card instead of crashing the runner", %{
     session: session
   } do
@@ -154,6 +232,25 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
     |> Enum.filter(&(&1["type"] == msg_type))
     |> Enum.flat_map(&get_in(&1, ["message", "content"]))
     |> Enum.filter(&(&1["type"] == block_type))
+  end
+
+  defp wait_until_message(session_id, type, attempts \\ 100) do
+    state = SessionRunner.get_state(session_id)
+
+    cond do
+      Enum.any?(state.messages, &(&1["type"] == type)) ->
+        state
+
+      attempts <= 0 ->
+        flunk(
+          "session #{session_id} never received a #{inspect(type)} message; " <>
+            "last status=#{inspect(state.status)}, messages=#{inspect(state.messages)}"
+        )
+
+      true ->
+        Process.sleep(50)
+        wait_until_message(session_id, type, attempts - 1)
+    end
   end
 
   defp wait_until_terminal(session_id, attempts \\ 100) do

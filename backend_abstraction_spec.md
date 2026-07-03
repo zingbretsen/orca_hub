@@ -1042,7 +1042,8 @@ exists (one key: `:agent_start_ms`).
 | system_prompt | `:flag` (`--append-system-prompt`) |
 | warmup_turn | ❌ (no handshake of any kind) |
 | plan_mode | ❌ |
-| ask_user_question | ❌ |
+| ask_user_question | ✅ (as of the "pi backend groundwork" slice, §12.3 — via `priv/pi/orca.ts`'s `question` tool + the extension-UI reply loop, not Claude's built-in tool) |
+| session_stats | ✅ (§12.3 — `get_session_stats`; pi-only, distinct from `usage`) |
 
 Also absent: permission prompts/sandboxing (runs with spawning user's perms —
 same posture as our `--dangerously-skip-permissions` Claude usage), sub-agents.
@@ -1051,3 +1052,183 @@ All capability-gated by §3.1/§7.
 The MCP gap remains the one real cost: pi sessions can't call orca tools
 (send_message_to_session etc.) until an extension exists — accepted as a v1
 gap (§11).
+
+### 12.3 "pi backend groundwork" slice (IMPLEMENTED — extension-UI reply loop, `priv/pi/orca.ts`, session stats)
+
+Three additions on top of §12.2's adapter, landed together, all pi-only.
+**Live-verified against the real 0.80.3 binary** (not just the stub) — see
+the live-smoke evidence below; every payload shape matched
+`docs/rpc.md`/`docs/extensions.md` exactly, no deviations found.
+
+**1. Extension-UI reply loop.** pi extensions can block mid-turn on user
+input via `ctx.ui.select`/`confirm`/`input`/`editor`, which surface as a
+blocking `extension_ui_request` on stdout (has BOTH `id` and `method`, so
+the existing peer-request dispatch in `session_runner.ex`'s `route_frame/2`
+already routes it to `handle_peer_request/2` — no new runner message-routing
+code was needed). `Backend.Pi.handle_peer_request/2` now, for the four
+dialog methods, does NOT reply immediately (the pre-existing behavior was an
+instant auto-`cancelled:true` — replaced): it stashes `%{id, method}` in
+`backend_state.pending_ui_request` and emits a new normalized event,
+`%{"type" => "pi_ui_request", "id", "method", "title", "message", "options",
+"placeholder", "prefill"}` — a genuinely new event type (same posture as the
+pre-existing `cli_error` type; §3.3's "no foreign shapes" rule is about not
+misusing an *existing* Claude type, not a ban on new ones). Deliberately
+**not** force-fit into Claude's `AskUserQuestion` tool_use/tool_result shape:
+pi's answer travels back as a direct `extension_ui_response` port write, not
+a plain chat turn, so conflating the two shapes would make the LiveView's
+answer path ambiguous about which write mechanism to use.
+
+The answer half: `SessionRunner.answer_ui_request/3` (new public API,
+`GenStatem.call`) — allowed **only in `:running`**, since the dialog blocks
+the CURRENT turn, so it can never be pending in `:ready`/`:idle`/`:error`
+(those states reply `{:error, :not_running}`). It dispatches through a new
+`OrcaHub.Backend.encode_ui_response/4` function (NOT the bare
+`backend.encode_ui_response/3` — that would raise for Claude/Codex) to a new
+**optional** behaviour callback, `@callback encode_ui_response(request_id,
+payload, ctx) :: {:ok, iodata, ctx} | :noop` (`@optional_callbacks
+encode_ui_response: 3` — Claude/Codex implement nothing, the dispatcher
+returns `:noop` for them via `function_exported?/3`).
+`Backend.Pi.encode_ui_response/3` validates `request_id` against the SAME
+`pending_ui_request` bookkeeping (ignoring unknown/already-answered ids per
+spec) and writes `{"type":"extension_ui_response","id":…, …payload}` to the
+port. On success the runner persists/broadcasts a `pi_ui_response` event and
+clears the pending marker.
+
+**Keyed purely on `request_id`, never on "a tool_use is in flight"** — a
+FUTURE extension (e.g. plan-mode popping a dialog after `agent_end` with no
+tool call running at all) flows through the IDENTICAL loop
+(`handle_peer_request/2` → `pi_ui_request` event →
+`SessionRunner.answer_ui_request/3` → `encode_ui_response/3`) with zero new
+runner code — only that extension's own request/response field shapes need
+handling, and the current implementation already passes through whatever
+`title`/`message`/`options`/`placeholder`/`prefill` the request carries.
+
+`SessionLive.Show` renders `pi_ui_request` via a small dedicated modal
+(`session_live/show.html.heex`, gated on `@capabilities.ask_user_question &&
+@pending_ui_request` — independent of `@status`, since pi's dialog blocks
+the port directly rather than going through Claude's
+synthetic-tool_result/"waiting" mechanism) and answers via two new events,
+`"piui_answer"`/`"piui_cancel"`, which call `Cluster.answer_ui_request/4` →
+`SessionRunner.answer_ui_request/3`. `@pending_ui_request` is reconstructed
+purely from message history (`pending_ui_request_from_messages/1`: the last
+`pi_ui_request` with no later matching `pi_ui_response`) — not tracked as
+separate runner state — so a page reload, even against a dead runner falling
+back to `HubRPC.list_messages/1`, still shows the pending card. `notify`
+(fire-and-forget) now surfaces as a passive `system`/`pi_notify` event
+instead of being silently dropped; the remaining fire-and-forget methods
+(`setStatus`/`setWidget`/`setTitle`/`set_editor_text` — TUI chrome concepts
+with no OrcaHub analogue) are still dropped.
+
+**Runner robustness fix found along the way (general, not pi-specific):**
+`SessionRunner`'s `:idle`/`:error` states had no `{port, {:data, raw}}`
+matcher — any port data arriving after a turn's `result` event (but before
+idle timeout) fell through to the generic `:info` catch-all and was
+SILENTLY DROPPED. This was latent but real: item 3 below (`get_session_stats`)
+writes its request the moment `agent_end` is normalized, but the response is
+a separate async port message that typically arrives AFTER the runner has
+already transitioned `:running` → `:idle` (both happen synchronously within
+one GenStatem message-handling pass, before another port message can be
+received). Fixed by factoring the decode+route logic into
+`process_port_data/2` and adding `idle`/`error` matchers for it (guarded
+`engine: :streaming`, since one-shot ports are already dead by the time
+`:idle` is entered). Backend-agnostic — benefits any backend with a
+late-arriving async write, not just pi.
+
+**2. `priv/pi/orca.ts`** — an OrcaHub-authored pi extension, loaded via
+`-e <path>` in `Backend.Pi.spawn_spec/2` (`common_args/1`), resolved through
+`Application.app_dir(:orca_hub, "priv/pi/orca.ts")` — NOT a literal
+repo-relative path — so it keeps working from an OTP release (`priv/` ships
+with the release by default; verified `Application.app_dir/2` resolves and
+`File.exists?/1` the file in both `mix test` and, by construction, a prod
+release). Registers a `question` tool mirroring Claude's built-in
+`AskUserQuestion` as closely as pi's RPC dialog primitives allow — pi's
+`ctx.ui.custom()` explicitly returns `undefined` in RPC mode
+(`docs/rpc.md`), so it's unusable; only `ctx.ui.select()` (options given →
+single choice) and `ctx.ui.input()` (no options → free text) actually work
+over the wire. Both dialogs pass a 10-minute `timeout`, delegating the
+"don't hang forever" requirement to pi's OWN agent-side timeout machinery
+(`docs/rpc.md`: "the agent-side will auto-resolve with a default value when
+the timeout expires") rather than building Elixir-side bookkeeping for it;
+on timeout (`select`/`input` resolve `undefined`) the tool returns a result
+saying the user didn't answer, `isError: false`. `Backend.Pi.normalize/2`'s
+`tool_execution_end` clause defensively clears any stale
+`backend_state.pending_ui_request` on every tool completion, since a
+timeout auto-resolves *inside* pi with no wire signal to the host at all —
+the only observable evidence is the blocked tool finishing.
+
+**3. Session stats.** `Backend.Pi.normalize/2`'s `agent_end` clause now also
+queues `{"type":"get_session_stats"}` onto `backend_state.pending_writes`
+(spec §3.2 — flushed by the same `route_frame/2` pass, right after the
+turn's synthesized `result` event). The response
+(`{"type":"response","command":"get_session_stats","success":true,"data":{tokens,cost,contextUsage}}`)
+is normalized into a new `pi_session_stats` event
+(`tokens`/`cost`/`context_usage`, field names passed through close to
+verbatim). Surfaced through a NEW `Capabilities.session_stats` boolean
+(`false` by default; `true` for pi only) — **deliberately NOT reusing
+`usage`**: `usage: true` gates the Claude-API OAuth quota panel backed by
+`OrcaHub.Claude.Usage` (a headless-account-quota fetch, entirely unrelated
+to session message history — see that module), which would be the WRONG
+data source wired up for a non-Claude backend. `pi_session_stats` renders
+inline in the message feed (`MessageComponents.pi_session_stats_message/1`)
+— tokens/cost/context% — right after each turn's own cost/duration card.
+
+**Live smoke (2026-07-03, real `pi` 0.80.3 binary, Fireworks
+`minimax-m2p7`, NOT the ExUnit stub):** a Python harness spawned
+`~/.local/bin/pi --mode rpc --session-dir <tmp> -e priv/pi/orca.ts` and sent
+"Use the question tool to ask me whether I prefer red or blue, then tell me
+my answer." The model called `question` with
+`{"question":"Do you prefer red or blue?","header":"Color Preference","options":[{"label":"Red","description":"…"},{"label":"Blue","description":"…"}]}`;
+pi emitted
+`{"type":"extension_ui_request","id":"80b3fa64-…","method":"select","title":"Color Preference: Do you prefer red or blue?","options":["Red — I prefer the color red","Blue — I prefer the color blue"],"timeout":600000}`
+— matching `handle_peer_request/2`'s `ui_request_event/1` shape exactly, no
+docs deviation. The harness answered
+`{"type":"extension_ui_response","id":"80b3fa64-…","value":"Blue — I prefer the color blue"}`;
+pi resumed with `tool_execution_end{… "content":[{"text":"User answered:
+Blue"}], "isError":false}` and a final assistant message reflecting the
+answer ("The user answered \"Blue\" to my question…"). `get_session_stats`
+returned real numbers:
+`tokens:{"input":7453,"output":136,"cacheRead":7329,"cacheWrite":0,"total":14918}`,
+`cost:0.00283884`,
+`contextUsage:{"tokens":7484,"contextWindow":196608,"percent":3.8…}` —
+exactly the field names `session_stats_event/1` expects.
+
+A second live run exercised interrupt-while-a-dialog-is-pending
+(`encode_interrupt/2` itself is untouched by this slice — still just sends
+`{"type":"abort"}`) and found a REAL gap, now fixed:
+`priv/pi/orca.ts`'s `question` tool originally ignored `execute`'s own
+`signal` (AbortSignal) parameter and passed only `{timeout:
+DIALOG_TIMEOUT_MS}` to `ctx.ui.select`/`ctx.ui.input`. Live-verified: with
+that first version, sending `{"type":"abort"}` while a `select` dialog was
+blocked produced NO further stdout at all — no `turn_end`, no `agent_end` —
+for 60+s (pi's `abort` cancels the agent/model loop, but a dialog already
+awaiting user input isn't tied to that cancellation unless the extension
+explicitly passes its own `signal`). Fixed by passing `{ signal, timeout:
+DIALOG_TIMEOUT_MS }` (the tool call's own `AbortSignal`) to both dialog
+calls. Re-verified live: `{"type":"abort"}` while pending now resolves the
+dialog (`choice === undefined`, same code path as a timeout — the tool
+returns "The user did not answer in time." and completes) and `turn_end`/
+`agent_end` fire immediately instead of hanging. This is the shape the
+"pi backend groundwork" reply loop needs for interrupt to actually work
+end-to-end, not just avoid crashing — a lesson worth carrying into any
+FUTURE extension that pops a dialog (e.g. plan-mode): always thread the
+handler's own abort signal into `ctx.ui.*` calls.
+
+**Test coverage:** `pi_test.exs` extended (dialog-method stashing +
+`pi_ui_request` event shape, `encode_ui_response/3` matching/unknown-id/no-
+pending cases, `tool_execution_end`'s defensive clear, `get_session_stats`
+request queuing + response normalization, capability values,
+`-e`/`Application.app_dir/2` spawn arg). `pi_stub_rpc.py` extended with an
+"ask a question" prompt scenario (emits the toolCall, blocks on stdin for
+the `extension_ui_response` exactly like the real binary, then completes)
+and a `get_session_stats` command handler; `pi_stub_integration_test.exs`
+gained three new tests: a full `SessionRunner`-driven extension-UI round
+trip via `answer_ui_request/3`, an unknown-request-id no-op while a
+different turn is running, and a `pi_session_stats` event landing via the
+new `idle(:info, {port, {:data, raw}})` fallback (deliberately polled for
+AFTER the turn already went `:idle`, to exercise the race window that
+motivated the runner robustness fix). `message_components_test.exs` gained
+rendering coverage for `pi_session_stats`/`pi_ui_response`/hidden
+`pi_ui_request`/`system pi_notify`. `backend_test.exs` and `show_test.exs`
+updated for the flipped `ask_user_question` capability and the new
+`session_stats` capability. Full suite: 390 tests, the same 1 pre-existing
+unrelated `TriggersTest` failure as every prior phase's baseline.

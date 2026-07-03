@@ -63,7 +63,8 @@ defmodule OrcaHub.Backend do
             system_prompt: system_prompt,
             warmup_turn: boolean,
             plan_mode: boolean,
-            ask_user_question: boolean
+            ask_user_question: boolean,
+            session_stats: boolean
           }
 
     defstruct streaming: true,
@@ -75,12 +76,26 @@ defmodule OrcaHub.Backend do
               warmup_turn: true,
               # Phase 3 (backend_abstraction_spec.md §7/§8): whether this
               # backend supports the `EnterPlanMode`/`ExitPlanMode` plan-mode
-              # tool pair, and whether it has a built-in `AskUserQuestion`
-              # tool the runner can track `waiting` status against. Both are
-              # Claude-only today; Codex falls back to plain assistant text
-              # for both (spec §6.3(4)/(5)).
+              # tool pair, and whether it has SOME mechanism for asking the
+              # user an interactive question mid-turn and tracking a
+              # `waiting`-ish status against it. Claude does this via its
+              # built-in `AskUserQuestion` tool; pi does it via the
+              # `question` tool in `priv/pi/orca.ts` + the extension-UI reply
+              # loop (`Backend.Pi.handle_peer_request/2` /
+              # `encode_ui_response/3`) — same capability flag, two different
+              # backend-specific mechanisms under it, gating the appropriate
+              # UI card either way (spec §12.3). Codex has neither.
               plan_mode: true,
-              ask_user_question: true
+              ask_user_question: true,
+              # pi-only (spec §12.3): whether this backend can report
+              # token/cost/context-window session stats on demand (pi's
+              # `get_session_stats` RPC command). Deliberately NOT the same
+              # flag as `usage` — `usage: true` gates the Claude-API quota
+              # panel backed by `OrcaHub.Claude.Usage`, which is the wrong
+              # data source for a non-Claude backend. `session_stats` gates a
+              # pi-appropriate per-session tokens/cost/context% display fed
+              # by the backend's own normalized `pi_session_stats` event.
+              session_stats: false
   end
 
   @typedoc "Long-lived streaming port vs. a per-turn one-shot process."
@@ -184,6 +199,28 @@ defmodule OrcaHub.Backend do
   pickers, while `resolve/1`/changeset validation stay node-agnostic.
   """
   @callback installed?() :: boolean
+
+  @doc """
+  OPTIONAL — encodes the user's answer to a backend-native mid-turn UI
+  dialog (pi's extension-UI reply loop; "pi backend groundwork" slice) into
+  bytes to write back to the port, keyed purely on `request_id` (NOT on any
+  in-flight tool_use — an extension can pop a dialog with no tool call
+  running at all, e.g. a future plan-mode extension).
+
+  Returns `{:ok, iodata, ctx}` on success (`iodata` already framed for the
+  wire; `ctx` has the pending-request bookkeeping cleared) or `:noop` when
+  `request_id` doesn't match a currently-pending request (unknown or
+  already-answered — callers must no-op rather than write anything).
+
+  Backends that never emit a mid-turn dialog request (Claude, Codex) don't
+  implement this callback at all — see `@optional_callbacks` below and the
+  `encode_ui_response/4` dispatcher, which returns `:noop` for any backend
+  lacking an implementation.
+  """
+  @callback encode_ui_response(request_id :: String.t(), payload :: map, ctx) ::
+              {:ok, iodata, ctx} | :noop
+
+  @optional_callbacks encode_ui_response: 3
 
   @doc """
   Resolves a backend identifier (the `sessions.backend` DB column value) to
@@ -309,4 +346,20 @@ defmodule OrcaHub.Backend do
   defp backend_string(%{backend: backend}), do: backend_string(backend)
   defp backend_string(nil), do: "claude"
   defp backend_string(backend) when is_binary(backend), do: backend
+
+  @doc """
+  Dispatches to `backend.encode_ui_response/3` when the backend implements
+  the optional callback, else returns `:noop`. `SessionRunner` calls this
+  instead of the bare `backend.encode_ui_response/3` so Claude/Codex sessions
+  answering a stray/impossible `answer_ui_request` call never hit
+  `UndefinedFunctionError`.
+  """
+  @spec encode_ui_response(module, String.t(), map, ctx) :: {:ok, iodata, ctx} | :noop
+  def encode_ui_response(backend, request_id, payload, ctx) do
+    if function_exported?(backend, :encode_ui_response, 3) do
+      backend.encode_ui_response(request_id, payload, ctx)
+    else
+      :noop
+    end
+  end
 end

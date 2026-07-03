@@ -47,16 +47,56 @@ defmodule OrcaHub.Backend.Pi do
       a harmless `willRetry` field and per-message `usage` gained a
       `cacheWrite1h` field — both ignored here.
 
+  ## "pi backend groundwork" slice (extension-UI reply loop, orca.ts, session stats)
+
+  Three additions on top of the Phase 4 adapter above, all still pi-only:
+
+    * **Extension-UI reply loop.** `handle_peer_request/2` stashes a
+      mid-turn `select`/`confirm`/`input`/`editor` dialog request
+      (`extension_ui_request`) as a NEW `pi_ui_request` event (spec §3.3 —
+      a custom type, same posture as the pre-existing `cli_error` type,
+      rather than force-fitting Claude's AskUserQuestion tool_use/tool_result
+      shape onto a fundamentally different wire mechanism) and tracks the
+      pending request (`id` + `method` only) in `backend_state`. The answer
+      travels back through `SessionRunner.answer_ui_request/3` (allowed
+      mid-turn — the dialog blocks the CURRENT turn) →
+      `Backend.encode_ui_response/4` → `encode_ui_response/3` below, which
+      validates the id against the SAME pending-request bookkeeping and
+      writes `extension_ui_response` directly to the port. Keyed purely on
+      `id` — never coupled to "a tool_use is in flight" — so a FUTURE
+      extension (e.g. plan-mode, popping a dialog after `agent_end` with no
+      tool call at all) flows through the identical loop with no new runner
+      code.
+    * **`priv/pi/orca.ts`** — loaded via `-e <path>` in `spawn_spec/2`
+      (`Application.app_dir/2`-resolved, so it also works from an OTP
+      release). Registers a `question` tool mirroring Claude's
+      AskUserQuestion as closely as pi's RPC dialog primitives allow:
+      `ctx.ui.select` for multiple-choice, `ctx.ui.input` for free-form
+      (pi's `ctx.ui.custom()` returns `undefined` in RPC mode, so it's
+      unusable here), both with a 10-minute dialog timeout so an unanswered
+      question auto-resolves instead of hanging the turn — pi's own timeout
+      machinery handles that (docs/rpc.md), not Elixir-side bookkeeping.
+    * **Session stats.** `get_session_stats` is queued (via
+      `backend_state.pending_writes`) every time `agent_end` fires, and its
+      response is normalized into a `pi_session_stats` event
+      (`tokens`/`cost`/`context_usage`, verbatim field names from pi's
+      response). Surfaced through a NEW `Capabilities.session_stats` flag
+      (`false` by default, `true` here) — deliberately NOT reusing `usage`,
+      which gates the Claude-API OAuth quota panel (`OrcaHub.Claude.Usage`),
+      the wrong data source for a non-Claude backend.
+
   ## Design (mirrors `Backend.Codex`'s structure, simpler FSM)
 
   Unlike Codex (mandatory `initialize`→`initialized`→`thread/start` handshake
   before any turn can start, tracked via `backend_state.phase` +
   `pending_requests` + `pending_prompt`), pi needs none of that: every
-  callback here is close to stateless. `backend_state` only ever holds
-  `:agent_start_ms` (wall-clock start of the in-flight agent run, stashed on
-  `agent_start` and read back at `agent_end` to synthesize `duration_ms` —
-  pi's own protocol has no elapsed-time field). No `pending_writes` are ever
-  queued (nothing here reacts to a response by writing more commands).
+  callback here is close to stateless. `backend_state` holds `:agent_start_ms`
+  (wall-clock start of the in-flight agent run, stashed on `agent_start` and
+  read back at `agent_end` to synthesize `duration_ms` — pi's own protocol
+  has no elapsed-time field) plus, as of the "pi backend groundwork" slice
+  below, `:pending_ui_request` (the currently-blocked extension-UI dialog, if
+  any) and a one-shot `:pending_writes` entry queued at `agent_end` to
+  request session stats.
 
   `normalize/2` treats `message_end{role:"assistant"}` as the sole source of
   assistant content (text/thinking/tool_use) and `tool_execution_end` as the
@@ -108,8 +148,18 @@ defmodule OrcaHub.Backend.Pi do
       warmup_turn: false,
       # No `~/.claude/plans` / EnterPlanMode/ExitPlanMode tool pair.
       plan_mode: false,
-      # No built-in AskUserQuestion tool.
-      ask_user_question: false
+      # "pi backend groundwork" slice: the `question` tool in
+      # priv/pi/orca.ts + the extension-UI reply loop
+      # (handle_peer_request/2 / encode_ui_response/3) give pi the same
+      # user-facing capability as Claude's built-in AskUserQuestion tool —
+      # asking an interactive question mid-turn — just via a different wire
+      # mechanism. The UI branches on this flag, not on which mechanism is
+      # underneath (spec §12.3).
+      ask_user_question: true,
+      # pi reports live token/cost/context-window stats via `get_session_stats`
+      # (spec §12.3) — surfaced through a pi-appropriate stats display, kept
+      # deliberately separate from `usage` (the Claude-API quota panel gate).
+      session_stats: true
     }
   end
 
@@ -214,7 +264,15 @@ defmodule OrcaHub.Backend.Pi do
     |> Kernel.++(["--session-dir", pi_session_dir(ctx)])
     |> maybe_add_session_id_arg(ctx[:claude_session_id])
     |> Kernel.++(["--append-system-prompt", system_prompt(ctx)])
+    |> Kernel.++(["-e", orca_extension_path()])
   end
+
+  # priv/pi/orca.ts — registers the `question` tool (spec §12.3). Resolved via
+  # Application.app_dir/2 (not a literal repo-relative path) so this keeps
+  # working from an OTP release, where `priv/` is copied alongside the app
+  # rather than living at the checkout path — `priv` files ship in releases
+  # by default, no extra release config needed.
+  defp orca_extension_path, do: Application.app_dir(:orca_hub, "priv/pi/orca.ts")
 
   defp maybe_add_model_arg(args, model) do
     case pi_model(model) do
@@ -302,8 +360,27 @@ defmodule OrcaHub.Backend.Pi do
     {[%{"type" => "result", "is_error" => true, "result" => message}], ctx}
   end
 
-  # Every other command response (abort ack, a get_state failure, …) — no
-  # feed event.
+  # get_session_stats reply (spec §12.3) — queued by the agent_end clause
+  # below via pending_writes, consumed here into a normalized stats event.
+  # `data` carries tokens{input,output,cacheRead,cacheWrite,total}, cost
+  # (USD), and contextUsage{tokens,contextWindow,percent} verbatim per
+  # docs/rpc.md — passed through with snake_case-ish key renaming only where
+  # it avoids exposing pi's camelCase straight into the UI layer.
+  def normalize(
+        %{
+          "type" => "response",
+          "command" => "get_session_stats",
+          "success" => true,
+          "data" => data
+        },
+        ctx
+      )
+      when is_map(data) do
+    {[session_stats_event(data)], ctx}
+  end
+
+  # Every other command response (abort ack, a get_state failure, a failed
+  # get_session_stats, …) — no feed event.
   def normalize(%{"type" => "response"}, ctx), do: {[], ctx}
 
   def normalize(%{"type" => "agent_start"}, ctx) do
@@ -330,12 +407,30 @@ defmodule OrcaHub.Backend.Pi do
       when is_binary(id) do
     content = get_in(ev, ["result", "content"]) || []
     is_error = ev["isError"] == true
-    {[tool_result_event(id, content, is_error)], ctx}
+
+    # Defensive: if a dialog request's own `timeout` (spec §12.3 — set by
+    # priv/pi/orca.ts) elapsed, pi auto-resolves it INTERNALLY (no
+    # extension_ui_response round-trip, no wire signal at all) — the only
+    # observable evidence is the tool that was blocked on it finishing. Clear
+    # any stale pending_ui_request now so a later encode_ui_response/3 call
+    # for that (already-moot) id correctly no-ops instead of writing a reply
+    # pi has already stopped listening for.
+    bs = Map.delete(ctx.backend_state, :pending_ui_request)
+    {[tool_result_event(id, content, is_error)], %{ctx | backend_state: bs}}
   end
 
   def normalize(%{"type" => "agent_end", "messages" => messages}, ctx) when is_list(messages) do
     event = agent_end_result(messages, ctx)
-    bs = Map.delete(ctx.backend_state, :agent_start_ms)
+
+    # Spec §12.3: after every completed turn, ask pi for token/cost/context
+    # stats. normalize/2 has no direct iodata slot for this — queue it onto
+    # backend_state.pending_writes (spec §3.2), flushed by the SAME
+    # route_frame/2 pass that called us, right after this event is handled.
+    bs =
+      ctx.backend_state
+      |> Map.delete(:agent_start_ms)
+      |> Map.put(:pending_writes, [get_session_stats_command()])
+
     {[event], %{ctx | backend_state: bs}}
   end
 
@@ -349,6 +444,22 @@ defmodule OrcaHub.Backend.Pi do
 
   defp system_init_event(sid),
     do: %{"type" => "system", "session_id" => sid, "subtype" => "init"}
+
+  defp get_session_stats_command, do: Jason.encode!(%{"type" => "get_session_stats"}) <> "\n"
+
+  # A custom (non-Claude-vocabulary) event type — same posture as the
+  # pre-existing "cli_error" type (spec §3.3's "emit nothing rather than a
+  # foreign shape" rule is about not misusing an EXISTING Claude type, not a
+  # ban on genuinely new ones). Rendered by MessageComponents' pi_session_stats
+  # case; gated in the UI by capabilities.session_stats.
+  defp session_stats_event(data) do
+    %{
+      "type" => "pi_session_stats",
+      "tokens" => data["tokens"],
+      "cost" => data["cost"],
+      "context_usage" => data["contextUsage"]
+    }
+  end
 
   defp assistant_event(blocks),
     do: %{"type" => "assistant", "message" => %{"content" => blocks}}
@@ -496,23 +607,84 @@ defmodule OrcaHub.Backend.Pi do
   end
 
   # ── Peer requests (extension UI protocol) ──────────────────────────────
-  # Shouldn't fire without extensions installed (v1 never loads any) — handled
-  # defensively per spec. Dialog methods (select/confirm/input/editor) block
-  # waiting for a response: reply `cancelled:true` so they never hang.
+  # "pi backend groundwork" slice, spec §12.3. Dialog methods
+  # (select/confirm/input/editor) — e.g. our own `question` tool
+  # (priv/pi/orca.ts) calling `ctx.ui.select`/`ctx.ui.input`, or a FUTURE
+  # extension (plan-mode) calling one with no tool_use in flight at all —
+  # block pi waiting for an `extension_ui_response`. We do NOT reply here:
+  # this is the mid-turn reply-loop's request half. The request is stashed
+  # in backend_state (keyed purely on `id`, per spec — never coupled to "a
+  # tool_use is in flight") so a LATER `encode_ui_response/3` call (driven by
+  # the user answering in the UI) can validate + write the actual reply.
+  # Normalized as a NEW event type (spec's "small new component" option,
+  # §3.3) rather than force-fit into Claude's AskUserQuestion tool_use/
+  # tool_result shape: pi's reply travels back over the wire as a direct
+  # `extension_ui_response` port write, not a plain chat turn like Claude's
+  # AskUserQuestion answer — conflating the two answer mechanisms under one
+  # message shape would make the LiveView's answer path ambiguous about
+  # which write path to use. `SessionLive.Show` renders this event via a
+  # dedicated modal/card, independent of the AskUserQuestion wizard.
+  #
   # Fire-and-forget methods (notify/setStatus/setWidget/setTitle/
   # set_editor_text) expect NO reply — sending one would be protocol noise.
+  # `notify` is surfaced as a passive `system`/`pi_notify` event so the user
+  # sees it in the feed; the rest (TUI chrome concepts with no OrcaHub
+  # analogue) are dropped.
 
   @impl true
-  def handle_peer_request(%{"id" => id, "method" => method}, ctx)
+  def handle_peer_request(%{"id" => id, "method" => method} = req, ctx)
       when method in @dialog_ui_methods do
-    reply =
-      Jason.encode!(%{"type" => "extension_ui_response", "id" => id, "cancelled" => true}) <>
-        "\n"
+    bs = Map.put(ctx.backend_state, :pending_ui_request, %{id: id, method: method})
+    {"", [ui_request_event(req)], %{ctx | backend_state: bs}}
+  end
 
-    {reply, [], ctx}
+  def handle_peer_request(%{"method" => "notify"} = req, ctx) do
+    event = %{
+      "type" => "system",
+      "subtype" => "pi_notify",
+      "message" => req["message"],
+      "notify_type" => req["notifyType"] || "info"
+    }
+
+    {"", [event], ctx}
   end
 
   def handle_peer_request(%{"method" => _fire_and_forget}, ctx), do: {"", [], ctx}
+
+  defp ui_request_event(req) do
+    %{
+      "type" => "pi_ui_request",
+      "id" => req["id"],
+      "method" => req["method"],
+      "title" => req["title"],
+      "message" => req["message"],
+      "options" => req["options"],
+      "placeholder" => req["placeholder"],
+      "prefill" => req["prefill"]
+    }
+  end
+
+  # ── Extension-UI reply loop: the answer half ────────────────────────────
+  # Called by SessionRunner.answer_ui_request/3 (a mid-turn-allowed GenStatem
+  # call — the dialog blocks the CURRENT turn, so the runner must be in
+  # :running when this fires) via the Backend.encode_ui_response/4
+  # dispatcher. Validates `request_id` against the SAME pending request
+  # `handle_peer_request/2` stashed above; an unknown or already-answered id
+  # (double submit, stale reload, a response for a request this backend_state
+  # was reset for — e.g. after a cold reopen) is a no-op rather than a wire
+  # write, per spec.
+  @impl true
+  def encode_ui_response(request_id, payload, ctx) do
+    case ctx.backend_state[:pending_ui_request] do
+      %{id: ^request_id} ->
+        bs = Map.delete(ctx.backend_state, :pending_ui_request)
+        body = Map.merge(%{"type" => "extension_ui_response", "id" => request_id}, payload)
+        {:ok, Jason.encode!(body) <> "\n", %{ctx | backend_state: bs}}
+
+      _ ->
+        :noop
+    end
+  end
 
   # ── Session id extraction ───────────────────────────────────────────────
 

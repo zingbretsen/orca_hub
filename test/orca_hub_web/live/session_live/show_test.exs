@@ -219,12 +219,30 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert :sys.get_state(view.pid).socket.assigns.capabilities.ask_user_question
     end
 
-    test "capabilities assign reflects ask_user_question: false for pi", %{
-      conn: conn,
-      pi_session: session
-    } do
+    test "capabilities assign reflects ask_user_question: true for pi ('pi backend groundwork' — pi's own question tool + extension-UI reply loop)",
+         %{
+           conn: conn,
+           pi_session: session
+         } do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
-      refute :sys.get_state(view.pid).socket.assigns.capabilities.ask_user_question
+      assert :sys.get_state(view.pid).socket.assigns.capabilities.ask_user_question
+    end
+  end
+
+  describe "session_stats capability — pi-only, distinct from usage" do
+    test "Claude session has session_stats: false", %{conn: conn, claude_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      refute :sys.get_state(view.pid).socket.assigns.capabilities.session_stats
+    end
+
+    test "Codex session has session_stats: false", %{conn: conn, codex_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      refute :sys.get_state(view.pid).socket.assigns.capabilities.session_stats
+    end
+
+    test "pi session has session_stats: true", %{conn: conn, pi_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assert :sys.get_state(view.pid).socket.assigns.capabilities.session_stats
     end
   end
 

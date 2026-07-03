@@ -72,7 +72,12 @@ defmodule OrcaHub.BackendTest do
       caps = Backend.capabilities_for("pi")
       assert caps.usage == false
       assert caps.plan_mode == false
-      assert caps.ask_user_question == false
+      # "pi backend groundwork" slice: pi asks interactive questions via its
+      # own `question` tool + extension-UI reply loop, not Claude's built-in
+      # AskUserQuestion tool — but the SAME capability flag gates both (the
+      # UI branches on the flag, not on the backend).
+      assert caps.ask_user_question == true
+      assert caps.session_stats == true
       assert caps.mcp == false
       assert caps.resume == true
       assert caps.streaming == true

@@ -1376,4 +1376,72 @@
     selections={@aq_selections}
     variant={:modal}
   />
+
+  <%!--
+    pi's extension-UI dialog card (spec §12.3) — the pi analogue of the
+    AskUserQuestion modal above, independent of it: pi's `question` tool
+    (priv/pi/orca.ts) blocks the turn directly on the wire rather than going
+    through Claude's synthetic-tool_result/"waiting"-status mechanism, so
+    this is gated purely on @pending_ui_request being present, not @status.
+    Answers post through "piui_answer"/"piui_cancel" (session_live/show.ex),
+    which write straight to the port via
+    SessionRunner.answer_ui_request/3 — NOT the plain-chat send_message path
+    Claude's aq_submit uses, since that's not the wire protocol pi's blocked
+    ctx.ui.select/ctx.ui.input call is waiting on.
+  --%>
+  <div :if={@capabilities.ask_user_question && @pending_ui_request} class="modal modal-open">
+    <div class="modal-box max-w-xl">
+      <div class="flex items-center gap-2 text-info">
+        <.icon name="hero-question-mark-circle" class="size-5" />
+        <span class="font-semibold">pi is asking a question</span>
+      </div>
+
+      <div class="mt-2">
+        <div class="font-medium">{@pending_ui_request["title"]}</div>
+        <div
+          :if={@pending_ui_request["message"] not in [nil, ""]}
+          class="text-sm text-base-content/70 mt-1"
+        >
+          {@pending_ui_request["message"]}
+        </div>
+      </div>
+
+      <div :if={@pending_ui_request["options"]} class="flex flex-col gap-2 mt-3">
+        <button
+          :for={opt <- @pending_ui_request["options"]}
+          type="button"
+          phx-click="piui_answer"
+          phx-value-request_id={@pending_ui_request["id"]}
+          phx-value-method={@pending_ui_request["method"]}
+          phx-value-value={opt}
+          class="text-left rounded-lg border border-base-300 p-3 transition-colors hover:border-base-content/30 hover:bg-base-200"
+        >
+          {opt}
+        </button>
+      </div>
+
+      <form :if={!@pending_ui_request["options"]} phx-submit="piui_answer" class="mt-3 flex gap-2">
+        <input type="hidden" name="request_id" value={@pending_ui_request["id"]} />
+        <input type="hidden" name="method" value={@pending_ui_request["method"]} />
+        <input
+          type="text"
+          name="value"
+          placeholder={@pending_ui_request["placeholder"] || "Type your answer..."}
+          class="input input-bordered input-sm flex-1"
+        />
+        <button type="submit" class="btn btn-sm btn-success">Send</button>
+      </form>
+
+      <div class="flex justify-end mt-3">
+        <button
+          type="button"
+          phx-click="piui_cancel"
+          phx-value-request_id={@pending_ui_request["id"]}
+          class="btn btn-ghost btn-sm"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
 </div>

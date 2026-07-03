@@ -137,4 +137,97 @@ defmodule OrcaHubWeb.MessageComponentsTest do
 
     refute html =~ "\"sleep\""
   end
+
+  describe "pi backend groundwork event types (spec §12.3)" do
+    test "pi_session_stats renders tokens/cost/context% instead of falling back to raw JSON" do
+      stats = %{
+        "type" => "pi_session_stats",
+        "tokens" => %{"input" => 50_000, "output" => 10_000, "cacheRead" => 0, "total" => 60_000},
+        "cost" => 0.45,
+        "context_usage" => %{"tokens" => 60_000, "contextWindow" => 200_000, "percent" => 30}
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [stats],
+          session_node: nil
+        })
+
+      assert html =~ "60000 tokens"
+      assert html =~ "$0.45"
+      assert html =~ "30% context"
+      refute html =~ "pi_session_stats"
+    end
+
+    test "pi_session_stats tolerates a missing context_usage (compaction just ran)" do
+      stats = %{
+        "type" => "pi_session_stats",
+        "tokens" => %{"total" => 100},
+        "cost" => 0.0,
+        "context_usage" => nil
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [stats],
+          session_node: nil
+        })
+
+      assert html =~ "100 tokens"
+      refute html =~ "context"
+    end
+
+    test "pi_ui_request is hidden from the feed (rendered separately as a live modal)" do
+      request = %{
+        "type" => "pi_ui_request",
+        "id" => "ui-req-1",
+        "method" => "select",
+        "title" => "Red or blue?",
+        "options" => ["Red", "Blue"]
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [request],
+          session_node: nil
+        })
+
+      assert html =~ ~r/^\s*$/
+      refute html =~ "Red or blue"
+    end
+
+    test "pi_ui_response renders the user's answer" do
+      response = %{
+        "type" => "pi_ui_response",
+        "id" => "ui-req-1",
+        "answer" => %{"value" => "Blue"}
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [response],
+          session_node: nil
+        })
+
+      assert html =~ "You answered: Blue"
+    end
+
+    test "system/pi_notify (a fire-and-forget extension-UI method) shows its message" do
+      notify = %{
+        "type" => "system",
+        "subtype" => "pi_notify",
+        "message" => "Command blocked by user",
+        "notify_type" => "warning"
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [notify],
+          session_node: nil
+        })
+
+      assert html =~ "pi_notify"
+      assert html =~ "Command blocked by user"
+    end
+  end
 end

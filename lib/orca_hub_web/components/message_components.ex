@@ -75,6 +75,10 @@ defmodule OrcaHubWeb.MessageComponents do
               <.system_message msg={msg} />
             <% "cli_error" -> %>
               <.cli_error_message msg={msg} />
+            <% "pi_ui_response" -> %>
+              <.pi_ui_response_message msg={msg} />
+            <% "pi_session_stats" -> %>
+              <.pi_session_stats_message msg={msg} />
             <% type when type in ~w(rate_limit_event) -> %>
               <% # Hide noisy internal events %>
             <% _ -> %>
@@ -88,6 +92,11 @@ defmodule OrcaHubWeb.MessageComponents do
   end
 
   defp hidden_message?(%{"type" => "system", "subtype" => "thinking_tokens"}), do: true
+  # The pending pi extension-UI dialog card renders separately (session_live/
+  # show.html.heex, driven off pending_ui_request) and the `question` tool's
+  # own tool_use/tool_result already shows the call in-feed — the raw
+  # `pi_ui_request` event would just be a redundant "waiting on you" line.
+  defp hidden_message?(%{"type" => "pi_ui_request"}), do: true
   defp hidden_message?(_), do: false
 
   defp build_feed_items(messages) do
@@ -490,12 +499,78 @@ defmodule OrcaHubWeb.MessageComponents do
   attr :msg, :map, required: true
 
   defp system_message(assigns) do
-    assigns = assign(assigns, :subtype, assigns.msg["subtype"])
+    assigns =
+      assigns
+      |> assign(:subtype, assigns.msg["subtype"])
+      # pi's fire-and-forget `notify` extension-UI method (spec §12.3) is
+      # normalized onto this same "system" shape with subtype "pi_notify" —
+      # unlike other system subtypes it carries a human message worth
+      # showing. Backward compatible: pre-existing system events without a
+      # "message" key render exactly as before (the :if hides the span).
+      |> assign(:extra, assigns.msg["message"])
 
     ~H"""
     <div class="flex items-center gap-1.5 text-xs opacity-40 italic py-1">
       <.icon name="hero-cog-6-tooth-micro" class="size-3" />
-      {@subtype}
+      {@subtype}<span :if={@extra not in [nil, ""]}>: {@extra}</span>
+    </div>
+    """
+  end
+
+  attr :msg, :map, required: true
+
+  # A pi extension-UI dialog was answered (spec §12.3 — see
+  # session_live/show.ex's piui_answer/piui_cancel handlers, which persist
+  # this via SessionRunner.answer_ui_request/3). Kept in the feed for
+  # transcript completeness — the pending pi_ui_request itself is hidden
+  # (see hidden_message?/1) since the live modal already showed it.
+  defp pi_ui_response_message(assigns) do
+    assigns = assign(assigns, :answer, format_pi_ui_answer(assigns.msg["answer"]))
+
+    ~H"""
+    <div class="flex items-center gap-1.5 text-xs opacity-50 italic py-1">
+      <.icon name="hero-chat-bubble-left-right-micro" class="size-3" /> You answered: {@answer}
+    </div>
+    """
+  end
+
+  defp format_pi_ui_answer(%{"cancelled" => true}), do: "(cancelled)"
+  defp format_pi_ui_answer(%{"value" => v}) when is_binary(v), do: v
+  defp format_pi_ui_answer(%{"confirmed" => c}), do: to_string(c)
+  defp format_pi_ui_answer(_), do: "(no answer)"
+
+  attr :msg, :map, required: true
+
+  # pi's `get_session_stats` reply, normalized by Backend.Pi after every
+  # completed turn (spec §12.3). Gated in practice by presence — only pi
+  # sessions ever emit this event type — mirroring the same
+  # `Capabilities.session_stats` flag session_live/show.ex checks before
+  # wiring the request loop up at all.
+  defp pi_session_stats_message(assigns) do
+    tokens = assigns.msg["tokens"] || %{}
+    cost = assigns.msg["cost"]
+    context = assigns.msg["context_usage"]
+
+    assigns =
+      assigns
+      |> assign(:total_tokens, tokens["total"])
+      |> assign(:cost_str, if(is_number(cost), do: "$#{Float.round(cost * 1.0, 4)}", else: "?"))
+      |> assign(:context_percent, context && context["percent"])
+
+    ~H"""
+    <div class="flex items-center gap-3 text-xs opacity-50 py-1 flex-wrap">
+      <span class="inline-flex items-center gap-1">
+        <.icon name="hero-cpu-chip-micro" class="size-3" />
+        {@total_tokens || "?"} tokens
+      </span>
+      <span class="inline-flex items-center gap-1">
+        <.icon name="hero-banknotes-micro" class="size-3" />
+        {@cost_str}
+      </span>
+      <span :if={@context_percent} class="inline-flex items-center gap-1">
+        <.icon name="hero-chart-pie-micro" class="size-3" />
+        {@context_percent}% context
+      </span>
     </div>
     """
   end

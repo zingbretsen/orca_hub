@@ -61,6 +61,16 @@ defmodule OrcaHub.SessionRunner do
     GenStatem.cast(via(session_id), {:update_code_exec, code_exec})
   end
 
+  # Answers a backend-native mid-turn UI dialog (pi's extension-UI reply
+  # loop — "pi backend groundwork" slice). MUST be allowed mid-turn: the
+  # dialog blocks the CURRENT turn on the CLI side, so it can only ever be
+  # pending while the runner is :running. Keyed purely on `request_id` (not
+  # on any tool_use) — see `OrcaHub.Backend.Pi`'s moduledoc. Returns
+  # `:ok | {:error, :not_running} | {:error, :not_pending}`.
+  def answer_ui_request(session_id, request_id, payload) do
+    GenStatem.call(via(session_id), {:answer_ui_request, request_id, payload})
+  end
+
   # In-session backend switch. A call (not a cast like the other update_*)
   # because it must be refused mid-turn — the in-flight port belongs to the
   # old backend and its events are still being normalized by it. Returns
@@ -231,6 +241,12 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
+  # A mid-turn dialog can only be pending while :running (see
+  # answer_ui_request/3's doc) — :ready structurally never has one.
+  def ready({:call, from}, {:answer_ui_request, _request_id, _payload}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  end
+
   def ready({:call, from}, :get_state, data) do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:ready, data)}]}
   end
@@ -268,6 +284,10 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
+  def idle({:call, from}, {:answer_ui_request, _request_id, _payload}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  end
+
   def idle({:call, from}, :get_state, data) do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:idle, data)}]}
   end
@@ -291,6 +311,14 @@ defmodule OrcaHub.SessionRunner do
 
   def idle(:info, {port, {:exit_status, code}}, %{engine: :streaming, port: port} = data) do
     handle_streaming_exit(code, :idle, data)
+  end
+
+  # Stray data on an otherwise-idle warm port (e.g. pi's late-arriving
+  # get_session_stats response, spec §12.3 — see process_port_data/2's doc).
+  # One-shot ports never reach here still open (they've already exited by
+  # the time :idle is entered), hence the :streaming guard.
+  def idle(:info, {port, {:data, raw}}, %{engine: :streaming, port: port} = data) do
+    {:keep_state, process_port_data(raw, data)}
   end
 
   def idle(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
@@ -363,6 +391,31 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:running, data)}]}
   end
 
+  # Answers a pending mid-turn UI dialog (pi's extension-UI reply loop; see
+  # answer_ui_request/3's doc + OrcaHub.Backend.Pi's moduledoc). Dispatches
+  # through Backend.encode_ui_response/4 (not data.backend.encode_ui_response
+  # directly — that would raise for Claude/Codex, which never implement the
+  # optional callback) so a stray call against a backend/request that has no
+  # such dialog pending cleanly no-ops instead of writing garbage to the port.
+  def running({:call, from}, {:answer_ui_request, request_id, payload}, %{port: port} = data)
+      when not is_nil(port) do
+    case Backend.encode_ui_response(data.backend, request_id, payload, data) do
+      {:ok, iodata, new_ctx} ->
+        Port.command(port, iodata)
+        new_ctx = flush_pending_writes(new_ctx)
+        response_event = %{"type" => "pi_ui_response", "id" => request_id, "answer" => payload}
+        new_data = handle_stream_event(response_event, new_ctx)
+        {:keep_state, new_data, [{:reply, from, :ok}]}
+
+      :noop ->
+        {:keep_state_and_data, [{:reply, from, {:error, :not_pending}}]}
+    end
+  end
+
+  def running({:call, from}, {:answer_ui_request, _request_id, _payload}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  end
+
   # Runtime kill-switch downgrade while a turn is in flight. We can't drop to
   # one-shot mid-turn without losing the turn, so we mark it pending and convert
   # when the turn's `result` arrives (finalize_downgrade/1). :interrupt ends the
@@ -392,23 +445,7 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def running(:info, {port, {:data, raw}}, %{port: port} = data) do
-    {events, new_buffer} = decode_frames(data.framing, raw, data.buffer)
-
-    error_lines = extract_non_json_lines(raw, data.buffer)
-
-    error_output =
-      if error_lines != "" do
-        data.error_output <> error_lines
-      else
-        data.error_output
-      end
-
-    new_data =
-      Enum.reduce(
-        events,
-        %{data | buffer: new_buffer, error_output: error_output},
-        &route_frame/2
-      )
+    new_data = process_port_data(raw, data)
 
     case new_data.engine do
       :streaming -> handle_streaming_progress(new_data)
@@ -508,6 +545,10 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
+  def error({:call, from}, {:answer_ui_request, _request_id, _payload}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  end
+
   def error({:call, from}, :get_state, data) do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:error, data)}]}
   end
@@ -531,6 +572,12 @@ defmodule OrcaHub.SessionRunner do
 
   def error(:info, {port, {:exit_status, code}}, %{engine: :streaming, port: port} = data) do
     handle_streaming_exit(code, :error, data)
+  end
+
+  # Stray data on an otherwise-errored-but-still-warm port — see
+  # idle(:info, {port, {:data, raw}}, ...) above for why this matters.
+  def error(:info, {port, {:data, raw}}, %{engine: :streaming, port: port} = data) do
+    {:keep_state, process_port_data(raw, data)}
   end
 
   def error(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
@@ -1048,6 +1095,34 @@ defmodule OrcaHub.SessionRunner do
       # message re-opens with --resume. Stay in the current state.
       {:keep_state, data}
     end
+  end
+
+  # Decodes + routes one raw port-data chunk (shared by :running's normal
+  # per-turn handler and the :idle/:error late-arrival handlers below).
+  # Late arrival is real, not hypothetical: pi's `get_session_stats` request
+  # (spec §12.3) is written the moment `agent_end` is normalized, but the
+  # RESPONSE is a separate async port message — by the time it lands, the
+  # SAME :info-handling pass that processed `agent_end` has usually already
+  # driven the turn's `result` event through `handle_streaming_progress/1`
+  # and transitioned :running -> :idle (all synchronous, before this process
+  # can receive another message). Without an :idle/:error match, that later
+  # `{port, {:data, raw}}` message would fall through to the generic
+  # `idle(:info, _msg, _data), do: :keep_state_and_data` catch-all and be
+  # silently dropped — losing the stats response (or any other backend's
+  # late async write) entirely.
+  defp process_port_data(raw, data) do
+    {events, new_buffer} = decode_frames(data.framing, raw, data.buffer)
+
+    error_lines = extract_non_json_lines(raw, data.buffer)
+
+    error_output =
+      if error_lines != "" do
+        data.error_output <> error_lines
+      else
+        data.error_output
+      end
+
+    Enum.reduce(events, %{data | buffer: new_buffer, error_output: error_output}, &route_frame/2)
   end
 
   # Decode layer selected by the port's framing (spec §3.2/§5) — NOT

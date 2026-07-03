@@ -61,7 +61,8 @@ defmodule OrcaHub.Backend.PiTest do
       assert caps.system_prompt == :flag
       assert caps.warmup_turn == false
       assert caps.plan_mode == false
-      assert caps.ask_user_question == false
+      assert caps.ask_user_question == true
+      assert caps.session_stats == true
     end
   end
 
@@ -175,6 +176,16 @@ defmodule OrcaHub.Backend.PiTest do
       idx = Enum.find_index(spec.args, &(&1 == "--append-system-prompt"))
       prompt = Enum.at(spec.args, idx + 1)
       assert prompt =~ "Your OrcaHub session ID is #{c.session_id}"
+    end
+
+    test "-e loads priv/pi/orca.ts, resolved via Application.app_dir/2 (release-safe)" do
+      spec = Backend.spawn_spec(:streaming, ctx())
+      idx = Enum.find_index(spec.args, &(&1 == "-e"))
+      refute is_nil(idx)
+
+      expected = Application.app_dir(:orca_hub, "priv/pi/orca.ts")
+      assert Enum.at(spec.args, idx + 1) == expected
+      assert File.exists?(expected)
     end
   end
 
@@ -636,6 +647,61 @@ defmodule OrcaHub.Backend.PiTest do
       refute Map.has_key?(event, "total_cost_usd")
       refute Map.has_key?(event, "usage")
     end
+
+    test "queues a get_session_stats command onto backend_state.pending_writes (spec §12.3)" do
+      messages = [%{"role" => "user", "content" => [%{"type" => "text", "text" => "hi"}]}]
+      {_events, out} = Backend.normalize(%{"type" => "agent_end", "messages" => messages}, ctx())
+
+      assert [write] = out.backend_state.pending_writes
+      assert decode_write(write) == %{"type" => "get_session_stats"}
+    end
+  end
+
+  # ── normalize/2 — get_session_stats response -> pi_session_stats event ──
+
+  describe "normalize/2 — get_session_stats response" do
+    test "success -> a pi_session_stats event carrying tokens/cost/context_usage verbatim" do
+      data = %{
+        "sessionFile" => "/tmp/x/session.jsonl",
+        "sessionId" => "abc123",
+        "tokens" => %{
+          "input" => 50_000,
+          "output" => 10_000,
+          "cacheRead" => 40_000,
+          "total" => 105_000
+        },
+        "cost" => 0.45,
+        "contextUsage" => %{"tokens" => 60_000, "contextWindow" => 200_000, "percent" => 30}
+      }
+
+      {[event], _out} =
+        Backend.normalize(
+          %{
+            "type" => "response",
+            "command" => "get_session_stats",
+            "success" => true,
+            "data" => data
+          },
+          ctx()
+        )
+
+      assert event == %{
+               "type" => "pi_session_stats",
+               "tokens" => data["tokens"],
+               "cost" => 0.45,
+               "context_usage" => data["contextUsage"]
+             }
+    end
+
+    test "a failed get_session_stats response emits nothing" do
+      {events, _out} =
+        Backend.normalize(
+          %{"type" => "response", "command" => "get_session_stats", "success" => false},
+          ctx()
+        )
+
+      assert events == []
+    end
   end
 
   # ── normalize/2 — deltas and unknown frames drop silently ───────────────
@@ -661,35 +727,126 @@ defmodule OrcaHub.Backend.PiTest do
     end
   end
 
-  # ── handle_peer_request/2 (extension UI protocol) ───────────────────────
+  # ── handle_peer_request/2 + encode_ui_response/3 (extension UI reply loop,
+  # "pi backend groundwork" slice) ────────────────────────────────────────
 
-  describe "handle_peer_request/2" do
-    test "dialog methods (select/confirm/input/editor) reply cancelled:true" do
+  describe "handle_peer_request/2 — dialog methods (select/confirm/input/editor)" do
+    test "no immediate reply — stashes the request and emits a pi_ui_request event" do
       for method <- ~w(select confirm input editor) do
         c = ctx()
 
         {reply, events, out} =
-          Backend.handle_peer_request(%{"id" => "uuid-1", "method" => method, "title" => "x"}, c)
+          Backend.handle_peer_request(
+            %{
+              "id" => "uuid-1",
+              "method" => method,
+              "title" => "Red or blue?",
+              "options" => ["Red", "Blue"]
+            },
+            c
+          )
 
-        assert decode_write(reply) == %{
-                 "type" => "extension_ui_response",
-                 "id" => "uuid-1",
-                 "cancelled" => true
-               }
+        assert reply == ""
 
-        assert events == []
-        assert out == c
+        assert events == [
+                 %{
+                   "type" => "pi_ui_request",
+                   "id" => "uuid-1",
+                   "method" => method,
+                   "title" => "Red or blue?",
+                   "message" => nil,
+                   "options" => ["Red", "Blue"],
+                   "placeholder" => nil,
+                   "prefill" => nil
+                 }
+               ]
+
+        assert out.backend_state.pending_ui_request == %{id: "uuid-1", method: method}
       end
     end
+  end
 
-    test "fire-and-forget methods (notify/setStatus/setWidget/setTitle/set_editor_text) get no reply" do
-      for method <- ~w(notify setStatus setWidget setTitle set_editor_text) do
+  describe "handle_peer_request/2 — fire-and-forget methods" do
+    test "notify surfaces as a passive system/pi_notify event, no reply" do
+      {reply, events, out} =
+        Backend.handle_peer_request(
+          %{
+            "id" => "uuid-2",
+            "method" => "notify",
+            "message" => "heads up",
+            "notifyType" => "warning"
+          },
+          ctx()
+        )
+
+      assert reply == ""
+
+      assert events == [
+               %{
+                 "type" => "system",
+                 "subtype" => "pi_notify",
+                 "message" => "heads up",
+                 "notify_type" => "warning"
+               }
+             ]
+
+      refute Map.has_key?(out.backend_state, :pending_ui_request)
+    end
+
+    test "setStatus/setWidget/setTitle/set_editor_text get no reply and no event" do
+      for method <- ~w(setStatus setWidget setTitle set_editor_text) do
         {reply, events, _out} =
-          Backend.handle_peer_request(%{"id" => "uuid-2", "method" => method}, ctx())
+          Backend.handle_peer_request(%{"id" => "uuid-3", "method" => method}, ctx())
 
         assert reply == ""
         assert events == []
       end
+    end
+  end
+
+  describe "encode_ui_response/3" do
+    test "matching pending request -> writes extension_ui_response and clears pending state" do
+      c = %{ctx() | backend_state: %{pending_ui_request: %{id: "uuid-1", method: "select"}}}
+
+      assert {:ok, iodata, out} =
+               Backend.encode_ui_response("uuid-1", %{"value" => "Blue"}, c)
+
+      assert decode_write(iodata) == %{
+               "type" => "extension_ui_response",
+               "id" => "uuid-1",
+               "value" => "Blue"
+             }
+
+      refute Map.has_key?(out.backend_state, :pending_ui_request)
+    end
+
+    test "unknown request id -> :noop" do
+      c = %{ctx() | backend_state: %{pending_ui_request: %{id: "uuid-1", method: "select"}}}
+      assert Backend.encode_ui_response("some-other-id", %{"value" => "x"}, c) == :noop
+    end
+
+    test "no pending request at all -> :noop" do
+      assert Backend.encode_ui_response("uuid-1", %{"value" => "x"}, ctx()) == :noop
+    end
+  end
+
+  describe "normalize/2 — tool_execution_end clears a stale pending_ui_request" do
+    test "defensively drops backend_state.pending_ui_request (pi's own dialog timeout has no wire signal)" do
+      c = %{ctx() | backend_state: %{pending_ui_request: %{id: "uuid-1", method: "select"}}}
+
+      {_events, out} =
+        Backend.normalize(
+          %{
+            "type" => "tool_execution_end",
+            "toolCallId" => "call_1",
+            "toolName" => "question",
+            "result" => %{"content" => [%{"type" => "text", "text" => "no answer"}]},
+            "isError" => false
+          },
+          c
+        )
+
+      refute Map.has_key?(out.backend_state, :pending_ui_request)
     end
   end
 
