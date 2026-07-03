@@ -1,13 +1,15 @@
 # Backend Abstraction Spec — Pluggable Agent CLIs (Claude, Codex, grok, pi, …)
 
-**Status:** Implemented — all four phases (§8) landed. Claude + Codex are both
-selectable per-session with capability-gated UI; grok/pi remain
-research-only (§12, adapters deferred).
+**Status:** Implemented — all four phases (§8) landed, plus a pi adapter
+(§12.2) landed post-Phase-3. Claude + Codex + pi are all selectable
+per-session with capability-gated UI; grok remains research-only (§12.1,
+adapter deferred).
 **Goal:** Decouple OrcaHub from the Claude Code CLI so a session can be driven by
 any headless coding-agent CLI. First non-Claude target: **OpenAI Codex CLI**
-(via `codex app-server`). Named future targets: **grok CLI** and **pi** (Mario
-Zechner's coding agent) — both CLIs, adapters deferred to post-v1 (see §12).
-Selection is **per-session**. Missing features **gracefully degrade** per backend.
+(via `codex app-server`); second: **pi** (Mario Zechner's coding agent, over
+`pi --mode rpc`). Named future target: **grok CLI** — adapter deferred to
+post-v1 (see §12.1). Selection is **per-session**. Missing features
+**gracefully degrade** per backend.
 
 **Scope note:** all supported backends are *agent CLIs* — child processes that
 execute their own tools and speak a machine-readable protocol on stdio. Raw chat
@@ -22,10 +24,13 @@ OpenAI-compatible `model_providers` in config.toml).
 > **0.142.5**) and a live no-API-key handshake capture (`initialize` ->
 > `thread/start`) during Phase 2 implementation. Deviations found vs. the
 > original SDK-corroborated draft are called out inline in §6.1/§6.3 with a
-> **"0.142.5:"** prefix. The grok and pi protocols in §12 are **Verified**
-> (grok: live capture against the 0.2.82 binary; pi: official docs + source)
-> — adapters remain deferred, but the seam design below already accounts for
-> both.
+> **"0.142.5:"** prefix. The grok protocol in §12.1 is **Verified** (live
+> capture against the 0.2.82 binary) — its adapter remains deferred, but the
+> seam design already accounts for it. The pi protocol in §12.2 is
+> **Verified against 0.80.3** (live capture — superseding the original
+> docs-only research pass, done against 0.75.3/0.80.3's identical
+> `docs/rpc.md`) and its adapter is **Implemented**; see §12.2's "Verified
+> against 0.80.3" note for every deviation found.
 
 ---
 
@@ -111,17 +116,17 @@ the backend name.
 }
 ```
 
-| | Claude | Codex |
-|---|---|---|
-| streaming | ✅ | ✅ (`app-server`) |
-| interrupt | `:protocol` (control_request) | `:protocol` (`turn/interrupt`) |
-| mcp | ✅ inline `--mcp-config` | ✅ via per-session `CODEX_HOME/config.toml` |
-| resume | ✅ `--resume` | ✅ `thread/resume` |
-| usage | ✅ | ❌ (`:none`) → panel hidden |
-| system_prompt | `:flag` | `:leading_message` |
-| warmup_turn | ✅ | ❌ — explicit `initialize`/`initialized` handshake; no MCP race |
-| plan_mode | ✅ | ❌ — plan-mode badges/review card hidden; plan items still render via TodoWrite |
-| ask_user_question | ✅ | ❌ — interactive wizard never initiates; falls back to plain assistant text |
+| | Claude | Codex | pi |
+|---|---|---|---|
+| streaming | ✅ | ✅ (`app-server`) | ✅ (`--mode rpc`) |
+| interrupt | `:protocol` (control_request) | `:protocol` (`turn/interrupt`) | `:protocol` (`{"type":"abort"}`) |
+| mcp | ✅ inline `--mcp-config` | ✅ via per-session `CODEX_HOME/config.toml` | ❌ — no MCP support by design (§12.2); orchestrator/code_exec toggles hidden |
+| resume | ✅ `--resume` | ✅ `thread/resume` | ✅ `--session-id <uuid>` |
+| usage | ✅ | ❌ (`:none`) → panel hidden | ❌ (`:none`) → panel hidden; per-turn cost/tokens still populate `result` |
+| system_prompt | `:flag` | `:leading_message` | `:flag` (`--append-system-prompt`) |
+| warmup_turn | ✅ | ❌ — explicit `initialize`/`initialized` handshake; no MCP race | ❌ — no handshake at all; first `prompt` write is safe immediately |
+| plan_mode | ✅ | ❌ — plan-mode badges/review card hidden; plan items still render via TodoWrite | ❌ — same |
+| ask_user_question | ✅ | ❌ — interactive wizard never initiates; falls back to plain assistant text | ❌ — same |
 
 ### 3.2 Behaviour callbacks (as implemented, Phase 2)
 
@@ -267,10 +272,11 @@ and keep new renderer code nil-tolerant on `result` fields.
 - **Migration:** add `backend :string, null: false, default: "claude"` to
   `sessions`.
 - `OrcaHub.Sessions.Session`: add `field :backend, :string, default: "claude"`;
-  changeset validates inclusion in `["claude", "codex"]`.
+  changeset validates inclusion in `["claude", "codex", "pi"]`.
 - **Reuse `claude_session_id` as the generic backend session id** (holds Codex's
-  `thread_id`). No rename migration; document that the column is backend-scoped.
-  (Optional later cleanup: rename → `agent_session_id`.)
+  `thread_id`, or pi's session UUID). No rename migration; document that the
+  column is backend-scoped. (Optional later cleanup: rename →
+  `agent_session_id`.)
 - New-session creation path carries `backend` alongside `model`
   (`Sessions.create_session`, `Cluster` start path, LiveView form).
 
@@ -537,16 +543,18 @@ Mapping command/file/mcp items to the existing tool-name icons means
 
 ## 7. UI changes
 
-- **New-session form:** backend selector (`Claude` / `Codex`) → model list scoped
-  to the chosen backend. Codex models are passthrough strings (e.g. `gpt-5.5`,
-  `gpt-5.3-Codex-Spark`) — no hardcoded enum; keep a small default list + free entry.
+- **New-session form:** backend selector (`Claude` / `Codex` / `Pi`) → model list
+  scoped to the chosen backend. Codex/pi models are passthrough strings (e.g.
+  `gpt-5.5`, `gpt-5.3-Codex-Spark`, `fireworks/accounts/fireworks/models/glm-5`)
+  — no hardcoded enum; keep a small default list + free entry.
 - **Session header / model picker:** show backend; restrict model buttons to the
   session's backend.
 - **Capability-gated chrome:** usage panel, plan-mode affordances, and
   AskUserQuestion rendering appear only when the session's backend advertises them.
 - **`mcp: false` gating:** hide the orchestrator/code_exec toggles on session
-  creation for backends without MCP support (pi, unless/until an extension
-  bridges it — §12.2).
+  creation for backends without MCP support — pi (§12.2, no MCP support by
+  design, unless/until an extension bridges it) is the first backend to
+  actually exercise this gate; Claude and Codex are both `mcp: true`.
 
 **IMPLEMENTED as-built (Phase 3):**
 
@@ -577,19 +585,25 @@ Mapping command/file/mcp items to the existing tool-name icons means
   special-case AskUserQuestion beyond generic tool rendering).
 - **MCP toggles:** the orchestrator-mode checkbox (new-session form) /
   toggle button (session header) and the MCP-servers modal + its header
-  button are hidden when `capabilities.mcp == false`. Both current backends
-  have `mcp: true`, so this is inert wiring today, asserted by tests that it
-  still shows for both.
+  button are hidden when `capabilities.mcp == false`. Claude and Codex are
+  both `mcp: true`, so this was inert wiring through Phase 3; the pi adapter
+  (§12.2) is the first backend with `mcp: false` and the first to actually
+  exercise the hidden path — covered by `show_test.exs`'s "MCP toggles —
+  absent for pi" describe block and `index_test.exs`'s new-session-form
+  equivalent.
 - **Model picker:** `Backend.Claude.models/0` returns the exact pre-Phase-3
   hardcoded list (Opus 4.8 / Sonnet 4.6 / Haiku 4.5).
   `Backend.Codex.models/0` returns a small default list
   (`gpt-5-codex`, `gpt-5.3-Codex-Spark`, `gpt-5.5` — the latter two are this
-  section's own example passthrough strings). The new-session form's model
-  field is a single text input + `<datalist>` of backend-scoped suggestions
-  (native free-text entry, no enum); it re-renders on the existing
-  `"validate"` LiveView event (already firing on every field change,
-  including the backend `<select>`) — no new event was needed. The in-session
-  model switcher (`session_live/show.html.heex`) iterates
+  section's own example passthrough strings). `Backend.Pi.models/0` returns
+  four `provider/id` passthrough strings (two Fireworks ids live-verified
+  against this host's configured auth during implementation; the
+  Anthropic/OpenAI ones are pi's own docs examples). The new-session form's
+  model field is a single text input + `<datalist>` of backend-scoped
+  suggestions (native free-text entry, no enum); it re-renders on the
+  existing `"validate"` LiveView event (already firing on every field
+  change, including the backend `<select>`) — no new event was needed. The
+  in-session model switcher (`session_live/show.html.heex`) iterates
   `Backend.models_for(@session.backend)` plus a small custom-model form.
 - **Backend badge:** the session header shows a subtle badge with the
   capitalized backend name, but ONLY when `@session.backend != "claude"` — no
@@ -649,6 +663,32 @@ Mapping command/file/mcp items to the existing tool-name icons means
   icon/summary code). Docs updated (`CLAUDE.md`, this spec). Gated by: full
   test suite (283 tests, the same 1 pre-existing unrelated `TriggersTest`
   failure as Phase 0-2's baseline). Commit.
+- **Phase 4 — pi adapter. LANDED.** `Backend.Pi` over `pi --mode rpc`
+  (streaming) / `pi -p --mode json` (`:one_shot` fallback) — see §12.2 for
+  the full verified protocol, normalization map, and every deviation found
+  vs. the pre-implementation research draft (re-verified live against
+  0.80.3 after the host's `pi` install was upgraded mid-implementation from
+  0.75.3). Unlike Codex, needed NO runner contract changes at all — pi's
+  protocol has no handshake to gate the first turn on, so the existing
+  `on_open/1`/`pending_writes`/`:ndjson` framing seams (already built for
+  Claude/Codex) were sufficient as-is. First backend with `mcp: false`,
+  exercising that gate in the UI for the first time (§7). Registry: `"pi"`
+  added to `Backend.resolve/1`, `Backend.available/0`, and
+  `Session.changeset/2`'s `validate_inclusion`. Gated by: full test suite
+  (357 tests, the same 1 pre-existing unrelated `TriggersTest` failure as
+  every prior phase's baseline) — new coverage: `pi_test.exs` (43 unit
+  fixtures against live-captured 0.80.3 frames), `pi_stub_integration_test.exs`
+  + `pi_stub_rpc.py` (a REAL `SessionRunner` driven against a Python stub
+  speaking the wire protocol), `backend_test.exs`/`show_test.exs`/
+  `index_test.exs` extensions. **Live smoke outcome (RESOLVED):** a full
+  real turn (Fireworks provider, `gpt-oss-20b`) PASSED end-to-end through
+  the real `SessionRunner` — session id captured via the `get_state`
+  round-trip, a `Bash` tool_use/tool_result pair from a real `bash` tool
+  call, final assistant text, and a `result` event with real
+  `total_cost_usd`/`duration_ms`/`usage` (pi reports cost directly, unlike
+  Codex — no adapter gap analogous to Codex's Phase 2 auth-copy issue was
+  found; pi reads `~/.pi/agent/auth.json` from the inherited `HOME`
+  directly, no per-session credential materialization needed). Commit.
 
 ---
 
@@ -744,21 +784,32 @@ Mapping command/file/mcp items to the existing tool-name icons means
 ## 11. Non-goals (v1)
 
 - Codex transcript import (`~/.codex/sessions`), analogous to `claude_import`.
-- Codex usage/quota scraping.
-- Node-login UI parity for Codex (env-based auth acceptable initially).
-- grok / pi adapter *implementations* (protocol research + capability rows in
-  §12 now; adapters are additive later).
+- Codex/pi usage/quota scraping (both `usage: :none` — per-turn cost/tokens
+  still flow into the `result` event where the underlying protocol reports
+  them; pi does, Codex doesn't).
+- Node-login UI parity for Codex/pi (env-based auth acceptable initially; pi
+  needs no OrcaHub-side auth handling at all — see §12.2).
+- pi MCP bridging (an extension shipping orca's tools to pi sessions) —
+  `mcp: false` and the hidden orchestrator/code_exec toggles are the accepted
+  v1 gap (§12.2).
+- grok adapter *implementation* (protocol research + capability row in §12.1
+  now; the adapter is additive later — pi's landed first since its protocol
+  needed no new runner seams beyond what Codex already built).
 - Raw-API backends (no CLI). See scope note in the header — a bare chat API has
   no tool executor; multi-provider CLIs are the on-ramp for API-only models.
 
 ---
 
-## 12. Future backends: grok CLI & pi (research findings)
+## 12. grok CLI (deferred) & pi (implemented)
 
 **Rule: no adapter gets written before a §6-style verified protocol section
 exists for its CLI.** The capability table and adapter design must come from
 observed wire behavior (docs + source + a captured session), not assumption.
-This section records the research pass for the two named future targets.
+§12.1 records the research pass for grok, still deferred. §12.2 records pi's
+research pass AND its subsequent implementation (Phase 4, §8) — kept in this
+section rather than promoted to a numbered §6/§7-style section of its own
+since its research-to-implementation delta was small enough to document
+inline (see §12.2's "Verified against 0.80.3" note).
 
 ### 12.1 grok CLI (VERIFIED — live binary capture + embedded docs, 2026-07-02)
 
@@ -842,70 +893,161 @@ One-shot fallback exists (`grok -p --output-format streaming-json`) but hides
 tool activity (text/thought/end/error only) — acceptable for the `:one_shot`
 engine, but ACP is the real mode.
 
-### 12.2 pi (VERIFIED — docs + source, 2026-07-02)
+### 12.2 pi (IMPLEMENTED — `Backend.Pi`, `lib/orca_hub/backend/pi.ex`)
 
 Mario Zechner's coding agent. Repo `github.com/earendil-works/pi` (formerly
-`badlogic/pi-mono`); npm `@earendil-works/pi-coding-agent` (v0.80.3, `bin: pi`);
-very active. Docs: `pi.dev/docs` + `packages/coding-agent/docs/{rpc,json,sdk,session-format,providers}.md`.
+`badlogic/pi-mono`); npm `@earendil-works/pi-coding-agent` (`bin: pi`); very
+active. Docs: `pi.dev/docs` + the installed package's own
+`docs/rpc.md`/`docs/sessions.md`.
 
 **Fit: excellent.** `pi --mode rpc` is a long-lived bidirectional JSONL-over-stdio
 process explicitly built for non-Node embedding — functionally equivalent to
-Claude's `stream-json` streaming mode, in places richer.
+Claude's `stream-json` streaming mode, in places richer. Confirmed the
+simplest of the three implemented backends: pi needed **zero runner contract
+changes** beyond what Codex already built (`on_open/1`, `pending_writes`,
+`:ndjson`/`:jsonrpc` framing dispatch) — its own `backend_state` FSM barely
+exists (one key: `:agent_start_ms`).
 
-- **Spawn:** `pi --mode rpc --provider <p> --model <m> [--session <id>|--no-session] [--append-system-prompt …]`.
+> **Verified against 0.80.3** (live capture, superseding the docs-only
+> research pass below, which was written against pi 0.80.3's `docs/rpc.md`
+> already but never live-tested until implementation). The host had pi
+> 0.75.3 installed at the start of implementation; both 0.75.3's and
+> 0.80.3's bundled `docs/rpc.md` describe an IDENTICAL RPC command/event
+> vocabulary (confirmed diffing the two), and 0.80.3 was live-captured
+> exclusively (a Python stdio harness driving `pi --mode rpc` and
+> `pi -p --mode json`, real turns against this host's configured Fireworks
+> auth in `~/.pi/agent/auth.json`, plus reading the installed package's
+> compiled tool-schema source under `dist/core/tools/*.js` for exact
+> argument field names) — 0.75.3 was never shipped in this adapter.
+> **Deviations found vs. the research draft below:**
+>
+> - **No handshake, no FSM to gate the first turn.** The draft below left
+>   open whether an `initialize`/session-ready exchange might be needed
+>   before the first `prompt`. Live-verified: `pi --mode rpc` accepts
+>   `{"type":"prompt",...}` as the very first stdin write, written
+>   back-to-back with `on_open/1`'s own command with no waiting — unlike
+>   Codex's mandatory `initialize`→`initialized`→`thread/start` chain, there
+>   is no `pending_prompt` stash anywhere in `Backend.Pi`.
+> - **Session id capture differs by engine, and neither is "the session
+>   header event" as drafted.** Streaming (`--mode rpc`) never
+>   unprompted-announces a session id on stdout at all — `on_open/1` sends
+>   `{"type":"get_state"}` purely to learn it, and `session_id/1` reads
+>   `response.data.sessionId` from that reply. One-shot (`-p --mode json`)
+>   DOES announce one unprompted, but as the very first stdout line's
+>   `{"type":"session","id":…}` (not a `message_end`/`turn_end` field as the
+>   draft implied) — `normalize/2` handles both shapes with separate clauses.
+> - **`--session-id <uuid>` (not `--session <path|id>`), for resume.** The
+>   draft only knew about `--session <path|id>`, which 404s
+>   ("No session found matching …") if the id isn't already on disk under
+>   the given `--session-dir` — useless for a fresh OrcaHub session that
+>   hasn't picked an id yet. 0.80.3 added `--session-id <id>` ("use exact
+>   project session id, creating it if missing"); live-verified round-trip:
+>   spawn with a fresh `--session-id` (creates it), spawn again later with
+>   the SAME `--session-id` + `--session-dir` → full prior context recalled.
+>   `Backend.Pi` always uses `--session-id`, never `--session`.
+> - **Everything else matched the research draft exactly**: strict-JSONL
+>   framing (no `"jsonrpc"` field, commands optionally carry `id`, responses
+>   echo it verbatim, events never have one), `{"type":"prompt","message":…}`
+>   / `{"type":"abort"}` stdin framing, the
+>   `message_end`/`tool_execution_end`/`agent_end` event vocabulary and field
+>   names (`toolCallId`, `isError`, `stopReason` ∈
+>   `stop|length|toolUse|error|aborted`, `usage:{input,output,cacheRead,
+>   cacheWrite,cost:{total,…}}`), built-in tool names
+>   (`bash`/`read`/`write`/`edit`/`grep`/`find`/`ls`) confirmed from the
+>   compiled tool source, the `extension_ui_request`/`extension_ui_response`
+>   sub-protocol shape (dialog vs. fire-and-forget methods), and
+>   `--append-system-prompt`. One tool-schema surprise: pi's own read/write/
+>   edit schemas use `"path"` (not Claude's `"file_path"`), and pi's edit
+>   tool takes an `"edits":[{oldText,newText}]` ARRAY (not Claude's single
+>   `old_string`/`new_string` pair) — `Backend.Pi`'s tool-argument
+>   translation layer (not drafted below at this level of detail) handles
+>   both, folding multiple edits into one separator-joined diff block for
+>   v1. `agent_end.messages` additionally carries a harmless `willRetry`
+>   field and per-message `usage` gained a `cacheWrite1h` field on 0.80.3 —
+>   both ignored.
+
+- **Spawn:** `pi --mode rpc --model <provider/id> --session-dir <dir>
+  [--session-id <uuid>] --append-system-prompt <text>` (streaming);
+  `pi -p --mode json <same flags> <prompt>` (`:one_shot` fallback — emits the
+  IDENTICAL event vocabulary to stdout, live-verified; no PTY/`script`
+  wrapper needed, unlike Claude's one-shot spawn). `--session-dir` points at
+  `<session.directory>/.pi_sessions/<session.id>` — per-session, nested under
+  a per-project parent (mirrors Codex's `CODEX_HOME` reasoning: computed
+  identically in `spawn_spec/2` and `prepare_session/1`/`cleanup_session/1`
+  via one private helper, so concurrent sessions never collide and cleanup
+  only ever touches its own session's directory).
 - **Framing:** strict JSONL, LF-only delimiter. Custom command/response/event
   protocol (NOT JSON-RPC): stdin commands optionally carry `id`; stdout emits
   `{"type":"response","command":…,"id":…,"success":…}` for commands and
-  un-id'd typed events otherwise. Fits the `:ndjson` decode layer + a pi
-  discriminator in the adapter.
-- **Multi-turn stdin:** `{"type":"prompt","message":…,"images":[…]}`; native
-  mid-turn `steer`/`follow_up` commands (Q6's steer option exists here too;
-  v1 still uses interrupt-then-resend for uniformity).
-- **Interrupt:** protocol — `{"type":"abort"}` (plus `abort_bash`, `abort_retry`).
-- **Resume:** sessions are plain JSONL trees under `~/.pi/agent/sessions/…`
-  (custom via `--session-dir`); resume by `--session <path|id>`; RPC
-  `switch_session`/`new_session`/`fork`/`clone`; `get_entries {since}` cursor
-  allows crash-safe incremental ingestion. Session UUID comes from the session
-  header event → `session_id/1`, stored in `claude_session_id` as usual.
-- **System prompt:** `--append-system-prompt` flag (or `APPEND_SYSTEM.md`)
-  ⇒ `system_prompt: :flag` — same as Claude.
-- **Events → normalize:** `message_end`/`turn_end` carry `AssistantMessage`
-  (`content: [{type:"text"}|{type:"toolCall",id,name,arguments}]`,
-  `usage:{input,output}`, `stopReason`) → assistant text/tool_use;
-  `tool_execution_end {toolCallId,toolName,result,isError}` → user tool_result
-  (ids pair natively — §3.3 invariant satisfied verbatim); `agent_end` →
-  synthesized `result` with usage accumulated in `backend_state`. Built-in tool
-  names map directly: `read`→Read, `bash`→Bash, `edit`→Edit, `write`→Write
-  (+ optional `grep`/`find`/`ls`). Deltas (`message_update`, thinking deltas)
-  ignored in v1 per Q7.
-- **Peer requests:** extensions can emit `extension_ui_request` (id'd, expects
-  `extension_ui_response` on stdin; dialogs hang if unanswered) → exactly
-  `handle_peer_request/2`; v1 replies `{"cancelled":true}` to dialog methods and
-  ignores notify/status methods. Shouldn't fire without extensions installed,
-  but must be handled defensively.
-- **Auth/models:** per-provider env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-  `GEMINI_API_KEY`, xAI, …) or OAuth via `/login` → `~/.pi/agent/auth.json`;
-  25+ providers incl. xAI — **pi is also the cheapest route to grok-the-model**
-  if the grok CLI itself proves unembeddable. Models: `--provider X --model Y`
-  or `--model provider/model`, thinking suffix (`sonnet:high`); passthrough
-  strings in our UI, same as Codex.
+  un-id'd typed events otherwise. Uses the existing `:ndjson` decode layer
+  (`StreamParser`) — no new framing needed.
+- **Multi-turn stdin:** `{"type":"prompt","message":…}`, written immediately
+  by `encode_user_turn/2` every time (no FSM/stash). Native mid-turn
+  `steer`/`follow_up` commands exist but v1 still uses interrupt-then-resend
+  for uniformity with the other backends (Q6).
+- **Interrupt:** protocol — `{"type":"abort"}`.
+- **Resume:** `--session-id <uuid>` (see the verification note above) +
+  `--session-dir`; sessions are plain JSONL trees under the per-session
+  directory. Session UUID comes from `on_open/1`'s `get_state` round-trip
+  (streaming) or the unprompted session-header line (one-shot) → `session_id/1`
+  → synthesized `system`/`init` event, stored in `claude_session_id` as usual.
+- **System prompt:** `--append-system-prompt` flag ⇒ `system_prompt: :flag` —
+  same as Claude. `Backend.Pi.system_prompt/1` reuses `SharedPrompts`'
+  non-MCP-dependent fragments (session id line, commit trailer, `.context/`
+  files) and drops the orchestrator/code-exec/sibling-session fragments
+  entirely, since `mcp: false` makes them all inapplicable.
+- **Events → normalize:** `message_end{role:"assistant",content:[…]}` (only,
+  not `turn_end`/`agent_end.messages`, which embed the same content
+  redundantly) → one Claude `assistant` event per pi message, with
+  `content:[{type:"text"}|{type:"thinking"}|{type:"toolCall",id,name,
+  arguments}]` blocks mapped to Claude's text/thinking/tool_use shapes
+  (tool-argument translation per the verification note above);
+  `tool_execution_end{toolCallId,result:{content},isError}` → `user`
+  tool_result (ids pair natively — §3.3 invariant satisfied verbatim);
+  `agent_end{messages}` → synthesized `result`, scanning its own bundled
+  `messages` (not accumulated separately in `backend_state`) for the last
+  assistant's `stopReason` (`"error"` → `is_error:true` + `errorMessage`;
+  `"aborted"` → `is_error:false`, same posture as Codex's
+  `turn/completed{interrupted}`) and the SUM of every assistant message's
+  `usage`/`cost.total` across the run — pi reports cost directly (unlike
+  Codex), so `total_cost_usd` IS populated here. `duration_ms` is
+  synthesized wall-clock (`agent_start` stashes `System.monotonic_time`,
+  read back at `agent_end`) since pi's protocol has no elapsed-time field.
+  Deltas (`message_update`, `tool_execution_start`/`update`) dropped per Q7.
+- **Peer requests:** extensions can emit `extension_ui_request` (id'd method,
+  dialog types `select`/`confirm`/`input`/`editor` block waiting for an
+  `extension_ui_response`; fire-and-forget types `notify`/`setStatus`/
+  `setWidget`/`setTitle`/`set_editor_text` expect NO reply) →
+  `handle_peer_request/2`; replies `{"cancelled":true}` to dialog methods,
+  sends nothing for fire-and-forget ones. Shouldn't fire without extensions
+  installed (v1 loads none), handled defensively.
+- **Auth/models:** per-provider env vars or OAuth via `/login` →
+  `~/.pi/agent/auth.json`, read straight from the inherited `HOME` — the
+  spawned child needs NO special env handling (`OrcaHub.Env.sanitized_env/0`
+  only unsets `RELEASE_*`/cleans `PATH`; `HOME` passes through unchanged),
+  live-verified with real Fireworks-provider turns. `Backend.Pi.models/0`
+  returns four `provider/id` passthrough strings (two Fireworks ids
+  live-verified against this host's configured auth; the Anthropic/OpenAI
+  ones are pi's own docs examples) — not an enum, same posture as Codex.
 
-**Gaps / capability row:**
+**Capability row (as implemented — see §3.1's three-column table):**
 
 | capability | pi |
 |---|---|
 | streaming | ✅ (`--mode rpc`) |
-| interrupt | `:protocol` (`abort`) |
-| mcp | ❌ **no MCP support by design** — orca MCP tools unavailable unless we ship a pi TypeScript extension (defer; capability-gate like usage) |
-| resume | ✅ (`--session`, JSONL on disk) |
-| usage | `:none` for account quota; per-turn tokens from `AssistantMessage.usage` still flow into `result` (`get_session_stats` RPC available if wanted) |
+| interrupt | `:protocol` (`{"type":"abort"}`) |
+| mcp | ❌ **no MCP support by design** — orca MCP tools unavailable unless a pi TypeScript extension bridges them (not built); UI hides the orchestrator/code_exec toggles and MCP-servers modal (§7) |
+| resume | ✅ (`--session-id <uuid>` + `--session-dir`, JSONL on disk) |
+| usage | `:none` for account quota; per-turn tokens AND cost flow into `result` (`total_cost_usd`/`usage` both populated — better than Codex here) |
 | system_prompt | `:flag` (`--append-system-prompt`) |
-| warmup_turn | ❌ |
+| warmup_turn | ❌ (no handshake of any kind) |
+| plan_mode | ❌ |
+| ask_user_question | ❌ |
 
 Also absent: permission prompts/sandboxing (runs with spawning user's perms —
-same posture as our `--dangerously-skip-permissions` Claude usage), plan mode,
-AskUserQuestion, sub-agents. All already capability-gated by §3.1/§7.
+same posture as our `--dangerously-skip-permissions` Claude usage), sub-agents.
+All capability-gated by §3.1/§7.
 
-The MCP gap is the one real cost: pi sessions can't call orca tools
-(send_message_to_session etc.) until an extension exists. Add
-`mcp: false → hide orchestrator/code_exec toggles` to the §7 gating list.
+The MCP gap remains the one real cost: pi sessions can't call orca tools
+(send_message_to_session etc.) until an extension exists — accepted as a v1
+gap (§11).
