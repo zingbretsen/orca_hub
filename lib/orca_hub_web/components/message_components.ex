@@ -541,6 +541,18 @@ defmodule OrcaHubWeb.MessageComponents do
     """
   end
 
+  # pi reports contextUsage.percent as a raw float (live-verified:
+  # 1.4506022135416665) — round for display ("1.5", whole numbers as "30"),
+  # keep nil/garbage hidden.
+  defp format_context_percent(p) when is_number(p) do
+    case Float.round(p * 1.0, 1) do
+      r when r == trunc(r) -> trunc(r)
+      r -> r
+    end
+  end
+
+  defp format_context_percent(_), do: nil
+
   defp format_pi_ui_answer(%{"cancelled" => true}), do: "(cancelled)"
   defp format_pi_ui_answer(%{"value" => v}) when is_binary(v), do: v
   defp format_pi_ui_answer(%{"confirmed" => c}), do: to_string(c)
@@ -562,7 +574,7 @@ defmodule OrcaHubWeb.MessageComponents do
       assigns
       |> assign(:total_tokens, tokens["total"])
       |> assign(:cost_str, if(is_number(cost), do: "$#{Float.round(cost * 1.0, 4)}", else: "?"))
-      |> assign(:context_percent, context && context["percent"])
+      |> assign(:context_percent, format_context_percent(context && context["percent"]))
 
     ~H"""
     <div class="flex items-center gap-3 text-xs opacity-50 py-1 flex-wrap">
