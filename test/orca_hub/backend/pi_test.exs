@@ -63,6 +63,7 @@ defmodule OrcaHub.Backend.PiTest do
       assert caps.plan_mode == false
       assert caps.ask_user_question == true
       assert caps.session_stats == true
+      assert caps.steering == true
     end
   end
 
@@ -707,7 +708,7 @@ defmodule OrcaHub.Backend.PiTest do
   # ── normalize/2 — deltas and unknown frames drop silently ───────────────
 
   describe "normalize/2 — deltas and unrecognized frames" do
-    test "message_update, tool_execution_start/update, turn_start/end, queue_update all drop" do
+    test "message_update, tool_execution_start/update, turn_start/end all drop" do
       c = ctx()
 
       frames = [
@@ -716,14 +717,150 @@ defmodule OrcaHub.Backend.PiTest do
         %{"type" => "tool_execution_update", "toolCallId" => "x", "toolName" => "bash"},
         %{"type" => "turn_start"},
         %{"type" => "turn_end", "message" => %{}, "toolResults" => []},
-        %{"type" => "queue_update", "steering" => [], "followUp" => []},
-        %{"type" => "compaction_start", "reason" => "threshold"},
         %{"type" => "extension_error", "error" => "boom"}
       ]
 
       for frame <- frames do
         assert Backend.normalize(frame, c) == {[], c}
       end
+    end
+  end
+
+  # ── normalize/2 — mid-turn steering (spec §12.6) ────────────────────────
+
+  describe "encode_steer_turn/2" do
+    test "writes a steer command carrying the message" do
+      c = ctx()
+      {iodata, out} = Backend.encode_steer_turn("actually do X instead", c)
+      assert decode_write(iodata) == %{"type" => "steer", "message" => "actually do X instead"}
+      assert out == c
+    end
+  end
+
+  describe "normalize/2 — queue_update" do
+    test "synthesizes a system/queue_update event carrying the current queue, snake_cased" do
+      c = ctx()
+
+      {[event], out} =
+        Backend.normalize(
+          %{
+            "type" => "queue_update",
+            "steering" => ["Focus on error handling"],
+            "followUp" => ["After that, summarize the result"]
+          },
+          c
+        )
+
+      assert event == %{
+               "type" => "system",
+               "subtype" => "queue_update",
+               "steering" => ["Focus on error handling"],
+               "follow_up" => ["After that, summarize the result"]
+             }
+
+      assert out == c
+    end
+
+    test "defaults missing steering/followUp to []" do
+      {[event], _out} = Backend.normalize(%{"type" => "queue_update"}, ctx())
+      assert event["steering"] == []
+      assert event["follow_up"] == []
+    end
+  end
+
+  describe "normalize/2 — compaction_start/compaction_end" do
+    test "compaction_start carries the reason" do
+      {[event], _out} =
+        Backend.normalize(%{"type" => "compaction_start", "reason" => "threshold"}, ctx())
+
+      assert event == %{
+               "type" => "system",
+               "subtype" => "compaction_start",
+               "reason" => "threshold"
+             }
+    end
+
+    test "compaction_end (success) carries reason, aborted:false, and token counts" do
+      {[event], _out} =
+        Backend.normalize(
+          %{
+            "type" => "compaction_end",
+            "reason" => "threshold",
+            "result" => %{
+              "summary" => "Summary of conversation...",
+              "firstKeptEntryId" => "abc123",
+              "tokensBefore" => 150_000,
+              "estimatedTokensAfter" => 32_000,
+              "details" => %{}
+            },
+            "aborted" => false,
+            "willRetry" => false
+          },
+          ctx()
+        )
+
+      assert event == %{
+               "type" => "system",
+               "subtype" => "compaction_end",
+               "reason" => "threshold",
+               "aborted" => false,
+               "tokens_before" => 150_000,
+               "estimated_tokens_after" => 32_000
+             }
+    end
+
+    test "compaction_end (aborted) has no result fields" do
+      {[event], _out} =
+        Backend.normalize(
+          %{"type" => "compaction_end", "reason" => "manual", "result" => nil, "aborted" => true},
+          ctx()
+        )
+
+      assert event == %{
+               "type" => "system",
+               "subtype" => "compaction_end",
+               "reason" => "manual",
+               "aborted" => true
+             }
+    end
+
+    test "compaction_end (failed) carries error_message, aborted:false" do
+      {[event], _out} =
+        Backend.normalize(
+          %{
+            "type" => "compaction_end",
+            "reason" => "overflow",
+            "result" => nil,
+            "aborted" => false,
+            "errorMessage" => "API quota exceeded"
+          },
+          ctx()
+        )
+
+      assert event["error_message"] == "API quota exceeded"
+      assert event["aborted"] == false
+      refute Map.has_key?(event, "tokens_before")
+    end
+  end
+
+  describe "normalize/2 — rejected steer command" do
+    test "success:false surfaces a non-terminal system note (does NOT end the turn)" do
+      {[event], _out} =
+        Backend.normalize(
+          %{
+            "type" => "response",
+            "command" => "steer",
+            "success" => false,
+            "error" => "steering disabled"
+          },
+          ctx()
+        )
+
+      assert event == %{
+               "type" => "system",
+               "subtype" => "steer_failed",
+               "message" => "steering disabled"
+             }
     end
   end
 

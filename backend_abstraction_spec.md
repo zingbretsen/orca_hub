@@ -1,7 +1,8 @@
 # Backend Abstraction Spec — Pluggable Agent CLIs (Claude, Codex, grok, pi, …)
 
 **Status:** Implemented — all four phases (§8) landed, plus a pi adapter
-(§12.2) landed post-Phase-3. Claude + Codex + pi are all selectable
+(§12.2) landed post-Phase-3, plus pi mid-turn steering/queue visibility/
+compaction events (§12.6). Claude + Codex + pi are all selectable
 per-session with capability-gated UI; grok remains research-only (§12.1,
 adapter deferred).
 **Goal:** Decouple OrcaHub from the Claude Code CLI so a session can be driven by
@@ -1044,6 +1045,7 @@ exists (one key: `:agent_start_ms`).
 | plan_mode | ❌ |
 | ask_user_question | ✅ (as of the "pi backend groundwork" slice, §12.3 — via `priv/pi/orca.ts`'s `question` tool + the extension-UI reply loop, not Claude's built-in tool) |
 | session_stats | ✅ (§12.3 — `get_session_stats`; pi-only, distinct from `usage`) |
+| steering | ✅ (`{"type":"steer",…}` — §12.6) |
 
 Also absent: permission prompts/sandboxing (runs with spawning user's perms —
 same posture as our `--dangerously-skip-permissions` Claude usage), sub-agents.
@@ -1232,3 +1234,168 @@ rendering coverage for `pi_session_stats`/`pi_ui_response`/hidden
 updated for the flipped `ask_user_question` capability and the new
 `session_stats` capability. Full suite: 390 tests, the same 1 pre-existing
 unrelated `TriggersTest` failure as every prior phase's baseline.
+
+### 12.6 pi mid-turn steering, queue visibility, and compaction events (IMPLEMENTED)
+
+Pi's `docs/rpc.md` documents three pieces of protocol OrcaHub didn't use at
+all through §12.2/Phase 4: `steer`/`follow_up` (mid-turn message delivery
+distinct from `prompt`), `queue_update` (what's currently queued), and
+`compaction_start`/`compaction_end` (manual/automatic context compaction).
+This section adds all three, live-verified against the real 0.80.3 binary.
+
+**Capability seam.** `Capabilities` (§3.1) gained a `steering: boolean` field,
+defstruct-defaulted to `false` — Claude and Codex needed **zero code changes**
+to keep behaving identically; only `Backend.Pi.capabilities/0` sets
+`steering: true`. `OrcaHub.Backend` gained a new **optional** callback,
+`encode_steer_turn/2` (`@optional_callbacks encode_steer_turn: 2`), mirroring
+`encode_user_turn/2`'s `{iodata, ctx}` shape. It's optional (not every
+`@behaviour OrcaHub.Backend` adopter needs a stub clause) because
+`SessionRunner` gates every call site with BOTH the capability flag AND
+`function_exported?(backend, :encode_steer_turn, 2)` (private `steerable?/1`
+in `session_runner.ex`) — a backend can advertise `steering: true` without
+implementing the callback and safely fall back to the default path instead of
+raising. `Backend.Pi.encode_steer_turn/2` writes
+`{"type":"steer","message":…}` (the dedicated `steer` command, not
+`{"type":"prompt",…,"streamingBehavior":"steer"}` — the docs offer both, this
+adapter uses the former since it needs no extra field on the existing
+`encode_user_turn/2` path). `follow_up` (pi's "deliver only once fully idle"
+variant) was deliberately NOT wired up: the runner's `:idle` state already
+starts a fresh turn via plain `encode_user_turn/2` for any message sent while
+idle, which is observably the same outcome `follow_up` describes — no new
+seam needed for that half of the docs section.
+
+**Runner mid-turn dispatch (`session_runner.ex`, `:running` state).** The
+existing `running({:call, from}, {:send_message, prompt}, %{engine:
+:streaming, port: port} = data)` clause (the ONLY call site that used to
+unconditionally queue + `send_control_interrupt/1`) now branches:
+`steerable?(data)` (capability + `function_exported?/3`, both true only for
+pi today) → `write_steer_turn/2` (mirrors `write_user_turn/2`: calls
+`backend.encode_steer_turn/2`, `Port.command/2`s the iodata, flushes
+`pending_writes` per §3.2) and **stays in `:running`** — no
+`pending_prompts` bookkeeping, no interrupt, the in-flight turn is never
+touched. The default branch (Claude/Codex, or any future backend that hasn't
+implemented the callback) is **byte-identical to before**: queue + interrupt.
+The user's message is persisted/broadcast identically either way — only what
+happens to the RUNNING TURN differs. The `warming_up` guard is kept for
+symmetry even though no `steering: true` backend today ever sets
+`warmup_turn: true`.
+
+**Composer UI (`show.ex`/`show.html.heex`).** The composer was ALREADY
+enabled while `:running` for every backend — sending mid-turn was never
+blocked; the existing behavior for Claude/Codex is queue+interrupt (spec's
+pre-existing behavior, unchanged). The only additions: (1) a subtle hint line
+below the composer, `@capabilities.steering && @status == :running` gated —
+"Sending now will steer the running turn instead of interrupting it."; (2) a
+small pending-queue indicator (see below) above the composer. Neither
+touches the Send/Interrupt buttons or textarea itself.
+
+**Queue visibility.** `Backend.Pi.normalize/2` maps pi's `queue_update`
+event to a synthesized **`system`** event:
+`%{"type"=>"system","subtype"=>"queue_update","steering"=>[…],"follow_up"=>[…]}`
+(pi's `followUp` key snake_cased to match the rest of the normalized
+vocabulary's key style). `SessionRunner.handle_stream_event/2` special-cases
+this exact `subtype` — mirroring the PRE-EXISTING Claude
+`"system"`/`"status"`/`"compacting"` clause right below it — to **broadcast
+only** (`{:queue_update, steering, follow_up}` over the session's PubSub
+topic) and explicitly NOT persist/append it to `data.messages`: it fires on
+every queue change, so persisting it would spam message history with
+transient state. `SessionLive.Show` holds the latest snapshot in a new
+transient `:pi_queue` assign (`%{steering: [], follow_up: []}`, never part of
+`@messages`), updated by a new `handle_info({:queue_update, steering,
+follow_up}, socket)` clause. The template renders it as a small row of
+`badge-ghost` chips above the composer, gated on
+`@capabilities.steering && (@pi_queue.steering != [] || @pi_queue.follow_up != [])`.
+
+**Compaction events.** Unlike `queue_update`, compaction is a one-off
+occurrence worth keeping in history, so `compaction_start`/`compaction_end`
+normalize onto **persisted** `system` events — no special-casing in
+`SessionRunner`, they fall through to the pre-existing generic `"system"`
+clause (same path the synthesized `"init"` event already uses) and render via
+`MessageComponents`' existing `system_message/1` component, **zero new
+components**. `compaction_start` → `%{"type"=>"system",
+"subtype"=>"compaction_start","reason"=>reason}` (`reason` ∈
+`"manual"|"threshold"|"overflow"`, passed through verbatim).
+`compaction_end` → `%{"type"=>"system","subtype"=>"compaction_end",
+"reason"=>…, "aborted"=>bool}` plus, when present on the wire,
+`"tokens_before"`/`"estimated_tokens_after"` (from `result.tokensBefore`/
+`result.estimatedTokensAfter`, snake_cased) and `"error_message"` (from
+`errorMessage`) — all three via the pre-existing `put_if_present/2` helper
+(reused, not duplicated) so a `nil`/absent `result` (aborted or failed
+compaction) omits them rather than synthesizing `nil`s. `system_message/1`
+grew a small `system_message_label/1` private helper (still ONE component,
+same `<div>`/icon markup) producing a friendlier label for these two
+subtypes specifically — "Compacting context (threshold)", "Compacted context
+(150000 → 32000 tokens)", "Compaction aborted", or the raw `error_message`
+(pi's own message is often already self-describing — live-verified
+`"Compaction failed: Nothing to compact (session too small)"` — so the
+label only ADDS a `"Compaction failed: "` prefix when the message doesn't
+already start with "compaction", avoiding a stutter); every other subtype
+(incl. `"init"`) falls back to the raw subtype string exactly as before.
+
+**Rejected `steer` (defensive).** A `{"type":"response","command":"steer",
+"success":false}` (e.g. steering disabled) must NOT synthesize a `"result"`
+event the way the pre-existing rejected-`prompt` defensive clause does —
+that would incorrectly end the STILL-RUNNING turn. It normalizes to a
+non-terminal persisted `%{"type"=>"system","subtype"=>"steer_failed",
+"message"=>…}` instead — visible in the feed, turn keeps going.
+
+**Testing.** `test/orca_hub/backend/pi_test.exs`: `encode_steer_turn/2`
+framing, `queue_update`/`compaction_start`/`compaction_end` normalization
+(success/aborted/failed-with-self-describing-message shapes), rejected-steer
+handling, plus the pre-existing "drops silently" test narrowed (queue_update/
+compaction_start moved out of the drop list into their own describes).
+`test/orca_hub_web/components/message_components_test.exs`: a new "pi
+compaction events" describe feeding real `Backend.Pi.normalize/2` output
+through `MessageComponents.message_feed/1` (same posture as the existing
+Codex renderer-check test), covering all four label branches.
+`test/orca_hub/backend/pi_stub_integration_test.exs` +
+`test/support/fixtures/pi_stub_rpc.py`: the stub gained a `"PAUSE_FOR_STEER"`
+sentinel prompt (pauses after `agent_start` instead of completing, so a real
+mid-flight turn exists to steer against) and a `steer` command handler
+(acks, emits `queue_update`+`compaction_start`+`compaction_end`, then
+finishes with text echoing the steered instruction) plus an optional
+`PI_STUB_LOG` env var that logs every received command type — the new
+integration test drives a REAL `SessionRunner` through the full
+pause→steer→finish cycle and asserts (a) exactly one `result` event (not two
+— proof the turn was steered, not interrupted-and-resent), (b) both user
+messages preserved distinctly, (c) the steered text was actually produced,
+(d) `compaction_start`/`compaction_end` persisted with the right fields, (e)
+`queue_update` did NOT leak into persisted messages, and (f) the stub's
+command log contains `"prompt"` and `"steer"` each exactly once and never
+`"abort"` — the strongest possible proof (short of the live smoke below)
+that steering took the non-interrupt path.
+
+**Live smoke (RESOLVED).** Ran `pi --mode rpc --no-session --model
+fireworks/accounts/fireworks/models/gpt-oss-20b` directly (no Elixir/Phoenix
+involved), driving the real 0.80.3 binary from a throwaway Python script:
+started a turn ("count to 20 slowly, one bash tool call per number"), let it
+run one bash call, sent `{"type":"steer","message":"Actually stop counting
+and just say STEERED"}` mid-turn. Observed on the wire, in order:
+`queue_update` with the steering message queued
+(`{"steering":["Actually stop counting and just say STEERED"],"followUp":[]}`),
+`{"type":"response","command":"steer","success":true}`, the in-flight bash
+call finishing normally, a SECOND `queue_update` with an now-empty queue
+(delivered before the next LLM call, exactly as `docs/rpc.md` describes),
+then a new assistant turn whose thinking block says *"We need to stop
+counting... Just respond with STEERED"* and whose final text is literally
+`"STEERED"` — the steer was genuinely delivered mid-turn, not
+queued-and-resent. Then, once idle, sent `{"type":"compact"}`: observed
+`{"type":"compaction_start","reason":"manual"}` immediately followed by
+`{"type":"compaction_end","reason":"manual","aborted":false,"willRetry":false,
+"errorMessage":"Compaction failed: Nothing to compact (session too small)"}`
+— this session was too small to actually compact, so the SUCCESS shape
+(`result.tokensBefore`/`estimatedTokensAfter`) wasn't captured live; that
+shape is taken verbatim from `docs/rpc.md`'s own example and covered by the
+unit tests above instead. No adapter gaps found — every field OrcaHub's
+normalizer reads matched the live wire output exactly.
+
+**Deferred (stretch, not attempted).** `get_entries`'s `since:<entryId>`
+cursor (reconnect hardening — replay only entries after the last one seen,
+across a runner restart) was explicitly out of scope for this change per the
+brief and is left as clean future work: it would need a new persisted
+"last seen pi entry id" per session (a candidate: reuse `backend_state`
+plumbing, but that's reset on every port teardown per §3.2, so it would need
+its OWN persisted column or piggyback on `claude_session_id`'s row) and a
+reconnect path that calls `get_entries{since:…}` instead of relying on pi's
+own `--session-id` resume replaying everything — a larger, separate change
+better scoped on its own.

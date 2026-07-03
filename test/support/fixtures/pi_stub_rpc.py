@@ -54,19 +54,48 @@ protocol's "events never have an id" rule — spec's docs/rpc.md):
                                         after every agent_end (spec §12.3); no
                                         "id" on either side, matching the real
                                         adapter's usage.
+  - {"type":"prompt","message":"PAUSE_FOR_STEER"} -> the same "prompt"
+                                        response + agent_start as above, then
+                                        PAUSES (no further events) instead of
+                                        completing — simulates a still-running
+                                        turn so a test can drive
+                                        OrcaHub.Backend.Pi's mid-turn steering
+                                        path (backend_abstraction_spec.md
+                                        §12.6).
+  - {"type":"steer","message":…}   -> {"type":"response","command":"steer",
+                                        "success":true}, then emits (in
+                                        order): queue_update (queue now
+                                        empty), compaction_start/compaction_end
+                                        (reason "manual"), message_end{text
+                                        "Steered: <message>"}, agent_end —
+                                        only meaningful after a
+                                        PAUSE_FOR_STEER prompt.
 
 Every stdout write is flushed explicitly — this is a pipe, not a tty.
 """
 
 import json
+import os
 import sys
 
 SESSION_ID = "stub-pi-session-1"
+
+# Optional command-received log (backend_abstraction_spec.md §12.6 test
+# support): when set, every command's "type" is appended to this file, one
+# per line, so a test can assert exactly which commands were sent (e.g. that
+# a mid-turn steer never fell back to "abort").
+STUB_LOG = os.environ.get("PI_STUB_LOG")
 
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
+
+
+def log_command(msg_type):
+    if STUB_LOG:
+        with open(STUB_LOG, "a") as f:
+            f.write(msg_type + "\n")
 
 
 def handle_ask_a_question(message):
@@ -161,6 +190,14 @@ def handle_prompt(message):
     send({"type": "response", "command": "prompt", "success": True})
     send({"type": "agent_start"})
 
+    if message == "PAUSE_FOR_STEER":
+        # spec §12.6 test support: stop here and wait for a "steer" command
+        # instead of completing immediately — simulates a turn that's still
+        # in flight (mid tool-call loop) when the user sends a mid-turn
+        # message, exercising OrcaHub.Backend.Pi's steering path (see
+        # handle_steer below) instead of the default happy path below.
+        return
+
     send(
         {
             "type": "message_end",
@@ -241,6 +278,62 @@ def handle_prompt(message):
     )
 
 
+def handle_steer(message):
+    # spec §12.6: mirrors what a real turn does with a mid-flight steer —
+    # acks the command, reports the (now-empty) queue, runs a manual
+    # compaction, then finishes the turn with text that echoes the steered
+    # instruction (so the test can tell the steer was actually delivered,
+    # not dropped/queued-and-resent).
+    send({"type": "response", "command": "steer", "success": True})
+    send({"type": "queue_update", "steering": [], "followUp": []})
+    send({"type": "compaction_start", "reason": "manual"})
+    send(
+        {
+            "type": "compaction_end",
+            "reason": "manual",
+            "result": {
+                "summary": "Summary of conversation...",
+                "firstKeptEntryId": "abc123",
+                "tokensBefore": 1000,
+                "estimatedTokensAfter": 200,
+                "details": {},
+            },
+            "aborted": False,
+            "willRetry": False,
+        }
+    )
+
+    steered_text = "Steered: " + message
+
+    send(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": steered_text}],
+                "usage": {"input": 10, "output": 5, "cacheRead": 0, "cacheWrite": 0, "cost": {"total": 0.00002}},
+                "stopReason": "stop",
+            },
+        }
+    )
+
+    send(
+        {
+            "type": "agent_end",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "PAUSE_FOR_STEER"}]},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": steered_text}],
+                    "usage": {"input": 10, "output": 5, "cacheRead": 0, "cacheWrite": 0, "cost": {"total": 0.00002}},
+                    "stopReason": "stop",
+                },
+            ],
+            "willRetry": False,
+        }
+    )
+
+
 def main():
     for line in sys.stdin:
         line = line.strip()
@@ -253,6 +346,7 @@ def main():
             continue
 
         msg_type = msg.get("type")
+        log_command(msg_type)
 
         if msg_type == "get_state":
             send(
@@ -270,6 +364,8 @@ def main():
             )
         elif msg_type == "prompt":
             handle_prompt(msg.get("message", ""))
+        elif msg_type == "steer":
+            handle_steer(msg.get("message", ""))
         elif msg_type == "abort":
             send({"type": "response", "command": "abort", "success": True})
         elif msg_type == "get_session_stats":

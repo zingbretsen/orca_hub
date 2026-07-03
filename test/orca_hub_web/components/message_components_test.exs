@@ -230,4 +230,122 @@ defmodule OrcaHubWeb.MessageComponentsTest do
       assert html =~ "Command blocked by user"
     end
   end
+
+  # spec §12.6 — pi's compaction_start/compaction_end normalize onto the
+  # SAME generic "system" rendering path exercised above for Codex's "init"
+  # (no new component); this feeds real `Backend.Pi.normalize/2` output
+  # through the renderer, same posture as the Codex coverage above.
+  describe "pi compaction events (spec §12.6)" do
+    alias OrcaHub.Backend.Pi, as: PiBackend
+
+    defp pi_ctx do
+      %{
+        session_id: Ecto.UUID.generate(),
+        project_id: nil,
+        claude_session_id: nil,
+        directory: "/nonexistent-dir-#{System.unique_integer([:positive])}",
+        model: nil,
+        orchestrator: false,
+        code_exec: false,
+        db_node: nil,
+        engine: :streaming,
+        backend_state: %{}
+      }
+    end
+
+    defp pi_normalize!(native_event) do
+      {events, _ctx} = PiBackend.normalize(native_event, pi_ctx())
+      events
+    end
+
+    test "compaction_start renders a reason-suffixed label" do
+      events = pi_normalize!(%{"type" => "compaction_start", "reason" => "threshold"})
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: events,
+          session_node: nil
+        })
+
+      assert html =~ "Compacting context"
+      assert html =~ "threshold"
+    end
+
+    test "compaction_end (success) renders a token-count label" do
+      events =
+        pi_normalize!(%{
+          "type" => "compaction_end",
+          "reason" => "threshold",
+          "result" => %{"tokensBefore" => 150_000, "estimatedTokensAfter" => 32_000},
+          "aborted" => false
+        })
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: events,
+          session_node: nil
+        })
+
+      assert html =~ "Compacted context"
+      assert html =~ "150000"
+      assert html =~ "32000"
+    end
+
+    test "compaction_end (aborted) renders an aborted label" do
+      events =
+        pi_normalize!(%{
+          "type" => "compaction_end",
+          "reason" => "manual",
+          "result" => nil,
+          "aborted" => true
+        })
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: events,
+          session_node: nil
+        })
+
+      assert html =~ "Compaction aborted"
+    end
+
+    test "compaction_end (failed, pi's message already self-describing) doesn't stutter the prefix" do
+      events =
+        pi_normalize!(%{
+          "type" => "compaction_end",
+          "reason" => "manual",
+          "result" => nil,
+          "aborted" => false,
+          "errorMessage" => "Compaction failed: Nothing to compact (session too small)"
+        })
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: events,
+          session_node: nil
+        })
+
+      assert html =~ "Compaction failed: Nothing to compact (session too small)"
+      refute html =~ "Compaction failed: Compaction failed:"
+    end
+
+    test "compaction_end (failed, generic error) gets our own prefix added" do
+      events =
+        pi_normalize!(%{
+          "type" => "compaction_end",
+          "reason" => "overflow",
+          "result" => nil,
+          "aborted" => false,
+          "errorMessage" => "API quota exceeded"
+        })
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: events,
+          session_node: nil
+        })
+
+      assert html =~ "Compaction failed: API quota exceeded"
+    end
+  end
 end

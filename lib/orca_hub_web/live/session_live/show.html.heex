@@ -746,6 +746,31 @@
           {upload_error_to_string(err)}
         </p>
 
+        <%!-- spec §12.6 — pending steer/follow-up queue for steering-capable
+        backends (pi). Transient (@pi_queue), not part of @messages. --%>
+        <div
+          :if={@capabilities.steering && (@pi_queue.steering != [] || @pi_queue.follow_up != [])}
+          class="flex flex-wrap items-center gap-1 px-2 pb-1 text-xs opacity-60"
+        >
+          <.icon name="hero-clock-micro" class="size-3" />
+          <span :for={msg <- @pi_queue.steering} class="badge badge-ghost badge-sm">
+            steer: {String.slice(msg, 0, 40)}
+          </span>
+          <span :for={msg <- @pi_queue.follow_up} class="badge badge-ghost badge-sm">
+            follow-up: {String.slice(msg, 0, 40)}
+          </span>
+        </div>
+
+        <%!-- spec §12.6 — the composer stays enabled while :running for every
+        backend (queue+interrupt is the default); steering-capable backends
+        get a hint that the message steers the turn in place instead. --%>
+        <p
+          :if={@capabilities.steering && @status == :running}
+          class="px-2 pb-1 text-[11px] opacity-50 italic"
+        >
+          Sending now will steer the running turn instead of interrupting it.
+        </p>
+
         <.form
           for={%{}}
           phx-submit="send_message"
