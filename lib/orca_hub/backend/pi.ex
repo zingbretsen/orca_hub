@@ -303,6 +303,7 @@ defmodule OrcaHub.Backend.Pi do
     |> Kernel.++(["-e", orca_extension_path()])
     |> Kernel.++(["-e", orca_mcp_extension_path()])
     |> Kernel.++(["-e", orca_plan_extension_path()])
+    |> maybe_add_plan_flag(ctx[:plan_mode_pending])
     # Project trust (docs/security.md): non-interactive modes (rpc/json/-p)
     # never show pi's trust prompt — without an explicit decision, pi falls
     # back to `defaultProjectTrust` ("ask" by default), which silently
@@ -333,6 +334,21 @@ defmodule OrcaHub.Backend.Pi do
   # PLAN_MODE_TOOLS list can reference the `question` tool orca.ts registers.
   # Same Application.app_dir/2 resolution as above.
   defp orca_plan_extension_path, do: Application.app_dir(:orca_hub, "priv/pi/orca-plan.ts")
+
+  # spec §12.8 — cold plan-mode toggle. `SessionRunner.toggle_plan_mode/1`
+  # remembers the desired plan-mode state in runner `data.plan_mode_pending`
+  # when it can't write `/plan` to a live port (no `:idle`+warm-port session
+  # to talk to). Since `ctx` IS the runner's `data` map at every spawn_spec/2
+  # call site (see Backend moduledoc), that pending flag is already present
+  # here with zero extra plumbing — this just adds `--plan` (registered by
+  # priv/pi/orca-plan.ts via `pi.registerFlag`, spec §12.4) when set, so the
+  # NEXT cold spawn starts already in plan mode. `orca-plan.ts`'s
+  # `session_start` handler broadcasts `pi_plan_mode` unconditionally
+  # (`broadcastPlanState`), so the header badge reconciles to the true
+  # post-spawn state regardless of whether this flag actually took effect
+  # (e.g. a resumed session's persisted state can override the flag).
+  defp maybe_add_plan_flag(args, true), do: args ++ ["--plan"]
+  defp maybe_add_plan_flag(args, _pending), do: args
 
   defp maybe_add_model_arg(args, model) do
     case pi_model(model) do
@@ -860,6 +876,18 @@ defmodule OrcaHub.Backend.Pi do
   def encode_toggle_plan_mode(ctx) do
     {iodata, new_ctx} = encode_user_turn("/plan", ctx)
     {:ok, iodata, new_ctx}
+  end
+
+  # ── Manual compaction (spec §12.8) ──────────────────────────────────────
+  # Called by SessionRunner.compact_session/1 (only reachable from :idle with
+  # a warm port — mirrors toggle_plan_mode/1's gating exactly) via the
+  # Backend.encode_compact/2 dispatcher. pi's `compact` RPC command
+  # (docs/rpc.md) triggers `compaction_start`/`compaction_end` events that
+  # Backend.Pi.normalize/2 already normalizes onto persisted `system` events
+  # (spec §12.6) — no further wiring needed here.
+  @impl true
+  def encode_compact(ctx) do
+    {:ok, Jason.encode!(%{"type" => "compact"}) <> "\n", ctx}
   end
 
   # ── Session id extraction ───────────────────────────────────────────────

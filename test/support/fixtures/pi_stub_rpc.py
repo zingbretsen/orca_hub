@@ -82,6 +82,18 @@ protocol's "events never have an id" rule — spec's docs/rpc.md):
                                         followed by
                                         {"type":"response","command":"prompt",
                                         "success":true}.
+  - {"type":"compact"}             -> (spec §12.8, SessionRunner.
+                                        compact_session/1's happy path)
+                                        mirrors handle_steer's posture: acks
+                                        with a response, then emits
+                                        compaction_start/compaction_end (with
+                                        a populated "result", the SUCCESS
+                                        shape from docs/rpc.md — the live
+                                        binary's own "session too small"
+                                        errorMessage failure shape is already
+                                        covered by pi_test.exs's normalize/2
+                                        unit tests + the live smoke, not
+                                        re-derived here).
 
 Every stdout write is flushed explicitly — this is a pipe, not a tty.
 """
@@ -366,6 +378,37 @@ def handle_steer(message):
     )
 
 
+def handle_compact():
+    # spec §12.8: mirrors handle_steer's posture (ack, then async lifecycle
+    # events) — the SUCCESS shape from docs/rpc.md's own "compact" example,
+    # since the "too small" errorMessage failure shape is exercised via the
+    # real pi binary in the live smoke + unit-tested directly in
+    # pi_test.exs's normalize/2 coverage.
+    send({"type": "response", "command": "compact", "success": True, "data": {
+        "summary": "Summary of conversation...",
+        "firstKeptEntryId": "abc123",
+        "tokensBefore": 150000,
+        "estimatedTokensAfter": 32000,
+        "details": {},
+    }})
+    send({"type": "compaction_start", "reason": "manual"})
+    send(
+        {
+            "type": "compaction_end",
+            "reason": "manual",
+            "result": {
+                "summary": "Summary of conversation...",
+                "firstKeptEntryId": "abc123",
+                "tokensBefore": 150000,
+                "estimatedTokensAfter": 32000,
+                "details": {},
+            },
+            "aborted": False,
+            "willRetry": False,
+        }
+    )
+
+
 def main():
     for line in sys.stdin:
         line = line.strip()
@@ -398,6 +441,8 @@ def main():
             handle_prompt(msg.get("message", ""))
         elif msg_type == "steer":
             handle_steer(msg.get("message", ""))
+        elif msg_type == "compact":
+            handle_compact()
         elif msg_type == "abort":
             send({"type": "response", "command": "abort", "success": True})
         elif msg_type == "get_session_stats":

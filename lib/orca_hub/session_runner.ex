@@ -72,16 +72,37 @@ defmodule OrcaHub.SessionRunner do
   end
 
   # Toggles a backend-native plan mode (pi's `/plan` extension command, spec
-  # §12.4) via `Backend.encode_toggle_plan_mode/2`. Deliberately the OPPOSITE
-  # scope of `answer_ui_request/3` above: only allowed from `:idle` with an
-  # already-warm port (a live process to send the command to, and no turn in
-  # flight to interfere with) — refused from `:ready` (never started; no live
-  # process worth cold-opening just for a toggle), `:running` (mid-turn
-  # is send_message/interrupt territory, not this), and `:error`. Returns
-  # `:ok | {:error, :not_running} | {:error, :unsupported}` (the latter if
-  # the backend never implements the optional callback — Claude/Codex).
+  # §12.4/§12.8) via `Backend.encode_toggle_plan_mode/2`. Reachable from
+  # EVERY state except `:running` (mid-turn is send_message/interrupt
+  # territory, not this):
+  #
+  #   - `:idle` with an already-warm port: writes `/plan` straight to the
+  #     live process (unchanged from §12.4 — no state transition, no wait).
+  #   - `:ready` / `:error` / `:idle` with NO warm port (spec §12.8, fixing
+  #     the "send a message first" wart on a cold session): nothing live to
+  #     write to, so the desired state is QUEUED in `data.plan_mode_pending`
+  #     instead and applied at the next spawn (`Backend.Pi.spawn_spec/2`'s
+  #     `--plan` flag) — see `toggle_plan_mode_pending/1`. Toggling again
+  #     while still queued just flips the pending flag back off.
+  #
+  # Always returns `:ok` except `:running` (`{:error, :not_running}`) or a
+  # backend with no toggle mechanism at all (`{:error, :unsupported}` —
+  # Claude/Codex; the UI never renders the button for them since it's gated
+  # on `capabilities.plan_mode_toggle`).
   def toggle_plan_mode(session_id) do
     GenStatem.call(via(session_id), :toggle_plan_mode)
+  end
+
+  # Manually triggers context compaction (pi's `compact` RPC command, spec
+  # §12.8) via `Backend.encode_compact/2`. Mirrors `toggle_plan_mode/1`'s
+  # SCOPE exactly but WITHOUT the cold-queue fallback: only reachable from
+  # `:idle` with an already-warm port. Compaction mid-turn is the backend's
+  # own business (not this call's concern), and a cold/never-started session
+  # has nothing to compact — so `:ready`/`:running`/`:error`/cold-`:idle` all
+  # refuse with `{:error, :not_running}`. Returns
+  # `:ok | {:error, :not_running} | {:error, :unsupported}`.
+  def compact_session(session_id) do
+    GenStatem.call(via(session_id), :compact_session)
   end
 
   # In-session backend switch. A call (not a cast like the other update_*)
@@ -163,6 +184,14 @@ defmodule OrcaHub.SessionRunner do
       # identity implementations never touch it.
       backend: Backend.resolve(session.backend),
       backend_state: %{},
+      # spec §12.8: the desired plan-mode state, applied at the NEXT spawn
+      # (Backend.Pi.spawn_spec/2 reads ctx[:plan_mode_pending] — ctx IS this
+      # `data` map at every spawn_spec/2 call site — and adds `--plan` when
+      # true). Set/flipped by toggle_plan_mode/1 whenever the runner can't
+      # write `/plan` to a live port right now (:ready, :error, or :idle with
+      # no warm port) — see toggle_plan_mode_pending/1 and the :ready/:idle/
+      # :error toggle_plan_mode clauses below.
+      plan_mode_pending: false,
       port: nil,
       # Decode layer for the current port (spec.framing at last spawn). :ndjson
       # until a port has been opened; re-set on every open_port*/1 call from
@@ -254,9 +283,14 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
-  # toggle_plan_mode/1 needs an already-warm port (see its doc) — :ready has
-  # never opened one.
-  def ready({:call, from}, :toggle_plan_mode, _data) do
+  # toggle_plan_mode/1 (spec §12.8): :ready has never opened a port, so queue
+  # the desired state instead of refusing outright — applied at the next
+  # spawn (see toggle_plan_mode/1's doc and toggle_plan_mode_pending/1).
+  def ready({:call, from}, :toggle_plan_mode, data), do: queue_plan_mode_toggle(from, data)
+
+  # compact_session/1 is :idle-with-warm-port-only (see its doc) — a fresh
+  # :ready session has nothing to compact.
+  def ready({:call, from}, :compact_session, _data) do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
@@ -311,9 +345,34 @@ defmodule OrcaHub.SessionRunner do
   # port — writes the backend's toggle command straight to stdin and stays
   # :idle (no turn started; pi's /plan extension command never triggers
   # agent_start/agent_end, live-verified — see Backend.Pi.encode_toggle_plan_mode/1).
+  # Also flips plan_mode_pending in lockstep (spec §12.8) so a LATER cold
+  # respawn (e.g. after the idle timeout tears the port down) continues in
+  # the same plan-mode state this live toggle just set, rather than reverting
+  # to whatever plan_mode_pending last held.
   def idle({:call, from}, :toggle_plan_mode, %{engine: :streaming, port: port} = data)
       when not is_nil(port) do
     case Backend.encode_toggle_plan_mode(data.backend, data) do
+      {:ok, iodata, new_ctx} ->
+        Port.command(port, iodata)
+        new_data = new_ctx |> flush_pending_writes() |> toggle_plan_mode_pending()
+        {:keep_state, new_data, [{:reply, from, :ok}]}
+
+      :noop ->
+        {:keep_state_and_data, [{:reply, from, {:error, :unsupported}}]}
+    end
+  end
+
+  # Cold (no warm process) or one-shot engine (spec §12.8): nothing live to
+  # write `/plan` to — queue the desired state instead, same as :ready.
+  def idle({:call, from}, :toggle_plan_mode, data), do: queue_plan_mode_toggle(from, data)
+
+  # compact_session/1 (see its doc): only meaningful against an ALREADY-warm
+  # port. Writes `compact` to stdin and stays :idle — pi's compaction
+  # lifecycle is entirely async (compaction_start/compaction_end events),
+  # never a state-machine-visible turn.
+  def idle({:call, from}, :compact_session, %{engine: :streaming, port: port} = data)
+      when not is_nil(port) do
+    case Backend.encode_compact(data.backend, data) do
       {:ok, iodata, new_ctx} ->
         Port.command(port, iodata)
         new_data = flush_pending_writes(new_ctx)
@@ -324,8 +383,8 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
-  # Cold (no warm process) or one-shot engine — nothing live to toggle.
-  def idle({:call, from}, :toggle_plan_mode, _data) do
+  # Cold (no warm process) or one-shot engine — nothing live to compact.
+  def idle({:call, from}, :compact_session, _data) do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
@@ -443,9 +502,16 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:running, data)}]}
   end
 
-  # toggle_plan_mode/1 is :idle-only (see its doc) — a turn is already in
-  # flight here.
+  # toggle_plan_mode/1 refuses only here (spec §12.8 — every other state
+  # queues instead of refusing): a turn is already in flight, and pi's own
+  # `/plan` command can't run concurrently with one.
   def running({:call, from}, :toggle_plan_mode, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  end
+
+  # compact_session/1 is :idle-with-warm-port-only (see its doc) — compaction
+  # mid-turn is the backend's own business, not this call's.
+  def running({:call, from}, :compact_session, _data) do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
@@ -607,9 +673,13 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
-  # toggle_plan_mode/1 is :idle-only (see its doc) — an errored run has no
-  # reliably-live port worth writing to.
-  def error({:call, from}, :toggle_plan_mode, _data) do
+  # toggle_plan_mode/1 (spec §12.8): an errored run has no reliably-live port
+  # worth writing to — queue the desired state instead, same as :ready.
+  def error({:call, from}, :toggle_plan_mode, data), do: queue_plan_mode_toggle(from, data)
+
+  # compact_session/1 is :idle-with-warm-port-only (see its doc) — an errored
+  # run has no reliably-live port worth writing to.
+  def error({:call, from}, :compact_session, _data) do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
@@ -711,6 +781,22 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp handle_cli_error(_code, data), do: data
+
+  # spec §12.8 — the cold-toggle_plan_mode fallback shared by :ready, :error,
+  # and cold `:idle` (no warm port): flips `data.plan_mode_pending` and
+  # replies :ok, UNLESS the backend has no toggle mechanism at all (Claude/
+  # Codex — the UI never renders the button for them, but a stray call is
+  # still answered honestly rather than pretending to queue something that
+  # will never apply).
+  defp queue_plan_mode_toggle(from, data) do
+    if function_exported?(data.backend, :encode_toggle_plan_mode, 1) do
+      {:keep_state, toggle_plan_mode_pending(data), [{:reply, from, :ok}]}
+    else
+      {:keep_state_and_data, [{:reply, from, {:error, :unsupported}}]}
+    end
+  end
+
+  defp toggle_plan_mode_pending(data), do: %{data | plan_mode_pending: not data.plan_mode_pending}
 
   defp start_running(from, prompt, data) do
     user_event = make_user_event(prompt)

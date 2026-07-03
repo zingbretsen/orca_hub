@@ -270,7 +270,23 @@ defmodule OrcaHub.Backend do
   """
   @callback encode_toggle_plan_mode(ctx) :: {:ok, iodata, ctx} | :noop
 
-  @optional_callbacks encode_ui_response: 3, encode_toggle_plan_mode: 1
+  @doc """
+  OPTIONAL — encodes a backend-native manual-compaction command (currently
+  only pi's `compact` RPC command, spec §12.8) into bytes to write to the
+  port, when NOT mid-turn (`SessionRunner.compact_session/1` is only
+  reachable from `:idle` with an already-warm port — mirrors
+  `encode_toggle_plan_mode/1`'s gating exactly: compaction mid-turn is the
+  backend's own business, and a cold session has nothing to compact).
+
+  Returns `{:ok, iodata, ctx}` on success or `:noop` when this backend has no
+  such command (Claude, Codex). `Backend.Pi.encode_compact/1` writes pi's
+  `{"type":"compact"}` RPC command; the resulting `compaction_start`/
+  `compaction_end` events already normalize and render (spec §12.6) with no
+  further changes needed.
+  """
+  @callback encode_compact(ctx) :: {:ok, iodata, ctx} | :noop
+
+  @optional_callbacks encode_ui_response: 3, encode_toggle_plan_mode: 1, encode_compact: 1
 
   @doc """
   Resolves a backend identifier (the `sessions.backend` DB column value) to
@@ -422,6 +438,20 @@ defmodule OrcaHub.Backend do
   def encode_toggle_plan_mode(backend, ctx) do
     if function_exported?(backend, :encode_toggle_plan_mode, 1) do
       backend.encode_toggle_plan_mode(ctx)
+    else
+      :noop
+    end
+  end
+
+  @doc """
+  Dispatches to `backend.encode_compact/1` when the backend implements the
+  optional callback, else returns `:noop`. Mirrors
+  `encode_toggle_plan_mode/2`'s dispatch pattern (spec §12.8).
+  """
+  @spec encode_compact(module, ctx) :: {:ok, iodata, ctx} | :noop
+  def encode_compact(backend, ctx) do
+    if function_exported?(backend, :encode_compact, 1) do
+      backend.encode_compact(ctx)
     else
       :noop
     end

@@ -129,6 +129,31 @@ defmodule OrcaHub.BackendTest do
     end
   end
 
+  describe "encode_compact/2 — optional callback dispatch (spec §12.8)" do
+    # function_exported?/3 (Backend.encode_compact/2's dispatch check) requires
+    # the target module to already be LOADED and does not autoload it —
+    # force it explicitly so this test doesn't depend on some OTHER test file
+    # (e.g. pi_test.exs, which calls real Backend.Pi functions) happening to
+    # run first and trigger the load as a side effect.
+    setup do
+      Code.ensure_loaded!(OrcaHub.Backend.Pi)
+      :ok
+    end
+
+    test "pi implements it — dispatches through" do
+      assert {:ok, iodata, _ctx} = Backend.encode_compact(OrcaHub.Backend.Pi, %{})
+      assert IO.iodata_to_binary(iodata) =~ "compact"
+    end
+
+    test "Claude never implements it — :noop rather than UndefinedFunctionError" do
+      assert Backend.encode_compact(OrcaHub.Backend.Claude, %{}) == :noop
+    end
+
+    test "Codex never implements it — :noop" do
+      assert Backend.encode_compact(OrcaHub.Backend.Codex, %{}) == :noop
+    end
+  end
+
   describe "models_for/1" do
     test "returns Claude's exact model list" do
       assert Backend.models_for("claude") == OrcaHub.Backend.Claude.models()

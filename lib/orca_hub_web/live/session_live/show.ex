@@ -102,6 +102,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
      # pi's dialog blocks the port directly, so the session status stays
      # "running" the whole time (no "waiting" transition to key off).
      |> assign(:pending_ui_request, pending_ui_request_from_messages(runner_state.messages))
+     # spec §12.8 — header context-window meter (pi only, capability-gated on
+     # @capabilities.session_stats). Reconstructed from the last
+     # `pi_session_stats` event in history, mirroring @plan_mode's
+     # reconstruction; nil (hidden) until the first stats event ever arrives.
+     |> assign(:context_percent, context_percent_from_messages(runner_state.messages))
      |> load_session_todos()
      |> load_session_commits()
      |> allow_upload(:image,
@@ -266,6 +271,43 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp handle_pi_plan_events(socket, _event), do: socket
 
+  # -- pi context meter helpers (spec §12.8) --
+
+  # Reconstructs the LATEST context-window percent from the most recent
+  # `pi_session_stats` event (Backend.Pi.normalize/2, spec §12.3) — mirrors
+  # pi_plan_mode_from_messages/1's "scan for the last matching event"
+  # pattern, so a page reload (even against a dead runner falling back to
+  # HubRPC.list_messages/1) still shows the meter. `nil` (not yet arrived, or
+  # a non-pi backend that never emits this event) keeps the meter hidden.
+  defp context_percent_from_messages(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %{"type" => "pi_session_stats", "context_usage" => %{"percent" => p}}
+      when is_number(p) ->
+        MessageComponents.format_context_percent(p)
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp handle_context_stats_events(socket, %{
+         "type" => "pi_session_stats",
+         "context_usage" => %{"percent" => p}
+       })
+       when is_number(p) do
+    assign(socket, :context_percent, MessageComponents.format_context_percent(p))
+  end
+
+  defp handle_context_stats_events(socket, _event), do: socket
+
+  # Color thresholds for the header context meter (spec §12.8): normal below
+  # 60%, warning 60-84%, error 85%+.
+  defp context_meter_color(pct) when pct >= 85, do: "progress-error"
+  defp context_meter_color(pct) when pct >= 60, do: "progress-warning"
+  defp context_meter_color(_pct), do: "progress-primary"
+
   @impl true
   def handle_event("send_message", %{"prompt" => prompt}, socket) do
     Logger.info("send_message: prompt=#{inspect(String.trim(prompt))}")
@@ -346,11 +388,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, socket}
   end
 
-  # Backend-native plan-mode toggle (pi's `/plan`, spec §12.4) — button is
-  # gated on @capabilities.plan_mode_toggle (Claude/Codex never render it).
-  # Optimistically flips @plan_mode immediately so the click feels responsive;
-  # the authoritative `pi_plan_mode` broadcast (handle_pi_plan_events/2)
-  # reconciles moments later over the wire regardless.
+  # Backend-native plan-mode toggle (pi's `/plan`, spec §12.4/§12.8) — button
+  # is gated on @capabilities.plan_mode_toggle (Claude/Codex never render
+  # it). Optimistically flips @plan_mode immediately so the click feels
+  # responsive whether the toggle applied live (warm :idle) or was only
+  # QUEUED for the next spawn (:ready/:error/cold :idle, spec §12.8 — the
+  # runner returns :ok either way); the authoritative `pi_plan_mode`
+  # broadcast (handle_pi_plan_events/2) — fired on every `/plan` AND on every
+  # `session_start`, per priv/pi/orca-plan.ts — reconciles moments later over
+  # the wire regardless, including after a queued toggle's next cold spawn.
   def handle_event("toggle_plan_mode", _params, socket) do
     case Cluster.toggle_plan_mode(socket.assigns.session_node, socket.assigns.session.id) do
       :ok ->
@@ -362,7 +408,28 @@ defmodule OrcaHubWeb.SessionLive.Show do
          put_flash(
            socket,
            :error,
-           "Can't toggle plan mode right now — send a message first and wait for it to finish."
+           "Can't toggle plan mode while a turn is running — wait for it to finish."
+         )}
+    end
+  end
+
+  # Manual context compaction (pi's `compact` RPC command, spec §12.8) —
+  # gated on the header context meter's own presence (@capabilities.
+  # session_stats && @context_percent), same posture as toggle_plan_mode/1's
+  # optimistic-then-reconciled feel, but with no local assign to flip: the
+  # resulting compaction_start/compaction_end events already render via the
+  # existing system_message/1 path (spec §12.6) as soon as they arrive.
+  def handle_event("compact_session", _params, socket) do
+    case Cluster.compact_session(socket.assigns.session_node, socket.assigns.session.id) do
+      :ok ->
+        {:noreply, put_flash(socket, :info, "Compaction requested")}
+
+      {:error, _reason} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Can't compact right now — the session must be idle to compact."
          )}
     end
   end
@@ -1303,6 +1370,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     socket = handle_todo_events(socket, event)
     socket = handle_pi_ui_events(socket, event)
     socket = handle_pi_plan_events(socket, event)
+    socket = handle_context_stats_events(socket, event)
     socket = socket |> refresh_pending_questions() |> sync_question_modal()
     {:noreply, socket}
   end
