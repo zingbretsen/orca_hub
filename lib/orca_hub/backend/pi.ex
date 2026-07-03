@@ -303,6 +303,7 @@ defmodule OrcaHub.Backend.Pi do
     |> Kernel.++(["-e", orca_extension_path()])
     |> Kernel.++(["-e", orca_mcp_extension_path()])
     |> Kernel.++(["-e", orca_plan_extension_path()])
+    |> Kernel.++(["-e", orca_guard_extension_path()])
     # Project trust (docs/security.md): non-interactive modes (rpc/json/-p)
     # never show pi's trust prompt — without an explicit decision, pi falls
     # back to `defaultProjectTrust` ("ask" by default), which silently
@@ -333,6 +334,14 @@ defmodule OrcaHub.Backend.Pi do
   # PLAN_MODE_TOOLS list can reference the `question` tool orca.ts registers.
   # Same Application.app_dir/2 resolution as above.
   defp orca_plan_extension_path, do: Application.app_dir(:orca_hub, "priv/pi/orca-plan.ts")
+
+  # priv/pi/orca-guard.ts — confirm-before-running gate for force-semantics
+  # bash commands (spec §12.7). Loaded LAST (after orca-plan.ts) so pi's
+  # per-extension `tool_call` handler ordering (load order, first `block:
+  # true` short-circuits — see that file's header) makes plan mode's
+  # allowlist block fire before this guard ever runs, composing the two
+  # without a double prompt. Same Application.app_dir/2 resolution as above.
+  defp orca_guard_extension_path, do: Application.app_dir(:orca_hub, "priv/pi/orca-guard.ts")
 
   defp maybe_add_model_arg(args, model) do
     case pi_model(model) do

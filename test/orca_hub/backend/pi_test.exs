@@ -190,21 +190,27 @@ defmodule OrcaHub.Backend.PiTest do
       assert File.exists?(expected)
     end
 
-    test "all three orca extensions load via -e, orca.ts first (spec §12.3/§12.4/§12.5)" do
+    test "all four orca extensions load via -e, orca.ts first (spec §12.3/§12.4/§12.5/§12.7)" do
       spec = Backend.spawn_spec(:streaming, ctx())
       e_indices = for {"-e", i} <- Enum.with_index(spec.args), do: i
-      assert length(e_indices) == 3
+      assert length(e_indices) == 4
 
       loaded = Enum.map(e_indices, &Enum.at(spec.args, &1 + 1))
 
       assert loaded == [
                Application.app_dir(:orca_hub, "priv/pi/orca.ts"),
                Application.app_dir(:orca_hub, "priv/pi/orca-mcp.ts"),
-               Application.app_dir(:orca_hub, "priv/pi/orca-plan.ts")
+               Application.app_dir(:orca_hub, "priv/pi/orca-plan.ts"),
+               Application.app_dir(:orca_hub, "priv/pi/orca-guard.ts")
              ]
 
       # orca.ts must precede orca-plan.ts: the plan extension's read-only
       # tool list references the `question` tool orca.ts registers.
+      # orca-guard.ts must load LAST (after orca-plan.ts): pi's per-extension
+      # tool_call handler ordering (load order, first `block: true`
+      # short-circuits) is what makes the guard defer to plan mode's
+      # allowlist block instead of double-prompting — see orca-guard.ts's
+      # header for the full composition rationale.
       assert Enum.each(loaded, &assert(File.exists?(&1))) == :ok
     end
 
