@@ -2,10 +2,11 @@
 
 **Status:** Implemented — all four phases (§8) landed, plus a pi adapter
 (§12.2) landed post-Phase-3, plus the "pi backend groundwork" slice (§12.3),
-pi plan mode (§12.4), the orca-mcp bridge (§12.5), and pi mid-turn
-steering/queue visibility/compaction events (§12.6). Claude + Codex + pi are
-all selectable per-session with capability-gated UI; grok remains
-research-only (§12.1, adapter deferred).
+pi plan mode (§12.4), the orca-mcp bridge (§12.5), pi mid-turn
+steering/queue visibility/compaction events (§12.6), and pi guarded mode
+(§12.7 — a confirm-before-running gate for force-semantics bash commands).
+Claude + Codex + pi are all selectable per-session with capability-gated UI;
+grok remains research-only (§12.1, adapter deferred).
 **Goal:** Decouple OrcaHub from the Claude Code CLI so a session can be driven by
 any headless coding-agent CLI. First non-Claude target: **OpenAI Codex CLI**
 (via `codex app-server`); second: **pi** (Mario Zechner's coding agent, over
@@ -1778,3 +1779,192 @@ its OWN persisted column or piggyback on `claude_session_id`'s row) and a
 reconnect path that calls `get_entries{since:…}` instead of relying on pi's
 own `--session-id` resume replaying everything — a larger, separate change
 better scoped on its own.
+
+### 12.7 pi guarded mode (IMPLEMENTED — `priv/pi/orca-guard.ts`)
+
+A fourth OrcaHub-authored pi extension, `priv/pi/orca-guard.ts`, loaded via a
+FOURTH `-e` in `Backend.Pi.spawn_spec/2`'s `common_args/1` (after `orca.ts`,
+`orca-mcp.ts`, `orca-plan.ts`), resolved the same
+`Application.app_dir(:orca_hub, "priv/pi/orca-guard.ts")` way as the other
+three. It's a `tool_call` hook that intercepts `bash` commands with
+unambiguous force semantics and requires an explicit user confirmation
+(`ctx.ui.confirm`) before letting them run — a "did you really mean that?"
+gate for the class of mistake that's expensive or impossible to undo
+locally (a force-pushed branch, a hard-reset working tree, a force-deleted
+git branch, an auto-approved terraform apply/destroy).
+
+**Zero new Elixir plumbing.** `ctx.ui.confirm` is one of the four dialog
+methods the "pi backend groundwork" slice (§12.3) already wired end to end:
+it emits a blocking `extension_ui_request{method:"confirm",…}` on stdout,
+`Backend.Pi.handle_peer_request/2` stashes it and surfaces a `pi_ui_request`
+event (unchanged — the dispatch already keys purely on
+"does this have `id`+`method`", not on which of the four methods it is), the
+existing modal in `session_live/show.html.heex` renders it, and the answer
+travels back via `SessionRunner.answer_ui_request/3` ->
+`Backend.Pi.encode_ui_response/3` as `extension_ui_response{confirmed:
+true|false}`. `show.ex`'s `piui_payload/2` already had a `"confirm"` clause
+(`%{"confirmed" => value in ["true", "Yes", "yes"]}`, groundwork landed in
+§12.3 with no consumer yet) and `message_components.ex`'s
+`format_pi_ui_answer/1` already handled `%{"confirmed" => c}` — both used
+verbatim, unmodified, by this slice.
+
+**One small template addition, not zero.** Eyeballing the existing modal
+against a real `confirm` request revealed one genuine gap: a `confirm`
+request carries no `"options"` array (only `select` does), so without a
+dedicated branch it fell through to the free-text form meant for `input`
+dialogs — asking the user to *type* `"true"`/`"yes"` to approve a force
+command, exactly the kind of error-prone interaction this guard exists to
+prevent. Fixed with a small, additive template branch in
+`session_live/show.html.heex`: `@pending_ui_request["method"] == "confirm"`
+now renders explicit **Confirm**/**Decline** buttons instead. "Confirm"
+reuses the existing `piui_answer` event with a literal `"true"` value (the
+pre-existing `piui_payload/2` clause maps that to `%{"confirmed" => true}`
+with no changes needed); "Decline" reuses the existing generic `piui_cancel`
+handler (`%{"cancelled" => true}` — resolves `confirmed: false` on the pi
+side either way, per `docs/rpc.md`'s confirm cancellation semantics), so
+neither button needed a new event handler. The free-text form and the
+generic bottom "Cancel" button are now both suppressed for `method ==
+"confirm"` (the new buttons replace them) to avoid presenting two
+decline-equivalent controls at once. The modal header also swaps "pi is
+asking a question" for "pi wants confirmation" when `method == "confirm"`,
+matching the intent of the dialog. No Elixir module gained a new public
+function or event handler — the diff is confined to conditionally-rendered
+markup in the one template.
+
+**Policy (`FORCE_COMMAND_PATTERNS`, `priv/pi/orca-guard.ts`).** A single flat
+exported `RegExp[]`, one pattern per line with an inline comment, deliberately
+narrow:
+
+```ts
+export const FORCE_COMMAND_PATTERNS: RegExp[] = [
+  /--force(-with-lease)?\b/,                                   // --force / --force-with-lease anywhere
+  /\bgit\s+push\b[^\n]*\s-f\b/,                                 // git push ... -f (short flag)
+  /\bgit\s+reset\b[^\n]*--hard\b/,                              // git reset --hard
+  /\bgit\s+clean\b[^\n]*\s-[a-zA-Z]*f[a-zA-Z]*\b/,              // git clean with an -f-containing short-flag cluster
+  /\bgit\s+branch\b[^\n]*\s-D\b/,                               // git branch -D (case-sensitive: lowercase -d is NOT gated)
+  /\bterraform\s+(apply|destroy)\b[^\n]*-auto-approve\b/i,      // terraform apply|destroy -auto-approve
+];
+```
+
+The generic `--force`/`--force-with-lease` pattern alone already covers
+`git push --force[-with-lease]`, `git checkout --force`, `kubectl delete
+--force`, `gh pr merge --force`, `docker rm --force`, and anything else that
+spells the long flag out — no separate `kubectl`/`checkout` pattern was
+needed. **`rm` (including `rm -rf`) is explicitly EXEMPT** — deleting files
+in the agent's own working directory is everyday and low-blast-radius, and
+gating it would just train the user to reflexively click through the
+dialog, defeating the guard's purpose. **No `sudo` gating either** — a
+different, broader policy question, out of scope here. Only the built-in
+`bash` tool is in scope; every other tool (including MCP tools) passes
+through untouched (`isToolCallEventType("bash", event)` guards the whole
+handler).
+
+**On match:** `ctx.ui.confirm(title, message, { signal: ctx.signal, timeout:
+DIALOG_TIMEOUT_MS })` — `title` quotes the exact command
+(`` `Run force command: ${command}` ``), `timeout` is 10 minutes (matching
+`orca.ts`/`orca-plan.ts`'s `DIALOG_TIMEOUT_MS`), and `ctx.signal` (the
+`tool_call` handler's own `AbortSignal`) is threaded through for the same
+reason `orca.ts`'s `question` tool and `orca-plan.ts`'s "what next?" dialog
+do (§12.3/§12.4's live-verified lesson: without it, `{"type":"abort"}` while
+the dialog is pending hangs pi with no further stdout). **Confirmed → allow**
+(handler returns `undefined`). **Declined, timed out, or aborted → deny**
+(`{block: true, reason: "User declined force command: <cmd>"}`) — verified
+against the installed 0.80.3 binary's `dist/modes/rpc/rpc-mode.js` that all
+three of those cases resolve `ctx.ui.confirm`'s promise to the SAME value,
+`false` (its `createDialogPromise` `defaultValue` argument, returned on
+timeout, on abort, and on an explicit `{"cancelled":true}` response) — so
+"declined", "timed out", and "aborted" collapse to one code path with no
+extra branching. DENY is the default on silence, as required.
+
+**Composing with `orca-plan.ts` (plan mode) — no double-prompt, no shared
+state.** pi runs every loaded extension's `tool_call` handlers in `-e` load
+order and stops at the FIRST handler whose result has `block: true`
+(verified against the installed 0.80.3 binary's
+`dist/core/extensions/runner.js`:`emitToolCall` — it iterates extensions in
+load order and does an immediate `return result` the moment any handler's
+result has `block: true`, skipping every remaining extension/handler
+entirely). `orca-plan.ts` loads BEFORE `orca-guard.ts` (third `-e` vs
+fourth) and its own `tool_call` hook already blocks every `bash` command not
+on its read-only allowlist while plan mode is enabled — which is every
+pattern `FORCE_COMMAND_PATTERNS` matches, none of which are read-only. So
+while planning, orca-plan's block always fires first and `orca-guard.ts`'s
+handler never even runs for a gated command — the two extensions compose
+correctly purely from `-e` load order, with no shared state and no explicit
+"is plan mode on?" check in either file.
+
+**Wiring.** `Backend.Pi.common_args/1` gained one line,
+`Kernel.++(["-e", orca_guard_extension_path()])`, appended after the
+pre-existing `orca_plan_extension_path()` line (ordering matters — see
+composition above), plus the `orca_guard_extension_path/0` private helper
+(same `Application.app_dir/2` resolution as the other three). The
+pre-existing "all three orca extensions load via -e" spawn-arg test in
+`pi_test.exs` was renamed/extended to "all four", asserting the exact
+4-element `-e` path list in order (`orca.ts`, `orca-mcp.ts`, `orca-plan.ts`,
+`orca-guard.ts`) and that every path exists on disk.
+
+**Live smoke (2026-07-03, real `pi` 0.80.3 binary, Fireworks
+`minimax-m2p7`, NOT the ExUnit stub, NOT via Phoenix — a throwaway Python
+harness spawning `pi --mode rpc --no-session --model
+fireworks/accounts/fireworks/models/minimax-m2p7 -e orca.ts -e orca-mcp.ts
+-e orca-plan.ts -e orca-guard.ts` directly, cwd'd into scratch git repos).
+All four required checks passed:
+
+1. **Decline.** Prompted "Run `git push --force origin main`" in a scratch
+   git repo with no remote. Observed
+   `{"type":"extension_ui_request","id":"884e...","method":"confirm","title":"Run
+   force command: git push --force origin main","message":"This command has
+   force semantics — it discards local/remote state or skips a safety check
+   the tool would otherwise perform. Confirm to proceed.","timeout":600000}`
+   — matching `handle_peer_request/2`'s `ui_request_event/1` normalization
+   exactly. Replied `{"type":"extension_ui_response","id":"884e...",
+   "confirmed":false}`; observed `tool_execution_end{isError:true,
+   result:{content:[{type:"text",text:"User declined force command: git
+   push --force origin main"}]}}`, then `turn_end`/`agent_end` — the model's
+   final message explained the command "was blocked by a safety guard."
+2. **Confirm.** Same prompt, same shape of `extension_ui_request`, replied
+   `{"confirmed":true}`. Observed `tool_execution_end{isError:true,
+   result:{content:[{type:"text",text:"error: src refspec main does not
+   match any\nerror: failed to push some refs to
+   'origin'\n\n\nCommand exited with code 1"}]}}` — a REAL git failure (this
+   scratch repo's default branch is `master`, not `main`, and has no
+   `origin` remote), proving the command actually reached `bash` and ran;
+   the `isError:true` here is git's own exit code, not a guard block.
+3. **`rm` exempt.** Prompted "Run `rm -rf rm_target/subdir`" against a
+   scratch directory. Observed `tool_execution_start` immediately followed
+   by `tool_execution_end{isError:false,result:{content:[{type:"text",
+   text:"(no output)"}]}}` — **no `extension_ui_request{method:"confirm"}`
+   at all** (the only `extension_ui_request` in the whole run was
+   `orca-plan.ts`'s unrelated fire-and-forget `setStatus` at
+   `session_start`). Confirmed on disk: `rm_target/subdir` was actually
+   deleted.
+4. **Abort while pending.** Prompted "Run `git branch -D
+   some-nonexistent-branch`". Observed the guard's `extension_ui_request
+   {method:"confirm",title:"Run force command: git branch -D
+   some-nonexistent-branch",…}`; sent `{"type":"abort"}` while it was
+   pending (no response). Observed, in order:
+   `tool_execution_end{isError:true,result:{content:[{type:"text",
+   text:"Operation aborted"}]}}`, `turn_end`, a second empty assistant
+   `message_end{stopReason:"aborted",errorMessage:"Request was
+   aborted."}`, `turn_end`, `agent_end`, then
+   `{"type":"response","command":"abort","success":true}` — measured
+   **0.10s** from sending `abort` to `agent_end`/`turn_end` landing, not the
+   60+s hang §12.3 documented for `orca.ts`'s FIRST (unfixed) version —
+   direct evidence the `{ signal: ctx.signal, … }` threading is load-bearing
+   here too, not cosmetic.
+
+The `git branch -D` scenario incidentally also demonstrates the guard fires
+even for a command that would itself fail harmlessly (no such branch
+exists) — the guard runs BEFORE execution, on the command text alone, not
+on any prediction of whether it will succeed.
+
+**Test coverage.** `pi_test.exs`'s spawn-arg test updated as described above
+(71 tests in that file, all passing). No other Elixir test changes were
+needed — per the "zero new Elixir plumbing" design, there is no new
+behaviour callback, no new event type, no new `SessionRunner` code path to
+unit-test; the extension's own logic (pattern matching, dialog composition,
+abort handling) is exercised end-to-end by the live smoke above, which is
+the appropriate bar for a pure-TypeScript, no-Elixir-surface change. Full
+suite: 420 tests, the same 1 pre-existing unrelated `TriggersTest` failure
+as every prior phase's baseline (verified with `--max-cases 1` to rule out
+the usual full-suite DB-pool concurrency flake from masquerading as a
+regression).
