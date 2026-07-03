@@ -56,6 +56,31 @@ defmodule OrcaHub.Backend.CodexStubIntegrationTest do
     {:ok, session: session}
   end
 
+  # Regression: a backend spawn failure (codex executable missing from the
+  # service PATH, observed live on the systemd agent) used to raise out of the
+  # send_message call, crash the runner, and take the calling LiveView down
+  # via erpc. It must land as a cli_error card in the feed with the runner
+  # alive in :error state.
+  test "a spawn failure lands as a cli_error card instead of crashing the runner", %{
+    session: session
+  } do
+    Application.put_env(
+      :orca_hub,
+      :codex_executable,
+      "/nonexistent/codex-#{System.unique_integer([:positive])}"
+    )
+
+    assert OrcaHub.Cluster.send_message(node(), session.id, "hi") == :ok
+
+    state = wait_until_terminal(session.id)
+    assert state.status == :error
+    assert SessionSupervisor.session_alive?(session.id)
+
+    cli_error = Enum.find(state.messages, &(&1["type"] == "cli_error"))
+    refute is_nil(cli_error)
+    assert cli_error["message"] =~ "Failed to start the agent CLI (OrcaHub.Backend.Codex)"
+  end
+
   # Regression: the abandoned-session cleanup used to stop the runner between
   # page load and send, and Cluster.send_message crashed the caller with a
   # GenError :noproc. It must transparently restart a dead runner instead —

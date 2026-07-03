@@ -606,26 +606,31 @@ defmodule OrcaHub.SessionRunner do
     persist_message(data, user_event)
     broadcast(data.session_id, {:event, user_event})
 
-    {port, framing} = open_port(prompt, data)
-    session = db_call(data, :get_session!, [data.session_id])
-    if session.archived_at, do: db_call(data, :unarchive_session, [session])
-    db_call(data, :update_session, [session, %{status: "running"}])
-    broadcast(data.session_id, {:status, :running})
-    AgentPresence.update_status(data.directory, data.session_id, "running")
+    try do
+      {port, framing} = open_port(prompt, data)
+      session = db_call(data, :get_session!, [data.session_id])
+      if session.archived_at, do: db_call(data, :unarchive_session, [session])
+      db_call(data, :update_session, [session, %{status: "running"}])
+      broadcast(data.session_id, {:status, :running})
+      AgentPresence.update_status(data.directory, data.session_id, "running")
 
-    first_prompt = data.first_prompt || prompt
+      first_prompt = data.first_prompt || prompt
 
-    {:next_state, :running,
-     %{
-       data
-       | port: port,
-         framing: framing,
-         buffer: "",
-         error_output: "",
-         messages: data.messages ++ [user_event],
-         first_prompt: first_prompt,
-         pending_questions: nil
-     }, [{:reply, from, :ok}]}
+      {:next_state, :running,
+       %{
+         data
+         | port: port,
+           framing: framing,
+           buffer: "",
+           error_output: "",
+           messages: data.messages ++ [user_event],
+           first_prompt: first_prompt,
+           pending_questions: nil
+       }, [{:reply, from, :ok}]}
+    rescue
+      e ->
+        rescue_turn_start(from, %{data | messages: data.messages ++ [user_event]}, e)
+    end
   end
 
   # When a hung run is resumed by a queued answer, leave "waiting" behind and
@@ -787,41 +792,74 @@ defmodule OrcaHub.SessionRunner do
         turn_result: nil
     }
 
-    data =
-      if base.port == nil do
-        # Cold start: claim a warm slot (may evict an LRU idle peer), then open
-        # the process and run any open-time handshake (Backend.on_open/1 —
-        # Codex's `initialize` request; a no-op for Claude, see spec §3.2).
-        # Backends that need a hidden warm-up turn to force their MCP
-        # handshake (capabilities.warmup_turn) run one and queue the real
-        # prompt to flush once it completes; others (Codex included — its
-        # handshake is the on_open/1 leg above, not a warm-up turn) write the
-        # real turn immediately.
-        Streaming.WarmPool.request_slot(base.session_id, self())
-        {port, framing} = open_port_streaming(base)
-        base = run_on_open(%{base | port: port, framing: framing})
+    try do
+      data =
+        if base.port == nil do
+          # Cold start: claim a warm slot (may evict an LRU idle peer), then open
+          # the process and run any open-time handshake (Backend.on_open/1 —
+          # Codex's `initialize` request; a no-op for Claude, see spec §3.2).
+          # Backends that need a hidden warm-up turn to force their MCP
+          # handshake (capabilities.warmup_turn) run one and queue the real
+          # prompt to flush once it completes; others (Codex included — its
+          # handshake is the on_open/1 leg above, not a warm-up turn) write the
+          # real turn immediately.
+          Streaming.WarmPool.request_slot(base.session_id, self())
+          {port, framing} = open_port_streaming(base)
+          base = run_on_open(%{base | port: port, framing: framing})
 
-        if base.backend.capabilities().warmup_turn do
-          base = write_warmup_turn(base)
-          # Fresh port bakes the current flags into the /mcp URL — any pending
-          # rebake is satisfied by this cold open.
-          %{
-            base
-            | warming_up: true,
-              pending_rebake: false,
-              pending_prompts: base.pending_prompts ++ [prompt]
-          }
+          if base.backend.capabilities().warmup_turn do
+            base = write_warmup_turn(base)
+            # Fresh port bakes the current flags into the /mcp URL — any pending
+            # rebake is satisfied by this cold open.
+            %{
+              base
+              | warming_up: true,
+                pending_rebake: false,
+                pending_prompts: base.pending_prompts ++ [prompt]
+            }
+          else
+            base = write_user_turn(base, prompt)
+            %{base | warming_up: false, pending_rebake: false}
+          end
         else
-          base = write_user_turn(base, prompt)
-          %{base | warming_up: false, pending_rebake: false}
+          # Warm process: write the real turn straight to the already-open stdin.
+          Streaming.WarmPool.touch(base.session_id, :running)
+          write_user_turn(base, prompt)
         end
-      else
-        # Warm process: write the real turn straight to the already-open stdin.
-        Streaming.WarmPool.touch(base.session_id, :running)
-        write_user_turn(base, prompt)
-      end
 
-    {:next_state, :running, data, [{:reply, from, :ok}]}
+      {:next_state, :running, data, [{:reply, from, :ok}]}
+    rescue
+      e -> rescue_turn_start(from, base, e)
+    end
+  end
+
+  # A failure while starting the turn — e.g. the backend's spawn_spec raising
+  # because the CLI executable isn't on the service's PATH — must land as an
+  # error card in the message feed, not crash the runner: the crash used to
+  # propagate through erpc and take the calling LiveView down with it. The
+  # user event was already persisted/broadcast by the caller, so only the
+  # error event is appended here.
+  defp rescue_turn_start(from, base, e) do
+    message = "Failed to start the agent CLI (#{inspect(base.backend)}): #{Exception.message(e)}"
+    Logger.error("[SessionRunner] #{message}")
+
+    error_event =
+      stamp(%{
+        "type" => "cli_error",
+        "exit_code" => nil,
+        "message" => message
+      })
+
+    persist_message(base, error_event)
+    broadcast(base.session_id, {:event, error_event})
+
+    update_session_status(base, %{status: "error"})
+    broadcast(base.session_id, {:status, :error})
+    AgentPresence.update_status(base.directory, base.session_id, "error")
+    Streaming.WarmPool.release(base.session_id)
+
+    data = %{base | messages: base.messages ++ [error_event], warming_up: false}
+    {:next_state, :error, data, [{:reply, from, :ok}]}
   end
 
   # Called after each event reduce in :running (streaming). Drives transitions off
