@@ -543,15 +543,16 @@ defmodule OrcaHubWeb.MessageComponents do
 
   # pi reports contextUsage.percent as a raw float (live-verified:
   # 1.4506022135416665) — round for display ("1.5", whole numbers as "30"),
-  # keep nil/garbage hidden.
-  defp format_context_percent(p) when is_number(p) do
+  # keep nil/garbage hidden. Public (spec §12.8): SessionLive.Show reuses this
+  # exact rounding for the header context meter rather than duplicating it.
+  def format_context_percent(p) when is_number(p) do
     case Float.round(p * 1.0, 1) do
       r when r == trunc(r) -> trunc(r)
       r -> r
     end
   end
 
-  defp format_context_percent(_), do: nil
+  def format_context_percent(_), do: nil
 
   defp format_pi_ui_answer(%{"cancelled" => true}), do: "(cancelled)"
   defp format_pi_ui_answer(%{"value" => v}) when is_binary(v), do: v

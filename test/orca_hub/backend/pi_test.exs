@@ -220,6 +220,30 @@ defmodule OrcaHub.Backend.PiTest do
     end
   end
 
+  # spec §12.8 — cold plan-mode toggle: SessionRunner.toggle_plan_mode/1
+  # remembers the desired state in data.plan_mode_pending when it can't write
+  # `/plan` to a live port; ctx IS that data map at every spawn_spec/2 call
+  # site, so this flag is already present with zero extra plumbing. A
+  # DELIBERATELY separate describe block (not folded into the -e extensions
+  # test above) to keep this slice's diff minimal against a concurrent change
+  # to that same function/test.
+  describe "spawn_spec/2 — plan mode pending flag (spec §12.8)" do
+    test "adds --plan when ctx.plan_mode_pending is true" do
+      spec = Backend.spawn_spec(:streaming, ctx(%{plan_mode_pending: true}))
+      assert "--plan" in spec.args
+    end
+
+    test "omits --plan when plan_mode_pending is false or absent" do
+      refute "--plan" in Backend.spawn_spec(:streaming, ctx(%{plan_mode_pending: false})).args
+      refute "--plan" in Backend.spawn_spec(:streaming, ctx()).args
+    end
+
+    test "also applies to :one_shot spawns" do
+      spec = Backend.spawn_spec(:one_shot, ctx(%{plan_mode_pending: true, prompt: "hi"}))
+      assert "--plan" in spec.args
+    end
+  end
+
   describe "spawn_spec/2 — :one_shot" do
     test "pi -p --mode json, prompt is the last positional arg" do
       c = ctx(%{prompt: "hello there"})
@@ -1043,6 +1067,15 @@ defmodule OrcaHub.Backend.PiTest do
       c = ctx()
       assert {:ok, iodata, out} = Backend.encode_toggle_plan_mode(c)
       assert decode_write(iodata) == %{"type" => "prompt", "message" => "/plan"}
+      assert out == c
+    end
+  end
+
+  describe "encode_compact/1 (spec §12.8)" do
+    test "writes pi's compact RPC command verbatim" do
+      c = ctx()
+      assert {:ok, iodata, out} = Backend.encode_compact(c)
+      assert decode_write(iodata) == %{"type" => "compact"}
       assert out == c
     end
   end

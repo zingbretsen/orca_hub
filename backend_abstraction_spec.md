@@ -1968,3 +1968,191 @@ suite: 420 tests, the same 1 pre-existing unrelated `TriggersTest` failure
 as every prior phase's baseline (verified with `--max-cases 1` to rule out
 the usual full-suite DB-pool concurrency flake from masquerading as a
 regression).
+
+### 12.8 Cold plan-mode toggle + context meter/manual compaction (IMPLEMENTED)
+
+Two small pi-only UX fixes on top of §12.4/§12.3/§12.6, both live-verified
+against the real 0.80.3 binary.
+
+**1. `toggle_plan_mode/1` now works on COLD sessions.** §12.4 scoped the
+toggle to `:idle` with an already-warm port ONLY — live use surfaced a wart:
+a fresh `:ready` session (or one that had gone cold via the idle timeout)
+flashed "send a message first" instead of toggling, even though the intent
+("start this session in plan mode") is perfectly well-defined for a session
+that hasn't spawned yet. Fixed by giving `SessionRunner` a new `data`
+field, `plan_mode_pending` (boolean, defaults `false`, initialized in
+`init/1`), and a shared private `queue_plan_mode_toggle/2` helper called from
+the `:ready`, `:error`, and cold-`:idle` (`port: nil`) `toggle_plan_mode`
+clauses: it flips `plan_mode_pending` (`toggle_plan_mode_pending/1`) and
+replies `:ok` — UNLESS the backend doesn't implement
+`encode_toggle_plan_mode/1` at all (Claude/Codex), in which case it replies
+`{:error, :unsupported}` rather than pretending to queue something that will
+never apply. Toggling again while still queued just flips the flag back
+(`true` -> `false` -> …) — no separate "clear" path needed, since the
+default (`false`) already means "no `--plan` flag, same as never toggled".
+The warm-`:idle` clause (unchanged wire behavior — still writes `/plan`
+straight to the live port) ALSO now flips `plan_mode_pending` in lockstep, so
+a later cold respawn (idle-timeout teardown) continues in the same plan-mode
+state the live toggle just set, rather than reverting to a stale queued
+value. `:running` is the ONLY state that still refuses outright
+(`{:error, :not_running}`) — a turn is in flight and pi's own `/plan` command
+can't run concurrently with one.
+
+The pending flag travels to the next spawn with ZERO new plumbing: the
+`Backend` moduledoc's ctx contract (§0) already establishes that `ctx` IS the
+runner's own `data` map at every `spawn_spec/2` call site (`open_port_streaming/1`
+passes `data` directly; `open_port/1` passes `Map.put(data, :prompt, prompt)`,
+which doesn't drop the key), so `data.plan_mode_pending` is simply present as
+`ctx[:plan_mode_pending]` inside `Backend.Pi.spawn_spec/2` for free.
+`Backend.Pi.common_args/1` gained one new pipe step,
+`maybe_add_plan_flag(args, ctx[:plan_mode_pending])`, appending `--plan`
+(the flag `priv/pi/orca-plan.ts` registers via `pi.registerFlag`, read at
+`session_start`) when true — a single line inserted right before the
+existing `--approve` step, deliberately NOT touching the `-e` extension-list
+lines (kept the diff minimal since another concurrent change was landing a
+fourth `-e` extension in the same function). Claude/Codex's `spawn_spec/2`
+never reads this key at all — backend-seam clean, no special-casing in
+`SessionRunner` beyond the existing capability-gated toggle button.
+
+`orca-plan.ts`'s `session_start` handler was ALREADY confirmed (§12.4's own
+prose) to call `broadcastPlanState(ctx)` unconditionally at the end of every
+`session_start` — re-confirmed by reading the file for this slice: `if
+(pi.getFlag("plan") === true) { planModeEnabled = true; }` runs first (this
+slice's write path), a resume's persisted `plan-mode` entry can then
+override it (`??` — only if actually present), and `broadcastPlanState(ctx)`
+fires last regardless. This means the header's `pi_plan_mode` badge always
+reconciles to the TRUE post-spawn state whether or not `--plan` actually
+took effect (e.g. a resumed session's own persisted state overriding a fresh
+spawn's flag) — no separate "did the flag apply?" bookkeeping needed
+anywhere.
+
+`SessionLive.Show`'s `handle_event("toggle_plan_mode", …)` needed NO changes
+to its optimistic-flip logic (it already just flips `@plan_mode` on any `:ok`
+reply, live or queued) — only the flash copy for the refusal case changed,
+since `:running` is now the only state left that can produce one:
+"Can't toggle plan mode while a turn is running — wait for it to finish."
+
+**2. Context meter + manual "Compact now".** Pi already reports live
+token/cost/context-window stats after every turn via the `pi_session_stats`
+event (§12.3) — rendered inline in the feed, but with no header-level
+at-a-glance indicator and no way to trigger compaction manually short of
+`{"type":"compact"}` over the raw wire (§12.6 wired up compaction
+EVENT rendering, not a way to REQUEST one).
+
+**Wire/runner side — `compact_session/1`, mirroring `toggle_plan_mode/1`'s
+STRUCTURE exactly, one level down in scope:** a new optional callback,
+`OrcaHub.Backend.encode_compact/1` (`@optional_callbacks encode_compact: 1`),
+dispatched via a new `Backend.encode_compact/2` function
+(`function_exported?/3`-gated, `:noop` for Claude/Codex) — same posture as
+`encode_toggle_plan_mode/1`/`encode_toggle_plan_mode/2`.
+`Backend.Pi.encode_compact/1` writes pi's documented `{"type":"compact"}` RPC
+command (`docs/rpc.md`'s "Compaction" section) verbatim, no extra fields.
+`SessionRunner.compact_session/1` (new public `GenStatem.call`) is
+DELIBERATELY narrower than `toggle_plan_mode/1`: reachable ONLY from `:idle`
+with an already-warm port (`%{engine: :streaming, port: port} when not
+is_nil(port)`) — every other state (`:ready`, `:running`, `:error`, cold
+`:idle`) replies `{:error, :not_running}` with no queuing fallback, per the
+task's own framing: compaction mid-turn is pi's own business (nothing for
+OrcaHub to queue — pi already auto-compacts near the context limit on its
+own), and a cold/never-spawned session has no context to compact at all.
+`Cluster.compact_session/2` is a plain RPC-through passthrough, same posture
+as `Cluster.toggle_plan_mode/2` (no ensure-started dance).
+`Backend.Pi.normalize/2` needed ZERO changes — the resulting
+`compaction_start`/`compaction_end` events it already emits (§12.6) normalize
+onto persisted `system` events and render via the pre-existing
+`system_message/1` component regardless of whether compaction was
+auto-triggered or this manually-requested. Live-verified (see below): a
+manual compact on a small session answers with `compaction_end`'s
+`errorMessage` "Nothing to compact (session too small)" — already rendered
+correctly by `system_message_label/1`'s existing "self-describing message"
+branch, no crash, no special-casing needed.
+
+**UI side — the meter.** `SessionLive.Show` gained a new `@context_percent`
+assign (`nil` until the first stats event, mirroring `@plan_mode`'s
+reconstruction posture): `context_percent_from_messages/1` (mount-time,
+scans history for the last `pi_session_stats` event's
+`context_usage.percent`, same "scan for the last matching event" pattern as
+`pi_plan_mode_from_messages/1`/`pending_ui_request_from_messages/1`) and
+`handle_context_stats_events/2` (live, called from the existing
+`handle_info({:event, event}, …)` clause alongside
+`handle_pi_plan_events/2`/`handle_pi_ui_events/2`). Both round the raw float
+through a small `round_percent/1` helper matching
+`MessageComponents.format_context_percent/1`'s exact rounding (`1.4506022…`
+-> `1.5`, whole numbers rendered bare). The header template
+(`session_live/show.html.heex`, in the SAME `:actions` slot as the
+backend/model picker and the plan-mode toggle) renders a `dropdown-end`
+button gated on `@capabilities.session_stats && @context_percent` — a thin
+daisyUI `.progress` bar (already used elsewhere in this same template for
+upload progress and in `usage_live.ex` for the Claude-API quota panel, so no
+new component risk) colored by `context_meter_color/1`'s thresholds (`>= 85`
+-> `progress-error`, `>= 60` -> `progress-warning`, else `progress-primary`)
+plus a `{@context_percent}%` label (`hidden sm:inline`, same mobile-hiding
+convention the backend/model button's label already uses). The dropdown
+itself reuses the EXACT `fixed! inset-x-2! … sm:absolute! …` responsive
+class stack the backend/model dropdown directly above it already uses, for
+the same documented reason (a right-anchored `dropdown-end` menu would
+render off-screen on a cramped mobile header) — "Compact now" lives inside
+this dropdown rather than as its own header icon, per the task's own
+"keep it simple" framing, so the meter's capability+data gate covers both
+surfaces with one `:if`. `handle_event("compact_session", …)` calls
+`Cluster.compact_session/2` and flashes `:info` "Compaction requested" on
+`:ok` (matching the task's suggested copy) or `:error` "Can't compact right
+now — the session must be idle to compact." otherwise; no local assign
+changes on success — the compaction events render themselves once they
+arrive over the wire, same as any other `system` event.
+
+**Test coverage.** `test/orca_hub/backend/pi_test.exs`: a new "spawn_spec/2 —
+plan mode pending flag" describe block (`--plan` present when
+`ctx.plan_mode_pending == true`, absent when `false`/absent) kept as its OWN
+describe block rather than folded into the existing `-e`-extensions test, to
+minimize hunk overlap with a concurrent change to that same function/test;
+`encode_compact/1`'s exact wire frame. `test/orca_hub/backend_test.exs`: an
+`encode_compact/2` dispatcher describe block mirroring
+`encode_toggle_plan_mode/2`'s (pi dispatches through; Claude/Codex `:noop`).
+`test/orca_hub/session_runner_test.exs`: direct state-function tests (no
+live runner/port needed, same pattern as the pre-existing `update_backend`
+describe block) covering `toggle_plan_mode`'s cold-queue path from `:ready`/
+`:error`/cold-`:idle` (flips `plan_mode_pending`, replies `:ok`), the
+toggle-again-clears-it case, the `:running` refusal, the `:unsupported` case
+for a backend with no `encode_toggle_plan_mode/1`, and `compact_session`'s
+narrower gating (`:ok` only from warm `:idle`, `{:error, :not_running}`
+everywhere else including cold `:idle`).
+`test/orca_hub/backend/pi_stub_integration_test.exs` +
+`test/support/fixtures/pi_stub_rpc.py`: the pre-existing
+`toggle_plan_mode/1` integration test's cold-session assertion updated from
+`{:error, :not_running}` to `:ok` (the exact behavior this slice changes);
+the stub gained a `compact` command handler (mirrors `handle_steer`'s
+posture: acks, then emits `compaction_start`/`compaction_end` with a
+populated `result`) and a new integration test driving
+`SessionRunner.compact_session/1` end-to-end against a warm `:idle` runner,
+asserting the persisted `compaction_start`/`compaction_end` system events
+land with the right fields and the runner never leaves `:idle`.
+`test/orca_hub_web/live/session_live/show_test.exs`: a context-meter describe
+block asserting the meter (and its `%` text) renders once a `pi_session_stats`
+message is seeded into a pi session's history but is absent for Claude
+(`session_stats: false`) even with the same message seeded, and that the
+`compact_session` button/gate follows the meter's own presence.
+
+**Live smoke (2026-07-03, real `pi` 0.80.3 binary, Fireworks
+`minimax-m2p7`, NOT the ExUnit stub):**
+
+1. Spawned `pi --mode rpc --no-session --plan -e priv/pi/orca.ts -e
+   priv/pi/orca-mcp.ts -e priv/pi/orca-plan.ts` (the exact `--plan` spawn
+   flag path `maybe_add_plan_flag/2` produces when `plan_mode_pending` is
+   true) and captured the FIRST stdout line after the `get_state` response:
+   `{"type":"extension_ui_request","id":"…","method":"setStatus",
+   "statusKey":"orca-plan-mode","statusText":"{\"enabled\":true,
+   \"executing\":false}"}` — `enabled:true` on session_start, proving the
+   cold `--plan` flag path this slice's `toggle_plan_mode/1` fix relies on
+   actually takes effect end-to-end, not just that the flag is passed.
+2. On the same session, after a short turn, sent `{"type":"compact"}`:
+   captured `{"type":"compaction_start","reason":"manual"}` immediately
+   followed by `{"type":"compaction_end","reason":"manual","aborted":false,
+   "willRetry":false,"errorMessage":"Compaction failed: Nothing to compact
+   (session too small)"}` — the same "too small" shape §12.6's own live
+   smoke captured, confirmed here as the exact response `compact_session/1`'s
+   manual trigger produces, and confirmed it renders via the existing
+   `system_message_label/1` branch with no crash.
+
+No adapter gaps found in either surface — every field read by this slice's
+code matched the live wire output exactly.

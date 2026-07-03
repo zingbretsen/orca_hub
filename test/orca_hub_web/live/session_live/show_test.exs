@@ -249,6 +249,112 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
   end
 
+  # spec §12.8 — header context-window meter + "Compact now". Both are gated
+  # on @capabilities.session_stats && @context_percent (the meter's presence
+  # covers the compact button too — it lives in the meter's own dropdown).
+  # A seeded pi_session_stats message pushes the runner past :ready into
+  # :idle (list_messages != []), same as any other pre-seeded history.
+  describe "context meter — session_stats capability (spec §12.8)" do
+    defp seed_pi_session_stats(session_id, percent) do
+      {:ok, _msg} =
+        Sessions.create_message(%{
+          session_id: session_id,
+          data: %{
+            "type" => "pi_session_stats",
+            "tokens" => %{"total" => 200},
+            "cost" => 0.001,
+            "context_usage" => %{
+              "tokens" => 200,
+              "contextWindow" => 128_000,
+              "percent" => percent
+            }
+          }
+        })
+    end
+
+    test "renders the meter (with its % text) once a pi_session_stats message is in history", %{
+      conn: conn,
+      pi_session: session
+    } do
+      seed_pi_session_stats(session.id, 42.3)
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+      # "Context window:" is the header meter's own title text — a distinct
+      # marker from MessageComponents' pre-existing, backend-agnostic inline
+      # feed line ("42.3% context", no "window"), which ALSO renders for this
+      # same seeded message regardless of capability gating (spec §12.3) —
+      # asserting on the bare "42.3%" substring would pass for either.
+      assert html =~ "Context window:"
+      assert html =~ "42.3%"
+      assert :sys.get_state(view.pid).socket.assigns.context_percent == 42.3
+    end
+
+    test "hidden (nil) for a pi session with no session-stats history yet", %{
+      conn: conn,
+      pi_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assert is_nil(:sys.get_state(view.pid).socket.assigns.context_percent)
+    end
+
+    test "hidden for Claude (session_stats: false) even with the same message seeded", %{
+      conn: conn,
+      claude_session: session
+    } do
+      seed_pi_session_stats(session.id, 42.3)
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+      # The @context_percent assign is set regardless of backend (reconstructed
+      # purely from message history) — only the header meter's RENDERING is
+      # capability-gated. The bare "42.3%" text still appears via the
+      # pre-existing backend-agnostic inline feed line (spec §12.3), so assert
+      # on the meter's own distinguishing marker instead.
+      refute html =~ "Context window:"
+      assert :sys.get_state(view.pid).socket.assigns.context_percent == 42.3
+    end
+
+    test "the compact_session button follows the meter's own presence (absent for Claude)", %{
+      conn: conn,
+      claude_session: session
+    } do
+      seed_pi_session_stats(session.id, 42.3)
+
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+      refute html =~ "compact_session"
+    end
+
+    test "the compact_session button is present for pi once stats have arrived", %{
+      conn: conn,
+      pi_session: session
+    } do
+      seed_pi_session_stats(session.id, 10)
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+      assert html =~ "compact_session"
+      assert has_element?(view, "button[phx-click='compact_session']")
+    end
+
+    test "color threshold: >=85% renders the error progress class", %{
+      conn: conn,
+      pi_session: session
+    } do
+      seed_pi_session_stats(session.id, 90)
+
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+      assert html =~ "progress-error"
+    end
+
+    test "color threshold: >=60% and <85% renders the warning progress class", %{
+      conn: conn,
+      pi_session: session
+    } do
+      seed_pi_session_stats(session.id, 70)
+
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+      assert html =~ "progress-warning"
+    end
+  end
+
   describe "plan mode — capability assign" do
     test "Claude session has plan_mode: true", %{conn: conn, claude_session: session} do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")

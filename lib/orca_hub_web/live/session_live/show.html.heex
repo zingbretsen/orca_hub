@@ -264,6 +264,42 @@
           </li>
         </ul>
       </div>
+      <%!-- spec §12.8 — header context-window meter (pi only, gated on
+           @capabilities.session_stats). Hidden until the first
+           pi_session_stats event arrives (@context_percent nil). Mirrors the
+           backend/model dropdown's responsive posture directly above (same
+           fixed/inset-x-2 mobile escape so it doesn't render off-screen in
+           the wrapped mobile header). The "Compact now" button lives in this
+           dropdown rather than as its own icon, to keep the header row
+           tight. --%>
+      <div :if={@capabilities.session_stats && @context_percent} class="dropdown dropdown-end">
+        <div
+          tabindex="0"
+          role="button"
+          class="btn btn-ghost btn-sm gap-1"
+          title={"Context window: #{@context_percent}% used"}
+        >
+          <.icon name="hero-chart-pie" class="size-4" />
+          <progress
+            class={["progress w-10 h-1.5", context_meter_color(@context_percent)]}
+            value={@context_percent}
+            max="100"
+          />
+          <span class="text-xs hidden sm:inline">{@context_percent}%</span>
+        </div>
+        <ul
+          tabindex="0"
+          class="dropdown-content menu bg-base-300 rounded-box z-10 p-2 shadow-lg fixed! inset-x-2! top-28! w-auto sm:absolute! sm:left-auto! sm:right-0! sm:top-full! sm:w-56"
+        >
+          <li class="menu-title text-xs uppercase opacity-60">Context window</li>
+          <li class="px-3 py-1 text-xs opacity-70">{@context_percent}% used</li>
+          <li>
+            <button phx-click="compact_session">
+              <.icon name="hero-archive-box-arrow-down" class="size-4" /> Compact now
+            </button>
+          </li>
+        </ul>
+      </div>
       <button
         :if={@capabilities.mcp}
         phx-click="toggle_orchestrator"

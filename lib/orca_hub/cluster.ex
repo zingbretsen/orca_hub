@@ -227,6 +227,13 @@ defmodule OrcaHub.Cluster do
   def toggle_plan_mode(n, session_id),
     do: rpc(n, SessionRunner, :toggle_plan_mode, [session_id])
 
+  # Manually triggers context compaction (pi's `compact` RPC command, spec
+  # §12.8). Same plain RPC-through posture as toggle_plan_mode/2 — no
+  # ensure-started dance: SessionRunner.compact_session/1 already returns
+  # {:error, :not_running} for a cold/never-started runner.
+  def compact_session(n, session_id),
+    do: rpc(n, SessionRunner, :compact_session, [session_id])
+
   # -------------------------------------------------------------------
   # Project queries
   # -------------------------------------------------------------------

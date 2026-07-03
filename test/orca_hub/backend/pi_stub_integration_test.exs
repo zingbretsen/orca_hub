@@ -301,9 +301,12 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
     idle_state = wait_until_terminal(session.id)
     assert idle_state.status == :idle
 
-    # toggle_plan_mode/1 is refused before the port is warm (spec §12.4 —
-    # only reachable from :idle with an already-open port) — a freshly
-    # started runner that has never sent a message is :ready, not :idle.
+    # toggle_plan_mode/1 against a freshly started :ready runner (never sent a
+    # message) now QUEUES the desired state instead of refusing (spec §12.8,
+    # fixing the "send a message first" wart) — the stub never sees this
+    # (no port write happens for a cold toggle), so this just asserts the
+    # runner-level :ok; Backend.Pi's spawn_spec/2 --plan-flag behavior is
+    # covered directly in pi_test.exs + the live smoke.
     fresh_dir =
       Path.join(System.tmp_dir!(), "pi_stub_it_cold_#{System.unique_integer([:positive])}")
 
@@ -319,7 +322,7 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
     end)
 
     assert {:ok, _pid} = SessionSupervisor.start_session(cold_session.id)
-    assert SessionRunner.toggle_plan_mode(cold_session.id) == {:error, :not_running}
+    assert SessionRunner.toggle_plan_mode(cold_session.id) == :ok
 
     # Against the WARM session, the stub's live-verified-shape response for
     # "/plan" (a fire-and-forget setStatus, then the prompt ack, no
@@ -333,6 +336,46 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
     plan_event = Enum.find(state.messages, &(&1["type"] == "pi_plan_mode"))
     assert plan_event["enabled"] == true
     assert plan_event["executing"] == false
+  end
+
+  # spec §12.8 — manual compaction. Mirrors the toggle_plan_mode/1 test above
+  # (a real turn warms the port first), but exercises compact_session/1's
+  # NARROWER gating: :ready refuses (no cold-queue fallback, unlike
+  # toggle_plan_mode/1) and the warm-:idle path writes {"type":"compact"},
+  # landing the stub's compaction_start/compaction_end pair as persisted
+  # `system` events without the runner ever leaving :idle.
+  test "compact_session/1: refused cold, then a real compact round-trips against a warm port",
+       %{session: session} do
+    assert {:ok, _pid} = SessionSupervisor.start_session(session.id)
+    assert SessionRunner.compact_session(session.id) == {:error, :not_running}
+
+    assert SessionRunner.send_message(session.id, "say hi") == :ok
+    idle_state = wait_until_terminal(session.id)
+    assert idle_state.status == :idle
+
+    assert SessionRunner.compact_session(session.id) == :ok
+
+    # compaction_start/compaction_end normalize onto persisted "system"
+    # events (subtype, not top-level type — spec §12.6), so this polls on
+    # subtype rather than reusing wait_until_message/2's type-only check.
+    state = wait_until_system_subtype(session.id, "compaction_end")
+    assert state.status == :idle
+
+    system_subtypes =
+      state.messages
+      |> Enum.filter(&(&1["type"] == "system"))
+      |> Enum.map(& &1["subtype"])
+
+    assert "compaction_start" in system_subtypes
+    assert "compaction_end" in system_subtypes
+
+    compaction_end =
+      Enum.find(state.messages, &(&1["type"] == "system" && &1["subtype"] == "compaction_end"))
+
+    assert compaction_end["reason"] == "manual"
+    assert compaction_end["aborted"] == false
+    assert compaction_end["tokens_before"] == 150_000
+    assert compaction_end["estimated_tokens_after"] == 32_000
   end
 
   test "a spawn failure lands as a cli_error card instead of crashing the runner", %{
@@ -378,6 +421,28 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
       true ->
         Process.sleep(50)
         wait_until_message(session_id, type, attempts - 1)
+    end
+  end
+
+  # Like wait_until_message/2, but for events normalized onto the generic
+  # "system" type (compaction_start/compaction_end, spec §12.6/§12.8) — those
+  # are distinguished by "subtype", not by a distinct top-level "type".
+  defp wait_until_system_subtype(session_id, subtype, attempts \\ 100) do
+    state = SessionRunner.get_state(session_id)
+
+    cond do
+      Enum.any?(state.messages, &(&1["type"] == "system" && &1["subtype"] == subtype)) ->
+        state
+
+      attempts <= 0 ->
+        flunk(
+          "session #{session_id} never received a system/#{inspect(subtype)} message; " <>
+            "last status=#{inspect(state.status)}, messages=#{inspect(state.messages)}"
+        )
+
+      true ->
+        Process.sleep(50)
+        wait_until_system_subtype(session_id, subtype, attempts - 1)
     end
   end
 
