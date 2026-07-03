@@ -1,13 +1,13 @@
 defmodule OrcaHubWeb.SessionLive.IndexTest do
   @moduledoc """
-  Backend picker coverage (backend_abstraction_spec.md §7/§9/§12.2). The
+  Backend picker coverage (backend_abstraction_spec.md §7/§9/§12.2/§12.5). The
   new-session form's `<select>` (index.html.heex ~292) is conditionally
   rendered off `OrcaHub.Backend.available/0`'s length — Phase 1 (Claude only)
   kept it hidden; Phase 2 registers Codex, so `available/0` now returns
   multiple entries and the picker becomes visible automatically (no template
-  change needed); the pi adapter adds a third entry and is the first backend
-  to actually exercise the `mcp: false` gating on this form (Codex is
-  `mcp: true`, so it never did). Asserts: the picker is shown, the default
+  change needed); the pi adapter adds a third entry. As of the orca-mcp
+  bridge (§12.5), all three backends are `mcp: true`, so the orchestrator
+  toggle shows for all three. Asserts: the picker is shown, the default
   submit (no explicit backend selection) still creates a "claude" session,
   and the model list / orchestrator toggle scope correctly per backend.
   """
@@ -80,7 +80,12 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
     assert html =~ "Orchestrator mode"
   end
 
-  test "new-session form hides the orchestrator toggle for pi (mcp: false)", %{conn: conn} do
+  # orca-mcp bridge (spec §12.5): priv/pi/orca-mcp.ts registers orca's MCP
+  # tools via pi.registerTool, so pi flipped to mcp: true — no longer the
+  # outlier that hid this toggle.
+  test "new-session form shows the orchestrator toggle for pi (mcp: true, orca-mcp bridge)", %{
+    conn: conn
+  } do
     {:ok, view, _html} = live(conn, ~p"/sessions/new")
 
     html =
@@ -88,7 +93,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
       |> form("form", session: %{"backend" => "pi"})
       |> render_change()
 
-    refute html =~ "Orchestrator mode"
+    assert html =~ "Orchestrator mode"
   end
 
   test "new-session form scopes the model datalist to pi's live catalog when selected", %{

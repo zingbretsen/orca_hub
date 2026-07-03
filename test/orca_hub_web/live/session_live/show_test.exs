@@ -1,12 +1,12 @@
 defmodule OrcaHubWeb.SessionLive.ShowTest do
   @moduledoc """
   Capability-gated chrome coverage (backend_abstraction_spec.md §7/§9,
-  Phase 3 + pi §12.2): the usage nav link, plan-mode badges/review card, and
-  the AskUserQuestion modal are present for a Claude session and absent for a
-  Codex/pi one; the MCP toggles (orchestrator + servers modal) are present
-  for Claude/Codex (`mcp: true`) and absent for pi (`mcp: false` — the first
-  backend to exercise that gate); the model switcher only offers the
-  session's own backend's models.
+  Phase 3 + pi §12.2/§12.5): the usage nav link, plan-mode badges/review
+  card, and the AskUserQuestion modal are present for a Claude session and
+  absent for a Codex/pi one; the MCP toggles (orchestrator + servers modal)
+  are present for all three backends (`mcp: true`, as of the orca-mcp bridge
+  §12.5 — pi is no longer the `mcp: false` outlier); the model switcher only
+  offers the session's own backend's models.
 
   Sessions here are freshly created (no message history), so `SessionRunner`
   boots straight into `:ready` and never opens a port for a page visit alone
@@ -167,13 +167,23 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
   end
 
-  describe "MCP toggles — present for both (mcp: true for Claude and Codex)" do
+  describe "MCP toggles — present for all three (mcp: true for Claude, Codex, and pi)" do
     test "orchestrator toggle button shown for Claude", %{conn: conn, claude_session: session} do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
       assert has_element?(view, "button[phx-click='toggle_orchestrator']")
     end
 
     test "orchestrator toggle button shown for Codex", %{conn: conn, codex_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assert has_element?(view, "button[phx-click='toggle_orchestrator']")
+    end
+
+    # orca-mcp bridge (spec §12.5): priv/pi/orca-mcp.ts registers orca's MCP
+    # tools via pi.registerTool, so pi is no longer the mcp: false outlier —
+    # the orchestrator/code_exec toggles and MCP-servers modal (gated purely
+    # on @capabilities.mcp in show.html.heex, no pi-specific markup) show for
+    # pi exactly like Claude/Codex.
+    test "orchestrator toggle button shown for pi", %{conn: conn, pi_session: session} do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
       assert has_element?(view, "button[phx-click='toggle_orchestrator']")
     end
@@ -187,17 +197,10 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
       assert has_element?(view, "button[phx-click='toggle_mcp_modal']")
     end
-  end
 
-  describe "MCP toggles — absent for pi (mcp: false, first backend to exercise this gate)" do
-    test "orchestrator toggle button hidden for pi", %{conn: conn, pi_session: session} do
+    test "MCP servers modal button shown for pi", %{conn: conn, pi_session: session} do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
-      refute has_element?(view, "button[phx-click='toggle_orchestrator']")
-    end
-
-    test "MCP servers modal button hidden for pi", %{conn: conn, pi_session: session} do
-      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
-      refute has_element?(view, "button[phx-click='toggle_mcp_modal']")
+      assert has_element?(view, "button[phx-click='toggle_mcp_modal']")
     end
   end
 
