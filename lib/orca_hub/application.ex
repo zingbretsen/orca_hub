@@ -55,6 +55,10 @@ defmodule OrcaHub.Application do
       {Registry, keys: :unique, name: OrcaHub.SessionRegistry},
       {Registry, keys: :unique, name: OrcaHub.MCPRegistry},
       {Registry, keys: :unique, name: OrcaHub.TerminalRegistry},
+      # Duplicate-keys: one entry per LiveView currently viewing a session.
+      # Consulted by the delayed abandoned-session cleanup (SessionLive.Show)
+      # so a page reload doesn't archive a session someone is still looking at.
+      {Registry, keys: :duplicate, name: OrcaHub.SessionViewersRegistry},
       {Task.Supervisor, name: OrcaHub.TaskSupervisor},
       OrcaHub.SessionHeartbeat,
       # Warm-process admission control — must start before SessionSupervisor so
@@ -82,6 +86,10 @@ defmodule OrcaHub.Application do
       {Registry, keys: :unique, name: OrcaHub.SessionRegistry},
       {Registry, keys: :unique, name: OrcaHub.MCPRegistry},
       {Registry, keys: :unique, name: OrcaHub.TerminalRegistry},
+      # Duplicate-keys: one entry per LiveView currently viewing a session.
+      # Consulted by the delayed abandoned-session cleanup (SessionLive.Show)
+      # so a page reload doesn't archive a session someone is still looking at.
+      {Registry, keys: :duplicate, name: OrcaHub.SessionViewersRegistry},
       {Task.Supervisor, name: OrcaHub.TaskSupervisor},
       # Warm-process admission control — must start before SessionSupervisor.
       OrcaHub.Streaming.WarmPool,

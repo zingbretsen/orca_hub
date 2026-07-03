@@ -56,6 +56,21 @@ defmodule OrcaHub.Backend.CodexStubIntegrationTest do
     {:ok, session: session}
   end
 
+  # Regression: the abandoned-session cleanup used to stop the runner between
+  # page load and send, and Cluster.send_message crashed the caller with a
+  # GenError :noproc. It must transparently restart a dead runner instead —
+  # this drives that restart through a full turn against the stub.
+  test "Cluster.send_message restarts a dead runner and completes the turn", %{session: session} do
+    refute SessionSupervisor.session_alive?(session.id)
+
+    assert OrcaHub.Cluster.send_message(node(), session.id, "say hi") == :ok
+    assert SessionSupervisor.session_alive?(session.id)
+
+    state = wait_until_terminal(session.id)
+    assert state.status == :idle
+    assert Enum.map(state.messages, & &1["type"]) |> Enum.member?("result")
+  end
+
   test "a real SessionRunner drives a full turn end-to-end against the stub app-server", %{
     session: session
   } do

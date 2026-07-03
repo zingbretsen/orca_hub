@@ -110,6 +110,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
   defp maybe_subscribe(socket, id, remote?) do
     if connected?(socket) do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{id}")
+      # Presence mark for the abandoned-session cleanup (see terminate/2):
+      # auto-removed when this LiveView process dies.
+      Registry.register(OrcaHub.SessionViewersRegistry, id, %{})
       unless remote?, do: Process.send_after(self(), :poll_file_changes, 2000)
     end
   end
@@ -234,6 +237,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
         {:error, :busy} ->
           {:noreply, put_flash(socket, :error, "Session is busy")}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Failed to send message: #{inspect(reason)}")}
       end
     else
       {:noreply, socket}
@@ -593,6 +599,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
       {:error, :busy} ->
         {:noreply, put_flash(socket, :error, "Session is busy")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to send message: #{inspect(reason)}")}
     end
   end
 
@@ -614,6 +623,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
       {:error, :busy} ->
         {:noreply, put_flash(socket, :error, "Session is busy")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to send message: #{inspect(reason)}")}
     end
   end
 
@@ -1211,16 +1223,47 @@ defmodule OrcaHubWeb.SessionLive.Show do
   @impl true
   def handle_info(_msg, socket), do: {:noreply, socket}
 
+  # Auto-archive sessions that were opened and abandoned without a single
+  # message (one-click creation paths make these easy to accumulate). The
+  # check is DELAYED and viewer-guarded rather than done inline: on a page
+  # reload the dying LiveView's terminate fires while (or just before) the
+  # replacement LiveView is mounting, and an inline stop/archive here used to
+  # kill the freshly started runner under the user (noproc on send) and
+  # archive the session they were still looking at.
   @impl true
   def terminate(_reason, socket) do
     if session = socket.assigns[:session] do
       session_node = socket.assigns[:session_node] || node()
-
-      if Enum.empty?(Cluster.list_messages(session_node, session.id)) do
-        Cluster.stop_session(session_node, session.id)
-        Cluster.archive_session(session_node, session)
-      end
+      schedule_abandoned_cleanup(session.id, session_node)
     end
+  end
+
+  defp schedule_abandoned_cleanup(session_id, session_node) do
+    delay = Application.get_env(:orca_hub, :abandoned_session_cleanup_ms, 30_000)
+
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      Process.sleep(delay)
+      abandoned_cleanup(session_id, session_node)
+    end)
+  end
+
+  # Public (@doc false) as a test seam. Stops + archives the session only if
+  # it is STILL untouched (no messages) and nobody is viewing it anymore.
+  @doc false
+  def abandoned_cleanup(session_id, session_node) do
+    with [] <- Registry.lookup(OrcaHub.SessionViewersRegistry, session_id),
+         session when not is_nil(session) <- HubRPC.get_session(session_id),
+         true <- is_nil(session.archived_at),
+         [] <- Cluster.list_messages(session_node, session_id) do
+      Cluster.stop_session(session_node, session_id)
+      Cluster.archive_session(session_node, session)
+      :archived
+    else
+      _ -> :kept
+    end
+  rescue
+    # Best-effort cleanup — a dead node or DB hiccup must not produce noise.
+    _ -> :kept
   end
 
   defp transfer_uploads(paths, target_node, session_dir) do

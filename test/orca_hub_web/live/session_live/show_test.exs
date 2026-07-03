@@ -168,6 +168,49 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
   end
 
+  describe "abandoned-session cleanup (delayed, viewer-guarded)" do
+    alias OrcaHubWeb.SessionLive.Show
+
+    test "archives an unviewed, empty, unarchived session", %{claude_session: session} do
+      assert Show.abandoned_cleanup(session.id, node()) == :archived
+      refute is_nil(Sessions.get_session!(session.id).archived_at)
+    end
+
+    test "keeps a session someone is still viewing", %{claude_session: session} do
+      {:ok, _} = Registry.register(OrcaHub.SessionViewersRegistry, session.id, %{})
+
+      assert Show.abandoned_cleanup(session.id, node()) == :kept
+      assert is_nil(Sessions.get_session!(session.id).archived_at)
+    end
+
+    test "keeps a session that has messages", %{claude_session: session} do
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{"type" => "user", "message" => %{"role" => "user", "content" => "hi"}}
+        })
+
+      assert Show.abandoned_cleanup(session.id, node()) == :kept
+      assert is_nil(Sessions.get_session!(session.id).archived_at)
+    end
+  end
+
+  describe "Cluster.send_message runner restart" do
+    test "returns {:error, {:not_started, _}} instead of crashing when the runner can't start" do
+      # A directory whose parent is a regular file makes runner init's
+      # mkdir_p fail — the pre-fix behavior was a GenError :noproc crash
+      # from send_message after the silent start failure.
+      file = Path.join(System.tmp_dir!(), "not_a_dir_#{System.unique_integer([:positive])}")
+      File.write!(file, "")
+      on_exit(fn -> File.rm(file) end)
+
+      {:ok, session} = Sessions.create_session(%{directory: Path.join(file, "sub")})
+
+      assert {:error, {:not_started, %File.Error{}}} =
+               OrcaHub.Cluster.send_message(node(), session.id, "hello")
+    end
+  end
+
   describe "in-session backend switcher" do
     test "dropdown lists every registered backend", %{conn: conn, claude_session: session} do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")

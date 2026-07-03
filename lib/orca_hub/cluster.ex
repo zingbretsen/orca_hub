@@ -176,8 +176,26 @@ defmodule OrcaHub.Cluster do
   def stop_session(n, session_id), do: rpc(n, SessionSupervisor, :stop_session, [session_id])
   def session_alive?(n, session_id), do: rpc(n, SessionSupervisor, :session_alive?, [session_id])
 
-  def send_message(n, session_id, prompt),
-    do: rpc(n, SessionRunner, :send_message, [session_id, prompt])
+  # The runner may have been stopped between page load and send — e.g. the
+  # abandoned-session cleanup in SessionLive.Show.terminate/2 racing a page
+  # reload — so restart it instead of letting the GenStatem call crash the
+  # caller with :noproc.
+  def send_message(n, session_id, prompt) do
+    ensure_started =
+      if session_alive?(n, session_id) do
+        :ok
+      else
+        case start_session(n, session_id) do
+          {:ok, _} -> :ok
+          {:error, {:already_started, _}} -> :ok
+          {:error, reason} -> {:error, {:not_started, reason}}
+        end
+      end
+
+    with :ok <- ensure_started do
+      rpc(n, SessionRunner, :send_message, [session_id, prompt])
+    end
+  end
 
   def interrupt(n, session_id), do: rpc(n, SessionRunner, :interrupt, [session_id])
   def get_state(n, session_id), do: rpc(n, SessionRunner, :get_state, [session_id])
