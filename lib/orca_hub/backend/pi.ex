@@ -303,6 +303,15 @@ defmodule OrcaHub.Backend.Pi do
     |> Kernel.++(["-e", orca_extension_path()])
     |> Kernel.++(["-e", orca_mcp_extension_path()])
     |> Kernel.++(["-e", orca_plan_extension_path()])
+    # Project trust (docs/security.md): non-interactive modes (rpc/json/-p)
+    # never show pi's trust prompt — without an explicit decision, pi falls
+    # back to `defaultProjectTrust` ("ask" by default), which silently
+    # IGNORES project-local `.pi/`/`.agents/` skills, prompts, and
+    # extensions. `--approve` trusts them for this run only — the same
+    # posture as our Claude usage (unsandboxed, skip-permissions, in
+    # user-owned project directories), decided per-spawn by OrcaHub rather
+    # than via mutable host-level settings.json state.
+    |> Kernel.++(["--approve"])
   end
 
   # priv/pi/orca.ts — registers the `question` tool (spec §12.3). Resolved via

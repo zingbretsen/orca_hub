@@ -207,6 +207,11 @@ defmodule OrcaHub.Backend.PiTest do
       # tool list references the `question` tool orca.ts registers.
       assert Enum.each(loaded, &assert(File.exists?(&1))) == :ok
     end
+
+    test "--approve trusts project-local .pi/.agents resources (rpc mode never prompts)" do
+      assert "--approve" in Backend.spawn_spec(:streaming, ctx()).args
+      assert "--approve" in Backend.spawn_spec(:one_shot, ctx(%{prompt: "hi"})).args
+    end
   end
 
   describe "spawn_spec/2 — :one_shot" do
