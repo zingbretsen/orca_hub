@@ -1,10 +1,12 @@
 defmodule OrcaHub.BackendTest do
   @moduledoc """
   Coverage for `OrcaHub.Backend.resolve/1`, `available/0`, `capabilities_for/1`,
-  and `models_for/1` (backend_abstraction_spec.md §4/§7/§8/§12.2). Phase 1
+  and `models_for/1` (backend_abstraction_spec.md §4/§7/§8/§12.2/§12.5). Phase 1
   landed Claude only; Phase 2 registers Codex; Phase 3 adds the
   capability/model lookup helpers the UI branches on; the pi adapter adds a
-  third backend and the first `mcp: false` capability row exercised here.
+  third backend. Pi started `mcp: false` (§12.2) and flipped to `mcp: true`
+  once the orca-mcp bridge (§12.5, `priv/pi/orca-mcp.ts`) gave it real orca
+  MCP tool access.
   """
 
   use ExUnit.Case, async: true
@@ -68,7 +70,7 @@ defmodule OrcaHub.BackendTest do
       assert caps.mcp == true
     end
 
-    test "\"pi\" resolves to pi's capabilities (mcp: false is the distinguishing gap)" do
+    test "\"pi\" resolves to pi's capabilities" do
       caps = Backend.capabilities_for("pi")
       assert caps.usage == false
       assert caps.plan_mode == false
@@ -78,14 +80,17 @@ defmodule OrcaHub.BackendTest do
       # UI branches on the flag, not on the backend).
       assert caps.ask_user_question == true
       assert caps.session_stats == true
-      assert caps.mcp == false
+      # orca-mcp bridge (spec §12.5): priv/pi/orca-mcp.ts registers orca's
+      # MCP tools via pi.registerTool, so pi is no longer the mcp: false
+      # outlier among the three backends.
+      assert caps.mcp == true
       assert caps.resume == true
       assert caps.streaming == true
     end
 
     test "accepts anything with a :backend key (a session-shaped map/struct)" do
       assert Backend.capabilities_for(%{backend: "codex"}).usage == false
-      assert Backend.capabilities_for(%{backend: "pi"}).mcp == false
+      assert Backend.capabilities_for(%{backend: "pi"}).mcp == true
       assert Backend.capabilities_for(%{backend: nil}) == OrcaHub.Backend.Claude.capabilities()
     end
 

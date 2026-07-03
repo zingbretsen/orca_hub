@@ -1,12 +1,17 @@
 defmodule OrcaHub.Backend.SharedPrompts do
   @moduledoc """
   System-prompt fragments that are NOT Claude-specific — shared by
-  `Backend.Claude` and `Backend.Codex` (spec §3.2's `system_prompt/1`
-  callback) so the two backends' otherwise-identical guidance can't drift.
+  `Backend.Claude`, `Backend.Codex`, and (as of the orca-mcp bridge, spec
+  §12.5) `Backend.Pi` (spec §3.2's `system_prompt/1` callback) so backends'
+  otherwise-identical guidance can't drift.
 
-  Fragments that genuinely depend on Claude tool names/built-ins
-  (`AskUserQuestion`, the `mcp__server__tool` naming convention baked into
-  `--append-system-prompt` instructions) stay private to `Backend.Claude`.
+  `orchestrator_prompt/2` uses the `mcp__server__tool` naming convention
+  directly (e.g. `mcp__orca__start_session`) — this used to be considered
+  Claude-only and lived in `Backend.Claude`, but it's equally correct for any
+  backend whose MCP bridge registers tools under that same convention, which
+  is exactly what `priv/pi/orca-mcp.ts` does (spec §12.5). Fragments that
+  depend on a Claude-only *built-in* (`AskUserQuestion`) still stay private
+  to `Backend.Claude`.
   """
 
   @doc "Teaches a code-exec session its collapsed tool surface, when enabled."
@@ -45,6 +50,61 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - The value of the last expression (and any stdout) is returned to you. \
       Keep return values slim — filter/project before returning. Pure stdlib is \
       available; OrcaHub internals, File, and System are blocked.
+    """
+    |> String.trim()
+  end
+
+  @doc """
+  Instructs an orchestrator session to delegate work via the `mcp__orca__*`
+  coordination tools instead of doing it directly. Moved here verbatim from
+  `Backend.Claude` (spec §12.5) when `Backend.Pi` gained the same
+  `mcp__orca__*`-namespaced coordination tools via its `orca-mcp.ts` bridge —
+  no text changed, only the call site.
+  """
+  def orchestrator_prompt(false, _session_id), do: nil
+  def orchestrator_prompt(nil, _session_id), do: nil
+
+  def orchestrator_prompt(true, session_id) do
+    """
+    # Orchestrator Session
+
+    You are an **orchestrator session**. Your role is to coordinate work across multiple worker sessions, NOT to do the work yourself.
+
+    ## Your Capabilities
+
+    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+
+    ## How to Work
+
+    **Important:** The OrcaHub MCP tools must be called by their full namespaced name — the MCP prefix followed by the tool name, e.g. `mcp__orca__start_session` (not just `start_session`). The same applies to every tool below (`mcp__orca__send_message_to_session`, `mcp__orca__schedule_heartbeat`, `mcp__orca__search_sessions`, `mcp__orca__archive_session`, `mcp__orca__cancel_heartbeat`, etc.).
+
+    1. **Delegate all implementation work** to other sessions using:
+       - `mcp__orca__start_session` — spawn a new worker session with a detailed prompt
+       - `mcp__orca__send_message_to_session` — direct an existing session
+
+    2. **Request callbacks** — When delegating work, explicitly ask the worker session to message you back when done:
+       > "When you have completed this task, use `mcp__orca__send_message_to_session` to notify session #{session_id} with a summary of what you did."
+
+    3. **Set up monitoring** — After spawning workers, use `mcp__orca__schedule_heartbeat` to wake yourself up periodically (e.g., every 2-5 minutes) to check on progress:
+       > "Check on worker sessions. Use `mcp__orca__search_sessions` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
+
+    4. **Check in proactively** — If you don't hear back from a worker session within a reasonable time, send it a message asking for a status update.
+
+    5. **Archive completed children** — When a worker session has finished its task, use `mcp__orca__archive_session` to archive it. This keeps the session list tidy. If you need to continue the conversation later, just send a message to the archived session — it will be automatically unarchived.
+
+    6. **Cancel monitoring** — When all delegated work is complete, use `mcp__orca__cancel_heartbeat` to stop monitoring.
+
+    ## Example Flow
+
+    1. Analyze the task and break it into subtasks
+    2. Spawn worker sessions for each subtask, requesting they message back when done
+    3. Set a heartbeat to check on progress
+    4. When workers report back or heartbeat fires, check status
+    5. If issues arise, provide guidance or spawn additional workers
+    6. As each worker finishes, archive its session to keep the list clean
+    7. When all work is complete, cancel heartbeat and summarize results
+
+    Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
     """
     |> String.trim()
   end

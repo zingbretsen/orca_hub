@@ -129,12 +129,21 @@ defmodule OrcaHub.Backend.Pi do
     %OrcaHub.Backend.Capabilities{
       streaming: true,
       interrupt: :protocol,
-      # No MCP support by design (spec §12.2) — orca tools (send_message_to_
-      # session, search_sessions, …) are unreachable from a pi session until
-      # a pi TypeScript extension bridges them. UI hides the
-      # orchestrator/code_exec toggles and the MCP-servers modal for this
-      # backend (spec §7's `mcp: false` gating list).
-      mcp: false,
+      # As of the orca-mcp bridge (spec §12.5): `priv/pi/orca-mcp.ts` connects
+      # to the SAME `/mcp` endpoint Claude uses (URL baked via
+      # `Backend.McpUrl.orca_url/1`, injected as `ORCA_MCP_URL`), discovers
+      # its tools via `tools/list`, and registers each one with
+      # `pi.registerTool` under the exact `mcp__orca__<tool>` name Claude
+      # itself would use — so orca tools (send_message_to_session,
+      # search_sessions, run_elixir in code-exec mode, …) are reachable from
+      # a pi session, and MessageComponents renders their tool_use/tool_result
+      # cards with ZERO pi-specific code (it already pattern-matches on the
+      # `mcp__orca__*` name string). This flips the UI's orchestrator/
+      # code_exec toggles and the MCP-servers modal back on for this backend
+      # (spec §7's `mcp` gating list) — mirrors Claude's per-session flag
+      # baking exactly (same evict_warm/cold-reopen mechanism in
+      # session_runner.ex rebakes the URL, unconditionally, on every backend).
+      mcp: true,
       resume: true,
       # No headless account-quota endpoint; per-turn cost/tokens still flow
       # into the synthesized `result` event from pi's own usage/cost fields
@@ -220,7 +229,7 @@ defmodule OrcaHub.Backend.Pi do
     %{
       executable: pi_executable!(),
       args: ["--mode", "rpc"] ++ common_args(ctx),
-      env: pi_env(),
+      env: pi_env(ctx),
       port_opts: [cd: String.to_charlist(ctx.directory)],
       framing: :ndjson
     }
@@ -238,7 +247,7 @@ defmodule OrcaHub.Backend.Pi do
     %{
       executable: pi_executable!(),
       args: ["-p", "--mode", "json"] ++ common_args(ctx) ++ [prompt],
-      env: pi_env(),
+      env: pi_env(ctx),
       port_opts: [cd: String.to_charlist(ctx.directory)],
       framing: :ndjson
     }
@@ -259,7 +268,20 @@ defmodule OrcaHub.Backend.Pi do
       raise "pi executable not found in PATH (install: npm install -g @earendil-works/pi-coding-agent)"
   end
 
-  defp pi_env, do: OrcaHub.Env.sanitized_env()
+  # ORCA_MCP_URL (spec §12.5): the SAME `/mcp` URL Claude bakes into its
+  # inline `--mcp-config` (`Backend.McpUrl.orca_url/1` — one shared builder,
+  # so the two backends can never bake different orca_session_id/
+  # orchestrator/code_exec query params). `priv/pi/orca-mcp.ts` reads this at
+  # `session_start` to discover + register orca's MCP tools; the env var is
+  # simply absent for a cold `pi_env/1` call made before a session context
+  # exists (there is none — `pi_env/1` always has a real ctx), so the
+  # extension's "degrade silently if unset" path only ever fires if URL
+  # construction itself fails, not from a missing var in practice.
+  defp pi_env(ctx) do
+    OrcaHub.Env.sanitized_env([
+      {~c"ORCA_MCP_URL", String.to_charlist(OrcaHub.Backend.McpUrl.orca_url(ctx))}
+    ])
+  end
 
   # Flags shared by :streaming and :one_shot spawns.
   defp common_args(ctx) do
@@ -269,6 +291,7 @@ defmodule OrcaHub.Backend.Pi do
     |> maybe_add_session_id_arg(ctx[:claude_session_id])
     |> Kernel.++(["--append-system-prompt", system_prompt(ctx)])
     |> Kernel.++(["-e", orca_extension_path()])
+    |> Kernel.++(["-e", orca_mcp_extension_path()])
   end
 
   # priv/pi/orca.ts — registers the `question` tool (spec §12.3). Resolved via
@@ -277,6 +300,13 @@ defmodule OrcaHub.Backend.Pi do
   # rather than living at the checkout path — `priv` files ship in releases
   # by default, no extra release config needed.
   defp orca_extension_path, do: Application.app_dir(:orca_hub, "priv/pi/orca.ts")
+
+  # priv/pi/orca-mcp.ts — bridges the orca `/mcp` endpoint's tools onto
+  # dynamically-`pi.registerTool`'d tools (spec §12.5). `pi -e` accepts
+  # multiple `--extension`/`-e` flags (verified: `pi --help` documents "can
+  # be used multiple times"), so this loads alongside `orca.ts` rather than
+  # replacing it.
+  defp orca_mcp_extension_path, do: Application.app_dir(:orca_hub, "priv/pi/orca-mcp.ts")
 
   defp maybe_add_model_arg(args, model) do
     case pi_model(model) do
@@ -789,17 +819,25 @@ defmodule OrcaHub.Backend.Pi do
   end
 
   # ── System prompt (:flag — --append-system-prompt) ─────────────────────
-  # Reuses the non-Claude-specific SharedPrompts fragments like Codex does,
-  # but DROPS every MCP-dependent fragment (orchestrator coordination
-  # guidance, code-exec mode, sibling-session discovery via orca MCP tools)
-  # since capabilities.mcp == false makes all of them inapplicable — a pi
-  # session has no orca MCP tools to reference. Keeps only the session id
-  # line, the commit trailer prompt, and project .context/ files.
+  # Reuses the non-Claude-specific SharedPrompts fragments like Codex does.
+  # As of the orca-mcp bridge (spec §12.5, capabilities.mcp == true), the
+  # MCP-dependent fragments are no longer inapplicable — `orca-mcp.ts`
+  # registers orca's tools under the exact same `mcp__orca__<tool>` names
+  # Claude uses, so `SharedPrompts.orchestrator_prompt/2`'s
+  # `mcp__orca__start_session`-shaped guidance (moved out of `Backend.Claude`
+  # into `SharedPrompts` for exactly this reuse) and the code-exec prompt are
+  # both included here now, mirroring `Backend.Claude.system_prompt/1`
+  # closely (this backend still has no AskUserQuestion-fallback text or
+  # sibling-session prompt — out of scope for the MCP bridge itself).
 
   @impl true
   def system_prompt(ctx) do
     [
       "Your OrcaHub session ID is #{ctx.session_id}.",
+      SharedPrompts.orchestrator_prompt(ctx.orchestrator, ctx.session_id),
+      SharedPrompts.code_exec_prompt(
+        OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
+      ),
       SharedPrompts.commit_trailer_prompt(ctx.session_id),
       SharedPrompts.context_files_prompt(ctx.directory)
     ]

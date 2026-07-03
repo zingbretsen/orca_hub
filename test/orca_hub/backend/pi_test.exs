@@ -55,7 +55,7 @@ defmodule OrcaHub.Backend.PiTest do
 
       assert caps.streaming == true
       assert caps.interrupt == :protocol
-      assert caps.mcp == false
+      assert caps.mcp == true
       assert caps.resume == true
       assert caps.usage == false
       assert caps.system_prompt == :flag
@@ -1039,22 +1039,42 @@ defmodule OrcaHub.Backend.PiTest do
   # ── system_prompt/1 ──────────────────────────────────────────────────────
 
   describe "system_prompt/1" do
-    test "includes the session id line, commit trailer, drops MCP-dependent fragments" do
+    test "includes the session id line and commit trailer; drops the Claude-only AskUserQuestion fallback" do
       c = ctx()
       prompt = Backend.system_prompt(c)
 
       assert prompt =~ "Your OrcaHub session ID is #{c.session_id}"
       assert prompt =~ "OrcaHub-Session: #{c.session_id}"
-      refute prompt =~ "mcp__orca"
-      refute prompt =~ "Orchestrator Session"
+      # AskUserQuestion is Claude's built-in tool; pi has its own `question`
+      # tool (priv/pi/orca.ts) with no equivalent fallback-guidance prompt.
       refute prompt =~ "AskUserQuestion"
-      refute prompt =~ "search_sessions"
+      # No orchestrator/code-exec flags set -> neither MCP-dependent fragment
+      # is included.
+      refute prompt =~ "Orchestrator Session"
+      refute prompt =~ "Code Execution Mode"
     end
 
-    test "orchestrator flag has no effect (no MCP-dependent orchestrator prompt to gate)" do
+    # As of the orca-mcp bridge (spec §12.5, capabilities.mcp == true),
+    # orchestrator mode DOES inject the same `mcp__orca__*`-shaped guidance
+    # Backend.Claude uses (SharedPrompts.orchestrator_prompt/2, moved out of
+    # Backend.Claude for exactly this reuse) — no longer inapplicable now
+    # that priv/pi/orca-mcp.ts registers orca's tools under the identical
+    # mcp__orca__<tool> names.
+    test "orchestrator: true injects SharedPrompts.orchestrator_prompt/2's mcp__orca__* guidance" do
       c = ctx(%{orchestrator: true})
       prompt = Backend.system_prompt(c)
-      refute prompt =~ "Orchestrator Session"
+
+      assert prompt =~ "# Orchestrator Session"
+      assert prompt =~ "mcp__orca__start_session"
+      assert prompt =~ "notify session #{c.session_id}"
+    end
+
+    test "code_exec: true injects SharedPrompts.code_exec_prompt/1's run_elixir guidance" do
+      c = ctx(%{code_exec: true})
+      prompt = Backend.system_prompt(c)
+
+      assert prompt =~ "# Code Execution Mode"
+      assert prompt =~ "run_elixir"
     end
   end
 end

@@ -1053,7 +1053,8 @@ All capability-gated by §3.1/§7.
 
 The MCP gap remains the one real cost: pi sessions can't call orca tools
 (send_message_to_session etc.) until an extension exists — accepted as a v1
-gap (§11).
+gap (§11). **Closed in §12.5** by `priv/pi/orca-mcp.ts`, which flips
+`capabilities().mcp` to `true`.
 
 ### 12.3 "pi backend groundwork" slice (IMPLEMENTED — extension-UI reply loop, `priv/pi/orca.ts`, session stats)
 
@@ -1234,6 +1235,209 @@ rendering coverage for `pi_session_stats`/`pi_ui_response`/hidden
 updated for the flipped `ask_user_question` capability and the new
 `session_stats` capability. Full suite: 390 tests, the same 1 pre-existing
 unrelated `TriggersTest` failure as every prior phase's baseline.
+
+### 12.5 orca-mcp bridge (IMPLEMENTED — `priv/pi/orca-mcp.ts`, `mcp: true`)
+
+Closes the one gap §12.2/§12.3 called out as "accepted as a v1 gap": pi has
+no built-in MCP client, so a pi session couldn't reach OrcaHub's own `/mcp`
+tools (send_message_to_session, start_session, search_sessions, the
+code-exec meta-tools, any project/session-scoped upstream server). This
+slice bridges that gap entirely from userspace — no new wire protocol on the
+Elixir side, no changes to `OrcaHub.MCP.Plug`/`OrcaHub.MCP.Server` at all.
+
+**Transport, confirmed by reading the hub's own code (not assumed):**
+`OrcaHub.MCP.Plug` (`lib/orca_hub/mcp/plug.ex`) implements MCP **Streamable
+HTTP**, but the SIMPLE half of that spec — every POST gets back a single
+`application/json` body (`json_response/3`), never an `text/event-stream`
+SSE stream; there is no GET-based server push (`call(%{method: "GET"} = conn,
+_)` unconditionally 405s). Auth/session correlation is the `mcp-session-id`
+response header `initialize` returns, echoed back as a REQUEST header on
+every subsequent call; `orca_session_id`/`orchestrator`/`code_exec` are
+query params baked in at `initialize` time and never re-read after
+(`OrcaHub.MCP.Server.init/1`). This is the exact same transport
+`OrcaHub.MCP.UpstreamClient` (the module that connects the HUB itself
+outbound to third-party MCP servers like Tavily) already speaks with `Req`,
+one Elixir-side precedent confirming the shape independent of reading the
+Plug — both call sites confirm plain-JSON, no SSE, ever, from this
+specific server implementation.
+
+**`OrcaHub.Backend.McpUrl.orca_url/1` was ALREADY the shared URL builder**
+(landed with the Codex adapter, before this slice) — `Backend.Claude` and
+`Backend.Pi` both call it now, so `orca_session_id`/`orchestrator`/
+`code_exec` can never drift between the two backends' baked URLs. No new
+extraction was needed; this slice just added the second caller.
+`Backend.Pi.spawn_spec/2` injects the built URL as the `ORCA_MCP_URL` env
+var (`pi_env/1`) alongside the existing `-e priv/pi/orca.ts` flag, adding a
+SECOND `-e priv/pi/orca-mcp.ts` (`pi -e` is documented as repeatable, and
+`--help` confirms it live: "can be used multiple times").
+
+**`priv/pi/orca-mcp.ts`** — hand-rolls an MCP JSON-RPC client over `fetch`
+(Node 18+ global; no npm dependency added, per the task's explicit
+constraint) rather than pulling in an MCP SDK. At `session_start`: reads
+`ORCA_MCP_URL` from `process.env`; if absent, logs once to **stderr**
+(`console.error` — `--mode rpc`'s **stdout is the NDJSON RPC channel
+itself**, so this extension never writes to stdout, unlike some of the
+docs' own TUI-mode examples) and returns, registering zero tools. If
+present: `initialize` → `notifications/initialized` → `tools/list`, each
+step wrapped so ANY failure (connection refused, non-2xx, timeout, bad
+JSON) is caught, logged once, and degrades to zero tools — never throws out
+of the `session_start` handler, never blocks/hangs the session. A request
+timeout (15s) is layered onto every call via an internal `AbortController`,
+combined (`combineSignals`) with whatever `AbortSignal` the caller passes —
+for `tools/call` specifically, that's the tool's own `execute(...,
+signal, ...)` argument, so an OrcaHub "stop" click aborts an in-flight
+`tools/call` fetch immediately instead of leaving the turn stuck. This is
+the exact lesson §12.3 found the hard way for `priv/pi/orca.ts`'s `question`
+tool dialogs (thread the handler's own `AbortSignal` into any blocking
+call) — carried into every blocking call this second extension makes too.
+
+**Tool naming: `mcp__orca__<raw_name>`, matching Claude byte-for-byte.**
+`Backend.Claude.mcp_config_json/1` points ONE `mcpServers` entry, keyed
+literally `"orca"`, at this same `/mcp` endpoint — the Claude CLI's own MCP
+client then names every tool that connection returns
+`mcp__<config-key>__<tool-name>` = `mcp__orca__<tool-name>`.
+`OrcaHub.MCP.Server`'s `tools/list` already returns upstream-server tools
+PRE-prefixed with their own server prefix
+(`OrcaHub.MCP.UpstreamClient.put_cache/1`:
+`"#{conn.prefix}__#{tool["name"]}"`), so from Claude's perspective an
+upstream tool ends up double-prefixed, e.g. `mcp__orca__tavily__
+tavily_search` — confirmed live in this slice's own smoke test (tools/list
+returned `tavily__tavily_crawl`/`tavily__tavily_search`/etc. verbatim,
+alongside bare-named first-party tools `open_file`/
+`send_message_to_session`). `orca-mcp.ts` mirrors this exactly: every tool
+`tools/list` returns is registered `mcp__orca__<raw_name>` verbatim, no
+other transformation — `Backend.Pi.normalize/2`'s `translate_tool/2`
+already passes unrecognized tool names through unchanged (its `bash`/
+`read`/`write`/`edit` clauses are the only special cases), so a `toolCall`
+named `mcp__orca__open_file` or `mcp__orca__tavily__tavily_search` reaches
+`MessageComponents` completely unmodified. Confirmed by reading
+`message_components.ex`: its `mcp__orca__run_elixir`/`search_tools`/
+`read_tool` pattern matches (~736-763) plus its generic `mcp__*`-agnostic
+`tool_icon`/`tool_summary` catch-alls mean **zero rendering changes were
+needed anywhere** — verified live (see smoke evidence below), not just by
+code reading.
+
+An MCP tool's `inputSchema` is raw JSON Schema, not directly a TypeBox
+schema (TypeBox's runtime validator dispatches on a `[Kind]` symbol plain
+JSON Schema objects don't carry) — `Type.Unsafe(schema)` is TypeBox's
+documented escape hatch for exactly this, and it's not a novel trick:
+`@earendil-works/pi-ai`'s own `StringEnum` helper (a pi dependency) uses the
+identical `Type.Unsafe({...raw JSON schema...})` pattern.
+
+A tool's `execute` proxies to `tools/call` and converts the MCP result
+(`{content:[{type:"text",text}], isError}`) to pi's tool-result shape:
+`isError: true` is converted to a **thrown** `Error` (`docs/extensions.md`:
+"throw to signal an error... returning a value never sets the error flag"),
+mirroring `OrcaHub.MCP.Tools.Result.error/1`'s content onto pi's own error
+convention; a plain object is returned on success.
+
+**Per-session flags and mid-session changes need NO pi-specific code.**
+Both were true before writing a single line of eviction logic, confirmed by
+reading `session_runner.ex`: `apply_flag_change_no_turn/3` and
+`apply_flag_change_running/3` (the two functions
+`update_orchestrator`/`update_code_exec` casts dispatch through) key
+entirely on `Map.get(data, key) != value` and `data.port`/
+`data.pending_rebake` — no `data.backend`/capability check anywhere in that
+path. `evict_warm_now/1` force-closes ANY backend's warm port
+unconditionally. So: (1) the flags are baked into `ORCA_MCP_URL` exactly
+the way Claude bakes them into its inline `--mcp-config` URL — same
+`McpUrl.orca_url/1` call, same query params; (2) a flag change while idle
+evicts the warm pi process immediately, and a flag change mid-turn marks
+`pending_rebake`, consumed at the next `:running` → `:idle`/`:error`
+transition — in both cases the NEXT `spawn_spec/2` call re-bakes
+`ORCA_MCP_URL` from the new flag values, and the fresh pi process re-runs
+`orca-mcp.ts`'s `session_start` handshake against the updated URL from
+scratch. Zero `session_runner.ex` changes were needed for this slice.
+
+**System prompt.** `Backend.Claude.system_prompt/1` injects an orchestrator-
+mode prompt block (`mcp__orca__start_session`-shaped delegation guidance)
+that was previously a private `Backend.Claude` function precisely because it
+uses the `mcp__server__tool` naming convention — now equally correct for
+`Backend.Pi`, since `orca-mcp.ts` registers tools under the identical
+convention. Moved verbatim (byte-for-byte, only the call site changed) into
+`OrcaHub.Backend.SharedPrompts.orchestrator_prompt/2`; `Backend.Claude` and
+`Backend.Pi` both call the shared version now. `Backend.Codex` was NOT
+switched to it — Codex's own `orchestrator_system_prompt/2` uses bare
+(non-`mcp__`-prefixed) tool names, a genuinely different convention for a
+genuinely different MCP client, so it correctly keeps its own private copy.
+`Backend.Pi.system_prompt/1` also now includes
+`SharedPrompts.code_exec_prompt/1` (already shared, just a new call site) —
+needed because code-exec mode collapses the bridged tool set down to the
+`run_elixir`/`search_tools`/`read_tool` meta-tools, and the model needs the
+same usage guidance Claude gets to use them well. Both fragments are
+correctly ABSENT when the corresponding flag is off (verified in
+`pi_test.exs`). Out of scope, deliberately: pi's `AskUserQuestion`-fallback
+prompt text (Claude-built-in-tool-specific, pi has its own `question` tool
+with no equivalent need) and Claude's non-orchestrator `sibling_sessions_
+prompt/1` (lower-value, kept the diff tight).
+
+**Capability flip.** `Backend.Pi.capabilities().mcp` flips `false` → `true`.
+This is the ONLY capability changed — every UI surface it gates
+(orchestrator toggle, code_exec toggle, MCP-servers modal in
+`session_live/show.html.heex` and the new-session picker in
+`session_live/index.html.heex`) is ALREADY conditioned purely on
+`@capabilities.mcp`, with no pi-specific markup anywhere in either
+template — confirmed by reading both `.heex` files, not just asserted. Pi
+sessions get this chrome for free.
+
+**Live smoke (2026-07-03, real `pi` 0.80.3 binary + the real hub `/mcp`
+endpoint, NOT a stub):** the hub was booted in `:hub` mode on
+`127.0.0.1:4002` (a throwaway `Application.ensure_all_started(:orca_hub)`
+script, port/watchers overridden — port 4000/4001 are off-limits on this
+host, a prod agent runs there) with a real dev-DB `Tavily` upstream MCP
+server already enabled. A curl-driven handshake against `/mcp` first
+confirmed the transport claims above directly (plain `200
+application/json`, `mcp-session-id` response header, `202` empty body for
+the `notifications/initialized` POST) before touching pi at all. Then a
+Python harness spawned `pi --mode rpc --no-session -e priv/pi/orca.ts -e
+priv/pi/orca-mcp.ts` with `ORCA_MCP_URL` pointed at the live endpoint and
+prompted: "Call the mcp__orca__open_file tool with file_path=\"README.md\"
+… then tell me the exact text the tool returned." Captured:
+
+```
+{"type":"tool_execution_start","toolCallId":"call_1c01625a61f04c6cb4025091","toolName":"mcp__orca__open_file","args":{"file_path":"README.md"}}
+{"type":"tool_execution_end","toolCallId":"call_1c01625a61f04c6cb4025091","toolName":"mcp__orca__open_file","result":{"content":[{"type":"text","text":"Opened README.md in the session file viewer."}],"details":{}},"isError":false}
+```
+
+— and the model's final answer correctly quoted `"Opened README.md in the
+session file viewer."`, the exact string `OrcaHub.MCP.Tools.Files.call/3`
+returns. Cross-checked hub-side logs for the SAME `mcp_session_id` show the
+full handshake: `[MCP] session start` → `initialize` → `notifications/
+initialized` → `tools/list … tool_count=7` (2 first-party + 5 Tavily) →
+`tools/call: name="open_file" … path=local` → `tools/call result:
+name="open_file" isError=false`. Two degrade-silently cases were also
+live-verified: `ORCA_MCP_URL` unset → one stderr line
+(`[orca-mcp] ORCA_MCP_URL not set — no orca MCP tools registered`), pi
+proceeds normally, the model just reports it lacks that tool; endpoint
+unreachable (`127.0.0.1:4009`, nothing listening) → one stderr line
+(`[orca-mcp] failed to bridge orca MCP tools from … fetch failed`), process
+exits cleanly, no hang.
+
+**Known gap kept out of scope:** unlike `Backend.Claude`'s
+`orchestrator_tools/1` (which restricts the Claude CLI's *native* built-in
+tool set — no Bash, Read/Glob/Grep/WebFetch/WebSearch/Write/Edit only — for
+an orchestrator session), `Backend.Pi` does not restrict pi's native
+built-in tools (`bash`/`read`/`write`/`edit`) by the orchestrator flag. An
+orchestrator pi session gets the full native tool set PLUS the bridged
+`mcp__orca__*` coordination tools, rather than Claude's read-only-plus-
+delegate posture. Fixing this would need pi CLI-flag research
+(`--no-tools`/`--no-builtin-tools` scope to a specific allowlist, not just
+on/off) out of scope for this MCP-bridge-focused slice.
+
+**Test coverage:** `pi_test.exs`'s capability row updated (`mcp: true`);
+its `system_prompt/1` describe block extended with two new tests
+(orchestrator-mode injects `SharedPrompts.orchestrator_prompt/2`'s text,
+code_exec-mode injects `SharedPrompts.code_exec_prompt/1`'s text) replacing
+the now-inverted "orchestrator flag has no effect" test.  `backend_test.exs`
+updated for pi's flipped `mcp` capability. `show_test.exs`/`index_test.exs`
+updated: the orchestrator toggle and MCP-servers modal now assert PRESENT
+for pi (previously asserted absent — pi was the one exercise of the
+`mcp: false` gate; now all three backends exercise the `mcp: true` path
+identically). No `message_components.ex` test changes — zero rendering code
+changed, so the existing generic `mcp__*` coverage already covers this.
+Full suite: 391 tests (+1 net: two new pi system_prompt tests, one
+retired), the same 1 pre-existing unrelated `TriggersTest` failure as every
+prior phase's baseline.
 
 ### 12.6 pi mid-turn steering, queue visibility, and compaction events (IMPLEMENTED)
 
