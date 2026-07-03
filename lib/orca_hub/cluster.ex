@@ -188,6 +188,9 @@ defmodule OrcaHub.Cluster do
   def update_orchestrator(n, session_id, orchestrator),
     do: rpc(n, SessionRunner, :update_orchestrator, [session_id, orchestrator])
 
+  def update_backend(n, session_id, backend),
+    do: rpc(n, SessionRunner, :update_backend, [session_id, backend])
+
   # -------------------------------------------------------------------
   # Project queries
   # -------------------------------------------------------------------

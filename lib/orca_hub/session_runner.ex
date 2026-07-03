@@ -61,6 +61,22 @@ defmodule OrcaHub.SessionRunner do
     GenStatem.cast(via(session_id), {:update_code_exec, code_exec})
   end
 
+  # In-session backend switch. A call (not a cast like the other update_*)
+  # because it must be refused mid-turn — the in-flight port belongs to the
+  # old backend and its events are still being normalized by it. Returns
+  # :ok | {:error, :busy}. A dead runner is :ok: the DB column is the source
+  # of truth and the next runner init resolves from it.
+  def update_backend(session_id, backend) do
+    GenStatem.call(via(session_id), {:update_backend, backend})
+  rescue
+    # GenStatem.call wraps every :gen.call exit (incl. :noproc) in GenError.
+    e in GenStatem.GenError ->
+      case e.reason do
+        :noproc -> :ok
+        _ -> reraise e, __STACKTRACE__
+      end
+  end
+
   # Callbacks
 
   @impl true
@@ -228,6 +244,9 @@ defmodule OrcaHub.SessionRunner do
   def ready(:cast, {:update_orchestrator, orchestrator}, data),
     do: apply_flag_change_no_turn(data, :orchestrator, orchestrator)
 
+  def ready({:call, from}, {:update_backend, backend}, data),
+    do: switch_backend_no_turn(from, data, backend)
+
   def ready(:cast, {:update_code_exec, code_exec}, data),
     do: apply_flag_change_no_turn(data, :code_exec, code_exec)
 
@@ -278,6 +297,9 @@ defmodule OrcaHub.SessionRunner do
 
   def idle(:cast, {:update_orchestrator, orchestrator}, data),
     do: apply_flag_change_no_turn(data, :orchestrator, orchestrator)
+
+  def idle({:call, from}, {:update_backend, backend}, data),
+    do: switch_backend_no_turn(from, data, backend)
 
   def idle(:cast, {:update_code_exec, code_exec}, data),
     do: apply_flag_change_no_turn(data, :code_exec, code_exec)
@@ -359,6 +381,12 @@ defmodule OrcaHub.SessionRunner do
   end
 
   # Never evict a runner that's mid-turn — the WarmPool tries the next LRU victim.
+  # The in-flight port belongs to the current backend (its adapter is still
+  # normalizing the turn's events) — never swap mid-turn.
+  def running({:call, from}, {:update_backend, _backend}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :busy}}]}
+  end
+
   def running({:call, from}, :evict_warm, _data) do
     {:keep_state_and_data, [{:reply, from, :busy}]}
   end
@@ -513,6 +541,9 @@ defmodule OrcaHub.SessionRunner do
   def error(:cast, {:update_code_exec, code_exec}, data),
     do: apply_flag_change_no_turn(data, :code_exec, code_exec)
 
+  def error({:call, from}, {:update_backend, backend}, data),
+    do: switch_backend_no_turn(from, data, backend)
+
   def error(:cast, _msg, _data), do: :keep_state_and_data
   def error(:info, _msg, _data), do: :keep_state_and_data
 
@@ -652,6 +683,41 @@ defmodule OrcaHub.SessionRunner do
   # Returns {new_data, actions} so callers can prepend their own reply.
   defp evict_warm_now(data) do
     {teardown_port(data), [{:state_timeout, :infinity, :idle_teardown}]}
+  end
+
+  # In-session backend switch while NOT mid-turn (ready/idle/error). Tears the
+  # old backend's warm CLI process down (teardown_port also resets
+  # backend_state), best-effort-cleans its per-session artifacts (e.g. Codex's
+  # CODEX_HOME dir), and drops the native resume id + model — a Claude session
+  # id means nothing to codex and vice versa, and model ids don't carry over
+  # either, so the new CLI starts a fresh native conversation with the default
+  # model. The normalized message history in the DB is untouched. Persisting
+  # the switch (backend column, claude_session_id, model) is the caller's job
+  # (SessionLive.Show) — this only swaps runner state.
+  defp switch_backend_no_turn(from, data, backend_str) do
+    new_backend = Backend.resolve(backend_str)
+
+    if new_backend == data.backend do
+      {:keep_state_and_data, [{:reply, from, :ok}]}
+    else
+      new_data = teardown_port(data)
+
+      try do
+        new_data.backend.cleanup_session(new_data)
+      rescue
+        _ -> :ok
+      end
+
+      new_data = %{
+        new_data
+        | backend: new_backend,
+          backend_state: %{},
+          claude_session_id: nil,
+          model: nil
+      }
+
+      {:keep_state, new_data, [{:reply, from, :ok}, {:state_timeout, :infinity, :idle_teardown}]}
+    end
   end
 
   # Self-applying per-session /mcp flag change (orchestrator/code_exec) while NOT

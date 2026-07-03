@@ -351,6 +351,49 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  def handle_event("set_backend", %{"backend" => backend}, socket) do
+    session = socket.assigns.session
+
+    cond do
+      backend == (session.backend || "claude") ->
+        {:noreply, socket}
+
+      backend not in Enum.map(Backend.available(), &elem(&1, 0)) ->
+        {:noreply, put_flash(socket, :error, "Unknown backend #{backend}")}
+
+      true ->
+        # Ask the runner first: it refuses mid-turn (the in-flight CLI process
+        # belongs to the old backend), and only after it has torn down the old
+        # warm process do we persist. The native resume id and model are
+        # dropped with it — neither carries across backends — so the new agent
+        # starts a fresh conversation; the message history stays in the UI.
+        case Cluster.update_backend(socket.assigns.session_node, session.id, backend) do
+          {:error, :busy} ->
+            {:noreply, put_flash(socket, :error, "Can't switch backend while a turn is running")}
+
+          :ok ->
+            case Sessions.update_session(session, %{
+                   backend: backend,
+                   claude_session_id: nil,
+                   model: nil
+                 }) do
+              {:ok, updated_session} ->
+                {:noreply,
+                 socket
+                 |> assign(:session, updated_session)
+                 |> assign(:capabilities, Backend.capabilities_for(updated_session))
+                 |> put_flash(
+                   :info,
+                   "Backend switched to #{backend} — the agent starts a fresh conversation on the next message"
+                 )}
+
+              {:error, _} ->
+                {:noreply, put_flash(socket, :error, "Failed to update backend")}
+            end
+        end
+    end
+  end
+
   def handle_event("toggle_orchestrator", _params, socket) do
     session = socket.assigns.session
     new_value = !session.orchestrator

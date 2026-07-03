@@ -167,4 +167,60 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       refute :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode
     end
   end
+
+  describe "in-session backend switcher" do
+    test "dropdown lists every registered backend", %{conn: conn, claude_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      for {value, _label} <- OrcaHub.Backend.available() do
+        assert has_element?(view, "button[phx-click='set_backend'][phx-value-backend='#{value}']")
+      end
+    end
+
+    test "switching persists the backend and drops the native resume id + model", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, _} =
+        Sessions.update_session(session, %{claude_session_id: "native-abc", model: "opus"})
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      view
+      |> element("button[phx-click='set_backend'][phx-value-backend='codex']")
+      |> render_click()
+
+      updated = Sessions.get_session!(session.id)
+      assert updated.backend == "codex"
+      assert updated.claude_session_id == nil
+      assert updated.model == nil
+    end
+
+    test "switching re-derives capabilities and re-scopes the model picker", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assert :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode
+
+      html =
+        view
+        |> element("button[phx-click='set_backend'][phx-value-backend='codex']")
+        |> render_click()
+
+      refute :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode
+      assert html =~ "GPT-5 Codex"
+      refute html =~ "Opus 4.8"
+    end
+
+    test "selecting the current backend is a no-op", %{conn: conn, claude_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      view
+      |> element("button[phx-click='set_backend'][phx-value-backend='claude']")
+      |> render_click()
+
+      assert Sessions.get_session!(session.id).backend == "claude"
+    end
+  end
 end
