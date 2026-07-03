@@ -364,8 +364,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
       backend == (session.backend || "claude") ->
         {:noreply, socket}
 
-      backend not in Enum.map(Backend.available(), &elem(&1, 0)) ->
-        {:noreply, put_flash(socket, :error, "Unknown backend #{backend}")}
+      backend not in Enum.map(Backend.available_on(socket.assigns.session_node), &elem(&1, 0)) ->
+        {:noreply,
+         put_flash(socket, :error, "Backend #{backend} is not installed on this session's node")}
 
       true ->
         # Ask the runner first: it refuses mid-turn (the in-flight CLI process

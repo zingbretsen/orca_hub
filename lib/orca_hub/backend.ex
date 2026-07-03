@@ -170,8 +170,20 @@ defmodule OrcaHub.Backend do
   §7). `id` is the exact passthrough string sent to the CLI — there is no
   enum validation, callers may also submit an arbitrary free-text id the UI
   didn't list.
+
+  May be node-dependent and non-static (pi shells out to `pi --list-models`
+  behind a TTL cache) — call it on the node that runs the CLI, via
+  `models_for/2`.
   """
   @callback models() :: [{String.t(), String.t()}]
+
+  @doc """
+  Whether this backend's CLI is actually runnable on THIS node (executable
+  resolvable). Drives node-scoped picker filtering via `available_on/1` —
+  a backend that isn't installed on a node is hidden from that node's
+  pickers, while `resolve/1`/changeset validation stay node-agnostic.
+  """
+  @callback installed?() :: boolean
 
   @doc """
   Resolves a backend identifier (the `sessions.backend` DB column value) to
@@ -205,6 +217,46 @@ defmodule OrcaHub.Backend do
   def available, do: [{"claude", "Claude"}, {"codex", "Codex"}, {"pi", "Pi"}]
 
   @doc """
+  The subset of `available/0` whose CLI is installed on THIS node.
+  Runs locally — use `available_on/1` to ask about another node.
+  """
+  @spec installed_backends() :: [{String.t(), String.t()}]
+  def installed_backends do
+    Enum.filter(available(), fn {value, _label} -> resolve(value).installed?() end)
+  end
+
+  # Node-scoped facts are re-read on every render; cache them briefly.
+  @availability_ttl_ms 60_000
+  @models_ttl_ms 300_000
+
+  @doc """
+  The subset of `available/0` whose CLI is installed on `node` (RPC'd and
+  cached #{div(@availability_ttl_ms, 1000)}s). An unreachable node falls back
+  to `[{"claude", "Claude"}]` — Claude is the one backend present on every
+  node, and a too-small picker beats a picker offering backends that can't
+  spawn.
+  """
+  @spec available_on(node | String.t() | nil) :: [{String.t(), String.t()}]
+  def available_on(node) do
+    node = normalize_node(node)
+
+    OrcaHub.Backend.Cache.get_or_run({:available_on, node}, @availability_ttl_ms, fn ->
+      OrcaHub.Cluster.rpc(node, __MODULE__, :installed_backends, [])
+    end)
+  rescue
+    _ -> [{"claude", "Claude"}]
+  end
+
+  defp normalize_node(nil), do: node()
+  defp normalize_node(n) when is_atom(n), do: n
+
+  defp normalize_node(n) when is_binary(n) do
+    String.to_existing_atom(n)
+  rescue
+    ArgumentError -> node()
+  end
+
+  @doc """
   Resolves a session (or a bare `backend` column value) to its
   `Capabilities` struct (Phase 3, spec §7/§9). The UI branches on the
   returned struct's fields, never on the backend name string.
@@ -234,4 +286,27 @@ defmodule OrcaHub.Backend do
   def models_for(backend) when is_binary(backend) or is_nil(backend) do
     resolve(backend).models()
   end
+
+  @doc """
+  Like `models_for/1` but evaluated on `node` (RPC'd + cached
+  #{div(@models_ttl_ms, 1000)}s) — required for backends whose `models/0` is
+  live/node-dependent (pi's `--list-models`). An unreachable node or a raise
+  inside `models/0` falls back to `[]`; the free-text model field still
+  covers everything.
+  """
+  @spec models_for(term, node | String.t() | nil) :: [{String.t(), String.t()}]
+  def models_for(backend_ref, node) do
+    backend = backend_string(backend_ref)
+    node = normalize_node(node)
+
+    OrcaHub.Backend.Cache.get_or_run({:models_for, backend, node}, @models_ttl_ms, fn ->
+      OrcaHub.Cluster.rpc(node, __MODULE__, :models_for, [backend])
+    end)
+  rescue
+    _ -> []
+  end
+
+  defp backend_string(%{backend: backend}), do: backend_string(backend)
+  defp backend_string(nil), do: "claude"
+  defp backend_string(backend) when is_binary(backend), do: backend
 end

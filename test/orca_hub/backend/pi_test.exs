@@ -67,14 +67,61 @@ defmodule OrcaHub.Backend.PiTest do
 
   # ── models/0 ───────────────────────────────────────────────────────────
 
-  describe "models/0" do
-    test "returns passthrough provider/id strings, not an enum" do
-      models = Backend.models()
-      assert length(models) >= 3
+  describe "models/0 — live catalog via `pi --list-models`" do
+    @list_models_stub Path.expand("../../support/fixtures/pi_stub_list_models.sh", __DIR__)
 
-      assert Enum.all?(models, fn {id, label} ->
-               is_binary(id) and is_binary(label) and String.contains?(id, "/")
-             end)
+    test "shells out to the (seamed) executable and parses the table" do
+      previous = Application.get_env(:orca_hub, :pi_executable)
+      Application.put_env(:orca_hub, :pi_executable, @list_models_stub)
+
+      on_exit(fn ->
+        if previous,
+          do: Application.put_env(:orca_hub, :pi_executable, previous),
+          else: Application.delete_env(:orca_hub, :pi_executable)
+      end)
+
+      assert Backend.models() == [
+               {"fireworks/accounts/fireworks/models/glm-5p2", "glm-5p2 (fireworks)"},
+               {"fireworks/accounts/fireworks/models/kimi-k2p6", "kimi-k2p6 (fireworks)"}
+             ]
+    end
+
+    test "degrades to [] when the executable can't answer" do
+      previous = Application.get_env(:orca_hub, :pi_executable)
+
+      Application.put_env(
+        :orca_hub,
+        :pi_executable,
+        "/nonexistent/pi-#{System.unique_integer([:positive])}"
+      )
+
+      on_exit(fn ->
+        if previous,
+          do: Application.put_env(:orca_hub, :pi_executable, previous),
+          else: Application.delete_env(:orca_hub, :pi_executable)
+      end)
+
+      assert Backend.models() == []
+    end
+  end
+
+  describe "parse_model_list/1" do
+    test "parses provider/model rows into {combined_id, basename_label} pairs" do
+      output = """
+      provider   model                                context  max-out  thinking  images
+      fireworks  accounts/fireworks/models/glm-5p2    1.0M     131.1K   yes       no
+      anthropic  claude-sonnet-4-20250514             200K     64K      yes       yes
+      """
+
+      assert Backend.parse_model_list(output) == [
+               {"fireworks/accounts/fireworks/models/glm-5p2", "glm-5p2 (fireworks)"},
+               {"anthropic/claude-sonnet-4-20250514", "claude-sonnet-4-20250514 (anthropic)"}
+             ]
+    end
+
+    test "tolerates blank lines and short/malformed rows" do
+      assert Backend.parse_model_list("provider model\n\nonlyonecolumn\n") == []
+      assert Backend.parse_model_list("") == []
     end
   end
 

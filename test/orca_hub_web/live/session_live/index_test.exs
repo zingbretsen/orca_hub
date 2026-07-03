@@ -91,7 +91,22 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
     refute html =~ "Orchestrator mode"
   end
 
-  test "new-session form scopes the model datalist to pi when selected", %{conn: conn} do
+  test "new-session form scopes the model datalist to pi's live catalog when selected", %{
+    conn: conn
+  } do
+    stub = Path.expand("../../../support/fixtures/pi_stub_list_models.sh", __DIR__)
+    previous = Application.get_env(:orca_hub, :pi_executable)
+    Application.put_env(:orca_hub, :pi_executable, stub)
+    OrcaHub.Backend.Cache.clear()
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:orca_hub, :pi_executable, previous),
+        else: Application.delete_env(:orca_hub, :pi_executable)
+
+      OrcaHub.Backend.Cache.clear()
+    end)
+
     {:ok, view, _html} = live(conn, ~p"/sessions/new")
 
     html =
@@ -99,7 +114,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
       |> form("form", session: %{"backend" => "pi"})
       |> render_change()
 
-    assert html =~ "GLM-5 (Fireworks)"
+    assert html =~ "glm-5p2 (fireworks)"
     refute html =~ "Opus 4.8"
     refute html =~ "GPT-5 Codex"
   end

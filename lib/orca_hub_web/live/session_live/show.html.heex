@@ -193,44 +193,43 @@
         </.link>
         <div :if={!@next_session_id} class="w-8"></div>
       </div>
-      <%!-- In-session backend switch: hidden with a single registered backend
-           (same gate as the new-session form's picker). Switching drops the
-           CLI-native resume id — the new agent starts a fresh conversation,
-           the normalized message history stays. Refused mid-turn. --%>
-      <div :if={length(OrcaHub.Backend.available()) > 1} class="dropdown dropdown-end">
-        <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1" title="Backend">
-          <.icon name="hero-command-line" class="size-4" />
+      <%!-- Combined backend + model picker (one button so it survives the
+           cramped mobile header). Backend section only appears when the
+           session's node has more than one CLI installed
+           (Backend.available_on/1, ETS-cached); switching drops the
+           CLI-native resume id — fresh agent conversation, message history
+           stays — and is refused mid-turn. The model list is live per
+           backend + node (pi enumerates `pi --list-models`). --%>
+      <div class="dropdown dropdown-end">
+        <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1" title="Backend & model">
+          <.icon name="hero-cpu-chip" class="size-4" />
           <span class="text-xs hidden sm:inline">
-            {String.capitalize(@session.backend || "claude")}
+            {String.capitalize(@session.backend || "claude")} · {@session.model || "default"}
           </span>
         </div>
+        <%!-- Mobile: the header actions wrap, so this button can sit near the
+             LEFT viewport edge — a right-anchored (dropdown-end) menu would
+             render mostly off-screen. Below `sm`, escape the anchor entirely:
+             fixed, clamped to the viewport with inset-x-2. --%>
         <ul
           tabindex="0"
-          class="dropdown-content menu bg-base-300 rounded-box z-10 w-64 p-2 shadow-lg"
+          class="dropdown-content menu bg-base-300 rounded-box z-10 p-2 shadow-lg max-h-[70vh] overflow-y-auto flex-nowrap fixed! inset-x-2! top-28! w-auto sm:absolute! sm:left-auto! sm:right-0! sm:top-full! sm:w-72"
         >
-          <li class="menu-title text-xs uppercase opacity-60">
-            Backend — switching starts a fresh agent conversation
-          </li>
-          <li :for={{value, label} <- OrcaHub.Backend.available()}>
-            <button
-              phx-click="set_backend"
-              phx-value-backend={value}
-              class={[(@session.backend || "claude") == value && "active"]}
-            >
-              {label}
-            </button>
-          </li>
-        </ul>
-      </div>
-      <div class="dropdown dropdown-end">
-        <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1" title="Model">
-          <.icon name="hero-cpu-chip" class="size-4" />
-          <span class="text-xs hidden sm:inline">{@session.model || "default"}</span>
-        </div>
-        <ul
-          tabindex="0"
-          class="dropdown-content menu bg-base-300 rounded-box z-10 w-64 p-2 shadow-lg"
-        >
+          <%= if length(OrcaHub.Backend.available_on(@session_node)) > 1 do %>
+            <li class="menu-title text-xs uppercase opacity-60">
+              Backend — switching starts a fresh agent conversation
+            </li>
+            <li :for={{value, label} <- OrcaHub.Backend.available_on(@session_node)}>
+              <button
+                phx-click="set_backend"
+                phx-value-backend={value}
+                class={[(@session.backend || "claude") == value && "active"]}
+              >
+                {label}
+              </button>
+            </li>
+          <% end %>
+          <li class="menu-title text-xs uppercase opacity-60 mt-1">Model</li>
           <li>
             <button
               phx-click="set_model"
@@ -240,7 +239,7 @@
               Default
             </button>
           </li>
-          <li :for={{model_id, label} <- OrcaHub.Backend.models_for(@session.backend)}>
+          <li :for={{model_id, label} <- OrcaHub.Backend.models_for(@session.backend, @session_node)}>
             <button
               phx-click="set_model"
               phx-value-model={model_id}

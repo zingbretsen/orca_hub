@@ -59,6 +59,9 @@ defmodule OrcaHub.Application do
       # Consulted by the delayed abandoned-session cleanup (SessionLive.Show)
       # so a page reload doesn't archive a session someone is still looking at.
       {Registry, keys: :duplicate, name: OrcaHub.SessionViewersRegistry},
+      # TTL cache for node-dependent backend facts (installed CLIs, pi's live
+      # model catalog) — see OrcaHub.Backend.Cache.
+      OrcaHub.Backend.Cache,
       {Task.Supervisor, name: OrcaHub.TaskSupervisor},
       OrcaHub.SessionHeartbeat,
       # Warm-process admission control — must start before SessionSupervisor so
@@ -90,6 +93,9 @@ defmodule OrcaHub.Application do
       # Consulted by the delayed abandoned-session cleanup (SessionLive.Show)
       # so a page reload doesn't archive a session someone is still looking at.
       {Registry, keys: :duplicate, name: OrcaHub.SessionViewersRegistry},
+      # TTL cache for node-dependent backend facts (installed CLIs, pi's live
+      # model catalog) — see OrcaHub.Backend.Cache.
+      OrcaHub.Backend.Cache,
       {Task.Supervisor, name: OrcaHub.TaskSupervisor},
       # Warm-process admission control — must start before SessionSupervisor.
       OrcaHub.Streaming.WarmPool,

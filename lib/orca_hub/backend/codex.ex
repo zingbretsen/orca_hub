@@ -116,6 +116,11 @@ defmodule OrcaHub.Backend.Codex do
   # instead of a real `codex` install — see
   # OrcaHub.Backend.Codex.CodexStubIntegrationTest) — unset in dev/prod, so
   # this falls through to the normal PATH lookup.
+  @impl true
+  def installed? do
+    (Application.get_env(:orca_hub, :codex_executable) || System.find_executable("codex")) != nil
+  end
+
   defp codex_executable! do
     Application.get_env(:orca_hub, :codex_executable) ||
       System.find_executable("codex") ||

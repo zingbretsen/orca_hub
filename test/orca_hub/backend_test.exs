@@ -116,4 +116,41 @@ defmodule OrcaHub.BackendTest do
       assert Backend.models_for(%{backend: "pi"}) == OrcaHub.Backend.Pi.models()
     end
   end
+
+  describe "installed_backends/0 and available_on/1 — node-scoped picker filtering" do
+    test "installed_backends is the subset of available whose CLI resolves locally" do
+      installed = Backend.installed_backends()
+
+      assert Enum.all?(installed, &(&1 in Backend.available()))
+      # This host has the claude CLI (the test suite itself runs under it).
+      assert {"claude", "Claude"} in installed
+    end
+
+    test "available_on the local node matches installed_backends (cached)" do
+      OrcaHub.Backend.Cache.invalidate({:available_on, node()})
+      assert Backend.available_on(node()) == Backend.installed_backends()
+      # A string node name resolves the same way.
+      assert Backend.available_on(Atom.to_string(node())) == Backend.installed_backends()
+    end
+
+    test "an unreachable node degrades to Claude-only rather than raising" do
+      assert Backend.available_on(:"nonexistent@nowhere.invalid") == [{"claude", "Claude"}]
+    end
+
+    test "a garbage node string falls back to the local node" do
+      OrcaHub.Backend.Cache.invalidate({:available_on, node()})
+      assert Backend.available_on("not even an existing atom !") == Backend.installed_backends()
+    end
+  end
+
+  describe "models_for/2 — node-scoped model lists" do
+    test "static backends answer through the cache unchanged" do
+      OrcaHub.Backend.Cache.invalidate({:models_for, "codex", node()})
+      assert Backend.models_for("codex", node()) == OrcaHub.Backend.Codex.models()
+    end
+
+    test "an unreachable node degrades to [] (free-text entry still works)" do
+      assert Backend.models_for("codex", :"nonexistent@nowhere.invalid") == []
+    end
+  end
 end

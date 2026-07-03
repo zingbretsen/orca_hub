@@ -74,6 +74,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
     |> assign(page_title: "New Session")
     |> assign(form: to_form(changeset))
     |> assign(cluster_nodes: Cluster.nodes())
+    |> assign(selected_target_node: Atom.to_string(node()))
   end
 
   @impl true
@@ -229,7 +230,11 @@ defmodule OrcaHubWeb.SessionLive.Index do
       end
 
     changeset = Session.changeset(%Session{}, form_params)
-    {:noreply, assign(socket, form: to_form(changeset))}
+
+    {:noreply,
+     socket
+     |> assign(form: to_form(changeset))
+     |> assign(selected_target_node: params["target_node"])}
   end
 
   def handle_event("browse", _params, socket) do

@@ -115,22 +115,48 @@ defmodule OrcaHub.Backend.Pi do
 
   # ── Models ───────────────────────────────────────────────────────────
   # pi model ids are passthrough "provider/id" strings (live-verified: a
-  # single --model flag with an embedded "/" resolves the provider, no
-  # separate --provider needed) — not an enum; the UI also offers free-text
-  # entry. These four are examples spanning pi's multi-provider design: two
-  # were live-verified against this host's configured Fireworks auth during
-  # Phase implementation; the Anthropic/OpenAI ones are pi's own docs
-  # examples (`docs/rpc.md`'s Model example, and `--provider openai --model
-  # gpt-4o-mini` from `--help`), included as familiar reference points.
+  # LIVE catalog: unlike Claude/Codex, pi can enumerate exactly the models
+  # usable with the credentials on this node (`pi --list-models` prints an
+  # aligned table of provider/model rows for AUTHENTICATED providers only).
+  # `Backend.models_for/2` wraps this in the node-scoped TTL cache, so the
+  # shell-out cost isn't paid per render. Any failure (pi missing, non-zero
+  # exit, unparseable output) degrades to [] — the free-text model field
+  # still accepts anything.
 
   @impl true
   def models do
-    [
-      {"fireworks/accounts/fireworks/models/glm-5", "GLM-5 (Fireworks)"},
-      {"fireworks/accounts/fireworks/models/gpt-oss-20b", "GPT-OSS 20B (Fireworks)"},
-      {"anthropic/claude-sonnet-4-20250514", "Claude Sonnet 4 (via pi)"},
-      {"openai/gpt-4o", "GPT-4o (via pi)"}
-    ]
+    exe = Application.get_env(:orca_hub, :pi_executable) || System.find_executable("pi")
+
+    with exe when is_binary(exe) <- exe,
+         {out, 0} <- System.cmd(exe, ["--list-models"], stderr_to_stdout: true) do
+      parse_model_list(out)
+    else
+      _ -> []
+    end
+  rescue
+    _ -> []
+  end
+
+  # Parses `pi --list-models` output: a header line
+  # (`provider   model   context  max-out  thinking  images`) followed by
+  # whitespace-aligned rows. The picker id is pi's combined "provider/model"
+  # form (an embedded "/" resolves the provider — no separate --provider
+  # flag needed); the label is the model's basename plus provider, since
+  # Fireworks ids are long `accounts/fireworks/models/<name>` paths.
+  @doc false
+  def parse_model_list(output) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.drop_while(&String.starts_with?(&1, "provider"))
+    |> Enum.flat_map(fn line ->
+      case String.split(line, ~r/\s+/, trim: true) do
+        [provider, model | _rest] when provider != "provider" ->
+          [{"#{provider}/#{model}", "#{Path.basename(model)} (#{provider})"}]
+
+        _ ->
+          []
+      end
+    end)
   end
 
   # ── Spawn ────────────────────────────────────────────────────────────
@@ -168,6 +194,11 @@ defmodule OrcaHub.Backend.Pi do
   # SessionRunner against `test/support/fixtures/pi_stub_rpc.py` instead of a
   # real `pi` install — see OrcaHub.Backend.Pi.PiStubIntegrationTest) — unset
   # in dev/prod, so this falls through to the normal PATH lookup.
+  @impl true
+  def installed? do
+    (Application.get_env(:orca_hub, :pi_executable) || System.find_executable("pi")) != nil
+  end
+
   defp pi_executable! do
     Application.get_env(:orca_hub, :pi_executable) ||
       System.find_executable("pi") ||

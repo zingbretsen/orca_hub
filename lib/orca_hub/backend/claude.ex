@@ -112,6 +112,9 @@ defmodule OrcaHub.Backend.Claude do
     }
   end
 
+  @impl true
+  def installed?, do: System.find_executable("claude") != nil
+
   defp claude_executable! do
     System.find_executable("claude") || raise "claude executable not found in PATH"
   end
