@@ -636,11 +636,31 @@ defmodule OrcaHub.Backend.Codex do
     dir = codex_home_dir(ctx)
     File.mkdir_p!(dir)
     File.write!(Path.join(dir, "config.toml"), config_toml(ctx))
+    copy_auth(dir)
     :ok
   rescue
     e ->
       Logger.error("[Backend.Codex] prepare_session failed: #{Exception.message(e)}")
       :ok
+  end
+
+  # The per-session CODEX_HOME hides the user's real one, which is where
+  # `codex login` (ChatGPT or --with-api-key) stores credentials — without
+  # this copy every turn fails with 401 unless OPENAI_API_KEY happens to be
+  # in the BEAM's env. Re-copied on every spawn so a re-login or token
+  # refresh in the real home is picked up on the next cold reopen. Caveat:
+  # if codex refreshes the ChatGPT token mid-session it writes to the
+  # session copy, and the source stays stale until the user's next
+  # interactive codex run refreshes it there.
+  defp copy_auth(session_home) do
+    source_home = System.get_env("CODEX_HOME") || Path.expand("~/.codex")
+    source = Path.join(source_home, "auth.json")
+    dest = Path.join(session_home, "auth.json")
+
+    if File.exists?(source) do
+      File.cp!(source, dest)
+      File.chmod!(dest, 0o600)
+    end
   end
 
   @impl true

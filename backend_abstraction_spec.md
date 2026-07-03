@@ -364,7 +364,10 @@ transports exist but are unneeded for a local port.
 `OPENAI_API_KEY` → ChatGPT OAuth in `auth.json`. Set `OPENAI_API_KEY` in the
 spawned child's env for API-key auth, or rely on a prior `codex login` writing
 `$CODEX_HOME/auth.json`. **`CODEX_HOME` isolates config/sessions/auth per
-session** — this is our per-session lever (see §6.3).
+session** — this is our per-session lever (see §6.3). Because that isolation
+also hides the user's real `auth.json`, `prepare_session/1` copies it from the
+source `CODEX_HOME` (env, else `~/.codex`) into the per-session home on every
+spawn — without this, `codex login` credentials never reach the child.
 
 **Framing:** newline-delimited JSON, JSON-RPC 2.0 shapes but the `"jsonrpc":"2.0"`
 field is **OMITTED on the wire**; `params`/`data` omitted when empty. One compact
@@ -611,20 +614,25 @@ Mapping command/file/mcp items to the existing tool-name icons means
   unchanged. Gated by: full test suite (Claude regression + new Codex
   normalization fixtures + a stub-app-server SessionRunner integration test —
   254 tests, 1 pre-existing unrelated failure) and a live smoke run against
-  the real CLI. **Live smoke outcome:** handshake + MCP config materialization
-  + `turn/interrupt` (mid-turn, against a real `codex app-server` process)
-  all verified live; the actual model turn itself was BLOCKED by the
-  configured `OPENAI_API_KEY` getting a consistent `401 Unauthorized: Missing
-  bearer or basic authentication in header` from `/v1/responses` (websocket
-  AND HTTPS fallback) — reproduced identically via a bare manual
-  `codex exec --json` invocation (not an OrcaHub bug) and after
-  `codex login --with-api-key`; the same key succeeds against `/v1/models`,
-  so this looks like an account/key scope restriction on the Responses API
-  rather than a broken key. Not retried further per the live-smoke budget.
-  A real assistant-text/tool_use/tool_result turn therefore remains
-  unverified against a live model call (fully covered by the fixture +
-  stub-integration tests instead). Also surfaced a pre-existing
-  (not Codex-specific) gap — see §10 Q5's addendum on `trap_exit`.
+  the real CLI. **Live smoke outcome (RESOLVED):** handshake + MCP config
+  materialization + `turn/interrupt` (mid-turn, against a real
+  `codex app-server` process) verified live during Phase 2; the model turn
+  itself was initially blocked by a 401 (account/key-scope restriction on
+  the Responses API — not an OrcaHub bug). After the user signed in via
+  ChatGPT `codex login`, the live smoke surfaced one real adapter gap: the
+  per-session `CODEX_HOME` hid `~/.codex/auth.json`, so the spawned
+  app-server had no credentials at all (401 even with a valid login).
+  Fixed: `prepare_session/1` now copies `auth.json` from the source
+  `CODEX_HOME` (env override, else `~/.codex`) into the per-session home,
+  mode 0600, re-copied on every spawn so re-logins are picked up. Known
+  caveat: a mid-session ChatGPT token refresh writes to the session copy
+  only; the source stays stale until the user's next interactive codex run.
+  With that fix, a full live turn PASSED through the real SessionRunner
+  path (`gpt-5.5`, ChatGPT auth): user message persisted, `system`/init
+  with thread id, `assistant` text, `result` with token usage — the
+  normalized message shapes rendered by the existing components. Also
+  surfaced a pre-existing (not Codex-specific) gap — see §10 Q5's addendum
+  on `trap_exit`.
 - **Phase 3 — Peripherals. LANDED.** `Capabilities` grew `plan_mode` and
   `ask_user_question` fields; `capabilities_for/1`/`models_for/1` helpers;
   `SessionLive.Show` assigns `:capabilities` once at mount and every

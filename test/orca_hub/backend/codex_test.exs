@@ -1,4 +1,6 @@
 defmodule OrcaHub.Backend.CodexTest do
+  import Bitwise, only: [&&&: 2]
+
   @moduledoc """
   Normalization fixtures for `OrcaHub.Backend.Codex` (backend_abstraction_spec.md
   §6/§9, Phase 2 Step 4). Frames below are hand-authored to match the field
@@ -880,6 +882,47 @@ defmodule OrcaHub.Backend.CodexTest do
 
       assert Backend.cleanup_session(c) == :ok
       refute File.exists?(Path.join([dir, ".codex_home", c.session_id]))
+    end
+
+    test "copies auth.json from the source CODEX_HOME so codex login credentials reach the per-session home",
+         %{directory: dir} do
+      source_home = Path.join(dir, "source_codex_home")
+      File.mkdir_p!(source_home)
+      File.write!(Path.join(source_home, "auth.json"), ~s({"auth_mode":"chatgpt"}))
+
+      previous = System.get_env("CODEX_HOME")
+      System.put_env("CODEX_HOME", source_home)
+
+      on_exit(fn ->
+        if previous,
+          do: System.put_env("CODEX_HOME", previous),
+          else: System.delete_env("CODEX_HOME")
+      end)
+
+      c = ctx(%{directory: dir})
+      assert Backend.prepare_session(c) == :ok
+
+      dest = Path.join([dir, ".codex_home", c.session_id, "auth.json"])
+      assert File.read!(dest) == ~s({"auth_mode":"chatgpt"})
+      assert (File.stat!(dest).mode &&& 0o777) == 0o600
+    end
+
+    test "prepare_session succeeds when no source auth.json exists", %{directory: dir} do
+      source_home = Path.join(dir, "empty_codex_home")
+      File.mkdir_p!(source_home)
+
+      previous = System.get_env("CODEX_HOME")
+      System.put_env("CODEX_HOME", source_home)
+
+      on_exit(fn ->
+        if previous,
+          do: System.put_env("CODEX_HOME", previous),
+          else: System.delete_env("CODEX_HOME")
+      end)
+
+      c = ctx(%{directory: dir})
+      assert Backend.prepare_session(c) == :ok
+      refute File.exists?(Path.join([dir, ".codex_home", c.session_id, "auth.json"]))
     end
   end
 
