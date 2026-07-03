@@ -1,15 +1,17 @@
 defmodule OrcaHubWeb.SessionLive.ShowTest do
   @moduledoc """
   Capability-gated chrome coverage (backend_abstraction_spec.md §7/§9,
-  Phase 3): the usage nav link, plan-mode badges/review card, and the
-  AskUserQuestion modal are present for a Claude session and absent for a
-  Codex one; the model switcher only offers the session's own backend's
-  models.
+  Phase 3 + pi §12.2): the usage nav link, plan-mode badges/review card, and
+  the AskUserQuestion modal are present for a Claude session and absent for a
+  Codex/pi one; the MCP toggles (orchestrator + servers modal) are present
+  for Claude/Codex (`mcp: true`) and absent for pi (`mcp: false` — the first
+  backend to exercise that gate); the model switcher only offers the
+  session's own backend's models.
 
   Sessions here are freshly created (no message history), so `SessionRunner`
   boots straight into `:ready` and never opens a port for a page visit alone
-  (see `session_runner.ex` init/1) — no real `claude`/`codex` executable or
-  stub is needed to render the show page.
+  (see `session_runner.ex` init/1) — no real `claude`/`codex`/`pi` executable
+  or stub is needed to render the show page.
   """
 
   # async: false — `ensure_runner_started/3` starts a real SessionRunner
@@ -43,13 +45,21 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
         orchestrator: false
       })
 
+    {:ok, pi_session} =
+      Sessions.create_session(%{
+        directory: dir,
+        backend: "pi",
+        code_exec: false,
+        orchestrator: false
+      })
+
     on_exit(fn ->
-      Enum.each([claude_session.id, codex_session.id], fn id ->
+      Enum.each([claude_session.id, codex_session.id, pi_session.id], fn id ->
         if SessionSupervisor.session_alive?(id), do: SessionSupervisor.stop_session(id)
       end)
     end)
 
-    {:ok, claude_session: claude_session, codex_session: codex_session}
+    {:ok, claude_session: claude_session, codex_session: codex_session, pi_session: pi_session}
   end
 
   describe "usage nav link" do
@@ -61,6 +71,14 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     test "absent for a Codex session (capabilities.usage == false)", %{
       conn: conn,
       codex_session: session
+    } do
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+      refute html =~ ~s(href="/usage")
+    end
+
+    test "absent for a pi session (capabilities.usage == false)", %{
+      conn: conn,
+      pi_session: session
     } do
       {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
       refute html =~ ~s(href="/usage")
@@ -80,6 +98,12 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
       assert html =~ "Agent backend"
       assert html =~ "Codex"
+    end
+
+    test "shown for pi", %{conn: conn, pi_session: session} do
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+      assert html =~ "Agent backend"
+      assert html =~ "Pi"
     end
   end
 
@@ -102,16 +126,27 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       refute html =~ "Haiku 4.5"
     end
 
-    test "both backends still offer free-text custom model entry", %{
+    test "pi session offers only pi models", %{conn: conn, pi_session: session} do
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert html =~ "GLM-5 (Fireworks)"
+      refute html =~ "Opus 4.8"
+      refute html =~ "GPT-5 Codex"
+    end
+
+    test "all three backends still offer free-text custom model entry", %{
       conn: conn,
       claude_session: claude_session,
-      codex_session: codex_session
+      codex_session: codex_session,
+      pi_session: pi_session
     } do
       {:ok, _view, claude_html} = live(conn, ~p"/sessions/#{claude_session.id}")
       {:ok, _view, codex_html} = live(conn, ~p"/sessions/#{codex_session.id}")
+      {:ok, _view, pi_html} = live(conn, ~p"/sessions/#{pi_session.id}")
 
       assert claude_html =~ "passthrough model id"
       assert codex_html =~ "passthrough model id"
+      assert pi_html =~ "passthrough model id"
     end
   end
 
@@ -137,6 +172,18 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
   end
 
+  describe "MCP toggles — absent for pi (mcp: false, first backend to exercise this gate)" do
+    test "orchestrator toggle button hidden for pi", %{conn: conn, pi_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      refute has_element?(view, "button[phx-click='toggle_orchestrator']")
+    end
+
+    test "MCP servers modal button hidden for pi", %{conn: conn, pi_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      refute has_element?(view, "button[phx-click='toggle_mcp_modal']")
+    end
+  end
+
   describe "AskUserQuestion modal — never initiates for a backend without the capability" do
     test "capabilities assign reflects ask_user_question: false for Codex", %{
       conn: conn,
@@ -154,6 +201,14 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
       assert :sys.get_state(view.pid).socket.assigns.capabilities.ask_user_question
     end
+
+    test "capabilities assign reflects ask_user_question: false for pi", %{
+      conn: conn,
+      pi_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      refute :sys.get_state(view.pid).socket.assigns.capabilities.ask_user_question
+    end
   end
 
   describe "plan mode — capability assign" do
@@ -163,6 +218,11 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
 
     test "Codex session has plan_mode: false", %{conn: conn, codex_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      refute :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode
+    end
+
+    test "pi session has plan_mode: false", %{conn: conn, pi_session: session} do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
       refute :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode
     end

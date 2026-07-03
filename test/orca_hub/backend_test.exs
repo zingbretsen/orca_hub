@@ -1,9 +1,10 @@
 defmodule OrcaHub.BackendTest do
   @moduledoc """
   Coverage for `OrcaHub.Backend.resolve/1`, `available/0`, `capabilities_for/1`,
-  and `models_for/1` (backend_abstraction_spec.md §4/§7/§8). Phase 1 landed
-  Claude only; Phase 2 registers Codex; Phase 3 adds the capability/model
-  lookup helpers the UI branches on.
+  and `models_for/1` (backend_abstraction_spec.md §4/§7/§8/§12.2). Phase 1
+  landed Claude only; Phase 2 registers Codex; Phase 3 adds the
+  capability/model lookup helpers the UI branches on; the pi adapter adds a
+  third backend and the first `mcp: false` capability row exercised here.
   """
 
   use ExUnit.Case, async: true
@@ -24,6 +25,10 @@ defmodule OrcaHub.BackendTest do
       assert Backend.resolve("codex") == OrcaHub.Backend.Codex
     end
 
+    test "resolves \"pi\" to Backend.Pi" do
+      assert Backend.resolve("pi") == OrcaHub.Backend.Pi
+    end
+
     test "raises loudly on garbage input instead of silently falling back" do
       assert_raise RuntimeError, ~r/unknown backend/i, fn ->
         Backend.resolve("not-a-real-backend")
@@ -32,8 +37,12 @@ defmodule OrcaHub.BackendTest do
   end
 
   describe "available/0" do
-    test "returns Claude and Codex in Phase 2" do
-      assert Backend.available() == [{"claude", "Claude"}, {"codex", "Codex"}]
+    test "returns Claude, Codex, and pi" do
+      assert Backend.available() == [
+               {"claude", "Claude"},
+               {"codex", "Codex"},
+               {"pi", "Pi"}
+             ]
     end
   end
 
@@ -59,8 +68,19 @@ defmodule OrcaHub.BackendTest do
       assert caps.mcp == true
     end
 
+    test "\"pi\" resolves to pi's capabilities (mcp: false is the distinguishing gap)" do
+      caps = Backend.capabilities_for("pi")
+      assert caps.usage == false
+      assert caps.plan_mode == false
+      assert caps.ask_user_question == false
+      assert caps.mcp == false
+      assert caps.resume == true
+      assert caps.streaming == true
+    end
+
     test "accepts anything with a :backend key (a session-shaped map/struct)" do
       assert Backend.capabilities_for(%{backend: "codex"}).usage == false
+      assert Backend.capabilities_for(%{backend: "pi"}).mcp == false
       assert Backend.capabilities_for(%{backend: nil}) == OrcaHub.Backend.Claude.capabilities()
     end
 
@@ -85,8 +105,15 @@ defmodule OrcaHub.BackendTest do
       assert Enum.all?(models, fn {id, label} -> is_binary(id) and is_binary(label) end)
     end
 
+    test "returns pi's default model list (passthrough provider/id strings)" do
+      models = Backend.models_for("pi")
+      assert models == OrcaHub.Backend.Pi.models()
+      assert Enum.all?(models, fn {id, label} -> is_binary(id) and is_binary(label) end)
+    end
+
     test "accepts a session-shaped map" do
       assert Backend.models_for(%{backend: "codex"}) == OrcaHub.Backend.Codex.models()
+      assert Backend.models_for(%{backend: "pi"}) == OrcaHub.Backend.Pi.models()
     end
   end
 end

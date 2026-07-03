@@ -1,12 +1,15 @@
 defmodule OrcaHubWeb.SessionLive.IndexTest do
   @moduledoc """
-  Backend picker coverage (backend_abstraction_spec.md §7/§9). The
+  Backend picker coverage (backend_abstraction_spec.md §7/§9/§12.2). The
   new-session form's `<select>` (index.html.heex ~292) is conditionally
   rendered off `OrcaHub.Backend.available/0`'s length — Phase 1 (Claude only)
-  kept it hidden; Phase 2 registers Codex, so `available/0` now returns two
-  entries and the picker becomes visible automatically (no template change
-  needed). Asserts both: the picker is now shown, AND the default submit
-  (no explicit backend selection) still creates a "claude" session.
+  kept it hidden; Phase 2 registers Codex, so `available/0` now returns
+  multiple entries and the picker becomes visible automatically (no template
+  change needed); the pi adapter adds a third entry and is the first backend
+  to actually exercise the `mcp: false` gating on this form (Codex is
+  `mcp: true`, so it never did). Asserts: the picker is shown, the default
+  submit (no explicit backend selection) still creates a "claude" session,
+  and the model list / orchestrator toggle scope correctly per backend.
   """
 
   # async: false — "save" starts a real SessionRunner (GenStatem) child under
@@ -25,9 +28,10 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
 
     {:ok, view, html} = live(conn, ~p"/sessions/new")
 
-    # Two backends registered (Claude + Codex) — the picker is now visible.
+    # Three backends registered (Claude + Codex + pi) — the picker is visible.
     assert html =~ "Backend"
     assert html =~ "Codex"
+    assert html =~ "Pi"
 
     {:ok, _view, _html} =
       view
@@ -59,7 +63,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
     refute html =~ "Opus 4.8"
   end
 
-  test "new-session form shows the orchestrator (MCP-dependent) toggle for both backends", %{
+  test "new-session form shows the orchestrator (MCP-dependent) toggle for mcp:true backends", %{
     conn: conn
   } do
     {:ok, view, html} = live(conn, ~p"/sessions/new")
@@ -67,13 +71,36 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
     # Claude (default): mcp: true -> shown.
     assert html =~ "Orchestrator mode"
 
-    # Codex: also mcp: true -> still shown (spec §7's mcp: false gating is
-    # wiring for a future backend like pi; both current backends show it).
+    # Codex: also mcp: true -> still shown.
     html =
       view
       |> form("form", session: %{"backend" => "codex"})
       |> render_change()
 
     assert html =~ "Orchestrator mode"
+  end
+
+  test "new-session form hides the orchestrator toggle for pi (mcp: false)", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/sessions/new")
+
+    html =
+      view
+      |> form("form", session: %{"backend" => "pi"})
+      |> render_change()
+
+    refute html =~ "Orchestrator mode"
+  end
+
+  test "new-session form scopes the model datalist to pi when selected", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/sessions/new")
+
+    html =
+      view
+      |> form("form", session: %{"backend" => "pi"})
+      |> render_change()
+
+    assert html =~ "GLM-5 (Fireworks)"
+    refute html =~ "Opus 4.8"
+    refute html =~ "GPT-5 Codex"
   end
 end
