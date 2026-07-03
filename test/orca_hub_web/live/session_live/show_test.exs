@@ -257,9 +257,44 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       refute :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode
     end
 
-    test "pi session has plan_mode: false", %{conn: conn, pi_session: session} do
+    test "pi session has plan_mode: true (spec §12.4 — orca-plan.ts extension)", %{
+      conn: conn,
+      pi_session: session
+    } do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
-      refute :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode
+      assert :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode
+    end
+  end
+
+  describe "plan_mode_toggle capability — pi-only user-facing toggle (spec §12.4)" do
+    test "Claude session has plan_mode_toggle: false (model-initiated, no user toggle)", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      refute :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode_toggle
+    end
+
+    test "Codex session has plan_mode_toggle: false", %{conn: conn, codex_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      refute :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode_toggle
+    end
+
+    test "pi session has plan_mode_toggle: true", %{conn: conn, pi_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assert :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode_toggle
+    end
+
+    test "the header toggle button renders only for pi", %{
+      conn: conn,
+      claude_session: claude_session,
+      pi_session: pi_session
+    } do
+      {:ok, _view, claude_html} = live(conn, ~p"/sessions/#{claude_session.id}")
+      refute claude_html =~ "toggle_plan_mode"
+
+      {:ok, _view, pi_html} = live(conn, ~p"/sessions/#{pi_session.id}")
+      assert pi_html =~ "toggle_plan_mode"
     end
   end
 

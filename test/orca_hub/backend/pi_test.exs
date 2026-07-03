@@ -60,7 +60,8 @@ defmodule OrcaHub.Backend.PiTest do
       assert caps.usage == false
       assert caps.system_prompt == :flag
       assert caps.warmup_turn == false
-      assert caps.plan_mode == false
+      assert caps.plan_mode == true
+      assert caps.plan_mode_toggle == true
       assert caps.ask_user_question == true
       assert caps.session_stats == true
     end
@@ -186,6 +187,20 @@ defmodule OrcaHub.Backend.PiTest do
       expected = Application.app_dir(:orca_hub, "priv/pi/orca.ts")
       assert Enum.at(spec.args, idx + 1) == expected
       assert File.exists?(expected)
+    end
+
+    test "a second -e loads priv/pi/orca-plan.ts (spec §12.4), after orca.ts" do
+      spec = Backend.spawn_spec(:streaming, ctx())
+      e_indices = for {"-e", i} <- Enum.with_index(spec.args), do: i
+      assert length(e_indices) == 2
+
+      [orca_idx, plan_idx] = e_indices
+      assert Enum.at(spec.args, orca_idx + 1) == Application.app_dir(:orca_hub, "priv/pi/orca.ts")
+
+      expected_plan = Application.app_dir(:orca_hub, "priv/pi/orca-plan.ts")
+      assert Enum.at(spec.args, plan_idx + 1) == expected_plan
+      assert File.exists?(expected_plan)
+      assert plan_idx > orca_idx
     end
   end
 
@@ -801,6 +816,82 @@ defmodule OrcaHub.Backend.PiTest do
         assert reply == ""
         assert events == []
       end
+    end
+  end
+
+  describe "handle_peer_request/2 — orca-plan.ts's plan-mode status broadcast (spec §12.4)" do
+    test "setStatus with statusKey orca-plan-mode -> a pi_plan_mode event, no reply" do
+      c = ctx()
+
+      {reply, events, out} =
+        Backend.handle_peer_request(
+          %{
+            "id" => "uuid-4",
+            "method" => "setStatus",
+            "statusKey" => "orca-plan-mode",
+            "statusText" => Jason.encode!(%{"enabled" => true, "executing" => false})
+          },
+          c
+        )
+
+      assert reply == ""
+      assert events == [%{"type" => "pi_plan_mode", "enabled" => true, "executing" => false}]
+      assert out == c
+    end
+
+    test "enabled:false round-trips too" do
+      {_reply, events, _out} =
+        Backend.handle_peer_request(
+          %{
+            "id" => "uuid-5",
+            "method" => "setStatus",
+            "statusKey" => "orca-plan-mode",
+            "statusText" => Jason.encode!(%{"enabled" => false, "executing" => false})
+          },
+          ctx()
+        )
+
+      assert events == [%{"type" => "pi_plan_mode", "enabled" => false, "executing" => false}]
+    end
+
+    test "a setStatus for a DIFFERENT statusKey is untouched (falls to the generic fire-and-forget clause)" do
+      {reply, events, _out} =
+        Backend.handle_peer_request(
+          %{
+            "id" => "uuid-6",
+            "method" => "setStatus",
+            "statusKey" => "some-other-extension",
+            "statusText" => "hello"
+          },
+          ctx()
+        )
+
+      assert reply == ""
+      assert events == []
+    end
+
+    test "malformed statusText JSON emits nothing rather than crashing" do
+      {_reply, events, _out} =
+        Backend.handle_peer_request(
+          %{
+            "id" => "uuid-7",
+            "method" => "setStatus",
+            "statusKey" => "orca-plan-mode",
+            "statusText" => "not json"
+          },
+          ctx()
+        )
+
+      assert events == []
+    end
+  end
+
+  describe "encode_toggle_plan_mode/1" do
+    test "writes the exact prompt frame encode_user_turn/2 would for \"/plan\"" do
+      c = ctx()
+      assert {:ok, iodata, out} = Backend.encode_toggle_plan_mode(c)
+      assert decode_write(iodata) == %{"type" => "prompt", "message" => "/plan"}
+      assert out == c
     end
   end
 

@@ -1,9 +1,9 @@
 # Backend Abstraction Spec — Pluggable Agent CLIs (Claude, Codex, grok, pi, …)
 
 **Status:** Implemented — all four phases (§8) landed, plus a pi adapter
-(§12.2) landed post-Phase-3. Claude + Codex + pi are all selectable
-per-session with capability-gated UI; grok remains research-only (§12.1,
-adapter deferred).
+(§12.2) landed post-Phase-3, the "pi backend groundwork" slice (§12.3), and
+pi plan mode (§12.4). Claude + Codex + pi are all selectable per-session with
+capability-gated UI; grok remains research-only (§12.1, adapter deferred).
 **Goal:** Decouple OrcaHub from the Claude Code CLI so a session can be driven by
 any headless coding-agent CLI. First non-Claude target: **OpenAI Codex CLI**
 (via `codex app-server`); second: **pi** (Mario Zechner's coding agent, over
@@ -111,7 +111,8 @@ the backend name.
   usage:             true,          # headless usage/quota query available
   system_prompt:     :flag,         # :flag | :leading_message | :session_param | :none
   warmup_turn:       true,          # needs a throwaway turn to settle MCP
-  plan_mode:         true,          # EnterPlanMode/ExitPlanMode tool pair (Phase 3)
+  plan_mode:         true,          # EnterPlanMode/ExitPlanMode tool pair (Phase 3); pi's own read-only mode (§12.4)
+  plan_mode_toggle:  false,         # whether the USER can flip plan_mode directly (pi only, §12.4)
   ask_user_question: true           # built-in AskUserQuestion tool + waiting-status tracking (Phase 3)
 }
 ```
@@ -125,7 +126,8 @@ the backend name.
 | usage | ✅ | ❌ (`:none`) → panel hidden | ❌ (`:none`) → panel hidden; per-turn cost/tokens still populate `result` |
 | system_prompt | `:flag` | `:leading_message` | `:flag` (`--append-system-prompt`) |
 | warmup_turn | ✅ | ❌ — explicit `initialize`/`initialized` handshake; no MCP race | ❌ — no handshake at all; first `prompt` write is safe immediately |
-| plan_mode | ✅ | ❌ — plan-mode badges/review card hidden; plan items still render via TodoWrite | ❌ — same |
+| plan_mode | ✅ (model-initiated `EnterPlanMode`/`ExitPlanMode`) | ❌ — plan-mode badges hidden; plan items still render via TodoWrite | ✅ (§12.4 — `priv/pi/orca-plan.ts`, USER-toggled) |
+| plan_mode_toggle | ❌ — no user-facing toggle exists for Claude's model-initiated flow | ❌ | ✅ — `/plan` via `SessionRunner.toggle_plan_mode/1` |
 | ask_user_question | ✅ | ❌ — interactive wizard never initiates; falls back to plain assistant text | ❌ — same |
 
 ### 3.2 Behaviour callbacks (as implemented, Phase 2)
@@ -1232,3 +1234,175 @@ rendering coverage for `pi_session_stats`/`pi_ui_response`/hidden
 updated for the flipped `ask_user_question` capability and the new
 `session_stats` capability. Full suite: 390 tests, the same 1 pre-existing
 unrelated `TriggersTest` failure as every prior phase's baseline.
+
+### 12.4 pi plan mode (IMPLEMENTED — `priv/pi/orca-plan.ts`, `Backend.Pi.encode_toggle_plan_mode/1`)
+
+Gives pi sessions the same `plan_mode`-gated header chrome Claude sessions
+have (the "planning" badge, `session_live/show.html.heex` ~152), flipping
+`Backend.Pi.capabilities().plan_mode` from `false` (§12.2/§12.3) to `true` —
+but via a fundamentally different mechanism than Claude's. Claude's plan mode
+is **model-initiated**: the LLM itself decides to call the built-in
+`EnterPlanMode`/`ExitPlanMode` tools (`OrcaHubWeb.SessionLive.PlanMode.detect/1`
+scans the message history for these tool_use names); there is **no
+user-facing toggle for Claude at all** — OrcaHub only ever *reflects* Claude's
+own decision, never drives it. pi's plan mode is the opposite: **user-toggled**
+via pi's own `/plan` extension command, with no analogous built-in tool pair.
+A new `plan_mode_toggle` capability (default `false`; `true` only for pi)
+distinguishes the two so the UI's toggle BUTTON only ever renders for
+backends that actually have one — `plan_mode` alone (shared, unchanged
+semantics for the existing badge/chrome) is not enough to gate it safely,
+since Claude's `plan_mode` was already `true` before this slice.
+
+**1. `priv/pi/orca-plan.ts`** — vendored and adapted from pi's own bundled
+example extension (`@earendil-works/pi-coding-agent`'s
+`examples/extensions/plan-mode/{index,utils}.ts`), loaded via a SECOND `-e`
+in `Backend.Pi.spawn_spec/2`'s `common_args/1`, right after `orca.ts` (same
+`Application.app_dir/2` resolution, release-safe). A read-only exploration
+mode: `/plan` toggles `write`/`edit` OUT of the active tool set entirely
+(`pi.setActiveTools`, so the model can't even see those tools, not just have
+calls rejected) and installs a `tool_call` hook that blocks any `bash`
+command not matching a read-only allowlist (`cat`/`grep`/`git status`/etc. —
+verbatim from the upstream example). When the model proposes a plan (a
+`Plan:` header with numbered steps), `agent_end` shows a "what next?" dialog
+(execute / stay in plan mode / refine) via `ctx.ui.select`. Three deliberate
+deviations from the upstream example, vendored into this single file (project
+convention — `orca.ts` is also single-file) rather than pi's original
+directory-with-`index.ts`+`utils.ts` layout:
+
+  - **`registerShortcut` dropped** — keyboard shortcuts (`Ctrl+Alt+P` in the
+    upstream example) are a TUI-only concept; there's no terminal on the
+    other end of `--mode rpc`. `/plan` (the command) is the only toggle
+    surface that exists over RPC, and it's exactly what
+    `Backend.Pi.encode_toggle_plan_mode/1` sends.
+  - **AbortSignal threaded into every dialog call** (the groundwork lesson,
+    §12.3's live-smoke finding, restated here because it bit again during
+    THIS slice's own live smoke — see below): `ctx.ui.select`/`ctx.ui.editor`
+    in the `agent_end` handler now pass `{ signal: ctx.signal, timeout:
+    DIALOG_TIMEOUT_MS }` (10 minutes, matching `orca.ts`). Without `signal`,
+    `{"type":"abort"}` while the "what next?" dialog is pending has no way to
+    unblock it.
+  - **`"questionnaire"` (a tool that doesn't exist in this deployment)
+    replaced with `"question"`** in `PLAN_MODE_TOOLS` — reuses the `question`
+    tool `orca.ts` already registers (loaded first, via the earlier `-e`) so
+    the model can still ask read-only clarifying questions while planning,
+    matching the upstream example's intent with a tool that actually exists
+    here.
+
+  Plan-mode state changes (toggle, execution start/complete) call a new
+  `broadcastPlanState(ctx)` helper: `ctx.ui.setStatus("orca-plan-mode",
+  JSON.stringify({enabled, executing}))` — a fire-and-forget `setStatus`
+  UI call, chosen over `ctx.ui.notify`'s free-text message because OrcaHub
+  needs a machine-readable signal, not a human-readable one, to drive
+  `@plan_mode`. Fires on `session_start` too (a resumed/cold-reopened session
+  re-broadcasts its `pi.appendEntry("plan-mode", …)`-persisted state), which
+  is what makes it reliable for state reconstruction after a runner restart.
+
+**2. The toggle mechanism.** `SessionRunner.toggle_plan_mode/1` (new public
+GenStatem call) — deliberately the OPPOSITE scope of
+`answer_ui_request/3` (§12.3): only reachable from `:idle` with an
+ALREADY-WARM port (`data.port != nil`), refused everywhere else (`:ready` —
+never started, nothing to cold-open just for a toggle; `:running` — a turn is
+already using the port; `:error`). This scope was chosen after LIVE-VERIFYING
+(not assumed) that pi's `/plan` is a pure extension command: sending
+`{"type":"prompt","message":"/plan"}` over RPC produces `extension_ui_request`
+events (from `broadcastPlanState`/`notify`) followed by
+`{"type":"response","command":"prompt","success":true}` with **NO**
+`agent_start`/`agent_end` at all — confirmed via `get_state`'s
+`messageCount` staying unchanged across the round trip. This matters because
+`SessionRunner`'s `:running` state only ever transitions back to `:idle` off a
+synthesized `result` event (itself only ever emitted from `agent_end` for
+pi) — routing `/plan` through the NORMAL `send_message`/`:running` path
+would have left the runner hung in `:running` forever, waiting for a `result`
+that would never arrive. `toggle_plan_mode/1` sidesteps this entirely by
+writing directly to the port and staying in `:idle` — no state transition,
+no wait.
+
+Wire encoding: `Backend.encode_toggle_plan_mode/2` (a NEW optional callback,
+`@optional_callbacks encode_toggle_plan_mode: 1`, dispatched via
+`function_exported?/3` exactly like `encode_ui_response/4` — Claude/Codex
+implement nothing and get `:noop`). `Backend.Pi.encode_toggle_plan_mode/1`
+reuses `encode_user_turn("/plan", ctx)` verbatim rather than hand-rolling a
+new frame — `/plan`'s wire shape IS a `{"type":"prompt","message":…}` command,
+just one pi's own command dispatcher intercepts before it ever reaches agent
+processing.
+
+`Cluster.toggle_plan_mode/2` mirrors `answer_ui_request/4`'s plain RPC-through
+posture (no ensure-started dance — a cold/never-started runner already
+returns `{:error, :not_running}`). `SessionLive.Show`'s `"toggle_plan_mode"`
+event handler (gated in the template on `@capabilities.plan_mode_toggle`)
+calls it and OPTIMISTICALLY flips `@plan_mode` on success (before any wire
+confirmation arrives) so the click feels responsive; the authoritative
+`pi_plan_mode` event (below) reconciles moments later regardless — same
+"optimistic, then reconciled" posture the task asked for.
+
+**3. State tracking.** `Backend.Pi.handle_peer_request/2` gained one new
+clause: a `setStatus` request with `statusKey: "orca-plan-mode"` decodes its
+`statusText` JSON and emits a NEW normalized event type, `pi_plan_mode`
+(`%{"type" => "pi_plan_mode", "enabled" => bool, "executing" => bool}` — a
+genuinely new type, same posture as `pi_ui_request`/`cli_error`, spec §3.3).
+It is PERSISTED (so `SessionLive.Show`'s mount-time reconstruction —
+`pi_plan_mode_from_messages/1`, mirroring `pending_ui_request_from_messages/1`'s
+"scan for the last matching event" pattern — survives a page reload, even
+against a dead runner falling back to `HubRPC.list_messages/1`) but marked
+`hidden_message?/1` in `MessageComponents` (it fires on every toggle AND
+every `session_start`/execution-progress tick — rendering each as a feed card
+would be noisy; the header badge already reflects the state). Live,
+`handle_pi_plan_events/2` (mirrors `handle_pi_ui_events/2`) updates
+`@plan_mode` off the SAME event as it streams in. `@plan_mode` only ever maps
+pi's boolean to `:planning` or `false` — there is no pi-side equivalent of
+Claude's transient `:review` state (the post-plan "what next?" moment is
+handled entirely by the extension-UI dialog described above, not a persisted
+review phase).
+
+**Live smoke (2026-07-03, real `pi` 0.80.3 binary, Fireworks
+`minimax-m2p7`, NOT the ExUnit stub):** a Python harness spawned
+`~/.local/bin/pi --mode rpc --session-dir <tmp> -e priv/pi/orca.ts -e
+priv/pi/orca-plan.ts` and drove all four surfaces:
+
+1. `{"type":"prompt","message":"/plan"}` -> `extension_ui_request{method:
+   "setStatus", statusKey:"orca-plan-mode",
+   statusText:"{\"enabled\":true,\"executing\":false}"}`, an
+   `extension_ui_request{method:"notify", message:"Plan mode enabled. Built-in
+   write tools disabled."}`, then `{"type":"response","command":"prompt",
+   "success":true}` — **no `agent_start`/`agent_end`**, confirming the
+   extension-command bypass the toggle mechanism above relies on.
+2. A real turn asked the model to run `rm -rf …` via bash and to explain (in
+   text) that it couldn't write files. Result: `tool_execution_end` for the
+   bash call carried `"isError":true,"result":{"content":[{"type":"text",
+   "text":"Plan mode: command blocked (not allowlisted). Use /plan to disable
+   plan mode first.\nCommand: rm -rf /tmp/orca_plan_smoke_should_not_run"}]}`
+   — the `tool_call` allowlist hook fired — and the model never attempted a
+   `write`/`edit` tool call at all (not offered, per `setActiveTools`).
+3. Asked for a `Plan:` section -> `agent_end`'s dialog fired as
+   `extension_ui_request{method:"select", title:"Plan mode - what next?",
+   options:["Execute the plan (track progress)","Stay in plan
+   mode","Refine the plan"]}` — matching `handle_peer_request/2`'s
+   `pi_ui_request` normalization exactly, no docs deviation.
+4. **The AbortSignal lesson, re-confirmed for THIS extension's own dialog:**
+   `{"type":"abort"}` sent while that "what next?" dialog was pending
+   resolved it (`choice === undefined`, same code path as a timeout) and the
+   process returned to idle in **0.00s** (measured via an immediate
+   `get_state` round-trip, `isStreaming:false`) — not the 60+s hang §12.3
+   documented for the FIRST (unfixed) version of `orca.ts`'s `question` tool.
+   This is direct evidence the `{ signal: ctx.signal, … }` fix applied to
+   `orca-plan.ts`'s dialog calls (item 1 above) is load-bearing, not
+   cosmetic — an extension that pops a dialog and forgets to thread its own
+   handler's `AbortSignal` will hang pi indefinitely on abort, every time.
+
+**Test coverage:** `pi_test.exs` gained `capabilities/0`'s `plan_mode: true`/
+`plan_mode_toggle: true` assertions, a second-`-e` spawn-arg test (confirms
+`orca-plan.ts` loads AFTER `orca.ts`), `handle_peer_request/2` coverage for
+the `orca-plan-mode` `setStatus` clause (happy path, a DIFFERENT `statusKey`
+falling through to the generic fire-and-forget catch-all unchanged, and
+malformed JSON dropping safely), and `encode_toggle_plan_mode/1`'s exact wire
+frame. `backend_test.exs` gained an `encode_toggle_plan_mode/2` dispatcher
+describe block (pi dispatches through; Claude/Codex `:noop`) and updated
+`capabilities_for/1` expectations. `pi_stub_rpc.py` gained a `/plan` scenario
+mirroring the live-verified no-agent-turn shape; `pi_stub_integration_test.exs`
+gained a full `SessionRunner`-driven round trip (`toggle_plan_mode/1` refused
+against a `:ready` runner, then `:ok` against a warm `:idle` one, landing a
+persisted `pi_plan_mode` event without ever leaving `:idle`).
+`show_test.exs` gained `plan_mode_toggle` capability-assign coverage per
+backend and a template test confirming the toggle button renders for pi only.
+Full suite: 397 tests, the same 1 pre-existing unrelated `TriggersTest`
+failure as every prior phase's baseline.

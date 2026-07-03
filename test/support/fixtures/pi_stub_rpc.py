@@ -54,6 +54,18 @@ protocol's "events never have an id" rule — spec's docs/rpc.md):
                                         after every agent_end (spec §12.3); no
                                         "id" on either side, matching the real
                                         adapter's usage.
+  - {"type":"prompt","message":"/plan"} -> (spec §12.4, SessionRunner.
+                                        toggle_plan_mode/1's happy path)
+                                        mirrors the REAL binary's live-verified
+                                        behavior for a pure extension command:
+                                        NO agent_start/agent_end at all, just
+                                        a fire-and-forget
+                                        extension_ui_request{method:"setStatus",
+                                        statusKey:"orca-plan-mode"} (the
+                                        orca-plan.ts broadcastPlanState() call)
+                                        followed by
+                                        {"type":"response","command":"prompt",
+                                        "success":true}.
 
 Every stdout write is flushed explicitly — this is a pipe, not a tty.
 """
@@ -153,9 +165,29 @@ def handle_ask_a_question(message):
     )
 
 
+def handle_plan_toggle():
+    # Live-verified against the real 0.80.3 binary (spec §12.4): a pure
+    # extension command never starts an agent turn — just the
+    # fire-and-forget status broadcast, then the prompt ack.
+    send(
+        {
+            "type": "extension_ui_request",
+            "id": "plan-status-1",
+            "method": "setStatus",
+            "statusKey": "orca-plan-mode",
+            "statusText": json.dumps({"enabled": True, "executing": False}),
+        }
+    )
+    send({"type": "response", "command": "prompt", "success": True})
+
+
 def handle_prompt(message):
     if message == "ask a question":
         handle_ask_a_question(message)
+        return
+
+    if message == "/plan":
+        handle_plan_toggle()
         return
 
     send({"type": "response", "command": "prompt", "success": True})

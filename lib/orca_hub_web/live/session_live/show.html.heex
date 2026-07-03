@@ -239,7 +239,9 @@
               Default
             </button>
           </li>
-          <li :for={{model_id, label} <- OrcaHub.Backend.models_for(@session.backend, @session_node)}>
+          <li :for={
+            {model_id, label} <- OrcaHub.Backend.models_for(@session.backend, @session_node)
+          }>
             <button
               phx-click="set_model"
               phx-value-model={model_id}
@@ -273,6 +275,19 @@
         }
       >
         <.icon name="hero-users" class="size-5" />
+      </button>
+      <%!-- Backend-native plan-mode toggle (pi only — spec §12.4). Claude's
+           plan_mode is model-initiated with no user toggle, so this is
+           gated on plan_mode_toggle, not plan_mode alone. --%>
+      <button
+        :if={@capabilities.plan_mode_toggle}
+        phx-click="toggle_plan_mode"
+        class={["btn btn-ghost btn-sm btn-circle", @plan_mode == :planning && "text-warning"]}
+        title={
+          if @plan_mode == :planning, do: "Exit plan mode", else: "Enter plan mode (read-only)"
+        }
+      >
+        <.icon name="hero-map" class="size-5" />
       </button>
       <button
         :if={@todos != []}
