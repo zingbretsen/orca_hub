@@ -79,7 +79,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "start_session",
         "description" =>
-          "Create a new Claude Code session in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session.",
+          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -96,6 +96,16 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "type" => "string",
               "description" =>
                 "Optional title for the new session. Auto-generated if not provided."
+            },
+            "backend" => %{
+              "type" => "string",
+              "description" =>
+                "Optional agent-CLI backend for the new session: \"claude\" (default), \"codex\", or \"pi\". Availability depends on which CLIs are installed on the target node — an unavailable backend is rejected with the list of backends actually installed there. Omit to use the default (\"claude\")."
+            },
+            "model" => %{
+              "type" => "string",
+              "description" =>
+                "Optional backend-specific model id, passed through as free text (no enum) — e.g. a Claude alias like \"opus\", a Codex model id like \"gpt-5-codex\", or a pi provider/model string like \"fireworks/accounts/fireworks/models/glm-5\". Omit to use the backend's default model."
             }
           },
           "required" => ["prompt"]
@@ -203,26 +213,56 @@ defmodule OrcaHub.MCP.Tools.Sessions do
         runner_node =
           if caller.project, do: Cluster.project_node_for(caller.project), else: node()
 
-        session_attrs =
-          %{
-            directory: directory,
-            project_id: project_id,
-            runner_node: Atom.to_string(runner_node)
-          }
-          |> maybe_put_field(:title, args["title"])
-          |> maybe_link_parent(caller, caller_session_id)
+        case validate_backend(args["backend"], runner_node) do
+          {:error, message} ->
+            error(message)
 
-        case HubRPC.create_session(session_attrs) do
-          {:ok, session} ->
-            {:ok, _} = Cluster.start_session(runner_node, session.id, session)
-            Cluster.send_message(runner_node, session.id, args["prompt"])
-            text("Session #{session.id} started in #{directory}")
+          {:ok, backend} ->
+            session_attrs =
+              %{
+                directory: directory,
+                project_id: project_id,
+                runner_node: Atom.to_string(runner_node)
+              }
+              |> maybe_put_field(:title, args["title"])
+              |> maybe_put_field(:backend, backend)
+              |> maybe_put_field(:model, blank_to_nil(args["model"]))
+              |> maybe_link_parent(caller, caller_session_id)
 
-          {:error, changeset} ->
-            error("Failed to create session: #{inspect(changeset.errors)}")
+            case HubRPC.create_session(session_attrs) do
+              {:ok, session} ->
+                {:ok, _} = Cluster.start_session(runner_node, session.id, session)
+                Cluster.send_message(runner_node, session.id, args["prompt"])
+                text("Session #{session.id} started in #{directory}")
+
+              {:error, changeset} ->
+                error("Failed to create session: #{inspect(changeset.errors)}")
+            end
         end
     end
   end
+
+  # No `backend` arg (nil, or blank) → leave it unset so the schema default
+  # ("claude") applies, same as before this parameter existed.
+  defp validate_backend(nil, _runner_node), do: {:ok, nil}
+  defp validate_backend("", _runner_node), do: {:ok, nil}
+
+  defp validate_backend(backend, runner_node) when is_binary(backend) do
+    available = OrcaHub.Backend.available_on(runner_node)
+
+    if Enum.any?(available, fn {value, _label} -> value == backend end) do
+      {:ok, backend}
+    else
+      installed = available |> Enum.map(&elem(&1, 0)) |> Enum.join(", ")
+
+      {:error,
+       "Unknown or unavailable backend #{inspect(backend)}. Backends installed on this node: #{installed}."}
+    end
+  end
+
+  defp blank_to_nil(nil), do: nil
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(val), do: val
 
   # A non-nil parent_session_id always means "spawned by an orchestrator", so only
   # set it when the caller is itself an orchestrator.

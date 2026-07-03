@@ -613,6 +613,12 @@ Mapping command/file/mcp items to the existing tool-name icons means
 - **Backend badge:** the session header shows a subtle badge with the
   capitalized backend name, but ONLY when `@session.backend != "claude"` — no
   visual change for the (still overwhelmingly common) Claude case.
+- **MCP `start_session`:** the orchestrator-facing `start_session` MCP tool
+  (`lib/orca_hub/mcp/tools/sessions.ex`) accepts optional `backend`/`model`
+  params (validated against `Backend.available_on(runner_node)`, so an
+  orchestrator can only pick a backend actually installed on the target node;
+  `model` is the same free-text passthrough as the UI). Omitted → the Claude
+  default, exactly as before.
 
 ---
 
