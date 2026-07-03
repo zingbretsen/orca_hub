@@ -187,6 +187,7 @@ defmodule OrcaHub.Backend do
   def resolve(nil), do: OrcaHub.Backend.Claude
   def resolve("claude"), do: OrcaHub.Backend.Claude
   def resolve("codex"), do: OrcaHub.Backend.Codex
+  def resolve("pi"), do: OrcaHub.Backend.Pi
 
   def resolve(other) do
     raise "OrcaHub.Backend.resolve/1: unknown backend #{inspect(other)} " <>
@@ -196,12 +197,12 @@ defmodule OrcaHub.Backend do
   @doc """
   Backends selectable in the UI, as `{value, label}` pairs for a `<select>`.
 
-  Phase 2: Claude + Codex. Callers should render nothing (or a hidden field)
-  when this list has a single entry, and only show a picker once it grows
-  past one.
+  Claude + Codex + pi. Callers should render nothing (or a hidden field) when
+  this list has a single entry, and only show a picker once it grows past
+  one.
   """
   @spec available() :: [{String.t(), String.t()}]
-  def available, do: [{"claude", "Claude"}, {"codex", "Codex"}]
+  def available, do: [{"claude", "Claude"}, {"codex", "Codex"}, {"pi", "Pi"}]
 
   @doc """
   Resolves a session (or a bare `backend` column value) to its

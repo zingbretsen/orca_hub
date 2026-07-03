@@ -63,6 +63,6 @@ defmodule OrcaHub.Sessions.Session do
     ])
     |> validate_required([:directory])
     |> validate_inclusion(:status, ~w(ready idle running waiting error compacting))
-    |> validate_inclusion(:backend, ~w(claude codex))
+    |> validate_inclusion(:backend, ~w(claude codex pi))
   end
 end
