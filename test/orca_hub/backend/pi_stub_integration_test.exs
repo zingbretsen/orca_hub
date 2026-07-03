@@ -294,6 +294,47 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
     assert stats["context_usage"]["percent"] == 1
   end
 
+  test "toggle_plan_mode/1: a real turn warms the port, then /plan round-trips with no agent turn",
+       %{session: session} do
+    assert {:ok, _pid} = SessionSupervisor.start_session(session.id)
+    assert SessionRunner.send_message(session.id, "say hi") == :ok
+    idle_state = wait_until_terminal(session.id)
+    assert idle_state.status == :idle
+
+    # toggle_plan_mode/1 is refused before the port is warm (spec §12.4 —
+    # only reachable from :idle with an already-open port) — a freshly
+    # started runner that has never sent a message is :ready, not :idle.
+    fresh_dir =
+      Path.join(System.tmp_dir!(), "pi_stub_it_cold_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(fresh_dir)
+    on_exit(fn -> File.rm_rf(fresh_dir) end)
+
+    {:ok, cold_session} =
+      Sessions.create_session(%{directory: fresh_dir, backend: "pi", model: nil})
+
+    on_exit(fn ->
+      if SessionSupervisor.session_alive?(cold_session.id),
+        do: SessionSupervisor.stop_session(cold_session.id)
+    end)
+
+    assert {:ok, _pid} = SessionSupervisor.start_session(cold_session.id)
+    assert SessionRunner.toggle_plan_mode(cold_session.id) == {:error, :not_running}
+
+    # Against the WARM session, the stub's live-verified-shape response for
+    # "/plan" (a fire-and-forget setStatus, then the prompt ack, no
+    # agent_start/agent_end at all) round-trips into a persisted
+    # `pi_plan_mode` event without the runner ever leaving :idle.
+    assert SessionRunner.toggle_plan_mode(session.id) == :ok
+
+    state = wait_until_message(session.id, "pi_plan_mode")
+    assert state.status == :idle
+
+    plan_event = Enum.find(state.messages, &(&1["type"] == "pi_plan_mode"))
+    assert plan_event["enabled"] == true
+    assert plan_event["executing"] == false
+  end
+
   test "a spawn failure lands as a cli_error card instead of crashing the runner", %{
     session: session
   } do

@@ -63,7 +63,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:scroll_to_line, nil)
      |> assign(:scroll_to_block, nil)
      |> assign(:editing_title, false)
-     |> assign(:plan_mode, PlanMode.detect(runner_state.messages))
+     # Claude: model-initiated EnterPlanMode/ExitPlanMode tool_use pair
+     # (PlanMode.detect/1). pi: user-toggled `/plan` (spec §12.4) — there is
+     # no tool_use to detect, so `pi_plan_mode_from_messages/1` reconstructs
+     # from the last `pi_plan_mode` broadcast instead. `||` is safe: a
+     # backend only ever produces events one of the two detectors reacts to
+     # (Claude never emits `pi_plan_mode`; pi never emits EnterPlanMode), so
+     # exactly one side is non-`false` per session.
+     |> assign(
+       :plan_mode,
+       PlanMode.detect(runner_state.messages) || pi_plan_mode_from_messages(runner_state.messages)
+     )
      |> assign(:pending_plan_file, nil)
      |> assign(:plan_file_path, nil)
      |> assign(:plan_file_original_mtime, nil)
@@ -231,6 +241,31 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end)
   end
 
+  # -- pi plan-mode helpers (spec §12.4) --
+
+  # Reconstructs pi's user-toggled plan-mode state from the most recent
+  # `pi_plan_mode` broadcast (see Backend.Pi.handle_peer_request/2's
+  # "orca-plan-mode" setStatus clause) — mirrors PlanMode.detect/1's role for
+  # Claude, but off a different wire signal since pi has no
+  # EnterPlanMode/ExitPlanMode tool_use to scan for. Maps straight to
+  # `:planning` (no distinct "review" phase for pi — the post-plan "what
+  # next?" moment is handled by the extension-UI dialog, not a persisted
+  # review state) or `false`.
+  defp pi_plan_mode_from_messages(messages) do
+    last_event = messages |> Enum.reverse() |> Enum.find(&(&1["type"] == "pi_plan_mode"))
+
+    case last_event do
+      %{"enabled" => true} -> :planning
+      _ -> false
+    end
+  end
+
+  defp handle_pi_plan_events(socket, %{"type" => "pi_plan_mode", "enabled" => enabled}) do
+    assign(socket, :plan_mode, if(enabled, do: :planning, else: false))
+  end
+
+  defp handle_pi_plan_events(socket, _event), do: socket
+
   @impl true
   def handle_event("send_message", %{"prompt" => prompt}, socket) do
     Logger.info("send_message: prompt=#{inspect(String.trim(prompt))}")
@@ -309,6 +344,27 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def handle_event("interrupt", _params, socket) do
     Cluster.interrupt(socket.assigns.session_node, socket.assigns.session.id)
     {:noreply, socket}
+  end
+
+  # Backend-native plan-mode toggle (pi's `/plan`, spec §12.4) — button is
+  # gated on @capabilities.plan_mode_toggle (Claude/Codex never render it).
+  # Optimistically flips @plan_mode immediately so the click feels responsive;
+  # the authoritative `pi_plan_mode` broadcast (handle_pi_plan_events/2)
+  # reconciles moments later over the wire regardless.
+  def handle_event("toggle_plan_mode", _params, socket) do
+    case Cluster.toggle_plan_mode(socket.assigns.session_node, socket.assigns.session.id) do
+      :ok ->
+        new_plan_mode = if socket.assigns.plan_mode == :planning, do: false, else: :planning
+        {:noreply, assign(socket, :plan_mode, new_plan_mode)}
+
+      {:error, _reason} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Can't toggle plan mode right now — send a message first and wait for it to finish."
+         )}
+    end
   end
 
   def handle_event("new_session", _params, socket) do
@@ -1246,6 +1302,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     socket = handle_plan_events(socket, event)
     socket = handle_todo_events(socket, event)
     socket = handle_pi_ui_events(socket, event)
+    socket = handle_pi_plan_events(socket, event)
     socket = socket |> refresh_pending_questions() |> sync_question_modal()
     {:noreply, socket}
   end

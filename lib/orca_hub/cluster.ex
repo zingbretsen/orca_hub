@@ -219,6 +219,14 @@ defmodule OrcaHub.Cluster do
   def answer_ui_request(n, session_id, request_id, payload),
     do: rpc(n, SessionRunner, :answer_ui_request, [session_id, request_id, payload])
 
+  # Toggles a backend-native plan mode (pi's `/plan`, spec §12.4). Plain
+  # RPC-through, same posture as answer_ui_request/4 above — no ensure-started
+  # dance: SessionRunner.toggle_plan_mode/1 already returns
+  # {:error, :not_running} for a cold/never-started runner, and a freshly
+  # (re)started one has nothing warm to toggle.
+  def toggle_plan_mode(n, session_id),
+    do: rpc(n, SessionRunner, :toggle_plan_mode, [session_id])
+
   # -------------------------------------------------------------------
   # Project queries
   # -------------------------------------------------------------------

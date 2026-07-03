@@ -155,8 +155,18 @@ defmodule OrcaHub.Backend.Pi do
       # no other startup handshake to hide behind a throwaway turn — the very
       # first `prompt` write is safe.
       warmup_turn: false,
-      # No `~/.claude/plans` / EnterPlanMode/ExitPlanMode tool pair.
-      plan_mode: false,
+      # spec §12.4: OrcaHub's own `priv/pi/orca-plan.ts` extension gives pi a
+      # read-only plan mode (write/edit tools disabled, bash restricted to a
+      # read-only allowlist) — rides the SAME `@capabilities.plan_mode`-gated
+      # header chrome as Claude's built-in EnterPlanMode/ExitPlanMode tool
+      # pair, just driven by a different (user-toggled, not model-initiated)
+      # mechanism underneath — see `plan_mode_toggle` below.
+      plan_mode: true,
+      # Unlike Claude (model decides when to enter/exit plan mode; no user
+      # affordance exists), pi's plan mode is a user-toggled `/plan` command
+      # (spec §12.4) — SessionRunner.toggle_plan_mode/1 sends it via
+      # encode_toggle_plan_mode/1 below. Gates the toggle button in the UI.
+      plan_mode_toggle: true,
       # "pi backend groundwork" slice: the `question` tool in
       # priv/pi/orca.ts + the extension-UI reply loop
       # (handle_peer_request/2 / encode_ui_response/3) give pi the same
@@ -292,6 +302,7 @@ defmodule OrcaHub.Backend.Pi do
     |> Kernel.++(["--append-system-prompt", system_prompt(ctx)])
     |> Kernel.++(["-e", orca_extension_path()])
     |> Kernel.++(["-e", orca_mcp_extension_path()])
+    |> Kernel.++(["-e", orca_plan_extension_path()])
   end
 
   # priv/pi/orca.ts — registers the `question` tool (spec §12.3). Resolved via
@@ -307,6 +318,12 @@ defmodule OrcaHub.Backend.Pi do
   # be used multiple times"), so this loads alongside `orca.ts` rather than
   # replacing it.
   defp orca_mcp_extension_path, do: Application.app_dir(:orca_hub, "priv/pi/orca-mcp.ts")
+
+  # priv/pi/orca-plan.ts — read-only plan mode, vendored + adapted from pi's
+  # own plan-mode example extension (spec §12.4). Loaded after orca.ts so its
+  # PLAN_MODE_TOOLS list can reference the `question` tool orca.ts registers.
+  # Same Application.app_dir/2 resolution as above.
+  defp orca_plan_extension_path, do: Application.app_dir(:orca_hub, "priv/pi/orca-plan.ts")
 
   defp maybe_add_model_arg(args, model) do
     case pi_model(model) do
@@ -749,6 +766,40 @@ defmodule OrcaHub.Backend.Pi do
     {"", [event], ctx}
   end
 
+  # `priv/pi/orca-plan.ts`'s broadcastPlanState() (spec §12.4) — a
+  # fire-and-forget `setStatus` call carrying a JSON-encoded
+  # `{"enabled":bool,"executing":bool}` payload in `statusText`, keyed by
+  # `statusKey: "orca-plan-mode"` so it's distinguishable from any other
+  # extension's status updates. Normalized into a `pi_plan_mode` event (a
+  # genuinely new type, spec §3.3) that `SessionLive.Show` uses to learn the
+  # TRUE post-toggle state — independent of `ctx.ui.notify`'s free-text
+  # message, which is for the human, not for parsing. Fires on every
+  # `session_start` too (a resumed/cold-reopened session re-broadcasts its
+  # restored state), which is exactly what makes it reliable for
+  # reconstruction after a runner restart.
+  def handle_peer_request(
+        %{"method" => "setStatus", "statusKey" => "orca-plan-mode", "statusText" => text},
+        ctx
+      )
+      when is_binary(text) do
+    event =
+      case Jason.decode(text) do
+        {:ok, %{"enabled" => enabled} = data} ->
+          [
+            %{
+              "type" => "pi_plan_mode",
+              "enabled" => enabled == true,
+              "executing" => data["executing"] == true
+            }
+          ]
+
+        _ ->
+          []
+      end
+
+    {"", event, ctx}
+  end
+
   def handle_peer_request(%{"method" => _fire_and_forget}, ctx), do: {"", [], ctx}
 
   defp ui_request_event(req) do
@@ -784,6 +835,22 @@ defmodule OrcaHub.Backend.Pi do
       _ ->
         :noop
     end
+  end
+
+  # ── Plan mode toggle (spec §12.4) ───────────────────────────────────────
+  # Called by SessionRunner.toggle_plan_mode/1 (only reachable from :idle
+  # with a warm port — never mid-turn) via the Backend.encode_toggle_plan_mode/2
+  # dispatcher. `priv/pi/orca-plan.ts` registers `/plan` as a toggle-only
+  # extension COMMAND (no arguments): extension commands are handled
+  # synchronously by pi and do NOT start an agent turn (live-verified against
+  # 0.80.3 — no `agent_start`/`agent_end` fires, `get_state.messageCount`
+  # stays unchanged), so this reuses encode_user_turn/2's exact wire shape
+  # (`{"type":"prompt","message":…}`) rather than a bespoke frame — pi
+  # dispatches on the leading "/plan" before ever reaching agent processing.
+  @impl true
+  def encode_toggle_plan_mode(ctx) do
+    {iodata, new_ctx} = encode_user_turn("/plan", ctx)
+    {:ok, iodata, new_ctx}
   end
 
   # ── Session id extraction ───────────────────────────────────────────────

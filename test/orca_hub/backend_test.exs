@@ -58,6 +58,9 @@ defmodule OrcaHub.BackendTest do
       assert %Capabilities{} = caps
       assert caps.usage == true
       assert caps.plan_mode == true
+      # Claude's plan mode is model-initiated (EnterPlanMode/ExitPlanMode
+      # tool_use) — there is no user-facing toggle, unlike pi (spec §12.4).
+      assert caps.plan_mode_toggle == false
       assert caps.ask_user_question == true
       assert caps.mcp == true
     end
@@ -66,6 +69,7 @@ defmodule OrcaHub.BackendTest do
       caps = Backend.capabilities_for("codex")
       assert caps.usage == false
       assert caps.plan_mode == false
+      assert caps.plan_mode_toggle == false
       assert caps.ask_user_question == false
       assert caps.mcp == true
     end
@@ -73,7 +77,12 @@ defmodule OrcaHub.BackendTest do
     test "\"pi\" resolves to pi's capabilities" do
       caps = Backend.capabilities_for("pi")
       assert caps.usage == false
-      assert caps.plan_mode == false
+      # spec §12.4: OrcaHub's own orca-plan.ts extension gives pi a
+      # read-only, USER-toggled plan mode — rides the same plan_mode-gated
+      # chrome as Claude, via a different (toggle vs. model-initiated)
+      # mechanism, distinguished by plan_mode_toggle.
+      assert caps.plan_mode == true
+      assert caps.plan_mode_toggle == true
       # "pi backend groundwork" slice: pi asks interactive questions via its
       # own `question` tool + extension-UI reply loop, not Claude's built-in
       # AskUserQuestion tool — but the SAME capability flag gates both (the
@@ -100,6 +109,23 @@ defmodule OrcaHub.BackendTest do
       assert_raise RuntimeError, ~r/unknown backend/i, fn ->
         Backend.capabilities_for("not-a-real-backend")
       end
+    end
+  end
+
+  describe "encode_toggle_plan_mode/2 — optional callback dispatch (spec §12.4)" do
+    test "pi implements it — dispatches through" do
+      assert {:ok, iodata, _ctx} =
+               Backend.encode_toggle_plan_mode(OrcaHub.Backend.Pi, %{backend_state: %{}})
+
+      assert IO.iodata_to_binary(iodata) =~ "/plan"
+    end
+
+    test "Claude never implements it — :noop rather than UndefinedFunctionError" do
+      assert Backend.encode_toggle_plan_mode(OrcaHub.Backend.Claude, %{}) == :noop
+    end
+
+    test "Codex never implements it — :noop" do
+      assert Backend.encode_toggle_plan_mode(OrcaHub.Backend.Codex, %{}) == :noop
     end
   end
 

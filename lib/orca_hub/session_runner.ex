@@ -71,6 +71,19 @@ defmodule OrcaHub.SessionRunner do
     GenStatem.call(via(session_id), {:answer_ui_request, request_id, payload})
   end
 
+  # Toggles a backend-native plan mode (pi's `/plan` extension command, spec
+  # §12.4) via `Backend.encode_toggle_plan_mode/2`. Deliberately the OPPOSITE
+  # scope of `answer_ui_request/3` above: only allowed from `:idle` with an
+  # already-warm port (a live process to send the command to, and no turn in
+  # flight to interfere with) — refused from `:ready` (never started; no live
+  # process worth cold-opening just for a toggle), `:running` (mid-turn
+  # is send_message/interrupt territory, not this), and `:error`. Returns
+  # `:ok | {:error, :not_running} | {:error, :unsupported}` (the latter if
+  # the backend never implements the optional callback — Claude/Codex).
+  def toggle_plan_mode(session_id) do
+    GenStatem.call(via(session_id), :toggle_plan_mode)
+  end
+
   # In-session backend switch. A call (not a cast like the other update_*)
   # because it must be refused mid-turn — the in-flight port belongs to the
   # old backend and its events are still being normalized by it. Returns
@@ -241,6 +254,12 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
+  # toggle_plan_mode/1 needs an already-warm port (see its doc) — :ready has
+  # never opened one.
+  def ready({:call, from}, :toggle_plan_mode, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  end
+
   # A mid-turn dialog can only be pending while :running (see
   # answer_ui_request/3's doc) — :ready structurally never has one.
   def ready({:call, from}, {:answer_ui_request, _request_id, _payload}, _data) do
@@ -285,6 +304,28 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def idle({:call, from}, {:answer_ui_request, _request_id, _payload}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  end
+
+  # toggle_plan_mode/1 (see its doc): only meaningful against an ALREADY-warm
+  # port — writes the backend's toggle command straight to stdin and stays
+  # :idle (no turn started; pi's /plan extension command never triggers
+  # agent_start/agent_end, live-verified — see Backend.Pi.encode_toggle_plan_mode/1).
+  def idle({:call, from}, :toggle_plan_mode, %{engine: :streaming, port: port} = data)
+      when not is_nil(port) do
+    case Backend.encode_toggle_plan_mode(data.backend, data) do
+      {:ok, iodata, new_ctx} ->
+        Port.command(port, iodata)
+        new_data = flush_pending_writes(new_ctx)
+        {:keep_state, new_data, [{:reply, from, :ok}]}
+
+      :noop ->
+        {:keep_state_and_data, [{:reply, from, {:error, :unsupported}}]}
+    end
+  end
+
+  # Cold (no warm process) or one-shot engine — nothing live to toggle.
+  def idle({:call, from}, :toggle_plan_mode, _data) do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
@@ -400,6 +441,12 @@ defmodule OrcaHub.SessionRunner do
 
   def running({:call, from}, :get_state, data) do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:running, data)}]}
+  end
+
+  # toggle_plan_mode/1 is :idle-only (see its doc) — a turn is already in
+  # flight here.
+  def running({:call, from}, :toggle_plan_mode, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
   # Answers a pending mid-turn UI dialog (pi's extension-UI reply loop; see
@@ -557,6 +604,12 @@ defmodule OrcaHub.SessionRunner do
   end
 
   def error({:call, from}, {:answer_ui_request, _request_id, _payload}, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  end
+
+  # toggle_plan_mode/1 is :idle-only (see its doc) — an errored run has no
+  # reliably-live port worth writing to.
+  def error({:call, from}, :toggle_plan_mode, _data) do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 

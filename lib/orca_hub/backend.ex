@@ -63,6 +63,7 @@ defmodule OrcaHub.Backend do
             system_prompt: system_prompt,
             warmup_turn: boolean,
             plan_mode: boolean,
+            plan_mode_toggle: boolean,
             ask_user_question: boolean,
             session_stats: boolean,
             steering: boolean
@@ -87,6 +88,16 @@ defmodule OrcaHub.Backend do
               # backend-specific mechanisms under it, gating the appropriate
               # UI card either way (spec §12.3). Codex has neither.
               plan_mode: true,
+              # Whether the USER can flip plan mode on/off directly (spec
+              # §12.4), as opposed to Claude's `plan_mode` chrome, which only
+              # ever reflects a model-INITIATED EnterPlanMode/ExitPlanMode
+              # tool call — there is no user-facing toggle for Claude.
+              # `SessionLive.Show`'s toggle button (`toggle_plan_mode` event
+              # -> `SessionRunner.toggle_plan_mode/1`) is gated on THIS flag,
+              # never on `plan_mode` alone, so Claude/Codex sessions (which
+              # both leave this `false`) never see an affordance that would
+              # write a meaningless "/plan" turn into their native protocol.
+              plan_mode_toggle: false,
               ask_user_question: true,
               # pi-only (spec §12.3): whether this backend can report
               # token/cost/context-window session stats on demand (pi's
@@ -245,7 +256,21 @@ defmodule OrcaHub.Backend do
   @callback encode_ui_response(request_id :: String.t(), payload :: map, ctx) ::
               {:ok, iodata, ctx} | :noop
 
-  @optional_callbacks encode_ui_response: 3
+  @doc """
+  OPTIONAL — encodes a backend-native command that toggles a live
+  session-level mode (currently only pi's plan mode, spec §12.4) into bytes
+  to write to the port, when NOT mid-turn (`SessionRunner.toggle_plan_mode/1`
+  is only reachable from `:idle` with a warm port — see that function's doc).
+
+  Returns `{:ok, iodata, ctx}` on success or `:noop` when this backend has no
+  such toggle (Claude, Codex — `plan_mode` there is model-initiated, not
+  user-toggled). `Backend.Pi.encode_toggle_plan_mode/1` writes pi's `/plan`
+  extension command via the SAME wire shape `encode_user_turn/2` already
+  produces — reused directly rather than duplicated.
+  """
+  @callback encode_toggle_plan_mode(ctx) :: {:ok, iodata, ctx} | :noop
+
+  @optional_callbacks encode_ui_response: 3, encode_toggle_plan_mode: 1
 
   @doc """
   Resolves a backend identifier (the `sessions.backend` DB column value) to
@@ -383,6 +408,20 @@ defmodule OrcaHub.Backend do
   def encode_ui_response(backend, request_id, payload, ctx) do
     if function_exported?(backend, :encode_ui_response, 3) do
       backend.encode_ui_response(request_id, payload, ctx)
+    else
+      :noop
+    end
+  end
+
+  @doc """
+  Dispatches to `backend.encode_toggle_plan_mode/1` when the backend
+  implements the optional callback, else returns `:noop`. Mirrors
+  `encode_ui_response/4`'s dispatch pattern (spec §12.4).
+  """
+  @spec encode_toggle_plan_mode(module, ctx) :: {:ok, iodata, ctx} | :noop
+  def encode_toggle_plan_mode(backend, ctx) do
+    if function_exported?(backend, :encode_toggle_plan_mode, 1) do
+      backend.encode_toggle_plan_mode(ctx)
     else
       :noop
     end

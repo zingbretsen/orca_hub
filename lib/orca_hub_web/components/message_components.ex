@@ -97,6 +97,11 @@ defmodule OrcaHubWeb.MessageComponents do
   # own tool_use/tool_result already shows the call in-feed — the raw
   # `pi_ui_request` event would just be a redundant "waiting on you" line.
   defp hidden_message?(%{"type" => "pi_ui_request"}), do: true
+  # Plan-mode state broadcasts (spec §12.4) persist for reconstruction
+  # (SessionLive.Show scans history for the last one) but fire on every
+  # toggle AND every session_start/turn_end progress tick — rendering each as
+  # a feed card would be noisy; the header badge already reflects the state.
+  defp hidden_message?(%{"type" => "pi_plan_mode"}), do: true
   defp hidden_message?(_), do: false
 
   defp build_feed_items(messages) do
