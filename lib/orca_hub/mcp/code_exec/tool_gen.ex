@@ -23,9 +23,9 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
     * `Tools.call(name, args)`      — dispatch by raw MCP name, **faithful**
       MCP envelope (escape hatch)
     * `Tools.try_call(name, args)`  — `{:ok, value} | {:error, reason}`
-    * `Tools.search(query)`         — tokenized search over tool
-      names/descriptions, returning `%{"name" =>, "description" =>, "args" =>}`
-      maps
+    * `Tools.search(query)`         — ranked keyword search (BM25, see
+      `OrcaHub.MCP.CodeExec.ToolSearch`) over tool names/descriptions,
+      returning `%{"name" =>, "description" =>, "args" =>}` maps
     * `Tools.schema(name)`          — a tool's JSON input schema
     * `Tools.list()`                — all tools as `%{"name" =>, "description" =>}`
       maps
@@ -49,7 +49,7 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
 
   require Logger
 
-  alias OrcaHub.MCP.CodeExec.Dispatcher
+  alias OrcaHub.MCP.CodeExec.{Dispatcher, ToolSearch}
 
   @default_root Tools
 
@@ -249,19 +249,14 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
       end,
       quote do
         @doc ~s"""
-        Tokenized search over tool names + descriptions: downcases the query, \
-        splits it on whitespace, and requires every token to match (case-insensitive). \
-        Returns %{"name" =>, "description" =>, "args" =>} maps, where "args" lists \
-        the tool's argument names (optional ones suffixed "?").
+        Ranked keyword search over tool names + descriptions (case-insensitive), \
+        best match first — see `OrcaHub.MCP.CodeExec.ToolSearch` for the ranking \
+        details. Returns %{"name" =>, "description" =>, "args" =>} maps, where \
+        "args" lists the tool's argument names (optional ones suffixed "?").
         """
         def search(query) when is_binary(query) do
-          tokens = query |> String.downcase() |> String.split()
-
           unquote(Macro.escape(index))
-          |> Enum.filter(fn t ->
-            haystack = String.downcase(t.name <> " " <> t.description)
-            Enum.all?(tokens, &String.contains?(haystack, &1))
-          end)
+          |> unquote(ToolSearch).search(query)
           |> Enum.map(fn t ->
             %{"name" => t.name, "description" => t.description, "args" => t.args}
           end)

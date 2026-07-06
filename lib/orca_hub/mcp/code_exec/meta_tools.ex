@@ -7,7 +7,7 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
 
     * `run_elixir`   — evaluate model-authored Elixir that calls tools as named
       `Tools.*` functions and stitches results with stdlib (the main surface)
-    * `search_tools` — read-only tokenized search over the live registry
+    * `search_tools` — read-only ranked keyword search over the live registry
     * `read_tool`    — read-only fetch of a tool's description + input schema
 
   First-party AND upstream tools are still reachable — but only as `Tools.*`
@@ -26,7 +26,7 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   """
 
   alias OrcaHub.MCP.CodeExec
-  alias OrcaHub.MCP.CodeExec.ToolGen
+  alias OrcaHub.MCP.CodeExec.{ToolGen, ToolSearch}
   alias OrcaHub.MCP.Tools.Result
 
   @run_elixir_tool %{
@@ -85,9 +85,9 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   @search_tools_tool %{
     "name" => "search_tools",
     "description" =>
-      "Search the available tool registry (first-party + upstream) by a query " <>
-        "matched against tool names and descriptions — every whitespace-separated " <>
-        "token in the query must match (case-insensitive). Returns matching tools as " <>
+      "Ranked keyword search over the available tool registry (first-party + " <>
+        "upstream) — matched against tool names and descriptions, best match " <>
+        "first (case-insensitive). Returns matching tools as " <>
         "{\"name\", \"description\", \"args\"} maps, where \"args\" lists argument " <>
         "names (optional ones suffixed \"?\"). These tools are callable as " <>
         "Tools.<name>/1 inside run_elixir.",
@@ -193,15 +193,11 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   defp search_tools(nil), do: Result.error("search_tools requires a `query` string argument.")
 
   defp search_tools(query) when is_binary(query) do
-    tokens = query |> String.downcase() |> String.split()
-
     matches =
       ToolGen.live_tools()
-      |> Enum.filter(fn t ->
-        haystack = String.downcase(t["name"] <> " " <> (t["description"] || ""))
-        Enum.all?(tokens, &String.contains?(haystack, &1))
-      end)
-      |> Enum.map(fn t ->
+      |> Enum.map(fn t -> %{name: t["name"], description: t["description"] || "", raw: t} end)
+      |> ToolSearch.search(query)
+      |> Enum.map(fn %{raw: t} ->
         %{
           "name" => t["name"],
           "description" => t["description"] || "",

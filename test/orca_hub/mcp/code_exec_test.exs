@@ -153,11 +153,22 @@ defmodule OrcaHub.MCP.CodeExecTest do
              } = entry
     end
 
-    test "search/1 requires every whitespace-separated token to match" do
-      assert {:ok, %{value: []}} = Sandbox.eval(~s|Tools.search("get nonexistentword")|)
-
+    test "search/1 ranks by shared tokens instead of requiring every token to match" do
+      # "nonexistentword" contributes nothing to the score but doesn't AND-fail
+      # the query the way substring search used to — "get" alone still surfaces
+      # the doc containing it.
       assert {:ok, %{value: [%{"name" => "github__get_issue"}]}} =
+               Sandbox.eval(~s|Tools.search("get nonexistentword")|)
+
+      # github__weird name!not-valid also shares the "github" token (via its
+      # name), so it may trail behind, but the doc matching BOTH tokens ranks
+      # first.
+      assert {:ok, %{value: [%{"name" => "github__get_issue"} | _]}} =
                Sandbox.eval(~s|Tools.search("issue github")|)
+    end
+
+    test "search/1 returns [] when zero query tokens match" do
+      assert {:ok, %{value: []}} = Sandbox.eval(~s|Tools.search("zzznotarealword")|)
     end
   end
 
@@ -276,13 +287,19 @@ defmodule OrcaHub.MCP.CodeExecTest do
       assert count > 0
     end
 
-    test "search_tools requires every whitespace-separated token to match" do
+    test "search_tools ranks by shared tokens instead of requiring every token to match" do
       result = MetaTools.call("search_tools", %{"query" => "open file"}, %{})
       assert result["isError"] == false
       %{"tools" => tools} = Jason.decode!(hd(result["content"])["text"])
       assert Enum.any?(tools, &(&1["name"] == "open_file"))
 
-      no_match = MetaTools.call("search_tools", %{"query" => "open nonexistentword"}, %{})
+      # a token matching nothing just contributes no score — it doesn't
+      # AND-fail the whole query the way substring search used to.
+      partial = MetaTools.call("search_tools", %{"query" => "open zzznotarealword"}, %{})
+      %{"tools" => partial_tools} = Jason.decode!(hd(partial["content"])["text"])
+      assert Enum.any?(partial_tools, &(&1["name"] == "open_file"))
+
+      no_match = MetaTools.call("search_tools", %{"query" => "zzznotarealword"}, %{})
       %{"count" => 0} = Jason.decode!(hd(no_match["content"])["text"])
     end
 
