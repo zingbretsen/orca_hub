@@ -26,7 +26,9 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
 
   ## Result tuples
 
-    * `{:ok, %{value: term, stdout: binary}}`
+    * `{:ok, %{value: term, stdout: binary, binding: keyword}}` — `binding` is
+      the resulting variable binding after the snippet ran, for callers that
+      want to persist it across evals (see `OrcaHub.MCP.CodeExec.BindingStore`)
     * `{:error, {:rejected, reason}}`   — failed parsing/allowlist (the model
       should FIX its code: syntax error, denied module)
     * `{:error, {:timeout, ms}}`        — ran too long (resource outcome)
@@ -82,6 +84,8 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
 
     * `:state`      — MCP state map installed in the eval process dictionary for
       the generated `Tools.*` functions to read (default `%{}`)
+    * `:binding`    — input variable binding to evaluate against, e.g. the
+      binding returned by a prior `eval/2` call (default `[]`)
     * `:timeout_ms` — wall-clock timeout (default 30_000; snippets are meant to
       batch several serial upstream/network tool calls)
     * `:max_output` — byte cap for captured stdout + formatted output
@@ -91,10 +95,11 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
     timeout = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
     max_output = Keyword.get(opts, :max_output, @default_max_output)
     state = Keyword.get(opts, :state, %{})
+    binding = Keyword.get(opts, :binding, [])
 
     with {:ok, ast} <- parse(code),
          :ok <- check(ast) do
-      run(ast, state, timeout, max_output)
+      run(ast, state, binding, timeout, max_output)
     else
       {:rejected, reason} -> {:error, {:rejected, reason}}
       {:error, {:rejected, _}} = err -> err
@@ -180,7 +185,7 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
 
   # ── evaluation ───────────────────────────────────────────────────────
 
-  defp run(ast, state, timeout, max_output) do
+  defp run(ast, state, binding, timeout, max_output) do
     parent = self()
     ref = make_ref()
 
@@ -196,8 +201,8 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
 
         result =
           try do
-            {value, _binding} = Code.eval_quoted(ast, [], eval_env())
-            {:ok, value}
+            {value, new_binding} = Code.eval_quoted(ast, binding, eval_env())
+            {:ok, value, new_binding}
           rescue
             e -> {:raised, :error, e, __STACKTRACE__}
           catch
@@ -220,8 +225,8 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
     end
   end
 
-  defp finalize({:ok, value}, out, max_output) do
-    {:ok, %{value: value, stdout: cap(out, max_output)}}
+  defp finalize({:ok, value, binding}, out, max_output) do
+    {:ok, %{value: value, stdout: cap(out, max_output), binding: binding}}
   end
 
   defp finalize({:raised, kind, reason, trace}, out, max_output) do

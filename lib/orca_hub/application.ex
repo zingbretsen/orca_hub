@@ -74,6 +74,9 @@ defmodule OrcaHub.Application do
       # Serializes (re)generation of the global `Tools` surface for code-exec
       # sessions. Idle until the first run_elixir on this node.
       OrcaHub.MCP.CodeExec.Generator,
+      # Per-session run_elixir variable bindings (REPL persistence). Must run
+      # on both hub and agent nodes — code-exec sessions run on either.
+      OrcaHub.MCP.CodeExec.BindingStore,
       OrcaHub.MCP.UpstreamClient,
       OrcaHub.Scheduler,
       OrcaHub.TriggerLoader,
@@ -106,6 +109,9 @@ defmodule OrcaHub.Application do
       # Serializes (re)generation of the global `Tools` surface for code-exec
       # sessions. Idle until the first run_elixir on this node.
       OrcaHub.MCP.CodeExec.Generator,
+      # Per-session run_elixir variable bindings (REPL persistence). Must run
+      # on both hub and agent nodes — code-exec sessions run on either.
+      OrcaHub.MCP.CodeExec.BindingStore,
       # Agent needs a local HTTP endpoint for MCP (Claude CLI connects to it)
       OrcaHubWeb.Endpoint
     ]

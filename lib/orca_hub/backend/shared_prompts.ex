@@ -50,6 +50,15 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - The value of the last expression (and any stdout) is returned to you. \
       Keep return values slim — filter/project before returning. Pure stdlib is \
       available; OrcaHub internals, File, and System are blocked.
+    - **Variables persist across `run_elixir` calls** within this session, like \
+      a REPL — fetch data once into a variable, then slice/reshape it in later \
+      calls instead of re-fetching:
+
+          sessions = Tools.search_sessions(%{"status" => "error"})
+          # ...next call...
+          Enum.map(sessions, & &1["title"])
+
+      Pass `"reset": true` to clear your stored variables and start fresh.
     """
     |> String.trim()
   end

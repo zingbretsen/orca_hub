@@ -3,7 +3,8 @@ defmodule OrcaHub.MCP.CodeExecTest do
   # not run concurrently with anything else that (re)generates it.
   use ExUnit.Case, async: false
 
-  alias OrcaHub.MCP.CodeExec.{MetaTools, Sandbox, ToolGen}
+  alias OrcaHub.MCP.CodeExec
+  alias OrcaHub.MCP.CodeExec.{BindingStore, MetaTools, Sandbox, ToolGen}
 
   # A stub dispatcher returning canned MCP envelopes, baked into the generated
   # `Tools.*` functions so we can exercise auto-unwrap / raise without a live
@@ -350,6 +351,173 @@ defmodule OrcaHub.MCP.CodeExecTest do
       names = tool_names(sid)
       refute "run_elixir" in names
       assert "open_file" in names
+    end
+  end
+
+  describe "run_elixir variable binding persistence (REPL across calls)" do
+    # Unique key per test so tests can't see each other's bindings via the
+    # shared, app-supervised BindingStore.
+    defp unique_key(label), do: "#{label}-#{System.unique_integer([:positive])}"
+
+    test "a variable assigned in one eval is visible in the next, for the same session key" do
+      state = %{orca_session_id: unique_key("persist")}
+
+      assert {:ok, %{value: 1}} = CodeExec.run("sessions = 1", state)
+      assert {:ok, %{value: 2}} = CodeExec.run("sessions + 1", state)
+    end
+
+    test "different session keys are isolated from each other" do
+      state_a = %{orca_session_id: unique_key("iso-a")}
+      state_b = %{orca_session_id: unique_key("iso-b")}
+
+      assert {:ok, %{value: 1}} = CodeExec.run("x = 1", state_a)
+      assert {:ok, %{value: 99}} = CodeExec.run("x = 99", state_b)
+
+      # state_a's `x` is unaffected by state_b's assignment.
+      assert {:ok, %{value: 1}} = CodeExec.run("x", state_a)
+      assert {:ok, %{value: 99}} = CodeExec.run("x", state_b)
+    end
+
+    test "an exception leaves the previously stored binding untouched" do
+      state = %{orca_session_id: unique_key("exception")}
+
+      assert {:ok, %{value: 1}} = CodeExec.run("x = 1", state)
+      assert {:error, {:exception, _}} = CodeExec.run("x = 2; raise \"boom\"", state)
+
+      # x is still 1 — the failed eval's reassignment never got saved.
+      assert {:ok, %{value: 1}} = CodeExec.run("x", state)
+    end
+
+    test "a timeout leaves the previously stored binding untouched" do
+      state = %{orca_session_id: unique_key("timeout")}
+
+      assert {:ok, %{value: 1}} = CodeExec.run("x = 1", state)
+
+      assert {:error, {:timeout, 50}} =
+               CodeExec.run("x = 2; Enum.each(Stream.cycle([1]), fn _ -> :ok end)", state,
+                 timeout_ms: 50
+               )
+
+      assert {:ok, %{value: 1}} = CodeExec.run("x", state)
+    end
+
+    test "reset: true clears the stored binding before evaluating" do
+      state = %{orca_session_id: unique_key("reset")}
+
+      assert {:ok, %{value: 1}} = CodeExec.run("x = 1", state)
+      assert {:ok, %{value: 1}} = CodeExec.run("x", state)
+
+      # With a fresh binding, `x` is no longer defined.
+      assert {:error, {:exception, _}} = CodeExec.run("x", state, reset: true)
+    end
+
+    test "run_elixir's \"reset\" arg reaches CodeExec via MetaTools" do
+      state = %{orca_session_id: unique_key("meta-reset")}
+
+      result = MetaTools.call("run_elixir", %{"code" => "y = 42"}, state)
+      assert result["isError"] == false
+
+      result = MetaTools.call("run_elixir", %{"code" => "y"}, state)
+      assert hd(result["content"])["text"] =~ "=> 42"
+
+      result = MetaTools.call("run_elixir", %{"code" => "y", "reset" => true}, state)
+      assert result["isError"] == true
+    end
+
+    test "falls back to the MCP session_id when orca_session_id is nil" do
+      state = %{orca_session_id: nil, session_id: unique_key("mcp-fallback")}
+
+      assert {:ok, %{value: 1}} = CodeExec.run("z = 1", state)
+      assert {:ok, %{value: 1}} = CodeExec.run("z", state)
+    end
+
+    test "an over-budget binding is not saved and a notice is appended" do
+      Application.put_env(:orca_hub, :code_exec_binding_budget_bytes, 100)
+      on_exit(fn -> Application.delete_env(:orca_hub, :code_exec_binding_budget_bytes) end)
+
+      state = %{orca_session_id: unique_key("budget")}
+
+      assert {:ok, %{value: 1}} = CodeExec.run("small = 1", state)
+
+      # Comfortably over a 100-byte budget.
+      assert {:ok, %{value: _big, note: note}} =
+               CodeExec.run("big = String.duplicate(\"a\", 10_000)", state)
+
+      assert note =~ "bindings not saved"
+      assert note =~ "exceeds the 100 byte budget"
+
+      # The old (small) binding is still there — the oversized `big` never got saved.
+      assert {:ok, %{value: 1}} = CodeExec.run("small", state)
+      assert {:error, {:exception, _}} = CodeExec.run("big", state)
+    end
+
+    test "run_elixir's result text includes the not-saved notice" do
+      Application.put_env(:orca_hub, :code_exec_binding_budget_bytes, 100)
+      on_exit(fn -> Application.delete_env(:orca_hub, :code_exec_binding_budget_bytes) end)
+
+      state = %{orca_session_id: unique_key("budget-meta")}
+      code = ~s|big = String.duplicate("a", 10_000)|
+
+      result = MetaTools.call("run_elixir", %{"code" => code}, state)
+      assert result["isError"] == false
+      assert hd(result["content"])["text"] =~ "bindings not saved"
+    end
+  end
+
+  describe "BindingStore" do
+    setup do
+      {:ok, pid} = BindingStore.start_link(name: nil)
+      %{store: pid}
+    end
+
+    test "get/1 defaults to an empty binding for an unknown key", %{store: store} do
+      assert BindingStore.get(:unknown, store) == []
+    end
+
+    test "put/2 then get/1 round-trips the binding for the same key", %{store: store} do
+      BindingStore.put(:k, [x: 1, y: 2], store)
+      assert BindingStore.get(:k, store) == [x: 1, y: 2]
+    end
+
+    test "different keys don't see each other's bindings", %{store: store} do
+      BindingStore.put(:a, [x: 1], store)
+      BindingStore.put(:b, [x: 2], store)
+
+      assert BindingStore.get(:a, store) == [x: 1]
+      assert BindingStore.get(:b, store) == [x: 2]
+    end
+
+    test "reset/1 clears a key", %{store: store} do
+      BindingStore.put(:k, [x: 1], store)
+      BindingStore.reset(:k, store)
+      assert BindingStore.get(:k, store) == []
+    end
+
+    test "a later put/2 overwrites an earlier one for the same key (last-write-wins)", %{
+      store: store
+    } do
+      BindingStore.put(:k, [x: 1], store)
+      BindingStore.put(:k, [x: 2], store)
+      assert BindingStore.get(:k, store) == [x: 2]
+    end
+
+    test "sweep evicts entries idle past ttl_ms, without waiting for the real clock" do
+      {:ok, store} = BindingStore.start_link(name: nil, ttl_ms: 10, sweep_interval_ms: 3_600_000)
+
+      BindingStore.put(:stale, [x: 1], store)
+      Process.sleep(20)
+      BindingStore.sweep(store)
+
+      assert BindingStore.get(:stale, store) == []
+    end
+
+    test "sweep does not evict entries touched within ttl_ms" do
+      {:ok, store} = BindingStore.start_link(name: nil, ttl_ms: 3_600_000)
+
+      BindingStore.put(:fresh, [x: 1], store)
+      BindingStore.sweep(store)
+
+      assert BindingStore.get(:fresh, store) == [x: 1]
     end
   end
 end

@@ -19,6 +19,10 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   error / allowlist violation — the model should fix its code) from **ran and
   failed** (`Tools.Error`, another exception, or a timeout — a tool/expression
   outcome).
+
+  Variables assigned in `run_elixir` persist across calls within the same
+  session (see `OrcaHub.MCP.CodeExec.BindingStore`) — only a successful eval
+  updates the stored binding, and `"reset": true` clears it.
   """
 
   alias OrcaHub.MCP.CodeExec
@@ -50,12 +54,29 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
     (Enum, Map, String, Jason, ...) is available; OrcaHub internals, File, \
     System, and process/dispatch primitives are blocked. The returned value of \
     the last expression and any stdout are sent back — keep it slim: \
-    filter/project before returning.\
+    filter/project before returning.
+
+    Variables you bind PERSIST across run_elixir calls within this session, \
+    like a REPL: fetch data once into a variable, then slice/reshape it in \
+    later calls instead of re-fetching.
+
+        sessions = Tools.search_sessions(%{"status" => "error"})
+        # ...next call...
+        Enum.map(sessions, & &1["title"])
+
+    Pass `"reset": true` to clear your session's stored variables and start \
+    fresh (the snippet then runs against an empty binding).\
     """,
     "inputSchema" => %{
       "type" => "object",
       "properties" => %{
-        "code" => %{"type" => "string", "description" => "Elixir code to evaluate."}
+        "code" => %{"type" => "string", "description" => "Elixir code to evaluate."},
+        "reset" => %{
+          "type" => "boolean",
+          "description" =>
+            "If true, clear this session's persisted variables before evaluating " <>
+              "(the snippet then runs with a fresh binding)."
+        }
       },
       "required" => ["code"]
     }
@@ -106,7 +127,7 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   Dispatch a meta-tool call. `state` is the MCP server state, threaded into
   evaluated code so `Tools.*` calls run with the connection's identity.
   """
-  def call("run_elixir", args, state), do: run_elixir(args["code"], state)
+  def call("run_elixir", args, state), do: run_elixir(args, state)
   def call("search_tools", args, _state), do: search_tools(args["query"])
   def call("read_tool", args, _state), do: read_tool(args["name"])
 
@@ -120,12 +141,12 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
 
   # ── run_elixir ───────────────────────────────────────────────────────
 
-  defp run_elixir(nil, _state), do: Result.error("run_elixir requires a `code` string argument.")
+  defp run_elixir(%{"code" => code} = args, state) when is_binary(code) do
+    reset? = args["reset"] == true
 
-  defp run_elixir(code, state) when is_binary(code) do
-    case CodeExec.run(code, state) do
-      {:ok, %{value: value, stdout: stdout}} ->
-        Result.text(format_success(value, stdout))
+    case CodeExec.run(code, state, reset: reset?) do
+      {:ok, %{value: value, stdout: stdout} = result} ->
+        Result.text(format_success(value, stdout, Map.get(result, :note)))
 
       {:error, {:rejected, reason}} ->
         Result.error("Code rejected before running (fix your code): #{reason}")
@@ -138,14 +159,18 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
     end
   end
 
+  defp run_elixir(_args, _state),
+    do: Result.error("run_elixir requires a `code` string argument.")
+
   # Same budget the sandbox caps stdout/exception banners at (see Sandbox's
   # @default_max_output) — the returned value gets no cap otherwise, and a big
   # tool result would be a context bomb.
   @max_value_bytes 50_000
 
-  defp format_success(value, stdout) do
+  defp format_success(value, stdout, note) do
     out = if stdout == "", do: "", else: "stdout:\n#{stdout}\n"
-    "#{out}=> #{cap_value(inspect(value, pretty: true, limit: :infinity))}"
+    note_line = if note, do: "\n\n#{note}", else: ""
+    "#{out}=> #{cap_value(inspect(value, pretty: true, limit: :infinity))}#{note_line}"
   end
 
   defp cap_value(formatted) when byte_size(formatted) > @max_value_bytes do

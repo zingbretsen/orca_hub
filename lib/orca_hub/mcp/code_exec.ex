@@ -14,8 +14,11 @@ defmodule OrcaHub.MCP.CodeExec do
       dictionary** of the eval Task. The generated `Tools.*` functions read it
       from there, so per-session state is NOT baked into a per-session module
       name (which would grow the never-GC'd atom table).
-    * **run/2** — ensure the live `Tools` surface is generated, then evaluate a
-      snippet in the sandbox with the given MCP state installed.
+    * **run/3** — ensure the live `Tools` surface is generated, then evaluate a
+      snippet in the sandbox with the given MCP state installed and the
+      session's persisted variable binding threaded in/out (see
+      `…CodeExec.BindingStore`), so variables survive across `run_elixir`
+      calls within the same session — like a REPL/notebook.
 
   ## On by default, opt-out per session
 
@@ -33,9 +36,15 @@ defmodule OrcaHub.MCP.CodeExec do
   collapsed MCP tool set.
   """
 
-  alias OrcaHub.MCP.CodeExec.{Generator, Sandbox}
+  alias OrcaHub.MCP.CodeExec.{BindingStore, Generator, Sandbox}
 
   @state_key {__MODULE__, :state}
+
+  # Suggested budget: don't let one session's binding grow unbounded. Over
+  # budget, the eval's own return value is unaffected — only persistence for
+  # the *next* call is skipped. Overridable via config (tests use a tiny
+  # budget instead of constructing multi-megabyte fixtures).
+  @default_binding_budget_bytes 5 * 1024 * 1024
 
   @doc """
   Whether code-exec mode is active for a connection.
@@ -63,12 +72,65 @@ defmodule OrcaHub.MCP.CodeExec do
   @doc """
   Evaluate model-authored `code` in the sandbox with `state` installed.
 
+  Threads a persistent variable binding, keyed by the session's
+  `orca_session_id` (falling back to the MCP `session_id` when nil — e.g.
+  connections without an orca session, so the feature still degrades
+  gracefully within a turn) through `BindingStore`, so variables assigned in
+  one `run_elixir` call are visible in the next. Only a **successful** eval
+  updates the stored binding — a rejected/raised/timed-out eval leaves the
+  previous binding untouched. If the new binding exceeds the byte budget
+  (default #{@default_binding_budget_bytes}, see `:code_exec_binding_budget_bytes`)
+  it is NOT saved (the old binding is kept) and a one-line notice is attached
+  under `:note`; the eval's own return value is unaffected.
+
+  `opts[:reset]` clears the stored binding before evaluating, so the snippet
+  runs against a fresh (empty) binding.
+
   Ensures the global `Tools` surface reflects the live registry, then delegates
-  to `Sandbox.eval/2`. Returns the sandbox result tuple; `MetaTools` formats it
-  into an MCP result for `run_elixir`.
+  to `Sandbox.eval/2`. Returns the sandbox result tuple (with `:binding`
+  replaced by an optional `:note` on success); `MetaTools` formats it into an
+  MCP result for `run_elixir`.
   """
   def run(code, state, opts \\ []) when is_binary(code) do
     Generator.ensure!()
-    Sandbox.eval(code, Keyword.merge(opts, state: state))
+    {reset?, opts} = Keyword.pop(opts, :reset, false)
+    key = binding_key(state)
+
+    if reset?, do: BindingStore.reset(key)
+    binding = BindingStore.get(key)
+
+    code
+    |> Sandbox.eval(Keyword.merge(opts, state: state, binding: binding))
+    |> persist_binding(key)
+  end
+
+  defp binding_key(%{orca_session_id: id}) when not is_nil(id), do: id
+  defp binding_key(%{session_id: id}) when not is_nil(id), do: id
+  defp binding_key(_state), do: nil
+
+  defp persist_binding({:ok, %{value: value, stdout: stdout, binding: binding}}, key) do
+    size = :erlang.external_size(binding)
+    budget = binding_budget_bytes()
+
+    if size <= budget do
+      BindingStore.put(key, binding)
+      {:ok, %{value: value, stdout: stdout}}
+    else
+      note =
+        "[bindings not saved: #{size} bytes exceeds the #{budget} byte budget " <>
+          "— bind smaller values]"
+
+      {:ok, %{value: value, stdout: stdout, note: note}}
+    end
+  end
+
+  defp persist_binding(error, _key), do: error
+
+  defp binding_budget_bytes do
+    Application.get_env(
+      :orca_hub,
+      :code_exec_binding_budget_bytes,
+      @default_binding_budget_bytes
+    )
   end
 end
