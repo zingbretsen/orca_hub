@@ -7,7 +7,7 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
 
     * `run_elixir`   — evaluate model-authored Elixir that calls tools as named
       `Tools.*` functions and stitches results with stdlib (the main surface)
-    * `search_tools` — read-only fuzzy search over the live registry
+    * `search_tools` — read-only tokenized search over the live registry
     * `read_tool`    — read-only fetch of a tool's description + input schema
 
   First-party AND upstream tools are still reachable — but only as `Tools.*`
@@ -41,14 +41,16 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
         |> Enum.map(& &1["title"])
 
     Discover tools from inside code with `Tools.search("query")`, \
-    `Tools.list()`, and `Tools.schema("name")`. `search`/`list` return \
-    `{name, description}` TUPLES (match the tuple, don't index with `["name"]`); \
-    `schema` returns a map. For explicit error handling use \
-    `Tools.try_call("name", args)` -> `{:ok, value} | {:error, reason}`, or \
+    `Tools.list()`, and `Tools.schema("name")`. `search`/`list` return maps \
+    with "name"/"description" keys (search results also include "args" — a \
+    list of argument names, with optional ones suffixed "?", e.g. \
+    ["repo", "number?"]); `schema` returns a map. For explicit error handling \
+    use `Tools.try_call("name", args)` -> `{:ok, value} | {:error, reason}`, or \
     `Tools.call("name", args)` for the faithful MCP envelope. Pure stdlib \
     (Enum, Map, String, Jason, ...) is available; OrcaHub internals, File, \
     System, and process/dispatch primitives are blocked. The returned value of \
-    the last expression and any stdout are sent back.\
+    the last expression and any stdout are sent back — keep it slim: \
+    filter/project before returning.\
     """,
     "inputSchema" => %{
       "type" => "object",
@@ -63,9 +65,11 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
     "name" => "search_tools",
     "description" =>
       "Search the available tool registry (first-party + upstream) by a query " <>
-        "matched against tool names and descriptions. Returns matching " <>
-        "{name, description} pairs. These tools are callable as Tools.<name>/1 " <>
-        "inside run_elixir.",
+        "matched against tool names and descriptions — every whitespace-separated " <>
+        "token in the query must match (case-insensitive). Returns matching tools as " <>
+        "{\"name\", \"description\", \"args\"} maps, where \"args\" lists argument " <>
+        "names (optional ones suffixed \"?\"). These tools are callable as " <>
+        "Tools.<name>/1 inside run_elixir.",
     "inputSchema" => %{
       "type" => "object",
       "properties" => %{
@@ -134,10 +138,24 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
     end
   end
 
+  # Same budget the sandbox caps stdout/exception banners at (see Sandbox's
+  # @default_max_output) — the returned value gets no cap otherwise, and a big
+  # tool result would be a context bomb.
+  @max_value_bytes 50_000
+
   defp format_success(value, stdout) do
     out = if stdout == "", do: "", else: "stdout:\n#{stdout}\n"
-    "#{out}=> #{inspect(value, pretty: true, limit: :infinity)}"
+    "#{out}=> #{cap_value(inspect(value, pretty: true, limit: :infinity))}"
   end
+
+  defp cap_value(formatted) when byte_size(formatted) > @max_value_bytes do
+    truncated = byte_size(formatted) - @max_value_bytes
+
+    binary_part(formatted, 0, @max_value_bytes) <>
+      "\n…[truncated #{truncated} bytes — filter/project the value in your code before returning it]"
+  end
+
+  defp cap_value(formatted), do: formatted
 
   defp format_exception(banner, line, stdout) do
     where = if line, do: " (at line #{line})", else: ""
@@ -150,15 +168,21 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   defp search_tools(nil), do: Result.error("search_tools requires a `query` string argument.")
 
   defp search_tools(query) when is_binary(query) do
-    q = String.downcase(query)
+    tokens = query |> String.downcase() |> String.split()
 
     matches =
       ToolGen.live_tools()
       |> Enum.filter(fn t ->
-        String.contains?(String.downcase(t["name"]), q) or
-          String.contains?(String.downcase(t["description"] || ""), q)
+        haystack = String.downcase(t["name"] <> " " <> (t["description"] || ""))
+        Enum.all?(tokens, &String.contains?(haystack, &1))
       end)
-      |> Enum.map(fn t -> %{"name" => t["name"], "description" => t["description"] || ""} end)
+      |> Enum.map(fn t ->
+        %{
+          "name" => t["name"],
+          "description" => t["description"] || "",
+          "args" => ToolGen.arg_names(t["inputSchema"] || %{})
+        }
+      end)
 
     Result.text(Jason.encode!(%{"count" => length(matches), "tools" => matches}))
   end

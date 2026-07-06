@@ -11,17 +11,24 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
     * First-party tools (`OrcaHub.MCP.Tools.list/0`) — flat on the root:
       `Tools.send_message_to_session/1`, `Tools.open_file/1`, ...
     * Upstream tools (`OrcaHub.MCP.UpstreamClient.list_tools/0`, namespaced
-      `github__get_issue`) — grouped by prefix into a submodule:
-      `Tools.Github.get_issue/1`.
+      `github__get_issue`) — flat on the root under their **raw MCP name**
+      (`Tools.github__get_issue/1`, matching what the system prompt and
+      `search_tools`/`read_tool` teach), AND grouped by prefix into a
+      submodule as sugar: `Tools.Github.get_issue/1`. A tool whose raw name
+      isn't a valid Elixir function identifier is skipped (with a
+      `Logger.warning`) rather than crashing generation.
 
   Plus generic helpers on the root module:
 
     * `Tools.call(name, args)`      — dispatch by raw MCP name, **faithful**
       MCP envelope (escape hatch)
     * `Tools.try_call(name, args)`  — `{:ok, value} | {:error, reason}`
-    * `Tools.search(query)`         — fuzzy search tool names/descriptions
+    * `Tools.search(query)`         — tokenized search over tool
+      names/descriptions, returning `%{"name" =>, "description" =>, "args" =>}`
+      maps
     * `Tools.schema(name)`          — a tool's JSON input schema
-    * `Tools.list()`                — all `{name, description}`
+    * `Tools.list()`                — all tools as `%{"name" =>, "description" =>}`
+      maps
     * `Tools.text(result)` / `Tools.json(result)` — unwrap a raw envelope
 
   ## State threading
@@ -40,9 +47,15 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
   ones.
   """
 
+  require Logger
+
   alias OrcaHub.MCP.CodeExec.Dispatcher
 
   @default_root Tools
+
+  # Raw MCP tool names are only generated as flat root defs when they're valid
+  # Elixir function identifiers (lowercase, underscores, optional trailing ?/!).
+  @valid_fun_name ~r/^[a-z_][a-zA-Z0-9_]*[?!]?$/
 
   @doc """
   Generate the named function modules from the (live or supplied) registry.
@@ -77,8 +90,8 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
           create_module(mod, prefix_tools, &strip_prefix/1, dispatcher)
         end)
 
-      # Root module: flat first-party funcs + generic helpers
-      create_root(root, first_party, tools, dispatcher)
+      # Root module: flat first-party + upstream funcs + generic helpers
+      create_root(root, first_party, upstream, tools, dispatcher)
 
       {root, [root | sub_modules]}
     end)
@@ -112,21 +125,75 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
     |> :erlang.phash2()
   end
 
+  @doc """
+  Derive an arg-name list from a tool's JSON input schema: property names,
+  sorted, with optional ones (not listed in "required") suffixed `?`, e.g.
+  `["number?", "repo"]`. Shared by the generated `Tools.search/1` and the
+  `search_tools` meta-tool so both report the same shape.
+  """
+  def arg_names(%{"properties" => properties} = schema) when is_map(properties) do
+    required = schema["required"] || []
+
+    properties
+    |> Map.keys()
+    |> Enum.sort()
+    |> Enum.map(fn name -> if name in required, do: name, else: name <> "?" end)
+  end
+
+  def arg_names(_schema), do: []
+
   # ── module builders ──────────────────────────────────────────────────
 
   defp create_module(mod, tools, name_fun, dispatcher) do
-    funs = Enum.map(tools, &tool_fun(&1, name_fun, dispatcher))
+    funs =
+      tools
+      |> filter_valid_names(name_fun)
+      |> Enum.map(&tool_fun(&1, name_fun, dispatcher))
+
     body = quote do: (unquote_splicing(funs))
     Module.create(mod, body, Macro.Env.location(__ENV__))
     mod
   end
 
-  defp create_root(root, first_party, all_tools, dispatcher) do
-    funs = Enum.map(first_party, &tool_fun(&1, fn tool -> tool["name"] end, dispatcher))
+  defp create_root(root, first_party, upstream, all_tools, dispatcher) do
+    raw_name = fn tool -> tool["name"] end
+
+    first_party_funs =
+      first_party
+      |> filter_valid_names(raw_name)
+      |> Enum.map(&tool_fun(&1, raw_name, dispatcher))
+
+    # Flat raw-name defs for upstream tools too (e.g. `github__get_issue`) —
+    # this is what the system prompt/search_tools/read_tool actually teach
+    # models to call; the per-prefix submodules remain as sugar.
+    upstream_funs =
+      upstream
+      |> filter_valid_names(raw_name)
+      |> Enum.map(&tool_fun(&1, raw_name, dispatcher))
+
     helpers = root_helpers(all_tools, dispatcher)
-    body = quote do: (unquote_splicing(funs ++ helpers))
+    body = quote do: (unquote_splicing(first_party_funs ++ upstream_funs ++ helpers))
     Module.create(root, body, Macro.Env.location(__ENV__))
     root
+  end
+
+  # Skip (rather than crash on) any tool whose raw name isn't a valid Elixir
+  # function identifier — logging so the gap is visible without taking down
+  # generation for every other tool.
+  defp filter_valid_names(tools, name_fun) do
+    Enum.filter(tools, fn tool ->
+      name = name_fun.(tool)
+
+      if is_binary(name) and Regex.match?(@valid_fun_name, name) do
+        true
+      else
+        Logger.warning(
+          "[code_exec] skipping generated function for tool with invalid name: #{inspect(name)}"
+        )
+
+        false
+      end
+    end)
   end
 
   # One named function per tool, e.g. `def get_issue(args \\ %{})`, dispatching
@@ -149,7 +216,14 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
     # A compact, escapable registry index for search/schema/list.
     index =
       Enum.map(all_tools, fn t ->
-        %{name: t["name"], description: t["description"] || "", schema: t["inputSchema"] || %{}}
+        schema = t["inputSchema"] || %{}
+
+        %{
+          name: t["name"],
+          description: t["description"] || "",
+          schema: schema,
+          args: arg_names(schema)
+        }
       end)
 
     [
@@ -166,22 +240,31 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
         end
       end,
       quote do
-        @doc "All tools as {name, description} tuples."
+        @doc ~s(All tools as %{"name" => ..., "description" => ...} maps.)
         def list do
-          Enum.map(unquote(Macro.escape(index)), fn t -> {t.name, t.description} end)
+          Enum.map(unquote(Macro.escape(index)), fn t ->
+            %{"name" => t.name, "description" => t.description}
+          end)
         end
       end,
       quote do
-        @doc "Fuzzy search tool names + descriptions (case-insensitive)."
+        @doc ~s"""
+        Tokenized search over tool names + descriptions: downcases the query, \
+        splits it on whitespace, and requires every token to match (case-insensitive). \
+        Returns %{"name" =>, "description" =>, "args" =>} maps, where "args" lists \
+        the tool's argument names (optional ones suffixed "?").
+        """
         def search(query) when is_binary(query) do
-          q = String.downcase(query)
+          tokens = query |> String.downcase() |> String.split()
 
           unquote(Macro.escape(index))
           |> Enum.filter(fn t ->
-            String.contains?(String.downcase(t.name), q) or
-              String.contains?(String.downcase(t.description), q)
+            haystack = String.downcase(t.name <> " " <> t.description)
+            Enum.all?(tokens, &String.contains?(haystack, &1))
           end)
-          |> Enum.map(fn t -> {t.name, t.description} end)
+          |> Enum.map(fn t ->
+            %{"name" => t.name, "description" => t.description, "args" => t.args}
+          end)
         end
       end,
       quote do

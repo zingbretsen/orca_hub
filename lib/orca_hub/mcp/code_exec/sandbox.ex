@@ -64,7 +64,11 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
   # Local builtins that enable dynamic dispatch / side effects.
   @denied_locals ~w(apply spawn spawn_link spawn_monitor send exit throw receive)a
 
-  @default_timeout_ms 5_000
+  # Actionable hint appended to rejections for OS/filesystem/process-style
+  # modules — the model's next move is to look for a tool, not retry the call.
+  @no_sandbox_access_hint "the sandbox has no filesystem/OS access — look for a tool instead, e.g. Tools.search(\"...\")"
+
+  @default_timeout_ms 30_000
   @default_max_output 50_000
 
   # Synthetic file name attributed to the snippet's frames, so we can keep the
@@ -78,7 +82,8 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
 
     * `:state`      — MCP state map installed in the eval process dictionary for
       the generated `Tools.*` functions to read (default `%{}`)
-    * `:timeout_ms` — wall-clock timeout (default 5000)
+    * `:timeout_ms` — wall-clock timeout (default 30_000; snippets are meant to
+      batch several serial upstream/network tool calls)
     * `:max_output` — byte cap for captured stdout + formatted output
       (default 50_000)
   """
@@ -128,7 +133,7 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
   # Erlang-style remote call: {{:., _, [:os, :cmd]}, _, args}
   defp acc_check({{:., _, [mod, _fun]}, _, _args}, :ok) when is_atom(mod) do
     if mod in @denied_erlang_modules do
-      reject("erlang module :#{mod} is not allowed")
+      reject("erlang module :#{mod} is not allowed — #{@no_sandbox_access_hint}")
     else
       :ok
     end
@@ -152,18 +157,22 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
         :ok
 
       root in @denied_modules ->
-        reject("module #{Enum.join(parts, ".")} is denied")
+        reject("module #{Enum.join(parts, ".")} is denied — #{@no_sandbox_access_hint}")
 
       root in @allowed_modules ->
         :ok
 
       root == :OrcaHub ->
         reject(
-          "OrcaHub.* internals are not accessible from the sandbox (#{Enum.join(parts, ".")})"
+          "OrcaHub.* internals are not accessible from the sandbox " <>
+            "(#{Enum.join(parts, ".")}) — call the corresponding Tools.* function instead"
         )
 
       true ->
-        reject("module #{Enum.join(parts, ".")} is not on the allowlist")
+        reject(
+          "module #{Enum.join(parts, ".")} is not on the allowlist — only pure stdlib " <>
+            "(Enum, Map, String, Jason, ...) and Tools.* are available"
+        )
     end
   end
 

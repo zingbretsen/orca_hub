@@ -29,9 +29,9 @@ defmodule OrcaHub.Backend.SharedPrompts do
 
     - **Discover tools** with `search_tools`/`read_tool`, or from inside code \
       with `Tools.search("query")`, `Tools.list()`, and `Tools.schema("name")`. \
-      `Tools.search/1` and `Tools.list/0` return `{name, description}` TUPLES — \
-      match the tuple (`Enum.map(fn {name, _} -> name end)`), do NOT index with \
-      `["name"]`. `Tools.schema/1` returns a map (or nil). Only tool \
+      `Tools.search/1` and `Tools.list/0` return maps with "name"/"description" \
+      keys (search results also include "args" — argument names, optional ones \
+      suffixed "?"). `Tools.schema/1` returns a map (or nil). Only tool \
       *invocations* (below) auto-unwrap to maps/lists.
     - **Call a tool** as `Tools.<raw_mcp_name>(args)`, e.g. \
       `Tools.open_file(%{"file_path" => "lib/foo.ex"})` or \

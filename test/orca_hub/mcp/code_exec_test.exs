@@ -21,12 +21,36 @@ defmodule OrcaHub.MCP.CodeExecTest do
     def dispatch("boom", _args, _state) do
       %{"content" => [%{"type" => "text", "text" => "repo not found"}], "isError" => true}
     end
+
+    def dispatch("github__get_issue", _args, _state) do
+      %{
+        "content" => [%{"type" => "text", "text" => "flat upstream call worked"}],
+        "isError" => false
+      }
+    end
   end
 
   @stub_tools [
     %{"name" => "ok_json", "description" => "returns JSON", "inputSchema" => %{}},
     %{"name" => "ok_text", "description" => "returns text", "inputSchema" => %{}},
-    %{"name" => "boom", "description" => "always errors", "inputSchema" => %{}}
+    %{"name" => "boom", "description" => "always errors", "inputSchema" => %{}},
+    %{
+      "name" => "github__get_issue",
+      "description" => "Get an issue from a github repo",
+      "inputSchema" => %{
+        "type" => "object",
+        "properties" => %{
+          "repo" => %{"type" => "string"},
+          "number" => %{"type" => "integer"}
+        },
+        "required" => ["repo"]
+      }
+    },
+    %{
+      "name" => "github__weird name!not-valid",
+      "description" => "invalid raw name",
+      "inputSchema" => %{}
+    }
   ]
 
   describe "generated Tools.* surface (auto-unwrap + raise)" do
@@ -73,28 +97,95 @@ defmodule OrcaHub.MCP.CodeExecTest do
 
       assert [%{"text" => "repo not found"}] = content
     end
+
+    test "upstream tools are callable flat on the root under their raw MCP name" do
+      assert {:ok, %{value: "flat upstream call worked"}} =
+               Sandbox.eval("Tools.github__get_issue()")
+    end
+
+    test "upstream tools are still callable via the per-prefix submodule (sugar)" do
+      assert {:ok, %{value: "flat upstream call worked"}} =
+               Sandbox.eval("Tools.Github.get_issue()")
+    end
+  end
+
+  describe "ToolGen sanity filter on raw tool names" do
+    setup do
+      ToolGen.generate(root: Tools, dispatcher: StubDispatcher, tools: @stub_tools)
+      :ok
+    end
+
+    test "a valid upstream raw name gets a flat def on the root" do
+      assert function_exported?(Tools, :github__get_issue, 1)
+    end
+
+    test "an invalid raw name gets no flat def, but generation still succeeds" do
+      # Still discoverable (list/search see every tool) — just not callable via
+      # dot syntax; Tools.call/2 remains the raw-dispatch escape hatch for it.
+      assert {:ok, %{value: names}} = Sandbox.eval(~S/Tools.list() |> Enum.map(& &1["name"])/)
+      assert "github__weird name!not-valid" in names
+
+      refute function_exported?(Tools, :"weird name!not-valid", 1)
+      refute function_exported?(Tools, :"github__weird name!not-valid", 1)
+    end
+  end
+
+  describe "generated Tools.search/1 and Tools.list/0 (map-shaped)" do
+    setup do
+      ToolGen.generate(root: Tools, dispatcher: StubDispatcher, tools: @stub_tools)
+      :ok
+    end
+
+    test "list/0 returns name/description maps" do
+      assert {:ok, %{value: entries}} = Sandbox.eval("Tools.list()")
+      assert %{"name" => "boom", "description" => "always errors"} in entries
+      refute Enum.any?(entries, &is_tuple/1)
+    end
+
+    test "search/1 returns name/description/args maps" do
+      assert {:ok, %{value: [entry]}} = Sandbox.eval(~s|Tools.search("get issue")|)
+
+      assert %{
+               "name" => "github__get_issue",
+               "description" => "Get an issue from a github repo",
+               "args" => ["number?", "repo"]
+             } = entry
+    end
+
+    test "search/1 requires every whitespace-separated token to match" do
+      assert {:ok, %{value: []}} = Sandbox.eval(~s|Tools.search("get nonexistentword")|)
+
+      assert {:ok, %{value: [%{"name" => "github__get_issue"}]}} =
+               Sandbox.eval(~s|Tools.search("issue github")|)
+    end
   end
 
   describe "sandbox allowlist (blocks OrcaHub internals + dangerous stdlib)" do
-    test "OrcaHub.* internals are rejected before running" do
+    test "OrcaHub.* internals are rejected before running, with a Tools.* pointer" do
       assert {:error, {:rejected, reason}} =
                Sandbox.eval("OrcaHub.Repo.all(OrcaHub.Sessions.Session)")
 
       assert reason =~ "OrcaHub.* internals are not accessible"
+      assert reason =~ "call the corresponding Tools.* function instead"
     end
 
-    test "System is rejected" do
+    test "System is rejected with a no-filesystem/OS-access hint pointing at Tools.search" do
       assert {:error, {:rejected, reason}} = Sandbox.eval(~s|System.cmd("whoami", [])|)
       assert reason =~ "System"
+      assert reason =~ "no filesystem/OS access"
+      assert reason =~ "Tools.search"
     end
 
-    test "File is rejected" do
+    test "File is rejected with the same no-filesystem/OS-access hint" do
       assert {:error, {:rejected, reason}} = Sandbox.eval(~s|File.read!("/etc/passwd")|)
       assert reason =~ "File"
+      assert reason =~ "no filesystem/OS access"
+      assert reason =~ "Tools.search"
     end
 
-    test "erlang :os shell-out is rejected" do
-      assert {:error, {:rejected, _}} = Sandbox.eval(~S|:os.cmd(~c"id")|)
+    test "erlang :os shell-out is rejected with the same hint" do
+      assert {:error, {:rejected, reason}} = Sandbox.eval(~S|:os.cmd(~c"id")|)
+      assert reason =~ "no filesystem/OS access"
     end
 
     test "apply/3 dynamic dispatch is rejected" do
@@ -102,6 +193,14 @@ defmodule OrcaHub.MCP.CodeExecTest do
                Sandbox.eval(~s|apply(File, :read!, ["/etc/passwd"])|)
 
       assert reason =~ "apply"
+    end
+
+    test "a module not on the allowlist at all gets a generic stdlib/Tools.* hint" do
+      assert {:error, {:rejected, reason}} = Sandbox.eval("SomeUnknownModule.foo()")
+
+      assert reason =~ "not on the allowlist"
+      assert reason =~ "only pure stdlib"
+      assert reason =~ "Tools.* are available"
     end
 
     test "allowed stdlib still works" do
@@ -156,6 +255,16 @@ defmodule OrcaHub.MCP.CodeExecTest do
       assert result["isError"] == false
       assert hd(result["content"])["text"] =~ "=> 3"
     end
+
+    test "a big returned value is capped with a teaching nudge" do
+      code = ~S|Enum.map(1..3000, fn i -> %{a: i, b: "value#{i}"} end)|
+      result = MetaTools.call("run_elixir", %{"code" => code}, %{})
+
+      assert result["isError"] == false
+      text = hd(result["content"])["text"]
+      assert text =~ "…[truncated"
+      assert text =~ "filter/project the value in your code before returning it"
+    end
   end
 
   describe "search_tools / read_tool (read-only over the live registry)" do
@@ -164,6 +273,26 @@ defmodule OrcaHub.MCP.CodeExecTest do
       assert result["isError"] == false
       %{"count" => count} = Jason.decode!(hd(result["content"])["text"])
       assert count > 0
+    end
+
+    test "search_tools requires every whitespace-separated token to match" do
+      result = MetaTools.call("search_tools", %{"query" => "open file"}, %{})
+      assert result["isError"] == false
+      %{"tools" => tools} = Jason.decode!(hd(result["content"])["text"])
+      assert Enum.any?(tools, &(&1["name"] == "open_file"))
+
+      no_match = MetaTools.call("search_tools", %{"query" => "open nonexistentword"}, %{})
+      %{"count" => 0} = Jason.decode!(hd(no_match["content"])["text"])
+    end
+
+    test "search_tools includes args, with optional properties suffixed \"?\"" do
+      result = MetaTools.call("search_tools", %{"query" => "open_file"}, %{})
+      %{"tools" => tools} = Jason.decode!(hd(result["content"])["text"])
+
+      assert %{"name" => "open_file", "args" => args} =
+               Enum.find(tools, &(&1["name"] == "open_file"))
+
+      assert args == ["file_path", "line?"]
     end
 
     test "read_tool returns a known first-party tool's schema" do
