@@ -93,10 +93,17 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
 
   defp session_dir do
     case CodeExec.get_state() do
-      %{orca_session_id: id} when is_binary(id) -> sanitize_for_filename(id)
+      %{orca_session_id: id} when is_binary(id) -> safe_dir_segment(sanitize_for_filename(id))
       _ -> "shared"
     end
   end
+
+  # sanitize_for_filename/1 keeps "." (it's a legal filename char), so an id
+  # of exactly "", ".", or ".." sanitizes to itself — and unlike a slash-laden
+  # id, that's a single path *component* the filesystem interprets specially
+  # (Path.join(root, "..") climbs OUT of root). Catch those exact values here.
+  defp safe_dir_segment(seg) when seg in ["", ".", ".."], do: "shared"
+  defp safe_dir_segment(seg), do: seg
 
   defp process_block(%{"type" => "text"} = block, ctx), do: {:text, block["text"], ctx}
 

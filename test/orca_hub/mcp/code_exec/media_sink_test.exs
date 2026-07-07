@@ -85,6 +85,26 @@ defmodule OrcaHub.MCP.CodeExec.MediaSinkTest do
       assert File.read!(path) == bytes
     end
 
+    test "a session id of exactly \"..\" falls back to the shared dir instead of climbing out" do
+      root = Path.join([System.tmp_dir!(), "orca_hub", "tool_media"])
+      CodeExec.put_state(%{orca_session_id: ".."})
+
+      on_exit(fn -> File.rm_rf!(Path.join(root, "shared")) end)
+
+      bytes = "danger bytes"
+      content = [%{"type" => "image", "data" => Base.encode64(bytes), "mimeType" => "image/png"}]
+      assert {[note], true} = MediaSink.render(content, "escape_attempt")
+
+      path = path_from_note(note)
+
+      # sanitize_for_filename/1 keeps dots (they're legal filename chars), so
+      # ".." sanitizes to itself — unlike the slash-laden case above, that's a
+      # single path COMPONENT the filesystem treats specially (climbs up one
+      # level). session_dir/0 has to catch this exact value explicitly.
+      assert Path.dirname(path) == Path.join(root, "shared")
+      assert File.read!(path) == bytes
+    end
+
     test "resource block with text is passed through like a text block" do
       content = [
         %{
