@@ -79,11 +79,17 @@ defmodule OrcaHub.MCP.UpstreamClientTest do
           })
 
         body["method"] == "tools/call" ->
+          text =
+            case Keyword.get(opts, :call_response) do
+              nil -> "ok:#{sess}"
+              fun when is_function(fun, 1) -> fun.(body["params"]["arguments"])
+            end
+
           Req.Test.json(conn, %{
             "jsonrpc" => "2.0",
             "id" => body["id"],
             "result" => %{
-              "content" => [%{"type" => "text", "text" => "ok:#{sess}"}],
+              "content" => [%{"type" => "text", "text" => text}],
               "isError" => false
             }
           })
@@ -391,6 +397,134 @@ defmodule OrcaHub.MCP.UpstreamClientTest do
       assert Map.keys(remaining) == [{srv.id, "orca-2"}]
       assert_received {:req, "DELETE", "upstream-a.test", _, "scoped-1"}
       refute_received {:req, "DELETE", _, _, "scoped-2"}
+    end
+  end
+
+  describe "secret injection and masking" do
+    setup do
+      :ok = Ecto.Adapters.SQL.Sandbox.checkout(OrcaHub.Repo)
+      {:ok, _} = OrcaHub.Secrets.put_secret("PHX_AGENT_LOGIN", "agent@lab.example.com")
+      {:ok, _} = OrcaHub.Secrets.put_secret("PHX_AGENT_PASSWORD", "hunter2-super-secret")
+      :ok
+    end
+
+    # `call_response` reports what the UPSTREAM actually received, via `send`
+    # rather than the tool result text — the result text gets masked right
+    # back (by design: an echo of an injected value is exactly the kind of
+    # "form-fill confirmation" masking must catch), so it can't also be used
+    # to prove injection happened on the wire.
+    test "injects secret values for exact key-name argument matches, leaves other strings alone" do
+      test_pid = self()
+      srv = server(secret_injection: true)
+
+      conns =
+        connect!(srv,
+          call_response: fn args ->
+            send(test_pid, {:upstream_saw, args})
+            "ok"
+          end
+        )
+
+      UpstreamClient.dispatch_call(conns, %{}, "play__navigate", %{
+        "email" => "PHX_AGENT_LOGIN",
+        "password" => "PHX_AGENT_PASSWORD",
+        "url" => "https://example.com"
+      })
+
+      assert_received {:upstream_saw, seen}
+      assert seen["email"] == "agent@lab.example.com"
+      assert seen["password"] == "hunter2-super-secret"
+      assert seen["url"] == "https://example.com"
+    end
+
+    test "deep-walks nested arguments (lists and maps) for injection" do
+      test_pid = self()
+      srv = server(secret_injection: true)
+
+      conns =
+        connect!(srv,
+          call_response: fn args ->
+            send(test_pid, {:upstream_saw, args})
+            "ok"
+          end
+        )
+
+      UpstreamClient.dispatch_call(conns, %{}, "play__navigate", %{
+        "steps" => [%{"field" => "password", "value" => "PHX_AGENT_PASSWORD"}]
+      })
+
+      assert_received {:upstream_saw, seen}
+      assert [%{"value" => "hunter2-super-secret"}] = seen["steps"]
+    end
+
+    test "does not inject or mask when secret_injection is disabled (the default)" do
+      srv = server(secret_injection: false)
+
+      conns =
+        connect!(srv,
+          call_response: fn args ->
+            Jason.encode!(%{echoed: args, leaked: "hunter2-super-secret"})
+          end
+        )
+
+      {result, _scoped} =
+        UpstreamClient.dispatch_call(conns, %{}, "play__navigate", %{
+          "password" => "PHX_AGENT_PASSWORD"
+        })
+
+      text = result_text(result)
+      assert text =~ "\"password\":\"PHX_AGENT_PASSWORD\""
+      assert text =~ "hunter2-super-secret"
+    end
+
+    test "masks secret values and their encoded variants out of responses, longest match first" do
+      {:ok, _} = OrcaHub.Secrets.put_secret("SHORT", "sec")
+      {:ok, _} = OrcaHub.Secrets.put_secret("LONG", "sec-and-more")
+
+      leaked =
+        "pw=hunter2-super-secret raw=sec-and-more short=sec " <>
+          "b64=#{Base.encode64("hunter2-super-secret")}"
+
+      srv = server(secret_injection: true)
+      conns = connect!(srv, call_response: fn _args -> leaked end)
+
+      {result, _scoped} = UpstreamClient.dispatch_call(conns, %{}, "play__navigate", %{})
+      text = result_text(result)
+
+      assert text =~ "pw=<secret>PHX_AGENT_PASSWORD</secret>"
+      assert text =~ "b64=<secret>PHX_AGENT_PASSWORD</secret>"
+      assert text =~ "raw=<secret>LONG</secret>"
+      assert text =~ "short=<secret>SHORT</secret>"
+      refute text =~ "hunter2-super-secret"
+      refute text =~ "sec-and-more"
+
+      # Longest-first: LONG's "sec-and-more" is masked whole, so SHORT's "sec"
+      # rule never gets a chance to chew a hole out of the middle of it.
+      refute text =~ "<secret>SHORT</secret>-and-more"
+    end
+
+    test "masks values across ALL stored secrets, not just ones the call referenced" do
+      srv = server(secret_injection: true)
+      conns = connect!(srv, call_response: fn _args -> "login is agent@lab.example.com" end)
+
+      {result, _scoped} = UpstreamClient.dispatch_call(conns, %{}, "play__navigate", %{})
+
+      assert result_text(result) == "login is <secret>PHX_AGENT_LOGIN</secret>"
+    end
+
+    test "returns a clear error instead of crashing when ORCA_SECRETS_KEY is unconfigured" do
+      previous = Application.get_env(:orca_hub, :secrets_key)
+      Application.delete_env(:orca_hub, :secrets_key)
+      on_exit(fn -> Application.put_env(:orca_hub, :secrets_key, previous) end)
+
+      srv = server(secret_injection: true)
+      conns = connect!(srv, call_response: fn args -> Jason.encode!(args) end)
+
+      {result, _scoped} =
+        UpstreamClient.dispatch_call(conns, %{}, "play__navigate", %{"a" => "PHX_AGENT_LOGIN"})
+
+      assert %{"isError" => true} = result
+      assert result_text(result) =~ "ORCA_SECRETS_KEY"
     end
   end
 

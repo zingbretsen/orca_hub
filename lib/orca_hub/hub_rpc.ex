@@ -203,6 +203,14 @@ defmodule OrcaHub.HubRPC do
   def list_logged_in_nodes, do: call(OrcaHub.NodeCredentials, :list_logged_in_nodes, [])
 
   # -------------------------------------------------------------------
+  # Secrets (OrcaHub-managed secrets for upstream MCP injection)
+  # -------------------------------------------------------------------
+
+  def list_secret_keys, do: call(OrcaHub.Secrets, :list_keys, [])
+  def put_secret(key, value), do: call(OrcaHub.Secrets, :put_secret, [key, value])
+  def delete_secret(key), do: call(OrcaHub.Secrets, :delete_secret, [key])
+
+  # -------------------------------------------------------------------
   # Session Heartbeat (hub-only GenServer)
   # -------------------------------------------------------------------
 

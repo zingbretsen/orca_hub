@@ -46,6 +46,11 @@ config :orca_hub,
        :disable_code_exec,
        System.get_env("ORCA_DISABLE_CODE_EXEC") in ~w(1 true)
 
+# Base64-encoded 32-byte key used by OrcaHub.Secrets to encrypt/decrypt
+# upstream-injection secrets at rest (AES-256-GCM). Hub-only; raises a clear
+# error at use time (not at boot) if unset or malformed.
+config :orca_hub, :secrets_key, System.get_env("ORCA_SECRETS_KEY")
+
 if System.get_env("PHX_SERVER") do
   config :orca_hub, OrcaHubWeb.Endpoint, server: true
 end

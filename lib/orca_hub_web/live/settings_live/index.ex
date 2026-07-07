@@ -33,7 +33,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
        login_output: "",
        login_url: nil,
        login_status: nil,
-       login_error: nil
+       login_error: nil,
+       secret_keys: HubRPC.list_secret_keys()
      )}
   end
 
@@ -210,6 +211,36 @@ defmodule OrcaHubWeb.SettingsLive.Index do
      |> put_flash(:info, "Refreshed upstream connections")}
   end
 
+  # ── Secrets (OrcaHub-managed, injected into upstream MCP tool calls) ──
+  #
+  # Strictly write-only: the submitted value is used to call put_secret and
+  # then discarded — it is never assigned to socket state, so it can never
+  # be rendered back (the in-cluster Playwright browser can reach this UI).
+
+  def handle_event("add_secret", %{"key" => key, "value" => value}, socket) do
+    key = String.trim(key)
+
+    if key == "" or value == "" do
+      {:noreply, put_flash(socket, :error, "Both a key and a value are required")}
+    else
+      {:ok, _} = HubRPC.put_secret(key, value)
+
+      {:noreply,
+       socket
+       |> assign(secret_keys: HubRPC.list_secret_keys())
+       |> put_flash(:info, "Secret #{key} saved")}
+    end
+  end
+
+  def handle_event("delete_secret", %{"key" => key}, socket) do
+    {:ok, _} = HubRPC.delete_secret(key)
+
+    {:noreply,
+     socket
+     |> assign(secret_keys: HubRPC.list_secret_keys())
+     |> put_flash(:info, "Secret #{key} deleted")}
+  end
+
   # ── Node login (Claude Code OAuth) ──────────────────────────────────
 
   def handle_event("login_node", %{"node" => node_str}, socket) do
@@ -333,7 +364,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
      socket
      |> assign(
        servers: HubRPC.list_upstream_servers(),
-       upstream_tools: upstream_tools
+       upstream_tools: upstream_tools,
+       secret_keys: HubRPC.list_secret_keys()
      )}
   end
 

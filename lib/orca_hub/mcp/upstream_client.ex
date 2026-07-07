@@ -239,16 +239,25 @@ defmodule OrcaHub.MCP.UpstreamClient do
   # Recompute the derived read-only data from the live connections and publish
   # it to the ETS cache that `list_tools/0` and `upstream_tool?/1` read.
   defp put_cache(connections) do
+    secret_keys =
+      if Enum.any?(connections, fn {_id, conn} -> conn.secret_injection end) do
+        OrcaHub.Secrets.list_keys() |> Enum.map(& &1.key)
+      else
+        []
+      end
+
     tools =
       connections
       |> Enum.sort_by(fn {id, _conn} -> id end)
       |> Enum.flat_map(fn {_id, conn} ->
         Enum.map(conn.tools, fn tool ->
           prefixed_name = "#{conn.prefix}__#{tool["name"]}"
+          description = "[#{conn.name}] #{tool["description"] || ""}"
+          description = maybe_decorate_description(description, conn, secret_keys)
 
           tool
           |> Map.put("name", prefixed_name)
-          |> Map.put("description", "[#{conn.name}] #{tool["description"] || ""}")
+          |> Map.put("description", description)
         end)
       end)
 
@@ -258,6 +267,22 @@ defmodule OrcaHub.MCP.UpstreamClient do
     :ets.insert(@tools_cache, {:prefixes, prefixes})
     :ok
   end
+
+  # Advertises OrcaHub-managed secret keys usable as literal argument values
+  # for injection-enabled servers, so the model knows it can pass e.g.
+  # "PHX_AGENT_PASSWORD" instead of a real credential. Reflects the CURRENT
+  # secret list because it's computed here at cache-write time — the cache is
+  # recomputed via a `reconnect/1` triggered by the "upstream_servers"
+  # PubSub broadcast that `OrcaHub.Secrets.put_secret/2` and `delete_secret/1`
+  # also emit (reusing the same `:upstream_servers_changed` message this
+  # GenServer already handles for server config changes).
+  defp maybe_decorate_description(description, %{secret_injection: true}, [_ | _] = secret_keys) do
+    description <>
+      " Secret keys usable as literal argument values (real values injected " <>
+      "server-side; outputs masked): #{Enum.join(secret_keys, ", ")}"
+  end
+
+  defp maybe_decorate_description(description, _conn, _secret_keys), do: description
 
   # Reconcile shared connections against the DB, then drop scoped sessions
   # whose server changed config or disappeared. Scoped sessions on unchanged
@@ -322,9 +347,16 @@ defmodule OrcaHub.MCP.UpstreamClient do
         # session id both verifies liveness and refreshes the cached tools.
         case fetch_tools(conn.url, conn.headers, conn.session_id) do
           {:ok, tools} ->
-            # `session_scoped` isn't part of same_config? (flipping it must
-            # not kill the shared session), so re-read it from the DB row.
-            {:ok, %{conn | tools: tools, session_scoped: server.session_scoped}}
+            # `session_scoped`/`secret_injection` aren't part of same_config?
+            # (flipping either must not kill the shared session), so re-read
+            # them from the DB row.
+            {:ok,
+             %{
+               conn
+               | tools: tools,
+                 session_scoped: server.session_scoped,
+                 secret_injection: server.secret_injection
+             }}
 
           {:error, reason} ->
             # Session presumed dead (e.g. 404 on an expired session) — no
@@ -377,6 +409,7 @@ defmodule OrcaHub.MCP.UpstreamClient do
          headers: headers,
          session_id: session_id,
          session_scoped: server.session_scoped,
+         secret_injection: server.secret_injection,
          tools: tools
        }}
     end
@@ -471,16 +504,131 @@ defmodule OrcaHub.MCP.UpstreamClient do
         {error_result("No upstream server found for tool: #{tool_name}"), scoped}
 
       {conn, original_name} ->
-        if conn.session_scoped and is_binary(orca_session_id) do
-          scoped_call(conn, scoped, orca_session_id, original_name, arguments)
-        else
-          # Non-scoped server, or a scoped call without an orca_session_id —
-          # fall back to the shared session.
-          {unwrap_proxy(
-             proxy_tool_call(conn.url, conn.headers, conn.session_id, original_name, arguments)
-           ), scoped}
+        try do
+          arguments = inject_secrets(conn, arguments)
+
+          {result, scoped} =
+            if conn.session_scoped and is_binary(orca_session_id) do
+              scoped_call(conn, scoped, orca_session_id, original_name, arguments)
+            else
+              # Non-scoped server, or a scoped call without an
+              # orca_session_id — fall back to the shared session.
+              {unwrap_proxy(
+                 proxy_tool_call(
+                   conn.url,
+                   conn.headers,
+                   conn.session_id,
+                   original_name,
+                   arguments
+                 )
+               ), scoped}
+            end
+
+          {mask_secrets(conn, result), scoped}
+        rescue
+          e in OrcaHub.Secrets.KeyNotConfiguredError ->
+            {error_result(Exception.message(e)), scoped}
         end
     end
+  end
+
+  # ── Secret injection / masking (see OrcaHub.Secrets) ────────────────────
+  #
+  # Only servers with `secret_injection: true` pay any cost here. Injection
+  # deep-walks the request arguments and replaces any string value that
+  # EXACTLY equals a stored secret key with its decrypted value. Masking
+  # deep-walks the response and replaces every occurrence of every secret
+  # VALUE (and common encoded transforms of it) with `<secret>KEY</secret>`,
+  # across ALL stored secrets — not just ones referenced by this call — since
+  # a value could leak into output via means the caller didn't ask for
+  # (e.g. an upstream default, cookie, or unrelated page content).
+
+  defp inject_secrets(%{secret_injection: true}, arguments) do
+    case OrcaHub.Secrets.all_decrypted() do
+      secrets when map_size(secrets) == 0 -> arguments
+      secrets -> deep_replace_exact(arguments, secrets)
+    end
+  end
+
+  defp inject_secrets(_conn, arguments), do: arguments
+
+  defp deep_replace_exact(value, secrets) when is_binary(value),
+    do: Map.get(secrets, value, value)
+
+  defp deep_replace_exact(value, secrets) when is_map(value),
+    do: Map.new(value, fn {k, v} -> {k, deep_replace_exact(v, secrets)} end)
+
+  defp deep_replace_exact(value, secrets) when is_list(value),
+    do: Enum.map(value, &deep_replace_exact(&1, secrets))
+
+  defp deep_replace_exact(value, _secrets), do: value
+
+  defp mask_secrets(%{secret_injection: true}, result) do
+    with secrets when map_size(secrets) > 0 <- OrcaHub.Secrets.all_decrypted(),
+         table when not is_nil(table) <- mask_table(secrets) do
+      mask_deep(result, table)
+    else
+      _ -> result
+    end
+  end
+
+  defp mask_secrets(_conn, result), do: result
+
+  # Builds one regex alternation over every secret's value (and common
+  # encoded transforms of it), longest-first, plus a variant => key lookup
+  # for the replacement. A SINGLE regex pass — rather than an iterated
+  # `String.replace` per variant — is essential: once a match is replaced
+  # with `<secret>KEY</secret>`, that literal text contains "secret", which
+  # would itself spuriously match a later (shorter) variant if we rescanned
+  # the growing string. A single pass never rescans already-emitted output.
+  # Longest-first ordering also makes the regex engine prefer the longer of
+  # two alternatives that both match at the same starting position (e.g. a
+  # value that is itself a prefix of another value or of an encoded blob).
+  defp mask_table(secrets) do
+    pairs =
+      secrets
+      |> Enum.flat_map(fn {key, value} -> mask_variants(key, value) end)
+      |> Enum.uniq_by(fn {variant, _key} -> variant end)
+      |> Enum.sort_by(fn {variant, _key} -> -byte_size(variant) end)
+
+    case pairs do
+      [] ->
+        nil
+
+      pairs ->
+        pattern = Enum.map_join(pairs, "|", fn {variant, _key} -> Regex.escape(variant) end)
+
+        {Regex.compile!(pattern), Map.new(pairs)}
+    end
+  end
+
+  defp mask_variants(_key, ""), do: []
+
+  defp mask_variants(key, value) do
+    [
+      value,
+      Base.encode64(value),
+      Base.encode16(value, case: :upper),
+      Base.encode16(value, case: :lower),
+      URI.encode_www_form(value),
+      json_escaped(value)
+    ]
+    |> Enum.uniq()
+    |> Enum.map(&{&1, key})
+  end
+
+  defp json_escaped(value), do: value |> Jason.encode!() |> String.trim("\"")
+
+  defp mask_deep(value, table) when is_binary(value), do: mask_string(value, table)
+
+  defp mask_deep(value, table) when is_map(value),
+    do: Map.new(value, fn {k, v} -> {k, mask_deep(v, table)} end)
+
+  defp mask_deep(value, table) when is_list(value), do: Enum.map(value, &mask_deep(&1, table))
+  defp mask_deep(value, _table), do: value
+
+  defp mask_string(text, {regex, lookup}) do
+    Regex.replace(regex, text, fn matched -> "<secret>#{Map.fetch!(lookup, matched)}</secret>" end)
   end
 
   defp find_connection(connections, tool_name) do

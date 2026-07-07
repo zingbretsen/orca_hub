@@ -116,11 +116,14 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
   @doc """
   A stable signature of the current registry. The `Generator` regenerates the
   `Tools` surface only when this changes, so the global module is not churned on
-  every `run_elixir` call.
+  every `run_elixir` call. Includes descriptions (not just names) so that
+  `Tools.schema/1`'s baked-in index picks up description-only changes — e.g.
+  the secret-keys line `UpstreamClient` appends for injection-enabled
+  servers, which can change independently of the tool name set.
   """
   def signature(tools \\ nil) do
     (tools || live_tools())
-    |> Enum.map(& &1["name"])
+    |> Enum.map(&{&1["name"], &1["description"]})
     |> Enum.sort()
     |> :erlang.phash2()
   end

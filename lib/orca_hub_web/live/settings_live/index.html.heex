@@ -69,6 +69,18 @@
         For stateful servers (e.g. Playwright): each Orca session gets its own upstream MCP
         session — its own browser context — instead of sharing one.
       </p>
+      <.input
+        field={@form[:secret_injection]}
+        type="checkbox"
+        label="Inject OrcaHub secrets into calls to this server"
+      />
+      <p class="text-xs text-base-content/50 -mt-2">
+        When enabled, any argument value that exactly matches a secret key name (see
+        <strong>Secrets</strong>
+        below) is replaced with the real value before the call is forwarded upstream, and
+        every occurrence of a secret value (plus common encodings) is masked out of this
+        server's tool responses.
+      </p>
 
       <div>
         <label class="label"><span class="label-text">Headers</span></label>
@@ -148,6 +160,13 @@
           <span :if={server.session_scoped} class="badge badge-xs badge-accent">
             session-scoped
           </span>
+          <span
+            :if={server.secret_injection}
+            class="badge badge-xs badge-warning gap-1"
+            title="OrcaHub secrets are injected into calls and masked from responses"
+          >
+            <.icon name="hero-key-micro" class="size-3" /> secret injection
+          </span>
           <span :if={server.enabled && server.global} class="badge badge-xs badge-info">
             {tool_count_for_server(@upstream_tools, server)} tools
           </span>
@@ -209,6 +228,74 @@
         <div class="font-mono text-xs">{tool["name"]}</div>
         <div class="text-base-content/50 text-xs truncate">{tool["description"]}</div>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="mt-10">
+  <h3 class="text-lg font-semibold mb-4">Secrets</h3>
+
+  <p class="text-sm text-base-content/60 mb-4">
+    Secrets stored here can be injected into calls to upstream servers with
+    <strong>secret injection</strong>
+    enabled above (e.g. Playwright). Pass the key name as a literal argument value — the
+    real value is substituted server-side and never sent to or returned by the agent.
+    Values are <strong>write-only</strong>: once saved, they cannot be viewed again here.
+  </p>
+
+  <form phx-submit="add_secret" class="card bg-base-200 p-4 mb-4 flex-row items-end gap-2">
+    <div class="flex-1">
+      <label class="label"><span class="label-text">Key</span></label>
+      <input
+        type="text"
+        name="key"
+        placeholder="PHX_AGENT_PASSWORD"
+        autocomplete="off"
+        class="input input-sm input-bordered w-full font-mono"
+      />
+    </div>
+    <div class="flex-1">
+      <label class="label"><span class="label-text">Value</span></label>
+      <input
+        type="password"
+        name="value"
+        autocomplete="new-password"
+        class="input input-sm input-bordered w-full"
+      />
+    </div>
+    <.button type="submit" class="btn-sm">Save</.button>
+  </form>
+
+  <div
+    :if={@secret_keys == []}
+    class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg"
+  >
+    No secrets stored.
+  </div>
+
+  <div
+    :if={@secret_keys != []}
+    class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
+  >
+    <div
+      :for={secret <- @secret_keys}
+      class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50"
+    >
+      <div class="flex-1 min-w-0">
+        <div class="font-mono font-medium">{secret.key}</div>
+        <div class="text-base-content/50 text-xs mt-0.5">
+          Updated {secret.updated_at}
+        </div>
+      </div>
+      <button
+        phx-click="delete_secret"
+        phx-value-key={secret.key}
+        data-confirm={"Delete secret #{secret.key}? Sessions using it will fail until it's re-added."}
+        class="btn btn-xs btn-ghost text-error"
+        title="Delete"
+      >
+        <.icon name="hero-trash-micro" class="size-4" />
+      </button>
     </div>
   </div>
 </div>
