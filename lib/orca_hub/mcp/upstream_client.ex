@@ -5,6 +5,20 @@ defmodule OrcaHub.MCP.UpstreamClient do
   Connects to each enabled upstream server via Streamable HTTP transport,
   initializes an MCP session, discovers available tools, and caches them.
   Proxies tool calls to the appropriate upstream server.
+
+  ## Session scoping
+
+  Servers with `session_scoped: true` get one upstream MCP session **per Orca
+  session** instead of a single shared one, so stateful upstreams (e.g.
+  Playwright, which ties an isolated browser context to each MCP session) are
+  isolated per Orca session. Scoped sessions live in `state.scoped`, keyed by
+  `{server_id, orca_session_id}`; they are created lazily on the first
+  `call_tool/3` carrying an `:orca_session_id`, reused afterwards, and cleaned
+  up by: an idle TTL sweep, an LRU cap per server, eager teardown when the
+  Orca session is archived, and teardown on server config change/removal.
+  A scoped call whose upstream session has expired (e.g. HTTP 404) is
+  re-initialized once and retried. Calls without an `:orca_session_id` — and
+  all calls to non-scoped servers — use the shared session as before.
   """
   use GenServer
   require Logger
@@ -13,6 +27,9 @@ defmodule OrcaHub.MCP.UpstreamClient do
 
   @refresh_interval :timer.minutes(5)
   @rpc_timeout 10_000
+  @scoped_sweep_interval :timer.minutes(5)
+  @scoped_idle_ttl :timer.minutes(30)
+  @max_scoped_per_server 20
 
   # ETS cache of derived, read-only data (the prefixed tool list and the set of
   # upstream prefixes). Reads go straight to ETS so the hot MCP paths
@@ -48,16 +65,25 @@ defmodule OrcaHub.MCP.UpstreamClient do
     ArgumentError -> []
   end
 
-  @doc "Calls a tool on an upstream server. Returns the tool result or {:error, reason}."
-  def call_tool(tool_name, arguments) do
+  @doc """
+  Calls a tool on an upstream server. Returns the tool result map.
+
+  Options:
+
+    * `:orca_session_id` — the calling Orca session's id. For servers with
+      `session_scoped: true` this selects (lazily creating) that Orca
+      session's own upstream MCP session; without it, scoped servers fall
+      back to the shared session.
+  """
+  def call_tool(tool_name, arguments, opts \\ []) do
     if Mode.hub?() do
-      GenServer.call(__MODULE__, {:call_tool, tool_name, arguments}, :infinity)
+      GenServer.call(__MODULE__, {:call_tool, tool_name, arguments, opts}, :infinity)
     else
       # :infinity mirrors the local GenServer call; :erpc still fails fast
       # with noconnection if the hub goes down.
       hub_rpc(
         :call_tool,
-        [tool_name, arguments],
+        [tool_name, arguments, opts],
         error_result("Upstream client is not available"),
         :infinity
       )
@@ -109,98 +135,103 @@ defmodule OrcaHub.MCP.UpstreamClient do
     put_cache(%{})
 
     Phoenix.PubSub.subscribe(OrcaHub.PubSub, "upstream_servers")
+    # "sessions" carries every session's status/event stream; we only care
+    # about {:status, :archived} for eager scoped-session teardown.
+    Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
     send(self(), :connect_all)
-    {:ok, %{connections: %{}}}
+    schedule_scoped_sweep()
+    {:ok, %{connections: %{}, scoped: %{}}}
   end
 
   @impl true
   def handle_info(:connect_all, state) do
-    connections =
+    state =
       try do
-        connect_all_upstreams(state.connections)
+        reconnect(state)
       rescue
         # Defensive boundary: connecting touches the DB and remote HTTP
         # servers, both of which can fail in many ways. A failure here must
         # not crash the GenServer — it just leaves connections empty.
         e ->
           Logger.warning("Failed to connect to upstream servers: #{inspect(e)}")
-          %{}
+          put_cache(%{})
+          %{state | connections: %{}}
       end
 
-    put_cache(connections)
     schedule_refresh()
-    {:noreply, %{state | connections: connections}}
+    {:noreply, state}
   end
 
   @impl true
   def handle_info(:refresh, state) do
-    connections =
+    state =
       try do
-        connect_all_upstreams(state.connections)
+        reconnect(state)
       rescue
         # Defensive boundary: keep prior connections on any refresh failure.
         e ->
           Logger.warning("Failed to refresh upstream connections: #{inspect(e)}")
-          state.connections
+          state
       end
 
-    put_cache(connections)
     schedule_refresh()
-    {:noreply, %{state | connections: connections}}
+    {:noreply, state}
   end
 
   @impl true
   def handle_info(:upstream_servers_changed, state) do
-    connections =
+    state =
       try do
-        connect_all_upstreams(state.connections)
+        reconnect(state)
       rescue
         # Defensive boundary: keep prior connections on any reconnect failure.
         e ->
           Logger.warning("Failed to connect upstream servers: #{inspect(e)}")
-          state.connections
+          state
       end
 
-    put_cache(connections)
-    {:noreply, %{state | connections: connections}}
+    {:noreply, state}
   end
 
   @impl true
-  def handle_call({:call_tool, tool_name, arguments}, _from, state) do
-    result =
-      Enum.find_value(
-        state.connections,
-        {:error, "No upstream server found for tool: #{tool_name}"},
-        fn {_id, conn} ->
-          prefix = "#{conn.prefix}__"
+  def handle_info(:sweep_scoped, state) do
+    scoped = sweep_scoped(state.scoped, System.monotonic_time(:millisecond))
+    schedule_scoped_sweep()
+    {:noreply, %{state | scoped: scoped}}
+  end
 
-          if String.starts_with?(tool_name, prefix) do
-            original_name = String.replace_prefix(tool_name, prefix, "")
-            {:ok, proxy_tool_call(conn, original_name, arguments)}
-          end
-        end
-      )
+  # Eager scoped-session teardown: an archived Orca session no longer needs
+  # its per-session upstream sessions (e.g. its Playwright browser context).
+  @impl true
+  def handle_info({session_id, {:status, :archived}}, state) when is_binary(session_id) do
+    {:noreply, %{state | scoped: drop_scoped_for_session(state.scoped, session_id)}}
+  end
 
-    case result do
-      {:ok, response} -> {:reply, response, state}
-      {:error, reason} -> {:reply, error_result(reason), state}
-    end
+  # Ignore the rest of the "sessions" topic traffic (events, other statuses).
+  @impl true
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  @impl true
+  def handle_call({:call_tool, tool_name, arguments, opts}, _from, state) do
+    {result, scoped} =
+      dispatch_call(state.connections, state.scoped, tool_name, arguments, opts)
+
+    {:reply, result, %{state | scoped: scoped}}
   end
 
   @impl true
   def handle_call(:refresh, _from, state) do
-    connections =
+    state =
       try do
-        connect_all_upstreams(state.connections)
+        reconnect(state)
       rescue
         # Defensive boundary: keep prior connections on any refresh failure.
         e ->
           Logger.warning("Failed to refresh upstream connections: #{inspect(e)}")
-          state.connections
+          state
       end
 
-    put_cache(connections)
-    {:reply, :ok, %{state | connections: connections}}
+    {:reply, :ok, state}
   end
 
   # Private
@@ -228,9 +259,17 @@ defmodule OrcaHub.MCP.UpstreamClient do
     :ok
   end
 
-  defp connect_all_upstreams(existing) do
-    OrcaHub.UpstreamServers.list_enabled_upstream_servers()
-    |> reconcile_connections(existing)
+  # Reconcile shared connections against the DB, then drop scoped sessions
+  # whose server changed config or disappeared. Scoped sessions on unchanged
+  # servers are deliberately NOT health-checked or torn down here — call-time
+  # retry (see `scoped_call/5`) covers expiry.
+  defp reconnect(state) do
+    connections =
+      OrcaHub.UpstreamServers.list_enabled_upstream_servers()
+      |> reconcile_connections(state.connections)
+
+    put_cache(connections)
+    %{state | connections: connections, scoped: reconcile_scoped(state.scoped, connections)}
   end
 
   @doc false
@@ -283,7 +322,9 @@ defmodule OrcaHub.MCP.UpstreamClient do
         # session id both verifies liveness and refreshes the cached tools.
         case fetch_tools(conn.url, conn.headers, conn.session_id) do
           {:ok, tools} ->
-            {:ok, %{conn | tools: tools}}
+            # `session_scoped` isn't part of same_config? (flipping it must
+            # not kill the shared session), so re-read it from the DB row.
+            {:ok, %{conn | tools: tools, session_scoped: server.session_scoped}}
 
           {:error, reason} ->
             # Session presumed dead (e.g. 404 on an expired session) — no
@@ -335,6 +376,7 @@ defmodule OrcaHub.MCP.UpstreamClient do
          prefix: server.prefix || default_prefix(server.name),
          headers: headers,
          session_id: session_id,
+         session_scoped: server.session_scoped,
          tools: tools
        }}
     end
@@ -417,7 +459,177 @@ defmodule OrcaHub.MCP.UpstreamClient do
     end
   end
 
-  defp proxy_tool_call(conn, tool_name, arguments) do
+  @doc false
+  # Route a tool call to its connection and — for session-scoped servers with
+  # a known orca_session_id — to that Orca session's own upstream session.
+  # Returns {result_map, new_scoped}. Public for tests only.
+  def dispatch_call(connections, scoped, tool_name, arguments, opts \\ []) do
+    orca_session_id = Keyword.get(opts, :orca_session_id)
+
+    case find_connection(connections, tool_name) do
+      nil ->
+        {error_result("No upstream server found for tool: #{tool_name}"), scoped}
+
+      {conn, original_name} ->
+        if conn.session_scoped and is_binary(orca_session_id) do
+          scoped_call(conn, scoped, orca_session_id, original_name, arguments)
+        else
+          # Non-scoped server, or a scoped call without an orca_session_id —
+          # fall back to the shared session.
+          {unwrap_proxy(
+             proxy_tool_call(conn.url, conn.headers, conn.session_id, original_name, arguments)
+           ), scoped}
+        end
+    end
+  end
+
+  defp find_connection(connections, tool_name) do
+    Enum.find_value(connections, fn {_id, conn} ->
+      prefix = "#{conn.prefix}__"
+
+      if String.starts_with?(tool_name, prefix) do
+        {conn, String.replace_prefix(tool_name, prefix, "")}
+      end
+    end)
+  end
+
+  # ── Scoped sessions ───────────────────────────────────────────────────
+  #
+  # Scoped entries are %{server_id, session_id, url, headers, last_used_at,
+  # lru} keyed by {server_id, orca_session_id}. `url`/`headers` are
+  # snapshotted at creation so the entry can be DELETEd even after the server
+  # config changes. `last_used_at` (monotonic ms) drives the idle TTL;
+  # `lru` (a monotonic unique_integer) breaks ties for cap eviction, since
+  # millisecond timestamps collide for back-to-back calls.
+
+  defp scoped_call(conn, scoped, orca_session_id, tool_name, arguments) do
+    key = {conn.id, orca_session_id}
+
+    case Map.fetch(scoped, key) do
+      {:ok, entry} ->
+        case proxy_tool_call(conn.url, conn.headers, entry.session_id, tool_name, arguments) do
+          {:ok, result} ->
+            {result, touch_scoped(scoped, key)}
+
+          {:error, reason} ->
+            # Scoped session presumed expired (e.g. 404) — no DELETE, just
+            # re-initialize once and retry the call.
+            Logger.info(
+              "Scoped upstream session for #{conn.name}/#{orca_session_id} failed " <>
+                "(#{inspect(reason)}); re-initializing"
+            )
+
+            create_scoped_and_call(conn, Map.delete(scoped, key), key, tool_name, arguments)
+        end
+
+      :error ->
+        create_scoped_and_call(conn, scoped, key, tool_name, arguments)
+    end
+  end
+
+  defp create_scoped_and_call(conn, scoped, key, tool_name, arguments) do
+    scoped = evict_over_cap(scoped, conn)
+
+    case initialize_session(conn.url, conn.headers) do
+      {:ok, session_id, _init_result} ->
+        {_server_id, orca_session_id} = key
+        Logger.info("Opened scoped upstream session for #{conn.name}/#{orca_session_id}")
+
+        entry = %{
+          server_id: conn.id,
+          session_id: session_id,
+          url: conn.url,
+          headers: conn.headers,
+          last_used_at: System.monotonic_time(:millisecond),
+          lru: System.unique_integer([:monotonic])
+        }
+
+        # Even if this first call fails, keep the entry — the upstream
+        # session exists and must stay tracked for cleanup.
+        result =
+          unwrap_proxy(proxy_tool_call(conn.url, conn.headers, session_id, tool_name, arguments))
+
+        {result, Map.put(scoped, key, entry)}
+
+      {:error, reason} ->
+        {error_result("Failed to initialize upstream session: #{inspect(reason)}"), scoped}
+    end
+  end
+
+  # Enforce the per-server cap BEFORE adding a new scoped session: evict the
+  # least-recently-used entry for this server, with a best-effort DELETE.
+  defp evict_over_cap(scoped, conn) do
+    entries = Enum.filter(scoped, fn {{server_id, _}, _} -> server_id == conn.id end)
+
+    if length(entries) >= @max_scoped_per_server do
+      {key, entry} = Enum.min_by(entries, fn {_key, e} -> e.lru end)
+
+      Logger.info(
+        "Evicting LRU scoped upstream session for #{conn.name} (cap #{@max_scoped_per_server})"
+      )
+
+      terminate_session(entry)
+      Map.delete(scoped, key)
+    else
+      scoped
+    end
+  end
+
+  defp touch_scoped(scoped, key) do
+    Map.update!(scoped, key, fn entry ->
+      %{
+        entry
+        | last_used_at: System.monotonic_time(:millisecond),
+          lru: System.unique_integer([:monotonic])
+      }
+    end)
+  end
+
+  @doc false
+  # Drop (with best-effort DELETE) scoped sessions idle longer than `ttl`.
+  # `now` is monotonic milliseconds. Public for tests only.
+  def sweep_scoped(scoped, now, ttl \\ @scoped_idle_ttl) do
+    {expired, kept} =
+      Enum.split_with(scoped, fn {_key, entry} -> now - entry.last_used_at >= ttl end)
+
+    Enum.each(expired, fn {_key, entry} -> terminate_session(entry) end)
+    Map.new(kept)
+  end
+
+  @doc false
+  # Drop (with best-effort DELETE) all scoped sessions belonging to an
+  # archived Orca session. Public for tests only.
+  def drop_scoped_for_session(scoped, orca_session_id) do
+    {dropped, kept} =
+      Enum.split_with(scoped, fn {{_server_id, osid}, _entry} -> osid == orca_session_id end)
+
+    Enum.each(dropped, fn {_key, entry} -> terminate_session(entry) end)
+    Map.new(kept)
+  end
+
+  @doc false
+  # Keep scoped sessions only for servers still connected, still scoped, and
+  # with unchanged url/headers; DELETE the rest. Public for tests only.
+  def reconcile_scoped(scoped, connections) do
+    {kept, dropped} =
+      Enum.split_with(scoped, fn {{server_id, _osid}, entry} ->
+        case Map.get(connections, server_id) do
+          nil -> false
+          conn -> conn.session_scoped and conn.url == entry.url and conn.headers == entry.headers
+        end
+      end)
+
+    Enum.each(dropped, fn {_key, entry} -> terminate_session(entry) end)
+    Map.new(kept)
+  end
+
+  # ── Proxying ──────────────────────────────────────────────────────────
+
+  # Returns {:ok, result_map} for any well-formed MCP response (including
+  # tool-level errors, which come back as error_result maps — those are NOT
+  # session failures) and {:error, reason} for HTTP/transport failures, which
+  # for scoped sessions signal a presumed-expired session worth a retry.
+  defp proxy_tool_call(url, headers, session_id, tool_name, arguments) do
     body = %{
       "jsonrpc" => "2.0",
       "id" => System.unique_integer([:positive]),
@@ -429,32 +641,38 @@ defmodule OrcaHub.MCP.UpstreamClient do
     }
 
     req_headers =
-      if conn.session_id do
-        [{"mcp-session-id", conn.session_id} | conn.headers]
+      if session_id do
+        [{"mcp-session-id", session_id} | headers]
       else
-        conn.headers
+        headers
       end
 
-    case Req.post(conn.url, [json: body, headers: req_headers] ++ req_opts()) do
+    case Req.post(url, [json: body, headers: req_headers] ++ req_opts()) do
       {:ok, %{status: 200, body: raw_body}} ->
         case parse_body(raw_body) do
           %{"result" => result} ->
-            result
+            {:ok, result}
 
           %{"error" => error} ->
-            error_result("Upstream error: #{error["message"] || inspect(error)}")
+            {:ok, error_result("Upstream error: #{error["message"] || inspect(error)}")}
 
           other ->
-            error_result("Unexpected upstream response: #{inspect(other)}")
+            {:ok, error_result("Unexpected upstream response: #{inspect(other)}")}
         end
 
       {:ok, resp} ->
-        error_result("Upstream HTTP #{resp.status}")
+        {:error, {:http, resp.status}}
 
       {:error, reason} ->
-        error_result("Upstream request failed: #{inspect(reason)}")
+        {:error, {:transport, reason}}
     end
   end
+
+  defp unwrap_proxy({:ok, result}), do: result
+  defp unwrap_proxy({:error, {:http, status}}), do: error_result("Upstream HTTP #{status}")
+
+  defp unwrap_proxy({:error, {:transport, reason}}),
+    do: error_result("Upstream request failed: #{inspect(reason)}")
 
   defp build_headers(nil), do: base_headers()
 
@@ -522,5 +740,9 @@ defmodule OrcaHub.MCP.UpstreamClient do
 
   defp schedule_refresh do
     Process.send_after(self(), :refresh, @refresh_interval)
+  end
+
+  defp schedule_scoped_sweep do
+    Process.send_after(self(), :sweep_scoped, @scoped_sweep_interval)
   end
 end

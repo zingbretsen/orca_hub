@@ -60,6 +60,15 @@
         When enabled, this server is automatically included in every session via OrcaHub's MCP proxy.
         Uncheck to only use this server in specific projects or sessions.
       </p>
+      <.input
+        field={@form[:session_scoped]}
+        type="checkbox"
+        label="Separate upstream session per Orca session"
+      />
+      <p class="text-xs text-base-content/50 -mt-2">
+        For stateful servers (e.g. Playwright): each Orca session gets its own upstream MCP
+        session — its own browser context — instead of sharing one.
+      </p>
 
       <div>
         <label class="label"><span class="label-text">Headers</span></label>
@@ -136,6 +145,9 @@
             {if server.enabled, do: "enabled", else: "disabled"}
           </span>
           <span :if={server.global} class="badge badge-xs badge-neutral">global</span>
+          <span :if={server.session_scoped} class="badge badge-xs badge-accent">
+            session-scoped
+          </span>
           <span :if={server.enabled && server.global} class="badge badge-xs badge-info">
             {tool_count_for_server(@upstream_tools, server)} tools
           </span>

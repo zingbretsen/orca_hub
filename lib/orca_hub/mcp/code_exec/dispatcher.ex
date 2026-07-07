@@ -8,7 +8,8 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
   reuses the exact decision the live MCP server makes in `OrcaHub.MCP.Server` —
 
     * upstream tool (namespaced, e.g. `github__get_issue`) →
-      `OrcaHub.MCP.UpstreamClient.call_tool/2`
+      `OrcaHub.MCP.UpstreamClient.call_tool/3` (passing the caller's
+      `orca_session_id` so session-scoped upstreams route correctly)
     * otherwise → `OrcaHub.MCP.Tools.call/3`
 
   and returns the raw MCP result map (`%{"content" => [...], "isError" => bool}`).
@@ -47,7 +48,7 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
   """
   def dispatch(name, args, state) when is_binary(name) and is_map(args) do
     if UpstreamClient.upstream_tool?(name) do
-      UpstreamClient.call_tool(name, args)
+      UpstreamClient.call_tool(name, args, orca_session_id: state[:orca_session_id])
     else
       OrcaHub.MCP.Tools.call(name, args, state)
     end

@@ -193,7 +193,9 @@ defmodule OrcaHub.MCP.Server do
             OrcaHub.MCP.CodeExec.MetaTools.call(tool_name, arguments, state)
 
           upstream? ->
-            OrcaHub.MCP.UpstreamClient.call_tool(tool_name, arguments)
+            OrcaHub.MCP.UpstreamClient.call_tool(tool_name, arguments,
+              orca_session_id: state.orca_session_id
+            )
 
           true ->
             Tools.call(tool_name, arguments, state)
