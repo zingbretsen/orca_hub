@@ -63,6 +63,28 @@ defmodule OrcaHub.MCP.CodeExec.MediaSinkTest do
       assert File.read!(path) == bytes
     end
 
+    test "a path-traversal-shaped session id is sanitized before use as a path segment" do
+      root = Path.join([System.tmp_dir!(), "orca_hub", "tool_media"])
+      malicious_id = "../../../../tmp/evil"
+      CodeExec.put_state(%{orca_session_id: malicious_id})
+
+      bytes = "danger bytes"
+      content = [%{"type" => "image", "data" => Base.encode64(bytes), "mimeType" => "image/png"}]
+      assert {[note], true} = MediaSink.render(content, "escape_attempt")
+
+      path = path_from_note(note)
+      session_dir = Path.dirname(path)
+
+      on_exit(fn -> File.rm_rf!(session_dir) end)
+
+      # The "/" separators in the malicious id were sanitized away, so the
+      # whole id collapses into a single literal path component — the file
+      # lands in a direct child of tool_media/, never escaping it.
+      assert Path.dirname(session_dir) == root
+      refute String.contains?(Path.basename(session_dir), "/")
+      assert File.read!(path) == bytes
+    end
+
     test "resource block with text is passed through like a text block" do
       content = [
         %{

@@ -13,9 +13,12 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
 
     * `text` → passed through verbatim.
     * `image` / `audio` → base64-decoded and written to
-      `$TMPDIR/orca_hub/tool_media/<orca_session_id>/<tool>-<ms>-<idx>.<ext>`,
+      `$TMPDIR/orca_hub/tool_media/<sanitized_orca_session_id>/<tool>-<ms>-<idx>.<ext>`,
       replaced with a `[<type> saved to <path> — view it with the Read tool]`
-      line.
+      line. The session id comes from the `/mcp` URL query string, so it's run
+      through the same filename sanitizer as the tool name before being used
+      as a path segment — a path-traversal-shaped id (`../../foo`) can't
+      escape the `tool_media` root.
     * `resource` (embedded resource) → its `text` is passed through like a
       text block; its `blob` (base64) is written to disk like an image/audio
       block.
@@ -90,7 +93,7 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
 
   defp session_dir do
     case CodeExec.get_state() do
-      %{orca_session_id: id} when is_binary(id) -> id
+      %{orca_session_id: id} when is_binary(id) -> sanitize_for_filename(id)
       _ -> "shared"
     end
   end
