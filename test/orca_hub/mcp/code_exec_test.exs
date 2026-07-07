@@ -29,6 +29,18 @@ defmodule OrcaHub.MCP.CodeExecTest do
         "isError" => false
       }
     end
+
+    def dispatch("playwright__browser_take_screenshot", _args, _state) do
+      png = Base.encode64("not-really-a-png")
+
+      %{
+        "content" => [
+          %{"type" => "text", "text" => "screenshot captured"},
+          %{"type" => "image", "data" => png, "mimeType" => "image/png"}
+        ],
+        "isError" => false
+      }
+    end
   end
 
   @stub_tools [
@@ -50,6 +62,11 @@ defmodule OrcaHub.MCP.CodeExecTest do
     %{
       "name" => "github__weird name!not-valid",
       "description" => "invalid raw name",
+      "inputSchema" => %{}
+    },
+    %{
+      "name" => "playwright__browser_take_screenshot",
+      "description" => "takes a screenshot",
       "inputSchema" => %{}
     }
   ]
@@ -107,6 +124,27 @@ defmodule OrcaHub.MCP.CodeExecTest do
     test "upstream tools are still callable via the per-prefix submodule (sugar)" do
       assert {:ok, %{value: "flat upstream call worked"}} =
                Sandbox.eval("Tools.Github.get_issue()")
+    end
+
+    test "an image content block is written to disk and referenced by path, text preserved" do
+      session_id = "screenshot-#{System.unique_integer([:positive])}"
+
+      assert {:ok, %{value: value}} =
+               Sandbox.eval("Tools.playwright__browser_take_screenshot()",
+                 state: %{orca_session_id: session_id}
+               )
+
+      assert is_binary(value)
+      assert value =~ "screenshot captured"
+      assert value =~ "view it with the Read tool"
+
+      [path] = Regex.run(~r{(/\S+\.png)}, value, capture: :all_but_first)
+      assert File.read!(path) == "not-really-a-png"
+      assert path =~ session_id
+
+      on_exit(fn ->
+        File.rm_rf!(Path.join([System.tmp_dir!(), "orca_hub", "tool_media", session_id]))
+      end)
     end
   end
 

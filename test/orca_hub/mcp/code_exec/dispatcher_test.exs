@@ -1,0 +1,132 @@
+defmodule OrcaHub.MCP.CodeExec.DispatcherTest do
+  use ExUnit.Case, async: true
+
+  alias OrcaHub.MCP.CodeExec
+  alias OrcaHub.MCP.CodeExec.Dispatcher
+
+  setup do
+    session_id = "dispatcher-media-#{System.unique_integer([:positive])}"
+    CodeExec.put_state(%{orca_session_id: session_id})
+
+    on_exit(fn ->
+      File.rm_rf!(Path.join([System.tmp_dir!(), "orca_hub", "tool_media", session_id]))
+    end)
+
+    %{session_id: session_id}
+  end
+
+  describe "unwrap!/2 regression: pure-text/JSON results are unaffected" do
+    test "JSON text still auto-decodes to a term" do
+      body = Jason.encode!(%{"a" => 1})
+      result = %{"content" => [%{"type" => "text", "text" => body}], "isError" => false}
+      assert Dispatcher.unwrap!(result, "some_tool") == %{"a" => 1}
+    end
+
+    test "plain text still returns a plain string" do
+      result = %{"content" => [%{"type" => "text", "text" => "hello"}], "isError" => false}
+      assert Dispatcher.unwrap!(result, "some_tool") == "hello"
+    end
+
+    test "isError still raises Tools.Error carrying the text" do
+      result = %{
+        "content" => [%{"type" => "text", "text" => "repo not found"}],
+        "isError" => true
+      }
+
+      assert_raise Tools.Error, "tool some_tool failed: repo not found", fn ->
+        Dispatcher.unwrap!(result, "some_tool")
+      end
+    end
+  end
+
+  describe "unwrap!/2 with media content" do
+    test "image block: text preserved, JSON-decode skipped, saved-file note appended", %{
+      session_id: session_id
+    } do
+      png = "fake-png-bytes"
+
+      result = %{
+        "content" => [
+          %{"type" => "text", "text" => "screenshot taken"},
+          %{"type" => "image", "data" => Base.encode64(png), "mimeType" => "image/png"}
+        ],
+        "isError" => false
+      }
+
+      value = Dispatcher.unwrap!(result, "browser_take_screenshot")
+      assert is_binary(value)
+      assert value =~ "screenshot taken"
+      assert value =~ "view it with the Read tool"
+
+      [path] = Regex.run(~r{(/\S+\.png)}, value, capture: :all_but_first)
+      assert File.read!(path) == png
+      assert path =~ session_id
+    end
+
+    test "resource_link renders a visible line" do
+      result = %{
+        "content" => [
+          %{"type" => "resource_link", "uri" => "file:///a/b.txt", "title" => "b.txt"}
+        ],
+        "isError" => false
+      }
+
+      assert Dispatcher.unwrap!(result, "some_tool") ==
+               "[resource_link] b.txt — file:///a/b.txt"
+    end
+
+    test "unsupported content type is dropped visibly, not silently" do
+      result = %{"content" => [%{"type" => "annotation", "foo" => "bar"}], "isError" => false}
+
+      assert Dispatcher.unwrap!(result, "some_tool") ==
+               "[dropped unsupported content block: annotation]"
+    end
+
+    test "invalid base64 does not raise and is surfaced visibly" do
+      result = %{
+        "content" => [
+          %{"type" => "image", "data" => "not-valid-base64!!", "mimeType" => "image/png"}
+        ],
+        "isError" => false
+      }
+
+      assert Dispatcher.unwrap!(result, "some_tool") == "[failed to decode image block]"
+    end
+  end
+
+  describe "isError envelopes with non-text content" do
+    test "resource-only error text is not empty" do
+      result = %{
+        "content" => [%{"type" => "resource", "resource" => %{"text" => "boom details"}}],
+        "isError" => true
+      }
+
+      assert_raise Tools.Error, "tool some_tool failed: boom details", fn ->
+        Dispatcher.unwrap!(result, "some_tool")
+      end
+    end
+
+    test "image-only error envelope still produces a non-empty message and writes the file", %{
+      session_id: session_id
+    } do
+      png = "fake-png-bytes"
+
+      result = %{
+        "content" => [
+          %{"type" => "image", "data" => Base.encode64(png), "mimeType" => "image/png"}
+        ],
+        "isError" => true
+      }
+
+      error =
+        assert_raise Tools.Error, fn ->
+          Dispatcher.unwrap!(result, "some_tool")
+        end
+
+      assert error.upstream =~ "view it with the Read tool"
+      [path] = Regex.run(~r{(/\S+\.png)}, error.upstream, capture: :all_but_first)
+      assert File.read!(path) == png
+      assert path =~ session_id
+    end
+  end
+end

@@ -30,10 +30,20 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
   This makes tool calls compose with `|>` / `Enum`. The faithful full envelope
   is still reachable via `Tools.call/2`, and `Tools.try_call/2` (→ `try/3`)
   returns `{:ok, val} | {:error, reason}` for explicit `with`-style handling.
+
+  Non-text content blocks (images, audio, embedded resources, resource links)
+  are rendered by `OrcaHub.MCP.CodeExec.MediaSink` rather than silently
+  dropped: binary blocks are written to disk and replaced with a `saved to
+  <path>` note the model can hand to its `Read` tool, and anything else
+  unsupported becomes a visible `[dropped ...]` note. Whenever a result
+  contains at least one such block, the JSON-decode shortcut is skipped and
+  `unwrap!/2` returns the concatenated text + notes as a plain string — a
+  pure-text result is completely unaffected.
   """
 
   alias OrcaHub.MCP.UpstreamClient
   alias OrcaHub.MCP.CodeExec
+  alias OrcaHub.MCP.CodeExec.MediaSink
 
   # NOTE: `Tools` is intentionally NOT aliased to `OrcaHub.MCP.Tools` here — in
   # this module `Tools.Error` must resolve to the top-level exception module
@@ -81,29 +91,32 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
 
     * `isError == true` → `raise Tools.Error`
     * content that decodes to a JSON map/list → the decoded term
-    * otherwise → the concatenated text string
+    * otherwise → the concatenated text string (plus any `MediaSink` notes)
   """
   def unwrap!(%{"isError" => true} = result, name) do
-    raise Tools.Error, name: name, upstream: extract_text(result)
+    raise Tools.Error, name: name, upstream: extract_text(result, name)
   end
 
-  def unwrap!(%{"content" => content}, _name) when is_list(content) do
-    text = text_from_content(content)
+  def unwrap!(%{"content" => content}, name) when is_list(content) do
+    {parts, has_notes?} = MediaSink.render(content, name)
+    text = Enum.join(parts, "\n")
 
-    case Jason.decode(text) do
-      {:ok, term} when is_map(term) or is_list(term) -> term
-      _ -> text
+    if has_notes? do
+      text
+    else
+      case Jason.decode(text) do
+        {:ok, term} when is_map(term) or is_list(term) -> term
+        _ -> text
+      end
     end
   end
 
   def unwrap!(other, _name), do: other
 
-  defp extract_text(%{"content" => content}) when is_list(content), do: text_from_content(content)
-  defp extract_text(other), do: inspect(other)
-
-  defp text_from_content(content) do
-    content
-    |> Enum.filter(&(&1["type"] == "text"))
-    |> Enum.map_join("\n", & &1["text"])
+  defp extract_text(%{"content" => content}, name) when is_list(content) do
+    {parts, _has_notes?} = MediaSink.render(content, name)
+    Enum.join(parts, "\n")
   end
+
+  defp extract_text(other, _name), do: inspect(other)
 end
