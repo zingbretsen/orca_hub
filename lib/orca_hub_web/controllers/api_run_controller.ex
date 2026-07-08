@@ -86,17 +86,19 @@ defmodule OrcaHubWeb.ApiRunController do
     result_schema = params["result_schema"]
     no_tools = params["no_tools"] == true
 
-    session_attrs = %{
-      directory: directory,
-      project_id: project && project.id,
-      title: params["title"] || "API run",
-      status: "ready",
-      triggered: true,
-      runner_node: Atom.to_string(runner_node),
-      model: params["model"],
-      backend: backend,
-      tools: if(no_tools, do: "", else: nil)
-    }
+    session_attrs =
+      %{
+        directory: directory,
+        project_id: project && project.id,
+        title: params["title"] || "API run",
+        status: "ready",
+        triggered: true,
+        runner_node: Atom.to_string(runner_node),
+        model: params["model"],
+        backend: backend,
+        tools: if(no_tools, do: "", else: nil)
+      }
+      |> maybe_disable_code_exec(result_schema)
 
     with {:ok, session} <- HubRPC.create_session(session_attrs),
          {:ok, run} <-
@@ -131,13 +133,23 @@ defmodule OrcaHubWeb.ApiRunController do
     end
   end
 
+  # code_exec is ON by default for new sessions (see Sessions.Session);
+  # a schema run's MCP server must expose ONLY submit_result (docs/api.md),
+  # so code_exec has to be explicitly turned off — leaving the key out of
+  # session_attrs entirely (rather than passing `code_exec: nil`) would
+  # otherwise apply the column's `true` default via the changeset.
+  defp maybe_disable_code_exec(attrs, nil), do: attrs
+  defp maybe_disable_code_exec(attrs, _result_schema), do: Map.put(attrs, :code_exec, false)
+
   defp full_prompt(prompt, nil), do: prompt
 
   defp full_prompt(prompt, result_schema) do
     schema_json = Jason.encode!(result_schema, pretty: true)
 
     prompt <>
-      "\n\nRespond with ONLY a JSON object (optionally in a ```json fence) conforming to this JSON Schema:\n```json\n#{schema_json}\n```"
+      "\n\nWhen you have your final answer, call the submit_result tool with a JSON object " <>
+      "conforming to this JSON Schema (shown here for reference; the tool's input schema " <>
+      "enforces it):\n```json\n#{schema_json}\n```"
   end
 
   # ---------------------------------------------------------------------
@@ -288,10 +300,15 @@ defmodule OrcaHubWeb.ApiRunController do
     end
   end
 
+  # This corrective prompt is only reached via the idle-fallback path (a
+  # schema-run session went idle without ever calling submit_result — see
+  # handle_idle_result/4) — the primary channel is the submit_result tool
+  # itself, whose validation errors return within the SAME turn as a tool
+  # error (see MCP.Server), never reaching this poll-driven retry at all.
   defp corrective_prompt(errors) do
-    "Your previous response did not validate against the required JSON Schema:\n" <>
+    "Your previous response did not produce a valid result:\n" <>
       Enum.map_join(errors, "\n", &"- #{&1}") <>
-      "\n\nRespond with ONLY corrected JSON (optionally in a ```json fence) that fixes these errors."
+      "\n\nCall the submit_result tool with your final result now — a plain text response is not accepted."
   end
 
   # ---------------------------------------------------------------------

@@ -28,6 +28,15 @@ defmodule OrcaHub.SessionRunner do
     db_call(data, :update_session, [session, attrs])
   end
 
+  # Agent Runs API (docs/api.md): does this session back a run with a
+  # result_schema? Resolved once at init/1 (see ctx.api_run_schema? there).
+  defp api_run_schema?(init_data, session_id) do
+    case db_call(init_data, :get_run_by_session_id, [session_id]) do
+      %{result_schema: schema} -> is_map(schema)
+      nil -> false
+    end
+  end
+
   # API
 
   def start_link(opts) do
@@ -176,6 +185,13 @@ defmodule OrcaHub.SessionRunner do
       orchestrator: session.orchestrator || false,
       code_exec: session.code_exec || false,
       tools: Map.get(session, :tools),
+      # Agent Runs API (docs/api.md): whether this session backs a run with a
+      # `result_schema` — resolved once here (DB work is already fine at this
+      # point, unlike MCP.Server's `initialize`) and baked into the /mcp URL's
+      # `api_run` flag so Backend.Claude's mcp_enabled?/1 keeps MCP wired up
+      # (for `submit_result`) even under `tools == ""`, and MCP.Server can
+      # collapse tools/list to just `submit_result` for the connection.
+      api_run_schema?: api_run_schema?(init_data, session_id),
       db_node: db_node,
       # Phase 1 (backend_abstraction_spec.md §4/§5): resolve from the
       # session's persisted `backend` column. Unknown values raise (loud

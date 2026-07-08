@@ -213,23 +213,35 @@ defmodule OrcaHub.Backend.Claude do
     # `Tools.*` surface would describe tools the model doesn't have — skip
     # them rather than mislead the model into calling something nonexistent.
     mcp = mcp_enabled?(ctx)
+    api_run = api_run_schema?(ctx)
     code_exec = mcp and OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
+    # An api_run connection's orca MCP server exposes ONLY submit_result (see
+    # MCP.Server) — no orchestrator/code-exec/sibling-session tools exist on
+    # it, so skip fragments that reference them even though mcp/1 is true.
+    mcp_orchestration = mcp and not api_run
 
     parts =
       [
         "Your OrcaHub session ID is #{ctx.session_id}.",
-        if(mcp,
+        if(mcp_orchestration,
           do: SharedPrompts.orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec)
         ),
         SharedPrompts.code_exec_prompt(code_exec),
         if(!ctx.orchestrator, do: SharedPrompts.commit_trailer_prompt(ctx.session_id)),
         if(!ctx.orchestrator, do: ask_user_question_prompt()),
-        if(mcp, do: sibling_sessions_prompt(ctx.orchestrator, code_exec)),
+        if(mcp_orchestration, do: sibling_sessions_prompt(ctx.orchestrator, code_exec)),
+        if(api_run, do: submit_result_prompt()),
         SharedPrompts.context_files_prompt(ctx.directory)
       ]
       |> Enum.reject(&is_nil/1)
 
     Enum.join(parts, "\n\n")
+  end
+
+  # Agent Runs API (docs/api.md): steer the model at the submit_result tool
+  # instead of letting it think a plain final-turn response is the deliverable.
+  defp submit_result_prompt do
+    "When you have your final answer, call the submit_result tool — your plain response text is not the deliverable."
   end
 
   # Only non-orchestrator sessions have the AskUserQuestion tool. Headless runs
@@ -288,6 +300,7 @@ defmodule OrcaHub.Backend.Claude do
       "[MCP] mcp_config: baking orca_session_id=#{inspect(ctx.session_id)} " <>
         "orchestrator=#{ctx.orchestrator == true} " <>
         "code_exec=#{OrcaHub.MCP.CodeExec.enabled?(ctx.code_exec)} " <>
+        "api_run=#{api_run_schema?(ctx)} " <>
         "into /mcp URL at port-open time"
     )
 
@@ -296,6 +309,17 @@ defmodule OrcaHub.Backend.Claude do
       "url" => OrcaHub.Backend.McpUrl.orca_url(ctx)
     }
 
+    # Agent Runs API (docs/api.md): an api_run connection's orca server exposes
+    # ONLY submit_result — project/session-scoped upstream servers are wired
+    # DIRECTLY into --mcp-config as their own top-level entries (the Claude CLI
+    # talks to them independently of orca's own tools/list), so they must be
+    # omitted here too, not just filtered out of orca's tool list.
+    scoped_servers = if api_run_schema?(ctx), do: %{}, else: scoped_mcp_servers(ctx)
+
+    Jason.encode!(%{"mcpServers" => Map.merge(scoped_servers, %{"orca" => orca_server})})
+  end
+
+  defp scoped_mcp_servers(ctx) do
     project_servers =
       if ctx.project_id,
         do: db_call(ctx, :list_enabled_servers_for_project, [ctx.project_id]),
@@ -303,21 +327,18 @@ defmodule OrcaHub.Backend.Claude do
 
     session_servers = db_call(ctx, :list_enabled_servers_for_session, [ctx.session_id])
 
-    scoped_servers =
-      (project_servers ++ session_servers)
-      |> Enum.uniq_by(& &1.id)
-      |> Map.new(fn server ->
-        entry = %{"type" => "http", "url" => server.url}
+    (project_servers ++ session_servers)
+    |> Enum.uniq_by(& &1.id)
+    |> Map.new(fn server ->
+      entry = %{"type" => "http", "url" => server.url}
 
-        entry =
-          if map_size(server.headers) > 0,
-            do: Map.put(entry, "headers", server.headers),
-            else: entry
+      entry =
+        if map_size(server.headers) > 0,
+          do: Map.put(entry, "headers", server.headers),
+          else: entry
 
-        {server.name, entry}
-      end)
-
-    Jason.encode!(%{"mcpServers" => Map.merge(scoped_servers, %{"orca" => orca_server})})
+      {server.name, entry}
+    end)
   end
 
   # ── Small helpers ────────────────────────────────────────────────────
@@ -346,9 +367,14 @@ defmodule OrcaHub.Backend.Claude do
   # "" is the same "no built-in tools" sentinel `tools_for/1` checks — MCP
   # tools (open_file, send_message_to_session, …) are just as much a
   # wander-into-files/other-sessions risk as built-in ones, so a no_tools API
-  # run (docs/api.md) gets neither. See the Backend.mcp_enabled?/2 doc.
+  # run (docs/api.md) gets neither. EXCEPT when the run has a result_schema:
+  # its only reachable orca tool is submit_result (see MCP.Server), which is
+  # the run's sole result channel — MCP stays wired up even under tools == ""
+  # so submit_result is still reachable. See the Backend.mcp_enabled?/2 doc.
   @impl true
-  def mcp_enabled?(ctx), do: Map.get(ctx, :tools) != ""
+  def mcp_enabled?(ctx), do: Map.get(ctx, :tools) != "" or api_run_schema?(ctx)
+
+  defp api_run_schema?(ctx), do: Map.get(ctx, :api_run_schema?) == true
 
   defp maybe_put_mcp_config(opts, ctx) do
     if mcp_enabled?(ctx) do

@@ -35,8 +35,8 @@ Creates a session and a run, sends the prompt, and returns immediately.
 | `model` | string | no | passed through to the backend |
 | `backend` | string | no | `"claude"` (default), `"codex"`, `"pi"` |
 | `title` | string | no | defaults to `"API run"` |
-| `no_tools` | boolean | no | `true` = pure text-in/JSON-out reasoning: zero built-in tools (`--tools ""`) AND no MCP config at all — the session never gets the `orca` MCP server (no `open_file`, `send_message_to_session`, etc.), so there's no file/session access of any kind. Claude backend only — `400` if combined with a non-`claude` backend |
-| `result_schema` | object | no | a JSON Schema the final result must validate against; appended to the prompt as an instruction and enforced server-side (see below) |
+| `no_tools` | boolean | no | `true` = zero built-in tools (`--tools ""`). Without a `result_schema`, this ALSO drops the MCP config entirely — the session never gets the `orca` MCP server (no `open_file`, `send_message_to_session`, etc.), so there's no file/session access of any kind, pure text-in/JSON-out reasoning. With a `result_schema`, the `orca` MCP server stays wired up (restricted to `submit_result` only — see below), since it's the run's sole result channel. Claude backend only — `400` if combined with a non-`claude` backend |
+| `result_schema` | object | no | a JSON Schema the final result must validate against. The session gets an `orca` MCP server exposing exactly one tool, `submit_result`, synthesized from this schema (see below); `code_exec` is disabled on the session so `submit_result` is the only orca tool reachable — no other orca tool, no upstream tool, no code-exec meta-tools |
 | `timeout_seconds` | integer | no | default `3600` |
 | `max_validation_attempts` | integer | no | default `3` — how many times to re-prompt on a schema-validation failure before giving up |
 
@@ -79,15 +79,50 @@ when it didn't parse/validate, for debugging.
 - **No `result_schema`**: on session idle, the final assistant text is
   stored as `result_text`; if it parses as JSON (bare, or inside a ` ```json `
   fence), it's also stored as `result` and the run completes.
-- **With `result_schema`**: the assistant's JSON is extracted and validated
-  server-side against the schema. Valid → `completed` with `result`. Invalid
-  → the session is re-prompted with the validation errors and told to
-  respond with corrected JSON (`status: "in_progress"`,
+- **With `result_schema`**: the run's primary (and intended) completion path
+  is the model calling the `submit_result` MCP tool — see below. That
+  happens **within the model's turn**, so a poll can see `status: "completed"`
+  even while `session_status` still reports `running` (the tool call landed
+  before the turn ended) — `GET` checks the run's own status first, before
+  looking at the session at all, so this is picked up on the very next poll.
+  As a **fallback**, if the session goes idle with the run still `running`
+  (the model never called the tool), the assistant's JSON is extracted from
+  its final text and validated server-side against the schema exactly like
+  v1 — valid → `completed` with `result`; invalid or unparsable → the session
+  is re-prompted to call `submit_result` (`status: "in_progress"`,
   `validation_attempts` incremented) until `max_validation_attempts` is
   exhausted, at which point the run is `failed` with the errors in `error`.
 - A session that errors out marks the run `failed`. A run whose
   `timeout_seconds` has elapsed is marked `timed_out` (the session itself is
   **not** killed — `session_id` is included so you can inspect it).
+
+## `submit_result`: the result channel for schema runs
+
+When a run has a `result_schema`, the session's `orca` MCP server exposes
+exactly one tool:
+
+- **`submit_result`** — `inputSchema` IS your `result_schema` when its
+  top-level `"type"` is `"object"` (the common case); any other top-level
+  type (array, string, ...) is wrapped as
+  `{"type": "object", "properties": {"result": <your schema>}, "required": ["result"]}`
+  and unwrapped server-side on submission. The model sees your schema
+  natively via tool-use — no fence-parsing, no guessing the expected shape.
+
+Validation runs server-side (`ExJsonSchema`, never trusted to the model) on
+every call:
+
+- **Valid** → the run completes immediately (`status: "completed"`,
+  `result` set) and the tool returns "Result accepted." A run that already
+  completed returns "Result already submitted." as a no-op — the stored
+  result is never overwritten by a later call.
+- **Invalid** → the tool call returns an MCP **error result** (`isError: true`)
+  listing the validation failures, delivered to the model **within the same
+  turn** — it can immediately retry with a corrected submission, no
+  round-trip through `GET`/re-prompting required.
+
+No other orca tool, upstream tool, or code-exec meta-tool is reachable on a
+schema run's MCP connection — the session is also created with `code_exec`
+disabled so `submit_result` is the only orca tool that exists at all.
 
 ## Example: plain text-in/JSON-out reasoning
 
@@ -105,7 +140,9 @@ curl -s -X POST https://orca.example/api/v1/runs \
 
 curl -s https://orca.example/api/v1/runs/<run_id> \
   -H "Authorization: Bearer $ORCA_API_TOKEN"
-# {"run_id":"…","session_id":"…","status":"completed","result":{"sentiment":"positive"},"result_text":"```json\n{\"sentiment\": \"positive\"}\n```","validation_attempts":0}
+# Completed via the submit_result tool (the primary path — result_text is
+# only set by the idle-text fallback described above):
+# {"run_id":"…","session_id":"…","status":"completed","result":{"sentiment":"positive"},"validation_attempts":0}
 ```
 
 ## Example: auto-editor (transcript → cut list)

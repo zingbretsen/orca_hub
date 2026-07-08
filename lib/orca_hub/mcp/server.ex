@@ -25,6 +25,7 @@ defmodule OrcaHub.MCP.Server do
     orca_session_id = Keyword.get(opts, :orca_session_id)
     orchestrator = Keyword.get(opts, :orchestrator, false)
     code_exec = Keyword.get(opts, :code_exec, false)
+    api_run = Keyword.get(opts, :api_run, false)
 
     {:ok, _pid} =
       DynamicSupervisor.start_child(
@@ -33,7 +34,8 @@ defmodule OrcaHub.MCP.Server do
          session_id: session_id,
          orca_session_id: orca_session_id,
          orchestrator: orchestrator,
-         code_exec: code_exec}
+         code_exec: code_exec,
+         api_run: api_run}
       )
 
     {:ok, session_id}
@@ -60,11 +62,14 @@ defmodule OrcaHub.MCP.Server do
     # The kill switch is honored at resolution time so a stale code_exec=true
     # query param can never re-enable the feature node-wide.
     code_exec = OrcaHub.MCP.CodeExec.enabled?(Keyword.get(opts, :code_exec, false))
+    # Agent Runs API (docs/api.md): whether this connection is scoped to a
+    # single `submit_result` tool synthesized from a run's result_schema.
+    api_run = Keyword.get(opts, :api_run, false)
 
     Logger.info(
       "[MCP] session start: mcp_session_id=#{session_id} " <>
         "orca_session_id=#{inspect(orca_session_id)} orchestrator=#{orchestrator} " <>
-        "code_exec=#{code_exec}"
+        "code_exec=#{code_exec} api_run=#{api_run}"
     )
 
     # `initialize` does NO hub work. The connection role (orchestrator?) is
@@ -72,13 +77,18 @@ defmodule OrcaHub.MCP.Server do
     # SessionRunner) rather than resolved via a hub/DB lookup. This keeps the
     # MCP handshake fast — no erpc, no DB — so tools/list is ready before the
     # model emits its first tool call, and a hub outage can't strip the
-    # orchestrator tool set.
+    # orchestrator tool set. `api_run_schema` (the run's actual result_schema)
+    # is fetched lazily at tools/list time instead — see
+    # `ensure_api_run_schema/1` — since THAT round-trip can tolerate the
+    # latency (nothing to hand-shake against it).
     {:ok,
      %{
        session_id: session_id,
        orca_session_id: orca_session_id,
        orchestrator: orchestrator,
        code_exec: code_exec,
+       api_run: api_run,
+       api_run_schema: nil,
        initialized: false
      }}
   end
@@ -121,6 +131,34 @@ defmodule OrcaHub.MCP.Server do
   # Orchestrator-only tools we explicitly assert are present for orchestrator
   # connections — used as a smoking-gun check in the tools/list log line.
   @orchestrator_only_tools ~w(cancel_heartbeat archive_session start_session schedule_heartbeat)
+
+  # Agent Runs API (docs/api.md): an api_run connection's tool surface is
+  # exactly one synthesized tool, submit_result, built from the run's
+  # result_schema — no other orca tool, no code-exec meta-tools, no upstream
+  # tools. `initialize` deliberately did no hub work (see init/1's doc), so
+  # the schema is fetched here, on first tools/list, and cached in state.
+  defp dispatch(%{"method" => "tools/list", "id" => id}, %{api_run: true} = state) do
+    state = ensure_api_run_schema(state)
+
+    tools =
+      case state.api_run_schema do
+        nil ->
+          Logger.error(
+            "[MCP] api_run tools/list: no result_schema found for orca_session_id=" <>
+              inspect(state.orca_session_id)
+          )
+
+          []
+
+        schema ->
+          [submit_result_tool(schema)]
+      end
+
+    log_tools_list_size("api_run", state, tools)
+
+    response = %{"jsonrpc" => "2.0", "id" => id, "result" => %{"tools" => tools}}
+    {response, state}
+  end
 
   # Code-exec mode: collapse the surface to just the meta-tools (run_elixir,
   # search_tools). First-party + upstream tools are no longer
@@ -169,6 +207,41 @@ defmodule OrcaHub.MCP.Server do
     }
 
     {response, state}
+  end
+
+  # Agent Runs API (docs/api.md): an api_run connection may only call
+  # submit_result — every other name is rejected outright rather than falling
+  # through to the general dispatcher below.
+  defp dispatch(
+         %{
+           "method" => "tools/call",
+           "id" => id,
+           "params" => %{"name" => "submit_result"} = params
+         },
+         %{api_run: true} = state
+       ) do
+    arguments = params["arguments"] || %{}
+    result = handle_submit_result(arguments, state)
+    {%{"jsonrpc" => "2.0", "id" => id, "result" => result}, state}
+  end
+
+  defp dispatch(
+         %{"method" => "tools/call", "id" => id, "params" => params},
+         %{api_run: true} = state
+       ) do
+    tool_name = params["name"]
+
+    Logger.warning(
+      "[MCP] api_run tools/call: rejected name=#{inspect(tool_name)} — only submit_result " <>
+        "is reachable on this connection"
+    )
+
+    result =
+      OrcaHub.MCP.Tools.Result.error(
+        "Unknown tool: #{tool_name}. This connection only exposes submit_result."
+      )
+
+    {%{"jsonrpc" => "2.0", "id" => id, "result" => result}, state}
   end
 
   defp dispatch(%{"method" => "tools/call", "id" => id, "params" => params}, state) do
@@ -261,6 +334,102 @@ defmodule OrcaHub.MCP.Server do
   # Notification we don't handle — just accept
   defp dispatch(%{"method" => _}, state) do
     {:accepted, state}
+  end
+
+  # ── Agent Runs API (api_run connections, docs/api.md) ─────────────────
+
+  defp ensure_api_run_schema(%{api_run_schema: schema} = state) when not is_nil(schema), do: state
+
+  defp ensure_api_run_schema(state) do
+    case OrcaHub.HubRPC.get_run_by_session_id(state.orca_session_id) do
+      %{result_schema: schema} when is_map(schema) -> %{state | api_run_schema: schema}
+      _ -> state
+    end
+  end
+
+  # The caller's schema is used directly as the tool's inputSchema when it's
+  # already a JSON object schema (the common case: `result_schema` describes
+  # an object). Anything else (array, string, ...) is wrapped so submit_result
+  # still has a valid object-shaped inputSchema — see `unwrap_submission/2`.
+  defp submit_result_tool(schema) do
+    %{
+      "name" => "submit_result",
+      "description" =>
+        "Submit the final structured result for this run. Input must conform to the schema.",
+      "inputSchema" => submit_result_input_schema(schema)
+    }
+  end
+
+  defp submit_result_input_schema(%{"type" => "object"} = schema), do: schema
+
+  defp submit_result_input_schema(schema) do
+    %{"type" => "object", "properties" => %{"result" => schema}, "required" => ["result"]}
+  end
+
+  defp wrapped_schema?(%{"type" => "object"}), do: false
+  defp wrapped_schema?(_schema), do: true
+
+  defp unwrap_submission(arguments, schema) do
+    if wrapped_schema?(schema), do: Map.get(arguments, "result"), else: arguments
+  end
+
+  defp handle_submit_result(arguments, state) do
+    case OrcaHub.HubRPC.get_run_by_session_id(state.orca_session_id) do
+      nil ->
+        OrcaHub.MCP.Tools.Result.error(
+          "No matching run found for orca_session_id=#{inspect(state.orca_session_id)}."
+        )
+
+      %{status: "completed"} ->
+        OrcaHub.MCP.Tools.Result.text("Result already submitted.")
+
+      run ->
+        validate_and_complete_run(run, arguments)
+    end
+  end
+
+  defp validate_and_complete_run(run, arguments) do
+    submission = unwrap_submission(arguments, run.result_schema)
+
+    case OrcaHub.ApiRuns.validate_against_schema(submission, run.result_schema) do
+      :ok ->
+        persist_completed_run(run, submission)
+
+      {:error, errors} ->
+        OrcaHub.MCP.Tools.Result.error(
+          "Validation failed:\n" <> Enum.map_join(errors, "\n", &"- #{&1}")
+        )
+
+      {:schema_error, message} ->
+        OrcaHub.MCP.Tools.Result.error("Invalid result_schema: #{message}")
+    end
+  end
+
+  # The `api_runs.result` column casts as a plain map (see ApiRun schema) —
+  # a schema-valid but non-object top-level submission (e.g. a wrapped array
+  # schema) fails THIS cast even though it passed JSON Schema validation.
+  # Handled as an ordinary tool error rather than crashing the GenServer (the
+  # general tools/call dispatcher's try/rescue doesn't cover this clause).
+  defp persist_completed_run(run, submission) do
+    case OrcaHub.HubRPC.update_api_run(run, %{
+           status: "completed",
+           result: submission,
+           result_text: nil
+         }) do
+      {:ok, _run} ->
+        OrcaHub.MCP.Tools.Result.text("Result accepted.")
+
+      {:error, changeset} ->
+        Logger.error(
+          "[MCP] api_run submit_result: failed to persist run #{run.id}: " <>
+            inspect(changeset.errors)
+        )
+
+        OrcaHub.MCP.Tools.Result.error(
+          "Result passed schema validation but could not be stored: " <>
+            inspect(changeset.errors)
+        )
+    end
   end
 
   # Token instrumentation: log the serialized payload size + tool count so the

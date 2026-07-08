@@ -6,6 +6,8 @@ defmodule OrcaHub.ApiRuns do
   a caller-supplied JSON Schema.
   """
 
+  import Ecto.Query, only: [from: 2]
+
   alias OrcaHub.ApiRuns.ApiRun
   alias OrcaHub.Repo
 
@@ -14,6 +16,23 @@ defmodule OrcaHub.ApiRuns do
       nil -> nil
       run -> Repo.preload(run, :session)
     end
+  end
+
+  @doc """
+  The most recently created run for a session, or `nil`. Used by
+  `SessionRunner` (ctx-build time) and `MCP.Server` (`tools/list`/`tools/call`
+  for `api_run` connections, see `docs/api.md`) to look up a session's run
+  by `orca_session_id`/`session_id` — a session is created fresh per
+  `POST /api/v1/runs`, so there is normally at most one, but this is
+  defensively ordered in case a session is ever reused across runs.
+  """
+  def get_run_by_session_id(session_id) do
+    from(r in ApiRun,
+      where: r.session_id == ^session_id,
+      order_by: [desc: r.inserted_at],
+      limit: 1
+    )
+    |> Repo.one()
   end
 
   def create_run(attrs) do

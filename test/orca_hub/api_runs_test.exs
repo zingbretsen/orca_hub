@@ -43,6 +43,31 @@ defmodule OrcaHub.ApiRunsTest do
     end
   end
 
+  describe "get_run_by_session_id/1" do
+    test "returns the run for a session", %{session: session} do
+      {:ok, run} = ApiRuns.create_run(%{session_id: session.id})
+      assert ApiRuns.get_run_by_session_id(session.id).id == run.id
+    end
+
+    test "returns nil when the session has no run" do
+      assert ApiRuns.get_run_by_session_id(Ecto.UUID.generate()) == nil
+    end
+
+    test "returns the most recently created run when a session has more than one", %{
+      session: session
+    } do
+      {:ok, older} = ApiRuns.create_run(%{session_id: session.id})
+      {:ok, newer} = ApiRuns.create_run(%{session_id: session.id})
+
+      # timestamps() defaults to second-level precision — force `older` to be
+      # unambiguously earlier rather than relying on wall-clock granularity.
+      past = NaiveDateTime.add(older.inserted_at, -10, :second)
+      OrcaHub.Repo.update!(Ecto.Changeset.change(older, inserted_at: past))
+
+      assert ApiRuns.get_run_by_session_id(session.id).id == newer.id
+    end
+  end
+
   describe "extract_json/1" do
     test "parses bare JSON" do
       assert ApiRuns.extract_json(~s({"a": 1})) == {:ok, %{"a" => 1}}

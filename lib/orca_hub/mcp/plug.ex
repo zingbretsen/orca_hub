@@ -27,17 +27,20 @@ defmodule OrcaHub.MCP.Plug do
         orca_session_id = conn.query_params["orca_session_id"]
         orchestrator = conn.query_params["orchestrator"] == "true"
         code_exec = conn.query_params["code_exec"] == "true"
+        api_run = conn.query_params["api_run"] == "true"
 
         {:ok, session_id} =
           OrcaHub.MCP.Server.start_session(
             orca_session_id: orca_session_id,
             orchestrator: orchestrator,
-            code_exec: code_exec
+            code_exec: code_exec,
+            api_run: api_run
           )
 
         Logger.info(
           "[MCP] initialize: mcp_session_id=#{session_id} orca_session_id=#{inspect(orca_session_id)} " <>
-            "orchestrator=#{orchestrator} code_exec=#{code_exec} query=#{inspect(conn.query_string)}"
+            "orchestrator=#{orchestrator} code_exec=#{code_exec} api_run=#{api_run} " <>
+            "query=#{inspect(conn.query_string)}"
         )
 
         response = OrcaHub.MCP.Server.handle_jsonrpc(session_id, message)

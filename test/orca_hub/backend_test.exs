@@ -166,6 +166,18 @@ defmodule OrcaHub.BackendTest do
       assert Backend.mcp_enabled?(OrcaHub.Backend.Claude, %{}) == true
     end
 
+    test "Claude: tools == \"\" but api_run_schema?: true stays true — submit_result is the run's sole result channel (docs/api.md)" do
+      assert Backend.mcp_enabled?(
+               OrcaHub.Backend.Claude,
+               %{tools: "", api_run_schema?: true}
+             ) == true
+
+      assert Backend.mcp_enabled?(
+               OrcaHub.Backend.Claude,
+               %{tools: "", api_run_schema?: false}
+             ) == false
+    end
+
     test "Codex never implements it — always true (unaffected by ctx.tools)" do
       assert Backend.mcp_enabled?(OrcaHub.Backend.Codex, %{tools: ""}) == true
     end

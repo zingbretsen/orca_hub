@@ -153,6 +153,40 @@ defmodule OrcaHubWeb.ApiRunControllerTest do
 
       on_exit(fn -> stop_if_alive(body["session_id"]) end)
     end
+
+    test "result_schema disables code_exec on the session (submit_result is the only orca tool)",
+         %{
+           conn: conn,
+           dir: dir
+         } do
+      schema = %{"type" => "object", "properties" => %{"answer" => %{"type" => "integer"}}}
+
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{
+          "prompt" => "say hi",
+          "directory" => dir,
+          "result_schema" => schema
+        })
+
+      body = json_response(conn, 202)
+      session = Sessions.get_session!(body["session_id"])
+      assert session.code_exec == false
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+    end
+
+    test "no result_schema leaves code_exec at its default (true)", %{conn: conn, dir: dir} do
+      conn =
+        conn |> authed() |> post(~p"/api/v1/runs", %{"prompt" => "say hi", "directory" => dir})
+
+      body = json_response(conn, 202)
+      session = Sessions.get_session!(body["session_id"])
+      assert session.code_exec == true
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+    end
   end
 
   describe "GET /api/v1/runs/:id" do
@@ -194,6 +228,24 @@ defmodule OrcaHubWeb.ApiRunControllerTest do
       body = json_response(conn, 200)
       assert body["status"] == "in_progress"
       assert body["session_status"] == "running"
+    end
+
+    test "completed via the submit_result tool is returned even while the session is still running",
+         %{conn: conn, session: session} do
+      {:ok, session} = Sessions.update_session(session, %{status: "running"})
+
+      {:ok, run} =
+        ApiRuns.create_run(%{
+          session_id: session.id,
+          status: "completed",
+          result: %{"answer" => 42}
+        })
+
+      conn = get(conn, ~p"/api/v1/runs/#{run.id}")
+      body = json_response(conn, 200)
+      assert body["status"] == "completed"
+      assert body["result"] == %{"answer" => 42}
+      refute Map.has_key?(body, "session_status")
     end
 
     test "completed with plain text when no schema is given", %{conn: conn, session: session} do

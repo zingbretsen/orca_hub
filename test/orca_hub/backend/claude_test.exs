@@ -281,12 +281,33 @@ defmodule OrcaHub.Backend.ClaudeTest do
     |> Enum.join("\n\n")
   end
 
+  defp expected_submit_result_prompt do
+    "When you have your final answer, call the submit_result tool — your plain response text is not the deliverable."
+  end
+
+  # api_run_schema?: true shape (submit_result tool-based result submission,
+  # docs/api.md) — MCP stays enabled (unlike expected_system_prompt_no_mcp/1
+  # above) but the orchestrator/sibling-session fragments are skipped since
+  # the only orca tool reachable on the connection is submit_result, and a
+  # submit_result instruction is appended instead.
+  defp expected_system_prompt_api_run(ctx) do
+    [
+      "Your OrcaHub session ID is #{ctx.session_id}.",
+      if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
+      if(!ctx.orchestrator, do: expected_ask_user_question_prompt()),
+      expected_submit_result_prompt()
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n\n")
+  end
+
   # Transcribed from SessionRunner.mcp_config/1 (pre-refactor). Every ctx
   # fixture uses a fresh unique session_id and project_id: nil, so there are
   # never any project/session-scoped MCP servers — the JSON is always just
   # the "orca" entry.
   defp expected_mcp_config_json(ctx) do
     code_exec = OrcaHub.MCP.CodeExec.enabled?(ctx.code_exec)
+    api_run = Map.get(ctx, :api_run_schema?) == true
 
     Jason.encode!(%{
       "mcpServers" => %{
@@ -295,7 +316,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
           "url" =>
             "http://localhost:#{expected_mcp_port()}/mcp?orca_session_id=#{ctx.session_id}" <>
               "&orchestrator=#{ctx.orchestrator == true}" <>
-              "&code_exec=#{code_exec}"
+              "&code_exec=#{code_exec}" <>
+              "&api_run=#{api_run}"
         }
       }
     })
@@ -416,6 +438,28 @@ defmodule OrcaHub.Backend.ClaudeTest do
       assert Enum.at(spec.args, tools_idx + 1) == ""
 
       refute "--mcp-config" in spec.args
+    end
+
+    test "tools: \"\" + api_run_schema?: true KEEPS --mcp-config (submit_result is the only result channel)" do
+      ctx = ctx(%{tools: "", api_run_schema?: true})
+
+      opts =
+        [cwd: ctx.directory, input_format: "stream-json"]
+        |> expected_maybe_put(:system_prompt, expected_system_prompt_api_run(ctx))
+        |> Keyword.put(:tools, "")
+        |> Keyword.put(:mcp_config, expected_mcp_config_json(ctx))
+
+      {expected_args, expected_port_opts} = Config.build_args(nil, opts)
+
+      spec = Backend.spawn_spec(:streaming, ctx)
+
+      assert spec.args == expected_args
+      assert spec.port_opts == expected_port_opts
+
+      tools_idx = Enum.find_index(spec.args, &(&1 == "--tools"))
+      assert Enum.at(spec.args, tools_idx + 1) == ""
+
+      assert "--mcp-config" in spec.args
     end
   end
 
@@ -646,6 +690,93 @@ defmodule OrcaHub.Backend.ClaudeTest do
       assert prompt =~ "Tools.archive_session"
       assert prompt =~ "Tools.cancel_heartbeat"
       refute prompt =~ "mcp__orca__"
+    end
+
+    test "tools: \"\" (no MCP at all): no submit_result instruction either" do
+      ctx = ctx(%{tools: ""})
+      prompt = Backend.system_prompt(ctx)
+
+      assert prompt == expected_system_prompt_no_mcp(ctx)
+      refute prompt =~ "submit_result"
+    end
+
+    test "api_run_schema?: true (Agent Runs API submit_result mode, docs/api.md): submit_result instruction, no orchestrator/sibling fragments" do
+      ctx = ctx(%{tools: "", api_run_schema?: true})
+      prompt = Backend.system_prompt(ctx)
+
+      assert prompt == expected_system_prompt_api_run(ctx)
+      assert prompt =~ "call the submit_result tool"
+      refute prompt =~ "Orchestrator Session"
+      refute prompt =~ "mcp__orca__"
+      refute prompt =~ "Other agent sessions may be active"
+    end
+  end
+
+  describe "mcp_enabled?/1 (Agent Runs API, docs/api.md)" do
+    test "false when tools == \"\" and no api_run schema" do
+      refute Backend.mcp_enabled?(%{tools: ""})
+    end
+
+    test "true when tools == \"\" but api_run_schema?: true — submit_result must stay reachable" do
+      assert Backend.mcp_enabled?(%{tools: "", api_run_schema?: true})
+    end
+
+    test "true when tools is unset/non-empty regardless of api_run_schema?" do
+      assert Backend.mcp_enabled?(%{tools: nil})
+      assert Backend.mcp_enabled?(%{})
+      assert Backend.mcp_enabled?(%{tools: nil, api_run_schema?: false})
+    end
+  end
+
+  describe "mcp_config_json (via spawn_spec) — api_run_schema?: true excludes project/session-scoped servers" do
+    test "an api_run connection's --mcp-config has ONLY the orca entry, even with a project-scoped upstream server" do
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "claude-test-project-#{System.unique_integer([:positive])}",
+          directory: "/nonexistent-dir-#{System.unique_integer([:positive])}"
+        })
+
+      {:ok, server} =
+        OrcaHub.Repo.insert(%OrcaHub.UpstreamServers.UpstreamServer{
+          name: "some-upstream",
+          url: "http://example.invalid/mcp",
+          enabled: true
+        })
+
+      {:ok, _} = OrcaHub.UpstreamServers.add_server_to_project(project.id, server.id)
+
+      ctx = ctx(%{project_id: project.id, api_run_schema?: true})
+
+      spec = Backend.spawn_spec(:streaming, ctx)
+      mcp_config_idx = Enum.find_index(spec.args, &(&1 == "--mcp-config"))
+      config = spec.args |> Enum.at(mcp_config_idx + 1) |> Jason.decode!()
+
+      assert Map.keys(config["mcpServers"]) == ["orca"]
+    end
+
+    test "a non-api_run connection's --mcp-config includes a project-scoped upstream server" do
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "claude-test-project-#{System.unique_integer([:positive])}",
+          directory: "/nonexistent-dir-#{System.unique_integer([:positive])}"
+        })
+
+      {:ok, server} =
+        OrcaHub.Repo.insert(%OrcaHub.UpstreamServers.UpstreamServer{
+          name: "some-upstream",
+          url: "http://example.invalid/mcp",
+          enabled: true
+        })
+
+      {:ok, _} = OrcaHub.UpstreamServers.add_server_to_project(project.id, server.id)
+
+      ctx = ctx(%{project_id: project.id})
+
+      spec = Backend.spawn_spec(:streaming, ctx)
+      mcp_config_idx = Enum.find_index(spec.args, &(&1 == "--mcp-config"))
+      config = spec.args |> Enum.at(mcp_config_idx + 1) |> Jason.decode!()
+
+      assert Enum.sort(Map.keys(config["mcpServers"])) == ["orca", "some-upstream"]
     end
   end
 end

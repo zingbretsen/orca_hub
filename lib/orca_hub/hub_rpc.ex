@@ -231,4 +231,7 @@ defmodule OrcaHub.HubRPC do
   def get_api_run(id), do: call(OrcaHub.ApiRuns, :get_run, [id])
   def create_api_run(attrs), do: call(OrcaHub.ApiRuns, :create_run, [attrs])
   def update_api_run(run, attrs), do: call(OrcaHub.ApiRuns, :update_run, [run, attrs])
+
+  def get_run_by_session_id(session_id),
+    do: call(OrcaHub.ApiRuns, :get_run_by_session_id, [session_id])
 end
