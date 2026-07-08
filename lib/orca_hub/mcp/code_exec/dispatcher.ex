@@ -51,6 +51,7 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
   alias OrcaHub.MCP.UpstreamClient
   alias OrcaHub.MCP.CodeExec
   alias OrcaHub.MCP.CodeExec.MediaSink
+  alias OrcaHub.MCP.CodeExec.PlaywrightUpload
 
   # NOTE: `Tools` is intentionally NOT aliased to `OrcaHub.MCP.Tools` here — in
   # this module `Tools.Error` must resolve to the top-level exception module
@@ -81,12 +82,29 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
 
   This is reset (to `nil` when not applicable) on every dispatch call, so it
   can never leak into an unrelated tool's result.
+
+  Separately, `browser_file_upload`/`browser_drop` calls carrying a `paths`
+  list are routed through `PlaywrightUpload.maybe_rewrite_paths/4` first:
+  those tools read `paths` from playwright's OWN pod filesystem, so a path to
+  a file on this node is unreachable to it. Any entry that's an existing
+  local file is pushed to the playwright-mcp upload sidecar and rewritten to
+  the pod-side path the sidecar hands back; everything else (already
+  pod-side, or pod-only references) passes through untouched. On upload
+  failure, `dispatch/3` short-circuits to the resulting error envelope
+  instead of ever calling `UpstreamClient.call_tool/3`.
   """
   def dispatch(name, args, state) when is_binary(name) and is_map(args) do
     if UpstreamClient.upstream_tool?(name) do
       {args, mode} = extract_requested_filename(name, args)
       MediaSink.put_requested_filename(mode)
-      UpstreamClient.call_tool(name, args, orca_session_id: state[:orca_session_id])
+
+      case PlaywrightUpload.maybe_rewrite_paths(name, args, state[:orca_session_id]) do
+        {:ok, args} ->
+          UpstreamClient.call_tool(name, args, orca_session_id: state[:orca_session_id])
+
+        {:error, envelope} ->
+          envelope
+      end
     else
       MediaSink.put_requested_filename(nil)
       OrcaHub.MCP.Tools.call(name, args, state)

@@ -1,8 +1,18 @@
 defmodule OrcaHub.MCP.CodeExec.DispatcherTest do
-  use ExUnit.Case, async: true
+  # async: false — the playwright-upload composition test below drives the
+  # real (singleton, DB-backed) OrcaHub.MCP.UpstreamClient GenServer so
+  # `Dispatcher.dispatch/3` takes its genuine upstream-tool branch; that
+  # mutates process-global state (the UpstreamClient ETS tools cache) that
+  # every other test in the suite reads, so it must never run concurrently
+  # with anything else. `OrcaHub.DataCase` gives every test here its own
+  # rolled-back DB transaction, `shared: true` (implied by `async: false`)
+  # so the UpstreamClient GenServer — a different process — sees it too.
+  use OrcaHub.DataCase, async: false
 
   alias OrcaHub.MCP.CodeExec
   alias OrcaHub.MCP.CodeExec.{Dispatcher, MediaSink}
+  alias OrcaHub.MCP.UpstreamClient
+  alias OrcaHub.UpstreamServers
 
   setup do
     session_id = "dispatcher-media-#{System.unique_integer([:positive])}"
@@ -307,6 +317,34 @@ defmodule OrcaHub.MCP.CodeExec.DispatcherTest do
       assert Path.basename(path) == "shot.png"
       assert File.read!(path) == png
       assert path =~ session_id
+    end
+  end
+
+  describe "dispatch/3 playwright upload interception" do
+    test "an oversize local file in `paths` short-circuits to an error envelope without reaching upstream",
+         %{session_id: session_id} do
+      dir = Path.join(System.tmp_dir!(), "dispatcher_upload_test_#{session_id}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      oversize_path = Path.join(dir, "big.bin")
+      File.write!(oversize_path, :binary.copy(<<0>>, 32 * 1024 * 1024 + 1))
+
+      # No upstream connection is configured in this test env, so a call that
+      # actually reached `UpstreamClient.call_tool/3` would raise/fail loudly
+      # rather than silently succeed — good enough to prove we never get there.
+      result =
+        Dispatcher.dispatch(
+          "playwright__browser_file_upload",
+          %{"paths" => [oversize_path]},
+          %{orca_session_id: session_id}
+        )
+
+      assert %{"isError" => true, "content" => [%{"type" => "text", "text" => message}]} =
+               result
+
+      assert message =~ oversize_path
+      assert message =~ "32MB"
     end
   end
 

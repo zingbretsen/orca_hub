@@ -231,8 +231,9 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
   # of exactly "", ".", or ".." sanitizes to itself — and unlike a slash-laden
   # id, that's a single path *component* the filesystem interprets specially
   # (Path.join(root, "..") climbs OUT of root). Catch those exact values here.
-  defp safe_dir_segment(seg) when seg in ["", ".", ".."], do: "shared"
-  defp safe_dir_segment(seg), do: seg
+  @doc "Catch a sanitized dir segment of exactly \"\", \".\", or \"..\" and fall back to \"shared\"."
+  def safe_dir_segment(seg) when seg in ["", ".", ".."], do: "shared"
+  def safe_dir_segment(seg), do: seg
 
   defp process_block(%{"type" => "text"} = block, ctx), do: {:text, block["text"], ctx}
 
@@ -327,10 +328,11 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
     path
   end
 
-  defp sanitize_for_filename(name) when is_binary(name),
+  @doc "Replace any character outside `[a-zA-Z0-9_.-]` with `_`; non-binary input becomes \"tool\"."
+  def sanitize_for_filename(name) when is_binary(name),
     do: String.replace(name, ~r/[^a-zA-Z0-9_.-]/, "_")
 
-  defp sanitize_for_filename(_name), do: "tool"
+  def sanitize_for_filename(_name), do: "tool"
 
   defp ext_for_mime(mime) when is_binary(mime), do: Map.get(@mime_ext, mime, fallback_ext(mime))
   defp ext_for_mime(_mime), do: "bin"
