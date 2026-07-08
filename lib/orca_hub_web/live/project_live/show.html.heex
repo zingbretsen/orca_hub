@@ -1,3 +1,8 @@
+<div :if={@node_unavailable} class="alert alert-warning mb-2">
+  <.icon name="hero-signal-slash" class="size-5" />
+  <span>{@node_unavailable_message} Git/file actions are disabled until it reconnects.</span>
+</div>
+
 <.header>
   <.link navigate={~p"/projects"} class="text-sm opacity-70">&larr; Projects</.link>
   <span class="ml-2">{@project.name}</span>
@@ -716,5 +721,342 @@
         Select a file to view its contents.
       </div>
     </div>
+  </div>
+</div>
+
+<%!-- Agent Memory: what Claude Code / Codex / pi have accumulated for this project --%>
+<div class="mt-8" id="agent-memory-section">
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">Agent Memory</h3>
+  </div>
+
+  <div
+    :if={@node_unavailable}
+    id="agent-memory-node-unavailable"
+    class="text-sm text-base-content/50 p-4 text-center bg-base-200 rounded-lg"
+  >
+    {@node_unavailable_message} Agent memory review is disabled until it reconnects.
+  </div>
+
+  <div :if={!@node_unavailable} class="space-y-8">
+    <%!-- Claude Code --%>
+    <div id="agent-memory-claude">
+      <div class="flex items-center justify-between mb-2">
+        <h4 class="font-semibold text-sm">Claude Code</h4>
+        <button
+          :if={match?({:ok, _}, @agent_memory.claude)}
+          id="claude-index-toggle"
+          phx-click="edit_claude_index"
+          class="btn btn-xs btn-ghost"
+        >
+          View/Edit MEMORY.md
+        </button>
+      </div>
+
+      <div
+        :if={@agent_memory.claude == {:error, :no_memory_dir}}
+        class="text-sm text-base-content/50 p-3 text-center bg-base-200 rounded-lg"
+      >
+        No Claude Code memory directory found on this node.
+      </div>
+
+      <div :if={match?({:ok, _}, @agent_memory.claude)}>
+        <% %{memories: memories, orphaned: orphaned, dangling: dangling} =
+          elem(@agent_memory.claude, 1) %>
+
+        <div
+          :if={@claude_editing_index}
+          id="claude-index-editor-card"
+          class="card bg-base-200 p-4 mb-3"
+        >
+          <h5 class="font-semibold mb-2 text-sm">MEMORY.md (raw)</h5>
+          <form phx-submit="save_claude_index" class="space-y-2">
+            <textarea
+              name="content"
+              id="claude-index-editor"
+              class="textarea textarea-bordered w-full font-mono text-sm"
+              rows="10"
+            >{@claude_index_edit_content}</textarea>
+            <div class="flex justify-end gap-2">
+              <button type="button" phx-click="cancel_edit_claude_index" class="btn btn-xs">
+                Cancel
+              </button>
+              <button type="submit" class="btn btn-xs btn-primary">Save</button>
+            </div>
+          </form>
+        </div>
+
+        <div :if={dangling != []} class="text-xs text-warning bg-base-200 rounded p-2 mb-2">
+          <.icon name="hero-exclamation-triangle-micro" class="size-4 align-text-bottom" />
+          MEMORY.md links to missing files: {Enum.join(dangling, ", ")}
+        </div>
+        <div :if={orphaned != []} class="text-xs text-warning bg-base-200 rounded p-2 mb-2">
+          <.icon name="hero-exclamation-triangle-micro" class="size-4 align-text-bottom" />
+          Files not linked from MEMORY.md: {Enum.join(orphaned, ", ")}
+        </div>
+
+        <div
+          :if={memories == []}
+          class="text-sm text-base-content/50 p-3 text-center bg-base-200 rounded-lg"
+        >
+          No Claude Code memories yet.
+        </div>
+
+        <div
+          :if={memories != []}
+          id="claude-memories-list"
+          class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
+        >
+          <div
+            :for={memory <- memories}
+            id={"claude-memory-#{memory.filename}"}
+            class="px-4 py-3 text-sm"
+          >
+            <div class="flex items-center gap-3">
+              <div
+                class="flex-1 min-w-0 cursor-pointer"
+                phx-click="toggle_claude_memory"
+                phx-value-filename={memory.filename}
+              >
+                <div class="flex items-center gap-2">
+                  <span class="font-medium">{memory.name}</span>
+                  <span :if={memory.type} class="badge badge-xs badge-neutral">
+                    {memory.type}
+                  </span>
+                  <span class="text-base-content/40 text-xs font-mono">{memory.filename}</span>
+                  <span :if={memory.filename in orphaned} class="badge badge-xs badge-warning">
+                    orphaned
+                  </span>
+                </div>
+                <div class="text-base-content/60 text-xs mt-0.5 truncate">
+                  {memory.description}
+                </div>
+              </div>
+              <div class="flex items-center gap-1">
+                <button
+                  id={"claude-memory-edit-#{memory.filename}"}
+                  phx-click="edit_claude_memory"
+                  phx-value-filename={memory.filename}
+                  class="btn btn-xs btn-ghost"
+                  title="Edit"
+                >
+                  <.icon name="hero-pencil-micro" class="size-4" />
+                </button>
+                <button
+                  id={"claude-memory-delete-#{memory.filename}"}
+                  phx-click="delete_claude_memory"
+                  phx-value-filename={memory.filename}
+                  data-confirm={"Delete Claude memory #{memory.filename}?"}
+                  class="btn btn-xs btn-ghost text-error"
+                  title="Delete"
+                >
+                  <.icon name="hero-trash-micro" class="size-4" />
+                </button>
+              </div>
+            </div>
+
+            <div :if={@claude_editing_filename == memory.filename} class="mt-3">
+              <form phx-submit="save_claude_memory" class="space-y-2">
+                <input type="hidden" name="filename" value={memory.filename} />
+                <textarea
+                  name="content"
+                  id={"claude-memory-editor-#{memory.filename}"}
+                  class="textarea textarea-bordered w-full font-mono text-sm"
+                  rows="10"
+                >{@claude_edit_content}</textarea>
+                <div class="flex justify-end gap-2">
+                  <button type="button" phx-click="cancel_edit_claude_memory" class="btn btn-xs">
+                    Cancel
+                  </button>
+                  <button type="submit" class="btn btn-xs btn-primary">Save</button>
+                </div>
+              </form>
+            </div>
+
+            <div
+              :if={
+                @claude_editing_filename != memory.filename &&
+                  MapSet.member?(@claude_expanded, memory.filename)
+              }
+              class="mt-3 bg-base-100 rounded p-3 prose prose-sm max-w-none"
+            >
+              {OrcaHubWeb.Markdown.render_block(memory.content)}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <%!-- Shared AGENTS.md "Project memory" section --%>
+    <div id="agent-memory-agents-md">
+      <h4 class="font-semibold text-sm mb-1">
+        Shared AGENTS.md — Project memory (read by Codex &amp; pi)
+      </h4>
+      <p class="text-xs text-base-content/50 mb-2">
+        Edits modify the checked-in AGENTS.md in the working tree — commit them separately.
+      </p>
+
+      <div
+        :if={@agent_memory.agents_md == :no_file}
+        class="text-sm text-base-content/50 p-3 text-center bg-base-200 rounded-lg"
+      >
+        No AGENTS.md file found in this project.
+      </div>
+      <div
+        :if={@agent_memory.agents_md == :no_section}
+        class="text-sm text-base-content/50 p-3 text-center bg-base-200 rounded-lg"
+      >
+        AGENTS.md exists but has no "## Project memory" section.
+      </div>
+
+      <div :if={match?({:ok, _}, @agent_memory.agents_md)}>
+        <% {:ok, bullets} = @agent_memory.agents_md %>
+
+        <div
+          :if={bullets == []}
+          class="text-sm text-base-content/50 p-3 text-center bg-base-200 rounded-lg"
+        >
+          No project memory bullets yet.
+        </div>
+
+        <div
+          :if={bullets != []}
+          id="agents-md-memories-list"
+          class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
+        >
+          <div
+            :for={bullet <- bullets}
+            id={"agents-md-memory-#{bullet.index}"}
+            class="px-4 py-3 text-sm"
+          >
+            <div :if={@agents_editing_index != bullet.index} class="flex items-center gap-3">
+              <div class="flex-1 min-w-0">{bullet.text}</div>
+              <div class="flex items-center gap-1">
+                <button
+                  id={"agents-md-edit-#{bullet.index}"}
+                  phx-click="edit_agents_memory"
+                  phx-value-index={bullet.index}
+                  class="btn btn-xs btn-ghost"
+                  title="Edit"
+                >
+                  <.icon name="hero-pencil-micro" class="size-4" />
+                </button>
+                <button
+                  id={"agents-md-delete-#{bullet.index}"}
+                  phx-click="delete_agents_memory"
+                  phx-value-index={bullet.index}
+                  data-confirm="Remove this bullet from AGENTS.md?"
+                  class="btn btn-xs btn-ghost text-error"
+                  title="Delete"
+                >
+                  <.icon name="hero-trash-micro" class="size-4" />
+                </button>
+              </div>
+            </div>
+
+            <form
+              :if={@agents_editing_index == bullet.index}
+              phx-submit="save_agents_memory"
+              class="space-y-2"
+            >
+              <input type="hidden" name="index" value={bullet.index} />
+              <textarea
+                name="text"
+                id={"agents-md-editor-#{bullet.index}"}
+                class="textarea textarea-bordered w-full text-sm"
+                rows="2"
+              >{@agents_edit_text}</textarea>
+              <div class="flex justify-end gap-2">
+                <button type="button" phx-click="cancel_edit_agents_memory" class="btn btn-xs">
+                  Cancel
+                </button>
+                <button type="submit" class="btn btn-xs btn-primary">Save</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <%!-- Codex native memories --%>
+    <div id="agent-memory-codex">
+      <h4 class="font-semibold text-sm mb-2">Codex (native)</h4>
+
+      <div
+        :if={@agent_memory.codex == {:error, :not_enabled}}
+        id="codex-memory-not-enabled"
+        class="text-sm text-base-content/50 p-3 text-center bg-base-200 rounded-lg"
+      >
+        Codex built-in memories not enabled on this node.
+      </div>
+
+      <div :if={match?({:ok, _}, @agent_memory.codex)}>
+        <% {:ok, files} = @agent_memory.codex %>
+
+        <div
+          :if={files == []}
+          class="text-sm text-base-content/50 p-3 text-center bg-base-200 rounded-lg"
+        >
+          No Codex memory files found.
+        </div>
+
+        <div
+          :if={files != []}
+          id="codex-memories-list"
+          class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
+        >
+          <div :for={file <- files} id={"codex-memory-#{file.filename}"} class="px-4 py-3 text-sm">
+            <div :if={@codex_editing_filename != file.filename} class="flex items-center gap-3">
+              <div class="flex-1 min-w-0 font-mono text-xs">{file.filename}</div>
+              <div class="flex items-center gap-1">
+                <button
+                  id={"codex-memory-edit-#{file.filename}"}
+                  phx-click="edit_codex_memory"
+                  phx-value-filename={file.filename}
+                  class="btn btn-xs btn-ghost"
+                  title="Edit"
+                >
+                  <.icon name="hero-pencil-micro" class="size-4" />
+                </button>
+                <button
+                  id={"codex-memory-delete-#{file.filename}"}
+                  phx-click="delete_codex_memory"
+                  phx-value-filename={file.filename}
+                  data-confirm={"Delete Codex memory #{file.filename}?"}
+                  class="btn btn-xs btn-ghost text-error"
+                  title="Delete"
+                >
+                  <.icon name="hero-trash-micro" class="size-4" />
+                </button>
+              </div>
+            </div>
+
+            <form
+              :if={@codex_editing_filename == file.filename}
+              phx-submit="save_codex_memory"
+              class="space-y-2"
+            >
+              <input type="hidden" name="filename" value={file.filename} />
+              <textarea
+                name="content"
+                id={"codex-memory-editor-#{file.filename}"}
+                class="textarea textarea-bordered w-full font-mono text-sm"
+                rows="8"
+              >{@codex_edit_content}</textarea>
+              <div class="flex justify-end gap-2">
+                <button type="button" phx-click="cancel_edit_codex_memory" class="btn btn-xs">
+                  Cancel
+                </button>
+                <button type="submit" class="btn btn-xs btn-primary">Save</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p class="text-xs text-base-content/40">
+      pi has no memory store of its own — it reads AGENTS.md and, via an extension, the Claude memory index above.
+    </p>
   </div>
 </div>

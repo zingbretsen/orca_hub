@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{Cluster, HubRPC, Projects, Triggers}
+  alias OrcaHub.{AgentMemory, Cluster, HubRPC, Projects, Triggers}
   alias OrcaHub.Projects.Project
   alias OrcaHub.Triggers.Trigger
 
@@ -14,12 +14,16 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     {project_node, project} = find_project!(id)
 
-    commits = rpc(project_node, Projects, :git_log, [project])
-    current_branch = rpc(project_node, Projects, :git_branch, [project])
-    worktrees = rpc(project_node, Projects, :git_worktree_list, [project])
-    branches = rpc(project_node, Projects, :git_branches, [project])
+    commits = list_result(rpc(project_node, Projects, :git_log, [project]))
+    current_branch = string_result(rpc(project_node, Projects, :git_branch, [project]))
+    worktrees = list_result(rpc(project_node, Projects, :git_worktree_list, [project]))
+    branches = list_result(rpc(project_node, Projects, :git_branches, [project]))
+
+    node_unavailable = node_unavailable_reason(project_node)
 
     triggers = HubRPC.list_triggers_for_project(project.id)
+
+    agent_memory = load_agent_memory(project_node, project)
 
     {:ok,
      socket
@@ -27,6 +31,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        show_archived_sessions: false,
        project: project,
        project_node: project_node,
+       node_unavailable: node_unavailable,
+       node_unavailable_message:
+         node_unavailable && Cluster.node_unavailable_message(node_unavailable),
        page_title: project.name,
        commits: commits,
        current_branch: current_branch,
@@ -51,7 +58,17 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        edit_form: nil,
        browsing: false,
        browse_path: nil,
-       browse_entries: []
+       browse_entries: [],
+       agent_memory: agent_memory,
+       claude_expanded: MapSet.new(),
+       claude_editing_filename: nil,
+       claude_edit_content: "",
+       claude_editing_index: false,
+       claude_index_edit_content: "",
+       agents_editing_index: nil,
+       agents_edit_text: "",
+       codex_editing_filename: nil,
+       codex_edit_content: ""
      )}
   end
 
@@ -449,8 +466,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     case rpc(target, Projects, :git_pull, [project]) do
       {:ok, output} ->
-        commits = rpc(target, Projects, :git_log, [project])
-        current_branch = rpc(target, Projects, :git_branch, [project])
+        commits = list_result(rpc(target, Projects, :git_log, [project]))
+        current_branch = string_result(rpc(target, Projects, :git_branch, [project]))
 
         {:noreply,
          socket
@@ -458,7 +475,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
          |> put_flash(:info, output)}
 
       {:error, output} ->
-        {:noreply, put_flash(socket, :error, output)}
+        message = Cluster.node_unavailable_message({:error, output}) || output
+        {:noreply, put_flash(socket, :error, message)}
     end
   end
 
@@ -490,8 +508,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
       case rpc(target, Projects, :git_create_worktree, [project, branch, opts]) do
         {:ok, _worktree_path} ->
-          worktrees = rpc(target, Projects, :git_worktree_list, [project])
-          branches = rpc(target, Projects, :git_branches, [project])
+          worktrees = list_result(rpc(target, Projects, :git_worktree_list, [project]))
+          branches = list_result(rpc(target, Projects, :git_branches, [project]))
 
           {:noreply,
            socket
@@ -499,7 +517,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
            |> put_flash(:info, "Worktree created for branch #{branch}")}
 
         {:error, output} ->
-          {:noreply, put_flash(socket, :error, output)}
+          message = Cluster.node_unavailable_message({:error, output}) || output
+          {:noreply, put_flash(socket, :error, message)}
       end
     end
   end
@@ -536,13 +555,17 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     case rpc(target, Projects, :git_rebase_worktree, [project, path]) do
       {:ok, output} ->
-        commits = rpc(target, Projects, :git_log, [project])
+        commits = list_result(rpc(target, Projects, :git_log, [project]))
 
         {:noreply,
          socket |> assign(commits: commits) |> put_flash(:info, "Rebase successful: #{output}")}
 
       {:error, output} ->
-        {:noreply, put_flash(socket, :error, "Rebase failed (auto-aborted): #{output}")}
+        message =
+          Cluster.node_unavailable_message({:error, output}) ||
+            "Rebase failed (auto-aborted): #{output}"
+
+        {:noreply, put_flash(socket, :error, message)}
     end
   end
 
@@ -552,8 +575,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     case rpc(target, Projects, :git_merge_worktree, [project, branch]) do
       {:ok, output} ->
-        commits = rpc(target, Projects, :git_log, [project])
-        current_branch = rpc(target, Projects, :git_branch, [project])
+        commits = list_result(rpc(target, Projects, :git_log, [project]))
+        current_branch = string_result(rpc(target, Projects, :git_branch, [project]))
 
         {:noreply,
          socket
@@ -561,7 +584,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
          |> put_flash(:info, "Merged #{branch}: #{output}")}
 
       {:error, output} ->
-        {:noreply, put_flash(socket, :error, "Merge failed: #{output}")}
+        message = Cluster.node_unavailable_message({:error, output}) || "Merge failed: #{output}"
+        {:noreply, put_flash(socket, :error, message)}
     end
   end
 
@@ -583,11 +607,200 @@ defmodule OrcaHubWeb.ProjectLive.Show do
           [cd: dir, stderr_to_stdout: true]
         ])
 
-        worktrees = rpc(target, Projects, :git_worktree_list, [project])
+        worktrees = list_result(rpc(target, Projects, :git_worktree_list, [project]))
         {:noreply, socket |> assign(worktrees: worktrees) |> put_flash(:info, "Worktree removed")}
+
+      # rpc/5's node-unavailable/unassigned refusal — structurally a 2-tuple
+      # like System.cmd's {output, exit_code}, so it must be matched before
+      # the generic {output, _} clause below (which would otherwise try
+      # String.trim/1 on the bare :error atom and crash).
+      {:error, reason} when reason in [:node_unassigned] ->
+        {:noreply, put_flash(socket, :error, Cluster.node_unavailable_message(reason))}
+
+      {:error, {:node_unavailable, _} = reason} ->
+        {:noreply, put_flash(socket, :error, Cluster.node_unavailable_message(reason))}
 
       {output, _} ->
         {:noreply, put_flash(socket, :error, "Remove failed: #{String.trim(output)}")}
+    end
+  end
+
+  # Agent Memory — Claude Code
+
+  def handle_event("toggle_claude_memory", %{"filename" => filename}, socket) do
+    expanded = socket.assigns.claude_expanded
+
+    expanded =
+      if MapSet.member?(expanded, filename),
+        do: MapSet.delete(expanded, filename),
+        else: MapSet.put(expanded, filename)
+
+    {:noreply, assign(socket, claude_expanded: expanded)}
+  end
+
+  def handle_event("edit_claude_memory", %{"filename" => filename}, socket) do
+    memory = find_claude_memory(socket, filename)
+
+    {:noreply,
+     assign(socket,
+       claude_editing_filename: filename,
+       claude_edit_content: (memory && memory.content) || ""
+     )}
+  end
+
+  def handle_event("cancel_edit_claude_memory", _params, socket) do
+    {:noreply, assign(socket, claude_editing_filename: nil, claude_edit_content: "")}
+  end
+
+  def handle_event("save_claude_memory", %{"filename" => filename, "content" => content}, socket) do
+    project = socket.assigns.project
+    target = socket.assigns.project_node
+
+    case rpc(target, AgentMemory, :save_claude_memory, [project.directory, filename, content]) do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(claude_editing_filename: nil, claude_edit_content: "")
+         |> refresh_claude_memories()
+         |> put_flash(:info, "Saved #{filename}")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to save #{filename}: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("delete_claude_memory", %{"filename" => filename}, socket) do
+    project = socket.assigns.project
+    target = socket.assigns.project_node
+
+    case rpc(target, AgentMemory, :delete_claude_memory, [project.directory, filename]) do
+      :ok ->
+        {:noreply,
+         socket
+         |> refresh_claude_memories()
+         |> put_flash(:info, "Deleted #{filename}")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to delete #{filename}: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("edit_claude_index", _params, socket) do
+    content =
+      case socket.assigns.agent_memory.claude do
+        {:ok, %{index: index}} -> index
+        _ -> ""
+      end
+
+    {:noreply, assign(socket, claude_editing_index: true, claude_index_edit_content: content)}
+  end
+
+  def handle_event("cancel_edit_claude_index", _params, socket) do
+    {:noreply, assign(socket, claude_editing_index: false, claude_index_edit_content: "")}
+  end
+
+  def handle_event("save_claude_index", %{"content" => content}, socket) do
+    project = socket.assigns.project
+    target = socket.assigns.project_node
+
+    case rpc(target, AgentMemory, :save_claude_index, [project.directory, content]) do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(claude_editing_index: false, claude_index_edit_content: "")
+         |> refresh_claude_memories()
+         |> put_flash(:info, "Saved MEMORY.md")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to save MEMORY.md: #{inspect(reason)}")}
+    end
+  end
+
+  # Agent Memory — AGENTS.md "Project memory" (shared by Codex & pi)
+
+  def handle_event("edit_agents_memory", %{"index" => index_str}, socket) do
+    index = String.to_integer(index_str)
+    text = find_agents_bullet_text(socket, index)
+    {:noreply, assign(socket, agents_editing_index: index, agents_edit_text: text || "")}
+  end
+
+  def handle_event("cancel_edit_agents_memory", _params, socket) do
+    {:noreply, assign(socket, agents_editing_index: nil, agents_edit_text: "")}
+  end
+
+  def handle_event("save_agents_memory", %{"index" => index_str, "text" => text}, socket) do
+    index = String.to_integer(index_str)
+    project = socket.assigns.project
+    target = socket.assigns.project_node
+
+    case rpc(target, AgentMemory, :update_agents_md_memory, [project.directory, index, text]) do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(agents_editing_index: nil, agents_edit_text: "")
+         |> refresh_agents_md()
+         |> put_flash(:info, "Updated AGENTS.md")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to update AGENTS.md: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("delete_agents_memory", %{"index" => index_str}, socket) do
+    index = String.to_integer(index_str)
+    project = socket.assigns.project
+    target = socket.assigns.project_node
+
+    case rpc(target, AgentMemory, :delete_agents_md_memory, [project.directory, index]) do
+      :ok ->
+        {:noreply,
+         socket
+         |> refresh_agents_md()
+         |> put_flash(:info, "Removed from AGENTS.md")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to update AGENTS.md: #{inspect(reason)}")}
+    end
+  end
+
+  # Agent Memory — Codex (native)
+
+  def handle_event("edit_codex_memory", %{"filename" => filename}, socket) do
+    content = find_codex_memory_content(socket, filename)
+
+    {:noreply,
+     assign(socket, codex_editing_filename: filename, codex_edit_content: content || "")}
+  end
+
+  def handle_event("cancel_edit_codex_memory", _params, socket) do
+    {:noreply, assign(socket, codex_editing_filename: nil, codex_edit_content: "")}
+  end
+
+  def handle_event("save_codex_memory", %{"filename" => filename, "content" => content}, socket) do
+    target = socket.assigns.project_node
+
+    case rpc(target, AgentMemory, :save_codex_memory, [filename, content]) do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(codex_editing_filename: nil, codex_edit_content: "")
+         |> refresh_codex()
+         |> put_flash(:info, "Saved #{filename}")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to save #{filename}: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("delete_codex_memory", %{"filename" => filename}, socket) do
+    target = socket.assigns.project_node
+
+    case rpc(target, AgentMemory, :delete_codex_memory, [filename]) do
+      :ok ->
+        {:noreply, socket |> refresh_codex() |> put_flash(:info, "Deleted #{filename}")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to delete #{filename}: #{inspect(reason)}")}
     end
   end
 
@@ -632,6 +845,102 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   defp rpc(target, mod, fun, args), do: Cluster.rpc(target, mod, fun, args)
+
+  defp node_unavailable_reason(n) do
+    unless Cluster.node_available?(n), do: {:node_unavailable, n}
+  end
+
+  # rpc/5 returns {:error, :node_unassigned | {:node_unavailable, _}} instead
+  # of a list when the project's node is offline — fall back to an empty list
+  # rather than propagating the error tuple into a template :for.
+  defp list_result(result) do
+    case result do
+      list when is_list(list) -> list
+      _ -> []
+    end
+  end
+
+  defp string_result(result) do
+    case result do
+      s when is_binary(s) -> s
+      _ -> nil
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # Agent Memory
+  # -------------------------------------------------------------------
+
+  defp load_agent_memory(project_node, project) do
+    %{
+      claude:
+        agent_memory_result(
+          rpc(project_node, AgentMemory, :list_claude_memories, [project.directory])
+        ),
+      agents_md:
+        agent_memory_result(
+          rpc(project_node, AgentMemory, :list_agents_md_memories, [project.directory])
+        ),
+      codex: agent_memory_result(rpc(project_node, AgentMemory, :list_codex_memories, []))
+    }
+  end
+
+  # rpc/5's node-unassigned/node-unavailable error tuples get normalized to
+  # a single {:error, :node_unavailable} shape here, distinct from the
+  # AgentMemory module's own {:error, :no_memory_dir | :not_enabled} /
+  # :no_file / :no_section results — the template branches on these to
+  # decide between "disabled, node offline" vs. "this store legitimately
+  # doesn't exist here" messaging.
+  defp agent_memory_result({:error, :node_unassigned}), do: {:error, :node_unavailable}
+  defp agent_memory_result({:error, {:node_unavailable, _}}), do: {:error, :node_unavailable}
+  defp agent_memory_result(other), do: other
+
+  defp find_claude_memory(socket, filename) do
+    case socket.assigns.agent_memory.claude do
+      {:ok, %{memories: memories}} -> Enum.find(memories, &(&1.filename == filename))
+      _ -> nil
+    end
+  end
+
+  defp find_agents_bullet_text(socket, index) do
+    case socket.assigns.agent_memory.agents_md do
+      {:ok, bullets} -> Enum.find_value(bullets, fn b -> if b.index == index, do: b.text end)
+      _ -> nil
+    end
+  end
+
+  defp find_codex_memory_content(socket, filename) do
+    case socket.assigns.agent_memory.codex do
+      {:ok, files} -> Enum.find_value(files, fn f -> if f.filename == filename, do: f.content end)
+      _ -> nil
+    end
+  end
+
+  defp refresh_claude_memories(socket) do
+    project = socket.assigns.project
+    target = socket.assigns.project_node
+
+    claude =
+      agent_memory_result(rpc(target, AgentMemory, :list_claude_memories, [project.directory]))
+
+    update(socket, :agent_memory, &Map.put(&1, :claude, claude))
+  end
+
+  defp refresh_agents_md(socket) do
+    project = socket.assigns.project
+    target = socket.assigns.project_node
+
+    agents_md =
+      agent_memory_result(rpc(target, AgentMemory, :list_agents_md_memories, [project.directory]))
+
+    update(socket, :agent_memory, &Map.put(&1, :agents_md, agents_md))
+  end
+
+  defp refresh_codex(socket) do
+    target = socket.assigns.project_node
+    codex = agent_memory_result(rpc(target, AgentMemory, :list_codex_memories, []))
+    update(socket, :agent_memory, &Map.put(&1, :codex, codex))
+  end
 
   defp browse_to(socket, path) do
     target = socket.assigns.project_node
