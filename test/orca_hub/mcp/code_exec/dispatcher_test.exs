@@ -2,7 +2,7 @@ defmodule OrcaHub.MCP.CodeExec.DispatcherTest do
   use ExUnit.Case, async: true
 
   alias OrcaHub.MCP.CodeExec
-  alias OrcaHub.MCP.CodeExec.Dispatcher
+  alias OrcaHub.MCP.CodeExec.{Dispatcher, MediaSink}
 
   setup do
     session_id = "dispatcher-media-#{System.unique_integer([:positive])}"
@@ -128,5 +128,59 @@ defmodule OrcaHub.MCP.CodeExec.DispatcherTest do
       assert File.read!(path) == png
       assert path =~ session_id
     end
+  end
+
+  describe "extract_screenshot_filename/2" do
+    test "strips filename from an upstream browser_take_screenshot call" do
+      assert Dispatcher.extract_screenshot_filename(
+               "playwright__browser_take_screenshot",
+               %{"filename" => "shot.png", "raw" => true}
+             ) == {%{"raw" => true}, "shot.png"}
+    end
+
+    test "leaves args untouched when there's no filename arg" do
+      assert Dispatcher.extract_screenshot_filename(
+               "playwright__browser_take_screenshot",
+               %{"raw" => true}
+             ) == {%{"raw" => true}, nil}
+    end
+
+    test "leaves args untouched for a tool that isn't a screenshot call" do
+      args = %{"filename" => "shot.png"}
+
+      assert Dispatcher.extract_screenshot_filename("playwright__browser_navigate", args) ==
+               {args, nil}
+    end
+
+    test "ignores a non-string filename value" do
+      args = %{"filename" => 123}
+
+      assert Dispatcher.extract_screenshot_filename(
+               "playwright__browser_take_screenshot",
+               args
+             ) == {args, nil}
+    end
+  end
+
+  describe "dispatch/3 clears any pending requested filename for non-upstream tools" do
+    test "so a stale screenshot filename can't leak into an unrelated tool's saved media", %{
+      session_id: session_id
+    } do
+      MediaSink.put_requested_filename("stale-name")
+
+      # "unknown_first_party_tool" isn't a real tool, but Tools.call/3 handles
+      # that gracefully (an error envelope) — good enough to exercise the
+      # non-upstream branch of dispatch/3 without any live upstream server.
+      Dispatcher.dispatch("unknown_first_party_tool", %{}, %{orca_session_id: session_id})
+
+      content = [%{"type" => "image", "data" => Base.encode64("x"), "mimeType" => "image/png"}]
+      assert {[note], true} = MediaSink.render(content, "some_tool")
+      assert Path.basename(path_from_note(note)) =~ ~r/^some_tool-\d+-1\.png$/
+    end
+  end
+
+  defp path_from_note(note) do
+    [path] = Regex.run(~r{saved to (\S+) —}, note, capture: :all_but_first)
+    path
   end
 end

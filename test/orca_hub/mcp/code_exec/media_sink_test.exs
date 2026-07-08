@@ -1,8 +1,14 @@
 defmodule OrcaHub.MCP.CodeExec.MediaSinkTest do
-  use ExUnit.Case, async: true
+  # async: false — some tests below create a real `Sessions` row (DB-backed
+  # project-directory resolution), which needs the shared sandbox; run
+  # alongside `use ExUnit.Case, async: true` throughout so the existing
+  # tmp-fallback tests (which use a synthetic, non-DB session id) keep their
+  # original behavior.
+  use OrcaHub.DataCase, async: false
 
   alias OrcaHub.MCP.CodeExec
   alias OrcaHub.MCP.CodeExec.MediaSink
+  alias OrcaHub.Sessions
 
   defp unique_session, do: "media-sink-#{System.unique_integer([:positive])}"
 
@@ -12,6 +18,14 @@ defmodule OrcaHub.MCP.CodeExec.MediaSinkTest do
     on_exit(fn ->
       File.rm_rf!(Path.join([System.tmp_dir!(), "orca_hub", "tool_media", session_id]))
     end)
+  end
+
+  defp put_real_session(directory) do
+    {:ok, session} =
+      Sessions.create_session(%{directory: directory, backend: "claude", code_exec: true})
+
+    CodeExec.put_state(%{orca_session_id: session.id})
+    session
   end
 
   defp path_from_note(note) do
@@ -200,6 +214,137 @@ defmodule OrcaHub.MCP.CodeExec.MediaSinkTest do
 
       assert saved == 8
       assert skipped == 1
+    end
+  end
+
+  describe "render/2 with a real session's project directory" do
+    setup do
+      dir =
+        Path.join(System.tmp_dir!(), "media_sink_project_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      %{dir: dir}
+    end
+
+    test "an image is written under <directory>/.agents/media/<session_id> instead of tmp", %{
+      dir: dir
+    } do
+      session = put_real_session(dir)
+      bytes = "real png bytes"
+
+      content = [%{"type" => "image", "data" => Base.encode64(bytes), "mimeType" => "image/png"}]
+      assert {[note], true} = MediaSink.render(content, "browser_take_screenshot")
+
+      path = path_from_note(note)
+
+      assert Path.dirname(path) == Path.join([dir, ".agents", "media", session.id])
+      assert File.read!(path) == bytes
+    end
+
+    test "falls back to the tmp dir when the session's directory doesn't exist on this host" do
+      session = put_real_session("/no/such/directory/#{System.unique_integer([:positive])}")
+
+      on_exit(fn ->
+        File.rm_rf!(Path.join([System.tmp_dir!(), "orca_hub", "tool_media", session.id]))
+      end)
+
+      bytes = "fallback bytes"
+      content = [%{"type" => "image", "data" => Base.encode64(bytes), "mimeType" => "image/png"}]
+      assert {[note], true} = MediaSink.render(content, "some_tool")
+
+      path = path_from_note(note)
+
+      assert Path.dirname(path) ==
+               Path.join([System.tmp_dir!(), "orca_hub", "tool_media", session.id])
+
+      assert File.read!(path) == bytes
+    end
+
+    test "falls back to the tmp dir when the session lookup fails (unknown id)" do
+      unknown_id = Ecto.UUID.generate()
+      put_session(unknown_id)
+
+      bytes = "unknown session bytes"
+      content = [%{"type" => "image", "data" => Base.encode64(bytes), "mimeType" => "image/png"}]
+      assert {[note], true} = MediaSink.render(content, "some_tool")
+
+      path = path_from_note(note)
+
+      assert Path.dirname(path) ==
+               Path.join([System.tmp_dir!(), "orca_hub", "tool_media", unknown_id])
+
+      assert File.read!(path) == bytes
+    end
+  end
+
+  describe "render/2 with a requested filename (screenshot passthrough)" do
+    test "the first media block uses the requested filename, with the mime extension appended" do
+      session_id = unique_session()
+      put_session(session_id)
+      MediaSink.put_requested_filename("shot")
+
+      bytes = "screenshot bytes"
+      content = [%{"type" => "image", "data" => Base.encode64(bytes), "mimeType" => "image/png"}]
+      assert {[note], true} = MediaSink.render(content, "browser_take_screenshot")
+
+      path = path_from_note(note)
+      assert Path.basename(path) == "shot.png"
+      assert File.read!(path) == bytes
+    end
+
+    test "a requested filename that already has the right extension is not doubled up" do
+      session_id = unique_session()
+      put_session(session_id)
+      MediaSink.put_requested_filename("shot.png")
+
+      content = [%{"type" => "image", "data" => Base.encode64("x"), "mimeType" => "image/png"}]
+      assert {[note], true} = MediaSink.render(content, "browser_take_screenshot")
+
+      assert Path.basename(path_from_note(note)) == "shot.png"
+    end
+
+    test "an unsafe requested filename is sanitized before use" do
+      session_id = unique_session()
+      put_session(session_id)
+      MediaSink.put_requested_filename("../../etc/shot")
+
+      content = [%{"type" => "image", "data" => Base.encode64("x"), "mimeType" => "image/png"}]
+      assert {[note], true} = MediaSink.render(content, "browser_take_screenshot")
+
+      path = path_from_note(note)
+      assert Path.basename(path) == ".._.._etc_shot.png"
+
+      assert Path.dirname(path) ==
+               Path.join([System.tmp_dir!(), "orca_hub", "tool_media", session_id])
+    end
+
+    test "only the first media block gets the requested filename; later blocks use default naming" do
+      session_id = unique_session()
+      put_session(session_id)
+      MediaSink.put_requested_filename("shot")
+
+      content = [
+        %{"type" => "image", "data" => Base.encode64("a"), "mimeType" => "image/png"},
+        %{"type" => "image", "data" => Base.encode64("b"), "mimeType" => "image/png"}
+      ]
+
+      assert {[note1, note2], true} = MediaSink.render(content, "browser_take_screenshot")
+
+      assert Path.basename(path_from_note(note1)) == "shot.png"
+      assert Path.basename(path_from_note(note2)) =~ ~r/^browser_take_screenshot-\d+-2\.png$/
+    end
+
+    test "a requested filename does not leak into the next render/2 call" do
+      session_id = unique_session()
+      put_session(session_id)
+      MediaSink.put_requested_filename("shot")
+
+      content = [%{"type" => "image", "data" => Base.encode64("a"), "mimeType" => "image/png"}]
+      MediaSink.render(content, "browser_take_screenshot")
+
+      assert {[note], true} = MediaSink.render(content, "other_tool")
+      assert Path.basename(path_from_note(note)) =~ ~r/^other_tool-\d+-1\.png$/
     end
   end
 end

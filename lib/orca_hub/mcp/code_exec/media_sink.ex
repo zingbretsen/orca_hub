@@ -4,21 +4,26 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
   snippets actually see, writing any binary media to disk instead of dropping
   it or inlining base64.
 
-  The Claude CLI always talks to `http://localhost:<port>/mcp` (see
-  `OrcaHub.Backend.McpUrl`), so the dispatcher always runs on the same host as
-  the session's own CLI — a file written here is directly readable by the
-  agent's `Read` tool (which renders images inline), no extra transport needed.
+  Media is written under the session's own project directory —
+  `<session_directory>/.agents/media/<sanitized_orca_session_id>/` — so a
+  human can actually find the file: the app process's own `$TMPDIR` is not a
+  reliable place to look (the local systemd service runs with
+  `PrivateTmp=yes`, and each k3s pod has its own ephemeral `/tmp`), and the
+  project directory is a filesystem location the model's `Read` tool can
+  already reach. When the session's directory can't be resolved (no
+  `orca_session_id`, session lookup fails, or the session has no directory /
+  the directory doesn't exist on this host), this falls back to the previous
+  `$TMPDIR/orca_hub/tool_media/<segment>/` location.
 
   Content blocks:
 
     * `text` → passed through verbatim.
-    * `image` / `audio` → base64-decoded and written to
-      `$TMPDIR/orca_hub/tool_media/<sanitized_orca_session_id>/<tool>-<ms>-<idx>.<ext>`,
-      replaced with a `[<type> saved to <path> — view it with the Read tool]`
-      line. The session id comes from the `/mcp` URL query string, so it's run
-      through the same filename sanitizer as the tool name before being used
-      as a path segment — a path-traversal-shaped id (`../../foo`) can't
-      escape the `tool_media` root.
+    * `image` / `audio` → base64-decoded and written to disk, replaced with a
+      `[<type> saved to <path> — view it with the Read tool]` line. The
+      session id comes from the `/mcp` URL query string, so it's run through
+      the same filename sanitizer as the tool name before being used as a
+      path segment — a path-traversal-shaped id (`../../foo`) can't escape
+      the media root.
     * `resource` (embedded resource) → its `text` is passed through like a
       text block; its `blob` (base64) is written to disk like an image/audio
       block.
@@ -34,12 +39,21 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
   Safety caps (`@max_media_blocks` writes, `@max_media_bytes` decoded bytes
   per call) protect the sandbox host's disk — blocks over cap render as
   `[skipped <type>: over media cap]` instead of writing.
+
+  The code-exec dispatcher (`Dispatcher.dispatch/3`) strips the `filename` arg
+  off `browser_take_screenshot` calls before forwarding upstream (playwright-mcp
+  writes the file inside its own pod when `filename` is set, returning only a
+  text block — unreachable from here) and stashes the requested name via
+  `put_requested_filename/1` so the first media block of the *next* `render/2`
+  call is saved under that name instead of the default `<tool>-<ms>-<idx>`
+  pattern.
   """
 
   alias OrcaHub.MCP.CodeExec
 
   @max_media_blocks 8
   @max_media_bytes 20 * 1024 * 1024
+  @filename_key {__MODULE__, :requested_filename}
 
   @mime_ext %{
     "image/png" => "png",
@@ -76,7 +90,8 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
       bytes: 0,
       tool_name: tool_name,
       ts_ms: System.system_time(:millisecond),
-      session_dir: session_dir()
+      media_root: media_root(),
+      requested_filename: take_requested_filename()
     }
 
     {parts, has_notes?, _ctx} =
@@ -91,12 +106,59 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
     {Enum.reverse(parts), has_notes?}
   end
 
-  defp session_dir do
+  @doc """
+  Stash a caller-requested filename for the first media block written by the
+  *next* `render/2` call — used by the code-exec dispatcher to carry
+  `browser_take_screenshot`'s `filename` arg through after stripping it from
+  the upstream call. Pass `nil` to clear any pending request.
+  """
+  def put_requested_filename(filename) when is_binary(filename) or is_nil(filename) do
+    if filename, do: Process.put(@filename_key, filename), else: Process.delete(@filename_key)
+  end
+
+  defp take_requested_filename do
+    filename = Process.get(@filename_key)
+    Process.delete(@filename_key)
+    filename
+  end
+
+  defp media_root do
     case CodeExec.get_state() do
-      %{orca_session_id: id} when is_binary(id) -> safe_dir_segment(sanitize_for_filename(id))
-      _ -> "shared"
+      %{orca_session_id: id} when is_binary(id) ->
+        segment = safe_dir_segment(sanitize_for_filename(id))
+
+        case project_media_dir(id) do
+          {:ok, directory} -> Path.join([directory, ".agents", "media", segment])
+          :error -> tmp_media_root(segment)
+        end
+
+      _ ->
+        tmp_media_root("shared")
     end
   end
+
+  defp project_media_dir(id) do
+    case fetch_session(id) do
+      %{directory: directory} when is_binary(directory) ->
+        if File.dir?(directory), do: {:ok, directory}, else: :error
+
+      _ ->
+        :error
+    end
+  end
+
+  # A hub-unreachable erpc failure (agent mode) must never surface as a crash
+  # here — it just means "fall back to the tmp dir", same as a nil session.
+  defp fetch_session(id) do
+    OrcaHub.HubRPC.get_session(id)
+  rescue
+    _ -> nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp tmp_media_root(segment),
+    do: Path.join([System.tmp_dir!(), "orca_hub", "tool_media", segment])
 
   # sanitize_for_filename/1 keeps "." (it's a legal filename char), so an id
   # of exactly "", ".", or ".." sanitizes to itself — and unlike a slash-laden
@@ -158,10 +220,30 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
       {:note, "[skipped #{kind}: over media cap]", ctx}
     else
       idx = ctx.count + 1
-      path = save_media_file(bytes, mime, ctx.tool_name, ctx.ts_ms, idx, ctx.session_dir)
+      {filename, ctx} = filename_for(ctx, mime, idx)
+      path = save_media_file(bytes, filename, ctx.media_root)
       note = "[#{kind} saved to #{path} — view it with the Read tool]"
       {:media, note, %{ctx | count: idx, bytes: ctx.bytes + byte_size(bytes)}}
     end
+  end
+
+  # Only the very first media block of a call may honor a requested filename
+  # (e.g. `browser_take_screenshot`'s stripped `filename` arg) — clearing it
+  # from ctx afterward means any further blocks fall back to default naming.
+  defp filename_for(%{count: 0, requested_filename: name} = ctx, mime, _idx)
+       when is_binary(name) do
+    sanitized = sanitize_for_filename(name)
+    ext = ext_for_mime(mime)
+
+    filename =
+      if String.ends_with?(sanitized, ".#{ext}"), do: sanitized, else: "#{sanitized}.#{ext}"
+
+    {filename, %{ctx | requested_filename: nil}}
+  end
+
+  defp filename_for(ctx, mime, idx) do
+    filename = "#{sanitize_for_filename(ctx.tool_name)}-#{ctx.ts_ms}-#{idx}.#{ext_for_mime(mime)}"
+    {filename, ctx}
   end
 
   defp decode_base64(data) do
@@ -171,11 +253,9 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
     end
   end
 
-  defp save_media_file(bytes, mime, tool_name, ts_ms, idx, session_dir) do
-    filename = "#{sanitize_for_filename(tool_name)}-#{ts_ms}-#{idx}.#{ext_for_mime(mime)}"
-    dir = Path.join([System.tmp_dir!(), "orca_hub", "tool_media", session_dir])
-    File.mkdir_p!(dir)
-    path = Path.join(dir, filename)
+  defp save_media_file(bytes, filename, media_root) do
+    File.mkdir_p!(media_root)
+    path = Path.join(media_root, filename)
     File.write!(path, bytes)
     path
   end

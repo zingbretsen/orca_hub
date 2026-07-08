@@ -55,12 +55,39 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
 
   `state` is the same `%{orca_session_id: ..., orchestrator: ...}` map the live
   MCP server threads into `OrcaHub.MCP.Tools.call/3`.
+
+  When `name` is an upstream `browser_take_screenshot` call with a `filename`
+  arg, the arg is stripped before forwarding upstream — playwright-mcp writes
+  the file inside its own pod when `filename` is set and returns only a text
+  block, unreachable from here (verified empirically: omit `filename` and it
+  also returns an `image/png` content block instead). The requested name is
+  stashed via `MediaSink.put_requested_filename/1` so `unwrap!/2`'s call to
+  `MediaSink.render/2` saves the screenshot locally under that name. This is
+  reset (to `nil` when not applicable) on every dispatch call, so it can never
+  leak into an unrelated tool's result.
   """
   def dispatch(name, args, state) when is_binary(name) and is_map(args) do
     if UpstreamClient.upstream_tool?(name) do
+      {args, filename} = extract_screenshot_filename(name, args)
+      MediaSink.put_requested_filename(filename)
       UpstreamClient.call_tool(name, args, orca_session_id: state[:orca_session_id])
     else
+      MediaSink.put_requested_filename(nil)
       OrcaHub.MCP.Tools.call(name, args, state)
+    end
+  end
+
+  @doc """
+  If `name` is an upstream `browser_take_screenshot` call carrying a `filename`
+  arg, strip it and return it alongside the remaining args; otherwise return
+  `args` unchanged with a `nil` filename. Exposed (rather than private) so its
+  logic is directly unit-testable without a live upstream connection.
+  """
+  def extract_screenshot_filename(name, args) do
+    if String.ends_with?(name, "browser_take_screenshot") and is_binary(args["filename"]) do
+      {Map.delete(args, "filename"), args["filename"]}
+    else
+      {args, nil}
     end
   end
 
