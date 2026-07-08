@@ -945,5 +945,22 @@ defmodule OrcaHub.Backend.CodexTest do
       assert prompt =~ "start_session"
       refute prompt =~ "mcp__orca__start_session"
     end
+
+    test "code_exec: true swaps the sibling-sessions guidance to Tools.* inside run_elixir" do
+      c = ctx(%{code_exec: true})
+      prompt = Backend.system_prompt(c)
+
+      assert prompt =~ "Tools.send_message_to_session"
+      assert prompt =~ "NOT a standalone MCP tool in this session"
+      refute prompt =~ "the `send_message_to_session` orca MCP tool"
+    end
+
+    test "orchestrator + code_exec: true points at Tools.search_sessions inside run_elixir" do
+      c = ctx(%{orchestrator: true, code_exec: true})
+      prompt = Backend.system_prompt(c)
+
+      assert prompt =~ "Tools.search_sessions"
+      refute prompt =~ "the `search_sessions` orca MCP tool"
+    end
   end
 end

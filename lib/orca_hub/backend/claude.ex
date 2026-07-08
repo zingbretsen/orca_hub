@@ -200,16 +200,16 @@ defmodule OrcaHub.Backend.Claude do
 
   @impl true
   def system_prompt(ctx) do
+    code_exec = OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
+
     parts =
       [
         "Your OrcaHub session ID is #{ctx.session_id}.",
         SharedPrompts.orchestrator_prompt(ctx.orchestrator, ctx.session_id),
-        SharedPrompts.code_exec_prompt(
-          OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
-        ),
+        SharedPrompts.code_exec_prompt(code_exec),
         if(!ctx.orchestrator, do: SharedPrompts.commit_trailer_prompt(ctx.session_id)),
         if(!ctx.orchestrator, do: ask_user_question_prompt()),
-        sibling_sessions_prompt(ctx.orchestrator),
+        sibling_sessions_prompt(ctx.orchestrator, code_exec),
         SharedPrompts.context_files_prompt(ctx.directory)
       ]
       |> Enum.reject(&is_nil/1)
@@ -235,11 +235,22 @@ defmodule OrcaHub.Backend.Claude do
 
   # Orchestrator sessions can use `search_sessions`; regular sessions cannot,
   # so point them at the `.agents/` directory to discover sibling session IDs.
-  defp sibling_sessions_prompt(true) do
+  # In code-exec mode, both tools only exist as `Tools.*` functions callable
+  # from inside `run_elixir` — they are NOT standalone `mcp__orca__*` tools,
+  # so the flat-tool-name guidance above is wrong and must be swapped out.
+  defp sibling_sessions_prompt(true, true) do
+    "Other agent sessions may be active in this directory. Use `Tools.search_sessions(%{\"status\" => ...})` inside the `run_elixir` MCP tool to discover sibling sessions you may want to coordinate with — it is NOT a standalone MCP tool in this session."
+  end
+
+  defp sibling_sessions_prompt(true, _code_exec) do
     "Other agent sessions may be active in this directory. Use the `mcp__orca__search_sessions` MCP tool to discover sibling sessions you may want to coordinate with."
   end
 
-  defp sibling_sessions_prompt(_orchestrator) do
+  defp sibling_sessions_prompt(_orchestrator, true) do
+    "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then send messages with `Tools.send_message_to_session(%{\"session_id\" => ..., \"message\" => ...})` inside the `run_elixir` MCP tool — it is NOT a standalone MCP tool in this session."
+  end
+
+  defp sibling_sessions_prompt(_orchestrator, _code_exec) do
     "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then use the `mcp__orca__send_message_to_session` MCP tool to coordinate with them."
   end
 

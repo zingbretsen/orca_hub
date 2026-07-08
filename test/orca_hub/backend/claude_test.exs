@@ -59,14 +59,16 @@ defmodule OrcaHub.Backend.ClaudeTest do
   # helpers (pre-refactor session_runner.ex ~1246-1418), NOT computed via
   # Backend.Claude.system_prompt/1.
   defp expected_system_prompt(ctx) do
+    code_exec = OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
+
     parts =
       [
         "Your OrcaHub session ID is #{ctx.session_id}.",
         expected_orchestrator_prompt(ctx.orchestrator, ctx.session_id),
-        expected_code_exec_prompt(OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))),
+        expected_code_exec_prompt(code_exec),
         if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
         if(!ctx.orchestrator, do: expected_ask_user_question_prompt()),
-        expected_sibling_sessions_prompt(ctx.orchestrator),
+        expected_sibling_sessions_prompt(ctx.orchestrator, code_exec),
         # context_files_prompt/1: nil for every ctx fixture here (directory
         # never has a `.context` subdir).
         nil
@@ -121,6 +123,12 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - For explicit error handling use `Tools.try_call("name", args)` which \
       returns `{:ok, value} | {:error, reason}`; for the faithful raw MCP \
       envelope use `Tools.call("name", args)`.
+    - **Inter-session coordination tools** (`send_message_to_session`, \
+      `search_sessions`, `start_session`, etc.) are `Tools.*` functions \
+      callable only from inside `run_elixir` in this session — they are NOT \
+      standalone MCP tools. Discover them with orca's own `search_tools` / \
+      `Tools.search`, not the CLI's built-in ToolSearch — that corpus only \
+      covers the CLI's own deferred tools and cannot see these.
     - The value of the last expression (and any stdout) is returned to you. \
       Keep return values slim — filter/project before returning. Pure stdlib is \
       available; OrcaHub internals, File, and System are blocked.
@@ -185,11 +193,19 @@ defmodule OrcaHub.Backend.ClaudeTest do
     |> String.trim()
   end
 
-  defp expected_sibling_sessions_prompt(true) do
+  defp expected_sibling_sessions_prompt(true, true) do
+    "Other agent sessions may be active in this directory. Use `Tools.search_sessions(%{\"status\" => ...})` inside the `run_elixir` MCP tool to discover sibling sessions you may want to coordinate with — it is NOT a standalone MCP tool in this session."
+  end
+
+  defp expected_sibling_sessions_prompt(true, _code_exec) do
     "Other agent sessions may be active in this directory. Use the `mcp__orca__search_sessions` MCP tool to discover sibling sessions you may want to coordinate with."
   end
 
-  defp expected_sibling_sessions_prompt(_orchestrator) do
+  defp expected_sibling_sessions_prompt(_orchestrator, true) do
+    "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then send messages with `Tools.send_message_to_session(%{\"session_id\" => ..., \"message\" => ...})` inside the `run_elixir` MCP tool — it is NOT a standalone MCP tool in this session."
+  end
+
+  defp expected_sibling_sessions_prompt(_orchestrator, _code_exec) do
     "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then use the `mcp__orca__send_message_to_session` MCP tool to coordinate with them."
   end
 
@@ -495,6 +511,27 @@ defmodule OrcaHub.Backend.ClaudeTest do
     test "orchestrator variant" do
       ctx = ctx(%{orchestrator: true})
       assert Backend.system_prompt(ctx) == expected_system_prompt(ctx)
+    end
+
+    test "code_exec: true swaps the sibling-sessions guidance to Tools.* inside run_elixir" do
+      ctx = ctx(%{code_exec: true})
+      prompt = Backend.system_prompt(ctx)
+
+      assert prompt == expected_system_prompt(ctx)
+      assert String.ends_with?(prompt, expected_sibling_sessions_prompt(false, true))
+      refute prompt =~ "mcp__orca__send_message_to_session"
+    end
+
+    # Note: `SharedPrompts.orchestrator_prompt/2` itself still references
+    # `mcp__orca__search_sessions` (out of scope here — a separate audit
+    # covers that fragment) — so this only pins down the trailing
+    # sibling-sessions bullet, not the whole prompt's tool-name vocabulary.
+    test "orchestrator + code_exec: true points at Tools.search_sessions inside run_elixir" do
+      ctx = ctx(%{orchestrator: true, code_exec: true})
+      prompt = Backend.system_prompt(ctx)
+
+      assert prompt == expected_system_prompt(ctx)
+      assert String.ends_with?(prompt, expected_sibling_sessions_prompt(true, true))
     end
   end
 end

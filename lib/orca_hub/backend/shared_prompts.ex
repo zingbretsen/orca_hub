@@ -47,6 +47,12 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - For explicit error handling use `Tools.try_call("name", args)` which \
       returns `{:ok, value} | {:error, reason}`; for the faithful raw MCP \
       envelope use `Tools.call("name", args)`.
+    - **Inter-session coordination tools** (`send_message_to_session`, \
+      `search_sessions`, `start_session`, etc.) are `Tools.*` functions \
+      callable only from inside `run_elixir` in this session — they are NOT \
+      standalone MCP tools. Discover them with orca's own `search_tools` / \
+      `Tools.search`, not the CLI's built-in ToolSearch — that corpus only \
+      covers the CLI's own deferred tools and cannot see these.
     - The value of the last expression (and any stdout) is returned to you. \
       Keep return values slim — filter/project before returning. Pure stdlib is \
       available; OrcaHub internals, File, and System are blocked.
