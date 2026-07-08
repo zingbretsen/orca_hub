@@ -268,6 +268,19 @@ defmodule OrcaHub.Backend.ClaudeTest do
     |> String.trim()
   end
 
+  # Same fragments as expected_system_prompt/1, minus everything that
+  # references an orca MCP tool (orchestrator/code-exec/sibling-session
+  # guidance) — the no-MCP shape (ctx.tools == "", see mcp_enabled?/1).
+  defp expected_system_prompt_no_mcp(ctx) do
+    [
+      "Your OrcaHub session ID is #{ctx.session_id}.",
+      if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
+      if(!ctx.orchestrator, do: expected_ask_user_question_prompt())
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n\n")
+  end
+
   # Transcribed from SessionRunner.mcp_config/1 (pre-refactor). Every ctx
   # fixture uses a fresh unique session_id and project_id: nil, so there are
   # never any project/session-scoped MCP servers — the JSON is always just
@@ -382,6 +395,28 @@ defmodule OrcaHub.Backend.ClaudeTest do
       assert spec.args == expected_args
       assert spec.port_opts == expected_port_opts
     end
+
+    test "tools: \"\" (no_tools API run mode) sets --tools \"\" and omits --mcp-config entirely" do
+      ctx = ctx(%{tools: ""})
+
+      opts =
+        [cwd: ctx.directory, input_format: "stream-json"]
+        |> expected_maybe_put(:system_prompt, expected_system_prompt_no_mcp(ctx))
+        |> Keyword.put(:tools, "")
+
+      {expected_args, expected_port_opts} = Config.build_args(nil, opts)
+
+      spec = Backend.spawn_spec(:streaming, ctx)
+
+      assert spec.args == expected_args
+      assert spec.port_opts == expected_port_opts
+      assert "--tools" in spec.args
+
+      tools_idx = Enum.find_index(spec.args, &(&1 == "--tools"))
+      assert Enum.at(spec.args, tools_idx + 1) == ""
+
+      refute "--mcp-config" in spec.args
+    end
   end
 
   # ── spawn_spec/2 — :one_shot ─────────────────────────────────────────
@@ -424,6 +459,36 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
       {expected_args, expected_port_opts} =
         Config.build_args("resume me", expected_one_shot_opts(ctx))
+
+      claude_path = System.find_executable("claude")
+
+      expected_script_args =
+        case :os.type() do
+          {:unix, :darwin} ->
+            ["-q", "/dev/null", claude_path | expected_args]
+
+          _ ->
+            cmd = Enum.map_join([claude_path | expected_args], " ", &Config.shell_escape/1)
+            ["-qc", cmd, "/dev/null"]
+        end
+
+      spec = Backend.spawn_spec(:one_shot, ctx)
+
+      assert spec.args == expected_script_args
+      assert spec.port_opts == expected_port_opts
+    end
+
+    test "tools: \"\" (no_tools API run mode) sets --tools \"\" and omits --mcp-config entirely" do
+      ctx = ctx(%{tools: "", prompt: "hi"})
+
+      opts =
+        [cwd: ctx.directory]
+        |> expected_maybe_put(:system_prompt, expected_system_prompt_no_mcp(ctx))
+        |> Keyword.put(:tools, "")
+
+      {expected_args, expected_port_opts} = Config.build_args("hi", opts)
+      assert "--tools" in expected_args
+      refute "--mcp-config" in expected_args
 
       claude_path = System.find_executable("claude")
 

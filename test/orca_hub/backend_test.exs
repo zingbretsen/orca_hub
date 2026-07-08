@@ -154,6 +154,27 @@ defmodule OrcaHub.BackendTest do
     end
   end
 
+  describe "mcp_enabled?/2 — optional callback dispatch (Agent Runs API no_tools mode)" do
+    setup do
+      Code.ensure_loaded!(OrcaHub.Backend.Claude)
+      :ok
+    end
+
+    test "Claude implements it — false exactly when ctx.tools == \"\"" do
+      assert Backend.mcp_enabled?(OrcaHub.Backend.Claude, %{tools: ""}) == false
+      assert Backend.mcp_enabled?(OrcaHub.Backend.Claude, %{tools: nil}) == true
+      assert Backend.mcp_enabled?(OrcaHub.Backend.Claude, %{}) == true
+    end
+
+    test "Codex never implements it — always true (unaffected by ctx.tools)" do
+      assert Backend.mcp_enabled?(OrcaHub.Backend.Codex, %{tools: ""}) == true
+    end
+
+    test "Pi never implements it — always true (unaffected by ctx.tools)" do
+      assert Backend.mcp_enabled?(OrcaHub.Backend.Pi, %{tools: ""}) == true
+    end
+  end
+
   describe "models_for/1" do
     test "returns Claude's exact model list" do
       assert Backend.models_for("claude") == OrcaHub.Backend.Claude.models()

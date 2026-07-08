@@ -1005,7 +1005,12 @@ defmodule OrcaHub.SessionRunner do
           {port, framing} = open_port_streaming(base)
           base = run_on_open(%{base | port: port, framing: framing})
 
-          if base.backend.capabilities().warmup_turn do
+          # The warm-up turn exists purely to force the MCP handshake before
+          # the real prompt is written (see the comment above) — with no MCP
+          # config at all (Backend.mcp_enabled?/2 false, e.g. a no_tools API
+          # run) there's nothing to hand-shake with, so skip straight to the
+          # real turn, same as a backend with no warmup_turn capability.
+          if base.backend.capabilities().warmup_turn and Backend.mcp_enabled?(base.backend, base) do
             base = write_warmup_turn(base)
             # Fresh port bakes the current flags into the /mcp URL — any pending
             # rebake is satisfied by this cold open.

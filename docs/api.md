@@ -35,7 +35,7 @@ Creates a session and a run, sends the prompt, and returns immediately.
 | `model` | string | no | passed through to the backend |
 | `backend` | string | no | `"claude"` (default), `"codex"`, `"pi"` |
 | `title` | string | no | defaults to `"API run"` |
-| `no_tools` | boolean | no | `true` = pure text-in/JSON-out reasoning, zero built-in tools. Claude backend only — `400` if combined with a non-`claude` backend |
+| `no_tools` | boolean | no | `true` = pure text-in/JSON-out reasoning: zero built-in tools (`--tools ""`) AND no MCP config at all — the session never gets the `orca` MCP server (no `open_file`, `send_message_to_session`, etc.), so there's no file/session access of any kind. Claude backend only — `400` if combined with a non-`claude` backend |
 | `result_schema` | object | no | a JSON Schema the final result must validate against; appended to the prompt as an instruction and enforced server-side (see below) |
 | `timeout_seconds` | integer | no | default `3600` |
 | `max_validation_attempts` | integer | no | default `3` — how many times to re-prompt on a schema-validation failure before giving up |

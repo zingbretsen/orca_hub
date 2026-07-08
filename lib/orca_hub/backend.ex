@@ -286,7 +286,27 @@ defmodule OrcaHub.Backend do
   """
   @callback encode_compact(ctx) :: {:ok, iodata, ctx} | :noop
 
-  @optional_callbacks encode_ui_response: 3, encode_toggle_plan_mode: 1, encode_compact: 1
+  @doc """
+  OPTIONAL — whether this ctx should get MCP wired up at all (Agent Runs API
+  "no filesystem tools" mode, docs/api.md): when false, `spawn_spec/2` must
+  omit `--mcp-config` entirely rather than baking in the `orca` server.
+
+  Returns `true` when the backend doesn't implement this callback (the
+  default — every existing backend keeps its current MCP-always-on
+  behavior). `Backend.Claude.mcp_enabled?/1` is the only implementor today:
+  `false` exactly when `ctx.tools == ""` (the same sentinel `tools_for/1`
+  uses to force zero built-in tools) — MCP tools (`open_file`,
+  `send_message_to_session`, …) are just as much a "wander into files /
+  other sessions" risk as built-in tools, so the two flags travel together.
+  `SessionRunner` also consults this to skip Claude's MCP-handshake-forcing
+  warmup turn when there's no MCP to hand-shake with.
+  """
+  @callback mcp_enabled?(ctx) :: boolean
+
+  @optional_callbacks encode_ui_response: 3,
+                      encode_toggle_plan_mode: 1,
+                      encode_compact: 1,
+                      mcp_enabled?: 1
 
   @doc """
   Resolves a backend identifier (the `sessions.backend` DB column value) to
@@ -463,6 +483,21 @@ defmodule OrcaHub.Backend do
       backend.encode_compact(ctx)
     else
       :noop
+    end
+  end
+
+  @doc """
+  Dispatches to `backend.mcp_enabled?/1` when the backend implements the
+  optional callback, else `true` (every backend without an opinion keeps its
+  current always-on MCP behavior). Mirrors `encode_compact/2`'s dispatch
+  pattern.
+  """
+  @spec mcp_enabled?(module, ctx) :: boolean
+  def mcp_enabled?(backend, ctx) do
+    if function_exported?(backend, :mcp_enabled?, 1) do
+      backend.mcp_enabled?(ctx)
+    else
+      true
     end
   end
 end

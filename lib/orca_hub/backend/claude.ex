@@ -66,7 +66,7 @@ defmodule OrcaHub.Backend.Claude do
       |> maybe_put(:model, ctx.model)
       |> maybe_put(:system_prompt, system_prompt(ctx))
       |> maybe_put(:tools, tools_for(ctx))
-      |> Keyword.put(:mcp_config, mcp_config_json(ctx))
+      |> maybe_put_mcp_config(ctx)
 
     {args, port_opts} = Config.build_args(nil, opts)
 
@@ -89,7 +89,7 @@ defmodule OrcaHub.Backend.Claude do
       |> maybe_put(:model, ctx.model)
       |> maybe_put(:system_prompt, system_prompt(ctx))
       |> maybe_put(:tools, tools_for(ctx))
-      |> Keyword.put(:mcp_config, mcp_config_json(ctx))
+      |> maybe_put_mcp_config(ctx)
 
     {args, port_opts} = Config.build_args(Map.get(ctx, :prompt), opts)
 
@@ -208,16 +208,23 @@ defmodule OrcaHub.Backend.Claude do
 
   @impl true
   def system_prompt(ctx) do
-    code_exec = OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
+    # No MCP (no_tools API run mode) means no orca server at all, so every
+    # fragment below that references an `mcp__orca__*` tool or the code-exec
+    # `Tools.*` surface would describe tools the model doesn't have — skip
+    # them rather than mislead the model into calling something nonexistent.
+    mcp = mcp_enabled?(ctx)
+    code_exec = mcp and OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
 
     parts =
       [
         "Your OrcaHub session ID is #{ctx.session_id}.",
-        SharedPrompts.orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec),
+        if(mcp,
+          do: SharedPrompts.orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec)
+        ),
         SharedPrompts.code_exec_prompt(code_exec),
         if(!ctx.orchestrator, do: SharedPrompts.commit_trailer_prompt(ctx.session_id)),
         if(!ctx.orchestrator, do: ask_user_question_prompt()),
-        sibling_sessions_prompt(ctx.orchestrator, code_exec),
+        if(mcp, do: sibling_sessions_prompt(ctx.orchestrator, code_exec)),
         SharedPrompts.context_files_prompt(ctx.directory)
       ]
       |> Enum.reject(&is_nil/1)
@@ -333,6 +340,21 @@ defmodule OrcaHub.Backend.Claude do
     case Map.get(ctx, :tools) do
       nil -> orchestrator_tools(ctx.orchestrator)
       tools -> tools
+    end
+  end
+
+  # "" is the same "no built-in tools" sentinel `tools_for/1` checks — MCP
+  # tools (open_file, send_message_to_session, …) are just as much a
+  # wander-into-files/other-sessions risk as built-in ones, so a no_tools API
+  # run (docs/api.md) gets neither. See the Backend.mcp_enabled?/2 doc.
+  @impl true
+  def mcp_enabled?(ctx), do: Map.get(ctx, :tools) != ""
+
+  defp maybe_put_mcp_config(opts, ctx) do
+    if mcp_enabled?(ctx) do
+      Keyword.put(opts, :mcp_config, mcp_config_json(ctx))
+    else
+      opts
     end
   end
 
