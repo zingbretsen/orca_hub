@@ -4,7 +4,9 @@ defmodule OrcaHub.MCP.CodeExec.PlaywrightUploadTest do
   alias OrcaHub.MCP.CodeExec.PlaywrightUpload
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "playwright_upload_test_#{System.unique_integer([:positive])}")
+    dir =
+      Path.join(System.tmp_dir!(), "playwright_upload_test_#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
     %{dir: dir}
