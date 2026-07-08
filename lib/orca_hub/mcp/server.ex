@@ -138,7 +138,28 @@ defmodule OrcaHub.MCP.Server do
   # tools. `initialize` deliberately did no hub work (see init/1's doc), so
   # the schema is fetched here, on first tools/list, and cached in state.
   defp dispatch(%{"method" => "tools/list", "id" => id}, %{api_run: true} = state) do
-    state = ensure_api_run_schema(state)
+    # ensure_api_run_schema/1 does a HubRPC call, which RAISES on erpc/hub
+    # failures — same defensive wrapper as the general tools/call dispatcher
+    # (and the submit_result tools/call clause below) so a hub blip degrades
+    # to an empty tool list instead of crashing this GenServer.
+    state =
+      try do
+        ensure_api_run_schema(state)
+      rescue
+        e ->
+          Logger.error(
+            "[MCP] api_run tools/list raised: " <> Exception.format(:error, e, __STACKTRACE__)
+          )
+
+          state
+      catch
+        kind, reason ->
+          Logger.error(
+            "[MCP] api_run tools/list #{kind}: " <> Exception.format(kind, reason, __STACKTRACE__)
+          )
+
+          state
+      end
 
     tools =
       case state.api_run_schema do
@@ -221,7 +242,33 @@ defmodule OrcaHub.MCP.Server do
          %{api_run: true} = state
        ) do
     arguments = params["arguments"] || %{}
-    result = handle_submit_result(arguments, state)
+
+    # Same defensive wrapper the general tools/call dispatcher uses below —
+    # this clause bypasses that dispatcher entirely, but handle_submit_result/2
+    # does its own HubRPC calls (get_run_by_session_id, update_api_run), which
+    # RAISE on erpc/hub failures. Without this, a hub blip mid-submission would
+    # crash this GenServer and orphan the MCP session instead of just failing
+    # the one tool call.
+    result =
+      try do
+        handle_submit_result(arguments, state)
+      rescue
+        e ->
+          Logger.error(
+            "[MCP] api_run submit_result raised: " <> Exception.format(:error, e, __STACKTRACE__)
+          )
+
+          OrcaHub.MCP.Tools.Result.error("submit_result raised: #{Exception.message(e)}")
+      catch
+        kind, reason ->
+          Logger.error(
+            "[MCP] api_run submit_result #{kind}: " <>
+              Exception.format(kind, reason, __STACKTRACE__)
+          )
+
+          OrcaHub.MCP.Tools.Result.error("submit_result failed: #{inspect(reason)}")
+      end
+
     {%{"jsonrpc" => "2.0", "id" => id, "result" => result}, state}
   end
 

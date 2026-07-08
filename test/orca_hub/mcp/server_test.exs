@@ -177,5 +177,31 @@ defmodule OrcaHub.MCP.ServerTest do
       assert response["result"]["isError"] == true
       assert result_text(response) =~ "only exposes submit_result"
     end
+
+    test "a raise inside handle_submit_result (e.g. a hub/DB blip) degrades to a tool error " <>
+           "instead of crashing the GenServer" do
+      # A malformed orca_session_id (never happens on the real /mcp?orca_session_id=...
+      # path — SessionRunner always bakes a real session UUID — but stands in here for
+      # any HubRPC call that raises, e.g. a hub outage's :erpc.call timeout/badrpc)
+      # makes ApiRuns.get_run_by_session_id/1's Ecto query raise when casting the
+      # `where: r.session_id == ^session_id` param, exercising the same code path a
+      # raised exception from a hub blip would.
+      {:ok, mcp_session_id} =
+        Server.start_session(orca_session_id: "not-a-valid-uuid", api_run: true)
+
+      on_exit(fn -> Server.stop_session(mcp_session_id) end)
+
+      response = call_tool(mcp_session_id, "submit_result", %{"answer" => 42})
+
+      assert response["result"]["isError"] == true
+      assert result_text(response) =~ "submit_result raised"
+
+      # The GenServer survived the raise — a follow-up call on the SAME mcp_session_id
+      # still gets a normal response rather than the "Invalid or missing session" 400
+      # a crashed/orphaned MCP session would produce upstream in MCP.Plug.
+      assert Server.session_exists?(mcp_session_id)
+      follow_up = tools_list(mcp_session_id)
+      assert %{"result" => %{"tools" => []}} = follow_up
+    end
   end
 end
