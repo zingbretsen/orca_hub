@@ -4,8 +4,8 @@
  * pi has no built-in MCP client — a pi session otherwise can't reach
  * OrcaHub's own MCP servers (the first-party "orca" tools:
  * send_message_to_session, start_session, search_sessions, …; any
- * project/session-scoped upstream server; the run_elixir/search_tools/
- * read_tool code-exec meta-tools). This extension bridges that gap by
+ * project/session-scoped upstream server; the run_elixir/search_tools
+ * code-exec meta-tools). This extension bridges that gap by
  * speaking the hub's `/mcp` Streamable HTTP JSON-RPC transport itself
  * (hand-rolled over `fetch` — Node 18+ global, no npm dependency added) and
  * re-exposing every discovered tool via `pi.registerTool`.
@@ -54,7 +54,7 @@
  * `mcp__orca__github__get_issue`. This extension mirrors that exactly:
  * every tool this endpoint returns is registered as `mcp__orca__<raw_name>`,
  * with no other transformation — matching `MessageComponents`' existing
- * `mcp__orca__run_elixir`/`search_tools`/`read_tool` pattern matches
+ * `mcp__orca__run_elixir`/`search_tools` pattern matches
  * (message_components.ex ~736-763) and its generic `mcp__*` fallback
  * renderer for everything else, byte for byte. `Backend.Pi.normalize/2`'s
  * `translate_tool/2` passes unrecognized tool names through unchanged, so a

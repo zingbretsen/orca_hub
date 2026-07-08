@@ -25,7 +25,7 @@ defmodule OrcaHub.Sessions.Session do
     field :original_node, :string
     field :orchestrator, :boolean, default: false
     # "Code execution with MCP" mode — collapses this session's MCP
-    # tools/list to the meta-tools (run_elixir/search_tools/read_tool) and
+    # tools/list to the meta-tools (run_elixir/search_tools) and
     # exposes every other tool as a generated `Tools.*` function. ON by
     # default for new sessions; still opt-OUT per session, and globally
     # killable node-wide via ORCA_DISABLE_CODE_EXEC.

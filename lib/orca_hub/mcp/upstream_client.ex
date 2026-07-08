@@ -106,6 +106,25 @@ defmodule OrcaHub.MCP.UpstreamClient do
     ArgumentError -> false
   end
 
+  @doc """
+  Prefixes of all connected upstream servers, without the trailing `__`
+  separator (e.g. `["github", "playwright"]`). Used to teach a code-exec
+  session which upstream servers exist without dumping every tool they
+  expose into the prompt — see `OrcaHub.MCP.CodeExec.MetaTools`.
+  """
+  def prefixes do
+    if Mode.hub?() do
+      case :ets.lookup(@tools_cache, :prefixes) do
+        [{:prefixes, prefixes}] -> Enum.map(prefixes, &String.trim_trailing(&1, "__"))
+        _ -> []
+      end
+    else
+      hub_rpc(:prefixes, [], [])
+    end
+  rescue
+    ArgumentError -> []
+  end
+
   @doc "Force refresh all upstream connections."
   def refresh do
     if Mode.hub?() do

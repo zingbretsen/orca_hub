@@ -13,7 +13,7 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
     * Upstream tools (`OrcaHub.MCP.UpstreamClient.list_tools/0`, namespaced
       `github__get_issue`) — flat on the root under their **raw MCP name**
       (`Tools.github__get_issue/1`, matching what the system prompt and
-      `search_tools`/`read_tool` teach), AND grouped by prefix into a
+      `search_tools`/`Tools.schema` teach), AND grouped by prefix into a
       submodule as sugar: `Tools.Github.get_issue/1`. A tool whose raw name
       isn't a valid Elixir function identifier is skipped (with a
       `Logger.warning`) rather than crashing generation.
@@ -167,7 +167,7 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
       |> Enum.map(&tool_fun(&1, raw_name, dispatcher))
 
     # Flat raw-name defs for upstream tools too (e.g. `github__get_issue`) —
-    # this is what the system prompt/search_tools/read_tool actually teach
+    # this is what the system prompt/search_tools/Tools.schema actually teach
     # models to call; the per-prefix submodules remain as sugar.
     upstream_funs =
       upstream

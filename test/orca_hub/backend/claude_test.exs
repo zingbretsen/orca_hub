@@ -97,18 +97,19 @@ defmodule OrcaHub.Backend.ClaudeTest do
     """
     # Code Execution Mode
 
-    Your MCP tool list is intentionally small: `run_elixir`, `search_tools`, and \
-    `read_tool`. Every other OrcaHub and upstream tool is reachable from inside \
-    `run_elixir` as a named `Tools.*` function — call several tools and stitch \
-    their results together with the Elixir standard library in ONE snippet \
-    instead of many separate tool calls.
+    Your MCP tool list is intentionally small: `run_elixir` and `search_tools`. \
+    Every other OrcaHub and upstream tool is reachable from inside `run_elixir` \
+    as a named `Tools.*` function — call several tools and stitch their \
+    results together with the Elixir standard library in ONE snippet instead \
+    of many separate tool calls.
 
-    - **Discover tools** with `search_tools`/`read_tool`, or from inside code \
-      with `Tools.search("query")`, `Tools.list()`, and `Tools.schema("name")`. \
-      `Tools.search/1` and `Tools.list/0` return maps with "name"/"description" \
-      keys (search results also include "args" — argument names, optional ones \
-      suffixed "?"). `Tools.schema/1` returns a map (or nil). Only tool \
-      *invocations* (below) auto-unwrap to maps/lists.
+    - **Discover tools** with `search_tools`, or from inside code with \
+      `Tools.search("query")`, `Tools.list()`, and `Tools.schema("name")` (a \
+      tool's JSON input schema). `Tools.search/1` and `Tools.list/0` return \
+      maps with "name"/"description" keys (search results also include "args" \
+      — argument names, optional ones suffixed "?"). `Tools.schema/1` returns \
+      a map (or nil). Only tool *invocations* (below) auto-unwrap to \
+      maps/lists.
     - **Call a tool** as `Tools.<raw_mcp_name>(args)`, e.g. \
       `Tools.open_file(%{"file_path" => "lib/foo.ex"})` or \
       `Tools.github__get_issue(%{"number" => 7})`. Named functions \
@@ -160,7 +161,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     ## How to Work
 
-    **Important:** Your MCP tool list is collapsed to `run_elixir`, `search_tools`, and `read_tool` (code execution mode) — none of the coordination tools below are standalone MCP tools here. Call them as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to every tool below (`Tools.send_message_to_session`, `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.).
+    **Important:** Your MCP tool list is collapsed to `run_elixir` and `search_tools` (code execution mode) — none of the coordination tools below are standalone MCP tools here. Call them as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to every tool below (`Tools.send_message_to_session`, `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.).
 
     1. **Delegate all implementation work** to other sessions using:
        - `Tools.start_session(...)` inside `run_elixir` — spawn a new worker session with a detailed prompt

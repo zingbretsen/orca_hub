@@ -317,7 +317,7 @@ defmodule OrcaHub.MCP.CodeExecTest do
     end
   end
 
-  describe "search_tools / read_tool (read-only over the live registry)" do
+  describe "search_tools (read-only over the live registry)" do
     test "search_tools returns matching tools" do
       result = MetaTools.call("search_tools", %{"query" => "session"}, %{})
       assert result["isError"] == false
@@ -350,20 +350,57 @@ defmodule OrcaHub.MCP.CodeExecTest do
 
       assert args == ["file_path", "line?"]
     end
+  end
 
-    test "read_tool returns a known first-party tool's schema" do
-      result = MetaTools.call("read_tool", %{"name" => "open_file"}, %{})
-      assert result["isError"] == false
-
-      %{"name" => "open_file", "inputSchema" => schema} =
-        Jason.decode!(hd(result["content"])["text"])
-
-      assert is_map(schema)
+  describe "removed read_tool meta-tool" do
+    test "meta_tool?/1 no longer recognizes it" do
+      refute MetaTools.meta_tool?("read_tool")
     end
 
-    test "read_tool reports unknown tools" do
-      result = MetaTools.call("read_tool", %{"name" => "does_not_exist"}, %{})
+    test "calling it falls through to the unknown-tool error, pointing at Tools.schema" do
+      result = MetaTools.call("read_tool", %{"name" => "open_file"}, %{})
+
       assert result["isError"] == true
+      text = hd(result["content"])["text"]
+      assert text =~ "run_elixir and search_tools"
+      assert text =~ "Tools.schema"
+      refute text =~ "read_tool;"
+    end
+  end
+
+  describe "MetaTools.list/0 tool definitions" do
+    test "only run_elixir and search_tools are exposed" do
+      assert Enum.map(MetaTools.list(), & &1["name"]) |> Enum.sort() == [
+               "run_elixir",
+               "search_tools"
+             ]
+    end
+
+    test "run_elixir's description lists the live first-party Tools.* names" do
+      run_elixir = Enum.find(MetaTools.list(), &(&1["name"] == "run_elixir"))
+      first_party_names = OrcaHub.MCP.Tools.list() |> Enum.map(& &1["name"])
+
+      assert first_party_names != []
+      assert Enum.all?(first_party_names, &(run_elixir["description"] =~ &1))
+    end
+
+    test "run_elixir's description reflects the live upstream server prefixes" do
+      run_elixir = Enum.find(MetaTools.list(), &(&1["name"] == "run_elixir"))
+      description = run_elixir["description"]
+
+      case OrcaHub.MCP.UpstreamClient.prefixes() do
+        [] ->
+          assert description =~ "No upstream MCP servers are currently connected."
+
+        prefixes ->
+          assert description =~ "Connected upstream MCP servers:"
+          assert Enum.all?(prefixes, &(description =~ &1))
+      end
+    end
+
+    test "search_tools' description points at Tools.schema for full schemas" do
+      search_tools = Enum.find(MetaTools.list(), &(&1["name"] == "search_tools"))
+      assert search_tools["description"] =~ "Tools.schema"
     end
   end
 
@@ -381,7 +418,7 @@ defmodule OrcaHub.MCP.CodeExecTest do
       {:ok, sid} = Server.start_session(orca_session_id: "t1", code_exec: true)
       on_exit(fn -> Server.stop_session(sid) end)
 
-      assert Enum.sort(tool_names(sid)) == ["read_tool", "run_elixir", "search_tools"]
+      assert Enum.sort(tool_names(sid)) == ["run_elixir", "search_tools"]
     end
 
     test "is unchanged (full set, no meta-tools) when code_exec is off" do

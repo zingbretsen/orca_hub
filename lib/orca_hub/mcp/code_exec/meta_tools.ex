@@ -3,17 +3,29 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   The collapsed MCP tool surface presented to a code-exec session.
 
   When `code_exec` is enabled for a connection, `tools/list` returns ONLY these
-  three meta-tools instead of flattening every first-party and upstream tool:
+  two meta-tools instead of flattening every first-party and upstream tool:
 
     * `run_elixir`   — evaluate model-authored Elixir that calls tools as named
       `Tools.*` functions and stitches results with stdlib (the main surface)
     * `search_tools` — read-only ranked keyword search over the live registry
-    * `read_tool`    — read-only fetch of a tool's description + input schema
 
   First-party AND upstream tools are still reachable — but only as `Tools.*`
   functions inside `run_elixir` (and discoverable there via `Tools.search/1` /
-  `Tools.schema/1`). `search_tools` / `read_tool` exist so the model can explore
-  the registry cheaply before writing code.
+  `Tools.schema/1`). `search_tools` exists so the model can explore the
+  registry cheaply before writing code.
+
+  A third meta-tool, `read_tool` (single-tool schema lookup by raw MCP name),
+  was removed: production usage showed it was the weakest of the three (27
+  calls across 15 sessions vs. 589 across 70 for `run_elixir`) and its job is
+  fully covered by `Tools.schema/1` inside `run_elixir`. Old sessions may still
+  have persisted `read_tool` calls in their message history — `MessageComponents`
+  keeps a render clause for those — but it's no longer callable.
+
+  Tool definitions are built **at call time**, not a compile-time `@tools`
+  attribute, so `run_elixir`'s description can list the CURRENT first-party
+  tool names (`OrcaHub.MCP.Tools.list/0`) and connected upstream server
+  prefixes (`OrcaHub.MCP.UpstreamClient.prefixes/0`) — both of which change at
+  runtime — without risking the list drifting from a hand-maintained literal.
 
   `run_elixir`'s result text distinguishes **rejected before running** (syntax
   error / allowlist violation — the model should fix its code) from **ran and
@@ -28,10 +40,55 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   alias OrcaHub.MCP.CodeExec
   alias OrcaHub.MCP.CodeExec.{ToolGen, ToolSearch}
   alias OrcaHub.MCP.Tools.Result
+  alias OrcaHub.MCP.UpstreamClient
 
-  @run_elixir_tool %{
-    "name" => "run_elixir",
-    "description" => """
+  @meta_tool_names ~w(run_elixir search_tools)
+
+  @doc "The collapsed meta-tool definitions shown to a code-exec connection."
+  def list, do: [run_elixir_tool(), search_tools_tool()]
+
+  @doc "True if `name` is one of the meta-tools."
+  def meta_tool?(name), do: name in @meta_tool_names
+
+  @doc """
+  Dispatch a meta-tool call. `state` is the MCP server state, threaded into
+  evaluated code so `Tools.*` calls run with the connection's identity.
+  """
+  def call("run_elixir", args, state), do: run_elixir(args, state)
+  def call("search_tools", args, _state), do: search_tools(args["query"])
+
+  def call(name, _args, _state) do
+    Result.error(
+      "Unknown tool: #{name}. In code-exec mode this connection exposes only " <>
+        "run_elixir and search_tools; call other tools as Tools.<name> inside " <>
+        "run_elixir (use Tools.schema(\"name\") there for a tool's input schema)."
+    )
+  end
+
+  # ── tool definitions (built at call time — see moduledoc) ────────────
+
+  defp run_elixir_tool do
+    %{
+      "name" => "run_elixir",
+      "description" => run_elixir_description(),
+      "inputSchema" => %{
+        "type" => "object",
+        "properties" => %{
+          "code" => %{"type" => "string", "description" => "Elixir code to evaluate."},
+          "reset" => %{
+            "type" => "boolean",
+            "description" =>
+              "If true, clear this session's persisted variables before evaluating " <>
+                "(the snippet then runs with a fresh binding)."
+          }
+        },
+        "required" => ["code"]
+      }
+    }
+  end
+
+  defp run_elixir_description do
+    """
     Evaluate Elixir code that can call OrcaHub + upstream MCP tools as named \
     functions and combine their results with the standard library. Prefer this \
     over many separate tool calls: write one snippet that calls several tools \
@@ -45,16 +102,20 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
         |> Enum.map(& &1["title"])
 
     Discover tools from inside code with `Tools.search("query")`, \
-    `Tools.list()`, and `Tools.schema("name")`. `search`/`list` return maps \
-    with "name"/"description" keys (search results also include "args" — a \
-    list of argument names, with optional ones suffixed "?", e.g. \
-    ["repo", "number?"]); `schema` returns a map. For explicit error handling \
-    use `Tools.try_call("name", args)` -> `{:ok, value} | {:error, reason}`, or \
-    `Tools.call("name", args)` for the faithful MCP envelope. Pure stdlib \
+    `Tools.list()`, and `Tools.schema("name")` — the tool's JSON input schema, \
+    worth checking before calling an unfamiliar tool. `search`/`list` return \
+    maps with "name"/"description" keys (search results also include "args" — \
+    a list of argument names, with optional ones suffixed "?", e.g. \
+    ["repo", "number?"]); `schema` returns a map (or `nil`). For explicit error \
+    handling use `Tools.try_call("name", args)` -> `{:ok, value} | {:error, reason}`, \
+    or `Tools.call("name", args)` for the faithful MCP envelope. Pure stdlib \
     (Enum, Map, String, Jason, ...) is available; OrcaHub internals, File, \
     System, and process/dispatch primitives are blocked. The returned value of \
     the last expression and any stdout are sent back — keep it slim: \
     filter/project before returning.
+
+    First-party OrcaHub tools available as Tools.* in every session: \
+    #{first_party_tool_names()}. #{upstream_prefixes_line()}
 
     Variables you bind PERSIST across run_elixir calls within this session, \
     like a REPL: fetch data once into a variable, then slice/reshape it in \
@@ -66,77 +127,46 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
 
     Pass `"reset": true` to clear your session's stored variables and start \
     fresh (the snippet then runs against an empty binding).\
-    """,
-    "inputSchema" => %{
-      "type" => "object",
-      "properties" => %{
-        "code" => %{"type" => "string", "description" => "Elixir code to evaluate."},
-        "reset" => %{
-          "type" => "boolean",
-          "description" =>
-            "If true, clear this session's persisted variables before evaluating " <>
-              "(the snippet then runs with a fresh binding)."
-        }
-      },
-      "required" => ["code"]
+    """
+  end
+
+  defp first_party_tool_names do
+    OrcaHub.MCP.Tools.list()
+    |> Enum.map(& &1["name"])
+    |> Enum.sort()
+    |> Enum.join(", ")
+  end
+
+  defp upstream_prefixes_line do
+    case UpstreamClient.prefixes() do
+      [] ->
+        "No upstream MCP servers are currently connected."
+
+      prefixes ->
+        "Connected upstream MCP servers: #{Enum.join(Enum.sort(prefixes), ", ")} — their " <>
+          "tools are namespaced <prefix>__<tool> and searchable via search_tools / Tools.search."
+    end
+  end
+
+  defp search_tools_tool do
+    %{
+      "name" => "search_tools",
+      "description" =>
+        "Ranked keyword search over the available tool registry (first-party + " <>
+          "upstream) — matched against tool names and descriptions, best match " <>
+          "first (case-insensitive). Returns matching tools as " <>
+          "{\"name\", \"description\", \"args\"} maps, where \"args\" lists argument " <>
+          "names (optional ones suffixed \"?\"). These tools are callable as " <>
+          "Tools.<name>/1 inside run_elixir — use Tools.schema/1 there for a tool's " <>
+          "full input schema.",
+      "inputSchema" => %{
+        "type" => "object",
+        "properties" => %{
+          "query" => %{"type" => "string", "description" => "Case-insensitive search query."}
+        },
+        "required" => ["query"]
+      }
     }
-  }
-
-  @search_tools_tool %{
-    "name" => "search_tools",
-    "description" =>
-      "Ranked keyword search over the available tool registry (first-party + " <>
-        "upstream) — matched against tool names and descriptions, best match " <>
-        "first (case-insensitive). Returns matching tools as " <>
-        "{\"name\", \"description\", \"args\"} maps, where \"args\" lists argument " <>
-        "names (optional ones suffixed \"?\"). These tools are callable as " <>
-        "Tools.<name>/1 inside run_elixir.",
-    "inputSchema" => %{
-      "type" => "object",
-      "properties" => %{
-        "query" => %{"type" => "string", "description" => "Case-insensitive search query."}
-      },
-      "required" => ["query"]
-    }
-  }
-
-  @read_tool_tool %{
-    "name" => "read_tool",
-    "description" =>
-      "Fetch a single tool's description and JSON input schema by its raw MCP " <>
-        "name (e.g. \"github__get_issue\"). Use to learn a tool's arguments " <>
-        "before calling it as Tools.<name>/1 inside run_elixir.",
-    "inputSchema" => %{
-      "type" => "object",
-      "properties" => %{
-        "name" => %{"type" => "string", "description" => "Raw MCP tool name."}
-      },
-      "required" => ["name"]
-    }
-  }
-
-  @tools [@run_elixir_tool, @search_tools_tool, @read_tool_tool]
-
-  @doc "The collapsed meta-tool definitions shown to a code-exec connection."
-  def list, do: @tools
-
-  @doc "True if `name` is one of the meta-tools."
-  def meta_tool?(name), do: Enum.any?(@tools, &(&1["name"] == name))
-
-  @doc """
-  Dispatch a meta-tool call. `state` is the MCP server state, threaded into
-  evaluated code so `Tools.*` calls run with the connection's identity.
-  """
-  def call("run_elixir", args, state), do: run_elixir(args, state)
-  def call("search_tools", args, _state), do: search_tools(args["query"])
-  def call("read_tool", args, _state), do: read_tool(args["name"])
-
-  def call(name, _args, _state) do
-    Result.error(
-      "Unknown tool: #{name}. In code-exec mode this connection exposes only " <>
-        "run_elixir, search_tools, and read_tool; call other tools as Tools.<name> " <>
-        "inside run_elixir."
-    )
   end
 
   # ── run_elixir ───────────────────────────────────────────────────────
@@ -188,7 +218,7 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
     "#{out}Code ran but raised#{where}:\n#{banner}"
   end
 
-  # ── search_tools / read_tool (read-only over the live registry) ──────
+  # ── search_tools (read-only over the live registry) ───────────────────
 
   defp search_tools(nil), do: Result.error("search_tools requires a `query` string argument.")
 
@@ -206,23 +236,5 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
       end)
 
     Result.text(Jason.encode!(%{"count" => length(matches), "tools" => matches}))
-  end
-
-  defp read_tool(nil), do: Result.error("read_tool requires a `name` string argument.")
-
-  defp read_tool(name) when is_binary(name) do
-    case Enum.find(ToolGen.live_tools(), &(&1["name"] == name)) do
-      nil ->
-        Result.error("Unknown tool: #{name}. Use search_tools to discover available tools.")
-
-      tool ->
-        Result.text(
-          Jason.encode!(%{
-            "name" => tool["name"],
-            "description" => tool["description"] || "",
-            "inputSchema" => tool["inputSchema"] || %{}
-          })
-        )
-    end
   end
 end

@@ -819,6 +819,8 @@ defmodule OrcaHubWeb.MessageComponents do
     """
   end
 
+  # read_tool meta-tool was removed (Tools.schema/1 inside run_elixir covers
+  # it), but old sessions have persisted calls to it — keep rendering them.
   defp tool_summary(%{name: name, input: input} = assigns)
        when name in ~w(mcp__orca__read_tool read_tool) do
     assigns = assign(assigns, :tool, input["name"] || "")

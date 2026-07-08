@@ -714,8 +714,8 @@ defmodule OrcaHub.Backend.Codex do
   defp orchestrator_system_prompt(false, _session_id, _code_exec), do: nil
   defp orchestrator_system_prompt(nil, _session_id, _code_exec), do: nil
 
-  # Code-exec collapses a session's MCP surface to run_elixir/search_tools/
-  # read_tool regardless of the orchestrator flag (see
+  # Code-exec collapses a session's MCP surface to run_elixir/search_tools
+  # regardless of the orchestrator flag (see
   # lib/orca_hub/mcp/server.ex:130) — none of the coordination tools below
   # exist as standalone orca MCP tools there, so this branch rewrites every
   # reference (including the callback instruction workers get told to paste)
@@ -732,7 +732,7 @@ defmodule OrcaHub.Backend.Codex do
 
     ## How to Work
 
-    Your MCP tool list is collapsed to `run_elixir`, `search_tools`, and `read_tool` (code execution mode) — none of the coordination tools (`start_session`, `send_message_to_session`, `schedule_heartbeat`, `search_sessions`, `archive_session`, `cancel_heartbeat`, etc.) are standalone MCP tools here. Call them as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})`.
+    Your MCP tool list is collapsed to `run_elixir` and `search_tools` (code execution mode) — none of the coordination tools (`start_session`, `send_message_to_session`, `schedule_heartbeat`, `search_sessions`, `archive_session`, `cancel_heartbeat`, etc.) are standalone MCP tools here. Call them as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})`.
 
     1. **Delegate all implementation work** to other sessions using `Tools.start_session(...)` (spawn a new worker with a detailed prompt) or `Tools.send_message_to_session(...)` (direct an existing session), both inside `run_elixir`.
     2. **Request callbacks** — when delegating work, explicitly ask the worker session to message you back when done via `Tools.send_message_to_session` inside `run_elixir`, referencing this session id: #{session_id}.

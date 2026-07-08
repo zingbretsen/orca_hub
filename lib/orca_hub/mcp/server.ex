@@ -123,7 +123,7 @@ defmodule OrcaHub.MCP.Server do
   @orchestrator_only_tools ~w(cancel_heartbeat archive_session start_session schedule_heartbeat)
 
   # Code-exec mode: collapse the surface to just the meta-tools (run_elixir,
-  # search_tools, read_tool). First-party + upstream tools are no longer
+  # search_tools). First-party + upstream tools are no longer
   # flattened here — they're reachable only as `Tools.*` functions inside
   # run_elixir. When the flag is OFF this clause never matches and tools/list
   # behaves exactly as before.

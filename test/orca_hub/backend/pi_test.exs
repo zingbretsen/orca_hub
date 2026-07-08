@@ -1217,7 +1217,7 @@ defmodule OrcaHub.Backend.PiTest do
     end
 
     # lib/orca_hub/mcp/server.ex:130 collapses the MCP surface to
-    # run_elixir/search_tools/read_tool regardless of the orchestrator flag,
+    # run_elixir/search_tools regardless of the orchestrator flag,
     # so orchestrator + code_exec together must rewrite the orchestrator
     # guidance to Tools.*(...) inside run_elixir too, same as Claude/Codex.
     test "orchestrator + code_exec: true rewrites the orchestrator guidance to Tools.* inside run_elixir" do

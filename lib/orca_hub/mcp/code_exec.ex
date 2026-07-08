@@ -22,8 +22,8 @@ defmodule OrcaHub.MCP.CodeExec do
 
   ## On by default, opt-out per session
 
-  Code-exec collapses a session's `tools/list` down to three meta-tools
-  (`run_elixir`, `search_tools`, `read_tool`) and routes everything else through
+  Code-exec collapses a session's `tools/list` down to two meta-tools
+  (`run_elixir`, `search_tools`) and routes everything else through
   generated Elixir. This is **on by default for new sessions** but remains a
   per-session setting you can turn **off** (opt-out) — the `sessions.code_exec`
   column, carried into the `/mcp` URL by `SessionRunner`, exactly like the
