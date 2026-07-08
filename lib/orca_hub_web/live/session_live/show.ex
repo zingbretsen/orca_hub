@@ -23,8 +23,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     {prev_session_id, next_session_id} = HubRPC.get_adjacent_session_ids(session)
 
-    # Display the original node name even if disconnected
-    session_node_name = Cluster.node_name(session.runner_node || node())
+    # Display the original node name even if disconnected/unassigned
+    session_node_name =
+      if session.runner_node, do: Cluster.node_name(session.runner_node), else: "unassigned"
+
+    node_unavailable = node_unavailable_reason(session_node)
 
     {:ok,
      socket
@@ -36,6 +39,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:session_node, session_node)
      |> assign(:session_node_name, session_node_name)
      |> assign(:remote_session, remote?)
+     |> assign(:node_unavailable, node_unavailable)
+     |> assign(
+       :node_unavailable_message,
+       node_unavailable && Cluster.node_unavailable_message(node_unavailable)
+     )
      |> assign(:cluster_nodes, Cluster.node_info())
      |> assign(:status, runner_state.status)
      |> assign(:messages, runner_state.messages)
@@ -125,16 +133,32 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   # -- mount helpers --
 
+  # No-op (never starts a local runner in place of the assigned one) when the
+  # session's node is nil/unassigned or currently unreachable — this is the
+  # guard against the incident where a debian-owned session got silently
+  # adopted and started on the hub during the debian agent's restart window.
   defp ensure_runner_started(session_node, id, session) do
-    unless Cluster.session_alive?(session_node, id) do
-      case Cluster.start_session(session_node, id, session) do
-        {:ok, _} ->
-          :ok
+    if session_node && Cluster.node_available?(session_node) do
+      unless Cluster.session_alive?(session_node, id) do
+        case Cluster.start_session(session_node, id, session) do
+          {:ok, _} ->
+            :ok
 
-        {:error, reason} ->
-          Logger.error("Failed to start session runner for #{id}: #{inspect(reason)}")
+          {:error, reason} ->
+            Logger.error("Failed to start session runner for #{id}: #{inspect(reason)}")
+        end
       end
+    else
+      Logger.warning(
+        "Skipping runner auto-start for session #{id}: node #{inspect(session_node)} unavailable"
+      )
     end
+  end
+
+  defp node_unavailable_reason(nil), do: :node_unassigned
+
+  defp node_unavailable_reason(n) do
+    unless Cluster.node_available?(n), do: {:node_unavailable, n}
   end
 
   defp maybe_subscribe(socket, id, remote?) do
@@ -364,7 +388,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
           {:noreply, put_flash(socket, :error, "Session is busy")}
 
         {:error, reason} ->
-          {:noreply, put_flash(socket, :error, "Failed to send message: #{inspect(reason)}")}
+          message =
+            Cluster.node_unavailable_message(reason) ||
+              "Failed to send message: #{inspect(reason)}"
+
+          {:noreply, put_flash(socket, :error, message)}
       end
     else
       {:noreply, socket}
@@ -403,13 +431,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
         new_plan_mode = if socket.assigns.plan_mode == :planning, do: false, else: :planning
         {:noreply, assign(socket, :plan_mode, new_plan_mode)}
 
-      {:error, _reason} ->
-        {:noreply,
-         put_flash(
-           socket,
-           :error,
-           "Can't toggle plan mode while a turn is running — wait for it to finish."
-         )}
+      {:error, reason} ->
+        message =
+          Cluster.node_unavailable_message(reason) ||
+            "Can't toggle plan mode while a turn is running — wait for it to finish."
+
+        {:noreply, put_flash(socket, :error, message)}
     end
   end
 
@@ -424,13 +451,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
       :ok ->
         {:noreply, put_flash(socket, :info, "Compaction requested")}
 
-      {:error, _reason} ->
-        {:noreply,
-         put_flash(
-           socket,
-           :error,
-           "Can't compact right now — the session must be idle to compact."
-         )}
+      {:error, reason} ->
+        message =
+          Cluster.node_unavailable_message(reason) ||
+            "Can't compact right now — the session must be idle to compact."
+
+        {:noreply, put_flash(socket, :error, message)}
     end
   end
 
@@ -505,10 +531,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
       {:noreply, assign(socket, expanded_commit: nil, commit_detail: nil)}
     else
       detail =
-        Cluster.rpc(socket.assigns.session_node, Sessions, :get_commit_detail, [
-          socket.assigns.session.directory,
-          hash
-        ])
+        case Cluster.rpc(socket.assigns.session_node, Sessions, :get_commit_detail, [
+               socket.assigns.session.directory,
+               hash
+             ]) do
+          %{} = detail -> detail
+          # node_unassigned/node_unavailable (or any other rpc failure) — no
+          # detail to show rather than assigning the raw error tuple.
+          _ -> nil
+        end
 
       {:noreply, assign(socket, expanded_commit: hash, commit_detail: detail)}
     end
@@ -568,6 +599,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
               {:error, _} ->
                 {:noreply, put_flash(socket, :error, "Failed to update backend")}
             end
+
+          {:error, reason} ->
+            message = Cluster.node_unavailable_message(reason) || "Failed to update backend"
+            {:noreply, put_flash(socket, :error, message)}
         end
     end
   end
@@ -896,7 +931,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     # Get flat file list and filter
     session_node = socket.assigns[:session_node] || node()
-    files = Cluster.rpc(session_node, Projects, :list_editable_files, [project])
+
+    files =
+      case Cluster.rpc(session_node, Projects, :list_editable_files, [project]) do
+        list when is_list(list) -> list
+        # node_unassigned/node_unavailable (or any other rpc failure) — no
+        # files to suggest rather than crashing on a non-list Enum.filter/2.
+        _ -> []
+      end
 
     filtered =
       if query == "" do
@@ -1328,25 +1370,37 @@ defmodule OrcaHubWeb.SessionLive.Show do
             |> assign(:open_terminals, [terminal])
             |> assign(:active_terminal_id, terminal.id)
 
-          {:error, _} ->
-            put_flash(socket, :error, "Failed to create terminal")
+          {:error, reason} ->
+            message = Cluster.node_unavailable_message(reason) || "Failed to create terminal"
+            put_flash(socket, :error, message)
         end
 
       {n, terminal} ->
         runner_node = Cluster.runner_node_for(terminal)
 
-        terminal =
-          if Cluster.terminal_alive?(runner_node, terminal.id) do
-            terminal
-          else
-            Cluster.start_terminal(runner_node, terminal.id)
-            Cluster.get_terminal!(n, terminal.id)
-          end
+        cond do
+          Cluster.terminal_alive?(runner_node, terminal.id) ->
+            socket
+            |> assign(:show_terminal, true)
+            |> assign(:open_terminals, [terminal])
+            |> assign(:active_terminal_id, terminal.id)
 
-        socket
-        |> assign(:show_terminal, true)
-        |> assign(:open_terminals, [terminal])
-        |> assign(:active_terminal_id, terminal.id)
+          Cluster.node_available?(runner_node) ->
+            Cluster.start_terminal(runner_node, terminal.id)
+            terminal = Cluster.get_terminal!(n, terminal.id)
+
+            socket
+            |> assign(:show_terminal, true)
+            |> assign(:open_terminals, [terminal])
+            |> assign(:active_terminal_id, terminal.id)
+
+          true ->
+            put_flash(
+              socket,
+              :error,
+              Cluster.node_unavailable_message({:node_unavailable, runner_node})
+            )
+        end
     end
   end
 
@@ -1753,10 +1807,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
     session_node = socket.assigns[:session_node] || node()
 
     commits =
-      Cluster.rpc(session_node, Sessions, :list_session_commits, [
-        socket.assigns.session.directory,
-        socket.assigns.session.id
-      ])
+      case Cluster.rpc(session_node, Sessions, :list_session_commits, [
+             socket.assigns.session.directory,
+             socket.assigns.session.id
+           ]) do
+        list when is_list(list) -> list
+        # node_unassigned/node_unavailable (or any other rpc failure) — no
+        # commits to show rather than propagating the raw error tuple.
+        _ -> []
+      end
 
     assign(socket, :commits, commits)
   end

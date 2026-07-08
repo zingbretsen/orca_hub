@@ -39,8 +39,7 @@ defmodule OrcaHubWeb.TerminalLive.Show do
     terminal = socket.assigns.terminal
     n = socket.assigns.runner_node
     Cluster.stop_terminal(n, terminal.id)
-    terminal = Cluster.get_terminal!(n, terminal.id)
-    {:noreply, assign(socket, terminal: terminal)}
+    {:noreply, assign(socket, terminal: get_terminal_safe(n, terminal.id, terminal))}
   end
 
   def handle_event("restart_terminal", _params, socket) do
@@ -62,14 +61,14 @@ defmodule OrcaHubWeb.TerminalLive.Show do
   # Channel receives exit/status messages from the TerminalRunner
   def handle_event("terminal_exited", _params, socket) do
     n = socket.assigns.runner_node
-    terminal = Cluster.get_terminal!(n, socket.assigns.terminal.id)
-    {:noreply, assign(socket, terminal: terminal)}
+    current = socket.assigns.terminal
+    {:noreply, assign(socket, terminal: get_terminal_safe(n, current.id, current))}
   end
 
   def handle_event("terminal_status_changed", _params, socket) do
     n = socket.assigns.runner_node
-    terminal = Cluster.get_terminal!(n, socket.assigns.terminal.id)
-    {:noreply, assign(socket, terminal: terminal)}
+    current = socket.assigns.terminal
+    {:noreply, assign(socket, terminal: get_terminal_safe(n, current.id, current))}
   end
 
   @impl true
@@ -87,6 +86,17 @@ defmodule OrcaHubWeb.TerminalLive.Show do
 
       {:error, reason} ->
         put_flash(socket, :error, "Failed to restart: #{inspect(reason)}")
+    end
+  end
+
+  # Cluster.get_terminal!/2 refuses ({:error, ...}) rather than raising when
+  # `n` is offline/unassigned — fall back to the terminal we already have
+  # rather than assigning the error tuple as @terminal (which would crash
+  # every field access in the template).
+  defp get_terminal_safe(n, terminal_id, fallback) do
+    case Cluster.get_terminal!(n, terminal_id) do
+      %OrcaHub.Terminals.Terminal{} = terminal -> terminal
+      _ -> fallback
     end
   end
 

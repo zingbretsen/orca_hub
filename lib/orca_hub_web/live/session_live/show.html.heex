@@ -17,6 +17,11 @@
     </div>
   </div>
 
+  <div :if={@node_unavailable} class="alert alert-warning mb-2">
+    <.icon name="hero-signal-slash" class="size-5" />
+    <span>{@node_unavailable_message} Actions are disabled until it reconnects.</span>
+  </div>
+
   <.header>
     <.link navigate={~p"/sessions"} class="text-sm opacity-70">&larr; Sessions</.link>
     <%= if @editing_title do %>
@@ -872,12 +877,17 @@
           <div class="flex-1 min-w-0 relative" id="prompt-wrapper" phx-update="ignore">
             <textarea
               name="prompt"
-              placeholder="Send a message... (@ files, # sessions, ## projects, / commands)"
+              placeholder={
+                if @node_unavailable,
+                  do: "This session's node is not connected — sending is disabled",
+                  else: "Send a message... (@ files, # sessions, ## projects, / commands)"
+              }
               class="textarea textarea-bordered w-full resize-none overflow-y-auto leading-normal max-h-[7.5rem]"
               autofocus
               rows="1"
               phx-hook="Autocomplete"
               id="prompt-input"
+              disabled={@node_unavailable != nil}
             ></textarea>
             <div
               id="autocomplete-dropdown"
@@ -894,7 +904,7 @@
           >
             <.icon name="hero-stop" class="size-5" />
           </button>
-          <.button type="submit">
+          <.button type="submit" disabled={@node_unavailable != nil}>
             Send
           </.button>
         </.form>

@@ -152,7 +152,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             text("Message delivered to session #{target_id}")
 
           {:error, reason} ->
-            error("Failed to send message to session #{target_id}: #{inspect(reason)}")
+            message =
+              Cluster.node_unavailable_message(reason) ||
+                "Failed to send message to session #{target_id}: #{inspect(reason)}"
+
+            error(message)
         end
 
       nil ->
@@ -231,9 +235,18 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
             case HubRPC.create_session(session_attrs) do
               {:ok, session} ->
-                {:ok, _} = Cluster.start_session(runner_node, session.id, session)
-                Cluster.send_message(runner_node, session.id, args["prompt"])
-                text("Session #{session.id} started in #{directory}")
+                case Cluster.start_session(runner_node, session.id, session) do
+                  {:ok, _} ->
+                    Cluster.send_message(runner_node, session.id, args["prompt"])
+                    text("Session #{session.id} started in #{directory}")
+
+                  {:error, reason} ->
+                    message =
+                      Cluster.node_unavailable_message(reason) ||
+                        "Session #{session.id} created but failed to start: #{inspect(reason)}"
+
+                    error(message)
+                end
 
               {:error, changeset} ->
                 error("Failed to create session: #{inspect(changeset.errors)}")

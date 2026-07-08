@@ -121,27 +121,52 @@ defmodule OrcaHub.Discord.Bridge do
       "Discord dispatch: channel=#{mapping.discord_channel_id} saved=#{length(saved)} text_len=#{text_len} branch=#{branch}"
     )
 
-    if String.trim(msg[:text] || "") == "" do
-      # File-only mention: no conversation. Do NOT advance the watermark, so the
-      # backfill window stays open for the next text mention.
-      :ok
-    else
-      session_id = resolve_session(mapping, project)
-      runner_node = Cluster.project_node_for(project)
+    runner_node = Cluster.project_node_for(project)
 
-      HubRPC.set_discord_channel_session(mapping, session_id)
+    cond do
+      String.trim(msg[:text] || "") == "" ->
+        # File-only mention: no conversation. Do NOT advance the watermark, so the
+        # backfill window stays open for the next text mention.
+        :ok
 
-      unless Cluster.session_alive?(runner_node, session_id) do
-        session = HubRPC.get_session(session_id)
-        Cluster.start_session(runner_node, session_id, session)
-      end
+      not Cluster.node_available?(runner_node) ->
+        # Never create/run a session on the wrong node — reply so the channel
+        # isn't left hanging, and leave the watermark alone so this mention is
+        # picked up again once the node reconnects.
+        Logger.warning(
+          "Discord dispatch skipped: node #{inspect(runner_node)} is not currently connected"
+        )
 
-      Cluster.send_message(runner_node, session_id, build_prompt(mapping, msg, saved))
-      capture_reply(session_id, mapping.discord_channel_id, message_id)
-      # Advance the watermark only after a successful dispatch, so a failed send
-      # (which raises out of here) leaves the backfill window open for a retry.
-      update_watermark(mapping, message_id)
+        post_node_unavailable_reply(runner_node, mapping.discord_channel_id, message_id)
+
+      true ->
+        session_id = resolve_session(mapping, project)
+
+        HubRPC.set_discord_channel_session(mapping, session_id)
+
+        unless Cluster.session_alive?(runner_node, session_id) do
+          session = HubRPC.get_session(session_id)
+          Cluster.start_session(runner_node, session_id, session)
+        end
+
+        Cluster.send_message(runner_node, session_id, build_prompt(mapping, msg, saved))
+        capture_reply(session_id, mapping.discord_channel_id, message_id)
+        # Advance the watermark only after a successful dispatch, so a failed send
+        # (which raises out of here) leaves the backfill window open for a retry.
+        update_watermark(mapping, message_id)
     end
+  end
+
+  defp post_node_unavailable_reply(runner_node, discord_channel_id, message_id) do
+    channel_id = String.to_integer(discord_channel_id)
+    message = Cluster.node_unavailable_message({:node_unavailable, runner_node})
+
+    Nostrum.Api.Message.create(channel_id,
+      content: message,
+      message_reference: %{message_id: message_id}
+    )
+  rescue
+    e -> Logger.error("Discord node-unavailable reply post failed: #{Exception.message(e)}")
   end
 
   # ------------------------------------------------------------------

@@ -283,7 +283,11 @@ defmodule OrcaHubWeb.ProjectLive.Index do
            |> browse_to(new_path)}
 
         {:error, reason} ->
-          {:noreply, put_flash(socket, :error, "Failed to create folder: #{reason}")}
+          message =
+            Cluster.node_unavailable_message({:error, reason}) ||
+              "Failed to create folder: #{inspect(reason)}"
+
+          {:noreply, put_flash(socket, :error, message)}
       end
     end
   end
@@ -318,7 +322,8 @@ defmodule OrcaHubWeb.ProjectLive.Index do
           put_flash(socket, :info, "Sync complete: #{output}")
 
         {:error, output} ->
-          put_flash(socket, :error, "Sync failed: #{output}")
+          message = Cluster.node_unavailable_message({:error, output}) || "Sync failed: #{output}"
+          put_flash(socket, :error, message)
       end
 
     # Re-fetch status for this project

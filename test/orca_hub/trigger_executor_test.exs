@@ -1,7 +1,7 @@
 defmodule OrcaHub.TriggerExecutorTest do
   use OrcaHub.DataCase, async: true
 
-  alias OrcaHub.{Projects, Sessions, Triggers}
+  alias OrcaHub.{Projects, Sessions, TriggerExecutor, Triggers}
 
   setup do
     {:ok, project} = Projects.create_project(%{name: "Test", directory: "/tmp/test"})
@@ -133,6 +133,52 @@ defmodule OrcaHub.TriggerExecutorTest do
         })
 
       assert trigger.last_session_id == nil
+    end
+  end
+
+  # Regression: a trigger whose project is assigned to an offline node used to
+  # silently run on THIS node instead (old runner_node_for/project_node_for
+  # fallback) — creating a session, bumping last_fired_at, and messaging a
+  # runner that was never actually reachable from where the trigger claims to
+  # have run. It must now skip entirely and leave no trace.
+  describe "execute/1 and execute_webhook/2 skip when the project's node is offline" do
+    setup %{trigger: trigger} do
+      {:ok, project} =
+        Projects.create_project(%{
+          name: "Offline project",
+          directory: "/tmp/offline_trigger_test",
+          node: "debian@totally-offline-host"
+        })
+
+      {:ok, trigger} = Triggers.update_trigger(trigger, %{project_id: project.id})
+      %{trigger: trigger, project: project}
+    end
+
+    test "execute/1 skips: no session created, trigger untouched", %{trigger: trigger} do
+      session_count_before = OrcaHub.Repo.aggregate(Sessions.Session, :count)
+
+      assert TriggerExecutor.execute(trigger.id) == :ok
+
+      assert OrcaHub.Repo.aggregate(Sessions.Session, :count) == session_count_before
+      reloaded = Triggers.get_trigger!(trigger.id)
+      assert reloaded.last_fired_at == nil
+      assert reloaded.last_session_id == nil
+    end
+
+    test "execute_webhook/2 skips: returns an error, no session created", %{trigger: trigger} do
+      session_count_before = OrcaHub.Repo.aggregate(Sessions.Session, :count)
+
+      assert TriggerExecutor.execute_webhook(trigger.id, %{}) == {:error, :node_unavailable}
+
+      assert OrcaHub.Repo.aggregate(Sessions.Session, :count) == session_count_before
+      reloaded = Triggers.get_trigger!(trigger.id)
+      assert reloaded.last_fired_at == nil
+    end
+
+    test "a disabled trigger on an offline node still just reports disabled, not node-unavailable",
+         %{trigger: trigger} do
+      {:ok, trigger} = Triggers.update_trigger(trigger, %{enabled: false})
+      assert TriggerExecutor.execute(trigger.id) == :ok
     end
   end
 end

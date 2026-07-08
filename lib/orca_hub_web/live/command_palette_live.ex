@@ -259,8 +259,17 @@ defmodule OrcaHubWeb.CommandPaletteLive do
 
     case HubRPC.create_session(attrs) do
       {:ok, session} ->
-        {:ok, _} = Cluster.start_session(runner_node, session.id, session)
-        {:noreply, socket |> close_palette() |> push_navigate(to: "/sessions/#{session.id}")}
+        case Cluster.start_session(runner_node, session.id, session) do
+          {:ok, _} ->
+            {:noreply, socket |> close_palette() |> push_navigate(to: "/sessions/#{session.id}")}
+
+          {:error, reason} ->
+            message =
+              Cluster.node_unavailable_message(reason) ||
+                "Session created but failed to start runner"
+
+            {:noreply, socket |> close_palette() |> put_flash(:error, message)}
+        end
 
       {:error, _} ->
         {:noreply, socket |> close_palette() |> put_flash(:error, "Failed to create session")}

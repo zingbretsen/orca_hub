@@ -151,6 +151,69 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert Repo.aggregate(Session, :count) == count_before
     end
 
+    test "the caller's project on an offline node: clean error, no local start, no reassignment",
+         %{dir: dir} do
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "offline-mcp-project",
+          directory: dir,
+          node: "debian@totally-offline-host"
+        })
+
+      {:ok, caller} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          project_id: project.id,
+          orchestrator: true
+        })
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi"},
+          %{orca_session_id: caller.id, orchestrator: true}
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "not currently connected"
+
+      # The session row IS created (assigned to the project's real node,
+      # per design — never silently reassigned elsewhere), but no local
+      # SessionRunner was started for it. Scoped to this test's own
+      # project_id — mix test runs against the dev DB (see [[test-db-config]]
+      # in memory), so a bare Repo.all(Session) would see unrelated rows.
+      [new_session] =
+        Repo.all(Session) |> Enum.filter(&(&1.project_id == project.id and &1.id != caller.id))
+
+      assert new_session.runner_node == "debian@totally-offline-host"
+      refute SessionSupervisor.session_alive?(new_session.id)
+    end
+  end
+
+  describe "send_message_to_session — offline target node" do
+    test "returns a clean node-unavailable error, never starts a runner locally", %{dir: dir} do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: "debian@totally-offline-host"
+        })
+
+      result =
+        SessionsTool.call(
+          "send_message_to_session",
+          %{"session_id" => target.id, "message" => "hello"},
+          %{orca_session_id: nil}
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "not currently connected"
+      refute SessionSupervisor.session_alive?(target.id)
+    end
+  end
+
+  describe "start_session backend/model params — model" do
     test "model passes through onto the created session row", %{state: state} do
       Application.put_env(:orca_hub, :codex_executable, @codex_stub)
       on_exit(fn -> Application.delete_env(:orca_hub, :codex_executable) end)

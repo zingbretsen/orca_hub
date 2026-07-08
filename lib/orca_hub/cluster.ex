@@ -107,10 +107,44 @@ defmodule OrcaHub.Cluster do
 
   @doc """
   Call `mod.fun(args)` on a specific node. Passthrough if it's the local node.
+
+  Never silently substitutes a different node for the one requested: refuses
+  with `{:error, :node_unassigned}` when `n` is `nil` (entity has no assigned
+  node) and `{:error, {:node_unavailable, n}}` when `n` is a node that isn't
+  currently connected, instead of letting `:erpc` raise/return a noconnection
+  error for an action we should never have attempted in the first place.
   """
   def rpc(n, mod, fun, args, timeout \\ @timeout)
+  def rpc(nil, _mod, _fun, _args, _timeout), do: {:error, :node_unassigned}
   def rpc(n, mod, fun, args, _timeout) when n == node(), do: apply(mod, fun, args)
-  def rpc(n, mod, fun, args, timeout), do: :erpc.call(n, mod, fun, args, timeout)
+
+  def rpc(n, mod, fun, args, timeout) do
+    if node_available?(n) do
+      :erpc.call(n, mod, fun, args, timeout)
+    else
+      {:error, {:node_unavailable, n}}
+    end
+  end
+
+  @doc """
+  Shared user-facing text for the node-unassigned/node-unavailable errors
+  produced by `rpc/5` (and by `session_alive?/2`/`terminal_alive?/2`
+  observing the same conditions), so every LiveView/controller/tool surfaces
+  the same wording instead of each inventing its own.
+  """
+  def node_unavailable_message(:node_unassigned),
+    do: "This session has no assigned node."
+
+  def node_unavailable_message({:node_unavailable, n}),
+    do: "This session's node (#{node_name(n)}) is not currently connected."
+
+  def node_unavailable_message({:error, reason}), do: node_unavailable_message(reason)
+  def node_unavailable_message(_), do: nil
+
+  @doc "Is `result` one of rpc/5's node-unassigned/node-unavailable errors?"
+  def node_unavailable_error?({:error, :node_unassigned}), do: true
+  def node_unavailable_error?({:error, {:node_unavailable, _}}), do: true
+  def node_unavailable_error?(_), do: false
 
   # -------------------------------------------------------------------
   # Session queries
@@ -174,7 +208,19 @@ defmodule OrcaHub.Cluster do
   end
 
   def stop_session(n, session_id), do: rpc(n, SessionSupervisor, :stop_session, [session_id])
-  def session_alive?(n, session_id), do: rpc(n, SessionSupervisor, :session_alive?, [session_id])
+
+  # Normalizes rpc/5's {:error, :node_unassigned | {:node_unavailable, _}} to
+  # `false` so `unless`/`if Cluster.session_alive?(...)` keeps working as a
+  # plain boolean check — "can't confirm it's alive" reads as "not alive"
+  # here, which is what callers want (e.g. don't skip start_session because
+  # of a stale truthy error tuple; let start_session's own rpc/5 gate refuse
+  # the unavailable node cleanly instead).
+  def session_alive?(n, session_id) do
+    case rpc(n, SessionSupervisor, :session_alive?, [session_id]) do
+      {:error, _} -> false
+      alive? -> alive?
+    end
+  end
 
   # The runner may have been stopped between page load and send — e.g. the
   # abandoned-session cleanup in SessionLive.Show.terminate/2 racing a page
@@ -186,9 +232,17 @@ defmodule OrcaHub.Cluster do
         :ok
       else
         case start_session(n, session_id) do
-          {:ok, _} -> :ok
-          {:error, {:already_started, _}} -> :ok
-          {:error, reason} -> {:error, {:not_started, reason}}
+          {:ok, _} ->
+            :ok
+
+          {:error, {:already_started, _}} ->
+            :ok
+
+          # Node-unavailable/unassigned refusals pass through as-is (not
+          # wrapped in :not_started) — this isn't "we tried to start it and
+          # it failed", it's "we correctly refused to start it anywhere".
+          {:error, reason} = error ->
+            if node_unavailable_error?(error), do: error, else: {:error, {:not_started, reason}}
         end
       end
 
@@ -272,30 +326,60 @@ defmodule OrcaHub.Cluster do
     Map.new(tagged_results, fn {n, item} -> {id_fn.(item), n} end)
   end
 
+  @doc "Is node `n` currently connected to this cluster (or is it this node)?"
+  def node_available?(nil), do: false
+  def node_available?(n) when is_atom(n), do: n in nodes()
+
+  # Node name strings in the DB are always written by our own code (via
+  # `node()`/`Atom.to_string/1` at assignment time), so converting back with
+  # to_atom/1 is safe — and required: to_existing_atom/1 raises for a node
+  # this process has never locally seen, which is exactly the "assigned but
+  # currently offline" case callers need represented as a value, not a crash.
+  defp node_atom_for(node_string), do: String.to_atom(node_string)
+
   @doc """
   Determine which node should run a session, based on its runner_node field.
-  Falls back to this node if not set.
+
+  Returns the ASSIGNED node even when it is currently unreachable — this
+  helper never re-assigns a session to another node just because its own
+  node is offline. Callers about to act on a session must check
+  `node_available?/1` (or go through `rpc/5`, which already refuses
+  unavailable/unassigned nodes) rather than treating the return value as
+  "safe to act on locally".
+
+  Sessions have no legacy nil fallback: every creation path stamps
+  `runner_node`, and a 2026-07 production audit found only long-archived
+  (pre-stamping) rows with a nil/empty value. A nil/empty `runner_node`
+  is therefore treated as "unassigned" (returns `nil`) rather than
+  silently local.
+
+  For non-session entities (e.g. terminals), a nil runner_node instead
+  falls back to this node — unlike sessions, that's a legitimate "not
+  started anywhere yet" state (see `OrcaHub.TerminalRunner`), not legacy
+  data.
   """
+  def runner_node_for(%OrcaHub.Sessions.Session{runner_node: runner_node})
+      when is_binary(runner_node) and runner_node != "" do
+    node_atom_for(runner_node)
+  end
+
+  def runner_node_for(%OrcaHub.Sessions.Session{}), do: nil
+
   def runner_node_for(%{runner_node: runner_node})
       when is_binary(runner_node) and runner_node != "" do
-    node_atom = String.to_existing_atom(runner_node)
-    if node_atom in nodes(), do: node_atom, else: node()
-  rescue
-    ArgumentError -> node()
+    node_atom_for(runner_node)
   end
 
   def runner_node_for(_), do: node()
 
   @doc """
   Determine which node a project's directory lives on, based on its node field.
-  Falls back to this node if not set.
+  Falls back to this node if not set — nil means "no clustering configured"
+  (single-node/dev default), which is real semantics, not a compatibility shim.
   """
   def project_node_for(%{node: project_node})
       when is_binary(project_node) and project_node != "" do
-    node_atom = String.to_existing_atom(project_node)
-    if node_atom in nodes(), do: node_atom, else: node()
-  rescue
-    ArgumentError -> node()
+    node_atom_for(project_node)
   end
 
   def project_node_for(_), do: node()
@@ -320,6 +404,13 @@ defmodule OrcaHub.Cluster do
     |> Enum.map(fn {_n, item} -> {runner_node_for(item), item} end)
   end
 
+  # Unlike get_session!/2 (which always queries the single shared hub DB
+  # directly via HubRPC, ignoring n), this stays routed through rpc/5:
+  # terminals still support the legacy multi-hub topology (see moduledoc)
+  # where each node owns its own DB, so a terminal genuinely may only be
+  # visible from its own node. Refuses cleanly ({:error, ...}) rather than
+  # raising when that node is offline — callers must handle a non-Terminal
+  # result (see terminal_live/show.ex's get_terminal_safe/2).
   def get_terminal!(n, terminal_id), do: rpc(n, HubRPC, :get_terminal!, [terminal_id])
 
   def create_terminal(n, attrs) do
@@ -350,8 +441,13 @@ defmodule OrcaHub.Cluster do
 
   def stop_terminal(n, terminal_id), do: rpc(n, TerminalSupervisor, :stop_terminal, [terminal_id])
 
-  def terminal_alive?(n, terminal_id),
-    do: rpc(n, TerminalSupervisor, :terminal_alive?, [terminal_id])
+  # See session_alive?/2 — same normalization, same reason.
+  def terminal_alive?(n, terminal_id) do
+    case rpc(n, TerminalSupervisor, :terminal_alive?, [terminal_id]) do
+      {:error, _} -> false
+      alive? -> alive?
+    end
+  end
 
   # -------------------------------------------------------------------
   # Node login (Claude Code OAuth, per-node)

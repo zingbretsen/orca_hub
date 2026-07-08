@@ -9,33 +9,42 @@ defmodule OrcaHub.TriggerExecutor do
 
   def execute(trigger_id) do
     trigger = HubRPC.get_trigger!(trigger_id)
+    runner_node = runner_node_for(trigger)
 
-    if trigger.enabled do
-      Logger.info("Firing trigger #{trigger.name} (#{trigger_id})")
+    cond do
+      not trigger.enabled ->
+        Logger.info("Trigger #{trigger_id} is disabled, skipping")
+        :ok
 
-      session_id = resolve_session(trigger)
-      runner_node = runner_node_for(trigger)
+      not Cluster.node_available?(runner_node) ->
+        Logger.warning(
+          "Trigger #{trigger.name} (#{trigger_id}) skipped: node #{inspect(runner_node)} is not currently connected"
+        )
 
-      HubRPC.update_trigger(trigger, %{
-        last_fired_at: DateTime.utc_now() |> DateTime.truncate(:second),
-        last_session_id: session_id
-      })
+        :ok
 
-      unless Cluster.session_alive?(runner_node, session_id) do
-        session = HubRPC.get_session(session_id)
-        Cluster.start_session(runner_node, session_id, session)
-      end
+      true ->
+        Logger.info("Firing trigger #{trigger.name} (#{trigger_id})")
 
-      Cluster.send_message(runner_node, session_id, build_prompt(trigger))
+        session_id = resolve_session(trigger)
 
-      if trigger.archive_on_complete do
-        subscribe_for_completion(session_id)
-      end
+        HubRPC.update_trigger(trigger, %{
+          last_fired_at: DateTime.utc_now() |> DateTime.truncate(:second),
+          last_session_id: session_id
+        })
 
-      :ok
-    else
-      Logger.info("Trigger #{trigger_id} is disabled, skipping")
-      :ok
+        unless Cluster.session_alive?(runner_node, session_id) do
+          session = HubRPC.get_session(session_id)
+          Cluster.start_session(runner_node, session_id, session)
+        end
+
+        Cluster.send_message(runner_node, session_id, build_prompt(trigger))
+
+        if trigger.archive_on_complete do
+          subscribe_for_completion(session_id)
+        end
+
+        :ok
     end
   rescue
     # Defensive boundary: triggers run from the scheduler or a background
@@ -48,34 +57,43 @@ defmodule OrcaHub.TriggerExecutor do
 
   def execute_webhook(trigger_id, payload) do
     trigger = HubRPC.get_trigger!(trigger_id)
+    runner_node = runner_node_for(trigger)
 
-    if trigger.enabled do
-      Logger.info("Firing webhook trigger #{trigger.name} (#{trigger_id})")
+    cond do
+      not trigger.enabled ->
+        Logger.info("Webhook trigger #{trigger_id} is disabled, skipping")
+        :ok
 
-      session_id = resolve_session(trigger)
-      runner_node = runner_node_for(trigger)
+      not Cluster.node_available?(runner_node) ->
+        Logger.warning(
+          "Webhook trigger #{trigger.name} (#{trigger_id}) skipped: node #{inspect(runner_node)} is not currently connected"
+        )
 
-      HubRPC.update_trigger(trigger, %{
-        last_fired_at: DateTime.utc_now() |> DateTime.truncate(:second),
-        last_session_id: session_id
-      })
+        {:error, :node_unavailable}
 
-      unless Cluster.session_alive?(runner_node, session_id) do
-        session = HubRPC.get_session(session_id)
-        Cluster.start_session(runner_node, session_id, session)
-      end
+      true ->
+        Logger.info("Firing webhook trigger #{trigger.name} (#{trigger_id})")
 
-      prompt = build_prompt(trigger, payload)
-      Cluster.send_message(runner_node, session_id, prompt)
+        session_id = resolve_session(trigger)
 
-      if trigger.archive_on_complete do
-        subscribe_for_completion(session_id)
-      end
+        HubRPC.update_trigger(trigger, %{
+          last_fired_at: DateTime.utc_now() |> DateTime.truncate(:second),
+          last_session_id: session_id
+        })
 
-      {:ok, session_id}
-    else
-      Logger.info("Webhook trigger #{trigger_id} is disabled, skipping")
-      :ok
+        unless Cluster.session_alive?(runner_node, session_id) do
+          session = HubRPC.get_session(session_id)
+          Cluster.start_session(runner_node, session_id, session)
+        end
+
+        prompt = build_prompt(trigger, payload)
+        Cluster.send_message(runner_node, session_id, prompt)
+
+        if trigger.archive_on_complete do
+          subscribe_for_completion(session_id)
+        end
+
+        {:ok, session_id}
     end
   rescue
     # Defensive boundary: webhook execution runs from a background task; any

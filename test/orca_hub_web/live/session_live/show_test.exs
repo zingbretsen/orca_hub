@@ -29,12 +29,18 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf(dir) end)
 
+    # runner_node stamped explicitly, matching every real session-creation
+    # path (session_live/index.ex, project_live/show.ex, etc.) — a bare nil
+    # runner_node is only ever transient (pre-first-run) or legacy/archived
+    # data in production, never how these fixtures are meant to represent a
+    # normal, locally-runnable session.
     {:ok, claude_session} =
       Sessions.create_session(%{
         directory: dir,
         backend: "claude",
         code_exec: false,
-        orchestrator: false
+        orchestrator: false,
+        runner_node: Atom.to_string(node())
       })
 
     {:ok, codex_session} =
@@ -42,7 +48,8 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
         directory: dir,
         backend: "codex",
         code_exec: false,
-        orchestrator: false
+        orchestrator: false,
+        runner_node: Atom.to_string(node())
       })
 
     {:ok, pi_session} =
@@ -50,7 +57,8 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
         directory: dir,
         backend: "pi",
         code_exec: false,
-        orchestrator: false
+        orchestrator: false,
+        runner_node: Atom.to_string(node())
       })
 
     on_exit(fn ->
@@ -447,6 +455,77 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       assert {:error, {:not_started, %File.Error{}}} =
                OrcaHub.Cluster.send_message(node(), session.id, "hello")
+    end
+  end
+
+  # Regression for the real incident: a session's runner_node pointed at an
+  # offline agent; mounting /sessions/:id on a different node used to fall
+  # back to `node()` and silently start (and crash) a local SessionRunner
+  # for a directory that doesn't exist on this node. Mount must now treat
+  # the assigned node as unavailable and never touch SessionSupervisor
+  # locally for it.
+  describe "mount with an offline/unassigned runner_node (incident regression)" do
+    test "session assigned to a node not in the cluster: no local runner started, no crash", %{
+      conn: conn
+    } do
+      dir = Path.join(System.tmp_dir!(), "offline_node_#{System.unique_integer([:positive])}")
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: "debian@totally-offline-host"
+        })
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      refute SessionSupervisor.session_alive?(session.id)
+      assert html =~ "not currently connected"
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.node_unavailable == {:node_unavailable, :"debian@totally-offline-host"}
+      assert assigns.session_node == :"debian@totally-offline-host"
+    end
+
+    test "session with nil runner_node (legacy/unassigned): treated as unassigned, no local start",
+         %{conn: conn} do
+      dir = Path.join(System.tmp_dir!(), "unassigned_node_#{System.unique_integer([:positive])}")
+
+      {:ok, session} = Sessions.create_session(%{directory: dir, backend: "claude"})
+      {:ok, session} = Sessions.update_session(session, %{runner_node: nil})
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      refute SessionSupervisor.session_alive?(session.id)
+      assert html =~ "no assigned node"
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.node_unavailable == :node_unassigned
+      assert assigns.session_node == nil
+    end
+
+    test "session assigned to the local node still starts a runner as before", %{conn: conn} do
+      dir = Path.join(System.tmp_dir!(), "local_node_#{System.unique_integer([:positive])}")
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn ->
+        if SessionSupervisor.session_alive?(session.id),
+          do: SessionSupervisor.stop_session(session.id)
+      end)
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert SessionSupervisor.session_alive?(session.id)
+      refute html =~ "not currently connected"
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.node_unavailable == nil
     end
   end
 

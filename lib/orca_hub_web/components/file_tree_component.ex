@@ -249,7 +249,7 @@ defmodule OrcaHubWeb.FileTreeComponent do
     show_hidden = Keyword.get(opts, :show_hidden, false)
 
     try do
-      Cluster.rpc(target_node, Projects, :list_dir_entries, [
+      rpc_list(target_node, Projects, :list_dir_entries, [
         project,
         "",
         [show_hidden: show_hidden, prefetch: true]
@@ -269,7 +269,7 @@ defmodule OrcaHubWeb.FileTreeComponent do
 
     try do
       children =
-        Cluster.rpc(target_node, Projects, :list_dir_entries, [
+        rpc_list(target_node, Projects, :list_dir_entries, [
           project,
           path,
           [show_hidden: show_hidden, prefetch: true]
@@ -284,7 +284,7 @@ defmodule OrcaHubWeb.FileTreeComponent do
 
   defp eager_tree(target_node, project, show_hidden) do
     files =
-      Cluster.rpc(target_node, Projects, :list_editable_files, [
+      rpc_list(target_node, Projects, :list_editable_files, [
         project,
         [show_hidden: show_hidden]
       ])
@@ -300,7 +300,7 @@ defmodule OrcaHubWeb.FileTreeComponent do
 
   defp filtered_tree(target_node, project, _file_tree, query, show_hidden) do
     files =
-      Cluster.rpc(target_node, Projects, :list_editable_files, [
+      rpc_list(target_node, Projects, :list_editable_files, [
         project,
         [show_hidden: show_hidden]
       ])
@@ -308,6 +308,18 @@ defmodule OrcaHubWeb.FileTreeComponent do
     files
     |> Projects.build_file_tree()
     |> Projects.filter_file_tree(query)
+  end
+
+  # rpc/5 returns {:error, :node_unassigned | {:node_unavailable, _}} instead
+  # of a list when target_node is offline/unassigned — normalize to an empty
+  # list (empty tree) rather than propagating the error tuple into
+  # Projects.build_file_tree/1 or a template :for. Genuine :undef errors
+  # (old remote code, see undef_error?/1) still raise through untouched.
+  defp rpc_list(target_node, mod, fun, args) do
+    case Cluster.rpc(target_node, mod, fun, args) do
+      list when is_list(list) -> list
+      _ -> []
+    end
   end
 
   defp dir_loaded?(tree, path) do

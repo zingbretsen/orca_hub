@@ -204,7 +204,13 @@ defmodule OrcaHub.SessionHeartbeat do
               Cluster.start_session(node, session_id, session)
             end
 
-            Cluster.send_message(node, session_id, message)
+            case Cluster.send_message(node, session_id, message) do
+              :ok ->
+                :ok
+
+              {:error, reason} ->
+                Logger.warning("Heartbeat to session #{session_id} failed: #{inspect(reason)}")
+            end
           else
             Logger.debug(
               "Skipping heartbeat for session #{session_id} (status: #{session.status})"

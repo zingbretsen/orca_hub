@@ -1,5 +1,6 @@
 defmodule OrcaHubWeb.WebhookController do
   use OrcaHubWeb, :controller
+  require Logger
 
   alias OrcaHub.{Cluster, HubRPC, TriggerExecutor}
 
@@ -18,7 +19,18 @@ defmodule OrcaHubWeb.WebhookController do
           if trigger.project, do: Cluster.project_node_for(trigger.project), else: node()
 
         Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-          Cluster.rpc(runner_node, TriggerExecutor, :execute_webhook, [trigger.id, payload])
+          case Cluster.rpc(runner_node, TriggerExecutor, :execute_webhook, [trigger.id, payload]) do
+            {:error, {:node_unavailable, _}} = error ->
+              Logger.warning(
+                "Webhook trigger #{trigger.name} (#{trigger.id}) skipped: " <>
+                  "node #{inspect(runner_node)} is not currently connected"
+              )
+
+              error
+
+            other ->
+              other
+          end
         end)
 
         json(conn, %{ok: true, trigger: trigger.name})

@@ -97,6 +97,13 @@ defmodule OrcaHubWeb.QueueLive do
 
           {:error, :busy} ->
             {:noreply, put_flash(socket, :error, "Session is busy")}
+
+          {:error, reason} ->
+            message =
+              Cluster.node_unavailable_message(reason) ||
+                "Failed to send message: #{inspect(reason)}"
+
+            {:noreply, put_flash(socket, :error, message)}
         end
     end
   end
@@ -116,6 +123,13 @@ defmodule OrcaHubWeb.QueueLive do
 
         {:error, :busy} ->
           {:noreply, put_flash(socket, :error, "Session is busy")}
+
+        {:error, reason} ->
+          message =
+            Cluster.node_unavailable_message(reason) ||
+              "Failed to send message: #{inspect(reason)}"
+
+          {:noreply, put_flash(socket, :error, message)}
       end
     end
   end
@@ -169,6 +183,13 @@ defmodule OrcaHubWeb.QueueLive do
 
           {:error, :busy} ->
             {:noreply, put_flash(socket, :error, "Session is busy")}
+
+          {:error, reason} ->
+            message =
+              Cluster.node_unavailable_message(reason) ||
+                "Failed to send message: #{inspect(reason)}"
+
+            {:noreply, put_flash(socket, :error, message)}
         end
 
       {:error, _changeset} ->
@@ -190,6 +211,12 @@ defmodule OrcaHubWeb.QueueLive do
 
       {:error, :busy} ->
         {:noreply, put_flash(socket, :error, "Session is busy")}
+
+      {:error, reason} ->
+        message =
+          Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
+
+        {:noreply, put_flash(socket, :error, message)}
     end
   end
 
@@ -207,6 +234,12 @@ defmodule OrcaHubWeb.QueueLive do
 
       {:error, :busy} ->
         {:noreply, put_flash(socket, :error, "Session is busy")}
+
+      {:error, reason} ->
+        message =
+          Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
+
+        {:noreply, put_flash(socket, :error, message)}
     end
   end
 
@@ -224,6 +257,12 @@ defmodule OrcaHubWeb.QueueLive do
 
       {:error, :busy} ->
         {:noreply, put_flash(socket, :error, "Session is busy")}
+
+      {:error, reason} ->
+        message =
+          Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
+
+        {:noreply, put_flash(socket, :error, message)}
     end
   end
 
@@ -241,6 +280,12 @@ defmodule OrcaHubWeb.QueueLive do
 
       {:error, :busy} ->
         {:noreply, put_flash(socket, :error, "Session is busy")}
+
+      {:error, reason} ->
+        message =
+          Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
+
+        {:noreply, put_flash(socket, :error, message)}
     end
   end
 
@@ -254,6 +299,12 @@ defmodule OrcaHubWeb.QueueLive do
 
       {:error, :busy} ->
         {:noreply, put_flash(socket, :error, "Session is busy")}
+
+      {:error, reason} ->
+        message =
+          Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
+
+        {:noreply, put_flash(socket, :error, message)}
     end
   end
 
@@ -295,6 +346,12 @@ defmodule OrcaHubWeb.QueueLive do
 
       {:error, :busy} ->
         {:noreply, put_flash(socket, :error, "Session is busy")}
+
+      {:error, reason} ->
+        message =
+          Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
+
+        {:noreply, put_flash(socket, :error, message)}
     end
   end
 

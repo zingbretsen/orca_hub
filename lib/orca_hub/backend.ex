@@ -346,6 +346,7 @@ defmodule OrcaHub.Backend do
     OrcaHub.Backend.Cache.get_or_run({:available_on, node}, @availability_ttl_ms, fn ->
       OrcaHub.Cluster.rpc(node, __MODULE__, :installed_backends, [])
     end)
+    |> list_or_fallback([{"claude", "Claude"}])
   rescue
     _ -> [{"claude", "Claude"}]
   end
@@ -405,9 +406,17 @@ defmodule OrcaHub.Backend do
     OrcaHub.Backend.Cache.get_or_run({:models_for, backend, node}, @models_ttl_ms, fn ->
       OrcaHub.Cluster.rpc(node, __MODULE__, :models_for, [backend])
     end)
+    |> list_or_fallback([])
   rescue
     _ -> []
   end
+
+  # rpc/5 refuses a nil/unavailable target node by returning
+  # {:error, :node_unassigned | {:node_unavailable, _}} rather than raising
+  # (see OrcaHub.Cluster.rpc/5) — treat that the same as the pre-existing
+  # unreachable-node rescue clause below: fall back, don't propagate the tuple.
+  defp list_or_fallback(list, _fallback) when is_list(list), do: list
+  defp list_or_fallback(_non_list, fallback), do: fallback
 
   defp backend_string(%{backend: backend}), do: backend_string(backend)
   defp backend_string(nil), do: "claude"
