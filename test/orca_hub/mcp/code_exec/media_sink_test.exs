@@ -282,7 +282,7 @@ defmodule OrcaHub.MCP.CodeExec.MediaSinkTest do
     test "the first media block uses the requested filename, with the mime extension appended" do
       session_id = unique_session()
       put_session(session_id)
-      MediaSink.put_requested_filename("shot")
+      MediaSink.put_requested_filename({:media, "shot"})
 
       bytes = "screenshot bytes"
       content = [%{"type" => "image", "data" => Base.encode64(bytes), "mimeType" => "image/png"}]
@@ -296,7 +296,7 @@ defmodule OrcaHub.MCP.CodeExec.MediaSinkTest do
     test "a requested filename that already has the right extension is not doubled up" do
       session_id = unique_session()
       put_session(session_id)
-      MediaSink.put_requested_filename("shot.png")
+      MediaSink.put_requested_filename({:media, "shot.png"})
 
       content = [%{"type" => "image", "data" => Base.encode64("x"), "mimeType" => "image/png"}]
       assert {[note], true} = MediaSink.render(content, "browser_take_screenshot")
@@ -307,7 +307,7 @@ defmodule OrcaHub.MCP.CodeExec.MediaSinkTest do
     test "an unsafe requested filename is sanitized before use" do
       session_id = unique_session()
       put_session(session_id)
-      MediaSink.put_requested_filename("../../etc/shot")
+      MediaSink.put_requested_filename({:media, "../../etc/shot"})
 
       content = [%{"type" => "image", "data" => Base.encode64("x"), "mimeType" => "image/png"}]
       assert {[note], true} = MediaSink.render(content, "browser_take_screenshot")
@@ -322,7 +322,7 @@ defmodule OrcaHub.MCP.CodeExec.MediaSinkTest do
     test "only the first media block gets the requested filename; later blocks use default naming" do
       session_id = unique_session()
       put_session(session_id)
-      MediaSink.put_requested_filename("shot")
+      MediaSink.put_requested_filename({:media, "shot"})
 
       content = [
         %{"type" => "image", "data" => Base.encode64("a"), "mimeType" => "image/png"},
@@ -338,13 +338,86 @@ defmodule OrcaHub.MCP.CodeExec.MediaSinkTest do
     test "a requested filename does not leak into the next render/2 call" do
       session_id = unique_session()
       put_session(session_id)
-      MediaSink.put_requested_filename("shot")
+      MediaSink.put_requested_filename({:media, "shot"})
 
       content = [%{"type" => "image", "data" => Base.encode64("a"), "mimeType" => "image/png"}]
       MediaSink.render(content, "browser_take_screenshot")
 
       assert {[note], true} = MediaSink.render(content, "other_tool")
       assert Path.basename(path_from_note(note)) =~ ~r/^other_tool-\d+-1\.png$/
+    end
+
+    test "a pending {:text, _} request is ignored by render/2 — a media block in that call still uses default naming" do
+      session_id = unique_session()
+      put_session(session_id)
+      MediaSink.put_requested_filename({:text, "snapshot.txt"})
+
+      content = [%{"type" => "image", "data" => Base.encode64("a"), "mimeType" => "image/png"}]
+      assert {[note], true} = MediaSink.render(content, "some_tool")
+      assert Path.basename(path_from_note(note)) =~ ~r/^some_tool-\d+-1\.png$/
+    end
+  end
+
+  describe "peek_requested_filename/0" do
+    test "returns the pending mode without consuming it" do
+      MediaSink.put_requested_filename({:text, "out.txt"})
+      assert MediaSink.peek_requested_filename() == {:text, "out.txt"}
+      assert MediaSink.peek_requested_filename() == {:text, "out.txt"}
+    end
+
+    test "returns nil when nothing is pending" do
+      MediaSink.put_requested_filename(nil)
+      assert MediaSink.peek_requested_filename() == nil
+    end
+  end
+
+  describe "save_text/2" do
+    test "writes the text verbatim under the session's media root, with no extension forced" do
+      session_id = unique_session()
+      put_session(session_id)
+
+      note = MediaSink.save_text("line one\nline two", "console-log")
+      path = path_from_note(note)
+
+      assert Path.basename(path) == "console-log"
+      assert File.read!(path) == "line one\nline two"
+
+      assert Path.dirname(path) ==
+               Path.join([System.tmp_dir!(), "orca_hub", "tool_media", session_id])
+    end
+
+    test "sanitizes the requested filename the same way render/2 does" do
+      session_id = unique_session()
+      put_session(session_id)
+
+      note = MediaSink.save_text("data", "../../etc/passwd")
+      path = path_from_note(note)
+
+      assert Path.basename(path) == ".._.._etc_passwd"
+      assert File.read!(path) == "data"
+    end
+
+    test "over the media cap: not written, a visible note instead" do
+      session_id = unique_session()
+      put_session(session_id)
+
+      huge = String.duplicate("x", 21 * 1024 * 1024)
+      note = MediaSink.save_text(huge, "huge.txt")
+
+      assert note == "[output not saved: over the media cap]"
+
+      refute File.exists?(
+               Path.join([System.tmp_dir!(), "orca_hub", "tool_media", session_id, "huge.txt"])
+             )
+    end
+
+    test "a nil text saves as an empty file rather than raising" do
+      session_id = unique_session()
+      put_session(session_id)
+
+      note = MediaSink.save_text(nil, "empty.txt")
+      path = path_from_note(note)
+      assert File.read!(path) == ""
     end
   end
 end

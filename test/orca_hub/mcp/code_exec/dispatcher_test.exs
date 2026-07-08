@@ -130,35 +130,131 @@ defmodule OrcaHub.MCP.CodeExec.DispatcherTest do
     end
   end
 
-  describe "extract_screenshot_filename/2" do
-    test "strips filename from an upstream browser_take_screenshot call" do
-      assert Dispatcher.extract_screenshot_filename(
+  describe "extract_requested_filename/2" do
+    test "strips filename from an upstream browser_take_screenshot call, tagged :media" do
+      assert Dispatcher.extract_requested_filename(
                "playwright__browser_take_screenshot",
                %{"filename" => "shot.png", "raw" => true}
-             ) == {%{"raw" => true}, "shot.png"}
+             ) == {%{"raw" => true}, {:media, "shot.png"}}
+    end
+
+    for suffix <- [
+          "browser_snapshot",
+          "browser_console_messages",
+          "browser_network_requests",
+          "browser_network_request",
+          "browser_evaluate"
+        ] do
+      test "strips filename from an upstream #{suffix} call, tagged :text" do
+        assert Dispatcher.extract_requested_filename(
+                 "playwright__#{unquote(suffix)}",
+                 %{"filename" => "out.txt", "raw" => true}
+               ) == {%{"raw" => true}, {:text, "out.txt"}}
+      end
+    end
+
+    test "the plural and singular network_request(s) suffixes are distinguished, not cross-matched" do
+      assert {_args, {:text, "a.txt"}} =
+               Dispatcher.extract_requested_filename(
+                 "playwright__browser_network_requests",
+                 %{"filename" => "a.txt"}
+               )
+
+      assert {_args, {:text, "b.txt"}} =
+               Dispatcher.extract_requested_filename(
+                 "playwright__browser_network_request",
+                 %{"filename" => "b.txt"}
+               )
     end
 
     test "leaves args untouched when there's no filename arg" do
-      assert Dispatcher.extract_screenshot_filename(
+      assert Dispatcher.extract_requested_filename(
                "playwright__browser_take_screenshot",
                %{"raw" => true}
              ) == {%{"raw" => true}, nil}
     end
 
-    test "leaves args untouched for a tool that isn't a screenshot call" do
+    test "leaves args untouched for a tool that isn't a known filename-trap tool" do
       args = %{"filename" => "shot.png"}
 
-      assert Dispatcher.extract_screenshot_filename("playwright__browser_navigate", args) ==
+      assert Dispatcher.extract_requested_filename("playwright__browser_navigate", args) ==
                {args, nil}
     end
 
     test "ignores a non-string filename value" do
       args = %{"filename" => 123}
 
-      assert Dispatcher.extract_screenshot_filename(
+      assert Dispatcher.extract_requested_filename(
                "playwright__browser_take_screenshot",
                args
              ) == {args, nil}
+
+      assert Dispatcher.extract_requested_filename(
+               "playwright__browser_evaluate",
+               args
+             ) == {args, nil}
+    end
+  end
+
+  describe "unwrap!/2 with a pending text-mode request" do
+    test "saves the full joined text output to disk and returns a single saved-to note", %{
+      session_id: session_id
+    } do
+      MediaSink.put_requested_filename({:text, "snapshot.txt"})
+
+      result = %{
+        "content" => [
+          %{"type" => "text", "text" => "line one"},
+          %{"type" => "text", "text" => "line two"}
+        ],
+        "isError" => false
+      }
+
+      value = Dispatcher.unwrap!(result, "playwright__browser_snapshot")
+
+      assert value =~ "view it with the Read tool"
+      path = path_from_note(value)
+      assert File.read!(path) == "line one\nline two"
+      assert path =~ session_id
+      assert Path.basename(path) == "snapshot.txt"
+    end
+
+    test "on isError, no file is written and the error text comes back inline as usual", %{
+      session_id: session_id
+    } do
+      MediaSink.put_requested_filename({:text, "should-not-exist.txt"})
+
+      result = %{
+        "content" => [%{"type" => "text", "text" => "evaluate failed: boom"}],
+        "isError" => true
+      }
+
+      assert_raise Tools.Error,
+                   "tool playwright__browser_evaluate failed: evaluate failed: boom",
+                   fn ->
+                     Dispatcher.unwrap!(result, "playwright__browser_evaluate")
+                   end
+
+      refute File.exists?(
+               Path.join([
+                 System.tmp_dir!(),
+                 "orca_hub",
+                 "tool_media",
+                 session_id,
+                 "should-not-exist.txt"
+               ])
+             )
+    end
+
+    test "a pending text-mode request does not leak into a later call with no request" do
+      MediaSink.put_requested_filename({:text, "first.txt"})
+
+      result = %{"content" => [%{"type" => "text", "text" => "first output"}], "isError" => false}
+      Dispatcher.unwrap!(result, "playwright__browser_snapshot")
+
+      # No new put_requested_filename here — the stash must already be clear.
+      result2 = %{"content" => [%{"type" => "text", "text" => "unrelated"}], "isError" => false}
+      assert Dispatcher.unwrap!(result2, "some_other_tool") == "unrelated"
     end
   end
 
@@ -166,7 +262,7 @@ defmodule OrcaHub.MCP.CodeExec.DispatcherTest do
     test "so a stale screenshot filename can't leak into an unrelated tool's saved media", %{
       session_id: session_id
     } do
-      MediaSink.put_requested_filename("stale-name")
+      MediaSink.put_requested_filename({:media, "stale-name"})
 
       # "unknown_first_party_tool" isn't a real tool, but Tools.call/3 handles
       # that gracefully (an error envelope) — good enough to exercise the
@@ -176,6 +272,41 @@ defmodule OrcaHub.MCP.CodeExec.DispatcherTest do
       content = [%{"type" => "image", "data" => Base.encode64("x"), "mimeType" => "image/png"}]
       assert {[note], true} = MediaSink.render(content, "some_tool")
       assert Path.basename(path_from_note(note)) =~ ~r/^some_tool-\d+-1\.png$/
+    end
+
+    test "a stale TEXT-mode request also can't leak into an unrelated tool's result", %{
+      session_id: session_id
+    } do
+      MediaSink.put_requested_filename({:text, "stale.txt"})
+
+      Dispatcher.dispatch("unknown_first_party_tool", %{}, %{orca_session_id: session_id})
+
+      result = %{"content" => [%{"type" => "text", "text" => "unrelated"}], "isError" => false}
+      assert Dispatcher.unwrap!(result, "some_tool") == "unrelated"
+    end
+  end
+
+  describe "unwrap!/2 screenshot (media-mode) behavior is unaffected by the text-mode addition" do
+    test "still saves the image block and keeps text inline", %{session_id: session_id} do
+      MediaSink.put_requested_filename({:media, "shot"})
+      png = "fake-png-bytes"
+
+      result = %{
+        "content" => [
+          %{"type" => "text", "text" => "screenshot taken"},
+          %{"type" => "image", "data" => Base.encode64(png), "mimeType" => "image/png"}
+        ],
+        "isError" => false
+      }
+
+      value = Dispatcher.unwrap!(result, "playwright__browser_take_screenshot")
+      assert value =~ "screenshot taken"
+      assert value =~ "view it with the Read tool"
+
+      path = path_from_note(value)
+      assert Path.basename(path) == "shot.png"
+      assert File.read!(path) == png
+      assert path =~ session_id
     end
   end
 

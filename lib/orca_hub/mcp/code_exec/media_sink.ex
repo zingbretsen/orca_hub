@@ -41,12 +41,21 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
   `[skipped <type>: over media cap]` instead of writing.
 
   The code-exec dispatcher (`Dispatcher.dispatch/3`) strips the `filename` arg
-  off `browser_take_screenshot` calls before forwarding upstream (playwright-mcp
-  writes the file inside its own pod when `filename` is set, returning only a
-  text block — unreachable from here) and stashes the requested name via
-  `put_requested_filename/1` so the first media block of the *next* `render/2`
-  call is saved under that name instead of the default `<tool>-<ms>-<idx>`
-  pattern.
+  off calls to a handful of playwright tools before forwarding upstream
+  (playwright-mcp writes the file inside its own pod when `filename` is set,
+  returning only a link — unreachable from here) and stashes the requested
+  name + mode via `put_requested_filename/1`:
+
+    * `{:media, name}` (`browser_take_screenshot`) — the first media block of
+      the *next* `render/2` call is saved under `name` (with a mime-derived
+      extension appended) instead of the default `<tool>-<ms>-<idx>` pattern.
+    * `{:text, name}` (`browser_snapshot`, `browser_console_messages`,
+      `browser_network_requests`/`_request`, `browser_evaluate`) — read via
+      `peek_requested_filename/0` and acted on by `Dispatcher.unwrap!/2`,
+      which saves the tool's full joined text output to disk with `save_text/2`
+      instead of returning it inline. `render/2` itself ignores this mode (it
+      only recognizes `{:media, _}`), so text-mode blocks still render
+      normally on the way to `save_text/2`.
   """
 
   alias OrcaHub.MCP.CodeExec
@@ -107,22 +116,69 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
   end
 
   @doc """
-  Stash a caller-requested filename for the first media block written by the
-  *next* `render/2` call — used by the code-exec dispatcher to carry
-  `browser_take_screenshot`'s `filename` arg through after stripping it from
-  the upstream call. Pass `nil` to clear any pending request.
+  Stash a caller-requested filename + mode for the code-exec dispatcher to
+  carry a stripped `filename` arg through after removing it from the upstream
+  call. `mode` is `nil` (no pending request), `{:media, name}` (consumed by
+  the next `render/2` call's first media block), or `{:text, name}` (consumed
+  by `Dispatcher.unwrap!/2` via `peek_requested_filename/0` + `save_text/2`).
+  Pass `nil` to clear any pending request.
   """
-  def put_requested_filename(filename) when is_binary(filename) or is_nil(filename) do
-    if filename, do: Process.put(@filename_key, filename), else: Process.delete(@filename_key)
-  end
+  def put_requested_filename(nil), do: Process.delete(@filename_key)
 
+  def put_requested_filename({mode, name}) when mode in [:media, :text] and is_binary(name),
+    do: Process.put(@filename_key, {mode, name})
+
+  @doc """
+  Peek at the pending requested-filename mode (`nil | {:media, name} |
+  {:text, name}`) without consuming it. Used by `Dispatcher.unwrap!/2` to
+  decide, before calling `render/2` (which consumes the stash), whether the
+  upcoming content should be saved to disk as a whole via `save_text/2`
+  instead of rendered block-by-block.
+  """
+  def peek_requested_filename, do: Process.get(@filename_key)
+
+  # Consumed by render/2's ctx setup on every call regardless of mode, so the
+  # stash never survives past the render it was set for — only `{:media, _}`
+  # is meaningful here; `{:text, _}` is handled upstream in Dispatcher and is
+  # simply discarded (there's no per-block filename to honor).
   defp take_requested_filename do
-    filename = Process.get(@filename_key)
+    mode = Process.get(@filename_key)
     Process.delete(@filename_key)
-    filename
+
+    case mode do
+      {:media, name} -> name
+      _ -> nil
+    end
   end
 
-  defp media_root do
+  @doc """
+  Write the full joined text output of a text-output tool call (e.g.
+  `browser_snapshot`, `browser_evaluate`) to disk under the same media root
+  `render/2` uses, named after the sanitized `requested_filename` verbatim —
+  no extension is forced (unlike media blocks there's no mime type to derive
+  one from; the agent chose the name). Returns a single note describing what
+  happened; never raises.
+  """
+  def save_text(text, requested_filename) do
+    text = text || ""
+
+    if byte_size(text) > @max_media_bytes do
+      "[output not saved: over the media cap]"
+    else
+      filename = sanitize_for_filename(requested_filename)
+      path = save_media_file(text, filename, media_root())
+      "[output saved to #{path} — view it with the Read tool]"
+    end
+  end
+
+  @doc """
+  Resolve where media/text files for the current session should be saved:
+  `<session_directory>/.agents/media/<sanitized_session_id>/`, falling back to
+  a tmp-dir location when the session's directory can't be resolved. Public
+  because `save_text/2` is the same kind of save-to-disk operation as the
+  per-block media writes and must resolve the identical root.
+  """
+  def media_root do
     case CodeExec.get_state() do
       %{orca_session_id: id} when is_binary(id) ->
         segment = safe_dir_segment(sanitize_for_filename(id))

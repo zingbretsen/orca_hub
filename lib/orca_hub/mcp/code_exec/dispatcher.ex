@@ -39,6 +39,13 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
   contains at least one such block, the JSON-decode shortcut is skipped and
   `unwrap!/2` returns the concatenated text + notes as a plain string — a
   pure-text result is completely unaffected.
+
+  A handful of upstream tools return huge *text* output (page snapshots,
+  console/network logs) inline unless the caller passes `filename`, in which
+  case they write it out-of-reach in their own pod. `dispatch/3` strips that
+  arg and `unwrap!/2` saves the tool's full text output to disk itself (via
+  `MediaSink.save_text/2`), replacing it with a single saved-to note — same
+  goal as the media case, keeping large output out of the model's context.
   """
 
   alias OrcaHub.MCP.UpstreamClient
@@ -56,20 +63,29 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
   `state` is the same `%{orca_session_id: ..., orchestrator: ...}` map the live
   MCP server threads into `OrcaHub.MCP.Tools.call/3`.
 
-  When `name` is an upstream `browser_take_screenshot` call with a `filename`
-  arg, the arg is stripped before forwarding upstream — playwright-mcp writes
-  the file inside its own pod when `filename` is set and returns only a text
-  block, unreachable from here (verified empirically: omit `filename` and it
-  also returns an `image/png` content block instead). The requested name is
-  stashed via `MediaSink.put_requested_filename/1` so `unwrap!/2`'s call to
-  `MediaSink.render/2` saves the screenshot locally under that name. This is
-  reset (to `nil` when not applicable) on every dispatch call, so it can never
-  leak into an unrelated tool's result.
+  When `name` is an upstream call to a tool in `@media_filename_tools` or
+  `@text_filename_tools` with a `filename` arg, the arg is stripped before
+  forwarding upstream — playwright-mcp writes the file inside its own pod when
+  `filename` is set and returns only a link, unreachable from here (verified
+  empirically: omit `filename` and these tools return their full output
+  inline instead — an `image/png` content block for `browser_take_screenshot`,
+  a text block for the rest). The requested name + mode is stashed via
+  `MediaSink.put_requested_filename/1`:
+
+    * `{:media, name}` — `unwrap!/2`'s call to `MediaSink.render/2` saves the
+      screenshot locally under that name.
+    * `{:text, name}` — `unwrap!/2` saves the tool's full joined text output
+      to disk under that name via `MediaSink.save_text/2` and replaces it with
+      a single saved-to note, instead of returning potentially huge output
+      (snapshots, network logs) inline.
+
+  This is reset (to `nil` when not applicable) on every dispatch call, so it
+  can never leak into an unrelated tool's result.
   """
   def dispatch(name, args, state) when is_binary(name) and is_map(args) do
     if UpstreamClient.upstream_tool?(name) do
-      {args, filename} = extract_screenshot_filename(name, args)
-      MediaSink.put_requested_filename(filename)
+      {args, mode} = extract_requested_filename(name, args)
+      MediaSink.put_requested_filename(mode)
       UpstreamClient.call_tool(name, args, orca_session_id: state[:orca_session_id])
     else
       MediaSink.put_requested_filename(nil)
@@ -77,19 +93,43 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
     end
   end
 
+  # Tools that return an image content block when `filename` is omitted.
+  @media_filename_tools ["browser_take_screenshot"]
+
+  # Tools that return a text content block when `filename` is omitted. Suffix
+  # match against the raw upstream name (e.g. `playwright__browser_evaluate`),
+  # so both `browser_network_requests` (plural, list) and
+  # `browser_network_request` (singular, single item) are covered distinctly.
+  @text_filename_tools [
+    "browser_snapshot",
+    "browser_console_messages",
+    "browser_network_requests",
+    "browser_network_request",
+    "browser_evaluate"
+  ]
+
   @doc """
-  If `name` is an upstream `browser_take_screenshot` call carrying a `filename`
-  arg, strip it and return it alongside the remaining args; otherwise return
-  `args` unchanged with a `nil` filename. Exposed (rather than private) so its
-  logic is directly unit-testable without a live upstream connection.
+  If `name` is an upstream call (matched by suffix) to one of the known
+  filename-trap tools carrying a `filename` arg, strip it and return it
+  alongside the remaining args, tagged with its mode (`{:media, name}` or
+  `{:text, name}`); otherwise return `args` unchanged with a `nil` mode.
+  Exposed (rather than private) so its logic is directly unit-testable
+  without a live upstream connection.
   """
-  def extract_screenshot_filename(name, args) do
-    if String.ends_with?(name, "browser_take_screenshot") and is_binary(args["filename"]) do
-      {Map.delete(args, "filename"), args["filename"]}
-    else
-      {args, nil}
+  def extract_requested_filename(name, args) do
+    cond do
+      is_binary(args["filename"]) and suffix_match?(name, @media_filename_tools) ->
+        {Map.delete(args, "filename"), {:media, args["filename"]}}
+
+      is_binary(args["filename"]) and suffix_match?(name, @text_filename_tools) ->
+        {Map.delete(args, "filename"), {:text, args["filename"]}}
+
+      true ->
+        {args, nil}
     end
   end
+
+  defp suffix_match?(name, suffixes), do: Enum.any?(suffixes, &String.ends_with?(name, &1))
 
   @doc """
   Dispatch `name` (via `dispatcher`) using the process-installed MCP state, then
@@ -116,25 +156,38 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
   @doc """
   Auto-unwrap an MCP result map for `name`.
 
-    * `isError == true` → `raise Tools.Error`
+    * `isError == true` → `raise Tools.Error` (a pending `{:text, _}` request
+      is discarded, unused, by the `extract_text/2` → `MediaSink.render/2`
+      call below — no file is written for an error result)
+    * a pending `{:text, name}` request (non-error only) → the full joined
+      text output is saved to disk via `MediaSink.save_text/2` and replaced
+      with a single saved-to note
     * content that decodes to a JSON map/list → the decoded term
-    * otherwise → the concatenated text string (plus any `MediaSink` notes)
+    * otherwise → the concatenated text string (plus any `MediaSink` notes,
+      e.g. a `{:media, name}` screenshot save)
   """
   def unwrap!(%{"isError" => true} = result, name) do
     raise Tools.Error, name: name, upstream: extract_text(result, name)
   end
 
   def unwrap!(%{"content" => content}, name) when is_list(content) do
-    {parts, has_notes?} = MediaSink.render(content, name)
-    text = Enum.join(parts, "\n")
+    case MediaSink.peek_requested_filename() do
+      {:text, filename} ->
+        {parts, _has_notes?} = MediaSink.render(content, name)
+        MediaSink.save_text(Enum.join(parts, "\n"), filename)
 
-    if has_notes? do
-      text
-    else
-      case Jason.decode(text) do
-        {:ok, term} when is_map(term) or is_list(term) -> term
-        _ -> text
-      end
+      _ ->
+        {parts, has_notes?} = MediaSink.render(content, name)
+        text = Enum.join(parts, "\n")
+
+        if has_notes? do
+          text
+        else
+          case Jason.decode(text) do
+            {:ok, term} when is_map(term) or is_list(term) -> term
+            _ -> text
+          end
+        end
     end
   end
 
