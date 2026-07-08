@@ -64,7 +64,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     parts =
       [
         "Your OrcaHub session ID is #{ctx.session_id}.",
-        expected_orchestrator_prompt(ctx.orchestrator, ctx.session_id),
+        expected_orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec),
         expected_code_exec_prompt(code_exec),
         if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
         if(!ctx.orchestrator, do: expected_ask_user_question_prompt()),
@@ -145,10 +145,55 @@ defmodule OrcaHub.Backend.ClaudeTest do
     |> String.trim()
   end
 
-  defp expected_orchestrator_prompt(false, _session_id), do: nil
-  defp expected_orchestrator_prompt(nil, _session_id), do: nil
+  defp expected_orchestrator_prompt(false, _session_id, _code_exec), do: nil
+  defp expected_orchestrator_prompt(nil, _session_id, _code_exec), do: nil
 
-  defp expected_orchestrator_prompt(true, session_id) do
+  defp expected_orchestrator_prompt(true, session_id, true) do
+    """
+    # Orchestrator Session
+
+    You are an **orchestrator session**. Your role is to coordinate work across multiple worker sessions, NOT to do the work yourself.
+
+    ## Your Capabilities
+
+    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+
+    ## How to Work
+
+    **Important:** Your MCP tool list is collapsed to `run_elixir`, `search_tools`, and `read_tool` (code execution mode) — none of the coordination tools below are standalone MCP tools here. Call them as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to every tool below (`Tools.send_message_to_session`, `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.).
+
+    1. **Delegate all implementation work** to other sessions using:
+       - `Tools.start_session(...)` inside `run_elixir` — spawn a new worker session with a detailed prompt
+       - `Tools.send_message_to_session(...)` inside `run_elixir` — direct an existing session
+
+    2. **Request callbacks** — When delegating work, explicitly ask the worker session to message you back when done:
+       > "When you have completed this task, use `Tools.send_message_to_session` inside the `run_elixir` MCP tool to notify session #{session_id} with a summary of what you did."
+
+    3. **Set up monitoring** — After spawning workers, use `Tools.schedule_heartbeat(...)` inside `run_elixir` to wake yourself up periodically (e.g., every 2-5 minutes) to check on progress:
+       > "Check on worker sessions. Use `Tools.search_sessions(...)` inside `run_elixir` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
+
+    4. **Check in proactively** — If you don't hear back from a worker session within a reasonable time, send it a message asking for a status update.
+
+    5. **Archive completed children** — When a worker session has finished its task, use `Tools.archive_session(...)` inside `run_elixir` to archive it. This keeps the session list tidy. If you need to continue the conversation later, just send a message to the archived session — it will be automatically unarchived.
+
+    6. **Cancel monitoring** — When all delegated work is complete, use `Tools.cancel_heartbeat(...)` inside `run_elixir` to stop monitoring.
+
+    ## Example Flow
+
+    1. Analyze the task and break it into subtasks
+    2. Spawn worker sessions for each subtask, requesting they message back when done
+    3. Set a heartbeat to check on progress
+    4. When workers report back or heartbeat fires, check status
+    5. If issues arise, provide guidance or spawn additional workers
+    6. As each worker finishes, archive its session to keep the list clean
+    7. When all work is complete, cancel heartbeat and summarize results
+
+    Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+    """
+    |> String.trim()
+  end
+
+  defp expected_orchestrator_prompt(true, session_id, _code_exec) do
     """
     # Orchestrator Session
 
@@ -522,16 +567,19 @@ defmodule OrcaHub.Backend.ClaudeTest do
       refute prompt =~ "mcp__orca__send_message_to_session"
     end
 
-    # Note: `SharedPrompts.orchestrator_prompt/2` itself still references
-    # `mcp__orca__search_sessions` (out of scope here — a separate audit
-    # covers that fragment) — so this only pins down the trailing
-    # sibling-sessions bullet, not the whole prompt's tool-name vocabulary.
-    test "orchestrator + code_exec: true points at Tools.search_sessions inside run_elixir" do
+    test "orchestrator + code_exec: true rewrites both the orchestrator and sibling-sessions guidance to Tools.* inside run_elixir" do
       ctx = ctx(%{orchestrator: true, code_exec: true})
       prompt = Backend.system_prompt(ctx)
 
       assert prompt == expected_system_prompt(ctx)
       assert String.ends_with?(prompt, expected_sibling_sessions_prompt(true, true))
+      assert prompt =~ "Tools.start_session"
+      assert prompt =~ "Tools.send_message_to_session"
+      assert prompt =~ "Tools.search_sessions"
+      assert prompt =~ "Tools.schedule_heartbeat"
+      assert prompt =~ "Tools.archive_session"
+      assert prompt =~ "Tools.cancel_heartbeat"
+      refute prompt =~ "mcp__orca__"
     end
   end
 end

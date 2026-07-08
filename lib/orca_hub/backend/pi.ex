@@ -936,7 +936,7 @@ defmodule OrcaHub.Backend.Pi do
   # As of the orca-mcp bridge (spec §12.5, capabilities.mcp == true), the
   # MCP-dependent fragments are no longer inapplicable — `orca-mcp.ts`
   # registers orca's tools under the exact same `mcp__orca__<tool>` names
-  # Claude uses, so `SharedPrompts.orchestrator_prompt/2`'s
+  # Claude uses, so `SharedPrompts.orchestrator_prompt/3`'s
   # `mcp__orca__start_session`-shaped guidance (moved out of `Backend.Claude`
   # into `SharedPrompts` for exactly this reuse) and the code-exec prompt are
   # both included here now, mirroring `Backend.Claude.system_prompt/1`
@@ -945,12 +945,12 @@ defmodule OrcaHub.Backend.Pi do
 
   @impl true
   def system_prompt(ctx) do
+    code_exec = OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
+
     [
       "Your OrcaHub session ID is #{ctx.session_id}.",
-      SharedPrompts.orchestrator_prompt(ctx.orchestrator, ctx.session_id),
-      SharedPrompts.code_exec_prompt(
-        OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
-      ),
+      SharedPrompts.orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec),
+      SharedPrompts.code_exec_prompt(code_exec),
       SharedPrompts.commit_trailer_prompt(ctx.session_id),
       SharedPrompts.context_files_prompt(ctx.directory)
     ]

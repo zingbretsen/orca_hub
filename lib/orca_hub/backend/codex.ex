@@ -701,7 +701,7 @@ defmodule OrcaHub.Backend.Codex do
 
     [
       "Your OrcaHub session ID is #{ctx.session_id}.",
-      orchestrator_system_prompt(ctx.orchestrator, ctx.session_id),
+      orchestrator_system_prompt(ctx.orchestrator, ctx.session_id, code_exec),
       SharedPrompts.code_exec_prompt(code_exec),
       if(!ctx.orchestrator, do: SharedPrompts.commit_trailer_prompt(ctx.session_id)),
       sibling_sessions_prompt(ctx.orchestrator, code_exec),
@@ -711,10 +711,42 @@ defmodule OrcaHub.Backend.Codex do
     |> Enum.join("\n\n")
   end
 
-  defp orchestrator_system_prompt(false, _session_id), do: nil
-  defp orchestrator_system_prompt(nil, _session_id), do: nil
+  defp orchestrator_system_prompt(false, _session_id, _code_exec), do: nil
+  defp orchestrator_system_prompt(nil, _session_id, _code_exec), do: nil
 
-  defp orchestrator_system_prompt(true, session_id) do
+  # Code-exec collapses a session's MCP surface to run_elixir/search_tools/
+  # read_tool regardless of the orchestrator flag (see
+  # lib/orca_hub/mcp/server.ex:130) — none of the coordination tools below
+  # exist as standalone orca MCP tools there, so this branch rewrites every
+  # reference (including the callback instruction workers get told to paste)
+  # to the Tools.<name>(...) inside run_elixir shape.
+  defp orchestrator_system_prompt(true, session_id, true) do
+    """
+    # Orchestrator Session
+
+    You are an **orchestrator session**. Your role is to coordinate work across multiple worker sessions, NOT to do the work yourself.
+
+    ## Your Capabilities
+
+    You have read-only access to the codebase and web access for research. You have file write access, but you must use it **only** to maintain your own file-based memory (e.g. a project-local notes directory). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+
+    ## How to Work
+
+    Your MCP tool list is collapsed to `run_elixir`, `search_tools`, and `read_tool` (code execution mode) — none of the coordination tools (`start_session`, `send_message_to_session`, `schedule_heartbeat`, `search_sessions`, `archive_session`, `cancel_heartbeat`, etc.) are standalone MCP tools here. Call them as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})`.
+
+    1. **Delegate all implementation work** to other sessions using `Tools.start_session(...)` (spawn a new worker with a detailed prompt) or `Tools.send_message_to_session(...)` (direct an existing session), both inside `run_elixir`.
+    2. **Request callbacks** — when delegating work, explicitly ask the worker session to message you back when done via `Tools.send_message_to_session` inside `run_elixir`, referencing this session id: #{session_id}.
+    3. **Set up monitoring** — after spawning workers, use `Tools.schedule_heartbeat(...)` inside `run_elixir` to wake yourself up periodically (e.g. every 2-5 minutes) to check on progress via `Tools.search_sessions(...)`.
+    4. **Check in proactively** — if you don't hear back from a worker within a reasonable time, message it for a status update.
+    5. **Archive completed children** — use `Tools.archive_session(...)` inside `run_elixir` once a worker has finished, to keep the session list tidy.
+    6. **Cancel monitoring** — use `Tools.cancel_heartbeat(...)` inside `run_elixir` once all delegated work is complete.
+
+    Remember: you orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+    """
+    |> String.trim()
+  end
+
+  defp orchestrator_system_prompt(true, session_id, _code_exec) do
     """
     # Orchestrator Session
 

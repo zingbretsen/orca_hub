@@ -1195,11 +1195,11 @@ defmodule OrcaHub.Backend.PiTest do
 
     # As of the orca-mcp bridge (spec §12.5, capabilities.mcp == true),
     # orchestrator mode DOES inject the same `mcp__orca__*`-shaped guidance
-    # Backend.Claude uses (SharedPrompts.orchestrator_prompt/2, moved out of
+    # Backend.Claude uses (SharedPrompts.orchestrator_prompt/3, moved out of
     # Backend.Claude for exactly this reuse) — no longer inapplicable now
     # that priv/pi/orca-mcp.ts registers orca's tools under the identical
     # mcp__orca__<tool> names.
-    test "orchestrator: true injects SharedPrompts.orchestrator_prompt/2's mcp__orca__* guidance" do
+    test "orchestrator: true injects SharedPrompts.orchestrator_prompt/3's mcp__orca__* guidance" do
       c = ctx(%{orchestrator: true})
       prompt = Backend.system_prompt(c)
 
@@ -1214,6 +1214,20 @@ defmodule OrcaHub.Backend.PiTest do
 
       assert prompt =~ "# Code Execution Mode"
       assert prompt =~ "run_elixir"
+    end
+
+    # lib/orca_hub/mcp/server.ex:130 collapses the MCP surface to
+    # run_elixir/search_tools/read_tool regardless of the orchestrator flag,
+    # so orchestrator + code_exec together must rewrite the orchestrator
+    # guidance to Tools.*(...) inside run_elixir too, same as Claude/Codex.
+    test "orchestrator + code_exec: true rewrites the orchestrator guidance to Tools.* inside run_elixir" do
+      c = ctx(%{orchestrator: true, code_exec: true})
+      prompt = Backend.system_prompt(c)
+
+      assert prompt =~ "# Orchestrator Session"
+      assert prompt =~ "Tools.start_session"
+      assert prompt =~ "Tools.send_message_to_session"
+      refute prompt =~ "mcp__orca__"
     end
   end
 end
