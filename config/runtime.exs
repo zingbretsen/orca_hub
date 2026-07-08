@@ -113,6 +113,14 @@ config :orca_hub,
        :elevenlabs_voice_id,
        System.get_env("ELEVENLABS_VOICE_ID") || "JBFqnCBsd6RMkjVDRZzb"
 
+# Upload sidecar running alongside playwright-mcp in its pod — lets code-exec
+# push a LOCAL (OrcaHub-node) file into that pod's own filesystem so
+# `browser_file_upload`/`browser_drop` (which read `paths` from the pod, not
+# from here) can reach it. See `OrcaHub.MCP.CodeExec.PlaywrightUpload`.
+config :orca_hub,
+       :playwright_upload_url,
+       System.get_env("PLAYWRIGHT_UPLOAD_URL") || "http://127.0.0.1:30932"
+
 # Libcluster topology configuration
 # Supports multiple strategies simultaneously:
 # - K8s DNS for in-cluster pod discovery (set CLUSTER_DNS_QUERY)
