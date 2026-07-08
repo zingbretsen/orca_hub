@@ -397,6 +397,19 @@ defmodule OrcaHub.MCP.CodeExec.MediaSinkTest do
       assert File.read!(path) == "data"
     end
 
+    test "a requested filename that sanitizes to \".\" or \"..\" falls back to a default name instead of raising" do
+      session_id = unique_session()
+      put_session(session_id)
+
+      for requested <- ["", ".", ".."] do
+        note = MediaSink.save_text("data for #{requested}", requested)
+        path = path_from_note(note)
+
+        assert Path.basename(path) == "output.txt"
+        assert File.read!(path) == "data for #{requested}"
+      end
+    end
+
     test "over the media cap: not written, a visible note instead" do
       session_id = unique_session()
       put_session(session_id)

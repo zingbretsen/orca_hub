@@ -165,11 +165,22 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
     if byte_size(text) > @max_media_bytes do
       "[output not saved: over the media cap]"
     else
-      filename = sanitize_for_filename(requested_filename)
+      filename = safe_file_segment(sanitize_for_filename(requested_filename))
       path = save_media_file(text, filename, media_root())
       "[output saved to #{path} — view it with the Read tool]"
     end
   end
+
+  # sanitize_for_filename/1 keeps "." (it's a legal filename char), so a
+  # requested name of exactly "", ".", or ".." sanitizes to itself — and
+  # unlike media blocks (which always append a mime extension, so this can't
+  # happen there), save_text/2 uses the name verbatim. Path.join(root, ".")
+  # or Path.join(root, "..") resolves to a directory, and File.write!/2 on a
+  # directory raises — breaking save_text/2's "never raises" contract. Same
+  # reasoning as safe_dir_segment/1, but for the leaf filename instead of a
+  # path segment.
+  defp safe_file_segment(seg) when seg in ["", ".", ".."], do: "output.txt"
+  defp safe_file_segment(seg), do: seg
 
   @doc """
   Resolve where media/text files for the current session should be saved:
