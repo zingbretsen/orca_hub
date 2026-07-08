@@ -29,6 +29,13 @@ defmodule OrcaHub.Projects do
     |> Repo.preload(sessions: from(s in OrcaHub.Sessions.Session, order_by: [desc: s.updated_at]))
   end
 
+  def get_project(id) do
+    case Repo.get(Project, id) do
+      nil -> nil
+      project -> Repo.preload(project, sessions: [])
+    end
+  end
+
   def get_project_by_directory(directory) do
     Repo.one(
       from p in Project, where: p.directory == ^directory and is_nil(p.deleted_at), limit: 1

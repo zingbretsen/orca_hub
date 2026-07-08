@@ -14,6 +14,11 @@ defmodule OrcaHubWeb.Router do
     plug :accepts, ["json"]
   end
 
+  pipeline :api_authed do
+    plug :accepts, ["json"]
+    plug OrcaHubWeb.Plugs.ApiAuth
+  end
+
   scope "/", OrcaHubWeb do
     pipe_through :browser
 
@@ -50,6 +55,12 @@ defmodule OrcaHubWeb.Router do
     pipe_through :api
     post "/tts", TTSController, :create
     post "/webhooks/:secret", WebhookController, :create
+  end
+
+  scope "/api/v1", OrcaHubWeb do
+    pipe_through :api_authed
+    post "/runs", ApiRunController, :create
+    get "/runs/:id", ApiRunController, :show
   end
 
   # MCP Streamable HTTP endpoint

@@ -65,7 +65,7 @@ defmodule OrcaHub.Backend.Claude do
       |> maybe_put(:session_id, ctx.claude_session_id)
       |> maybe_put(:model, ctx.model)
       |> maybe_put(:system_prompt, system_prompt(ctx))
-      |> maybe_put(:tools, orchestrator_tools(ctx.orchestrator))
+      |> maybe_put(:tools, tools_for(ctx))
       |> Keyword.put(:mcp_config, mcp_config_json(ctx))
 
     {args, port_opts} = Config.build_args(nil, opts)
@@ -88,7 +88,7 @@ defmodule OrcaHub.Backend.Claude do
       |> maybe_put(:session_id, ctx.claude_session_id)
       |> maybe_put(:model, ctx.model)
       |> maybe_put(:system_prompt, system_prompt(ctx))
-      |> maybe_put(:tools, orchestrator_tools(ctx.orchestrator))
+      |> maybe_put(:tools, tools_for(ctx))
       |> Keyword.put(:mcp_config, mcp_config_json(ctx))
 
     {args, port_opts} = Config.build_args(Map.get(ctx, :prompt), opts)
@@ -113,10 +113,18 @@ defmodule OrcaHub.Backend.Claude do
   end
 
   @impl true
-  def installed?, do: System.find_executable("claude") != nil
+  def installed?,
+    do:
+      (Application.get_env(:orca_hub, :claude_executable) || System.find_executable("claude")) !=
+        nil
 
+  # `:orca_hub, :claude_executable` is a test-only seam (mirrors
+  # `:codex_executable`/`:pi_executable`) letting tests point spawn_spec/2 at
+  # a stub script instead of a real, network-calling `claude` binary.
   defp claude_executable! do
-    System.find_executable("claude") || raise "claude executable not found in PATH"
+    Application.get_env(:orca_hub, :claude_executable) ||
+      System.find_executable("claude") ||
+      raise "claude executable not found in PATH"
   end
 
   # If this node has been logged into Claude Code via the web UI
@@ -316,6 +324,17 @@ defmodule OrcaHub.Backend.Claude do
   @orchestrator_tools "Read,Glob,Grep,WebFetch,WebSearch,Write,Edit"
   defp orchestrator_tools(true), do: @orchestrator_tools
   defp orchestrator_tools(_), do: nil
+
+  # A session-level `--tools` override (Agent Runs API "no filesystem tools"
+  # mode, ctx.tools — see Sessions.Session) always wins over the
+  # orchestrator-derived default when set, including the empty string
+  # ("" = zero built-in tools).
+  defp tools_for(ctx) do
+    case Map.get(ctx, :tools) do
+      nil -> orchestrator_tools(ctx.orchestrator)
+      tools -> tools
+    end
+  end
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, val), do: Keyword.put(opts, key, val)

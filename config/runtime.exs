@@ -51,6 +51,13 @@ config :orca_hub,
 # error at use time (not at boot) if unset or malformed.
 config :orca_hub, :secrets_key, System.get_env("ORCA_SECRETS_KEY")
 
+# Static bearer token for the Agent Runs API (docs/api.md), homelab-internal
+# auth via OrcaHubWeb.Plugs.ApiAuth. Unset/empty means the API is disabled
+# (503 on every request), not "open".
+config :orca_hub,
+       :api_token,
+       System.get_env("ORCA_API_TOKEN") |> then(fn v -> if v in [nil, ""], do: nil, else: v end)
+
 if System.get_env("PHX_SERVER") do
   config :orca_hub, OrcaHubWeb.Endpoint, server: true
 end

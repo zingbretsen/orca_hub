@@ -34,6 +34,10 @@ defmodule OrcaHub.Sessions.Session do
     # nil = inherit global default (streaming unless ORCA_DISABLE_STREAMING set);
     # true/false force the engine for this session
     field :streaming, :boolean
+    # Per-session `--tools` override (Agent Runs API "no filesystem tools"
+    # mode). nil = inherit the orchestrator-derived default; "" restricts the
+    # Claude CLI to zero built-in tools. See Backend.Claude.spawn_spec/2.
+    field :tools, :string
 
     has_many :messages, OrcaHub.Sessions.Message
     belongs_to :project, OrcaHub.Projects.Project
@@ -61,6 +65,11 @@ defmodule OrcaHub.Sessions.Session do
       :parent_session_id,
       :streaming
     ])
+    # Cast separately with empty_values: [] — cast/4's default empty_values
+    # ([""]) would otherwise silently turn an explicit `tools: ""` (the "no
+    # built-in tools" API run mode, see field doc above) into nil, indistinguishable
+    # from "not set".
+    |> cast(attrs, [:tools], empty_values: [])
     |> validate_required([:directory])
     |> validate_inclusion(:status, ~w(ready idle running waiting error compacting))
     |> validate_inclusion(:backend, ~w(claude codex pi))

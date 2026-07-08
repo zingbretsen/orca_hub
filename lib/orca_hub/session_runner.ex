@@ -175,6 +175,7 @@ defmodule OrcaHub.SessionRunner do
       model: session.model,
       orchestrator: session.orchestrator || false,
       code_exec: session.code_exec || false,
+      tools: Map.get(session, :tools),
       db_node: db_node,
       # Phase 1 (backend_abstraction_spec.md §4/§5): resolve from the
       # session's persisted `backend` column. Unknown values raise (loud
