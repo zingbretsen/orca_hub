@@ -162,4 +162,132 @@ defmodule OrcaHubWeb.ProjectLive.StructuredFileTest do
     assert html =~ "not valid json"
     assert Process.alive?(view.pid)
   end
+
+  describe ".toml files" do
+    setup %{dir: dir} do
+      File.write!(Path.join(dir, "config.toml"), """
+      # config
+      zeta = 1
+
+      [alpha]
+      nested = true
+      """)
+
+      :ok
+    end
+
+    test "viewing a .toml file defaults to Structured and renders its tree", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.id}?file=config.toml")
+
+      assert html =~ "Structured"
+      assert html =~ "alpha"
+      assert html =~ "nested"
+      refute html =~ "Parse error"
+    end
+
+    test "editing a leaf value persists via Projects.save_file", %{
+      conn: conn,
+      project: project,
+      dir: dir
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?file=config.toml")
+      path = OrcaHub.ConfigFile.encode_path(["zeta"])
+
+      render_click(view, "edit_value", %{"scope" => "project_file", "key" => "", "path" => path})
+
+      render_submit(view, "save_value", %{
+        "scope" => "project_file",
+        "key" => "",
+        "path" => path,
+        "value_type" => "number",
+        "value" => "2"
+      })
+
+      content = File.read!(Path.join(dir, "config.toml"))
+      assert content =~ "zeta = 2"
+      assert content =~ "# config"
+    end
+
+    test "deleting a table removes it, preserving the rest", %{
+      conn: conn,
+      project: project,
+      dir: dir
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?file=config.toml")
+      path = OrcaHub.ConfigFile.encode_path(["alpha"])
+
+      render_click(view, "delete_key", %{"scope" => "project_file", "key" => "", "path" => path})
+
+      content = File.read!(Path.join(dir, "config.toml"))
+      refute content =~ "[alpha]"
+      assert content =~ "zeta = 1"
+    end
+  end
+
+  describe ".yml files" do
+    setup %{dir: dir} do
+      File.write!(Path.join(dir, "config.yml"), """
+      # config
+      zeta: 1
+
+      alpha:
+        nested: true
+      """)
+
+      :ok
+    end
+
+    test "viewing a .yml file defaults to Structured and renders its tree", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.id}?file=config.yml")
+
+      assert html =~ "Structured"
+      assert html =~ "alpha"
+      assert html =~ "nested"
+      refute html =~ "Parse error"
+    end
+
+    test "editing a leaf value persists via Projects.save_file", %{
+      conn: conn,
+      project: project,
+      dir: dir
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?file=config.yml")
+      path = OrcaHub.ConfigFile.encode_path(["zeta"])
+
+      render_click(view, "edit_value", %{"scope" => "project_file", "key" => "", "path" => path})
+
+      render_submit(view, "save_value", %{
+        "scope" => "project_file",
+        "key" => "",
+        "path" => path,
+        "value_type" => "number",
+        "value" => "2"
+      })
+
+      content = File.read!(Path.join(dir, "config.yml"))
+      assert content =~ "zeta: 2"
+      assert content =~ "# config"
+    end
+
+    test "deleting a mapping key removes its child block, preserving the rest", %{
+      conn: conn,
+      project: project,
+      dir: dir
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?file=config.yml")
+      path = OrcaHub.ConfigFile.encode_path(["alpha"])
+
+      render_click(view, "delete_key", %{"scope" => "project_file", "key" => "", "path" => path})
+
+      content = File.read!(Path.join(dir, "config.yml"))
+      refute content =~ "nested"
+      assert content =~ "zeta: 1"
+    end
+  end
 end

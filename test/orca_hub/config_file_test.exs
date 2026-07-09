@@ -12,20 +12,21 @@ defmodule OrcaHub.ConfigFileTest do
   describe "supported?/1" do
     test "true for a registered format" do
       assert ConfigFile.supported?(:json)
+      assert ConfigFile.supported?(:toml)
+      assert ConfigFile.supported?(:yaml)
     end
 
     test "false for an unregistered format" do
-      refute ConfigFile.supported?(:toml)
-      refute ConfigFile.supported?(:yaml)
       refute ConfigFile.supported?(:markdown)
+      refute ConfigFile.supported?(:ini)
     end
   end
 
   describe "parse/2 and apply_op/3 for an unsupported format" do
     test "both return :unsupported_format rather than raising" do
-      assert ConfigFile.parse(:toml, "a = 1") == {:error, :unsupported_format}
+      assert ConfigFile.parse(:ini, "a = 1") == {:error, :unsupported_format}
 
-      assert ConfigFile.apply_op(:toml, "a = 1", {:set, ["a"], 2}) ==
+      assert ConfigFile.apply_op(:ini, "a = 1", {:set, ["a"], 2}) ==
                {:error, :unsupported_format}
     end
   end

@@ -81,6 +81,8 @@ defmodule OrcaHub.MixProject do
       {:tz, "~> 0.28"},
       {:gen_statem, "~> 0.1.0"},
       {:libcluster, "~> 3.4"},
+      {:toml, "~> 0.7"},
+      {:yaml_elixir, "~> 2.11"},
       # Discord gateway client for the all-in-one Discord worker. Declared as
       # an `included_applications` entry (see `application/0`) so it ships in
       # the release but does NOT auto-start — nostrum would otherwise connect

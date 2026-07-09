@@ -57,7 +57,7 @@ defmodule OrcaHub.ConfigFile do
   malformed text degrades the same way.
   """
 
-  alias OrcaHub.ConfigFile.Json
+  alias OrcaHub.ConfigFile.{Json, Toml, Yaml}
 
   @type path :: [String.t() | non_neg_integer()]
   @type value_type :: :string | :integer | :float | :boolean | :null
@@ -70,7 +70,7 @@ defmodule OrcaHub.ConfigFile do
           | {:delete, path}
           | {:add, path, String.t() | nil, term()}
 
-  @adapters %{json: Json}
+  @adapters %{json: Json, toml: Toml, yaml: Yaml}
 
   @doc "Whether `format` has a registered structured-editing adapter."
   def supported?(format), do: Map.has_key?(@adapters, format)

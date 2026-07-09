@@ -979,10 +979,14 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   # The format a structured editor should use for `path`, or `nil` when
   # there's no adapter for it yet — `nil` falls through to the plain raw
-  # `<pre>` view. TOML/YAML extend this with another clause once their
-  # `OrcaHub.ConfigFile` adapters exist.
+  # `<pre>` view.
   defp structured_format(path) when is_binary(path) do
-    if String.ends_with?(path, ".json"), do: :json
+    cond do
+      String.ends_with?(path, ".json") -> :json
+      String.ends_with?(path, ".toml") -> :toml
+      String.ends_with?(path, ".yml") or String.ends_with?(path, ".yaml") -> :yaml
+      true -> nil
+    end
   end
 
   defp structured_format(_path), do: nil
