@@ -39,10 +39,83 @@
     Node unavailable — backend configuration requires an active connection to this node.
   </div>
 
-  <div
-    :if={@connected}
-    class="text-sm text-base-content/50 p-4 text-center bg-base-200 rounded-lg"
-  >
-    Coming soon.
+  <div :if={@connected} class="space-y-4" id="backend-config-sections">
+    <div
+      :for={backend <- OrcaHub.NodeConfig.backends()}
+      id={"config-section-#{backend}"}
+      class="card bg-base-200"
+    >
+      <% result = @node_config[backend] %>
+
+      <div
+        class="flex items-center justify-between px-4 py-3 cursor-pointer"
+        phx-click="toggle_config_section"
+        phx-value-backend={backend}
+      >
+        <div class="flex items-center gap-2">
+          <.icon
+            name={
+              if MapSet.member?(@config_sections_expanded, backend),
+                do: "hero-chevron-down-micro",
+                else: "hero-chevron-right-micro"
+            }
+            class="size-4"
+          />
+          <span class="font-semibold text-sm capitalize">{backend}</span>
+          <span :if={match?(%{}, result) && !result.installed?} class="badge badge-xs badge-ghost">
+            not installed on this node
+          </span>
+          <span
+            :if={backend == :codex && match?(%{}, result) && result.agents_override_conflict?}
+            class="badge badge-xs badge-warning"
+            title="AGENTS.override.md replaces AGENTS.md entirely for this node's sessions"
+          >
+            AGENTS.override.md active
+          </span>
+        </div>
+      </div>
+
+      <div
+        :if={MapSet.member?(@config_sections_expanded, backend) && match?({:error, _}, result)}
+        class="px-4 pb-4 text-sm text-error"
+      >
+        Failed to load: {elem(result, 1) |> inspect()}
+      </div>
+
+      <div
+        :if={MapSet.member?(@config_sections_expanded, backend) && match?(%{}, result)}
+        class="px-4 pb-4 space-y-2"
+      >
+        <div :for={entry <- result.entries} id={"config-entry-#{backend}-#{entry.path}"}>
+          <%= if entry.kind == :file do %>
+            <.config_file_row
+              backend={backend}
+              entry={entry}
+              config_expanded={@config_expanded}
+              config_editing={@config_editing}
+              config_edit_content={@config_edit_content}
+              config_content={@config_content}
+              editing_block={@editing_block}
+              block_edit_content={@block_edit_content}
+            />
+          <% else %>
+            <.config_dir_row
+              backend={backend}
+              entry={entry}
+              config_dirs_expanded={@config_dirs_expanded}
+              config_expanded={@config_expanded}
+              config_editing={@config_editing}
+              config_edit_content={@config_edit_content}
+              config_content={@config_content}
+              config_new_entry={@config_new_entry}
+              config_new_entry_name={@config_new_entry_name}
+              config_new_entry_content={@config_new_entry_content}
+              editing_block={@editing_block}
+              block_edit_content={@block_edit_content}
+            />
+          <% end %>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
