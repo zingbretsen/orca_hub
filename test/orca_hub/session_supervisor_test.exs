@@ -6,8 +6,14 @@ defmodule OrcaHub.SessionSupervisorTest do
   since `SessionRunner` (a `:gen_statem`) never traps exits, its
   `terminate/3` callback (which normally runs `backend.cleanup_session/1`)
   never fires on this path. `stop_session/1` now calls `cleanup_session/1`
-  directly after the child is confirmed terminated, so Codex's per-session
-  `CODEX_HOME` directory is still removed on an explicit stop.
+  directly after the child is confirmed terminated.
+
+  Historical note: this used to assert a filesystem side effect — Codex's
+  per-session `CODEX_HOME` directory being removed on an explicit stop. That
+  directory no longer exists (2026-07 migration to `-c` config overrides over
+  the real `~/.codex` home — see `OrcaHub.Backend.Codex`); `cleanup_session/1`
+  is a no-op for every current backend, so both tests below now just assert
+  `stop_session/1` completes cleanly regardless.
   """
 
   # async: false — starts a real SessionRunner (GenStatem) child under the
@@ -49,23 +55,16 @@ defmodule OrcaHub.SessionSupervisorTest do
     {:ok, session: session, dir: dir}
   end
 
-  test "stop_session/1 removes Codex's CODEX_HOME even though it bypasses SessionRunner.terminate/3",
-       %{session: session, dir: dir} do
+  test "stop_session/1 completes cleanly for a Codex session even though it bypasses SessionRunner.terminate/3",
+       %{session: session} do
     assert {:ok, _pid} = SessionSupervisor.start_session(session.id)
     assert SessionRunner.send_message(session.id, "say hi") == :ok
 
-    codex_home = Path.join([dir, ".codex_home", session.id])
-
-    # prepare_session/1 materializes CODEX_HOME on spawn — wait for the turn
-    # to actually open the port (real filesystem side effect, not something
-    # get_state's in-memory status alone proves).
-    assert wait_until(fn -> File.dir?(codex_home) end),
-           "expected #{codex_home} to be created by Backend.Codex.prepare_session/1"
+    assert wait_until(fn -> SessionRunner.get_state(session.id).status != :ready end),
+           "expected the turn to actually open the port before stopping"
 
     assert SessionSupervisor.stop_session(session.id) == :ok
-
     refute SessionSupervisor.session_alive?(session.id)
-    refute File.dir?(codex_home), "expected #{codex_home} to be removed by cleanup_session/1"
   end
 
   test "stop_session/1 is still a no-op-safe cleanup for Claude sessions (cleanup_session/1 is :ok)",

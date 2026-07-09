@@ -33,7 +33,12 @@ OpenAI-compatible `model_providers` in config.toml).
 > **Verified against 0.80.3** (live capture — superseding the original
 > docs-only research pass, done against 0.75.3/0.80.3's identical
 > `docs/rpc.md`) and its adapter is **Implemented**; see §12.2's "Verified
-> against 0.80.3" note for every deviation found.
+> against 0.80.3" note for every deviation found. **2026-07: Codex's
+> per-session `CODEX_HOME` isolation (originally §6.1/§6.3(2)) was replaced
+> with root-level `-c` config overrides over the user's real `~/.codex`
+> home** — spike-verified against codex-cli 0.142.5 (live handshake, MCP
+> loader connection, no-persistence, and no-cross-talk checks); see §6.1's
+> "2026-07 (post-migration)" note and §6.3(2)'s "IMPLEMENTED as-built" note.
 
 ---
 
@@ -374,11 +379,14 @@ transports exist but are unneeded for a local port.
 **Auth (child env):** precedence `CODEX_API_KEY` → `auth.json "OPENAI_API_KEY"` →
 `OPENAI_API_KEY` → ChatGPT OAuth in `auth.json`. Set `OPENAI_API_KEY` in the
 spawned child's env for API-key auth, or rely on a prior `codex login` writing
-`$CODEX_HOME/auth.json`. **`CODEX_HOME` isolates config/sessions/auth per
-session** — this is our per-session lever (see §6.3). Because that isolation
-also hides the user's real `auth.json`, `prepare_session/1` copies it from the
-source `CODEX_HOME` (env, else `~/.codex`) into the per-session home on every
-spawn — without this, `codex login` credentials never reach the child.
+`$CODEX_HOME/auth.json`. **2026-07 (post-migration): no `CODEX_HOME` override
+at all** — the child inherits the real `~/.codex` home (or whatever
+`CODEX_HOME` the node's own env already has set), so `auth.json`/ChatGPT OAuth,
+`features.memories`, and session rollouts under `~/.codex/sessions` all work
+exactly as they would from an interactive `codex` invocation. (Superseded
+design: a per-session `CODEX_HOME` isolated config/sessions/auth, requiring
+`prepare_session/1` to copy `auth.json` into it on every spawn — dropped
+because it hid the user's real config and let the copy go stale; see §6.3(2).)
 
 **Framing:** newline-delimited JSON, JSON-RPC 2.0 shapes but the `"jsonrpc":"2.0"`
 field is **OMITTED on the wire**; `params`/`data` omitted when empty. One compact
@@ -503,20 +511,30 @@ Mapping command/file/mcp items to the existing tool-name icons means
    `mcp__server__tool` naming caveat are genuinely Claude-CLI-specific and
    dropped) to the first user turn per thread.
 2. **MCP** — config-file only (no inline `mcpServers` param on `thread/start`).
-   → `prepare_session/1` writes a per-session `CODEX_HOME` with a generated
-   `config.toml`; **IMPLEMENTED as-built:** `spawn_spec/2` independently
-   computes the SAME deterministic `CODEX_HOME` path and bakes it into the
-   child's env itself (both derive it from `ctx.directory`/`ctx.session_id`
-   via the same private helper), so `prepare_session/1` returns plain `:ok`
-   — no `extra_env` plumbing through the runner needed for Codex (the
-   `{:ok, extra_env}` shape in the behaviour remains available for a future
-   backend that DOES need it). `cleanup_session/1` removes the directory.
-   0.142.5-verified minimal streamable-HTTP stanza for the orca server (see
-   §6.1's deviation note — no `experimental_use_rmcp_client` flag exists):
+   → **IMPLEMENTED as-built (2026-07 migration, spike-verified against
+   codex-cli 0.142.5):** `spawn_spec/2` passes the per-session orca MCP
+   stanza as **root-level `-c` config overrides** — `mcp_servers.<name>.<key>`
+   is a valid dotted `-c` path, and both `codex app-server` and `codex exec`
+   accept it. A live JSON-RPC handshake (real `~/.codex` home, no `CODEX_HOME`
+   override) confirmed the override reaches the MCP loader end-to-end:
+   `mcpServer/startupStatus/updated` went `starting` → `ready` for `orca`, and
+   a `tools/list` round-trip against a real OrcaHub `/mcp` endpoint returned
+   the session's orca tools. Also verified: the override does NOT persist
+   anything to `~/.codex/config.toml` (byte-identical before/after), and two
+   concurrent `app-server` processes with different session URLs each connect
+   to their own — no cross-talk via shared config. `prepare_session/1` and
+   `cleanup_session/1` are now no-ops (no on-disk state to materialize or
+   tear down). Equivalent to the old minimal streamable-HTTP stanza (see
+   §6.1's deviation note — no `experimental_use_rmcp_client` flag exists),
+   just delivered as CLI args instead of a written file:
    ```toml
    [mcp_servers.orca]
    url = "http://localhost:4000/mcp?orca_session_id=…&orchestrator=…&code_exec=…"
    default_tools_approval_mode = "auto"          # run orca tools w/o prompting
+   ```
+   ```
+   -c mcp_servers.orca.url="http://localhost:4000/mcp?orca_session_id=…&orchestrator=…&code_exec=…"
+   -c mcp_servers.orca.default_tools_approval_mode="auto"
    ```
    The URL is built by `OrcaHub.Backend.McpUrl.orca_url/1` — the SAME helper
    `Backend.Claude`'s inline `--mcp-config` JSON uses, extracted in Phase 2 so
@@ -526,11 +544,15 @@ Mapping command/file/mcp items to the existing tool-name icons means
    prompts. Keep an auto-`acceptForSession` (or method-appropriate — see
    §6.1) peer-request handler as a backstop in case an approval is still
    raised. **Not implemented in v1:** project/session-scoped MCP servers
-   (`UpstreamServers.list_enabled_servers_for_*`) are NOT added to Codex's
-   `config.toml` — only the orca server. Claude gets all scoped servers via
+   (`UpstreamServers.list_enabled_servers_for_*`) are NOT added as further
+   `-c` overrides — only the orca server. Claude gets all scoped servers via
    its inline `--mcp-config`; Codex sessions get orca tools only for now
-   (documented gap, not a silent drop — add per-server TOML stanzas in a
-   follow-up if needed).
+   (documented gap, not a silent drop — add per-server `-c` overrides in a
+   follow-up if needed). Because there's no per-session `CODEX_HOME`
+   anymore, the session now ALSO sees the user's real config verbatim
+   (`personality`, `features.memories`, `[projects.<dir>] trust_level`, any
+   other `mcp_servers.*` the user has configured) — this is the whole point
+   of the migration, not a side effect to guard against.
 3. **Usage** — no headless quota endpoint. → `usage: :none`; the usage panel is
    hidden for Codex sessions. Per-turn token counts from `turn.completed.usage`
    still flow into the `result` event for display.

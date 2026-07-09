@@ -1,6 +1,4 @@
 defmodule OrcaHub.Backend.CodexTest do
-  import Bitwise, only: [&&&: 2]
-
   @moduledoc """
   Normalization fixtures for `OrcaHub.Backend.Codex` (backend_abstraction_spec.md
   §6/§9, Phase 2 Step 4). Frames below are hand-authored to match the field
@@ -48,6 +46,19 @@ defmodule OrcaHub.Backend.CodexTest do
   # stays correct if that seam happens to be active concurrently.
   defp expected_codex_executable do
     Application.get_env(:orca_hub, :codex_executable) || System.find_executable("codex")
+  end
+
+  # Independent derivation of the -c overrides spawn_spec/2 must emit (spec
+  # §6.3(2)) — NOT a call into the module under test.
+  defp mcp_config_args(ctx) do
+    url = OrcaHub.Backend.McpUrl.orca_url(ctx)
+
+    [
+      "-c",
+      "mcp_servers.orca.url=#{inspect(url)}",
+      "-c",
+      ~s(mcp_servers.orca.default_tools_approval_mode="auto")
+    ]
   end
 
   # ── capabilities/0 (spec §3.1 Codex column) ───────────────────────────
@@ -819,30 +830,38 @@ defmodule OrcaHub.Backend.CodexTest do
   # ── spawn_spec/2 ────────────────────────────────────────────────────────
 
   describe "spawn_spec/2 — :streaming" do
-    test "codex app-server, :jsonrpc framing, CODEX_HOME baked into env" do
+    test "codex app-server, :jsonrpc framing, orca MCP stanza passed as -c overrides, no CODEX_HOME" do
       c = ctx()
       spec = Backend.spawn_spec(:streaming, c)
 
       assert spec.executable == expected_codex_executable()
-      assert spec.args == ["app-server"]
+      assert spec.args == ["app-server" | mcp_config_args(c)]
       assert spec.framing == :jsonrpc
       assert spec.port_opts == [cd: String.to_charlist(c.directory)]
 
-      {_key, codex_home} = Enum.find(spec.env, fn {k, _v} -> k == ~c"CODEX_HOME" end)
-      assert to_string(codex_home) == Path.join([c.directory, ".codex_home", c.session_id])
+      refute Enum.any?(spec.env, fn {k, _v} -> k == ~c"CODEX_HOME" end)
     end
   end
 
   describe "spawn_spec/2 — :one_shot" do
-    test "codex exec --json fallback, :ndjson framing" do
+    test "codex exec --json fallback, :ndjson framing, orca MCP stanza passed as -c overrides, no CODEX_HOME" do
       c = ctx(%{prompt: "hello"})
       spec = Backend.spawn_spec(:one_shot, c)
 
       assert spec.executable == expected_codex_executable()
       assert spec.framing == :ndjson
-      assert "exec" in spec.args
-      assert "--json" in spec.args
-      assert List.last(spec.args) == "hello"
+
+      assert spec.args ==
+               [
+                 "exec",
+                 "--json",
+                 "--cd",
+                 c.directory,
+                 "--dangerously-bypass-approvals-and-sandbox"
+               ] ++
+                 mcp_config_args(c) ++ ["hello"]
+
+      refute Enum.any?(spec.env, fn {k, _v} -> k == ~c"CODEX_HOME" end)
     end
 
     test "a non-Claude model adds -m <model>" do
@@ -854,75 +873,16 @@ defmodule OrcaHub.Backend.CodexTest do
     end
   end
 
-  # ── prepare_session/1 + cleanup_session/1 (CODEX_HOME + config.toml) ──
+  # ── prepare_session/1 + cleanup_session/1 (no on-disk state — spec §6.3(2)) ──
+  # `-c` overrides (asserted above in spawn_spec/2) replaced the old
+  # per-session CODEX_HOME/config.toml/auth.json-copy dance; both lifecycle
+  # callbacks are now no-ops.
 
   describe "prepare_session/1 and cleanup_session/1" do
-    setup do
-      dir =
-        Path.join(System.tmp_dir!(), "codex_backend_test_#{System.unique_integer([:positive])}")
-
-      File.mkdir_p!(dir)
-      on_exit(fn -> File.rm_rf(dir) end)
-      {:ok, directory: dir}
-    end
-
-    test "writes CODEX_HOME/config.toml with the orca MCP stanza (same URL builder as Claude)", %{
-      directory: dir
-    } do
-      c = ctx(%{directory: dir, orchestrator: true})
+    test "both are no-ops that always return :ok" do
+      c = ctx()
       assert Backend.prepare_session(c) == :ok
-
-      config_path = Path.join([dir, ".codex_home", c.session_id, "config.toml"])
-      assert File.exists?(config_path)
-      contents = File.read!(config_path)
-
-      assert contents =~ "[mcp_servers.orca]"
-      assert contents =~ "default_tools_approval_mode = \"auto\""
-      assert contents =~ OrcaHub.Backend.McpUrl.orca_url(c)
-
       assert Backend.cleanup_session(c) == :ok
-      refute File.exists?(Path.join([dir, ".codex_home", c.session_id]))
-    end
-
-    test "copies auth.json from the source CODEX_HOME so codex login credentials reach the per-session home",
-         %{directory: dir} do
-      source_home = Path.join(dir, "source_codex_home")
-      File.mkdir_p!(source_home)
-      File.write!(Path.join(source_home, "auth.json"), ~s({"auth_mode":"chatgpt"}))
-
-      previous = System.get_env("CODEX_HOME")
-      System.put_env("CODEX_HOME", source_home)
-
-      on_exit(fn ->
-        if previous,
-          do: System.put_env("CODEX_HOME", previous),
-          else: System.delete_env("CODEX_HOME")
-      end)
-
-      c = ctx(%{directory: dir})
-      assert Backend.prepare_session(c) == :ok
-
-      dest = Path.join([dir, ".codex_home", c.session_id, "auth.json"])
-      assert File.read!(dest) == ~s({"auth_mode":"chatgpt"})
-      assert (File.stat!(dest).mode &&& 0o777) == 0o600
-    end
-
-    test "prepare_session succeeds when no source auth.json exists", %{directory: dir} do
-      source_home = Path.join(dir, "empty_codex_home")
-      File.mkdir_p!(source_home)
-
-      previous = System.get_env("CODEX_HOME")
-      System.put_env("CODEX_HOME", source_home)
-
-      on_exit(fn ->
-        if previous,
-          do: System.put_env("CODEX_HOME", previous),
-          else: System.delete_env("CODEX_HOME")
-      end)
-
-      c = ctx(%{directory: dir})
-      assert Backend.prepare_session(c) == :ok
-      refute File.exists?(Path.join([dir, ".codex_home", c.session_id, "auth.json"]))
     end
   end
 

@@ -87,8 +87,8 @@ defmodule OrcaHub.Backend.Codex do
   def spawn_spec(:streaming, ctx) do
     %{
       executable: codex_executable!(),
-      args: ["app-server"],
-      env: codex_env(ctx),
+      args: ["app-server"] ++ mcp_config_args(ctx),
+      env: codex_env(),
       port_opts: [cd: String.to_charlist(ctx.directory)],
       framing: :jsonrpc
     }
@@ -99,13 +99,14 @@ defmodule OrcaHub.Backend.Codex do
 
     args =
       ["exec", "--json", "--cd", ctx.directory, "--dangerously-bypass-approvals-and-sandbox"]
+      |> Kernel.++(mcp_config_args(ctx))
       |> maybe_add_model_arg(ctx[:model])
       |> Kernel.++([prompt])
 
     %{
       executable: codex_executable!(),
       args: args,
-      env: codex_env(ctx),
+      env: codex_env(),
       port_opts: [cd: String.to_charlist(ctx.directory)],
       framing: :ndjson
     }
@@ -134,26 +135,39 @@ defmodule OrcaHub.Backend.Codex do
     end
   end
 
-  # `CODEX_HOME` is the per-session isolation lever (spec §6.1/§6.3(2)) — points
-  # the CLI at a directory this backend controls (config.toml with the orca MCP
-  # stanza), computed the SAME way in spawn_spec/2 (env) and prepare_session/1
-  # (the side effect that materializes it), so no extra_env plumbing through
-  # the runner is needed (prepare_session/1 returns plain `:ok`).
-  defp codex_env(ctx) do
-    extra = [{~c"CODEX_HOME", String.to_charlist(codex_home_dir(ctx))}]
-
+  # No `CODEX_HOME` override — the child inherits the real `~/.codex` home (or
+  # whatever `CODEX_HOME` the operator already has set in the node's own env),
+  # so `codex login`/API-key auth, `features.memories`, and session rollouts
+  # all work exactly as they would from an interactive `codex` invocation.
+  # Session-scoped isolation for the orca MCP server URL is instead passed as
+  # `-c` overrides layered on top of the real config (spec §6.1/§6.3(2),
+  # spike-verified against codex-cli 0.142.5 — see `mcp_config_args/1`).
+  defp codex_env do
     extra =
       case System.get_env("OPENAI_API_KEY") do
-        nil -> extra
-        "" -> extra
-        key -> extra ++ [{~c"OPENAI_API_KEY", String.to_charlist(key)}]
+        nil -> []
+        "" -> []
+        key -> [{~c"OPENAI_API_KEY", String.to_charlist(key)}]
       end
 
     OrcaHub.Env.sanitized_env(extra)
   end
 
-  defp codex_home_dir(ctx) do
-    Path.join([ctx.directory, ".codex_home", to_string(ctx.session_id)])
+  # `-c` root-level config overrides (spike-verified against codex-cli 0.142.5,
+  # both `app-server` and `exec`) layer the per-session orca MCP stanza over
+  # whatever real `~/.codex/config.toml` the child process loads, without
+  # writing anything to disk or touching the user's config. `inspect/1`
+  # produces a double-quoted, escaped string — valid TOML string syntax for
+  # the dotted-path value (mirrors the old config.toml's `url = #{inspect(url)}`).
+  defp mcp_config_args(ctx) do
+    url = McpUrl.orca_url(ctx)
+
+    [
+      "-c",
+      "mcp_servers.orca.url=#{inspect(url)}",
+      "-c",
+      ~s(mcp_servers.orca.default_tools_approval_mode="auto")
+    ]
   end
 
   # Codex model handling (spec step 3): passthrough string; omit when the
@@ -623,71 +637,27 @@ defmodule OrcaHub.Backend.Codex do
   def session_id(%{"type" => "system", "session_id" => sid}) when is_binary(sid), do: sid
   def session_id(_event), do: nil
 
-  # ── Session lifecycle (CODEX_HOME + config.toml) ──────────────────────
-  # Per-session CODEX_HOME lives under the session's working directory
-  # (`<directory>/.codex_home/<session_id>`) — deterministic, not `/tmp`
-  # (codex warns/refuses PATH-alias helpers under `/tmp`), keyed by session id
-  # so concurrent sessions in the same directory don't collide. Rewritten on
-  # EVERY spawn (mirrors Claude's per-spawn /mcp URL bake — see
-  # `call_prepare_session/1` in SessionRunner) so a flag change
-  # (orchestrator/code_exec) is picked up on the next cold reopen. Removed by
-  # `cleanup_session/1`, called from `SessionRunner.terminate/3` — i.e. on
-  # runner-process death, NOT on every idle-timeout port teardown, so a warm
-  # process cycling cold/warm within one runner's life doesn't churn the
-  # directory (spec §10 Q3/Q5).
+  # ── Session lifecycle (no on-disk state — see `mcp_config_args/1`) ────
+  # Superseded design: through 2026-07, this backend materialized a
+  # per-session `CODEX_HOME` (`<directory>/.codex_home/<session_id>`) with a
+  # generated `config.toml` (the orca MCP stanza) and a copy of the real
+  # `auth.json`, torn down by `cleanup_session/1`. That hid the user's real
+  # `~/.codex/config.toml` (personality, `features.memories`, trust) from
+  # every Codex session and let `auth.json` copies go stale. Spike-verified
+  # (codex-cli 0.142.5) that `-c` root-level config overrides layer the
+  # per-session orca MCP stanza over the REAL config for both `app-server` and
+  # `exec`, don't persist anything back to `~/.codex/config.toml`, and don't
+  # cross-talk between concurrent sessions with different URLs — see
+  # `mcp_config_args/1` and `spawn_spec/2`. So there's nothing left to
+  # materialize or tear down; both callbacks are no-ops (the `prepare_session/1`
+  # `{:ok, extra_env}` / `:ok` return shape and `cleanup_session/1` remain
+  # required behaviour callbacks for backends that DO need on-disk state).
 
   @impl true
-  def prepare_session(ctx) do
-    dir = codex_home_dir(ctx)
-    File.mkdir_p!(dir)
-    File.write!(Path.join(dir, "config.toml"), config_toml(ctx))
-    copy_auth(dir)
-    :ok
-  rescue
-    e ->
-      Logger.error("[Backend.Codex] prepare_session failed: #{Exception.message(e)}")
-      :ok
-  end
-
-  # The per-session CODEX_HOME hides the user's real one, which is where
-  # `codex login` (ChatGPT or --with-api-key) stores credentials — without
-  # this copy every turn fails with 401 unless OPENAI_API_KEY happens to be
-  # in the BEAM's env. Re-copied on every spawn so a re-login or token
-  # refresh in the real home is picked up on the next cold reopen. Caveat:
-  # if codex refreshes the ChatGPT token mid-session it writes to the
-  # session copy, and the source stays stale until the user's next
-  # interactive codex run refreshes it there.
-  defp copy_auth(session_home) do
-    source_home = System.get_env("CODEX_HOME") || Path.expand("~/.codex")
-    source = Path.join(source_home, "auth.json")
-    dest = Path.join(session_home, "auth.json")
-
-    if File.exists?(source) do
-      File.cp!(source, dest)
-      File.chmod!(dest, 0o600)
-    end
-  end
+  def prepare_session(_ctx), do: :ok
 
   @impl true
-  def cleanup_session(ctx) do
-    File.rm_rf(codex_home_dir(ctx))
-    :ok
-  rescue
-    _ -> :ok
-  end
-
-  # CRITICAL: the orca MCP URL is built by the SAME helper Backend.Claude uses
-  # (OrcaHub.Backend.McpUrl.orca_url/1) so the query params (orca_session_id,
-  # orchestrator, code_exec) can never drift between backends (spec §6.3(2)).
-  defp config_toml(ctx) do
-    url = McpUrl.orca_url(ctx)
-
-    """
-    [mcp_servers.orca]
-    url = #{inspect(url)}
-    default_tools_approval_mode = "auto"
-    """
-  end
+  def cleanup_session(_ctx), do: :ok
 
   # ── System prompt (leading-message — spec §6.3(1)) ────────────────────
   # Reuses the non-Claude-specific fragments from SharedPrompts; the
