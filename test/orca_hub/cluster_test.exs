@@ -114,6 +114,52 @@ defmodule OrcaHub.ClusterTest do
     end
   end
 
+  # This describe block makes the test VM a real distributed Erlang node
+  # (via Node.start/:peer) to reproduce a genuine cross-node :undef. Run
+  # with CLUSTER_NODES and CLUSTER_DNS_QUERY unset (see mix-test-env docs) —
+  # otherwise libcluster's already-configured static/DNS strategy could
+  # attempt to connect this ad hoc node to a real cluster member.
+  describe "rpc/5 — connected node running an older release (rolling deploy / version skew)" do
+    setup do
+      # ClusterNodeTracker writes to the DB (from its own process, outside
+      # this test's Ecto sandbox checkout) whenever a real :nodeup fires —
+      # pause it for the duration so the Node.start/:peer connection below
+      # doesn't crash it.
+      Supervisor.terminate_child(OrcaHub.Supervisor, OrcaHub.ClusterNodeTracker)
+      on_exit(fn -> Supervisor.restart_child(OrcaHub.Supervisor, OrcaHub.ClusterNodeTracker) end)
+
+      unless Node.alive?() do
+        {:ok, hostname} = :inet.gethostname()
+        {:ok, _pid} = Node.start(:"cluster_rpc_test@#{hostname}", :shortnames)
+      end
+
+      {:ok, peer_pid, peer_node} =
+        :peer.start_link(%{name: :"cluster_rpc_undef_peer_#{System.unique_integer([:positive])}"})
+
+      on_exit(fn ->
+        try do
+          :peer.stop(peer_pid)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
+      %{peer_node: peer_node}
+    end
+
+    test "a connected node lacking the called function returns {:error, {:rpc_undef, mfa}} instead of crashing the caller",
+         %{peer_node: peer_node} do
+      # The peer is a bare node with no OrcaHub code loaded — same as a
+      # connected cluster node that hasn't been redeployed with a newly
+      # added function yet (e.g. BackendInstaller.running_backends/0,
+      # which crashed NodeLive.Index's mount in production: :erpc.call
+      # raised :undef uncaught, so every socket reconnect re-crashed —
+      # the classic "page keeps refreshing" symptom).
+      assert Cluster.rpc(peer_node, OrcaHub.BackendInstaller, :running_backends, [], 2_000) ==
+               {:error, {:rpc_undef, {OrcaHub.BackendInstaller, :running_backends, 0}}}
+    end
+  end
+
   describe "node_unavailable_message/1" do
     test "explains an unassigned session" do
       assert Cluster.node_unavailable_message(:node_unassigned) =~ "no assigned node"

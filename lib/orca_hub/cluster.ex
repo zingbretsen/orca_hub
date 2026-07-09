@@ -113,6 +113,12 @@ defmodule OrcaHub.Cluster do
   node) and `{:error, {:node_unavailable, n}}` when `n` is a node that isn't
   currently connected, instead of letting `:erpc` raise/return a noconnection
   error for an action we should never have attempted in the first place.
+
+  Also returns `{:error, {:rpc_undef, {mod, fun, arity}}}` instead of raising
+  when the target node IS connected but doesn't export `mod.fun/arity` — the
+  hub+agent topology deploys nodes independently, so a connected node running
+  an older release is an expected, recoverable state (same treatment as an
+  unavailable node), not a crash.
   """
   def rpc(n, mod, fun, args, timeout \\ @timeout)
   def rpc(nil, _mod, _fun, _args, _timeout), do: {:error, :node_unassigned}
@@ -120,7 +126,18 @@ defmodule OrcaHub.Cluster do
 
   def rpc(n, mod, fun, args, timeout) do
     if node_available?(n) do
-      :erpc.call(n, mod, fun, args, timeout)
+      try do
+        :erpc.call(n, mod, fun, args, timeout)
+      rescue
+        e in ErlangError ->
+          case e.original do
+            {:exception, :undef, _stacktrace} ->
+              {:error, {:rpc_undef, {mod, fun, length(args)}}}
+
+            _ ->
+              reraise e, __STACKTRACE__
+          end
+      end
     else
       {:error, {:node_unavailable, n}}
     end
