@@ -56,6 +56,27 @@ ENV HOME=/home/orca
 RUN curl -fsSL https://claude.ai/install.sh | su orca -c bash
 ENV PATH="/home/orca/.local/bin:${PATH}"
 
+# Install mise (mise.jdx.dev) for the orca user. Used to bake in a pinned
+# Node LTS now, and to let tools be added on-demand in running pods later.
+# The mise.run script just drops a static binary at ~/.local/bin/mise (no
+# package manager / build deps needed), which is already on PATH above.
+RUN curl -fsSL https://mise.run | su orca -c sh
+
+# Shims (not `mise activate`) are what make mise-installed tools resolve in
+# a plain non-interactive, non-login shell — which is what the OTP release
+# process sees, since it never sources .bashrc/.profile.
+ENV PATH="/home/orca/.local/share/mise/shims:${PATH}"
+
+# Pin a Node LTS via mise, then bake in codex + pi on top of it so they're
+# available by default on every pod (mise-managed tools installed at
+# container runtime are ephemeral across pod restarts; baking into the
+# image is the durable path).
+RUN su orca -c "mise use -g node@22" && \
+    su orca -c "npm install -g @openai/codex@latest @earendil-works/pi-coding-agent@latest" && \
+    su orca -c "npm cache clean --force" && \
+    su orca -c "mise reshim" && \
+    rm -rf /home/orca/.local/share/mise/installs/node/*/include
+
 WORKDIR /app
 
 ENV MIX_ENV=prod
