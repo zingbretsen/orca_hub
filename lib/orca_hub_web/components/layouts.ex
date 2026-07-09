@@ -19,15 +19,22 @@ defmodule OrcaHubWeb.Layouts do
   # this NODE's local Claude credentials — nothing session-specific — but
   # while viewing a session whose backend has no usage capability (Codex),
   # the link is still the wrong thing to dangle in front of the user.
-  defp nav_links(assigns) do
+  defp nav_links(_assigns) do
     [
       %{href: ~p"/queue", label: "Queue", badge: true},
       %{href: ~p"/projects", label: "Projects"},
       %{href: ~p"/triggers", label: "Triggers"},
       %{href: ~p"/terminals", label: "Terminals"},
       %{href: ~p"/sessions", label: "Sessions"},
-      %{href: ~p"/usage", label: "Usage", visible: usage_nav_visible?(assigns)},
-      %{href: ~p"/settings", label: "Settings"}
+      %{href: ~p"/nodes", label: "Nodes"}
+    ]
+  end
+
+  # Settings dropdown entries (desktop) / flat trailing links (mobile).
+  defp settings_menu_links(assigns) do
+    [
+      %{href: ~p"/settings", label: "Settings"},
+      %{href: ~p"/usage", label: "Usage", visible: usage_nav_visible?(assigns)}
     ]
     |> Enum.filter(&Map.get(&1, :visible, true))
   end
@@ -51,7 +58,10 @@ defmodule OrcaHubWeb.Layouts do
   slot :inner_block
 
   def app(assigns) do
-    assigns = assign(assigns, :nav_links, nav_links(assigns))
+    assigns =
+      assigns
+      |> assign(:nav_links, nav_links(assigns))
+      |> assign(:settings_menu_links, settings_menu_links(assigns))
 
     ~H"""
     <header class="flex items-center gap-2 px-4 py-2 sm:px-6 lg:px-8">
@@ -64,6 +74,7 @@ defmodule OrcaHubWeb.Layouts do
           {link.label}
           <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-desktop" />
         </a>
+        <.settings_nav_dropdown links={@settings_menu_links} />
       </nav>
 
       <div class="hidden md:flex items-center gap-2 ml-auto">
@@ -95,6 +106,9 @@ defmodule OrcaHubWeb.Layouts do
               {link.label}
               <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-mobile" />
             </a>
+          </li>
+          <li :for={link <- @settings_menu_links}>
+            <a href={link.href}>{link.label}</a>
           </li>
           <li :if={assigns[:node_filter_visible]} class="menu-title text-xs uppercase opacity-60 mt-2">
             Nodes
@@ -168,6 +182,30 @@ defmodule OrcaHubWeb.Layouts do
         {gettext("Attempting to reconnect")}
         <.icon name="hero-arrow-path" class="ml-1 size-3 motion-safe:animate-spin" />
       </.flash>
+    </div>
+    """
+  end
+
+  # Degrades to a plain "Settings" link when there's only one entry (e.g.
+  # Usage hidden by capabilities) — a dropdown with a single item is just
+  # extra clicks.
+  defp settings_nav_dropdown(%{links: [single]} = assigns) do
+    assigns = assign(assigns, :single, single)
+
+    ~H"""
+    <a href={@single.href} class="btn btn-ghost btn-sm">{@single.label}</a>
+    """
+  end
+
+  defp settings_nav_dropdown(assigns) do
+    ~H"""
+    <div class="dropdown dropdown-end">
+      <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1">
+        Settings <.icon name="hero-chevron-down-micro" class="size-3" />
+      </div>
+      <ul tabindex="0" class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-40">
+        <li :for={link <- @links}><a href={link.href}>{link.label}</a></li>
+      </ul>
     </div>
     """
   end

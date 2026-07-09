@@ -1,0 +1,48 @@
+<div :if={!@connected} id="node-unavailable" class="alert alert-warning mb-2">
+  <.icon name="hero-signal-slash" class="size-5" />
+  <span>
+    This node is not currently connected. Node-local operations are unavailable until it reconnects.
+  </span>
+</div>
+
+<.header>
+  <.link navigate={~p"/nodes"} class="text-sm opacity-70">&larr; Nodes</.link>
+  <span class="ml-2">{@node.display_name}</span>
+</.header>
+
+<div class="card bg-base-200 p-4 mt-4">
+  <.list>
+    <:item title="Status">
+      <span class={["badge", if(@connected, do: "badge-success", else: "badge-neutral")]}>
+        {if @connected, do: "connected", else: "offline"}
+      </span>
+    </:item>
+    <:item title="Node name"><span class="font-mono">{@node.name}</span></:item>
+    <:item title="Display name">{@node.display_name}</:item>
+    <:item title="First connected">{first_connected_label(@node.first_connected_at)}</:item>
+    <:item title="Last connected">
+      {last_connected_label(@connected, @node.last_connected_at)}
+    </:item>
+    <:item title="Sessions">{@session_count}</:item>
+    <:item title="Projects">{@project_count}</:item>
+  </.list>
+</div>
+
+<div class="mt-6">
+  <h3 class="font-semibold mb-2">Backend Configuration</h3>
+
+  <div
+    :if={!@connected}
+    id="backend-config-node-unavailable"
+    class="text-sm text-base-content/50 p-4 text-center bg-base-200 rounded-lg"
+  >
+    Node unavailable — backend configuration requires an active connection to this node.
+  </div>
+
+  <div
+    :if={@connected}
+    class="text-sm text-base-content/50 p-4 text-center bg-base-200 rounded-lg"
+  >
+    Coming soon.
+  </div>
+</div>

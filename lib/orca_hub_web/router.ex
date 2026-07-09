@@ -37,6 +37,9 @@ defmodule OrcaHubWeb.Router do
       live "/queue", QueueLive, :index
       live "/usage", UsageLive, :index
 
+      live "/nodes", NodeLive.Index, :index
+      live "/nodes/:id", NodeLive.Show, :show
+
       live "/terminals", TerminalLive.Index, :index
       live "/terminals/new", TerminalLive.Index, :new
       live "/terminals/:id", TerminalLive.Show, :show

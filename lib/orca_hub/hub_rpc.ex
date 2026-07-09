@@ -234,4 +234,17 @@ defmodule OrcaHub.HubRPC do
 
   def get_run_by_session_id(session_id),
     do: call(OrcaHub.ApiRuns, :get_run_by_session_id, [session_id])
+
+  # -------------------------------------------------------------------
+  # Cluster Nodes (/nodes UI — currently and previously connected nodes)
+  # -------------------------------------------------------------------
+
+  def list_nodes, do: call(OrcaHub.ClusterNodes, :list_nodes, [])
+  def get_node!(id), do: call(OrcaHub.ClusterNodes, :get_node!, [id])
+
+  def count_sessions_for_node(name),
+    do: call(OrcaHub.ClusterNodes, :count_sessions_for_node, [name])
+
+  def count_projects_for_node(name),
+    do: call(OrcaHub.ClusterNodes, :count_projects_for_node, [name])
 end

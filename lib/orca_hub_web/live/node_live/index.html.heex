@@ -1,0 +1,28 @@
+<.header>
+  Nodes
+</.header>
+
+<.table
+  id="nodes"
+  rows={@nodes}
+  row_click={fn %{node: n} -> JS.navigate(~p"/nodes/#{n.id}") end}
+>
+  <:col :let={%{node: n}} label="Name">
+    <div class="font-medium">{n.display_name}</div>
+    <div class="text-xs text-base-content/60 font-mono">{n.name}</div>
+  </:col>
+  <:col :let={%{connected: connected?}} label="Status">
+    <span class={["badge", if(connected?, do: "badge-success", else: "badge-neutral")]}>
+      {if connected?, do: "connected", else: "offline"}
+    </span>
+  </:col>
+  <:col :let={%{node: n, connected: connected?}} label="Last Connected">
+    {last_connected_label(connected?, n.last_connected_at)}
+  </:col>
+  <:col :let={%{session_count: count}} label="Sessions">{count}</:col>
+  <:col :let={%{project_count: count}} label="Projects">{count}</:col>
+</.table>
+
+<p :if={@nodes == []} class="text-sm text-base-content/60 mt-4">
+  No nodes have connected to this cluster yet.
+</p>

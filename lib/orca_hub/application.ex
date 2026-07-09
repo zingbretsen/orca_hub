@@ -80,6 +80,7 @@ defmodule OrcaHub.Application do
       OrcaHub.MCP.UpstreamClient,
       OrcaHub.Scheduler,
       OrcaHub.TriggerLoader,
+      OrcaHub.ClusterNodeTracker,
       OrcaHubWeb.Endpoint
     ]
   end
