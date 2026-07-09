@@ -100,7 +100,13 @@ config :orca_hub, :discord_guild_ids, discord_guild_ids
 config :orca_hub, OrcaHubWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
-config :orca_hub, :openai_api_key, System.get_env("OPENAI_API_KEY")
+# TITLE_GEN_OPENAI_API_KEY is preferred over the legacy OPENAI_API_KEY name so
+# this key isn't ambiently visible to the codex backend (which gives env vars
+# precedence over `codex login`/subscription auth — see Backend.Codex).
+config :orca_hub,
+       :openai_api_key,
+       System.get_env("TITLE_GEN_OPENAI_API_KEY") || System.get_env("OPENAI_API_KEY")
+
 config :orca_hub, :datarobot_api_token, System.get_env("DATAROBOT_API_TOKEN")
 config :orca_hub, :datarobot_endpoint, System.get_env("DATAROBOT_ENDPOINT")
 

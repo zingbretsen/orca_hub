@@ -69,7 +69,7 @@ If you prefer to run OrcaHub outside Docker (for development or customization):
    cp .env.example .env
    ```
 
-   Edit `.env` if your database credentials differ from the defaults. Optionally add an `OPENAI_API_KEY` or DataRobot credentials for automatic session title generation.
+   Edit `.env` if your database credentials differ from the defaults. Optionally add a `TITLE_GEN_OPENAI_API_KEY` or DataRobot credentials for automatic session title generation.
 
 3. **Start PostgreSQL** (if using Docker):
 
@@ -105,7 +105,8 @@ If you prefer to run OrcaHub outside Docker (for development or customization):
 | `SECRET_KEY_BASE` | auto-generated | Session signing key (Docker auto-generates and persists one) |
 | `PHX_HOST` | `localhost` | Hostname for URL generation |
 | `PORT` | `4000` | HTTP server port |
-| `OPENAI_API_KEY` | — | Enables auto-generated session titles (via OpenAI directly) |
+| `TITLE_GEN_OPENAI_API_KEY` | — | Enables auto-generated session titles (via OpenAI directly). Falls back to `OPENAI_API_KEY` if unset — but prefer this name if the codex backend is also in use, since a bare `OPENAI_API_KEY` is ambiently visible to codex (env wins over `codex login`/subscription auth) |
+| `OPENAI_API_KEY` | — | Legacy fallback for `TITLE_GEN_OPENAI_API_KEY` (title generation only) |
 | `DATAROBOT_API_TOKEN` | — | DataRobot API token (alternative to OpenAI for title generation) |
 | `DATAROBOT_ENDPOINT` | — | DataRobot API endpoint (required if using DataRobot) |
 | `TITLE_MODEL` | `azure/gpt-4o-mini` | LLM model for title generation (used with DataRobot LLM Gateway) |

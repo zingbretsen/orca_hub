@@ -11,8 +11,10 @@ services:
       # SECRET_KEY_BASE: <set to override auto-generated key>
       PHX_HOST: ${PHX_HOST:-localhost}
       PHX_URL_PORT: ${PORT:-4000}
-      # Optional: title generation
-      # OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # Optional: title generation. Prefer TITLE_GEN_OPENAI_API_KEY over the
+      # legacy OPENAI_API_KEY name if the codex backend is also in use (codex
+      # gives ambient env vars precedence over subscription auth).
+      # TITLE_GEN_OPENAI_API_KEY: ${TITLE_GEN_OPENAI_API_KEY}
       DATAROBOT_API_TOKEN: ${DATAROBOT_API_TOKEN}
       DATAROBOT_ENDPOINT: ${DATAROBOT_ENDPOINT}
       TITLE_MODEL: ${TITLE_MODEL}
