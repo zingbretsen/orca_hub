@@ -20,11 +20,12 @@ defmodule OrcaHub.AgentMemory do
       `~/.codex/config.toml`); the missing-dir case is expected, not an
       error. Contains flat files (canonically `MEMORY.md`,
       `memory_summary.md`, `raw_memories.md`) plus three known
-      subdirectories one level deep: `rollout_summaries/`, `skills/`, and
-      `memories_extensions/`. **These memories are GLOBAL to the node's
-      current OS user, not scoped to any one project** — every project
-      routed to the same node shares (and can edit/delete) the same
-      Codex memory files.
+      subdirectories: `rollout_summaries/` and `skills/` one level deep,
+      and `extensions/<extension_name>/` two levels deep (confirmed via a
+      live `codex exec` run — e.g. `extensions/ad_hoc/instructions.md`).
+      **These memories are GLOBAL to the node's current OS user, not
+      scoped to any one project** — every project routed to the same node
+      shares (and can edit/delete) the same Codex memory files.
 
   pi has no memory store of its own — it reads AGENTS.md and, via an
   extension, the Claude MEMORY.md index.
@@ -393,7 +394,12 @@ defmodule OrcaHub.AgentMemory do
 
   @codex_config_subpath ".codex/config.toml"
   @codex_canonical_files ["MEMORY.md", "memory_summary.md", "raw_memories.md"]
-  @codex_known_subdirs ["rollout_summaries", "skills", "memories_extensions"]
+  # rollout_summaries/ and skills/ are flat (one level); extensions/ nests
+  # one level further, keyed by extension name (extensions/<name>/<file>) —
+  # confirmed via a live `codex exec` run producing
+  # extensions/ad_hoc/instructions.md.
+  @codex_flat_subdirs ["rollout_summaries", "skills"]
+  @codex_extensions_subdir "extensions"
 
   @doc "Path to `~/.codex/memories` on this node."
   def codex_memories_dir(opts \\ []), do: Path.join(home_dir(opts), @codex_memories_subpath)
@@ -422,12 +428,14 @@ defmodule OrcaHub.AgentMemory do
   distinguish "not enabled" from "enabled, nothing consolidated yet").
 
   `filename` is the path relative to `~/.codex/memories/` — a bare name
-  for top-level files, or `"<subdir>/<name>"` for the known subdirectories.
-  `group` is `nil` for top-level files, else the subdir name. Canonical
-  files (`MEMORY.md`, `memory_summary.md`, `raw_memories.md`) sort first
-  in that order, then other top-level files alphabetically, then each
-  known subdirectory's files alphabetically. Unknown subdirectories and
-  sqlite state files are skipped.
+  for top-level files, `"<subdir>/<name>"` for `rollout_summaries/` and
+  `skills/`, or `"extensions/<extension_name>/<name>"` for `extensions/`.
+  `group` is `nil` for top-level files, else the subdir name
+  (`"rollout_summaries"`, `"skills"`, or `"extensions"`). Canonical files
+  (`MEMORY.md`, `memory_summary.md`, `raw_memories.md`) sort first in
+  that order, then other top-level files alphabetically, then each known
+  subdirectory's files alphabetically. Unknown subdirectories and sqlite
+  state files are skipped.
   """
   def list_codex_memories(opts \\ []) do
     dir = codex_memories_dir(opts)
@@ -443,18 +451,48 @@ defmodule OrcaHub.AgentMemory do
         end)
 
       subdir_files =
-        for subdir <- @codex_known_subdirs,
-            subdir_path = Path.join(dir, subdir),
-            File.dir?(subdir_path),
-            filename <- subdir_path |> File.ls!() |> Enum.sort(),
-            File.regular?(Path.join(subdir_path, filename)) do
-          relative = Path.join(subdir, filename)
-          %{filename: relative, group: subdir, content: File.read!(Path.join(dir, relative))}
-        end
+        Enum.flat_map(@codex_flat_subdirs, &list_codex_flat_subdir(dir, &1)) ++
+          list_codex_extensions(dir)
 
       {:ok, flat_files ++ subdir_files}
     else
       {:error, :not_enabled}
+    end
+  end
+
+  defp list_codex_flat_subdir(dir, subdir) do
+    subdir_path = Path.join(dir, subdir)
+
+    if File.dir?(subdir_path) do
+      for filename <- subdir_path |> File.ls!() |> Enum.sort(),
+          File.regular?(Path.join(subdir_path, filename)) do
+        relative = Path.join(subdir, filename)
+        %{filename: relative, group: subdir, content: File.read!(Path.join(dir, relative))}
+      end
+    else
+      []
+    end
+  end
+
+  defp list_codex_extensions(dir) do
+    extensions_dir = Path.join(dir, @codex_extensions_subdir)
+
+    if File.dir?(extensions_dir) do
+      for ext_name <- extensions_dir |> File.ls!() |> Enum.sort(),
+          ext_dir = Path.join(extensions_dir, ext_name),
+          File.dir?(ext_dir),
+          filename <- ext_dir |> File.ls!() |> Enum.sort(),
+          File.regular?(Path.join(ext_dir, filename)) do
+        relative = Path.join([@codex_extensions_subdir, ext_name, filename])
+
+        %{
+          filename: relative,
+          group: @codex_extensions_subdir,
+          content: File.read!(Path.join(dir, relative))
+        }
+      end
+    else
+      []
     end
   end
 
@@ -492,16 +530,22 @@ defmodule OrcaHub.AgentMemory do
     end
   end
 
-  # Accepts either a bare filename (validated like Claude's) or exactly one
-  # known-subdir segment followed by a bare filename — still rejects `..`,
-  # absolute paths, and any deeper nesting or unknown subdir.
+  # Accepts a bare filename (validated like Claude's), one flat-subdir
+  # segment followed by a bare filename, or "extensions/<name>/<filename>"
+  # — still rejects `..`, absolute paths, unknown subdirs, and any nesting
+  # beyond what's confirmed real (see @codex_flat_subdirs/@codex_extensions_subdir above).
   defp validate_safe_codex_path(path) when is_binary(path) do
     case String.split(path, "/") do
       [filename] ->
         validate_safe_filename(filename)
 
-      [subdir, filename] when subdir in @codex_known_subdirs ->
+      [subdir, filename] when subdir in @codex_flat_subdirs ->
         validate_safe_filename(filename)
+
+      [@codex_extensions_subdir, ext_name, filename] ->
+        with :ok <- validate_safe_filename(ext_name) do
+          validate_safe_filename(filename)
+        end
 
       _ ->
         {:error, :unsafe_filename}

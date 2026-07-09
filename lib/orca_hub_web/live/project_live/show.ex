@@ -954,7 +954,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   defp codex_group_label(nil), do: nil
   defp codex_group_label("rollout_summaries"), do: "rollout summary"
   defp codex_group_label("skills"), do: "skill"
-  defp codex_group_label("memories_extensions"), do: "extension"
+  defp codex_group_label("extensions"), do: "extension"
 
   # Codex memory filenames may include a subdir segment (e.g.
   # "rollout_summaries/2026-07-08.md") — "/" is valid in an HTML id but

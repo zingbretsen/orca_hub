@@ -293,6 +293,28 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
 
       assert File.read!(Path.join(rollout_dir, "2026-07-08.md")) == "Updated rollout summary."
     end
+
+    test "groups and badges the nested extensions/<name>/<file> shape", %{
+      conn: conn,
+      project: project,
+      home: home
+    } do
+      dir = AgentMemory.codex_memories_dir(home_dir: home)
+      ad_hoc_dir = Path.join([dir, "extensions", "ad_hoc"])
+      File.mkdir_p!(ad_hoc_dir)
+      File.write!(Path.join(ad_hoc_dir, "instructions.md"), "Ad-hoc extension notes.")
+
+      {:ok, view, html} = live(conn, ~p"/projects/#{project.id}")
+
+      assert html =~ "extensions/ad_hoc/instructions.md"
+      assert html =~ "extension"
+
+      view
+      |> element("#codex-memory-delete-extensions--ad_hoc--instructions\\.md")
+      |> render_click()
+
+      refute File.exists?(Path.join(ad_hoc_dir, "instructions.md"))
+    end
   end
 
   describe "Codex feature-flag messaging when the dir doesn't exist yet" do

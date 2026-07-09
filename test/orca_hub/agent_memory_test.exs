@@ -331,7 +331,7 @@ defmodule OrcaHub.AgentMemoryTest do
              ]
     end
 
-    test "includes known subdirectories one level deep, grouped, ordered after flat files", %{
+    test "includes flat subdirectories one level deep, grouped, ordered after flat files", %{
       opts: opts
     } do
       dir = AgentMemory.codex_memories_dir(opts)
@@ -347,7 +347,8 @@ defmodule OrcaHub.AgentMemoryTest do
       File.mkdir_p!(skills_dir)
       File.write!(Path.join(skills_dir, "my-skill.md"), "skill body")
 
-      # Nested one level further should not be picked up.
+      # Nested one level further should not be picked up (rollout_summaries
+      # and skills are flat, unlike extensions/).
       File.mkdir_p!(Path.join(rollout_dir, "nested"))
       File.write!(Path.join(rollout_dir, "nested/too-deep.md"), "should not appear")
 
@@ -368,7 +369,27 @@ defmodule OrcaHub.AgentMemoryTest do
       assert skill.group == "skills"
     end
 
-    test "reads/saves/deletes files inside known subdirectories", %{opts: opts} do
+    test "includes extensions/<name>/<file> two levels deep, grouped as 'extensions'", %{
+      opts: opts
+    } do
+      dir = AgentMemory.codex_memories_dir(opts)
+      ad_hoc_dir = Path.join([dir, "extensions", "ad_hoc"])
+      File.mkdir_p!(ad_hoc_dir)
+      File.write!(Path.join(ad_hoc_dir, "instructions.md"), "Ad-hoc extension notes.")
+
+      # A bare file directly under extensions/ (no extension-name level)
+      # doesn't match the confirmed real shape and must be skipped.
+      File.write!(Path.join(dir, "extensions") |> Path.join("stray.md"), "stray")
+
+      assert {:ok, files} = AgentMemory.list_codex_memories(opts)
+
+      assert [%{filename: "extensions/ad_hoc/instructions.md", group: "extensions"} = entry] =
+               files
+
+      assert entry.content == "Ad-hoc extension notes."
+    end
+
+    test "reads/saves/deletes files inside flat subdirectories", %{opts: opts} do
       assert :ok =
                AgentMemory.save_codex_memory(
                  "rollout_summaries/session-1.md",
@@ -386,6 +407,24 @@ defmodule OrcaHub.AgentMemoryTest do
       assert {:ok, []} = AgentMemory.list_codex_memories(opts)
     end
 
+    test "reads/saves/deletes files inside extensions/<name>/", %{opts: opts} do
+      assert :ok =
+               AgentMemory.save_codex_memory(
+                 "extensions/ad_hoc/instructions.md",
+                 "Notes.",
+                 opts
+               )
+
+      assert {:ok, "Notes."} =
+               AgentMemory.read_codex_memory("extensions/ad_hoc/instructions.md", opts)
+
+      assert {:ok, files} = AgentMemory.list_codex_memories(opts)
+      assert [%{filename: "extensions/ad_hoc/instructions.md", group: "extensions"}] = files
+
+      assert :ok = AgentMemory.delete_codex_memory("extensions/ad_hoc/instructions.md", opts)
+      assert {:ok, []} = AgentMemory.list_codex_memories(opts)
+    end
+
     test "rejects unknown subdirs, deeper nesting, and absolute paths for subdir paths", %{
       opts: opts
     } do
@@ -400,6 +439,16 @@ defmodule OrcaHub.AgentMemoryTest do
 
       assert {:error, :unsafe_filename} =
                AgentMemory.read_codex_memory("/etc/passwd", opts)
+
+      # extensions/ requires exactly the <name>/<file> shape.
+      assert {:error, :unsafe_filename} =
+               AgentMemory.save_codex_memory("extensions/stray.md", "x", opts)
+
+      assert {:error, :unsafe_filename} =
+               AgentMemory.save_codex_memory("extensions/ad_hoc/nested/too-deep.md", "x", opts)
+
+      assert {:error, :unsafe_filename} =
+               AgentMemory.save_codex_memory("extensions/../MEMORY.md", "x", opts)
     end
   end
 
