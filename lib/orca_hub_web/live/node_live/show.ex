@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.NodeLive.Show do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Cluster, ConfigFile, HubRPC, NodeConfig}
+  alias OrcaHub.{BackendInstaller, Cluster, ConfigFile, HubRPC, NodeConfig}
   alias OrcaHubWeb.Markdown
 
   import OrcaHubWeb.NodeLive.ConfigComponents, only: [config_file_row: 1, config_dir_row: 1]
@@ -16,6 +16,10 @@ defmodule OrcaHubWeb.NodeLive.Show do
 
     node_config = if config_node, do: load_all_node_config(config_node), else: nil
 
+    if config_node && Phoenix.LiveView.connected?(socket) do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, BackendInstaller.topic(config_node))
+    end
+
     socket =
       socket
       |> assign(
@@ -24,6 +28,14 @@ defmodule OrcaHubWeb.NodeLive.Show do
         connected: connected?,
         config_node: config_node,
         node_config: node_config,
+        backend_installer_status: if(config_node, do: load_backend_installer_status(config_node)),
+        backend_installer_running:
+          if(config_node,
+            do: load_backend_installer_running(config_node),
+            else: MapSet.new()
+          ),
+        backend_installer_output: %{},
+        backend_installer_result: %{},
         session_count: HubRPC.count_sessions_for_node(node.name),
         project_count: HubRPC.count_projects_for_node(node.name),
         config_sections_expanded: MapSet.new(),
@@ -64,6 +76,32 @@ defmodule OrcaHubWeb.NodeLive.Show do
 
   def first_connected_label(nil), do: "Unknown"
   def first_connected_label(dt), do: OrcaHubWeb.DashboardLive.time_ago(dt)
+
+  # -------------------------------------------------------------------
+  # Backend install/update
+  # -------------------------------------------------------------------
+
+  def handle_event("run_backend_job", %{"backend" => b, "action" => a}, socket) do
+    with backend when not is_nil(backend) <- backend_atom(b),
+         action when not is_nil(action) <- installer_action_atom(a) do
+      case rpc(socket.assigns.config_node, BackendInstaller, :run, [backend, action]) do
+        :ok ->
+          {:noreply,
+           socket
+           |> update(:backend_installer_running, &MapSet.put(&1, backend))
+           |> update(:backend_installer_output, &Map.put(&1, backend, ""))
+           |> update(:backend_installer_result, &Map.delete(&1, backend))}
+
+        {:error, :already_running} ->
+          {:noreply, put_flash(socket, :error, "#{b} install/update is already running")}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Failed to start #{b}: #{inspect(reason)}")}
+      end
+    else
+      nil -> {:noreply, socket}
+    end
+  end
 
   # -------------------------------------------------------------------
   # Section / entry expand-collapse
@@ -447,10 +485,31 @@ defmodule OrcaHubWeb.NodeLive.Show do
   end
 
   # -------------------------------------------------------------------
+  # Backend install/update (PubSub events from OrcaHub.BackendInstaller.Job)
+  # -------------------------------------------------------------------
+
+  @impl true
+  def handle_info({:installer_output, backend, chunk}, socket) do
+    {:noreply,
+     update(socket, :backend_installer_output, fn output ->
+       Map.update(output, backend, chunk, &(&1 <> chunk))
+     end)}
+  end
+
+  def handle_info({:installer_done, backend, result}, socket) do
+    {:noreply,
+     socket
+     |> update(:backend_installer_running, &MapSet.delete(&1, backend))
+     |> update(:backend_installer_result, &Map.put(&1, backend, result))
+     |> refresh_backend_installer_status()}
+  end
+
+  # -------------------------------------------------------------------
   # Private helpers
   # -------------------------------------------------------------------
 
   defp rpc(target, mod, fun, args), do: Cluster.rpc(target, mod, fun, args)
+  defp rpc(target, mod, fun, args, timeout), do: Cluster.rpc(target, mod, fun, args, timeout)
 
   # A node string in the `nodes` table is only ever meaningful as a live
   # Erlang node atom if that atom already exists in this VM (i.e. we've
@@ -467,6 +526,34 @@ defmodule OrcaHubWeb.NodeLive.Show do
   defp backend_atom("codex"), do: :codex
   defp backend_atom("pi"), do: :pi
   defp backend_atom(_), do: nil
+
+  defp installer_action_atom("install"), do: :install
+  defp installer_action_atom("update"), do: :update
+  defp installer_action_atom(_), do: nil
+
+  # BackendInstaller.status/0 runs 3 backends' checks concurrently but each
+  # may shell out to npm (see BackendInstaller's internal timeouts) — pad
+  # well above Cluster.rpc's default 10s so a slow-but-not-hung node doesn't
+  # spuriously read as unavailable.
+  defp load_backend_installer_status(config_node) do
+    case rpc(config_node, BackendInstaller, :status, [], 12_000) do
+      list when is_list(list) -> list
+      _ -> []
+    end
+  end
+
+  defp load_backend_installer_running(config_node) do
+    case rpc(config_node, BackendInstaller, :running_backends, []) do
+      list when is_list(list) -> MapSet.new(list)
+      _ -> MapSet.new()
+    end
+  end
+
+  defp refresh_backend_installer_status(socket) do
+    assign(socket,
+      backend_installer_status: load_backend_installer_status(socket.assigns.config_node)
+    )
+  end
 
   defp split_key(key) do
     [backend_str, path] = String.split(key, "|", parts: 2)

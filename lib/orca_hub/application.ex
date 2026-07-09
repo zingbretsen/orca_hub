@@ -70,6 +70,8 @@ defmodule OrcaHub.Application do
       OrcaHub.SessionSupervisor,
       OrcaHub.TerminalSupervisor,
       OrcaHub.LoginSupervisor,
+      {Registry, keys: :unique, name: OrcaHub.BackendInstallerRegistry},
+      OrcaHub.BackendInstallerSupervisor,
       {DynamicSupervisor, name: OrcaHub.MCPSupervisor, strategy: :one_for_one},
       # Serializes (re)generation of the global `Tools` surface for code-exec
       # sessions. Idle until the first run_elixir on this node.
@@ -106,6 +108,8 @@ defmodule OrcaHub.Application do
       OrcaHub.SessionSupervisor,
       OrcaHub.TerminalSupervisor,
       OrcaHub.LoginSupervisor,
+      {Registry, keys: :unique, name: OrcaHub.BackendInstallerRegistry},
+      OrcaHub.BackendInstallerSupervisor,
       {DynamicSupervisor, name: OrcaHub.MCPSupervisor, strategy: :one_for_one},
       # Serializes (re)generation of the global `Tools` surface for code-exec
       # sessions. Idle until the first run_elixir on this node.

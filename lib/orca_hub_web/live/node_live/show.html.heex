@@ -29,6 +29,97 @@
 </div>
 
 <div class="mt-6">
+  <h3 class="font-semibold mb-2">Backends</h3>
+
+  <div
+    :if={!@connected}
+    id="backend-installer-node-unavailable"
+    class="text-sm text-base-content/50 p-4 text-center bg-base-200 rounded-lg"
+  >
+    Node unavailable — install/update requires an active connection to this node.
+  </div>
+
+  <div :if={@connected} class="space-y-3" id="backend-installer-sections">
+    <div
+      :for={row <- @backend_installer_status || []}
+      id={"backend-installer-#{row.backend}"}
+      class="card bg-base-200 p-4"
+    >
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="font-semibold text-sm capitalize">{row.backend}</span>
+          <span class="text-sm font-mono opacity-70">
+            {if row.installed?, do: row.version || "unknown version", else: "not installed"}
+          </span>
+          <span
+            :if={row.installed? && row.latest_version && row.latest_version != row.version}
+            class="badge badge-xs badge-info"
+          >
+            update available: {row.latest_version}
+          </span>
+          <span
+            :if={row.ephemeral?}
+            class="badge badge-xs badge-warning"
+            title="Binary lives in the container's writable layer, not the PVC — reverts on pod restart"
+          >
+            ephemeral (pod)
+          </span>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <span
+            :if={MapSet.member?(@backend_installer_running, row.backend)}
+            class="loading loading-spinner loading-xs"
+          />
+          <button
+            :if={
+              row.action != :unavailable &&
+                !MapSet.member?(@backend_installer_running, row.backend)
+            }
+            phx-click="run_backend_job"
+            phx-value-backend={row.backend}
+            phx-value-action={row.action}
+            class="btn btn-xs btn-primary"
+          >
+            {if row.action == :install, do: "Install", else: "Update"}
+          </button>
+          <span
+            :if={row.action == :unavailable}
+            class="badge badge-xs badge-ghost"
+            title={row.unavailable_reason}
+          >
+            unavailable
+          </span>
+        </div>
+      </div>
+
+      <div :if={row.ephemeral?} class="text-xs text-warning mt-2">
+        Changes revert on pod restart — durable updates require an image rebuild.
+      </div>
+
+      <div :if={row.action == :unavailable} class="text-xs text-base-content/50 mt-2">
+        {row.unavailable_reason}
+      </div>
+
+      <pre
+        :if={Map.get(@backend_installer_output, row.backend, "") != ""}
+        id={"backend-installer-output-#{row.backend}"}
+        class="mt-2 bg-base-300 text-xs p-2 rounded max-h-40 overflow-y-auto whitespace-pre-wrap"
+      >{Map.get(@backend_installer_output, row.backend, "")}</pre>
+
+      <div :if={result = Map.get(@backend_installer_result, row.backend)} class="text-xs mt-2">
+        <span :if={match?({:ok, _}, result)} class="text-success">
+          Done — now at {elem(result, 1) || "unknown version"}
+        </span>
+        <span :if={match?({:error, _}, result)} class="text-error">
+          Failed: {inspect(elem(result, 1))}
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mt-6">
   <h3 class="font-semibold mb-2">Backend Configuration</h3>
 
   <div
