@@ -6,7 +6,7 @@ ARG DEBIAN_CODENAME=bookworm
 FROM hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_CODENAME}-20260223 AS builder
 
 RUN apt-get update -y && \
-    apt-get install -y build-essential git curl && \
+    apt-get install -y build-essential git curl nodejs npm && \
     apt-get clean && rm -f /var/lib/apt/lists/*_*
 
 WORKDIR /app
@@ -27,6 +27,12 @@ COPY priv priv
 COPY lib lib
 COPY assets assets
 COPY rel rel
+
+# assets/package.json deps (e.g. @xterm/xterm for the terminal hook) aren't
+# fetched by `mix assets.setup` (that only installs the tailwind/esbuild
+# standalone binaries) — esbuild needs them present in assets/node_modules
+# to resolve the imports when bundling.
+RUN npm --prefix assets ci
 
 # Compile first (generates phoenix-colocated hooks JS), then build assets
 RUN mix compile
