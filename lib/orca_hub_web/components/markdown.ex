@@ -72,4 +72,39 @@ defmodule OrcaHubWeb.Markdown do
     |> Enum.sort_by(fn {idx, _} -> idx end)
     |> Enum.map_join("\n\n", fn {_, text} -> text end)
   end
+
+  @doc """
+  Splits a leading `---`-delimited YAML frontmatter block off of `content`,
+  if present. Returns `{frontmatter, body}` where `frontmatter` includes
+  both delimiter lines verbatim (or `nil` if `content` has none), and
+  `body` is everything after it with leading blank lines trimmed.
+
+  Uses the same line-based delimiter detection as
+  `OrcaHub.AgentMemory.parse_frontmatter/1`, but keeps the frontmatter's raw
+  text instead of parsing it — so callers that only want to block-split the
+  body (never the frontmatter internals) can reassemble byte-for-byte via
+  `join_frontmatter/2`.
+  """
+  def split_frontmatter(content) when is_binary(content) do
+    case String.split(content, "\n") do
+      ["---" | rest] ->
+        case Enum.split_while(rest, &(&1 != "---")) do
+          {frontmatter_lines, ["---" | body_lines]} ->
+            frontmatter = Enum.join(["---"] ++ frontmatter_lines ++ ["---"], "\n")
+            body = body_lines |> Enum.join("\n") |> String.trim_leading("\n")
+            {frontmatter, body}
+
+          _ ->
+            {nil, content}
+        end
+
+      _ ->
+        {nil, content}
+    end
+  end
+
+  @doc "Reassembles `split_frontmatter/1`'s output back into a full document."
+  def join_frontmatter(nil, body), do: body
+  def join_frontmatter(frontmatter, ""), do: frontmatter
+  def join_frontmatter(frontmatter, body), do: frontmatter <> "\n\n" <> body
 end

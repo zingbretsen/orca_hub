@@ -167,6 +167,230 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
 
       assert render(view) =~ "Body for foo."
     end
+
+    test "expanding a memory renders it as tap-to-edit blocks, not raw markdown", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+      view
+      |> element("[phx-click=toggle_claude_memory][phx-value-filename='foo.md']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ ~s(phx-value-scope="claude_memory")
+      assert html =~ ~s(phx-value-key="foo.md")
+      assert has_element?(view, ~s([phx-click=edit_block][phx-value-key="foo.md"]))
+    end
+
+    test "editing a body block persists the change and leaves frontmatter byte-identical", %{
+      conn: conn,
+      project: project,
+      project_dir: project_dir,
+      home: home
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+      view
+      |> element("[phx-click=toggle_claude_memory][phx-value-filename='foo.md']")
+      |> render_click()
+
+      view
+      |> element(~s([phx-click=edit_block][phx-value-key="foo.md"][phx-value-index="0"]))
+      |> render_click()
+
+      assert has_element?(view, "#claude-memory-block-foo\\.md-editor-0")
+
+      view
+      |> element("form[phx-submit=save_block]")
+      |> render_submit(%{"content" => "Updated body for foo."})
+
+      memory_dir = memory_dir(project_dir, home)
+      content = File.read!(Path.join(memory_dir, "foo.md"))
+
+      assert content == """
+             ---
+             name: foo
+             description: "A feedback note"
+             metadata:
+               type: feedback
+             ---
+
+             Updated body for foo.\
+             """
+
+      refute content =~ "Body for foo."
+    end
+
+    test "deleting the only body block leaves frontmatter intact with no body", %{
+      conn: conn,
+      project: project,
+      project_dir: project_dir,
+      home: home
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+      view
+      |> element("[phx-click=toggle_claude_memory][phx-value-filename='foo.md']")
+      |> render_click()
+
+      view
+      |> element(~s([phx-click=delete_block][phx-value-key="foo.md"][phx-value-index="0"]))
+      |> render_click()
+
+      memory_dir = memory_dir(project_dir, home)
+      content = File.read!(Path.join(memory_dir, "foo.md"))
+
+      assert content == """
+             ---
+             name: foo
+             description: "A feedback note"
+             metadata:
+               type: feedback
+             ---\
+             """
+
+      refute content =~ "Body for foo."
+    end
+  end
+
+  describe "Claude memory frontmatter round-trip with multiple body blocks" do
+    setup %{project_dir: project_dir, home: home} do
+      memory_dir = memory_dir(project_dir, home)
+      File.mkdir_p!(memory_dir)
+
+      File.write!(Path.join(memory_dir, "multi.md"), """
+      ---
+      name: multi
+      description: "Has two body paragraphs"
+      metadata:
+        type: project
+      ---
+
+      First paragraph.
+
+      Second paragraph.
+      """)
+
+      File.write!(Path.join(memory_dir, "MEMORY.md"), """
+      # Memory Index
+
+      - [multi.md](multi.md) - Has two body paragraphs
+      """)
+
+      :ok
+    end
+
+    test "editing one body block leaves the other block and the frontmatter untouched", %{
+      conn: conn,
+      project: project,
+      project_dir: project_dir,
+      home: home
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+      view
+      |> element("[phx-click=toggle_claude_memory][phx-value-filename='multi.md']")
+      |> render_click()
+
+      view
+      |> element(~s([phx-click=edit_block][phx-value-key="multi.md"][phx-value-index="1"]))
+      |> render_click()
+
+      view
+      |> element("form[phx-submit=save_block]")
+      |> render_submit(%{"content" => "Updated second paragraph."})
+
+      memory_dir = memory_dir(project_dir, home)
+      content = File.read!(Path.join(memory_dir, "multi.md"))
+
+      assert content =~ "name: multi"
+      assert content =~ "type: project"
+      assert content =~ "First paragraph."
+      assert content =~ "Updated second paragraph."
+      refute content =~ "Second paragraph.\n"
+    end
+  end
+
+  describe "Claude MEMORY.md index" do
+    setup %{project_dir: project_dir, home: home} do
+      memory_dir = memory_dir(project_dir, home)
+      File.mkdir_p!(memory_dir)
+
+      File.write!(Path.join(memory_dir, "foo.md"), """
+      ---
+      name: foo
+      ---
+
+      Body for foo.
+      """)
+
+      File.write!(Path.join(memory_dir, "MEMORY.md"), """
+      # Memory Index
+
+      - [foo.md](foo.md) - A note
+      """)
+
+      :ok
+    end
+
+    test "toggling the index open renders it as tap-to-edit blocks", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, view, html} = live(conn, ~p"/projects/#{project.id}")
+
+      refute html =~ ~s(phx-value-scope="claude_index")
+
+      view
+      |> element("#claude-index-toggle")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ ~s(phx-value-scope="claude_index")
+      assert html =~ "Memory Index"
+    end
+
+    test "editing a block in the index persists via AgentMemory.save_claude_index", %{
+      conn: conn,
+      project: project,
+      project_dir: project_dir,
+      home: home
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+      view
+      |> element("#claude-index-toggle")
+      |> render_click()
+
+      view
+      |> element(~s([phx-click=edit_block][phx-value-scope="claude_index"][phx-value-index="1"]))
+      |> render_click()
+
+      view
+      |> element("form[phx-submit=save_block]")
+      |> render_submit(%{"content" => "- [foo.md](foo.md) - Updated note"})
+
+      memory_dir = memory_dir(project_dir, home)
+      content = File.read!(Path.join(memory_dir, "MEMORY.md"))
+      assert content =~ "Updated note"
+      refute content =~ "- A note"
+    end
+
+    test "Raw Edit still opens the whole-file textarea", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+      view
+      |> element("#claude-index-toggle")
+      |> render_click()
+
+      view
+      |> element("#claude-index-raw-edit")
+      |> render_click()
+
+      assert has_element?(view, "#claude-index-editor")
+    end
   end
 
   describe "AGENTS.md project memory" do
@@ -264,6 +488,63 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.id}")
 
       assert html =~ "not scoped to this project"
+    end
+
+    test "expanding a Codex memory renders it as tap-to-edit blocks", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+      refute render(view) =~ "A codex note."
+
+      view
+      |> element("[phx-click=toggle_codex_memory][phx-value-filename='note.md']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "A codex note."
+      assert html =~ ~s(phx-value-scope="codex_memory")
+      assert html =~ ~s(phx-value-key="note.md")
+    end
+
+    test "editing a block in an expanded Codex memory persists via AgentMemory.save_codex_memory",
+         %{conn: conn, project: project, home: home} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+      view
+      |> element("[phx-click=toggle_codex_memory][phx-value-filename='note.md']")
+      |> render_click()
+
+      view
+      |> element(~s([phx-click=edit_block][phx-value-key="note.md"][phx-value-index="0"]))
+      |> render_click()
+
+      view
+      |> element("form[phx-submit=save_block]")
+      |> render_submit(%{"content" => "Updated codex note via block edit."})
+
+      dir = AgentMemory.codex_memories_dir(home_dir: home)
+      assert File.read!(Path.join(dir, "note.md")) == "Updated codex note via block edit."
+    end
+
+    test "deleting a block in an expanded Codex memory persists the removal", %{
+      conn: conn,
+      project: project,
+      home: home
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+      view
+      |> element("[phx-click=toggle_codex_memory][phx-value-filename='note.md']")
+      |> render_click()
+
+      view
+      |> element(~s([phx-click=delete_block][phx-value-key="note.md"][phx-value-index="0"]))
+      |> render_click()
+
+      dir = AgentMemory.codex_memories_dir(home_dir: home)
+      assert File.read!(Path.join(dir, "note.md")) == ""
     end
 
     test "groups and badges subdirectory files", %{conn: conn, project: project, home: home} do

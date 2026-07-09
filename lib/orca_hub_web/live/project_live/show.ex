@@ -5,6 +5,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   alias OrcaHub.{AgentMemory, Cluster, HubRPC, Projects, Triggers}
   alias OrcaHub.Projects.Project
   alias OrcaHub.Triggers.Trigger
+  alias OrcaHubWeb.{BlockEditor, Markdown}
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -63,10 +64,12 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        claude_expanded: MapSet.new(),
        claude_editing_filename: nil,
        claude_edit_content: "",
+       claude_index_expanded: false,
        claude_editing_index: false,
        claude_index_edit_content: "",
        agents_editing_index: nil,
        agents_edit_text: "",
+       codex_expanded: MapSet.new(),
        codex_editing_filename: nil,
        codex_edit_content: ""
      )}
@@ -95,10 +98,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
           case rpc(socket.assigns.project_node, Projects, :load_file, [project, path]) do
             {:ok, content} ->
-              blocks =
-                if Projects.markdown_file?(path),
-                  do: OrcaHubWeb.Markdown.split_blocks(content),
-                  else: []
+              blocks = project_file_blocks(path, content)
 
               assign(socket,
                 selected_file: path,
@@ -201,10 +201,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
         :ok ->
           send_update(OrcaHubWeb.FileTreeComponent, id: "project-file-tree", reload: true)
 
-          blocks =
-            if Projects.markdown_file?(path),
-              do: OrcaHubWeb.Markdown.split_blocks(content),
-              else: []
+          blocks = project_file_blocks(path, content)
 
           {:noreply,
            assign(socket,
@@ -245,70 +242,61 @@ defmodule OrcaHubWeb.ProjectLive.Show do
      )}
   end
 
-  def handle_event("edit_block", %{"index" => index_str}, socket) do
+  # Generic markdown block editing — shared by the project file viewer and
+  # all Agent Memory viewers (Claude memories, the Claude MEMORY.md index,
+  # Codex native memories). See `content_for/3` / `save_scoped_content/4`
+  # for how `scope` routes to each store, and `split_body_blocks/2` for how
+  # a Claude memory's frontmatter is kept out of the editable blocks.
+
+  def handle_event("edit_block", %{"scope" => scope, "key" => key, "index" => index_str}, socket) do
     index = String.to_integer(index_str)
-    {_, text} = Enum.find(socket.assigns.file_blocks, fn {i, _} -> i == index end)
-    {:noreply, assign(socket, editing_block: index, block_edit_content: text)}
+    {_frontmatter, blocks} = split_body_blocks(scope, content_for(socket, scope, key))
+
+    case Enum.find(blocks, fn {i, _} -> i == index end) do
+      {_, text} ->
+        {:noreply,
+         assign(socket,
+           editing_block: %{scope: scope, key: key, index: index},
+           block_edit_content: text
+         )}
+
+      nil ->
+        {:noreply, socket}
+    end
   end
 
   def handle_event("cancel_block_edit", _params, socket) do
     {:noreply, assign(socket, editing_block: nil, block_edit_content: nil)}
   end
 
-  def handle_event("delete_block", %{"index" => index_str}, socket) do
+  def handle_event(
+        "delete_block",
+        %{"scope" => scope, "key" => key, "index" => index_str},
+        socket
+      ) do
     index = String.to_integer(index_str)
+    {frontmatter, blocks} = split_body_blocks(scope, content_for(socket, scope, key))
 
-    blocks =
-      socket.assigns.file_blocks
+    new_blocks =
+      blocks
       |> Enum.reject(fn {i, _} -> i == index end)
       |> Enum.with_index()
       |> Enum.map(fn {{_, text}, new_idx} -> {new_idx, text} end)
 
-    full_content = OrcaHubWeb.Markdown.join_blocks(blocks)
-    project = socket.assigns.project
-    path = socket.assigns.selected_file
-
-    case rpc(socket.assigns.project_node, Projects, :save_file, [project, path, full_content]) do
-      :ok ->
-        {:noreply,
-         assign(socket,
-           file_blocks: blocks,
-           file_content: full_content,
-           editing_block: nil,
-           block_edit_content: nil
-         )}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
-    end
+    apply_block_change(socket, scope, key, frontmatter, new_blocks)
   end
 
   def handle_event("save_block", %{"content" => content}, socket) do
-    index = socket.assigns.editing_block
+    %{scope: scope, key: key, index: index} = socket.assigns.editing_block
+    {frontmatter, blocks} = split_body_blocks(scope, content_for(socket, scope, key))
 
-    blocks =
-      Enum.map(socket.assigns.file_blocks, fn
+    new_blocks =
+      Enum.map(blocks, fn
         {^index, _} -> {index, String.trim(content)}
         other -> other
       end)
 
-    full_content = OrcaHubWeb.Markdown.join_blocks(blocks)
-    project = socket.assigns.project
-    path = socket.assigns.selected_file
-
-    case rpc(socket.assigns.project_node, Projects, :save_file, [project, path, full_content]) do
-      :ok ->
-        {:noreply,
-         assign(socket,
-           file_blocks: blocks,
-           file_content: full_content,
-           editing_block: nil,
-           block_edit_content: nil
-         )}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
-    end
+    apply_block_change(socket, scope, key, frontmatter, new_blocks)
   end
 
   def handle_event("create_session", _params, socket) do
@@ -685,6 +673,10 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     end
   end
 
+  def handle_event("toggle_claude_index", _params, socket) do
+    {:noreply, assign(socket, claude_index_expanded: !socket.assigns.claude_index_expanded)}
+  end
+
   def handle_event("edit_claude_index", _params, socket) do
     content =
       case socket.assigns.agent_memory.claude do
@@ -765,6 +757,17 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   # Agent Memory — Codex (native)
 
+  def handle_event("toggle_codex_memory", %{"filename" => filename}, socket) do
+    expanded = socket.assigns.codex_expanded
+
+    expanded =
+      if MapSet.member?(expanded, filename),
+        do: MapSet.delete(expanded, filename),
+        else: MapSet.put(expanded, filename)
+
+    {:noreply, assign(socket, codex_expanded: expanded)}
+  end
+
   def handle_event("edit_codex_memory", %{"filename" => filename}, socket) do
     content = find_codex_memory_content(socket, filename)
 
@@ -810,10 +813,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     case rpc(socket.assigns.project_node, Projects, :load_file, [project, path]) do
       {:ok, content} ->
-        blocks =
-          if Projects.markdown_file?(path),
-            do: OrcaHubWeb.Markdown.split_blocks(content),
-            else: []
+        blocks = project_file_blocks(path, content)
 
         {:noreply,
          assign(socket,
@@ -864,6 +864,104 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     case result do
       s when is_binary(s) -> s
       _ -> nil
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # Generic markdown block editing (project file viewer + Agent Memory)
+  # -------------------------------------------------------------------
+
+  defp project_file_blocks(path, content) do
+    if Projects.markdown_file?(path), do: Markdown.split_blocks(content), else: []
+  end
+
+  # Resolves the current content for a block-editing `scope`/`key` pair
+  # from live socket assigns — used both to look a block up by index and to
+  # rebuild the full document around an edited/deleted block.
+  defp content_for(socket, "project_file", _key), do: socket.assigns.file_content
+
+  defp content_for(socket, "claude_index", _key) do
+    case socket.assigns.agent_memory.claude do
+      {:ok, %{index: index}} -> index
+      _ -> ""
+    end
+  end
+
+  defp content_for(socket, "claude_memory", key) do
+    case find_claude_memory(socket, key) do
+      %{content: content} -> content
+      _ -> ""
+    end
+  end
+
+  defp content_for(socket, "codex_memory", key), do: find_codex_memory_content(socket, key) || ""
+
+  # Splits `content` into editable blocks for `scope`. Claude memory files
+  # start with `---`-delimited YAML frontmatter — split_blocks/1 would treat
+  # it as an ordinary block (editable/deletable like any paragraph), so it's
+  # separated out first and kept out of the editable block list entirely;
+  # `apply_block_change/5` re-prepends it verbatim via `Markdown.join_frontmatter/2`.
+  defp split_body_blocks("claude_memory", content) do
+    {frontmatter, body} = Markdown.split_frontmatter(content)
+    {frontmatter, Markdown.split_blocks(body)}
+  end
+
+  defp split_body_blocks(_scope, content), do: {nil, Markdown.split_blocks(content)}
+
+  defp apply_block_change(socket, scope, key, frontmatter, blocks) do
+    full_content = Markdown.join_frontmatter(frontmatter, Markdown.join_blocks(blocks))
+
+    case save_scoped_content(socket, scope, key, full_content) do
+      {:ok, socket} ->
+        {:noreply, assign(socket, editing_block: nil, block_edit_content: nil)}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
+    end
+  end
+
+  defp save_scoped_content(socket, "project_file", _key, content) do
+    project = socket.assigns.project
+    path = socket.assigns.selected_file
+
+    case rpc(socket.assigns.project_node, Projects, :save_file, [project, path, content]) do
+      :ok ->
+        send_update(OrcaHubWeb.FileTreeComponent, id: "project-file-tree", reload: true)
+
+        {:ok,
+         assign(socket, file_content: content, file_blocks: project_file_blocks(path, content))}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp save_scoped_content(socket, "claude_index", _key, content) do
+    project = socket.assigns.project
+    target = socket.assigns.project_node
+
+    case rpc(target, AgentMemory, :save_claude_index, [project.directory, content]) do
+      :ok -> {:ok, refresh_claude_memories(socket)}
+      error -> error
+    end
+  end
+
+  defp save_scoped_content(socket, "claude_memory", key, content) do
+    project = socket.assigns.project
+    target = socket.assigns.project_node
+
+    case rpc(target, AgentMemory, :save_claude_memory, [project.directory, key, content]) do
+      :ok -> {:ok, refresh_claude_memories(socket)}
+      error -> error
+    end
+  end
+
+  defp save_scoped_content(socket, "codex_memory", key, content) do
+    target = socket.assigns.project_node
+
+    case rpc(target, AgentMemory, :save_codex_memory, [key, content]) do
+      :ok -> {:ok, refresh_codex(socket)}
+      error -> error
     end
   end
 

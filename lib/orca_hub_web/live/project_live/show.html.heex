@@ -619,52 +619,13 @@
           </div>
           <button phx-click="edit_file" class="btn btn-sm btn-ghost">Raw Edit</button>
         </div>
-        <div class="bg-base-200 rounded-lg p-4">
-          <div
-            :for={{index, block_text} <- @file_blocks}
-            class="group relative"
-          >
-            <%!-- Editing this block --%>
-            <div :if={@editing_block == index} class="my-2">
-              <form phx-submit="save_block" class="space-y-2">
-                <textarea
-                  name="content"
-                  class="textarea textarea-bordered w-full font-mono text-sm"
-                  rows={max(3, length(String.split(block_text, "\n")) + 1)}
-                  phx-hook="AutoFocus"
-                  id={"block-editor-#{index}"}
-                >{@block_edit_content}</textarea>
-                <div class="flex justify-end gap-2">
-                  <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">
-                    Cancel
-                  </button>
-                  <button type="submit" class="btn btn-xs btn-primary">Save</button>
-                </div>
-              </form>
-            </div>
-            <%!-- Rendered block (clickable to edit) --%>
-            <div
-              :if={@editing_block != index}
-              class="relative group"
-            >
-              <div
-                phx-click="edit_block"
-                phx-value-index={index}
-                class="prose prose-sm max-w-none cursor-pointer rounded px-2 -mx-2 py-1 hover:bg-base-300/50 transition-colors"
-              >
-                {OrcaHubWeb.Markdown.render_block(block_text)}
-              </div>
-              <button
-                phx-click="delete_block"
-                phx-value-index={index}
-                class="absolute top-1 right-1 btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity text-error"
-                title="Delete block"
-              >
-                <.icon name="hero-trash-micro" class="size-3" />
-              </button>
-            </div>
-          </div>
-        </div>
+        <BlockEditor.block_editor
+          scope="project_file"
+          blocks={@file_blocks}
+          dom_prefix="file-block"
+          editing_block={@editing_block}
+          block_edit_content={@block_edit_content}
+        />
       </div>
 
       <%!-- View selected non-markdown file (raw display) --%>
@@ -746,10 +707,10 @@
         <button
           :if={match?({:ok, _}, @agent_memory.claude)}
           id="claude-index-toggle"
-          phx-click="edit_claude_index"
+          phx-click="toggle_claude_index"
           class="btn btn-xs btn-ghost"
         >
-          View/Edit MEMORY.md
+          View MEMORY.md
         </button>
       </div>
 
@@ -761,16 +722,23 @@
       </div>
 
       <div :if={match?({:ok, _}, @agent_memory.claude)}>
-        <% %{memories: memories, orphaned: orphaned, dangling: dangling} =
+        <% %{memories: memories, orphaned: orphaned, dangling: dangling, index: index_content} =
           elem(@agent_memory.claude, 1) %>
 
-        <div
-          :if={@claude_editing_index}
-          id="claude-index-editor-card"
-          class="card bg-base-200 p-4 mb-3"
-        >
-          <h5 class="font-semibold mb-2 text-sm">MEMORY.md (raw)</h5>
-          <form phx-submit="save_claude_index" class="space-y-2">
+        <div :if={@claude_index_expanded} id="claude-index-card" class="card bg-base-200 p-4 mb-3">
+          <div class="flex items-center justify-between mb-2">
+            <h5 class="font-semibold text-sm">MEMORY.md</h5>
+            <button
+              :if={!@claude_editing_index}
+              id="claude-index-raw-edit"
+              phx-click="edit_claude_index"
+              class="btn btn-xs btn-ghost"
+            >
+              Raw Edit
+            </button>
+          </div>
+
+          <form :if={@claude_editing_index} phx-submit="save_claude_index" class="space-y-2">
             <textarea
               name="content"
               id="claude-index-editor"
@@ -784,6 +752,18 @@
               <button type="submit" class="btn btn-xs btn-primary">Save</button>
             </div>
           </form>
+
+          <% {claude_index_frontmatter, claude_index_blocks} =
+            split_body_blocks("claude_index", index_content) %>
+          <BlockEditor.block_editor
+            :if={!@claude_editing_index}
+            scope="claude_index"
+            blocks={claude_index_blocks}
+            frontmatter={claude_index_frontmatter}
+            dom_prefix="claude-index-block"
+            editing_block={@editing_block}
+            block_edit_content={@block_edit_content}
+          />
         </div>
 
         <div :if={dangling != []} class="text-xs text-warning bg-base-200 rounded p-2 mb-2">
@@ -873,14 +853,24 @@
               </form>
             </div>
 
+            <% {claude_memory_frontmatter, claude_memory_blocks} =
+              split_body_blocks("claude_memory", memory.content) %>
             <div
               :if={
                 @claude_editing_filename != memory.filename &&
                   MapSet.member?(@claude_expanded, memory.filename)
               }
-              class="mt-3 bg-base-100 rounded p-3 prose prose-sm max-w-none"
+              class="mt-3"
             >
-              {OrcaHubWeb.Markdown.render_block(memory.content)}
+              <BlockEditor.block_editor
+                scope="claude_memory"
+                target_key={memory.filename}
+                blocks={claude_memory_blocks}
+                frontmatter={claude_memory_frontmatter}
+                dom_prefix={"claude-memory-block-#{memory.filename}"}
+                editing_block={@editing_block}
+                block_edit_content={@block_edit_content}
+              />
             </div>
           </div>
         </div>
@@ -1023,7 +1013,11 @@
             class="px-4 py-3 text-sm"
           >
             <div :if={@codex_editing_filename != file.filename} class="flex items-center gap-3">
-              <div class="flex-1 min-w-0 flex items-center gap-2">
+              <div
+                class="flex-1 min-w-0 flex items-center gap-2 cursor-pointer"
+                phx-click="toggle_codex_memory"
+                phx-value-filename={file.filename}
+              >
                 <span class="font-mono text-xs">{file.filename}</span>
                 <span :if={codex_group_label(file.group)} class="badge badge-xs badge-neutral">
                   {codex_group_label(file.group)}
@@ -1071,6 +1065,25 @@
                 <button type="submit" class="btn btn-xs btn-primary">Save</button>
               </div>
             </form>
+
+            <% {_codex_frontmatter, codex_blocks} =
+              split_body_blocks("codex_memory", file.content) %>
+            <div
+              :if={
+                @codex_editing_filename != file.filename &&
+                  MapSet.member?(@codex_expanded, file.filename)
+              }
+              class="mt-3"
+            >
+              <BlockEditor.block_editor
+                scope="codex_memory"
+                target_key={file.filename}
+                blocks={codex_blocks}
+                dom_prefix={"codex-memory-block-#{dom_id(file.filename)}"}
+                editing_block={@editing_block}
+                block_edit_content={@block_edit_content}
+              />
+            </div>
           </div>
         </div>
       </div>
