@@ -362,18 +362,30 @@ defmodule OrcaHub.MCP.CodeExecTest do
 
       assert result["isError"] == true
       text = hd(result["content"])["text"]
-      assert text =~ "run_elixir and search_tools"
+      assert text =~ "run_elixir, search_tools, send_message_to_session"
       assert text =~ "Tools.schema"
       refute text =~ "read_tool;"
     end
   end
 
   describe "MetaTools.list/0 tool definitions" do
-    test "only run_elixir and search_tools are exposed" do
+    test "the meta-tools plus the send_message_to_session passthrough are exposed" do
       assert Enum.map(MetaTools.list(), & &1["name"]) |> Enum.sort() == [
                "run_elixir",
-               "search_tools"
+               "search_tools",
+               "send_message_to_session"
              ]
+    end
+
+    test "send_message_to_session's definition matches the real first-party schema" do
+      passthrough = Enum.find(MetaTools.list(), &(&1["name"] == "send_message_to_session"))
+      real = Enum.find(OrcaHub.MCP.Tools.list(), &(&1["name"] == "send_message_to_session"))
+
+      assert passthrough == real
+    end
+
+    test "passthrough_tool_names/0 is the single source of truth for what's promoted to standalone" do
+      assert MetaTools.passthrough_tool_names() == ["send_message_to_session"]
     end
 
     test "run_elixir's description lists the live first-party Tools.* names" do
@@ -414,11 +426,15 @@ defmodule OrcaHub.MCP.CodeExecTest do
       Enum.map(tools, & &1["name"])
     end
 
-    test "collapses to the meta-tools when code_exec is on" do
+    test "collapses to the meta-tools (plus send_message_to_session) when code_exec is on" do
       {:ok, sid} = Server.start_session(orca_session_id: "t1", code_exec: true)
       on_exit(fn -> Server.stop_session(sid) end)
 
-      assert Enum.sort(tool_names(sid)) == ["run_elixir", "search_tools"]
+      assert Enum.sort(tool_names(sid)) == [
+               "run_elixir",
+               "search_tools",
+               "send_message_to_session"
+             ]
     end
 
     test "is unchanged (full set, no meta-tools) when code_exec is off" do
@@ -443,6 +459,71 @@ defmodule OrcaHub.MCP.CodeExecTest do
       names = tool_names(sid)
       refute "run_elixir" in names
       assert "open_file" in names
+    end
+  end
+
+  describe "send_message_to_session passthrough in code-exec mode" do
+    alias OrcaHub.MCP.Server
+    alias OrcaHub.Sessions
+
+    setup do
+      # This describe block is the only one in the file that touches the DB —
+      # shared mode (matching DataCase's async:false default) lets the
+      # SessionsTool call's internal Repo access see this test's data.
+      pid = Ecto.Adapters.SQL.Sandbox.start_owner!(OrcaHub.Repo, shared: true)
+      on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "code_exec_send_message_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: "debian@totally-offline-host"
+        })
+
+      {:ok, target: target}
+    end
+
+    test "MetaTools.call/3 delegates to the real Sessions implementation, not the unknown-tool fallback",
+         %{target: target} do
+      result =
+        MetaTools.call(
+          "send_message_to_session",
+          %{"session_id" => target.id, "message" => "hi"},
+          %{orca_session_id: nil}
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "not currently connected"
+      refute text =~ "Unknown tool"
+    end
+
+    test "MCP.Server tools/call routes it through end to end in code-exec mode", %{
+      target: target
+    } do
+      {:ok, sid} = Server.start_session(orca_session_id: "t-passthrough", code_exec: true)
+      on_exit(fn -> Server.stop_session(sid) end)
+
+      %{"result" => result} =
+        Server.handle_jsonrpc(sid, %{
+          "method" => "tools/call",
+          "id" => 1,
+          "params" => %{
+            "name" => "send_message_to_session",
+            "arguments" => %{"session_id" => target.id, "message" => "hi"}
+          }
+        })
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "not currently connected"
     end
   end
 

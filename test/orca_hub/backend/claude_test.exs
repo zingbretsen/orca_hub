@@ -97,11 +97,11 @@ defmodule OrcaHub.Backend.ClaudeTest do
     """
     # Code Execution Mode
 
-    Your MCP tool list is intentionally small: `run_elixir` and `search_tools`. \
-    Every other OrcaHub and upstream tool is reachable from inside `run_elixir` \
-    as a named `Tools.*` function — call several tools and stitch their \
-    results together with the Elixir standard library in ONE snippet instead \
-    of many separate tool calls.
+    Your MCP tool list is intentionally small: `run_elixir`, `search_tools`, \
+    and `send_message_to_session`. Every other OrcaHub and upstream tool is \
+    reachable from inside `run_elixir` as a named `Tools.*` function — call \
+    several tools and stitch their results together with the Elixir standard \
+    library in ONE snippet instead of many separate tool calls.
 
     - **Discover tools** with `search_tools`, or from inside code with \
       `Tools.search("query")`, `Tools.list()`, and `Tools.schema("name")` (a \
@@ -124,12 +124,15 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - For explicit error handling use `Tools.try_call("name", args)` which \
       returns `{:ok, value} | {:error, reason}`; for the faithful raw MCP \
       envelope use `Tools.call("name", args)`.
-    - **Inter-session coordination tools** (`send_message_to_session`, \
-      `search_sessions`, `start_session`, etc.) are `Tools.*` functions \
-      callable only from inside `run_elixir` in this session — they are NOT \
-      standalone MCP tools. Discover them with orca's own `search_tools` / \
-      `Tools.search`, not the CLI's built-in ToolSearch — that corpus only \
-      covers the CLI's own deferred tools and cannot see these.
+    - **These first-party tools are ALSO standalone top-level tools** — call \
+      them directly, not as `Tools.*`: `send_message_to_session`. \
+      Every OTHER inter-session coordination tool (`search_sessions`, \
+      `start_session`, `schedule_heartbeat`, `archive_session`, \
+      `cancel_heartbeat`, etc.) is a `Tools.*` function callable only from \
+      inside `run_elixir` in this session — NOT a standalone MCP tool. \
+      Discover them with orca's own `search_tools` / `Tools.search`, not the \
+      CLI's built-in ToolSearch — that corpus only covers the CLI's own \
+      deferred tools and cannot see these.
     - The value of the last expression (and any stdout) is returned to you. \
       Keep return values slim — filter/project before returning. Pure stdlib is \
       available; OrcaHub internals, File, and System are blocked.
@@ -161,14 +164,14 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     ## How to Work
 
-    **Important:** Your MCP tool list is collapsed to `run_elixir` and `search_tools` (code execution mode) — none of the coordination tools below are standalone MCP tools here. Call them as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to every tool below (`Tools.send_message_to_session`, `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.).
+    **Important:** Your MCP tool list is collapsed to `run_elixir`, `search_tools`, and `send_message_to_session` (code execution mode). `send_message_to_session` is a standalone MCP tool — call it directly. Every OTHER coordination tool below is NOT standalone here; call it as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.
 
     1. **Delegate all implementation work** to other sessions using:
        - `Tools.start_session(...)` inside `run_elixir` — spawn a new worker session with a detailed prompt
-       - `Tools.send_message_to_session(...)` inside `run_elixir` — direct an existing session
+       - `send_message_to_session(...)` — direct an existing session (standalone tool, not `Tools.*`)
 
     2. **Request callbacks** — When delegating work, explicitly ask the worker session to message you back when done:
-       > "When you have completed this task, use `Tools.send_message_to_session` inside the `run_elixir` MCP tool to notify session #{session_id} with a summary of what you did."
+       > "When you have completed this task, use `send_message_to_session` to notify session #{session_id} with a summary of what you did."
 
     3. **Set up monitoring** — After spawning workers, use `Tools.schedule_heartbeat(...)` inside `run_elixir` to wake yourself up periodically (e.g., every 2-5 minutes) to check on progress:
        > "Check on worker sessions. Use `Tools.search_sessions(...)` inside `run_elixir` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
@@ -248,7 +251,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
   end
 
   defp expected_sibling_sessions_prompt(_orchestrator, true) do
-    "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then send messages with `Tools.send_message_to_session(%{\"session_id\" => ..., \"message\" => ...})` inside the `run_elixir` MCP tool — it is NOT a standalone MCP tool in this session."
+    "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then use the standalone `send_message_to_session` MCP tool to send them messages."
   end
 
   defp expected_sibling_sessions_prompt(_orchestrator, _code_exec) do
@@ -684,7 +687,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
       assert prompt == expected_system_prompt(ctx)
       assert String.ends_with?(prompt, expected_sibling_sessions_prompt(true, true))
       assert prompt =~ "Tools.start_session"
-      assert prompt =~ "Tools.send_message_to_session"
+      assert prompt =~ "send_message_to_session"
+      refute prompt =~ "Tools.send_message_to_session"
       assert prompt =~ "Tools.search_sessions"
       assert prompt =~ "Tools.schedule_heartbeat"
       assert prompt =~ "Tools.archive_session"

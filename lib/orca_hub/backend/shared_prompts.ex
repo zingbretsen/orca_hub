@@ -12,7 +12,16 @@ defmodule OrcaHub.Backend.SharedPrompts do
   is exactly what `priv/pi/orca-mcp.ts` does (spec §12.5). Fragments that
   depend on a Claude-only *built-in* (`AskUserQuestion`) still stay private
   to `Backend.Claude`.
+
+  `code_exec_prompt/1` sources its list of standalone tools from
+  `OrcaHub.MCP.CodeExec.MetaTools.passthrough_tool_names/0` rather than
+  hardcoding them, so promoting another first-party tool to standalone
+  top-level status (alongside `send_message_to_session`) only requires
+  updating `@passthrough_tool_names` there — every prompt fragment here
+  picks it up automatically.
   """
+
+  alias OrcaHub.MCP.CodeExec.MetaTools
 
   @doc "Teaches a code-exec session its collapsed tool surface, when enabled."
   def code_exec_prompt(false), do: nil
@@ -21,11 +30,11 @@ defmodule OrcaHub.Backend.SharedPrompts do
     """
     # Code Execution Mode
 
-    Your MCP tool list is intentionally small: `run_elixir` and `search_tools`. \
-    Every other OrcaHub and upstream tool is reachable from inside `run_elixir` \
-    as a named `Tools.*` function — call several tools and stitch their \
-    results together with the Elixir standard library in ONE snippet instead \
-    of many separate tool calls.
+    Your MCP tool list is intentionally small: #{standalone_tool_names_line()}. \
+    Every other OrcaHub and upstream tool is reachable from inside \
+    `run_elixir` as a named `Tools.*` function — call several tools and \
+    stitch their results together with the Elixir standard library in ONE \
+    snippet instead of many separate tool calls.
 
     - **Discover tools** with `search_tools`, or from inside code with \
       `Tools.search("query")`, `Tools.list()`, and `Tools.schema("name")` (a \
@@ -48,12 +57,15 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - For explicit error handling use `Tools.try_call("name", args)` which \
       returns `{:ok, value} | {:error, reason}`; for the faithful raw MCP \
       envelope use `Tools.call("name", args)`.
-    - **Inter-session coordination tools** (`send_message_to_session`, \
-      `search_sessions`, `start_session`, etc.) are `Tools.*` functions \
-      callable only from inside `run_elixir` in this session — they are NOT \
-      standalone MCP tools. Discover them with orca's own `search_tools` / \
-      `Tools.search`, not the CLI's built-in ToolSearch — that corpus only \
-      covers the CLI's own deferred tools and cannot see these.
+    - **These first-party tools are ALSO standalone top-level tools** — call \
+      them directly, not as `Tools.*`: #{passthrough_tool_names_line()}. \
+      Every OTHER inter-session coordination tool (`search_sessions`, \
+      `start_session`, `schedule_heartbeat`, `archive_session`, \
+      `cancel_heartbeat`, etc.) is a `Tools.*` function callable only from \
+      inside `run_elixir` in this session — NOT a standalone MCP tool. \
+      Discover them with orca's own `search_tools` / `Tools.search`, not the \
+      CLI's built-in ToolSearch — that corpus only covers the CLI's own \
+      deferred tools and cannot see these.
     - The value of the last expression (and any stdout) is returned to you. \
       Keep return values slim — filter/project before returning. Pure stdlib is \
       available; OrcaHub internals, File, and System are blocked.
@@ -70,6 +82,26 @@ defmodule OrcaHub.Backend.SharedPrompts do
     |> String.trim()
   end
 
+  defp standalone_tool_names_line do
+    ["run_elixir", "search_tools" | MetaTools.passthrough_tool_names()]
+    |> Enum.map(&"`#{&1}`")
+    |> oxford_join()
+  end
+
+  defp passthrough_tool_names_line do
+    MetaTools.passthrough_tool_names()
+    |> Enum.map(&"`#{&1}`")
+    |> Enum.join(", ")
+  end
+
+  defp oxford_join([item]), do: item
+  defp oxford_join([a, b]), do: "#{a} and #{b}"
+
+  defp oxford_join(items) do
+    {init, [last]} = Enum.split(items, -1)
+    Enum.join(init, ", ") <> ", and #{last}"
+  end
+
   @doc """
   Instructs an orchestrator session to delegate work via the `mcp__orca__*`
   coordination tools instead of doing it directly. Moved here verbatim from
@@ -78,12 +110,14 @@ defmodule OrcaHub.Backend.SharedPrompts do
   no text changed, only the call site.
 
   Code-exec-aware: `lib/orca_hub/mcp/server.ex:130` collapses a code-exec
-  connection's MCP surface to `run_elixir`/`search_tools`
-  regardless of the `orchestrator` flag, so none of `mcp__orca__start_session`
-  etc. exist as standalone tools there — the `code_exec` arg swaps every
-  coordination-tool reference (including the example instruction in step 2,
-  which orchestrators are known to paste verbatim into worker prompts) to the
-  `Tools.<name>(...)` inside `run_elixir` shape.
+  connection's MCP surface to `run_elixir`/`search_tools`/
+  `send_message_to_session` regardless of the `orchestrator` flag, so none of
+  `mcp__orca__start_session` etc. (aside from `send_message_to_session`
+  itself, promoted back to standalone) exist as standalone tools there — the
+  `code_exec` arg swaps every OTHER coordination-tool reference (including the
+  example instruction in step 2, which orchestrators are known to paste
+  verbatim into worker prompts) to the `Tools.<name>(...)` inside `run_elixir`
+  shape.
   """
   def orchestrator_prompt(false, _session_id, _code_exec), do: nil
   def orchestrator_prompt(nil, _session_id, _code_exec), do: nil
@@ -100,14 +134,14 @@ defmodule OrcaHub.Backend.SharedPrompts do
 
     ## How to Work
 
-    **Important:** Your MCP tool list is collapsed to `run_elixir` and `search_tools` (code execution mode) — none of the coordination tools below are standalone MCP tools here. Call them as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to every tool below (`Tools.send_message_to_session`, `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.).
+    **Important:** Your MCP tool list is collapsed to `run_elixir`, `search_tools`, and `send_message_to_session` (code execution mode). `send_message_to_session` is a standalone MCP tool — call it directly. Every OTHER coordination tool below is NOT standalone here; call it as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.
 
     1. **Delegate all implementation work** to other sessions using:
        - `Tools.start_session(...)` inside `run_elixir` — spawn a new worker session with a detailed prompt
-       - `Tools.send_message_to_session(...)` inside `run_elixir` — direct an existing session
+       - `send_message_to_session(...)` — direct an existing session (standalone tool, not `Tools.*`)
 
     2. **Request callbacks** — When delegating work, explicitly ask the worker session to message you back when done:
-       > "When you have completed this task, use `Tools.send_message_to_session` inside the `run_elixir` MCP tool to notify session #{session_id} with a summary of what you did."
+       > "When you have completed this task, use `send_message_to_session` to notify session #{session_id} with a summary of what you did."
 
     3. **Set up monitoring** — After spawning workers, use `Tools.schedule_heartbeat(...)` inside `run_elixir` to wake yourself up periodically (e.g., every 2-5 minutes) to check on progress:
        > "Check on worker sessions. Use `Tools.search_sessions(...)` inside `run_elixir` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."

@@ -684,12 +684,14 @@ defmodule OrcaHub.Backend.Codex do
   defp orchestrator_system_prompt(false, _session_id, _code_exec), do: nil
   defp orchestrator_system_prompt(nil, _session_id, _code_exec), do: nil
 
-  # Code-exec collapses a session's MCP surface to run_elixir/search_tools
-  # regardless of the orchestrator flag (see
-  # lib/orca_hub/mcp/server.ex:130) — none of the coordination tools below
-  # exist as standalone orca MCP tools there, so this branch rewrites every
-  # reference (including the callback instruction workers get told to paste)
-  # to the Tools.<name>(...) inside run_elixir shape.
+  # Code-exec collapses a session's MCP surface to
+  # run_elixir/search_tools/send_message_to_session regardless of the
+  # orchestrator flag (see lib/orca_hub/mcp/server.ex:130) — none of the
+  # OTHER coordination tools below exist as standalone orca MCP tools there,
+  # so this branch rewrites every one of THOSE references (including the
+  # callback instruction workers get told to paste) to the Tools.<name>(...)
+  # inside run_elixir shape. `send_message_to_session` itself stays a
+  # standalone tool call.
   defp orchestrator_system_prompt(true, session_id, true) do
     """
     # Orchestrator Session
@@ -702,10 +704,10 @@ defmodule OrcaHub.Backend.Codex do
 
     ## How to Work
 
-    Your MCP tool list is collapsed to `run_elixir` and `search_tools` (code execution mode) — none of the coordination tools (`start_session`, `send_message_to_session`, `schedule_heartbeat`, `search_sessions`, `archive_session`, `cancel_heartbeat`, etc.) are standalone MCP tools here. Call them as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})`.
+    Your MCP tool list is collapsed to `run_elixir`, `search_tools`, and `send_message_to_session` (code execution mode). `send_message_to_session` is a standalone MCP tool — call it directly. None of the OTHER coordination tools (`start_session`, `schedule_heartbeat`, `search_sessions`, `archive_session`, `cancel_heartbeat`, etc.) are standalone MCP tools here — call them as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})`.
 
-    1. **Delegate all implementation work** to other sessions using `Tools.start_session(...)` (spawn a new worker with a detailed prompt) or `Tools.send_message_to_session(...)` (direct an existing session), both inside `run_elixir`.
-    2. **Request callbacks** — when delegating work, explicitly ask the worker session to message you back when done via `Tools.send_message_to_session` inside `run_elixir`, referencing this session id: #{session_id}.
+    1. **Delegate all implementation work** to other sessions using `Tools.start_session(...)` inside `run_elixir` (spawn a new worker with a detailed prompt) or `send_message_to_session(...)` (direct an existing session, standalone tool).
+    2. **Request callbacks** — when delegating work, explicitly ask the worker session to message you back when done via `send_message_to_session`, referencing this session id: #{session_id}.
     3. **Set up monitoring** — after spawning workers, use `Tools.schedule_heartbeat(...)` inside `run_elixir` to wake yourself up periodically (e.g. every 2-5 minutes) to check on progress via `Tools.search_sessions(...)`.
     4. **Check in proactively** — if you don't hear back from a worker within a reasonable time, message it for a status update.
     5. **Archive completed children** — use `Tools.archive_session(...)` inside `run_elixir` once a worker has finished, to keep the session list tidy.
@@ -742,10 +744,11 @@ defmodule OrcaHub.Backend.Codex do
     |> String.trim()
   end
 
-  # In code-exec mode, `search_sessions`/`send_message_to_session` only exist
-  # as `Tools.*` functions callable from inside `run_elixir` — they are NOT
-  # standalone orca MCP tools, so the flat-tool-name guidance below is wrong
-  # and must be swapped out.
+  # In code-exec mode, `search_sessions` only exists as a `Tools.*` function
+  # callable from inside `run_elixir` — it is NOT a standalone orca MCP tool,
+  # so the flat-tool-name guidance below is wrong and must be swapped out.
+  # `send_message_to_session` is the exception: it's promoted to a standalone
+  # tool even in code-exec mode (see `MCP.CodeExec.MetaTools`).
   defp sibling_sessions_prompt(true, true) do
     "Other agent sessions may be active in this directory. Use `Tools.search_sessions(%{\"status\" => ...})` inside the `run_elixir` MCP tool to discover sibling sessions you may want to coordinate with — it is NOT a standalone MCP tool in this session."
   end
@@ -755,7 +758,7 @@ defmodule OrcaHub.Backend.Codex do
   end
 
   defp sibling_sessions_prompt(_orchestrator, true) do
-    "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then send messages with `Tools.send_message_to_session(%{\"session_id\" => ..., \"message\" => ...})` inside the `run_elixir` MCP tool — it is NOT a standalone MCP tool in this session."
+    "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then use the standalone `send_message_to_session` MCP tool to send them messages."
   end
 
   defp sibling_sessions_prompt(_orchestrator, _code_exec) do

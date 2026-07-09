@@ -1226,7 +1226,8 @@ defmodule OrcaHub.Backend.PiTest do
 
       assert prompt =~ "# Orchestrator Session"
       assert prompt =~ "Tools.start_session"
-      assert prompt =~ "Tools.send_message_to_session"
+      assert prompt =~ "send_message_to_session"
+      refute prompt =~ "Tools.send_message_to_session"
       refute prompt =~ "mcp__orca__"
     end
   end

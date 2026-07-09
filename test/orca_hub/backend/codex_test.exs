@@ -910,8 +910,9 @@ defmodule OrcaHub.Backend.CodexTest do
       c = ctx(%{code_exec: true})
       prompt = Backend.system_prompt(c)
 
-      assert prompt =~ "Tools.send_message_to_session"
-      assert prompt =~ "NOT a standalone MCP tool in this session"
+      assert prompt =~ "send_message_to_session"
+      refute prompt =~ "Tools.send_message_to_session"
+      assert prompt =~ "NOT a standalone MCP tool"
       refute prompt =~ "the `send_message_to_session` orca MCP tool"
     end
 
@@ -920,7 +921,8 @@ defmodule OrcaHub.Backend.CodexTest do
       prompt = Backend.system_prompt(c)
 
       assert prompt =~ "Tools.start_session"
-      assert prompt =~ "Tools.send_message_to_session"
+      assert prompt =~ "send_message_to_session"
+      refute prompt =~ "Tools.send_message_to_session"
       assert prompt =~ "Tools.search_sessions"
       assert prompt =~ "Tools.schedule_heartbeat"
       assert prompt =~ "Tools.archive_session"

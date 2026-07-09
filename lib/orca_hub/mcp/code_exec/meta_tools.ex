@@ -2,17 +2,24 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   @moduledoc """
   The collapsed MCP tool surface presented to a code-exec session.
 
-  When `code_exec` is enabled for a connection, `tools/list` returns ONLY these
-  two meta-tools instead of flattening every first-party and upstream tool:
+  When `code_exec` is enabled for a connection, `tools/list` returns THREE
+  tools instead of flattening every first-party and upstream tool:
 
     * `run_elixir`   — evaluate model-authored Elixir that calls tools as named
       `Tools.*` functions and stitches results with stdlib (the main surface)
     * `search_tools` — read-only ranked keyword search over the live registry
+    * `send_message_to_session` — a **passthrough** to the real first-party
+      tool of the same name (`OrcaHub.MCP.Tools.Sessions`). It's promoted to a
+      standalone tool because orchestrator/code-exec sessions call it so
+      frequently that round-tripping through `run_elixir` for every message
+      was pure overhead. Its definition is sourced from
+      `OrcaHub.MCP.Tools.list/0` (not hand-duplicated), and `call/3` delegates
+      straight to `OrcaHub.MCP.Tools.call/3` — no reimplementation here.
 
-  First-party AND upstream tools are still reachable — but only as `Tools.*`
-  functions inside `run_elixir` (and discoverable there via `Tools.search/1` /
-  `Tools.schema/1`). `search_tools` exists so the model can explore the
-  registry cheaply before writing code.
+  Every OTHER first-party AND upstream tool is still reachable — but only as
+  `Tools.*` functions inside `run_elixir` (and discoverable there via
+  `Tools.search/1` / `Tools.schema/1`). `search_tools` exists so the model can
+  explore the registry cheaply before writing code.
 
   A third meta-tool, `read_tool` (single-tool schema lookup by raw MCP name),
   was removed: production usage showed it was the weakest of the three (27
@@ -43,25 +50,37 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   alias OrcaHub.MCP.UpstreamClient
 
   @meta_tool_names ~w(run_elixir search_tools)
+  @passthrough_tool_names ~w(send_message_to_session)
 
-  @doc "The collapsed meta-tool definitions shown to a code-exec connection."
-  def list, do: [run_elixir_tool(), search_tools_tool()]
+  @doc "The collapsed tool definitions shown to a code-exec connection: the meta-tools plus any passthrough tools."
+  def list, do: [run_elixir_tool(), search_tools_tool() | passthrough_tool_definitions()]
 
-  @doc "True if `name` is one of the meta-tools."
+  @doc "True if `name` is one of the meta-tools (run_elixir/search_tools — not a passthrough tool)."
   def meta_tool?(name), do: name in @meta_tool_names
 
+  @doc "The first-party tool names promoted to standalone top-level tools in code-exec mode."
+  def passthrough_tool_names, do: @passthrough_tool_names
+
   @doc """
-  Dispatch a meta-tool call. `state` is the MCP server state, threaded into
-  evaluated code so `Tools.*` calls run with the connection's identity.
+  Dispatch a meta-tool or passthrough-tool call. `state` is the MCP server
+  state, threaded into evaluated code so `Tools.*` calls run with the
+  connection's identity (and passed straight through to the delegated
+  first-party call for passthrough tools).
   """
   def call("run_elixir", args, state), do: run_elixir(args, state)
   def call("search_tools", args, _state), do: search_tools(args["query"])
 
+  def call(name, args, state) when name in @passthrough_tool_names do
+    OrcaHub.MCP.Tools.call(name, args, state)
+  end
+
   def call(name, _args, _state) do
+    exposed_names = Enum.join(@meta_tool_names ++ @passthrough_tool_names, ", ")
+
     Result.error(
       "Unknown tool: #{name}. In code-exec mode this connection exposes only " <>
-        "run_elixir and search_tools; call other tools as Tools.<name> inside " <>
-        "run_elixir (use Tools.schema(\"name\") there for a tool's input schema)."
+        "#{exposed_names}; call other tools as Tools.<name> inside run_elixir " <>
+        "(use Tools.schema(\"name\") there for a tool's input schema)."
     )
   end
 
@@ -146,6 +165,14 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
         "Connected upstream MCP servers: #{Enum.join(Enum.sort(prefixes), ", ")} — their " <>
           "tools are namespaced <prefix>__<tool> and searchable via search_tools / Tools.search."
     end
+  end
+
+  # Passthrough tools are standalone in code-exec mode but must not drift from
+  # the real first-party schema — so their definitions are looked up by name
+  # in the live registry rather than duplicated here.
+  defp passthrough_tool_definitions do
+    OrcaHub.MCP.Tools.list()
+    |> Enum.filter(&(&1["name"] in @passthrough_tool_names))
   end
 
   defp search_tools_tool do
