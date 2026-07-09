@@ -376,17 +376,40 @@
           >
             <.icon name="hero-key-micro" class="size-3" /> logged in
           </span>
+          <% codex = Map.get(@codex_status_by_node, "#{info.node}", %{status: :not_logged_in}) %>
+          <span
+            :if={codex.status != :not_logged_in}
+            class="badge badge-xs badge-secondary gap-1"
+            title="Codex login status"
+          >
+            <.icon name="hero-key-micro" class="size-3" /> codex: {codex.label}
+          </span>
+          <span
+            :if={Map.get(@codex_env_conflict_by_node, "#{info.node}", false)}
+            class="badge badge-xs badge-warning gap-1"
+            title="OPENAI_API_KEY is set on this node and will override any codex login"
+          >
+            <.icon name="hero-exclamation-triangle-micro" class="size-3" /> codex env conflict
+          </span>
+          <% pi_count = length(Map.get(@pi_providers_by_node, "#{info.node}", [])) %>
+          <span
+            :if={pi_count > 0}
+            class="badge badge-xs badge-accent gap-1"
+            title="Configured pi provider keys"
+          >
+            <.icon name="hero-key-micro" class="size-3" /> pi: {pi_count}
+          </span>
         </div>
         <div class="text-base-content/50 text-xs mt-0.5 font-mono">{info.node}</div>
       </div>
-      <div class="flex items-center gap-1">
+      <div class="flex items-center gap-1 flex-wrap justify-end">
         <button
           phx-click="login_node"
           phx-value-node={info.node}
           class="btn btn-xs btn-ghost"
           title="Log this node into Claude Code"
         >
-          <.icon name="hero-arrow-right-on-rectangle-micro" class="size-4" /> Log in
+          <.icon name="hero-arrow-right-on-rectangle-micro" class="size-4" /> Claude
         </button>
         <button
           :if={"#{info.node}" in @logged_in_nodes}
@@ -397,6 +420,30 @@
           title="Remove stored credential"
         >
           <.icon name="hero-trash-micro" class="size-4" />
+        </button>
+        <button
+          phx-click="codex_login_device"
+          phx-value-node={info.node}
+          class="btn btn-xs btn-ghost"
+          title="Log this node into codex via ChatGPT device-auth"
+        >
+          <.icon name="hero-arrow-right-on-rectangle-micro" class="size-4" /> Codex (device)
+        </button>
+        <button
+          phx-click="codex_login_api_key_open"
+          phx-value-node={info.node}
+          class="btn btn-xs btn-ghost"
+          title="Set a codex API key for this node"
+        >
+          <.icon name="hero-key-micro" class="size-4" /> Codex (key)
+        </button>
+        <button
+          phx-click="open_pi_keys"
+          phx-value-node={info.node}
+          class="btn btn-xs btn-ghost"
+          title="Manage pi provider keys for this node"
+        >
+          <.icon name="hero-key-micro" class="size-4" /> pi keys
         </button>
         <button
           :if={info.node != node()}
@@ -542,6 +589,259 @@
         >
           Cancel
         </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%!-- Node login flow (codex device-auth / API key) --%>
+<div
+  :if={@codex_login_node}
+  class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+  phx-window-keydown="cancel_codex_login"
+  phx-key="escape"
+>
+  <div class="bg-base-100 rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+    <div class="flex items-center justify-between px-5 py-3 border-b border-base-300">
+      <h3 class="text-lg font-semibold">
+        Log in {Cluster.node_name(@codex_login_node)} to codex
+        <span class="text-sm font-normal text-base-content/50">
+          ({if @codex_login_mode == :device_auth, do: "device auth", else: "API key"})
+        </span>
+      </h3>
+      <button phx-click="cancel_codex_login" class="btn btn-sm btn-ghost btn-circle">
+        <.icon name="hero-x-mark-micro" class="size-4" />
+      </button>
+    </div>
+
+    <div class="px-5 py-4 space-y-4">
+      <div
+        :if={Map.get(@codex_env_conflict_by_node, "#{@codex_login_node}", false)}
+        class="alert alert-warning text-sm"
+      >
+        <.icon name="hero-exclamation-triangle-micro" class="size-5" />
+        <span>
+          <code class="bg-base-300 px-1 rounded">OPENAI_API_KEY</code>
+          is set on this node's environment and will silently override this login for codex —
+          unset it there first if you want this login to actually take effect.
+        </span>
+      </div>
+
+      <%= case @codex_login_status do %>
+        <% :success -> %>
+          <div class="alert alert-success text-sm">
+            <.icon name="hero-check-circle-micro" class="size-5" />
+            <span>{Cluster.node_name(@codex_login_node)} is now logged in to codex.</span>
+          </div>
+        <% :error -> %>
+          <div class="alert alert-error text-sm">
+            <.icon name="hero-exclamation-triangle-micro" class="size-5" />
+            <span>Login failed: {@codex_login_error}</span>
+          </div>
+        <% _ -> %>
+          <p :if={@codex_login_mode == :device_auth} class="text-sm text-base-content/70">
+            Open the verification URL below on <strong>any</strong>
+            device, sign in, and enter the code shown — no need to paste anything back here.
+            Requires "device code" login to be enabled in your ChatGPT account's security
+            settings first.
+          </p>
+          <p :if={@codex_login_mode == :api_key} class="text-sm text-base-content/70">
+            Paste an OpenAI API key below. It's piped directly to
+            <code class="bg-base-300 px-1 rounded">codex login --with-api-key</code>
+            on the target node and is never stored, logged, or displayed by OrcaHub.
+            This is API-key auth only — it does not grant ChatGPT-plan usage.
+          </p>
+      <% end %>
+
+      <div :if={
+        @codex_login_mode == :device_auth && @codex_login_url && @codex_login_status != :success
+      }>
+        <div class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-1">
+          Verification URL
+        </div>
+        <a
+          href={@codex_login_url}
+          target="_blank"
+          rel="noopener"
+          class="link link-primary text-sm break-all"
+        >
+          {@codex_login_url}
+        </a>
+      </div>
+
+      <div :if={
+        @codex_login_mode == :device_auth && @codex_login_code && @codex_login_status != :success
+      }>
+        <div class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-1">
+          Code
+        </div>
+        <div class="text-lg font-mono tracking-widest">{@codex_login_code}</div>
+      </div>
+
+      <form
+        :if={
+          @codex_login_mode == :api_key && @codex_login_status not in [:running, :success, :error]
+        }
+        phx-submit="submit_codex_api_key"
+        class="flex items-end gap-2"
+      >
+        <div class="flex-1">
+          <label class="text-xs font-semibold text-base-content/50 uppercase tracking-wide">
+            API key
+          </label>
+          <input
+            type="password"
+            name="key"
+            autocomplete="off"
+            placeholder="sk-..."
+            class="input input-bordered input-sm w-full mt-1"
+          />
+        </div>
+        <button type="submit" class="btn btn-sm btn-primary">Log in</button>
+      </form>
+
+      <div :if={@codex_login_mode == :device_auth}>
+        <div class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-1">
+          Output
+        </div>
+        <pre class="bg-base-300 rounded p-3 text-xs overflow-x-auto max-h-64 whitespace-pre-wrap">{if @codex_login_output == "", do: "Starting…", else: @codex_login_output}</pre>
+      </div>
+
+      <div :if={@codex_login_mode == :api_key && @codex_login_status == :running} class="text-sm">
+        <span class="loading loading-spinner loading-sm"></span>
+        Running codex login --with-api-key…
+      </div>
+
+      <div class="flex justify-end gap-2 pt-2">
+        <button
+          :if={@codex_login_status in [:success, :error]}
+          phx-click="close_codex_login"
+          class="btn btn-sm btn-primary"
+        >
+          Close
+        </button>
+        <button
+          :if={@codex_login_status not in [:success, :error]}
+          phx-click="cancel_codex_login"
+          class="btn btn-sm btn-ghost"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%!-- pi provider keys --%>
+<div
+  :if={@pi_key_node}
+  class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+  phx-window-keydown="close_pi_keys"
+  phx-key="escape"
+>
+  <div class="bg-base-100 rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+    <div class="flex items-center justify-between px-5 py-3 border-b border-base-300">
+      <h3 class="text-lg font-semibold">
+        pi provider keys — {Cluster.node_name(@pi_key_node)}
+      </h3>
+      <button phx-click="close_pi_keys" class="btn btn-sm btn-ghost btn-circle">
+        <.icon name="hero-x-mark-micro" class="size-4" />
+      </button>
+    </div>
+
+    <div class="px-5 py-4 space-y-4">
+      <p class="text-sm text-base-content/70">
+        Keys are written directly to
+        <code class="bg-base-300 px-1 rounded">~/.pi/agent/auth.json</code>
+        on the target node — write-only, never displayed again here. Unlike codex (where an
+        env var wins), pi prefers a stored <code class="bg-base-300 px-1 rounded">auth.json</code>
+        key <strong>over</strong>
+        any environment variable of the same provider.
+      </p>
+
+      <form phx-submit="save_pi_key" class="card bg-base-200 p-3 space-y-2" phx-value-provider="">
+        <div class="flex items-end gap-2">
+          <div class="flex-1">
+            <label class="label"><span class="label-text text-xs">Provider</span></label>
+            <select name="provider" class="select select-bordered select-sm w-full">
+              <option :for={p <- @pi_provider_options} value={p}>{p}</option>
+              <option value="custom">custom…</option>
+            </select>
+          </div>
+          <div class="flex-1">
+            <label class="label">
+              <span class="label-text text-xs">Custom provider id</span>
+            </label>
+            <input
+              type="text"
+              name="custom_provider"
+              placeholder="only used if 'custom' is selected"
+              class="input input-sm input-bordered w-full"
+            />
+          </div>
+        </div>
+        <div class="flex items-end gap-2">
+          <div class="flex-1">
+            <label class="label"><span class="label-text text-xs">API key</span></label>
+            <input
+              type="password"
+              name="key"
+              autocomplete="off"
+              class="input input-sm input-bordered w-full"
+            />
+          </div>
+          <.button type="submit" class="btn-sm">Save</.button>
+        </div>
+      </form>
+
+      <div
+        :if={@pi_key_sanity}
+        class={[
+          "alert text-xs",
+          if(match?({:ok, _}, @pi_key_sanity), do: "alert-success", else: "alert-warning")
+        ]}
+      >
+        <span>{elem(@pi_key_sanity, 1)}</span>
+      </div>
+
+      <div>
+        <div class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-1">
+          Configured providers
+        </div>
+        <div
+          :if={Map.get(@pi_providers_by_node, "#{@pi_key_node}", []) == []}
+          class="text-sm text-base-content/50 p-4 text-center bg-base-200 rounded-lg"
+        >
+          No pi provider keys configured on this node.
+        </div>
+        <div
+          :if={Map.get(@pi_providers_by_node, "#{@pi_key_node}", []) != []}
+          class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
+        >
+          <div
+            :for={p <- Map.get(@pi_providers_by_node, "#{@pi_key_node}", [])}
+            class="flex items-center gap-3 px-3 py-2 text-sm"
+          >
+            <div class="flex-1">
+              <span class="font-mono">{p.provider}</span>
+              <span class="badge badge-xs badge-success ml-2">configured</span>
+              <span :if={p.type} class="text-xs text-base-content/50 ml-1">({p.type})</span>
+            </div>
+            <button
+              phx-click="delete_pi_key"
+              phx-value-provider={p.provider}
+              data-confirm={"Remove the stored #{p.provider} key on #{Cluster.node_name(@pi_key_node)}?"}
+              class="btn btn-xs btn-ghost text-error"
+              title="Remove"
+            >
+              <.icon name="hero-trash-micro" class="size-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex justify-end pt-2">
+        <button phx-click="close_pi_keys" class="btn btn-sm btn-primary">Close</button>
       </div>
     </div>
   </div>

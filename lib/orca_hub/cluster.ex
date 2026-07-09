@@ -461,4 +461,33 @@ defmodule OrcaHub.Cluster do
 
   @doc "Cancel the in-progress login flow on node `n`."
   def cancel_login(n), do: rpc(n, OrcaHub.LoginRunner, :cancel, [])
+
+  # -------------------------------------------------------------------
+  # Node login (codex device-auth / API key, per-node) + pi provider keys
+  # -------------------------------------------------------------------
+
+  @doc "Start the `codex login --device-auth` flow on node `n`."
+  def login_node_codex_device(n), do: rpc(n, OrcaHub.CodexLoginRunner, :start_device_auth, [])
+
+  @doc "Start the `codex login --with-api-key` flow on node `n`, piping `key`."
+  def login_node_codex_api_key(n, key),
+    do: rpc(n, OrcaHub.CodexLoginRunner, :start_api_key, [key])
+
+  @doc "Cancel the in-progress codex login flow on node `n`."
+  def cancel_codex_login(n), do: rpc(n, OrcaHub.CodexLoginRunner, :cancel, [])
+
+  @doc "Codex login-status badge for node `n` (see `OrcaHub.BackendAuth.codex_status/1`)."
+  def codex_status(n), do: rpc(n, OrcaHub.BackendAuth, :codex_status, [])
+
+  @doc "Whether node `n` has an `OPENAI_API_KEY` env var that would shadow a codex login."
+  def codex_env_conflict?(n), do: rpc(n, OrcaHub.BackendAuth, :codex_env_conflict?, [])
+
+  @doc "List configured pi providers (names/types only) on node `n`."
+  def list_pi_providers(n), do: rpc(n, OrcaHub.BackendAuth, :list_pi_providers, [])
+
+  @doc "Set pi's stored API key for `provider` on node `n`."
+  def set_pi_key(n, provider, key), do: rpc(n, OrcaHub.BackendAuth, :set_pi_key, [provider, key])
+
+  @doc "Remove pi's stored API key for `provider` on node `n`."
+  def delete_pi_key(n, provider), do: rpc(n, OrcaHub.BackendAuth, :delete_pi_key, [provider])
 end
