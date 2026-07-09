@@ -8,10 +8,16 @@ defmodule OrcaHub.BackendInstaller.Job do
   under `OrcaHub.BackendInstallerSupervisor`. Broadcasts on
   `OrcaHub.BackendInstaller.topic(node())`:
 
-    * `{:installer_output, backend, chunk}` — a raw stdout/stderr chunk (binary)
-    * `{:installer_done, backend, {:ok, new_version} | {:error, reason}}` —
+    * `{:installer_output, node, backend, chunk}` — a raw stdout/stderr chunk (binary)
+    * `{:installer_done, node, backend, {:ok, new_version} | {:error, reason}}` —
       `reason` is an exit code (integer), `:timeout`, `:not_found`, or
       `:invalid_action`
+
+  `node` is always `node()` (this job only ever runs on the node it reports
+  for) — it's included so a subscriber fanned out across multiple nodes'
+  topics (Stage B's Nodes-index "update all backends" sweep) can tell which
+  node a message came from; the plain PubSub message itself carries no topic
+  information.
 
   Every command runs as `sh -c "<cmd> < /dev/null"`. The explicit
   `< /dev/null` matters: an Erlang port's stdin is an open-but-silent pipe by
@@ -66,18 +72,18 @@ defmodule OrcaHub.BackendInstaller.Job do
         {:ok, %{backend: backend, port: port, timer: timer}}
 
       {:error, _} ->
-        broadcast(backend, {:installer_done, backend, {:error, :invalid_action}})
+        broadcast({:installer_done, node(), backend, {:error, :invalid_action}})
         :ignore
 
       {{:ok, _cmd}, nil} ->
-        broadcast(backend, {:installer_done, backend, {:error, :not_found}})
+        broadcast({:installer_done, node(), backend, {:error, :not_found}})
         :ignore
     end
   end
 
   @impl true
   def handle_info({port, {:data, data}}, %{port: port} = state) do
-    broadcast(state.backend, {:installer_output, state.backend, data})
+    broadcast({:installer_output, node(), state.backend, data})
     {:noreply, state}
   end
 
@@ -87,13 +93,13 @@ defmodule OrcaHub.BackendInstaller.Job do
         do: {:ok, BackendInstaller.fetch_version(state.backend)},
         else: {:error, status}
 
-    broadcast(state.backend, {:installer_done, state.backend, result})
+    broadcast({:installer_done, node(), state.backend, result})
     {:stop, :normal, %{state | port: nil}}
   end
 
   def handle_info(:job_timeout, state) do
     close_port(state.port)
-    broadcast(state.backend, {:installer_done, state.backend, {:error, :timeout}})
+    broadcast({:installer_done, node(), state.backend, {:error, :timeout}})
     {:stop, :normal, %{state | port: nil}}
   end
 
@@ -129,7 +135,7 @@ defmodule OrcaHub.BackendInstaller.Job do
     ArgumentError -> :ok
   end
 
-  defp broadcast(_backend, msg) do
+  defp broadcast(msg) do
     Phoenix.PubSub.broadcast(OrcaHub.PubSub, BackendInstaller.topic(node()), msg)
   end
 end

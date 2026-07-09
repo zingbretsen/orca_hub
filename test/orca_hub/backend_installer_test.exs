@@ -242,10 +242,12 @@ defmodule OrcaHub.BackendInstallerTest do
       subscribe()
       assert BackendInstaller.run(:claude, :update) == :ok
 
-      assert_receive {:installer_output, :claude, output}, 2000
+      assert_receive {:installer_output, n, :claude, output}, 2000
+      assert n == node()
       assert output =~ "hello-from-job"
 
-      assert_receive {:installer_done, :claude, {:ok, "2.1.205"}}, 2000
+      assert_receive {:installer_done, n, :claude, {:ok, "2.1.205"}}, 2000
+      assert n == node()
       eventually(fn -> not BackendInstaller.running?(:claude) end)
     end
 
@@ -255,7 +257,8 @@ defmodule OrcaHub.BackendInstallerTest do
       subscribe()
       assert BackendInstaller.run(:codex, :update) == :ok
 
-      assert_receive {:installer_done, :codex, {:error, 1}}, 2000
+      assert_receive {:installer_done, n, :codex, {:error, 1}}, 2000
+      assert n == node()
       eventually(fn -> not BackendInstaller.running?(:codex) end)
     end
 
@@ -269,7 +272,8 @@ defmodule OrcaHub.BackendInstallerTest do
       assert BackendInstaller.running?(:pi)
       assert BackendInstaller.run(:pi, :update) == {:error, :already_running}
 
-      assert_receive {:installer_done, :pi, _result}, 3000
+      assert_receive {:installer_done, n, :pi, _result}, 3000
+      assert n == node()
       eventually(fn -> not BackendInstaller.running?(:pi) end)
     end
 
@@ -281,7 +285,8 @@ defmodule OrcaHub.BackendInstallerTest do
       subscribe()
       assert BackendInstaller.run(:claude, :update, timeout: 100) == :ok
 
-      assert_receive {:installer_done, :claude, {:error, :timeout}}, 2000
+      assert_receive {:installer_done, n, :claude, {:error, :timeout}}, 2000
+      assert n == node()
       eventually(fn -> not BackendInstaller.running?(:claude) end)
     end
 
@@ -296,7 +301,8 @@ defmodule OrcaHub.BackendInstallerTest do
       assert BackendInstaller.run(:codex, :update) == :ok
       assert BackendInstaller.running_backends() == [:codex]
 
-      assert_receive {:installer_done, :codex, _result}, 3000
+      assert_receive {:installer_done, n, :codex, _result}, 3000
+      assert n == node()
       eventually(fn -> BackendInstaller.running_backends() == [] end)
     end
   end

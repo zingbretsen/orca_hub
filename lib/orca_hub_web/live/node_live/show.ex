@@ -489,14 +489,14 @@ defmodule OrcaHubWeb.NodeLive.Show do
   # -------------------------------------------------------------------
 
   @impl true
-  def handle_info({:installer_output, backend, chunk}, socket) do
+  def handle_info({:installer_output, _node, backend, chunk}, socket) do
     {:noreply,
      update(socket, :backend_installer_output, fn output ->
        Map.update(output, backend, chunk, &(&1 <> chunk))
      end)}
   end
 
-  def handle_info({:installer_done, backend, result}, socket) do
+  def handle_info({:installer_done, _node, backend, result}, socket) do
     {:noreply,
      socket
      |> update(:backend_installer_running, &MapSet.delete(&1, backend))

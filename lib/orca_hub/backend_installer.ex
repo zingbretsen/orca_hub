@@ -60,10 +60,13 @@ defmodule OrcaHub.BackendInstaller do
   * Progress/completion is PubSub-only — subscribe to `topic(node)` for every
     node you fanned out to (do this BEFORE calling `run/2`, same
     connect-before-act ordering `NodeLive.Show` uses) and fold in:
-      * `{:installer_output, backend, chunk}` — raw stdout+stderr binary chunk
-      * `{:installer_done, backend, {:ok, new_version} | {:error, reason}}`
+      * `{:installer_output, node, backend, chunk}` — raw stdout+stderr binary chunk
+      * `{:installer_done, node, backend, {:ok, new_version} | {:error, reason}}`
         — `reason` is an exit code (integer), `:timeout`, `:not_found`, or
-        `:invalid_action`
+        `:invalid_action`. `node` is included (Stage B) so a subscriber fanned
+        out across multiple nodes' topics — e.g. the Nodes-index "update all
+        backends" sweep — can tell which node a message came from; the plain
+        PubSub message carries no topic information on its own.
   * `running?/1` / `running_backends/0` — reflect in-flight jobs on this node
     (Registry-backed, not PubSub) — useful for a page (re)mount to restore
     spinner state without waiting for the next broadcast.

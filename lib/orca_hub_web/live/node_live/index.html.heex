@@ -1,5 +1,10 @@
 <.header>
   Nodes
+  <:actions>
+    <.button phx-click="sweep_update_all" disabled={@sweep_active?} id="sweep-update-all">
+      {if @sweep_active?, do: "Updating…", else: "Update all backends"}
+    </.button>
+  </:actions>
 </.header>
 
 <.table
@@ -26,3 +31,63 @@
 <p :if={@nodes == []} class="text-sm text-base-content/60 mt-4">
   No nodes have connected to this cluster yet.
 </p>
+
+<div :if={@sweep_active? or @sweep_summary} class="mt-6" id="backend-sweep">
+  <h3 class="font-semibold mb-2">Backend update sweep</h3>
+
+  <p :if={@sweep_summary} id="backend-sweep-summary" class="text-sm mb-2">
+    {@sweep_summary}
+  </p>
+
+  <div class="overflow-x-auto">
+    <table class="table table-sm">
+      <thead>
+        <tr>
+          <th>Node</th>
+          <th :for={backend <- backends()} class="capitalize">{backend}</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr
+          :for={row <- @nodes}
+          :if={MapSet.member?(@sweep_node_names, row.node.name)}
+          id={"backend-sweep-row-#{row.node.id}"}
+        >
+          <td class="font-medium">{row.node.display_name}</td>
+          <td :for={backend <- backends()} id={"backend-sweep-cell-#{row.node.id}-#{backend}"}>
+            <% sweep_cell = Map.get(@sweep_cells, {row.node.name, backend}) %>
+            <div :if={sweep_cell} class="flex items-center gap-1.5">
+              <span
+                :if={sweep_cell.status == :running}
+                class="loading loading-spinner loading-xs"
+              />
+              <span :if={sweep_cell.status == :pending} class="text-xs text-base-content/50">
+                pending…
+              </span>
+              <span :if={sweep_cell.status == :running} class="text-xs">
+                running{if sweep_cell.output_tail != "", do: " — #{sweep_cell.output_tail}"}
+              </span>
+              <span :if={sweep_cell.status == :done} class="badge badge-xs badge-success">
+                done — {sweep_cell.version || "unknown version"}
+              </span>
+              <span
+                :if={sweep_cell.status == :failed}
+                class="badge badge-xs badge-error"
+                title={sweep_cell.reason}
+              >
+                failed — {sweep_cell.reason}
+              </span>
+              <span
+                :if={sweep_cell.status == :skipped}
+                class="badge badge-xs badge-ghost"
+                title={sweep_cell.reason}
+              >
+                skipped — {sweep_cell.reason}
+              </span>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
