@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.NodeLive.Show do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Cluster, HubRPC, NodeConfig}
+  alias OrcaHub.{Cluster, ConfigFile, HubRPC, NodeConfig}
   alias OrcaHubWeb.Markdown
 
   import OrcaHubWeb.NodeLive.ConfigComponents, only: [config_file_row: 1, config_dir_row: 1]
@@ -36,7 +36,10 @@ defmodule OrcaHubWeb.NodeLive.Show do
         config_new_entry_name: "",
         config_new_entry_content: "",
         editing_block: nil,
-        block_edit_content: nil
+        block_edit_content: nil,
+        config_view_mode: %{},
+        structured_editing: nil,
+        structured_edit_value: ""
       )
 
     socket =
@@ -334,6 +337,116 @@ defmodule OrcaHubWeb.NodeLive.Show do
   end
 
   # -------------------------------------------------------------------
+  # Structured editing (shared by every entry whose format has an
+  # `OrcaHub.ConfigFile` adapter) — mirrors the markdown block editing
+  # above: a single global editing session, addressed by scope/key/path,
+  # applying an op via the format layer and persisting through the same
+  # `NodeConfig.write_entry` path `save_config_entry` uses.
+  # -------------------------------------------------------------------
+
+  def handle_event(
+        "toggle_view_mode",
+        %{"scope" => "node_config", "key" => key, "mode" => mode},
+        socket
+      ) do
+    mode_atom = if mode == "raw", do: :raw, else: :structured
+    {:noreply, update(socket, :config_view_mode, &Map.put(&1, key, mode_atom))}
+  end
+
+  def handle_event(
+        "edit_value",
+        %{"scope" => "node_config", "key" => key, "path" => encoded_path},
+        socket
+      ) do
+    path = ConfigFile.decode_path(encoded_path)
+    format = entry_format(socket, key)
+    content = Map.get(socket.assigns.config_content, key, "")
+
+    with {:ok, tree} <- ConfigFile.parse(format, content),
+         %{} = node <- ConfigFile.get_node(tree, path) do
+      {:noreply,
+       assign(socket,
+         structured_editing: %{scope: "node_config", key: key, path: path},
+         structured_edit_value: leaf_edit_value(node)
+       )}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event(
+        "save_value",
+        %{
+          "scope" => "node_config",
+          "key" => key,
+          "path" => encoded_path,
+          "value_type" => value_type,
+          "value" => raw_value
+        },
+        socket
+      ) do
+    path = ConfigFile.decode_path(encoded_path)
+    format = entry_format(socket, key)
+    content = Map.get(socket.assigns.config_content, key, "")
+
+    with {:ok, value} <- ConfigFile.coerce(String.to_existing_atom(value_type), raw_value),
+         {:ok, new_content} <- ConfigFile.apply_op(format, content, {:set, path, value}) do
+      apply_structured_change(socket, key, new_content)
+    else
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event(
+        "delete_key",
+        %{"scope" => "node_config", "key" => key, "path" => encoded_path},
+        socket
+      ) do
+    path = ConfigFile.decode_path(encoded_path)
+    format = entry_format(socket, key)
+    content = Map.get(socket.assigns.config_content, key, "")
+
+    case ConfigFile.apply_op(format, content, {:delete, path}) do
+      {:ok, new_content} ->
+        apply_structured_change(socket, key, new_content)
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to delete: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event(
+        "add_key",
+        %{
+          "scope" => "node_config",
+          "key" => key,
+          "path" => encoded_path,
+          "value_type" => value_type
+        } =
+          params,
+        socket
+      ) do
+    path = ConfigFile.decode_path(encoded_path)
+    format = entry_format(socket, key)
+    content = Map.get(socket.assigns.config_content, key, "")
+    add_key = blank_to_nil(params["name"])
+
+    with {:ok, value} <-
+           ConfigFile.coerce(ConfigFile.parse_value_type(value_type), params["value"] || ""),
+         {:ok, new_content} <- ConfigFile.apply_op(format, content, {:add, path, add_key, value}) do
+      apply_structured_change(socket, key, new_content)
+    else
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to add: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("cancel", %{"scope" => _scope, "key" => _key}, socket) do
+    {:noreply, assign(socket, structured_editing: nil, structured_edit_value: "")}
+  end
+
+  # -------------------------------------------------------------------
   # Private helpers
   # -------------------------------------------------------------------
 
@@ -407,6 +520,26 @@ defmodule OrcaHubWeb.NodeLive.Show do
 
   defp entry_template_match(_entry, _path), do: nil
 
+  # Resolves the catalog `format:` for `key` (e.g. `:json`) the same way
+  # `template_for/3` resolves a create template — exact top-level match, or
+  # inherited from the parent dir entry for a dir child.
+  defp entry_format(socket, key) do
+    {backend, path} = split_key(key)
+
+    case socket.assigns.node_config[backend] do
+      %{entries: entries} -> Enum.find_value(entries, &entry_format_match(&1, path))
+      _ -> nil
+    end
+  end
+
+  defp entry_format_match(%{path: path, format: format}, path), do: format
+
+  defp entry_format_match(%{kind: :dir, path: dir_path, format: format}, path) do
+    if String.starts_with?(path, dir_path <> "/"), do: format
+  end
+
+  defp entry_format_match(_entry, _path), do: nil
+
   defp find_dir_entry(socket, backend, dir_path) do
     case socket.assigns.node_config[backend] do
       %{entries: entries} -> Enum.find(entries, &(&1.kind == :dir and &1.path == dir_path))
@@ -428,6 +561,34 @@ defmodule OrcaHubWeb.NodeLive.Show do
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
+    end
+  end
+
+  defp apply_structured_change(socket, key, new_content) do
+    {backend, path} = split_key(key)
+
+    case rpc(socket.assigns.config_node, NodeConfig, :write_entry, [backend, path, new_content]) do
+      :ok ->
+        {:noreply,
+         socket
+         |> update(:config_content, &Map.put(&1, key, new_content))
+         |> refresh_backend_config(backend)
+         |> assign(structured_editing: nil, structured_edit_value: "")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
+    end
+  end
+
+  defp leaf_edit_value(%{value_type: :null}), do: ""
+  defp leaf_edit_value(%{value: value}), do: to_string(value)
+
+  defp blank_to_nil(nil), do: nil
+
+  defp blank_to_nil(str) do
+    case String.trim(str) do
+      "" -> nil
+      trimmed -> trimmed
     end
   end
 end

@@ -651,9 +651,21 @@
           </div>
           <button phx-click="edit_file" class="btn btn-sm btn-ghost">Edit</button>
         </div>
-        <div class="bg-base-200 rounded-lg p-4">
-          <pre class="text-sm font-mono whitespace-pre-wrap break-words">{@file_content}</pre>
-        </div>
+        <%= if structured_format(@selected_file) do %>
+          <StructuredEditor.structured_or_raw
+            scope="project_file"
+            dom_prefix="file-struct"
+            content={@file_content}
+            format={structured_format(@selected_file)}
+            view_mode={@file_view_mode}
+            editing={@structured_editing}
+            edit_value={@structured_edit_value}
+          />
+        <% else %>
+          <div class="bg-base-200 rounded-lg p-4">
+            <pre class="text-sm font-mono whitespace-pre-wrap break-words">{@file_content}</pre>
+          </div>
+        <% end %>
       </div>
 
       <%!-- Raw edit selected file --%>

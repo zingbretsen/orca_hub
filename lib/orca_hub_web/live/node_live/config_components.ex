@@ -13,7 +13,8 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
   import OrcaHubWeb.NodeLive.ConfigHelpers,
     only: [entry_key: 2, flag_label: 1, format_label: 1, split_config_blocks: 2]
 
-  alias OrcaHubWeb.BlockEditor
+  alias OrcaHub.ConfigFile
+  alias OrcaHubWeb.{BlockEditor, StructuredEditor}
 
   attr :backend, :atom, required: true
   attr :entry, :map, required: true
@@ -23,6 +24,9 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
   attr :config_content, :map, required: true
   attr :editing_block, :any, required: true
   attr :block_edit_content, :any, required: true
+  attr :config_view_mode, :any, required: true
+  attr :structured_editing, :any, required: true
+  attr :structured_edit_value, :string, required: true
 
   def config_file_row(assigns) do
     assigns = assign(assigns, :key, entry_key(assigns.backend, assigns.entry.path))
@@ -99,21 +103,33 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
       </div>
 
       <div :if={@config_editing != @key && MapSet.member?(@config_expanded, @key)} class="mt-2">
-        <%= if @entry.format == :markdown do %>
-          <% {frontmatter, blocks} = split_config_blocks(@config_content, @key) %>
-          <BlockEditor.block_editor
-            scope="node_config"
-            target_key={@key}
-            blocks={blocks}
-            frontmatter={frontmatter}
-            dom_prefix={"config-block-#{@backend}-#{@entry.path}"}
-            editing_block={@editing_block}
-            block_edit_content={@block_edit_content}
-          />
-        <% else %>
-          <div class="bg-base-200 rounded-lg p-3">
-            <pre class="text-sm font-mono whitespace-pre-wrap break-words">{Map.get(@config_content, @key, "")}</pre>
-          </div>
+        <%= cond do %>
+          <% @entry.format == :markdown -> %>
+            <% {frontmatter, blocks} = split_config_blocks(@config_content, @key) %>
+            <BlockEditor.block_editor
+              scope="node_config"
+              target_key={@key}
+              blocks={blocks}
+              frontmatter={frontmatter}
+              dom_prefix={"config-block-#{@backend}-#{@entry.path}"}
+              editing_block={@editing_block}
+              block_edit_content={@block_edit_content}
+            />
+          <% ConfigFile.supported?(@entry.format) -> %>
+            <StructuredEditor.structured_or_raw
+              scope="node_config"
+              target_key={@key}
+              dom_prefix={"config-struct-#{@backend}-#{@entry.path}"}
+              content={Map.get(@config_content, @key, "")}
+              format={@entry.format}
+              view_mode={Map.get(@config_view_mode, @key, :structured)}
+              editing={@structured_editing}
+              edit_value={@structured_edit_value}
+            />
+          <% true -> %>
+            <div class="bg-base-200 rounded-lg p-3">
+              <pre class="text-sm font-mono whitespace-pre-wrap break-words">{Map.get(@config_content, @key, "")}</pre>
+            </div>
         <% end %>
       </div>
     </div>
@@ -132,6 +148,9 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
   attr :config_new_entry_content, :string, required: true
   attr :editing_block, :any, required: true
   attr :block_edit_content, :any, required: true
+  attr :config_view_mode, :any, required: true
+  attr :structured_editing, :any, required: true
+  attr :structured_edit_value, :string, required: true
 
   def config_dir_row(assigns) do
     assigns = assign(assigns, :dir_key, {assigns.backend, assigns.entry.path})
@@ -190,6 +209,9 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
             config_content={@config_content}
             editing_block={@editing_block}
             block_edit_content={@block_edit_content}
+            config_view_mode={@config_view_mode}
+            structured_editing={@structured_editing}
+            structured_edit_value={@structured_edit_value}
           />
         </div>
 

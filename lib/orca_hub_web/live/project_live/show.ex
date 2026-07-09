@@ -2,10 +2,10 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{AgentMemory, Cluster, HubRPC, Projects, Triggers}
+  alias OrcaHub.{AgentMemory, Cluster, ConfigFile, HubRPC, Projects, Triggers}
   alias OrcaHub.Projects.Project
   alias OrcaHub.Triggers.Trigger
-  alias OrcaHubWeb.{BlockEditor, Markdown}
+  alias OrcaHubWeb.{BlockEditor, Markdown, StructuredEditor}
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -47,6 +47,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        file_blocks: [],
        editing_block: nil,
        block_edit_content: nil,
+       file_view_mode: :structured,
+       structured_editing: nil,
+       structured_edit_value: "",
        new_file_name: nil,
        triggers: triggers,
        editing_trigger: nil,
@@ -106,6 +109,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
                 file_blocks: blocks,
                 file_editing: false,
                 editing_block: nil,
+                file_view_mode: :structured,
+                structured_editing: nil,
+                structured_edit_value: "",
                 new_file_name: nil
               )
 
@@ -238,6 +244,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        file_blocks: [],
        editing_block: nil,
        block_edit_content: nil,
+       file_view_mode: :structured,
+       structured_editing: nil,
+       structured_edit_value: "",
        new_file_name: nil
      )}
   end
@@ -297,6 +306,95 @@ defmodule OrcaHubWeb.ProjectLive.Show do
       end)
 
     apply_block_change(socket, scope, key, frontmatter, new_blocks)
+  end
+
+  # -------------------------------------------------------------------
+  # Structured editing — the project file viewer's only host so far (scope
+  # "project_file", single global editing session, same as the markdown
+  # block editing above). See `OrcaHubWeb.NodeLive.Show` for the sibling
+  # integration; both apply an op via `OrcaHub.ConfigFile.apply_op/3` and
+  # persist through their own existing save path.
+  # -------------------------------------------------------------------
+
+  def handle_event("toggle_view_mode", %{"scope" => "project_file", "mode" => mode}, socket) do
+    mode_atom = if mode == "raw", do: :raw, else: :structured
+    {:noreply, assign(socket, file_view_mode: mode_atom)}
+  end
+
+  def handle_event("edit_value", %{"scope" => "project_file", "path" => encoded_path}, socket) do
+    path = ConfigFile.decode_path(encoded_path)
+    format = structured_format(socket.assigns.selected_file)
+
+    with {:ok, tree} <- ConfigFile.parse(format, socket.assigns.file_content),
+         %{} = node <- ConfigFile.get_node(tree, path) do
+      {:noreply,
+       assign(socket,
+         structured_editing: %{scope: "project_file", key: "", path: path},
+         structured_edit_value: leaf_edit_value(node)
+       )}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event(
+        "save_value",
+        %{
+          "scope" => "project_file",
+          "path" => encoded_path,
+          "value_type" => value_type,
+          "value" => raw_value
+        },
+        socket
+      ) do
+    path = ConfigFile.decode_path(encoded_path)
+    format = structured_format(socket.assigns.selected_file)
+
+    with {:ok, value} <- ConfigFile.coerce(String.to_existing_atom(value_type), raw_value),
+         {:ok, new_content} <-
+           ConfigFile.apply_op(format, socket.assigns.file_content, {:set, path, value}) do
+      apply_structured_file_change(socket, new_content)
+    else
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("delete_key", %{"scope" => "project_file", "path" => encoded_path}, socket) do
+    path = ConfigFile.decode_path(encoded_path)
+    format = structured_format(socket.assigns.selected_file)
+
+    case ConfigFile.apply_op(format, socket.assigns.file_content, {:delete, path}) do
+      {:ok, new_content} ->
+        apply_structured_file_change(socket, new_content)
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to delete: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event(
+        "add_key",
+        %{"scope" => "project_file", "path" => encoded_path, "value_type" => value_type} = params,
+        socket
+      ) do
+    path = ConfigFile.decode_path(encoded_path)
+    format = structured_format(socket.assigns.selected_file)
+    add_key = blank_to_nil(params["name"])
+
+    with {:ok, value} <-
+           ConfigFile.coerce(ConfigFile.parse_value_type(value_type), params["value"] || ""),
+         {:ok, new_content} <-
+           ConfigFile.apply_op(format, socket.assigns.file_content, {:add, path, add_key, value}) do
+      apply_structured_file_change(socket, new_content)
+    else
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to add: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("cancel", %{"scope" => "project_file"}, socket) do
+    {:noreply, assign(socket, structured_editing: nil, structured_edit_value: "")}
   end
 
   def handle_event("create_session", _params, socket) do
@@ -873,6 +971,52 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   defp project_file_blocks(path, content) do
     if Projects.markdown_file?(path), do: Markdown.split_blocks(content), else: []
+  end
+
+  # -------------------------------------------------------------------
+  # Structured editing (project file viewer only, scope "project_file")
+  # -------------------------------------------------------------------
+
+  # The format a structured editor should use for `path`, or `nil` when
+  # there's no adapter for it yet — `nil` falls through to the plain raw
+  # `<pre>` view. TOML/YAML extend this with another clause once their
+  # `OrcaHub.ConfigFile` adapters exist.
+  defp structured_format(path) when is_binary(path) do
+    if String.ends_with?(path, ".json"), do: :json
+  end
+
+  defp structured_format(_path), do: nil
+
+  defp apply_structured_file_change(socket, new_content) do
+    project = socket.assigns.project
+    path = socket.assigns.selected_file
+
+    case rpc(socket.assigns.project_node, Projects, :save_file, [project, path, new_content]) do
+      :ok ->
+        send_update(OrcaHubWeb.FileTreeComponent, id: "project-file-tree", reload: true)
+
+        {:noreply,
+         assign(socket,
+           file_content: new_content,
+           structured_editing: nil,
+           structured_edit_value: ""
+         )}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(reason)}")}
+    end
+  end
+
+  defp leaf_edit_value(%{value_type: :null}), do: ""
+  defp leaf_edit_value(%{value: value}), do: to_string(value)
+
+  defp blank_to_nil(nil), do: nil
+
+  defp blank_to_nil(str) do
+    case String.trim(str) do
+      "" -> nil
+      trimmed -> trimmed
+    end
   end
 
   # Resolves the current content for a block-editing `scope`/`key` pair
