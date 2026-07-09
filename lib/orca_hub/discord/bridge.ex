@@ -185,11 +185,16 @@ defmodule OrcaHub.Discord.Bridge do
         history -> format_prompt(history, msg)
       end
 
-    append_saved_files(base, saved)
+    base
+    |> append_saved_files(saved)
+    |> append_discord_tool_hint()
   rescue
     e ->
       Logger.warning("Discord history backfill failed: #{Exception.message(e)}")
-      append_saved_files(msg.text, saved)
+
+      msg.text
+      |> append_saved_files(saved)
+      |> append_discord_tool_hint()
   end
 
   # Tack the saved inbox paths onto the prompt so Claude knows the files landed.
@@ -201,6 +206,20 @@ defmodule OrcaHub.Discord.Bridge do
 
     [Files saved to inbox/]
     #{Enum.join(saved, "\n")}
+    """
+    |> String.trim_trailing()
+  end
+
+  # Reminder on every dispatch, since the model has no other way to discover
+  # this tool exists: `send_discord_message` lets it post attachments or
+  # interim updates mid-turn. It should NOT use it to repeat the final reply —
+  # `post_reply/2` below already posts that automatically once the session
+  # goes idle.
+  defp append_discord_tool_hint(prompt) do
+    """
+    #{prompt}
+
+    [You can use the send_discord_message MCP tool to send files/attachments or interim updates to this channel. Your final reply is posted here automatically when you finish — don't duplicate it with this tool.]
     """
     |> String.trim_trailing()
   end

@@ -173,6 +173,9 @@ defmodule OrcaHub.HubRPC do
   def get_discord_channel_by_channel_id(discord_channel_id),
     do: call(OrcaHub.DiscordChannels, :get_by_channel_id, [discord_channel_id])
 
+  def get_discord_channel_by_session_id(session_id),
+    do: call(OrcaHub.DiscordChannels, :get_by_session_id, [session_id])
+
   def create_discord_channel(attrs),
     do: call(OrcaHub.DiscordChannels, :create_discord_channel, [attrs])
 

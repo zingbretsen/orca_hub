@@ -34,6 +34,25 @@ defmodule OrcaHub.DiscordChannels do
     end
   end
 
+  @doc """
+  Look up the mapping currently pointing at `session_id`
+  (`discord_channels.session_id`, set by `OrcaHub.Discord.Bridge.drive/2` on
+  every dispatch), with project preloaded. A session should only ever be
+  referenced by one mapping, but if more than one somehow does, the most
+  recently updated wins. Returns `nil` if none.
+  """
+  def get_by_session_id(session_id) when is_binary(session_id) do
+    DiscordChannel
+    |> where([c], c.session_id == ^session_id)
+    |> order_by([c], desc: c.updated_at)
+    |> limit(1)
+    |> Repo.one()
+    |> case do
+      nil -> nil
+      channel -> Repo.preload(channel, :project)
+    end
+  end
+
   def create_discord_channel(attrs) do
     %DiscordChannel{}
     |> DiscordChannel.changeset(attrs)
