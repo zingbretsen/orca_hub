@@ -881,9 +881,16 @@ defmodule OrcaHubWeb.ProjectLive.Show do
         agent_memory_result(
           rpc(project_node, AgentMemory, :list_agents_md_memories, [project.directory])
         ),
-      codex: agent_memory_result(rpc(project_node, AgentMemory, :list_codex_memories, []))
+      codex: agent_memory_result(rpc(project_node, AgentMemory, :list_codex_memories, [])),
+      codex_enabled: bool_result(rpc(project_node, AgentMemory, :codex_memories_enabled?, []))
     }
   end
+
+  # Normalizes rpc/5's {:error, ...} tuples (node offline/unassigned) down to
+  # `false` — the section is hidden entirely via @node_unavailable in that
+  # case anyway, so this only ever matters when the rpc actually succeeded.
+  defp bool_result(true), do: true
+  defp bool_result(_), do: false
 
   # rpc/5's node-unassigned/node-unavailable error tuples get normalized to
   # a single {:error, :node_unavailable} shape here, distinct from the
@@ -941,6 +948,19 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     codex = agent_memory_result(rpc(target, AgentMemory, :list_codex_memories, []))
     update(socket, :agent_memory, &Map.put(&1, :codex, codex))
   end
+
+  # Human label for a Codex memory file's subdir group (nil for top-level
+  # canonical/flat files, which render with no badge at all).
+  defp codex_group_label(nil), do: nil
+  defp codex_group_label("rollout_summaries"), do: "rollout summary"
+  defp codex_group_label("skills"), do: "skill"
+  defp codex_group_label("memories_extensions"), do: "extension"
+
+  # Codex memory filenames may include a subdir segment (e.g.
+  # "rollout_summaries/2026-07-08.md") — "/" is valid in an HTML id but
+  # unconventional, so DOM ids swap it for "--" while phx-value-filename
+  # (and the form's hidden input) keep the real relative path.
+  defp dom_id(str), do: String.replace(str, "/", "--")
 
   defp browse_to(socket, path) do
     target = socket.assigns.project_node

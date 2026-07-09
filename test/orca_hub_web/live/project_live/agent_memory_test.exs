@@ -259,5 +259,66 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
       dir = AgentMemory.codex_memories_dir(home_dir: home)
       refute File.exists?(Path.join(dir, "note.md"))
     end
+
+    test "renders the global-scope caption", %{conn: conn, project: project} do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.id}")
+
+      assert html =~ "not scoped to this project"
+    end
+
+    test "groups and badges subdirectory files", %{conn: conn, project: project, home: home} do
+      dir = AgentMemory.codex_memories_dir(home_dir: home)
+      rollout_dir = Path.join(dir, "rollout_summaries")
+      File.mkdir_p!(rollout_dir)
+      File.write!(Path.join(rollout_dir, "2026-07-08.md"), "A rollout summary.")
+
+      {:ok, view, html} = live(conn, ~p"/projects/#{project.id}")
+
+      assert html =~ "rollout_summaries/2026-07-08.md"
+      assert html =~ "rollout summary"
+
+      # Slash in the relative path is swapped for "--" in DOM ids.
+      assert has_element?(view, "#codex-memory-edit-rollout_summaries--2026-07-08\\.md")
+
+      view
+      |> element("#codex-memory-edit-rollout_summaries--2026-07-08\\.md")
+      |> render_click()
+
+      view
+      |> element("#codex-memory-rollout_summaries--2026-07-08\\.md form")
+      |> render_submit(%{
+        "filename" => "rollout_summaries/2026-07-08.md",
+        "content" => "Updated rollout summary."
+      })
+
+      assert File.read!(Path.join(rollout_dir, "2026-07-08.md")) == "Updated rollout summary."
+    end
+  end
+
+  describe "Codex feature-flag messaging when the dir doesn't exist yet" do
+    test "says 'not enabled' when no config.toml is present", %{conn: conn, project: project} do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.id}")
+
+      assert html =~ "Codex built-in memories not enabled on this node."
+      refute html =~ "none have been consolidated yet"
+    end
+
+    test "says 'enabled, none consolidated yet' when the feature flag is on but the memories dir is missing",
+         %{conn: conn, project: project, home: home} do
+      codex_dir = Path.join(home, ".codex")
+      File.mkdir_p!(codex_dir)
+
+      File.write!(Path.join(codex_dir, "config.toml"), """
+      [features]
+      memories = true
+      """)
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.id}")
+
+      assert html =~
+               "Codex memories are enabled on this node, but none have been consolidated yet."
+
+      refute html =~ "not enabled on this node."
+    end
   end
 end

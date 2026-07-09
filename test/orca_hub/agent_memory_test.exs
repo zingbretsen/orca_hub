@@ -281,14 +281,14 @@ defmodule OrcaHub.AgentMemoryTest do
       assert AgentMemory.list_codex_memories(opts) == {:error, :not_enabled}
     end
 
-    test "list/save/delete round-trip, skipping subdirs and sqlite files", %{opts: opts} do
+    test "list/save/delete round-trip, skipping unknown subdirs and sqlite files", %{opts: opts} do
       dir = AgentMemory.codex_memories_dir(opts)
       File.mkdir_p!(dir)
       File.write!(Path.join(dir, "note.md"), "A codex memory note.")
       File.mkdir_p!(Path.join(dir, "a_subdir"))
       File.write!(Path.join(dir, "state.sqlite"), "binary junk")
 
-      assert {:ok, [%{filename: "note.md", content: "A codex memory note."}]} =
+      assert {:ok, [%{filename: "note.md", group: nil, content: "A codex memory note."}]} =
                AgentMemory.list_codex_memories(opts)
 
       assert :ok = AgentMemory.save_codex_memory("second.md", "Another note.", opts)
@@ -306,6 +306,164 @@ defmodule OrcaHub.AgentMemoryTest do
       assert {:error, :unsafe_filename} = AgentMemory.read_codex_memory("../secret", opts)
       assert {:error, :unsafe_filename} = AgentMemory.save_codex_memory("a/b", "x", opts)
       assert {:error, :unsafe_filename} = AgentMemory.delete_codex_memory("..", opts)
+    end
+
+    test "canonical files sort first in a fixed order, then other flat files alphabetically", %{
+      opts: opts
+    } do
+      dir = AgentMemory.codex_memories_dir(opts)
+      File.mkdir_p!(dir)
+      # Written out of order on purpose, to prove the sort isn't accidental.
+      File.write!(Path.join(dir, "raw_memories.md"), "raw")
+      File.write!(Path.join(dir, "zzz_other.md"), "z")
+      File.write!(Path.join(dir, "aaa_other.md"), "a")
+      File.write!(Path.join(dir, "MEMORY.md"), "index")
+      File.write!(Path.join(dir, "memory_summary.md"), "summary")
+
+      assert {:ok, files} = AgentMemory.list_codex_memories(opts)
+
+      assert Enum.map(files, & &1.filename) == [
+               "MEMORY.md",
+               "memory_summary.md",
+               "raw_memories.md",
+               "aaa_other.md",
+               "zzz_other.md"
+             ]
+    end
+
+    test "includes known subdirectories one level deep, grouped, ordered after flat files", %{
+      opts: opts
+    } do
+      dir = AgentMemory.codex_memories_dir(opts)
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "MEMORY.md"), "index")
+
+      rollout_dir = Path.join(dir, "rollout_summaries")
+      File.mkdir_p!(rollout_dir)
+      File.write!(Path.join(rollout_dir, "2026-07-08.md"), "rollout summary body")
+      File.write!(Path.join(rollout_dir, "2026-07-09.md"), "another rollout summary")
+
+      skills_dir = Path.join(dir, "skills")
+      File.mkdir_p!(skills_dir)
+      File.write!(Path.join(skills_dir, "my-skill.md"), "skill body")
+
+      # Nested one level further should not be picked up.
+      File.mkdir_p!(Path.join(rollout_dir, "nested"))
+      File.write!(Path.join(rollout_dir, "nested/too-deep.md"), "should not appear")
+
+      assert {:ok, files} = AgentMemory.list_codex_memories(opts)
+
+      assert [memory_md, rollout1, rollout2, skill] = files
+      assert memory_md.filename == "MEMORY.md"
+      assert memory_md.group == nil
+
+      assert rollout1.filename == "rollout_summaries/2026-07-08.md"
+      assert rollout1.group == "rollout_summaries"
+      assert rollout1.content == "rollout summary body"
+
+      assert rollout2.filename == "rollout_summaries/2026-07-09.md"
+      assert rollout2.group == "rollout_summaries"
+
+      assert skill.filename == "skills/my-skill.md"
+      assert skill.group == "skills"
+    end
+
+    test "reads/saves/deletes files inside known subdirectories", %{opts: opts} do
+      assert :ok =
+               AgentMemory.save_codex_memory(
+                 "rollout_summaries/session-1.md",
+                 "Summary body.",
+                 opts
+               )
+
+      assert {:ok, "Summary body."} =
+               AgentMemory.read_codex_memory("rollout_summaries/session-1.md", opts)
+
+      assert {:ok, files} = AgentMemory.list_codex_memories(opts)
+      assert [%{filename: "rollout_summaries/session-1.md", group: "rollout_summaries"}] = files
+
+      assert :ok = AgentMemory.delete_codex_memory("rollout_summaries/session-1.md", opts)
+      assert {:ok, []} = AgentMemory.list_codex_memories(opts)
+    end
+
+    test "rejects unknown subdirs, deeper nesting, and absolute paths for subdir paths", %{
+      opts: opts
+    } do
+      assert {:error, :unsafe_filename} =
+               AgentMemory.save_codex_memory("unknown_subdir/file.md", "x", opts)
+
+      assert {:error, :unsafe_filename} =
+               AgentMemory.save_codex_memory("rollout_summaries/nested/file.md", "x", opts)
+
+      assert {:error, :unsafe_filename} =
+               AgentMemory.save_codex_memory("rollout_summaries/../MEMORY.md", "x", opts)
+
+      assert {:error, :unsafe_filename} =
+               AgentMemory.read_codex_memory("/etc/passwd", opts)
+    end
+  end
+
+  describe "codex_memories_enabled?/1" do
+    test "false when ~/.codex/config.toml doesn't exist", %{opts: opts} do
+      refute AgentMemory.codex_memories_enabled?(opts)
+    end
+
+    test "false when the config file exists but has no [features] table", %{
+      home: home,
+      opts: opts
+    } do
+      codex_dir = Path.join(home, ".codex")
+      File.mkdir_p!(codex_dir)
+      File.write!(Path.join(codex_dir, "config.toml"), "personality = \"pragmatic\"\n")
+
+      refute AgentMemory.codex_memories_enabled?(opts)
+    end
+
+    test "false when [features] exists but memories isn't true", %{home: home, opts: opts} do
+      codex_dir = Path.join(home, ".codex")
+      File.mkdir_p!(codex_dir)
+
+      File.write!(Path.join(codex_dir, "config.toml"), """
+      [features]
+      memories = false
+      """)
+
+      refute AgentMemory.codex_memories_enabled?(opts)
+    end
+
+    test "true when [features]\\nmemories = true is present", %{home: home, opts: opts} do
+      codex_dir = Path.join(home, ".codex")
+      File.mkdir_p!(codex_dir)
+
+      File.write!(Path.join(codex_dir, "config.toml"), """
+      personality = "pragmatic"
+
+      [projects."/home/zach/orca_hub"]
+      trust_level = "trusted"
+
+      [features]
+      memories = true
+      """)
+
+      assert AgentMemory.codex_memories_enabled?(opts)
+    end
+
+    test "doesn't leak a flag from a later table with the same key name", %{
+      home: home,
+      opts: opts
+    } do
+      codex_dir = Path.join(home, ".codex")
+      File.mkdir_p!(codex_dir)
+
+      File.write!(Path.join(codex_dir, "config.toml"), """
+      [features]
+      memories = false
+
+      [other]
+      memories = true
+      """)
+
+      refute AgentMemory.codex_memories_enabled?(opts)
     end
   end
 end

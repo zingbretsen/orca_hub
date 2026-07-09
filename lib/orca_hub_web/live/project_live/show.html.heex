@@ -980,14 +980,26 @@
 
     <%!-- Codex native memories --%>
     <div id="agent-memory-codex">
-      <h4 class="font-semibold text-sm mb-2">Codex (native)</h4>
+      <h4 class="font-semibold text-sm mb-1">Codex (native)</h4>
+      <p class="text-xs text-base-content/50 mb-2">
+        Global to this node's user, not scoped to this project — editing or deleting a file here
+        affects every project routed to this node.
+      </p>
 
       <div
-        :if={@agent_memory.codex == {:error, :not_enabled}}
+        :if={@agent_memory.codex == {:error, :not_enabled} && !@agent_memory.codex_enabled}
         id="codex-memory-not-enabled"
         class="text-sm text-base-content/50 p-3 text-center bg-base-200 rounded-lg"
       >
         Codex built-in memories not enabled on this node.
+      </div>
+
+      <div
+        :if={@agent_memory.codex == {:error, :not_enabled} && @agent_memory.codex_enabled}
+        id="codex-memory-enabled-not-consolidated"
+        class="text-sm text-base-content/50 p-3 text-center bg-base-200 rounded-lg"
+      >
+        Codex memories are enabled on this node, but none have been consolidated yet.
       </div>
 
       <div :if={match?({:ok, _}, @agent_memory.codex)}>
@@ -1005,12 +1017,21 @@
           id="codex-memories-list"
           class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
         >
-          <div :for={file <- files} id={"codex-memory-#{file.filename}"} class="px-4 py-3 text-sm">
+          <div
+            :for={file <- files}
+            id={"codex-memory-#{dom_id(file.filename)}"}
+            class="px-4 py-3 text-sm"
+          >
             <div :if={@codex_editing_filename != file.filename} class="flex items-center gap-3">
-              <div class="flex-1 min-w-0 font-mono text-xs">{file.filename}</div>
+              <div class="flex-1 min-w-0 flex items-center gap-2">
+                <span class="font-mono text-xs">{file.filename}</span>
+                <span :if={codex_group_label(file.group)} class="badge badge-xs badge-neutral">
+                  {codex_group_label(file.group)}
+                </span>
+              </div>
               <div class="flex items-center gap-1">
                 <button
-                  id={"codex-memory-edit-#{file.filename}"}
+                  id={"codex-memory-edit-#{dom_id(file.filename)}"}
                   phx-click="edit_codex_memory"
                   phx-value-filename={file.filename}
                   class="btn btn-xs btn-ghost"
@@ -1019,10 +1040,10 @@
                   <.icon name="hero-pencil-micro" class="size-4" />
                 </button>
                 <button
-                  id={"codex-memory-delete-#{file.filename}"}
+                  id={"codex-memory-delete-#{dom_id(file.filename)}"}
                   phx-click="delete_codex_memory"
                   phx-value-filename={file.filename}
-                  data-confirm={"Delete Codex memory #{file.filename}?"}
+                  data-confirm={"Delete Codex memory #{file.filename}? This is global to this node's user."}
                   class="btn btn-xs btn-ghost text-error"
                   title="Delete"
                 >
@@ -1039,7 +1060,7 @@
               <input type="hidden" name="filename" value={file.filename} />
               <textarea
                 name="content"
-                id={"codex-memory-editor-#{file.filename}"}
+                id={"codex-memory-editor-#{dom_id(file.filename)}"}
                 class="textarea textarea-bordered w-full font-mono text-sm"
                 rows="8"
               >{@codex_edit_content}</textarea>

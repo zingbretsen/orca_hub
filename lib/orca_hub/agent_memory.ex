@@ -16,7 +16,15 @@ defmodule OrcaHub.AgentMemory do
       modify the working tree.
     * **Codex native memories** — `~/.codex/memories/` on the project's
       node. Only populated if Codex's built-in memories feature is enabled
-      (off by default); the missing-dir case is expected, not an error.
+      (off by default, via `[features]\nmemories = true` in
+      `~/.codex/config.toml`); the missing-dir case is expected, not an
+      error. Contains flat files (canonically `MEMORY.md`,
+      `memory_summary.md`, `raw_memories.md`) plus three known
+      subdirectories one level deep: `rollout_summaries/`, `skills/`, and
+      `memories_extensions/`. **These memories are GLOBAL to the node's
+      current OS user, not scoped to any one project** — every project
+      routed to the same node shares (and can edit/delete) the same
+      Codex memory files.
 
   pi has no memory store of its own — it reads AGENTS.md and, via an
   extension, the Claude MEMORY.md index.
@@ -380,61 +388,154 @@ defmodule OrcaHub.AgentMemory do
   defp bullet_text(line), do: line |> String.trim_leading() |> String.trim_leading("- ")
 
   # -------------------------------------------------------------------
-  # Codex native memories (~/.codex/memories/, flat, feature usually off)
+  # Codex native memories (~/.codex/memories/, feature usually off)
   # -------------------------------------------------------------------
+
+  @codex_config_subpath ".codex/config.toml"
+  @codex_canonical_files ["MEMORY.md", "memory_summary.md", "raw_memories.md"]
+  @codex_known_subdirs ["rollout_summaries", "skills", "memories_extensions"]
 
   @doc "Path to `~/.codex/memories` on this node."
   def codex_memories_dir(opts \\ []), do: Path.join(home_dir(opts), @codex_memories_subpath)
 
   @doc """
-  Lists Codex native memories. Returns `{:ok, [%{filename, content}, ...]}`
-  or `{:error, :not_enabled}` if `~/.codex/memories/` doesn't exist (the
-  normal case — Codex's built-in memories feature is a preview flag that's
-  off by default). Subdirectories and sqlite state files are skipped.
+  Best-effort check for whether Codex's built-in memories feature is
+  enabled, via a plain string/regex scan of `~/.codex/config.toml` for
+  `memories = true` inside a `[features]` table — no TOML dependency.
+  Returns `false` if the config file is absent, unreadable, or the flag
+  isn't set to `true`.
+  """
+  def codex_memories_enabled?(opts \\ []) do
+    path = Path.join(home_dir(opts), @codex_config_subpath)
+
+    case File.read(path) do
+      {:ok, content} -> toml_bool_flag?(content, "features", "memories")
+      {:error, _} -> false
+    end
+  end
+
+  @doc """
+  Lists Codex native memories. Returns `{:ok, [%{filename, group,
+  content}, ...]}` or `{:error, :not_enabled}` if `~/.codex/memories/`
+  doesn't exist (the normal case — Codex's built-in memories feature is a
+  preview flag that's off by default; see `codex_memories_enabled?/1` to
+  distinguish "not enabled" from "enabled, nothing consolidated yet").
+
+  `filename` is the path relative to `~/.codex/memories/` — a bare name
+  for top-level files, or `"<subdir>/<name>"` for the known subdirectories.
+  `group` is `nil` for top-level files, else the subdir name. Canonical
+  files (`MEMORY.md`, `memory_summary.md`, `raw_memories.md`) sort first
+  in that order, then other top-level files alphabetically, then each
+  known subdirectory's files alphabetically. Unknown subdirectories and
+  sqlite state files are skipped.
   """
   def list_codex_memories(opts \\ []) do
     dir = codex_memories_dir(opts)
 
     if File.dir?(dir) do
-      files =
+      flat_files =
         dir
         |> File.ls!()
         |> Enum.filter(&codex_memory_file?(dir, &1))
-        |> Enum.sort()
+        |> order_codex_flat_files()
         |> Enum.map(fn filename ->
-          %{filename: filename, content: File.read!(Path.join(dir, filename))}
+          %{filename: filename, group: nil, content: File.read!(Path.join(dir, filename))}
         end)
 
-      {:ok, files}
+      subdir_files =
+        for subdir <- @codex_known_subdirs,
+            subdir_path = Path.join(dir, subdir),
+            File.dir?(subdir_path),
+            filename <- subdir_path |> File.ls!() |> Enum.sort(),
+            File.regular?(Path.join(subdir_path, filename)) do
+          relative = Path.join(subdir, filename)
+          %{filename: relative, group: subdir, content: File.read!(Path.join(dir, relative))}
+        end
+
+      {:ok, flat_files ++ subdir_files}
     else
       {:error, :not_enabled}
     end
+  end
+
+  # Filtering @codex_canonical_files (rather than `files`) keeps them in
+  # canonical order automatically, since we walk the canonical list itself.
+  defp order_codex_flat_files(files) do
+    canonical = Enum.filter(@codex_canonical_files, &(&1 in files))
+    canonical ++ Enum.sort(files -- @codex_canonical_files)
   end
 
   defp codex_memory_file?(dir, filename) do
     File.regular?(Path.join(dir, filename)) and not String.contains?(filename, "sqlite")
   end
 
-  @doc "Reads a single Codex memory file's raw content."
+  @doc "Reads a single Codex memory file's raw content (bare name or `<subdir>/<name>`)."
   def read_codex_memory(filename, opts \\ []) do
-    with :ok <- validate_safe_filename(filename) do
+    with :ok <- validate_safe_codex_path(filename) do
       File.read(Path.join(codex_memories_dir(opts), filename))
     end
   end
 
   @doc "Overwrites (or creates) a single Codex memory file's raw content."
   def save_codex_memory(filename, content, opts \\ []) do
-    with :ok <- validate_safe_filename(filename) do
-      dir = codex_memories_dir(opts)
-      File.mkdir_p!(dir)
-      File.write(Path.join(dir, filename), content)
+    with :ok <- validate_safe_codex_path(filename) do
+      path = Path.join(codex_memories_dir(opts), filename)
+      File.mkdir_p!(Path.dirname(path))
+      File.write(path, content)
     end
   end
 
   @doc "Deletes a single Codex memory file."
   def delete_codex_memory(filename, opts \\ []) do
-    with :ok <- validate_safe_filename(filename) do
+    with :ok <- validate_safe_codex_path(filename) do
       File.rm(Path.join(codex_memories_dir(opts), filename))
+    end
+  end
+
+  # Accepts either a bare filename (validated like Claude's) or exactly one
+  # known-subdir segment followed by a bare filename — still rejects `..`,
+  # absolute paths, and any deeper nesting or unknown subdir.
+  defp validate_safe_codex_path(path) when is_binary(path) do
+    case String.split(path, "/") do
+      [filename] ->
+        validate_safe_filename(filename)
+
+      [subdir, filename] when subdir in @codex_known_subdirs ->
+        validate_safe_filename(filename)
+
+      _ ->
+        {:error, :unsafe_filename}
+    end
+  end
+
+  defp validate_safe_codex_path(_), do: {:error, :unsafe_filename}
+
+  # Naive `[section]`-scoped boolean lookup for a TOML file: finds the
+  # `[section]` table header (bounded by the next `[...]` header or EOF)
+  # and checks for `key = true` inside it. Deliberately simplistic — good
+  # enough for the one flag we care about, not a general TOML parser.
+  defp toml_bool_flag?(content, section, key) do
+    lines = String.split(content, "\n")
+
+    case Enum.find_index(lines, &(String.trim(&1) == "[#{section}]")) do
+      nil ->
+        false
+
+      start_idx ->
+        end_idx =
+          lines
+          |> Enum.with_index()
+          |> Enum.find(fn {line, idx} ->
+            idx > start_idx and Regex.match?(~r/^\[.*\]$/, String.trim(line))
+          end)
+          |> case do
+            {_line, idx} -> idx
+            nil -> length(lines)
+          end
+
+        lines
+        |> Enum.slice((start_idx + 1)..(end_idx - 1)//1)
+        |> Enum.any?(&Regex.match?(~r/^\s*#{Regex.escape(key)}\s*=\s*true\s*(#.*)?$/, &1))
     end
   end
 
