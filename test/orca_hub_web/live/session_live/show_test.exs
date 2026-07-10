@@ -119,8 +119,9 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     test "Claude session offers only Claude models", %{conn: conn, claude_session: session} do
       {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
 
+      assert html =~ "Fable 5"
       assert html =~ "Opus 4.8"
-      assert html =~ "Sonnet 4.6"
+      assert html =~ "Sonnet 5"
       assert html =~ "Haiku 4.5"
       refute html =~ "GPT-5"
     end
@@ -130,7 +131,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       assert html =~ "GPT-5 Codex"
       refute html =~ "Opus 4.8"
-      refute html =~ "Sonnet 4.6"
+      refute html =~ "Fable 5"
       refute html =~ "Haiku 4.5"
     end
 
