@@ -52,6 +52,33 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
     end
   end
 
+  describe "validate_reply_to_message_id/1" do
+    test "nil (omitted) is valid and means no reply" do
+      assert DiscordTool.validate_reply_to_message_id(nil) == {:ok, nil}
+    end
+
+    test "a numeric snowflake string is valid and parsed to an integer" do
+      assert DiscordTool.validate_reply_to_message_id("123456789012345678") ==
+               {:ok, 123_456_789_012_345_678}
+    end
+
+    test "rejects a non-numeric string" do
+      assert {:error, msg} = DiscordTool.validate_reply_to_message_id("not-a-snowflake")
+      assert msg =~ "numeric"
+      assert msg =~ "reply_to_message_id"
+    end
+
+    test "rejects a string with any non-digit characters, even mixed with digits" do
+      assert {:error, msg} = DiscordTool.validate_reply_to_message_id("123abc")
+      assert msg =~ "numeric"
+    end
+
+    test "rejects a non-string type" do
+      assert {:error, msg} = DiscordTool.validate_reply_to_message_id(123_456)
+      assert msg =~ "numeric"
+    end
+  end
+
   describe "validate_file_paths/2" do
     setup do
       dir = Path.join(System.tmp_dir!(), "discord_tool_#{System.unique_integer([:positive])}")
@@ -134,6 +161,20 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
 
       assert %{"isError" => true, "content" => [%{"text" => text}]} = result
       assert text =~ "at least one is required"
+    end
+  end
+
+  describe "call/3 — invalid reply_to_message_id" do
+    test "errors before even checking the session" do
+      result =
+        DiscordTool.call(
+          "send_discord_message",
+          %{"message" => "hi", "reply_to_message_id" => "not-a-snowflake"},
+          %{orca_session_id: nil}
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "numeric"
     end
   end
 

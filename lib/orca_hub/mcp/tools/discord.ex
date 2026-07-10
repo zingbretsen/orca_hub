@@ -39,7 +39,8 @@ defmodule OrcaHub.MCP.Tools.Discord do
             "accepted). Note: when this session finishes its turn, the bridge " <>
             "automatically posts the session's final assistant text to the channel — so " <>
             "this tool is mainly for attachments and interim/progress updates mid-turn; " <>
-            "avoid using it to duplicate your final reply.",
+            "avoid using it to duplicate your final reply. Pass `reply_to_message_id` to " <>
+            "thread the post as a Discord reply to a specific earlier message.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -55,6 +56,16 @@ defmodule OrcaHub.MCP.Tools.Discord do
               "description" =>
                 "Files to attach, relative to the session's working directory (or " <>
                   "absolute). Up to #{@max_files} files, #{div(@max_total_bytes, 1_048_576)}MB total."
+            },
+            "reply_to_message_id" => %{
+              "type" => "string",
+              "description" =>
+                "Discord message id (snowflake) to reply to, threading this post under " <>
+                  "that specific message in Discord. Message ids appear as `[id: ...]` " <>
+                  "prefixes on the channel history and mention lines in your prompt — " <>
+                  "pass one of those values here. Must be a numeric snowflake string. " <>
+                  "Only applies to the first message posted (a long `message` split " <>
+                  "across multiple Discord messages only threads the first chunk)."
             }
           }
         }
@@ -67,11 +78,12 @@ defmodule OrcaHub.MCP.Tools.Discord do
     file_paths = normalize_file_paths(args["file_paths"])
 
     with :ok <- validate_present(message, file_paths),
+         {:ok, reply_to} <- validate_reply_to_message_id(args["reply_to_message_id"]),
          {:ok, session_id} <- require_session(state),
          :ok <- require_discord_node(),
          {:ok, mapping} <- require_mapping(session_id),
          {:ok, resolved_paths} <- resolve_files(session_id, file_paths) do
-      post_to_discord(mapping.discord_channel_id, message, resolved_paths)
+      post_to_discord(mapping.discord_channel_id, message, resolved_paths, reply_to)
     else
       {:error, reason} -> error(reason)
     end
@@ -102,6 +114,30 @@ defmodule OrcaHub.MCP.Tools.Discord do
     do: {:error, "Provide a `message` and/or `file_paths` — at least one is required."}
 
   def validate_present(_message, _file_paths), do: :ok
+
+  @doc """
+  Validate the optional `reply_to_message_id` arg. Omitting it (`nil`) is
+  valid and means "not a reply". Otherwise it must be a numeric snowflake
+  string — Discord message ids are 64-bit integers that MCP/JSON callers pass
+  as strings to avoid precision loss. Returns `{:ok, integer_or_nil}` or
+  `{:error, message}`.
+  """
+  def validate_reply_to_message_id(nil), do: {:ok, nil}
+
+  def validate_reply_to_message_id(id) when is_binary(id) do
+    if String.match?(id, ~r/^\d+$/) do
+      {:ok, String.to_integer(id)}
+    else
+      {:error, reply_to_error(id)}
+    end
+  end
+
+  def validate_reply_to_message_id(id), do: {:error, reply_to_error(id)}
+
+  defp reply_to_error(id),
+    do:
+      "`reply_to_message_id` must be a numeric Discord message id (e.g. \"123456789012345678\"), " <>
+        "got: #{inspect(id)}"
 
   defp require_session(%{orca_session_id: session_id}) when is_binary(session_id),
     do: {:ok, session_id}
@@ -188,18 +224,22 @@ defmodule OrcaHub.MCP.Tools.Discord do
   # everything after that is a plain content-only follow-up message. A
   # files-only call (no message) is a single message with files and no
   # content, since chunking "" would otherwise produce zero chunks.
+  #
+  # `reply_to` (an integer message id, or nil) is likewise applied only to
+  # the FIRST posted message — Discord's message_reference threads a single
+  # message, so follow-up chunks are just plain posts in the same channel.
 
-  defp post_to_discord(discord_channel_id, message, file_paths) do
+  defp post_to_discord(discord_channel_id, message, file_paths, reply_to) do
     channel_id = String.to_integer(discord_channel_id)
     chunks = if message, do: Bridge.chunk(message, @discord_max_len), else: []
     chunk_count = length(chunks)
     messages = if chunks == [], do: [nil], else: chunks
 
-    case send_messages(channel_id, messages, file_paths) do
+    case send_messages(channel_id, messages, file_paths, reply_to) do
       :ok ->
         text(
           "Posted to Discord channel #{discord_channel_id} " <>
-            "(#{chunk_count} chunks, #{length(file_paths)} files)."
+            "(#{chunk_count} chunks, #{length(file_paths)} files#{reply_suffix(reply_to)})."
         )
 
       {:error, reason} ->
@@ -207,20 +247,29 @@ defmodule OrcaHub.MCP.Tools.Discord do
     end
   end
 
-  defp send_messages(channel_id, [first | rest], file_paths) do
-    with :ok <- create_message(channel_id, first, file_paths) do
-      send_messages(channel_id, rest, [])
+  defp reply_suffix(nil), do: ""
+  defp reply_suffix(reply_to), do: ", replying to message #{reply_to}"
+
+  defp send_messages(channel_id, [first | rest], file_paths, reply_to) do
+    with :ok <- create_message(channel_id, first, file_paths, reply_to) do
+      # reply_to only ever applies to the first message sent (see comment above).
+      send_messages(channel_id, rest, [], nil)
     end
   end
 
-  defp send_messages(_channel_id, [], _file_paths), do: :ok
+  defp send_messages(_channel_id, [], _file_paths, _reply_to), do: :ok
 
-  defp create_message(channel_id, content, file_paths) do
+  defp create_message(channel_id, content, file_paths, reply_to) do
     opts =
       []
       |> then(fn opts -> if content, do: Keyword.put(opts, :content, content), else: opts end)
       |> then(fn opts ->
         if file_paths == [], do: opts, else: Keyword.put(opts, :files, file_paths)
+      end)
+      |> then(fn opts ->
+        if reply_to,
+          do: Keyword.put(opts, :message_reference, %{message_id: reply_to}),
+          else: opts
       end)
 
     case Nostrum.Api.Message.create(channel_id, opts) do
@@ -228,10 +277,22 @@ defmodule OrcaHub.MCP.Tools.Discord do
         :ok
 
       {:error, %Nostrum.Error.ApiError{status_code: status, response: response}} ->
-        {:error, "Discord API error (HTTP #{status}): #{inspect(response)}"}
+        {:error, api_error_message(status, response, reply_to)}
 
       {:error, reason} ->
         {:error, "Discord API error: #{inspect(reason)}"}
     end
   end
+
+  # An unknown/deleted `reply_to` message id is indistinguishable from any
+  # other Discord API rejection at this layer (it just comes back as an
+  # ApiError, most commonly HTTP 400 "Unknown Message") — name the reply
+  # target explicitly so the session doesn't have to guess why the post failed.
+  defp api_error_message(status, response, nil),
+    do: "Discord API error (HTTP #{status}): #{inspect(response)}"
+
+  defp api_error_message(status, response, reply_to),
+    do:
+      "Discord API error (HTTP #{status}) while replying to message #{reply_to} " <>
+        "(it may have been deleted, or the id may be invalid): #{inspect(response)}"
 end

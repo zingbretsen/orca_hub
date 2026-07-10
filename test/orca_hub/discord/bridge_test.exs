@@ -3,6 +3,39 @@ defmodule OrcaHub.Discord.BridgeTest do
 
   alias OrcaHub.Discord.Bridge
 
+  describe "format_prompt/2" do
+    test "empty history: just the id-tagged mention line" do
+      msg = %{message_id: 111, text: "hello", author: %{global_name: "Zach"}}
+
+      assert Bridge.format_prompt([], msg) == "[id: 111] [Zach mentioned you]: hello"
+    end
+
+    test "empty history with no author falls back to a neutral label" do
+      msg = %{message_id: 111, text: "hello"}
+
+      assert Bridge.format_prompt([], msg) == "[id: 111] [someone mentioned you]: hello"
+    end
+
+    test "with history: id-tagged transcript lines plus the id-tagged mention line" do
+      history = [
+        %{id: 1, author: %{username: "alice"}, content: "hi"},
+        %{id: 2, author: %{global_name: "Bob"}, content: "yo"}
+      ]
+
+      msg = %{message_id: 3, text: "what up", author: %{global_name: "Zach"}}
+
+      assert Bridge.format_prompt(history, msg) ==
+               """
+               [Channel messages since your last reply]
+               [id: 1] alice: hi
+               [id: 2] Bob: yo
+
+               [id: 3] [Zach mentioned you]: what up
+               """
+               |> String.trim_trailing()
+    end
+  end
+
   describe "sanitize_filename/1" do
     test "keeps a plain safe filename intact" do
       assert Bridge.sanitize_filename("report.pdf") == "report.pdf"

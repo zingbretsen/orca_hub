@@ -178,21 +178,20 @@ defmodule OrcaHub.Discord.Bridge do
   # said untagged, then "@bot what should you call me?"). Bounded and defensive:
   # any Discord API failure falls back to sending just the mention text.
 
-  defp build_prompt(mapping, %{text: text} = msg, saved) do
-    base =
-      case fetch_history(mapping, msg) do
-        [] -> text
-        history -> format_prompt(history, msg)
-      end
-
-    base
+  defp build_prompt(mapping, msg, saved) do
+    mapping
+    |> fetch_history(msg)
+    |> format_prompt(msg)
     |> append_saved_files(saved)
     |> append_discord_tool_hint()
   rescue
     e ->
       Logger.warning("Discord history backfill failed: #{Exception.message(e)}")
 
-      msg.text
+      # format_prompt([], msg) still tags the mention line with its id, even
+      # though the backfill (and thus any transcript) is unavailable — the
+      # session must always be able to reply to the message that triggered it.
+      format_prompt([], msg)
       |> append_saved_files(saved)
       |> append_discord_tool_hint()
   end
@@ -219,7 +218,7 @@ defmodule OrcaHub.Discord.Bridge do
     """
     #{prompt}
 
-    [You can use the send_discord_message MCP tool to send files/attachments or interim updates to this channel. Your final reply is posted here automatically when you finish — don't duplicate it with this tool.]
+    [You can use the send_discord_message MCP tool to send files/attachments or interim updates to this channel. Pass one of the `[id: ...]` values shown above as `reply_to_message_id` to thread your post as a Discord reply to that specific message. Your final reply is posted here automatically when you finish — don't duplicate it with this tool.]
     """
     |> String.trim_trailing()
   end
@@ -269,16 +268,29 @@ defmodule OrcaHub.Discord.Bridge do
     end)
   end
 
-  defp format_prompt(history, %{text: text} = msg) do
+  @doc """
+  Render the prompt text sent to the session: an optional transcript of
+  backfilled `history` (each line tagged `[id: <snowflake>]`) followed by the
+  triggering mention, also id-tagged. Every line carries its Discord message
+  id so the session can pass one back as `reply_to_message_id` to the
+  `send_discord_message` MCP tool and thread its post under that message.
+
+  Pure string-building (no Nostrum/HubRPC dependency) — directly unit-testable.
+  """
+  def format_prompt([], %{text: text} = msg) do
+    "[id: #{msg.message_id}] [#{display_name(msg[:author])} mentioned you]: #{text}"
+  end
+
+  def format_prompt(history, %{text: text} = msg) do
     transcript =
       history
-      |> Enum.map_join("\n", fn m -> "#{display_name(m.author)}: #{m.content}" end)
+      |> Enum.map_join("\n", fn m -> "[id: #{m.id}] #{display_name(m.author)}: #{m.content}" end)
 
     """
     [Channel messages since your last reply]
     #{transcript}
 
-    [#{display_name(msg[:author])} mentioned you]: #{text}
+    [id: #{msg.message_id}] [#{display_name(msg[:author])} mentioned you]: #{text}
     """
     |> String.trim_trailing()
   end
