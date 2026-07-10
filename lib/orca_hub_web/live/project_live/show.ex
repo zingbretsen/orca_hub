@@ -696,15 +696,15 @@ defmodule OrcaHubWeb.ProjectLive.Show do
         worktrees = list_result(rpc(target, Projects, :git_worktree_list, [project]))
         {:noreply, socket |> assign(worktrees: worktrees) |> put_flash(:info, "Worktree removed")}
 
-      # rpc/5's node-unavailable/unassigned refusal — structurally a 2-tuple
-      # like System.cmd's {output, exit_code}, so it must be matched before
-      # the generic {output, _} clause below (which would otherwise try
-      # String.trim/1 on the bare :error atom and crash).
-      {:error, reason} when reason in [:node_unassigned] ->
-        {:noreply, put_flash(socket, :error, Cluster.node_unavailable_message(reason))}
+      # rpc/5's node-unavailable/unassigned/check-failed refusals — structurally
+      # a 2-tuple like System.cmd's {output, exit_code}, so this must be
+      # matched before the generic {output, _} clause below (which would
+      # otherwise try String.trim/1 on the bare :error atom and crash).
+      {:error, _reason} = error ->
+        message =
+          Cluster.node_unavailable_message(error) || "Worktree remove failed: #{inspect(error)}"
 
-      {:error, {:node_unavailable, _} = reason} ->
-        {:noreply, put_flash(socket, :error, Cluster.node_unavailable_message(reason))}
+        {:noreply, put_flash(socket, :error, message)}
 
       {output, _} ->
         {:noreply, put_flash(socket, :error, "Remove failed: #{String.trim(output)}")}

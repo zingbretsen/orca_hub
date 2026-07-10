@@ -119,27 +119,84 @@ defmodule OrcaHub.Cluster do
   hub+agent topology deploys nodes independently, so a connected node running
   an older release is an expected, recoverable state (same treatment as an
   unavailable node), not a crash.
+
+  The hub+agent topology is not guaranteed to be a full mesh: agent nodes
+  each connect to the hub, but two agents may never connect directly to each
+  other (confirmed in production — the discord-agent node only ever sees the
+  hub, never other agents). So a local `node_unavailable?` isn't the final
+  word: this node first tries to heal its own view with a cheap
+  `Node.connect/1`, and if that doesn't help, relays the call through the hub
+  (which every legitimate node IS connected to) rather than refusing an
+  action against a node that may well be up.
   """
   def rpc(n, mod, fun, args, timeout \\ @timeout)
   def rpc(nil, _mod, _fun, _args, _timeout), do: {:error, :node_unassigned}
   def rpc(n, mod, fun, args, _timeout) when n == node(), do: apply(mod, fun, args)
 
   def rpc(n, mod, fun, args, timeout) do
-    if node_available?(n) do
+    case attempt_rpc(n, mod, fun, args, timeout) do
+      {:error, {:node_unavailable, ^n}} = local_error ->
+        relay_via_hub(n, mod, fun, args, timeout, local_error)
+
+      result ->
+        result
+    end
+  end
+
+  # Exported (not just private) because relay_via_hub/5 invokes this on the
+  # HUB node via :erpc.call — it needs to be a real remote entry point, not
+  # just a local helper.
+  @doc false
+  def attempt_rpc(n, mod, fun, args, timeout) do
+    if node_available?(n) or (Node.connect(n) == true and node_available?(n)) do
+      do_rpc(n, mod, fun, args, timeout)
+    else
+      {:error, {:node_unavailable, n}}
+    end
+  end
+
+  defp do_rpc(n, mod, fun, args, timeout) do
+    :erpc.call(n, mod, fun, args, timeout)
+  rescue
+    e in ErlangError ->
+      case e.original do
+        {:exception, :undef, _stacktrace} ->
+          {:error, {:rpc_undef, {mod, fun, length(args)}}}
+
+        _ ->
+          reraise e, __STACKTRACE__
+      end
+  end
+
+  # Only reached once THIS node's own (possibly stale/partial) view says `n`
+  # is unreachable. Ask the hub — which every legitimate node connects to —
+  # to attempt the call instead; it may reach `n` even though we can't.
+  defp relay_via_hub(n, mod, fun, args, timeout, local_error) do
+    if OrcaHub.Mode.hub?() do
+      # We ARE the hub and still can't reach n directly - there's no one
+      # else to relay through, so this is a confirmed failure, not just a
+      # gap in our own view.
+      local_error
+    else
       try do
-        :erpc.call(n, mod, fun, args, timeout)
+        hub = OrcaHub.Mode.hub_node()
+        :erpc.call(hub, __MODULE__, :attempt_rpc, [n, mod, fun, args, timeout], timeout + 2_000)
       rescue
         e in ErlangError ->
           case e.original do
-            {:exception, :undef, _stacktrace} ->
-              {:error, {:rpc_undef, {mod, fun, length(args)}}}
+            {:erpc, reason} when reason in [:noconnection, :timeout] ->
+              # Couldn't even reach the hub to ask - a transport failure
+              # distinct from "the hub confirmed n is down".
+              {:error, {:node_check_failed, n}}
 
             _ ->
               reraise e, __STACKTRACE__
           end
+
+        RuntimeError ->
+          # OrcaHub.Mode.hub_node/0 raises when no hub is discoverable at all.
+          {:error, {:node_check_failed, n}}
       end
-    else
-      {:error, {:node_unavailable, n}}
     end
   end
 
@@ -153,7 +210,12 @@ defmodule OrcaHub.Cluster do
     do: "This session has no assigned node."
 
   def node_unavailable_message({:node_unavailable, n}),
-    do: "This session's node (#{node_name(n)}) is not currently connected."
+    do:
+      "This session's node (#{node_name(n)}) is not currently connected to any node in the cluster."
+
+  def node_unavailable_message({:node_check_failed, n}),
+    do:
+      "Could not confirm whether this session's node (#{node_name(n)}) is connected — the hub could not be reached to check."
 
   def node_unavailable_message({:error, reason}), do: node_unavailable_message(reason)
   def node_unavailable_message(_), do: nil
@@ -161,6 +223,7 @@ defmodule OrcaHub.Cluster do
   @doc "Is `result` one of rpc/5's node-unassigned/node-unavailable errors?"
   def node_unavailable_error?({:error, :node_unassigned}), do: true
   def node_unavailable_error?({:error, {:node_unavailable, _}}), do: true
+  def node_unavailable_error?({:error, {:node_check_failed, _}}), do: true
   def node_unavailable_error?(_), do: false
 
   # -------------------------------------------------------------------

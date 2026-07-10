@@ -213,6 +213,89 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     end
   end
 
+  describe "send_message_to_session — sender attribution" do
+    defp delivered_text(target_id) do
+      [message] = Sessions.list_messages(target_id)
+      get_in(message.data, ["message", "content", Access.at(0), "text"])
+    end
+
+    test "defaults the sender to the caller's own orca_session_id when not explicitly given",
+         %{state: state, dir: dir} do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "send_message_to_session",
+            %{"session_id" => target.id, "message" => "hello"},
+            state
+          )
+        end)
+
+      assert %{"isError" => false} = result
+
+      assert delivered_text(target.id) ==
+               "[Message from session #{state.orca_session_id}]\n\nhello"
+    end
+
+    test "an explicit sender_session_id overrides the connection's own session id",
+         %{state: state, dir: dir} do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(target.id) end)
+      other_id = Ecto.UUID.generate()
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "send_message_to_session",
+            %{"session_id" => target.id, "message" => "hello", "sender_session_id" => other_id},
+            state
+          )
+        end)
+
+      assert %{"isError" => false} = result
+      assert delivered_text(target.id) == "[Message from session #{other_id}]\n\nhello"
+    end
+
+    test "falls back to the generic label when the MCP connection has no linked session", %{
+      dir: dir
+    } do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "send_message_to_session",
+            %{"session_id" => target.id, "message" => "hello"},
+            %{orca_session_id: nil}
+          )
+        end)
+
+      assert %{"isError" => false} = result
+      assert delivered_text(target.id) == "[Message from another session]\n\nhello"
+    end
+  end
+
   describe "start_session backend/model params — model" do
     test "model passes through onto the created session row", %{state: state} do
       Application.put_env(:orca_hub, :codex_executable, @codex_stub)

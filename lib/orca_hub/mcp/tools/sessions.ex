@@ -26,7 +26,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "sender_session_id" => %{
               "type" => "string",
               "description" =>
-                "Your own OrcaHub session ID, so the recipient knows who sent the message. Find this in your .agents/ presence file."
+                "Optional override for your own OrcaHub session ID. Normally inferred automatically from this MCP connection — only pass this if you're relaying on behalf of a different session."
             }
           },
           "required" => ["session_id", "message"]
@@ -129,10 +129,13 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     ]
   end
 
-  def call("send_message_to_session", args, _state) do
+  def call("send_message_to_session", args, state) do
     target_id = args["session_id"]
     message = args["message"]
-    sender_id = args["sender_session_id"]
+    # The explicit arg is an override; normally the sender is whichever
+    # OrcaHub session this MCP connection is linked to (state.orca_session_id),
+    # set once at connection time — see MCP.Server/MCP.Tools dispatch.
+    sender_id = args["sender_session_id"] || state.orca_session_id
 
     signed_message =
       if sender_id do

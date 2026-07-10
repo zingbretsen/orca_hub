@@ -114,6 +114,34 @@ defmodule OrcaHub.ClusterTest do
     end
   end
 
+  # Bug: agent->agent messaging was refused whenever the CALLING node's own
+  # (possibly partial) view of the mesh didn't include the target, even when
+  # the hub could reach it fine — hub+agent is not guaranteed to be a full
+  # mesh (confirmed in production: the discord-agent node only ever connects
+  # to the hub, never to other agents). rpc/5 now relays through the hub
+  # before giving up. These tests don't spin up a real disconnected peer
+  # (plain distributed Erlang on one host auto-forms a full mesh — verified
+  # by hand: a node started by a peer we're connected to becomes visible to
+  # us too), so they instead cover the decision logic around that hub hop.
+  describe "rpc/5 — hub relay (partial-mesh fallback)" do
+    test "acting as an agent with no discoverable hub returns {:error, {:node_check_failed, n}}, distinct from a hub-confirmed-down node" do
+      Application.put_env(:orca_hub, :mode, :agent)
+      on_exit(fn -> Application.delete_env(:orca_hub, :mode) end)
+
+      assert Cluster.rpc(@offline_node, Kernel, :+, [1, 2]) ==
+               {:error, {:node_check_failed, @offline_node}}
+    end
+
+    test "acting as the hub itself never relays (nowhere else to ask)" do
+      # Default test config IS hub mode - the existing "unavailable target"
+      # test above already covers this, this just makes the invariant explicit.
+      assert OrcaHub.Mode.hub?()
+
+      assert Cluster.rpc(@offline_node, Kernel, :+, [1, 2]) ==
+               {:error, {:node_unavailable, @offline_node}}
+    end
+  end
+
   # This describe block makes the test VM a real distributed Erlang node
   # (via Node.start/:peer) to reproduce a genuine cross-node :undef. Run
   # with CLUSTER_NODES and CLUSTER_DNS_QUERY unset (see mix-test-env docs) —
@@ -158,6 +186,73 @@ defmodule OrcaHub.ClusterTest do
       assert Cluster.rpc(peer_node, OrcaHub.BackendInstaller, :running_backends, [], 2_000) ==
                {:error, {:rpc_undef, {OrcaHub.BackendInstaller, :running_backends, 0}}}
     end
+
+    test "relays through the hub, preserving {:node_unavailable, target} once the hub also fails to reach it",
+         %{peer_node: peer_node} do
+      # Load OrcaHub's code onto the peer so it can play the hub role: it
+      # needs OrcaHub.Cluster/OrcaHub.Mode to answer the relayed attempt_rpc
+      # call. (OrcaHub.Mode.hub?/0 defaults to :hub since this bare peer has
+      # no ORCA_MODE config of its own - exactly what we want here.)
+      :erpc.call(peer_node, :code, :add_paths, [:code.get_path()])
+      assert :erpc.call(peer_node, OrcaHub.Mode, :hub?, [], 5_000)
+
+      Application.put_env(:orca_hub, :mode, :agent)
+      on_exit(fn -> Application.delete_env(:orca_hub, :mode) end)
+
+      # @offline_node is unreachable by construction (never started anywhere)
+      # so both this node's direct attempt AND the hub's relayed attempt fail
+      # the same way - proving the round trip (agent -> hub -> attempt_rpc)
+      # actually executes, without requiring a genuinely-partitioned third
+      # node (unreproducible on one host - plain distributed Erlang
+      # auto-forms a full mesh, verified by hand).
+      assert Cluster.rpc(@offline_node, Kernel, :+, [1, 2]) ==
+               {:error, {:node_unavailable, @offline_node}}
+    end
+  end
+
+  describe "rpc/5 — Node.connect heals a stale/dropped view of a still-reachable node" do
+    setup do
+      Supervisor.terminate_child(OrcaHub.Supervisor, OrcaHub.ClusterNodeTracker)
+      on_exit(fn -> Supervisor.restart_child(OrcaHub.Supervisor, OrcaHub.ClusterNodeTracker) end)
+
+      unless Node.alive?() do
+        {:ok, hostname} = :inet.gethostname()
+        {:ok, _pid} = Node.start(:"cluster_rpc_heal_test@#{hostname}", :shortnames)
+      end
+
+      # connection: :standard_io keeps the peer's control channel off the
+      # distributed connection itself, so disconnecting the distributed link
+      # (below) drops OUR view of it without killing the peer - simulating a
+      # stale/partial mesh view rather than a genuinely dead node.
+      {:ok, peer_pid, peer_node} =
+        :peer.start_link(%{
+          name: :"cluster_rpc_heal_peer_#{System.unique_integer([:positive])}",
+          connection: :standard_io
+        })
+
+      on_exit(fn ->
+        try do
+          :peer.stop(peer_pid)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
+      assert Node.connect(peer_node)
+      %{peer_node: peer_node}
+    end
+
+    test "reconnects and completes the call instead of refusing or relaying",
+         %{peer_node: peer_node} do
+      assert peer_node in Node.list()
+      Node.disconnect(peer_node)
+      refute peer_node in Node.list()
+
+      # attempt_rpc/5's Node.connect/1 call should silently re-establish the
+      # connection before ever falling back to a hub relay - the underlying
+      # network path never went away, only this node's view of it did.
+      assert Cluster.rpc(peer_node, :erlang, :node, [], 2_000) == peer_node
+    end
   end
 
   describe "node_unavailable_message/1" do
@@ -165,18 +260,41 @@ defmodule OrcaHub.ClusterTest do
       assert Cluster.node_unavailable_message(:node_unassigned) =~ "no assigned node"
     end
 
-    test "explains an offline node, naming it" do
+    test "explains an offline node, naming it, and reads as hub-confirmed-down" do
       message = Cluster.node_unavailable_message({:node_unavailable, @offline_node})
       assert message =~ "not currently connected"
     end
 
+    test "explains a check-failed node distinctly from a confirmed-down node" do
+      message = Cluster.node_unavailable_message({:node_check_failed, @offline_node})
+      assert message =~ "Could not confirm"
+      refute message == Cluster.node_unavailable_message({:node_unavailable, @offline_node})
+    end
+
     test "unwraps an {:error, reason} tuple the same way" do
       assert Cluster.node_unavailable_message({:error, :node_unassigned}) =~ "no assigned node"
+
+      assert Cluster.node_unavailable_message({:error, {:node_check_failed, @offline_node}}) =~
+               "Could not confirm"
     end
 
     test "nil for anything else" do
       assert Cluster.node_unavailable_message({:error, "some git error"}) == nil
       assert Cluster.node_unavailable_message(:busy) == nil
+    end
+  end
+
+  describe "node_unavailable_error?/1" do
+    test "true for all three rpc/5 refusal shapes" do
+      assert Cluster.node_unavailable_error?({:error, :node_unassigned})
+      assert Cluster.node_unavailable_error?({:error, {:node_unavailable, @offline_node}})
+      assert Cluster.node_unavailable_error?({:error, {:node_check_failed, @offline_node}})
+    end
+
+    test "false for other results" do
+      refute Cluster.node_unavailable_error?({:error, {:rpc_undef, {Kernel, :+, 2}}})
+      refute Cluster.node_unavailable_error?({:ok, :whatever})
+      refute Cluster.node_unavailable_error?(3)
     end
   end
 end
