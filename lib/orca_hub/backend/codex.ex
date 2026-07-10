@@ -69,15 +69,19 @@ defmodule OrcaHub.Backend.Codex do
   # Codex model ids are passthrough strings — codex-cli 0.142.5 has no
   # queryable model enum (spec §7). This is a small default list, not a
   # hardcoded enum: the UI also offers free-text entry for any other id.
-  # `gpt-5.5` / `gpt-5.3-Codex-Spark` are spec §7's own example passthrough
-  # strings; `gpt-5-codex` is the well-known baseline Codex model id.
+  # Current recommended set per the Codex models docs (July 2026): the
+  # gpt-5.6 family (sol/terra/luna) plus gpt-5.5 and gpt-5.3-codex-spark
+  # (spark id is now canonical lowercase). `gpt-5-codex` is legacy — all
+  # legacy Codex models sunset 2026-07-23 — so it's no longer listed.
 
   @impl true
   def models do
     [
-      {"gpt-5-codex", "GPT-5 Codex"},
-      {"gpt-5.3-Codex-Spark", "GPT-5.3 Codex Spark"},
-      {"gpt-5.5", "GPT-5.5"}
+      {"gpt-5.6-sol", "GPT-5.6 Sol"},
+      {"gpt-5.6-terra", "GPT-5.6 Terra"},
+      {"gpt-5.6-luna", "GPT-5.6 Luna"},
+      {"gpt-5.5", "GPT-5.5"},
+      {"gpt-5.3-codex-spark", "GPT-5.3 Codex Spark"}
     ]
   end
 

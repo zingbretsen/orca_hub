@@ -129,7 +129,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     test "Codex session offers only Codex models", %{conn: conn, codex_session: session} do
       {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
 
-      assert html =~ "GPT-5 Codex"
+      assert html =~ "GPT-5.6 Sol"
       refute html =~ "Opus 4.8"
       refute html =~ "Fable 5"
       refute html =~ "Haiku 4.5"
@@ -157,7 +157,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert html =~ "glm-5p2 (fireworks)"
       assert html =~ "kimi-k2p6 (fireworks)"
       refute html =~ "Opus 4.8"
-      refute html =~ "GPT-5 Codex"
+      refute html =~ "GPT-5.6 Sol"
     end
 
     test "all three backends still offer free-text custom model entry", %{
@@ -571,7 +571,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
         |> render_click()
 
       refute :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode
-      assert html =~ "GPT-5 Codex"
+      assert html =~ "GPT-5.6 Sol"
       refute html =~ "Opus 4.8"
     end
 

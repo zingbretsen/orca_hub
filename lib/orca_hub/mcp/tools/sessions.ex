@@ -105,7 +105,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "model" => %{
               "type" => "string",
               "description" =>
-                "Optional backend-specific model id, passed through as free text (no enum) — e.g. a Claude alias like \"opus\", a Codex model id like \"gpt-5-codex\", or a pi provider/model string like \"fireworks/accounts/fireworks/models/glm-5\". Omit to use the backend's default model."
+                "Optional backend-specific model id, passed through as free text (no enum) — e.g. a Claude alias like \"opus\", a Codex model id like \"gpt-5.5\", or a pi provider/model string like \"fireworks/accounts/fireworks/models/glm-5\". Omit to use the backend's default model."
             }
           },
           "required" => ["prompt"]

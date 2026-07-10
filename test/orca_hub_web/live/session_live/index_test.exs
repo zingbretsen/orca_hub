@@ -59,7 +59,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
       |> form("form", session: %{"backend" => "codex"})
       |> render_change()
 
-    assert html =~ "GPT-5 Codex"
+    assert html =~ "GPT-5.6 Sol"
     refute html =~ "Opus 4.8"
   end
 
@@ -121,6 +121,6 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
 
     assert html =~ "glm-5p2 (fireworks)"
     refute html =~ "Opus 4.8"
-    refute html =~ "GPT-5 Codex"
+    refute html =~ "GPT-5.6 Sol"
   end
 end
