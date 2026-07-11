@@ -332,21 +332,27 @@ defmodule OrcaHub.Backend.Codex do
     {[], %{ctx | backend_state: bs}}
   end
 
+  # `approvalPolicy`/`sandbox` must be re-sent on EVERY `thread/start` or
+  # `thread/resume` call, not just the thread's first ever start: resuming a
+  # thread does not inherit its previous live overrides — Codex silently
+  # falls back to the operator's `~/.codex/config.toml` defaults (typically
+  # `on-request` + `workspaceWrite`) for any call that omits them. Since
+  # SessionRunner cold-spawns a fresh port (and thus re-resumes the Codex
+  # thread) on every idle-timeout/crash, omitting these on resume meant
+  # hands-off mode silently degraded to interactive approval after the first
+  # cold restart, and `handle_peer_request/2` couldn't answer the resulting
+  # approval prompt (spike-verified against codex-cli 0.144.1).
   defp thread_start_or_resume(ctx) do
+    params =
+      %{"approvalPolicy" => "never", "sandbox" => "danger-full-access"}
+      |> maybe_put_model_param(ctx[:model])
+
     case ctx[:claude_session_id] do
       sid when is_binary(sid) and sid != "" ->
-        {"thread/resume", %{"threadId" => sid}, :thread_resume}
+        {"thread/resume", Map.put(params, "threadId", sid), :thread_resume}
 
       _ ->
-        params =
-          %{
-            "cwd" => ctx.directory,
-            "approvalPolicy" => "never",
-            "sandbox" => "danger-full-access"
-          }
-          |> maybe_put_model_param(ctx[:model])
-
-        {"thread/start", params, :thread_start}
+        {"thread/start", Map.put(params, "cwd", ctx.directory), :thread_start}
     end
   end
 
@@ -625,6 +631,14 @@ defmodule OrcaHub.Backend.Codex do
     reply = Jason.encode!(%{"id" => id, "result" => approval_result(method)}) <> "\n"
     {reply, [], ctx}
   end
+
+  # MCP tool-call approval (and other elicitations) under a granular/
+  # interactive approval policy — schema-verified against codex-cli 0.144.1
+  # (`McpServerElicitationRequestResponse`, required `action`, enum
+  # accept/decline/cancel). `content` stays absent: nullable, and this
+  # request's `requestedSchema` is empty (spike-verified: real payloads carry
+  # `_meta.codex_approval_kind: "mcp_tool_call"` with no fields to fill in).
+  defp approval_result("mcpServer/elicitation/request"), do: %{"action" => "accept"}
 
   defp approval_result("item/commandExecution/requestApproval"),
     do: %{"decision" => "acceptForSession"}

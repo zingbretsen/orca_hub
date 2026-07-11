@@ -147,7 +147,12 @@ defmodule OrcaHub.Backend.CodexTest do
       [_initialized, resume_write] = out.backend_state.pending_writes
       resume = decode_write(resume_write)
       assert resume["method"] == "thread/resume"
-      assert resume["params"] == %{"threadId" => "prior-thread-abc"}
+
+      assert resume["params"] == %{
+               "threadId" => "prior-thread-abc",
+               "approvalPolicy" => "never",
+               "sandbox" => "danger-full-access"
+             }
     end
 
     test "a non-Claude model is passed through on thread/start; a Claude model id is omitted" do
