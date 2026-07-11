@@ -58,15 +58,18 @@
         <.icon name="hero-pencil-micro" class="size-3 opacity-0 group-hover:opacity-50 inline" />
       </span>
     <% end %>
-    <span class={[
-      "badge ml-2",
-      @status == :running && "badge-warning",
-      @status == :compacting && "badge-warning",
-      @status == :waiting && "badge-info",
-      @status == :idle && "badge-success",
-      @status == :ready && "badge-ghost",
-      @status == :error && "badge-error"
-    ]}>
+    <span
+      class={[
+        "badge ml-2",
+        @status == :running && "badge-warning",
+        @status == :compacting && "badge-warning",
+        @status == :waiting && "badge-info",
+        @status == :idle && "badge-success",
+        @status == :ready && "badge-ghost",
+        @status == :error && "badge-error"
+      ]}
+      title={@status == :error && @session.error_detail}
+    >
       {@status}
     </span>
     <%!-- Node badge with dropdown for switching nodes --%>

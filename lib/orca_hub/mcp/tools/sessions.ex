@@ -125,6 +125,30 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           },
           "required" => ["session_id"]
         }
+      },
+      %{
+        "name" => "get_session_tail",
+        "description" =>
+          "Peek at another session's recent activity WITHOUT interrupting it — unlike " <>
+            "send_message_to_session, this does not send a message or touch the live agent " <>
+            "process. Returns the session's current status plus its last assistant text " <>
+            "message and a compact list of its most recent tool calls (name + truncated " <>
+            "input). Use this to tell \"making progress\" from \"stuck\" before deciding " <>
+            "whether to interrupt a worker.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "session_id" => %{
+              "type" => "string",
+              "description" => "The OrcaHub session ID to peek at"
+            },
+            "tool_call_limit" => %{
+              "type" => "integer",
+              "description" => "Maximum number of recent tool calls to include. Default: 10"
+            }
+          },
+          "required" => ["session_id"]
+        }
       }
     ]
   end
@@ -187,6 +211,30 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     end
   end
 
+  def call("get_session_tail", args, _state) do
+    target_id = args["session_id"]
+    limit = args["tool_call_limit"] || 10
+
+    case Cluster.find_session(target_id) do
+      {_node, session} ->
+        tail = HubRPC.session_tail(target_id, tool_call_limit: limit)
+
+        result = %{
+          id: session.id,
+          title: session.title,
+          status: session.status,
+          updated_at: session.updated_at,
+          last_assistant_text: cap_tail_text(tail.last_assistant_text),
+          recent_tool_calls: Enum.map(tail.recent_tool_calls, &format_tool_call/1)
+        }
+
+        text(Jason.encode!(result))
+
+      nil ->
+        error("Session #{target_id} not found on any node.")
+    end
+  end
+
   def call("search_sessions", args, state) do
     limit = args["limit"] || 20
 
@@ -225,34 +273,40 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             error(message)
 
           {:ok, backend} ->
-            session_attrs =
-              %{
-                directory: directory,
-                project_id: project_id,
-                runner_node: Atom.to_string(runner_node)
-              }
-              |> maybe_put_field(:title, args["title"])
-              |> maybe_put_field(:backend, backend)
-              |> maybe_put_field(:model, blank_to_nil(args["model"]))
-              |> maybe_link_parent(caller, caller_session_id)
+            case validate_model(args["model"], backend, runner_node) do
+              {:error, message} ->
+                error(message)
 
-            case HubRPC.create_session(session_attrs) do
-              {:ok, session} ->
-                case Cluster.start_session(runner_node, session.id, session) do
-                  {:ok, _} ->
-                    Cluster.send_message(runner_node, session.id, args["prompt"])
-                    text("Session #{session.id} started in #{directory}")
+              {:ok, model} ->
+                session_attrs =
+                  %{
+                    directory: directory,
+                    project_id: project_id,
+                    runner_node: Atom.to_string(runner_node)
+                  }
+                  |> maybe_put_field(:title, args["title"])
+                  |> maybe_put_field(:backend, backend)
+                  |> maybe_put_field(:model, model)
+                  |> maybe_link_parent(caller, caller_session_id)
 
-                  {:error, reason} ->
-                    message =
-                      Cluster.node_unavailable_message(reason) ||
-                        "Session #{session.id} created but failed to start: #{inspect(reason)}"
+                case HubRPC.create_session(session_attrs) do
+                  {:ok, session} ->
+                    case Cluster.start_session(runner_node, session.id, session) do
+                      {:ok, _} ->
+                        Cluster.send_message(runner_node, session.id, args["prompt"])
+                        text("Session #{session.id} started in #{directory}")
 
-                    error(message)
+                      {:error, reason} ->
+                        message =
+                          Cluster.node_unavailable_message(reason) ||
+                            "Session #{session.id} created but failed to start: #{inspect(reason)}"
+
+                        error(message)
+                    end
+
+                  {:error, changeset} ->
+                    error("Failed to create session: #{inspect(changeset.errors)}")
                 end
-
-              {:error, changeset} ->
-                error("Failed to create session: #{inspect(changeset.errors)}")
             end
         end
     end
@@ -276,9 +330,71 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     end
   end
 
-  defp blank_to_nil(nil), do: nil
-  defp blank_to_nil(""), do: nil
-  defp blank_to_nil(val), do: val
+  # The model arg is free text (backend-specific — a Codex model id or a pi
+  # provider/model string can't be enumerated here), so this ONLY guards the
+  # claude backend, and only against its OWN known model list — never a
+  # hardcoded enum, and never applied to other backends (Codex/pi model ids
+  # legitimately range far beyond any static picker list). Catches exactly
+  # the incident this exists for: an alias like "sonnet-5" that matches
+  # neither a full model id (e.g. "claude-sonnet-5") nor a bare tier alias
+  # (e.g. "sonnet") — start_session used to accept it and the CLI died ~2s
+  # later with only "status: error" to go on.
+  defp validate_model(model, _backend, _runner_node) when model in [nil, ""], do: {:ok, nil}
+
+  defp validate_model(model, backend, runner_node) when backend in [nil, "claude"] do
+    case OrcaHub.Backend.models_for("claude", runner_node) do
+      # Empty means "couldn't determine the list right now" (unreachable
+      # node) — don't block on it.
+      [] ->
+        {:ok, model}
+
+      known ->
+        ids = Enum.map(known, &elem(&1, 0))
+        aliases = claude_model_aliases(ids)
+
+        if model in ids or model in aliases do
+          {:ok, model}
+        else
+          {:error,
+           "Unknown claude model #{inspect(model)}. Known model ids/aliases: " <>
+             "#{Enum.join(ids ++ aliases, ", ")}."}
+        end
+    end
+  end
+
+  defp validate_model(model, _backend, _runner_node), do: {:ok, model}
+
+  # Bare tier aliases the Claude CLI also accepts (e.g. "opus" for the latest
+  # Opus snapshot), derived from the full ids rather than hardcoded — strips
+  # the "claude-" prefix and any trailing version/date suffix.
+  defp claude_model_aliases(full_ids) do
+    full_ids
+    |> Enum.map(&(&1 |> String.replace_prefix("claude-", "") |> String.replace(~r/-\d.*$/, "")))
+    |> Enum.uniq()
+  end
+
+  # ── get_session_tail helpers ──────────────────────────────────────────
+  # Keep the payload slim — this is a cheap progress peek, not a transcript.
+
+  @max_tail_text_bytes 2000
+  @max_tool_arg_bytes 200
+
+  defp cap_tail_text(nil), do: nil
+
+  defp cap_tail_text(text) when byte_size(text) > @max_tail_text_bytes do
+    binary_part(text, 0, @max_tail_text_bytes) <> "…[truncated]"
+  end
+
+  defp cap_tail_text(text), do: text
+
+  defp format_tool_call(%{name: name, input: input}) do
+    %{name: name, args: cap_tail_arg(inspect(input, pretty: false, limit: 20))}
+  end
+
+  defp cap_tail_arg(str) when byte_size(str) > @max_tool_arg_bytes,
+    do: binary_part(str, 0, @max_tool_arg_bytes) <> "…"
+
+  defp cap_tail_arg(str), do: str
 
   # A non-nil parent_session_id always means "spawned by an orchestrator", so only
   # set it when the caller is itself an orchestrator.
@@ -334,9 +450,18 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       archived: not is_nil(session.archived_at),
       directory: session.directory,
       project: if(session.project, do: session.project.name),
+      backend: session.backend,
+      model: session.model,
       updated_at: session.updated_at,
       inserted_at: session.inserted_at
     }
+
+    result =
+      if session.status == "error" and session.error_detail do
+        Map.put(result, :error_detail, session.error_detail)
+      else
+        result
+      end
 
     if clustered do
       Map.put(result, :node, Cluster.node_name(session.runner_node || node()))

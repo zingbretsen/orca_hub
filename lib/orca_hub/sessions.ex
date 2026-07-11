@@ -243,6 +243,46 @@ defmodule OrcaHub.Sessions do
     if text == "", do: nil, else: text
   end
 
+  # How many recent assistant messages to scan for tool_use blocks — bounds
+  # query cost regardless of how long the session's history is.
+  @tail_scan_limit 50
+
+  @doc """
+  A slim, read-only "tail" for a session: its last assistant text message plus
+  the last `tool_call_limit` tool calls (name + raw input, oldest to newest) —
+  without touching the live SessionRunner. Powers `get_session_tail` (an
+  orchestrator progress peek that doesn't interrupt the worker, unlike
+  `send_message_to_session`).
+  """
+  def session_tail(session_id, opts \\ []) do
+    limit = Keyword.get(opts, :tool_call_limit, 10)
+
+    %{
+      last_assistant_text: last_assistant_text(session_id),
+      recent_tool_calls: recent_tool_calls(session_id, limit)
+    }
+  end
+
+  defp recent_tool_calls(session_id, limit) do
+    from(m in Message,
+      where: m.session_id == ^session_id and fragment("? ->> 'type' = 'assistant'", m.data),
+      order_by: [desc: m.inserted_at],
+      limit: @tail_scan_limit
+    )
+    |> Repo.all()
+    |> Enum.reverse()
+    |> Enum.flat_map(&tool_use_blocks/1)
+    |> Enum.take(-limit)
+  end
+
+  defp tool_use_blocks(%Message{data: data}) do
+    data
+    |> get_in(["message", "content"])
+    |> List.wrap()
+    |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use"))
+    |> Enum.map(&%{name: &1["name"], input: &1["input"]})
+  end
+
   defp reset_front_of_queue_priority do
     min_priority_query =
       from s in Session,

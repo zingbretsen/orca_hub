@@ -79,6 +79,12 @@ defmodule OrcaHub.Backend.CodexStubIntegrationTest do
     cli_error = Enum.find(state.messages, &(&1["type"] == "cli_error"))
     refute is_nil(cli_error)
     assert cli_error["message"] =~ "Failed to start the agent CLI (OrcaHub.Backend.Codex)"
+
+    # feedback item 2 (orchestrator-feedback-2026-07-10): the same failure
+    # is persisted on the session row so `search_sessions` can surface it
+    # without an orchestrator having to infer the cause from a short lifetime.
+    assert Sessions.get_session!(session.id).error_detail =~
+             "Failed to start the agent CLI (OrcaHub.Backend.Codex)"
   end
 
   # Regression: the abandoned-session cleanup used to stop the runner between

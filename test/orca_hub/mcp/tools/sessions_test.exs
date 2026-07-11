@@ -317,5 +317,154 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert session.backend == "codex"
       assert session.model == "gpt-5-codex"
     end
+
+    test "an unknown claude model alias errors and creates no session, without touching Codex/pi models",
+         %{state: state} do
+      before_count = Sessions.list_sessions(:all) |> length()
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "model" => "sonnet-5"},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "Unknown claude model"
+      assert text =~ "sonnet-5"
+      assert text =~ "sonnet"
+      assert Sessions.list_sessions(:all) |> length() == before_count
+    end
+
+    test "a bare claude tier alias (e.g. \"sonnet\") is accepted", %{state: state} do
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call("start_session", %{"prompt" => "hi", "model" => "sonnet"}, state)
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert Sessions.get_session!(session_id).model == "sonnet"
+    end
+
+    test "a full claude model id is accepted", %{state: state} do
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "model" => "claude-sonnet-5"},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert Sessions.get_session!(session_id).model == "claude-sonnet-5"
+    end
+  end
+
+  describe "search_sessions — model/backend/error_detail fields" do
+    test "surfaces model and backend, and error_detail only when status is error", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, ok_session} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "codex",
+          model: "gpt-5.5",
+          status: "idle",
+          error_detail: "stale detail that should never surface while not errored"
+        })
+
+      {:ok, errored_session} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          model: "opus",
+          status: "error",
+          error_detail: "Error: model not found: sonnet-5"
+        })
+
+      %{"content" => [%{"text" => text}]} =
+        SessionsTool.call(
+          "search_sessions",
+          %{"directory" => dir, "all_projects" => false},
+          state
+        )
+
+      results = Jason.decode!(text) |> Enum.into(%{}, &{&1["id"], &1})
+
+      ok_result = results[ok_session.id]
+      assert ok_result["backend"] == "codex"
+      assert ok_result["model"] == "gpt-5.5"
+      refute Map.has_key?(ok_result, "error_detail")
+
+      error_result = results[errored_session.id]
+      assert error_result["backend"] == "claude"
+      assert error_result["model"] == "opus"
+      assert error_result["error_detail"] == "Error: model not found: sonnet-5"
+    end
+  end
+
+  describe "get_session_tail" do
+    test "returns status, last assistant text, and recent tool calls without touching the runner",
+         %{dir: dir, state: state} do
+      {:ok, target} =
+        Sessions.create_session(%{directory: dir, status: "running", title: "peek-me"})
+
+      # A single assistant turn commonly carries both a tool_use block and
+      # trailing text — bundled in one message so the assertions below don't
+      # depend on tie-breaking `Message.inserted_at` (second precision) across
+      # two rows inserted in the same test.
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{
+                "type" => "tool_use",
+                "id" => "t1",
+                "name" => "Bash",
+                "input" => %{"command" => "ls"}
+              },
+              %{"type" => "text", "text" => "still working on it"}
+            ]
+          }
+        }
+      })
+
+      result =
+        SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert decoded["id"] == target.id
+      assert decoded["status"] == "running"
+      assert decoded["last_assistant_text"] == "still working on it"
+      assert [%{"name" => "Bash", "args" => args}] = decoded["recent_tool_calls"]
+      assert args =~ "ls"
+
+      # Read-only: no runner was ever started for this session.
+      refute SessionSupervisor.session_alive?(target.id)
+    end
+
+    test "an unknown session id errors", %{state: state} do
+      result =
+        SessionsTool.call(
+          "get_session_tail",
+          %{"session_id" => Ecto.UUID.generate()},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "not found"
+    end
   end
 end

@@ -38,6 +38,10 @@ defmodule OrcaHub.Sessions.Session do
     # mode). nil = inherit the orchestrator-derived default; "" restricts the
     # Claude CLI to zero built-in tools. See Backend.Claude.spawn_spec/2.
     field :tools, :string
+    # Concise launch/exit failure detail (last stderr/output lines, or a
+    # turn-level error message), truncated. Set when status becomes "error";
+    # cleared when a later run succeeds. See SessionRunner.handle_cli_error/2.
+    field :error_detail, :string
 
     has_many :messages, OrcaHub.Sessions.Message
     belongs_to :project, OrcaHub.Projects.Project
@@ -63,7 +67,8 @@ defmodule OrcaHub.Sessions.Session do
       :orchestrator,
       :code_exec,
       :parent_session_id,
-      :streaming
+      :streaming,
+      :error_detail
     ])
     # Cast separately with empty_values: [] — cast/4's default empty_values
     # ([""]) would otherwise silently turn an explicit `tools: ""` (the "no

@@ -49,6 +49,9 @@ defmodule OrcaHub.HubRPC do
   def last_assistant_text(session_id),
     do: call(OrcaHub.Sessions, :last_assistant_text, [session_id])
 
+  def session_tail(session_id, opts \\ []),
+    do: call(OrcaHub.Sessions, :session_tail, [session_id, opts])
+
   def search(query, opts \\ []), do: call(OrcaHub.Sessions, :search, [query, opts])
 
   def search_sessions_by_directory(directory, opts \\ %{}),

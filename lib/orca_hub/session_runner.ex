@@ -630,7 +630,7 @@ defmodule OrcaHub.SessionRunner do
          }}
 
       [] ->
-        data = handle_cli_error(code, data)
+        {data, error_detail} = handle_cli_error(code, data)
         session = db_call(data, :get_session!, [data.session_id])
 
         # On a clean exit with an unanswered AskUserQuestion, persist/broadcast
@@ -643,7 +643,14 @@ defmodule OrcaHub.SessionRunner do
             true -> {"error", :error}
           end
 
-        db_call(data, :update_session, [session, %{status: db_status}])
+        # A clean exit clears any stale error_detail from a prior failed run.
+        session_error_detail = if code == 0, do: nil, else: error_detail
+
+        db_call(data, :update_session, [
+          session,
+          %{status: db_status, error_detail: session_error_detail}
+        ])
+
         broadcast(data.session_id, {:status, broadcast_status})
         AgentPresence.update_status(data.directory, data.session_id, db_status)
 
@@ -778,6 +785,9 @@ defmodule OrcaHub.SessionRunner do
 
   # ── Private ──────────────────────────────────────────────────────────
 
+  # Returns `{data, error_detail}` — `error_detail` is the truncated error
+  # text (for the session's `error_detail` column), or `nil` if there was
+  # nothing to report.
   defp handle_cli_error(code, data) when code != 0 do
     error_text = String.trim(data.error_output <> data.buffer)
 
@@ -791,13 +801,34 @@ defmodule OrcaHub.SessionRunner do
 
       persist_message(data, error_event)
       broadcast(data.session_id, {:event, error_event})
-      %{data | messages: data.messages ++ [error_event]}
+      {%{data | messages: data.messages ++ [error_event]}, truncate_error_detail(error_text)}
     else
-      data
+      {data, nil}
     end
   end
 
-  defp handle_cli_error(_code, data), do: data
+  defp handle_cli_error(_code, data), do: {data, nil}
+
+  # Caps the persisted `error_detail` column so a runaway stderr dump can't
+  # bloat the sessions table — the message feed already has the full text.
+  @max_error_detail_bytes 1000
+
+  defp truncate_error_detail(nil), do: nil
+
+  defp truncate_error_detail(text) when is_binary(text) do
+    text = String.trim(text)
+
+    cond do
+      text == "" ->
+        nil
+
+      byte_size(text) > @max_error_detail_bytes ->
+        binary_part(text, 0, @max_error_detail_bytes) <> "…[truncated]"
+
+      true ->
+        text
+    end
+  end
 
   # spec §12.8 — the cold-toggle_plan_mode fallback shared by :ready, :error,
   # and cold `:idle` (no warm port): flips `data.plan_mode_pending` and
@@ -824,7 +855,7 @@ defmodule OrcaHub.SessionRunner do
       {port, framing} = open_port(prompt, data)
       session = db_call(data, :get_session!, [data.session_id])
       if session.archived_at, do: db_call(data, :unarchive_session, [session])
-      db_call(data, :update_session, [session, %{status: "running"}])
+      db_call(data, :update_session, [session, %{status: "running", error_detail: nil}])
       broadcast(data.session_id, {:status, :running})
       AgentPresence.update_status(data.directory, data.session_id, "running")
 
@@ -989,7 +1020,7 @@ defmodule OrcaHub.SessionRunner do
 
     session = db_call(data, :get_session!, [data.session_id])
     if session.archived_at, do: db_call(data, :unarchive_session, [session])
-    db_call(data, :update_session, [session, %{status: "running"}])
+    db_call(data, :update_session, [session, %{status: "running", error_detail: nil}])
     broadcast(data.session_id, {:status, :running})
     AgentPresence.update_status(data.directory, data.session_id, "running")
 
@@ -1072,7 +1103,7 @@ defmodule OrcaHub.SessionRunner do
     persist_message(base, error_event)
     broadcast(base.session_id, {:event, error_event})
 
-    update_session_status(base, %{status: "error"})
+    update_session_status(base, %{status: "error", error_detail: truncate_error_detail(message)})
     broadcast(base.session_id, {:status, :error})
     AgentPresence.update_status(base.directory, base.session_id, "error")
     Streaming.WarmPool.release(base.session_id)
@@ -1117,7 +1148,7 @@ defmodule OrcaHub.SessionRunner do
     case prompts do
       [] ->
         session = db_call(data, :get_session!, [data.session_id])
-        db_call(data, :update_session, [session, %{status: "idle"}])
+        db_call(data, :update_session, [session, %{status: "idle", error_detail: nil}])
         broadcast(data.session_id, {:status, :idle})
         AgentPresence.update_status(data.directory, data.session_id, "idle")
         {:next_state, :idle, data}
@@ -1129,7 +1160,7 @@ defmodule OrcaHub.SessionRunner do
         data = resume_clears_waiting(data)
         {new_port, framing} = open_port(combined, data)
         session = db_call(data, :get_session!, [data.session_id])
-        db_call(data, :update_session, [session, %{status: "running"}])
+        db_call(data, :update_session, [session, %{status: "running", error_detail: nil}])
         broadcast(data.session_id, {:status, :running})
         AgentPresence.update_status(data.directory, data.session_id, "running")
 
@@ -1166,7 +1197,8 @@ defmodule OrcaHub.SessionRunner do
 
       :error ->
         session = db_call(data, :get_session!, [data.session_id])
-        db_call(data, :update_session, [session, %{status: "error"}])
+        error_detail = truncate_error_detail(result_ev["result"] || result_ev["message"])
+        db_call(data, :update_session, [session, %{status: "error", error_detail: error_detail}])
         broadcast(data.session_id, {:status, :error})
         AgentPresence.update_status(data.directory, data.session_id, "error")
         # Process stays warm after a turn error — mark it idle-in-pool (evictable).
@@ -1216,7 +1248,7 @@ defmodule OrcaHub.SessionRunner do
     {db_status, broadcast_status} =
       if data.pending_questions != nil, do: {"waiting", :waiting}, else: {"idle", :idle}
 
-    db_call(data, :update_session, [session, %{status: db_status}])
+    db_call(data, :update_session, [session, %{status: db_status, error_detail: nil}])
     broadcast(data.session_id, {:status, broadcast_status})
     AgentPresence.update_status(data.directory, data.session_id, db_status)
 
@@ -1256,9 +1288,9 @@ defmodule OrcaHub.SessionRunner do
     if state == :running do
       # Crash mid-turn: surface the failure; do NOT auto-resend (avoids duplicate
       # side effects). The next message re-opens cold with --resume.
-      data = handle_cli_error(code, data)
+      {data, error_detail} = handle_cli_error(code, data)
       session = db_call(data, :get_session!, [data.session_id])
-      db_call(data, :update_session, [session, %{status: "error"}])
+      db_call(data, :update_session, [session, %{status: "error", error_detail: error_detail}])
       broadcast(data.session_id, {:status, :error})
       AgentPresence.update_status(data.directory, data.session_id, "error")
       {:next_state, :error, data}

@@ -98,7 +98,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     # Code Execution Mode
 
     Your MCP tool list is intentionally small: `run_elixir`, `search_tools`, \
-    and `send_message_to_session`. Every other OrcaHub and upstream tool is \
+    `send_message_to_session`, and `get_session_tail`. Every other OrcaHub and upstream tool is \
     reachable from inside `run_elixir` as a named `Tools.*` function — call \
     several tools and stitch their results together with the Elixir standard \
     library in ONE snippet instead of many separate tool calls.
@@ -125,7 +125,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
       returns `{:ok, value} | {:error, reason}`; for the faithful raw MCP \
       envelope use `Tools.call("name", args)`.
     - **These first-party tools are ALSO standalone top-level tools** — call \
-      them directly, not as `Tools.*`: `send_message_to_session`. \
+      them directly, not as `Tools.*`: `send_message_to_session`, `get_session_tail`. \
       Every OTHER inter-session coordination tool (`search_sessions`, \
       `start_session`, `schedule_heartbeat`, `archive_session`, \
       `cancel_heartbeat`, etc.) is a `Tools.*` function callable only from \
