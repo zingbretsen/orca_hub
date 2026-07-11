@@ -209,15 +209,38 @@ defmodule OrcaHub.BackendTest do
       assert Enum.all?(models, fn {id, label} -> is_binary(id) and is_binary(label) end)
     end
 
+    @pi_list_models_stub Path.expand(
+                           "../support/fixtures/pi_stub_list_models.sh",
+                           __DIR__
+                         )
+
+    defp with_stubbed_pi_executable(fun) do
+      previous = Application.get_env(:orca_hub, :pi_executable)
+      Application.put_env(:orca_hub, :pi_executable, @pi_list_models_stub)
+
+      on_exit(fn ->
+        if previous,
+          do: Application.put_env(:orca_hub, :pi_executable, previous),
+          else: Application.delete_env(:orca_hub, :pi_executable)
+      end)
+
+      fun.()
+    end
+
     test "returns pi's default model list (passthrough provider/id strings)" do
-      models = Backend.models_for("pi")
-      assert models == OrcaHub.Backend.Pi.models()
-      assert Enum.all?(models, fn {id, label} -> is_binary(id) and is_binary(label) end)
+      with_stubbed_pi_executable(fn ->
+        models = Backend.models_for("pi")
+        assert models == OrcaHub.Backend.Pi.models()
+        assert Enum.all?(models, fn {id, label} -> is_binary(id) and is_binary(label) end)
+      end)
     end
 
     test "accepts a session-shaped map" do
       assert Backend.models_for(%{backend: "codex"}) == OrcaHub.Backend.Codex.models()
-      assert Backend.models_for(%{backend: "pi"}) == OrcaHub.Backend.Pi.models()
+
+      with_stubbed_pi_executable(fn ->
+        assert Backend.models_for(%{backend: "pi"}) == OrcaHub.Backend.Pi.models()
+      end)
     end
   end
 
