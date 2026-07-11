@@ -261,6 +261,8 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with #{list_feature_requests_ref} first — if it's already tracked, add what you found with #{append_feature_request_note_ref} instead of filing a duplicate with #{feature_request_ref}. Once a fix for a tracked request has shipped AND been verified, close it with #{close_feature_request_ref} (pass a resolution note referencing the commit).
+    - Scheduled heartbeats do NOT survive a restart of your own host (e.g. a deploy) — re-call #{heartbeat_ref} as your first action after waking from one.
+    - Pre-deploy gate pattern: run the full suite once at the pipeline tip via a dedicated worker with an explicit allow-list of known flakes; treat any NEW failure as fix-at-root, never expand the allow-list.
     """
     |> String.trim()
   end
@@ -288,6 +290,22 @@ defmodule OrcaHub.Backend.SharedPrompts do
     else
       nil
     end
+  end
+
+  @doc "Terse operational guidance for a worker (non-orchestrator) session."
+  def worker_practices_prompt do
+    """
+    - Verify your changes with **targeted tests** for the files you touched; \
+    the full suite runs later as the orchestrator's pre-deploy gate — don't \
+    burn time running it per-task unless asked.
+    - If your task restarts the service/host hosting your own session \
+    (deploys, systemctl restarts), send your report **before** triggering \
+    the restart — your session may die with it and post-restart delivery \
+    isn't guaranteed.
+    - Tests failing for environmental/flaky reasons? Root-cause and fix the \
+    flake rather than retrying until green — report what you found.
+    """
+    |> String.trim()
   end
 
   @doc "Instructs the model to append the OrcaHub-Session git trailer."

@@ -67,6 +67,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
         expected_orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec),
         expected_code_exec_prompt(code_exec),
         if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
+        if(!ctx.orchestrator, do: expected_worker_practices_prompt()),
         if(!ctx.orchestrator, do: expected_ask_user_question_prompt()),
         expected_sibling_sessions_prompt(ctx.orchestrator, code_exec),
         # context_files_prompt/1: nil for every ctx fixture here (directory
@@ -87,6 +88,21 @@ defmodule OrcaHub.Backend.ClaudeTest do
     not continue based on it. After calling AskUserQuestion, stop and end your \
     turn. The user's real answer will arrive as a separate follow-up message; \
     only act on the question once the user has actually responded.\
+    """
+    |> String.trim()
+  end
+
+  defp expected_worker_practices_prompt do
+    """
+    - Verify your changes with **targeted tests** for the files you touched; \
+    the full suite runs later as the orchestrator's pre-deploy gate — don't \
+    burn time running it per-task unless asked.
+    - If your task restarts the service/host hosting your own session \
+    (deploys, systemctl restarts), send your report **before** triggering \
+    the restart — your session may die with it and post-restart delivery \
+    isn't guaranteed.
+    - Tests failing for environmental/flaky reasons? Root-cause and fix the \
+    flake rather than retrying until green — report what you found.
     """
     |> String.trim()
   end
@@ -193,6 +209,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `list_feature_requests(...)` first — if it's already tracked, add what you found with `append_feature_request_note(...)` instead of filing a duplicate with `file_feature_request(...)`. Once a fix for a tracked request has shipped AND been verified, close it with `close_feature_request(...)` (pass a resolution note referencing the commit).
+    - Scheduled heartbeats do NOT survive a restart of your own host (e.g. a deploy) — re-call `Tools.schedule_heartbeat(...)` as your first action after waking from one.
+    - Pre-deploy gate pattern: run the full suite once at the pipeline tip via a dedicated worker with an explicit allow-list of known flakes; treat any NEW failure as fix-at-root, never expand the allow-list.
 
     ## Example Flow
 
@@ -246,6 +264,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `mcp__orca__list_feature_requests` first — if it's already tracked, add what you found with `mcp__orca__append_feature_request_note` instead of filing a duplicate with `mcp__orca__file_feature_request`. Once a fix for a tracked request has shipped AND been verified, close it with `mcp__orca__close_feature_request` (pass a resolution note referencing the commit).
+    - Scheduled heartbeats do NOT survive a restart of your own host (e.g. a deploy) — re-call `mcp__orca__schedule_heartbeat` as your first action after waking from one.
+    - Pre-deploy gate pattern: run the full suite once at the pipeline tip via a dedicated worker with an explicit allow-list of known flakes; treat any NEW failure as fix-at-root, never expand the allow-list.
 
     ## Example Flow
 
@@ -298,6 +318,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     [
       "Your OrcaHub session ID is #{ctx.session_id}.",
       if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
+      if(!ctx.orchestrator, do: expected_worker_practices_prompt()),
       if(!ctx.orchestrator, do: expected_ask_user_question_prompt())
     ]
     |> Enum.reject(&is_nil/1)
@@ -317,6 +338,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     [
       "Your OrcaHub session ID is #{ctx.session_id}.",
       if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
+      if(!ctx.orchestrator, do: expected_worker_practices_prompt()),
       if(!ctx.orchestrator, do: expected_ask_user_question_prompt()),
       expected_submit_result_prompt()
     ]

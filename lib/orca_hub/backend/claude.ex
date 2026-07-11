@@ -229,6 +229,7 @@ defmodule OrcaHub.Backend.Claude do
         ),
         SharedPrompts.code_exec_prompt(code_exec),
         if(!ctx.orchestrator, do: SharedPrompts.commit_trailer_prompt(ctx.session_id)),
+        if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt()),
         if(!ctx.orchestrator, do: ask_user_question_prompt()),
         if(mcp_orchestration, do: sibling_sessions_prompt(ctx.orchestrator, code_exec)),
         if(api_run, do: submit_result_prompt()),
