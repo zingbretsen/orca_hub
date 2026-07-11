@@ -88,6 +88,21 @@ defmodule OrcaHub.ClusterDistributedTest do
     end
   end
 
+  describe "rpc/5 — hub relay (partial-mesh fallback)" do
+    test "acting as an agent with no discoverable hub returns {:error, {:node_check_failed, n}}, distinct from a hub-confirmed-down node" do
+      # Moved from cluster_test.exs: this mutates the process-wide
+      # `:orca_hub, :mode` Application env, which raced with unrelated
+      # async tests (e.g. ProjectLive.ShowTest calling Mode.hub_node/0 and
+      # hitting find_hub_node/0's "No hub node found in cluster" raise mid
+      # mutation) whenever it ran concurrently in the async:true suite.
+      Application.put_env(:orca_hub, :mode, :agent)
+      on_exit(fn -> Application.delete_env(:orca_hub, :mode) end)
+
+      assert Cluster.rpc(@offline_node, Kernel, :+, [1, 2]) ==
+               {:error, {:node_check_failed, @offline_node}}
+    end
+  end
+
   describe "rpc/5 — Node.connect heals a stale/dropped view of a still-reachable node" do
     setup do
       Supervisor.terminate_child(OrcaHub.Supervisor, OrcaHub.ClusterNodeTracker)

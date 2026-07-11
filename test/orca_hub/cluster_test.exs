@@ -123,15 +123,11 @@ defmodule OrcaHub.ClusterTest do
   # (plain distributed Erlang on one host auto-forms a full mesh — verified
   # by hand: a node started by a peer we're connected to becomes visible to
   # us too), so they instead cover the decision logic around that hub hop.
+  # The "acting as an agent with no discoverable hub" case moved to
+  # cluster_distributed_test.exs — it mutates the process-wide
+  # `:orca_hub, :mode` Application env, same class of cross-test race as the
+  # describes already split out there (see that file's moduledoc).
   describe "rpc/5 — hub relay (partial-mesh fallback)" do
-    test "acting as an agent with no discoverable hub returns {:error, {:node_check_failed, n}}, distinct from a hub-confirmed-down node" do
-      Application.put_env(:orca_hub, :mode, :agent)
-      on_exit(fn -> Application.delete_env(:orca_hub, :mode) end)
-
-      assert Cluster.rpc(@offline_node, Kernel, :+, [1, 2]) ==
-               {:error, {:node_check_failed, @offline_node}}
-    end
-
     test "acting as the hub itself never relays (nowhere else to ask)" do
       # Default test config IS hub mode - the existing "unavailable target"
       # test above already covers this, this just makes the invariant explicit.
