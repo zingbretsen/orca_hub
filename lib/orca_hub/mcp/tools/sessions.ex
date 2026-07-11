@@ -4,7 +4,17 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   """
   import OrcaHub.MCP.Tools.Result
 
+  require Logger
+
   alias OrcaHub.{Cluster, HubRPC}
+
+  # Time bound for AUTO-derived idempotency keys only (see
+  # auto_idempotency_key/3) — belt-and-braces against a pathological hash
+  # collision on a recycled MCP request id: even if the same auto-key were
+  # (virtually impossibly) computed twice for genuinely different spawns
+  # more than this far apart, the second one is no longer deduped. Explicit
+  # caller-supplied idempotency_key stays unbounded.
+  @auto_idempotency_window_seconds 15 * 60
 
   def list do
     [
@@ -337,12 +347,35 @@ defmodule OrcaHub.MCP.Tools.Sessions do
         error("No OrcaHub session linked to this MCP connection. Cannot determine project.")
 
       caller_session_id ->
-        case HubRPC.get_session_by_idempotency_key(args["idempotency_key"]) do
-          %{} = existing ->
-            text(Jason.encode!(start_session_result(existing, true)))
+        explicit_key = args["idempotency_key"]
 
-          nil ->
-            do_start_session(args, caller_session_id)
+        if explicit_key in [nil, ""] do
+          auto_key = auto_idempotency_key(caller_session_id, state, args)
+
+          case HubRPC.get_recent_session_by_idempotency_key(
+                 auto_key,
+                 @auto_idempotency_window_seconds
+               ) do
+            %{} = existing ->
+              Logger.warning(
+                "[MCP] start_session: auto idempotency key absorbed a replay — " <>
+                  "returning existing session #{existing.id} instead of spawning a " <>
+                  "duplicate (caller_session_id=#{caller_session_id})"
+              )
+
+              text(Jason.encode!(start_session_result(existing, true)))
+
+            nil ->
+              do_start_session(args, caller_session_id, auto_key)
+          end
+        else
+          case HubRPC.get_session_by_idempotency_key(explicit_key) do
+            %{} = existing ->
+              text(Jason.encode!(start_session_result(existing, true)))
+
+            nil ->
+              do_start_session(args, caller_session_id, explicit_key)
+          end
         end
     end
   end
@@ -377,7 +410,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", {:progress, phase, note})
   end
 
-  defp do_start_session(args, caller_session_id) do
+  defp do_start_session(args, caller_session_id, idempotency_key) do
     caller = HubRPC.get_session!(caller_session_id)
     directory = args["directory"] || caller.directory
     {project_id, runner_node} = resolve_routing(directory, caller)
@@ -401,7 +434,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               |> maybe_put_field(:title, args["title"])
               |> maybe_put_field(:backend, backend)
               |> maybe_put_field(:model, model)
-              |> maybe_put_field(:idempotency_key, args["idempotency_key"])
+              |> maybe_put_field(:idempotency_key, idempotency_key)
               |> maybe_link_parent(caller, caller_session_id, args["notify_on_completion"])
 
             case HubRPC.create_session(session_attrs) do
@@ -424,6 +457,37 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             end
         end
     end
+  end
+
+  # Automatic idempotency key (issue c7eeef06) — derived when the caller
+  # didn't supply one, so a transport-level replay of the SAME logical
+  # tools/call (e.g. an infra-level retry during a rolling deploy) still gets
+  # deduped even though the model never retried and passed no explicit key.
+  #
+  # The MCP JSON-RPC request id alone can't be the key: it's connection/turn
+  # scoped and resets across CLI re-handshakes, so a later, genuinely
+  # different start_session call can legitimately recycle the same id. Hashing
+  # it together with every session-shaping argument means a true replay
+  # (identical id AND identical prompt/title/directory/model/backend) matches,
+  # while a later legitimate call reusing the id almost certainly differs in
+  # at least one of those fields and so gets its own key. Pure function of its
+  # inputs only — no node()/timestamp — so it's identical across nodes and
+  # releases, which matters since a replay pair can land on different nodes
+  # during a rollout.
+  defp auto_idempotency_key(caller_session_id, state, args) do
+    material =
+      [
+        caller_session_id,
+        Map.get(state, :mcp_request_id),
+        args["prompt"],
+        args["title"],
+        args["directory"],
+        args["model"],
+        args["backend"]
+      ]
+      |> Enum.map_join(<<0x1F>>, &to_string(&1 || ""))
+
+    "auto:" <> (:crypto.hash(:sha256, material) |> Base.encode16(case: :lower))
   end
 
   # An explicit `directory` that differs from the caller's own directory may

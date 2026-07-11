@@ -868,4 +868,156 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert first_id != second_id
     end
   end
+
+  describe "start_session — automatic idempotency key (issue c7eeef06)" do
+    test "a wire-level replay (identical args, same MCP request id) returns the existing session",
+         %{state: state} do
+      replay_state = Map.put(state, :mcp_request_id, 7)
+      args = %{"prompt" => "hi", "notify_on_completion" => false}
+
+      first =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call("start_session", args, replay_state)
+        end)
+
+      %{"content" => [%{"text" => first_text}]} = first
+      first_id = session_id_from!(first_text)
+      on_exit(fn -> stop_if_alive(first_id) end)
+
+      before_count = Sessions.list_sessions(:all) |> length()
+
+      # No fake claude on $PATH this time — a genuine second call would raise
+      # trying to spawn the real CLI, so success here proves no spawn happened.
+      second = SessionsTool.call("start_session", args, replay_state)
+
+      assert %{"isError" => false, "content" => [%{"text" => second_text}]} = second
+      decoded = Jason.decode!(second_text)
+
+      assert decoded["session_id"] == first_id
+      assert decoded["already_exists"] == true
+      assert Sessions.list_sessions(:all) |> length() == before_count
+    end
+
+    test "a recycled MCP request id with a different prompt is NOT deduped", %{state: state} do
+      replay_state = Map.put(state, :mcp_request_id, 1)
+
+      first =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "task A", "notify_on_completion" => false},
+            replay_state
+          )
+        end)
+
+      %{"content" => [%{"text" => first_text}]} = first
+      first_id = session_id_from!(first_text)
+      on_exit(fn -> stop_if_alive(first_id) end)
+
+      # Simulates the CLI re-handshaking and restarting request ids at 1 for
+      # a genuinely new, unrelated start_session call.
+      second =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "task B", "notify_on_completion" => false},
+            replay_state
+          )
+        end)
+
+      %{"content" => [%{"text" => second_text}]} = second
+      decoded = Jason.decode!(second_text)
+      second_id = session_id_from!(second_text)
+      on_exit(fn -> stop_if_alive(second_id) end)
+
+      assert second_id != first_id
+      assert decoded["already_exists"] == false
+    end
+
+    test "an explicit idempotency_key still takes precedence over the auto-derived key", %{
+      state: state
+    } do
+      replay_state = Map.put(state, :mcp_request_id, 42)
+
+      first =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{
+              "prompt" => "hi",
+              "notify_on_completion" => false,
+              "idempotency_key" => "explicit-1"
+            },
+            replay_state
+          )
+        end)
+
+      %{"content" => [%{"text" => first_text}]} = first
+      first_id = session_id_from!(first_text)
+      on_exit(fn -> stop_if_alive(first_id) end)
+
+      # Same request id AND same args AS the auto-key would require, but a
+      # DIFFERENT explicit key — explicit semantics must win, so this spawns
+      # a distinct session rather than deduping on the auto-key match.
+      second =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{
+              "prompt" => "hi",
+              "notify_on_completion" => false,
+              "idempotency_key" => "explicit-2"
+            },
+            replay_state
+          )
+        end)
+
+      %{"content" => [%{"text" => second_text}]} = second
+      decoded = Jason.decode!(second_text)
+      second_id = session_id_from!(second_text)
+      on_exit(fn -> stop_if_alive(second_id) end)
+
+      assert second_id != first_id
+      assert decoded["already_exists"] == false
+    end
+
+    test "an auto-key match older than the dedup window is NOT absorbed — a fresh session spawns",
+         %{state: state} do
+      replay_state = Map.put(state, :mcp_request_id, 99)
+      args = %{"prompt" => "hi", "notify_on_completion" => false}
+
+      first =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call("start_session", args, replay_state)
+        end)
+
+      %{"content" => [%{"text" => first_text}]} = first
+      first_id = session_id_from!(first_text)
+      on_exit(fn -> stop_if_alive(first_id) end)
+
+      # Backdate the first session past the 15-minute auto-key window so the
+      # belt-and-braces time bound kicks in.
+      stale_inserted_at =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(-16 * 60, :second)
+        |> NaiveDateTime.truncate(:second)
+
+      Sessions.get_session!(first_id)
+      |> Ecto.Changeset.change(inserted_at: stale_inserted_at)
+      |> Repo.update!()
+
+      second =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call("start_session", args, replay_state)
+        end)
+
+      %{"content" => [%{"text" => second_text}]} = second
+      decoded = Jason.decode!(second_text)
+      second_id = session_id_from!(second_text)
+      on_exit(fn -> stop_if_alive(second_id) end)
+
+      assert second_id != first_id
+      assert decoded["already_exists"] == false
+    end
+  end
 end

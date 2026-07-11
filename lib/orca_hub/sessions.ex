@@ -107,6 +107,37 @@ defmodule OrcaHub.Sessions do
     end
   end
 
+  @doc """
+  Like `get_session_by_idempotency_key/1`, but only matches a session created
+  within the last `window_seconds` — used for AUTO-derived idempotency keys
+  (see `OrcaHub.MCP.Tools.Sessions`), which are time-bounded so a
+  pathological hash collision on a recycled MCP request id ages out instead
+  of dedup-ing forever. Explicit caller-supplied keys stay unbounded (see
+  `get_session_by_idempotency_key/1`) since retrying "until I know it
+  landed" may legitimately happen well after the auto-key window.
+  """
+  def get_recent_session_by_idempotency_key(nil, _window_seconds), do: nil
+  def get_recent_session_by_idempotency_key("", _window_seconds), do: nil
+
+  def get_recent_session_by_idempotency_key(key, window_seconds) do
+    cutoff =
+      DateTime.utc_now()
+      |> DateTime.add(-window_seconds, :second)
+      |> DateTime.to_naive()
+
+    from(s in Session,
+      where: s.idempotency_key == ^key and is_nil(s.archived_at),
+      where: s.inserted_at >= ^cutoff,
+      order_by: [desc: s.inserted_at],
+      limit: 1
+    )
+    |> Repo.one()
+    |> case do
+      nil -> nil
+      session -> Repo.preload(session, :project)
+    end
+  end
+
   def update_session(%Session{} = session, attrs) do
     session
     |> Session.changeset(attrs)

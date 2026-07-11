@@ -34,6 +34,9 @@ defmodule OrcaHub.HubRPC do
   def get_session_by_idempotency_key(key),
     do: call(OrcaHub.Sessions, :get_session_by_idempotency_key, [key])
 
+  def get_recent_session_by_idempotency_key(key, window_seconds),
+    do: call(OrcaHub.Sessions, :get_recent_session_by_idempotency_key, [key, window_seconds])
+
   def update_session(session, attrs),
     do: call(OrcaHub.Sessions, :update_session, [session, attrs])
 

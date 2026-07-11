@@ -295,6 +295,13 @@ defmodule OrcaHub.MCP.Server do
     tool_name = params["name"]
     arguments = params["arguments"] || %{}
     upstream? = OrcaHub.MCP.UpstreamClient.upstream_tool?(tool_name)
+    # Threaded through to Tools.call (and, for code-exec connections, into
+    # run_elixir's CodeExec state) so side-effecting tools like start_session
+    # can derive an automatic idempotency key that survives a transport-level
+    # replay of this same JSON-RPC request — see issue c7eeef06. The id is
+    # connection/turn-scoped (resets across CLI re-handshakes), so it's only
+    # ever used ALONGSIDE the call's own arguments, never alone.
+    state = Map.put(state, :mcp_request_id, id)
 
     Logger.info(
       "[MCP] tools/call: name=#{inspect(tool_name)} orchestrator=#{state.orchestrator} " <>
