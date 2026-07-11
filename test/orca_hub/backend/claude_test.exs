@@ -98,7 +98,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     # Code Execution Mode
 
     Your MCP tool list is intentionally small: `run_elixir`, `search_tools`, \
-    `send_message_to_session`, and `get_session_tail`. Every other OrcaHub and upstream tool is \
+    `send_message_to_session`, `get_session_tail`, and `report_progress`. Every other OrcaHub and upstream tool is \
     reachable from inside `run_elixir` as a named `Tools.*` function — call \
     several tools and stitch their results together with the Elixir standard \
     library in ONE snippet instead of many separate tool calls.
@@ -125,7 +125,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
       returns `{:ok, value} | {:error, reason}`; for the faithful raw MCP \
       envelope use `Tools.call("name", args)`.
     - **These first-party tools are ALSO standalone top-level tools** — call \
-      them directly, not as `Tools.*`: `send_message_to_session`, `get_session_tail`. \
+      them directly, not as `Tools.*`: `send_message_to_session`, `get_session_tail`, `report_progress`. \
       Every OTHER inter-session coordination tool (`search_sessions`, \
       `start_session`, `schedule_heartbeat`, `archive_session`, \
       `cancel_heartbeat`, etc.) is a `Tools.*` function callable only from \
@@ -145,6 +145,10 @@ defmodule OrcaHub.Backend.ClaudeTest do
           Enum.map(sessions, & &1["title"])
 
       Pass `"reset": true` to clear your stored variables and start fresh.
+    - **Call `report_progress(phase: ..., note: ...)` at phase boundaries** \
+      (e.g. planning → implementing → validating → fixing-tests) — a \
+      non-interrupting way for whoever spawned you to see you're making \
+      progress without messaging you.
     """
     |> String.trim()
   end
@@ -164,7 +168,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     ## How to Work
 
-    **Important:** Your MCP tool list is collapsed to `run_elixir`, `search_tools`, and `send_message_to_session` (code execution mode). `send_message_to_session` is a standalone MCP tool — call it directly. Every OTHER coordination tool below is NOT standalone here; call it as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.
+    **Important:** Your MCP tool list is collapsed to `run_elixir`, `search_tools`, `send_message_to_session`, `get_session_tail`, and `report_progress` (code execution mode). Those are standalone MCP tools — call them directly. Every OTHER coordination tool below is NOT standalone here; call it as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.
 
     1. **Delegate all implementation work** to other sessions using:
        - `Tools.start_session(...)` inside `run_elixir` — spawn a new worker session with a detailed prompt. Since you're an orchestrator, the worker is automatically linked as your child: when it goes idle or errors, you automatically get a `[Session lifecycle]` message — this is the PRIMARY way to learn a worker is done, you do not need to instruct it to call `send_message_to_session` back. Pass `notify_on_completion: false` if you genuinely want a fire-and-forget spawn with no callback.
@@ -175,11 +179,19 @@ defmodule OrcaHub.Backend.ClaudeTest do
     3. **Heartbeats are a coarse fallback, not your primary signal.** Automatic `[Session lifecycle]` messages fire the moment a worker finishes, so you shouldn't need to poll. Still set one wide-interval `Tools.schedule_heartbeat(...)` safety net (e.g. every 10-15 minutes) in case a notification is ever missed or a worker hangs mid-turn (never goes idle/error):
        > "Check on worker sessions. Use `Tools.search_sessions(...)` inside `run_elixir` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
 
-    4. **Check in proactively** — If a worker session seems stuck (no lifecycle notification and no heartbeat signal within a reasonable time), use `Tools.get_session_tail(...)` to peek at its progress without interrupting it, or message it directly.
+    4. **Check in proactively** — If a worker session seems stuck (no lifecycle notification and no heartbeat signal within a reasonable time), use `get_session_tail(...)` to peek at its progress without interrupting it, or message it directly.
 
     5. **Archive completed children** — When a worker session has finished its task, use `Tools.archive_session(...)` inside `run_elixir` to archive it. This keeps the session list tidy. If you need to continue the conversation later, just send a message to the archived session — it will be automatically unarchived.
 
     6. **Cancel monitoring** — When all delegated work is complete, use `Tools.cancel_heartbeat(...)` inside `run_elixir` to stop monitoring.
+
+    ## Orchestration Practices (tl;dr)
+
+    - Rely on lifecycle notifications plus `get_session_tail(...)` / activity metadata for progress; heartbeats are a coarse fallback — re-call `Tools.schedule_heartbeat(...)` at each stage change to keep its delivered message current (it updates in place, it doesn't stack).
+    - `send_message_to_session(...)` to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with `get_session_tail(...)` first.
+    - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. A full test-suite run is a per-checkout mutex — coordinate before running one. No worktrees.
+    - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
+    - Archive finished children, and have workers report back with commit SHAs and test results.
 
     ## Example Flow
 
@@ -224,6 +236,14 @@ defmodule OrcaHub.Backend.ClaudeTest do
     5. **Archive completed children** — When a worker session has finished its task, use `mcp__orca__archive_session` to archive it. This keeps the session list tidy. If you need to continue the conversation later, just send a message to the archived session — it will be automatically unarchived.
 
     6. **Cancel monitoring** — When all delegated work is complete, use `mcp__orca__cancel_heartbeat` to stop monitoring.
+
+    ## Orchestration Practices (tl;dr)
+
+    - Rely on lifecycle notifications plus `mcp__orca__get_session_tail` / activity metadata for progress; heartbeats are a coarse fallback — re-call `mcp__orca__schedule_heartbeat` at each stage change to keep its delivered message current (it updates in place, it doesn't stack).
+    - `mcp__orca__send_message_to_session` to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with `mcp__orca__get_session_tail` first.
+    - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. A full test-suite run is a per-checkout mutex — coordinate before running one. No worktrees.
+    - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
+    - Archive finished children, and have workers report back with commit SHAs and test results.
 
     ## Example Flow
 

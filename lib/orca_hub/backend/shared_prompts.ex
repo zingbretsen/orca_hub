@@ -78,6 +78,10 @@ defmodule OrcaHub.Backend.SharedPrompts do
           Enum.map(sessions, & &1["title"])
 
       Pass `"reset": true` to clear your stored variables and start fresh.
+    - **Call `report_progress(phase: ..., note: ...)` at phase boundaries** \
+      (e.g. planning → implementing → validating → fixing-tests) — a \
+      non-interrupting way for whoever spawned you to see you're making \
+      progress without messaging you.
     """
     |> String.trim()
   end
@@ -134,7 +138,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
 
     ## How to Work
 
-    **Important:** Your MCP tool list is collapsed to `run_elixir`, `search_tools`, and `send_message_to_session` (code execution mode). `send_message_to_session` is a standalone MCP tool — call it directly. Every OTHER coordination tool below is NOT standalone here; call it as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.
+    **Important:** Your MCP tool list is collapsed to #{standalone_tool_names_line()} (code execution mode). Those are standalone MCP tools — call them directly. Every OTHER coordination tool below is NOT standalone here; call it as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.
 
     1. **Delegate all implementation work** to other sessions using:
        - `Tools.start_session(...)` inside `run_elixir` — spawn a new worker session with a detailed prompt. Since you're an orchestrator, the worker is automatically linked as your child: when it goes idle or errors, you automatically get a `[Session lifecycle]` message — this is the PRIMARY way to learn a worker is done, you do not need to instruct it to call `send_message_to_session` back. Pass `notify_on_completion: false` if you genuinely want a fire-and-forget spawn with no callback.
@@ -145,11 +149,13 @@ defmodule OrcaHub.Backend.SharedPrompts do
     3. **Heartbeats are a coarse fallback, not your primary signal.** Automatic `[Session lifecycle]` messages fire the moment a worker finishes, so you shouldn't need to poll. Still set one wide-interval `Tools.schedule_heartbeat(...)` safety net (e.g. every 10-15 minutes) in case a notification is ever missed or a worker hangs mid-turn (never goes idle/error):
        > "Check on worker sessions. Use `Tools.search_sessions(...)` inside `run_elixir` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
 
-    4. **Check in proactively** — If a worker session seems stuck (no lifecycle notification and no heartbeat signal within a reasonable time), use `Tools.get_session_tail(...)` to peek at its progress without interrupting it, or message it directly.
+    4. **Check in proactively** — If a worker session seems stuck (no lifecycle notification and no heartbeat signal within a reasonable time), use `get_session_tail(...)` to peek at its progress without interrupting it, or message it directly.
 
     5. **Archive completed children** — When a worker session has finished its task, use `Tools.archive_session(...)` inside `run_elixir` to archive it. This keeps the session list tidy. If you need to continue the conversation later, just send a message to the archived session — it will be automatically unarchived.
 
     6. **Cancel monitoring** — When all delegated work is complete, use `Tools.cancel_heartbeat(...)` inside `run_elixir` to stop monitoring.
+
+    #{orchestration_practices_block(true)}
 
     ## Example Flow
 
@@ -195,6 +201,8 @@ defmodule OrcaHub.Backend.SharedPrompts do
 
     6. **Cancel monitoring** — When all delegated work is complete, use `mcp__orca__cancel_heartbeat` to stop monitoring.
 
+    #{orchestration_practices_block(false)}
+
     ## Example Flow
 
     1. Analyze the task and break it into subtasks
@@ -206,6 +214,34 @@ defmodule OrcaHub.Backend.SharedPrompts do
     7. When all work is complete, cancel heartbeat and summarize results
 
     Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+    """
+    |> String.trim()
+  end
+
+  # Terse orchestration tl;dr shared by both orchestrator_prompt/3 variants —
+  # NOT a restatement of the notification/heartbeat mechanics spelled out
+  # above (numbered steps 1-6), just the cross-cutting practices that don't
+  # fit that flow: interrupt semantics, parallel-worker etiquette, model ids,
+  # and what a finished worker owes back.
+  defp orchestration_practices_block(code_exec) do
+    heartbeat_ref =
+      if code_exec, do: "`Tools.schedule_heartbeat(...)`", else: "`mcp__orca__schedule_heartbeat`"
+
+    tail_ref = if code_exec, do: "`get_session_tail(...)`", else: "`mcp__orca__get_session_tail`"
+
+    message_ref =
+      if code_exec,
+        do: "`send_message_to_session(...)`",
+        else: "`mcp__orca__send_message_to_session`"
+
+    """
+    ## Orchestration Practices (tl;dr)
+
+    - Rely on lifecycle notifications plus #{tail_ref} / activity metadata for progress; heartbeats are a coarse fallback — re-call #{heartbeat_ref} at each stage change to keep its delivered message current (it updates in place, it doesn't stack).
+    - #{message_ref} to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with #{tail_ref} first.
+    - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. A full test-suite run is a per-checkout mutex — coordinate before running one. No worktrees.
+    - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
+    - Archive finished children, and have workers report back with commit SHAs and test results.
     """
     |> String.trim()
   end
