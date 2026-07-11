@@ -1438,6 +1438,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   @impl true
+  def handle_info({:progress, phase, note}, socket) do
+    session = %{socket.assigns.session | progress_phase: phase, progress_note: note}
+    {:noreply, assign(socket, :session, session)}
+  end
+
+  @impl true
   def handle_info({:status, status}, socket) do
     socket =
       socket |> assign(:status, status) |> refresh_pending_questions() |> sync_question_modal()

@@ -72,6 +72,13 @@
     >
       {@status}
     </span>
+    <span
+      :if={@session.progress_phase}
+      class="badge badge-outline ml-1"
+      title={@session.progress_note}
+    >
+      {@session.progress_phase}
+    </span>
     <%!-- Node badge with dropdown for switching nodes --%>
     <div :if={length(@cluster_nodes) > 1} class="dropdown dropdown-end ml-1">
       <div

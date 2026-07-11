@@ -115,6 +115,47 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
   end
 
+  describe "progress badge (report_progress)" do
+    test "absent when no progress has been reported", %{conn: conn, claude_session: session} do
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+      refute html =~ "badge-outline"
+    end
+
+    test "shown with the reported phase as a tooltip-bearing badge", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, _} =
+        Sessions.update_session(session, %{
+          progress_phase: "implementing",
+          progress_note: "writing the migration"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+      assert html =~ "badge-outline"
+      assert html =~ "implementing"
+      assert html =~ "writing the migration"
+    end
+
+    test "updates live when a {:progress, ...} PubSub event arrives", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      refute render(view) =~ "badge-outline"
+
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{session.id}",
+        {:progress, "validating", "running the suite"}
+      )
+
+      html = render(view)
+      assert html =~ "badge-outline"
+      assert html =~ "validating"
+    end
+  end
+
   describe "model switcher — scoped per backend" do
     test "Claude session offers only Claude models", %{conn: conn, claude_session: session} do
       {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
