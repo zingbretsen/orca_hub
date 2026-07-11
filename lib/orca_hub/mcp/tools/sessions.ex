@@ -59,6 +59,24 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "enum" => ["running", "idle", "waiting", "error", "ready"],
               "description" => "Optional filter by session status"
             },
+            "session_id" => %{
+              "type" => "string",
+              "description" =>
+                "Optional exact-match filter: only return the session with this id."
+            },
+            "parent_session_id" => %{
+              "type" => "string",
+              "description" =>
+                "Optional exact-match filter: only return sessions spawned with this session id as their parent (see start_session's orchestrator child-linking)."
+            },
+            "include_activity" => %{
+              "type" => "boolean",
+              "description" =>
+                "If true, include per-session activity metadata (message/tool-call counts " <>
+                  "bucketed over the last 5/15/30 minutes, last_activity_at, and last_commit) " <>
+                  "in each result — computed in one grouped query for the whole result set, " <>
+                  "not per session. Default: false."
+            },
             "include_archived" => %{
               "type" => "boolean",
               "description" =>
@@ -79,7 +97,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "start_session",
         "description" =>
-          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session. If you are yourself an orchestrator session, the new session is automatically linked as your child: when it finishes its turn (goes idle) or errors, you automatically receive a \"[Session lifecycle]\" message — no need to instruct the worker to message you back, and no need to poll with search_sessions/heartbeats just to detect completion. Set notify_on_completion to false to opt out for a true fire-and-forget spawn.",
+          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session. If you are yourself an orchestrator session, the new session is automatically linked as your child: when it finishes its turn (goes idle) or errors, you automatically receive a \"[Session lifecycle]\" message — no need to instruct the worker to message you back, and no need to poll with search_sessions/heartbeats just to detect completion. Set notify_on_completion to false to opt out for a true fire-and-forget spawn. Returns structured JSON: session_id, node, model, backend, directory, already_exists.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -111,9 +129,40 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "type" => "boolean",
               "description" =>
                 "Whether the new session should automatically message you (the caller) when it goes idle or errors. Only applies when the caller is an orchestrator session (the only case a parent link is created). Default: true. Set false for a fire-and-forget spawn you don't want a callback from."
+            },
+            "idempotency_key" => %{
+              "type" => "string",
+              "description" =>
+                "Optional dedup key. If a non-archived session was already started with this same key, that session is returned (with \"already_exists\": true) instead of spawning a duplicate — no prompt is sent. Use this when retrying a start_session call you're not sure succeeded."
             }
           },
           "required" => ["prompt"]
+        }
+      },
+      %{
+        "name" => "report_progress",
+        "description" =>
+          "Self-report your current phase, as a non-interrupting progress signal — an " <>
+            "orchestrator (or a human) can see this via search_sessions/get_session_tail " <>
+            "and the session UI without messaging you. Suggested phases: planning, " <>
+            "implementing, validating, fixing-tests, done — but phase is free text, use " <>
+            "whatever's clearest for the task. Cleared automatically at the start of your " <>
+            "next turn, so call it again after each phase boundary rather than once at the " <>
+            "start.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "phase" => %{
+              "type" => "string",
+              "description" =>
+                "Short phase label, e.g. \"planning\", \"implementing\", \"validating\", \"fixing-tests\"."
+            },
+            "note" => %{
+              "type" => "string",
+              "description" => "Optional one-line detail about the phase."
+            }
+          },
+          "required" => ["phase"]
         }
       },
       %{
@@ -137,9 +186,12 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           "Peek at another session's recent activity WITHOUT interrupting it — unlike " <>
             "send_message_to_session, this does not send a message or touch the live agent " <>
             "process. Returns the session's current status plus its last assistant text " <>
-            "message and a compact list of its most recent tool calls (name + truncated " <>
-            "input). Use this to tell \"making progress\" from \"stuck\" before deciding " <>
-            "whether to interrupt a worker.",
+            "message, a compact list of its most recent tool calls (name + truncated " <>
+            "input), self-reported progress (phase/note from report_progress, if any), " <>
+            "activity metadata (message/tool-call counts over the last 5/15/30 minutes, " <>
+            "last_activity_at), and last_commit (git HEAD of its directory, if it's a repo). " <>
+            "Use this to tell \"making progress\" from \"stuck\" before deciding whether to " <>
+            "interrupt a worker.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -196,6 +248,16 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     end
   end
 
+  def call("report_progress", args, state) do
+    case state.orca_session_id do
+      nil ->
+        error("No OrcaHub session linked to this MCP connection.")
+
+      session_id ->
+        do_report_progress(session_id, args["phase"], args["note"])
+    end
+  end
+
   def call("archive_session", args, _state) do
     target_id = args["session_id"]
 
@@ -221,16 +283,22 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     limit = args["tool_call_limit"] || 10
 
     case Cluster.find_session(target_id) do
-      {_node, session} ->
+      {node, session} ->
         tail = HubRPC.session_tail(target_id, tool_call_limit: limit)
+        activity = Map.get(HubRPC.activity_metadata([session.id]), session.id, empty_activity())
 
         result = %{
           id: session.id,
           title: session.title,
           status: session.status,
           updated_at: session.updated_at,
+          progress_phase: session.progress_phase,
+          progress_note: session.progress_note,
+          progress_updated_at: session.progress_updated_at,
           last_assistant_text: cap_tail_text(tail.last_assistant_text),
-          recent_tool_calls: Enum.map(tail.recent_tool_calls, &format_tool_call/1)
+          recent_tool_calls: Enum.map(tail.recent_tool_calls, &format_tool_call/1),
+          activity: activity,
+          last_commit: fetch_last_commit(node, session.directory)
         }
 
         text(Jason.encode!(result))
@@ -246,6 +314,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     search_opts = %{
       query: args["query"],
       status: args["status"],
+      session_id: args["session_id"],
+      parent_session_id: args["parent_session_id"],
       include_archived: args["include_archived"] || false,
       archived_only: args["archived_only"] || false,
       limit: limit
@@ -256,7 +326,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
         error(msg)
 
       sessions when is_list(sessions) ->
-        text(Jason.encode!(format_session_results(sessions, limit)))
+        include_activity = args["include_activity"] == true
+        text(Jason.encode!(format_session_results(sessions, limit, include_activity)))
     end
   end
 
@@ -266,55 +337,107 @@ defmodule OrcaHub.MCP.Tools.Sessions do
         error("No OrcaHub session linked to this MCP connection. Cannot determine project.")
 
       caller_session_id ->
-        caller = HubRPC.get_session!(caller_session_id)
-        directory = args["directory"] || caller.directory
-        project_id = caller.project_id
+        case HubRPC.get_session_by_idempotency_key(args["idempotency_key"]) do
+          %{} = existing ->
+            text(Jason.encode!(start_session_result(existing, true)))
 
-        runner_node =
-          if caller.project, do: Cluster.project_node_for(caller.project), else: node()
+          nil ->
+            do_start_session(args, caller_session_id)
+        end
+    end
+  end
 
-        case validate_backend(args["backend"], runner_node) do
+  defp do_report_progress(_session_id, phase, _note) when not is_binary(phase) or phase == "" do
+    error("report_progress requires a non-empty `phase` string argument.")
+  end
+
+  defp do_report_progress(session_id, phase, note) do
+    session = HubRPC.get_session!(session_id)
+
+    attrs = %{
+      progress_phase: phase,
+      progress_note: note,
+      progress_updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+    }
+
+    case HubRPC.update_session(session, attrs) do
+      {:ok, _session} ->
+        broadcast_progress(session_id, phase, note)
+        suffix = if note, do: " — #{note}", else: ""
+        text("Progress recorded: #{phase}#{suffix}")
+
+      {:error, changeset} ->
+        error("Failed to record progress: #{inspect(changeset.errors)}")
+    end
+  end
+
+  # Live-updates the session UI's progress badge (SessionLive.Show subscribes
+  # to "session:<id>" — same topic SessionRunner's own broadcast/2 uses).
+  defp broadcast_progress(session_id, phase, note) do
+    Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", {:progress, phase, note})
+  end
+
+  defp do_start_session(args, caller_session_id) do
+    caller = HubRPC.get_session!(caller_session_id)
+    directory = args["directory"] || caller.directory
+    project_id = caller.project_id
+
+    runner_node =
+      if caller.project, do: Cluster.project_node_for(caller.project), else: node()
+
+    case validate_backend(args["backend"], runner_node) do
+      {:error, message} ->
+        error(message)
+
+      {:ok, backend} ->
+        case validate_model(args["model"], backend, runner_node) do
           {:error, message} ->
             error(message)
 
-          {:ok, backend} ->
-            case validate_model(args["model"], backend, runner_node) do
-              {:error, message} ->
-                error(message)
+          {:ok, model} ->
+            session_attrs =
+              %{
+                directory: directory,
+                project_id: project_id,
+                runner_node: Atom.to_string(runner_node)
+              }
+              |> maybe_put_field(:title, args["title"])
+              |> maybe_put_field(:backend, backend)
+              |> maybe_put_field(:model, model)
+              |> maybe_put_field(:idempotency_key, args["idempotency_key"])
+              |> maybe_link_parent(caller, caller_session_id, args["notify_on_completion"])
 
-              {:ok, model} ->
-                session_attrs =
-                  %{
-                    directory: directory,
-                    project_id: project_id,
-                    runner_node: Atom.to_string(runner_node)
-                  }
-                  |> maybe_put_field(:title, args["title"])
-                  |> maybe_put_field(:backend, backend)
-                  |> maybe_put_field(:model, model)
-                  |> maybe_link_parent(caller, caller_session_id, args["notify_on_completion"])
+            case HubRPC.create_session(session_attrs) do
+              {:ok, session} ->
+                case Cluster.start_session(runner_node, session.id, session) do
+                  {:ok, _} ->
+                    Cluster.send_message(runner_node, session.id, args["prompt"])
+                    text(Jason.encode!(start_session_result(session, false)))
 
-                case HubRPC.create_session(session_attrs) do
-                  {:ok, session} ->
-                    case Cluster.start_session(runner_node, session.id, session) do
-                      {:ok, _} ->
-                        Cluster.send_message(runner_node, session.id, args["prompt"])
-                        text("Session #{session.id} started in #{directory}")
+                  {:error, reason} ->
+                    message =
+                      Cluster.node_unavailable_message(reason) ||
+                        "Session #{session.id} created but failed to start: #{inspect(reason)}"
 
-                      {:error, reason} ->
-                        message =
-                          Cluster.node_unavailable_message(reason) ||
-                            "Session #{session.id} created but failed to start: #{inspect(reason)}"
-
-                        error(message)
-                    end
-
-                  {:error, changeset} ->
-                    error("Failed to create session: #{inspect(changeset.errors)}")
+                    error(message)
                 end
+
+              {:error, changeset} ->
+                error("Failed to create session: #{inspect(changeset.errors)}")
             end
         end
     end
+  end
+
+  defp start_session_result(session, already_exists) do
+    %{
+      session_id: session.id,
+      node: Cluster.node_name(session.runner_node || node()),
+      model: session.model,
+      backend: session.backend,
+      directory: session.directory,
+      already_exists: already_exists
+    }
   end
 
   # No `backend` arg (nil, or blank) → leave it unset so the schema default
@@ -443,16 +566,34 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     end
   end
 
-  defp format_session_results(sessions, limit) do
+  defp format_session_results(sessions, limit, include_activity) do
     clustered = Node.list() != []
 
-    sessions
-    |> Enum.sort_by(fn s -> s.updated_at end, {:desc, NaiveDateTime})
-    |> Enum.take(limit)
-    |> Enum.map(&format_session_result(&1, clustered))
+    page =
+      sessions
+      |> Enum.sort_by(fn s -> s.updated_at end, {:desc, NaiveDateTime})
+      |> Enum.take(limit)
+
+    {activity_by_id, last_commit_by_id} =
+      if include_activity do
+        {HubRPC.activity_metadata(Enum.map(page, & &1.id)), fetch_last_commits(page)}
+      else
+        {%{}, %{}}
+      end
+
+    Enum.map(
+      page,
+      &format_session_result(&1, clustered, activity_by_id, last_commit_by_id, include_activity)
+    )
   end
 
-  defp format_session_result(session, clustered) do
+  defp format_session_result(
+         session,
+         clustered,
+         activity_by_id,
+         last_commit_by_id,
+         include_activity
+       ) do
     result = %{
       id: session.id,
       title: session.title,
@@ -463,6 +604,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       backend: session.backend,
       model: session.model,
       parent_session_id: session.parent_session_id,
+      progress_phase: session.progress_phase,
+      progress_note: session.progress_note,
       updated_at: session.updated_at,
       inserted_at: session.inserted_at
     }
@@ -474,10 +617,57 @@ defmodule OrcaHub.MCP.Tools.Sessions do
         result
       end
 
-    if clustered do
-      Map.put(result, :node, Cluster.node_name(session.runner_node || node()))
+    result =
+      if clustered do
+        Map.put(result, :node, Cluster.node_name(session.runner_node || node()))
+      else
+        result
+      end
+
+    if include_activity do
+      result
+      |> Map.put(:activity, Map.get(activity_by_id, session.id, empty_activity()))
+      |> Map.put(:last_commit, Map.get(last_commit_by_id, session.id))
     else
       result
+    end
+  end
+
+  # ── activity metadata / last_commit helpers ──────────────────────────
+  # Shared by get_session_tail (always on, single session) and search_sessions
+  # (opt-in via include_activity, whole result page at once).
+
+  defp empty_activity do
+    %{
+      messages_5m: 0,
+      messages_15m: 0,
+      messages_30m: 0,
+      tool_calls_5m: 0,
+      tool_calls_15m: 0,
+      tool_calls_30m: 0,
+      last_activity_at: nil
+    }
+  end
+
+  # Dedupes by {node, directory} so sessions sharing a working directory (the
+  # common case) only trigger one `git log` per directory, not one per session.
+  defp fetch_last_commits(sessions) do
+    tagged =
+      Enum.map(sessions, fn s -> {s.id, Cluster.runner_node_for(s) || node(), s.directory} end)
+
+    commit_by_pair =
+      tagged
+      |> Enum.map(fn {_id, node, dir} -> {node, dir} end)
+      |> Enum.uniq()
+      |> Map.new(fn {node, dir} -> {{node, dir}, fetch_last_commit(node, dir)} end)
+
+    Map.new(tagged, fn {id, node, dir} -> {id, commit_by_pair[{node, dir}]} end)
+  end
+
+  defp fetch_last_commit(node, directory) do
+    case Cluster.rpc(node, OrcaHub.Sessions, :git_head_info, [directory]) do
+      %{} = info -> info
+      _ -> nil
     end
   end
 end

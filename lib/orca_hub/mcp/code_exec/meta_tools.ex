@@ -8,14 +8,14 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
     * `run_elixir`   — evaluate model-authored Elixir that calls tools as named
       `Tools.*` functions and stitches results with stdlib (the main surface)
     * `search_tools` — read-only ranked keyword search over the live registry
-    * `send_message_to_session`, `get_session_tail` — **passthroughs** to the
-      real first-party tools of the same name (`OrcaHub.MCP.Tools.Sessions`).
-      They're promoted to standalone tools because orchestrator/code-exec
-      sessions call them so frequently that round-tripping through
-      `run_elixir` for every call was pure overhead. Their definitions are
-      sourced from `OrcaHub.MCP.Tools.list/0` (not hand-duplicated), and
-      `call/3` delegates straight to `OrcaHub.MCP.Tools.call/3` — no
-      reimplementation here.
+    * `send_message_to_session`, `get_session_tail`, `report_progress` —
+      **passthroughs** to the real first-party tools of the same name
+      (`OrcaHub.MCP.Tools.Sessions`). They're promoted to standalone tools
+      because orchestrator/code-exec sessions call them so frequently that
+      round-tripping through `run_elixir` for every call was pure overhead.
+      Their definitions are sourced from `OrcaHub.MCP.Tools.list/0` (not
+      hand-duplicated), and `call/3` delegates straight to
+      `OrcaHub.MCP.Tools.call/3` — no reimplementation here.
 
   Every OTHER first-party AND upstream tool is still reachable — but only as
   `Tools.*` functions inside `run_elixir` (and discoverable there via
@@ -53,7 +53,7 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   alias OrcaHub.MCP.UpstreamClient
 
   @meta_tool_names ~w(run_elixir search_tools)
-  @passthrough_tool_names ~w(send_message_to_session get_session_tail)
+  @passthrough_tool_names ~w(send_message_to_session get_session_tail report_progress)
 
   @doc "The collapsed tool definitions shown to a code-exec connection: the meta-tools plus any passthrough tools."
   def list, do: [run_elixir_tool(), search_tools_tool() | passthrough_tool_definitions()]

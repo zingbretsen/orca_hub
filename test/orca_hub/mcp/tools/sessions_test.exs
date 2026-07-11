@@ -67,7 +67,7 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
   end
 
   defp session_id_from!(text) do
-    [id] = Regex.run(~r/^Session (\S+) started/, text, capture: :all_but_first)
+    %{"session_id" => id} = Jason.decode!(text)
     id
   end
 
@@ -473,8 +473,32 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert [%{"name" => "Bash", "args" => args}] = decoded["recent_tool_calls"]
       assert args =~ "ls"
 
+      # Always-on activity metadata: one assistant message with one tool_use.
+      assert %{"messages_5m" => 1, "tool_calls_5m" => 1} = decoded["activity"]
+      # dir is a fresh tmp dir, not a git repo.
+      assert decoded["last_commit"] == nil
+      assert decoded["progress_phase"] == nil
+
       # Read-only: no runner was ever started for this session.
       refute SessionSupervisor.session_alive?(target.id)
+    end
+
+    test "surfaces self-reported progress from report_progress", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      SessionsTool.call(
+        "report_progress",
+        %{"phase" => "implementing", "note" => "writing the migration"},
+        %{orca_session_id: target.id}
+      )
+
+      %{"content" => [%{"text" => text}]} =
+        SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      decoded = Jason.decode!(text)
+      assert decoded["progress_phase"] == "implementing"
+      assert decoded["progress_note"] == "writing the migration"
+      assert decoded["progress_updated_at"] != nil
     end
 
     test "an unknown session id errors", %{state: state} do
@@ -487,6 +511,217 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
 
       assert %{"isError" => true, "content" => [%{"text" => text}]} = result
       assert text =~ "not found"
+    end
+  end
+
+  describe "report_progress" do
+    test "records phase and optional note on the calling session", %{dir: dir} do
+      {:ok, session} = Sessions.create_session(%{directory: dir})
+
+      result =
+        SessionsTool.call(
+          "report_progress",
+          %{"phase" => "validating"},
+          %{orca_session_id: session.id}
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text =~ "validating"
+
+      reloaded = Sessions.get_session!(session.id)
+      assert reloaded.progress_phase == "validating"
+      assert reloaded.progress_note == nil
+      assert reloaded.progress_updated_at != nil
+    end
+
+    test "rejects an empty phase" do
+      result =
+        SessionsTool.call(
+          "report_progress",
+          %{"phase" => ""},
+          %{orca_session_id: Ecto.UUID.generate()}
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "phase"
+    end
+
+    test "errors with no linked session" do
+      result =
+        SessionsTool.call("report_progress", %{"phase" => "planning"}, %{orca_session_id: nil})
+
+      assert %{"isError" => true} = result
+    end
+  end
+
+  describe "search_sessions — session_id and parent_session_id filters" do
+    test "session_id filters to an exact match", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, title: "target"})
+      {:ok, _other} = Sessions.create_session(%{directory: dir, title: "other"})
+
+      %{"content" => [%{"text" => text}]} =
+        SessionsTool.call(
+          "search_sessions",
+          %{"directory" => dir, "session_id" => target.id},
+          state
+        )
+
+      results = Jason.decode!(text)
+      assert Enum.map(results, & &1["id"]) == [target.id]
+    end
+
+    test "parent_session_id filters to that parent's children", %{dir: dir, state: state} do
+      {:ok, parent} = Sessions.create_session(%{directory: dir, title: "parent"})
+
+      {:ok, child} =
+        Sessions.create_session(%{directory: dir, title: "child", parent_session_id: parent.id})
+
+      {:ok, _unrelated} = Sessions.create_session(%{directory: dir, title: "unrelated"})
+
+      %{"content" => [%{"text" => text}]} =
+        SessionsTool.call(
+          "search_sessions",
+          %{"directory" => dir, "parent_session_id" => parent.id},
+          state
+        )
+
+      results = Jason.decode!(text)
+      assert Enum.map(results, & &1["id"]) == [child.id]
+    end
+  end
+
+  describe "search_sessions — include_activity" do
+    test "computes activity metadata and last_commit for the whole result page", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, session} = Sessions.create_session(%{directory: dir, title: "active"})
+
+      Sessions.create_message(%{
+        session_id: session.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{"content" => [%{"type" => "tool_use", "name" => "Bash", "input" => %{}}]}
+        }
+      })
+
+      %{"content" => [%{"text" => text}]} =
+        SessionsTool.call(
+          "search_sessions",
+          %{"directory" => dir, "include_activity" => true},
+          state
+        )
+
+      [result] = Jason.decode!(text) |> Enum.filter(&(&1["id"] == session.id))
+      assert %{"messages_5m" => 1, "tool_calls_5m" => 1} = result["activity"]
+      # dir is a fresh tmp dir, not a git repo.
+      assert result["last_commit"] == nil
+    end
+
+    test "omits activity/last_commit when include_activity is not set", %{dir: dir, state: state} do
+      {:ok, session} = Sessions.create_session(%{directory: dir, title: "quiet"})
+
+      %{"content" => [%{"text" => text}]} =
+        SessionsTool.call("search_sessions", %{"directory" => dir}, state)
+
+      [result] = Jason.decode!(text) |> Enum.filter(&(&1["id"] == session.id))
+      refute Map.has_key?(result, "activity")
+      refute Map.has_key?(result, "last_commit")
+    end
+  end
+
+  describe "start_session — structured JSON result" do
+    test "returns session_id/node/model/backend/directory/already_exists", %{state: state} do
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      on_exit(fn -> stop_if_alive(decoded["session_id"]) end)
+
+      assert decoded["already_exists"] == false
+      assert decoded["backend"] == "claude"
+      assert is_binary(decoded["node"])
+      assert is_binary(decoded["directory"])
+    end
+  end
+
+  describe "start_session — idempotency_key" do
+    test "a repeat call with the same key returns the existing session instead of spawning a new one",
+         %{state: state} do
+      first =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{
+              "prompt" => "hi",
+              "notify_on_completion" => false,
+              "idempotency_key" => "dedup-1"
+            },
+            state
+          )
+        end)
+
+      %{"content" => [%{"text" => first_text}]} = first
+      first_id = session_id_from!(first_text)
+      on_exit(fn -> stop_if_alive(first_id) end)
+
+      before_count = Sessions.list_sessions(:all) |> length()
+
+      second =
+        SessionsTool.call(
+          "start_session",
+          %{
+            "prompt" => "hi again",
+            "notify_on_completion" => false,
+            "idempotency_key" => "dedup-1"
+          },
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => second_text}]} = second
+      decoded = Jason.decode!(second_text)
+
+      assert decoded["session_id"] == first_id
+      assert decoded["already_exists"] == true
+      assert Sessions.list_sessions(:all) |> length() == before_count
+    end
+
+    test "a different key spawns a distinct session", %{state: state} do
+      first =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "notify_on_completion" => false, "idempotency_key" => "key-a"},
+            state
+          )
+        end)
+
+      %{"content" => [%{"text" => first_text}]} = first
+      first_id = session_id_from!(first_text)
+      on_exit(fn -> stop_if_alive(first_id) end)
+
+      second =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "notify_on_completion" => false, "idempotency_key" => "key-b"},
+            state
+          )
+        end)
+
+      %{"content" => [%{"text" => second_text}]} = second
+      second_id = session_id_from!(second_text)
+      on_exit(fn -> stop_if_alive(second_id) end)
+
+      assert first_id != second_id
     end
   end
 end

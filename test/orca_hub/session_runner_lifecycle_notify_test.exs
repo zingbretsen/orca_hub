@@ -102,7 +102,7 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
 
       result = SessionsTool.call("start_session", %{"prompt" => "hi"}, state)
       assert %{"isError" => false, "content" => [%{"text" => text}]} = result
-      [child_id] = Regex.run(~r/^Session (\S+) started/, text, capture: :all_but_first)
+      %{"session_id" => child_id} = Jason.decode!(text)
       on_exit(fn -> stop_if_alive(child_id) end)
 
       child = Sessions.get_session!(child_id)
@@ -122,7 +122,7 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
         )
 
       assert %{"isError" => false, "content" => [%{"text" => text}]} = result
-      [child_id] = Regex.run(~r/^Session (\S+) started/, text, capture: :all_but_first)
+      %{"session_id" => child_id} = Jason.decode!(text)
       on_exit(fn -> stop_if_alive(child_id) end)
 
       child = Sessions.get_session!(child_id)
@@ -137,7 +137,7 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
 
       result = SessionsTool.call("start_session", %{"prompt" => "hi"}, state)
       assert %{"isError" => false, "content" => [%{"text" => text}]} = result
-      [child_id] = Regex.run(~r/^Session (\S+) started/, text, capture: :all_but_first)
+      %{"session_id" => child_id} = Jason.decode!(text)
       on_exit(fn -> stop_if_alive(child_id) end)
 
       assert Sessions.get_session!(child_id).parent_session_id == nil

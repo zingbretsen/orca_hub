@@ -467,6 +467,7 @@ defmodule OrcaHub.MCP.CodeExecTest do
     test "the meta-tools plus the passthrough tools are exposed" do
       assert Enum.map(MetaTools.list(), & &1["name"]) |> Enum.sort() == [
                "get_session_tail",
+               "report_progress",
                "run_elixir",
                "search_tools",
                "send_message_to_session"
@@ -481,7 +482,11 @@ defmodule OrcaHub.MCP.CodeExecTest do
     end
 
     test "passthrough_tool_names/0 is the single source of truth for what's promoted to standalone" do
-      assert MetaTools.passthrough_tool_names() == ["send_message_to_session", "get_session_tail"]
+      assert MetaTools.passthrough_tool_names() == [
+               "send_message_to_session",
+               "get_session_tail",
+               "report_progress"
+             ]
     end
 
     test "run_elixir's description lists the live first-party Tools.* names" do
@@ -528,6 +533,7 @@ defmodule OrcaHub.MCP.CodeExecTest do
 
       assert Enum.sort(tool_names(sid)) == [
                "get_session_tail",
+               "report_progress",
                "run_elixir",
                "search_tools",
                "send_message_to_session"
