@@ -46,6 +46,12 @@ config :orca_hub,
        :disable_code_exec,
        System.get_env("ORCA_DISABLE_CODE_EXEC") in ~w(1 true)
 
+# OrcaHub.SessionResumer's boot-time orphan-resume sweep — ON by default.
+# ORCA_AUTO_RESUME=false/0 disables it node-wide.
+config :orca_hub,
+       :auto_resume,
+       System.get_env("ORCA_AUTO_RESUME") not in ~w(0 false)
+
 # Base64-encoded 32-byte key used by OrcaHub.Secrets to encrypt/decrypt
 # upstream-injection secrets at rest (AES-256-GCM). Hub-only; raises a clear
 # error at use time (not at boot) if unset or malformed.

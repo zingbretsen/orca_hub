@@ -42,6 +42,10 @@ defmodule OrcaHub.HubRPC do
   def unarchive_session(session), do: call(OrcaHub.Sessions, :unarchive_session, [session])
   def defer_session(session), do: call(OrcaHub.Sessions, :defer_session, [session])
   def list_sessions(filter \\ :manual), do: call(OrcaHub.Sessions, :list_sessions, [filter])
+
+  def list_running_sessions_for_node(node_name),
+    do: call(OrcaHub.Sessions, :list_running_sessions_for_node, [node_name])
+
   def list_messages(session_id), do: call(OrcaHub.Sessions, :list_messages, [session_id])
   def create_message(attrs), do: call(OrcaHub.Sessions, :create_message, [attrs])
   def count_idle_sessions, do: call(OrcaHub.Sessions, :count_idle_sessions, [])

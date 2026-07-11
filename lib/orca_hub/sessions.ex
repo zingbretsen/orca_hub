@@ -28,6 +28,21 @@ defmodule OrcaHub.Sessions do
     Repo.all(query)
   end
 
+  @doc """
+  Non-archived sessions stuck at `status: "running"` whose `runner_node`
+  matches `node_name` — candidates for `OrcaHub.SessionResumer`'s
+  boot-time orphan sweep. Scoped to a single node by design (never-reassign
+  rule): a node only ever resumes its own sessions.
+  """
+  def list_running_sessions_for_node(node_name) do
+    Repo.all(
+      from s in Session,
+        where: is_nil(s.archived_at),
+        where: s.runner_node == ^node_name,
+        where: s.status == "running"
+    )
+  end
+
   def archive_session(%Session{} = session) do
     result =
       session

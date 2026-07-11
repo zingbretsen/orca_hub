@@ -68,6 +68,9 @@ defmodule OrcaHub.Application do
       # streaming runners can request_slot at port-open.
       OrcaHub.Streaming.WarmPool,
       OrcaHub.SessionSupervisor,
+      # Auto-resumes this node's own sessions orphaned in `status: "running"`
+      # by a node restart (deploy). See OrcaHub.SessionResumer moduledoc.
+      OrcaHub.SessionResumer,
       OrcaHub.TerminalSupervisor,
       OrcaHub.LoginSupervisor,
       {Registry, keys: :unique, name: OrcaHub.BackendInstallerRegistry},
@@ -106,6 +109,9 @@ defmodule OrcaHub.Application do
       # Warm-process admission control — must start before SessionSupervisor.
       OrcaHub.Streaming.WarmPool,
       OrcaHub.SessionSupervisor,
+      # Auto-resumes this node's own sessions orphaned in `status: "running"`
+      # by a node restart (deploy). See OrcaHub.SessionResumer moduledoc.
+      OrcaHub.SessionResumer,
       OrcaHub.TerminalSupervisor,
       OrcaHub.LoginSupervisor,
       {Registry, keys: :unique, name: OrcaHub.BackendInstallerRegistry},
