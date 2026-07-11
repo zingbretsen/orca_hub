@@ -7,6 +7,16 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - `mix phx.server` to start the dev server
 - Logs are written to `log/dev.log` — use `tail -f log/dev.log` to monitor
 
+## Testing
+
+- Canonical invocation (the `.env`'s `ORCA_MODE`/`PORT` break tests; `CLUSTER_*` leak into distributed state):
+  ```
+  export $(grep -E "^DB_" .env | xargs) && env -u PHX_SERVER -u ORCA_MODE -u PORT -u CLUSTER_NODES -u CLUSTER_DNS_QUERY mix test
+  ```
+- Distributed tests are excluded by default — run them separately: `mix test --only distributed`
+- Exactly ONE known flake: `OrcaHub.TriggersTest "list_enabled_triggers/0"` (shared dev-DB leftover state). Anything else failing is real — investigate, don't retry-until-green.
+- Tests run against the shared dev DB, not an isolated test DB — hub-boot GenServers write real rows; this is expected.
+
 ## Architecture
 
 - **SessionRunner** (`lib/orca_hub/session_runner.ex`): GenStatem that manages an agent-CLI session via a port. Sends prompts, parses streaming JSON output, persists messages, and broadcasts events via PubSub. Delegates every CLI-specific concern (spawn args, stdin framing, event normalization) to `data.backend`.
