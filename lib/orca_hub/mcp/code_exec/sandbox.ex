@@ -37,12 +37,19 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
       statement_count: pos_integer}}}` — ran and raised/threw (a tool or
       expression outcome, e.g. `Tools.Error`); `banner` is trimmed of internal
       eval/Task frames and `line` points at the offending line of the snippet.
-      Top-level statements are evaluated sequentially (see "Sequential
-      top-level evaluation" below), so `partial_binding` carries whatever was
-      bound by the statements that completed before the one that raised
-      (`statement` of `statement_count`, 1-indexed) — callers that persist
-      bindings across evals (`OrcaHub.MCP.CodeExec.BindingStore`) can keep
-      that partial progress instead of discarding it.
+      A statement that references an unbound variable (e.g. a name from a
+      previous snippet whose bindings never persisted) surfaces here too, as
+      an `:error`-kind `CompileError` — its `banner`/`line` are built from the
+      compiler's own diagnostic (via `Code.with_diagnostics/2`) instead of the
+      generic "cannot compile file (errors have been logged)" message, so the
+      model gets the real reason (e.g. `undefined variable "worker"`) and
+      line back instead of a dead end. Top-level statements are evaluated
+      sequentially (see "Sequential top-level evaluation" below), so
+      `partial_binding` carries whatever was bound by the statements that
+      completed before the one that raised (`statement` of `statement_count`,
+      1-indexed) — callers that persist bindings across evals
+      (`OrcaHub.MCP.CodeExec.BindingStore`) can keep that partial progress
+      instead of discarding it.
 
   ## Sequential top-level evaluation
 
@@ -248,24 +255,38 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
   # any `require`/`import`/`alias` from an earlier statement). Stops at the
   # first raise, carrying the binding as of the last *successful* statement
   # so the caller can persist that partial progress instead of losing it.
+  # Wrapped in `Code.with_diagnostics/2` so a compile-time diagnostic (e.g.
+  # "undefined variable") is captured for `finalize/3` to surface, rather than
+  # only going to the Logger and leaving the caller with a bare
+  # `%CompileError{description: "cannot compile file (errors have been
+  # logged)"}`. `log: false` (the default) suppresses that Logger write since
+  # we now report the same detail back to the model instead.
   defp eval_statements(statements, binding, env) do
     count = length(statements)
 
-    statements
-    |> Enum.with_index(1)
-    |> Enum.reduce_while({binding, env, nil}, fn {statement, index}, {binding, env, _value} ->
-      try do
-        {value, new_binding, new_env} = Code.eval_quoted_with_env(statement, binding, env)
-        {:cont, {new_binding, new_env, value}}
-      rescue
-        e -> {:halt, {:raised, :error, e, __STACKTRACE__, binding, index, count}}
-      catch
-        kind, reason -> {:halt, {:raised, kind, reason, __STACKTRACE__, binding, index, count}}
-      end
-    end)
-    |> case do
-      {:raised, _, _, _, _, _, _} = raised -> raised
-      {binding, _env, value} -> {:ok, value, binding}
+    {outcome, diagnostics} =
+      Code.with_diagnostics(fn ->
+        statements
+        |> Enum.with_index(1)
+        |> Enum.reduce_while({binding, env, nil}, fn {statement, index}, {binding, env, _value} ->
+          try do
+            {value, new_binding, new_env} = Code.eval_quoted_with_env(statement, binding, env)
+            {:cont, {new_binding, new_env, value}}
+          rescue
+            e -> {:halt, {:raised, :error, e, __STACKTRACE__, binding, index, count}}
+          catch
+            kind, reason ->
+              {:halt, {:raised, kind, reason, __STACKTRACE__, binding, index, count}}
+          end
+        end)
+      end)
+
+    case outcome do
+      {:raised, kind, reason, trace, binding, index, count} ->
+        {:raised, kind, reason, trace, binding, index, count, diagnostics}
+
+      {binding, _env, value} ->
+        {:ok, value, binding}
     end
   end
 
@@ -273,9 +294,13 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
     {:ok, %{value: value, stdout: cap(out, max_output), binding: binding}}
   end
 
-  defp finalize({:raised, kind, reason, trace, partial_binding, index, count}, out, max_output) do
-    banner = Exception.format_banner(kind, reason)
-    line = snippet_line(trace)
+  defp finalize(
+         {:raised, kind, reason, trace, partial_binding, index, count, diagnostics},
+         out,
+         max_output
+       ) do
+    banner = exception_banner(kind, reason, diagnostics)
+    line = exception_line(reason, trace, diagnostics)
 
     {:error,
      {:exception,
@@ -288,6 +313,45 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
         statement_count: count
       }}}
   end
+
+  # A `CompileError` (e.g. an unbound variable reference) carries no useful
+  # `description` of its own — the real detail was emitted as a compiler
+  # diagnostic, which `eval_statements/3` captured via `Code.with_diagnostics/2`.
+  # Build the banner from that diagnostic instead of the generic
+  # "cannot compile file (errors have been logged)" text.
+  defp exception_banner(:error, %CompileError{} = reason, diagnostics) do
+    case error_diagnostics(diagnostics) do
+      [] -> Exception.format_banner(:error, reason)
+      errors -> "** (CompileError) " <> Enum.map_join(errors, "; ", &format_diagnostic/1)
+    end
+  end
+
+  defp exception_banner(kind, reason, _diagnostics), do: Exception.format_banner(kind, reason)
+
+  defp format_diagnostic(%{message: message} = diagnostic) do
+    case diagnostic_line(diagnostic) do
+      nil -> message
+      line -> "#{message} (line #{line})"
+    end
+  end
+
+  # `CompileError`'s own stacktrace points at compiler-internal frames (e.g.
+  # `src/elixir_expand.erl`), not the snippet — so `snippet_line/1` finds
+  # nothing. The diagnostic's `:position` has the real line instead.
+  defp exception_line(%CompileError{}, _trace, diagnostics) do
+    case error_diagnostics(diagnostics) do
+      [diagnostic | _] -> diagnostic_line(diagnostic)
+      [] -> nil
+    end
+  end
+
+  defp exception_line(_reason, trace, _diagnostics), do: snippet_line(trace)
+
+  defp error_diagnostics(diagnostics), do: Enum.filter(diagnostics, &(&1.severity == :error))
+
+  defp diagnostic_line(%{position: {line, _column}}) when is_integer(line), do: line
+  defp diagnostic_line(%{position: line}) when is_integer(line), do: line
+  defp diagnostic_line(_diagnostic), do: nil
 
   # The first stack frame attributed to the snippet — its line is the offending
   # line of the model's code. Internal eval/Task frames are skipped.

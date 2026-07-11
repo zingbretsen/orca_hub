@@ -282,6 +282,56 @@ defmodule OrcaHub.MCP.CodeExecTest do
     end
   end
 
+  describe "compile errors (e.g. an unbound variable) surface the real compiler diagnostic" do
+    test "an undefined variable reference includes the diagnostic message and line, not the generic banner" do
+      assert {:error, {:exception, %{banner: banner, line: 1}}} = Sandbox.eval("worker")
+
+      assert banner =~ ~s|undefined variable "worker"|
+      assert banner =~ "(line 1)"
+      refute banner =~ "cannot compile file (errors have been logged)"
+    end
+
+    test "the line points at the statement referencing the unbound variable, not line 1" do
+      code = """
+      x = 1
+      worker
+      """
+
+      assert {:error, {:exception, %{banner: banner, line: 2}}} = Sandbox.eval(code)
+      assert banner =~ ~s|undefined variable "worker"|
+      assert banner =~ "(line 2)"
+    end
+
+    test "bindings from statements before the undefined-variable statement are kept as partial_binding" do
+      code = """
+      x = 1
+      y = 2
+      worker
+      """
+
+      assert {:error, {:exception, %{statement: 3, statement_count: 3, partial_binding: partial}}} =
+               Sandbox.eval(code)
+
+      assert Keyword.get(partial, :x) == 1
+      assert Keyword.get(partial, :y) == 2
+    end
+
+    test "a non-compile-error exception's banner/line are unaffected (still built from the stacktrace)" do
+      code = """
+      a = 1
+      b = 0
+      a / b
+      """
+
+      assert {:error, {:exception, %{banner: banner, line: 3}}} = Sandbox.eval(code)
+      assert banner =~ "(ArithmeticError)"
+    end
+
+    test "a successful eval is unaffected" do
+      assert {:ok, %{value: 3}} = Sandbox.eval("1 + 2")
+    end
+  end
+
   describe "sequential top-level statement evaluation" do
     test "a multi-statement snippet that never raises behaves exactly like a whole-block eval" do
       code = """
