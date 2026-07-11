@@ -200,6 +200,150 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     end
   end
 
+  describe "start_session — directory-based cross-node project routing" do
+    test "a directory matching a different LOCAL project routes to that project's id, not the caller's",
+         %{state: state} do
+      other_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_other_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(other_dir)
+      on_exit(fn -> File.rm_rf(other_dir) end)
+
+      {:ok, other_project} =
+        OrcaHub.Projects.create_project(%{
+          name: "other-local-project",
+          directory: other_dir,
+          node: Atom.to_string(node())
+        })
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "directory" => other_dir, "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      session = Sessions.get_session!(session_id)
+      assert session.project_id == other_project.id
+      assert session.directory == other_dir
+      assert session.runner_node == Atom.to_string(node())
+    end
+
+    test "a directory matching a project on an OFFLINE node routes runner_node/project_id there, refuses to start locally, and never reassigns",
+         %{dir: dir, state: state} do
+      other_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_offline_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, offline_project} =
+        OrcaHub.Projects.create_project(%{
+          name: "offline-remote-project",
+          directory: other_dir,
+          node: "debian@totally-offline-host"
+        })
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "directory" => other_dir},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "not currently connected"
+
+      # dir is the caller's own directory, unrelated to offline_project — used
+      # here only to prove the caller's own directory/project was NOT used.
+      refute other_dir == dir
+
+      [new_session] =
+        Repo.all(Session)
+        |> Enum.filter(&(&1.project_id == offline_project.id and &1.id != state.orca_session_id))
+
+      assert new_session.runner_node == "debian@totally-offline-host"
+      assert new_session.directory == other_dir
+      refute SessionSupervisor.session_alive?(new_session.id)
+    end
+
+    test "an unregistered directory (no matching project) falls back to the caller's own project and node",
+         %{state: state} do
+      unregistered_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_unregistered_#{System.unique_integer([:positive])}"
+        )
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{
+              "prompt" => "hi",
+              "directory" => unregistered_dir,
+              "notify_on_completion" => false
+            },
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      caller = Sessions.get_session!(state.orca_session_id)
+      session = Sessions.get_session!(session_id)
+      assert session.project_id == caller.project_id
+      assert session.runner_node == Atom.to_string(node())
+      assert session.directory == unregistered_dir
+    end
+
+    test "explicitly passing the caller's own directory keeps the caller's own project/node (no lookup)",
+         %{dir: dir} do
+      {:ok, caller_project} =
+        OrcaHub.Projects.create_project(%{
+          name: "caller-own-project",
+          directory: dir,
+          node: Atom.to_string(node())
+        })
+
+      {:ok, caller} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          project_id: caller_project.id,
+          orchestrator: true
+        })
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "directory" => dir, "notify_on_completion" => false},
+            %{orca_session_id: caller.id, orchestrator: true}
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      session = Sessions.get_session!(session_id)
+      assert session.project_id == caller_project.id
+      assert session.runner_node == Atom.to_string(node())
+    end
+  end
+
   describe "send_message_to_session — offline target node" do
     test "returns a clean node-unavailable error, never starts a runner locally", %{dir: dir} do
       {:ok, target} =

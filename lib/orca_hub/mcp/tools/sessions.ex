@@ -108,7 +108,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "directory" => %{
               "type" => "string",
               "description" =>
-                "Override the working directory for the new session. Defaults to the calling session's directory."
+                "Override the working directory for the new session. Defaults to the calling session's directory. If this directory belongs to a DIFFERENT registered project than the caller's, the new session is routed to THAT project's node and project_id instead of the caller's — use this to delegate work to another node. An unregistered directory (no matching project) falls back to the caller's own node/project, with only the working directory changed."
             },
             "title" => %{
               "type" => "string",
@@ -380,10 +380,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   defp do_start_session(args, caller_session_id) do
     caller = HubRPC.get_session!(caller_session_id)
     directory = args["directory"] || caller.directory
-    project_id = caller.project_id
-
-    runner_node =
-      if caller.project, do: Cluster.project_node_for(caller.project), else: node()
+    {project_id, runner_node} = resolve_routing(directory, caller)
 
     case validate_backend(args["backend"], runner_node) do
       {:error, message} ->
@@ -427,6 +424,28 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             end
         end
     end
+  end
+
+  # An explicit `directory` that differs from the caller's own directory may
+  # belong to a DIFFERENT project (registered on a different node) — route
+  # the child there instead of blindly inheriting the caller's project_id
+  # and node, which used to silently spawn cross-node delegation attempts on
+  # the WRONG node against the WRONG project_id (issue 6c304aec). An
+  # unregistered directory (no project row for it) falls back to the
+  # caller's own routing unchanged — never invent or reassign a node for a
+  # directory OrcaHub doesn't have on file.
+  defp resolve_routing(directory, %{directory: directory} = caller),
+    do: {caller.project_id, caller_runner_node(caller)}
+
+  defp resolve_routing(directory, caller) do
+    case HubRPC.get_project_by_directory(directory) do
+      %{} = project -> {project.id, Cluster.project_node_for(project)}
+      nil -> {caller.project_id, caller_runner_node(caller)}
+    end
+  end
+
+  defp caller_runner_node(caller) do
+    if caller.project, do: Cluster.project_node_for(caller.project), else: node()
   end
 
   defp start_session_result(session, already_exists) do
