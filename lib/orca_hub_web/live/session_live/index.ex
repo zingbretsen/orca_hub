@@ -607,6 +607,28 @@ defmodule OrcaHubWeb.SessionLive.Index do
     end)
   end
 
+  def time_ago(datetime) do
+    now = DateTime.utc_now()
+
+    datetime =
+      if is_struct(datetime, NaiveDateTime),
+        do: DateTime.from_naive!(datetime, "Etc/UTC"),
+        else: datetime
+
+    diff = DateTime.diff(now, datetime, :second)
+
+    cond do
+      diff < 60 -> "#{diff}s ago"
+      diff < 3600 -> "#{div(diff, 60)}m ago"
+      diff < 86_400 -> "#{div(diff, 3600)}h ago"
+      true -> "#{div(diff, 86_400)}d ago"
+    end
+  end
+
+  def full_timestamp(datetime) do
+    Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")
+  end
+
   defp group_session_ids(grouped_sessions, project_id, node) do
     Enum.find_value(grouped_sessions, [], fn {{node_name, project}, main, worktrees} ->
       matches_project? =

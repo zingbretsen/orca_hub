@@ -114,7 +114,7 @@
         phx-value-id={session.id}
       />
     </:col>
-    <:col :let={session} label="Title" class="w-3/5">
+    <:col :let={session} label="Title" class="w-2/5">
       <div class={["flex items-center gap-1", session.parent_session_id && "pl-6"]}>
         <.icon
           :if={session.parent_session_id}
@@ -156,6 +156,20 @@
           moved
         </span>
       </div>
+    </:col>
+    <:col
+      :let={session}
+      label="Created"
+      class="hidden md:table-cell whitespace-nowrap text-xs text-base-content/60"
+    >
+      <span title={full_timestamp(session.inserted_at)}>{time_ago(session.inserted_at)}</span>
+    </:col>
+    <:col
+      :let={session}
+      label="Updated"
+      class="hidden md:table-cell whitespace-nowrap text-xs text-base-content/60"
+    >
+      <span title={full_timestamp(session.updated_at)}>{time_ago(session.updated_at)}</span>
     </:col>
     <:action :let={session}>
       <.link
@@ -206,7 +220,7 @@
           phx-value-id={session.id}
         />
       </:col>
-      <:col :let={session} label="Title" class="w-3/5">
+      <:col :let={session} label="Title" class="w-2/5">
         <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">
           {session.title}
         </.link>
@@ -241,6 +255,20 @@
             moved
           </span>
         </div>
+      </:col>
+      <:col
+        :let={session}
+        label="Created"
+        class="hidden md:table-cell whitespace-nowrap text-xs text-base-content/60"
+      >
+        <span title={full_timestamp(session.inserted_at)}>{time_ago(session.inserted_at)}</span>
+      </:col>
+      <:col
+        :let={session}
+        label="Updated"
+        class="hidden md:table-cell whitespace-nowrap text-xs text-base-content/60"
+      >
+        <span title={full_timestamp(session.updated_at)}>{time_ago(session.updated_at)}</span>
       </:col>
       <:action :let={session}>
         <.link phx-click="archive" phx-value-id={session.id}>
