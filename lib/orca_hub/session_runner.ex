@@ -943,8 +943,14 @@ defmodule OrcaHub.SessionRunner do
       {port, framing} = open_port(prompt, data)
       session = db_call(data, :get_session!, [data.session_id])
       if session.archived_at, do: db_call(data, :unarchive_session, [session])
-      db_call(data, :update_session, [session, %{status: "running", error_detail: nil}])
+
+      db_call(data, :update_session, [
+        session,
+        Map.merge(%{status: "running", error_detail: nil}, clear_progress_attrs())
+      ])
+
       broadcast(data.session_id, {:status, :running})
+      broadcast(data.session_id, {:progress, nil, nil})
       AgentPresence.update_status(data.directory, data.session_id, "running")
 
       first_prompt = data.first_prompt || prompt
@@ -966,13 +972,27 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
+  # A fresh turn is starting — self-reported progress (report_progress) from a
+  # prior turn is stale the moment a new one begins, so every start-of-turn
+  # path clears it (see also start_running/start_streaming below).
+  defp clear_progress_attrs,
+    do: %{progress_phase: nil, progress_note: nil, progress_updated_at: nil}
+
   # When a hung run is resumed by a queued answer, leave "waiting" behind and
-  # reflect that the session is running again.
-  defp resume_clears_waiting(%{pending_questions: nil} = data), do: data
+  # reflect that the session is running again. Also called (with
+  # pending_questions: nil, a no-op for the "waiting" part) whenever a queued
+  # prompt starts a genuinely new turn on an already-running warm process, so
+  # it always clears stale progress regardless.
+  defp resume_clears_waiting(%{pending_questions: nil} = data) do
+    update_session_status(data, clear_progress_attrs())
+    broadcast(data.session_id, {:progress, nil, nil})
+    data
+  end
 
   defp resume_clears_waiting(data) do
-    update_session_status(data, %{status: "running"})
+    update_session_status(data, Map.put(clear_progress_attrs(), :status, "running"))
     broadcast(data.session_id, {:status, :running})
+    broadcast(data.session_id, {:progress, nil, nil})
     AgentPresence.update_status(data.directory, data.session_id, "running")
     data
   end
@@ -1108,8 +1128,14 @@ defmodule OrcaHub.SessionRunner do
 
     session = db_call(data, :get_session!, [data.session_id])
     if session.archived_at, do: db_call(data, :unarchive_session, [session])
-    db_call(data, :update_session, [session, %{status: "running", error_detail: nil}])
+
+    db_call(data, :update_session, [
+      session,
+      Map.merge(%{status: "running", error_detail: nil}, clear_progress_attrs())
+    ])
+
     broadcast(data.session_id, {:status, :running})
+    broadcast(data.session_id, {:progress, nil, nil})
     AgentPresence.update_status(data.directory, data.session_id, "running")
 
     first_prompt = data.first_prompt || prompt
