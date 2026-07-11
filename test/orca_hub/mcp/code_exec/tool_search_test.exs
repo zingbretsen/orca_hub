@@ -59,6 +59,15 @@ defmodule OrcaHub.MCP.CodeExec.ToolSearchTest do
     assert Enum.sort([first, second]) == ["search_notes", "web_search"]
   end
 
+  test "optional search terms participate in ranking" do
+    tools = [
+      %{name: "first_party_tool", description: "A tool", search_terms: "orca orcahub"},
+      tool("upstream_tool", "An external tool")
+    ]
+
+    assert names(ToolSearch.search(tools, "OrcaHub")) == ["first_party_tool"]
+  end
+
   test "no token overlap returns an empty list" do
     assert ToolSearch.search(corpus(), "zebra xylophone") == []
     assert ToolSearch.search(corpus(), "") == []

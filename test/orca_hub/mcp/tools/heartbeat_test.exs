@@ -21,6 +21,9 @@ defmodule OrcaHub.MCP.Tools.HeartbeatTest do
 
       assert %{"type" => "boolean"} = properties["watch_children"]
       assert %{"type" => "boolean"} = properties["only_if_changed"]
+      assert %{"type" => "integer"} = properties["interval_minutes"]
+      assert schedule_tool["inputSchema"]["required"] == ["message"]
+      assert schedule_tool["description"] =~ "ScheduleWakeup"
     end
   end
 
@@ -41,6 +44,48 @@ defmodule OrcaHub.MCP.Tools.HeartbeatTest do
                )
 
       assert msg =~ "interval_seconds"
+      assert HubRPC.get_heartbeat(id) == nil
+    end
+
+    test "converts a positive interval_minutes alias to seconds" do
+      id = unique_id()
+      on_exit(fn -> HubRPC.cancel_heartbeat(id) end)
+
+      assert %{"isError" => false} =
+               HeartbeatTool.call(
+                 "schedule_heartbeat",
+                 %{"interval_minutes" => 2, "message" => "check in"},
+                 state_for(id)
+               )
+
+      assert %{interval_seconds: 120} = HubRPC.get_heartbeat(id)
+    end
+
+    test "prefers interval_seconds when both interval units are given" do
+      id = unique_id()
+      on_exit(fn -> HubRPC.cancel_heartbeat(id) end)
+
+      assert %{"isError" => false} =
+               HeartbeatTool.call(
+                 "schedule_heartbeat",
+                 %{"interval_seconds" => 45, "interval_minutes" => 2, "message" => "check in"},
+                 state_for(id)
+               )
+
+      assert %{interval_seconds: 45} = HubRPC.get_heartbeat(id)
+    end
+
+    test "enforces the 30-second minimum after resolving the interval" do
+      id = unique_id()
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               HeartbeatTool.call(
+                 "schedule_heartbeat",
+                 %{"interval_seconds" => 29, "interval_minutes" => 2, "message" => "check in"},
+                 state_for(id)
+               )
+
+      assert msg =~ "at least 30 seconds"
       assert HubRPC.get_heartbeat(id) == nil
     end
 

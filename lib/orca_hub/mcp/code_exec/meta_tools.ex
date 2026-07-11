@@ -191,7 +191,9 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
           "upstream) — matched against tool names and descriptions, best match " <>
           "first (case-insensitive). Returns matching tools as " <>
           "{\"name\", \"description\", \"args\"} maps, where \"args\" lists argument " <>
-          "names (optional ones suffixed \"?\"). These tools are callable as " <>
+          "names with compact JSON-schema type hints in `name:type` form " <>
+          "(optional arguments use `name?:type`, e.g. `interval_seconds:integer`). " <>
+          "These tools are callable as " <>
           "Tools.<name>/1 inside run_elixir — use Tools.schema/1 there for a tool's " <>
           "full input schema.",
       "inputSchema" => %{
@@ -260,17 +262,64 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
 
   defp search_tools(query) when is_binary(query) do
     matches =
-      ToolGen.live_tools()
-      |> Enum.map(fn t -> %{name: t["name"], description: t["description"] || "", raw: t} end)
+      searchable_tools()
       |> ToolSearch.search(query)
       |> Enum.map(fn %{raw: t} ->
         %{
           "name" => t["name"],
           "description" => t["description"] || "",
-          "args" => ToolGen.arg_names(t["inputSchema"] || %{})
+          "args" => arg_hints(t["inputSchema"] || %{})
         }
       end)
 
     Result.text(Jason.encode!(%{"count" => length(matches), "tools" => matches}))
   end
+
+  # The live registry intentionally excludes the two code-exec meta-tools,
+  # because they are not callable through the generated Tools module. Search
+  # still needs to teach them: they are part of the code-exec MCP surface.
+  # First-party tools also get platform synonyms so an agent can discover the
+  # server's own capabilities by searching "orca" or "OrcaHub".
+  defp searchable_tools do
+    first_party_names =
+      OrcaHub.MCP.Tools.list()
+      |> Enum.map(& &1["name"])
+      |> MapSet.new()
+
+    ToolGen.live_tools()
+    |> Enum.map(fn tool ->
+      %{
+        name: tool["name"],
+        description: tool["description"] || "",
+        search_terms:
+          if(MapSet.member?(first_party_names, tool["name"]), do: "orca orcahub", else: ""),
+        raw: tool
+      }
+    end)
+    |> Kernel.++(
+      [run_elixir_tool(), search_tools_tool()]
+      |> Enum.map(fn tool ->
+        %{
+          name: tool["name"],
+          description: tool["description"] || "",
+          search_terms: "orca orcahub",
+          raw: tool
+        }
+      end)
+    )
+  end
+
+  defp arg_hints(%{"properties" => properties} = schema) when is_map(properties) do
+    required = schema["required"] || []
+
+    properties
+    |> Enum.sort_by(fn {name, _property} -> name end)
+    |> Enum.map(fn {name, property} ->
+      optional_marker = if name in required, do: "", else: "?"
+      type = Map.get(property, "type", "value")
+      "#{name}#{optional_marker}:#{type}"
+    end)
+  end
+
+  defp arg_hints(_schema), do: []
 end

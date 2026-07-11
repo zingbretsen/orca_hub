@@ -97,6 +97,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - Verify your changes with **targeted tests** for the files you touched; \
     the full suite runs later as the orchestrator's pre-deploy gate — don't \
     burn time running it per-task unless asked.
+    - Read a file before Edit/Write even when the task prompt quotes its exact \
+    current content; the guardrail requires it regardless.
     - If your task restarts the service/host hosting your own session \
     (deploys, systemctl restarts), send your report **before** triggering \
     the restart — your session may die with it and post-restart delivery \
@@ -126,6 +128,12 @@ defmodule OrcaHub.Backend.ClaudeTest do
       — argument names, optional ones suffixed "?"). `Tools.schema/1` returns \
       a map (or nil). Only tool *invocations* (below) auto-unwrap to \
       maps/lists.
+    - Before first using a deferred-schema tool (`Monitor`, `TaskCreate`, \
+      `WebFetch`, `ScheduleWakeup`, standalone `send_message_to_session`, or \
+      an early `mcp__orca__*` tool), load its real schema with ToolSearch/\
+      `search_tools`; never guess argument names. `No such tool available` or \
+      `InputValidationError` means its schema was not loaded yet, not that it \
+      does not exist.
     - **Call a tool** as `Tools.<raw_mcp_name>(args)`, e.g. \
       `Tools.open_file(%{"file_path" => "lib/foo.ex"})` or \
       `Tools.github__get_issue(%{"number" => 7})`. Named functions \
@@ -206,6 +214,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - Rely on lifecycle notifications plus `get_session_tail(...)` / activity metadata for progress; heartbeats are a coarse fallback — re-call `Tools.schedule_heartbeat(...)` at each stage change to keep its delivered message current (it updates in place, it doesn't stack).
     - `send_message_to_session(...)` to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with `get_session_tail(...)` first.
     - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. Workers verify with targeted tests only; the full suite runs once as a pre-deploy gate. No worktrees.
+    - Do not Read or Glob a different project's directory; delegate with `Tools.start_session(...)` using that project's `directory` instead.
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `list_feature_requests(...)` first — if it's already tracked, add what you found with `append_feature_request_note(...)` instead of filing a duplicate with `file_feature_request(...)`. Once a fix for a tracked request has shipped AND been verified, close it with `close_feature_request(...)` (pass a resolution note referencing the commit).
@@ -261,6 +270,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - Rely on lifecycle notifications plus `mcp__orca__get_session_tail` / activity metadata for progress; heartbeats are a coarse fallback — re-call `mcp__orca__schedule_heartbeat` at each stage change to keep its delivered message current (it updates in place, it doesn't stack).
     - `mcp__orca__send_message_to_session` to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with `mcp__orca__get_session_tail` first.
     - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. Workers verify with targeted tests only; the full suite runs once as a pre-deploy gate. No worktrees.
+    - Do not Read or Glob a different project's directory; delegate with `mcp__orca__start_session` using that project's `directory` instead.
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `mcp__orca__list_feature_requests` first — if it's already tracked, add what you found with `mcp__orca__append_feature_request_note` instead of filing a duplicate with `mcp__orca__file_feature_request`. Once a fix for a tracked request has shipped AND been verified, close it with `mcp__orca__close_feature_request` (pass a resolution note referencing the commit).
@@ -735,7 +745,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
       assert prompt =~ "Tools.schedule_heartbeat"
       assert prompt =~ "Tools.archive_session"
       assert prompt =~ "Tools.cancel_heartbeat"
-      refute prompt =~ "mcp__orca__"
+      assert prompt =~ "mcp__orca__*"
+      refute prompt =~ "mcp__orca__start_session"
     end
 
     test "tools: \"\" (no MCP at all): no submit_result instruction either" do
@@ -753,7 +764,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
       assert prompt == expected_system_prompt_api_run(ctx)
       assert prompt =~ "call the submit_result tool"
       refute prompt =~ "Orchestrator Session"
-      refute prompt =~ "mcp__orca__"
+      refute prompt =~ "mcp__orca__start_session"
       refute prompt =~ "Other agent sessions may be active"
     end
   end

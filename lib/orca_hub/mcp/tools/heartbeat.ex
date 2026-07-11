@@ -11,7 +11,7 @@ defmodule OrcaHub.MCP.Tools.Heartbeat do
       %{
         "name" => "schedule_heartbeat",
         "description" =>
-          "Schedule periodic heartbeat messages to your session. Use this when you're orchestrating other sessions or waiting for external events and need to periodically wake up to check status. The heartbeat will send the specified message to your session at the given interval, with an auto-digest of any watched sessions appended. Only one heartbeat can be active per session - calling this again updates the existing heartbeat. Call cancel_heartbeat when you're done with your task.",
+          "Schedule periodic heartbeat messages to your session. Unlike the Claude-CLI-native ScheduleWakeup tool (delaySeconds/prompt), this tool takes interval_seconds (integer seconds) and message. Use this when you're orchestrating other sessions or waiting for external events and need to periodically wake up to check status. The heartbeat will send the specified message to your session at the given interval, with an auto-digest of any watched sessions appended. Only one heartbeat can be active per session - calling this again updates the existing heartbeat. Call cancel_heartbeat when you're done with your task.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -19,6 +19,11 @@ defmodule OrcaHub.MCP.Tools.Heartbeat do
               "type" => "integer",
               "description" =>
                 "Interval between heartbeats in seconds. Minimum 30 seconds, no maximum."
+            },
+            "interval_minutes" => %{
+              "type" => "integer",
+              "description" =>
+                "Convenience alias for interval_seconds, in whole positive minutes. Used only when interval_seconds is absent."
             },
             "message" => %{
               "type" => "string",
@@ -42,7 +47,7 @@ defmodule OrcaHub.MCP.Tools.Heartbeat do
                 "If true, skip delivering a fire entirely when no watched session's status/phase/activity changed since the previous fire. No effect if there's no watch list. Default: false."
             }
           },
-          "required" => ["interval_seconds", "message"]
+          "required" => ["message"]
         }
       },
       %{
@@ -69,7 +74,8 @@ defmodule OrcaHub.MCP.Tools.Heartbeat do
           only_if_changed: args["only_if_changed"] == true
         }
 
-        do_schedule_heartbeat(session_id, args["interval_seconds"], args["message"], opts)
+        interval = resolve_interval(args["interval_seconds"], args["interval_minutes"])
+        do_schedule_heartbeat(session_id, interval, args["message"], opts)
     end
   end
 
@@ -94,6 +100,15 @@ defmodule OrcaHub.MCP.Tools.Heartbeat do
   end
 
   # ── schedule_heartbeat helpers ────────────────────────────────────────
+
+  defp resolve_interval(interval_seconds, _interval_minutes) when not is_nil(interval_seconds),
+    do: interval_seconds
+
+  defp resolve_interval(nil, interval_minutes)
+       when is_integer(interval_minutes) and interval_minutes > 0,
+       do: interval_minutes * 60
+
+  defp resolve_interval(_interval_seconds, _interval_minutes), do: nil
 
   defp do_schedule_heartbeat(_session_id, interval, _message, _opts)
        when not is_integer(interval) do

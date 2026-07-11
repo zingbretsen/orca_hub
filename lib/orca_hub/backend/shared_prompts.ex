@@ -43,6 +43,12 @@ defmodule OrcaHub.Backend.SharedPrompts do
       — argument names, optional ones suffixed "?"). `Tools.schema/1` returns \
       a map (or nil). Only tool *invocations* (below) auto-unwrap to \
       maps/lists.
+    - Before first using a deferred-schema tool (`Monitor`, `TaskCreate`, \
+      `WebFetch`, `ScheduleWakeup`, standalone `send_message_to_session`, or \
+      an early `mcp__orca__*` tool), load its real schema with ToolSearch/\
+      `search_tools`; never guess argument names. `No such tool available` or \
+      `InputValidationError` means its schema was not loaded yet, not that it \
+      does not exist.
     - **Call a tool** as `Tools.<raw_mcp_name>(args)`, e.g. \
       `Tools.open_file(%{"file_path" => "lib/foo.ex"})` or \
       `Tools.github__get_issue(%{"number" => 7})`. Named functions \
@@ -258,6 +264,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - Rely on lifecycle notifications plus #{tail_ref} / activity metadata for progress; heartbeats are a coarse fallback — re-call #{heartbeat_ref} at each stage change to keep its delivered message current (it updates in place, it doesn't stack).
     - #{message_ref} to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with #{tail_ref} first.
     - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. Workers verify with targeted tests only; the full suite runs once as a pre-deploy gate. No worktrees.
+    - Do not Read or Glob a different project's directory; delegate with #{if(code_exec, do: "`Tools.start_session(...)`", else: "`mcp__orca__start_session`")} using that project's `directory` instead.
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with #{list_feature_requests_ref} first — if it's already tracked, add what you found with #{append_feature_request_note_ref} instead of filing a duplicate with #{feature_request_ref}. Once a fix for a tracked request has shipped AND been verified, close it with #{close_feature_request_ref} (pass a resolution note referencing the commit).
@@ -298,6 +305,8 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - Verify your changes with **targeted tests** for the files you touched; \
     the full suite runs later as the orchestrator's pre-deploy gate — don't \
     burn time running it per-task unless asked.
+    - Read a file before Edit/Write even when the task prompt quotes its exact \
+    current content; the guardrail requires it regardless.
     - If your task restarts the service/host hosting your own session \
     (deploys, systemctl restarts), send your report **before** triggering \
     the restart — your session may die with it and post-restart delivery \

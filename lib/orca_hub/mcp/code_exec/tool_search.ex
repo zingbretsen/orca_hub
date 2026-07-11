@@ -12,8 +12,9 @@ defmodule OrcaHub.MCP.CodeExec.ToolSearch do
   Pure Elixir, no deps, no index: the corpus is whatever tool list is passed
   in per call (~150 docs at our scale), so IDF is computed fresh each time.
   A document is a tool's name tokens (counted TWICE — a cheap name-field
-  boost) plus its description tokens. Tokenization downcases and splits on
-  non-alphanumerics, which also splits snake_case tool names into words.
+  boost), description tokens, and any optional search-term tokens.
+  Tokenization downcases and splits on non-alphanumerics, which also splits
+  snake_case tool names into words.
 
   Two deliberate deviations from textbook BM25:
 
@@ -82,9 +83,13 @@ defmodule OrcaHub.MCP.CodeExec.ToolSearch do
 
   # --- Internals ---
 
-  defp doc_tokens(%{name: name, description: description}) do
+  defp doc_tokens(%{name: name, description: description} = tool) do
     name_tokens = tokenize(name)
-    name_tokens ++ name_tokens ++ tokenize(description || "")
+
+    name_tokens ++
+      name_tokens ++
+      tokenize(description || "") ++
+      tokenize(Map.get(tool, :search_terms, ""))
   end
 
   defp average_doc_length([]), do: 1.0

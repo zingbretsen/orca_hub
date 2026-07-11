@@ -443,7 +443,29 @@ defmodule OrcaHub.MCP.CodeExecTest do
       assert %{"name" => "open_file", "args" => args} =
                Enum.find(tools, &(&1["name"] == "open_file"))
 
-      assert args == ["file_path", "line?"]
+      assert args == ["file_path:string", "line?:integer"]
+    end
+
+    test "search_tools finds first-party tools by the OrcaHub platform name" do
+      result = MetaTools.call("search_tools", %{"query" => "OrcaHub"}, %{})
+      %{"tools" => tools} = Jason.decode!(hd(result["content"])["text"])
+
+      platform_tool_names =
+        OrcaHub.MCP.Tools.list()
+        |> Enum.map(& &1["name"])
+        |> Kernel.++(~w(run_elixir search_tools))
+        |> MapSet.new()
+
+      assert tools != []
+      assert Enum.all?(tools, &MapSet.member?(platform_tool_names, &1["name"]))
+      assert Enum.any?(tools, &(&1["name"] == "search_sessions"))
+    end
+
+    test "search_tools includes run_elixir from the meta-tool corpus" do
+      result = MetaTools.call("search_tools", %{"query" => "elixir"}, %{})
+      %{"tools" => tools} = Jason.decode!(hd(result["content"])["text"])
+
+      assert Enum.any?(tools, &(&1["name"] == "run_elixir"))
     end
   end
 
@@ -524,6 +546,7 @@ defmodule OrcaHub.MCP.CodeExecTest do
     test "search_tools' description points at Tools.schema for full schemas" do
       search_tools = Enum.find(MetaTools.list(), &(&1["name"] == "search_tools"))
       assert search_tools["description"] =~ "Tools.schema"
+      assert search_tools["description"] =~ "name:type"
     end
   end
 
