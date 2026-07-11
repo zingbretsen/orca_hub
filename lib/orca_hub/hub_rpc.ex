@@ -114,6 +114,9 @@ defmodule OrcaHub.HubRPC do
   def list_issues_for_project(project_id),
     do: call(OrcaHub.Issues, :list_issues_for_project, [project_id])
 
+  def list_issues_by_id_prefix(prefix),
+    do: call(OrcaHub.Issues, :list_issues_by_id_prefix, [prefix])
+
   def append_issue_note(issue, note), do: call(OrcaHub.Issues, :append_note, [issue, note])
   def close_issue(issue), do: call(OrcaHub.Issues, :close_issue, [issue])
   def reopen_issue(issue), do: call(OrcaHub.Issues, :reopen_issue, [issue])

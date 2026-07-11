@@ -43,6 +43,17 @@ defmodule OrcaHub.Issues do
     )
   end
 
+  @doc """
+  Issues whose id, cast to text, starts with `prefix` — backs short/prefix id
+  resolution for the feature-request MCP tools. `prefix` should already be a
+  validated hex string (with UUID dashes reinserted at canonical positions as
+  needed) by the caller; further scoping (e.g. to agent-filed issues) is left
+  to the caller too, same as the rest of this module.
+  """
+  def list_issues_by_id_prefix(prefix) do
+    Repo.all(from i in Issue, where: fragment("?::text LIKE ?", i.id, ^"#{prefix}%"))
+  end
+
   @doc "Every issue, open first, newest first within each group."
   def list_issues do
     Repo.all(

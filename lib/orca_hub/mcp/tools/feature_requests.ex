@@ -32,6 +32,12 @@ defmodule OrcaHub.MCP.Tools.FeatureRequests do
 
   @orca_hub_directory "/home/zach/orca_hub"
   @title_prefix "[agent-fr] "
+  @id_description "The feature request's issue id — a full id or an unambiguous prefix " <>
+                    "(>= 8 hex chars, dashes optional), like the short id shown in URLs " <>
+                    "and session messages."
+
+  @full_uuid_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  @hex_only_regex ~r/^[0-9a-f]+$/i
 
   def list do
     [
@@ -95,7 +101,7 @@ defmodule OrcaHub.MCP.Tools.FeatureRequests do
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
-            "id" => %{"type" => "string", "description" => "The feature request's issue id."}
+            "id" => %{"type" => "string", "description" => @id_description}
           },
           "required" => ["id"]
         }
@@ -109,7 +115,7 @@ defmodule OrcaHub.MCP.Tools.FeatureRequests do
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
-            "id" => %{"type" => "string", "description" => "The feature request's issue id."},
+            "id" => %{"type" => "string", "description" => @id_description},
             "note" => %{"type" => "string", "description" => "The note text to append."}
           },
           "required" => ["id", "note"]
@@ -125,7 +131,7 @@ defmodule OrcaHub.MCP.Tools.FeatureRequests do
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
-            "id" => %{"type" => "string", "description" => "The feature request's issue id."},
+            "id" => %{"type" => "string", "description" => @id_description},
             "resolution_note" => %{
               "type" => "string",
               "description" =>
@@ -414,8 +420,20 @@ defmodule OrcaHub.MCP.Tools.FeatureRequests do
   end
 
   # Only agent-filed issues are readable/annotatable through these tools —
-  # same scope as file_feature_request's write path.
+  # same scope as file_feature_request's write path. Accepts either a full
+  # id or an unambiguous hex prefix (>= 8 chars, dashes optional) — the
+  # short id surfaced in /issues URLs, dedup responses, and session
+  # messages — instead of only the full UUID Repo.get expects (a bare
+  # short id there raises a raw Ecto.Query.CastError).
   defp fetch_agent_issue(id) do
+    if Regex.match?(@full_uuid_regex, id) do
+      fetch_agent_issue_by_exact_id(id)
+    else
+      fetch_agent_issue_by_prefix(id)
+    end
+  end
+
+  defp fetch_agent_issue_by_exact_id(id) do
     case HubRPC.get_issue(id) do
       %Issue{title: title} = issue ->
         if String.starts_with?(title, @title_prefix) do
@@ -427,6 +445,52 @@ defmodule OrcaHub.MCP.Tools.FeatureRequests do
       nil ->
         {:error, "No agent-filed feature request found with id #{id}."}
     end
+  end
+
+  defp fetch_agent_issue_by_prefix(id) do
+    hex = String.replace(id, "-", "")
+
+    if Regex.match?(@hex_only_regex, hex) and String.length(hex) in 8..32 do
+      hex
+      |> String.downcase()
+      |> uuid_prefix_pattern()
+      |> HubRPC.list_issues_by_id_prefix()
+      |> Enum.filter(&String.starts_with?(&1.title, @title_prefix))
+      |> resolve_prefix_matches(id)
+    else
+      {:error,
+       "\"#{id}\" isn't a valid feature request id — pass a full id or a hex prefix of at " <>
+         "least 8 characters."}
+    end
+  end
+
+  defp resolve_prefix_matches([issue], _id), do: {:ok, issue}
+
+  defp resolve_prefix_matches([], id) do
+    {:error, "No feature request found with id starting \"#{id}\"."}
+  end
+
+  defp resolve_prefix_matches(issues, id) do
+    matches = Enum.map_join(issues, ", ", &"#{&1.id} (#{&1.title})")
+
+    {:error,
+     "Multiple feature requests match id prefix \"#{id}\": #{matches}. Use a longer prefix or the full id."}
+  end
+
+  # Splits a hex prefix at canonical UUID group boundaries (8-4-4-4-12) and
+  # rejoins with dashes, so a dash-free short id like "bbdce095" or a longer
+  # "bbdce0958b65..." both produce a valid `id::text LIKE` pattern regardless
+  # of whether the caller included dashes.
+  defp uuid_prefix_pattern(hex) do
+    {a, rest} = String.split_at(hex, 8)
+    {b, rest} = String.split_at(rest, 4)
+    {c, rest} = String.split_at(rest, 4)
+    {d, rest} = String.split_at(rest, 4)
+    {e, _} = String.split_at(rest, 12)
+
+    [a, b, c, d, e]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("-")
   end
 
   defp note_provenance(state) do

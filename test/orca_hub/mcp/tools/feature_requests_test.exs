@@ -13,7 +13,8 @@ defmodule OrcaHub.MCP.Tools.FeatureRequestsTest do
   use OrcaHub.DataCase, async: true
 
   alias OrcaHub.MCP.Tools.FeatureRequests, as: FeatureRequestsTool
-  alias OrcaHub.{Issues, Projects}
+  alias OrcaHub.Issues.Issue
+  alias OrcaHub.{Issues, Projects, Repo}
 
   @orca_hub_directory "/home/zach/orca_hub"
 
@@ -29,6 +30,15 @@ defmodule OrcaHub.MCP.Tools.FeatureRequestsTest do
 
   defp unique_id, do: Ecto.UUID.generate()
   defp state_for(session_id), do: %{orca_session_id: session_id}
+
+  defp file_request(title) do
+    FeatureRequestsTool.call(
+      "file_feature_request",
+      %{"title" => title, "description" => "d"},
+      state_for(unique_id())
+    )
+    |> then(fn %{"content" => [%{"text" => body}]} -> Jason.decode!(body) end)
+  end
 
   # The read tools (list/get/append) resolve against whatever project is
   # currently registered for @orca_hub_directory — in the shared dev DB that
@@ -431,6 +441,130 @@ defmodule OrcaHub.MCP.Tools.FeatureRequestsTest do
                )
 
       assert msg =~ "No agent-filed feature request found"
+    end
+  end
+
+  describe "call/3 id prefix resolution" do
+    setup :isolate_orca_hub_project
+
+    test "resolves an 8-char id prefix the same as the full id" do
+      %{"id" => id} = file_request("Prefix hit target #{System.unique_integer([:positive])}")
+      short_id = String.slice(id, 0, 8)
+
+      assert %{"isError" => false, "content" => [%{"text" => body}]} =
+               FeatureRequestsTool.call(
+                 "get_feature_request",
+                 %{"id" => short_id},
+                 state_for(unique_id())
+               )
+
+      assert Jason.decode!(body)["id"] == id
+    end
+
+    test "resolves an 8-char prefix for append_feature_request_note and close_feature_request too" do
+      %{"id" => id} =
+        file_request("Prefix append/close target #{System.unique_integer([:positive])}")
+
+      short_id = String.slice(id, 0, 8)
+
+      assert %{"isError" => false, "content" => [%{"text" => body}]} =
+               FeatureRequestsTool.call(
+                 "append_feature_request_note",
+                 %{"id" => short_id, "note" => "via prefix"},
+                 state_for(unique_id())
+               )
+
+      assert Jason.decode!(body)["id"] == id
+
+      assert %{"isError" => false, "content" => [%{"text" => body}]} =
+               FeatureRequestsTool.call(
+                 "close_feature_request",
+                 %{"id" => short_id},
+                 state_for(unique_id())
+               )
+
+      assert Jason.decode!(body)["id"] == id
+    end
+
+    test "a full uuid still works unchanged" do
+      %{"id" => id} = file_request("Full uuid target #{System.unique_integer([:positive])}")
+
+      assert %{"isError" => false, "content" => [%{"text" => body}]} =
+               FeatureRequestsTool.call(
+                 "get_feature_request",
+                 %{"id" => id},
+                 state_for(unique_id())
+               )
+
+      assert Jason.decode!(body)["id"] == id
+    end
+
+    test "errors with a friendly message for an unknown prefix" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call(
+                 "get_feature_request",
+                 %{"id" => "deadbeef"},
+                 state_for(unique_id())
+               )
+
+      assert msg =~ "No feature request found with id starting \"deadbeef\""
+    end
+
+    test "errors with a friendly message (not a raw Ecto exception) for garbage input" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call(
+                 "get_feature_request",
+                 %{"id" => "not-a-uuid"},
+                 state_for(unique_id())
+               )
+
+      assert msg =~ "isn't a valid feature request id"
+    end
+
+    test "errors with a friendly message for a too-short prefix" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call(
+                 "get_feature_request",
+                 %{"id" => "abc123"},
+                 state_for(unique_id())
+               )
+
+      assert msg =~ "isn't a valid feature request id"
+    end
+
+    test "errors listing the matching ids/titles when a prefix is ambiguous", %{
+      project: project
+    } do
+      shared_prefix = "aaaaaaaa"
+
+      {:ok, issue_a} =
+        %Issue{id: shared_prefix <> "-0000-4000-8000-000000000001"}
+        |> Issue.changeset(%{
+          title: "[agent-fr] Ambiguous prefix A",
+          project_id: project.id,
+          status: "open"
+        })
+        |> Repo.insert()
+
+      {:ok, issue_b} =
+        %Issue{id: shared_prefix <> "-0000-4000-8000-000000000002"}
+        |> Issue.changeset(%{
+          title: "[agent-fr] Ambiguous prefix B",
+          project_id: project.id,
+          status: "open"
+        })
+        |> Repo.insert()
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call(
+                 "get_feature_request",
+                 %{"id" => shared_prefix},
+                 state_for(unique_id())
+               )
+
+      assert msg =~ "Multiple feature requests match"
+      assert msg =~ issue_a.id
+      assert msg =~ issue_b.id
     end
   end
 

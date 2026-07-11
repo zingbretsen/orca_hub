@@ -101,6 +101,21 @@ defmodule OrcaHub.IssuesTest do
     end
   end
 
+  describe "list_issues_by_id_prefix/1" do
+    test "matches issues whose id starts with the given prefix", %{project: project} do
+      {:ok, issue} = Issues.create_issue(%{title: "prefix match", project_id: project.id})
+      prefix = String.slice(issue.id, 0, 8)
+
+      ids = Issues.list_issues_by_id_prefix(prefix) |> Enum.map(& &1.id)
+
+      assert issue.id in ids
+    end
+
+    test "returns an empty list when nothing matches the prefix" do
+      assert Issues.list_issues_by_id_prefix("deadbeef") == []
+    end
+  end
+
   describe "list_issues/0" do
     test "returns open issues before closed issues", %{project: project} do
       {:ok, open_a} = Issues.create_issue(%{title: "open a", project_id: project.id})
