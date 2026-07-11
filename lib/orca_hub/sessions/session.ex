@@ -47,6 +47,20 @@ defmodule OrcaHub.Sessions.Session do
     # turn-level error message), truncated. Set when status becomes "error";
     # cleared when a later run succeeds. See SessionRunner.handle_cli_error/2.
     field :error_detail, :string
+    # Self-reported phase (e.g. "planning", "implementing") set by the
+    # report_progress MCP tool — a coarse, non-interrupting progress signal
+    # distinct from `status`. Cleared at the start of every new turn (see
+    # SessionRunner's resume_clears_waiting/start_running/start_streaming) so
+    # a stale phase from a prior turn can't survive into a fresh run.
+    field :progress_phase, :string
+    field :progress_note, :string
+    field :progress_updated_at, :utc_datetime
+    # Caller-supplied dedup key for start_session (Agent Runs API and
+    # orchestrator retries): a repeat start_session with the same key against
+    # a non-archived session returns that session instead of spawning a
+    # duplicate. Not unique at the DB level — archived sessions with the same
+    # key are ignored by that lookup, not deleted.
+    field :idempotency_key, :string
 
     has_many :messages, OrcaHub.Sessions.Message
     belongs_to :project, OrcaHub.Projects.Project
@@ -74,7 +88,11 @@ defmodule OrcaHub.Sessions.Session do
       :parent_session_id,
       :notify_parent,
       :streaming,
-      :error_detail
+      :error_detail,
+      :progress_phase,
+      :progress_note,
+      :progress_updated_at,
+      :idempotency_key
     ])
     # Cast separately with empty_values: [] — cast/4's default empty_values
     # ([""]) would otherwise silently turn an explicit `tools: ""` (the "no
