@@ -113,6 +113,16 @@ defmodule OrcaHub.BackendTest do
   end
 
   describe "encode_toggle_plan_mode/2 — optional callback dispatch (spec §12.4)" do
+    # function_exported?/3 (Backend.encode_toggle_plan_mode/2's dispatch check)
+    # requires the target module to already be LOADED and does not autoload
+    # it — force it explicitly so this test doesn't depend on some OTHER test
+    # file (e.g. pi_test.exs, which calls real Backend.Pi functions) happening
+    # to run first and trigger the load as a side effect.
+    setup do
+      Code.ensure_loaded!(OrcaHub.Backend.Pi)
+      :ok
+    end
+
     test "pi implements it — dispatches through" do
       assert {:ok, iodata, _ctx} =
                Backend.encode_toggle_plan_mode(OrcaHub.Backend.Pi, %{backend_state: %{}})
