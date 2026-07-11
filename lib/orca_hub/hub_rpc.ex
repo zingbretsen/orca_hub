@@ -92,6 +92,19 @@ defmodule OrcaHub.HubRPC do
   def search_projects(query), do: call(OrcaHub.Projects, :search, [query])
 
   # -------------------------------------------------------------------
+  # Issues (minimal — backs the file_feature_request MCP tool only; see
+  # OrcaHub.Issues moduledoc)
+  # -------------------------------------------------------------------
+
+  def create_issue(attrs), do: call(OrcaHub.Issues, :create_issue, [attrs])
+  def get_issue(id), do: call(OrcaHub.Issues, :get_issue, [id])
+
+  def list_open_issues_for_project(project_id),
+    do: call(OrcaHub.Issues, :list_open_issues_for_project, [project_id])
+
+  def append_issue_note(issue, note), do: call(OrcaHub.Issues, :append_note, [issue, note])
+
+  # -------------------------------------------------------------------
   # Triggers
   # -------------------------------------------------------------------
 

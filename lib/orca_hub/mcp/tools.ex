@@ -26,14 +26,14 @@ defmodule OrcaHub.MCP.Tools do
 
   require Logger
 
-  alias OrcaHub.MCP.Tools.{Discord, Files, Heartbeat, Result, Sessions, Triggers}
+  alias OrcaHub.MCP.Tools.{Discord, FeatureRequests, Files, Heartbeat, Result, Sessions, Triggers}
 
-  @categories [Sessions, Triggers, Files, Heartbeat, Discord]
+  @categories [Sessions, Triggers, Files, Heartbeat, Discord, FeatureRequests]
 
   # Tools visible to regular (non-orchestrator) connections. Orchestrator
   # connections see every tool. `send_discord_message` is deliberately absent
   # here — its visibility is conditional (see moduledoc), not static.
-  @regular_session_tools ~w(send_message_to_session open_file report_progress)
+  @regular_session_tools ~w(send_message_to_session open_file report_progress file_feature_request)
 
   @doc "Return every MCP tool definition map across every category."
   def list do
