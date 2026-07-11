@@ -3,8 +3,10 @@ defmodule OrcaHubWeb.IssueLive.Index do
   Read-only listing of the agent-filed (and any human-filed) issue backlog.
 
   Deliberately minimal per `OrcaHub.Issues`' moduledoc — no create/edit/
-  delete/status-change UI. Just enough to browse what `file_feature_request`
-  has been filing.
+  delete UI, just enough to browse what `file_feature_request` has been
+  filing. Closed issues render dimmed, sorted after open ones. Closing/
+  reopening itself lives on `IssueLive.Show`, the one status-change action
+  this UI supports.
   """
   use OrcaHubWeb, :live_view
 

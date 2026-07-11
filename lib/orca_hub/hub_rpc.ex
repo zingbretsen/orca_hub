@@ -108,6 +108,8 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.Issues, :list_issues_for_project, [project_id])
 
   def append_issue_note(issue, note), do: call(OrcaHub.Issues, :append_note, [issue, note])
+  def close_issue(issue), do: call(OrcaHub.Issues, :close_issue, [issue])
+  def reopen_issue(issue), do: call(OrcaHub.Issues, :reopen_issue, [issue])
 
   # -------------------------------------------------------------------
   # Triggers

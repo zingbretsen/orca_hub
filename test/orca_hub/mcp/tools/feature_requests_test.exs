@@ -74,6 +74,15 @@ defmodule OrcaHub.MCP.Tools.FeatureRequestsTest do
 
       assert append_tool["inputSchema"]["required"] == ["id", "note"]
     end
+
+    test "exposes close_feature_request with only id required, resolution_note optional" do
+      names = FeatureRequestsTool.list() |> Enum.map(& &1["name"])
+      assert "close_feature_request" in names
+
+      tool = Enum.find(FeatureRequestsTool.list(), &(&1["name"] == "close_feature_request"))
+      assert tool["inputSchema"]["required"] == ["id"]
+      assert Map.has_key?(tool["inputSchema"]["properties"], "resolution_note")
+    end
   end
 
   describe "call/3 validation" do
@@ -485,6 +494,100 @@ defmodule OrcaHub.MCP.Tools.FeatureRequestsTest do
                FeatureRequestsTool.call(
                  "append_feature_request_note",
                  %{"id" => Ecto.UUID.generate(), "note" => "x"},
+                 state_for(unique_id())
+               )
+
+      assert msg =~ "No agent-filed feature request found"
+    end
+  end
+
+  describe "call/3 close_feature_request" do
+    setup :isolate_orca_hub_project
+
+    test "closes an agent-filed issue with no resolution note" do
+      %{"id" => id} =
+        FeatureRequestsTool.call(
+          "file_feature_request",
+          %{
+            "title" => "Close target #{System.unique_integer([:positive])}",
+            "description" => "d"
+          },
+          state_for(unique_id())
+        )
+        |> then(fn %{"content" => [%{"text" => body}]} -> Jason.decode!(body) end)
+
+      assert %{"isError" => false, "content" => [%{"text" => body}]} =
+               FeatureRequestsTool.call(
+                 "close_feature_request",
+                 %{"id" => id},
+                 state_for(unique_id())
+               )
+
+      result = Jason.decode!(body)
+      assert result["id"] == id
+      assert result["status"] == "closed"
+
+      issue = Issues.get_issue!(id)
+      assert issue.status == "closed"
+      refute issue.notes
+    end
+
+    test "appends a resolution note with provenance before closing" do
+      session_id = unique_id()
+
+      %{"id" => id} =
+        FeatureRequestsTool.call(
+          "file_feature_request",
+          %{
+            "title" => "Close with note #{System.unique_integer([:positive])}",
+            "description" => "d"
+          },
+          state_for(unique_id())
+        )
+        |> then(fn %{"content" => [%{"text" => body}]} -> Jason.decode!(body) end)
+
+      assert %{"isError" => false, "content" => [%{"text" => body}]} =
+               FeatureRequestsTool.call(
+                 "close_feature_request",
+                 %{"id" => id, "resolution_note" => "Fixed in abc1234"},
+                 state_for(session_id)
+               )
+
+      result = Jason.decode!(body)
+      assert result["status"] == "closed"
+
+      issue = Issues.get_issue!(id)
+      assert issue.status == "closed"
+      assert issue.notes =~ "Fixed in abc1234"
+      assert issue.notes =~ "Session: #{session_id}"
+    end
+
+    test "errors on a missing id" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call("close_feature_request", %{}, state_for(unique_id()))
+
+      assert msg =~ "id"
+    end
+
+    test "errors for an unknown id" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call(
+                 "close_feature_request",
+                 %{"id" => Ecto.UUID.generate()},
+                 state_for(unique_id())
+               )
+
+      assert msg =~ "No agent-filed feature request found"
+    end
+
+    test "errors for a human-filed issue (out of scope)", %{project: project} do
+      title = "Human filed for close #{System.unique_integer([:positive])}"
+      {:ok, human_issue} = Issues.create_issue(%{title: title, project_id: project.id})
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call(
+                 "close_feature_request",
+                 %{"id" => human_issue.id},
                  state_for(unique_id())
                )
 

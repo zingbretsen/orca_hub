@@ -19,6 +19,11 @@ defmodule OrcaHub.MCP.Tools.FeatureRequests do
   same as `file_feature_request`'s write scope. `append_feature_request_note`
   is what `file_feature_request`'s dedup path now points callers at instead
   of creating a duplicate.
+
+  `close_feature_request` closes out an agent-filed request once its fix has
+  shipped and been verified — same agent-filed-only scope. An optional
+  `resolution_note` is appended (with the standard note provenance line)
+  before closing, the same way `append_feature_request_note` records one.
   """
   import OrcaHub.MCP.Tools.Result
 
@@ -109,6 +114,26 @@ defmodule OrcaHub.MCP.Tools.FeatureRequests do
           },
           "required" => ["id", "note"]
         }
+      },
+      %{
+        "name" => "close_feature_request",
+        "description" =>
+          "Close an agent-filed feature request once its fix has shipped and been " <>
+            "verified. Pass a `resolution_note` (e.g. referencing the commit that fixed " <>
+            "it) to record how it was resolved before closing — appended the same way " <>
+            "append_feature_request_note does.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "id" => %{"type" => "string", "description" => "The feature request's issue id."},
+            "resolution_note" => %{
+              "type" => "string",
+              "description" =>
+                "Optional note recording how/where this was resolved, e.g. a commit SHA."
+            }
+          },
+          "required" => ["id"]
+        }
       }
     ]
   end
@@ -154,6 +179,16 @@ defmodule OrcaHub.MCP.Tools.FeatureRequests do
 
       true ->
         append_request_note(id, note, state)
+    end
+  end
+
+  def call("close_feature_request", args, state) do
+    id = args["id"]
+
+    if is_binary(id) and id != "" do
+      close_request(id, args["resolution_note"], state)
+    else
+      error("close_feature_request requires a non-empty `id` string argument.")
     end
   end
 
@@ -354,6 +389,28 @@ defmodule OrcaHub.MCP.Tools.FeatureRequests do
       {:error, message} ->
         error(message)
     end
+  end
+
+  defp close_request(id, resolution_note, state) do
+    case fetch_agent_issue(id) do
+      {:ok, issue} ->
+        with {:ok, issue} <- maybe_append_resolution_note(issue, resolution_note, state),
+             {:ok, closed} <- HubRPC.close_issue(issue) do
+          text(Jason.encode!(%{id: closed.id, title: closed.title, status: closed.status}))
+        else
+          {:error, changeset} ->
+            error("Failed to close feature request: #{inspect(changeset.errors)}")
+        end
+
+      {:error, message} ->
+        error(message)
+    end
+  end
+
+  defp maybe_append_resolution_note(issue, note, _state) when note in [nil, ""], do: {:ok, issue}
+
+  defp maybe_append_resolution_note(issue, note, state) do
+    HubRPC.append_issue_note(issue, note <> "\n\n" <> note_provenance(state))
   end
 
   # Only agent-filed issues are readable/annotatable through these tools —

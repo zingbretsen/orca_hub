@@ -54,4 +54,37 @@ defmodule OrcaHubWeb.IssueLive.ShowTest do
       live(conn, ~p"/issues/#{Ecto.UUID.generate()}")
     end
   end
+
+  test "closing an open issue updates its status and swaps the button to Reopen", %{
+    conn: conn,
+    project: project
+  } do
+    {:ok, issue} = Issues.create_issue(%{title: "Open issue", project_id: project.id})
+
+    {:ok, view, _html} = live(conn, ~p"/issues/#{issue.id}")
+
+    html = view |> element("button", "Close") |> render_click()
+
+    assert html =~ "closed"
+    refute html =~ ">Close<"
+    assert html =~ "Reopen"
+    assert Issues.get_issue!(issue.id).status == "closed"
+  end
+
+  test "reopening a closed issue updates its status and swaps the button to Close", %{
+    conn: conn,
+    project: project
+  } do
+    {:ok, issue} =
+      Issues.create_issue(%{title: "Closed issue", project_id: project.id, status: "closed"})
+
+    {:ok, view, _html} = live(conn, ~p"/issues/#{issue.id}")
+
+    html = view |> element("button", "Reopen") |> render_click()
+
+    assert html =~ "open"
+    refute html =~ ">Reopen<"
+    assert html =~ "Close"
+    assert Issues.get_issue!(issue.id).status == "open"
+  end
 end

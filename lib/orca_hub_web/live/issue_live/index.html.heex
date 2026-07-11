@@ -9,7 +9,10 @@
   row_click={fn issue -> JS.navigate(~p"/issues/#{issue.id}") end}
 >
   <:col :let={issue} label="Title">
-    <.link navigate={~p"/issues/#{issue.id}"} class="link link-hover">
+    <.link
+      navigate={~p"/issues/#{issue.id}"}
+      class={["link link-hover", issue.status == "closed" && "opacity-50"]}
+    >
       {issue.title}
     </.link>
   </:col>
@@ -18,16 +21,18 @@
       "badge",
       issue.status == "open" && "badge-info",
       issue.status == "in_progress" && "badge-warning",
-      issue.status == "closed" && "badge-success"
+      issue.status == "closed" && "badge-success opacity-60"
     ]}>
       {issue.status}
     </span>
   </:col>
   <:col :let={issue} label="Category">
-    {category(issue) || "—"}
+    <span class={issue.status == "closed" && "opacity-50"}>{category(issue) || "—"}</span>
   </:col>
   <:col :let={issue} label="Filed">
-    {Calendar.strftime(issue.inserted_at, "%Y-%m-%d %H:%M")}
+    <span class={issue.status == "closed" && "opacity-50"}>
+      {Calendar.strftime(issue.inserted_at, "%Y-%m-%d %H:%M")}
+    </span>
   </:col>
 </.table>
 

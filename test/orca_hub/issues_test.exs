@@ -119,6 +119,22 @@ defmodule OrcaHub.IssuesTest do
     end
   end
 
+  describe "close_issue/1 and reopen_issue/1" do
+    test "closes an open issue", %{project: project} do
+      {:ok, issue} = Issues.create_issue(%{title: "x", project_id: project.id})
+
+      assert {:ok, closed} = Issues.close_issue(issue)
+      assert closed.status == "closed"
+    end
+
+    test "reopens a closed issue", %{project: project} do
+      {:ok, issue} = Issues.create_issue(%{title: "x", project_id: project.id, status: "closed"})
+
+      assert {:ok, reopened} = Issues.reopen_issue(issue)
+      assert reopened.status == "open"
+    end
+  end
+
   describe "append_note/2" do
     test "sets notes when previously empty", %{project: project} do
       {:ok, issue} = Issues.create_issue(%{title: "x", project_id: project.id})

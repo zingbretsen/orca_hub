@@ -9,6 +9,19 @@
   ]}>
     {@issue.status}
   </span>
+
+  <:actions>
+    <button
+      :if={@issue.status != "closed"}
+      phx-click="close"
+      class="btn btn-sm btn-outline"
+    >
+      Close
+    </button>
+    <button :if={@issue.status == "closed"} phx-click="reopen" class="btn btn-sm btn-outline">
+      Reopen
+    </button>
+  </:actions>
 </.header>
 
 <div

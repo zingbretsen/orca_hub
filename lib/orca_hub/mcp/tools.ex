@@ -34,7 +34,8 @@ defmodule OrcaHub.MCP.Tools do
   # connections see every tool. `send_discord_message` is deliberately absent
   # here — its visibility is conditional (see moduledoc), not static.
   @regular_session_tools ~w(send_message_to_session open_file report_progress file_feature_request
-                             list_feature_requests get_feature_request append_feature_request_note)
+                             list_feature_requests get_feature_request append_feature_request_note
+                             close_feature_request)
 
   @doc "Return every MCP tool definition map across every category."
   def list do

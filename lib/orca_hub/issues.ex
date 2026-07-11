@@ -6,10 +6,10 @@ defmodule OrcaHub.Issues do
   linkage, and this context were all deleted); the `issues` table and
   `sessions.issue_id` column were deliberately left in place. This module
   reintroduces just enough of the original `OrcaHub.Issues` to back the
-  `file_feature_request` MCP tool and a minimal read-only browsing UI —
-  create, fetch, list-open-for-project, list-all, and append a note. No
-  project/session association management, no closing/reopening workflow —
-  that's UI territory that stays removed.
+  `file_feature_request` MCP tool and a minimal browsing UI — create,
+  fetch, list-open-for-project, list-all, append a note, and close/reopen.
+  No project/session association management beyond that — the rest of the
+  original feature stays removed.
   """
 
   import Ecto.Query
@@ -68,4 +68,10 @@ defmodule OrcaHub.Issues do
 
     update_issue(issue, %{notes: updated})
   end
+
+  @doc "Transitions an issue to closed status."
+  def close_issue(%Issue{} = issue), do: update_issue(issue, %{status: "closed"})
+
+  @doc "Transitions a closed issue back to open status."
+  def reopen_issue(%Issue{} = issue), do: update_issue(issue, %{status: "open"})
 end

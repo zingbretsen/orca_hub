@@ -59,6 +59,15 @@ defmodule OrcaHubWeb.IssueLive.IndexTest do
     assert open_index < closed_index
   end
 
+  test "closed issues render with dimmed styling", %{conn: conn, project: project} do
+    {:ok, closed} = Issues.create_issue(%{title: "Dimmed issue", project_id: project.id})
+    {:ok, _} = Issues.update_issue(closed, %{status: "closed"})
+
+    {:ok, _view, html} = live(conn, ~p"/issues")
+
+    assert html =~ "opacity-50"
+  end
+
   test "row links to the issue's show page", %{conn: conn, project: project} do
     {:ok, issue} = Issues.create_issue(%{title: "Linked issue", project_id: project.id})
 
