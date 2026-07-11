@@ -189,7 +189,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     - Rely on lifecycle notifications plus `get_session_tail(...)` / activity metadata for progress; heartbeats are a coarse fallback — re-call `Tools.schedule_heartbeat(...)` at each stage change to keep its delivered message current (it updates in place, it doesn't stack).
     - `send_message_to_session(...)` to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with `get_session_tail(...)` first.
-    - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. A full test-suite run is a per-checkout mutex — coordinate before running one. No worktrees.
+    - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. Workers verify with targeted tests only; the full suite runs once as a pre-deploy gate. No worktrees.
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
 
@@ -241,7 +241,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     - Rely on lifecycle notifications plus `mcp__orca__get_session_tail` / activity metadata for progress; heartbeats are a coarse fallback — re-call `mcp__orca__schedule_heartbeat` at each stage change to keep its delivered message current (it updates in place, it doesn't stack).
     - `mcp__orca__send_message_to_session` to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with `mcp__orca__get_session_tail` first.
-    - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. A full test-suite run is a per-checkout mutex — coordinate before running one. No worktrees.
+    - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. Workers verify with targeted tests only; the full suite runs once as a pre-deploy gate. No worktrees.
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
 
