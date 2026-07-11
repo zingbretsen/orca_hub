@@ -14,6 +14,7 @@ defmodule OrcaHub.SessionHeartbeat do
   require Logger
 
   alias OrcaHub.Cluster
+  alias OrcaHub.SessionHeartbeat.Digest
 
   @min_interval_seconds 30
 
@@ -26,12 +27,20 @@ defmodule OrcaHub.SessionHeartbeat do
   end
 
   @doc """
-  Schedule a heartbeat for a session. Idempotent - updates existing heartbeat.
+  Schedule a heartbeat for a session. Idempotent - updates existing heartbeat
+  (also resets any `only_if_changed` change-tracking state).
+
+  `opts` (all optional):
+    - `:watch_session_ids` - session ids to auto-digest into each fire
+    - `:watch_children` - also auto-digest the caller's non-archived children,
+      resolved fresh at fire time
+    - `:only_if_changed` - skip delivering a fire when nothing watched changed
+      since the previous fire (no-op when there's no watch list)
 
   Returns :ok on success, {:error, reason} on failure.
   """
-  def schedule(session_id, interval_seconds, message) do
-    GenServer.call(__MODULE__, {:schedule, session_id, interval_seconds, message})
+  def schedule(session_id, interval_seconds, message, opts \\ %{}) do
+    GenServer.call(__MODULE__, {:schedule, session_id, interval_seconds, message, opts})
   end
 
   @doc """
@@ -67,7 +76,7 @@ defmodule OrcaHub.SessionHeartbeat do
   end
 
   @impl true
-  def handle_call({:schedule, session_id, interval_seconds, message}, _from, state) do
+  def handle_call({:schedule, session_id, interval_seconds, message, opts}, _from, state) do
     if interval_seconds < @min_interval_seconds do
       {:reply, {:error, "Interval must be at least #{@min_interval_seconds} seconds"}, state}
     else
@@ -82,7 +91,11 @@ defmodule OrcaHub.SessionHeartbeat do
         interval_ms: interval_ms,
         message: message,
         timer_ref: timer_ref,
-        scheduled_at: DateTime.utc_now()
+        scheduled_at: DateTime.utc_now(),
+        watch_session_ids: Map.get(opts, :watch_session_ids, []),
+        watch_children: Map.get(opts, :watch_children, false),
+        only_if_changed: Map.get(opts, :only_if_changed, false),
+        last_snapshot: nil
       }
 
       Logger.info("Scheduled heartbeat for session #{session_id}: every #{interval_seconds}s")
@@ -105,7 +118,7 @@ defmodule OrcaHub.SessionHeartbeat do
   def handle_call({:get, session_id}, _from, state) do
     case Map.get(state, session_id) do
       nil -> {:reply, nil, state}
-      entry -> {:reply, Map.drop(entry, [:timer_ref]), state}
+      entry -> {:reply, Map.drop(entry, [:timer_ref, :last_snapshot]), state}
     end
   end
 
@@ -113,7 +126,7 @@ defmodule OrcaHub.SessionHeartbeat do
   def handle_call(:list_all, _from, state) do
     result =
       Enum.map(state, fn {id, entry} ->
-        {id, Map.drop(entry, [:timer_ref])}
+        {id, Map.drop(entry, [:timer_ref, :last_snapshot])}
       end)
 
     {:reply, result, state}
@@ -126,13 +139,21 @@ defmodule OrcaHub.SessionHeartbeat do
         # Heartbeat was cancelled
         {:noreply, state}
 
-      %{interval_ms: interval_ms, message: message} = entry ->
-        # Send the heartbeat message
-        send_heartbeat(session_id, message)
+      %{interval_ms: interval_ms} = entry ->
+        %{deliver?: deliver?, message: full_message, snapshot: snapshot} =
+          build_fire(session_id, entry)
+
+        if deliver? do
+          send_heartbeat(session_id, full_message)
+        else
+          Logger.debug(
+            "Skipping heartbeat for session #{session_id} (only_if_changed: no watched changes)"
+          )
+        end
 
         # Schedule next heartbeat
         timer_ref = Process.send_after(self(), {:heartbeat, session_id}, interval_ms)
-        new_entry = %{entry | timer_ref: timer_ref}
+        new_entry = %{entry | timer_ref: timer_ref, last_snapshot: snapshot}
 
         {:noreply, Map.put(state, session_id, new_entry)}
     end
@@ -164,6 +185,23 @@ defmodule OrcaHub.SessionHeartbeat do
 
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
+
+  @doc false
+  # Resolves the watch digest and delivery decision for one fire, given the
+  # session's stored heartbeat entry. Pulled out of handle_info/2 so the
+  # decision logic is testable without driving the GenServer's real timer.
+  def build_fire(session_id, entry) do
+    {digest, snapshot} =
+      Digest.build(session_id, entry[:watch_session_ids] || [], entry[:watch_children] || false)
+
+    deliver? =
+      not (entry[:only_if_changed] || false) or snapshot == %{} or
+        Digest.changed?(entry[:last_snapshot], snapshot)
+
+    full_message = if digest, do: entry.message <> digest, else: entry.message
+
+    %{deliver?: deliver?, message: full_message, snapshot: snapshot}
+  end
 
   @impl true
   def handle_cast({:auto_cancel, session_id}, state) do

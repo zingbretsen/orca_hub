@@ -227,8 +227,8 @@ defmodule OrcaHub.HubRPC do
   # Session Heartbeat (hub-only GenServer)
   # -------------------------------------------------------------------
 
-  def schedule_heartbeat(session_id, interval_seconds, message),
-    do: call(OrcaHub.SessionHeartbeat, :schedule, [session_id, interval_seconds, message])
+  def schedule_heartbeat(session_id, interval_seconds, message, opts \\ %{}),
+    do: call(OrcaHub.SessionHeartbeat, :schedule, [session_id, interval_seconds, message, opts])
 
   def cancel_heartbeat(session_id),
     do: call(OrcaHub.SessionHeartbeat, :cancel, [session_id])
