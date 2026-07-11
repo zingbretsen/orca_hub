@@ -70,6 +70,28 @@ defmodule OrcaHub.Sessions do
     |> Repo.insert()
   end
 
+  @doc """
+  The most recently created non-archived session with the given
+  `idempotency_key`, or `nil`. Powers `start_session`'s `idempotency_key`
+  dedup — a repeat call with the same key returns the existing session
+  instead of spawning a duplicate.
+  """
+  def get_session_by_idempotency_key(nil), do: nil
+  def get_session_by_idempotency_key(""), do: nil
+
+  def get_session_by_idempotency_key(key) do
+    from(s in Session,
+      where: s.idempotency_key == ^key and is_nil(s.archived_at),
+      order_by: [desc: s.inserted_at],
+      limit: 1
+    )
+    |> Repo.one()
+    |> case do
+      nil -> nil
+      session -> Repo.preload(session, :project)
+    end
+  end
+
   def update_session(%Session{} = session, attrs) do
     session
     |> Session.changeset(attrs)
@@ -141,6 +163,8 @@ defmodule OrcaHub.Sessions do
     |> filter_by_archive(opts)
     |> filter_by_query(opts[:query])
     |> filter_by_status(opts[:status])
+    |> filter_by_session_id(opts[:session_id])
+    |> filter_by_parent_session_id(opts[:parent_session_id])
   end
 
   defp filter_by_archive(q, opts) do
@@ -156,6 +180,14 @@ defmodule OrcaHub.Sessions do
 
   defp filter_by_status(q, nil), do: q
   defp filter_by_status(q, status), do: from(s in q, where: s.status == ^status)
+
+  defp filter_by_session_id(q, nil), do: q
+  defp filter_by_session_id(q, id), do: from(s in q, where: s.id == ^id)
+
+  defp filter_by_parent_session_id(q, nil), do: q
+
+  defp filter_by_parent_session_id(q, parent_id),
+    do: from(s in q, where: s.parent_session_id == ^parent_id)
 
   @doc """
   Returns the IDs of the previous and next sessions within the same project,
@@ -281,6 +313,105 @@ defmodule OrcaHub.Sessions do
     |> List.wrap()
     |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use"))
     |> Enum.map(&%{name: &1["name"], input: &1["input"]})
+  end
+
+  # Bucket windows (minutes) for activity_metadata/1.
+  @activity_buckets [5, 15, 30]
+
+  @doc """
+  Bucketed activity metadata (message + tool-call counts over the last
+  5/15/30 minutes, plus last_activity_at) for every id in `session_ids`, keyed
+  by session_id. Computed in two grouped queries total regardless of how many
+  session ids are passed — NOT one query per session — so it's safe to call
+  for an entire `search_sessions` page at once.
+
+  Every id passed in `session_ids` is present in the result, even a session
+  with no messages at all (zero counts, `last_activity_at: nil`) — callers
+  never need to handle a missing key.
+  """
+  def activity_metadata(session_ids)
+  def activity_metadata([]), do: %{}
+
+  def activity_metadata(session_ids) when is_list(session_ids) do
+    now = NaiveDateTime.utc_now()
+    [t5, t15, t30] = Enum.map(@activity_buckets, &NaiveDateTime.add(now, -&1 * 60, :second))
+
+    message_counts =
+      from(m in Message,
+        where: m.session_id in ^session_ids,
+        group_by: m.session_id,
+        select: %{
+          session_id: m.session_id,
+          messages_5m: fragment("count(*) FILTER (WHERE ? >= ?)", m.inserted_at, ^t5),
+          messages_15m: fragment("count(*) FILTER (WHERE ? >= ?)", m.inserted_at, ^t15),
+          messages_30m: fragment("count(*) FILTER (WHERE ? >= ?)", m.inserted_at, ^t30),
+          last_activity_at: max(m.inserted_at)
+        }
+      )
+      |> Repo.all()
+      |> Map.new(&{&1.session_id, &1})
+
+    tool_call_counts =
+      from(m in Message,
+        where: m.session_id in ^session_ids and fragment("? ->> 'type' = 'assistant'", m.data),
+        inner_lateral_join:
+          block in fragment(
+            "jsonb_array_elements(COALESCE(?->'message'->'content', '[]'::jsonb))",
+            m.data
+          ),
+        on: fragment("? ->> 'type' = 'tool_use'", block),
+        group_by: m.session_id,
+        select: %{
+          session_id: m.session_id,
+          tool_calls_5m: fragment("count(?) FILTER (WHERE ? >= ?)", block, m.inserted_at, ^t5),
+          tool_calls_15m: fragment("count(?) FILTER (WHERE ? >= ?)", block, m.inserted_at, ^t15),
+          tool_calls_30m: fragment("count(?) FILTER (WHERE ? >= ?)", block, m.inserted_at, ^t30)
+        }
+      )
+      |> Repo.all()
+      |> Map.new(&{&1.session_id, &1})
+
+    session_ids
+    |> Enum.uniq()
+    |> Map.new(fn id ->
+      msgs = Map.get(message_counts, id, %{})
+      tools = Map.get(tool_call_counts, id, %{})
+
+      {id,
+       %{
+         messages_5m: msgs[:messages_5m] || 0,
+         messages_15m: msgs[:messages_15m] || 0,
+         messages_30m: msgs[:messages_30m] || 0,
+         tool_calls_5m: tools[:tool_calls_5m] || 0,
+         tool_calls_15m: tools[:tool_calls_15m] || 0,
+         tool_calls_30m: tools[:tool_calls_30m] || 0,
+         last_activity_at: msgs[:last_activity_at]
+       }}
+    end)
+  end
+
+  @doc """
+  The current git HEAD of `directory` (sha, short_sha, subject) — a cheap "did
+  it actually commit" signal for a session's working directory. Returns `nil`
+  silently for a non-repo, a missing directory, or any git failure; never
+  raises.
+  """
+  def git_head_info(directory) do
+    case System.cmd("git", ["log", "-1", "--format=%H%n%h%n%s"],
+           cd: directory,
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        case String.split(String.trim(output), "\n", parts: 3) do
+          [sha, short_sha, subject] -> %{sha: sha, short_sha: short_sha, subject: subject}
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    ErlangError -> nil
   end
 
   defp reset_front_of_queue_priority do

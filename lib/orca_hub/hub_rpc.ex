@@ -31,6 +31,9 @@ defmodule OrcaHub.HubRPC do
   def get_session(id), do: call(OrcaHub.Sessions, :get_session, [id])
   def create_session(attrs), do: call(OrcaHub.Sessions, :create_session, [attrs])
 
+  def get_session_by_idempotency_key(key),
+    do: call(OrcaHub.Sessions, :get_session_by_idempotency_key, [key])
+
   def update_session(session, attrs),
     do: call(OrcaHub.Sessions, :update_session, [session, attrs])
 
@@ -68,6 +71,9 @@ defmodule OrcaHub.HubRPC do
 
   def get_commit_detail(directory, hash),
     do: call(OrcaHub.Sessions, :get_commit_detail, [directory, hash])
+
+  def activity_metadata(session_ids),
+    do: call(OrcaHub.Sessions, :activity_metadata, [session_ids])
 
   # -------------------------------------------------------------------
   # Projects

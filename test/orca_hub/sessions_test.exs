@@ -1,8 +1,10 @@
 defmodule OrcaHub.SessionsTest do
   use OrcaHub.DataCase
 
-  alias OrcaHub.{Projects, Sessions}
-  alias OrcaHub.Sessions.Session
+  import Ecto.Query
+
+  alias OrcaHub.{Projects, Repo, Sessions}
+  alias OrcaHub.Sessions.{Message, Session}
 
   setup do
     {:ok, project} = Projects.create_project(%{name: "Test", directory: "/tmp/test-sessions"})
@@ -158,6 +160,185 @@ defmodule OrcaHub.SessionsTest do
 
       assert parent.id in ids
       refute child.id in ids
+    end
+  end
+
+  describe "activity_metadata/1" do
+    defp insert_message(session, data, minutes_ago) do
+      {:ok, message} = Sessions.create_message(%{session_id: session.id, data: data})
+
+      if minutes_ago > 0 do
+        ts = NaiveDateTime.utc_now() |> NaiveDateTime.add(-minutes_ago * 60, :second)
+        from(m in Message, where: m.id == ^message.id) |> Repo.update_all(set: [inserted_at: ts])
+      end
+
+      message
+    end
+
+    defp assistant_with_tool_calls(names) do
+      %{
+        "type" => "assistant",
+        "message" => %{
+          "content" =>
+            Enum.map(names, fn name -> %{"type" => "tool_use", "name" => name, "input" => %{}} end) ++
+              [%{"type" => "text", "text" => "hi"}]
+        }
+      }
+    end
+
+    test "returns zeroed defaults for a session with no messages", %{project: project} do
+      session = create_session(project)
+
+      assert Sessions.activity_metadata([session.id]) == %{
+               session.id => %{
+                 messages_5m: 0,
+                 messages_15m: 0,
+                 messages_30m: 0,
+                 tool_calls_5m: 0,
+                 tool_calls_15m: 0,
+                 tool_calls_30m: 0,
+                 last_activity_at: nil
+               }
+             }
+    end
+
+    test "returns an empty map for an empty id list" do
+      assert Sessions.activity_metadata([]) == %{}
+    end
+
+    test "buckets messages and tool calls by age, and computes last_activity_at",
+         %{project: project} do
+      session = create_session(project)
+
+      insert_message(session, assistant_with_tool_calls(["Bash"]), 1)
+      insert_message(session, assistant_with_tool_calls(["Read", "Edit"]), 10)
+      insert_message(session, assistant_with_tool_calls(["Write"]), 20)
+      insert_message(session, assistant_with_tool_calls(["Bash"]), 40)
+
+      result = Sessions.activity_metadata([session.id])[session.id]
+
+      # 5m bucket: only the 1-minute-old message/tool call
+      assert result.messages_5m == 1
+      assert result.tool_calls_5m == 1
+
+      # 15m bucket: 1m + 10m messages (2 tool_use blocks in the 10m message)
+      assert result.messages_15m == 2
+      assert result.tool_calls_15m == 3
+
+      # 30m bucket: 1m + 10m + 20m messages
+      assert result.messages_30m == 3
+      assert result.tool_calls_30m == 4
+
+      assert result.last_activity_at != nil
+    end
+
+    test "does not N+1 — computes metadata for many sessions in a fixed number of queries",
+         %{project: project} do
+      sessions = for _ <- 1..5, do: create_session(project)
+      Enum.each(sessions, &insert_message(&1, assistant_with_tool_calls(["Bash"]), 1))
+
+      ids = Enum.map(sessions, & &1.id)
+
+      {queries, result} =
+        with_query_count(fn -> Sessions.activity_metadata(ids) end)
+
+      assert map_size(result) == 5
+      assert queries <= 2
+    end
+
+    defp with_query_count(fun) do
+      test_pid = self()
+      ref = make_ref()
+
+      handler = fn _event, _measurements, _metadata, _config ->
+        send(test_pid, {ref, :query})
+      end
+
+      :telemetry.attach(
+        {ref, __MODULE__},
+        [:orca_hub, :repo, :query],
+        handler,
+        nil
+      )
+
+      result = fun.()
+      :telemetry.detach({ref, __MODULE__})
+
+      count =
+        Stream.repeatedly(fn ->
+          receive do
+            {^ref, :query} -> :ok
+          after
+            0 -> nil
+          end
+        end)
+        |> Enum.take_while(& &1)
+        |> length()
+
+      {count, result}
+    end
+  end
+
+  describe "git_head_info/1" do
+    test "returns sha/short_sha/subject for a git repo" do
+      dir =
+        Path.join(System.tmp_dir!(), "sessions-git-head-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      System.cmd("git", ["init", "-q"], cd: dir)
+      System.cmd("git", ["config", "user.email", "test@example.com"], cd: dir)
+      System.cmd("git", ["config", "user.name", "Test"], cd: dir)
+      File.write!(Path.join(dir, "f.txt"), "hi")
+      System.cmd("git", ["add", "."], cd: dir)
+      System.cmd("git", ["commit", "-q", "-m", "initial commit"], cd: dir)
+
+      assert %{sha: sha, short_sha: short_sha, subject: "initial commit"} =
+               Sessions.git_head_info(dir)
+
+      assert is_binary(sha)
+      assert String.starts_with?(sha, short_sha)
+    end
+
+    test "returns nil for a non-repo directory" do
+      dir =
+        Path.join(System.tmp_dir!(), "sessions-not-a-repo-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      assert Sessions.git_head_info(dir) == nil
+    end
+
+    test "returns nil (does not raise) for a missing directory" do
+      assert Sessions.git_head_info("/nonexistent/path/#{System.unique_integer([:positive])}") ==
+               nil
+    end
+  end
+
+  describe "get_session_by_idempotency_key/1" do
+    test "returns nil for nil/blank keys" do
+      assert Sessions.get_session_by_idempotency_key(nil) == nil
+      assert Sessions.get_session_by_idempotency_key("") == nil
+    end
+
+    test "finds a non-archived session by key", %{project: project} do
+      session = create_session(project, %{idempotency_key: "abc-123"})
+
+      found = Sessions.get_session_by_idempotency_key("abc-123")
+      assert found.id == session.id
+    end
+
+    test "ignores archived sessions", %{project: project} do
+      session = create_session(project, %{idempotency_key: "abc-456"})
+      Sessions.archive_session(session)
+
+      assert Sessions.get_session_by_idempotency_key("abc-456") == nil
+    end
+
+    test "returns nil when no session matches" do
+      assert Sessions.get_session_by_idempotency_key("does-not-exist") == nil
     end
   end
 end
