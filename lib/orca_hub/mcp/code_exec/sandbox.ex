@@ -33,9 +33,28 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
       should FIX its code: syntax error, denied module)
     * `{:error, {:timeout, ms}}`        — ran too long (resource outcome)
     * `{:error, {:exception, %{banner: binary, line: integer | nil,
-      stdout: binary}}}` — ran and raised/threw (a tool or expression outcome,
-      e.g. `Tools.Error`); `banner` is trimmed of internal eval/Task frames and
-      `line` points at the offending line of the snippet.
+      stdout: binary, partial_binding: keyword, statement: pos_integer,
+      statement_count: pos_integer}}}` — ran and raised/threw (a tool or
+      expression outcome, e.g. `Tools.Error`); `banner` is trimmed of internal
+      eval/Task frames and `line` points at the offending line of the snippet.
+      Top-level statements are evaluated sequentially (see "Sequential
+      top-level evaluation" below), so `partial_binding` carries whatever was
+      bound by the statements that completed before the one that raised
+      (`statement` of `statement_count`, 1-indexed) — callers that persist
+      bindings across evals (`OrcaHub.MCP.CodeExec.BindingStore`) can keep
+      that partial progress instead of discarding it.
+
+  ## Sequential top-level evaluation
+
+  A snippet's top-level statements (the entries of its `:__block__`, or the
+  single expression itself when there's no block) are evaluated one at a time
+  via `Code.eval_quoted_with_env/4`, threading the binding *and* env forward
+  so `require`/`import`/`alias` in one top-level statement still apply to
+  later ones. If statement N raises, statements `1..N-1` already committed
+  their bindings — those are surfaced as `partial_binding` above instead of
+  being lost with the rest of the snippet. A snippet that never raises is
+  unaffected: the last statement's value is returned exactly as a whole-block
+  `Code.eval_quoted/3` would have produced.
 
   ## Known gaps (acceptable for a single-user tool)
 
@@ -199,15 +218,7 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
         {:ok, io} = StringIO.open("")
         Process.group_leader(self(), io)
 
-        result =
-          try do
-            {value, new_binding} = Code.eval_quoted(ast, binding, eval_env())
-            {:ok, value, new_binding}
-          rescue
-            e -> {:raised, :error, e, __STACKTRACE__}
-          catch
-            kind, reason -> {:raised, kind, reason, __STACKTRACE__}
-          end
+        result = eval_statements(top_level_statements(ast), binding, eval_env())
 
         {_in, out} = StringIO.contents(io)
         StringIO.close(io)
@@ -225,16 +236,57 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
     end
   end
 
+  # A `:__block__` is what the parser produces for multiple top-level
+  # statements (separated by newlines or `;`); a snippet that's a single
+  # expression has no wrapping block at all.
+  defp top_level_statements({:__block__, _meta, statements}), do: statements
+  defp top_level_statements(ast), do: [ast]
+
+  # Evaluate each top-level statement in turn, threading the binding AND env
+  # forward (`Code.eval_quoted_with_env/4` is the documented shape for
+  # exactly this loop-of-evals use case — plain `eval_quoted/3` would forget
+  # any `require`/`import`/`alias` from an earlier statement). Stops at the
+  # first raise, carrying the binding as of the last *successful* statement
+  # so the caller can persist that partial progress instead of losing it.
+  defp eval_statements(statements, binding, env) do
+    count = length(statements)
+
+    statements
+    |> Enum.with_index(1)
+    |> Enum.reduce_while({binding, env, nil}, fn {statement, index}, {binding, env, _value} ->
+      try do
+        {value, new_binding, new_env} = Code.eval_quoted_with_env(statement, binding, env)
+        {:cont, {new_binding, new_env, value}}
+      rescue
+        e -> {:halt, {:raised, :error, e, __STACKTRACE__, binding, index, count}}
+      catch
+        kind, reason -> {:halt, {:raised, kind, reason, __STACKTRACE__, binding, index, count}}
+      end
+    end)
+    |> case do
+      {:raised, _, _, _, _, _, _} = raised -> raised
+      {binding, _env, value} -> {:ok, value, binding}
+    end
+  end
+
   defp finalize({:ok, value, binding}, out, max_output) do
     {:ok, %{value: value, stdout: cap(out, max_output), binding: binding}}
   end
 
-  defp finalize({:raised, kind, reason, trace}, out, max_output) do
+  defp finalize({:raised, kind, reason, trace, partial_binding, index, count}, out, max_output) do
     banner = Exception.format_banner(kind, reason)
     line = snippet_line(trace)
 
     {:error,
-     {:exception, %{banner: cap(banner, max_output), line: line, stdout: cap(out, max_output)}}}
+     {:exception,
+      %{
+        banner: cap(banner, max_output),
+        line: line,
+        stdout: cap(out, max_output),
+        partial_binding: partial_binding,
+        statement: index,
+        statement_count: count
+      }}}
   end
 
   # The first stack frame attributed to the snippet — its line is the offending
@@ -255,11 +307,15 @@ defmodule OrcaHub.MCP.CodeExec.Sandbox do
 
   defp cap(bin, _max), do: bin
 
-  # A minimal eval env. We deliberately do NOT auto-`import`/`alias` anything
-  # beyond defaults — the allowlist check already gates module access, and the
-  # generated `Tools` modules are referenced by their fully-qualified name. The
-  # synthetic file name lets us recover the snippet's own line numbers.
+  # A minimal eval env, built via `Code.env_for_eval/1` — the documented way
+  # to seed a "loop of evals" (our sequential top-level statements are exactly
+  # that; `eval_quoted_with_env/4` threads the env this produces from one
+  # statement to the next). We deliberately do NOT auto-`import`/`alias`
+  # anything beyond defaults — the allowlist check already gates module
+  # access, and the generated `Tools` modules are referenced by their
+  # fully-qualified name. The synthetic file name lets us recover the
+  # snippet's own line numbers.
   defp eval_env do
-    %{__ENV__ | file: @snippet_file, function: nil}
+    Code.env_for_eval(file: @snippet_file)
   end
 end

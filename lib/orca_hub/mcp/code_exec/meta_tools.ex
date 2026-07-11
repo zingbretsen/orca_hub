@@ -41,8 +41,10 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   outcome).
 
   Variables assigned in `run_elixir` persist across calls within the same
-  session (see `OrcaHub.MCP.CodeExec.BindingStore`) — only a successful eval
-  updates the stored binding, and `"reset": true` clears it.
+  session (see `OrcaHub.MCP.CodeExec.BindingStore`). A raise still persists
+  whatever earlier top-level statements in the snippet successfully bound
+  (see `OrcaHub.MCP.CodeExec.Sandbox`'s sequential top-level evaluation);
+  `"reset": true` clears the stored binding entirely.
   """
 
   alias OrcaHub.MCP.CodeExec
@@ -212,8 +214,8 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
       {:error, {:timeout, ms}} ->
         Result.error("Code ran but was killed after exceeding the #{ms}ms time limit.")
 
-      {:error, {:exception, %{banner: banner, line: line, stdout: stdout}}} ->
-        Result.error(format_exception(banner, line, stdout))
+      {:error, {:exception, %{banner: banner, line: line, stdout: stdout} = info}} ->
+        Result.error(format_exception(banner, line, stdout, Map.get(info, :note)))
     end
   end
 
@@ -240,10 +242,11 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
 
   defp cap_value(formatted), do: formatted
 
-  defp format_exception(banner, line, stdout) do
+  defp format_exception(banner, line, stdout, note) do
     where = if line, do: " (at line #{line})", else: ""
     out = if stdout == "", do: "", else: "stdout before failure:\n#{stdout}\n"
-    "#{out}Code ran but raised#{where}:\n#{banner}"
+    note_line = if note, do: "\n\n#{note}", else: ""
+    "#{out}Code ran but raised#{where}:\n#{banner}#{note_line}"
   end
 
   # ── search_tools (read-only over the live registry) ───────────────────

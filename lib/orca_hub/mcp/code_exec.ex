@@ -76,11 +76,17 @@ defmodule OrcaHub.MCP.CodeExec do
   `orca_session_id` (falling back to the MCP `session_id` when nil — e.g.
   connections without an orca session, so the feature still degrades
   gracefully within a turn) through `BindingStore`, so variables assigned in
-  one `run_elixir` call are visible in the next. Only a **successful** eval
-  updates the stored binding — a rejected/raised/timed-out eval leaves the
-  previous binding untouched. If the new binding exceeds the byte budget
-  (default #{@default_binding_budget_bytes}, see `:code_exec_binding_budget_bytes`)
-  it is NOT saved (the old binding is kept) and a one-line notice is attached
+  one `run_elixir` call are visible in the next. A rejected or timed-out eval
+  leaves the previous binding entirely untouched. A **raised** eval still
+  persists whatever the snippet's earlier top-level statements successfully
+  bound before the one that raised (see `Sandbox`'s sequential top-level
+  evaluation) — so e.g. `worker = Tools.start_session(...)` surviving a later
+  statement's typo means the caller doesn't have to guess whether the spawn
+  actually happened. Only a fully **successful** eval's own return value is
+  unaffected either way. If the binding to persist (whether from a full
+  success or a partial one) exceeds the byte budget (default
+  #{@default_binding_budget_bytes}, see `:code_exec_binding_budget_bytes`) it
+  is NOT saved (the old binding is kept) and a one-line notice is attached
   under `:note`; the eval's own return value is unaffected.
 
   `opts[:reset]` clears the stored binding before evaluating, so the snippet
@@ -109,22 +115,52 @@ defmodule OrcaHub.MCP.CodeExec do
   defp binding_key(_state), do: nil
 
   defp persist_binding({:ok, %{value: value, stdout: stdout, binding: binding}}, key) do
+    case save(binding, key) do
+      :ok -> {:ok, %{value: value, stdout: stdout}}
+      {:over_budget, note} -> {:ok, %{value: value, stdout: stdout, note: note}}
+    end
+  end
+
+  defp persist_binding(
+         {:error, {:exception, %{partial_binding: partial_binding} = info}},
+         key
+       ) do
+    note =
+      case save(partial_binding, key) do
+        :ok -> partial_note(info)
+        {:over_budget, budget_note} -> budget_note
+      end
+
+    info = info |> Map.delete(:partial_binding) |> Map.put(:note, note)
+    {:error, {:exception, info}}
+  end
+
+  defp persist_binding(error, _key), do: error
+
+  defp save(binding, key) do
     size = :erlang.external_size(binding)
     budget = binding_budget_bytes()
 
     if size <= budget do
       BindingStore.put(key, binding)
-      {:ok, %{value: value, stdout: stdout}}
+      :ok
     else
-      note =
-        "[bindings not saved: #{size} bytes exceeds the #{budget} byte budget " <>
-          "— bind smaller values]"
-
-      {:ok, %{value: value, stdout: stdout, note: note}}
+      {:over_budget,
+       "[bindings not saved: #{size} bytes exceeds the #{budget} byte budget " <>
+         "— bind smaller values]"}
     end
   end
 
-  defp persist_binding(error, _key), do: error
+  # No note when there was nothing before the failing statement to keep (the
+  # overwhelmingly common single-statement snippet, or a raise on statement 1).
+  defp partial_note(%{statement: index}) when index <= 1, do: nil
+
+  defp partial_note(%{statement: index, statement_count: count}) do
+    kept = index - 1
+
+    range = if kept == 1, do: "statement 1", else: "statements 1-#{kept}"
+    "[bindings from #{range} of #{count} were kept — statement #{index} raised]"
+  end
 
   defp binding_budget_bytes do
     Application.get_env(

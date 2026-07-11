@@ -282,6 +282,82 @@ defmodule OrcaHub.MCP.CodeExecTest do
     end
   end
 
+  describe "sequential top-level statement evaluation" do
+    test "a multi-statement snippet that never raises behaves exactly like a whole-block eval" do
+      code = """
+      x = 1
+      x = x + 1
+      x * 10
+      """
+
+      assert {:ok, %{value: 20, binding: binding}} = Sandbox.eval(code)
+      assert Keyword.get(binding, :x) == 2
+    end
+
+    test "a single-expression snippet (no block at all) still works" do
+      assert {:ok, %{value: 3}} = Sandbox.eval("1 + 2")
+    end
+
+    test "on raise, the exception carries which statement failed, of how many, plus the partial binding" do
+      code = """
+      a = 1
+      b = 2
+      raise "boom"
+      """
+
+      assert {:error, {:exception, %{statement: 3, statement_count: 3, partial_binding: partial}}} =
+               Sandbox.eval(code)
+
+      assert Keyword.get(partial, :a) == 1
+      assert Keyword.get(partial, :b) == 2
+    end
+
+    test "a raise on the very first statement reports statement 1 of N with an empty partial binding" do
+      code = """
+      raise "boom"
+      b = 2
+      """
+
+      assert {:error, {:exception, %{statement: 1, statement_count: 2, partial_binding: []}}} =
+               Sandbox.eval(code)
+    end
+
+    test "a single-expression snippet that raises reports statement 1 of 1" do
+      assert {:error, {:exception, %{statement: 1, statement_count: 1, partial_binding: []}}} =
+               Sandbox.eval("1 / 0")
+    end
+
+    test "stdout from statements before the raise is still captured" do
+      code = """
+      IO.puts("one")
+      IO.puts("two")
+      raise "boom"
+      """
+
+      assert {:error, {:exception, %{stdout: "one\ntwo\n"}}} = Sandbox.eval(code)
+    end
+
+    test "a variable rebound across statements keeps the latest value in the partial binding" do
+      code = """
+      x = 1
+      x = 2
+      raise "boom"
+      """
+
+      assert {:error, {:exception, %{partial_binding: partial}}} = Sandbox.eval(code)
+      assert Keyword.get(partial, :x) == 2
+    end
+
+    test "require in one top-level statement is still in scope for the next" do
+      code = """
+      require Integer
+      Integer.is_even(4)
+      """
+
+      assert {:ok, %{value: true}} = Sandbox.eval(code)
+    end
+  end
+
   describe "run_elixir result text distinguishes rejected vs ran-and-failed" do
     test "a rejected snippet tells the model to fix its code" do
       result = MetaTools.call("run_elixir", %{"code" => ~s|File.read!("x")|}, %{})
@@ -304,6 +380,25 @@ defmodule OrcaHub.MCP.CodeExecTest do
 
       assert result["isError"] == false
       assert hd(result["content"])["text"] =~ "=> 3"
+    end
+
+    test "a raise after earlier statements bound variables notes that those bindings were kept" do
+      state = %{orca_session_id: "meta-partial-#{System.unique_integer([:positive])}"}
+      code = "worker = 1\nraise \"boom\""
+
+      result = MetaTools.call("run_elixir", %{"code" => code}, state)
+
+      assert result["isError"] == true
+      text = hd(result["content"])["text"]
+      assert text =~ "Code ran but raised"
+      assert text =~ "bindings from statement 1 of 2 were kept"
+    end
+
+    test "a raise on the only statement carries no partial-binding note" do
+      result = MetaTools.call("run_elixir", %{"code" => "1 / 0"}, %{})
+
+      text = hd(result["content"])["text"]
+      refute text =~ "were kept"
     end
 
     test "a big returned value is capped with a teaching nudge" do
@@ -553,14 +648,31 @@ defmodule OrcaHub.MCP.CodeExecTest do
       assert {:ok, %{value: 99}} = CodeExec.run("x", state_b)
     end
 
-    test "an exception leaves the previously stored binding untouched" do
-      state = %{orca_session_id: unique_key("exception")}
+    test "a raise on the snippet's only (or first) top-level statement leaves the previous binding untouched" do
+      state = %{orca_session_id: unique_key("exception-first-stmt")}
 
       assert {:ok, %{value: 1}} = CodeExec.run("x = 1", state)
-      assert {:error, {:exception, _}} = CodeExec.run("x = 2; raise \"boom\"", state)
+      assert {:error, {:exception, _}} = CodeExec.run("raise \"boom\"", state)
 
-      # x is still 1 — the failed eval's reassignment never got saved.
+      # x is still 1 — the raising statement never got to run, let alone bind anything.
       assert {:ok, %{value: 1}} = CodeExec.run("x", state)
+    end
+
+    test "bindings from top-level statements that completed before a raise are still persisted" do
+      state = %{orca_session_id: unique_key("exception-partial")}
+
+      assert {:ok, %{value: 1}} = CodeExec.run("x = 1", state)
+
+      # `x = 2` completes before `raise` blows up the third statement — the
+      # real-world incident this fixes: `worker = Tools.start_session(...)`
+      # succeeding, then a later statement in the same snippet raising, must
+      # not make the orchestrator lose track of `worker`.
+      assert {:error, {:exception, info}} = CodeExec.run("x = 2\ny = 3\nraise \"boom\"", state)
+      assert %{statement: 3, statement_count: 3} = info
+      assert info.note =~ "bindings from statements 1-2 of 3 were kept"
+
+      assert {:ok, %{value: 2}} = CodeExec.run("x", state)
+      assert {:ok, %{value: 3}} = CodeExec.run("y", state)
     end
 
     test "a timeout leaves the previously stored binding untouched" do
