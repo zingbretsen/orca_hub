@@ -9,7 +9,7 @@ defmodule OrcaHub.SessionRunner do
   use GenStatem
   require Logger
 
-  alias OrcaHub.{AgentPresence, AskUserQuestion, Backend, HubRPC, Streaming}
+  alias OrcaHub.{AgentPresence, AskUserQuestion, Backend, Cluster, HubRPC, Streaming}
   alias OrcaHub.Claude.StreamParser
 
   # Route a HubRPC call through the node that owns the session's DB record.
@@ -654,6 +654,11 @@ defmodule OrcaHub.SessionRunner do
         broadcast(data.session_id, {:status, broadcast_status})
         AgentPresence.update_status(data.directory, data.session_id, db_status)
 
+        maybe_notify_parent(
+          %{session | status: db_status, error_detail: session_error_detail},
+          notify_status(db_status)
+        )
+
         if code == 0 && (session.title == nil || session.title == "") do
           Logger.info(
             "Attempting title generation for session #{data.session_id}, first_prompt: #{inspect(data.first_prompt)}"
@@ -808,6 +813,89 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp handle_cli_error(_code, data), do: {data, nil}
+
+  # ── Parent lifecycle notification ────────────────────────────────────
+  # Feedback item 1 (orchestrator-feedback-2026-07-10, "biggest win"):
+  # orchestrators were polling schedule_heartbeat every few minutes just to
+  # learn a child session went idle/errored. On a genuine turn-ending
+  # running->idle/running->error transition, ping the parent session (if
+  # any) directly instead of relying on the child to remember to message
+  # back, or the orchestrator to keep polling. Fired async (Task.Supervisor)
+  # so a slow/failed delivery can never block or crash the child's own state
+  # transition — failures are logged, never raised.
+  #
+  # Maps a DB `status` string to the notification-worthy atom, or `nil` for
+  # anything that isn't a genuine turn end (e.g. "waiting", "compacting").
+  defp notify_status("idle"), do: :idle
+  defp notify_status("error"), do: :error
+  defp notify_status(_status), do: nil
+
+  defp maybe_notify_parent(_session, nil), do: :ok
+
+  # Never notify a session about itself, and nothing to do without a parent
+  # (also covers the parent being deleted — its FK is `on_delete: :nilify_all`,
+  # so a freshly-fetched `session` already has `parent_session_id: nil` by then).
+  defp maybe_notify_parent(%{parent_session_id: parent_id, id: id}, _status)
+       when is_nil(parent_id) or parent_id == id do
+    :ok
+  end
+
+  defp maybe_notify_parent(%{notify_parent: false}, _status), do: :ok
+
+  defp maybe_notify_parent(session, status) when status in [:idle, :error] do
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      deliver_parent_notification(session, status)
+    end)
+
+    :ok
+  end
+
+  # Public (@doc false) as a test seam — lets tests exercise delivery
+  # (including the deleted-parent race) synchronously, without depending on
+  # Task.Supervisor scheduling.
+  @doc false
+  def deliver_parent_notification(session, status) do
+    case Cluster.find_session(session.parent_session_id) do
+      # Parent not found — deleted (a race with the nilify_all FK) or gone.
+      # Skip silently, never crash the caller.
+      nil ->
+        :ok
+
+      {node, parent} ->
+        case Cluster.send_message(node, parent.id, lifecycle_message(session, status)) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "[lifecycle notify] failed to notify parent #{parent.id} of child " <>
+                "#{session.id}: #{inspect(reason)}"
+            )
+        end
+    end
+  rescue
+    e ->
+      Logger.warning(
+        "[lifecycle notify] crashed notifying parent of child #{session.id}: " <>
+          Exception.message(e)
+      )
+  end
+
+  defp lifecycle_message(session, :idle) do
+    "[Session lifecycle] Child session #{session.id} (\"#{lifecycle_title(session)}\") is now idle."
+  end
+
+  defp lifecycle_message(session, :error) do
+    base =
+      "[Session lifecycle] Child session #{session.id} (\"#{lifecycle_title(session)}\") is now error."
+
+    case session.error_detail do
+      detail when detail in [nil, ""] -> base
+      detail -> base <> " Error: #{detail}"
+    end
+  end
+
+  defp lifecycle_title(session), do: session.title || "untitled"
 
   # Caps the persisted `error_detail` column so a runaway stderr dump can't
   # bloat the sessions table — the message feed already has the full text.
@@ -1151,6 +1239,7 @@ defmodule OrcaHub.SessionRunner do
         db_call(data, :update_session, [session, %{status: "idle", error_detail: nil}])
         broadcast(data.session_id, {:status, :idle})
         AgentPresence.update_status(data.directory, data.session_id, "idle")
+        maybe_notify_parent(%{session | status: "idle", error_detail: nil}, :idle)
         {:next_state, :idle, data}
 
       _ ->
@@ -1201,6 +1290,7 @@ defmodule OrcaHub.SessionRunner do
         db_call(data, :update_session, [session, %{status: "error", error_detail: error_detail}])
         broadcast(data.session_id, {:status, :error})
         AgentPresence.update_status(data.directory, data.session_id, "error")
+        maybe_notify_parent(%{session | status: "error", error_detail: error_detail}, :error)
         # Process stays warm after a turn error — mark it idle-in-pool (evictable).
         Streaming.WarmPool.touch(data.session_id, :error)
         {next_data, actions} = consume_pending_rebake(%{data | interrupting: false})
@@ -1252,6 +1342,11 @@ defmodule OrcaHub.SessionRunner do
     broadcast(data.session_id, {:status, broadcast_status})
     AgentPresence.update_status(data.directory, data.session_id, db_status)
 
+    maybe_notify_parent(
+      %{session | status: db_status, error_detail: nil},
+      notify_status(db_status)
+    )
+
     if generate_title? and (session.title == nil or session.title == "") do
       maybe_generate_title(data, data.first_prompt)
     end
@@ -1293,6 +1388,7 @@ defmodule OrcaHub.SessionRunner do
       db_call(data, :update_session, [session, %{status: "error", error_detail: error_detail}])
       broadcast(data.session_id, {:status, :error})
       AgentPresence.update_status(data.directory, data.session_id, "error")
+      maybe_notify_parent(%{session | status: "error", error_detail: error_detail}, :error)
       {:next_state, :error, data}
     else
       # Crash while idle/errored (no turn in flight): silently go cold; the next

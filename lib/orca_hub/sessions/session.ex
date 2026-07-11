@@ -31,6 +31,11 @@ defmodule OrcaHub.Sessions.Session do
     # killable node-wide via ORCA_DISABLE_CODE_EXEC.
     field :code_exec, :boolean, default: true
     field :parent_session_id, :binary_id
+    # Whether a running->idle/running->error turn-end transition should
+    # notify `parent_session_id` (fire-and-forget spawns want this off).
+    # Meaningless without a parent_session_id. See SessionRunner's
+    # maybe_notify_parent/2.
+    field :notify_parent, :boolean, default: true
     # nil = inherit global default (streaming unless ORCA_DISABLE_STREAMING set);
     # true/false force the engine for this session
     field :streaming, :boolean
@@ -67,6 +72,7 @@ defmodule OrcaHub.Sessions.Session do
       :orchestrator,
       :code_exec,
       :parent_session_id,
+      :notify_parent,
       :streaming,
       :error_detail
     ])

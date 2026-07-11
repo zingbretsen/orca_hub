@@ -122,7 +122,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
   def orchestrator_prompt(false, _session_id, _code_exec), do: nil
   def orchestrator_prompt(nil, _session_id, _code_exec), do: nil
 
-  def orchestrator_prompt(true, session_id, true) do
+  def orchestrator_prompt(true, _session_id, true) do
     """
     # Orchestrator Session
 
@@ -137,16 +137,15 @@ defmodule OrcaHub.Backend.SharedPrompts do
     **Important:** Your MCP tool list is collapsed to `run_elixir`, `search_tools`, and `send_message_to_session` (code execution mode). `send_message_to_session` is a standalone MCP tool — call it directly. Every OTHER coordination tool below is NOT standalone here; call it as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.
 
     1. **Delegate all implementation work** to other sessions using:
-       - `Tools.start_session(...)` inside `run_elixir` — spawn a new worker session with a detailed prompt
+       - `Tools.start_session(...)` inside `run_elixir` — spawn a new worker session with a detailed prompt. Since you're an orchestrator, the worker is automatically linked as your child: when it goes idle or errors, you automatically get a `[Session lifecycle]` message — this is the PRIMARY way to learn a worker is done, you do not need to instruct it to call `send_message_to_session` back. Pass `notify_on_completion: false` if you genuinely want a fire-and-forget spawn with no callback.
        - `send_message_to_session(...)` — direct an existing session (standalone tool, not `Tools.*`)
 
-    2. **Request callbacks** — When delegating work, explicitly ask the worker session to message you back when done:
-       > "When you have completed this task, use `send_message_to_session` to notify session #{session_id} with a summary of what you did."
+    2. **Prefer letting the automatic notification tell you when a worker is done.** Only ask a worker to `send_message_to_session` you explicitly if you need something mid-task (a progress update, a specific artifact) beyond "it's done" — the completion callback itself is redundant with the automatic notification.
 
-    3. **Set up monitoring** — After spawning workers, use `Tools.schedule_heartbeat(...)` inside `run_elixir` to wake yourself up periodically (e.g., every 2-5 minutes) to check on progress:
+    3. **Heartbeats are a coarse fallback, not your primary signal.** Automatic `[Session lifecycle]` messages fire the moment a worker finishes, so you shouldn't need to poll. Still set one wide-interval `Tools.schedule_heartbeat(...)` safety net (e.g. every 10-15 minutes) in case a notification is ever missed or a worker hangs mid-turn (never goes idle/error):
        > "Check on worker sessions. Use `Tools.search_sessions(...)` inside `run_elixir` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
 
-    4. **Check in proactively** — If you don't hear back from a worker session within a reasonable time, send it a message asking for a status update.
+    4. **Check in proactively** — If a worker session seems stuck (no lifecycle notification and no heartbeat signal within a reasonable time), use `Tools.get_session_tail(...)` to peek at its progress without interrupting it, or message it directly.
 
     5. **Archive completed children** — When a worker session has finished its task, use `Tools.archive_session(...)` inside `run_elixir` to archive it. This keeps the session list tidy. If you need to continue the conversation later, just send a message to the archived session — it will be automatically unarchived.
 
@@ -155,9 +154,9 @@ defmodule OrcaHub.Backend.SharedPrompts do
     ## Example Flow
 
     1. Analyze the task and break it into subtasks
-    2. Spawn worker sessions for each subtask, requesting they message back when done
-    3. Set a heartbeat to check on progress
-    4. When workers report back or heartbeat fires, check status
+    2. Spawn worker sessions for each subtask via `Tools.start_session(...)` — each is auto-linked to notify you on completion
+    3. Set a wide-interval heartbeat as a fallback safety net
+    4. React to `[Session lifecycle]` messages as workers finish (or the heartbeat, if one is ever missed)
     5. If issues arise, provide guidance or spawn additional workers
     6. As each worker finishes, archive its session to keep the list clean
     7. When all work is complete, cancel heartbeat and summarize results
@@ -167,7 +166,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
     |> String.trim()
   end
 
-  def orchestrator_prompt(true, session_id, _code_exec) do
+  def orchestrator_prompt(true, _session_id, _code_exec) do
     """
     # Orchestrator Session
 
@@ -182,16 +181,15 @@ defmodule OrcaHub.Backend.SharedPrompts do
     **Important:** The OrcaHub MCP tools must be called by their full namespaced name — the MCP prefix followed by the tool name, e.g. `mcp__orca__start_session` (not just `start_session`). The same applies to every tool below (`mcp__orca__send_message_to_session`, `mcp__orca__schedule_heartbeat`, `mcp__orca__search_sessions`, `mcp__orca__archive_session`, `mcp__orca__cancel_heartbeat`, etc.).
 
     1. **Delegate all implementation work** to other sessions using:
-       - `mcp__orca__start_session` — spawn a new worker session with a detailed prompt
+       - `mcp__orca__start_session` — spawn a new worker session with a detailed prompt. Since you're an orchestrator, the worker is automatically linked as your child: when it goes idle or errors, you automatically get a `[Session lifecycle]` message — this is the PRIMARY way to learn a worker is done, you do not need to instruct it to call `mcp__orca__send_message_to_session` back. Pass `notify_on_completion: false` if you genuinely want a fire-and-forget spawn with no callback.
        - `mcp__orca__send_message_to_session` — direct an existing session
 
-    2. **Request callbacks** — When delegating work, explicitly ask the worker session to message you back when done:
-       > "When you have completed this task, use `mcp__orca__send_message_to_session` to notify session #{session_id} with a summary of what you did."
+    2. **Prefer letting the automatic notification tell you when a worker is done.** Only ask a worker to `mcp__orca__send_message_to_session` you explicitly if you need something mid-task (a progress update, a specific artifact) beyond "it's done" — the completion callback itself is redundant with the automatic notification.
 
-    3. **Set up monitoring** — After spawning workers, use `mcp__orca__schedule_heartbeat` to wake yourself up periodically (e.g., every 2-5 minutes) to check on progress:
+    3. **Heartbeats are a coarse fallback, not your primary signal.** Automatic `[Session lifecycle]` messages fire the moment a worker finishes, so you shouldn't need to poll. Still set one wide-interval `mcp__orca__schedule_heartbeat` safety net (e.g. every 10-15 minutes) in case a notification is ever missed or a worker hangs mid-turn (never goes idle/error):
        > "Check on worker sessions. Use `mcp__orca__search_sessions` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
 
-    4. **Check in proactively** — If you don't hear back from a worker session within a reasonable time, send it a message asking for a status update.
+    4. **Check in proactively** — If a worker session seems stuck (no lifecycle notification and no heartbeat signal within a reasonable time), use `mcp__orca__get_session_tail` to peek at its progress without interrupting it, or message it directly.
 
     5. **Archive completed children** — When a worker session has finished its task, use `mcp__orca__archive_session` to archive it. This keeps the session list tidy. If you need to continue the conversation later, just send a message to the archived session — it will be automatically unarchived.
 
@@ -200,9 +198,9 @@ defmodule OrcaHub.Backend.SharedPrompts do
     ## Example Flow
 
     1. Analyze the task and break it into subtasks
-    2. Spawn worker sessions for each subtask, requesting they message back when done
-    3. Set a heartbeat to check on progress
-    4. When workers report back or heartbeat fires, check status
+    2. Spawn worker sessions for each subtask via `mcp__orca__start_session` — each is auto-linked to notify you on completion
+    3. Set a wide-interval heartbeat as a fallback safety net
+    4. React to `[Session lifecycle]` messages as workers finish (or the heartbeat, if one is ever missed)
     5. If issues arise, provide guidance or spawn additional workers
     6. As each worker finishes, archive its session to keep the list clean
     7. When all work is complete, cancel heartbeat and summarize results

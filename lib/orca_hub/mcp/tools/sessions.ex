@@ -79,7 +79,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "start_session",
         "description" =>
-          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session.",
+          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session. If you are yourself an orchestrator session, the new session is automatically linked as your child: when it finishes its turn (goes idle) or errors, you automatically receive a \"[Session lifecycle]\" message — no need to instruct the worker to message you back, and no need to poll with search_sessions/heartbeats just to detect completion. Set notify_on_completion to false to opt out for a true fire-and-forget spawn.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -106,6 +106,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "type" => "string",
               "description" =>
                 "Optional backend-specific model id, passed through as free text (no enum) — e.g. a Claude alias like \"opus\", a Codex model id like \"gpt-5.5\", or a pi provider/model string like \"fireworks/accounts/fireworks/models/glm-5\". Omit to use the backend's default model."
+            },
+            "notify_on_completion" => %{
+              "type" => "boolean",
+              "description" =>
+                "Whether the new session should automatically message you (the caller) when it goes idle or errors. Only applies when the caller is an orchestrator session (the only case a parent link is created). Default: true. Set false for a fire-and-forget spawn you don't want a callback from."
             }
           },
           "required" => ["prompt"]
@@ -287,7 +292,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
                   |> maybe_put_field(:title, args["title"])
                   |> maybe_put_field(:backend, backend)
                   |> maybe_put_field(:model, model)
-                  |> maybe_link_parent(caller, caller_session_id)
+                  |> maybe_link_parent(caller, caller_session_id, args["notify_on_completion"])
 
                 case HubRPC.create_session(session_attrs) do
                   {:ok, session} ->
@@ -397,12 +402,17 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   defp cap_tail_arg(str), do: str
 
   # A non-nil parent_session_id always means "spawned by an orchestrator", so only
-  # set it when the caller is itself an orchestrator.
-  defp maybe_link_parent(attrs, %{orchestrator: true}, caller_session_id) do
-    Map.put(attrs, :parent_session_id, caller_session_id)
+  # set it when the caller is itself an orchestrator. `notify_on_completion`
+  # (default true) becomes `notify_parent` — the "[Session lifecycle]"
+  # running->idle/error callback to the parent — and is meaningless (ignored)
+  # for non-orchestrator callers since no link is created either way.
+  defp maybe_link_parent(attrs, %{orchestrator: true}, caller_session_id, notify_on_completion) do
+    attrs
+    |> Map.put(:parent_session_id, caller_session_id)
+    |> Map.put(:notify_parent, notify_on_completion != false)
   end
 
-  defp maybe_link_parent(attrs, _caller, _caller_session_id), do: attrs
+  defp maybe_link_parent(attrs, _caller, _caller_session_id, _notify_on_completion), do: attrs
 
   # ── search_sessions helpers ───────────────────────────────────────────
 
@@ -452,6 +462,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       project: if(session.project, do: session.project.name),
       backend: session.backend,
       model: session.model,
+      parent_session_id: session.parent_session_id,
       updated_at: session.updated_at,
       inserted_at: session.inserted_at
     }

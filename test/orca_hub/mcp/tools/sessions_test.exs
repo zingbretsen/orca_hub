@@ -102,7 +102,11 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     } do
       result =
         with_fake_claude_on_path(fn ->
-          SessionsTool.call("start_session", %{"prompt" => "hi"}, state)
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "notify_on_completion" => false},
+            state
+          )
         end)
 
       assert %{"isError" => false, "content" => [%{"text" => text}]} = result
@@ -119,7 +123,12 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       Application.put_env(:orca_hub, :pi_executable, @pi_stub)
       on_exit(fn -> Application.delete_env(:orca_hub, :pi_executable) end)
 
-      result = SessionsTool.call("start_session", %{"prompt" => "hi", "backend" => "pi"}, state)
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "backend" => "pi", "notify_on_completion" => false},
+          state
+        )
 
       assert %{"isError" => false, "content" => [%{"text" => text}]} = result
       session_id = session_id_from!(text)
@@ -304,7 +313,12 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       result =
         SessionsTool.call(
           "start_session",
-          %{"prompt" => "hi", "backend" => "codex", "model" => "gpt-5-codex"},
+          %{
+            "prompt" => "hi",
+            "backend" => "codex",
+            "model" => "gpt-5-codex",
+            "notify_on_completion" => false
+          },
           state
         )
 
@@ -339,7 +353,11 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     test "a bare claude tier alias (e.g. \"sonnet\") is accepted", %{state: state} do
       result =
         with_fake_claude_on_path(fn ->
-          SessionsTool.call("start_session", %{"prompt" => "hi", "model" => "sonnet"}, state)
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "model" => "sonnet", "notify_on_completion" => false},
+            state
+          )
         end)
 
       assert %{"isError" => false, "content" => [%{"text" => text}]} = result
@@ -354,7 +372,11 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
         with_fake_claude_on_path(fn ->
           SessionsTool.call(
             "start_session",
-            %{"prompt" => "hi", "model" => "claude-sonnet-5"},
+            %{
+              "prompt" => "hi",
+              "model" => "claude-sonnet-5",
+              "notify_on_completion" => false
+            },
             state
           )
         end)
