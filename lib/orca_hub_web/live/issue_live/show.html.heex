@@ -1,0 +1,24 @@
+<.header>
+  <.link navigate={~p"/issues"} class="text-sm opacity-70">&larr; Issues</.link>
+  <span class="ml-2">{@issue.title}</span>
+  <span class={[
+    "badge ml-2",
+    @issue.status == "open" && "badge-info",
+    @issue.status == "in_progress" && "badge-warning",
+    @issue.status == "closed" && "badge-success"
+  ]}>
+    {@issue.status}
+  </span>
+</.header>
+
+<div
+  :if={@issue.description}
+  class="mt-4 p-4 bg-base-200 rounded-lg whitespace-pre-wrap text-sm"
+>
+  {@issue.description}
+</div>
+
+<div :if={@issue.notes && @issue.notes != ""} class="mt-4">
+  <h3 class="text-sm font-semibold mb-1 opacity-70">Notes</h3>
+  <div class="p-4 bg-base-200 rounded-lg whitespace-pre-wrap text-sm">{@issue.notes}</div>
+</div>

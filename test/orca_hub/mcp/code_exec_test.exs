@@ -466,8 +466,11 @@ defmodule OrcaHub.MCP.CodeExecTest do
   describe "MetaTools.list/0 tool definitions" do
     test "the meta-tools plus the passthrough tools are exposed" do
       assert Enum.map(MetaTools.list(), & &1["name"]) |> Enum.sort() == [
+               "append_feature_request_note",
                "file_feature_request",
+               "get_feature_request",
                "get_session_tail",
+               "list_feature_requests",
                "report_progress",
                "run_elixir",
                "search_tools",
@@ -487,7 +490,10 @@ defmodule OrcaHub.MCP.CodeExecTest do
                "send_message_to_session",
                "get_session_tail",
                "report_progress",
-               "file_feature_request"
+               "file_feature_request",
+               "list_feature_requests",
+               "get_feature_request",
+               "append_feature_request_note"
              ]
     end
 
@@ -534,8 +540,11 @@ defmodule OrcaHub.MCP.CodeExecTest do
       on_exit(fn -> Server.stop_session(sid) end)
 
       assert Enum.sort(tool_names(sid)) == [
+               "append_feature_request_note",
                "file_feature_request",
+               "get_feature_request",
                "get_session_tail",
+               "list_feature_requests",
                "report_progress",
                "run_elixir",
                "search_tools",

@@ -81,6 +81,44 @@ defmodule OrcaHub.IssuesTest do
     end
   end
 
+  describe "list_issues_for_project/1" do
+    test "includes closed issues and excludes issues from other projects", %{project: project} do
+      {:ok, other_project} =
+        Projects.create_project(%{
+          name: "other-project-2",
+          directory: "/tmp/other-#{System.unique_integer([:positive])}",
+          node: "n1@x"
+        })
+
+      {:ok, open_issue} = Issues.create_issue(%{title: "open one", project_id: project.id})
+      {:ok, closed_issue} = Issues.create_issue(%{title: "closed one", project_id: project.id})
+      {:ok, _} = Issues.update_issue(closed_issue, %{status: "closed"})
+      {:ok, _} = Issues.create_issue(%{title: "elsewhere", project_id: other_project.id})
+
+      ids = Issues.list_issues_for_project(project.id) |> Enum.map(& &1.id)
+
+      assert Enum.sort(ids) == Enum.sort([open_issue.id, closed_issue.id])
+    end
+  end
+
+  describe "list_issues/0" do
+    test "returns open issues before closed issues", %{project: project} do
+      {:ok, open_a} = Issues.create_issue(%{title: "open a", project_id: project.id})
+      {:ok, closed} = Issues.create_issue(%{title: "closed", project_id: project.id})
+      {:ok, _} = Issues.update_issue(closed, %{status: "closed"})
+      {:ok, open_b} = Issues.create_issue(%{title: "open b", project_id: project.id})
+
+      ids =
+        Issues.list_issues()
+        |> Enum.map(& &1.id)
+        |> Enum.filter(&(&1 in [open_a.id, closed.id, open_b.id]))
+
+      closed_index = Enum.find_index(ids, &(&1 == closed.id))
+      assert Enum.find_index(ids, &(&1 == open_a.id)) < closed_index
+      assert Enum.find_index(ids, &(&1 == open_b.id)) < closed_index
+    end
+  end
+
   describe "append_note/2" do
     test "sets notes when previously empty", %{project: project} do
       {:ok, issue} = Issues.create_issue(%{title: "x", project_id: project.id})

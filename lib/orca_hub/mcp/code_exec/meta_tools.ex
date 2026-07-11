@@ -9,8 +9,9 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
       `Tools.*` functions and stitches results with stdlib (the main surface)
     * `search_tools` — read-only ranked keyword search over the live registry
     * `send_message_to_session`, `get_session_tail`, `report_progress`,
-      `file_feature_request` — **passthroughs** to the real first-party tools
-      of the same name (`OrcaHub.MCP.Tools.Sessions`,
+      `file_feature_request`, `list_feature_requests`, `get_feature_request`,
+      `append_feature_request_note` — **passthroughs** to the real
+      first-party tools of the same name (`OrcaHub.MCP.Tools.Sessions`,
       `OrcaHub.MCP.Tools.FeatureRequests`). They're promoted to standalone
       tools because orchestrator/code-exec sessions call them so frequently
       that round-tripping through `run_elixir` for every call was pure
@@ -54,7 +55,9 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
   alias OrcaHub.MCP.UpstreamClient
 
   @meta_tool_names ~w(run_elixir search_tools)
-  @passthrough_tool_names ~w(send_message_to_session get_session_tail report_progress file_feature_request)
+  @passthrough_tool_names ~w(send_message_to_session get_session_tail report_progress
+                              file_feature_request list_feature_requests get_feature_request
+                              append_feature_request_note)
 
   @doc "The collapsed tool definitions shown to a code-exec connection: the meta-tools plus any passthrough tools."
   def list, do: [run_elixir_tool(), search_tools_tool() | passthrough_tool_definitions()]

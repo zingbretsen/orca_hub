@@ -237,6 +237,16 @@ defmodule OrcaHub.Backend.SharedPrompts do
     feature_request_ref =
       if code_exec, do: "`file_feature_request(...)`", else: "`mcp__orca__file_feature_request`"
 
+    list_feature_requests_ref =
+      if code_exec,
+        do: "`list_feature_requests(...)`",
+        else: "`mcp__orca__list_feature_requests`"
+
+    append_feature_request_note_ref =
+      if code_exec,
+        do: "`append_feature_request_note(...)`",
+        else: "`mcp__orca__append_feature_request_note`"
+
     """
     ## Orchestration Practices (tl;dr)
 
@@ -245,7 +255,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. Workers verify with targeted tests only; the full suite runs once as a pre-deploy gate. No worktrees.
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
-    - Hit platform friction (missing tool, awkward workflow, confusing error)? File it with #{feature_request_ref} instead of silently working around it — that turns friction into a queryable backlog.
+    - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with #{list_feature_requests_ref} first — if it's already tracked, add what you found with #{append_feature_request_note_ref} instead of filing a duplicate with #{feature_request_ref}.
     """
     |> String.trim()
   end

@@ -30,13 +30,49 @@ defmodule OrcaHub.MCP.Tools.FeatureRequestsTest do
   defp unique_id, do: Ecto.UUID.generate()
   defp state_for(session_id), do: %{orca_session_id: session_id}
 
+  # The read tools (list/get/append) resolve against whatever project is
+  # currently registered for @orca_hub_directory — in the shared dev DB that
+  # project already carries real accumulated history (and other concurrent
+  # sessions may be filing against it too), so list_feature_requests' cap
+  # and status-count assertions would be flaky against it. Swap in a fresh,
+  # empty project under the same directory for the duration of each test
+  # here — rolled back by DataCase's transaction, same technique the "no
+  # project registered" test below uses.
+  defp isolate_orca_hub_project(%{project: real_project}) do
+    {:ok, _} = Projects.delete_project(real_project)
+
+    {:ok, isolated} =
+      Projects.create_project(%{
+        name: "isolated-orca-hub-#{System.unique_integer([:positive])}",
+        directory: @orca_hub_directory,
+        node: "n1@x"
+      })
+
+    {:ok, project: isolated}
+  end
+
   describe "list/0" do
     test "exposes file_feature_request with title/description required, category optional" do
-      [tool] = FeatureRequestsTool.list()
+      tool = Enum.find(FeatureRequestsTool.list(), &(&1["name"] == "file_feature_request"))
 
-      assert tool["name"] == "file_feature_request"
       assert tool["inputSchema"]["required"] == ["title", "description"]
       assert Map.has_key?(tool["inputSchema"]["properties"], "category")
+    end
+
+    test "exposes list_feature_requests, get_feature_request, append_feature_request_note" do
+      names = FeatureRequestsTool.list() |> Enum.map(& &1["name"])
+
+      assert "list_feature_requests" in names
+      assert "get_feature_request" in names
+      assert "append_feature_request_note" in names
+
+      get_tool = Enum.find(FeatureRequestsTool.list(), &(&1["name"] == "get_feature_request"))
+      assert get_tool["inputSchema"]["required"] == ["id"]
+
+      append_tool =
+        Enum.find(FeatureRequestsTool.list(), &(&1["name"] == "append_feature_request_note"))
+
+      assert append_tool["inputSchema"]["required"] == ["id", "note"]
     end
   end
 
@@ -153,7 +189,7 @@ defmodule OrcaHub.MCP.Tools.FeatureRequestsTest do
       assert result["created"] == false
       assert result["deduped"] == true
       assert result["id"] == first_id
-      assert result["message"] =~ "append_note"
+      assert result["message"] =~ "append_feature_request_note"
 
       open_titled =
         project.id
@@ -224,6 +260,235 @@ defmodule OrcaHub.MCP.Tools.FeatureRequestsTest do
 
       result = Jason.decode!(body)
       assert result["created"] == true
+    end
+  end
+
+  describe "call/3 list_feature_requests" do
+    setup :isolate_orca_hub_project
+
+    test "defaults to open, agent-filed issues only" do
+      unique = System.unique_integer([:positive])
+
+      # Deliberately dissimilar titles (only the trailing number is shared) —
+      # the fuzzy dedup in file_feature_request would otherwise fold these
+      # into a single issue via its word-overlap heuristic.
+      %{"content" => [%{"text" => first_body}]} =
+        FeatureRequestsTool.call(
+          "file_feature_request",
+          %{"title" => "Broken export dialog #{unique}", "description" => "d1"},
+          state_for(unique_id())
+        )
+
+      %{"content" => [%{"text" => second_body}]} =
+        FeatureRequestsTool.call(
+          "file_feature_request",
+          %{"title" => "Missing keyboard shortcut #{unique}", "description" => "d2"},
+          state_for(unique_id())
+        )
+
+      %{"id" => first_id} = Jason.decode!(first_body)
+      %{"id" => second_id} = Jason.decode!(second_body)
+
+      %{"id" => closed_id} =
+        FeatureRequestsTool.call(
+          "file_feature_request",
+          %{"title" => "Slow database migration #{unique}", "description" => "d3"},
+          state_for(unique_id())
+        )
+        |> then(fn %{"content" => [%{"text" => body}]} -> Jason.decode!(body) end)
+
+      Issues.get_issue!(closed_id) |> Issues.update_issue(%{status: "closed"})
+
+      assert %{"isError" => false, "content" => [%{"text" => body}]} =
+               FeatureRequestsTool.call("list_feature_requests", %{}, state_for(unique_id()))
+
+      %{"feature_requests" => requests} = Jason.decode!(body)
+      ids = Enum.map(requests, & &1["id"])
+
+      assert first_id in ids
+      assert second_id in ids
+      refute closed_id in ids
+    end
+
+    test "status: \"all\" includes closed issues, status: \"closed\" filters to only closed" do
+      unique = System.unique_integer([:positive])
+
+      %{"id" => id} =
+        FeatureRequestsTool.call(
+          "file_feature_request",
+          %{"title" => "List status filter #{unique}", "description" => "d"},
+          state_for(unique_id())
+        )
+        |> then(fn %{"content" => [%{"text" => body}]} -> Jason.decode!(body) end)
+
+      Issues.get_issue!(id) |> Issues.update_issue(%{status: "closed"})
+
+      %{"content" => [%{"text" => all_body}]} =
+        FeatureRequestsTool.call(
+          "list_feature_requests",
+          %{"status" => "all"},
+          state_for(unique_id())
+        )
+
+      assert id in (Jason.decode!(all_body)["feature_requests"] |> Enum.map(& &1["id"]))
+
+      %{"content" => [%{"text" => closed_body}]} =
+        FeatureRequestsTool.call(
+          "list_feature_requests",
+          %{"status" => "closed"},
+          state_for(unique_id())
+        )
+
+      closed_ids = Jason.decode!(closed_body)["feature_requests"] |> Enum.map(& &1["id"])
+      assert id in closed_ids
+
+      %{"content" => [%{"text" => open_body}]} =
+        FeatureRequestsTool.call(
+          "list_feature_requests",
+          %{"status" => "open"},
+          state_for(unique_id())
+        )
+
+      refute id in (Jason.decode!(open_body)["feature_requests"] |> Enum.map(& &1["id"]))
+    end
+
+    test "excludes human-filed issues", %{project: project} do
+      title = "Human filed for listing #{System.unique_integer([:positive])}"
+      {:ok, human_issue} = Issues.create_issue(%{title: title, project_id: project.id})
+
+      assert %{"content" => [%{"text" => body}]} =
+               FeatureRequestsTool.call("list_feature_requests", %{}, state_for(unique_id()))
+
+      ids = Jason.decode!(body)["feature_requests"] |> Enum.map(& &1["id"])
+      refute human_issue.id in ids
+    end
+  end
+
+  describe "call/3 get_feature_request" do
+    setup :isolate_orca_hub_project
+
+    test "returns full title/description/status/notes for an agent-filed issue" do
+      %{"id" => id} =
+        FeatureRequestsTool.call(
+          "file_feature_request",
+          %{
+            "title" => "Get target #{System.unique_integer([:positive])}",
+            "description" => "the pain point"
+          },
+          state_for(unique_id())
+        )
+        |> then(fn %{"content" => [%{"text" => body}]} -> Jason.decode!(body) end)
+
+      assert %{"isError" => false, "content" => [%{"text" => body}]} =
+               FeatureRequestsTool.call(
+                 "get_feature_request",
+                 %{"id" => id},
+                 state_for(unique_id())
+               )
+
+      result = Jason.decode!(body)
+      assert result["id"] == id
+      assert result["status"] == "open"
+      assert result["description"] =~ "the pain point"
+    end
+
+    test "errors on a missing id" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call("get_feature_request", %{}, state_for(unique_id()))
+
+      assert msg =~ "id"
+    end
+
+    test "errors for an unknown id" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call(
+                 "get_feature_request",
+                 %{"id" => Ecto.UUID.generate()},
+                 state_for(unique_id())
+               )
+
+      assert msg =~ "No agent-filed feature request found"
+    end
+
+    test "errors for a human-filed issue (out of scope)", %{project: project} do
+      title = "Human filed for get #{System.unique_integer([:positive])}"
+      {:ok, human_issue} = Issues.create_issue(%{title: title, project_id: project.id})
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call(
+                 "get_feature_request",
+                 %{"id" => human_issue.id},
+                 state_for(unique_id())
+               )
+
+      assert msg =~ "No agent-filed feature request found"
+    end
+  end
+
+  describe "call/3 append_feature_request_note" do
+    setup :isolate_orca_hub_project
+
+    test "appends a note with provenance to an agent-filed issue" do
+      session_id = unique_id()
+
+      %{"id" => id} =
+        FeatureRequestsTool.call(
+          "file_feature_request",
+          %{
+            "title" => "Append target #{System.unique_integer([:positive])}",
+            "description" => "d"
+          },
+          state_for(unique_id())
+        )
+        |> then(fn %{"content" => [%{"text" => body}]} -> Jason.decode!(body) end)
+
+      assert %{"isError" => false, "content" => [%{"text" => body}]} =
+               FeatureRequestsTool.call(
+                 "append_feature_request_note",
+                 %{"id" => id, "note" => "saw this again"},
+                 state_for(session_id)
+               )
+
+      result = Jason.decode!(body)
+      assert result["notes"] =~ "saw this again"
+      assert result["notes"] =~ "append_feature_request_note"
+      assert result["notes"] =~ "Session: #{session_id}"
+
+      issue = Issues.get_issue!(id)
+      assert issue.notes == result["notes"]
+    end
+
+    test "errors on a missing id" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call(
+                 "append_feature_request_note",
+                 %{"note" => "x"},
+                 state_for(unique_id())
+               )
+
+      assert msg =~ "id"
+    end
+
+    test "errors on an empty note" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call(
+                 "append_feature_request_note",
+                 %{"id" => Ecto.UUID.generate(), "note" => ""},
+                 state_for(unique_id())
+               )
+
+      assert msg =~ "note"
+    end
+
+    test "errors for an unknown id" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               FeatureRequestsTool.call(
+                 "append_feature_request_note",
+                 %{"id" => Ecto.UUID.generate(), "note" => "x"},
+                 state_for(unique_id())
+               )
+
+      assert msg =~ "No agent-filed feature request found"
     end
   end
 
