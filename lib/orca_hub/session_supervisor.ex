@@ -49,6 +49,11 @@ defmodule OrcaHub.SessionSupervisor do
           # session is already terminated. The DB record may be gone, or the
           # hub node unreachable — neither should fail stop_session/1.
           _ -> :ok
+        catch
+          # A dead DB connection/sandbox owner surfaces as a linked-process
+          # EXIT (e.g. DBConnection.Holder.checkout hitting :noproc), not a
+          # raised exception, so `rescue` alone doesn't cover it.
+          :exit, _ -> :ok
         end
 
         Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", {:status, :error})
