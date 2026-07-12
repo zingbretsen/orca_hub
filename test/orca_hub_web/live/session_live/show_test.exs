@@ -725,6 +725,28 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       refute has_element?(view, "#session-node-#{root.id}.outline-primary")
     end
 
+    test "shows a node's model, badge-styled like backend/runner_node; omits the chip when nil",
+         %{conn: conn, claude_session: root, child: child, archived_grandchild: leaf} do
+      {:ok, child} = Sessions.update_session(child, %{model: "claude-opus-4-8"})
+      assert is_nil(root.model)
+      assert is_nil(leaf.model)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{child.id}?view=tree")
+
+      assert has_element?(
+               view,
+               "#session-node-#{child.id} span.badge",
+               "claude-opus-4-8"
+             )
+
+      # `leaf` (archived_grandchild) has no children of its own, so its node's
+      # DOM subtree is self-contained — unlike checking against an ancestor
+      # (root/child), whose subtree structurally nests every descendant's
+      # markup and would trivially "contain" this text regardless of whether
+      # the assertion logic were correct.
+      refute has_element?(view, "#session-node-#{leaf.id} span.badge", "claude-opus-4-8")
+    end
+
     test "a lone session with no parent and no children renders as a single node, no crash", %{
       conn: conn,
       claude_session: root,
@@ -783,6 +805,72 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       assert html =~ "explore"
       assert html =~ "Find the bug"
+    end
+  end
+
+  describe "Tree view — subagents disclosure gate (upfront ids_with_subagents query, not the lazy per-node fetch)" do
+    setup %{claude_session: root} do
+      dir =
+        Path.join(System.tmp_dir!(), "tree_subagents_gate_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, with_subagents} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node()),
+          parent_session_id: root.id,
+          title: "Has Subagents"
+        })
+
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: with_subagents.id,
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "toolu_gate_1",
+                  "name" => "Agent",
+                  "input" => %{"subagent_type" => "explore", "description" => "look around"}
+                }
+              ]
+            }
+          }
+        })
+
+      {:ok, without_subagents} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node()),
+          parent_session_id: root.id,
+          title: "No Subagents"
+        })
+
+      on_exit(fn ->
+        Enum.each([with_subagents.id, without_subagents.id], fn id ->
+          if SessionSupervisor.session_alive?(id), do: SessionSupervisor.stop_session(id)
+        end)
+      end)
+
+      %{with_subagents: with_subagents, without_subagents: without_subagents}
+    end
+
+    test "renders the Subagents disclosure only on the node that actually has one", %{
+      conn: conn,
+      claude_session: root,
+      with_subagents: with_subagents,
+      without_subagents: without_subagents
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{root.id}?view=tree")
+
+      assert has_element?(view, "#session-node-#{with_subagents.id} summary", "Subagents")
+      refute has_element?(view, "#session-node-#{without_subagents.id} summary", "Subagents")
     end
   end
 

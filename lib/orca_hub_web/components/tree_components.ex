@@ -140,6 +140,7 @@ defmodule OrcaHubWeb.TreeComponents do
   attr :children_by_parent, :map, required: true
   attr :edges_by_session, :map, required: true
   attr :subagents, :map, required: true
+  attr :has_subagents, :map, required: true
   attr :current_session_id, :string, required: true
 
   def tree_view(assigns) do
@@ -150,6 +151,7 @@ defmodule OrcaHubWeb.TreeComponents do
         children_by_parent={@children_by_parent}
         edges_by_session={@edges_by_session}
         subagents={@subagents}
+        has_subagents={@has_subagents}
         current_session_id={@current_session_id}
       />
     </div>
@@ -160,6 +162,7 @@ defmodule OrcaHubWeb.TreeComponents do
   attr :children_by_parent, :map, required: true
   attr :edges_by_session, :map, required: true
   attr :subagents, :map, required: true
+  attr :has_subagents, :map, required: true
   attr :current_session_id, :string, required: true
 
   defp tree_node(assigns) do
@@ -171,6 +174,7 @@ defmodule OrcaHubWeb.TreeComponents do
       |> assign(:children, children)
       |> assign(:edges, edges)
       |> assign(:subagent_list, Map.get(assigns.subagents, assigns.session.id))
+      |> assign(:subagent_count, Map.get(assigns.has_subagents, assigns.session.id))
       |> assign(:current?, assigns.session.id == assigns.current_session_id)
 
     ~H"""
@@ -202,6 +206,7 @@ defmodule OrcaHubWeb.TreeComponents do
                 edges={@edges}
                 session={@session}
                 subagent_list={@subagent_list}
+                subagent_count={@subagent_count}
               />
               <div class="border-l border-base-300 pl-2 ml-2 mt-1 space-y-1">
                 <.tree_node
@@ -210,6 +215,7 @@ defmodule OrcaHubWeb.TreeComponents do
                   children_by_parent={@children_by_parent}
                   edges_by_session={@edges_by_session}
                   subagents={@subagents}
+                  has_subagents={@has_subagents}
                   current_session_id={@current_session_id}
                 />
               </div>
@@ -224,7 +230,12 @@ defmodule OrcaHubWeb.TreeComponents do
         <.compose_button session={@session} />
       </div>
       <div :if={@children == []} class="ml-6 mt-0.5">
-        <.node_chips_and_subagents edges={@edges} session={@session} subagent_list={@subagent_list} />
+        <.node_chips_and_subagents
+          edges={@edges}
+          session={@session}
+          subagent_list={@subagent_list}
+          subagent_count={@subagent_count}
+        />
       </div>
     </div>
     """
@@ -239,6 +250,9 @@ defmodule OrcaHubWeb.TreeComponents do
     </.link>
     <span class={["badge badge-sm", status_badge_class(@session.status)]}>{@session.status}</span>
     <span class="badge badge-sm badge-outline opacity-60">{@session.backend}</span>
+    <span :if={@session.model not in [nil, ""]} class="badge badge-sm badge-outline opacity-60">
+      {@session.model}
+    </span>
     <span
       :if={@session.archived_at}
       class="badge badge-sm badge-ghost opacity-60"
@@ -281,6 +295,7 @@ defmodule OrcaHubWeb.TreeComponents do
   attr :edges, :map, required: true
   attr :session, :map, required: true
   attr :subagent_list, :list, default: nil
+  attr :subagent_count, :integer, default: nil
 
   defp node_chips_and_subagents(assigns) do
     ~H"""
@@ -289,7 +304,7 @@ defmodule OrcaHubWeb.TreeComponents do
       <.edge_chip :for={chip <- @edges.received} chip={chip} arrow="←" />
     </div>
 
-    <details class="group/subagents mb-1">
+    <details :if={@subagent_count} class="group/subagents mb-1">
       <summary
         phx-click="toggle_subagents"
         phx-value-id={@session.id}
@@ -298,7 +313,7 @@ defmodule OrcaHubWeb.TreeComponents do
         <.icon
           name="hero-chevron-right-micro"
           class="size-3 transition-transform group-open/subagents:rotate-90"
-        /> Subagents
+        /> Subagents ({@subagent_count})
       </summary>
       <div class="ml-4 mt-1 space-y-0.5">
         <p :if={@subagent_list == nil} class="text-xs text-base-content/40 italic">Loading…</p>

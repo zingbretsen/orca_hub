@@ -295,6 +295,37 @@ defmodule OrcaHub.Sessions do
     end)
   end
 
+  @doc """
+  Which of `session_ids` have at least one harness-internal subagent
+  invocation — same "Agent"-named tool_use block match as
+  `list_task_invocations/1`, just counted instead of extracted, and for a
+  whole tree's worth of ids in one grouped query rather than one id at a
+  time. Powers the tree view's upfront gate for whether a node's
+  "Subagents" disclosure is worth rendering at all — the disclosure's own
+  contents still fetch lazily, on first expand.
+
+  Returns `%{session_id => count}`; a session with none is simply absent
+  from the map (no zero-count entries).
+  """
+  def session_ids_with_subagents(session_ids)
+  def session_ids_with_subagents([]), do: %{}
+
+  def session_ids_with_subagents(session_ids) when is_list(session_ids) do
+    from(m in Message,
+      where: m.session_id in ^session_ids and fragment("? ->> 'type' = 'assistant'", m.data),
+      inner_lateral_join:
+        block in fragment(
+          "jsonb_array_elements(COALESCE(?->'message'->'content', '[]'::jsonb))",
+          m.data
+        ),
+      on: fragment("? ->> 'type' = 'tool_use' AND ? ->> 'name' = 'Agent'", block, block),
+      group_by: m.session_id,
+      select: {m.session_id, fragment("count(*)")}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
   defp filter_interactions_by_sender(q, nil), do: q
 
   defp filter_interactions_by_sender(q, sender_id),

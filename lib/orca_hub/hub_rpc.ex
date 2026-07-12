@@ -98,6 +98,9 @@ defmodule OrcaHub.HubRPC do
   def list_task_invocations(session_id),
     do: call(OrcaHub.Sessions, :list_task_invocations, [session_id])
 
+  def session_ids_with_subagents(session_ids),
+    do: call(OrcaHub.Sessions, :session_ids_with_subagents, [session_ids])
+
   # -------------------------------------------------------------------
   # Projects
   # -------------------------------------------------------------------

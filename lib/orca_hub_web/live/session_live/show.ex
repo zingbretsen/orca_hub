@@ -121,6 +121,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      # opened from a tree node regardless of which view loaded it.
      |> assign(:view, :conversation)
      |> assign(:tree_subagents, %{})
+     |> assign(:tree_has_subagents, %{})
      |> assign(:tree_compose, nil)
      |> assign(:sessions_topic_subscribed, false)
      |> load_session_todos()
@@ -177,6 +178,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     |> assign(:tree_root, root)
     |> assign(:tree_children_by_parent, TreeComponents.group_children_by_parent(members))
     |> assign(:tree_edges_by_session, TreeComponents.build_edges(interactions, sessions_by_id))
+    |> assign(:tree_has_subagents, HubRPC.session_ids_with_subagents(session_ids))
   end
 
   # -- mount helpers --
