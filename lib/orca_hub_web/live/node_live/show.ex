@@ -81,6 +81,24 @@ defmodule OrcaHubWeb.NodeLive.Show do
   # Backend install/update
   # -------------------------------------------------------------------
 
+  def handle_event("toggle_isolated", _params, socket) do
+    node = socket.assigns.node
+    new_value = !node.isolated
+
+    case HubRPC.update_node(node, %{isolated: new_value}) do
+      {:ok, updated_node} ->
+        flash_msg =
+          if new_value,
+            do: "Node isolated — sessions here can no longer reach other nodes",
+            else: "Node isolation disabled"
+
+        {:noreply, socket |> assign(:node, updated_node) |> put_flash(:info, flash_msg)}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to update isolation setting")}
+    end
+  end
+
   def handle_event("run_backend_job", %{"backend" => b, "action" => a}, socket) do
     with backend when not is_nil(backend) <- backend_atom(b),
          action when not is_nil(action) <- installer_action_atom(a) do

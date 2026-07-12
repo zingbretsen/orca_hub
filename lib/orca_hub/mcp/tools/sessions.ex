@@ -6,7 +6,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
   require Logger
 
-  alias OrcaHub.{Cluster, HubRPC}
+  alias OrcaHub.{Cluster, HubRPC, NodePolicy}
 
   # Time bound for AUTO-derived idempotency keys only (see
   # auto_idempotency_key/3) — belt-and-braces against a pathological hash
@@ -237,21 +237,25 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
     case Cluster.find_session(target_id) do
       {node, session} ->
-        unless Cluster.session_alive?(node, target_id) do
-          Cluster.start_session(node, target_id, session)
-        end
+        if NodePolicy.cross_node_allowed?(node) do
+          unless Cluster.session_alive?(node, target_id) do
+            Cluster.start_session(node, target_id, session)
+          end
 
-        case Cluster.send_message(node, target_id, signed_message) do
-          :ok ->
-            maybe_record_interaction(sender_id, session.id)
-            text("Message delivered to session #{target_id}")
+          case Cluster.send_message(node, target_id, signed_message) do
+            :ok ->
+              maybe_record_interaction(sender_id, session.id)
+              text("Message delivered to session #{target_id}")
 
-          {:error, reason} ->
-            message =
-              Cluster.node_unavailable_message(reason) ||
-                "Failed to send message to session #{target_id}: #{inspect(reason)}"
+            {:error, reason} ->
+              message =
+                Cluster.node_unavailable_message(reason) ||
+                  "Failed to send message to session #{target_id}: #{inspect(reason)}"
 
-            error(message)
+              error(message)
+          end
+        else
+          error(NodePolicy.denial_message(node))
         end
 
       nil ->
@@ -274,14 +278,18 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
     case Cluster.find_session(target_id) do
       {node, session} ->
-        case Cluster.archive_session(node, session) do
-          {:ok, _} ->
-            text(
-              "Session #{target_id} archived. Send it a message to resume — it will be automatically unarchived."
-            )
+        if NodePolicy.cross_node_allowed?(node) do
+          case Cluster.archive_session(node, session) do
+            {:ok, _} ->
+              text(
+                "Session #{target_id} archived. Send it a message to resume — it will be automatically unarchived."
+              )
 
-          {:error, changeset} ->
-            error("Failed to archive session #{target_id}: #{inspect(changeset.errors)}")
+            {:error, changeset} ->
+              error("Failed to archive session #{target_id}: #{inspect(changeset.errors)}")
+          end
+        else
+          error(NodePolicy.denial_message(node))
         end
 
       nil ->
@@ -295,24 +303,30 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
     case Cluster.find_session(target_id) do
       {node, session} ->
-        tail = HubRPC.session_tail(target_id, tool_call_limit: limit)
-        activity = Map.get(HubRPC.activity_metadata([session.id]), session.id, empty_activity())
+        if NodePolicy.cross_node_allowed?(node) do
+          tail = HubRPC.session_tail(target_id, tool_call_limit: limit)
 
-        result = %{
-          id: session.id,
-          title: session.title,
-          status: session.status,
-          updated_at: session.updated_at,
-          progress_phase: session.progress_phase,
-          progress_note: session.progress_note,
-          progress_updated_at: session.progress_updated_at,
-          last_assistant_text: cap_tail_text(tail.last_assistant_text),
-          recent_tool_calls: Enum.map(tail.recent_tool_calls, &format_tool_call/1),
-          activity: activity,
-          last_commit: fetch_last_commit(node, session.directory)
-        }
+          activity =
+            Map.get(HubRPC.activity_metadata([session.id]), session.id, empty_activity())
 
-        text(Jason.encode!(result))
+          result = %{
+            id: session.id,
+            title: session.title,
+            status: session.status,
+            updated_at: session.updated_at,
+            progress_phase: session.progress_phase,
+            progress_note: session.progress_note,
+            progress_updated_at: session.progress_updated_at,
+            last_assistant_text: cap_tail_text(tail.last_assistant_text),
+            recent_tool_calls: Enum.map(tail.recent_tool_calls, &format_tool_call/1),
+            activity: activity,
+            last_commit: fetch_last_commit(node, session.directory)
+          }
+
+          text(Jason.encode!(result))
+        else
+          error(NodePolicy.denial_message(node))
+        end
 
       nil ->
         error("Session #{target_id} not found on any node.")
@@ -338,7 +352,14 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
       sessions when is_list(sessions) ->
         include_activity = args["include_activity"] == true
-        text(Jason.encode!(format_session_results(sessions, limit, include_activity)))
+
+        text(
+          Jason.encode!(
+            sessions
+            |> scope_to_local_node_if_isolated()
+            |> format_session_results(limit, include_activity)
+          )
+        )
     end
   end
 
@@ -449,6 +470,30 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     directory = args["directory"] || caller.directory
     {project_id, runner_node} = resolve_routing(directory, caller)
 
+    if NodePolicy.cross_node_allowed?(runner_node) do
+      create_and_start_session(
+        args,
+        directory,
+        project_id,
+        runner_node,
+        caller,
+        caller_session_id,
+        idempotency_key
+      )
+    else
+      error(NodePolicy.denial_message(runner_node))
+    end
+  end
+
+  defp create_and_start_session(
+         args,
+         directory,
+         project_id,
+         runner_node,
+         caller,
+         caller_session_id,
+         idempotency_key
+       ) do
     case validate_backend(args["backend"], runner_node) do
       {:error, message} ->
         error(message)
@@ -655,6 +700,19 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   defp maybe_link_parent(attrs, _caller, _caller_session_id, _notify_on_completion), do: attrs
 
   # ── search_sessions helpers ───────────────────────────────────────────
+
+  # Isolation is scoped silently here (rather than erroring) so an isolated
+  # node's search_sessions still "works" — it just can't discover sessions
+  # elsewhere. Checked once per call (not cached across calls/process —
+  # NodePolicy always re-checks the current `nodes` row) since a single
+  # search can return many sessions to filter.
+  defp scope_to_local_node_if_isolated(sessions) do
+    if NodePolicy.local_node_isolated?() do
+      Enum.filter(sessions, fn s -> Cluster.runner_node_for(s) == node() end)
+    else
+      sessions
+    end
+  end
 
   defp search_sessions_for(%{"all_projects" => true}, _state, search_opts) do
     HubRPC.search_all_sessions(search_opts)

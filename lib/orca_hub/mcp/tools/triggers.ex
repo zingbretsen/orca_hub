@@ -4,7 +4,7 @@ defmodule OrcaHub.MCP.Tools.Triggers do
   """
   import OrcaHub.MCP.Tools.Result
 
-  alias OrcaHub.HubRPC
+  alias OrcaHub.{Cluster, HubRPC, NodePolicy}
 
   def list do
     [
@@ -103,50 +103,78 @@ defmodule OrcaHub.MCP.Tools.Triggers do
   end
 
   def call("create_scheduled_trigger", args, _state) do
-    attrs = %{
-      name: args["name"],
-      prompt: args["prompt"],
-      cron_expression: build_cron(args),
-      project_id: args["project_id"],
-      reuse_session: args["reuse_session"] || false,
-      archive_on_complete: args["archive_on_complete"] || false
-    }
+    with :ok <- check_project_node_allowed(args["project_id"]) do
+      attrs = %{
+        name: args["name"],
+        prompt: args["prompt"],
+        cron_expression: build_cron(args),
+        project_id: args["project_id"],
+        reuse_session: args["reuse_session"] || false,
+        archive_on_complete: args["archive_on_complete"] || false
+      }
 
-    case HubRPC.create_trigger(attrs) do
-      {:ok, trigger} ->
-        text(
-          "Trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
-            "Schedule: #{trigger.cron_expression}"
-        )
+      case HubRPC.create_trigger(attrs) do
+        {:ok, trigger} ->
+          text(
+            "Trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
+              "Schedule: #{trigger.cron_expression}"
+          )
 
-      {:error, changeset} ->
-        error("Failed to create trigger: #{inspect(changeset.errors)}")
+        {:error, changeset} ->
+          error("Failed to create trigger: #{inspect(changeset.errors)}")
+      end
     end
   end
 
   def call("create_webhook_trigger", args, _state) do
-    attrs = %{
-      name: args["name"],
-      prompt: args["prompt"],
-      type: "webhook",
-      project_id: args["project_id"],
-      reuse_session: args["reuse_session"] || false,
-      archive_on_complete: args["archive_on_complete"] || false
-    }
+    with :ok <- check_project_node_allowed(args["project_id"]) do
+      attrs = %{
+        name: args["name"],
+        prompt: args["prompt"],
+        type: "webhook",
+        project_id: args["project_id"],
+        reuse_session: args["reuse_session"] || false,
+        archive_on_complete: args["archive_on_complete"] || false
+      }
 
-    case HubRPC.create_trigger(attrs) do
-      {:ok, trigger} ->
-        url = OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"
+      case HubRPC.create_trigger(attrs) do
+        {:ok, trigger} ->
+          url = OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"
 
-        text(
-          "Webhook trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
-            "Webhook URL: #{url}"
-        )
+          text(
+            "Webhook trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
+              "Webhook URL: #{url}"
+          )
 
-      {:error, changeset} ->
-        error("Failed to create trigger: #{inspect(changeset.errors)}")
+        {:error, changeset} ->
+          error("Failed to create trigger: #{inspect(changeset.errors)}")
+      end
     end
   end
+
+  # A trigger fires on ITS project's node (see TriggerExecutor), not
+  # necessarily the caller's — so pointing a trigger at a project on
+  # another node is itself a cross-node action an isolated node must not
+  # be able to initiate, same as start_session's directory-based routing.
+  # An unknown project_id is left to the existing FK/changeset error path
+  # below rather than duplicated here.
+  defp check_project_node_allowed(project_id) when is_binary(project_id) do
+    case HubRPC.get_project(project_id) do
+      %{} = project ->
+        target_node = Cluster.project_node_for(project)
+
+        if NodePolicy.cross_node_allowed?(target_node) do
+          :ok
+        else
+          error(NodePolicy.denial_message(target_node))
+        end
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp check_project_node_allowed(_project_id), do: :ok
 
   # ── create_scheduled_trigger helpers ──────────────────────────────────
 

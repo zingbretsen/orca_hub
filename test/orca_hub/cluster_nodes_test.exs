@@ -59,6 +59,50 @@ defmodule OrcaHub.ClusterNodesTest do
     end
   end
 
+  describe "update_node/2" do
+    test "updates arbitrary attrs, e.g. isolated" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      refute node.isolated
+
+      {:ok, updated} = ClusterNodes.update_node(node, %{isolated: true})
+      assert updated.isolated
+
+      {:ok, toggled_back} = ClusterNodes.update_node(updated, %{isolated: false})
+      refute toggled_back.isolated
+    end
+  end
+
+  describe "isolated flag survives conflict-update paths" do
+    test "upsert_seen does not reset an isolated node back to false" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      {:ok, isolated_node} = ClusterNodes.update_node(node, %{isolated: true})
+      assert isolated_node.isolated
+
+      {:ok, reseen} = ClusterNodes.upsert_seen("orca@a", "a (reconnected)")
+
+      assert reseen.isolated
+      assert ClusterNodes.get_by_name("orca@a").isolated
+    end
+
+    test "touch_last_connected does not reset an isolated node back to false" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      {:ok, _} = ClusterNodes.update_node(node, %{isolated: true})
+
+      {:ok, touched} = ClusterNodes.touch_last_connected("orca@a")
+
+      assert touched.isolated
+    end
+
+    test "backfill_node never overwrites an existing isolated row" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      {:ok, _} = ClusterNodes.update_node(node, %{isolated: true})
+
+      {:ok, _} = ClusterNodes.backfill_node("orca@a", "should not apply")
+
+      assert ClusterNodes.get_by_name("orca@a").isolated
+    end
+  end
+
   describe "distinct_session_and_project_node_names/0" do
     test "collects distinct node names from sessions and projects, ignoring blanks" do
       {:ok, _} =

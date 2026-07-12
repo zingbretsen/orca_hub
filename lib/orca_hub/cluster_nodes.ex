@@ -28,6 +28,18 @@ defmodule OrcaHub.ClusterNodes do
   def get_by_name(name) when is_binary(name), do: Repo.get_by(ClusterNode, name: name)
 
   @doc """
+  Generic attribute update for a `nodes` row — currently used for the
+  `isolated` toggle (see `OrcaHub.NodePolicy`). Deliberately NOT used by
+  `upsert_seen`/`touch_last_connected`/`backfill_node`'s conflict-update
+  paths, which only ever `on_conflict: [set: [...]]` an explicit field
+  list — so a node reconnecting never resets an operator-set `isolated`
+  flag back to false.
+  """
+  def update_node(%ClusterNode{} = node, attrs) do
+    node |> ClusterNode.changeset(attrs) |> Repo.update()
+  end
+
+  @doc """
   Insert or update the row for `name`, bumping `last_connected_at` to now
   and refreshing `display_name`. On first insert, `first_connected_at` is
   also set to now and preserved on every later call. Used for `:nodeup` and

@@ -13,7 +13,16 @@
   row_click={fn %{node: n} -> JS.navigate(~p"/nodes/#{n.id}") end}
 >
   <:col :let={%{node: n}} label="Name">
-    <div class="font-medium">{n.display_name}</div>
+    <div class="font-medium flex items-center gap-2">
+      {n.display_name}
+      <span
+        :if={n.isolated}
+        class="badge badge-xs badge-warning"
+        title="Cross-node MCP tools are blocked on this node"
+      >
+        isolated
+      </span>
+    </div>
     <div class="text-xs text-base-content/60 font-mono">{n.name}</div>
   </:col>
   <:col :let={%{connected: connected?}} label="Status">

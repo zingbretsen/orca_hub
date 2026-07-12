@@ -28,7 +28,7 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
   alias OrcaHub.Backend.Cache
   alias OrcaHub.MCP.Tools.Sessions, as: SessionsTool
   alias OrcaHub.Sessions.Session
-  alias OrcaHub.{Sessions, SessionSupervisor}
+  alias OrcaHub.{ClusterNodes, Sessions, SessionSupervisor}
 
   @codex_stub Path.expand("../../../support/fixtures/codex_stub_app_server.py", __DIR__)
   @pi_stub Path.expand("../../../support/fixtures/pi_stub_rpc.py", __DIR__)
@@ -880,6 +880,190 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert decoded["backend"] == "claude"
       assert is_binary(decoded["node"])
       assert is_binary(decoded["directory"])
+    end
+  end
+
+  describe "cross-node isolation enforcement" do
+    defp isolate_local_node! do
+      node_row =
+        ClusterNodes.get_by_name(Atom.to_string(node())) ||
+          (
+            {:ok, row} = ClusterNodes.upsert_seen(Atom.to_string(node()), Atom.to_string(node()))
+            row
+          )
+
+      {:ok, isolated_row} = ClusterNodes.update_node(node_row, %{isolated: true})
+      isolated_row
+    end
+
+    test "send_message_to_session denies a cross-node target when the local node is isolated",
+         %{dir: dir} do
+      isolate_local_node!()
+
+      {:ok, target} =
+        Sessions.create_session(%{directory: dir, runner_node: "debian@totally-offline-host"})
+
+      result =
+        SessionsTool.call(
+          "send_message_to_session",
+          %{"session_id" => target.id, "message" => "hello"},
+          %{orca_session_id: nil}
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "isolated"
+      assert Sessions.list_messages(target.id) == []
+    end
+
+    test "send_message_to_session still allows a same-node target when isolated",
+         %{state: state, dir: dir} do
+      isolate_local_node!()
+
+      {:ok, target} =
+        Sessions.create_session(%{directory: dir, runner_node: Atom.to_string(node())})
+
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "send_message_to_session",
+            %{"session_id" => target.id, "message" => "hello"},
+            state
+          )
+        end)
+
+      assert %{"isError" => false} = result
+    end
+
+    test "archive_session denies a cross-node target when the local node is isolated",
+         %{dir: dir} do
+      isolate_local_node!()
+
+      {:ok, target} =
+        Sessions.create_session(%{directory: dir, runner_node: "debian@totally-offline-host"})
+
+      result =
+        SessionsTool.call("archive_session", %{"session_id" => target.id}, %{orca_session_id: nil})
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "isolated"
+      refute Sessions.get_session!(target.id).archived_at
+    end
+
+    test "get_session_tail denies a cross-node target when the local node is isolated",
+         %{dir: dir} do
+      isolate_local_node!()
+
+      {:ok, target} =
+        Sessions.create_session(%{directory: dir, runner_node: "debian@totally-offline-host"})
+
+      result =
+        SessionsTool.call("get_session_tail", %{"session_id" => target.id}, %{
+          orca_session_id: nil
+        })
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "isolated"
+    end
+
+    test "start_session denies routing to another node's project when the local node is isolated",
+         %{state: state} do
+      isolate_local_node!()
+
+      other_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_isolated_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, _other_project} =
+        OrcaHub.Projects.create_project(%{
+          name: "isolated-other-project",
+          directory: other_dir,
+          node: "debian@totally-offline-host"
+        })
+
+      count_before = Sessions.list_sessions(:all) |> length()
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "directory" => other_dir},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "isolated"
+      assert Sessions.list_sessions(:all) |> length() == count_before
+    end
+
+    test "start_session still allows same-node routing when isolated", %{state: state} do
+      isolate_local_node!()
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+    end
+
+    test "search_sessions scopes results to the local node when isolated", %{
+      dir: dir,
+      state: state
+    } do
+      isolate_local_node!()
+
+      {:ok, local_session} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "local-one",
+          runner_node: Atom.to_string(node())
+        })
+
+      {:ok, _remote_session} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "remote-one",
+          runner_node: "debian@totally-offline-host"
+        })
+
+      %{"content" => [%{"text" => text}]} =
+        SessionsTool.call("search_sessions", %{"directory" => dir}, state)
+
+      ids = Jason.decode!(text) |> Enum.map(& &1["id"])
+      assert local_session.id in ids
+      refute Enum.any?(ids, &(&1 != local_session.id and &1 != state.orca_session_id))
+    end
+
+    test "search_sessions is unrestricted when not isolated", %{dir: dir, state: state} do
+      {:ok, local_session} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "local-two",
+          runner_node: Atom.to_string(node())
+        })
+
+      {:ok, remote_session} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "remote-two",
+          runner_node: "debian@totally-offline-host"
+        })
+
+      %{"content" => [%{"text" => text}]} =
+        SessionsTool.call("search_sessions", %{"directory" => dir}, state)
+
+      ids = Jason.decode!(text) |> Enum.map(& &1["id"])
+      assert local_session.id in ids
+      assert remote_session.id in ids
     end
   end
 

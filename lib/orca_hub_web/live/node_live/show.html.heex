@@ -25,6 +25,19 @@
     </:item>
     <:item title="Sessions">{@session_count}</:item>
     <:item title="Projects">{@project_count}</:item>
+    <:item title="Isolated">
+      <label class="label cursor-pointer gap-2 justify-start">
+        <input
+          type="checkbox"
+          class="toggle toggle-xs"
+          checked={@node.isolated}
+          phx-click="toggle_isolated"
+        />
+        <span class="label-text text-xs">
+          Sessions on this node cannot message, inspect, or spawn sessions on other nodes, and session search is scoped to this node.
+        </span>
+      </label>
+    </:item>
   </.list>
 </div>
 
