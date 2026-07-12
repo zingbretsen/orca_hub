@@ -4,7 +4,14 @@ defmodule OrcaHub.Sessions do
   """
 
   import Ecto.Query
-  alias OrcaHub.{AgentPresence, Repo, Sessions.Message, Sessions.Session}
+
+  alias OrcaHub.{
+    AgentPresence,
+    Repo,
+    Sessions.Message,
+    Sessions.Session,
+    Sessions.SessionInteraction
+  }
 
   def list_sessions(filter \\ :manual) do
     query =
@@ -157,6 +164,58 @@ defmodule OrcaHub.Sessions do
     |> Message.changeset(attrs)
     |> Repo.insert()
   end
+
+  @doc """
+  Records a directed session_interactions edge — e.g. a
+  send_message_to_session delivery. `attrs` needs :sender_session_id and
+  :recipient_session_id; :kind defaults to "message" and :inserted_at
+  defaults to now (the backfill task overrides it with the original
+  message timestamp).
+  """
+  def create_session_interaction(attrs) do
+    %SessionInteraction{}
+    |> SessionInteraction.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists session_interactions edges, newest first. `opts` supports
+  :sender_session_id, :recipient_session_id, and :since (only edges with
+  inserted_at >= since) — all optional, combinable.
+  """
+  def list_session_interactions(opts \\ []) do
+    from(i in SessionInteraction, order_by: [desc: i.inserted_at])
+    |> filter_interactions_by_sender(opts[:sender_session_id])
+    |> filter_interactions_by_recipient(opts[:recipient_session_id])
+    |> filter_interactions_by_since(opts[:since])
+    |> Repo.all()
+  end
+
+  @doc """
+  Every session_interactions edge touching any session in `session_ids`,
+  as either sender or recipient — the whole-subgraph query the session
+  graph view needs in one round trip rather than per-node lookups.
+  """
+  def list_session_interactions_for_sessions(session_ids) when is_list(session_ids) do
+    from(i in SessionInteraction,
+      where: i.sender_session_id in ^session_ids or i.recipient_session_id in ^session_ids,
+      order_by: [asc: i.inserted_at]
+    )
+    |> Repo.all()
+  end
+
+  defp filter_interactions_by_sender(q, nil), do: q
+
+  defp filter_interactions_by_sender(q, sender_id),
+    do: from(i in q, where: i.sender_session_id == ^sender_id)
+
+  defp filter_interactions_by_recipient(q, nil), do: q
+
+  defp filter_interactions_by_recipient(q, recipient_id),
+    do: from(i in q, where: i.recipient_session_id == ^recipient_id)
+
+  defp filter_interactions_by_since(q, nil), do: q
+  defp filter_interactions_by_since(q, since), do: from(i in q, where: i.inserted_at >= ^since)
 
   def search(query, opts \\ []) do
     like = "%#{query}%"

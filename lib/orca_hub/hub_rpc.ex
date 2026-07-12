@@ -82,6 +82,15 @@ defmodule OrcaHub.HubRPC do
   def activity_metadata(session_ids),
     do: call(OrcaHub.Sessions, :activity_metadata, [session_ids])
 
+  def create_session_interaction(attrs),
+    do: call(OrcaHub.Sessions, :create_session_interaction, [attrs])
+
+  def list_session_interactions(opts \\ []),
+    do: call(OrcaHub.Sessions, :list_session_interactions, [opts])
+
+  def list_session_interactions_for_sessions(session_ids),
+    do: call(OrcaHub.Sessions, :list_session_interactions_for_sessions, [session_ids])
+
   # -------------------------------------------------------------------
   # Projects
   # -------------------------------------------------------------------

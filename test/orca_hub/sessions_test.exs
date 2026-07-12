@@ -341,4 +341,119 @@ defmodule OrcaHub.SessionsTest do
       assert Sessions.get_session_by_idempotency_key("does-not-exist") == nil
     end
   end
+
+  describe "session_interactions" do
+    test "create_session_interaction/1 inserts an edge with a default kind", %{project: project} do
+      a = create_session(project)
+      b = create_session(project)
+
+      assert {:ok, interaction} =
+               Sessions.create_session_interaction(%{
+                 sender_session_id: a.id,
+                 recipient_session_id: b.id
+               })
+
+      assert interaction.sender_session_id == a.id
+      assert interaction.recipient_session_id == b.id
+      assert interaction.kind == "message"
+    end
+
+    test "create_session_interaction/1 requires sender and recipient" do
+      assert {:error, changeset} = Sessions.create_session_interaction(%{})
+
+      assert %{sender_session_id: ["can't be blank"], recipient_session_id: ["can't be blank"]} =
+               errors_on(changeset)
+    end
+
+    test "create_session_interaction/1 accepts an explicit inserted_at for backfilling", %{
+      project: project
+    } do
+      a = create_session(project)
+      b = create_session(project)
+      stamp = ~N[2026-01-01 00:00:00]
+
+      assert {:ok, interaction} =
+               Sessions.create_session_interaction(%{
+                 sender_session_id: a.id,
+                 recipient_session_id: b.id,
+                 inserted_at: stamp
+               })
+
+      assert interaction.inserted_at == stamp
+    end
+
+    test "list_session_interactions/1 filters by sender, recipient, and since", %{
+      project: project
+    } do
+      a = create_session(project)
+      b = create_session(project)
+      c = create_session(project)
+
+      {:ok, old} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: a.id,
+          recipient_session_id: b.id,
+          inserted_at: ~N[2020-01-01 00:00:00]
+        })
+
+      {:ok, recent} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: a.id,
+          recipient_session_id: c.id,
+          inserted_at: ~N[2026-06-01 00:00:00]
+        })
+
+      {:ok, other_sender} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: c.id,
+          recipient_session_id: b.id,
+          inserted_at: ~N[2026-06-01 00:00:00]
+        })
+
+      by_sender = Sessions.list_session_interactions(sender_session_id: a.id)
+      assert Enum.map(by_sender, & &1.id) |> Enum.sort() == Enum.sort([old.id, recent.id])
+
+      by_recipient = Sessions.list_session_interactions(recipient_session_id: b.id)
+
+      assert Enum.map(by_recipient, & &1.id) |> Enum.sort() ==
+               Enum.sort([old.id, other_sender.id])
+
+      since_2025 = Sessions.list_session_interactions(since: ~N[2025-01-01 00:00:00])
+      ids = Enum.map(since_2025, & &1.id)
+      assert recent.id in ids
+      assert other_sender.id in ids
+      refute old.id in ids
+    end
+
+    test "list_session_interactions_for_sessions/1 returns edges touching any given session id (either direction)",
+         %{project: project} do
+      a = create_session(project)
+      b = create_session(project)
+      c = create_session(project)
+      unrelated = create_session(project)
+
+      {:ok, a_to_b} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: a.id,
+          recipient_session_id: b.id
+        })
+
+      {:ok, c_to_a} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: c.id,
+          recipient_session_id: a.id
+        })
+
+      {:ok, _unrelated_edge} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: unrelated.id,
+          recipient_session_id: c.id
+        })
+
+      result = Sessions.list_session_interactions_for_sessions([a.id])
+      assert Enum.map(result, & &1.id) |> Enum.sort() == Enum.sort([a_to_b.id, c_to_a.id])
+
+      assert Sessions.list_session_interactions_for_sessions([]) == []
+    end
+  end
 end

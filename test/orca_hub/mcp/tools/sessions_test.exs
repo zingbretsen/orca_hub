@@ -449,6 +449,92 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     end
   end
 
+  describe "send_message_to_session — session_interactions edge" do
+    test "records an edge (sender -> resolved recipient) on successful delivery", %{
+      state: state,
+      dir: dir
+    } do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "send_message_to_session",
+            %{"session_id" => target.id, "message" => "hello"},
+            state
+          )
+        end)
+
+      assert %{"isError" => false} = result
+
+      assert [interaction] = Sessions.list_session_interactions(recipient_session_id: target.id)
+      assert interaction.sender_session_id == state.orca_session_id
+      assert interaction.recipient_session_id == target.id
+      assert interaction.kind == "message"
+    end
+
+    test "does not record an edge when there is no sender", %{dir: dir} do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "send_message_to_session",
+            %{"session_id" => target.id, "message" => "hello"},
+            %{orca_session_id: nil}
+          )
+        end)
+
+      assert %{"isError" => false} = result
+      assert Sessions.list_session_interactions(recipient_session_id: target.id) == []
+    end
+
+    test "a failure to record the edge does not fail the tool call", %{state: state, dir: dir} do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      # A sender id that isn't a real session violates the FK on insert —
+      # the tool call must still report success since delivery itself worked.
+      bogus_sender = Ecto.UUID.generate()
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "send_message_to_session",
+            %{
+              "session_id" => target.id,
+              "message" => "hello",
+              "sender_session_id" => bogus_sender
+            },
+            state
+          )
+        end)
+
+      assert %{"isError" => false} = result
+      assert Sessions.list_session_interactions(recipient_session_id: target.id) == []
+    end
+  end
+
   describe "start_session backend/model params — model" do
     test "model passes through onto the created session row", %{state: state} do
       Application.put_env(:orca_hub, :codex_executable, @codex_stub)

@@ -243,6 +243,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
         case Cluster.send_message(node, target_id, signed_message) do
           :ok ->
+            maybe_record_interaction(sender_id, session.id)
             text("Message delivered to session #{target_id}")
 
           {:error, reason} ->
@@ -378,6 +379,39 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           end
         end
     end
+  end
+
+  # Structural edge for the session graph feature. Best-effort: the actual
+  # message delivery already succeeded by the time this runs, so a failure
+  # here (bad sender id, transient DB/erpc error) must never surface as a
+  # tool error — just log and move on.
+  defp maybe_record_interaction(nil, _recipient_id), do: :ok
+
+  defp maybe_record_interaction(sender_id, recipient_id) do
+    case HubRPC.create_session_interaction(%{
+           sender_session_id: sender_id,
+           recipient_session_id: recipient_id,
+           kind: "message"
+         }) do
+      {:ok, _interaction} ->
+        :ok
+
+      {:error, changeset} ->
+        Logger.warning(
+          "[MCP] send_message_to_session: failed to record session_interactions edge " <>
+            "(#{sender_id} -> #{recipient_id}): #{inspect(changeset.errors)}"
+        )
+
+        :ok
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "[MCP] send_message_to_session: failed to record session_interactions edge " <>
+          "(#{sender_id} -> #{recipient_id}): #{Exception.format(:error, error)}"
+      )
+
+      :ok
   end
 
   defp do_report_progress(_session_id, phase, _note) when not is_binary(phase) or phase == "" do
