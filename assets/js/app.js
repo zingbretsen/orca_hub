@@ -283,6 +283,24 @@ let Hooks = {
       }
     }
   },
+  // Session tree page (/sessions/tree): message-edge chips dispatch a
+  // "orca:scroll-to-session" custom event (via JS.dispatch, detail: {id})
+  // at this hook's element (the tree's root container, mounted once) —
+  // scroll the target node into view and briefly flash a highlight ring,
+  // matching CopyToClipboard's flash-then-remove-class pattern above.
+  ScrollHighlightTarget: {
+    mounted() {
+      this.el.addEventListener("orca:scroll-to-session", (e) => {
+        const id = e.detail && e.detail.id
+        if (!id) return
+        const target = document.getElementById(`session-node-${id}`)
+        if (!target) return
+        target.scrollIntoView({ behavior: "smooth", block: "center" })
+        target.classList.add("ring", "ring-primary", "ring-offset-2")
+        setTimeout(() => target.classList.remove("ring", "ring-primary", "ring-offset-2"), 1500)
+      })
+    }
+  },
   AutoResize: {
     mounted() {
       this.resize()

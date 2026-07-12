@@ -1,0 +1,34 @@
+<.header>
+  Session Tree
+  <:actions>
+    <button phx-click="toggle_scope" class="btn btn-sm">
+      <%= if @scope == :recent do %>
+        Show full history
+      <% else %>
+        Show recent only
+      <% end %>
+    </button>
+  </:actions>
+</.header>
+
+<p class="text-xs text-base-content/50 mt-1">
+  <%= if @scope == :recent do %>
+    Showing non-archived sessions, plus archived sessions updated in the last 24h.
+  <% else %>
+    Showing full history — every session, including old archived ones.
+  <% end %>
+</p>
+
+<div :if={@roots == []} class="text-sm text-base-content/50 p-4 text-center">
+  No sessions to show.
+</div>
+
+<div id="session-tree-root" phx-hook="ScrollHighlightTarget" class="mt-4 space-y-1">
+  <.tree_node
+    :for={session <- @roots}
+    session={session}
+    children_by_parent={@children_by_parent}
+    edges_by_session={@edges_by_session}
+    subagents={@subagents}
+  />
+</div>

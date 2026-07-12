@@ -204,6 +204,92 @@ defmodule OrcaHub.Sessions do
     |> Repo.all()
   end
 
+  @doc """
+  Sessions for the `/sessions/tree` spawn-forest page. `:recent` (default)
+  returns non-archived sessions plus sessions archived/updated within the
+  last 24h; `:all` is the "full history" toggle — every session, no
+  archived/time bound. Unlike `list_sessions/1`, there's no :manual/
+  :automated/:orchestrator split here — the tree page shows everything so
+  parent/child chains aren't broken by an unrelated filter hiding a link
+  in the chain.
+  """
+  def list_sessions_for_tree(scope \\ :recent)
+
+  def list_sessions_for_tree(:all) do
+    from(s in Session,
+      left_join: p in assoc(s, :project),
+      where: is_nil(s.project_id) or is_nil(p.deleted_at),
+      preload: [project: p],
+      order_by: [desc: s.updated_at]
+    )
+    |> Repo.all()
+  end
+
+  def list_sessions_for_tree(:recent) do
+    cutoff = NaiveDateTime.utc_now() |> NaiveDateTime.add(-24 * 3600, :second)
+
+    from(s in Session,
+      left_join: p in assoc(s, :project),
+      where: is_nil(s.project_id) or is_nil(p.deleted_at),
+      where: is_nil(s.archived_at) or s.updated_at >= ^cutoff,
+      preload: [project: p],
+      order_by: [desc: s.updated_at]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Bulk id -> title lookup, one query regardless of list size. Powers the
+  `/sessions/tree` message-edge overlay resolving the title of the far end
+  of an edge whose session got filtered out of the visible set — a single
+  extra fetch for the whole page, never per-chip.
+  """
+  def list_sessions_by_ids([]), do: []
+
+  def list_sessions_by_ids(ids) when is_list(ids) do
+    from(s in Session, where: s.id in ^ids, select: %{id: s.id, title: s.title})
+    |> Repo.all()
+  end
+
+  # How many recent assistant messages to scan for Agent tool_use blocks —
+  # generous relative to @tail_scan_limit since list_task_invocations/1 wants
+  # the FULL history of subagent spawns for a session, not just a tail.
+  @task_invocation_scan_limit 2000
+
+  @doc """
+  Every harness-internal subagent invocation for a session: assistant
+  messages' "Agent"-named tool_use blocks (see message_components.ex's
+  `assistant_message/1`, which separates Agent tool_use blocks from regular
+  ones for the same reason — harness subagents surface as a tool_use block
+  named "Agent", not a literal "Task" string anywhere in this codebase).
+  Powers the `/sessions/tree` page's lazy, per-session "Subagents"
+  disclosure — called on-demand for one session at a time, never for the
+  whole visible set up front.
+  """
+  def list_task_invocations(session_id) do
+    from(m in Message,
+      where: m.session_id == ^session_id and fragment("? ->> 'type' = 'assistant'", m.data),
+      order_by: [asc: m.inserted_at],
+      limit: @task_invocation_scan_limit
+    )
+    |> Repo.all()
+    |> Enum.flat_map(&agent_tool_use_blocks/1)
+  end
+
+  defp agent_tool_use_blocks(%Message{data: data}) do
+    data
+    |> get_in(["message", "content"])
+    |> List.wrap()
+    |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use" && &1["name"] == "Agent"))
+    |> Enum.map(fn block ->
+      %{
+        id: block["id"],
+        subagent_type: get_in(block, ["input", "subagent_type"]),
+        description: get_in(block, ["input", "description"])
+      }
+    end)
+  end
+
   defp filter_interactions_by_sender(q, nil), do: q
 
   defp filter_interactions_by_sender(q, sender_id),

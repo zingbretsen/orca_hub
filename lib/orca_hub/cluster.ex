@@ -252,6 +252,19 @@ defmodule OrcaHub.Cluster do
     |> Enum.sort_by(fn {_n, {s, _msg}} -> {s.priority || 0, s.updated_at} end)
   end
 
+  @doc """
+  Like `list_sessions/1` but scoped for the `/sessions/tree` spawn-forest
+  page: `:recent` (default) = non-archived plus archived/updated within the
+  last 24h; `:all` = full history, no archived/time bound. Same tagging
+  contract as `list_sessions/1` — `[{node, session}, ...]`.
+  """
+  def list_sessions_for_tree(scope \\ :recent) do
+    sessions = HubRPC.list_sessions_for_tree(scope)
+
+    Enum.map(sessions, fn s -> {runner_node_for(s), s} end)
+    |> Enum.sort_by(fn {_n, s} -> s.updated_at end, {:desc, NaiveDateTime})
+  end
+
   def count_idle_sessions, do: HubRPC.count_idle_sessions()
 
   def search(query, opts \\ []) do

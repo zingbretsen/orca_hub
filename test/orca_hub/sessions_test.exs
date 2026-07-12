@@ -456,4 +456,148 @@ defmodule OrcaHub.SessionsTest do
       assert Sessions.list_session_interactions_for_sessions([]) == []
     end
   end
+
+  describe "list_sessions_for_tree/1" do
+    test "recent scope includes non-archived sessions and archived-but-recently-updated ones",
+         %{project: project} do
+      fresh = create_session(project, %{title: "Fresh"})
+      old_archived = create_session(project, %{title: "Old Archived"})
+      recent_archived = create_session(project, %{title: "Recent Archived"})
+
+      {:ok, old_archived} = Sessions.archive_session(old_archived)
+      {:ok, recent_archived} = Sessions.archive_session(recent_archived)
+
+      old_time = NaiveDateTime.utc_now() |> NaiveDateTime.add(-2 * 24 * 3600, :second)
+
+      from(s in Session, where: s.id == ^old_archived.id)
+      |> Repo.update_all(set: [updated_at: old_time])
+
+      ids = Sessions.list_sessions_for_tree(:recent) |> Enum.map(& &1.id)
+
+      assert fresh.id in ids
+      assert recent_archived.id in ids
+      refute old_archived.id in ids
+    end
+
+    test "all scope includes every session regardless of archive age", %{project: project} do
+      old_archived = create_session(project, %{title: "Old Archived"})
+      {:ok, old_archived} = Sessions.archive_session(old_archived)
+
+      old_time = NaiveDateTime.utc_now() |> NaiveDateTime.add(-2 * 24 * 3600, :second)
+
+      from(s in Session, where: s.id == ^old_archived.id)
+      |> Repo.update_all(set: [updated_at: old_time])
+
+      ids = Sessions.list_sessions_for_tree(:all) |> Enum.map(& &1.id)
+      assert old_archived.id in ids
+    end
+  end
+
+  describe "list_sessions_by_ids/1" do
+    test "returns id/title pairs for the given ids only", %{project: project} do
+      a = create_session(project, %{title: "A"})
+      _b = create_session(project, %{title: "B"})
+
+      assert [%{id: id, title: "A"}] = Sessions.list_sessions_by_ids([a.id])
+      assert id == a.id
+    end
+
+    test "returns an empty list for an empty id list" do
+      assert Sessions.list_sessions_by_ids([]) == []
+    end
+  end
+
+  describe "list_task_invocations/1" do
+    defp assistant_with_tool_uses(blocks) do
+      %{"type" => "assistant", "message" => %{"content" => blocks}}
+    end
+
+    test "returns only Agent-named tool_use blocks, parsed into subagent_type/description",
+         %{project: project} do
+      session = create_session(project)
+
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data:
+            assistant_with_tool_uses([
+              %{
+                "type" => "tool_use",
+                "id" => "toolu_agent_1",
+                "name" => "Agent",
+                "input" => %{
+                  "subagent_type" => "code-reviewer",
+                  "description" => "Review the diff"
+                }
+              },
+              %{
+                "type" => "tool_use",
+                "id" => "toolu_bash_1",
+                "name" => "Bash",
+                "input" => %{"command" => "ls"}
+              }
+            ])
+        })
+
+      assert [
+               %{
+                 id: "toolu_agent_1",
+                 subagent_type: "code-reviewer",
+                 description: "Review the diff"
+               }
+             ] =
+               Sessions.list_task_invocations(session.id)
+    end
+
+    test "returns an empty list for a session with no Agent tool_use blocks", %{project: project} do
+      session = create_session(project)
+
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data:
+            assistant_with_tool_uses([
+              %{"type" => "tool_use", "id" => "toolu_bash_2", "name" => "Bash", "input" => %{}}
+            ])
+        })
+
+      assert Sessions.list_task_invocations(session.id) == []
+    end
+
+    test "collects Agent tool_use blocks across multiple messages", %{project: project} do
+      session = create_session(project)
+
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data:
+            assistant_with_tool_uses([
+              %{
+                "type" => "tool_use",
+                "id" => "toolu_agent_a",
+                "name" => "Agent",
+                "input" => %{"subagent_type" => "explore", "description" => "Find the bug"}
+              }
+            ])
+        })
+
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data:
+            assistant_with_tool_uses([
+              %{
+                "type" => "tool_use",
+                "id" => "toolu_agent_b",
+                "name" => "Agent",
+                "input" => %{"subagent_type" => "fix", "description" => "Fix the bug"}
+              }
+            ])
+        })
+
+      result = Sessions.list_task_invocations(session.id)
+      assert length(result) == 2
+      assert Enum.map(result, & &1.id) == ["toolu_agent_a", "toolu_agent_b"]
+    end
+  end
 end
