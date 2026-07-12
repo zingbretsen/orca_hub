@@ -457,39 +457,59 @@ defmodule OrcaHub.SessionsTest do
     end
   end
 
-  describe "list_sessions_for_tree/1" do
-    test "recent scope includes non-archived sessions and archived-but-recently-updated ones",
-         %{project: project} do
-      fresh = create_session(project, %{title: "Fresh"})
-      old_archived = create_session(project, %{title: "Old Archived"})
-      recent_archived = create_session(project, %{title: "Recent Archived"})
+  describe "get_session_tree/1" do
+    test "a session with no parent and no children is a lone root", %{project: project} do
+      lone = create_session(project, %{title: "Lone"})
 
-      {:ok, old_archived} = Sessions.archive_session(old_archived)
-      {:ok, recent_archived} = Sessions.archive_session(recent_archived)
-
-      old_time = NaiveDateTime.utc_now() |> NaiveDateTime.add(-2 * 24 * 3600, :second)
-
-      from(s in Session, where: s.id == ^old_archived.id)
-      |> Repo.update_all(set: [updated_at: old_time])
-
-      ids = Sessions.list_sessions_for_tree(:recent) |> Enum.map(& &1.id)
-
-      assert fresh.id in ids
-      assert recent_archived.id in ids
-      refute old_archived.id in ids
+      assert {root, members} = Sessions.get_session_tree(lone.id)
+      assert root.id == lone.id
+      assert Enum.map(members, & &1.id) == [lone.id]
     end
 
-    test "all scope includes every session regardless of archive age", %{project: project} do
-      old_archived = create_session(project, %{title: "Old Archived"})
-      {:ok, old_archived} = Sessions.archive_session(old_archived)
+    test "walks up multiple parent generations to find the true root, then returns every descendant",
+         %{project: project} do
+      root = create_session(project, %{title: "Root"})
+      child = create_session(project, %{title: "Child", parent_session_id: root.id})
 
-      old_time = NaiveDateTime.utc_now() |> NaiveDateTime.add(-2 * 24 * 3600, :second)
+      grandchild =
+        create_session(project, %{title: "Grandchild", parent_session_id: child.id})
 
-      from(s in Session, where: s.id == ^old_archived.id)
+      # Asking from any member of the tree — not just the root — returns the
+      # same {root, full membership} pair.
+      assert {found_root, members} = Sessions.get_session_tree(grandchild.id)
+      assert found_root.id == root.id
+
+      assert Enum.map(members, & &1.id) |> Enum.sort() ==
+               Enum.sort([root.id, child.id, grandchild.id])
+    end
+
+    test "includes archived descendants with no time bound, unlike the old tree page's filter",
+         %{project: project} do
+      root = create_session(project, %{title: "Root"})
+
+      archived_child =
+        create_session(project, %{title: "Archived Child", parent_session_id: root.id})
+
+      {:ok, archived_child} = Sessions.archive_session(archived_child)
+
+      old_time = NaiveDateTime.utc_now() |> NaiveDateTime.add(-30 * 24 * 3600, :second)
+
+      from(s in Session, where: s.id == ^archived_child.id)
       |> Repo.update_all(set: [updated_at: old_time])
 
-      ids = Sessions.list_sessions_for_tree(:all) |> Enum.map(& &1.id)
-      assert old_archived.id in ids
+      {_root, members} = Sessions.get_session_tree(root.id)
+      assert archived_child.id in Enum.map(members, & &1.id)
+    end
+
+    test "a session whose parent got filtered/archived is still a member — only membership matters, not status",
+         %{project: project} do
+      root = create_session(project, %{title: "Root"})
+      {:ok, root} = Sessions.archive_session(root)
+      child = create_session(project, %{title: "Child", parent_session_id: root.id})
+
+      assert {found_root, members} = Sessions.get_session_tree(child.id)
+      assert found_root.id == root.id
+      assert Enum.map(members, & &1.id) |> Enum.sort() == Enum.sort([root.id, child.id])
     end
   end
 

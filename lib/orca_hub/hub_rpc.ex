@@ -91,8 +91,7 @@ defmodule OrcaHub.HubRPC do
   def list_session_interactions_for_sessions(session_ids),
     do: call(OrcaHub.Sessions, :list_session_interactions_for_sessions, [session_ids])
 
-  def list_sessions_for_tree(scope \\ :recent),
-    do: call(OrcaHub.Sessions, :list_sessions_for_tree, [scope])
+  def get_session_tree(session_id), do: call(OrcaHub.Sessions, :get_session_tree, [session_id])
 
   def list_sessions_by_ids(ids), do: call(OrcaHub.Sessions, :list_sessions_by_ids, [ids])
 

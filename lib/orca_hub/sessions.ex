@@ -205,44 +205,49 @@ defmodule OrcaHub.Sessions do
   end
 
   @doc """
-  Sessions for the `/sessions/tree` spawn-forest page. `:recent` (default)
-  returns non-archived sessions plus sessions archived/updated within the
-  last 24h; `:all` is the "full history" toggle — every session, no
-  archived/time bound. Unlike `list_sessions/1`, there's no :manual/
-  :automated/:orchestrator split here — the tree page shows everything so
-  parent/child chains aren't broken by an unrelated filter hiding a link
-  in the chain.
+  Returns `{root, members}` for the whole spawn tree containing
+  `session_id`: walks `parent_session_id` up to the root ancestor, then
+  gathers every descendant of that root via breadth-first traversal. No
+  archived/time filtering (unlike the old `/sessions/tree` page's `:recent`
+  scope) — a session's own tree view is already scoped to one
+  orchestration, so a completed/archived child is exactly the point of
+  looking, not something to hide.
   """
-  def list_sessions_for_tree(scope \\ :recent)
-
-  def list_sessions_for_tree(:all) do
-    from(s in Session,
-      left_join: p in assoc(s, :project),
-      where: is_nil(s.project_id) or is_nil(p.deleted_at),
-      preload: [project: p],
-      order_by: [desc: s.updated_at]
-    )
-    |> Repo.all()
+  def get_session_tree(session_id) do
+    session = Repo.get!(Session, session_id)
+    root = find_root_session(session)
+    {root, collect_tree_members([root])}
   end
 
-  def list_sessions_for_tree(:recent) do
-    cutoff = NaiveDateTime.utc_now() |> NaiveDateTime.add(-24 * 3600, :second)
+  defp find_root_session(%Session{parent_session_id: nil} = session), do: session
 
-    from(s in Session,
-      left_join: p in assoc(s, :project),
-      where: is_nil(s.project_id) or is_nil(p.deleted_at),
-      where: is_nil(s.archived_at) or s.updated_at >= ^cutoff,
-      preload: [project: p],
-      order_by: [desc: s.updated_at]
-    )
-    |> Repo.all()
+  defp find_root_session(%Session{parent_session_id: parent_id} = session) do
+    case Repo.get(Session, parent_id) do
+      nil -> session
+      parent -> find_root_session(parent)
+    end
+  end
+
+  defp collect_tree_members(frontier, acc \\ %{})
+  defp collect_tree_members([], acc), do: Map.values(acc)
+
+  defp collect_tree_members(frontier, acc) do
+    acc = Enum.reduce(frontier, acc, &Map.put(&2, &1.id, &1))
+    frontier_ids = Enum.map(frontier, & &1.id)
+
+    new_children =
+      from(s in Session, where: s.parent_session_id in ^frontier_ids)
+      |> Repo.all()
+      |> Enum.reject(&Map.has_key?(acc, &1.id))
+
+    collect_tree_members(new_children, acc)
   end
 
   @doc """
   Bulk id -> title lookup, one query regardless of list size. Powers the
-  `/sessions/tree` message-edge overlay resolving the title of the far end
-  of an edge whose session got filtered out of the visible set — a single
-  extra fetch for the whole page, never per-chip.
+  session-tree view resolving the title of an edge's far end when it
+  points at a session outside the current tree — a single extra fetch for
+  the whole page, never per-chip.
   """
   def list_sessions_by_ids([]), do: []
 
@@ -262,9 +267,9 @@ defmodule OrcaHub.Sessions do
   `assistant_message/1`, which separates Agent tool_use blocks from regular
   ones for the same reason — harness subagents surface as a tool_use block
   named "Agent", not a literal "Task" string anywhere in this codebase).
-  Powers the `/sessions/tree` page's lazy, per-session "Subagents"
-  disclosure — called on-demand for one session at a time, never for the
-  whole visible set up front.
+  Powers the session-tree view's lazy, per-session "Subagents" disclosure —
+  called on-demand for one session at a time, never for the whole visible
+  set up front.
   """
   def list_task_invocations(session_id) do
     from(m in Message,

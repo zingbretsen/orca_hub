@@ -626,4 +626,281 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert Sessions.get_session!(session.id).backend == "claude"
     end
   end
+
+  describe "Conversation/Tree view toggle" do
+    test "defaults to conversation view, with both toggle options rendered", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert html =~ "Conversation"
+      assert html =~ "Tree"
+      assert has_element?(view, "#message-feed")
+      refute has_element?(view, "#session-tree-root")
+    end
+
+    test "?view=tree patches to the tree view without discarding conversation state", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "user",
+            "message" => %{
+              "role" => "user",
+              "content" => [%{"type" => "text", "text" => "hello there"}]
+            }
+          }
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      render_patch(view, ~p"/sessions/#{session.id}?view=tree")
+
+      refute has_element?(view, "#message-feed")
+      assert has_element?(view, "#session-tree-root")
+      assert has_element?(view, "#session-node-#{session.id}")
+
+      # Conversation state (the seeded message) was never dropped from
+      # @messages — switching back renders it immediately, no refetch.
+      html = render_patch(view, ~p"/sessions/#{session.id}?view=conversation")
+      assert html =~ "hello there"
+    end
+  end
+
+  describe "Tree view — membership and highlighting" do
+    setup %{claude_session: root} do
+      dir = Path.join(System.tmp_dir!(), "tree_view_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node()),
+          parent_session_id: root.id,
+          title: "Child Worker"
+        })
+
+      {:ok, archived_grandchild} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node()),
+          parent_session_id: child.id,
+          title: "Archived Grandchild"
+        })
+
+      {:ok, archived_grandchild} = Sessions.archive_session(archived_grandchild)
+
+      on_exit(fn ->
+        Enum.each([child.id, archived_grandchild.id], fn id ->
+          if SessionSupervisor.session_alive?(id), do: SessionSupervisor.stop_session(id)
+        end)
+      end)
+
+      %{child: child, archived_grandchild: archived_grandchild}
+    end
+
+    test "shows the whole tree — ancestors and descendants, archived included — with the current node highlighted",
+         %{conn: conn, claude_session: root, child: child, archived_grandchild: archived} do
+      {:ok, view, html} = live(conn, ~p"/sessions/#{child.id}?view=tree")
+
+      assert html =~ (root.title || root.directory)
+      assert html =~ child.title
+      assert html =~ archived.title
+
+      # Nested structurally: grandchild under child under root.
+      assert has_element?(
+               view,
+               "#session-node-#{root.id} #session-node-#{child.id} #session-node-#{archived.id}"
+             )
+
+      # Only the session the page was mounted for is marked "you are here".
+      assert has_element?(view, "#session-node-#{child.id}.outline-primary")
+      refute has_element?(view, "#session-node-#{root.id}.outline-primary")
+    end
+
+    test "a lone session with no parent and no children renders as a single node, no crash", %{
+      conn: conn,
+      claude_session: root,
+      child: child
+    } do
+      # `child` has its own child (archived_grandchild) but `root`'s OTHER
+      # child, if it had none, would be the trivial case — use a brand new
+      # unrelated session instead so this test is truly parent-and-child-free.
+      {:ok, lone} =
+        Sessions.create_session(%{
+          directory: root.directory,
+          backend: "claude",
+          runner_node: Atom.to_string(node())
+        })
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{lone.id}?view=tree")
+
+      assert html =~ (lone.title || lone.directory)
+      assert has_element?(view, "#session-node-#{lone.id}")
+      refute has_element?(view, "#session-node-#{child.id}")
+    end
+
+    test "subagent invocations are fetched lazily on first toggle", %{
+      conn: conn,
+      claude_session: root,
+      archived_grandchild: leaf
+    } do
+      # A leaf (no descendants of its own) — otherwise the CSS descendant
+      # selector below would also match a nested child's own "Subagents"
+      # summary, since it lives inside this node's DOM subtree too.
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: leaf.id,
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "toolu_show_tree_1",
+                  "name" => "Agent",
+                  "input" => %{"subagent_type" => "explore", "description" => "Find the bug"}
+                }
+              ]
+            }
+          }
+        })
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{root.id}?view=tree")
+      refute html =~ "Find the bug"
+
+      html =
+        view
+        |> element("#session-node-#{leaf.id} summary", "Subagents")
+        |> render_click()
+
+      assert html =~ "explore"
+      assert html =~ "Find the bug"
+    end
+  end
+
+  describe "Tree view — message-edge chips" do
+    test "renders chips from seeded session_interactions, with a count for repeats", %{
+      conn: conn,
+      claude_session: root
+    } do
+      dir = Path.join(System.tmp_dir!(), "tree_edges_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, sibling} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node()),
+          parent_session_id: root.id,
+          title: "Sibling Worker"
+        })
+
+      on_exit(fn ->
+        if SessionSupervisor.session_alive?(sibling.id),
+          do: SessionSupervisor.stop_session(sibling.id)
+      end)
+
+      {:ok, _} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: root.id,
+          recipient_session_id: sibling.id
+        })
+
+      {:ok, _} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: root.id,
+          recipient_session_id: sibling.id
+        })
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{root.id}?view=tree")
+
+      assert html =~ "×2"
+      assert has_element?(view, "#session-node-#{root.id} button", sibling.title)
+      assert has_element?(view, "#session-node-#{sibling.id} button", root.title)
+    end
+  end
+
+  describe "Tree view — compose (message a session from its tree node)" do
+    setup %{claude_session: root} do
+      dir = Path.join(System.tmp_dir!(), "tree_compose_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node()),
+          parent_session_id: root.id,
+          title: "Target Child"
+        })
+
+      on_exit(fn ->
+        if SessionSupervisor.session_alive?(target.id),
+          do: SessionSupervisor.stop_session(target.id)
+      end)
+
+      %{target: target}
+    end
+
+    defp user_message_texts(session_id) do
+      session_id
+      |> Sessions.list_messages()
+      |> Enum.filter(&(&1.data["type"] == "user"))
+      |> Enum.map(fn m ->
+        m.data |> get_in(["message", "content"]) |> List.first() |> Map.get("text")
+      end)
+    end
+
+    test "direct send delivers the text straight to the target session's own feed", %{
+      conn: conn,
+      claude_session: root,
+      target: target
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{root.id}?view=tree")
+
+      view |> element("button[phx-value-id='#{target.id}']") |> render_click()
+      assert has_element?(view, "button.btn-active", "Send directly")
+
+      view
+      |> form("form[phx-submit='send_tree_compose']", %{"text" => "please look at the build"})
+      |> render_submit()
+
+      assert "please look at the build" in user_message_texts(target.id)
+      assert user_message_texts(root.id) == []
+    end
+
+    test "relay mode sends the phrased nudge to the CURRENT session instead of the target", %{
+      conn: conn,
+      claude_session: root,
+      target: target
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{root.id}?view=tree")
+
+      view |> element("button[phx-value-id='#{target.id}']") |> render_click()
+
+      view
+      |> element("button[phx-value-mode='relay']")
+      |> render_click()
+
+      view
+      |> form("form[phx-submit='send_tree_compose']", %{"text" => "check on the deploy"})
+      |> render_submit()
+
+      expected =
+        "Please message session #{target.id} (#{target.title}) about the following: check on the deploy"
+
+      assert expected in user_message_texts(root.id)
+      assert user_message_texts(target.id) == []
+    end
+  end
 end

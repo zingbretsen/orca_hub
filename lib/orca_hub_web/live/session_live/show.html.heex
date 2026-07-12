@@ -458,6 +458,83 @@
     </:actions>
   </.header>
 
+  <div class="join mb-2">
+    <.link
+      patch={~p"/sessions/#{@session.id}?view=conversation"}
+      class={["btn btn-sm join-item", @view == :conversation && "btn-active"]}
+    >
+      Conversation
+    </.link>
+    <.link
+      patch={~p"/sessions/#{@session.id}?view=tree"}
+      class={["btn btn-sm join-item", @view == :tree && "btn-active"]}
+    >
+      Tree
+    </.link>
+  </div>
+
+  <%!-- Tree-view "message this session" compose modal — opened from any
+  node's compose button (TreeComponents.compose_button/1), regardless of
+  which node it's for. --%>
+  <div
+    :if={@tree_compose}
+    class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
+  >
+    <div class="card bg-base-100 shadow-xl w-full max-w-lg p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold">Message {@tree_compose.target_title}</h2>
+        <button phx-click="close_tree_compose" class="btn btn-ghost btn-sm btn-circle">
+          <.icon name="hero-x-mark" class="size-5" />
+        </button>
+      </div>
+
+      <div class="join mb-2">
+        <button
+          type="button"
+          phx-click="set_tree_compose_mode"
+          phx-value-mode="direct"
+          disabled={@tree_compose.target_node_unavailable}
+          title={@tree_compose.target_node_unavailable && "This session's node is unavailable"}
+          class={["btn btn-sm join-item", @tree_compose.mode == "direct" && "btn-active"]}
+        >
+          Send directly
+        </button>
+        <button
+          type="button"
+          phx-click="set_tree_compose_mode"
+          phx-value-mode="relay"
+          class={["btn btn-sm join-item", @tree_compose.mode == "relay" && "btn-active"]}
+        >
+          Ask this session to relay
+        </button>
+      </div>
+
+      <p class="text-xs text-base-content/50 mb-3">
+        <%= if @tree_compose.mode == "direct" do %>
+          Delivered straight to {@tree_compose.target_title}'s conversation, exactly as if typed into its own composer.
+        <% else %>
+          Sent to THIS session, asking it to message {@tree_compose.target_title} via its send_message_to_session tool.
+        <% end %>
+      </p>
+
+      <.form for={%{}} phx-submit="send_tree_compose" class="space-y-3">
+        <textarea
+          name="text"
+          rows="4"
+          class="textarea textarea-bordered w-full"
+          placeholder="Type a message..."
+          autofocus
+        ></textarea>
+        <div class="flex justify-end gap-2">
+          <button type="button" phx-click="close_tree_compose" class="btn btn-ghost">
+            Cancel
+          </button>
+          <button type="submit" class="btn btn-primary">Send</button>
+        </div>
+      </.form>
+    </div>
+  </div>
+
   <div :if={@commits != [] && @show_commits} class="mb-2 bg-base-200 rounded-lg px-3 py-2">
     <ul class="space-y-1">
       <li :for={commit <- @commits}>
@@ -713,693 +790,251 @@
     </div>
   </div>
 
-  <%!-- Main content area: side-by-side on desktop when files are open --%>
-  <div class="flex flex-1 min-h-0 gap-4" id="session-split-container">
-    <%!-- Previous session nav button --%>
-    <.link
-      :if={@prev_session_id}
-      navigate={~p"/sessions/#{@prev_session_id}"}
-      class="hidden sm:flex items-center justify-center w-8 shrink-0 opacity-30 hover:opacity-70 transition-opacity"
-      title="Previous session (newer)"
-    >
-      <.icon name="hero-chevron-left" class="size-6" />
-    </.link>
-    <div :if={!@prev_session_id} class="hidden sm:block w-8 shrink-0"></div>
-
-    <%!-- Chat column --%>
-    <div class="flex flex-col min-w-0 flex-1" data-resize-panel="left">
-      <div
-        id="message-feed"
-        phx-hook="ScrollToBottom"
-        class="flex-1 overflow-y-auto space-y-1 p-4 bg-base-200 rounded-lg text-sm"
+  <%= if @view == :tree do %>
+    <div class="flex-1 min-h-0 overflow-y-auto p-2">
+      <TreeComponents.tree_view
+        root={@tree_root}
+        children_by_parent={@tree_children_by_parent}
+        edges_by_session={@tree_edges_by_session}
+        subagents={@tree_subagents}
+        current_session_id={@session.id}
+      />
+    </div>
+  <% else %>
+    <%!-- Main content area: side-by-side on desktop when files are open --%>
+    <div class="flex flex-1 min-h-0 gap-4" id="session-split-container">
+      <%!-- Previous session nav button --%>
+      <.link
+        :if={@prev_session_id}
+        navigate={~p"/sessions/#{@prev_session_id}"}
+        class="hidden sm:flex items-center justify-center w-8 shrink-0 opacity-30 hover:opacity-70 transition-opacity"
+        title="Previous session (newer)"
       >
-        <MessageComponents.message_feed messages={@messages} session_node={@session_node} />
-      </div>
+        <.icon name="hero-chevron-left" class="size-6" />
+      </.link>
+      <div :if={!@prev_session_id} class="hidden sm:block w-8 shrink-0"></div>
 
-      <div
-        :if={@capabilities.plan_mode && @plan_mode == :review}
-        class="mt-2 card bg-warning/10 border border-warning/30"
-      >
-        <div class="card-body p-3 gap-2">
-          <div class="flex items-center gap-2">
-            <span class="badge badge-warning badge-sm">Plan Review</span>
-            <span class="text-sm text-base-content/70">
-              Claude has proposed a plan. Review it in the editor, make edits, then approve or provide feedback.
+      <%!-- Chat column --%>
+      <div class="flex flex-col min-w-0 flex-1" data-resize-panel="left">
+        <div
+          id="message-feed"
+          phx-hook="ScrollToBottom"
+          class="flex-1 overflow-y-auto space-y-1 p-4 bg-base-200 rounded-lg text-sm"
+        >
+          <MessageComponents.message_feed messages={@messages} session_node={@session_node} />
+        </div>
+
+        <div
+          :if={@capabilities.plan_mode && @plan_mode == :review}
+          class="mt-2 card bg-warning/10 border border-warning/30"
+        >
+          <div class="card-body p-3 gap-2">
+            <div class="flex items-center gap-2">
+              <span class="badge badge-warning badge-sm">Plan Review</span>
+              <span class="text-sm text-base-content/70">
+                Claude has proposed a plan. Review it in the editor, make edits, then approve or provide feedback.
+              </span>
+            </div>
+            <div class="flex gap-2">
+              <button phx-click="approve_plan" class="btn btn-sm btn-success">
+                <.icon name="hero-check-micro" class="size-4" /> Approve Plan
+              </button>
+              <button phx-click="reject_plan" class="btn btn-sm btn-ghost">
+                <.icon name="hero-x-mark-micro" class="size-4" /> Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-2 sm:mt-4 flex flex-col gap-2">
+          <%!-- Upload previews --%>
+          <div :for={entry <- @uploads.image.entries} class="flex items-center gap-2 px-2">
+            <.live_img_preview entry={entry} class="h-16 w-16 object-cover rounded" />
+            <span class="text-xs truncate flex-1">{entry.client_name}</span>
+            <progress
+              :if={entry.progress < 100}
+              value={entry.progress}
+              max="100"
+              class="progress progress-primary w-16 h-2"
+            />
+            <p :for={err <- upload_errors(@uploads.image, entry)} class="text-xs text-error">
+              {upload_error_to_string(err)}
+            </p>
+            <button
+              type="button"
+              phx-click="cancel-upload"
+              phx-value-ref={entry.ref}
+              phx-value-upload="image"
+              class="btn btn-ghost btn-xs"
+            >
+              &times;
+            </button>
+          </div>
+          <div :for={entry <- @uploads.file.entries} class="flex items-center gap-2 px-2">
+            <.icon name="hero-document" class="size-8 opacity-50" />
+            <span class="text-xs truncate flex-1">{entry.client_name}</span>
+            <progress
+              :if={entry.progress < 100}
+              value={entry.progress}
+              max="100"
+              class="progress progress-primary w-16 h-2"
+            />
+            <p :for={err <- upload_errors(@uploads.file, entry)} class="text-xs text-error">
+              {upload_error_to_string(err)}
+            </p>
+            <button
+              type="button"
+              phx-click="cancel-upload"
+              phx-value-ref={entry.ref}
+              phx-value-upload="file"
+              class="btn btn-ghost btn-xs"
+            >
+              &times;
+            </button>
+          </div>
+          <%!-- Upload errors --%>
+          <p :for={err <- upload_errors(@uploads.image)} class="text-xs text-error px-2">
+            {upload_error_to_string(err)}
+          </p>
+          <p :for={err <- upload_errors(@uploads.file)} class="text-xs text-error px-2">
+            {upload_error_to_string(err)}
+          </p>
+
+          <%!-- spec §12.6 — pending steer/follow-up queue for steering-capable
+        backends (pi). Transient (@pi_queue), not part of @messages. --%>
+          <div
+            :if={
+              @capabilities.steering && (@pi_queue.steering != [] || @pi_queue.follow_up != [])
+            }
+            class="flex flex-wrap items-center gap-1 px-2 pb-1 text-xs opacity-60"
+          >
+            <.icon name="hero-clock-micro" class="size-3" />
+            <span :for={msg <- @pi_queue.steering} class="badge badge-ghost badge-sm">
+              steer: {String.slice(msg, 0, 40)}
+            </span>
+            <span :for={msg <- @pi_queue.follow_up} class="badge badge-ghost badge-sm">
+              follow-up: {String.slice(msg, 0, 40)}
             </span>
           </div>
-          <div class="flex gap-2">
-            <button phx-click="approve_plan" class="btn btn-sm btn-success">
-              <.icon name="hero-check-micro" class="size-4" /> Approve Plan
-            </button>
-            <button phx-click="reject_plan" class="btn btn-sm btn-ghost">
-              <.icon name="hero-x-mark-micro" class="size-4" /> Dismiss
-            </button>
-          </div>
-        </div>
-      </div>
 
-      <div class="mt-2 sm:mt-4 flex flex-col gap-2">
-        <%!-- Upload previews --%>
-        <div :for={entry <- @uploads.image.entries} class="flex items-center gap-2 px-2">
-          <.live_img_preview entry={entry} class="h-16 w-16 object-cover rounded" />
-          <span class="text-xs truncate flex-1">{entry.client_name}</span>
-          <progress
-            :if={entry.progress < 100}
-            value={entry.progress}
-            max="100"
-            class="progress progress-primary w-16 h-2"
-          />
-          <p :for={err <- upload_errors(@uploads.image, entry)} class="text-xs text-error">
-            {upload_error_to_string(err)}
-          </p>
-          <button
-            type="button"
-            phx-click="cancel-upload"
-            phx-value-ref={entry.ref}
-            phx-value-upload="image"
-            class="btn btn-ghost btn-xs"
-          >
-            &times;
-          </button>
-        </div>
-        <div :for={entry <- @uploads.file.entries} class="flex items-center gap-2 px-2">
-          <.icon name="hero-document" class="size-8 opacity-50" />
-          <span class="text-xs truncate flex-1">{entry.client_name}</span>
-          <progress
-            :if={entry.progress < 100}
-            value={entry.progress}
-            max="100"
-            class="progress progress-primary w-16 h-2"
-          />
-          <p :for={err <- upload_errors(@uploads.file, entry)} class="text-xs text-error">
-            {upload_error_to_string(err)}
-          </p>
-          <button
-            type="button"
-            phx-click="cancel-upload"
-            phx-value-ref={entry.ref}
-            phx-value-upload="file"
-            class="btn btn-ghost btn-xs"
-          >
-            &times;
-          </button>
-        </div>
-        <%!-- Upload errors --%>
-        <p :for={err <- upload_errors(@uploads.image)} class="text-xs text-error px-2">
-          {upload_error_to_string(err)}
-        </p>
-        <p :for={err <- upload_errors(@uploads.file)} class="text-xs text-error px-2">
-          {upload_error_to_string(err)}
-        </p>
-
-        <%!-- spec §12.6 — pending steer/follow-up queue for steering-capable
-        backends (pi). Transient (@pi_queue), not part of @messages. --%>
-        <div
-          :if={@capabilities.steering && (@pi_queue.steering != [] || @pi_queue.follow_up != [])}
-          class="flex flex-wrap items-center gap-1 px-2 pb-1 text-xs opacity-60"
-        >
-          <.icon name="hero-clock-micro" class="size-3" />
-          <span :for={msg <- @pi_queue.steering} class="badge badge-ghost badge-sm">
-            steer: {String.slice(msg, 0, 40)}
-          </span>
-          <span :for={msg <- @pi_queue.follow_up} class="badge badge-ghost badge-sm">
-            follow-up: {String.slice(msg, 0, 40)}
-          </span>
-        </div>
-
-        <%!-- spec §12.6 — the composer stays enabled while :running for every
+          <%!-- spec §12.6 — the composer stays enabled while :running for every
         backend (queue+interrupt is the default); steering-capable backends
         get a hint that the message steers the turn in place instead. --%>
-        <p
-          :if={@capabilities.steering && @status == :running}
-          class="px-2 pb-1 text-[11px] opacity-50 italic"
-        >
-          Sending now will steer the running turn instead of interrupting it.
-        </p>
-
-        <.form
-          for={%{}}
-          phx-submit="send_message"
-          phx-change="validate"
-          class="flex gap-2"
-          multipart
-        >
-          <button
-            type="button"
-            phx-click="toggle_tts"
-            class={["btn btn-ghost btn-square", @tts_autoplay && "text-primary"]}
-            title={if @tts_autoplay, do: "Disable TTS autoplay", else: "Enable TTS autoplay"}
+          <p
+            :if={@capabilities.steering && @status == :running}
+            class="px-2 pb-1 text-[11px] opacity-50 italic"
           >
-            <.icon name="hero-speaker-wave" class="size-5" />
-          </button>
-          <div class="dropdown dropdown-top">
-            <div tabindex="0" role="button" class="btn btn-ghost btn-square">
-              <.icon name="hero-plus" class="size-5" />
-            </div>
-            <ul
-              tabindex="0"
-              class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg mb-2"
-            >
-              <li>
-                <label>
-                  <.live_file_input upload={@uploads.image} class="hidden" />
-                  <.icon name="hero-photo" class="size-5" /> Upload image
-                </label>
-              </li>
-              <li>
-                <label>
-                  <.live_file_input upload={@uploads.file} class="hidden" />
-                  <.icon name="hero-paper-clip" class="size-5" /> Attach file
-                </label>
-              </li>
-              <li>
-                <button type="button" phx-click="commit">
-                  <.icon name="hero-check" class="size-5" /> Commit
-                </button>
-              </li>
-              <li>
-                <button type="button" phx-click="new_session">
-                  <.icon name="hero-plus-circle" class="size-5" /> New session
-                </button>
-              </li>
-            </ul>
-          </div>
-          <div class="flex-1 min-w-0 relative" id="prompt-wrapper" phx-update="ignore">
-            <textarea
-              name="prompt"
-              placeholder={
-                if @node_unavailable,
-                  do: "This session's node is not connected — sending is disabled",
-                  else: "Send a message... (@ files, # sessions, ## projects, / commands)"
-              }
-              class="textarea textarea-bordered w-full resize-none overflow-y-auto leading-normal max-h-[7.5rem]"
-              autofocus
-              rows="1"
-              phx-hook="Autocomplete"
-              id="prompt-input"
-              disabled={@node_unavailable != nil}
-            ></textarea>
-            <div
-              id="autocomplete-dropdown"
-              class="hidden absolute bottom-full left-0 right-0 mb-1 bg-base-100 rounded-lg shadow-xl border border-base-300 overflow-hidden z-50"
-            >
-            </div>
-          </div>
-          <button
-            :if={@status in [:running, :compacting]}
-            type="button"
-            phx-click="interrupt"
-            class="btn btn-error btn-square"
-            title="Interrupt"
+            Sending now will steer the running turn instead of interrupting it.
+          </p>
+
+          <.form
+            for={%{}}
+            phx-submit="send_message"
+            phx-change="validate"
+            class="flex gap-2"
+            multipart
           >
-            <.icon name="hero-stop" class="size-5" />
-          </button>
-          <.button type="submit" disabled={@node_unavailable != nil}>
-            Send
-          </.button>
-        </.form>
-      </div>
-    </div>
-
-    <%!-- Resize handle (between chat and side panel) --%>
-    <div
-      :if={(@show_terminal && @open_terminals != []) || @open_files != [] || @show_file_browser}
-      class="hidden lg:flex items-center justify-center w-2 cursor-col-resize group shrink-0 -mx-1 px-1 z-10"
-      id="resize-handle"
-      phx-hook="ResizeHandle"
-    >
-      <div class="flex flex-col gap-1 items-center py-2 opacity-30 group-hover:opacity-60 group-active:opacity-100 transition-opacity">
-        <div class="w-1 h-1 rounded-full bg-base-content"></div>
-        <div class="w-1 h-1 rounded-full bg-base-content"></div>
-        <div class="w-1 h-1 rounded-full bg-base-content"></div>
-        <div class="w-1 h-1 rounded-full bg-base-content"></div>
-        <div class="w-1 h-1 rounded-full bg-base-content"></div>
-      </div>
-    </div>
-
-    <%!-- Terminal panel column (desktop only) --%>
-    <div
-      :if={@show_terminal && @open_terminals != []}
-      class="hidden lg:flex flex-col min-w-0 w-1/2"
-      data-resize-panel="right"
-    >
-      <%!-- Tab bar --%>
-      <div class="flex items-center gap-1 mb-2">
-        <div class="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
-          <button
-            :for={term <- @open_terminals}
-            phx-click="switch_terminal"
-            phx-value-id={term.id}
-            class={[
-              "btn btn-xs gap-1 shrink-0",
-              term.id == @active_terminal_id && "btn-primary",
-              term.id != @active_terminal_id && "btn-ghost"
-            ]}
-          >
-            <span class="truncate max-w-24">{term.name}</span>
-            <span
-              phx-click="close_terminal_tab"
-              phx-value-id={term.id}
-              class="hover:text-error"
-              title="Close"
-            >
-              &times;
-            </span>
-          </button>
-        </div>
-        <button
-          phx-click="new_terminal"
-          class="btn btn-ghost btn-xs btn-circle"
-          title="New terminal"
-        >
-          <.icon name="hero-plus-micro" class="size-4" />
-        </button>
-        <button
-          :if={@active_terminal_id}
-          phx-click="pop_out_terminal"
-          class="btn btn-ghost btn-xs btn-circle"
-          title="Open in full page"
-        >
-          <.icon name="hero-arrow-top-right-on-square-micro" class="size-4" />
-        </button>
-        <button
-          phx-click="close_terminal_panel"
-          class="btn btn-ghost btn-xs btn-circle"
-          title="Close panel"
-        >
-          <.icon name="hero-x-mark-micro" class="size-4" />
-        </button>
-      </div>
-      <%!-- Terminal instances (all stay in DOM, only active is visible) --%>
-      <div class="flex-1 min-h-0 relative">
-        <div
-          :for={term <- @open_terminals}
-          id={"terminal-#{term.id}"}
-          phx-hook="Terminal"
-          data-terminal-id={term.id}
-          class={[
-            "absolute inset-0 rounded-lg overflow-hidden",
-            term.id != @active_terminal_id && "invisible"
-          ]}
-          phx-update="ignore"
-        >
-        </div>
-      </div>
-    </div>
-
-    <%!-- File panel column (desktop: side-by-side, mobile: modal) --%>
-    <div
-      :if={@open_files != [] || @show_file_browser}
-      class="hidden lg:flex flex-col min-w-0 w-1/2"
-      data-resize-panel="right"
-    >
-      <%!-- Tab bar --%>
-      <div class="flex items-center gap-1 mb-2">
-        <div class="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
-          <button
-            :for={tab <- @open_files}
-            phx-click="switch_tab"
-            phx-value-path={tab.path}
-            class={[
-              "btn btn-xs gap-1 shrink-0",
-              tab.path == @active_file_tab && "btn-primary",
-              tab.path != @active_file_tab && "btn-ghost"
-            ]}
-          >
-            <span class="font-mono truncate max-w-32">{Path.basename(tab.path)}</span>
-            <span
-              phx-click="close_tab"
-              phx-value-path={tab.path}
-              class="hover:text-error"
-              title="Close"
-            >
-              &times;
-            </span>
-          </button>
-        </div>
-        <button
-          phx-click="toggle_file_browser"
-          class={["btn btn-ghost btn-xs btn-circle", @show_file_browser && "text-primary"]}
-          title="Browse files"
-        >
-          <.icon name="hero-plus-micro" class="size-4" />
-        </button>
-        <button
-          phx-click="close_file_panel"
-          class="btn btn-ghost btn-xs btn-circle"
-          title="Close panel"
-        >
-          <.icon name="hero-x-mark-micro" class="size-4" />
-        </button>
-      </div>
-
-      <div class="flex flex-1 min-h-0 gap-2">
-        <%!-- File browser sidebar --%>
-        <div :if={@show_file_browser} class="w-52 shrink-0 flex flex-col min-h-0 overflow-hidden">
-          <.live_component
-            module={OrcaHubWeb.FileTreeComponent}
-            id="session-file-tree-desktop"
-            tree_id="session-file-tree"
-            target_node={@session_node}
-            project={%OrcaHub.Projects.Project{directory: @session.directory}}
-            selected_path={@active_file_tab}
-          />
-        </div>
-
-        <%!-- File content area --%>
-        <div class="flex-1 min-w-0 overflow-y-auto bg-base-200 rounded-lg p-4">
-          <%= if tab = Enum.find(@open_files, & &1.path == @active_file_tab) do %>
-            <%!-- File header --%>
-            <div class="flex items-center justify-between mb-3">
-              <div class="flex items-center gap-2 min-w-0">
-                <span class="font-mono text-xs text-base-content/70 truncate">{tab.path}</span>
-                <span :if={tab.read_only} class="badge badge-xs badge-ghost">read-only</span>
-              </div>
-              <div :if={!tab.read_only} class="flex items-center gap-1 shrink-0">
-                <button
-                  :if={!@file_editing && @file_edit_mode}
-                  phx-click="edit_file"
-                  class="btn btn-xs btn-ghost"
-                >
-                  Raw Edit
-                </button>
-                <button
-                  phx-click="toggle_edit_mode"
-                  class={[
-                    "btn btn-xs",
-                    @file_edit_mode && "btn-primary",
-                    !@file_edit_mode && "btn-ghost"
-                  ]}
-                >
-                  <.icon name="hero-pencil-micro" class="size-3" /> Edit
-                </button>
-              </div>
-            </div>
-
-            <%!-- Markdown block view --%>
-            <div
-              :if={!@file_editing && tab.blocks != []}
-              id="file-blocks-desktop"
-              phx-hook="ScrollToLine"
-              data-line={@scroll_to_block}
-            >
-              <div
-                :for={{index, block_text} <- tab.blocks}
-                id={"file-block-#{index}"}
-                class={[
-                  "group relative",
-                  @scroll_to_block == index && "ring-2 ring-warning/50 rounded"
-                ]}
-              >
-                <div :if={@editing_block == index && @file_edit_mode} class="my-2">
-                  <form phx-submit="save_block" class="space-y-2">
-                    <textarea
-                      name="content"
-                      class="textarea textarea-bordered w-full font-mono text-sm"
-                      rows={max(3, length(String.split(block_text, "\n")) + 1)}
-                      phx-hook="AutoFocus"
-                      id={"block-editor-#{index}"}
-                    >{@block_edit_content}</textarea>
-                    <div class="flex justify-end gap-2">
-                      <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">
-                        Cancel
-                      </button>
-                      <button type="submit" class="btn btn-xs btn-primary">Save</button>
-                    </div>
-                  </form>
-                </div>
-                <div :if={@editing_block != index || !@file_edit_mode} class="relative group">
-                  <div
-                    phx-click={if @file_edit_mode, do: "edit_block"}
-                    phx-value-index={if @file_edit_mode, do: index}
-                    class={[
-                      "prose prose-sm max-w-none rounded px-2 -mx-2 py-1",
-                      @file_edit_mode && "cursor-pointer hover:bg-base-300/50 transition-colors"
-                    ]}
-                  >
-                    {Markdown.render_block(block_text)}
-                  </div>
-                  <button
-                    :if={@file_edit_mode}
-                    phx-click="delete_block"
-                    phx-value-index={index}
-                    class="absolute top-1 right-1 btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity text-error"
-                    title="Delete block"
-                  >
-                    <.icon name="hero-trash-micro" class="size-3" />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <%!-- Non-markdown view with line numbers --%>
-            <div
-              :if={!@file_editing && tab.blocks == []}
-              id="file-content-desktop"
-              phx-hook="ScrollToLine"
-              data-line={@scroll_to_line}
-            >
-              <table class="text-sm font-mono w-full border-collapse">
-                <tbody>
-                  <tr
-                    :for={{line_text, idx} <- Enum.with_index(String.split(tab.content, "\n"), 1)}
-                    id={"file-line-#{idx}"}
-                    class={if @scroll_to_line == idx, do: "bg-warning/20", else: ""}
-                  >
-                    <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">
-                      {idx}
-                    </td>
-                    <td class="whitespace-pre-wrap break-words">{line_text}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <%!-- Raw edit mode --%>
-            <div :if={@file_editing} class="space-y-3">
-              <form phx-submit="save_file" class="space-y-3">
-                <textarea
-                  name="content"
-                  class="textarea textarea-bordered w-full font-mono text-sm"
-                  rows="20"
-                >{tab.content}</textarea>
-                <div class="flex justify-end gap-2">
-                  <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">
-                    Cancel
-                  </button>
-                  <.button type="submit" class="btn-sm">Save</.button>
-                </div>
-              </form>
-            </div>
-          <% else %>
-            <div :if={@open_files == []} class="text-sm text-base-content/50 p-8 text-center">
-              Select a file to view its contents.
-            </div>
-          <% end %>
-        </div>
-      </div>
-    </div>
-
-    <%!-- Next session nav button --%>
-    <.link
-      :if={@next_session_id}
-      navigate={~p"/sessions/#{@next_session_id}"}
-      class="hidden sm:flex items-center justify-center w-8 shrink-0 opacity-30 hover:opacity-70 transition-opacity"
-      title="Next session (older)"
-    >
-      <.icon name="hero-chevron-right" class="size-6" />
-    </.link>
-    <div :if={!@next_session_id} class="hidden sm:block w-8 shrink-0"></div>
-  </div>
-
-  <%!-- Mobile file panel (modal) --%>
-  <div :if={@open_files != [] || @show_file_browser} class="lg:hidden">
-    <input type="checkbox" id="file-panel-modal" class="modal-toggle" checked />
-    <div class="modal modal-bottom" role="dialog">
-      <div class="modal-box h-[80vh] max-h-[80vh] flex flex-col p-4">
-        <%!-- Modal header with tabs --%>
-        <div class="flex items-center gap-1 mb-2 shrink-0">
-          <div class="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
             <button
-              :for={tab <- @open_files}
-              phx-click="switch_tab"
-              phx-value-path={tab.path}
-              class={[
-                "btn btn-xs gap-1 shrink-0",
-                tab.path == @active_file_tab && "btn-primary",
-                tab.path != @active_file_tab && "btn-ghost"
-              ]}
+              type="button"
+              phx-click="toggle_tts"
+              class={["btn btn-ghost btn-square", @tts_autoplay && "text-primary"]}
+              title={if @tts_autoplay, do: "Disable TTS autoplay", else: "Enable TTS autoplay"}
             >
-              <span class="font-mono truncate max-w-32">{Path.basename(tab.path)}</span>
-              <span phx-click="close_tab" phx-value-path={tab.path} class="hover:text-error">
-                &times;
-              </span>
+              <.icon name="hero-speaker-wave" class="size-5" />
             </button>
-          </div>
-          <button
-            phx-click="toggle_file_browser"
-            class={["btn btn-ghost btn-xs btn-circle", @show_file_browser && "text-primary"]}
-            title="Browse files"
-          >
-            <.icon name="hero-plus-micro" class="size-4" />
-          </button>
-          <button
-            phx-click="close_file_panel"
-            class="btn btn-ghost btn-xs btn-circle"
-            title="Close"
-          >
-            <.icon name="hero-x-mark-micro" class="size-4" />
-          </button>
-        </div>
-
-        <div class="flex flex-1 min-h-0 gap-2">
-          <%!-- File browser --%>
-          <div
-            :if={@show_file_browser}
-            class="w-44 shrink-0 flex flex-col min-h-0 overflow-hidden"
-          >
-            <.live_component
-              module={OrcaHubWeb.FileTreeComponent}
-              id="session-file-tree-mobile"
-              tree_id="mobile-file-tree"
-              target_node={@session_node}
-              project={%OrcaHub.Projects.Project{directory: @session.directory}}
-              selected_path={@active_file_tab}
-            />
-          </div>
-
-          <%!-- File content --%>
-          <div class="flex-1 min-w-0 overflow-y-auto bg-base-200 rounded-lg p-3">
-            <%= if tab = Enum.find(@open_files, & &1.path == @active_file_tab) do %>
-              <div class="flex items-center justify-between mb-2">
-                <div class="flex items-center gap-2 min-w-0">
-                  <span class="font-mono text-xs text-base-content/70 truncate">{tab.path}</span>
-                  <span :if={tab.read_only} class="badge badge-xs badge-ghost">read-only</span>
-                </div>
-                <div :if={!tab.read_only} class="flex items-center gap-1 shrink-0">
-                  <button
-                    :if={!@file_editing && @file_edit_mode}
-                    phx-click="edit_file"
-                    class="btn btn-xs btn-ghost"
-                  >
-                    Raw Edit
-                  </button>
-                  <button
-                    phx-click="toggle_edit_mode"
-                    class={[
-                      "btn btn-xs",
-                      @file_edit_mode && "btn-primary",
-                      !@file_edit_mode && "btn-ghost"
-                    ]}
-                  >
-                    <.icon name="hero-pencil-micro" class="size-3" /> Edit
-                  </button>
-                </div>
+            <div class="dropdown dropdown-top">
+              <div tabindex="0" role="button" class="btn btn-ghost btn-square">
+                <.icon name="hero-plus" class="size-5" />
               </div>
-
-              <div
-                :if={!@file_editing && tab.blocks != []}
-                id="file-blocks-mobile"
-                phx-hook="ScrollToLine"
-                data-line={@scroll_to_block}
+              <ul
+                tabindex="0"
+                class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg mb-2"
               >
-                <div
-                  :for={{index, block_text} <- tab.blocks}
-                  id={"mobile-file-block-#{index}"}
-                  class={[
-                    "group relative",
-                    @scroll_to_block == index && "ring-2 ring-warning/50 rounded"
-                  ]}
-                >
-                  <div :if={@editing_block == index && @file_edit_mode} class="my-2">
-                    <form phx-submit="save_block" class="space-y-2">
-                      <textarea
-                        name="content"
-                        class="textarea textarea-bordered w-full font-mono text-sm"
-                        rows={max(3, length(String.split(block_text, "\n")) + 1)}
-                        phx-hook="AutoFocus"
-                        id={"mobile-block-editor-#{index}"}
-                      >{@block_edit_content}</textarea>
-                      <div class="flex justify-end gap-2">
-                        <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">
-                          Cancel
-                        </button>
-                        <button type="submit" class="btn btn-xs btn-primary">Save</button>
-                      </div>
-                    </form>
-                  </div>
-                  <div :if={@editing_block != index || !@file_edit_mode}>
-                    <div
-                      phx-click={if @file_edit_mode, do: "edit_block"}
-                      phx-value-index={if @file_edit_mode, do: index}
-                      class={[
-                        "prose prose-sm max-w-none rounded px-2 -mx-2 py-1",
-                        @file_edit_mode && "cursor-pointer hover:bg-base-300/50"
-                      ]}
-                    >
-                      {Markdown.render_block(block_text)}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
+                <li>
+                  <label>
+                    <.live_file_input upload={@uploads.image} class="hidden" />
+                    <.icon name="hero-photo" class="size-5" /> Upload image
+                  </label>
+                </li>
+                <li>
+                  <label>
+                    <.live_file_input upload={@uploads.file} class="hidden" />
+                    <.icon name="hero-paper-clip" class="size-5" /> Attach file
+                  </label>
+                </li>
+                <li>
+                  <button type="button" phx-click="commit">
+                    <.icon name="hero-check" class="size-5" /> Commit
+                  </button>
+                </li>
+                <li>
+                  <button type="button" phx-click="new_session">
+                    <.icon name="hero-plus-circle" class="size-5" /> New session
+                  </button>
+                </li>
+              </ul>
+            </div>
+            <div class="flex-1 min-w-0 relative" id="prompt-wrapper" phx-update="ignore">
+              <textarea
+                name="prompt"
+                placeholder={
+                  if @node_unavailable,
+                    do: "This session's node is not connected — sending is disabled",
+                    else: "Send a message... (@ files, # sessions, ## projects, / commands)"
+                }
+                class="textarea textarea-bordered w-full resize-none overflow-y-auto leading-normal max-h-[7.5rem]"
+                autofocus
+                rows="1"
+                phx-hook="Autocomplete"
+                id="prompt-input"
+                disabled={@node_unavailable != nil}
+              ></textarea>
               <div
-                :if={!@file_editing && tab.blocks == []}
-                id="file-content-mobile"
-                phx-hook="ScrollToLine"
-                data-line={@scroll_to_line}
+                id="autocomplete-dropdown"
+                class="hidden absolute bottom-full left-0 right-0 mb-1 bg-base-100 rounded-lg shadow-xl border border-base-300 overflow-hidden z-50"
               >
-                <table class="text-sm font-mono w-full border-collapse">
-                  <tbody>
-                    <tr
-                      :for={
-                        {line_text, idx} <- Enum.with_index(String.split(tab.content, "\n"), 1)
-                      }
-                      id={"mobile-file-line-#{idx}"}
-                      class={if @scroll_to_line == idx, do: "bg-warning/20", else: ""}
-                    >
-                      <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">
-                        {idx}
-                      </td>
-                      <td class="whitespace-pre-wrap break-words">{line_text}</td>
-                    </tr>
-                  </tbody>
-                </table>
               </div>
-
-              <div :if={@file_editing} class="space-y-3">
-                <form phx-submit="save_file" class="space-y-3">
-                  <textarea
-                    name="content"
-                    class="textarea textarea-bordered w-full font-mono text-sm"
-                    rows="15"
-                  >{tab.content}</textarea>
-                  <div class="flex justify-end gap-2">
-                    <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">
-                      Cancel
-                    </button>
-                    <.button type="submit" class="btn-sm">Save</.button>
-                  </div>
-                </form>
-              </div>
-            <% else %>
-              <div :if={@open_files == []} class="text-sm text-base-content/50 p-4 text-center">
-                Select a file to view.
-              </div>
-            <% end %>
-          </div>
+            </div>
+            <button
+              :if={@status in [:running, :compacting]}
+              type="button"
+              phx-click="interrupt"
+              class="btn btn-error btn-square"
+              title="Interrupt"
+            >
+              <.icon name="hero-stop" class="size-5" />
+            </button>
+            <.button type="submit" disabled={@node_unavailable != nil}>
+              Send
+            </.button>
+          </.form>
         </div>
       </div>
-      <label class="modal-backdrop" phx-click="close_file_panel"></label>
-    </div>
-  </div>
 
-  <%!-- Mobile terminal panel (modal) --%>
-  <div :if={@show_terminal && @open_terminals != []} class="lg:hidden">
-    <input type="checkbox" id="terminal-panel-modal" class="modal-toggle" checked />
-    <div class="modal modal-bottom" role="dialog">
-      <div class="modal-box h-[80vh] max-h-[80vh] flex flex-col p-4">
-        <div class="flex items-center gap-1 mb-2 shrink-0">
+      <%!-- Resize handle (between chat and side panel) --%>
+      <div
+        :if={(@show_terminal && @open_terminals != []) || @open_files != [] || @show_file_browser}
+        class="hidden lg:flex items-center justify-center w-2 cursor-col-resize group shrink-0 -mx-1 px-1 z-10"
+        id="resize-handle"
+        phx-hook="ResizeHandle"
+      >
+        <div class="flex flex-col gap-1 items-center py-2 opacity-30 group-hover:opacity-60 group-active:opacity-100 transition-opacity">
+          <div class="w-1 h-1 rounded-full bg-base-content"></div>
+          <div class="w-1 h-1 rounded-full bg-base-content"></div>
+          <div class="w-1 h-1 rounded-full bg-base-content"></div>
+          <div class="w-1 h-1 rounded-full bg-base-content"></div>
+          <div class="w-1 h-1 rounded-full bg-base-content"></div>
+        </div>
+      </div>
+
+      <%!-- Terminal panel column (desktop only) --%>
+      <div
+        :if={@show_terminal && @open_terminals != []}
+        class="hidden lg:flex flex-col min-w-0 w-1/2"
+        data-resize-panel="right"
+      >
+        <%!-- Tab bar --%>
+        <div class="flex items-center gap-1 mb-2">
           <div class="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
             <button
               :for={term <- @open_terminals}
@@ -1440,15 +1075,16 @@
           <button
             phx-click="close_terminal_panel"
             class="btn btn-ghost btn-xs btn-circle"
-            title="Close"
+            title="Close panel"
           >
             <.icon name="hero-x-mark-micro" class="size-4" />
           </button>
         </div>
+        <%!-- Terminal instances (all stay in DOM, only active is visible) --%>
         <div class="flex-1 min-h-0 relative">
           <div
             :for={term <- @open_terminals}
-            id={"mobile-terminal-#{term.id}"}
+            id={"terminal-#{term.id}"}
             phx-hook="Terminal"
             data-terminal-id={term.id}
             class={[
@@ -1460,20 +1096,483 @@
           </div>
         </div>
       </div>
-      <label class="modal-backdrop" phx-click="close_terminal_panel"></label>
+
+      <%!-- File panel column (desktop: side-by-side, mobile: modal) --%>
+      <div
+        :if={@open_files != [] || @show_file_browser}
+        class="hidden lg:flex flex-col min-w-0 w-1/2"
+        data-resize-panel="right"
+      >
+        <%!-- Tab bar --%>
+        <div class="flex items-center gap-1 mb-2">
+          <div class="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
+            <button
+              :for={tab <- @open_files}
+              phx-click="switch_tab"
+              phx-value-path={tab.path}
+              class={[
+                "btn btn-xs gap-1 shrink-0",
+                tab.path == @active_file_tab && "btn-primary",
+                tab.path != @active_file_tab && "btn-ghost"
+              ]}
+            >
+              <span class="font-mono truncate max-w-32">{Path.basename(tab.path)}</span>
+              <span
+                phx-click="close_tab"
+                phx-value-path={tab.path}
+                class="hover:text-error"
+                title="Close"
+              >
+                &times;
+              </span>
+            </button>
+          </div>
+          <button
+            phx-click="toggle_file_browser"
+            class={["btn btn-ghost btn-xs btn-circle", @show_file_browser && "text-primary"]}
+            title="Browse files"
+          >
+            <.icon name="hero-plus-micro" class="size-4" />
+          </button>
+          <button
+            phx-click="close_file_panel"
+            class="btn btn-ghost btn-xs btn-circle"
+            title="Close panel"
+          >
+            <.icon name="hero-x-mark-micro" class="size-4" />
+          </button>
+        </div>
+
+        <div class="flex flex-1 min-h-0 gap-2">
+          <%!-- File browser sidebar --%>
+          <div
+            :if={@show_file_browser}
+            class="w-52 shrink-0 flex flex-col min-h-0 overflow-hidden"
+          >
+            <.live_component
+              module={OrcaHubWeb.FileTreeComponent}
+              id="session-file-tree-desktop"
+              tree_id="session-file-tree"
+              target_node={@session_node}
+              project={%OrcaHub.Projects.Project{directory: @session.directory}}
+              selected_path={@active_file_tab}
+            />
+          </div>
+
+          <%!-- File content area --%>
+          <div class="flex-1 min-w-0 overflow-y-auto bg-base-200 rounded-lg p-4">
+            <%= if tab = Enum.find(@open_files, & &1.path == @active_file_tab) do %>
+              <%!-- File header --%>
+              <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="font-mono text-xs text-base-content/70 truncate">{tab.path}</span>
+                  <span :if={tab.read_only} class="badge badge-xs badge-ghost">read-only</span>
+                </div>
+                <div :if={!tab.read_only} class="flex items-center gap-1 shrink-0">
+                  <button
+                    :if={!@file_editing && @file_edit_mode}
+                    phx-click="edit_file"
+                    class="btn btn-xs btn-ghost"
+                  >
+                    Raw Edit
+                  </button>
+                  <button
+                    phx-click="toggle_edit_mode"
+                    class={[
+                      "btn btn-xs",
+                      @file_edit_mode && "btn-primary",
+                      !@file_edit_mode && "btn-ghost"
+                    ]}
+                  >
+                    <.icon name="hero-pencil-micro" class="size-3" /> Edit
+                  </button>
+                </div>
+              </div>
+
+              <%!-- Markdown block view --%>
+              <div
+                :if={!@file_editing && tab.blocks != []}
+                id="file-blocks-desktop"
+                phx-hook="ScrollToLine"
+                data-line={@scroll_to_block}
+              >
+                <div
+                  :for={{index, block_text} <- tab.blocks}
+                  id={"file-block-#{index}"}
+                  class={[
+                    "group relative",
+                    @scroll_to_block == index && "ring-2 ring-warning/50 rounded"
+                  ]}
+                >
+                  <div :if={@editing_block == index && @file_edit_mode} class="my-2">
+                    <form phx-submit="save_block" class="space-y-2">
+                      <textarea
+                        name="content"
+                        class="textarea textarea-bordered w-full font-mono text-sm"
+                        rows={max(3, length(String.split(block_text, "\n")) + 1)}
+                        phx-hook="AutoFocus"
+                        id={"block-editor-#{index}"}
+                      >{@block_edit_content}</textarea>
+                      <div class="flex justify-end gap-2">
+                        <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">
+                          Cancel
+                        </button>
+                        <button type="submit" class="btn btn-xs btn-primary">Save</button>
+                      </div>
+                    </form>
+                  </div>
+                  <div :if={@editing_block != index || !@file_edit_mode} class="relative group">
+                    <div
+                      phx-click={if @file_edit_mode, do: "edit_block"}
+                      phx-value-index={if @file_edit_mode, do: index}
+                      class={[
+                        "prose prose-sm max-w-none rounded px-2 -mx-2 py-1",
+                        @file_edit_mode && "cursor-pointer hover:bg-base-300/50 transition-colors"
+                      ]}
+                    >
+                      {Markdown.render_block(block_text)}
+                    </div>
+                    <button
+                      :if={@file_edit_mode}
+                      phx-click="delete_block"
+                      phx-value-index={index}
+                      class="absolute top-1 right-1 btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity text-error"
+                      title="Delete block"
+                    >
+                      <.icon name="hero-trash-micro" class="size-3" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <%!-- Non-markdown view with line numbers --%>
+              <div
+                :if={!@file_editing && tab.blocks == []}
+                id="file-content-desktop"
+                phx-hook="ScrollToLine"
+                data-line={@scroll_to_line}
+              >
+                <table class="text-sm font-mono w-full border-collapse">
+                  <tbody>
+                    <tr
+                      :for={
+                        {line_text, idx} <- Enum.with_index(String.split(tab.content, "\n"), 1)
+                      }
+                      id={"file-line-#{idx}"}
+                      class={if @scroll_to_line == idx, do: "bg-warning/20", else: ""}
+                    >
+                      <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">
+                        {idx}
+                      </td>
+                      <td class="whitespace-pre-wrap break-words">{line_text}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <%!-- Raw edit mode --%>
+              <div :if={@file_editing} class="space-y-3">
+                <form phx-submit="save_file" class="space-y-3">
+                  <textarea
+                    name="content"
+                    class="textarea textarea-bordered w-full font-mono text-sm"
+                    rows="20"
+                  >{tab.content}</textarea>
+                  <div class="flex justify-end gap-2">
+                    <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">
+                      Cancel
+                    </button>
+                    <.button type="submit" class="btn-sm">Save</.button>
+                  </div>
+                </form>
+              </div>
+            <% else %>
+              <div :if={@open_files == []} class="text-sm text-base-content/50 p-8 text-center">
+                Select a file to view its contents.
+              </div>
+            <% end %>
+          </div>
+        </div>
+      </div>
+
+      <%!-- Next session nav button --%>
+      <.link
+        :if={@next_session_id}
+        navigate={~p"/sessions/#{@next_session_id}"}
+        class="hidden sm:flex items-center justify-center w-8 shrink-0 opacity-30 hover:opacity-70 transition-opacity"
+        title="Next session (older)"
+      >
+        <.icon name="hero-chevron-right" class="size-6" />
+      </.link>
+      <div :if={!@next_session_id} class="hidden sm:block w-8 shrink-0"></div>
     </div>
-  </div>
 
-  <.ask_user_question
-    :if={@capabilities.ask_user_question && @status == :waiting && @aq_open && @pending_questions}
-    session_id={@session.id}
-    questions={@pending_questions.questions}
-    page={@aq_page}
-    selections={@aq_selections}
-    variant={:modal}
-  />
+    <%!-- Mobile file panel (modal) --%>
+    <div :if={@open_files != [] || @show_file_browser} class="lg:hidden">
+      <input type="checkbox" id="file-panel-modal" class="modal-toggle" checked />
+      <div class="modal modal-bottom" role="dialog">
+        <div class="modal-box h-[80vh] max-h-[80vh] flex flex-col p-4">
+          <%!-- Modal header with tabs --%>
+          <div class="flex items-center gap-1 mb-2 shrink-0">
+            <div class="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
+              <button
+                :for={tab <- @open_files}
+                phx-click="switch_tab"
+                phx-value-path={tab.path}
+                class={[
+                  "btn btn-xs gap-1 shrink-0",
+                  tab.path == @active_file_tab && "btn-primary",
+                  tab.path != @active_file_tab && "btn-ghost"
+                ]}
+              >
+                <span class="font-mono truncate max-w-32">{Path.basename(tab.path)}</span>
+                <span phx-click="close_tab" phx-value-path={tab.path} class="hover:text-error">
+                  &times;
+                </span>
+              </button>
+            </div>
+            <button
+              phx-click="toggle_file_browser"
+              class={["btn btn-ghost btn-xs btn-circle", @show_file_browser && "text-primary"]}
+              title="Browse files"
+            >
+              <.icon name="hero-plus-micro" class="size-4" />
+            </button>
+            <button
+              phx-click="close_file_panel"
+              class="btn btn-ghost btn-xs btn-circle"
+              title="Close"
+            >
+              <.icon name="hero-x-mark-micro" class="size-4" />
+            </button>
+          </div>
 
-  <%!--
+          <div class="flex flex-1 min-h-0 gap-2">
+            <%!-- File browser --%>
+            <div
+              :if={@show_file_browser}
+              class="w-44 shrink-0 flex flex-col min-h-0 overflow-hidden"
+            >
+              <.live_component
+                module={OrcaHubWeb.FileTreeComponent}
+                id="session-file-tree-mobile"
+                tree_id="mobile-file-tree"
+                target_node={@session_node}
+                project={%OrcaHub.Projects.Project{directory: @session.directory}}
+                selected_path={@active_file_tab}
+              />
+            </div>
+
+            <%!-- File content --%>
+            <div class="flex-1 min-w-0 overflow-y-auto bg-base-200 rounded-lg p-3">
+              <%= if tab = Enum.find(@open_files, & &1.path == @active_file_tab) do %>
+                <div class="flex items-center justify-between mb-2">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <span class="font-mono text-xs text-base-content/70 truncate">
+                      {tab.path}
+                    </span>
+                    <span :if={tab.read_only} class="badge badge-xs badge-ghost">read-only</span>
+                  </div>
+                  <div :if={!tab.read_only} class="flex items-center gap-1 shrink-0">
+                    <button
+                      :if={!@file_editing && @file_edit_mode}
+                      phx-click="edit_file"
+                      class="btn btn-xs btn-ghost"
+                    >
+                      Raw Edit
+                    </button>
+                    <button
+                      phx-click="toggle_edit_mode"
+                      class={[
+                        "btn btn-xs",
+                        @file_edit_mode && "btn-primary",
+                        !@file_edit_mode && "btn-ghost"
+                      ]}
+                    >
+                      <.icon name="hero-pencil-micro" class="size-3" /> Edit
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  :if={!@file_editing && tab.blocks != []}
+                  id="file-blocks-mobile"
+                  phx-hook="ScrollToLine"
+                  data-line={@scroll_to_block}
+                >
+                  <div
+                    :for={{index, block_text} <- tab.blocks}
+                    id={"mobile-file-block-#{index}"}
+                    class={[
+                      "group relative",
+                      @scroll_to_block == index && "ring-2 ring-warning/50 rounded"
+                    ]}
+                  >
+                    <div :if={@editing_block == index && @file_edit_mode} class="my-2">
+                      <form phx-submit="save_block" class="space-y-2">
+                        <textarea
+                          name="content"
+                          class="textarea textarea-bordered w-full font-mono text-sm"
+                          rows={max(3, length(String.split(block_text, "\n")) + 1)}
+                          phx-hook="AutoFocus"
+                          id={"mobile-block-editor-#{index}"}
+                        >{@block_edit_content}</textarea>
+                        <div class="flex justify-end gap-2">
+                          <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">
+                            Cancel
+                          </button>
+                          <button type="submit" class="btn btn-xs btn-primary">Save</button>
+                        </div>
+                      </form>
+                    </div>
+                    <div :if={@editing_block != index || !@file_edit_mode}>
+                      <div
+                        phx-click={if @file_edit_mode, do: "edit_block"}
+                        phx-value-index={if @file_edit_mode, do: index}
+                        class={[
+                          "prose prose-sm max-w-none rounded px-2 -mx-2 py-1",
+                          @file_edit_mode && "cursor-pointer hover:bg-base-300/50"
+                        ]}
+                      >
+                        {Markdown.render_block(block_text)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  :if={!@file_editing && tab.blocks == []}
+                  id="file-content-mobile"
+                  phx-hook="ScrollToLine"
+                  data-line={@scroll_to_line}
+                >
+                  <table class="text-sm font-mono w-full border-collapse">
+                    <tbody>
+                      <tr
+                        :for={
+                          {line_text, idx} <- Enum.with_index(String.split(tab.content, "\n"), 1)
+                        }
+                        id={"mobile-file-line-#{idx}"}
+                        class={if @scroll_to_line == idx, do: "bg-warning/20", else: ""}
+                      >
+                        <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">
+                          {idx}
+                        </td>
+                        <td class="whitespace-pre-wrap break-words">{line_text}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div :if={@file_editing} class="space-y-3">
+                  <form phx-submit="save_file" class="space-y-3">
+                    <textarea
+                      name="content"
+                      class="textarea textarea-bordered w-full font-mono text-sm"
+                      rows="15"
+                    >{tab.content}</textarea>
+                    <div class="flex justify-end gap-2">
+                      <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">
+                        Cancel
+                      </button>
+                      <.button type="submit" class="btn-sm">Save</.button>
+                    </div>
+                  </form>
+                </div>
+              <% else %>
+                <div :if={@open_files == []} class="text-sm text-base-content/50 p-4 text-center">
+                  Select a file to view.
+                </div>
+              <% end %>
+            </div>
+          </div>
+        </div>
+        <label class="modal-backdrop" phx-click="close_file_panel"></label>
+      </div>
+    </div>
+
+    <%!-- Mobile terminal panel (modal) --%>
+    <div :if={@show_terminal && @open_terminals != []} class="lg:hidden">
+      <input type="checkbox" id="terminal-panel-modal" class="modal-toggle" checked />
+      <div class="modal modal-bottom" role="dialog">
+        <div class="modal-box h-[80vh] max-h-[80vh] flex flex-col p-4">
+          <div class="flex items-center gap-1 mb-2 shrink-0">
+            <div class="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
+              <button
+                :for={term <- @open_terminals}
+                phx-click="switch_terminal"
+                phx-value-id={term.id}
+                class={[
+                  "btn btn-xs gap-1 shrink-0",
+                  term.id == @active_terminal_id && "btn-primary",
+                  term.id != @active_terminal_id && "btn-ghost"
+                ]}
+              >
+                <span class="truncate max-w-24">{term.name}</span>
+                <span
+                  phx-click="close_terminal_tab"
+                  phx-value-id={term.id}
+                  class="hover:text-error"
+                  title="Close"
+                >
+                  &times;
+                </span>
+              </button>
+            </div>
+            <button
+              phx-click="new_terminal"
+              class="btn btn-ghost btn-xs btn-circle"
+              title="New terminal"
+            >
+              <.icon name="hero-plus-micro" class="size-4" />
+            </button>
+            <button
+              :if={@active_terminal_id}
+              phx-click="pop_out_terminal"
+              class="btn btn-ghost btn-xs btn-circle"
+              title="Open in full page"
+            >
+              <.icon name="hero-arrow-top-right-on-square-micro" class="size-4" />
+            </button>
+            <button
+              phx-click="close_terminal_panel"
+              class="btn btn-ghost btn-xs btn-circle"
+              title="Close"
+            >
+              <.icon name="hero-x-mark-micro" class="size-4" />
+            </button>
+          </div>
+          <div class="flex-1 min-h-0 relative">
+            <div
+              :for={term <- @open_terminals}
+              id={"mobile-terminal-#{term.id}"}
+              phx-hook="Terminal"
+              data-terminal-id={term.id}
+              class={[
+                "absolute inset-0 rounded-lg overflow-hidden",
+                term.id != @active_terminal_id && "invisible"
+              ]}
+              phx-update="ignore"
+            >
+            </div>
+          </div>
+        </div>
+        <label class="modal-backdrop" phx-click="close_terminal_panel"></label>
+      </div>
+    </div>
+
+    <.ask_user_question
+      :if={
+        @capabilities.ask_user_question && @status == :waiting && @aq_open && @pending_questions
+      }
+      session_id={@session.id}
+      questions={@pending_questions.questions}
+      page={@aq_page}
+      selections={@aq_selections}
+      variant={:modal}
+    />
+
+    <%!--
     pi's extension-UI dialog card (spec §12.3) — the pi analogue of the
     AskUserQuestion modal above, independent of it: pi's `question` tool
     (priv/pi/orca.ts) blocks the turn directly on the wire rather than going
@@ -1485,42 +1584,42 @@
     Claude's aq_submit uses, since that's not the wire protocol pi's blocked
     ctx.ui.select/ctx.ui.input call is waiting on.
   --%>
-  <div :if={@capabilities.ask_user_question && @pending_ui_request} class="modal modal-open">
-    <div class="modal-box max-w-xl">
-      <div class="flex items-center gap-2 text-info">
-        <.icon name="hero-question-mark-circle" class="size-5" />
-        <span class="font-semibold">
-          {if @pending_ui_request["method"] == "confirm",
-            do: "pi wants confirmation",
-            else: "pi is asking a question"}
-        </span>
-      </div>
-
-      <div class="mt-2">
-        <div class="font-medium">{@pending_ui_request["title"]}</div>
-        <div
-          :if={@pending_ui_request["message"] not in [nil, ""]}
-          class="text-sm text-base-content/70 mt-1"
-        >
-          {@pending_ui_request["message"]}
+    <div :if={@capabilities.ask_user_question && @pending_ui_request} class="modal modal-open">
+      <div class="modal-box max-w-xl">
+        <div class="flex items-center gap-2 text-info">
+          <.icon name="hero-question-mark-circle" class="size-5" />
+          <span class="font-semibold">
+            {if @pending_ui_request["method"] == "confirm",
+              do: "pi wants confirmation",
+              else: "pi is asking a question"}
+          </span>
         </div>
-      </div>
 
-      <div :if={@pending_ui_request["options"]} class="flex flex-col gap-2 mt-3">
-        <button
-          :for={opt <- @pending_ui_request["options"]}
-          type="button"
-          phx-click="piui_answer"
-          phx-value-request_id={@pending_ui_request["id"]}
-          phx-value-method={@pending_ui_request["method"]}
-          phx-value-value={opt}
-          class="text-left rounded-lg border border-base-300 p-3 transition-colors hover:border-base-content/30 hover:bg-base-200"
-        >
-          {opt}
-        </button>
-      </div>
+        <div class="mt-2">
+          <div class="font-medium">{@pending_ui_request["title"]}</div>
+          <div
+            :if={@pending_ui_request["message"] not in [nil, ""]}
+            class="text-sm text-base-content/70 mt-1"
+          >
+            {@pending_ui_request["message"]}
+          </div>
+        </div>
 
-      <%!--
+        <div :if={@pending_ui_request["options"]} class="flex flex-col gap-2 mt-3">
+          <button
+            :for={opt <- @pending_ui_request["options"]}
+            type="button"
+            phx-click="piui_answer"
+            phx-value-request_id={@pending_ui_request["id"]}
+            phx-value-method={@pending_ui_request["method"]}
+            phx-value-value={opt}
+            class="text-left rounded-lg border border-base-300 p-3 transition-colors hover:border-base-content/30 hover:bg-base-200"
+          >
+            {opt}
+          </button>
+        </div>
+
+        <%!--
         `ctx.ui.confirm` dialogs (e.g. priv/pi/orca-guard.ts's force-command
         guard, spec §12.7) carry no "options" array, so without this branch
         they'd fall into the free-text form below and ask the user to TYPE
@@ -1533,53 +1632,54 @@
         resolves `confirmed: false` on the pi side either way, per
         docs/rpc.md) — no new event handler needed for either button.
       --%>
-      <div :if={@pending_ui_request["method"] == "confirm"} class="flex gap-2 mt-3">
-        <button
-          type="button"
-          phx-click="piui_answer"
-          phx-value-request_id={@pending_ui_request["id"]}
-          phx-value-method="confirm"
-          phx-value-value="true"
-          class="btn btn-sm btn-error"
-        >
-          Confirm
-        </button>
-        <button
-          type="button"
-          phx-click="piui_cancel"
-          phx-value-request_id={@pending_ui_request["id"]}
-          class="btn btn-sm btn-ghost"
-        >
-          Decline
-        </button>
-      </div>
+        <div :if={@pending_ui_request["method"] == "confirm"} class="flex gap-2 mt-3">
+          <button
+            type="button"
+            phx-click="piui_answer"
+            phx-value-request_id={@pending_ui_request["id"]}
+            phx-value-method="confirm"
+            phx-value-value="true"
+            class="btn btn-sm btn-error"
+          >
+            Confirm
+          </button>
+          <button
+            type="button"
+            phx-click="piui_cancel"
+            phx-value-request_id={@pending_ui_request["id"]}
+            class="btn btn-sm btn-ghost"
+          >
+            Decline
+          </button>
+        </div>
 
-      <form
-        :if={!@pending_ui_request["options"] && @pending_ui_request["method"] != "confirm"}
-        phx-submit="piui_answer"
-        class="mt-3 flex gap-2"
-      >
-        <input type="hidden" name="request_id" value={@pending_ui_request["id"]} />
-        <input type="hidden" name="method" value={@pending_ui_request["method"]} />
-        <input
-          type="text"
-          name="value"
-          placeholder={@pending_ui_request["placeholder"] || "Type your answer..."}
-          class="input input-bordered input-sm flex-1"
-        />
-        <button type="submit" class="btn btn-sm btn-success">Send</button>
-      </form>
-
-      <div :if={@pending_ui_request["method"] != "confirm"} class="flex justify-end mt-3">
-        <button
-          type="button"
-          phx-click="piui_cancel"
-          phx-value-request_id={@pending_ui_request["id"]}
-          class="btn btn-ghost btn-sm"
+        <form
+          :if={!@pending_ui_request["options"] && @pending_ui_request["method"] != "confirm"}
+          phx-submit="piui_answer"
+          class="mt-3 flex gap-2"
         >
-          Cancel
-        </button>
+          <input type="hidden" name="request_id" value={@pending_ui_request["id"]} />
+          <input type="hidden" name="method" value={@pending_ui_request["method"]} />
+          <input
+            type="text"
+            name="value"
+            placeholder={@pending_ui_request["placeholder"] || "Type your answer..."}
+            class="input input-bordered input-sm flex-1"
+          />
+          <button type="submit" class="btn btn-sm btn-success">Send</button>
+        </form>
+
+        <div :if={@pending_ui_request["method"] != "confirm"} class="flex justify-end mt-3">
+          <button
+            type="button"
+            phx-click="piui_cancel"
+            phx-value-request_id={@pending_ui_request["id"]}
+            class="btn btn-ghost btn-sm"
+          >
+            Cancel
+          </button>
+        </div>
       </div>
     </div>
-  </div>
+  <% end %>
 </div>

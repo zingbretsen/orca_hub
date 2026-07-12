@@ -3,7 +3,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   require Logger
 
   alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, Projects, SessionRunner, Sessions}
-  alias OrcaHubWeb.{Markdown, MessageComponents}
+  alias OrcaHubWeb.{Markdown, MessageComponents, TreeComponents}
   alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Todos}
 
   import OrcaHubWeb.AskUserQuestionComponent
@@ -115,6 +115,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
      # `pi_session_stats` event in history, mirroring @plan_mode's
      # reconstruction; nil (hidden) until the first stats event ever arrives.
      |> assign(:context_percent, context_percent_from_messages(runner_state.messages))
+     # Conversation/Tree toggle (view param persisted via handle_params) —
+     # tree_* assigns only get populated by load_tree_data/1 once @view is
+     # :tree; tree_compose is the per-node "message this session" modal,
+     # opened from a tree node regardless of which view loaded it.
+     |> assign(:view, :conversation)
+     |> assign(:tree_subagents, %{})
+     |> assign(:tree_compose, nil)
+     |> assign(:sessions_topic_subscribed, false)
      |> load_session_todos()
      |> load_session_commits()
      |> allow_upload(:image,
@@ -129,6 +137,46 @@ defmodule OrcaHubWeb.SessionLive.Show do
        max_file_size: 50_000_000,
        auto_upload: true
      )}
+  end
+
+  @impl true
+  def handle_params(params, _url, socket) do
+    view = if params["view"] == "tree", do: :tree, else: :conversation
+    socket = assign(socket, :view, view)
+
+    socket =
+      if view == :tree do
+        socket |> maybe_subscribe_sessions_topic() |> load_tree_data()
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  defp maybe_subscribe_sessions_topic(socket) do
+    if connected?(socket) and not socket.assigns.sessions_topic_subscribed do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
+      assign(socket, :sessions_topic_subscribed, true)
+    else
+      socket
+    end
+  end
+
+  # Tree view data: the tree containing this session (root ancestor + every
+  # descendant, archived included — see Sessions.get_session_tree/1 doc),
+  # plus the cross-session message-edge overlay for that same membership.
+  defp load_tree_data(socket) do
+    {root, members} = HubRPC.get_session_tree(socket.assigns.session.id)
+    session_ids = Enum.map(members, & &1.id)
+    sessions_by_id = Map.new(members, &{&1.id, &1})
+
+    interactions = HubRPC.list_session_interactions_for_sessions(session_ids)
+
+    socket
+    |> assign(:tree_root, root)
+    |> assign(:tree_children_by_parent, TreeComponents.group_children_by_parent(members))
+    |> assign(:tree_edges_by_session, TreeComponents.build_edges(interactions, sessions_by_id))
   end
 
   # -- mount helpers --
@@ -396,6 +444,62 @@ defmodule OrcaHubWeb.SessionLive.Show do
       end
     else
       {:noreply, socket}
+    end
+  end
+
+  # -- Tree view --
+
+  def handle_event("toggle_subagents", %{"id" => session_id}, socket) do
+    subagents = socket.assigns.tree_subagents
+
+    # <details>'s open/closed state lives client-side (native browser
+    # behavior); this handler only needs to run the fetch once per session,
+    # idempotently, on whichever click first opens it.
+    subagents =
+      if Map.has_key?(subagents, session_id) do
+        subagents
+      else
+        Map.put(subagents, session_id, HubRPC.list_task_invocations(session_id))
+      end
+
+    {:noreply, assign(socket, :tree_subagents, subagents)}
+  end
+
+  def handle_event("open_tree_compose", %{"id" => target_id, "title" => target_title}, socket) do
+    target_node_unavailable =
+      case Cluster.find_session(target_id) do
+        {node, _session} -> !Cluster.node_available?(node)
+        nil -> true
+      end
+
+    {:noreply,
+     assign(socket, :tree_compose, %{
+       target_id: target_id,
+       target_title: target_title,
+       mode: if(target_node_unavailable, do: "relay", else: "direct"),
+       target_node_unavailable: target_node_unavailable
+     })}
+  end
+
+  def handle_event("close_tree_compose", _params, socket) do
+    {:noreply, assign(socket, :tree_compose, nil)}
+  end
+
+  def handle_event("set_tree_compose_mode", %{"mode" => mode}, socket) do
+    {:noreply, update(socket, :tree_compose, &Map.put(&1, :mode, mode))}
+  end
+
+  def handle_event("send_tree_compose", %{"text" => text}, socket) do
+    case String.trim(text) do
+      "" ->
+        {:noreply, socket}
+
+      text ->
+        %{target_id: target_id, target_title: target_title, mode: mode} =
+          socket.assigns.tree_compose
+
+        result = send_tree_compose_message(socket, mode, target_id, target_title, text)
+        {:noreply, handle_tree_compose_result(socket, result)}
     end
   end
 
@@ -1264,6 +1368,45 @@ defmodule OrcaHubWeb.SessionLive.Show do
     )
   end
 
+  # Mode 1, "direct": delivered to the TARGET session exactly like typing
+  # into that session's own composer — Cluster.send_message already
+  # restarts a dead runner and unarchives on send (SessionRunner's
+  # start_running/3), same as send_message_to_session and the main composer
+  # above.
+  defp send_tree_compose_message(_socket, "direct", target_id, _target_title, text) do
+    case Cluster.find_session(target_id) do
+      {node, _session} -> Cluster.send_message(node, target_id, text)
+      nil -> {:error, :not_found}
+    end
+  end
+
+  # Mode 2, "relay": nudges the CURRENT session (the one whose page we're
+  # on) to use its own send_message_to_session MCP tool — as a side effect,
+  # that records a session_interactions edge automatically.
+  defp send_tree_compose_message(socket, "relay", target_id, target_title, text) do
+    nudge = "Please message session #{target_id} (#{target_title}) about the following: #{text}"
+    Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, nudge)
+  end
+
+  defp handle_tree_compose_result(socket, :ok) do
+    socket |> assign(:tree_compose, nil) |> put_flash(:info, "Message sent.")
+  end
+
+  defp handle_tree_compose_result(socket, {:error, :not_found}) do
+    put_flash(socket, :error, "That session could not be found.")
+  end
+
+  defp handle_tree_compose_result(socket, {:error, :busy}) do
+    put_flash(socket, :error, "Session is busy")
+  end
+
+  defp handle_tree_compose_result(socket, {:error, reason}) do
+    message =
+      Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
+
+    put_flash(socket, :error, message)
+  end
+
   # Persists `content` to `path` on the session's node, then either updates the
   # matching open-file tab (content, blocks, mtime) plus `success_assigns`, or
   # flashes an error prefixed with `error_label`. Shared by the save_file,
@@ -1498,6 +1641,22 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end)
 
     {:noreply, socket}
+  end
+
+  # Aggregate "sessions" topic (see Sessions.archive_session/1,
+  # SessionRunner's broadcast/2) — some OTHER session in the tree changed
+  # status/archived state. Shaped `{session_id, payload}`, distinguished
+  # from this session's own `{:atom, ...}` topic events above by the guard:
+  # only fires while the tree view is actually mounted, and just reloads
+  # the whole tree rather than diffing (same "simplest correct approach for
+  # a read-mostly view" call the old /sessions/tree page made).
+  @impl true
+  def handle_info({session_id, _payload}, socket) when is_binary(session_id) do
+    if socket.assigns.view == :tree do
+      {:noreply, load_tree_data(socket)}
+    else
+      {:noreply, socket}
+    end
   end
 
   # Catch-all: ignore unexpected messages so the LiveView never crashes.
