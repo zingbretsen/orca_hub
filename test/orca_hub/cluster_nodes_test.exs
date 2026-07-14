@@ -70,6 +70,24 @@ defmodule OrcaHub.ClusterNodesTest do
       {:ok, toggled_back} = ClusterNodes.update_node(updated, %{isolated: false})
       refute toggled_back.isolated
     end
+
+    test "updates default_backend and default_model" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      assert node.default_backend == nil
+      assert node.default_model == nil
+
+      {:ok, updated} =
+        ClusterNodes.update_node(node, %{default_backend: "claude", default_model: "sonnet-5"})
+
+      assert updated.default_backend == "claude"
+      assert updated.default_model == "sonnet-5"
+
+      {:ok, cleared} =
+        ClusterNodes.update_node(updated, %{default_backend: nil, default_model: nil})
+
+      assert cleared.default_backend == nil
+      assert cleared.default_model == nil
+    end
   end
 
   describe "isolated flag survives conflict-update paths" do
@@ -100,6 +118,41 @@ defmodule OrcaHub.ClusterNodesTest do
       {:ok, _} = ClusterNodes.backfill_node("orca@a", "should not apply")
 
       assert ClusterNodes.get_by_name("orca@a").isolated
+    end
+  end
+
+  describe "default_backend/default_model survive conflict-update paths" do
+    test "upsert_seen does not reset node defaults" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+
+      {:ok, defaulted} =
+        ClusterNodes.update_node(node, %{default_backend: "claude", default_model: "sonnet-5"})
+
+      assert defaulted.default_backend == "claude"
+
+      {:ok, reseen} = ClusterNodes.upsert_seen("orca@a", "a (reconnected)")
+
+      assert reseen.default_backend == "claude"
+      assert reseen.default_model == "sonnet-5"
+      assert ClusterNodes.get_by_name("orca@a").default_backend == "claude"
+    end
+
+    test "touch_last_connected does not reset node defaults" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      {:ok, _} = ClusterNodes.update_node(node, %{default_backend: "codex"})
+
+      {:ok, touched} = ClusterNodes.touch_last_connected("orca@a")
+
+      assert touched.default_backend == "codex"
+    end
+
+    test "backfill_node never overwrites an existing row's defaults" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      {:ok, _} = ClusterNodes.update_node(node, %{default_backend: "codex"})
+
+      {:ok, _} = ClusterNodes.backfill_node("orca@a", "should not apply")
+
+      assert ClusterNodes.get_by_name("orca@a").default_backend == "codex"
     end
   end
 

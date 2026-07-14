@@ -58,4 +58,72 @@ defmodule OrcaHubWeb.NodeLive.ShowTest do
     assert html =~ "backend-config-node-unavailable"
     refute html =~ "config-section-claude"
   end
+
+  describe "default backend/model controls" do
+    test "with no defaults set, both controls render as '(no default)'", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+      {:ok, _view, html} = live(conn, ~p"/nodes/#{n.id}")
+
+      assert html =~ "Default backend"
+      assert html =~ "Default model"
+      assert html =~ "(no default)"
+    end
+
+    test "updating default_backend persists and re-renders the selection", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+      {:ok, view, _html} = live(conn, ~p"/nodes/#{n.id}")
+
+      html = render_change(view, "update_default_backend", %{"default_backend" => "claude"})
+
+      assert html =~ ~s(value="claude" selected)
+      assert ClusterNodes.get_by_name(n.name).default_backend == "claude"
+    end
+
+    test "clearing default_backend back to blank persists nil", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+      {:ok, n} = ClusterNodes.update_node(n, %{default_backend: "claude"})
+
+      {:ok, view, _html} = live(conn, ~p"/nodes/#{n.id}")
+
+      render_change(view, "update_default_backend", %{"default_backend" => ""})
+
+      assert ClusterNodes.get_by_name(n.name).default_backend == nil
+    end
+
+    test "default model renders as a select of Claude models when the default backend is claude",
+         %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+      {:ok, n} = ClusterNodes.update_node(n, %{default_backend: "claude"})
+
+      {:ok, _view, html} = live(conn, ~p"/nodes/#{n.id}")
+
+      assert html =~ "claude-sonnet-5"
+    end
+
+    test "updating default_model persists", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+      {:ok, n} = ClusterNodes.update_node(n, %{default_backend: "claude"})
+
+      {:ok, view, _html} = live(conn, ~p"/nodes/#{n.id}")
+
+      render_change(view, "update_default_model", %{"default_model" => "claude-sonnet-5"})
+
+      assert ClusterNodes.get_by_name(n.name).default_model == "claude-sonnet-5"
+    end
+
+    test "default model renders as free text when the default backend is codex", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+      {:ok, n} =
+        ClusterNodes.update_node(n, %{default_backend: "codex", default_model: "gpt-5.5"})
+
+      {:ok, _view, html} = live(conn, ~p"/nodes/#{n.id}")
+
+      assert html =~ ~s(name="default_model")
+      assert html =~ ~s(type="text")
+      assert html =~ "gpt-5.5"
+    end
+  end
 end

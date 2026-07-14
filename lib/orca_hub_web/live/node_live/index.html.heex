@@ -22,6 +22,13 @@
       >
         isolated
       </span>
+      <span
+        :if={n.default_backend || n.default_model}
+        class="badge badge-xs badge-ghost"
+        title="Default backend/model applied to sessions created on this node"
+      >
+        default: {n.default_backend || "claude"}{if n.default_model, do: " / #{n.default_model}"}
+      </span>
     </div>
     <div class="text-xs text-base-content/60 font-mono">{n.name}</div>
   </:col>

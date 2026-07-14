@@ -38,6 +38,51 @@
         </span>
       </label>
     </:item>
+    <:item title="Default backend">
+      <form phx-change="update_default_backend">
+        <select name="default_backend" class="select select-bordered select-sm">
+          <option value="" selected={@node.default_backend in [nil, ""]}>(no default)</option>
+          <option
+            :for={{value, label} <- default_backend_options(@connected, @config_node)}
+            value={value}
+            selected={@node.default_backend == value}
+          >
+            {label}
+          </option>
+        </select>
+      </form>
+      <p class="text-xs text-base-content/50 mt-1">
+        New sessions created on this node default to this backend when the caller doesn't specify one.
+      </p>
+    </:item>
+    <:item title="Default model">
+      <% model_options = default_model_options(@node, @connected, @config_node) %>
+      <form :if={model_options != []} phx-change="update_default_model">
+        <select name="default_model" class="select select-bordered select-sm">
+          <option value="" selected={@node.default_model in [nil, ""]}>(no default)</option>
+          <option
+            :for={{id, label} <- model_options}
+            value={id}
+            selected={@node.default_model == id}
+          >
+            {label}
+          </option>
+        </select>
+      </form>
+      <form :if={model_options == []} phx-change="update_default_model">
+        <input
+          type="text"
+          name="default_model"
+          value={@node.default_model}
+          phx-debounce="blur"
+          placeholder="(no default)"
+          class="input input-bordered input-sm w-full max-w-xs font-mono"
+        />
+      </form>
+      <p class="text-xs text-base-content/50 mt-1">
+        New sessions created on this node default to this model when the caller doesn't specify one. Only applied when the session's effective backend matches the default backend above.
+      </p>
+    </:item>
   </.list>
 </div>
 

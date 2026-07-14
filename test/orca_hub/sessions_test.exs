@@ -143,6 +143,204 @@ defmodule OrcaHub.SessionsTest do
     end
   end
 
+  describe "create_session/1 node default resolution" do
+    alias OrcaHub.ClusterNodes
+
+    setup do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@discord", "discord")
+      %{node: node}
+    end
+
+    test "no runner_node means unchanged behavior", %{project: project} do
+      {:ok, _} =
+        ClusterNodes.update_node(
+          ClusterNodes.get_by_name("orca@discord"),
+          %{default_backend: "codex", default_model: "some-model"}
+        )
+
+      {:ok, session} =
+        Sessions.create_session(%{directory: project.directory, project_id: project.id})
+
+      assert session.backend == "claude"
+      assert session.model == nil
+    end
+
+    test "runner_node with no matching row leaves attrs untouched", %{project: project} do
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: project.directory,
+          project_id: project.id,
+          runner_node: "orca@ghost-node"
+        })
+
+      assert session.backend == "claude"
+      assert session.model == nil
+    end
+
+    test "matching node with nil defaults leaves attrs untouched", %{project: project, node: node} do
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: project.directory,
+          project_id: project.id,
+          runner_node: node.name
+        })
+
+      assert session.backend == "claude"
+      assert session.model == nil
+    end
+
+    test "fills backend/model from node defaults with atom-keyed attrs", %{
+      project: project,
+      node: node
+    } do
+      {:ok, _} =
+        ClusterNodes.update_node(node, %{default_backend: "claude", default_model: "sonnet-5"})
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: project.directory,
+          project_id: project.id,
+          runner_node: node.name
+        })
+
+      assert session.backend == "claude"
+      assert session.model == "sonnet-5"
+    end
+
+    test "fills backend/model from node defaults with string-keyed attrs", %{
+      project: project,
+      node: node
+    } do
+      {:ok, _} =
+        ClusterNodes.update_node(node, %{default_backend: "claude", default_model: "sonnet-5"})
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          "directory" => project.directory,
+          "project_id" => project.id,
+          "runner_node" => node.name
+        })
+
+      assert session.backend == "claude"
+      assert session.model == "sonnet-5"
+    end
+
+    test "explicit backend wins over node default_backend", %{project: project, node: node} do
+      {:ok, _} =
+        ClusterNodes.update_node(node, %{default_backend: "codex", default_model: "sonnet-5"})
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: project.directory,
+          project_id: project.id,
+          runner_node: node.name,
+          backend: "claude"
+        })
+
+      assert session.backend == "claude"
+    end
+
+    test "explicit model wins over node default_model", %{project: project, node: node} do
+      {:ok, _} =
+        ClusterNodes.update_node(node, %{default_backend: "claude", default_model: "sonnet-5"})
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: project.directory,
+          project_id: project.id,
+          runner_node: node.name,
+          model: "opus-4"
+        })
+
+      assert session.model == "opus-4"
+    end
+
+    test "empty-string backend/model count as unset and get the node defaults", %{
+      project: project,
+      node: node
+    } do
+      {:ok, _} =
+        ClusterNodes.update_node(node, %{default_backend: "claude", default_model: "sonnet-5"})
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          "directory" => project.directory,
+          "project_id" => project.id,
+          "runner_node" => node.name,
+          "backend" => "",
+          "model" => ""
+        })
+
+      assert session.backend == "claude"
+      assert session.model == "sonnet-5"
+    end
+
+    test "explicit backend different from node default_backend skips node's default_model", %{
+      project: project,
+      node: node
+    } do
+      {:ok, _} =
+        ClusterNodes.update_node(node, %{default_backend: "claude", default_model: "sonnet-5"})
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: project.directory,
+          project_id: project.id,
+          runner_node: node.name,
+          backend: "codex"
+        })
+
+      assert session.backend == "codex"
+      assert session.model == nil
+    end
+
+    test "explicit backend matching node default_backend still gets the default_model", %{
+      project: project,
+      node: node
+    } do
+      {:ok, _} =
+        ClusterNodes.update_node(node, %{default_backend: "claude", default_model: "sonnet-5"})
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: project.directory,
+          project_id: project.id,
+          runner_node: node.name,
+          backend: "claude"
+        })
+
+      assert session.model == "sonnet-5"
+    end
+
+    test "default_model with no default_backend is treated as configured for claude", %{
+      project: project,
+      node: node
+    } do
+      {:ok, _} = ClusterNodes.update_node(node, %{default_model: "sonnet-5"})
+
+      {:ok, no_backend_session} =
+        Sessions.create_session(%{
+          directory: project.directory,
+          project_id: project.id,
+          runner_node: node.name
+        })
+
+      assert no_backend_session.backend == "claude"
+      assert no_backend_session.model == "sonnet-5"
+
+      {:ok, codex_session} =
+        Sessions.create_session(%{
+          directory: project.directory,
+          project_id: project.id,
+          runner_node: node.name,
+          backend: "codex"
+        })
+
+      assert codex_session.backend == "codex"
+      assert codex_session.model == nil
+    end
+  end
+
   describe "list_idle_sessions_with_last_assistant_message/0" do
     test "includes top-level idle sessions but excludes orchestrator-spawned children",
          %{project: project} do

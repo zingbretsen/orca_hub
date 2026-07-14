@@ -99,6 +99,14 @@ defmodule OrcaHubWeb.NodeLive.Show do
     end
   end
 
+  def handle_event("update_default_backend", %{"default_backend" => value}, socket) do
+    update_node_default(socket, :default_backend, blank_to_nil(value))
+  end
+
+  def handle_event("update_default_model", %{"default_model" => value}, socket) do
+    update_node_default(socket, :default_model, blank_to_nil(value))
+  end
+
   def handle_event("run_backend_job", %{"backend" => b, "action" => a}, socket) do
     with backend when not is_nil(backend) <- backend_atom(b),
          action when not is_nil(action) <- installer_action_atom(a) do
@@ -544,6 +552,45 @@ defmodule OrcaHubWeb.NodeLive.Show do
   defp backend_atom("codex"), do: :codex
   defp backend_atom("pi"), do: :pi
   defp backend_atom(_), do: nil
+
+  defp update_node_default(socket, field, value) do
+    case HubRPC.update_node(socket.assigns.node, %{field => value}) do
+      {:ok, updated_node} ->
+        {:noreply, assign(socket, :node, updated_node)}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to update default #{field}")}
+    end
+  end
+
+  @doc """
+  Backend options for the "Default backend" select: scoped to what's
+  actually installed when the node is reachable (mirrors the new-session
+  picker), or the full known backend catalog when it isn't — an operator
+  should be able to pre-configure a default before a node ever connects.
+  """
+  def default_backend_options(true, config_node), do: OrcaHub.Backend.available_on(config_node)
+  def default_backend_options(false, _config_node), do: OrcaHub.Backend.available()
+
+  @doc """
+  Model options for the "Default model" control. Only Claude's model list is
+  enumerable (and only when the node is reachable, since an unreached
+  `config_node` of `nil` would otherwise resolve to *this* node's models —
+  see `Backend.available_on/1`'s node-normalization). `[]` here means the
+  template falls back to a free-text input — also the right answer for
+  Codex/pi, whose model ids aren't enumerable.
+  """
+  def default_model_options(_node, false, _config_node), do: []
+
+  def default_model_options(node, true, config_node) do
+    if configured_backend(node) == "claude" do
+      OrcaHub.Backend.models_for("claude", config_node)
+    else
+      []
+    end
+  end
+
+  defp configured_backend(node), do: node.default_backend || "claude"
 
   defp installer_action_atom("install"), do: :install
   defp installer_action_atom("update"), do: :update

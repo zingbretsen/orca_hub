@@ -68,6 +68,13 @@ defmodule OrcaHubWeb.SessionLive.Index do
           %{"project_id" => id, "directory" => project.directory}
       end
 
+    # Preselect the target node's configured backend/model default (see
+    # OrcaHub.Sessions moduledoc) so the picker shows what the session will
+    # actually get, rather than always opening on the schema's bare "claude"
+    # default. `initial`'s own keys always win (there's no overlap today,
+    # but explicit request params should take precedence over a guess).
+    initial = Map.merge(node_default_attrs(node()), initial)
+
     changeset = Session.changeset(%Session{}, initial)
 
     socket
@@ -375,6 +382,25 @@ defmodule OrcaHubWeb.SessionLive.Index do
       v -> v
     end
   end
+
+  # Node-configured backend/model default (see `OrcaHub.Sessions` moduledoc)
+  # as `"backend"`/`"model"` form-param keys, for preselecting the new-session
+  # picker. Only used at initial mount — the picker doesn't re-derive this on
+  # a subsequent target-node change within the same open form.
+  defp node_default_attrs(target_node) do
+    case HubRPC.get_node_by_name(Atom.to_string(target_node)) do
+      nil ->
+        %{}
+
+      node ->
+        %{}
+        |> maybe_put_default("backend", node.default_backend)
+        |> maybe_put_default("model", node.default_model)
+    end
+  end
+
+  defp maybe_put_default(map, _key, nil), do: map
+  defp maybe_put_default(map, key, value), do: Map.put(map, key, value)
 
   defp schedule_undo_archive(socket, session_id) do
     socket = cancel_undo_timer(socket)

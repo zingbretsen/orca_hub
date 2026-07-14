@@ -20,7 +20,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
 
   import Phoenix.LiveViewTest
 
-  alias OrcaHub.Projects
+  alias OrcaHub.{ClusterNodes, Projects}
 
   test "new-session form shows the backend picker and defaults to \"claude\"", %{conn: conn} do
     {:ok, project} =
@@ -45,6 +45,19 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
 
     assert session
     assert session.backend == "claude"
+  end
+
+  test "new-session form preselects the target node's configured backend/model default", %{
+    conn: conn
+  } do
+    {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+    {:ok, _} =
+      ClusterNodes.update_node(n, %{default_backend: "claude", default_model: "claude-sonnet-5"})
+
+    {:ok, _view, html} = live(conn, ~p"/sessions/new")
+
+    assert html =~ ~s(value="claude-sonnet-5")
   end
 
   test "new-session form scopes the model datalist to the selected backend", %{conn: conn} do

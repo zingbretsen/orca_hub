@@ -1,12 +1,39 @@
 defmodule OrcaHub.Sessions do
   @moduledoc """
   Context for managing Claude sessions and their messages.
+
+  ## Per-node backend/model defaults
+
+  `create_session/1` is the single seam every session-creation path funnels
+  through (LiveView forms, the command palette, MCP `start_session`,
+  `TriggerExecutor`, the Discord bridge, the Agent Runs API) — always via
+  `OrcaHub.HubRPC` on non-hub nodes, since the `nodes` table is hub-local.
+  Before inserting, it fills in a node's configured `default_backend` /
+  `default_model` (set on the node's show page) for any attrs the caller
+  left blank, so e.g. the Discord bridge's node can default every session it
+  spawns to `sonnet-5` without the bridge itself knowing that.
+
+  Precedence: explicit caller value > node default > existing behavior (the
+  `Session` schema's own `backend` default of `"claude"`, `model: nil`
+  meaning "let the CLI pick"). A value counts as "explicit" unless it's
+  missing, `nil`, or `""` — callers arrive with both atom keys (MCP/trigger/
+  Discord paths) and string keys (LiveView form params).
+
+  The backend/model pair is applied atomically: `default_model` only fires
+  when the effective backend matches the backend `default_model` was
+  configured for. Concretely, if the caller explicitly requests a backend
+  different from the node's `default_backend` (e.g. an explicit `"codex"`
+  session on a node whose default is `"claude"`/`"sonnet-5"`), the node's
+  `default_model` is skipped — a Claude model default makes no sense for a
+  Codex session. A node with no `runner_node` match, or a matching node with
+  both defaults `nil`, leaves attrs untouched.
   """
 
   import Ecto.Query
 
   alias OrcaHub.{
     AgentPresence,
+    ClusterNodes,
     Repo,
     Sessions.Message,
     Sessions.Session,
@@ -88,9 +115,87 @@ defmodule OrcaHub.Sessions do
 
   def create_session(attrs) do
     %Session{}
-    |> Session.changeset(attrs)
+    |> Session.changeset(apply_node_defaults(attrs))
     |> Repo.insert()
   end
+
+  # -------------------------------------------------------------------
+  # Node default resolution (see moduledoc)
+  # -------------------------------------------------------------------
+
+  defp apply_node_defaults(attrs) do
+    case attr_value(attrs, :runner_node, "runner_node") do
+      nil ->
+        attrs
+
+      node_name ->
+        case ClusterNodes.get_by_name(node_name) do
+          nil -> attrs
+          node -> merge_node_defaults(attrs, node)
+        end
+    end
+  end
+
+  defp merge_node_defaults(attrs, node) do
+    explicit_backend = attr_value(attrs, :backend, "backend")
+    configured_backend = node.default_backend || "claude"
+
+    attrs
+    |> put_default(:backend, "backend", node.default_backend)
+    |> maybe_put_default_model(node.default_model, explicit_backend, configured_backend)
+  end
+
+  defp maybe_put_default_model(attrs, nil, _explicit_backend, _configured_backend), do: attrs
+
+  defp maybe_put_default_model(attrs, default_model, explicit_backend, configured_backend) do
+    if is_nil(explicit_backend) or explicit_backend == configured_backend do
+      put_default(attrs, :model, "model", default_model)
+    else
+      attrs
+    end
+  end
+
+  # `nil` means "no node default configured for this field" — never inject a
+  # literal nil into attrs, since an explicit nil would cast over (and clear)
+  # the Session schema's own field default.
+  defp put_default(attrs, _atom_key, _string_key, nil), do: attrs
+
+  defp put_default(attrs, atom_key, string_key, default_value) do
+    case locate_attr(attrs, atom_key, string_key) do
+      :missing ->
+        if string_keyed?(attrs),
+          do: Map.put(attrs, string_key, default_value),
+          else: Map.put(attrs, atom_key, default_value)
+
+      {:atom, v} ->
+        if blank?(v), do: Map.put(attrs, atom_key, default_value), else: attrs
+
+      {:string, v} ->
+        if blank?(v), do: Map.put(attrs, string_key, default_value), else: attrs
+    end
+  end
+
+  # `nil` if the key is missing or blank under either key style, else the value.
+  defp attr_value(attrs, atom_key, string_key) do
+    case locate_attr(attrs, atom_key, string_key) do
+      :missing -> nil
+      {_style, v} -> if blank?(v), do: nil, else: v
+    end
+  end
+
+  defp locate_attr(attrs, atom_key, string_key) do
+    cond do
+      Map.has_key?(attrs, atom_key) -> {:atom, Map.get(attrs, atom_key)}
+      Map.has_key?(attrs, string_key) -> {:string, Map.get(attrs, string_key)}
+      true -> :missing
+    end
+  end
+
+  defp string_keyed?(attrs), do: Enum.any?(Map.keys(attrs), &is_binary/1)
+
+  defp blank?(nil), do: true
+  defp blank?(""), do: true
+  defp blank?(_), do: false
 
   @doc """
   The most recently created non-archived session with the given
