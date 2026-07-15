@@ -220,6 +220,39 @@ defmodule OrcaHub.Backend.PiTest do
     end
   end
 
+  # ── spawn_spec/2 — scrub_session_env (OrcaHub.NodePolicy) ─────────────────
+  # Not DataCase (this module is plain ExUnit.Case) — checks out a sandboxed
+  # DB connection just for this describe block so the local node's row can be
+  # flagged, then reverts on exit like any other DataCase test.
+
+  describe "spawn_spec/2 — scrub_session_env" do
+    setup do
+      OrcaHub.DataCase.setup_sandbox(%{async: true})
+
+      {:ok, node_row} = OrcaHub.ClusterNodes.upsert_seen(Atom.to_string(node()), "test")
+      {:ok, _} = OrcaHub.ClusterNodes.update_node(node_row, %{scrub_session_env: true})
+
+      System.put_env("ORCA_TEST_LEAK_PI", "should-not-survive-scrubbing")
+      System.put_env("FIREWORKS_API_KEY", "fw-test-should-be-reinjected")
+
+      on_exit(fn ->
+        System.delete_env("ORCA_TEST_LEAK_PI")
+        System.delete_env("FIREWORKS_API_KEY")
+      end)
+
+      :ok
+    end
+
+    test "unsets an arbitrary inherited var but keeps HOME, re-injects ORCA_MCP_URL and FIREWORKS_API_KEY" do
+      spec = Backend.spawn_spec(:streaming, ctx())
+
+      assert {~c"ORCA_TEST_LEAK_PI", false} in spec.env
+      refute {~c"HOME", false} in spec.env
+      assert {~c"FIREWORKS_API_KEY", ~c"fw-test-should-be-reinjected"} in spec.env
+      assert Enum.any?(spec.env, fn {k, _v} -> k == ~c"ORCA_MCP_URL" end)
+    end
+  end
+
   # spec §12.8 — cold plan-mode toggle: SessionRunner.toggle_plan_mode/1
   # remembers the desired state in data.plan_mode_pending when it can't write
   # `/plan` to a live port; ctx IS that data map at every spawn_spec/2 call

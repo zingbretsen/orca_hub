@@ -12,6 +12,12 @@ defmodule OrcaHub.NodePolicyTest do
     updated
   end
 
+  defp set_local_scrub_session_env(bool) do
+    node_row = ClusterNodes.get_by_name(@local_name) || insert_local_row()
+    {:ok, updated} = ClusterNodes.update_node(node_row, %{scrub_session_env: bool})
+    updated
+  end
+
   defp insert_local_row do
     {:ok, node_row} = ClusterNodes.upsert_seen(@local_name, @local_name)
     node_row
@@ -29,6 +35,30 @@ defmodule OrcaHub.NodePolicyTest do
 
     test "true when this node's row is flagged isolated" do
       set_local_isolated(true)
+      assert NodePolicy.local_node_isolated?()
+    end
+  end
+
+  describe "scrub_session_env?/0" do
+    test "false when no nodes row exists for this node yet (fail open)" do
+      refute NodePolicy.scrub_session_env?()
+    end
+
+    test "false when this node's row does not have the flag set" do
+      set_local_scrub_session_env(false)
+      refute NodePolicy.scrub_session_env?()
+    end
+
+    test "true when this node's row is flagged scrub_session_env" do
+      set_local_scrub_session_env(true)
+      assert NodePolicy.scrub_session_env?()
+    end
+
+    test "independent of the isolated flag" do
+      node_row = insert_local_row()
+      {:ok, _} = ClusterNodes.update_node(node_row, %{isolated: true, scrub_session_env: false})
+
+      refute NodePolicy.scrub_session_env?()
       assert NodePolicy.local_node_isolated?()
     end
   end

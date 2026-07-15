@@ -12,6 +12,10 @@ defmodule OrcaHub.ClusterNodes.ClusterNode do
     field :first_connected_at, :utc_datetime
     field :last_connected_at, :utc_datetime
     field :isolated, :boolean, default: false
+    # When true, sessions/terminals spawned on this node get a strict
+    # allow-list environment instead of the full BEAM environment — see
+    # OrcaHub.NodePolicy.scrub_session_env?/0 and OrcaHub.Env.strict_env/1.
+    field :scrub_session_env, :boolean, default: false
     # Per-node defaults applied by OrcaHub.Sessions.create_session/1 when the
     # caller's attrs don't already specify that field. nil means "no default,
     # fall back to existing behavior" (see Sessions moduledoc for the
@@ -30,6 +34,7 @@ defmodule OrcaHub.ClusterNodes.ClusterNode do
       :first_connected_at,
       :last_connected_at,
       :isolated,
+      :scrub_session_env,
       :default_backend,
       :default_model
     ])

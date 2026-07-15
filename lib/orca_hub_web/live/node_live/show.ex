@@ -99,6 +99,25 @@ defmodule OrcaHubWeb.NodeLive.Show do
     end
   end
 
+  def handle_event("toggle_scrub_session_env", _params, socket) do
+    node = socket.assigns.node
+    new_value = !node.scrub_session_env
+
+    case HubRPC.update_node(node, %{scrub_session_env: new_value}) do
+      {:ok, updated_node} ->
+        flash_msg =
+          if new_value,
+            do:
+              "Session env scrubbing enabled — new sessions/terminals on this node get a minimal allow-list environment",
+            else: "Session env scrubbing disabled"
+
+        {:noreply, socket |> assign(:node, updated_node) |> put_flash(:info, flash_msg)}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to update session env scrubbing setting")}
+    end
+  end
+
   def handle_event("update_default_backend", %{"default_backend" => value}, socket) do
     update_node_default(socket, :default_backend, blank_to_nil(value))
   end

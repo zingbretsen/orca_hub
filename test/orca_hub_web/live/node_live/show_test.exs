@@ -59,6 +59,32 @@ defmodule OrcaHubWeb.NodeLive.ShowTest do
     refute html =~ "config-section-claude"
   end
 
+  describe "scrub_session_env toggle" do
+    test "renders unchecked by default", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+      {:ok, _view, html} = live(conn, ~p"/nodes/#{n.id}")
+
+      assert html =~ "Scrub session env"
+      refute html =~ ~s(checked="" phx-click="toggle_scrub_session_env")
+    end
+
+    test "clicking the toggle persists and flips it on, then off again", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+      {:ok, view, _html} = live(conn, ~p"/nodes/#{n.id}")
+
+      html = render_click(view, "toggle_scrub_session_env")
+
+      assert ClusterNodes.get_by_name(n.name).scrub_session_env
+      assert html =~ ~s(checked="" phx-click="toggle_scrub_session_env")
+
+      render_click(view, "toggle_scrub_session_env")
+
+      refute ClusterNodes.get_by_name(n.name).scrub_session_env
+    end
+  end
+
   describe "default backend/model controls" do
     test "with no defaults set, both controls render as '(no default)'", %{conn: conn} do
       {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")

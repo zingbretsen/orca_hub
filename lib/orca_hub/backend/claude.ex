@@ -74,7 +74,7 @@ defmodule OrcaHub.Backend.Claude do
     %{
       executable: claude_path,
       args: args,
-      env: OrcaHub.Env.sanitized_env(node_oauth_env()),
+      env: session_env(node_oauth_env()),
       port_opts: port_opts,
       framing: :ndjson
     }
@@ -107,7 +107,7 @@ defmodule OrcaHub.Backend.Claude do
     %{
       executable: script_path,
       args: script_args,
-      env: OrcaHub.Env.sanitized_env(node_oauth_env()),
+      env: session_env(node_oauth_env()),
       port_opts: port_opts,
       framing: :ndjson
     }
@@ -141,6 +141,19 @@ defmodule OrcaHub.Backend.Claude do
     # Token lookup must never block opening a session port. If the hub is
     # briefly unreachable, fall back to the node's own credentials.
     _ -> []
+  end
+
+  # `extra` (the OAuth token tuple, when present) is always layered AFTER the
+  # unset tuples in both modes — see OrcaHub.Env moduledoc's verified port-env
+  # ordering note — so CLAUDE_CODE_OAUTH_TOKEN survives strict scrubbing.
+  # `~/.claude`-file-based auth (credentials.json) also survives: HOME is in
+  # OrcaHub.Env's strict allow-list.
+  defp session_env(extra) do
+    if OrcaHub.NodePolicy.scrub_session_env?() do
+      OrcaHub.Env.strict_env(extra)
+    else
+      OrcaHub.Env.sanitized_env(extra)
+    end
   end
 
   # ── stdin framing ────────────────────────────────────────────────────

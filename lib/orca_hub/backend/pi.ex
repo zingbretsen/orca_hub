@@ -288,9 +288,41 @@ defmodule OrcaHub.Backend.Pi do
   # extension's "degrade silently if unset" path only ever fires if URL
   # construction itself fails, not from a missing var in practice.
   defp pi_env(ctx) do
-    OrcaHub.Env.sanitized_env([
+    extra = [
       {~c"ORCA_MCP_URL", String.to_charlist(OrcaHub.Backend.McpUrl.orca_url(ctx))}
-    ])
+      | provider_api_key_env()
+    ]
+
+    if OrcaHub.NodePolicy.scrub_session_env?() do
+      OrcaHub.Env.strict_env(extra)
+    else
+      OrcaHub.Env.sanitized_env(extra)
+    end
+  end
+
+  # pi's real, live-verified auth path is `~/.pi/agent/auth.json`, read
+  # straight from the inherited HOME (see the "Session lifecycle" note
+  # below) — HOME is in OrcaHub.Env's strict allow-list, so that path
+  # survives OrcaHub.NodePolicy.scrub_session_env?/0 with no extra handling.
+  # pi ALSO supports bare per-provider env-var auth for any configured
+  # provider (`@earendil-works/pi-ai`'s `env-api-keys.js` maps ~30 provider
+  # ids to env var names); re-injecting the full list is unnecessary
+  # complexity for a fail-open toggle, so this re-injects only the small,
+  # obvious subset most likely to be in play (Fireworks — this host's
+  # live-verified provider — plus the three big hosted-model vendors) when
+  # set on the node. A node relying on a DIFFERENT provider's bare env var
+  # (Groq, OpenRouter, etc.) with no `auth.json` would need that var added
+  # here — flag if that's needed.
+  @pi_provider_api_key_vars ~w(FIREWORKS_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY)
+
+  defp provider_api_key_env do
+    Enum.flat_map(@pi_provider_api_key_vars, fn name ->
+      case System.get_env(name) do
+        nil -> []
+        "" -> []
+        value -> [{String.to_charlist(name), String.to_charlist(value)}]
+      end
+    end)
   end
 
   # Flags shared by :streaming and :one_shot spawns.

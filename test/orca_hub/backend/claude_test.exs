@@ -518,6 +518,34 @@ defmodule OrcaHub.Backend.ClaudeTest do
     end
   end
 
+  # ── spawn_spec/2 — scrub_session_env (OrcaHub.NodePolicy) ─────────────────
+
+  describe "spawn_spec/2 — scrub_session_env" do
+    setup do
+      {:ok, node_row} = OrcaHub.ClusterNodes.upsert_seen(Atom.to_string(node()), "test")
+      {:ok, _} = OrcaHub.ClusterNodes.update_node(node_row, %{scrub_session_env: true})
+
+      System.put_env("ORCA_TEST_LEAK_CLAUDE", "should-not-survive-scrubbing")
+      on_exit(fn -> System.delete_env("ORCA_TEST_LEAK_CLAUDE") end)
+
+      :ok
+    end
+
+    test "unsets an arbitrary inherited var but keeps HOME (streaming)" do
+      spec = Backend.spawn_spec(:streaming, ctx())
+
+      assert {~c"ORCA_TEST_LEAK_CLAUDE", false} in spec.env
+      refute {~c"HOME", false} in spec.env
+    end
+
+    test "unsets an arbitrary inherited var but keeps HOME (one_shot)" do
+      spec = Backend.spawn_spec(:one_shot, ctx(%{prompt: "hi"}))
+
+      assert {~c"ORCA_TEST_LEAK_CLAUDE", false} in spec.env
+      refute {~c"HOME", false} in spec.env
+    end
+  end
+
   # ── spawn_spec/2 — :one_shot ─────────────────────────────────────────
 
   describe "spawn_spec/2 — :one_shot" do

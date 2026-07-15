@@ -146,6 +146,13 @@ defmodule OrcaHub.Backend.Codex do
   # Session-scoped isolation for the orca MCP server URL is instead passed as
   # `-c` overrides layered on top of the real config (spec §6.1/§6.3(2),
   # spike-verified against codex-cli 0.142.5 — see `mcp_config_args/1`).
+  #
+  # Under OrcaHub.NodePolicy.scrub_session_env?/0, HOME (allow-listed) still
+  # covers the default `~/.codex` home and `codex login`'s `auth.json` — only
+  # an OPERATOR-set CUSTOM `CODEX_HOME` pointed outside `$HOME` would stop
+  # resolving under strict scrubbing, since it isn't explicitly re-injected
+  # here (not needed on the node this feature was built for — flag if that
+  # changes).
   defp codex_env do
     extra =
       case System.get_env("OPENAI_API_KEY") do
@@ -154,7 +161,11 @@ defmodule OrcaHub.Backend.Codex do
         key -> [{~c"OPENAI_API_KEY", String.to_charlist(key)}]
       end
 
-    OrcaHub.Env.sanitized_env(extra)
+    if OrcaHub.NodePolicy.scrub_session_env?() do
+      OrcaHub.Env.strict_env(extra)
+    else
+      OrcaHub.Env.sanitized_env(extra)
+    end
   end
 
   # `-c` root-level config overrides (spike-verified against codex-cli 0.142.5,

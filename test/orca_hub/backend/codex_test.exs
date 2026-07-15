@@ -878,6 +878,38 @@ defmodule OrcaHub.Backend.CodexTest do
     end
   end
 
+  # ── spawn_spec/2 — scrub_session_env (OrcaHub.NodePolicy) ─────────────────
+  # Not DataCase (this module is plain ExUnit.Case) — checks out a sandboxed
+  # DB connection just for this describe block so the local node's row can be
+  # flagged, then reverts on exit like any other DataCase test.
+
+  describe "spawn_spec/2 — scrub_session_env" do
+    setup do
+      OrcaHub.DataCase.setup_sandbox(%{async: true})
+
+      {:ok, node_row} = OrcaHub.ClusterNodes.upsert_seen(Atom.to_string(node()), "test")
+      {:ok, _} = OrcaHub.ClusterNodes.update_node(node_row, %{scrub_session_env: true})
+
+      System.put_env("ORCA_TEST_LEAK_CODEX", "should-not-survive-scrubbing")
+      System.put_env("OPENAI_API_KEY", "sk-test-should-be-reinjected")
+
+      on_exit(fn ->
+        System.delete_env("ORCA_TEST_LEAK_CODEX")
+        System.delete_env("OPENAI_API_KEY")
+      end)
+
+      :ok
+    end
+
+    test "unsets an arbitrary inherited var but keeps HOME and re-injects OPENAI_API_KEY" do
+      spec = Backend.spawn_spec(:streaming, ctx())
+
+      assert {~c"ORCA_TEST_LEAK_CODEX", false} in spec.env
+      refute {~c"HOME", false} in spec.env
+      assert {~c"OPENAI_API_KEY", ~c"sk-test-should-be-reinjected"} in spec.env
+    end
+  end
+
   # ── prepare_session/1 + cleanup_session/1 (no on-disk state — spec §6.3(2)) ──
   # `-c` overrides (asserted above in spawn_spec/2) replaced the old
   # per-session CODEX_HOME/config.toml/auth.json-copy dance; both lifecycle

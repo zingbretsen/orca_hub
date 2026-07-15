@@ -23,6 +23,13 @@
         isolated
       </span>
       <span
+        :if={n.scrub_session_env}
+        class="badge badge-xs badge-warning"
+        title="Sessions/terminals on this node run with a minimal allow-list environment"
+      >
+        scrubbed env
+      </span>
+      <span
         :if={n.default_backend || n.default_model}
         class="badge badge-xs badge-ghost"
         title="Default backend/model applied to sessions created on this node"

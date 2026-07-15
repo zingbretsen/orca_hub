@@ -71,6 +71,17 @@ defmodule OrcaHub.ClusterNodesTest do
       refute toggled_back.isolated
     end
 
+    test "updates arbitrary attrs, e.g. scrub_session_env" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      refute node.scrub_session_env
+
+      {:ok, updated} = ClusterNodes.update_node(node, %{scrub_session_env: true})
+      assert updated.scrub_session_env
+
+      {:ok, toggled_back} = ClusterNodes.update_node(updated, %{scrub_session_env: false})
+      refute toggled_back.scrub_session_env
+    end
+
     test "updates default_backend and default_model" do
       {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
       assert node.default_backend == nil
@@ -118,6 +129,37 @@ defmodule OrcaHub.ClusterNodesTest do
       {:ok, _} = ClusterNodes.backfill_node("orca@a", "should not apply")
 
       assert ClusterNodes.get_by_name("orca@a").isolated
+    end
+  end
+
+  describe "scrub_session_env flag survives conflict-update paths" do
+    test "upsert_seen does not reset a scrub_session_env node back to false" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      {:ok, scrubbed_node} = ClusterNodes.update_node(node, %{scrub_session_env: true})
+      assert scrubbed_node.scrub_session_env
+
+      {:ok, reseen} = ClusterNodes.upsert_seen("orca@a", "a (reconnected)")
+
+      assert reseen.scrub_session_env
+      assert ClusterNodes.get_by_name("orca@a").scrub_session_env
+    end
+
+    test "touch_last_connected does not reset a scrub_session_env node back to false" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      {:ok, _} = ClusterNodes.update_node(node, %{scrub_session_env: true})
+
+      {:ok, touched} = ClusterNodes.touch_last_connected("orca@a")
+
+      assert touched.scrub_session_env
+    end
+
+    test "backfill_node never overwrites an existing scrub_session_env row" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      {:ok, _} = ClusterNodes.update_node(node, %{scrub_session_env: true})
+
+      {:ok, _} = ClusterNodes.backfill_node("orca@a", "should not apply")
+
+      assert ClusterNodes.get_by_name("orca@a").scrub_session_env
     end
   end
 

@@ -38,6 +38,19 @@
         </span>
       </label>
     </:item>
+    <:item title="Scrub session env">
+      <label class="label cursor-pointer gap-2 justify-start">
+        <input
+          type="checkbox"
+          class="toggle toggle-xs"
+          checked={@node.scrub_session_env}
+          phx-click="toggle_scrub_session_env"
+        />
+        <span class="label-text text-xs">
+          Sessions and terminals on this node run with a minimal allow-list environment (PATH/HOME/TERM/locale + backend API keys); pod/host secrets are not inherited.
+        </span>
+      </label>
+    </:item>
     <:item title="Default backend">
       <form phx-change="update_default_backend">
         <select name="default_backend" class="select select-bordered select-sm">

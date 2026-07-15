@@ -14,10 +14,34 @@ defmodule OrcaHub.Env do
   variables (setting a var to `false` removes it from the child's env) and strip
   release entries out of `PATH`. In dev (`mix phx.server`), none of these
   variables are set, so the result is an empty/harmless list.
+
+  `strict_env/1` is a stronger mode, opt-in per node via
+  `OrcaHub.NodePolicy.scrub_session_env?/0`: instead of only unsetting
+  release cruft, it unsets EVERY variable not in a small base allow-list
+  (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*` by
+  prefix, `TMPDIR`, `COLUMNS`, `LINES`) — for nodes that run sessions
+  triggered by untrusted input and shouldn't leak pod/host secrets
+  (API keys, `DISCORD_TOKEN`, `SECRET_KEY_BASE`, etc.) into a session's Bash
+  tool via inherited environment. Anything a backend legitimately needs
+  (auth tokens, MCP URLs) must be layered back on top via `extra` — see
+  `OrcaHub.Backend.Claude`/`Codex`/`Pi`'s `*_env/0` helpers.
+
+  Erlang port `:env` semantics (verified, not assumed): the child process
+  inherits the BEAM's own environment for any variable NOT mentioned in the
+  `:env` list at all; a variable IS mentioned via `{name, false}` (unset) or
+  `{name, value}` (set). When the SAME name appears more than once in the
+  list, the LAST tuple wins — so appending explicit `extra` tuples after a
+  block of unsets reliably overrides them.
   """
 
   # Standalone release vars that don't share a common prefix.
   @release_vars ~w(BINDIR ROOTDIR PROGNAME)
+
+  # Base allow-list for strict_env/1. Kept as a single private list (rather
+  # than threaded through as public API) so a future per-node/per-project
+  # configurable allow-list can extend `strict_unset_vars/1`'s parameter
+  # without changing strict_env/1's signature.
+  @base_allow_list ~w(PATH HOME USER LOGNAME SHELL TERM LANG TMPDIR COLUMNS LINES)
 
   @doc """
   Returns the sanitized environment as a list of `:env` tuples.
@@ -35,6 +59,26 @@ defmodule OrcaHub.Env do
   @spec sanitized_env([{charlist(), charlist() | false}]) :: [{charlist(), charlist() | false}]
   def sanitized_env(extra) when is_list(extra) do
     unset_vars() ++ path_var() ++ extra
+  end
+
+  @doc """
+  Returns a strict allow-list environment (see moduledoc) with `extra`
+  layered on top, same convention as `sanitized_env/1`.
+  """
+  @spec strict_env([{charlist(), charlist() | false}]) :: [{charlist(), charlist() | false}]
+  def strict_env(extra \\ []) when is_list(extra) do
+    strict_unset_vars(@base_allow_list) ++ path_var() ++ extra
+  end
+
+  defp strict_unset_vars(allow_list) do
+    System.get_env()
+    |> Map.keys()
+    |> Enum.reject(&allowed_var?(&1, allow_list))
+    |> Enum.map(fn name -> {String.to_charlist(name), false} end)
+  end
+
+  defp allowed_var?(name, allow_list) do
+    name in allow_list or String.starts_with?(name, "LC_")
   end
 
   defp unset_vars do
