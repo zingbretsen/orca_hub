@@ -29,14 +29,14 @@ defmodule OrcaHub.ClusterNodes do
 
   @doc """
   Generic attribute update for a `nodes` row — currently used for the
-  `isolated`/`scrub_session_env` toggles (see `OrcaHub.NodePolicy`) and the
-  `default_backend`/`default_model` fields (see
+  `isolated`/`scrub_session_env` toggles and `env_allowlist` extension (see
+  `OrcaHub.NodePolicy`) and the `default_backend`/`default_model` fields (see
   `OrcaHub.Sessions.create_session/1`). Deliberately NOT used by
   `upsert_seen`/`touch_last_connected`/`backfill_node`'s conflict-update
   paths, which only ever `on_conflict: [set: [...]]` an explicit field list —
   so a node reconnecting never resets an operator-set `isolated`/
-  `scrub_session_env` flag, or an operator-set default backend/model, back to
-  blank.
+  `scrub_session_env`/`env_allowlist`, or an operator-set default
+  backend/model, back to blank.
   """
   def update_node(%ClusterNode{} = node, attrs) do
     node |> ClusterNode.changeset(attrs) |> Repo.update()

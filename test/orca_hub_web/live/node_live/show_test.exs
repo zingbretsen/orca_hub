@@ -85,6 +85,41 @@ defmodule OrcaHubWeb.NodeLive.ShowTest do
     end
   end
 
+  describe "env_allowlist input" do
+    test "hidden while scrub_session_env is off", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+      {:ok, _view, html} = live(conn, ~p"/nodes/#{n.id}")
+
+      refute html =~ "Env allow-list"
+    end
+
+    test "shown once scrub_session_env is on, and saving persists parsed entries", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+      {:ok, n} = ClusterNodes.update_node(n, %{scrub_session_env: true})
+
+      {:ok, view, html} = live(conn, ~p"/nodes/#{n.id}")
+      assert html =~ "Env allow-list"
+
+      html = render_submit(view, "update_env_allowlist", %{"env_allowlist" => "AWS_*, MY_TOKEN"})
+
+      assert ClusterNodes.get_by_name(n.name).env_allowlist == ["AWS_*", "MY_TOKEN"]
+      assert html =~ "AWS_*, MY_TOKEN"
+    end
+
+    test "an invalid entry flashes an error and does not persist", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+      {:ok, n} = ClusterNodes.update_node(n, %{scrub_session_env: true})
+
+      {:ok, view, _html} = live(conn, ~p"/nodes/#{n.id}")
+
+      html = render_submit(view, "update_env_allowlist", %{"env_allowlist" => "bad-entry!"})
+
+      assert html =~ "Failed to update env allow-list"
+      assert ClusterNodes.get_by_name(n.name).env_allowlist == []
+    end
+  end
+
   describe "default backend/model controls" do
     test "with no defaults set, both controls render as '(no default)'", %{conn: conn} do
       {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")

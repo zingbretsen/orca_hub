@@ -92,7 +92,7 @@ defmodule OrcaHub.Backend.Codex do
     %{
       executable: codex_executable!(),
       args: ["app-server"] ++ mcp_config_args(ctx),
-      env: codex_env(),
+      env: codex_env(ctx),
       port_opts: [cd: String.to_charlist(ctx.directory)],
       framing: :jsonrpc
     }
@@ -110,7 +110,7 @@ defmodule OrcaHub.Backend.Codex do
     %{
       executable: codex_executable!(),
       args: args,
-      env: codex_env(),
+      env: codex_env(ctx),
       port_opts: [cd: String.to_charlist(ctx.directory)],
       framing: :ndjson
     }
@@ -152,8 +152,10 @@ defmodule OrcaHub.Backend.Codex do
   # an OPERATOR-set CUSTOM `CODEX_HOME` pointed outside `$HOME` would stop
   # resolving under strict scrubbing, since it isn't explicitly re-injected
   # here (not needed on the node this feature was built for — flag if that
-  # changes).
-  defp codex_env do
+  # changes). An operator with such a setup can instead extend the node's
+  # `env_allowlist` with `CODEX_HOME` (Stage 2) rather than disabling
+  # scrubbing entirely.
+  defp codex_env(ctx) do
     extra =
       case System.get_env("OPENAI_API_KEY") do
         nil -> []
@@ -162,7 +164,7 @@ defmodule OrcaHub.Backend.Codex do
       end
 
     if OrcaHub.NodePolicy.scrub_session_env?() do
-      OrcaHub.Env.strict_env(extra)
+      OrcaHub.Env.strict_env(extra, OrcaHub.NodePolicy.extra_env_allowlist(ctx.project_id))
     else
       OrcaHub.Env.sanitized_env(extra)
     end

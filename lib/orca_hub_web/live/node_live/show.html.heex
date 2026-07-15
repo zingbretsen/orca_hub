@@ -51,6 +51,25 @@
         </span>
       </label>
     </:item>
+    <:item :if={@node.scrub_session_env} title="Env allow-list">
+      <form phx-submit="update_env_allowlist">
+        <input
+          type="text"
+          name="env_allowlist"
+          value={OrcaHubWeb.EnvAllowlistInput.to_text(@node.env_allowlist)}
+          placeholder="AWS_*, MY_TOKEN"
+          class="input input-bordered input-sm w-full max-w-md font-mono"
+        />
+        <button type="submit" class="btn btn-sm btn-ghost">Save</button>
+      </form>
+      <p class="text-xs text-base-content/50 mt-1">
+        Extra variable names (comma/space/newline separated) additionally kept, on top of the base allow-list, while "Scrub session env" above is ON. End an entry in
+        <code>*</code>
+        for a prefix match, e.g. <code>AWS_*</code>
+        matches any <code>AWS_...</code>
+        variable. Combined with this project's own env allow-list, if the session belongs to one. Has no effect while "Scrub session env" is off.
+      </p>
+    </:item>
     <:item title="Default backend">
       <form phx-change="update_default_backend">
         <select name="default_backend" class="select select-bordered select-sm">

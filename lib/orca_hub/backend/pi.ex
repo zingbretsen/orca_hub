@@ -294,7 +294,7 @@ defmodule OrcaHub.Backend.Pi do
     ]
 
     if OrcaHub.NodePolicy.scrub_session_env?() do
-      OrcaHub.Env.strict_env(extra)
+      OrcaHub.Env.strict_env(extra, OrcaHub.NodePolicy.extra_env_allowlist(ctx.project_id))
     else
       OrcaHub.Env.sanitized_env(extra)
     end

@@ -118,6 +118,25 @@ defmodule OrcaHubWeb.NodeLive.Show do
     end
   end
 
+  def handle_event("update_env_allowlist", %{"env_allowlist" => value}, socket) do
+    node = socket.assigns.node
+    entries = OrcaHubWeb.EnvAllowlistInput.parse(value)
+
+    case HubRPC.update_node(node, %{env_allowlist: entries}) do
+      {:ok, updated_node} ->
+        {:noreply,
+         socket |> assign(:node, updated_node) |> put_flash(:info, "Env allow-list updated")}
+
+      {:error, changeset} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Failed to update env allow-list: #{OrcaHubWeb.EnvAllowlistInput.error_summary(changeset)}"
+         )}
+    end
+  end
+
   def handle_event("update_default_backend", %{"default_backend" => value}, socket) do
     update_node_default(socket, :default_backend, blank_to_nil(value))
   end

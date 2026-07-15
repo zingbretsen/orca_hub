@@ -40,6 +40,27 @@
         </div>
         <button type="button" phx-click="browse" class="btn btn-outline mb-0.5">Browse</button>
       </div>
+      <div class="fieldset mb-2">
+        <label for={@edit_form[:env_allowlist].id}>
+          <span class="label mb-1">Env allow-list</span>
+          <input
+            type="text"
+            id={@edit_form[:env_allowlist].id}
+            name={@edit_form[:env_allowlist].name}
+            value={OrcaHubWeb.EnvAllowlistInput.to_text(@edit_form[:env_allowlist].value)}
+            placeholder="AWS_*, MY_TOKEN"
+            class="w-full input font-mono"
+          />
+        </label>
+        <p :for={msg <- @edit_form[:env_allowlist].errors} class="text-error text-xs mt-1">
+          {OrcaHubWeb.CoreComponents.translate_error(msg)}
+        </p>
+        <p class="text-xs text-base-content/60 mt-1">
+          Extra variable names (comma/space/newline separated) kept alongside the node's own env allow-list, only in effect on nodes that have "Scrub session env" enabled (see the Nodes page). End an entry in
+          <code>*</code>
+          for a prefix match, e.g. <code>AWS_*</code>.
+        </p>
+      </div>
       <div class="flex justify-end gap-2 mt-4">
         <.link patch={~p"/projects/#{@project.id}"} class="btn">Cancel</.link>
         <.button type="submit">Save</.button>

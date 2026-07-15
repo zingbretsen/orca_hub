@@ -125,7 +125,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   @impl true
   def handle_event("save_project", %{"project" => params}, socket) do
-    case HubRPC.update_project(socket.assigns.project, params) do
+    case HubRPC.update_project(socket.assigns.project, parse_env_allowlist_param(params)) do
       {:ok, project} ->
         {:noreply,
          socket
@@ -140,7 +140,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   def handle_event("validate_project", %{"project" => params}, socket) do
     changeset =
       socket.assigns.project
-      |> Project.changeset(params)
+      |> Project.changeset(parse_env_allowlist_param(params))
       |> Map.put(:action, :validate)
 
     {:noreply, assign(socket, edit_form: to_form(changeset))}
@@ -1013,6 +1013,16 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   defp leaf_edit_value(%{value_type: :null}), do: ""
   defp leaf_edit_value(%{value: value}), do: to_string(value)
+
+  # The edit form's env_allowlist field submits free text (comma/space/
+  # newline separated, see OrcaHubWeb.EnvAllowlistInput) — Project's
+  # changeset casts `:env_allowlist` as {:array, :string}, so the raw string
+  # must become a list before it reaches Project.changeset/2.
+  defp parse_env_allowlist_param(%{"env_allowlist" => text} = params) when is_binary(text) do
+    Map.put(params, "env_allowlist", OrcaHubWeb.EnvAllowlistInput.parse(text))
+  end
+
+  defp parse_env_allowlist_param(params), do: params
 
   defp blank_to_nil(nil), do: nil
 

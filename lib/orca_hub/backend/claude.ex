@@ -74,7 +74,7 @@ defmodule OrcaHub.Backend.Claude do
     %{
       executable: claude_path,
       args: args,
-      env: session_env(node_oauth_env()),
+      env: session_env(node_oauth_env(), ctx.project_id),
       port_opts: port_opts,
       framing: :ndjson
     }
@@ -107,7 +107,7 @@ defmodule OrcaHub.Backend.Claude do
     %{
       executable: script_path,
       args: script_args,
-      env: session_env(node_oauth_env()),
+      env: session_env(node_oauth_env(), ctx.project_id),
       port_opts: port_opts,
       framing: :ndjson
     }
@@ -147,10 +147,13 @@ defmodule OrcaHub.Backend.Claude do
   # unset tuples in both modes — see OrcaHub.Env moduledoc's verified port-env
   # ordering note — so CLAUDE_CODE_OAUTH_TOKEN survives strict scrubbing.
   # `~/.claude`-file-based auth (credentials.json) also survives: HOME is in
-  # OrcaHub.Env's strict allow-list.
-  defp session_env(extra) do
+  # OrcaHub.Env's strict allow-list. `project_id` (nil-able) feeds
+  # OrcaHub.NodePolicy.extra_env_allowlist/1 — the operator-configured
+  # node+project allow-list extension (Stage 2), only consulted when
+  # scrubbing is on.
+  defp session_env(extra, project_id) do
     if OrcaHub.NodePolicy.scrub_session_env?() do
-      OrcaHub.Env.strict_env(extra)
+      OrcaHub.Env.strict_env(extra, OrcaHub.NodePolicy.extra_env_allowlist(project_id))
     else
       OrcaHub.Env.sanitized_env(extra)
     end

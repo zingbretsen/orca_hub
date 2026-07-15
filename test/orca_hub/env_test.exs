@@ -186,4 +186,59 @@ defmodule OrcaHub.EnvTest do
       assert List.last(env) == {~c"COLUMNS", ~c"120"}
     end
   end
+
+  describe "strict_env/2 additional_allow (Stage 2 combined allow-list)" do
+    test "keeps an exact-name additional_allow entry unmentioned-as-unset" do
+      System.put_env("ORCA_TEST_EXTRA", "value")
+      on_exit(fn -> System.delete_env("ORCA_TEST_EXTRA") end)
+
+      env = Env.strict_env([], ["ORCA_TEST_EXTRA"])
+
+      refute {~c"ORCA_TEST_EXTRA", false} in env
+    end
+
+    test "still unsets a var not covered by base or additional_allow" do
+      System.put_env("ORCA_TEST_SECRET", "secret")
+      on_exit(fn -> System.delete_env("ORCA_TEST_SECRET") end)
+
+      env = Env.strict_env([], ["ORCA_OTHER_VAR"])
+
+      assert {~c"ORCA_TEST_SECRET", false} in env
+    end
+
+    test "a NAME* entry prefix-matches multiple vars" do
+      System.put_env("ORCA_AWS_REGION", "us-east-1")
+      System.put_env("ORCA_AWS_SECRET", "shh")
+      System.put_env("ORCA_OTHER", "unrelated")
+
+      on_exit(fn ->
+        Enum.each(~w(ORCA_AWS_REGION ORCA_AWS_SECRET ORCA_OTHER), &System.delete_env/1)
+      end)
+
+      env = Env.strict_env([], ["ORCA_AWS_*"])
+
+      refute {~c"ORCA_AWS_REGION", false} in env
+      refute {~c"ORCA_AWS_SECRET", false} in env
+      assert {~c"ORCA_OTHER", false} in env
+    end
+
+    test "a bare * entry matches nothing (would defeat scrubbing otherwise)" do
+      System.put_env("ORCA_TEST_ANYTHING", "value")
+      on_exit(fn -> System.delete_env("ORCA_TEST_ANYTHING") end)
+
+      env = Env.strict_env([], ["*"])
+
+      assert {~c"ORCA_TEST_ANYTHING", false} in env
+    end
+
+    test "strict_env/1 (one arg) is unaffected — additional_allow defaults to empty" do
+      System.put_env("ORCA_TEST_SECRET2", "secret")
+      on_exit(fn -> System.delete_env("ORCA_TEST_SECRET2") end)
+
+      env = Env.strict_env([{~c"TERM", ~c"xterm"}])
+
+      assert {~c"ORCA_TEST_SECRET2", false} in env
+      assert {~c"TERM", ~c"xterm"} in env
+    end
+  end
 end

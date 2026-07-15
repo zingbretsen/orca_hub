@@ -177,11 +177,14 @@ defmodule OrcaHub.TerminalRunner do
         {:args, script_args},
         {:cd, directory},
         {:env,
-         terminal_env([
-           {~c"TERM", ~c"xterm-256color"},
-           {~c"COLUMNS", ~c"#{cols}"},
-           {~c"LINES", ~c"#{rows}"}
-         ])}
+         terminal_env(
+           [
+             {~c"TERM", ~c"xterm-256color"},
+             {~c"COLUMNS", ~c"#{cols}"},
+             {~c"LINES", ~c"#{rows}"}
+           ],
+           terminal.project_id
+         )}
       ]
     )
   end
@@ -189,9 +192,12 @@ defmodule OrcaHub.TerminalRunner do
   # Same per-node scrub policy as agent-CLI sessions (OrcaHub.Backend.Claude/
   # Codex/Pi) — a web terminal on a node running untrusted-triggered sessions
   # shouldn't expose pod/host secrets any more than the agent CLI does.
-  defp terminal_env(extra) do
+  # `project_id` (nil-able — a terminal isn't required to belong to a
+  # project) feeds the same node+project env_allowlist extension the agent
+  # backends use (Stage 2).
+  defp terminal_env(extra, project_id) do
     if OrcaHub.NodePolicy.scrub_session_env?() do
-      OrcaHub.Env.strict_env(extra)
+      OrcaHub.Env.strict_env(extra, OrcaHub.NodePolicy.extra_env_allowlist(project_id))
     else
       OrcaHub.Env.sanitized_env(extra)
     end

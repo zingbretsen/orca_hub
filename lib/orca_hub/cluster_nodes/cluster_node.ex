@@ -16,6 +16,10 @@ defmodule OrcaHub.ClusterNodes.ClusterNode do
     # allow-list environment instead of the full BEAM environment — see
     # OrcaHub.NodePolicy.scrub_session_env?/0 and OrcaHub.Env.strict_env/1.
     field :scrub_session_env, :boolean, default: false
+    # Extension to OrcaHub.Env's strict_env/2 base allow-list, only relevant
+    # while scrub_session_env is true — see OrcaHub.NodePolicy.extra_env_allowlist/1.
+    # Each entry is an exact var name or a NAME* prefix match.
+    field :env_allowlist, {:array, :string}, default: []
     # Per-node defaults applied by OrcaHub.Sessions.create_session/1 when the
     # caller's attrs don't already specify that field. nil means "no default,
     # fall back to existing behavior" (see Sessions moduledoc for the
@@ -26,6 +30,8 @@ defmodule OrcaHub.ClusterNodes.ClusterNode do
     timestamps()
   end
 
+  @env_entry_regex ~r/^[A-Za-z_][A-Za-z0-9_]*\*?$/
+
   def changeset(node, attrs) do
     node
     |> cast(attrs, [
@@ -35,10 +41,25 @@ defmodule OrcaHub.ClusterNodes.ClusterNode do
       :last_connected_at,
       :isolated,
       :scrub_session_env,
+      :env_allowlist,
       :default_backend,
       :default_model
     ])
     |> validate_required([:name])
     |> unique_constraint(:name)
+    |> validate_env_allowlist()
+  end
+
+  # Shared with OrcaHub.Projects.Project's changeset (same entry grammar —
+  # exact var name, or NAME* for a prefix match).
+  def validate_env_allowlist(changeset) do
+    validate_change(changeset, :env_allowlist, fn :env_allowlist, entries ->
+      entries
+      |> Enum.reject(&Regex.match?(@env_entry_regex, &1))
+      |> Enum.map(
+        &{:env_allowlist,
+         "invalid entry #{inspect(&1)} — use A-Z/0-9/_ names, optionally ending in *"}
+      )
+    end)
   end
 end

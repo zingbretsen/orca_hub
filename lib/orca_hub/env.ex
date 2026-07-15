@@ -15,16 +15,35 @@ defmodule OrcaHub.Env do
   release entries out of `PATH`. In dev (`mix phx.server`), none of these
   variables are set, so the result is an empty/harmless list.
 
-  `strict_env/1` is a stronger mode, opt-in per node via
+  `strict_env/2` is a stronger mode, opt-in per node via
   `OrcaHub.NodePolicy.scrub_session_env?/0`: instead of only unsetting
   release cruft, it unsets EVERY variable not in a small base allow-list
   (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*` by
-  prefix, `TMPDIR`, `COLUMNS`, `LINES`) — for nodes that run sessions
-  triggered by untrusted input and shouldn't leak pod/host secrets
+  prefix, `TMPDIR`, `COLUMNS`, `LINES`) plus, as of Stage 2, any
+  `additional_allow` entries the caller passes in — for nodes that run
+  sessions triggered by untrusted input and shouldn't leak pod/host secrets
   (API keys, `DISCORD_TOKEN`, `SECRET_KEY_BASE`, etc.) into a session's Bash
   tool via inherited environment. Anything a backend legitimately needs
   (auth tokens, MCP URLs) must be layered back on top via `extra` — see
   `OrcaHub.Backend.Claude`/`Codex`/`Pi`'s `*_env/0` helpers.
+
+  ## Per-node/per-project allow-list extension (Stage 2)
+
+  The base allow-list above is fixed and always in effect. On top of it, an
+  operator can configure a per-node `env_allowlist` (`nodes` table /
+  `/nodes` UI) and a per-project `env_allowlist` (`projects` table /
+  project edit form) — `OrcaHub.NodePolicy.extra_env_allowlist/1` combines
+  the two (node ∪ project, for the node running the spawn and the project
+  the session/terminal belongs to, if any) into the `additional_allow` list
+  passed to `strict_env/2`. Each entry is either an exact variable name
+  (`AWS_REGION`) or a name ending in `*` for a prefix match (`AWS_*` matches
+  `AWS_REGION`, `AWS_SECRET_ACCESS_KEY`, etc. — validated at the
+  changeset level, see `OrcaHub.ClusterNodes.ClusterNode.validate_env_allowlist/1`).
+  Allow-listing only controls whether a variable is left unset-as-inherited
+  vs. explicitly unset — it NEVER sets a new value; a var not present in the
+  BEAM's own environment is simply absent either way. This extension is
+  inert unless `scrub_session_env?/0` is already true for the node — it
+  cannot turn scrubbing on by itself.
 
   Erlang port `:env` semantics (verified, not assumed): the child process
   inherits the BEAM's own environment for any variable NOT mentioned in the
@@ -37,10 +56,9 @@ defmodule OrcaHub.Env do
   # Standalone release vars that don't share a common prefix.
   @release_vars ~w(BINDIR ROOTDIR PROGNAME)
 
-  # Base allow-list for strict_env/1. Kept as a single private list (rather
-  # than threaded through as public API) so a future per-node/per-project
-  # configurable allow-list can extend `strict_unset_vars/1`'s parameter
-  # without changing strict_env/1's signature.
+  # Base allow-list for strict_env/2 — always in effect, independent of any
+  # per-node/per-project `additional_allow` entries a caller passes in (see
+  # moduledoc's "Per-node/per-project allow-list extension" section).
   @base_allow_list ~w(PATH HOME USER LOGNAME SHELL TERM LANG TMPDIR COLUMNS LINES)
 
   @doc """
@@ -63,11 +81,17 @@ defmodule OrcaHub.Env do
 
   @doc """
   Returns a strict allow-list environment (see moduledoc) with `extra`
-  layered on top, same convention as `sanitized_env/1`.
+  layered on top, same convention as `sanitized_env/1`. `additional_allow`
+  (Stage 2: per-node/per-project `env_allowlist` entries, see
+  `OrcaHub.NodePolicy.extra_env_allowlist/1`) extends the base allow-list —
+  each entry is an exact var name or a `NAME*` prefix match.
   """
-  @spec strict_env([{charlist(), charlist() | false}]) :: [{charlist(), charlist() | false}]
-  def strict_env(extra \\ []) when is_list(extra) do
-    strict_unset_vars(@base_allow_list) ++ path_var() ++ extra
+  @spec strict_env([{charlist(), charlist() | false}], [String.t()]) :: [
+          {charlist(), charlist() | false}
+        ]
+  def strict_env(extra \\ [], additional_allow \\ [])
+      when is_list(extra) and is_list(additional_allow) do
+    strict_unset_vars(@base_allow_list ++ additional_allow) ++ path_var() ++ extra
   end
 
   defp strict_unset_vars(allow_list) do
@@ -78,7 +102,22 @@ defmodule OrcaHub.Env do
   end
 
   defp allowed_var?(name, allow_list) do
-    name in allow_list or String.starts_with?(name, "LC_")
+    name in allow_list or String.starts_with?(name, "LC_") or
+      Enum.any?(allow_list, &prefix_allow_match?(name, &1))
+  end
+
+  # A `NAME*` allow-list entry matches any var starting with `NAME` — `*`
+  # alone (empty prefix) never matches anything (that would allow through
+  # the ENTIRE environment, defeating the point of strict_env/2).
+  defp prefix_allow_match?(name, entry) do
+    case String.ends_with?(entry, "*") do
+      true ->
+        prefix = String.trim_trailing(entry, "*")
+        prefix != "" and String.starts_with?(name, prefix)
+
+      false ->
+        false
+    end
   end
 
   defp unset_vars do

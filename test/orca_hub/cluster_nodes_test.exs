@@ -82,6 +82,24 @@ defmodule OrcaHub.ClusterNodesTest do
       refute toggled_back.scrub_session_env
     end
 
+    test "updates env_allowlist" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      assert node.env_allowlist == []
+
+      {:ok, updated} = ClusterNodes.update_node(node, %{env_allowlist: ["AWS_*", "MY_TOKEN"]})
+      assert updated.env_allowlist == ["AWS_*", "MY_TOKEN"]
+
+      {:ok, cleared} = ClusterNodes.update_node(updated, %{env_allowlist: []})
+      assert cleared.env_allowlist == []
+    end
+
+    test "rejects an invalid env_allowlist entry" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+
+      assert {:error, changeset} = ClusterNodes.update_node(node, %{env_allowlist: ["bad entry"]})
+      assert errors_on(changeset).env_allowlist != []
+    end
+
     test "updates default_backend and default_model" do
       {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
       assert node.default_backend == nil
@@ -160,6 +178,37 @@ defmodule OrcaHub.ClusterNodesTest do
       {:ok, _} = ClusterNodes.backfill_node("orca@a", "should not apply")
 
       assert ClusterNodes.get_by_name("orca@a").scrub_session_env
+    end
+  end
+
+  describe "env_allowlist survives conflict-update paths" do
+    test "upsert_seen does not reset a node's env_allowlist back to []" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      {:ok, extended} = ClusterNodes.update_node(node, %{env_allowlist: ["AWS_*"]})
+      assert extended.env_allowlist == ["AWS_*"]
+
+      {:ok, reseen} = ClusterNodes.upsert_seen("orca@a", "a (reconnected)")
+
+      assert reseen.env_allowlist == ["AWS_*"]
+      assert ClusterNodes.get_by_name("orca@a").env_allowlist == ["AWS_*"]
+    end
+
+    test "touch_last_connected does not reset a node's env_allowlist back to []" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      {:ok, _} = ClusterNodes.update_node(node, %{env_allowlist: ["AWS_*"]})
+
+      {:ok, touched} = ClusterNodes.touch_last_connected("orca@a")
+
+      assert touched.env_allowlist == ["AWS_*"]
+    end
+
+    test "backfill_node never overwrites an existing row's env_allowlist" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      {:ok, _} = ClusterNodes.update_node(node, %{env_allowlist: ["AWS_*"]})
+
+      {:ok, _} = ClusterNodes.backfill_node("orca@a", "should not apply")
+
+      assert ClusterNodes.get_by_name("orca@a").env_allowlist == ["AWS_*"]
     end
   end
 

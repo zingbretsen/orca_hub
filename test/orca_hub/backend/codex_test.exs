@@ -908,6 +908,28 @@ defmodule OrcaHub.Backend.CodexTest do
       refute {~c"HOME", false} in spec.env
       assert {~c"OPENAI_API_KEY", ~c"sk-test-should-be-reinjected"} in spec.env
     end
+
+    test "keeps a node+project env_allowlist entry unset-as-inherited" do
+      node_row = OrcaHub.ClusterNodes.get_by_name(Atom.to_string(node()))
+      {:ok, _} = OrcaHub.ClusterNodes.update_node(node_row, %{env_allowlist: ["ORCA_NODE_VAR"]})
+
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "p-#{System.unique_integer([:positive])}",
+          directory: "/tmp/p-#{System.unique_integer([:positive])}",
+          env_allowlist: ["ORCA_PROJECT_*"]
+        })
+
+      System.put_env("ORCA_NODE_VAR", "node-value")
+      System.put_env("ORCA_PROJECT_TOKEN", "project-value")
+      on_exit(fn -> Enum.each(~w(ORCA_NODE_VAR ORCA_PROJECT_TOKEN), &System.delete_env/1) end)
+
+      spec = Backend.spawn_spec(:streaming, ctx(%{project_id: project.id}))
+
+      refute {~c"ORCA_NODE_VAR", false} in spec.env
+      refute {~c"ORCA_PROJECT_TOKEN", false} in spec.env
+      assert {~c"ORCA_TEST_LEAK_CODEX", false} in spec.env
+    end
   end
 
   # ── prepare_session/1 + cleanup_session/1 (no on-disk state — spec §6.3(2)) ──
