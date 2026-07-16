@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # === Build stage ===
 ARG ELIXIR_VERSION=1.18.3
 ARG OTP_VERSION=27.2.3
@@ -23,12 +25,25 @@ ENV MIX_ENV=prod
 ARG GIT_SHA
 ENV GIT_SHA=${GIT_SHA}
 
-# Install dependencies first (layer caching)
+# Install dependencies first (layer caching). Cache-mounted /app/deps,
+# /app/_build, /root/.hex, /root/.cache/rebar3 persist across builds keyed
+# by BuildKit's own cache store (not the Docker layer cache) — so even when
+# an earlier layer invalidates (mix.lock or source changes), deps.get/compile
+# hit a warm cache instead of a cold re-fetch + full rebuild. Cache-mounted
+# paths are NOT committed into the image layer when a RUN exits, so nothing
+# outside these RUNs may read from /app/deps or /app/_build directly.
 COPY mix.exs mix.lock ./
-RUN mix deps.get --only prod
+RUN --mount=type=cache,target=/app/deps,sharing=locked \
+    --mount=type=cache,target=/root/.hex,sharing=locked \
+    --mount=type=cache,target=/root/.cache/rebar3,sharing=locked \
+    mix deps.get --only prod
 RUN mkdir config
 COPY config/config.exs config/prod.exs config/runtime.exs config/
-RUN mix deps.compile
+RUN --mount=type=cache,target=/app/deps,sharing=locked \
+    --mount=type=cache,target=/app/_build,sharing=locked \
+    --mount=type=cache,target=/root/.hex,sharing=locked \
+    --mount=type=cache,target=/root/.cache/rebar3,sharing=locked \
+    mix deps.compile
 
 # Copy application source
 COPY priv priv
@@ -40,12 +55,35 @@ COPY rel rel
 # fetched by `mix assets.setup` (that only installs the tailwind/esbuild
 # standalone binaries) — esbuild needs them present in assets/node_modules
 # to resolve the imports when bundling.
-RUN npm --prefix assets ci
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm --prefix assets ci
 
-# Compile first (generates phoenix-colocated hooks JS), then build assets
-RUN mix compile
-RUN mix assets.deploy
-RUN mix release
+# Compile first (generates phoenix-colocated hooks JS), then build assets,
+# then release. `mix release`'s output lands inside the cache-mounted
+# /app/_build, so it's `cp -a`'d out to /app/release (a normal,
+# non-cache-mounted path) as the last command in the same RUN — that's what
+# actually survives into the image layer for the COPY --from=builder
+# instructions below (both the artifact stage and the runtime stage).
+RUN --mount=type=cache,target=/app/deps,sharing=locked \
+    --mount=type=cache,target=/app/_build,sharing=locked \
+    --mount=type=cache,target=/root/.hex,sharing=locked \
+    --mount=type=cache,target=/root/.cache/rebar3,sharing=locked \
+    mix compile && \
+    mix assets.deploy && \
+    mix release && \
+    rm -rf /app/release && \
+    cp -a /app/_build/prod/rel/orca_hub /app/release
+
+# === Artifact export stage ===
+# Exports just the release directory as build output (no runtime-stage OS
+# packages), so deploy-orca-hub.sh can pull it out with `docker build
+# --target artifact --output type=local,dest=<dir>` and reuse the SAME
+# bookworm-glibc-built release for the local systemd instance and mini,
+# instead of building a second, separate release on each host. Bookworm's
+# glibc 2.36 is older than (forward-compatible with) both mini's Arch glibc
+# 2.43 and the debian trixie host's glibc 2.41 — smoke-tested on all three.
+FROM scratch AS artifact
+COPY --from=builder /app/release /
 
 # === Runtime stage ===
 FROM debian:${DEBIAN_CODENAME}-slim
@@ -96,7 +134,7 @@ WORKDIR /app
 ENV MIX_ENV=prod
 ENV PHX_SERVER=true
 
-COPY --from=builder --chown=orca:orca /app/_build/prod/rel/orca_hub ./
+COPY --from=builder --chown=orca:orca /app/release ./
 
 # Entrypoint: run migrations then start the server
 COPY --chown=orca:orca <<'EOF' /app/bin/entrypoint.sh
