@@ -8,11 +8,11 @@ StartLimitIntervalSec=60
 [Service]
 Type=simple
 User={{USER}}
-WorkingDirectory={{ORCA_HUB_DIR}}
+WorkingDirectory={{HOME}}/orca-hub-releases/current
 EnvironmentFile={{ORCA_HUB_DIR}}/.env
 Environment="PATH={{HOME}}/.local/share/mise/shims:{{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PHX_SERVER=true"
-ExecStart={{ORCA_HUB_DIR}}/_build/prod/rel/orca_hub/bin/orca_hub start
+ExecStart={{HOME}}/orca-hub-releases/current/bin/orca_hub start
 Restart=on-failure
 RestartSec=5
 
