@@ -10,7 +10,7 @@ Type=simple
 User={{USER}}
 WorkingDirectory={{ORCA_HUB_DIR}}
 EnvironmentFile={{ORCA_HUB_DIR}}/.env
-Environment="PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH={{HOME}}/.local/share/mise/shims:{{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PHX_SERVER=true"
 ExecStart={{ORCA_HUB_DIR}}/_build/prod/rel/orca_hub/bin/orca_hub start
 Restart=on-failure
