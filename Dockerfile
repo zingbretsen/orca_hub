@@ -20,10 +20,11 @@ ENV MIX_ENV=prod
 # No .git dir reaches the build context (only lib/priv/assets/rel are
 # COPYed below), so OrcaHub.BuildInfo can't shell out to `git rev-parse`
 # the way a host `mix release` build can. The deploy script passes this as
-# --build-arg GIT_SHA=$(git rev-parse --short HEAD); exporting it as an ENV
-# here (before `mix compile`) lets BuildInfo read it at compile time.
+# --build-arg GIT_SHA=$(git rev-parse --short HEAD); it's written to
+# priv/git_sha further down (right where priv is COPYed in, not here) so
+# that a changing GIT_SHA doesn't invalidate the deps layers below on every
+# single build — ARG is declared here only so it's in scope for that RUN.
 ARG GIT_SHA
-ENV GIT_SHA=${GIT_SHA}
 
 # Install dependencies first (layer caching). Cache-mounted /app/deps,
 # /app/_build, /root/.hex, /root/.cache/rebar3 persist across builds keyed
@@ -47,6 +48,16 @@ RUN --mount=type=cache,target=/app/deps,sharing=locked \
 
 # Copy application source
 COPY priv priv
+
+# Written here (not up near ENV MIX_ENV) so GIT_SHA only invalidates cache
+# from this point forward — deps.get/deps.compile above stay cache-hit
+# across builds that change nothing but the commit. OrcaHub.BuildInfo
+# declares this file as an @external_resource, so a changed GIT_SHA (and
+# therefore a changed file) is exactly what makes Mix recompile it, even
+# though the cache-mounted /app/_build below would otherwise let Mix skip
+# recompiling a source file whose own text hasn't changed.
+RUN echo "$GIT_SHA" > priv/git_sha
+
 COPY lib lib
 COPY assets assets
 COPY rel rel
@@ -64,13 +75,23 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 # non-cache-mounted path) as the last command in the same RUN — that's what
 # actually survives into the image layer for the COPY --from=builder
 # instructions below (both the artifact stage and the runtime stage).
+#
+# --overwrite is required here: with /app/_build cache-mounted and
+# persisting across builds, `mix release` finds an already-assembled
+# release from a previous build and (with no tty to answer "Release ...
+# already exists. Overwrite? [Yn]") gets EOF on stdin, which Mix treats as
+# "no" — silently skipping the copy of freshly-compiled .beam files (e.g.
+# OrcaHub.BuildInfo, recompiled because priv/git_sha changed) into the
+# release dir. Without this flag every build after the first would keep
+# assembling the SAME stale release forever, regardless of what actually
+# got recompiled above.
 RUN --mount=type=cache,target=/app/deps,sharing=locked \
     --mount=type=cache,target=/app/_build,sharing=locked \
     --mount=type=cache,target=/root/.hex,sharing=locked \
     --mount=type=cache,target=/root/.cache/rebar3,sharing=locked \
     mix compile && \
     mix assets.deploy && \
-    mix release && \
+    mix release --overwrite && \
     rm -rf /app/release && \
     cp -a /app/_build/prod/rel/orca_hub /app/release
 

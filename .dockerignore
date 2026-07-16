@@ -37,3 +37,9 @@ test-results/
 # Uploaded files / screenshots
 upload_*
 *.png
+
+# Generated inside the image build (echo "$GIT_SHA" > priv/git_sha) —
+# excluded so a stray local copy can never ride into the build context and
+# get COPYed in before the Dockerfile's own RUN overwrites it with the real
+# value for this build.
+priv/git_sha
