@@ -9,7 +9,7 @@ StartLimitIntervalSec=60
 Type=simple
 User={{USER}}
 WorkingDirectory={{HOME}}/orca-hub-releases/current
-EnvironmentFile={{ORCA_HUB_DIR}}/.env
+EnvironmentFile={{HOME}}/orca-hub-releases/.env
 Environment="PATH={{HOME}}/.local/share/mise/shims:{{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PHX_SERVER=true"
 ExecStart={{HOME}}/orca-hub-releases/current/bin/orca_hub start
