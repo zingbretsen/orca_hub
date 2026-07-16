@@ -15,6 +15,14 @@ RUN mix local.hex --force && mix local.rebar --force
 
 ENV MIX_ENV=prod
 
+# No .git dir reaches the build context (only lib/priv/assets/rel are
+# COPYed below), so OrcaHub.BuildInfo can't shell out to `git rev-parse`
+# the way a host `mix release` build can. The deploy script passes this as
+# --build-arg GIT_SHA=$(git rev-parse --short HEAD); exporting it as an ENV
+# here (before `mix compile`) lets BuildInfo read it at compile time.
+ARG GIT_SHA
+ENV GIT_SHA=${GIT_SHA}
+
 # Install dependencies first (layer caching)
 COPY mix.exs mix.lock ./
 RUN mix deps.get --only prod

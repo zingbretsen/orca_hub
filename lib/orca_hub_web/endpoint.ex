@@ -54,6 +54,7 @@ defmodule OrcaHubWeb.Endpoint do
   plug Plug.Head
 
   plug :healthz
+  plug :version
 
   plug Plug.Session, @session_options
   plug OrcaHubWeb.Router
@@ -65,4 +66,20 @@ defmodule OrcaHubWeb.Endpoint do
   end
 
   defp healthz(conn, _opts), do: conn
+
+  # Unauthenticated on purpose (like /healthz above): a git SHA of a
+  # private repo is low-sensitivity, and the deploy script needs to poll
+  # this from plain localhost/cluster HTTP without minting a bearer token.
+  # Handled directly in the endpoint, ahead of the session/router pipeline,
+  # so it works identically for the local systemd, mini, and k8s instances.
+  defp version(%{request_path: "/api/version"} = conn, _opts) do
+    body = Jason.encode!(%{sha: OrcaHub.BuildInfo.sha(), built_at: OrcaHub.BuildInfo.built_at()})
+
+    conn
+    |> Plug.Conn.put_resp_content_type("application/json")
+    |> Plug.Conn.send_resp(200, body)
+    |> Plug.Conn.halt()
+  end
+
+  defp version(conn, _opts), do: conn
 end
