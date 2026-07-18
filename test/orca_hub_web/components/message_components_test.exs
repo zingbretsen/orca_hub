@@ -138,6 +138,48 @@ defmodule OrcaHubWeb.MessageComponentsTest do
     refute html =~ "\"sleep\""
   end
 
+  defp run_elixir_message(code) do
+    %{
+      "type" => "assistant",
+      "message" => %{
+        "content" => [
+          %{
+            "type" => "tool_use",
+            "id" => "re-1",
+            "name" => "mcp__orca__run_elixir",
+            "input" => %{"code" => code}
+          }
+        ]
+      }
+    }
+  end
+
+  describe "run_elixir summary" do
+    test "shows the statically-extracted Tools.* names when the Analyzer finds any" do
+      code = ~s[Tools.search_sessions(%{"status" => "error"})]
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [run_elixir_message(code)],
+          session_node: nil
+        })
+
+      assert html =~ "search_sessions"
+    end
+
+    test "falls back to the first-line code preview when nothing is extracted" do
+      code = "x = [1, 2, 3]\nEnum.sum(x)"
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [run_elixir_message(code)],
+          session_node: nil
+        })
+
+      assert html =~ "x = [1, 2, 3]"
+    end
+  end
+
   describe "pi backend groundwork event types (spec §12.3)" do
     test "pi_session_stats renders tokens/cost/context% instead of falling back to raw JSON" do
       stats = %{

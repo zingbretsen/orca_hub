@@ -8,6 +8,7 @@ defmodule OrcaHubWeb.MessageComponents do
 
   import OrcaHubWeb.CoreComponents, only: [icon: 1]
 
+  alias OrcaHub.MCP.CodeExec.Analyzer
   alias OrcaHubWeb.Markdown
 
   attr :messages, :list, required: true
@@ -796,12 +797,20 @@ defmodule OrcaHubWeb.MessageComponents do
   # Code-execution meta-tools (namespaced by the CLI as mcp__orca__*).
   defp tool_summary(%{name: name, input: input} = assigns)
        when name in ~w(mcp__orca__run_elixir run_elixir) do
+    code = input["code"] || ""
+
     preview =
-      (input["code"] || "")
-      |> String.split("\n", trim: true)
-      |> List.first()
-      |> Kernel.||("")
-      |> truncate(80)
+      case Analyzer.tool_calls(code) do
+        [] ->
+          code
+          |> String.split("\n", trim: true)
+          |> List.first()
+          |> Kernel.||("")
+          |> truncate(80)
+
+        tools ->
+          tools |> Enum.join(", ") |> truncate(80)
+      end
 
     assigns = assign(assigns, :preview, preview)
 

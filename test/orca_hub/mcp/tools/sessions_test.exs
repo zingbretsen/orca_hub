@@ -742,6 +742,106 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert %{"isError" => true, "content" => [%{"text" => text}]} = result
       assert text =~ "not found"
     end
+
+    test "a run_elixir tool call adds a statically-extracted tools list", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{
+                "type" => "tool_use",
+                "id" => "t1",
+                "name" => "mcp__orca__run_elixir",
+                "input" => %{
+                  "code" => ~s[Tools.search_sessions(%{"status" => "error"})]
+                }
+              }
+            ]
+          }
+        }
+      })
+
+      result =
+        SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert [%{"name" => "mcp__orca__run_elixir", "tools" => tools}] =
+               decoded["recent_tool_calls"]
+
+      assert tools == ["search_sessions"]
+    end
+
+    test "a run_elixir call with no extractable tools omits the tools key", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{
+                "type" => "tool_use",
+                "id" => "t1",
+                "name" => "mcp__orca__run_elixir",
+                "input" => %{"code" => "Enum.sum([1, 2, 3])"}
+              }
+            ]
+          }
+        }
+      })
+
+      result =
+        SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert [%{"name" => "mcp__orca__run_elixir"} = call] = decoded["recent_tool_calls"]
+      refute Map.has_key?(call, "tools")
+    end
+
+    test "a non-run_elixir tool call never gets a tools key", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{
+                "type" => "tool_use",
+                "id" => "t1",
+                "name" => "Bash",
+                "input" => %{"command" => "ls"}
+              }
+            ]
+          }
+        }
+      })
+
+      result =
+        SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert [%{"name" => "Bash"} = call] = decoded["recent_tool_calls"]
+      refute Map.has_key?(call, "tools")
+    end
   end
 
   describe "report_progress" do

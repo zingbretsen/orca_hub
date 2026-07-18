@@ -6,6 +6,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
   require Logger
 
+  alias OrcaHub.MCP.CodeExec.Analyzer
   alias OrcaHub.{Cluster, HubRPC, NodePolicy}
 
   # Time bound for AUTO-derived idempotency keys only (see
@@ -677,9 +678,28 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
   defp cap_tail_text(text), do: text
 
+  @run_elixir_tool_names ~w(run_elixir mcp__orca__run_elixir)
+  @max_tail_extracted_tools 10
+
   defp format_tool_call(%{name: name, input: input}) do
     %{name: name, args: cap_tail_arg(inspect(input, pretty: false, limit: 20))}
+    |> maybe_put_extracted_tools(name, input)
   end
+
+  # Static peek at which `Tools.*` a run_elixir snippet references — cheap
+  # legibility for an orchestrator skimming get_session_tail, not a runtime
+  # trace (see `OrcaHub.MCP.CodeExec.Analyzer`). Omitted entirely for
+  # non-run_elixir calls and when nothing was extracted (plain-stdlib
+  # snippets are common).
+  defp maybe_put_extracted_tools(call, name, %{"code" => code})
+       when name in @run_elixir_tool_names do
+    case Analyzer.tool_calls(code) do
+      [] -> call
+      tools -> Map.put(call, :tools, Enum.take(tools, @max_tail_extracted_tools))
+    end
+  end
+
+  defp maybe_put_extracted_tools(call, _name, _input), do: call
 
   defp cap_tail_arg(str) when byte_size(str) > @max_tool_arg_bytes,
     do: binary_part(str, 0, @max_tool_arg_bytes) <> "…"
