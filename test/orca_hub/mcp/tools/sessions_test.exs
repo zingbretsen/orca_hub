@@ -842,6 +842,60 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert [%{"name" => "Bash"} = call] = decoded["recent_tool_calls"]
       refute Map.has_key?(call, "tools")
     end
+
+    test "truncates a long last assistant message by default", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+      long_text = String.duplicate("a", 3000)
+
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [%{"type" => "text", "text" => long_text}]
+          }
+        }
+      })
+
+      result =
+        SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert String.length(decoded["last_assistant_text"]) < 3000
+      assert decoded["last_assistant_text"] =~ "…[truncated]"
+    end
+
+    test "full_last_message: true returns the last assistant message untruncated", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+      long_text = String.duplicate("a", 3000)
+
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [%{"type" => "text", "text" => long_text}]
+          }
+        }
+      })
+
+      result =
+        SessionsTool.call(
+          "get_session_tail",
+          %{"session_id" => target.id, "full_last_message" => true},
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert decoded["last_assistant_text"] == long_text
+    end
   end
 
   describe "report_progress" do

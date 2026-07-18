@@ -197,7 +197,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           "Peek at another session's recent activity WITHOUT interrupting it — unlike " <>
             "send_message_to_session, this does not send a message or touch the live agent " <>
             "process. Returns the session's current status plus its last assistant text " <>
-            "message, a compact list of its most recent tool calls (name + truncated " <>
+            "message (truncated to ~2KB by default; pass full_last_message to get it in " <>
+            "full), a compact list of its most recent tool calls (name + truncated " <>
             "input), self-reported progress (phase/note from report_progress, if any), " <>
             "activity metadata (message/tool-call counts over the last 5/15/30 minutes, " <>
             "last_activity_at), and last_commit (git HEAD of its directory, if it's a repo). " <>
@@ -213,6 +214,13 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "tool_call_limit" => %{
               "type" => "integer",
               "description" => "Maximum number of recent tool calls to include. Default: 10"
+            },
+            "full_last_message" => %{
+              "type" => "boolean",
+              "description" =>
+                "If true, return the complete last assistant text message instead of " <>
+                  "truncating it to ~2KB. Use when you need the worker's full report " <>
+                  "verbatim. Default: false"
             }
           },
           "required" => ["session_id"]
@@ -301,6 +309,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   def call("get_session_tail", args, _state) do
     target_id = args["session_id"]
     limit = args["tool_call_limit"] || 10
+    full_last_message = args["full_last_message"] == true
 
     case Cluster.find_session(target_id) do
       {node, session} ->
@@ -310,6 +319,13 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           activity =
             Map.get(HubRPC.activity_metadata([session.id]), session.id, empty_activity())
 
+          last_assistant_text =
+            if full_last_message do
+              tail.last_assistant_text
+            else
+              cap_tail_text(tail.last_assistant_text)
+            end
+
           result = %{
             id: session.id,
             title: session.title,
@@ -318,7 +334,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             progress_phase: session.progress_phase,
             progress_note: session.progress_note,
             progress_updated_at: session.progress_updated_at,
-            last_assistant_text: cap_tail_text(tail.last_assistant_text),
+            last_assistant_text: last_assistant_text,
             recent_tool_calls: Enum.map(tail.recent_tool_calls, &format_tool_call/1),
             activity: activity,
             last_commit: fetch_last_commit(node, session.directory)
