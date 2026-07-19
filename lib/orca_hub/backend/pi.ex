@@ -984,7 +984,7 @@ defmodule OrcaHub.Backend.Pi do
       SharedPrompts.orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec),
       SharedPrompts.code_exec_prompt(code_exec),
       SharedPrompts.commit_trailer_prompt(ctx.session_id),
-      if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt()),
+      if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec)),
       SharedPrompts.context_files_prompt(ctx.directory)
     ]
     |> Enum.reject(&is_nil/1)

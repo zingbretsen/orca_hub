@@ -17,20 +17,30 @@ defmodule OrcaHub.MCP.ToolsTest do
       assert "open_file" in names
     end
 
-    test "regular connections see only the regular tool set" do
+    test "regular connections can now spawn/peek-at/archive children, but not the full session-management surface" do
       names = Tools.list(%{orchestrator: false}) |> Enum.map(& &1["name"])
 
       assert "send_message_to_session" in names
       assert "open_file" in names
-      refute "start_session" in names
+      # Child spawning is first-class for every session now, not just
+      # orchestrators — a regular connection can spawn a child, peek at its
+      # progress, and clean it up when done.
+      assert "start_session" in names
+      assert "get_session_tail" in names
+      assert "archive_session" in names
+      # ...but not the full session-management surface: these stay
+      # orchestrator-only.
       refute "search_sessions" in names
+      refute "schedule_heartbeat" in names
+      refute "cancel_heartbeat" in names
     end
 
     test "an absent role defaults to a regular connection" do
       names = Tools.list(%{orca_session_id: "abc"}) |> Enum.map(& &1["name"])
 
       assert "send_message_to_session" in names
-      refute "start_session" in names
+      assert "start_session" in names
+      refute "search_sessions" in names
     end
 
     test "regular connections never see send_discord_message when the node has no linked session" do

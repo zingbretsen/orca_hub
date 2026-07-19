@@ -129,8 +129,13 @@ defmodule OrcaHub.MCP.Server do
   end
 
   # Orchestrator-only tools we explicitly assert are present for orchestrator
-  # connections — used as a smoking-gun check in the tools/list log line.
-  @orchestrator_only_tools ~w(cancel_heartbeat archive_session start_session schedule_heartbeat)
+  # connections — used as a smoking-gun check in the tools/list log line, not
+  # an exhaustive list of every orchestrator-only tool (search_sessions is
+  # also orchestrator-only, just not part of this particular sanity check).
+  # start_session/archive_session moved OUT of this list: regular sessions can
+  # now spawn/peek-at/archive children too (see Tools.@regular_session_tools)
+  # — only the heartbeat tools remain orchestrator-only here.
+  @orchestrator_only_tools ~w(cancel_heartbeat schedule_heartbeat)
 
   # Agent Runs API (docs/api.md): an api_run connection's tool surface is
   # exactly one synthesized tool, submit_result, built from the run's

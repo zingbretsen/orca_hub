@@ -130,7 +130,7 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
       assert child.notify_parent == false
     end
 
-    test "a non-orchestrator caller creates no parent link regardless of notify_on_completion",
+    test "a non-orchestrator caller ALSO links the child as parent and defaults notify_parent to true (child spawning is first-class for every session, not just orchestrators)",
          %{dir: dir} do
       {:ok, caller} = Sessions.create_session(%{directory: dir, orchestrator: false})
       state = %{orca_session_id: caller.id, orchestrator: false}
@@ -140,7 +140,46 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
       %{"session_id" => child_id} = Jason.decode!(text)
       on_exit(fn -> stop_if_alive(child_id) end)
 
-      assert Sessions.get_session!(child_id).parent_session_id == nil
+      child = Sessions.get_session!(child_id)
+      assert child.parent_session_id == caller.id
+      assert child.notify_parent == true
+    end
+
+    test "a non-orchestrator caller: notify_on_completion: false links the parent but suppresses notification",
+         %{dir: dir} do
+      {:ok, caller} = Sessions.create_session(%{directory: dir, orchestrator: false})
+      state = %{orca_session_id: caller.id, orchestrator: false}
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "notify_on_completion" => false},
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      %{"session_id" => child_id} = Jason.decode!(text)
+      on_exit(fn -> stop_if_alive(child_id) end)
+
+      child = Sessions.get_session!(child_id)
+      assert child.parent_session_id == caller.id
+      assert child.notify_parent == false
+    end
+
+    test "start_session with no caller session id at all still creates no parent link" do
+      # An HTTP/API-triggered start_session (no MCP connection, hence no
+      # orca_session_id) has no caller to link to — call/3 rejects it before
+      # ever reaching maybe_link_parent/4, whose own nil-caller_session_id
+      # clause is the same "no link" behavior as a defensive fallback.
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi"},
+          %{orca_session_id: nil, orchestrator: false}
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "No OrcaHub session linked"
     end
   end
 

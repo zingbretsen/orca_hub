@@ -67,7 +67,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
         expected_orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec),
         expected_code_exec_prompt(code_exec),
         if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
-        if(!ctx.orchestrator, do: expected_worker_practices_prompt()),
+        if(!ctx.orchestrator, do: expected_worker_practices_prompt(true, code_exec)),
         if(!ctx.orchestrator, do: expected_ask_user_question_prompt()),
         expected_sibling_sessions_prompt(ctx.orchestrator, code_exec),
         # context_files_prompt/1: nil for every ctx fixture here (directory
@@ -92,7 +92,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     |> String.trim()
   end
 
-  defp expected_worker_practices_prompt do
+  defp expected_worker_practices_prompt(false, _code_exec) do
     """
     - Verify your changes with **targeted tests** for the files you touched; \
     the full suite runs later as the orchestrator's pre-deploy gate — don't \
@@ -105,6 +105,34 @@ defmodule OrcaHub.Backend.ClaudeTest do
     isn't guaranteed.
     - Tests failing for environmental/flaky reasons? Root-cause and fix the \
     flake rather than retrying until green — report what you found.
+    """
+    |> String.trim()
+  end
+
+  defp expected_worker_practices_prompt(true, code_exec) do
+    start_session_ref =
+      if code_exec,
+        do: "`Tools.start_session(...)` inside a `run_elixir` snippet",
+        else: "the `mcp__orca__start_session` MCP tool"
+
+    """
+    - Verify your changes with **targeted tests** for the files you touched; \
+    the full suite runs later as the orchestrator's pre-deploy gate — don't \
+    burn time running it per-task unless asked.
+    - Read a file before Edit/Write even when the task prompt quotes its exact \
+    current content; the guardrail requires it regardless.
+    - If your task restarts the service/host hosting your own session \
+    (deploys, systemctl restarts), send your report **before** triggering \
+    the restart — your session may die with it and post-restart delivery \
+    isn't guaranteed.
+    - Tests failing for environmental/flaky reasons? Root-cause and fix the \
+    flake rather than retrying until green — report what you found.
+    - You can spawn child sessions of your own via #{start_session_ref} — the \
+    child is automatically linked as your child and will send you a \
+    "[Session lifecycle]" message when it goes idle or errors, just like an \
+    orchestrator's workers do. Reach for this only for genuinely parallel or \
+    offloadable subtasks — it is not a substitute for doing your own assigned \
+    work.
     """
     |> String.trim()
   end
@@ -195,7 +223,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     **Important:** Your MCP tool list is collapsed to `run_elixir`, `search_tools`, `send_message_to_session`, `get_session_tail`, `report_progress`, `file_feature_request`, `list_feature_requests`, `get_feature_request`, `append_feature_request_note`, and `close_feature_request` (code execution mode). Those are standalone MCP tools — call them directly. Every OTHER coordination tool below is NOT standalone here; call it as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.
 
     1. **Delegate all implementation work** to other sessions using:
-       - `Tools.start_session(...)` inside `run_elixir` — spawn a new worker session with a detailed prompt. Since you're an orchestrator, the worker is automatically linked as your child: when it goes idle or errors, you automatically get a `[Session lifecycle]` message — this is the PRIMARY way to learn a worker is done, you do not need to instruct it to call `send_message_to_session` back. Pass `notify_on_completion: false` if you genuinely want a fire-and-forget spawn with no callback.
+       - `Tools.start_session(...)` inside `run_elixir` — spawn a new worker session with a detailed prompt. Child spawning automatically links and notifies the caller for any session, not just orchestrators: the worker is linked as your child, and when it goes idle or errors, you automatically get a `[Session lifecycle]` message — this is the PRIMARY way to learn a worker is done, you do not need to instruct it to call `send_message_to_session` back. Pass `notify_on_completion: false` if you genuinely want a fire-and-forget spawn with no callback.
        - `send_message_to_session(...)` — direct an existing session (standalone tool, not `Tools.*`)
 
     2. **Prefer letting the automatic notification tell you when a worker is done.** Only ask a worker to `send_message_to_session` you explicitly if you need something mid-task (a progress update, a specific artifact) beyond "it's done" — the completion callback itself is redundant with the automatic notification.
@@ -251,7 +279,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     **Important:** The OrcaHub MCP tools must be called by their full namespaced name — the MCP prefix followed by the tool name, e.g. `mcp__orca__start_session` (not just `start_session`). The same applies to every tool below (`mcp__orca__send_message_to_session`, `mcp__orca__schedule_heartbeat`, `mcp__orca__search_sessions`, `mcp__orca__archive_session`, `mcp__orca__cancel_heartbeat`, etc.).
 
     1. **Delegate all implementation work** to other sessions using:
-       - `mcp__orca__start_session` — spawn a new worker session with a detailed prompt. Since you're an orchestrator, the worker is automatically linked as your child: when it goes idle or errors, you automatically get a `[Session lifecycle]` message — this is the PRIMARY way to learn a worker is done, you do not need to instruct it to call `mcp__orca__send_message_to_session` back. Pass `notify_on_completion: false` if you genuinely want a fire-and-forget spawn with no callback.
+       - `mcp__orca__start_session` — spawn a new worker session with a detailed prompt. Child spawning automatically links and notifies the caller for any session, not just orchestrators: the worker is linked as your child, and when it goes idle or errors, you automatically get a `[Session lifecycle]` message — this is the PRIMARY way to learn a worker is done, you do not need to instruct it to call `mcp__orca__send_message_to_session` back. Pass `notify_on_completion: false` if you genuinely want a fire-and-forget spawn with no callback.
        - `mcp__orca__send_message_to_session` — direct an existing session
 
     2. **Prefer letting the automatic notification tell you when a worker is done.** Only ask a worker to `mcp__orca__send_message_to_session` you explicitly if you need something mid-task (a progress update, a specific artifact) beyond "it's done" — the completion callback itself is redundant with the automatic notification.
@@ -328,7 +356,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     [
       "Your OrcaHub session ID is #{ctx.session_id}.",
       if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
-      if(!ctx.orchestrator, do: expected_worker_practices_prompt()),
+      if(!ctx.orchestrator, do: expected_worker_practices_prompt(false, false)),
       if(!ctx.orchestrator, do: expected_ask_user_question_prompt())
     ]
     |> Enum.reject(&is_nil/1)
@@ -348,7 +376,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     [
       "Your OrcaHub session ID is #{ctx.session_id}.",
       if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
-      if(!ctx.orchestrator, do: expected_worker_practices_prompt()),
+      if(!ctx.orchestrator, do: expected_worker_practices_prompt(false, false)),
       if(!ctx.orchestrator, do: expected_ask_user_question_prompt()),
       expected_submit_result_prompt()
     ]

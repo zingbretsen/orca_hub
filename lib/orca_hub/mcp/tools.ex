@@ -13,12 +13,14 @@ defmodule OrcaHub.MCP.Tools do
   MCP server `state` (`:orchestrator`) and sourced from the MCP connection
   itself (a query param set by `SessionRunner`) — never from a hub/DB lookup.
   Orchestrator connections see every tool; regular connections see only the
-  tools in `@regular_session_tools` (messaging another session and opening
-  files), plus `send_discord_message` when (and only when) the connection's
-  session is actually Discord-bridged. That one exception needs a hub lookup,
-  so it is done lazily in `list/1` itself, gated behind `Discord.enabled?()`
-  first (a cheap local check) so every non-Discord node's `tools/list` stays
-  free of hub work. `initialize` itself never does a hub lookup.
+  tools in `@regular_session_tools` — messaging another session, opening
+  files, spawning a child session and peeking at/archiving it, and filing
+  feature requests — plus `send_discord_message` when (and only when) the
+  connection's session is actually Discord-bridged. That one exception needs a
+  hub lookup, so it is done lazily in `list/1` itself, gated behind
+  `Discord.enabled?()` first (a cheap local check) so every non-Discord node's
+  `tools/list` stays free of hub work. `initialize` itself never does a hub
+  lookup.
 
   `call/3` does **not** gate by role: any known tool may be called. Only
   genuinely-unknown tool names are rejected.
@@ -31,9 +33,16 @@ defmodule OrcaHub.MCP.Tools do
   @categories [Sessions, Triggers, Files, Heartbeat, Discord, FeatureRequests]
 
   # Tools visible to regular (non-orchestrator) connections. Orchestrator
-  # connections see every tool. `send_discord_message` is deliberately absent
-  # here — its visibility is conditional (see moduledoc), not static.
-  @regular_session_tools ~w(send_message_to_session open_file report_progress file_feature_request
+  # connections see every tool. Child spawning is first-class for every
+  # session now, not just orchestrators: a regular session can spawn a child
+  # (start_session), peek at its progress without interrupting it
+  # (get_session_tail), and clean it up when done (archive_session) — but not
+  # the full session-management surface. search_sessions and the heartbeat
+  # tools (schedule_heartbeat, cancel_heartbeat) stay orchestrator-only.
+  # `send_discord_message` is deliberately absent here — its visibility is
+  # conditional (see moduledoc), not static.
+  @regular_session_tools ~w(send_message_to_session open_file report_progress start_session
+                             get_session_tail archive_session file_feature_request
                              list_feature_requests get_feature_request append_feature_request_note
                              close_feature_request)
 

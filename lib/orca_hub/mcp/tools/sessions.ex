@@ -78,7 +78,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "parent_session_id" => %{
               "type" => "string",
               "description" =>
-                "Optional exact-match filter: only return sessions spawned with this session id as their parent (see start_session's orchestrator child-linking)."
+                "Optional exact-match filter: only return sessions spawned with this session id as their parent (see start_session's automatic child-linking)."
             },
             "include_activity" => %{
               "type" => "boolean",
@@ -108,7 +108,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "start_session",
         "description" =>
-          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session. If you are yourself an orchestrator session, the new session is automatically linked as your child: when it finishes its turn (goes idle) or errors, you automatically receive a \"[Session lifecycle]\" message — no need to instruct the worker to message you back, and no need to poll with search_sessions/heartbeats just to detect completion. Set notify_on_completion to false to opt out for a true fire-and-forget spawn. Returns structured JSON: session_id, node, model, backend, directory, already_exists.",
+          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session. The new session is automatically linked as your child: when it finishes its turn (goes idle) or errors, you automatically receive a \"[Session lifecycle]\" message — no need to instruct the worker to message you back, and no need to poll with search_sessions/heartbeats just to detect completion. Set notify_on_completion to false to opt out for a true fire-and-forget spawn. Returns structured JSON: session_id, node, model, backend, directory, already_exists.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -139,7 +139,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "notify_on_completion" => %{
               "type" => "boolean",
               "description" =>
-                "Whether the new session should automatically message you (the caller) when it goes idle or errors. Only applies when the caller is an orchestrator session (the only case a parent link is created). Default: true. Set false for a fire-and-forget spawn you don't want a callback from."
+                "Whether the new session should automatically message you (the caller) when it goes idle or errors. Applies whenever this call is made from within another OrcaHub session — a parent link is always created in that case. Default: true. Set false for a fire-and-forget spawn you don't want a callback from. No effect on a direct HTTP/API-triggered start_session call with no calling session, since no parent link is created there."
             },
             "idempotency_key" => %{
               "type" => "string",
@@ -722,12 +722,17 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
   defp cap_tail_arg(str), do: str
 
-  # A non-nil parent_session_id always means "spawned by an orchestrator", so only
-  # set it when the caller is itself an orchestrator. `notify_on_completion`
-  # (default true) becomes `notify_parent` — the "[Session lifecycle]"
-  # running->idle/error callback to the parent — and is meaningless (ignored)
-  # for non-orchestrator callers since no link is created either way.
-  defp maybe_link_parent(attrs, %{orchestrator: true}, caller_session_id, notify_on_completion) do
+  # Child spawning is first-class for ANY caller session now, not just
+  # orchestrators: whenever this start_session call happened from within a
+  # running OrcaHub session (caller_session_id present), the new session is
+  # linked as that caller's child. `notify_on_completion` (default true)
+  # becomes `notify_parent` — the "[Session lifecycle]" running->idle/error
+  # callback to the parent. There's still nothing to link when start_session
+  # is invoked with no calling session at all (e.g. an HTTP/API-triggered
+  # spawn) — `caller_session_id` is nil in that case and no parent/notify
+  # fields are set.
+  defp maybe_link_parent(attrs, _caller, caller_session_id, notify_on_completion)
+       when is_binary(caller_session_id) do
     attrs
     |> Map.put(:parent_session_id, caller_session_id)
     |> Map.put(:notify_parent, notify_on_completion != false)

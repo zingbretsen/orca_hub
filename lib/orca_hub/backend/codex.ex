@@ -705,7 +705,7 @@ defmodule OrcaHub.Backend.Codex do
       orchestrator_system_prompt(ctx.orchestrator, ctx.session_id, code_exec),
       SharedPrompts.code_exec_prompt(code_exec),
       if(!ctx.orchestrator, do: SharedPrompts.commit_trailer_prompt(ctx.session_id)),
-      if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt()),
+      if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec)),
       sibling_sessions_prompt(ctx.orchestrator, code_exec),
       SharedPrompts.context_files_prompt(ctx.directory)
     ]
