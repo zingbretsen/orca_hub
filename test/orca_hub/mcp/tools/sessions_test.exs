@@ -896,6 +896,75 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
 
       assert decoded["last_assistant_text"] == long_text
     end
+
+    test "truncation is UTF-8-safe when a multibyte character straddles the byte boundary",
+         %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      # Em dash is 3 bytes in UTF-8 (0xE2 0x80 0x94). Positioned so the fixed
+      # 2000-byte truncation cut lands after only 2 of its 3 bytes (1998 'a'
+      # bytes + 2 em-dash bytes = 2000) — this used to yield an invalid
+      # binary that crashed downstream (prod: "invalid byte 0xE2 in ...").
+      long_text = String.duplicate("a", 1998) <> "—" <> String.duplicate("a", 100)
+
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{"content" => [%{"type" => "text", "text" => long_text}]}
+        }
+      })
+
+      result =
+        SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert String.valid?(decoded["last_assistant_text"])
+      assert decoded["last_assistant_text"] =~ "…[truncated]"
+    end
+
+    test "tool call arg truncation is UTF-8-safe when a multibyte character straddles the byte boundary",
+         %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      # Sweep the emoji's starting offset across a range comfortably wider
+      # than the ~16-byte `%{"command" => "` inspect prefix, so the fixed
+      # 200-byte tool-arg truncation cut is guaranteed to land inside the
+      # 4-byte emoji sequence for some offset in this range regardless of
+      # the exact prefix length.
+      for offset <- 190..210 do
+        command = String.duplicate("a", offset) <> "🎉" <> String.duplicate("a", 50)
+
+        Sessions.create_message(%{
+          session_id: target.id,
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "t#{offset}",
+                  "name" => "Bash",
+                  "input" => %{"command" => command}
+                }
+              ]
+            }
+          }
+        })
+
+        result =
+          SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+        assert %{"isError" => false, "content" => [%{"text" => text}]} = result,
+               "offset #{offset} produced an error result"
+
+        decoded = Jason.decode!(text)
+        assert %{"args" => args} = List.last(decoded["recent_tool_calls"])
+        assert String.valid?(args), "offset #{offset} produced invalid UTF-8: #{inspect(args)}"
+      end
+    end
   end
 
   describe "report_progress" do

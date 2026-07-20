@@ -689,7 +689,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   defp cap_tail_text(nil), do: nil
 
   defp cap_tail_text(text) when byte_size(text) > @max_tail_text_bytes do
-    binary_part(text, 0, @max_tail_text_bytes) <> "…[truncated]"
+    safe_truncate(text, @max_tail_text_bytes) <> "…[truncated]"
   end
 
   defp cap_tail_text(text), do: text
@@ -718,9 +718,29 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   defp maybe_put_extracted_tools(call, _name, _input), do: call
 
   defp cap_tail_arg(str) when byte_size(str) > @max_tool_arg_bytes,
-    do: binary_part(str, 0, @max_tool_arg_bytes) <> "…"
+    do: safe_truncate(str, @max_tool_arg_bytes) <> "…"
 
   defp cap_tail_arg(str), do: str
+
+  # binary_part alone can split a multibyte UTF-8 character mid-sequence,
+  # producing an invalid binary that later blows up (e.g. Jason.encode!) —
+  # prod crash: "invalid byte 0xE2 in <<35, 35, 32, 82, ...>>". Trim back to
+  # the last complete character after the byte-budget cut.
+  defp safe_truncate(bin, max_bytes) do
+    bin
+    |> binary_part(0, max_bytes)
+    |> trim_incomplete_utf8()
+  end
+
+  defp trim_incomplete_utf8(<<>>), do: <<>>
+
+  defp trim_incomplete_utf8(bin) do
+    if String.valid?(bin) do
+      bin
+    else
+      trim_incomplete_utf8(binary_part(bin, 0, byte_size(bin) - 1))
+    end
+  end
 
   # Child spawning is first-class for ANY caller session now, not just
   # orchestrators: whenever this start_session call happened from within a
