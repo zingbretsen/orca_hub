@@ -51,7 +51,17 @@ defmodule OrcaHub.MCP.Tools.Triggers do
             },
             "project_id" => %{
               "type" => "string",
-              "description" => "The UUID of the project to run the trigger in"
+              "description" =>
+                "The UUID of the project to run the trigger in. Either this or `directory` " <>
+                  "is required; project_id wins if both are given. Use the list_projects " <>
+                  "tool to look up a project's UUID."
+            },
+            "directory" => %{
+              "type" => "string",
+              "description" =>
+                "Alternative to project_id: the absolute directory of a registered project. " <>
+                  "Resolved to that project's id the same way start_session resolves a " <>
+                  "directory. Ignored if project_id is also given."
             },
             "reuse_session" => %{
               "type" => "boolean",
@@ -63,7 +73,7 @@ defmodule OrcaHub.MCP.Tools.Triggers do
               "description" => "If true, archive the session once it completes. Default: false"
             }
           },
-          "required" => ["name", "prompt", "project_id"]
+          "required" => ["name", "prompt"]
         }
       },
       %{
@@ -84,7 +94,17 @@ defmodule OrcaHub.MCP.Tools.Triggers do
             },
             "project_id" => %{
               "type" => "string",
-              "description" => "The UUID of the project to run the trigger in"
+              "description" =>
+                "The UUID of the project to run the trigger in. Either this or `directory` " <>
+                  "is required; project_id wins if both are given. Use the list_projects " <>
+                  "tool to look up a project's UUID."
+            },
+            "directory" => %{
+              "type" => "string",
+              "description" =>
+                "Alternative to project_id: the absolute directory of a registered project. " <>
+                  "Resolved to that project's id the same way start_session resolves a " <>
+                  "directory. Ignored if project_id is also given."
             },
             "reuse_session" => %{
               "type" => "boolean",
@@ -96,19 +116,20 @@ defmodule OrcaHub.MCP.Tools.Triggers do
               "description" => "If true, archive the session once it completes. Default: false"
             }
           },
-          "required" => ["name", "prompt", "project_id"]
+          "required" => ["name", "prompt"]
         }
       }
     ]
   end
 
   def call("create_scheduled_trigger", args, _state) do
-    with :ok <- check_project_node_allowed(args["project_id"]) do
+    with {:ok, project_id} <- resolve_project_id(args),
+         :ok <- check_project_node_allowed(project_id) do
       attrs = %{
         name: args["name"],
         prompt: args["prompt"],
         cron_expression: build_cron(args),
-        project_id: args["project_id"],
+        project_id: project_id,
         reuse_session: args["reuse_session"] || false,
         archive_on_complete: args["archive_on_complete"] || false
       }
@@ -123,16 +144,20 @@ defmodule OrcaHub.MCP.Tools.Triggers do
         {:error, changeset} ->
           error("Failed to create trigger: #{inspect(changeset.errors)}")
       end
+    else
+      {:error, message} -> error(message)
+      other -> other
     end
   end
 
   def call("create_webhook_trigger", args, _state) do
-    with :ok <- check_project_node_allowed(args["project_id"]) do
+    with {:ok, project_id} <- resolve_project_id(args),
+         :ok <- check_project_node_allowed(project_id) do
       attrs = %{
         name: args["name"],
         prompt: args["prompt"],
         type: "webhook",
-        project_id: args["project_id"],
+        project_id: project_id,
         reuse_session: args["reuse_session"] || false,
         archive_on_complete: args["archive_on_complete"] || false
       }
@@ -149,7 +174,38 @@ defmodule OrcaHub.MCP.Tools.Triggers do
         {:error, changeset} ->
           error("Failed to create trigger: #{inspect(changeset.errors)}")
       end
+    else
+      {:error, message} -> error(message)
+      other -> other
     end
+  end
+
+  # project_id wins when both are given; a directory resolves the same way
+  # start_session resolves one (OrcaHub.MCP.Tools.Sessions.resolve_routing) —
+  # via HubRPC.get_project_by_directory/1. Neither present, or a directory
+  # matching no registered project, is a clear user error rather than a
+  # changeset FK failure.
+  defp resolve_project_id(%{"project_id" => project_id})
+       when is_binary(project_id) and project_id != "" do
+    {:ok, project_id}
+  end
+
+  defp resolve_project_id(%{"directory" => directory})
+       when is_binary(directory) and directory != "" do
+    case HubRPC.get_project_by_directory(directory) do
+      %{} = project ->
+        {:ok, project.id}
+
+      nil ->
+        {:error,
+         "No registered project found for directory #{inspect(directory)}. Use the " <>
+           "list_projects tool to see registered projects (id, name, directory, node), " <>
+           "or pass project_id directly."}
+    end
+  end
+
+  defp resolve_project_id(_args) do
+    {:error, "Either project_id or directory is required."}
   end
 
   # A trigger fires on ITS project's node (see TriggerExecutor), not

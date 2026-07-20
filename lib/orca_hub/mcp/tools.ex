@@ -28,9 +28,18 @@ defmodule OrcaHub.MCP.Tools do
 
   require Logger
 
-  alias OrcaHub.MCP.Tools.{Discord, FeatureRequests, Files, Heartbeat, Result, Sessions, Triggers}
+  alias OrcaHub.MCP.Tools.{
+    Discord,
+    FeatureRequests,
+    Files,
+    Heartbeat,
+    Projects,
+    Result,
+    Sessions,
+    Triggers
+  }
 
-  @categories [Sessions, Triggers, Files, Heartbeat, Discord, FeatureRequests]
+  @categories [Sessions, Triggers, Projects, Files, Heartbeat, Discord, FeatureRequests]
 
   # Tools visible to regular (non-orchestrator) connections. Orchestrator
   # connections see every tool. Child spawning is first-class for every
