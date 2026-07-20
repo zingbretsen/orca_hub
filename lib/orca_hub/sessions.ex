@@ -578,23 +578,49 @@ defmodule OrcaHub.Sessions do
     )
   end
 
+  # How many recent assistant messages to scan (for text or tool_use blocks) —
+  # bounds query cost regardless of how long the session's history is.
+  @tail_scan_limit 50
+
+  # Assistant messages within this many seconds of the newest one are treated
+  # as the same "message burst" when hunting for reply text (see below).
+  @assistant_text_window_seconds 2
+
   @doc """
-  Return the text of the most recent assistant message for a session, or `nil`
-  if there is none (or it carried no text blocks — e.g. only tool_use).
+  Return the text of the most recent assistant message that actually carries
+  text blocks, or `nil` if there is none (or the latest burst carried no text
+  blocks — e.g. only tool_use/thinking).
+
+  Scans the newest few assistant messages rather than taking exactly the
+  newest one: a turn's final thinking-only and text messages often share a
+  same-second `inserted_at`, so `limit: 1` can land on the thinking one and
+  report no text even though the reply exists. The scan is bounded to a small
+  time window around the newest assistant message so a text-less turn can't
+  resurrect a previous turn's reply.
 
   Used by the Discord worker to post a session's reply back to the channel.
   """
   def last_assistant_text(session_id) do
-    from(m in Message,
-      where: m.session_id == ^session_id and fragment("? ->> 'type' = 'assistant'", m.data),
-      order_by: [desc: m.inserted_at],
-      limit: 1
-    )
-    |> Repo.one()
-    |> extract_assistant_text()
-  end
+    rows =
+      from(m in Message,
+        where: m.session_id == ^session_id and fragment("? ->> 'type' = 'assistant'", m.data),
+        order_by: [desc: m.inserted_at],
+        limit: @tail_scan_limit
+      )
+      |> Repo.all()
 
-  defp extract_assistant_text(nil), do: nil
+    case rows do
+      [] ->
+        nil
+
+      [newest | _] ->
+        cutoff = NaiveDateTime.add(newest.inserted_at, -@assistant_text_window_seconds, :second)
+
+        rows
+        |> Enum.take_while(&(NaiveDateTime.compare(&1.inserted_at, cutoff) != :lt))
+        |> Enum.find_value(&extract_assistant_text/1)
+    end
+  end
 
   defp extract_assistant_text(%Message{data: data}) do
     text =
@@ -606,10 +632,6 @@ defmodule OrcaHub.Sessions do
 
     if text == "", do: nil, else: text
   end
-
-  # How many recent assistant messages to scan for tool_use blocks — bounds
-  # query cost regardless of how long the session's history is.
-  @tail_scan_limit 50
 
   @doc """
   A slim, read-only "tail" for a session: its last assistant text message plus

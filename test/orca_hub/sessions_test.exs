@@ -361,6 +361,59 @@ defmodule OrcaHub.SessionsTest do
     end
   end
 
+  describe "last_assistant_text/1" do
+    defp text_message(text \\ "here is my reply") do
+      %{
+        "type" => "assistant",
+        "message" => %{"content" => [%{"type" => "text", "text" => text}]}
+      }
+    end
+
+    defp thinking_message do
+      %{
+        "type" => "assistant",
+        "message" => %{"content" => [%{"type" => "thinking", "thinking" => "hmm"}]}
+      }
+    end
+
+    defp insert_assistant_at(session, data, inserted_at) do
+      {:ok, message} = Sessions.create_message(%{session_id: session.id, data: data})
+      from(m in Message, where: m.id == ^message.id) |> Repo.update_all(set: [inserted_at: inserted_at])
+      message
+    end
+
+    test "same-second tie: returns the text message even when a thinking-only message shares its inserted_at",
+         %{project: project} do
+      session = create_session(project)
+      ts = ~N[2026-07-20 19:17:09]
+
+      # Inserted first, so it would win a naive "first row back" tie-break —
+      # the fix must not depend on insertion order within the same second.
+      insert_assistant_at(session, thinking_message(), ts)
+      insert_assistant_at(session, text_message(), ts)
+
+      assert Sessions.last_assistant_text(session.id) == "here is my reply"
+    end
+
+    test "does not resurrect an older reply from outside the burst window when the newest turn is text-less",
+         %{project: project} do
+      session = create_session(project)
+      old_ts = ~N[2026-07-20 19:10:00]
+      new_ts = NaiveDateTime.add(old_ts, 10, :second)
+
+      insert_assistant_at(session, text_message(), old_ts)
+      insert_assistant_at(session, thinking_message(), new_ts)
+
+      assert Sessions.last_assistant_text(session.id) == nil
+    end
+
+    test "returns nil when the session has no assistant messages", %{project: project} do
+      session = create_session(project)
+
+      assert Sessions.last_assistant_text(session.id) == nil
+    end
+  end
+
   describe "activity_metadata/1" do
     defp insert_message(session, data, minutes_ago) do
       {:ok, message} = Sessions.create_message(%{session_id: session.id, data: data})
