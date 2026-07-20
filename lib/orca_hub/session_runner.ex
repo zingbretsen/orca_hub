@@ -711,7 +711,11 @@ defmodule OrcaHub.SessionRunner do
   # Same as idle — accepts new messages to retry, rejects interrupts.
 
   def error({:call, from}, {:send_message, prompt}, %{engine: :streaming} = data) do
-    start_streaming(from, prompt, data)
+    # Defensive: an :error-state streaming session must never reuse a stale warm
+    # port — the turn-error path above already tears it down, but this guards
+    # against any other path that could leave one alive (teardown_port is a
+    # no-op when port is already nil).
+    start_streaming(from, prompt, teardown_port(data))
   end
 
   def error({:call, from}, {:send_message, prompt}, data) do
@@ -1341,10 +1345,12 @@ defmodule OrcaHub.SessionRunner do
         broadcast(data.session_id, {:status, :error})
         AgentPresence.update_status(data.directory, data.session_id, "error")
         maybe_notify_parent(%{session | status: "error", error_detail: error_detail}, :error)
-        # Process stays warm after a turn error — mark it idle-in-pool (evictable).
-        Streaming.WarmPool.touch(data.session_id, :error)
-        {next_data, actions} = consume_pending_rebake(%{data | interrupting: false})
-        {:next_state, :error, next_data, actions}
+        # A turn-level error must not leave a stale warm process behind — it may be
+        # wedged (e.g. spawned before login credentials existed, so every retry on
+        # the same process fails identically). Tear it down now instead of leaving
+        # it warm for up to 15 min: the next send_message always cold-starts.
+        next_data = teardown_port(%{data | interrupting: false, pending_rebake: false})
+        {:next_state, :error, next_data}
 
       :success ->
         finalize_streaming_idle(data, true)
