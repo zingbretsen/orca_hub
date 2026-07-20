@@ -37,6 +37,29 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
+  # Project-level toggle for the OrcaHub-Session commit trailer prompt
+  # fragment (see ctx.commit_trailer there, and
+  # OrcaHub.Backend.SharedPrompts.commit_trailer_prompt/1). Resolved once at
+  # init/1 — a warm streaming port's system prompt is already baked, so
+  # toggling the project setting only affects the next cold spawn. Fails
+  # OPEN (true) on no project or any lookup failure, preserving the
+  # pre-existing always-on behavior.
+  defp commit_trailer?(_init_data, nil), do: true
+
+  defp commit_trailer?(init_data, project_id) do
+    case db_call(init_data, :get_commit_trailer, [project_id]) do
+      false -> false
+      _ -> true
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "[SessionRunner] failed to look up commit_trailer for project #{project_id}: #{Exception.format(:error, error)} — defaulting to true"
+      )
+
+      true
+  end
+
   # API
 
   def start_link(opts) do
@@ -192,6 +215,7 @@ defmodule OrcaHub.SessionRunner do
       # (for `submit_result`) even under `tools == ""`, and MCP.Server can
       # collapse tools/list to just `submit_result` for the connection.
       api_run_schema?: api_run_schema?(init_data, session_id),
+      commit_trailer: commit_trailer?(init_data, session.project_id),
       db_node: db_node,
       # Phase 1 (backend_abstraction_spec.md §4/§5): resolve from the
       # session's persisted `backend` column. Unknown values raise (loud

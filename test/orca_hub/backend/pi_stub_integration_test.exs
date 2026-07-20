@@ -398,6 +398,55 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
     assert cli_error["message"] =~ "Failed to start the agent CLI (OrcaHub.Backend.Pi)"
   end
 
+  # Regression coverage for the "wedged warm port" bug: a genuine turn-level
+  # streaming error (agent_end with stopReason "error", e.g. a real "not
+  # logged in" CLI failure) used to leave the process alive in :error, and
+  # every retry reused that same doomed process for up to 15 minutes (only a
+  # backend switch recycled the port). A turn error must instead tear the
+  # port down immediately, so the very next send_message cold-starts a fresh
+  # process instead of writing into the dead one.
+  test "a genuine turn error tears down the warm port; the next send_message cold-starts", %{
+    session: session
+  } do
+    log_path =
+      Path.join(System.tmp_dir!(), "pi_stub_log_#{System.unique_integer([:positive])}")
+
+    System.put_env("PI_STUB_LOG", log_path)
+
+    on_exit(fn ->
+      System.delete_env("PI_STUB_LOG")
+      File.rm(log_path)
+    end)
+
+    assert {:ok, _pid} = SessionSupervisor.start_session(session.id)
+    assert SessionRunner.send_message(session.id, "TRIGGER_ERROR") == :ok
+
+    state = wait_until_terminal(session.id)
+    assert state.status == :error
+
+    result_event = Enum.find(state.messages, &(&1["type"] == "result"))
+    assert result_event["is_error"] == true
+
+    # The warm slot must be released immediately, not just eventually via the
+    # 15-min idle_teardown timer.
+    refute Enum.any?(OrcaHub.Streaming.WarmPool.warm_rows(), fn {sid, _pid, _ts, _status} ->
+             sid == session.id
+           end)
+
+    # A subsequent send_message must cold-start a NEW process rather than
+    # write to the dead one — Backend.Pi's on_open/1 writes exactly one
+    # "get_state" command per cold open, so two cold opens (the initial one
+    # plus this retry) show up as two "get_state" lines in the stub's command
+    # log. A stale-port-reuse bug would write "prompt" straight to the dead
+    # process with no second "get_state" at all.
+    assert SessionRunner.send_message(session.id, "say hi") == :ok
+    retry_state = wait_until_terminal(session.id)
+    assert retry_state.status == :idle
+
+    log = log_path |> File.read!() |> String.split("\n", trim: true)
+    assert Enum.count(log, &(&1 == "get_state")) == 2
+  end
+
   defp tool_blocks(messages, msg_type, block_type) do
     messages
     |> Enum.filter(&(&1["type"] == msg_type))

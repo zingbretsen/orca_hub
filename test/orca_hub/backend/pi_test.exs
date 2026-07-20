@@ -1271,6 +1271,29 @@ defmodule OrcaHub.Backend.PiTest do
       assert prompt =~ "run_elixir"
     end
 
+    test "commit_trailer: false omits the OrcaHub-Session trailer instruction" do
+      c = ctx(%{commit_trailer: false})
+      refute Backend.system_prompt(c) =~ "OrcaHub-Session:"
+    end
+
+    test "commit_trailer: true or missing includes the trailer instruction (default)" do
+      assert Backend.system_prompt(ctx(%{commit_trailer: true})) =~ "OrcaHub-Session:"
+      assert Backend.system_prompt(ctx()) =~ "OrcaHub-Session:"
+    end
+
+    # Unlike Claude/Codex, pi's commit-trailer fragment is gated ONLY on the
+    # flag, not on `!ctx.orchestrator` — preserve that existing behavior:
+    # an orchestrator still gets the trailer unless the project opted out.
+    test "orchestrator: true still includes the trailer when commit_trailer is unset (no orchestrator gate on pi)" do
+      c = ctx(%{orchestrator: true})
+      assert Backend.system_prompt(c) =~ "OrcaHub-Session:"
+    end
+
+    test "orchestrator: true + commit_trailer: false omits the trailer" do
+      c = ctx(%{orchestrator: true, commit_trailer: false})
+      refute Backend.system_prompt(c) =~ "OrcaHub-Session:"
+    end
+
     # lib/orca_hub/mcp/server.ex:130 collapses the MCP surface to
     # run_elixir/search_tools regardless of the orchestrator flag,
     # so orchestrator + code_exec together must rewrite the orchestrator

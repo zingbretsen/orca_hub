@@ -18,6 +18,12 @@ defmodule OrcaHub.Projects.Project do
     # also has scrub_session_env enabled. Same entry grammar as
     # OrcaHub.ClusterNodes.ClusterNode#env_allowlist (exact name or NAME*).
     field :env_allowlist, {:array, :string}, default: []
+    # Whether sessions under this project are instructed to append the
+    # OrcaHub-Session git trailer to commits — see
+    # OrcaHub.Backend.SharedPrompts.commit_trailer_prompt/1. Resolved once at
+    # SessionRunner init, so toggling this only affects the NEXT cold spawn
+    # (a warm streaming port already baked its system prompt).
+    field :commit_trailer, :boolean, default: true
 
     has_many :sessions, OrcaHub.Sessions.Session
 
@@ -26,7 +32,7 @@ defmodule OrcaHub.Projects.Project do
 
   def changeset(project, attrs) do
     project
-    |> cast(attrs, [:name, :directory, :deleted_at, :node, :env_allowlist])
+    |> cast(attrs, [:name, :directory, :deleted_at, :node, :env_allowlist, :commit_trailer])
     |> validate_required([:name, :directory])
     |> OrcaHub.ClusterNodes.ClusterNode.validate_env_allowlist()
   end

@@ -62,6 +62,16 @@ protocol's "events never have an id" rule — spec's docs/rpc.md):
                                         OrcaHub.Backend.Pi's mid-turn steering
                                         path (backend_abstraction_spec.md
                                         §12.6).
+  - {"type":"prompt","message":"TRIGGER_ERROR"} -> the same "prompt" response
+                                        + agent_start as above, then an
+                                        agent_end whose last assistant message
+                                        has stopReason "error" (mirrors a
+                                        genuine CLI-reported failure, e.g. "not
+                                        logged in") — no tool calls, no
+                                        success text. Lets a test drive a
+                                        REAL turn-level streaming error against
+                                        a live warm port (SessionRunner's
+                                        :error-state warm-port teardown fix).
   - {"type":"steer","message":…}   -> {"type":"response","command":"steer",
                                         "success":true}, then emits (in
                                         order): queue_update (queue now
@@ -240,6 +250,25 @@ def handle_prompt(message):
         # in flight (mid tool-call loop) when the user sends a mid-turn
         # message, exercising OrcaHub.Backend.Pi's steering path (see
         # handle_steer below) instead of the default happy path below.
+        return
+
+    if message == "TRIGGER_ERROR":
+        send(
+            {
+                "type": "agent_end",
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": message}]},
+                    {
+                        "role": "assistant",
+                        "content": [],
+                        "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "cost": {"total": 0}},
+                        "stopReason": "error",
+                        "errorMessage": "Not logged in · Please run /login",
+                    },
+                ],
+                "willRetry": False,
+            }
+        )
         return
 
     send(

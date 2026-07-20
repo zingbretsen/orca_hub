@@ -244,7 +244,9 @@ defmodule OrcaHub.Backend.Claude do
           do: SharedPrompts.orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec)
         ),
         SharedPrompts.code_exec_prompt(code_exec),
-        if(!ctx.orchestrator, do: SharedPrompts.commit_trailer_prompt(ctx.session_id)),
+        if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true),
+          do: SharedPrompts.commit_trailer_prompt(ctx.session_id)
+        ),
         if(!ctx.orchestrator,
           do: SharedPrompts.worker_practices_prompt(mcp_orchestration, code_exec)
         ),

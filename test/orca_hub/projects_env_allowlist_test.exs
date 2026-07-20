@@ -62,4 +62,31 @@ defmodule OrcaHub.ProjectsEnvAllowlistTest do
       assert updated.env_allowlist == ["OTHER_*"]
     end
   end
+
+  describe "commit_trailer (SharedPrompts.commit_trailer_prompt/1 gate, see backend tests)" do
+    test "defaults to true when omitted" do
+      {:ok, project} =
+        Projects.create_project(%{
+          name: "p-#{System.unique_integer([:positive])}",
+          directory: "/tmp/p-#{System.unique_integer([:positive])}"
+        })
+
+      assert project.commit_trailer == true
+    end
+
+    test "is cast on create and update" do
+      {:ok, project} = Projects.create_project(attrs([]) |> Map.put(:commit_trailer, false))
+      assert project.commit_trailer == false
+
+      assert {:ok, updated} = Projects.update_project(project, %{commit_trailer: true})
+      assert updated.commit_trailer == true
+    end
+
+    test "get_commit_trailer/1 returns the raw column, nil for a missing project" do
+      {:ok, project} = Projects.create_project(attrs([]) |> Map.put(:commit_trailer, false))
+
+      assert Projects.get_commit_trailer(project.id) == false
+      assert Projects.get_commit_trailer(Ecto.UUID.generate()) == nil
+    end
+  end
 end

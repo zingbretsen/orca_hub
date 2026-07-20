@@ -965,6 +965,23 @@ defmodule OrcaHub.Backend.CodexTest do
       refute prompt =~ "mcp__orca__start_session"
     end
 
+    test "commit_trailer: false omits the OrcaHub-Session trailer instruction" do
+      c = ctx(%{commit_trailer: false})
+      prompt = Backend.system_prompt(c)
+
+      refute prompt =~ "OrcaHub-Session:"
+    end
+
+    test "commit_trailer: true or missing includes the trailer instruction (default)" do
+      assert Backend.system_prompt(ctx(%{commit_trailer: true})) =~ "OrcaHub-Session:"
+      assert Backend.system_prompt(ctx()) =~ "OrcaHub-Session:"
+    end
+
+    test "commit_trailer: false still omits the trailer for an orchestrator (already omitted)" do
+      c = ctx(%{orchestrator: true, commit_trailer: false})
+      refute Backend.system_prompt(c) =~ "OrcaHub-Session:"
+    end
+
     test "code_exec: true swaps the sibling-sessions guidance to Tools.* inside run_elixir" do
       c = ctx(%{code_exec: true})
       prompt = Backend.system_prompt(c)

@@ -66,7 +66,9 @@ defmodule OrcaHub.Backend.ClaudeTest do
         "Your OrcaHub session ID is #{ctx.session_id}.",
         expected_orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec),
         expected_code_exec_prompt(code_exec),
-        if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
+        if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true),
+          do: expected_commit_trailer_prompt(ctx.session_id)
+        ),
         if(!ctx.orchestrator, do: expected_worker_practices_prompt(true, code_exec)),
         if(!ctx.orchestrator, do: expected_ask_user_question_prompt()),
         expected_sibling_sessions_prompt(ctx.orchestrator, code_exec),
@@ -355,7 +357,9 @@ defmodule OrcaHub.Backend.ClaudeTest do
   defp expected_system_prompt_no_mcp(ctx) do
     [
       "Your OrcaHub session ID is #{ctx.session_id}.",
-      if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
+      if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true),
+        do: expected_commit_trailer_prompt(ctx.session_id)
+      ),
       if(!ctx.orchestrator, do: expected_worker_practices_prompt(false, false)),
       if(!ctx.orchestrator, do: expected_ask_user_question_prompt())
     ]
@@ -375,7 +379,9 @@ defmodule OrcaHub.Backend.ClaudeTest do
   defp expected_system_prompt_api_run(ctx) do
     [
       "Your OrcaHub session ID is #{ctx.session_id}.",
-      if(!ctx.orchestrator, do: expected_commit_trailer_prompt(ctx.session_id)),
+      if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true),
+        do: expected_commit_trailer_prompt(ctx.session_id)
+      ),
       if(!ctx.orchestrator, do: expected_worker_practices_prompt(false, false)),
       if(!ctx.orchestrator, do: expected_ask_user_question_prompt()),
       expected_submit_result_prompt()
@@ -845,6 +851,31 @@ defmodule OrcaHub.Backend.ClaudeTest do
       refute prompt =~ "Orchestrator Session"
       refute prompt =~ "mcp__orca__start_session"
       refute prompt =~ "Other agent sessions may be active"
+    end
+
+    test "commit_trailer: false omits the OrcaHub-Session trailer instruction" do
+      ctx = ctx(%{commit_trailer: false})
+      prompt = Backend.system_prompt(ctx)
+
+      assert prompt == expected_system_prompt(ctx)
+      refute prompt =~ "OrcaHub-Session:"
+    end
+
+    test "commit_trailer: true (explicit) includes the trailer instruction, same as the default" do
+      ctx = ctx(%{commit_trailer: true})
+      prompt = Backend.system_prompt(ctx)
+
+      assert prompt == expected_system_prompt(ctx)
+      assert prompt == Backend.system_prompt(ctx(session_id: ctx.session_id))
+      assert prompt =~ "OrcaHub-Session: #{ctx.session_id}"
+    end
+
+    test "commit_trailer: false still omits the trailer for an orchestrator (already omitted, belt-and-suspenders)" do
+      ctx = ctx(%{orchestrator: true, commit_trailer: false})
+      prompt = Backend.system_prompt(ctx)
+
+      assert prompt == expected_system_prompt(ctx)
+      refute prompt =~ "OrcaHub-Session:"
     end
   end
 

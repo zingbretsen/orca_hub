@@ -61,6 +61,16 @@
           for a prefix match, e.g. <code>AWS_*</code>.
         </p>
       </div>
+      <div class="fieldset mb-2">
+        <.input
+          field={@edit_form[:commit_trailer]}
+          type="checkbox"
+          label="Instruct sessions to add the OrcaHub-Session trailer to commits"
+        />
+        <p class="text-xs text-base-content/60 mt-1">
+          Toggling this only affects the next cold session spawn — an already-warm streaming session's system prompt is baked in until it goes idle and reopens.
+        </p>
+      </div>
       <div class="flex justify-end gap-2 mt-4">
         <.link patch={~p"/projects/#{@project.id}"} class="btn">Cancel</.link>
         <.button type="submit">Save</.button>

@@ -983,7 +983,9 @@ defmodule OrcaHub.Backend.Pi do
       "Your OrcaHub session ID is #{ctx.session_id}.",
       SharedPrompts.orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec),
       SharedPrompts.code_exec_prompt(code_exec),
-      SharedPrompts.commit_trailer_prompt(ctx.session_id),
+      if(Map.get(ctx, :commit_trailer, true),
+        do: SharedPrompts.commit_trailer_prompt(ctx.session_id)
+      ),
       if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec)),
       SharedPrompts.context_files_prompt(ctx.directory)
     ]

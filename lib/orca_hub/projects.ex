@@ -36,6 +36,13 @@ defmodule OrcaHub.Projects do
     end
   end
 
+  # Lightweight lookup for SessionRunner init — avoids the sessions preload
+  # that get_project/1 and get_project!/1 do, since this is called on every
+  # session start and only the single boolean is needed.
+  def get_commit_trailer(project_id) do
+    Repo.one(from p in Project, where: p.id == ^project_id, select: p.commit_trailer)
+  end
+
   def get_project_by_directory(directory) do
     Repo.one(
       from p in Project, where: p.directory == ^directory and is_nil(p.deleted_at), limit: 1
