@@ -26,7 +26,28 @@ defmodule OrcaHub.Backend.Claude do
   # silently never fire. Hard-disabled for every Claude spawn; sessions must
   # use the schedule_heartbeat MCP tool instead, which is driven by the
   # server-side SessionHeartbeat and survives all of that.
-  @disallowed_tools ["ScheduleWakeup"]
+  #
+  # SendMessage is the CLI's own native inter-session/teammate messaging
+  # tool (confirmed via `claude -p ... --output-format stream-json --verbose`
+  # init event's "tools" array). It cannot reach OrcaHub sessions at all
+  # (they aren't CLI "teammates"), so a model reaching for it would silently
+  # talk to nothing. Sessions must use Tools.send_message_to_session(...)
+  # inside run_elixir instead, which actually delivers to another OrcaHub
+  # session.
+  #
+  # Task and Workflow are the CLI's own local subagent-spawning mechanisms
+  # (Task launches a single subagent; Workflow scripts a multi-agent
+  # pipeline) — also confirmed present in the same init "tools" array.
+  # OrcaHub sessions must have no local subagent mechanism at all: delegated
+  # work has to go through Tools.start_session(...) instead, which spawns a
+  # real OrcaHub child session that's visible/coordinable in the hub (auto
+  # notifies the parent on completion), rather than an invisible in-process
+  # subagent the hub never learns about. TaskCreate/TaskGet/TaskList/
+  # TaskOutput/TaskStop/TaskUpdate are a separate, unrelated tool family
+  # (todo-list tracking within the current session) and are deliberately
+  # left enabled, as are ordinary execution tools (Bash/Read/Edit/
+  # ToolSearch/etc.).
+  @disallowed_tools ["ScheduleWakeup", "SendMessage", "Task", "Workflow"]
 
   # ── Capabilities ─────────────────────────────────────────────────────
 
@@ -292,11 +313,10 @@ defmodule OrcaHub.Backend.Claude do
 
   # Orchestrator sessions can use `search_sessions`; regular sessions cannot,
   # so point them at the `.agents/` directory to discover sibling session IDs.
-  # In code-exec mode, `search_sessions` only exists as a `Tools.*` function
-  # callable from inside `run_elixir` — it is NOT a standalone `mcp__orca__*`
-  # tool, so the flat-tool-name guidance above is wrong and must be swapped
-  # out. `send_message_to_session` is the exception: it's promoted to a
-  # standalone tool even in code-exec mode (see `MCP.CodeExec.MetaTools`).
+  # In code-exec mode, EVERY coordination tool including `send_message_to_session`
+  # only exists as a `Tools.*` function callable from inside `run_elixir` — none
+  # are standalone `mcp__orca__*` tools, so the flat-tool-name guidance below
+  # is wrong there and must be swapped out.
   defp sibling_sessions_prompt(true, true) do
     "Other agent sessions may be active in this directory. Use `Tools.search_sessions(%{\"status\" => ...})` inside the `run_elixir` MCP tool to discover sibling sessions you may want to coordinate with — it is NOT a standalone MCP tool in this session."
   end
@@ -306,7 +326,7 @@ defmodule OrcaHub.Backend.Claude do
   end
 
   defp sibling_sessions_prompt(_orchestrator, true) do
-    "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then use the standalone `send_message_to_session` MCP tool to send them messages."
+    "Other agent sessions may be active in this directory. Check the `.agents/` directory to discover active sessions and their IDs, then use `Tools.send_message_to_session(...)` inside the `run_elixir` MCP tool to send them messages — it is NOT a standalone MCP tool in this session."
   end
 
   defp sibling_sessions_prompt(_orchestrator, _code_exec) do

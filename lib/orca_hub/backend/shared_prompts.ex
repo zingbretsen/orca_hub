@@ -13,15 +13,12 @@ defmodule OrcaHub.Backend.SharedPrompts do
   depend on a Claude-only *built-in* (`AskUserQuestion`) still stay private
   to `Backend.Claude`.
 
-  `code_exec_prompt/1` sources its list of standalone tools from
-  `OrcaHub.MCP.CodeExec.MetaTools.passthrough_tool_names/0` rather than
-  hardcoding them, so promoting another first-party tool to standalone
-  top-level status (alongside `send_message_to_session`) only requires
-  updating `@passthrough_tool_names` there — every prompt fragment here
-  picks it up automatically.
+  `code_exec_prompt/1` documents the collapsed-to-`run_elixir` surface
+  (`OrcaHub.MCP.CodeExec.MetaTools`) — every OrcaHub coordination tool is a
+  `Tools.*` function called from inside `run_elixir`, none are standalone
+  MCP tools, so there's nothing here to keep in sync with a promoted-tools
+  list anymore.
   """
-
-  alias OrcaHub.MCP.CodeExec.MetaTools
 
   @doc "Teaches a code-exec session its collapsed tool surface, when enabled."
   def code_exec_prompt(false), do: nil
@@ -30,34 +27,64 @@ defmodule OrcaHub.Backend.SharedPrompts do
     """
     # Code Execution Mode
 
-    Your MCP tool list is intentionally small: #{standalone_tool_names_line()}. \
-    Every other OrcaHub and upstream tool is reachable from inside \
-    `run_elixir` as a named `Tools.*` function — call several tools and \
-    stitch their results together with the Elixir standard library in ONE \
-    snippet instead of many separate tool calls.
+    Your MCP tool list is intentionally small: `run_elixir` is the ONLY MCP \
+    tool this connection exposes. Every OrcaHub and upstream tool — \
+    `send_message_to_session`, `get_session_tail`, `report_progress`, \
+    `start_session`, `search_sessions`, `schedule_heartbeat`, the \
+    feature-request tools, upstream tools like `github__get_issue`, all of \
+    it — is reachable from inside `run_elixir` as a named `Tools.*` \
+    function, never as a standalone tool. Call several tools and stitch \
+    their results together with the Elixir standard library in ONE snippet \
+    instead of many separate tool calls.
 
-    - **Discover tools** with `search_tools`, or from inside code with \
-      `Tools.search("query")`, `Tools.list()`, and `Tools.schema("name")` (a \
-      tool's JSON input schema). `Tools.search/1` and `Tools.list/0` return \
-      maps with "name"/"description" keys (search results also include "args" \
-      — argument names, optional ones suffixed "?"). `Tools.schema/1` returns \
-      a map (or nil). Only tool *invocations* (below) auto-unwrap to \
-      maps/lists.
-    - Before first using a deferred-schema tool (`Monitor`, `TaskCreate`, \
-      `WebFetch`, standalone `send_message_to_session`, or an early \
-      `mcp__orca__*` tool), load its real schema with ToolSearch/\
-      `search_tools`; never guess argument names. `No such tool available` or \
-      `InputValidationError` means its schema was not loaded yet, not that it \
-      does not exist.
+    - **Discover tools** from inside code with `Tools.search("query")`, \
+      `Tools.list()`, and `Tools.schema("name")` (a tool's JSON input \
+      schema) — e.g. `Tools.search("discord")` surfaces \
+      `Tools.send_discord_message`. `Tools.search/1` and `Tools.list/0` \
+      return maps with "name"/"description" keys (search results also \
+      include "args" — argument names, optional ones suffixed "?"). \
+      `Tools.schema/1` returns a map (or nil). Only tool *invocations* \
+      (below) auto-unwrap to maps/lists.
+    - **Tools you'll call often**, all as `Tools.<name>(args)` from inside \
+      `run_elixir`:
+
+          Tools.send_message_to_session(%{"session_id" => "...", "message" => "..."})
+          Tools.get_session_tail(%{"session_id" => "..."})
+          Tools.report_progress(%{"phase" => "implementing", "note" => "..."})
+          # orchestrator flows:
+          Tools.start_session(%{"directory" => "...", "prompt" => "..."})
+          Tools.search_sessions(%{"status" => "error"})
+          Tools.schedule_heartbeat(%{"interval_seconds" => 300, "message" => "..."})
+          # feature-request backlog:
+          Tools.file_feature_request(%{"title" => "...", "description" => "..."})
+          Tools.list_feature_requests(%{})
+
+    - Before first using a deferred-schema CLI-native tool (`Monitor`, \
+      `TaskCreate`, `WebFetch`), load its real schema with ToolSearch; never \
+      guess argument names. `No such tool available` or `InputValidationError` \
+      there means its schema was not loaded yet, not that it does not exist. \
+      This does NOT apply to OrcaHub's own tools — those are plain \
+      `Tools.*` Elixir function calls, not MCP tool invocations, so this \
+      failure mode cannot happen to them.
     - **Never use a CLI-native ScheduleWakeup tool** — its timer lives \
       inside the CLI process itself, which OrcaHub routinely kills while a \
       session is idle (15-minute idle teardown, warm-pool eviction, a \
       kill-switch downgrade, or a deploy), so the wakeup may silently never \
-      fire. Use the `schedule_heartbeat` MCP tool instead (`interval_seconds`, \
-      `message`), and call `cancel_heartbeat` when done.
+      fire. Use `Tools.schedule_heartbeat(...)` instead (`interval_seconds`, \
+      `message`), and call `Tools.cancel_heartbeat(...)` when done.
+    - **Never use a CLI-native inter-session messaging tool** (e.g. \
+      `SendMessage`) to reach another session — it cannot reach OrcaHub \
+      sessions at all. Always use `Tools.send_message_to_session(...)` \
+      inside `run_elixir` instead.
+    - **CLI-native subagent tools (e.g. `Task`, `Workflow`) are disabled** — \
+      to delegate work, spawn a real OrcaHub child session with \
+      `Tools.start_session(...)` instead. It's auto-linked as your child and \
+      notifies you with a `[Session lifecycle]` message when it goes idle or \
+      errors, and — unlike a CLI-native subagent — is visible and \
+      coordinable from the hub.
     - **`Monitor`-yield background watchers can die the same way** while a \
       session sits idle for a long stretch — for long waits, prefer polling \
-      via `schedule_heartbeat` over leaving a `Monitor` unattended.
+      via `Tools.schedule_heartbeat(...)` over leaving a `Monitor` unattended.
     - **Call a tool** as `Tools.<raw_mcp_name>(args)`, e.g. \
       `Tools.open_file(%{"file_path" => "lib/foo.ex"})` or \
       `Tools.github__get_issue(%{"number" => 7})`. Named functions \
@@ -72,15 +99,6 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - For explicit error handling use `Tools.try_call("name", args)` which \
       returns `{:ok, value} | {:error, reason}`; for the faithful raw MCP \
       envelope use `Tools.call("name", args)`.
-    - **These first-party tools are ALSO standalone top-level tools** — call \
-      them directly, not as `Tools.*`: #{passthrough_tool_names_line()}. \
-      Every OTHER inter-session coordination tool (`search_sessions`, \
-      `start_session`, `schedule_heartbeat`, `archive_session`, \
-      `cancel_heartbeat`, etc.) is a `Tools.*` function callable only from \
-      inside `run_elixir` in this session — NOT a standalone MCP tool. \
-      Discover them with orca's own `search_tools` / `Tools.search`, not the \
-      CLI's built-in ToolSearch — that corpus only covers the CLI's own \
-      deferred tools and cannot see these.
     - The value of the last expression (and any stdout) is returned to you. \
       Keep return values slim — filter/project before returning. Pure stdlib is \
       available; OrcaHub internals, File, and System are blocked.
@@ -93,32 +111,12 @@ defmodule OrcaHub.Backend.SharedPrompts do
           Enum.map(sessions, & &1["title"])
 
       Pass `"reset": true` to clear your stored variables and start fresh.
-    - **Call `report_progress(phase: ..., note: ...)` at phase boundaries** \
-      (e.g. planning → implementing → validating → fixing-tests) — a \
-      non-interrupting way for whoever spawned you to see you're making \
-      progress without messaging you.
+    - **Call `Tools.report_progress(%{"phase" => ..., "note" => ...})` at \
+      phase boundaries** (e.g. planning → implementing → validating → \
+      fixing-tests) — a non-interrupting way for whoever spawned you to see \
+      you're making progress without messaging you.
     """
     |> String.trim()
-  end
-
-  defp standalone_tool_names_line do
-    ["run_elixir", "search_tools" | MetaTools.passthrough_tool_names()]
-    |> Enum.map(&"`#{&1}`")
-    |> oxford_join()
-  end
-
-  defp passthrough_tool_names_line do
-    MetaTools.passthrough_tool_names()
-    |> Enum.map(&"`#{&1}`")
-    |> Enum.join(", ")
-  end
-
-  defp oxford_join([item]), do: item
-  defp oxford_join([a, b]), do: "#{a} and #{b}"
-
-  defp oxford_join(items) do
-    {init, [last]} = Enum.split(items, -1)
-    Enum.join(init, ", ") <> ", and #{last}"
   end
 
   @doc """
@@ -129,11 +127,10 @@ defmodule OrcaHub.Backend.SharedPrompts do
   no text changed, only the call site.
 
   Code-exec-aware: `lib/orca_hub/mcp/server.ex:130` collapses a code-exec
-  connection's MCP surface to `run_elixir`/`search_tools`/
-  `send_message_to_session` regardless of the `orchestrator` flag, so none of
-  `mcp__orca__start_session` etc. (aside from `send_message_to_session`
-  itself, promoted back to standalone) exist as standalone tools there — the
-  `code_exec` arg swaps every OTHER coordination-tool reference (including the
+  connection's MCP surface to `run_elixir` ONLY, regardless of the
+  `orchestrator` flag — no coordination tool, including
+  `send_message_to_session`, exists as a standalone tool there anymore. The
+  `code_exec` arg swaps every coordination-tool reference (including the
   example instruction in step 2, which orchestrators are known to paste
   verbatim into worker prompts) to the `Tools.<name>(...)` inside `run_elixir`
   shape.
@@ -153,18 +150,18 @@ defmodule OrcaHub.Backend.SharedPrompts do
 
     ## How to Work
 
-    **Important:** Your MCP tool list is collapsed to #{standalone_tool_names_line()} (code execution mode). Those are standalone MCP tools — call them directly. Every OTHER coordination tool below is NOT standalone here; call it as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.
+    **Important:** Your MCP tool list is collapsed to `run_elixir` (code execution mode) — it is the ONLY standalone MCP tool here. Every coordination tool below, including `send_message_to_session` itself, is called as `Tools.<name>(args)` from inside `run_elixir`, e.g. `Tools.start_session(%{...})` (not a bare `start_session` tool call). The same applies to `Tools.send_message_to_session`, `Tools.schedule_heartbeat`, `Tools.search_sessions`, `Tools.archive_session`, `Tools.cancel_heartbeat`, etc.
 
     1. **Delegate all implementation work** to other sessions using:
-       - `Tools.start_session(...)` inside `run_elixir` — spawn a new worker session with a detailed prompt. Child spawning automatically links and notifies the caller for any session, not just orchestrators: the worker is linked as your child, and when it goes idle or errors, you automatically get a `[Session lifecycle]` message — this is the PRIMARY way to learn a worker is done, you do not need to instruct it to call `send_message_to_session` back. Pass `notify_on_completion: false` if you genuinely want a fire-and-forget spawn with no callback.
-       - `send_message_to_session(...)` — direct an existing session (standalone tool, not `Tools.*`)
+       - `Tools.start_session(...)` inside `run_elixir` — spawn a new worker session with a detailed prompt. Child spawning automatically links and notifies the caller for any session, not just orchestrators: the worker is linked as your child, and when it goes idle or errors, you automatically get a `[Session lifecycle]` message — this is the PRIMARY way to learn a worker is done, you do not need to instruct it to call `Tools.send_message_to_session` back. Pass `notify_on_completion: false` if you genuinely want a fire-and-forget spawn with no callback.
+       - `Tools.send_message_to_session(...)` inside `run_elixir` — direct an existing session
 
-    2. **Prefer letting the automatic notification tell you when a worker is done.** Only ask a worker to `send_message_to_session` you explicitly if you need something mid-task (a progress update, a specific artifact) beyond "it's done" — the completion callback itself is redundant with the automatic notification.
+    2. **Prefer letting the automatic notification tell you when a worker is done.** Only ask a worker to `Tools.send_message_to_session` you explicitly if you need something mid-task (a progress update, a specific artifact) beyond "it's done" — the completion callback itself is redundant with the automatic notification.
 
     3. **Heartbeats are a coarse fallback, not your primary signal.** Automatic `[Session lifecycle]` messages fire the moment a worker finishes, so you shouldn't need to poll. Still set one wide-interval `Tools.schedule_heartbeat(...)` safety net (e.g. every 10-15 minutes) in case a notification is ever missed or a worker hangs mid-turn (never goes idle/error). Pass `watch_children: true` (or `watch_session_ids`) — watch lists put per-worker status/activity digests directly in the wake-up message, often enough to skip a `search_sessions` call:
        > "Check on worker sessions. Use `Tools.search_sessions(...)` inside `run_elixir` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
 
-    4. **Check in proactively** — If a worker session seems stuck (no lifecycle notification and no heartbeat signal within a reasonable time), use `get_session_tail(...)` to peek at its progress without interrupting it, or message it directly.
+    4. **Check in proactively** — If a worker session seems stuck (no lifecycle notification and no heartbeat signal within a reasonable time), use `Tools.get_session_tail(...)` inside `run_elixir` to peek at its progress without interrupting it, or message it directly.
 
     5. **Archive completed children** — When a worker session has finished its task, use `Tools.archive_session(...)` inside `run_elixir` to archive it. This keeps the session list tidy. If you need to continue the conversation later, just send a message to the archived session — it will be automatically unarchived.
 
@@ -242,29 +239,32 @@ defmodule OrcaHub.Backend.SharedPrompts do
     heartbeat_ref =
       if code_exec, do: "`Tools.schedule_heartbeat(...)`", else: "`mcp__orca__schedule_heartbeat`"
 
-    tail_ref = if code_exec, do: "`get_session_tail(...)`", else: "`mcp__orca__get_session_tail`"
+    tail_ref =
+      if code_exec, do: "`Tools.get_session_tail(...)`", else: "`mcp__orca__get_session_tail`"
 
     message_ref =
       if code_exec,
-        do: "`send_message_to_session(...)`",
+        do: "`Tools.send_message_to_session(...)`",
         else: "`mcp__orca__send_message_to_session`"
 
     feature_request_ref =
-      if code_exec, do: "`file_feature_request(...)`", else: "`mcp__orca__file_feature_request`"
+      if code_exec,
+        do: "`Tools.file_feature_request(...)`",
+        else: "`mcp__orca__file_feature_request`"
 
     list_feature_requests_ref =
       if code_exec,
-        do: "`list_feature_requests(...)`",
+        do: "`Tools.list_feature_requests(...)`",
         else: "`mcp__orca__list_feature_requests`"
 
     append_feature_request_note_ref =
       if code_exec,
-        do: "`append_feature_request_note(...)`",
+        do: "`Tools.append_feature_request_note(...)`",
         else: "`mcp__orca__append_feature_request_note`"
 
     close_feature_request_ref =
       if code_exec,
-        do: "`close_feature_request(...)`",
+        do: "`Tools.close_feature_request(...)`",
         else: "`mcp__orca__close_feature_request`"
 
     """

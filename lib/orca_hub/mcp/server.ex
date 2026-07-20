@@ -186,11 +186,10 @@ defmodule OrcaHub.MCP.Server do
     {response, state}
   end
 
-  # Code-exec mode: collapse the surface to just the meta-tools (run_elixir,
-  # search_tools). First-party + upstream tools are no longer
-  # flattened here — they're reachable only as `Tools.*` functions inside
-  # run_elixir. When the flag is OFF this clause never matches and tools/list
-  # behaves exactly as before.
+  # Code-exec mode: collapse the surface to just the run_elixir meta-tool.
+  # First-party + upstream tools are no longer flattened here — they're
+  # reachable only as `Tools.*` functions inside run_elixir. When the flag is
+  # OFF this clause never matches and tools/list behaves exactly as before.
   defp dispatch(%{"method" => "tools/list", "id" => id}, %{code_exec: true} = state) do
     all_tools = OrcaHub.MCP.CodeExec.MetaTools.list()
 

@@ -213,12 +213,16 @@ defmodule OrcaHub.Discord.Bridge do
   # this tool exists: `send_discord_message` lets it post attachments or
   # interim updates mid-turn. It should NOT use it to repeat the final reply —
   # `post_reply/2` below already posts that automatically once the session
-  # goes idle.
+  # goes idle. Discord-bridged sessions run in code-exec mode, where
+  # `send_discord_message` is reachable ONLY as a `Tools.*` function inside
+  # `run_elixir` (it was never a standalone MCP tool, even before the
+  # code-exec passthrough removal — pointing at a bare `send_discord_message`
+  # tool call here was a real, hit-in-production bug).
   defp append_discord_tool_hint(prompt) do
     """
     #{prompt}
 
-    [You can use the send_discord_message MCP tool to send files/attachments or interim updates to this channel. Pass one of the `[id: ...]` values shown above as `reply_to_message_id` to thread your post as a Discord reply to that specific message. Your final reply is posted here automatically when you finish — don't duplicate it with this tool.]
+    [You can call Tools.send_discord_message(%{...}) inside the run_elixir MCP tool to send files/attachments or interim updates to this channel. Pass one of the `[id: ...]` values shown above as `reply_to_message_id` to thread your post as a Discord reply to that specific message. Your final reply is posted here automatically when you finish — don't duplicate it with this tool.]
     """
     |> String.trim_trailing()
   end

@@ -462,60 +462,19 @@ defmodule OrcaHub.MCP.CodeExecTest do
     end
   end
 
-  describe "search_tools (read-only over the live registry)" do
-    test "search_tools returns matching tools" do
-      result = MetaTools.call("search_tools", %{"query" => "session"}, %{})
-      assert result["isError"] == false
-      %{"count" => count} = Jason.decode!(hd(result["content"])["text"])
-      assert count > 0
+  describe "removed search_tools meta-tool" do
+    test "meta_tool?/1 no longer recognizes it" do
+      refute MetaTools.meta_tool?("search_tools")
     end
 
-    test "search_tools ranks by shared tokens instead of requiring every token to match" do
-      result = MetaTools.call("search_tools", %{"query" => "open file"}, %{})
-      assert result["isError"] == false
-      %{"tools" => tools} = Jason.decode!(hd(result["content"])["text"])
-      assert Enum.any?(tools, &(&1["name"] == "open_file"))
-
-      # a token matching nothing just contributes no score — it doesn't
-      # AND-fail the whole query the way substring search used to.
-      partial = MetaTools.call("search_tools", %{"query" => "open zzznotarealword"}, %{})
-      %{"tools" => partial_tools} = Jason.decode!(hd(partial["content"])["text"])
-      assert Enum.any?(partial_tools, &(&1["name"] == "open_file"))
-
-      no_match = MetaTools.call("search_tools", %{"query" => "zzznotarealword"}, %{})
-      %{"count" => 0} = Jason.decode!(hd(no_match["content"])["text"])
-    end
-
-    test "search_tools includes args, with optional properties suffixed \"?\"" do
+    test "calling it falls through to the unknown-tool error, pointing at Tools.search" do
       result = MetaTools.call("search_tools", %{"query" => "open_file"}, %{})
-      %{"tools" => tools} = Jason.decode!(hd(result["content"])["text"])
 
-      assert %{"name" => "open_file", "args" => args} =
-               Enum.find(tools, &(&1["name"] == "open_file"))
-
-      assert args == ["file_path:string", "line?:integer"]
-    end
-
-    test "search_tools finds first-party tools by the OrcaHub platform name" do
-      result = MetaTools.call("search_tools", %{"query" => "OrcaHub"}, %{})
-      %{"tools" => tools} = Jason.decode!(hd(result["content"])["text"])
-
-      platform_tool_names =
-        OrcaHub.MCP.Tools.list()
-        |> Enum.map(& &1["name"])
-        |> Kernel.++(~w(run_elixir search_tools))
-        |> MapSet.new()
-
-      assert tools != []
-      assert Enum.all?(tools, &MapSet.member?(platform_tool_names, &1["name"]))
-      assert Enum.any?(tools, &(&1["name"] == "search_sessions"))
-    end
-
-    test "search_tools includes run_elixir from the meta-tool corpus" do
-      result = MetaTools.call("search_tools", %{"query" => "elixir"}, %{})
-      %{"tools" => tools} = Jason.decode!(hd(result["content"])["text"])
-
-      assert Enum.any?(tools, &(&1["name"] == "run_elixir"))
+      assert result["isError"] == true
+      text = hd(result["content"])["text"]
+      assert text =~ "exposes only run_elixir"
+      assert text =~ "Tools.search"
+      refute text =~ "search_tools;"
     end
   end
 
@@ -529,46 +488,16 @@ defmodule OrcaHub.MCP.CodeExecTest do
 
       assert result["isError"] == true
       text = hd(result["content"])["text"]
-      assert text =~ "run_elixir, search_tools, send_message_to_session"
+      assert text =~ "exposes only run_elixir"
       assert text =~ "Tools.schema"
+      assert text =~ "Tools.search"
       refute text =~ "read_tool;"
     end
   end
 
   describe "MetaTools.list/0 tool definitions" do
-    test "the meta-tools plus the passthrough tools are exposed" do
-      assert Enum.map(MetaTools.list(), & &1["name"]) |> Enum.sort() == [
-               "append_feature_request_note",
-               "close_feature_request",
-               "file_feature_request",
-               "get_feature_request",
-               "get_session_tail",
-               "list_feature_requests",
-               "report_progress",
-               "run_elixir",
-               "search_tools",
-               "send_message_to_session"
-             ]
-    end
-
-    test "send_message_to_session's definition matches the real first-party schema" do
-      passthrough = Enum.find(MetaTools.list(), &(&1["name"] == "send_message_to_session"))
-      real = Enum.find(OrcaHub.MCP.Tools.list(), &(&1["name"] == "send_message_to_session"))
-
-      assert passthrough == real
-    end
-
-    test "passthrough_tool_names/0 is the single source of truth for what's promoted to standalone" do
-      assert MetaTools.passthrough_tool_names() == [
-               "send_message_to_session",
-               "get_session_tail",
-               "report_progress",
-               "file_feature_request",
-               "list_feature_requests",
-               "get_feature_request",
-               "append_feature_request_note",
-               "close_feature_request"
-             ]
+    test "only run_elixir is exposed" do
+      assert Enum.map(MetaTools.list(), & &1["name"]) == ["run_elixir"]
     end
 
     test "run_elixir's description lists the live first-party Tools.* names" do
@@ -593,10 +522,20 @@ defmodule OrcaHub.MCP.CodeExecTest do
       end
     end
 
-    test "search_tools' description points at Tools.schema for full schemas" do
-      search_tools = Enum.find(MetaTools.list(), &(&1["name"] == "search_tools"))
-      assert search_tools["description"] =~ "Tools.schema"
-      assert search_tools["description"] =~ "name:type"
+    test "run_elixir's description documents discovery and advertises frequently-used tools" do
+      run_elixir = Enum.find(MetaTools.list(), &(&1["name"] == "run_elixir"))
+      description = run_elixir["description"]
+
+      assert description =~ "Tools.search("
+      assert description =~ "Tools.list()"
+      assert description =~ "Tools.schema("
+      assert description =~ "Tools.send_message_to_session"
+      assert description =~ "Tools.get_session_tail"
+      assert description =~ "Tools.report_progress"
+      assert description =~ "Tools.start_session"
+      assert description =~ "Tools.search_sessions"
+      assert description =~ "Tools.schedule_heartbeat"
+      assert description =~ "Tools.file_feature_request"
     end
   end
 
@@ -610,22 +549,11 @@ defmodule OrcaHub.MCP.CodeExecTest do
       Enum.map(tools, & &1["name"])
     end
 
-    test "collapses to the meta-tools (plus the passthrough tools) when code_exec is on" do
+    test "collapses to exactly [run_elixir] when code_exec is on" do
       {:ok, sid} = Server.start_session(orca_session_id: "t1", code_exec: true)
       on_exit(fn -> Server.stop_session(sid) end)
 
-      assert Enum.sort(tool_names(sid)) == [
-               "append_feature_request_note",
-               "close_feature_request",
-               "file_feature_request",
-               "get_feature_request",
-               "get_session_tail",
-               "list_feature_requests",
-               "report_progress",
-               "run_elixir",
-               "search_tools",
-               "send_message_to_session"
-             ]
+      assert tool_names(sid) == ["run_elixir"]
     end
 
     test "is unchanged (full set, no meta-tools) when code_exec is off" do
@@ -653,54 +581,24 @@ defmodule OrcaHub.MCP.CodeExecTest do
     end
   end
 
-  describe "send_message_to_session passthrough in code-exec mode" do
+  describe "send_message_to_session is no longer a standalone tool in code-exec mode" do
     alias OrcaHub.MCP.Server
-    alias OrcaHub.Sessions
 
-    setup do
-      # This describe block is the only one in the file that touches the DB —
-      # shared mode (matching DataCase's async:false default) lets the
-      # SessionsTool call's internal Repo access see this test's data.
-      pid = Ecto.Adapters.SQL.Sandbox.start_owner!(OrcaHub.Repo, shared: true)
-      on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
-
-      dir =
-        Path.join(
-          System.tmp_dir!(),
-          "code_exec_send_message_#{System.unique_integer([:positive])}"
-        )
-
-      File.mkdir_p!(dir)
-      on_exit(fn -> File.rm_rf(dir) end)
-
-      {:ok, target} =
-        Sessions.create_session(%{
-          directory: dir,
-          backend: "claude",
-          runner_node: "debian@totally-offline-host"
-        })
-
-      {:ok, target: target}
-    end
-
-    test "MetaTools.call/3 delegates to the real Sessions implementation, not the unknown-tool fallback",
-         %{target: target} do
+    test "MetaTools.call/3 falls through to the unknown-tool steering error, not the real Sessions implementation" do
       result =
         MetaTools.call(
           "send_message_to_session",
-          %{"session_id" => target.id, "message" => "hi"},
+          %{"session_id" => "whatever", "message" => "hi"},
           %{orca_session_id: nil}
         )
 
       assert %{"isError" => true, "content" => [%{"text" => text}]} = result
-      assert text =~ "not currently connected"
-      refute text =~ "Unknown tool"
+      assert text =~ "exposes only run_elixir"
+      refute text =~ "not currently connected"
     end
 
-    test "MCP.Server tools/call routes it through end to end in code-exec mode", %{
-      target: target
-    } do
-      {:ok, sid} = Server.start_session(orca_session_id: "t-passthrough", code_exec: true)
+    test "MCP.Server tools/call gets the same steering error end to end in code-exec mode" do
+      {:ok, sid} = Server.start_session(orca_session_id: "t-no-passthrough", code_exec: true)
       on_exit(fn -> Server.stop_session(sid) end)
 
       %{"result" => result} =
@@ -709,12 +607,12 @@ defmodule OrcaHub.MCP.CodeExecTest do
           "id" => 1,
           "params" => %{
             "name" => "send_message_to_session",
-            "arguments" => %{"session_id" => target.id, "message" => "hi"}
+            "arguments" => %{"session_id" => "whatever", "message" => "hi"}
           }
         })
 
       assert %{"isError" => true, "content" => [%{"text" => text}]} = result
-      assert text =~ "not currently connected"
+      assert text =~ "exposes only run_elixir"
     end
   end
 

@@ -1,7 +1,7 @@
 defmodule OrcaHub.MCP.CodeExec.ToolSearch do
   @moduledoc """
-  Ranked keyword search (BM25) over a tool list, shared by the `search_tools`
-  meta-tool (`MetaTools`) and the generated `Tools.search/1` (`ToolGen`).
+  Ranked keyword search (BM25) over a tool list, used by the generated
+  `Tools.search/1` (`ToolGen`).
 
   Ported from a sibling project's code-exec design (`phx-app`,
   `code-exec-tools` branch) which replaced tokenized-substring matching with
