@@ -18,6 +18,7 @@ defmodule OrcaHub.Claude.Config do
     * `:skip_permissions` - skip permission prompts (default: `true`)
     * `:session_id` - resume a session by ID
     * `:allowed_tools` - list of allowed tool names (permission-style filtering)
+    * `:disallowed_tools` - list of denied tool names (permission-style filtering)
     * `:tools` - restrict built-in tools to this list (e.g. "Read,Glob,Grep")
     * `:max_turns` - maximum number of turns
     * `:max_budget` - maximum budget in USD
@@ -52,6 +53,7 @@ defmodule OrcaHub.Claude.Config do
       )
       |> maybe_add_opt("--resume", Keyword.get(opts, :session_id))
       |> maybe_add_opt("--allowedTools", maybe_join(Keyword.get(opts, :allowed_tools)))
+      |> maybe_add_opt("--disallowedTools", maybe_join(Keyword.get(opts, :disallowed_tools)))
       |> maybe_add_opt("--tools", Keyword.get(opts, :tools))
       |> maybe_add_opt("--max-turns", maybe_to_string(Keyword.get(opts, :max_turns)))
       |> maybe_add_opt("--max-budget-usd", maybe_to_string(Keyword.get(opts, :max_budget)))

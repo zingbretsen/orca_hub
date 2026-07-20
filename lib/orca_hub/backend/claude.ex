@@ -20,6 +20,14 @@ defmodule OrcaHub.Backend.Claude do
   alias OrcaHub.Claude.Config
   alias OrcaHub.HubRPC
 
+  # CLI-native ScheduleWakeup's timer lives inside this very process, which
+  # OrcaHub routinely kills while a session is idle (15-min idle_teardown,
+  # WarmPool evict_warm, kill-switch downgrade, deploys) — the wakeup would
+  # silently never fire. Hard-disabled for every Claude spawn; sessions must
+  # use the schedule_heartbeat MCP tool instead, which is driven by the
+  # server-side SessionHeartbeat and survives all of that.
+  @disallowed_tools ["ScheduleWakeup"]
+
   # ── Capabilities ─────────────────────────────────────────────────────
 
   @impl true
@@ -62,7 +70,7 @@ defmodule OrcaHub.Backend.Claude do
     claude_path = claude_executable!()
 
     opts =
-      [cwd: ctx.directory, input_format: "stream-json"]
+      [cwd: ctx.directory, input_format: "stream-json", disallowed_tools: @disallowed_tools]
       |> maybe_put(:session_id, ctx.claude_session_id)
       |> maybe_put(:model, ctx.model)
       |> maybe_put(:system_prompt, system_prompt(ctx))
@@ -85,7 +93,7 @@ defmodule OrcaHub.Backend.Claude do
     script_path = System.find_executable("script") || raise "script executable not found in PATH"
 
     opts =
-      [cwd: ctx.directory]
+      [cwd: ctx.directory, disallowed_tools: @disallowed_tools]
       |> maybe_put(:session_id, ctx.claude_session_id)
       |> maybe_put(:model, ctx.model)
       |> maybe_put(:system_prompt, system_prompt(ctx))

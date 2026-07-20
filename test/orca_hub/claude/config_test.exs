@@ -30,6 +30,12 @@ defmodule OrcaHub.Claude.ConfigTest do
     assert "Read,Edit" in args
   end
 
+  test "disallowed_tools joined with commas via --disallowedTools" do
+    {args, _} = Config.build_args("hello", disallowed_tools: ["ScheduleWakeup", "Edit"])
+    assert "--disallowedTools" in args
+    assert "ScheduleWakeup,Edit" in args
+  end
+
   test "max_turns adds --max-turns" do
     {args, _} = Config.build_args("hello", max_turns: 5)
     assert "--max-turns" in args

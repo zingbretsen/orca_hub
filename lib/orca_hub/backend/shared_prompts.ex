@@ -44,11 +44,20 @@ defmodule OrcaHub.Backend.SharedPrompts do
       a map (or nil). Only tool *invocations* (below) auto-unwrap to \
       maps/lists.
     - Before first using a deferred-schema tool (`Monitor`, `TaskCreate`, \
-      `WebFetch`, `ScheduleWakeup`, standalone `send_message_to_session`, or \
-      an early `mcp__orca__*` tool), load its real schema with ToolSearch/\
+      `WebFetch`, standalone `send_message_to_session`, or an early \
+      `mcp__orca__*` tool), load its real schema with ToolSearch/\
       `search_tools`; never guess argument names. `No such tool available` or \
       `InputValidationError` means its schema was not loaded yet, not that it \
       does not exist.
+    - **Never use a CLI-native ScheduleWakeup tool** — its timer lives \
+      inside the CLI process itself, which OrcaHub routinely kills while a \
+      session is idle (15-minute idle teardown, warm-pool eviction, a \
+      kill-switch downgrade, or a deploy), so the wakeup may silently never \
+      fire. Use the `schedule_heartbeat` MCP tool instead (`interval_seconds`, \
+      `message`), and call `cancel_heartbeat` when done.
+    - **`Monitor`-yield background watchers can die the same way** while a \
+      session sits idle for a long stretch — for long waits, prefer polling \
+      via `schedule_heartbeat` over leaving a `Monitor` unattended.
     - **Call a tool** as `Tools.<raw_mcp_name>(args)`, e.g. \
       `Tools.open_file(%{"file_path" => "lib/foo.ex"})` or \
       `Tools.github__get_issue(%{"number" => 7})`. Named functions \

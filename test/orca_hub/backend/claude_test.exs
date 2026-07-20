@@ -159,11 +159,20 @@ defmodule OrcaHub.Backend.ClaudeTest do
       a map (or nil). Only tool *invocations* (below) auto-unwrap to \
       maps/lists.
     - Before first using a deferred-schema tool (`Monitor`, `TaskCreate`, \
-      `WebFetch`, `ScheduleWakeup`, standalone `send_message_to_session`, or \
-      an early `mcp__orca__*` tool), load its real schema with ToolSearch/\
+      `WebFetch`, standalone `send_message_to_session`, or an early \
+      `mcp__orca__*` tool), load its real schema with ToolSearch/\
       `search_tools`; never guess argument names. `No such tool available` or \
       `InputValidationError` means its schema was not loaded yet, not that it \
       does not exist.
+    - **Never use a CLI-native ScheduleWakeup tool** — its timer lives \
+      inside the CLI process itself, which OrcaHub routinely kills while a \
+      session is idle (15-minute idle teardown, warm-pool eviction, a \
+      kill-switch downgrade, or a deploy), so the wakeup may silently never \
+      fire. Use the `schedule_heartbeat` MCP tool instead (`interval_seconds`, \
+      `message`), and call `cancel_heartbeat` when done.
+    - **`Monitor`-yield background watchers can die the same way** while a \
+      session sits idle for a long stretch — for long waits, prefer polling \
+      via `schedule_heartbeat` over leaving a `Monitor` unattended.
     - **Call a tool** as `Tools.<raw_mcp_name>(args)`, e.g. \
       `Tools.open_file(%{"file_path" => "lib/foo.ex"})` or \
       `Tools.github__get_issue(%{"number" => 7})`. Named functions \
@@ -431,8 +440,14 @@ defmodule OrcaHub.Backend.ClaudeTest do
     _ -> OrcaHub.Env.sanitized_env([])
   end
 
+  # ScheduleWakeup's timer lives inside the CLI process, which OrcaHub
+  # routinely kills while a session is idle — hard-disabled on every Claude
+  # spawn (see Backend.Claude's @disallowed_tools), independently derived
+  # here rather than referencing that attribute.
+  @expected_disallowed_tools ["ScheduleWakeup"]
+
   defp expected_streaming_opts(ctx) do
-    [cwd: ctx.directory, input_format: "stream-json"]
+    [cwd: ctx.directory, input_format: "stream-json", disallowed_tools: @expected_disallowed_tools]
     |> expected_maybe_put(:session_id, ctx.claude_session_id)
     |> expected_maybe_put(:model, ctx.model)
     |> expected_maybe_put(:system_prompt, expected_system_prompt(ctx))
@@ -441,7 +456,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
   end
 
   defp expected_one_shot_opts(ctx) do
-    [cwd: ctx.directory]
+    [cwd: ctx.directory, disallowed_tools: @expected_disallowed_tools]
     |> expected_maybe_put(:session_id, ctx.claude_session_id)
     |> expected_maybe_put(:model, ctx.model)
     |> expected_maybe_put(:system_prompt, expected_system_prompt(ctx))
@@ -511,7 +526,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
       ctx = ctx(%{tools: ""})
 
       opts =
-        [cwd: ctx.directory, input_format: "stream-json"]
+        [cwd: ctx.directory, input_format: "stream-json", disallowed_tools: @expected_disallowed_tools]
         |> expected_maybe_put(:system_prompt, expected_system_prompt_no_mcp(ctx))
         |> Keyword.put(:tools, "")
 
@@ -533,7 +548,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
       ctx = ctx(%{tools: "", api_run_schema?: true})
 
       opts =
-        [cwd: ctx.directory, input_format: "stream-json"]
+        [cwd: ctx.directory, input_format: "stream-json", disallowed_tools: @expected_disallowed_tools]
         |> expected_maybe_put(:system_prompt, expected_system_prompt_api_run(ctx))
         |> Keyword.put(:tools, "")
         |> Keyword.put(:mcp_config, expected_mcp_config_json(ctx))
@@ -666,7 +681,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
       ctx = ctx(%{tools: "", prompt: "hi"})
 
       opts =
-        [cwd: ctx.directory]
+        [cwd: ctx.directory, disallowed_tools: @expected_disallowed_tools]
         |> expected_maybe_put(:system_prompt, expected_system_prompt_no_mcp(ctx))
         |> Keyword.put(:tools, "")
 
