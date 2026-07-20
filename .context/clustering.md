@@ -137,20 +137,30 @@ sequenceDiagram
 | Component | Hub | Agent | Notes |
 |-----------|-----|-------|-------|
 | **Ecto.Repo (PostgreSQL)** | Yes | No | Agent proxies all DB ops via HubRPC |
-| **Phoenix Endpoint** | Full web UI | MCP endpoint only | Agent needs HTTP for Claude CLI MCP |
+| **Phoenix Endpoint** | Full web UI | MCP endpoint only | Agent needs HTTP for MCP |
 | **Telemetry** | Yes | No | |
-| **SessionSupervisor** | Yes | Yes | Both nodes run Claude CLI sessions |
+| **SessionSupervisor** | Yes | Yes | Both nodes run agent-CLI sessions |
 | **SessionRegistry** | Yes | Yes | Local registry per node |
+| **SessionResumer** | Yes | Yes | Resumes sessions orphaned in `status: "running"` on boot |
+| **SessionHeartbeat** | Yes | No | Hub-only scheduled heartbeat messages into sessions |
+| **Streaming.WarmPool** | Yes | Yes | Per-node warm-port admission control (streaming engine) |
 | **TerminalSupervisor** | Yes | Yes | Both nodes run terminal PTYs |
 | **TerminalRegistry** | Yes | Yes | Local registry per node |
+| **SessionViewersRegistry** | Yes | Yes | Tracks live viewers per session, local (`:duplicate` keys) |
+| **LoginSupervisor** | Yes | Yes | Both nodes can drive backend login flows |
+| **BackendInstallerSupervisor** + Registry | Yes | Yes | Both nodes install/upgrade backend CLIs locally |
+| **Backend.Cache** | Yes | Yes | Local cache of backend capability/model lookups |
 | **MCPSupervisor** | Yes | Yes | Per-session MCP servers |
+| **MCP.CodeExec.Generator** / **BindingStore** | Yes | Yes | Code-exec tool surface generated + bound locally |
 | **MCP.UpstreamClient** | Yes | No | Upstream MCP connections hub-only |
 | **Quantum Scheduler** | Yes | No | Cron triggers fire on hub only |
 | **TriggerLoader** | Yes | No | Syncs triggers into scheduler on boot |
+| **ClusterNodeTracker** | Yes | No | Tracks node connect/disconnect into the `nodes` table |
 | **PubSub** | Yes | Yes | Auto-distributes via `:pg` |
 | **Task.Supervisor** | Yes | Yes | Async work (title gen, archival) |
 | **libcluster** | Yes | Yes | Both participate in discovery |
 | **AgentPresence** | Cleanup on boot | Write only | Hub cleans stale `.agents/` files |
+| **Discord.Bot** | env-gated | env-gated | Gated by `DISCORD_BOT`/token, not by hub/agent mode |
 
 ### Key Modules
 
@@ -176,6 +186,43 @@ Agent nodes are intentionally limited:
 - **No upstream MCP connections** — `MCP.UpstreamClient` is hub-only
 - **No web UI** — the Endpoint runs but only serves the MCP HTTP endpoint for Claude CLI
 - **No agent presence cleanup** — hub handles stale `.agents/` file cleanup on boot
+
+## Per-Node Policy
+
+Beyond routing, each Erlang node has an optional policy row in the `nodes`
+table (`OrcaHub.ClusterNodes.ClusterNode`, `lib/orca_hub/cluster_nodes/cluster_node.ex`):
+`name` (Erlang node name), `display_name`, `first_connected_at`/
+`last_connected_at`, `isolated`, `scrub_session_env`, `env_allowlist`,
+`default_backend`, `default_model`. `OrcaHub.ClusterNodeTracker` (hub only,
+`lib/orca_hub/cluster_node_tracker.ex`) is a GenServer that monitors
+`:net_kernel` up/down events and upserts rows into this table, backing the
+`/nodes` UI (`NodeLive`).
+
+`OrcaHub.NodePolicy` (`lib/orca_hub/node_policy.ex`) resolves this policy at
+the point of use, and fails safe in different directions depending on the
+stakes:
+
+- **`isolated`** — checked at cross-node tool-call time; an isolated node is
+  blocked from *initiating* messaging/inspecting/spawning/discovering
+  sessions on other nodes (inbound traffic to it is unaffected). Fails
+  **open** (allowed) if the policy lookup itself fails.
+- **`scrub_session_env`** — when true, sessions/terminals spawned on that
+  node get `OrcaHub.Env.strict_env/1` (allow-list only) instead of the
+  default `OrcaHub.Env.sanitized_env/1`. Also fails **open**.
+- **`env_allowlist`** — extra environment variables let through on top of
+  the strict base list when scrubbing is on. `NodePolicy.extra_env_allowlist/1`
+  merges the node's `env_allowlist` with the owning **project's**
+  `env_allowlist` (`lib/orca_hub/projects/project.ex`) as a deduped union —
+  neither list takes precedence over the other, both are purely additive.
+  This one fails **closed** (`[]`) on lookup error, since narrowing the
+  allow-list is the safe direction.
+- **`default_backend` / `default_model`** — *not* resolved by `NodePolicy`.
+  Applied in `OrcaHub.Sessions.create_session/1`: the node's
+  `default_backend` fills an unset `backend` attr, and `default_model` only
+  fills `model` when the effective backend matches the node's
+  `default_backend` (or none was explicitly requested) — an atomic
+  backend+model pairing so a node's default model is never applied to a
+  different backend.
 
 ## Discovery Strategies
 

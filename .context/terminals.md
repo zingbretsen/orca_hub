@@ -108,7 +108,7 @@ stateDiagram-v2
 
     note right of running
         TerminalRunner GenServer active.
-        Port open to Python PTY wrapper.
+        Port open to `script -qc /bin/bash /dev/null`.
         Output streamed via PubSub.
         Scrollback buffer maintained (64KB).
     end note
