@@ -23,6 +23,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     node_unavailable = node_unavailable_reason(project_node)
 
     triggers = HubRPC.list_triggers_for_project(project.id)
+    artifacts = HubRPC.list_artifacts_for_project(project.id)
 
     agent_memory = load_agent_memory(project_node, project)
 
@@ -52,6 +53,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        structured_edit_value: "",
        new_file_name: nil,
        triggers: triggers,
+       artifacts: artifacts,
        editing_trigger: nil,
        show_trigger_form: false,
        trigger_type: "scheduled",

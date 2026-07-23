@@ -19,6 +19,13 @@ defmodule OrcaHubWeb.Router do
     plug OrcaHubWeb.Plugs.ApiAuth
   end
 
+  # Deliberately minimal: no session/CSRF/layout machinery, no CSP — see
+  # OrcaHubWeb.ArtifactController moduledoc. Just enough to get query params
+  # (the `?v=` cache-buster) parsed.
+  pipeline :artifact_raw do
+    plug :fetch_query_params
+  end
+
   scope "/", OrcaHubWeb do
     pipe_through :browser
 
@@ -51,10 +58,17 @@ defmodule OrcaHubWeb.Router do
       live "/sessions/new", SessionLive.Index, :new
       live "/sessions/:id", SessionLive.Show, :show
 
+      live "/artifacts/:id", ArtifactLive.Show, :show
+
       live "/settings", SettingsLive.Index, :index
       live "/settings/upstream/new", SettingsLive.Index, :new
       live "/settings/upstream/:id/edit", SettingsLive.Index, :edit
     end
+  end
+
+  scope "/artifacts", OrcaHubWeb do
+    pipe_through :artifact_raw
+    get "/:id/raw", ArtifactController, :raw
   end
 
   scope "/api", OrcaHubWeb do

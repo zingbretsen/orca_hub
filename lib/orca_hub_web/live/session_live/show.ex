@@ -62,6 +62,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:tts_autoplay, false)
      |> assign(:open_files, [])
      |> assign(:active_file_tab, nil)
+     |> assign(:subscribed_artifact_ids, MapSet.new())
      |> assign(:file_editing, false)
      |> assign(:file_edit_mode, false)
      |> assign(:editing_block, nil)
@@ -91,6 +92,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:commits, [])
      |> assign(:expanded_commit, nil)
      |> assign(:commit_detail, nil)
+     |> assign(:show_artifacts, false)
+     |> assign(:session_artifacts, HubRPC.list_artifacts_for_session(id))
      |> assign(:show_terminal, false)
      |> assign(:open_terminals, [])
      |> assign(:active_terminal_id, nil)
@@ -597,6 +600,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("toggle_commits", _params, socket) do
     {:noreply, assign(socket, :show_commits, !socket.assigns.show_commits)}
+  end
+
+  def handle_event("toggle_artifacts", _params, socket) do
+    {:noreply, assign(socket, :show_artifacts, !socket.assigns.show_artifacts)}
+  end
+
+  def handle_event("open_session_artifact", %{"id" => artifact_id}, socket) do
+    {:noreply, socket |> open_artifact_tab(artifact_id) |> assign(:show_artifacts, false)}
   end
 
   def handle_event("edit_title", _params, socket) do
@@ -1248,6 +1259,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("close_tab", %{"path" => path}, socket) do
+    closing = Enum.find(socket.assigns.open_files, &(&1.path == path))
     open_files = Enum.reject(socket.assigns.open_files, &(&1.path == path))
 
     active =
@@ -1255,6 +1267,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
         open_files == [] -> nil
         socket.assigns.active_file_tab == path -> hd(open_files).path
         true -> socket.assigns.active_file_tab
+      end
+
+    socket =
+      case closing do
+        %{kind: :artifact, artifact_id: id} -> unsubscribe_artifact(socket, id)
+        _ -> socket
       end
 
     {:noreply,
@@ -1267,6 +1285,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("close_file_panel", _params, socket) do
+    socket =
+      Enum.reduce(socket.assigns.open_files, socket, fn
+        %{kind: :artifact, artifact_id: id}, acc -> unsubscribe_artifact(acc, id)
+        _tab, acc -> acc
+      end)
+
     {:noreply,
      socket
      |> assign(:open_files, [])
@@ -1554,6 +1578,27 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, open_file_tab(socket, path)}
   end
 
+  def handle_info({:open_artifact, artifact_id, "full"}, socket) do
+    {:noreply, push_navigate(socket, to: ~p"/artifacts/#{artifact_id}")}
+  end
+
+  def handle_info({:open_artifact, artifact_id, _mode}, socket) do
+    {:noreply, open_artifact_tab(socket, artifact_id)}
+  end
+
+  def handle_info({:artifact_updated, artifact}, socket) do
+    open_files =
+      Enum.map(socket.assigns.open_files, fn
+        %{kind: :artifact, artifact_id: id} = tab when id == artifact.id ->
+          %{tab | artifact: artifact}
+
+        tab ->
+          tab
+      end)
+
+    {:noreply, assign(socket, :open_files, open_files)}
+  end
+
   @impl true
   def handle_info({:event, event}, socket) do
     socket = assign(socket, :messages, socket.assigns.messages ++ [event])
@@ -1785,6 +1830,107 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  # -- Artifact tab helpers --
+
+  # Artifact tabs share the same `open_files`/`active_file_tab` tab strip as
+  # file tabs (switch_tab/close_tab/close_file_panel all key off `tab.path`,
+  # which works unchanged here since "artifact:<id>" is a distinct fake
+  # path), tagged `kind: :artifact` so the content area renders the
+  # sandboxed iframe instead of file content.
+  defp open_artifact_tab(socket, artifact_id) do
+    path = "artifact:#{artifact_id}"
+
+    case Enum.find(socket.assigns.open_files, &(&1.path == path)) do
+      tab when not is_nil(tab) ->
+        socket |> assign(:active_file_tab, path) |> assign(:show_file_browser, false)
+
+      nil ->
+        case HubRPC.get_artifact(artifact_id) do
+          nil ->
+            put_flash(socket, :error, "Artifact not found.")
+
+          artifact ->
+            tab = %{
+              kind: :artifact,
+              path: path,
+              artifact_id: artifact.id,
+              artifact: artifact,
+              read_only: true
+            }
+
+            socket
+            |> assign(:open_files, socket.assigns.open_files ++ [tab])
+            |> assign(:active_file_tab, path)
+            |> assign(:show_file_browser, false)
+            |> subscribe_artifact(artifact.id)
+        end
+    end
+  end
+
+  defp subscribe_artifact(socket, artifact_id) do
+    if connected?(socket) and
+         not MapSet.member?(socket.assigns.subscribed_artifact_ids, artifact_id) do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "artifact:#{artifact_id}")
+
+      assign(
+        socket,
+        :subscribed_artifact_ids,
+        MapSet.put(socket.assigns.subscribed_artifact_ids, artifact_id)
+      )
+    else
+      socket
+    end
+  end
+
+  defp unsubscribe_artifact(socket, artifact_id) do
+    if MapSet.member?(socket.assigns.subscribed_artifact_ids, artifact_id) do
+      Phoenix.PubSub.unsubscribe(OrcaHub.PubSub, "artifact:#{artifact_id}")
+
+      assign(
+        socket,
+        :subscribed_artifact_ids,
+        MapSet.delete(socket.assigns.subscribed_artifact_ids, artifact_id)
+      )
+    else
+      socket
+    end
+  end
+
+  # Shared by the desktop and mobile split-panel templates (both are always
+  # present in the DOM simultaneously, toggled by responsive CSS classes —
+  # not conditionally rendered — so `variant` keeps their iframe ids from
+  # colliding). `?v=<version>` busts the iframe's cache so a live-reload
+  # (handle_info({:artifact_updated, ...})) actually re-fetches instead of
+  # serving the old cached document.
+  defp artifact_tab_panel(assigns) do
+    ~H"""
+    <div class="flex flex-col h-full min-h-0">
+      <div class="flex items-center justify-between gap-2 mb-3 shrink-0">
+        <div class="flex items-center gap-2 min-w-0">
+          <.icon name="hero-sparkles-micro" class="size-4 text-primary shrink-0" />
+          <span class="font-medium truncate">{@tab.artifact.name}</span>
+          <span class="badge badge-xs badge-outline">{@tab.artifact.kind}</span>
+          <span class="badge badge-xs badge-ghost">v{@tab.artifact.version}</span>
+        </div>
+        <.link
+          navigate={~p"/artifacts/#{@tab.artifact_id}"}
+          class="btn btn-xs btn-ghost gap-1 shrink-0"
+          title="Open fullscreen"
+        >
+          <.icon name="hero-arrows-pointing-out-micro" class="size-3" /> Fullscreen
+        </.link>
+      </div>
+      <iframe
+        id={"artifact-iframe-#{@variant}-#{@tab.artifact_id}"}
+        src={~p"/artifacts/#{@tab.artifact_id}/raw?v=#{@tab.artifact.version}"}
+        sandbox="allow-scripts"
+        title={@tab.artifact.name}
+        class="flex-1 w-full min-h-0 bg-white rounded border border-base-300"
+      />
+    </div>
+    """
+  end
+
   # -- File panel helpers --
 
   defp open_file_tab(socket, path, line \\ nil) do
@@ -1882,6 +2028,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
     |> assign(:open_files, open_files)
     |> assign(:file_mtimes, mtimes)
   end
+
+  # Artifact tabs reload via the `"artifact:<id>"` PubSub broadcast
+  # (handle_info({:artifact_updated, ...})), not mtime polling — they have
+  # no on-disk file to stat.
+  defp refresh_tab(%{kind: :artifact} = tab, mtimes, _dir, _project), do: {tab, mtimes}
 
   # Reloads a single open file tab if its on-disk mtime has changed.
   defp refresh_tab(tab, mtimes, dir, project) do

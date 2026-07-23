@@ -186,6 +186,34 @@
 </div>
 
 <div class="mt-8">
+  <h3 class="text-lg font-semibold mb-4">Artifacts</h3>
+
+  <div :if={@artifacts == []} class="text-sm text-base-content/50 p-4 text-center">
+    No artifacts yet.
+  </div>
+
+  <.table
+    :if={@artifacts != []}
+    id="project-artifacts"
+    rows={@artifacts}
+    row_click={fn artifact -> JS.navigate(~p"/artifacts/#{artifact.id}") end}
+  >
+    <:col :let={artifact} label="Name">
+      <.link navigate={~p"/artifacts/#{artifact.id}"} class="link link-hover">
+        {artifact.name}
+      </.link>
+    </:col>
+    <:col :let={artifact} label="Kind">
+      <span class="badge badge-sm badge-outline">{artifact.kind}</span>
+    </:col>
+    <:col :let={artifact} label="Version">v{artifact.version}</:col>
+    <:col :let={artifact} label="Updated">
+      {Calendar.strftime(artifact.updated_at, "%b %d, %H:%M")}
+    </:col>
+  </.table>
+</div>
+
+<div class="mt-8">
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">MCP Servers</h3>
     <button phx-click="toggle_mcp_server_picker" class="btn btn-sm btn-primary">

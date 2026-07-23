@@ -366,6 +366,17 @@
         <span class="indicator-item badge badge-xs badge-primary">{length(@commits)}</span>
       </button>
       <button
+        :if={@session_artifacts != []}
+        phx-click="toggle_artifacts"
+        class={["btn btn-ghost btn-sm btn-circle indicator", @show_artifacts && "text-primary"]}
+        title="Artifacts"
+      >
+        <.icon name="hero-sparkles" class="size-5" />
+        <span class="indicator-item badge badge-xs badge-primary">
+          {length(@session_artifacts)}
+        </span>
+      </button>
+      <button
         phx-click="toggle_file_browser"
         class={[
           "btn btn-ghost btn-sm btn-circle",
@@ -557,6 +568,28 @@
             class="whitespace-pre-wrap text-base-content/50 font-mono"
           >{@commit_detail.stat}</pre>
         </div>
+      </li>
+    </ul>
+  </div>
+
+  <div
+    :if={@session_artifacts != [] && @show_artifacts}
+    class="mb-2 bg-base-200 rounded-lg px-3 py-2"
+  >
+    <ul class="space-y-1">
+      <li :for={artifact <- @session_artifacts}>
+        <button
+          phx-click="open_session_artifact"
+          phx-value-id={artifact.id}
+          class="flex items-center gap-2 text-sm w-full text-left hover:bg-base-300/50 rounded px-1 -mx-1 py-0.5 transition-colors"
+        >
+          <.icon name="hero-sparkles-micro" class="size-3 text-primary shrink-0" />
+          <span class="truncate">{artifact.name}</span>
+          <span class="badge badge-xs badge-outline shrink-0">{artifact.kind}</span>
+          <span class="text-xs text-base-content/40 shrink-0 ml-auto whitespace-nowrap">
+            v{artifact.version}
+          </span>
+        </button>
       </li>
     </ul>
   </div>
@@ -1115,7 +1148,14 @@
                 tab.path != @active_file_tab && "btn-ghost"
               ]}
             >
-              <span class="font-mono truncate max-w-32">{Path.basename(tab.path)}</span>
+              <.icon
+                :if={tab[:kind] == :artifact}
+                name="hero-sparkles-micro"
+                class="size-3 text-primary"
+              />
+              <span class="font-mono truncate max-w-32">
+                {if tab[:kind] == :artifact, do: tab.artifact.name, else: Path.basename(tab.path)}
+              </span>
               <span
                 phx-click="close_tab"
                 phx-value-path={tab.path}
@@ -1161,130 +1201,137 @@
           <%!-- File content area --%>
           <div class="flex-1 min-w-0 overflow-y-auto bg-base-200 rounded-lg p-4">
             <%= if tab = Enum.find(@open_files, & &1.path == @active_file_tab) do %>
-              <%!-- File header --%>
-              <div class="flex items-center justify-between mb-3">
-                <div class="flex items-center gap-2 min-w-0">
-                  <span class="font-mono text-xs text-base-content/70 truncate">{tab.path}</span>
-                  <span :if={tab.read_only} class="badge badge-xs badge-ghost">read-only</span>
-                </div>
-                <div :if={!tab.read_only} class="flex items-center gap-1 shrink-0">
-                  <button
-                    :if={!@file_editing && @file_edit_mode}
-                    phx-click="edit_file"
-                    class="btn btn-xs btn-ghost"
-                  >
-                    Raw Edit
-                  </button>
-                  <button
-                    phx-click="toggle_edit_mode"
-                    class={[
-                      "btn btn-xs",
-                      @file_edit_mode && "btn-primary",
-                      !@file_edit_mode && "btn-ghost"
-                    ]}
-                  >
-                    <.icon name="hero-pencil-micro" class="size-3" /> Edit
-                  </button>
-                </div>
-              </div>
-
-              <%!-- Markdown block view --%>
-              <div
-                :if={!@file_editing && tab.blocks != []}
-                id="file-blocks-desktop"
-                phx-hook="ScrollToLine"
-                data-line={@scroll_to_block}
-              >
-                <div
-                  :for={{index, block_text} <- tab.blocks}
-                  id={"file-block-#{index}"}
-                  class={[
-                    "group relative",
-                    @scroll_to_block == index && "ring-2 ring-warning/50 rounded"
-                  ]}
-                >
-                  <div :if={@editing_block == index && @file_edit_mode} class="my-2">
-                    <form phx-submit="save_block" class="space-y-2">
-                      <textarea
-                        name="content"
-                        class="textarea textarea-bordered w-full font-mono text-sm"
-                        rows={max(3, length(String.split(block_text, "\n")) + 1)}
-                        phx-hook="AutoFocus"
-                        id={"block-editor-#{index}"}
-                      >{@block_edit_content}</textarea>
-                      <div class="flex justify-end gap-2">
-                        <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">
-                          Cancel
-                        </button>
-                        <button type="submit" class="btn btn-xs btn-primary">Save</button>
-                      </div>
-                    </form>
+              <%= if tab[:kind] == :artifact do %>
+                <.artifact_tab_panel tab={tab} variant="desktop" />
+              <% else %>
+                <%!-- File header --%>
+                <div class="flex items-center justify-between mb-3">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <span class="font-mono text-xs text-base-content/70 truncate">
+                      {tab.path}
+                    </span>
+                    <span :if={tab.read_only} class="badge badge-xs badge-ghost">read-only</span>
                   </div>
-                  <div :if={@editing_block != index || !@file_edit_mode} class="relative group">
-                    <div
-                      phx-click={if @file_edit_mode, do: "edit_block"}
-                      phx-value-index={if @file_edit_mode, do: index}
+                  <div :if={!tab.read_only} class="flex items-center gap-1 shrink-0">
+                    <button
+                      :if={!@file_editing && @file_edit_mode}
+                      phx-click="edit_file"
+                      class="btn btn-xs btn-ghost"
+                    >
+                      Raw Edit
+                    </button>
+                    <button
+                      phx-click="toggle_edit_mode"
                       class={[
-                        "prose prose-sm max-w-none rounded px-2 -mx-2 py-1",
-                        @file_edit_mode && "cursor-pointer hover:bg-base-300/50 transition-colors"
+                        "btn btn-xs",
+                        @file_edit_mode && "btn-primary",
+                        !@file_edit_mode && "btn-ghost"
                       ]}
                     >
-                      {Markdown.render_block(block_text)}
-                    </div>
-                    <button
-                      :if={@file_edit_mode}
-                      phx-click="delete_block"
-                      phx-value-index={index}
-                      class="absolute top-1 right-1 btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity text-error"
-                      title="Delete block"
-                    >
-                      <.icon name="hero-trash-micro" class="size-3" />
+                      <.icon name="hero-pencil-micro" class="size-3" /> Edit
                     </button>
                   </div>
                 </div>
-              </div>
 
-              <%!-- Non-markdown view with line numbers --%>
-              <div
-                :if={!@file_editing && tab.blocks == []}
-                id="file-content-desktop"
-                phx-hook="ScrollToLine"
-                data-line={@scroll_to_line}
-              >
-                <table class="text-sm font-mono w-full border-collapse">
-                  <tbody>
-                    <tr
-                      :for={
-                        {line_text, idx} <- Enum.with_index(String.split(tab.content, "\n"), 1)
-                      }
-                      id={"file-line-#{idx}"}
-                      class={if @scroll_to_line == idx, do: "bg-warning/20", else: ""}
-                    >
-                      <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">
-                        {idx}
-                      </td>
-                      <td class="whitespace-pre-wrap break-words">{line_text}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              <%!-- Raw edit mode --%>
-              <div :if={@file_editing} class="space-y-3">
-                <form phx-submit="save_file" class="space-y-3">
-                  <textarea
-                    name="content"
-                    class="textarea textarea-bordered w-full font-mono text-sm"
-                    rows="20"
-                  >{tab.content}</textarea>
-                  <div class="flex justify-end gap-2">
-                    <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">
-                      Cancel
-                    </button>
-                    <.button type="submit" class="btn-sm">Save</.button>
+                <%!-- Markdown block view --%>
+                <div
+                  :if={!@file_editing && tab.blocks != []}
+                  id="file-blocks-desktop"
+                  phx-hook="ScrollToLine"
+                  data-line={@scroll_to_block}
+                >
+                  <div
+                    :for={{index, block_text} <- tab.blocks}
+                    id={"file-block-#{index}"}
+                    class={[
+                      "group relative",
+                      @scroll_to_block == index && "ring-2 ring-warning/50 rounded"
+                    ]}
+                  >
+                    <div :if={@editing_block == index && @file_edit_mode} class="my-2">
+                      <form phx-submit="save_block" class="space-y-2">
+                        <textarea
+                          name="content"
+                          class="textarea textarea-bordered w-full font-mono text-sm"
+                          rows={max(3, length(String.split(block_text, "\n")) + 1)}
+                          phx-hook="AutoFocus"
+                          id={"block-editor-#{index}"}
+                        >{@block_edit_content}</textarea>
+                        <div class="flex justify-end gap-2">
+                          <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">
+                            Cancel
+                          </button>
+                          <button type="submit" class="btn btn-xs btn-primary">Save</button>
+                        </div>
+                      </form>
+                    </div>
+                    <div :if={@editing_block != index || !@file_edit_mode} class="relative group">
+                      <div
+                        phx-click={if @file_edit_mode, do: "edit_block"}
+                        phx-value-index={if @file_edit_mode, do: index}
+                        class={[
+                          "prose prose-sm max-w-none rounded px-2 -mx-2 py-1",
+                          @file_edit_mode &&
+                            "cursor-pointer hover:bg-base-300/50 transition-colors"
+                        ]}
+                      >
+                        {Markdown.render_block(block_text)}
+                      </div>
+                      <button
+                        :if={@file_edit_mode}
+                        phx-click="delete_block"
+                        phx-value-index={index}
+                        class="absolute top-1 right-1 btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity text-error"
+                        title="Delete block"
+                      >
+                        <.icon name="hero-trash-micro" class="size-3" />
+                      </button>
+                    </div>
                   </div>
-                </form>
-              </div>
+                </div>
+
+                <%!-- Non-markdown view with line numbers --%>
+                <div
+                  :if={!@file_editing && tab.blocks == []}
+                  id="file-content-desktop"
+                  phx-hook="ScrollToLine"
+                  data-line={@scroll_to_line}
+                >
+                  <table class="text-sm font-mono w-full border-collapse">
+                    <tbody>
+                      <tr
+                        :for={
+                          {line_text, idx} <- Enum.with_index(String.split(tab.content, "\n"), 1)
+                        }
+                        id={"file-line-#{idx}"}
+                        class={if @scroll_to_line == idx, do: "bg-warning/20", else: ""}
+                      >
+                        <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">
+                          {idx}
+                        </td>
+                        <td class="whitespace-pre-wrap break-words">{line_text}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <%!-- Raw edit mode --%>
+                <div :if={@file_editing} class="space-y-3">
+                  <form phx-submit="save_file" class="space-y-3">
+                    <textarea
+                      name="content"
+                      class="textarea textarea-bordered w-full font-mono text-sm"
+                      rows="20"
+                    >{tab.content}</textarea>
+                    <div class="flex justify-end gap-2">
+                      <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">
+                        Cancel
+                      </button>
+                      <.button type="submit" class="btn-sm">Save</.button>
+                    </div>
+                  </form>
+                </div>
+              <% end %>
             <% else %>
               <div :if={@open_files == []} class="text-sm text-base-content/50 p-8 text-center">
                 Select a file to view its contents.
@@ -1324,7 +1371,16 @@
                   tab.path != @active_file_tab && "btn-ghost"
                 ]}
               >
-                <span class="font-mono truncate max-w-32">{Path.basename(tab.path)}</span>
+                <.icon
+                  :if={tab[:kind] == :artifact}
+                  name="hero-sparkles-micro"
+                  class="size-3 text-primary"
+                />
+                <span class="font-mono truncate max-w-32">
+                  {if tab[:kind] == :artifact,
+                    do: tab.artifact.name,
+                    else: Path.basename(tab.path)}
+                </span>
                 <span phx-click="close_tab" phx-value-path={tab.path} class="hover:text-error">
                   &times;
                 </span>
@@ -1365,119 +1421,126 @@
             <%!-- File content --%>
             <div class="flex-1 min-w-0 overflow-y-auto bg-base-200 rounded-lg p-3">
               <%= if tab = Enum.find(@open_files, & &1.path == @active_file_tab) do %>
-                <div class="flex items-center justify-between mb-2">
-                  <div class="flex items-center gap-2 min-w-0">
-                    <span class="font-mono text-xs text-base-content/70 truncate">
-                      {tab.path}
-                    </span>
-                    <span :if={tab.read_only} class="badge badge-xs badge-ghost">read-only</span>
-                  </div>
-                  <div :if={!tab.read_only} class="flex items-center gap-1 shrink-0">
-                    <button
-                      :if={!@file_editing && @file_edit_mode}
-                      phx-click="edit_file"
-                      class="btn btn-xs btn-ghost"
-                    >
-                      Raw Edit
-                    </button>
-                    <button
-                      phx-click="toggle_edit_mode"
-                      class={[
-                        "btn btn-xs",
-                        @file_edit_mode && "btn-primary",
-                        !@file_edit_mode && "btn-ghost"
-                      ]}
-                    >
-                      <.icon name="hero-pencil-micro" class="size-3" /> Edit
-                    </button>
-                  </div>
-                </div>
-
-                <div
-                  :if={!@file_editing && tab.blocks != []}
-                  id="file-blocks-mobile"
-                  phx-hook="ScrollToLine"
-                  data-line={@scroll_to_block}
-                >
-                  <div
-                    :for={{index, block_text} <- tab.blocks}
-                    id={"mobile-file-block-#{index}"}
-                    class={[
-                      "group relative",
-                      @scroll_to_block == index && "ring-2 ring-warning/50 rounded"
-                    ]}
-                  >
-                    <div :if={@editing_block == index && @file_edit_mode} class="my-2">
-                      <form phx-submit="save_block" class="space-y-2">
-                        <textarea
-                          name="content"
-                          class="textarea textarea-bordered w-full font-mono text-sm"
-                          rows={max(3, length(String.split(block_text, "\n")) + 1)}
-                          phx-hook="AutoFocus"
-                          id={"mobile-block-editor-#{index}"}
-                        >{@block_edit_content}</textarea>
-                        <div class="flex justify-end gap-2">
-                          <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">
-                            Cancel
-                          </button>
-                          <button type="submit" class="btn btn-xs btn-primary">Save</button>
-                        </div>
-                      </form>
+                <%= if tab[:kind] == :artifact do %>
+                  <.artifact_tab_panel tab={tab} variant="mobile" />
+                <% else %>
+                  <div class="flex items-center justify-between mb-2">
+                    <div class="flex items-center gap-2 min-w-0">
+                      <span class="font-mono text-xs text-base-content/70 truncate">
+                        {tab.path}
+                      </span>
+                      <span :if={tab.read_only} class="badge badge-xs badge-ghost">
+                        read-only
+                      </span>
                     </div>
-                    <div :if={@editing_block != index || !@file_edit_mode}>
-                      <div
-                        phx-click={if @file_edit_mode, do: "edit_block"}
-                        phx-value-index={if @file_edit_mode, do: index}
+                    <div :if={!tab.read_only} class="flex items-center gap-1 shrink-0">
+                      <button
+                        :if={!@file_editing && @file_edit_mode}
+                        phx-click="edit_file"
+                        class="btn btn-xs btn-ghost"
+                      >
+                        Raw Edit
+                      </button>
+                      <button
+                        phx-click="toggle_edit_mode"
                         class={[
-                          "prose prose-sm max-w-none rounded px-2 -mx-2 py-1",
-                          @file_edit_mode && "cursor-pointer hover:bg-base-300/50"
+                          "btn btn-xs",
+                          @file_edit_mode && "btn-primary",
+                          !@file_edit_mode && "btn-ghost"
                         ]}
                       >
-                        {Markdown.render_block(block_text)}
+                        <.icon name="hero-pencil-micro" class="size-3" /> Edit
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    :if={!@file_editing && tab.blocks != []}
+                    id="file-blocks-mobile"
+                    phx-hook="ScrollToLine"
+                    data-line={@scroll_to_block}
+                  >
+                    <div
+                      :for={{index, block_text} <- tab.blocks}
+                      id={"mobile-file-block-#{index}"}
+                      class={[
+                        "group relative",
+                        @scroll_to_block == index && "ring-2 ring-warning/50 rounded"
+                      ]}
+                    >
+                      <div :if={@editing_block == index && @file_edit_mode} class="my-2">
+                        <form phx-submit="save_block" class="space-y-2">
+                          <textarea
+                            name="content"
+                            class="textarea textarea-bordered w-full font-mono text-sm"
+                            rows={max(3, length(String.split(block_text, "\n")) + 1)}
+                            phx-hook="AutoFocus"
+                            id={"mobile-block-editor-#{index}"}
+                          >{@block_edit_content}</textarea>
+                          <div class="flex justify-end gap-2">
+                            <button type="button" phx-click="cancel_block_edit" class="btn btn-xs">
+                              Cancel
+                            </button>
+                            <button type="submit" class="btn btn-xs btn-primary">Save</button>
+                          </div>
+                        </form>
+                      </div>
+                      <div :if={@editing_block != index || !@file_edit_mode}>
+                        <div
+                          phx-click={if @file_edit_mode, do: "edit_block"}
+                          phx-value-index={if @file_edit_mode, do: index}
+                          class={[
+                            "prose prose-sm max-w-none rounded px-2 -mx-2 py-1",
+                            @file_edit_mode && "cursor-pointer hover:bg-base-300/50"
+                          ]}
+                        >
+                          {Markdown.render_block(block_text)}
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
 
-                <div
-                  :if={!@file_editing && tab.blocks == []}
-                  id="file-content-mobile"
-                  phx-hook="ScrollToLine"
-                  data-line={@scroll_to_line}
-                >
-                  <table class="text-sm font-mono w-full border-collapse">
-                    <tbody>
-                      <tr
-                        :for={
-                          {line_text, idx} <- Enum.with_index(String.split(tab.content, "\n"), 1)
-                        }
-                        id={"mobile-file-line-#{idx}"}
-                        class={if @scroll_to_line == idx, do: "bg-warning/20", else: ""}
-                      >
-                        <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">
-                          {idx}
-                        </td>
-                        <td class="whitespace-pre-wrap break-words">{line_text}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
+                  <div
+                    :if={!@file_editing && tab.blocks == []}
+                    id="file-content-mobile"
+                    phx-hook="ScrollToLine"
+                    data-line={@scroll_to_line}
+                  >
+                    <table class="text-sm font-mono w-full border-collapse">
+                      <tbody>
+                        <tr
+                          :for={
+                            {line_text, idx} <-
+                              Enum.with_index(String.split(tab.content, "\n"), 1)
+                          }
+                          id={"mobile-file-line-#{idx}"}
+                          class={if @scroll_to_line == idx, do: "bg-warning/20", else: ""}
+                        >
+                          <td class="select-none text-right pr-3 text-base-content/30 align-top w-1 whitespace-nowrap">
+                            {idx}
+                          </td>
+                          <td class="whitespace-pre-wrap break-words">{line_text}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
 
-                <div :if={@file_editing} class="space-y-3">
-                  <form phx-submit="save_file" class="space-y-3">
-                    <textarea
-                      name="content"
-                      class="textarea textarea-bordered w-full font-mono text-sm"
-                      rows="15"
-                    >{tab.content}</textarea>
-                    <div class="flex justify-end gap-2">
-                      <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">
-                        Cancel
-                      </button>
-                      <.button type="submit" class="btn-sm">Save</.button>
-                    </div>
-                  </form>
-                </div>
+                  <div :if={@file_editing} class="space-y-3">
+                    <form phx-submit="save_file" class="space-y-3">
+                      <textarea
+                        name="content"
+                        class="textarea textarea-bordered w-full font-mono text-sm"
+                        rows="15"
+                      >{tab.content}</textarea>
+                      <div class="flex justify-end gap-2">
+                        <button type="button" phx-click="cancel_edit_file" class="btn btn-sm">
+                          Cancel
+                        </button>
+                        <.button type="submit" class="btn-sm">Save</.button>
+                      </div>
+                    </form>
+                  </div>
+                <% end %>
               <% else %>
                 <div :if={@open_files == []} class="text-sm text-base-content/50 p-4 text-center">
                   Select a file to view.

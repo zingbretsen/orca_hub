@@ -14,8 +14,9 @@ defmodule OrcaHub.MCP.Tools do
   itself (a query param set by `SessionRunner`) — never from a hub/DB lookup.
   Orchestrator connections see every tool; regular connections see only the
   tools in `@regular_session_tools` — messaging another session, opening
-  files, spawning a child session and peeking at/archiving it, and filing
-  feature requests — plus `send_discord_message` when (and only when) the
+  files, spawning a child session and peeking at/archiving it, filing
+  feature requests, and creating/browsing artifacts — plus
+  `send_discord_message` when (and only when) the
   connection's session is actually Discord-bridged. That one exception needs a
   hub lookup, so it is done lazily in `list/1` itself, gated behind
   `Discord.enabled?()` first (a cheap local check) so every non-Discord node's
@@ -29,6 +30,7 @@ defmodule OrcaHub.MCP.Tools do
   require Logger
 
   alias OrcaHub.MCP.Tools.{
+    Artifacts,
     Discord,
     FeatureRequests,
     Files,
@@ -39,7 +41,16 @@ defmodule OrcaHub.MCP.Tools do
     Triggers
   }
 
-  @categories [Sessions, Triggers, Projects, Files, Heartbeat, Discord, FeatureRequests]
+  @categories [
+    Sessions,
+    Triggers,
+    Projects,
+    Files,
+    Heartbeat,
+    Discord,
+    FeatureRequests,
+    Artifacts
+  ]
 
   # Tools visible to regular (non-orchestrator) connections. Orchestrator
   # connections see every tool. Child spawning is first-class for every
@@ -53,7 +64,8 @@ defmodule OrcaHub.MCP.Tools do
   @regular_session_tools ~w(send_message_to_session open_file report_progress start_session
                              get_session_tail archive_session file_feature_request
                              list_feature_requests get_feature_request append_feature_request_note
-                             close_feature_request)
+                             close_feature_request save_artifact open_artifact list_artifacts
+                             get_artifact)
 
   @doc "Return every MCP tool definition map across every category."
   def list do

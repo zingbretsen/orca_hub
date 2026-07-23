@@ -145,6 +145,24 @@ defmodule OrcaHub.HubRPC do
   def reopen_issue(issue), do: call(OrcaHub.Issues, :reopen_issue, [issue])
 
   # -------------------------------------------------------------------
+  # Artifacts (see OrcaHub.Artifacts moduledoc)
+  # -------------------------------------------------------------------
+
+  def save_artifact(attrs), do: call(OrcaHub.Artifacts, :save_artifact, [attrs])
+  def get_artifact(id), do: call(OrcaHub.Artifacts, :get_artifact, [id])
+
+  def get_artifact_by_name(project_id, name),
+    do: call(OrcaHub.Artifacts, :get_artifact_by_name, [project_id, name])
+
+  def list_artifacts_for_project(project_id),
+    do: call(OrcaHub.Artifacts, :list_artifacts_for_project, [project_id])
+
+  def list_artifacts_for_session(session_id),
+    do: call(OrcaHub.Artifacts, :list_artifacts_for_session, [session_id])
+
+  def delete_artifact(artifact), do: call(OrcaHub.Artifacts, :delete_artifact, [artifact])
+
+  # -------------------------------------------------------------------
   # Triggers
   # -------------------------------------------------------------------
 
