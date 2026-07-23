@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, Projects, SessionRunner, Sessions}
+  alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, Projects, Sessions}
   alias OrcaHubWeb.{Markdown, MessageComponents, TreeComponents}
   alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Todos}
 
@@ -622,14 +622,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "Failed to update title")}
     end
-  end
-
-  def handle_event("regenerate_title", _params, socket) do
-    Cluster.rpc(socket.assigns.session_node, SessionRunner, :regenerate_title, [
-      socket.assigns.session.id
-    ])
-
-    {:noreply, socket}
   end
 
   def handle_event("toggle_commit_detail", %{"hash" => hash}, socket) do
@@ -1613,11 +1605,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def handle_info({:title_updated, title}, socket) do
     session = %{socket.assigns.session | title: title}
     {:noreply, socket |> assign(:session, session) |> assign(:page_title, title)}
-  end
-
-  @impl true
-  def handle_info({:title_error, reason}, socket) do
-    {:noreply, put_flash(socket, :error, "Title generation failed: #{reason}")}
   end
 
   @impl true

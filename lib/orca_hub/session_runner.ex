@@ -1897,164 +1897,45 @@ defmodule OrcaHub.SessionRunner do
 
   defp stamp(event), do: Map.put(event, "timestamp", NaiveDateTime.utc_now())
 
-  def regenerate_title(session_id) do
-    messages = HubRPC.list_messages(session_id)
-
-    first_prompt =
-      Enum.find_value(messages, fn msg ->
-        case msg.data do
-          %{"type" => "user", "message" => %{"content" => content}} when is_list(content) ->
-            Enum.find_value(content, fn
-              %{"type" => "text", "text" => text} -> text
-              _ -> nil
-            end)
-
-          _ ->
-            nil
-        end
-      end)
-
-    # Called externally (same node), so db_node is nil (use local HubRPC)
-    maybe_generate_title(%{db_node: nil, session_id: session_id}, first_prompt)
-  end
+  # Dumb fallback only — agents are expected to title their own sessions
+  # (orchestrators pass `title` to start_session, workers self-title via
+  # report_progress's `title` arg — see OrcaHub.MCP.Tools.Sessions). This
+  # only fires when a turn ends and no one set a title yet: the first
+  # non-empty line of the first prompt, collapsed and capped, no API call.
+  @max_fallback_title_length 60
 
   defp maybe_generate_title(%{session_id: session_id}, nil) do
-    Logger.warning("Skipping title generation for session #{session_id}: no first_prompt")
+    Logger.warning("Skipping title fallback for session #{session_id}: no first_prompt")
   end
 
   defp maybe_generate_title(data, prompt) do
     session_id = data.session_id
+    title = fallback_title(prompt)
 
-    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-      try do
-        case generate_title(prompt) do
-          {:ok, title} ->
-            Logger.info("Generated title for session #{session_id}: #{title}")
-            session = db_call(data, :get_session!, [session_id])
-            db_call(data, :update_session, [session, %{title: title}])
-            broadcast(session_id, {:title_updated, title})
+    session = db_call(data, :get_session!, [session_id])
+    db_call(data, :update_session, [session, %{title: title}])
+    broadcast(session_id, {:title_updated, title})
 
-            AgentPresence.write(session.directory, session_id, %{
-              title: title,
-              status: session.status
-            })
-
-          {:error, reason} ->
-            Logger.warning(
-              "Failed to generate title for session #{session_id}: #{inspect(reason)}"
-            )
-
-            broadcast(session_id, {:title_error, reason})
-        end
-      rescue
-        e ->
-          Logger.error(
-            "Title generation crashed for session #{session_id}: #{Exception.message(e)}"
-          )
-
-          broadcast(session_id, {:title_error, Exception.message(e)})
-      end
-    end)
+    AgentPresence.write(session.directory, session_id, %{
+      title: title,
+      status: session.status
+    })
   end
 
-  defp generate_title(summary) do
-    {url, headers, model, api_type} = title_api_config()
-    Logger.info("Title generation using model=#{model} url=#{url} api_type=#{api_type}")
+  @doc false
+  # Public for testing.
+  def fallback_title(prompt) do
+    line =
+      prompt
+      |> String.split("\n")
+      |> Enum.find("", fn line -> String.trim(line) != "" end)
+      |> String.trim()
+      |> String.replace(~r/\s+/, " ")
 
-    {json_body, extract_fn} = title_request_body(model, summary, api_type)
-
-    resp = Req.post!(url, headers: headers, json: json_body, receive_timeout: 60_000)
-
-    Logger.info("Title API response: #{inspect(resp.body)}")
-
-    case resp.status do
-      200 ->
-        title =
-          extract_fn.(resp.body)
-          |> String.trim()
-          |> String.slice(0, 255)
-
-        {:ok, title}
-
-      status ->
-        {:error, "Title API returned #{status}: #{inspect(resp.body)}"}
-    end
-  end
-
-  defp title_request_body(model, summary, :responses) do
-    json = %{
-      model: model,
-      input: [
-        %{
-          role: "developer",
-          content:
-            "Generate a short title (max 6 words) for this coding session. Return only the title, no quotes or punctuation."
-        },
-        %{role: "user", content: "Generate a title for this session. First message: #{summary}"}
-      ],
-      reasoning: %{effort: "minimal"}
-    }
-
-    extract_fn = fn body ->
-      # Responses API: output is a list, find the message type and extract text
-      outputs = body["output"] || []
-
-      Enum.find_value(outputs, "", fn item ->
-        if item["type"] == "message" do
-          get_in(item, ["content", Access.at(0), "text"]) || ""
-        end
-      end)
-    end
-
-    {json, extract_fn}
-  end
-
-  defp title_request_body(model, summary, :chat_completions) do
-    json = %{
-      model: model,
-      messages: [
-        %{
-          role: "system",
-          content:
-            "Generate a short title (max 6 words) for this coding session. Return only the title, no quotes or punctuation."
-        },
-        %{role: "user", content: summary}
-      ],
-      max_completion_tokens: 200
-    }
-
-    extract_fn = fn body ->
-      get_in(body, ["choices", Access.at(0), "message", "content"]) || ""
-    end
-
-    {json, extract_fn}
-  end
-
-  defp title_api_config do
-    dr_token = Application.get_env(:orca_hub, :datarobot_api_token)
-    dr_endpoint = Application.get_env(:orca_hub, :datarobot_endpoint)
-    custom_model = Application.get_env(:orca_hub, :title_model)
-
-    if dr_token && dr_endpoint do
-      Logger.info(
-        "Title API: using DataRobot gateway (endpoint=#{dr_endpoint}, token=#{if dr_token, do: "set", else: "MISSING"})"
-      )
-
-      url = String.trim_trailing(dr_endpoint, "/") <> "/genai/llmgw/responses"
-      headers = [{"authorization", "Bearer #{dr_token}"}]
-      model = custom_model || "azure/gpt-5-nano-2025-08-07"
-      {url, headers, model, :responses}
+    if String.length(line) > @max_fallback_title_length do
+      String.slice(line, 0, @max_fallback_title_length - 1) <> "…"
     else
-      api_key = Application.get_env(:orca_hub, :openai_api_key)
-
-      Logger.info(
-        "Title API: using OpenAI directly (api_key=#{if api_key, do: "set", else: "MISSING"})"
-      )
-
-      url = "https://api.openai.com/v1/chat/completions"
-      headers = [{"authorization", "Bearer #{api_key}"}]
-      model = custom_model || "gpt-4.1-nano"
-      {url, headers, model, :chat_completions}
+      line
     end
   end
 

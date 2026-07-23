@@ -1005,6 +1005,95 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
 
       assert %{"isError" => true} = result
     end
+
+    test "rejects a call with both phase and title blank/absent" do
+      result =
+        SessionsTool.call(
+          "report_progress",
+          %{"note" => "no phase or title given"},
+          %{orca_session_id: Ecto.UUID.generate()}
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "phase"
+      assert text =~ "title"
+    end
+
+    test "a title-only call persists and echoes the title without touching progress",
+         %{dir: dir} do
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          progress_phase: "validating",
+          progress_note: "from an earlier call",
+          progress_updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+
+      result =
+        SessionsTool.call(
+          "report_progress",
+          %{"title" => "Fix the login bug"},
+          %{orca_session_id: session.id}
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text =~ ~s(Title updated to "Fix the login bug")
+
+      reloaded = Sessions.get_session!(session.id)
+      assert reloaded.title == "Fix the login bug"
+      # Title-only calls must not clear or touch progress fields.
+      assert reloaded.progress_phase == "validating"
+      assert reloaded.progress_note == "from an earlier call"
+    end
+
+    test "a phase+title call updates both and echoes the new title", %{dir: dir} do
+      {:ok, session} = Sessions.create_session(%{directory: dir})
+
+      result =
+        SessionsTool.call(
+          "report_progress",
+          %{"phase" => "implementing", "title" => "New scope: also fix logout"},
+          %{orca_session_id: session.id}
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text =~ "implementing"
+      assert text =~ ~s(Title updated to "New scope: also fix logout")
+
+      reloaded = Sessions.get_session!(session.id)
+      assert reloaded.title == "New scope: also fix logout"
+      assert reloaded.progress_phase == "implementing"
+    end
+
+    test "a phase-only call still echoes the session's existing title", %{dir: dir} do
+      {:ok, session} = Sessions.create_session(%{directory: dir, title: "Existing title"})
+
+      result =
+        SessionsTool.call(
+          "report_progress",
+          %{"phase" => "planning"},
+          %{orca_session_id: session.id}
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text =~ ~s(Session title: "Existing title")
+    end
+
+    test "title is trimmed, collapsed, and capped to ~80 chars", %{dir: dir} do
+      {:ok, session} = Sessions.create_session(%{directory: dir})
+
+      long_title = "  line one\n\nline two   with   spaces  " <> String.duplicate("x", 100)
+
+      SessionsTool.call(
+        "report_progress",
+        %{"title" => long_title},
+        %{orca_session_id: session.id}
+      )
+
+      reloaded = Sessions.get_session!(session.id)
+      assert String.length(reloaded.title) == 80
+      refute reloaded.title =~ "\n"
+    end
   end
 
   describe "search_sessions — session_id and parent_session_id filters" do

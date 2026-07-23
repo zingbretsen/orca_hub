@@ -114,7 +114,10 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - **Call `Tools.report_progress(%{"phase" => ..., "note" => ...})` at \
       phase boundaries** (e.g. planning → implementing → validating → \
       fixing-tests) — a non-interrupting way for whoever spawned you to see \
-      you're making progress without messaging you.
+      you're making progress without messaging you. Its result always shows \
+      your session's current title — pass a `title` in the same call to \
+      update it when what you're doing has meaningfully changed (task \
+      pivoted, blocked, scope grew).
     """
     |> String.trim()
   end
@@ -274,6 +277,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - #{message_ref} to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with #{tail_ref} first.
     - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. Workers verify with targeted tests only; the full suite runs once as a pre-deploy gate. No worktrees.
     - Do not Read or Glob a different project's directory; delegate with #{if(code_exec, do: "`Tools.start_session(...)`", else: "`mcp__orca__start_session`")} using that project's `directory` instead.
+    - Always pass a concise `title` when calling #{if(code_exec, do: "`Tools.start_session(...)`", else: "`mcp__orca__start_session`")} — you already know the subtask, and it's free. Sessions no longer auto-generate a good title on their own.
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with #{list_feature_requests_ref} first — if it's already tracked, add what you found with #{append_feature_request_note_ref} instead of filing a duplicate with #{feature_request_ref}. Once a fix for a tracked request has shipped AND been verified, close it with #{close_feature_request_ref} (pass a resolution note referencing the commit).

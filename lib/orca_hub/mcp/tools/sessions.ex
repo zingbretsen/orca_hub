@@ -158,13 +158,17 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "report_progress",
         "description" =>
-          "Self-report your current phase, as a non-interrupting progress signal — an " <>
-            "orchestrator (or a human) can see this via search_sessions/get_session_tail " <>
-            "and the session UI without messaging you. Suggested phases: planning, " <>
-            "implementing, validating, fixing-tests, done — but phase is free text, use " <>
-            "whatever's clearest for the task. Cleared automatically at the start of your " <>
-            "next turn, so call it again after each phase boundary rather than once at the " <>
-            "start.",
+          "Self-report your current phase and/or update your session title, as a " <>
+            "non-interrupting signal — an orchestrator (or a human) can see this via " <>
+            "search_sessions/get_session_tail and the session UI without messaging you. " <>
+            "Suggested phases: planning, implementing, validating, fixing-tests, done — but " <>
+            "phase is free text, use whatever's clearest for the task. phase/note are " <>
+            "cleared automatically at the start of your next turn, so call it again after " <>
+            "each phase boundary rather than once at the start. `title`, unlike phase/note, " <>
+            "PERSISTS across turns and updates the session title shown in the hub UI — set " <>
+            "it when your work has meaningfully shifted from what the current title says " <>
+            "(the tool result always echoes the session's current title, so you can check " <>
+            "it without another call).",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -176,9 +180,16 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "note" => %{
               "type" => "string",
               "description" => "Optional one-line detail about the phase."
+            },
+            "title" => %{
+              "type" => "string",
+              "description" =>
+                "Optional new session title. Unlike phase/note, this persists across turns " <>
+                  "rather than clearing at the start of the next one. Set it when what " <>
+                  "you're doing has meaningfully changed from the current title."
             }
           },
-          "required" => ["phase"]
+          "required" => []
         }
       },
       %{
@@ -283,7 +294,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
         error("No OrcaHub session linked to this MCP connection.")
 
       session_id ->
-        do_report_progress(session_id, args["phase"], args["note"])
+        do_report_progress(session_id, args["phase"], args["note"], args["title"])
     end
   end
 
@@ -457,34 +468,96 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       :ok
   end
 
-  defp do_report_progress(_session_id, phase, _note) when not is_binary(phase) or phase == "" do
-    error("report_progress requires a non-empty `phase` string argument.")
+  @max_title_length 80
+
+  defp do_report_progress(session_id, phase, note, title) do
+    if is_binary_non_empty(phase) or is_binary_non_empty(title) do
+      do_report_progress!(session_id, phase, note, title)
+    else
+      error(
+        "report_progress requires at least one of `phase` or `title` to be a non-empty string."
+      )
+    end
   end
 
-  defp do_report_progress(session_id, phase, note) do
+  defp do_report_progress!(session_id, phase, note, title) do
     session = HubRPC.get_session!(session_id)
+    new_title = if is_binary_non_empty(title), do: normalize_title(title)
 
-    attrs = %{
-      progress_phase: phase,
-      progress_note: note,
-      progress_updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
-    }
+    attrs =
+      %{}
+      |> maybe_put_progress_attrs(phase, note)
+      |> maybe_put_field(:title, new_title)
 
     case HubRPC.update_session(session, attrs) do
-      {:ok, _session} ->
-        broadcast_progress(session_id, phase, note)
-        suffix = if note, do: " — #{note}", else: ""
-        text("Progress recorded: #{phase}#{suffix}")
+      {:ok, updated} ->
+        if is_binary_non_empty(phase), do: broadcast_progress(session_id, phase, note)
+        if new_title, do: broadcast_title(session_id, new_title)
+
+        text(report_progress_result_text(phase, note, new_title, updated.title))
 
       {:error, changeset} ->
         error("Failed to record progress: #{inspect(changeset.errors)}")
     end
   end
 
+  defp is_binary_non_empty(v), do: is_binary(v) and v != ""
+
+  defp maybe_put_progress_attrs(attrs, phase, note) do
+    if is_binary_non_empty(phase) do
+      attrs
+      |> Map.put(:progress_phase, phase)
+      |> Map.put(:progress_note, note)
+      |> Map.put(:progress_updated_at, DateTime.utc_now() |> DateTime.truncate(:second))
+    else
+      attrs
+    end
+  end
+
+  # Collapses to a single line and caps length — this is a UI label (session
+  # list, tab title), not free-form text.
+  defp normalize_title(title) do
+    title
+    |> String.trim()
+    |> String.replace(~r/\s*\n+\s*/, " ")
+    |> String.slice(0, @max_title_length)
+  end
+
+  defp report_progress_result_text(phase, note, new_title, current_title) do
+    progress_part =
+      if is_binary_non_empty(phase) do
+        suffix = if note, do: " — #{note}", else: ""
+        "Progress recorded: #{phase}#{suffix}."
+      end
+
+    title_part =
+      cond do
+        new_title -> "Title updated to #{title_display(current_title)}."
+        progress_part -> "Session title: #{title_display(current_title)}"
+        true -> nil
+      end
+
+    [progress_part, title_part] |> Enum.reject(&is_nil/1) |> Enum.join(" ")
+  end
+
+  defp title_display(nil), do: "(untitled)"
+  defp title_display(""), do: "(untitled)"
+  defp title_display(title), do: inspect(title)
+
   # Live-updates the session UI's progress badge (SessionLive.Show subscribes
   # to "session:<id>" — same topic SessionRunner's own broadcast/2 uses).
   defp broadcast_progress(session_id, phase, note) do
     Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", {:progress, phase, note})
+  end
+
+  # Same topic/shape SessionRunner's own title-generation broadcast used —
+  # SessionLive.Show already handles {:title_updated, title}.
+  defp broadcast_title(session_id, title) do
+    Phoenix.PubSub.broadcast(
+      OrcaHub.PubSub,
+      "session:#{session_id}",
+      {:title_updated, title}
+    )
   end
 
   defp do_start_session(args, caller_session_id, idempotency_key) do

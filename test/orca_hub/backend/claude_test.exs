@@ -232,7 +232,10 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - **Call `Tools.report_progress(%{"phase" => ..., "note" => ...})` at \
       phase boundaries** (e.g. planning → implementing → validating → \
       fixing-tests) — a non-interrupting way for whoever spawned you to see \
-      you're making progress without messaging you.
+      you're making progress without messaging you. Its result always shows \
+      your session's current title — pass a `title` in the same call to \
+      update it when what you're doing has meaningfully changed (task \
+      pivoted, blocked, scope grew).
     """
     |> String.trim()
   end
@@ -275,6 +278,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - `Tools.send_message_to_session(...)` to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with `Tools.get_session_tail(...)` first.
     - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. Workers verify with targeted tests only; the full suite runs once as a pre-deploy gate. No worktrees.
     - Do not Read or Glob a different project's directory; delegate with `Tools.start_session(...)` using that project's `directory` instead.
+    - Always pass a concise `title` when calling `Tools.start_session(...)` — you already know the subtask, and it's free. Sessions no longer auto-generate a good title on their own.
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `Tools.list_feature_requests(...)` first — if it's already tracked, add what you found with `Tools.append_feature_request_note(...)` instead of filing a duplicate with `Tools.file_feature_request(...)`. Once a fix for a tracked request has shipped AND been verified, close it with `Tools.close_feature_request(...)` (pass a resolution note referencing the commit).
@@ -331,6 +335,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - `mcp__orca__send_message_to_session` to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with `mcp__orca__get_session_tail` first.
     - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. Workers verify with targeted tests only; the full suite runs once as a pre-deploy gate. No worktrees.
     - Do not Read or Glob a different project's directory; delegate with `mcp__orca__start_session` using that project's `directory` instead.
+    - Always pass a concise `title` when calling `mcp__orca__start_session` — you already know the subtask, and it's free. Sessions no longer auto-generate a good title on their own.
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `mcp__orca__list_feature_requests` first — if it's already tracked, add what you found with `mcp__orca__append_feature_request_note` instead of filing a duplicate with `mcp__orca__file_feature_request`. Once a fix for a tracked request has shipped AND been verified, close it with `mcp__orca__close_feature_request` (pass a resolution note referencing the commit).
