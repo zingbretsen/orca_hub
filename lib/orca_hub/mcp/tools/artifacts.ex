@@ -24,9 +24,18 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
 
   alias OrcaHub.Artifacts.HtmlValidator
   alias OrcaHub.HubRPC
+  alias OrcaHub.MCP.CodeExec.MediaSink
+  alias OrcaHub.MCP.UpstreamClient
 
   @kinds ~w(html svg markdown)
   @modes ~w(split full)
+  @default_viewports [375, 768, 1440]
+  @default_viewport_height 900
+  # The MCP endpoint is only reachable in-cluster (Authelia fronts every
+  # other origin) — see .context/message-flow.md and the
+  # prod-browser-verify-origin memory. playwright-mcp navigates from inside
+  # the cluster, so it must use this host, never the LAN/public one.
+  @in_cluster_base_url "http://orca-hub.lab.svc.cluster.local:4000"
 
   def list do
     [
@@ -47,10 +56,19 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             "Saving under a `name` that already exists in this project UPDATES that " <>
             "artifact in place (and bumps its version) rather than creating a new one — " <>
             "reuse the same name to iterate on one artifact across turns/sessions.\n\n" <>
-            "You can verify how it actually renders by navigating a playwright browser " <>
-            "(when that upstream MCP server is enabled) to the returned raw URL — " <>
-            "http://orca-hub.lab.svc.cluster.local:4000<raw_url> — and taking screenshots " <>
-            "at a few viewport widths (e.g. 375, 768, 1280) before telling the user it's " <>
+            "LIVE DATA: if this artifact shows numbers that will change later (a dashboard, " <>
+            "a report, a live counter), don't re-save the whole document to refresh them — " <>
+            "call update_artifact_data instead, which pushes a new `data` snapshot into the " <>
+            "SAME artifact without reloading/rewriting its HTML. Your HTML must read " <>
+            "`window.ORCA_DATA` on load for the initial snapshot, and listen for live " <>
+            "updates with `window.addEventListener(\"message\", (e) => { if (e.data?.type " <>
+            "=== \"orca:data\") /* e.data.data is the new snapshot */ })`. The iframe's " <>
+            "sandbox has an opaque origin (no `allow-same-origin`), so `fetch()` from " <>
+            "inside it can't reach this host — ORCA_DATA/postMessage is the only data path " <>
+            "in or out.\n\n" <>
+            "Verify how it actually renders with screenshot_artifact (drives a shared " <>
+            "playwright browser server-side across a few viewport widths and returns " <>
+            "saved screenshot file paths for you to Read) before telling the user it's " <>
             "ready.",
         "inputSchema" => %{
           "type" => "object",
@@ -138,6 +156,74 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             }
           }
         }
+      },
+      %{
+        "name" => "update_artifact_data",
+        "description" =>
+          "Push a fresh `data` snapshot into an already-saved artifact WITHOUT reloading " <>
+            "its HTML — use this to refresh the numbers behind a dashboard/report you already " <>
+            "shipped with save_artifact (e.g. re-run \"top memory consumers\" a week later and " <>
+            "push the new numbers into the SAME artifact), instead of re-saving the whole " <>
+            "document. Does not bump the artifact's version. Delivered to any already-open " <>
+            "viewer live via `postMessage` (see save_artifact's description for the " <>
+            "ORCA_DATA/postMessage contract your artifact's HTML must implement to receive " <>
+            "it) — no reload, no page refresh.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "name" => %{
+              "type" => "string",
+              "description" => "The artifact's name, within this session's project."
+            },
+            "artifact_id" => %{
+              "type" => "string",
+              "description" => "The artifact's id (alternative to `name`)."
+            },
+            "data" => %{
+              "type" => "object",
+              "description" =>
+                "The new data snapshot — a JSON object. Replaces the artifact's entire " <>
+                  "previous data payload (not a merge)."
+            }
+          },
+          "required" => ["data"]
+        }
+      },
+      %{
+        "name" => "screenshot_artifact",
+        "description" =>
+          "Collapse the artifact self-preview loop (resize/navigate/screenshot per " <>
+            "viewport) into one call: drives the shared playwright-mcp upstream " <>
+            "server-side, sequentially, at each requested viewport width, and saves each " <>
+            "screenshot to this session's own media directory — returning file paths for " <>
+            "you to Read as images before telling the user the artifact is ready.\n\n" <>
+            "Requires the playwright-mcp upstream MCP server to be connected/enabled for " <>
+            "this session; if it isn't, this returns an error containing the manual " <>
+            "recipe (the exact raw URL + steps) so you can drive it yourself with " <>
+            "whatever browser tool IS available.\n\n" <>
+            "The playwright browser is SHARED state on the hub — another session using it " <>
+            "at the same time can interleave with this call (e.g. navigate the shared " <>
+            "page out from under it) and produce a screenshot of the wrong content.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "name" => %{
+              "type" => "string",
+              "description" => "The artifact's name, within this session's project."
+            },
+            "artifact_id" => %{
+              "type" => "string",
+              "description" => "The artifact's id (alternative to `name`)."
+            },
+            "viewports" => %{
+              "type" => "array",
+              "items" => %{"type" => "integer"},
+              "description" =>
+                "Viewport widths in px to screenshot at, one screenshot per width. " <>
+                  "Defaults to [375, 768, 1440] (mobile/tablet/desktop)."
+            }
+          }
+        }
       }
     ]
   end
@@ -201,6 +287,30 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
 
       {:error, message} ->
         error(message)
+    end
+  end
+
+  def call("update_artifact_data", args, state) do
+    data = args["data"]
+
+    cond do
+      not is_map(data) ->
+        error("update_artifact_data requires a `data` object argument.")
+
+      true ->
+        case resolve_artifact(args, state) do
+          {:ok, artifact} -> do_update_data(artifact, data)
+          {:error, message} -> error(message)
+        end
+    end
+  end
+
+  def call("screenshot_artifact", args, state) do
+    viewports = normalize_viewports(args["viewports"])
+
+    case resolve_artifact(args, state) do
+      {:ok, artifact} -> do_screenshot(artifact, viewports, state)
+      {:error, message} -> error(message)
     end
   end
 
@@ -273,6 +383,191 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
           {:open_artifact, artifact_id, mode}
         )
     end
+  end
+
+  # ── update_artifact_data ──────────────────────────────────────────────
+
+  defp do_update_data(artifact, data) do
+    case HubRPC.update_artifact_data(artifact, data) do
+      {:ok, artifact} ->
+        text(
+          Jason.encode!(%{
+            id: artifact.id,
+            name: artifact.name,
+            version: artifact.version,
+            raw_url: raw_url(artifact),
+            data_updated: true
+          })
+        )
+
+      {:error, changeset} ->
+        error("Failed to update artifact data: #{inspect(changeset.errors)}")
+    end
+  end
+
+  # ── screenshot_artifact ───────────────────────────────────────────────
+  #
+  # Drives playwright-mcp directly via `UpstreamClient.call_tool/3` — the
+  # exact same hub-aware entry point `OrcaHub.MCP.Server` and
+  # `MCP.CodeExec.Dispatcher` use for every upstream tool call, so this works
+  # unchanged whether the calling session's MCP connection lives on the hub
+  # or an agent node (it forwards to the hub via `:erpc` there, same as
+  # every other upstream call). `filename` is deliberately never passed to
+  # `browser_take_screenshot` — playwright-mcp would then write the file
+  # inside its OWN pod and hand back only an unreachable link (see
+  # `MCP.CodeExec.Dispatcher`'s moduledoc) — instead the raw image bytes are
+  # requested inline and saved locally via `MediaSink`, on this session's
+  # own runner node, exactly like the code-exec self-preview loop does.
+
+  defp normalize_viewports(widths) when is_list(widths) do
+    case Enum.filter(widths, &(is_integer(&1) and &1 > 0)) do
+      [] -> @default_viewports
+      widths -> widths
+    end
+  end
+
+  defp normalize_viewports(_widths), do: @default_viewports
+
+  defp do_screenshot(artifact, viewports, state) do
+    render_screenshots(artifact, viewports, state[:orca_session_id])
+  end
+
+  @doc """
+  Public and dependency-injectable — mirrors `PlaywrightUpload.maybe_rewrite_paths/4`'s
+  `upload_fun` pattern — so tests can exercise the full happy/error paths
+  without touching the live `UpstreamClient` GenServer or the network.
+
+    * `available?` (arity 0) decides whether playwright is connected;
+      defaults to a real `UpstreamClient.prefixes/0` check.
+    * `call_fn` (arity 3, `tool_name, arguments, opts -> envelope`) performs
+      one upstream tool call; defaults to the real
+      `UpstreamClient.call_tool/3` (itself hub-aware — see the moduledoc
+      note above).
+  """
+  def render_screenshots(
+        artifact,
+        viewports,
+        session_id,
+        available? \\ &playwright_available?/0,
+        call_fn \\ &UpstreamClient.call_tool/3
+      ) do
+    if available?.() do
+      url = absolute_raw_url(artifact)
+
+      screenshots =
+        Enum.map(viewports, &viewport_screenshot(&1, url, artifact, session_id, call_fn))
+
+      text(
+        Jason.encode!(%{
+          id: artifact.id,
+          name: artifact.name,
+          raw_url: raw_url(artifact),
+          screenshots: screenshots
+        })
+      )
+    else
+      error(manual_recipe(artifact))
+    end
+  end
+
+  defp playwright_available?, do: "playwright" in UpstreamClient.prefixes()
+
+  # Sequential by construction — Enum.map/2 over one process, one viewport at
+  # a time, matching the tool description's "sequentially" promise (the
+  # shared upstream browser can't usefully be resized/navigated concurrently
+  # from a single call anyway).
+  defp viewport_screenshot(width, url, artifact, session_id, call_fn) do
+    with {:ok, _} <- resize(width, session_id, call_fn),
+         {:ok, _} <- navigate(url, session_id, call_fn),
+         {:ok, content} <- screenshot(session_id, call_fn),
+         {:ok, bytes, mime} <- first_image_block(content) do
+      path = save_screenshot(bytes, mime, artifact, width, session_id)
+      %{width: width, path: path}
+    else
+      {:error, message} -> %{width: width, error: message}
+    end
+  end
+
+  defp resize(width, session_id, call_fn),
+    do:
+      call_playwright(
+        "browser_resize",
+        %{"width" => width, "height" => @default_viewport_height},
+        session_id,
+        call_fn
+      )
+
+  defp navigate(url, session_id, call_fn),
+    do: call_playwright("browser_navigate", %{"url" => url}, session_id, call_fn)
+
+  defp screenshot(session_id, call_fn) do
+    case call_playwright("browser_take_screenshot", %{}, session_id, call_fn) do
+      {:ok, %{"content" => content}} when is_list(content) -> {:ok, content}
+      {:ok, other} -> {:error, "unexpected browser_take_screenshot response: #{inspect(other)}"}
+      {:error, message} -> {:error, message}
+    end
+  end
+
+  defp call_playwright(name, args, session_id, call_fn) do
+    case call_fn.("playwright__#{name}", args, orca_session_id: session_id) do
+      %{"isError" => true} = result -> {:error, upstream_error_text(result)}
+      result -> {:ok, result}
+    end
+  end
+
+  defp upstream_error_text(%{"content" => content}) when is_list(content) do
+    content
+    |> Enum.map(fn
+      %{"text" => text} -> text
+      other -> inspect(other)
+    end)
+    |> Enum.join(" ")
+  end
+
+  defp upstream_error_text(other), do: inspect(other)
+
+  defp first_image_block(content) do
+    case Enum.find(content, &(&1["type"] == "image")) do
+      %{"data" => data, "mimeType" => mime} ->
+        case decode_base64(data) do
+          {:ok, bytes} -> {:ok, bytes, mime}
+          :error -> {:error, "failed to decode screenshot image data"}
+        end
+
+      _ ->
+        {:error, "browser_take_screenshot did not return an image"}
+    end
+  end
+
+  defp decode_base64(data) do
+    case Base.decode64(data) do
+      {:ok, bytes} -> {:ok, bytes}
+      :error -> Base.decode64(data, padding: false)
+    end
+  end
+
+  defp save_screenshot(bytes, mime, artifact, width, session_id) do
+    root = MediaSink.media_root_for(session_id)
+    File.mkdir_p!(root)
+    ext = MediaSink.ext_for_mime(mime)
+    filename = "artifact-#{MediaSink.sanitize_for_filename(artifact.name)}-#{width}px.#{ext}"
+    path = Path.join(root, filename)
+    File.write!(path, bytes)
+    path
+  end
+
+  defp absolute_raw_url(artifact), do: @in_cluster_base_url <> raw_url(artifact)
+
+  defp manual_recipe(artifact) do
+    url = absolute_raw_url(artifact)
+
+    "The playwright-mcp upstream server isn't connected/enabled for this session, so " <>
+      "screenshot_artifact can't drive it server-side. If a playwright browser tool is " <>
+      "reachable some other way, drive it yourself: for each viewport width " <>
+      "(default 375, 768, 1440) call browser_resize({width, height: #{@default_viewport_height}}), " <>
+      "then browser_navigate({url: #{inspect(url)}}), then browser_take_screenshot() — " <>
+      "omit `filename` so it returns the image bytes inline instead of saving them " <>
+      "unreachably inside playwright's own pod."
   end
 
   # ── shared resolution helpers ────────────────────────────────────────

@@ -1599,6 +1599,27 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, assign(socket, :open_files, open_files)}
   end
 
+  # Live-data push (OrcaHub.Artifacts.update_artifact_data/2) — distinct from
+  # {:artifact_updated, ...} above: no version bump, so no iframe reload.
+  # Forwarded to the ArtifactData hook via push_event; the hook filters by
+  # artifact_id, so this is broadcast even when no matching tab is open (the
+  # hook simply has nothing to catch it).
+  def handle_info({:artifact_data_updated, artifact}, socket) do
+    open_files =
+      Enum.map(socket.assigns.open_files, fn
+        %{kind: :artifact, artifact_id: id} = tab when id == artifact.id ->
+          %{tab | artifact: artifact}
+
+        tab ->
+          tab
+      end)
+
+    {:noreply,
+     socket
+     |> assign(:open_files, open_files)
+     |> push_event("artifact_data_updated", %{artifact_id: artifact.id, data: artifact.data})}
+  end
+
   @impl true
   def handle_info({:event, event}, socket) do
     socket = assign(socket, :messages, socket.assigns.messages ++ [event])
@@ -1925,6 +1946,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
         src={~p"/artifacts/#{@tab.artifact_id}/raw?v=#{@tab.artifact.version}"}
         sandbox="allow-scripts"
         title={@tab.artifact.name}
+        phx-hook="ArtifactData"
+        data-artifact-id={@tab.artifact_id}
         class="flex-1 w-full min-h-0 bg-white rounded border border-base-300"
       />
     </div>

@@ -966,6 +966,35 @@ let Hooks = {
     }
   },
 
+  // Live-data channel for artifacts (see OrcaHub.Artifacts.update_artifact_data/2).
+  // Wraps an artifact iframe: forwards pushed data into it via postMessage
+  // rather than fetch(), since the iframe's opaque sandbox origin (no
+  // allow-same-origin) can't fetch() this host in prod. Also re-sends the
+  // last known data on the iframe's own "load" event, covering the race
+  // where the iframe reloads (a content/version update) shortly after a
+  // data push landed.
+  ArtifactData: {
+    mounted() {
+      this._lastData = undefined
+
+      this._onLoad = () => {
+        if (this._lastData !== undefined) this._send(this._lastData)
+      }
+      this.el.addEventListener("load", this._onLoad)
+
+      this.handleEvent("artifact_data_updated", ({ artifact_id, data }) => {
+        if (artifact_id !== this.el.dataset.artifactId) return
+        this._lastData = data
+        this._send(data)
+      })
+    },
+    destroyed() {
+      this.el.removeEventListener("load", this._onLoad)
+    },
+    _send(data) {
+      this.el.contentWindow?.postMessage({ type: "orca:data", data }, "*")
+    }
+  },
   FileTree: {
     _getVisibleItems() {
       return Array.from(this.el.querySelectorAll("li > button[phx-click='select_file'], li > details > summary"))

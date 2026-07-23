@@ -39,6 +39,8 @@
     src={raw_src(@artifact)}
     sandbox="allow-scripts"
     title={@artifact.name}
+    phx-hook="ArtifactData"
+    data-artifact-id={@artifact.id}
     class="h-full bg-white rounded border border-base-300"
     style={
       if width = viewport_width(@viewport),

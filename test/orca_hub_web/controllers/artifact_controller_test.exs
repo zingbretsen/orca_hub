@@ -34,7 +34,10 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
     assert conn.status == 404
   end
 
-  test "serves html content as text/html verbatim", %{conn: conn, project: project} do
+  test "serves html content as text/html, prefixed with the (empty-data) ORCA_DATA script", %{
+    conn: conn,
+    project: project
+  } do
     {:ok, artifact} =
       Artifacts.save_artifact(%{
         project_id: project.id,
@@ -47,7 +50,9 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
 
     assert conn.status == 200
     assert get_resp_content_type(conn) == "text/html"
-    assert conn.resp_body == "<html><body><h1>Hi</h1></body></html>"
+
+    assert conn.resp_body ==
+             "<script>window.ORCA_DATA = {};</script><html><body><h1>Hi</h1></body></html>"
   end
 
   test "serves svg content as image/svg+xml verbatim", %{conn: conn, project: project} do
@@ -98,7 +103,127 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
 
     conn = get(conn, ~p"/artifacts/#{artifact.id}/raw?v=#{artifact.version}")
     assert conn.status == 200
-    assert conn.resp_body == "<p>v1</p>"
+    assert conn.resp_body == "<script>window.ORCA_DATA = {};</script><p>v1</p>"
+  end
+
+  describe "ORCA_DATA injection (live-data channel)" do
+    test "injects window.ORCA_DATA immediately after an opening <head> tag", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "with-head",
+          kind: "html",
+          content: "<html><head><title>T</title></head><body>Hi</body></html>"
+        })
+
+      {:ok, artifact} = Artifacts.update_artifact_data(artifact, %{"count" => 3})
+
+      conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
+
+      assert conn.resp_body ==
+               "<html><head><script>window.ORCA_DATA = {\"count\":3};</script>" <>
+                 "<title>T</title></head><body>Hi</body></html>"
+    end
+
+    test "matches a <head> tag with attributes too", %{conn: conn, project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "head-with-attrs",
+          kind: "html",
+          content: ~s(<html><head lang="en"></head><body></body></html>)
+        })
+
+      conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
+
+      assert conn.resp_body ==
+               ~s(<html><head lang="en"><script>window.ORCA_DATA = {};</script></head><body></body></html>)
+    end
+
+    test "prepends window.ORCA_DATA when there's no <head> tag at all", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "no-head",
+          kind: "html",
+          content: "<p>hi</p>"
+        })
+
+      conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
+
+      assert conn.resp_body == "<script>window.ORCA_DATA = {};</script><p>hi</p>"
+    end
+
+    test "reflects the artifact's current data, not what it was saved with", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "live-data",
+          kind: "html",
+          content: "<p>hi</p>"
+        })
+
+      {:ok, artifact} = Artifacts.update_artifact_data(artifact, %{"n" => 1})
+      conn1 = get(conn, ~p"/artifacts/#{artifact.id}/raw")
+      assert conn1.resp_body =~ "{\"n\":1}"
+
+      {:ok, artifact} = Artifacts.update_artifact_data(artifact, %{"n" => 2})
+      conn2 = get(build_conn(), ~p"/artifacts/#{artifact.id}/raw")
+      assert conn2.resp_body =~ "{\"n\":2}"
+    end
+
+    test "escapes </script> inside a data value so it can't break out of the injected tag", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "escape-test",
+          kind: "html",
+          content: "<html><head></head><body></body></html>"
+        })
+
+      payload = %{"evil" => "</script><script>alert(1)</script>"}
+      {:ok, artifact} = Artifacts.update_artifact_data(artifact, payload)
+
+      conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
+      body = conn.resp_body
+
+      # Exactly one <script>/</script> pair — the one we injected. If the
+      # payload's literal "</script>" had survived unescaped, this would be 3.
+      assert length(String.split(body, "<script>")) == 2
+      assert length(String.split(body, "</script>")) == 2
+
+      [_, injected_json] = Regex.run(~r/window\.ORCA_DATA = (.*?);<\/script>/, body)
+      assert Jason.decode!(injected_json) == payload
+    end
+
+    test "svg content is never touched by data injection", %{conn: conn, project: project} do
+      svg = ~s(<svg xmlns="http://www.w3.org/2000/svg"><circle r="5"/></svg>)
+
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "svg-no-inject",
+          kind: "svg",
+          content: svg
+        })
+
+      {:ok, artifact} = Artifacts.update_artifact_data(artifact, %{"n" => 1})
+
+      conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
+      assert conn.resp_body == svg
+    end
   end
 
   defp get_resp_content_type(conn) do

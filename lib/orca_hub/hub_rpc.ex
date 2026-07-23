@@ -149,6 +149,10 @@ defmodule OrcaHub.HubRPC do
   # -------------------------------------------------------------------
 
   def save_artifact(attrs), do: call(OrcaHub.Artifacts, :save_artifact, [attrs])
+
+  def update_artifact_data(artifact, data),
+    do: call(OrcaHub.Artifacts, :update_artifact_data, [artifact, data])
+
   def get_artifact(id), do: call(OrcaHub.Artifacts, :get_artifact, [id])
 
   def get_artifact_by_name(project_id, name),

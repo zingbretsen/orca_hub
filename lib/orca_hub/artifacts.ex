@@ -54,6 +54,26 @@ defmodule OrcaHub.Artifacts do
     |> broadcast_on_save()
   end
 
+  @doc """
+  Replace an artifact's `data` map in place — backs the `update_artifact_data`
+  MCP tool, the live-data channel that lets an agent ship a dashboard's HTML
+  once and then push fresh numbers into it on a later turn/session.
+
+  Deliberately does NOT bump `version` (unlike `save_artifact/1`): version is
+  what busts the iframe's `?v=` cache param and forces a reload, which is
+  exactly what a live-data update is trying to avoid. Broadcasts
+  `{:artifact_data_updated, artifact}` — a distinct message from
+  `save_artifact/1`'s `{:artifact_updated, ...}` — on `"artifact:<artifact_id>"`
+  so a viewer can tell a live-data push (forward via `postMessage`, no reload)
+  apart from a content/version change (reload the iframe).
+  """
+  def update_artifact_data(%Artifact{} = artifact, data) when is_map(data) do
+    artifact
+    |> Artifact.changeset(%{data: data})
+    |> Repo.update()
+    |> broadcast_data_update()
+  end
+
   def get_artifact(id) do
     case Ecto.UUID.cast(id) do
       {:ok, _} -> Repo.get(Artifact, id)
@@ -95,4 +115,16 @@ defmodule OrcaHub.Artifacts do
   end
 
   defp broadcast_on_save(error), do: error
+
+  defp broadcast_data_update({:ok, artifact} = result) do
+    Phoenix.PubSub.broadcast(
+      OrcaHub.PubSub,
+      "artifact:#{artifact.id}",
+      {:artifact_data_updated, artifact}
+    )
+
+    result
+  end
+
+  defp broadcast_data_update(error), do: error
 end

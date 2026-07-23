@@ -189,18 +189,30 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
   because `save_text/2` is the same kind of save-to-disk operation as the
   per-block media writes and must resolve the identical root.
   """
-  def media_root do
+  def media_root, do: media_root_for(session_id_from_process_state())
+
+  @doc """
+  Same resolution as `media_root/0`, but for an explicit `session_id` instead
+  of the current process's installed `CodeExec` state — used by callers that
+  save media outside a `run_elixir` eval (e.g. `screenshot_artifact`, which
+  drives playwright-mcp directly from a first-party MCP tool call, never
+  through the sandbox).
+  """
+  def media_root_for(id) when is_binary(id) do
+    segment = safe_dir_segment(sanitize_for_filename(id))
+
+    case project_media_dir(id) do
+      {:ok, directory} -> Path.join([directory, ".agents", "media", segment])
+      :error -> tmp_media_root(segment)
+    end
+  end
+
+  def media_root_for(_id), do: tmp_media_root("shared")
+
+  defp session_id_from_process_state do
     case CodeExec.get_state() do
-      %{orca_session_id: id} when is_binary(id) ->
-        segment = safe_dir_segment(sanitize_for_filename(id))
-
-        case project_media_dir(id) do
-          {:ok, directory} -> Path.join([directory, ".agents", "media", segment])
-          :error -> tmp_media_root(segment)
-        end
-
-      _ ->
-        tmp_media_root("shared")
+      %{orca_session_id: id} when is_binary(id) -> id
+      _ -> nil
     end
   end
 
@@ -334,8 +346,9 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
 
   def sanitize_for_filename(_name), do: "tool"
 
-  defp ext_for_mime(mime) when is_binary(mime), do: Map.get(@mime_ext, mime, fallback_ext(mime))
-  defp ext_for_mime(_mime), do: "bin"
+  @doc "Map a mime type to a filename extension, falling back to its subtype or \"bin\"."
+  def ext_for_mime(mime) when is_binary(mime), do: Map.get(@mime_ext, mime, fallback_ext(mime))
+  def ext_for_mime(_mime), do: "bin"
 
   defp fallback_ext(mime) do
     case String.split(mime, "/", parts: 2) do

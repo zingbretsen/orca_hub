@@ -130,6 +130,53 @@ defmodule OrcaHub.ArtifactsTest do
     end
   end
 
+  describe "update_artifact_data/2" do
+    test "replaces the data map without bumping version", %{project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "dashboard",
+          content: "<html></html>"
+        })
+
+      assert artifact.version == 1
+      assert artifact.data == %{}
+
+      assert {:ok, updated} =
+               Artifacts.update_artifact_data(artifact, %{"top" => ["a", "b"], "count" => 2})
+
+      assert updated.id == artifact.id
+      assert updated.version == 1
+      assert updated.data == %{"top" => ["a", "b"], "count" => 2}
+    end
+
+    test "a second call fully replaces the previous data (not a merge)", %{project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "dashboard", content: "x"})
+
+      {:ok, artifact} = Artifacts.update_artifact_data(artifact, %{"a" => 1, "b" => 2})
+      {:ok, artifact} = Artifacts.update_artifact_data(artifact, %{"c" => 3})
+
+      assert artifact.data == %{"c" => 3}
+    end
+
+    test "broadcasts {:artifact_data_updated, artifact} (not {:artifact_updated, ...})", %{
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "dashboard", content: "x"})
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "artifact:#{artifact.id}")
+
+      {:ok, updated} = Artifacts.update_artifact_data(artifact, %{"n" => 42})
+
+      assert_receive {:artifact_data_updated, %Artifact{id: id, data: %{"n" => 42}}}
+      assert id == artifact.id
+      refute_received {:artifact_updated, _}
+      assert updated.version == artifact.version
+    end
+  end
+
   describe "get_artifact/1" do
     test "fetches an existing artifact", %{project: project} do
       {:ok, artifact} =

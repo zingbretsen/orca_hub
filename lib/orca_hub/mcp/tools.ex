@@ -65,7 +65,7 @@ defmodule OrcaHub.MCP.Tools do
                              get_session_tail archive_session file_feature_request
                              list_feature_requests get_feature_request append_feature_request_note
                              close_feature_request save_artifact open_artifact list_artifacts
-                             get_artifact)
+                             get_artifact update_artifact_data screenshot_artifact)
 
   @doc "Return every MCP tool definition map across every category."
   def list do

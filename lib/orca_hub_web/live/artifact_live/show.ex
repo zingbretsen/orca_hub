@@ -45,6 +45,15 @@ defmodule OrcaHubWeb.ArtifactLive.Show do
     {:noreply, assign(socket, :artifact, artifact)}
   end
 
+  # Live-data push (OrcaHub.Artifacts.update_artifact_data/2) — no version
+  # bump, so no iframe reload; forwarded to the ArtifactData hook instead.
+  def handle_info({:artifact_data_updated, artifact}, socket) do
+    {:noreply,
+     socket
+     |> assign(:artifact, artifact)
+     |> push_event("artifact_data_updated", %{artifact_id: artifact.id, data: artifact.data})}
+  end
+
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   defp viewport_width(viewport), do: @viewports[viewport]
