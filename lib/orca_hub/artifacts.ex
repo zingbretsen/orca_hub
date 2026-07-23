@@ -17,7 +17,10 @@ defmodule OrcaHub.Artifacts do
 
   Every successful save broadcasts `{:artifact_updated, artifact}` on
   `"artifact:<artifact_id>"` so any open viewer (session split panel,
-  fullscreen `/artifacts/:id`) can live-reload without a page refresh.
+  fullscreen `/artifacts/:id`) can live-reload without a page refresh. When
+  the artifact has a `session_id`, it also broadcasts `{:artifact_saved,
+  artifact}` on `"session:<session_id>"` so the creator session's header
+  (Artifacts button count + dropdown) can stay in sync without a remount.
   """
 
   import Ecto.Query
@@ -29,7 +32,9 @@ defmodule OrcaHub.Artifacts do
   Create or update an artifact, keyed on `(project_id, name)` from `attrs`
   (atom-keyed map). Bumps `version` on update; leaves it at the schema
   default (1) on insert. Broadcasts `{:artifact_updated, artifact}` on
-  `"artifact:<artifact_id>"` after a successful save.
+  `"artifact:<artifact_id>"`, and `{:artifact_saved, artifact}` on
+  `"session:<session_id>"` when `attrs` has a `session_id`, after a
+  successful save.
   """
   def save_artifact(attrs) do
     project_id = Map.get(attrs, :project_id)
@@ -110,6 +115,14 @@ defmodule OrcaHub.Artifacts do
       "artifact:#{artifact.id}",
       {:artifact_updated, artifact}
     )
+
+    if artifact.session_id do
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{artifact.session_id}",
+        {:artifact_saved, artifact}
+      )
+    end
 
     result
   end

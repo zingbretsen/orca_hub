@@ -178,6 +178,61 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
     end
   end
 
+  describe "{:artifact_saved, artifact} broadcast (header button + dropdown)" do
+    test "a new artifact attributed to the session appears in the badge/dropdown without remount",
+         %{conn: conn, session: session, artifact: artifact} do
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert html =~ "title=\"Artifacts\""
+      assert view |> element("button[title='Artifacts'] .badge") |> render() =~ "1"
+
+      {:ok, second} =
+        Artifacts.save_artifact(%{
+          project_id: artifact.project_id,
+          session_id: session.id,
+          name: "second-dashboard",
+          kind: "html",
+          content: "<p>hi</p>"
+        })
+
+      render(view)
+      assert view |> element("button[title='Artifacts'] .badge") |> render() =~ "2"
+
+      html = view |> element("button[title='Artifacts']") |> render_click()
+      assert html =~ artifact.name
+      assert html =~ second.name
+    end
+
+    test "re-saving an existing session artifact updates it in place (no duplicate row)", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      {:ok, updated} =
+        Artifacts.save_artifact(%{
+          project_id: artifact.project_id,
+          session_id: session.id,
+          name: artifact.name,
+          content: "<p>updated</p>"
+        })
+
+      assert updated.version == artifact.version + 1
+
+      html = view |> element("button[title='Artifacts']") |> render_click()
+      assert html =~ "v#{updated.version}"
+
+      doc = Floki.parse_document!(html)
+
+      badge_count =
+        doc |> Floki.find("button[title='Artifacts'] .badge") |> Floki.text() |> String.trim()
+
+      assert badge_count == "1"
+      assert doc |> Floki.find("button[phx-click='open_session_artifact']") |> length() == 1
+    end
+  end
+
   describe "orca.send bidirectional bridge (Phase 3)" do
     @claude_stub Path.expand("../../../support/fixtures/claude_stub_noop.sh", __DIR__)
 

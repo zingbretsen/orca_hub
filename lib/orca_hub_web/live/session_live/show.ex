@@ -1625,6 +1625,21 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, assign(socket, :open_files, open_files)}
   end
 
+  # Keeps the header Artifacts button (count badge + dropdown) fresh when the
+  # agent calls save_artifact mid-session — without this, @session_artifacts
+  # is a one-time snapshot from mount/2 and only catches up on a page reload.
+  # Upserts by id instead of re-querying: the broadcast payload already has
+  # everything the dropdown renders.
+  def handle_info({:artifact_saved, artifact}, socket) do
+    session_artifacts =
+      case Enum.find_index(socket.assigns.session_artifacts, &(&1.id == artifact.id)) do
+        nil -> [artifact | socket.assigns.session_artifacts]
+        index -> List.replace_at(socket.assigns.session_artifacts, index, artifact)
+      end
+
+    {:noreply, assign(socket, :session_artifacts, session_artifacts)}
+  end
+
   # Live-data push (OrcaHub.Artifacts.update_artifact_data/2) — distinct from
   # {:artifact_updated, ...} above: no version bump, so no iframe reload.
   # Forwarded to the ArtifactData hook via push_event; the hook filters by
