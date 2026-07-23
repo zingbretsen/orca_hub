@@ -117,6 +117,62 @@ defmodule OrcaHub.ClusterNodesTest do
       assert cleared.default_backend == nil
       assert cleared.default_model == nil
     end
+
+    test "updates dial" do
+      {:ok, node} = ClusterNodes.upsert_seen("orca@a", "a")
+      refute node.dial
+
+      {:ok, updated} = ClusterNodes.update_node(node, %{dial: true})
+      assert updated.dial
+
+      {:ok, toggled_back} = ClusterNodes.update_node(updated, %{dial: false})
+      refute toggled_back.dial
+    end
+  end
+
+  describe "create_node/1" do
+    test "manually creates a row with dial enabled, for a node that has never connected" do
+      assert {:ok, node} =
+               ClusterNodes.create_node(%{
+                 name: "orca@future-gb10",
+                 display_name: "GB10",
+                 dial: true
+               })
+
+      assert node.name == "orca@future-gb10"
+      assert node.display_name == "GB10"
+      assert node.dial
+      assert node.first_connected_at == nil
+      assert node.last_connected_at == nil
+    end
+
+    test "rejects a duplicate name with a friendly error" do
+      {:ok, _} = ClusterNodes.create_node(%{name: "orca@dup", dial: true})
+
+      assert {:error, changeset} = ClusterNodes.create_node(%{name: "orca@dup", dial: true})
+      assert "has already been taken" in errors_on(changeset).name
+    end
+
+    test "rejects a name that doesn't look like basename@host" do
+      assert {:error, changeset} = ClusterNodes.create_node(%{name: "not-a-node-name"})
+      assert errors_on(changeset).name != []
+    end
+  end
+
+  describe "list_dial_targets/0" do
+    test "returns only the names of dial-enabled rows" do
+      {:ok, _} = ClusterNodes.create_node(%{name: "orca@dial-me", dial: true})
+      {:ok, _} = ClusterNodes.create_node(%{name: "orca@dont-dial-me", dial: false})
+      {:ok, _} = ClusterNodes.upsert_seen("orca@never-touched", "never-touched")
+
+      assert ClusterNodes.list_dial_targets() == ["orca@dial-me"]
+    end
+
+    test "returns [] when no rows are dial-enabled" do
+      {:ok, _} = ClusterNodes.upsert_seen("orca@a", "a")
+
+      assert ClusterNodes.list_dial_targets() == []
+    end
   end
 
   describe "isolated flag survives conflict-update paths" do

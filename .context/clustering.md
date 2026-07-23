@@ -192,7 +192,7 @@ Agent nodes are intentionally limited:
 Beyond routing, each Erlang node has an optional policy row in the `nodes`
 table (`OrcaHub.ClusterNodes.ClusterNode`, `lib/orca_hub/cluster_nodes/cluster_node.ex`):
 `name` (Erlang node name), `display_name`, `first_connected_at`/
-`last_connected_at`, `isolated`, `scrub_session_env`, `env_allowlist`,
+`last_connected_at`, `isolated`, `dial`, `scrub_session_env`, `env_allowlist`,
 `default_backend`, `default_model`. `OrcaHub.ClusterNodeTracker` (hub only,
 `lib/orca_hub/cluster_node_tracker.ex`) is a GenServer that monitors
 `:net_kernel` up/down events and upserts rows into this table, backing the
@@ -223,6 +223,20 @@ stakes:
   `default_backend` (or none was explicitly requested) — an atomic
   backend+model pairing so a node's default model is never applied to a
   different backend.
+- **`dial`** — *not* resolved by `NodePolicy` either; consumed directly by
+  `OrcaHub.NodeDialer` (hub-only GenServer, `lib/orca_hub/node_dialer.ex`).
+  Every 5s it reads every `nodes` row with `dial: true`
+  (`OrcaHub.ClusterNodes.list_dial_targets/0`) and `Node.connect/1`s each one
+  not already in `Node.list/0` — the DB-backed, per-node replacement for the
+  steady-state half of the `CLUSTER_NODES` static Epmd strategy below, for a
+  hub that's on a network (e.g. a k8s pod network) that LAN nodes can't dial
+  *into*. Toggling `dial` in the `/nodes` UI takes effect within one tick
+  (targets are read fresh each time, no cache). Per-target consecutive
+  failures are tracked in-process so an offline node doesn't log every tick
+  forever: one warning on the first failure, then silence, with at most one
+  repeat warning every ~5 minutes. `CLUSTER_NODES` remains supported below,
+  but only as a bootstrap fallback (e.g. before a node's `nodes` row exists)
+  — it is not the mechanism a running hub should rely on day to day.
 
 ## Discovery Strategies
 

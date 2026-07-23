@@ -31,6 +31,7 @@ defmodule OrcaHubWeb.NodeLive.Index do
   use OrcaHubWeb, :live_view
 
   alias OrcaHub.{BackendInstaller, Cluster, HubRPC, NodeConfig}
+  alias OrcaHub.ClusterNodes.ClusterNode
 
   @impl true
   def mount(_params, _session, socket) do
@@ -40,6 +41,7 @@ defmodule OrcaHubWeb.NodeLive.Index do
       |> assign(nodes: load_nodes())
       |> assign(sweep_active?: false, sweep_summary: nil)
       |> assign(sweep_cells: %{}, sweep_node_names: MapSet.new())
+      |> assign(adding_node?: false, add_node_form: nil)
 
     socket = if connected?(socket), do: restore_running_sweep(socket), else: socket
 
@@ -54,6 +56,46 @@ defmodule OrcaHubWeb.NodeLive.Index do
 
   @doc "The fixed backend list the sweep grid's columns are built from."
   def backends, do: NodeConfig.backends()
+
+  # -------------------------------------------------------------------
+  # Add node: a `nodes` row can only ever be auto-created by
+  # OrcaHub.ClusterNodeTracker when a node first connects — but a LAN node
+  # the hub can't dial *into* can never connect until the hub dials *out*
+  # to it, which requires a row with `dial: true` to already exist. This
+  # form is the only way to bootstrap that first row.
+  # -------------------------------------------------------------------
+
+  @impl true
+  def handle_event("show_add_node_form", _params, socket) do
+    changeset = ClusterNode.changeset(%ClusterNode{}, %{dial: true})
+    {:noreply, assign(socket, adding_node?: true, add_node_form: to_form(changeset))}
+  end
+
+  def handle_event("cancel_add_node_form", _params, socket) do
+    {:noreply, assign(socket, adding_node?: false, add_node_form: nil)}
+  end
+
+  def handle_event("validate_add_node", %{"cluster_node" => params}, socket) do
+    changeset =
+      %ClusterNode{}
+      |> ClusterNode.changeset(params)
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign(socket, add_node_form: to_form(changeset))}
+  end
+
+  def handle_event("save_add_node", %{"cluster_node" => params}, socket) do
+    case HubRPC.create_node(params) do
+      {:ok, _node} ->
+        {:noreply,
+         socket
+         |> assign(nodes: load_nodes(), adding_node?: false, add_node_form: nil)
+         |> put_flash(:info, "Node added")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, add_node_form: to_form(changeset))}
+    end
+  end
 
   # -------------------------------------------------------------------
   # Sweep: kick-off

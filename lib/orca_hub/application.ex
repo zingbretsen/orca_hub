@@ -86,6 +86,10 @@ defmodule OrcaHub.Application do
       OrcaHub.Scheduler,
       OrcaHub.TriggerLoader,
       OrcaHub.ClusterNodeTracker,
+      # Dials out to every `nodes` row flagged `dial: true` — see
+      # OrcaHub.NodeDialer moduledoc. Hub-only: agents never dial out on
+      # their own.
+      OrcaHub.NodeDialer,
       OrcaHubWeb.Endpoint
     ]
   end

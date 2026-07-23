@@ -12,6 +12,10 @@ defmodule OrcaHub.ClusterNodes.ClusterNode do
     field :first_connected_at, :utc_datetime
     field :last_connected_at, :utc_datetime
     field :isolated, :boolean, default: false
+    # When true, OrcaHub.NodeDialer (hub-only) actively dials this node every
+    # tick — for LAN nodes the pod network can't dial into, only out of. See
+    # OrcaHub.NodeDialer.
+    field :dial, :boolean, default: false
     # When true, sessions/terminals spawned on this node get a strict
     # allow-list environment instead of the full BEAM environment — see
     # OrcaHub.NodePolicy.scrub_session_env?/0 and OrcaHub.Env.strict_env/1.
@@ -31,6 +35,11 @@ defmodule OrcaHub.ClusterNodes.ClusterNode do
   end
 
   @env_entry_regex ~r/^[A-Za-z_][A-Za-z0-9_]*\*?$/
+  # Real Erlang distribution node names are always `basename@host` — enforced
+  # here so a manually-added row (see OrcaHub.ClusterNodes.create_node/1)
+  # can't silently be typo'd into something OrcaHub.NodeDialer will never be
+  # able to String.to_atom/Node.connect its way to.
+  @node_name_regex ~r/^[a-zA-Z0-9_\-]+@[a-zA-Z0-9_.\-]+$/
 
   def changeset(node, attrs) do
     node
@@ -40,12 +49,16 @@ defmodule OrcaHub.ClusterNodes.ClusterNode do
       :first_connected_at,
       :last_connected_at,
       :isolated,
+      :dial,
       :scrub_session_env,
       :env_allowlist,
       :default_backend,
       :default_model
     ])
     |> validate_required([:name])
+    |> validate_format(:name, @node_name_regex,
+      message: "must look like basename@host (e.g. orca@my-laptop)"
+    )
     |> unique_constraint(:name)
     |> validate_env_allowlist()
   end

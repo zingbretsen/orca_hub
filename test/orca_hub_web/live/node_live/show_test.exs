@@ -85,6 +85,32 @@ defmodule OrcaHubWeb.NodeLive.ShowTest do
     end
   end
 
+  describe "dial toggle" do
+    test "renders unchecked by default", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+      {:ok, _view, html} = live(conn, ~p"/nodes/#{n.id}")
+
+      assert html =~ "Hub dials this node"
+      refute html =~ ~s(checked="" phx-click="toggle_dial")
+    end
+
+    test "clicking the toggle persists and flips it on, then off again", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+      {:ok, view, _html} = live(conn, ~p"/nodes/#{n.id}")
+
+      html = render_click(view, "toggle_dial")
+
+      assert ClusterNodes.get_by_name(n.name).dial
+      assert html =~ ~s(checked="" phx-click="toggle_dial")
+
+      render_click(view, "toggle_dial")
+
+      refute ClusterNodes.get_by_name(n.name).dial
+    end
+  end
+
   describe "env_allowlist input" do
     test "hidden while scrub_session_env is off", %{conn: conn} do
       {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")

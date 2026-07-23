@@ -43,6 +43,94 @@ defmodule OrcaHubWeb.NodeLive.IndexTest do
     assert html =~ ~p"/nodes/#{n.id}"
   end
 
+  test "shows a badge for dial-enabled nodes", %{conn: conn} do
+    {:ok, _} = ClusterNodes.create_node(%{name: "orca@dialed", dial: true})
+
+    {:ok, _view, html} = live(conn, ~p"/nodes")
+
+    assert html =~ "dials"
+  end
+
+  describe "add node form" do
+    test "hidden until the Add node button is clicked", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/nodes")
+
+      refute html =~ "add-node-form"
+    end
+
+    test "clicking Add node reveals the form, defaulting dial to checked", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/nodes")
+
+      html = render_click(view, "show_add_node_form")
+
+      assert html =~ "add-node-form"
+
+      assert [dial_checkbox] =
+               Regex.run(
+                 ~r/<input type="checkbox"[^>]*name="cluster_node\[dial\]"[^>]*>/,
+                 html
+               )
+
+      assert dial_checkbox =~ "checked"
+    end
+
+    test "cancel hides the form again", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/nodes")
+
+      render_click(view, "show_add_node_form")
+      html = render_click(view, "cancel_add_node_form")
+
+      refute html =~ "add-node-form"
+    end
+
+    test "submitting creates the node and shows it in the table", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/nodes")
+
+      render_click(view, "show_add_node_form")
+
+      html =
+        view
+        |> form("#add-node-form form", %{
+          "cluster_node" => %{"name" => "orca@gb10", "display_name" => "GB10", "dial" => "true"}
+        })
+        |> render_submit()
+
+      assert ClusterNodes.get_by_name("orca@gb10").dial
+      assert html =~ "GB10"
+      refute html =~ "add-node-form"
+    end
+
+    test "a duplicate name surfaces a friendly validation error instead of crashing", %{
+      conn: conn
+    } do
+      {:ok, _} = ClusterNodes.create_node(%{name: "orca@dup", dial: true})
+
+      {:ok, view, _html} = live(conn, ~p"/nodes")
+
+      render_click(view, "show_add_node_form")
+
+      html =
+        view
+        |> form("#add-node-form form", %{"cluster_node" => %{"name" => "orca@dup"}})
+        |> render_submit()
+
+      assert html =~ "has already been taken"
+    end
+
+    test "an invalid name shape surfaces a friendly validation error", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/nodes")
+
+      render_click(view, "show_add_node_form")
+
+      html =
+        view
+        |> form("#add-node-form form", %{"cluster_node" => %{"name" => "not-a-node-name"}})
+        |> render_submit()
+
+      assert html =~ "must look like basename@host"
+    end
+  end
+
   describe "update all backends sweep" do
     setup do
       tmp_dir =

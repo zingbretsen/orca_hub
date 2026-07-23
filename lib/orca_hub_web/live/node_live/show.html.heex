@@ -38,6 +38,19 @@
         </span>
       </label>
     </:item>
+    <:item title="Hub dials this node">
+      <label class="label cursor-pointer gap-2 justify-start">
+        <input
+          type="checkbox"
+          class="toggle toggle-xs"
+          checked={@node.dial}
+          phx-click="toggle_dial"
+        />
+        <span class="label-text text-xs">
+          The hub actively Node.connect/1's this node every 5s (OrcaHub.NodeDialer) — for LAN nodes the pod network can't dial into, only out of.
+        </span>
+      </label>
+    </:item>
     <:item title="Scrub session env">
       <label class="label cursor-pointer gap-2 justify-start">
         <input

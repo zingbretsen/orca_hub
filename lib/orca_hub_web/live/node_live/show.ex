@@ -99,6 +99,24 @@ defmodule OrcaHubWeb.NodeLive.Show do
     end
   end
 
+  def handle_event("toggle_dial", _params, socket) do
+    node = socket.assigns.node
+    new_value = !node.dial
+
+    case HubRPC.update_node(node, %{dial: new_value}) do
+      {:ok, updated_node} ->
+        flash_msg =
+          if new_value,
+            do: "Hub will now dial this node every 5s (OrcaHub.NodeDialer)",
+            else: "Hub dial-out disabled for this node"
+
+        {:noreply, socket |> assign(:node, updated_node) |> put_flash(:info, flash_msg)}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to update dial setting")}
+    end
+  end
+
   def handle_event("toggle_scrub_session_env", _params, socket) do
     node = socket.assigns.node
     new_value = !node.scrub_session_env

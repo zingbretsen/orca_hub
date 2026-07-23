@@ -28,6 +28,27 @@ defmodule OrcaHub.ClusterNodes do
   def get_by_name(name) when is_binary(name), do: Repo.get_by(ClusterNode, name: name)
 
   @doc """
+  Names of every row with `dial: true` — the targets `OrcaHub.NodeDialer`
+  actively `Node.connect/1`s to every tick. Read fresh from the DB on every
+  tick (see NodeDialer's moduledoc) so toggling this in the /nodes UI takes
+  effect within one tick, no restart required.
+  """
+  def list_dial_targets do
+    Repo.all(from n in ClusterNode, where: n.dial == true, select: n.name)
+  end
+
+  @doc """
+  Manually creates a `nodes` row for a machine that has never connected —
+  needed because a LAN node the hub can't dial *into* can also never trigger
+  the auto-create path in `OrcaHub.ClusterNodeTracker` (which only fires on
+  an actual `:nodeup`). This is the only way to onboard such a node's `dial`
+  flag before it's ever been seen.
+  """
+  def create_node(attrs) do
+    %ClusterNode{} |> ClusterNode.changeset(attrs) |> Repo.insert()
+  end
+
+  @doc """
   Generic attribute update for a `nodes` row — currently used for the
   `isolated`/`scrub_session_env` toggles and `env_allowlist` extension (see
   `OrcaHub.NodePolicy`) and the `default_backend`/`default_model` fields (see

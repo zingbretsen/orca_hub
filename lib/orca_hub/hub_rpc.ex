@@ -309,6 +309,7 @@ defmodule OrcaHub.HubRPC do
   def get_node_by_name(name), do: call(OrcaHub.ClusterNodes, :get_by_name, [name])
 
   def update_node(node, attrs), do: call(OrcaHub.ClusterNodes, :update_node, [node, attrs])
+  def create_node(attrs), do: call(OrcaHub.ClusterNodes, :create_node, [attrs])
 
   def count_sessions_for_node(name),
     do: call(OrcaHub.ClusterNodes, :count_sessions_for_node, [name])

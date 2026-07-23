@@ -1,11 +1,40 @@
 <.header>
   Nodes
   <:actions>
+    <.button phx-click="show_add_node_form" :if={!@adding_node?} id="add-node">
+      Add node
+    </.button>
     <.button phx-click="sweep_update_all" disabled={@sweep_active?} id="sweep-update-all">
       {if @sweep_active?, do: "Updating…", else: "Update all backends"}
     </.button>
   </:actions>
 </.header>
+
+<div :if={@adding_node?} id="add-node-form" class="card bg-base-200 p-4 mt-4 max-w-lg">
+  <.form for={@add_node_form} phx-change="validate_add_node" phx-submit="save_add_node">
+    <.input
+      field={@add_node_form[:name]}
+      label="Node name"
+      placeholder="orca@my-laptop"
+      autocomplete="off"
+    />
+    <p class="text-xs text-base-content/50 -mt-3 mb-3">
+      The Erlang node name this machine will run as (basename@host).
+    </p>
+    <.input field={@add_node_form[:display_name]} label="Display name (optional)" />
+    <.input
+      field={@add_node_form[:dial]}
+      type="checkbox"
+      label="Hub dials this node (Node.connect every 5s)"
+    />
+    <div class="flex gap-2 mt-4">
+      <.button type="submit">Add</.button>
+      <.button type="button" phx-click="cancel_add_node_form" class="btn-ghost">
+        Cancel
+      </.button>
+    </div>
+  </.form>
+</div>
 
 <.table
   id="nodes"
@@ -28,6 +57,13 @@
         title="Sessions/terminals on this node run with a minimal allow-list environment"
       >
         scrubbed env
+      </span>
+      <span
+        :if={n.dial}
+        class="badge badge-xs badge-info"
+        title="The hub dials this node every 5s (OrcaHub.NodeDialer)"
+      >
+        dials
       </span>
       <span
         :if={n.default_backend || n.default_model}
