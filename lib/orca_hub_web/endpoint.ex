@@ -11,6 +11,22 @@ defmodule OrcaHubWeb.Endpoint do
     same_site: "Lax"
   ]
 
+  # Agent nodes are supposed to serve ONLY the MCP HTTP endpoint — no web UI,
+  # no webhooks, no Agent Runs API, no terminals. This runs before anything
+  # else in the pipeline (including Plug.Static) so it also blocks static
+  # assets in agent mode. `OrcaHub.Mode.agent?/0` is checked at request time
+  # (runtime config), not baked in at compile time.
+  #
+  # Caveat: Phoenix's own `:socket_dispatch` plug (injected unconditionally by
+  # `use Phoenix.Endpoint`, ahead of any plug declared in this module) still
+  # owns the literal "/live/websocket", "/live/longpoll", and
+  # "/terminal_socket/websocket" paths — this gate can't intercept those
+  # before Phoenix's socket transport code runs. That's fine in practice:
+  # those transports require a signed session token minted by an initial page
+  # load, and this gate 404s every page route, so there's never a valid token
+  # for an attacker to present.
+  plug :agent_mode_gate
+
   socket "/terminal_socket", OrcaHubWeb.UserSocket, websocket: true
 
   socket "/live", Phoenix.LiveView.Socket,
@@ -82,4 +98,23 @@ defmodule OrcaHubWeb.Endpoint do
   end
 
   defp version(conn, _opts), do: conn
+
+  defp agent_mode_gate(conn, _opts) do
+    if OrcaHub.Mode.agent?() and not agent_mode_allowed?(conn.path_info) do
+      conn
+      |> Plug.Conn.put_resp_content_type("text/plain")
+      |> Plug.Conn.send_resp(404, "not found")
+      |> Plug.Conn.halt()
+    else
+      conn
+    end
+  end
+
+  # MCP Streamable HTTP endpoint (and any subpaths under it).
+  defp agent_mode_allowed?(["mcp" | _]), do: true
+  # k8s liveness/readiness probes.
+  defp agent_mode_allowed?(["healthz"]), do: true
+  # Deploy script polls this over plain HTTP; see `version/2` above.
+  defp agent_mode_allowed?(["api", "version"]), do: true
+  defp agent_mode_allowed?(_path_info), do: false
 end

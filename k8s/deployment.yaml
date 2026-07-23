@@ -39,6 +39,12 @@ spec:
         - name: orca-hub
           image: orca-hub:latest
           imagePullPolicy: Never  # Use locally built image
+          # Set ORCA_MODE=agent to run this as a lightweight agent node (no
+          # DB, no scheduler, no upstream MCP). Agent mode locks down the
+          # HTTP surface at the app level (see OrcaHubWeb.Endpoint's
+          # agent_mode_gate): every route 404s except /mcp, /healthz, and
+          # /api/version — no auth needed on top for the LiveView UI, API,
+          # or webhooks, because they're simply unreachable.
           envFrom:
             - secretRef:
                 name: orca-hub-secrets

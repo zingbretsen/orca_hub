@@ -228,6 +228,31 @@ if config_env() == :prod do
 
   config :orca_hub, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
+  # Optional listener bind address override (default: "::", i.e. all
+  # interfaces on IPv4+IPv6). Lets a node bind to a narrower address, e.g.
+  # 127.0.0.1 for a LAN systemd agent that should only be reachable via its
+  # cluster/loopback interface.
+  listen_ip =
+    case System.get_env("PHX_LISTEN_IP") do
+      nil ->
+        {0, 0, 0, 0, 0, 0, 0, 0}
+
+      "" ->
+        {0, 0, 0, 0, 0, 0, 0, 0}
+
+      ip_str ->
+        case :inet.parse_address(String.to_charlist(ip_str)) do
+          {:ok, ip} ->
+            ip
+
+          {:error, _} ->
+            raise """
+            PHX_LISTEN_IP is set to an unparseable IP address: #{inspect(ip_str)}
+            Expected a plain IPv4 or IPv6 address, e.g. "127.0.0.1" or "::1".
+            """
+        end
+    end
+
   extra_origins =
     case System.get_env("PHX_EXTRA_ORIGINS") do
       nil -> []
@@ -243,11 +268,11 @@ if config_env() == :prod do
         "#{scheme}://#{host}:#{url_port}"
       ] ++ extra_origins,
     http: [
-      # Enable IPv6 and bind on all interfaces.
-      # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
+      # Defaults to "::" (all interfaces, IPv4+IPv6). Override via
+      # PHX_LISTEN_IP (see above) for e.g. loopback-only access.
       # See the documentation on https://hexdocs.pm/bandit/Bandit.html#t:options/0
       # for details about using IPv6 vs IPv4 and loopback vs public addresses.
-      ip: {0, 0, 0, 0, 0, 0, 0, 0}
+      ip: listen_ip
     ],
     secret_key_base: secret_key_base
 
