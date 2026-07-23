@@ -245,7 +245,7 @@ defmodule OrcaHubWeb.TreeComponents do
 
   defp node_title_and_badges(assigns) do
     ~H"""
-    <.link navigate={~p"/sessions/#{@session.id}?view=tree"} class="link link-hover font-medium">
+    <.link navigate={~p"/sessions/#{@session.id}"} class="link link-hover font-medium">
       {@session.title || @session.directory}
     </.link>
     <span class={["badge badge-sm", status_badge_class(@session.status)]}>{@session.status}</span>
