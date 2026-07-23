@@ -1084,7 +1084,9 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
   end
 
   describe "start_session — structured JSON result" do
-    test "returns session_id/node/model/backend/directory/already_exists", %{state: state} do
+    test "returns session_id/node/model/backend/directory/already_exists/orchestrator", %{
+      state: state
+    } do
       result =
         with_fake_claude_on_path(fn ->
           SessionsTool.call(
@@ -1103,6 +1105,52 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert decoded["backend"] == "claude"
       assert is_binary(decoded["node"])
       assert is_binary(decoded["directory"])
+      assert decoded["orchestrator"] == false
+    end
+  end
+
+  describe "start_session — orchestrator param" do
+    test "passing orchestrator: true creates a session with orchestrator == true", %{
+      state: state
+    } do
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "orchestrator" => true, "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      session_id = decoded["session_id"]
+
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert decoded["orchestrator"] == true
+      assert Sessions.get_session!(session_id).orchestrator == true
+    end
+
+    test "omitting orchestrator leaves the new session as a non-orchestrator (default false)",
+         %{state: state} do
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      session_id = decoded["session_id"]
+
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert decoded["orchestrator"] == false
+      assert Sessions.get_session!(session_id).orchestrator == false
     end
   end
 

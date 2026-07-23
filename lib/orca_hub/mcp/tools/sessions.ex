@@ -108,7 +108,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "start_session",
         "description" =>
-          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session. The new session is automatically linked as your child: when it finishes its turn (goes idle) or errors, you automatically receive a \"[Session lifecycle]\" message — no need to instruct the worker to message you back, and no need to poll with search_sessions/heartbeats just to detect completion. Set notify_on_completion to false to opt out for a true fire-and-forget spawn. Returns structured JSON: session_id, node, model, backend, directory, already_exists.",
+          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session. The new session is automatically linked as your child: when it finishes its turn (goes idle) or errors, you automatically receive a \"[Session lifecycle]\" message — no need to instruct the worker to message you back, and no need to poll with search_sessions/heartbeats just to detect completion. Set notify_on_completion to false to opt out for a true fire-and-forget spawn. Returns structured JSON: session_id, node, model, backend, directory, already_exists, orchestrator.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -145,6 +145,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "type" => "string",
               "description" =>
                 "Optional dedup key. If a non-archived session was already started with this same key, that session is returned (with \"already_exists\": true) instead of spawning a duplicate — no prompt is sent. Use this when retrying a start_session call you're not sure succeeded."
+            },
+            "orchestrator" => %{
+              "type" => "boolean",
+              "description" =>
+                "If true, the new session is created as an orchestrator session — it gets the orchestrator system prompt and coordination tool surface, and is expected to delegate work to its own child sessions rather than implement directly. Default: false (a normal worker session). Use for a coordinator managing a large multi-part effort as a sub-tree."
             }
           },
           "required" => ["prompt"]
@@ -530,6 +535,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               |> maybe_put_field(:title, args["title"])
               |> maybe_put_field(:backend, backend)
               |> maybe_put_field(:model, model)
+              |> maybe_put_field(:orchestrator, args["orchestrator"])
               |> maybe_put_field(:idempotency_key, idempotency_key)
               |> maybe_link_parent(caller, caller_session_id, args["notify_on_completion"])
 
@@ -564,12 +570,12 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   # scoped and resets across CLI re-handshakes, so a later, genuinely
   # different start_session call can legitimately recycle the same id. Hashing
   # it together with every session-shaping argument means a true replay
-  # (identical id AND identical prompt/title/directory/model/backend) matches,
-  # while a later legitimate call reusing the id almost certainly differs in
-  # at least one of those fields and so gets its own key. Pure function of its
-  # inputs only — no node()/timestamp — so it's identical across nodes and
-  # releases, which matters since a replay pair can land on different nodes
-  # during a rollout.
+  # (identical id AND identical prompt/title/directory/model/backend/orchestrator)
+  # matches, while a later legitimate call reusing the id almost certainly
+  # differs in at least one of those fields and so gets its own key. Pure
+  # function of its inputs only — no node()/timestamp — so it's identical
+  # across nodes and releases, which matters since a replay pair can land on
+  # different nodes during a rollout.
   defp auto_idempotency_key(caller_session_id, state, args) do
     material =
       [
@@ -579,7 +585,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
         args["title"],
         args["directory"],
         args["model"],
-        args["backend"]
+        args["backend"],
+        args["orchestrator"]
       ]
       |> Enum.map_join(<<0x1F>>, &to_string(&1 || ""))
 
@@ -615,7 +622,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       model: session.model,
       backend: session.backend,
       directory: session.directory,
-      already_exists: already_exists
+      already_exists: already_exists,
+      orchestrator: session.orchestrator
     }
   end
 
