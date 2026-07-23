@@ -66,6 +66,16 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             "sandbox has an opaque origin (no `allow-same-origin`), so `fetch()` from " <>
             "inside it can't reach this host — ORCA_DATA/postMessage is the only data path " <>
             "in or out.\n\n" <>
+            "USER INPUT: to build a UI that submits data back into this conversation — a " <>
+            "dropdown, a form, a region-select, a button — call `window.orca.send(payload)` " <>
+            "with any JSON-serializable value (it's injected automatically, no setup " <>
+            "needed). The payload is delivered to the user as a message in the session, " <>
+            "just like something they typed, so your next turn sees it in the " <>
+            "conversation. Design sends as explicit user actions (a submit/confirm " <>
+            "button) — never call orca.send automatically or in a loop (e.g. from an " <>
+            "interval, a drag/mousemove handler, or on every keystroke); each call becomes " <>
+            "a real message, and payloads over ~16KB or sent faster than ~2/sec are " <>
+            "dropped.\n\n" <>
             "Verify how it actually renders with screenshot_artifact (drives a shared " <>
             "playwright browser server-side across a few viewport widths and returns " <>
             "saved screenshot file paths for you to Read) before telling the user it's " <>

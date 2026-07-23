@@ -966,16 +966,27 @@ let Hooks = {
     }
   },
 
-  // Live-data channel for artifacts (see OrcaHub.Artifacts.update_artifact_data/2).
-  // Wraps an artifact iframe: forwards pushed data into it via postMessage
-  // rather than fetch(), since the iframe's opaque sandbox origin (no
-  // allow-same-origin) can't fetch() this host in prod. Also re-sends the
-  // last known data on the iframe's own "load" event, covering the race
-  // where the iframe reloads (a content/version update) shortly after a
-  // data push landed.
+  // Live-data channel for artifacts (see OrcaHub.Artifacts.update_artifact_data/2),
+  // plus the orca.send bidirectional bridge (Phase 3). Wraps an artifact
+  // iframe:
+  //   - forwards pushed data into it via postMessage rather than fetch(),
+  //     since the iframe's opaque sandbox origin (no allow-same-origin)
+  //     can't fetch() this host in prod. Also re-sends the last known data
+  //     on the iframe's own "load" event, covering the race where the
+  //     iframe reloads (a content/version update) shortly after a data
+  //     push landed.
+  //   - listens for "orca:send" postMessages the artifact's injected
+  //     `window.orca.send(payload)` shim posts to its parent, and forwards
+  //     them to the LiveView as an "artifact_send" event. Filtered strictly
+  //     by `e.source === this.el.contentWindow` (identity, not origin — the
+  //     sandbox's origin is opaque/"null") so only this exact iframe can
+  //     trigger a send. Client-side guards: drop (+ console.warn) payloads
+  //     over ~16KB serialized, and rate-limit to 1 send per 500ms — a
+  //     buggy/looping artifact shouldn't be able to flood the session.
   ArtifactData: {
     mounted() {
       this._lastData = undefined
+      this._lastSendAt = 0
 
       this._onLoad = () => {
         if (this._lastData !== undefined) this._send(this._lastData)
@@ -987,12 +998,43 @@ let Hooks = {
         this._lastData = data
         this._send(data)
       })
+
+      this._onMessage = (e) => {
+        if (e.source !== this.el.contentWindow) return
+        if (e.data?.type !== "orca:send") return
+        this._handleOrcaSend(e.data.payload)
+      }
+      window.addEventListener("message", this._onMessage)
     },
     destroyed() {
       this.el.removeEventListener("load", this._onLoad)
+      window.removeEventListener("message", this._onMessage)
     },
     _send(data) {
       this.el.contentWindow?.postMessage({ type: "orca:data", data }, "*")
+    },
+    _handleOrcaSend(payload) {
+      let serialized
+      try {
+        serialized = JSON.stringify(payload)
+      } catch (e) {
+        console.warn("orca.send: payload is not JSON-serializable, dropped", e)
+        return
+      }
+
+      if (serialized.length > 16 * 1024) {
+        console.warn("orca.send: payload exceeds 16KB, dropped")
+        return
+      }
+
+      const now = Date.now()
+      if (now - this._lastSendAt < 500) {
+        console.warn("orca.send: rate limit exceeded (max 1 per 500ms), dropped")
+        return
+      }
+      this._lastSendAt = now
+
+      this.pushEvent("artifact_send", { artifact_id: this.el.dataset.artifactId, payload })
     }
   },
   FileTree: {

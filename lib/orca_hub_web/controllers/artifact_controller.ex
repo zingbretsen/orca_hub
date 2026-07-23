@@ -51,30 +51,41 @@ defmodule OrcaHubWeb.ArtifactController do
   end
 
   defp body(%{kind: "html", content: content, data: data}) do
-    inject_data_script(content || "", data || %{})
+    inject_scripts(content || "", data || %{})
   end
 
   defp body(%{content: content}), do: content || ""
 
-  # Injects window.ORCA_DATA = <json>; immediately after the opening <head>
-  # tag (or prepended if there's no <head> at all) — the initial snapshot
-  # half of the live-data channel (OrcaHub.Artifacts.update_artifact_data/2
-  # carries later updates via postMessage instead, since the iframe's opaque
-  # sandbox origin can't fetch() this host). safe_json/1 replaces every "<"
-  # in the encoded JSON with its JS unicode escape so no data value
-  # (e.g. one literally containing the string "</script>") can break out of
-  # the injected tag — JSON only ever uses "<" inside string values, never as
-  # structural syntax, so the escape can never corrupt otherwise-valid JSON.
-  defp inject_data_script(html, data) do
-    script = "<script>window.ORCA_DATA = #{safe_json(data)};</script>"
+  # Injects two <script> tags immediately after the opening <head> tag (or
+  # prepended if there's no <head> at all):
+  #
+  #   1. window.ORCA_DATA = <json>; — the initial snapshot half of the
+  #      live-data channel (OrcaHub.Artifacts.update_artifact_data/2 carries
+  #      later updates via postMessage instead, since the iframe's opaque
+  #      sandbox origin can't fetch() this host).
+  #   2. window.orca = { send: ... }; — the orca.send bridge (Phase 3):
+  #      artifact authors call `orca.send(payload)` to submit interaction
+  #      data back into the session as a user-visible message. The parent
+  #      hook (`ArtifactData` in assets/js/app.js) listens for the resulting
+  #      postMessage and forwards it to the LiveView.
+  #
+  # safe_json/1 replaces every "<" in the encoded JSON with its JS unicode
+  # escape so no data value (e.g. one literally containing the string
+  # "</script>") can break out of the injected tag — JSON only ever uses "<"
+  # inside string values, never as structural syntax, so the escape can
+  # never corrupt otherwise-valid JSON.
+  defp inject_scripts(html, data) do
+    scripts =
+      "<script>window.ORCA_DATA = #{safe_json(data)};</script>" <>
+        "<script>window.orca = { send: function(payload) { window.parent.postMessage({type: \"orca:send\", payload: payload}, \"*\"); } };</script>"
 
     case Regex.run(~r/<head[^>]*>/i, html, return: :index) do
       [{start, len}] ->
         {pre, post} = String.split_at(html, start + len)
-        pre <> script <> post
+        pre <> scripts <> post
 
       nil ->
-        script <> html
+        scripts <> html
     end
   end
 

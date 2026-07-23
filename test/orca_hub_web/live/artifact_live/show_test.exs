@@ -1,14 +1,19 @@
 defmodule OrcaHubWeb.ArtifactLive.ShowTest do
   @moduledoc """
   Coverage for the fullscreen artifact viewer at `/artifacts/:id`: renders
-  the sandboxed iframe, the viewport-width toggle, and live-reloads on
-  `{:artifact_updated, ...}`.
+  the sandboxed iframe, the viewport-width toggle, live-reloads on
+  `{:artifact_updated, ...}`, and (Artifacts Phase 3) the orca.send bridge
+  delivering artifact interactions to the artifact's creator session.
   """
-  use OrcaHubWeb.ConnCase, async: true
+
+  # async: false — the orca.send describe block below starts a real
+  # SessionRunner under the shared OrcaHub.SessionSupervisor (see
+  # SessionLive.ArtifactTest for the same pattern).
+  use OrcaHubWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
 
-  alias OrcaHub.{Artifacts, Projects}
+  alias OrcaHub.{Artifacts, Projects, SessionSupervisor, Sessions}
 
   setup do
     dir =
@@ -74,5 +79,134 @@ defmodule OrcaHubWeb.ArtifactLive.ShowTest do
 
     html = render(view)
     assert html =~ "/artifacts/#{artifact.id}/raw?v=#{updated.version}"
+  end
+
+  describe "orca.send bidirectional bridge (Phase 3)" do
+    @claude_stub Path.expand("../../../support/fixtures/claude_stub_noop.sh", __DIR__)
+
+    setup %{project: project} do
+      Application.put_env(:orca_hub, :claude_executable, @claude_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :claude_executable) end)
+
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "artifact_send_creator_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, creator} =
+        Sessions.create_session(%{
+          directory: dir,
+          project_id: project.id,
+          code_exec: false,
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn ->
+        if SessionSupervisor.session_alive?(creator.id),
+          do: SessionSupervisor.stop_session(creator.id)
+      end)
+
+      {:ok, artifact_with_creator} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          session_id: creator.id,
+          name: "creator-linked",
+          kind: "html",
+          content: "<p>hi</p>"
+        })
+
+      {:ok, creator: creator, artifact: artifact_with_creator}
+    end
+
+    defp delivered_text(session_id) do
+      [message] = Sessions.list_messages(session_id)
+      get_in(message.data, ["message", "content", Access.at(0), "text"])
+    end
+
+    test "delivers to the artifact's CREATOR session, not any viewed session (there is none)", %{
+      conn: conn,
+      creator: creator,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/artifacts/#{artifact.id}")
+
+      html =
+        render_hook(view, "artifact_send", %{
+          "artifact_id" => artifact.id,
+          "payload" => %{"choice" => "approve"}
+        })
+
+      assert html =~ "Sent to session."
+
+      text = delivered_text(creator.id)
+      assert text =~ ~s([Artifact "#{artifact.name}" interaction])
+      assert text =~ "approve"
+    end
+
+    test "flashes an explanatory message when the artifact has no creator session", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, orphan} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "no-creator",
+          kind: "html",
+          content: "<p>hi</p>"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/artifacts/#{orphan.id}")
+
+      html =
+        render_hook(view, "artifact_send", %{
+          "artifact_id" => orphan.id,
+          "payload" => %{"choice" => "approve"}
+        })
+
+      assert html =~ "creator session no longer exists"
+    end
+
+    test "an oversized payload is rejected with a flash and never delivered", %{
+      conn: conn,
+      creator: creator,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/artifacts/#{artifact.id}")
+
+      big_payload = %{"blob" => String.duplicate("x", 17 * 1024)}
+
+      html =
+        render_hook(view, "artifact_send", %{
+          "artifact_id" => artifact.id,
+          "payload" => big_payload
+        })
+
+      assert html =~ "too large"
+      assert Sessions.list_messages(creator.id) == []
+    end
+
+    test "a second send within the throttle window is dropped", %{
+      conn: conn,
+      creator: creator,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/artifacts/#{artifact.id}")
+
+      render_hook(view, "artifact_send", %{"artifact_id" => artifact.id, "payload" => %{"n" => 1}})
+
+      html =
+        render_hook(view, "artifact_send", %{
+          "artifact_id" => artifact.id,
+          "payload" => %{"n" => 2}
+        })
+
+      assert html =~ "too fast"
+      assert length(Sessions.list_messages(creator.id)) == 1
+      assert delivered_text(creator.id) =~ ~s("n": 1)
+    end
   end
 end

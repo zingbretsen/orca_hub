@@ -177,4 +177,81 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
       refute html =~ "/artifacts/#{artifact.id}/raw?v=#{artifact.version}\""
     end
   end
+
+  describe "orca.send bidirectional bridge (Phase 3)" do
+    @claude_stub Path.expand("../../../support/fixtures/claude_stub_noop.sh", __DIR__)
+
+    setup do
+      Application.put_env(:orca_hub, :claude_executable, @claude_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :claude_executable) end)
+      :ok
+    end
+
+    defp delivered_text(session_id) do
+      [message] = Sessions.list_messages(session_id)
+      get_in(message.data, ["message", "content", Access.at(0), "text"])
+    end
+
+    test "an \"artifact_send\" hook event is delivered to the VIEWED session as a message", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      html =
+        render_hook(view, "artifact_send", %{
+          "artifact_id" => artifact.id,
+          "payload" => %{"choice" => "approve"}
+        })
+
+      assert html =~ "Sent to session."
+
+      text = delivered_text(session.id)
+      assert text =~ ~s([Artifact "#{artifact.name}" interaction])
+      assert text =~ "approve"
+    end
+
+    test "an oversized payload is rejected with a flash and never delivered", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      big_payload = %{"blob" => String.duplicate("x", 17 * 1024)}
+
+      html =
+        render_hook(view, "artifact_send", %{
+          "artifact_id" => artifact.id,
+          "payload" => big_payload
+        })
+
+      assert html =~ "too large"
+      assert Sessions.list_messages(session.id) == []
+    end
+
+    test "a second send for the same artifact within the throttle window is dropped", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      render_hook(view, "artifact_send", %{
+        "artifact_id" => artifact.id,
+        "payload" => %{"n" => 1}
+      })
+
+      html =
+        render_hook(view, "artifact_send", %{
+          "artifact_id" => artifact.id,
+          "payload" => %{"n" => 2}
+        })
+
+      assert html =~ "too fast"
+      assert length(Sessions.list_messages(session.id)) == 1
+      assert delivered_text(session.id) =~ ~s("n": 1)
+    end
+  end
 end

@@ -3,7 +3,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   require Logger
 
   alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, Projects, Sessions}
-  alias OrcaHubWeb.{Markdown, MessageComponents, TreeComponents}
+  alias OrcaHubWeb.{ArtifactSend, Markdown, MessageComponents, TreeComponents}
   alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Todos}
 
   import OrcaHubWeb.AskUserQuestionComponent
@@ -94,6 +94,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:commit_detail, nil)
      |> assign(:show_artifacts, false)
      |> assign(:session_artifacts, HubRPC.list_artifacts_for_session(id))
+     |> assign(:artifact_send_throttle, %{})
      |> assign(:show_terminal, false)
      |> assign(:open_terminals, [])
      |> assign(:active_terminal_id, nil)
@@ -608,6 +609,31 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("open_session_artifact", %{"id" => artifact_id}, socket) do
     {:noreply, socket |> open_artifact_tab(artifact_id) |> assign(:show_artifacts, false)}
+  end
+
+  # orca.send bidirectional bridge (Artifacts Phase 3): an artifact iframe's
+  # ArtifactData hook forwards its `window.orca.send(payload)` postMessage
+  # here. Delivered to the session being VIEWED (not necessarily the
+  # artifact's creator — reopening someone else's artifact and interacting
+  # with it talks to whoever you're currently looking at), through the same
+  # Cluster.send_message path a typed user message uses, so
+  # running/idle/interrupt-and-queue semantics all behave identically.
+  def handle_event("artifact_send", %{"artifact_id" => artifact_id, "payload" => payload}, socket) do
+    if ArtifactSend.too_large?(payload) do
+      {:noreply,
+       put_flash(socket, :error, "Artifact interaction payload too large (max 16KB) — dropped.")}
+    else
+      case ArtifactSend.check_throttle(socket.assigns.artifact_send_throttle, artifact_id) do
+        :throttled ->
+          {:noreply,
+           put_flash(socket, :error, "Artifact is sending too fast — interaction dropped.")}
+
+        {:ok, throttle} ->
+          socket
+          |> assign(:artifact_send_throttle, throttle)
+          |> deliver_artifact_send(artifact_id, payload)
+      end
+    end
   end
 
   def handle_event("edit_title", _params, socket) do
@@ -1858,6 +1884,28 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # which works unchanged here since "artifact:<id>" is a distinct fake
   # path), tagged `kind: :artifact` so the content area renders the
   # sandboxed iframe instead of file content.
+  defp deliver_artifact_send(socket, artifact_id, payload) do
+    case HubRPC.get_artifact(artifact_id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Artifact not found.")}
+
+      artifact ->
+        message = ArtifactSend.format_message(artifact.name, payload)
+
+        case Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, message) do
+          :ok ->
+            {:noreply, put_flash(socket, :info, "Sent to session.")}
+
+          {:error, reason} ->
+            error_message =
+              Cluster.node_unavailable_message(reason) ||
+                "Failed to send artifact interaction: #{inspect(reason)}"
+
+            {:noreply, put_flash(socket, :error, error_message)}
+        end
+    end
+  end
+
   defp open_artifact_tab(socket, artifact_id) do
     path = "artifact:#{artifact_id}"
 
