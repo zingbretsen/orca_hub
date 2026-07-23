@@ -318,7 +318,7 @@ defmodule OrcaHubWeb.CoreComponents do
       @actions != [] && "flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-6",
       "pb-4"
     ]}>
-      <div>
+      <div class="min-w-0">
         <h1 class="text-lg font-semibold leading-8">
           {render_slot(@inner_block)}
         </h1>
@@ -326,7 +326,9 @@ defmodule OrcaHubWeb.CoreComponents do
           {render_slot(@subtitle)}
         </p>
       </div>
-      <div class="flex-none">{render_slot(@actions)}</div>
+      <div class="flex flex-wrap items-center justify-end gap-1 min-w-0">
+        {render_slot(@actions)}
+      </div>
     </header>
     """
   end

@@ -216,9 +216,14 @@
            stays — and is refused mid-turn. The model list is live per
            backend + node (pi enumerates `pi --list-models`). --%>
       <div class="dropdown dropdown-end">
-        <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1" title="Backend & model">
+        <div
+          tabindex="0"
+          role="button"
+          class="btn btn-ghost btn-sm gap-1"
+          title={"Backend & model: #{String.capitalize(@session.backend || "claude")} · #{@session.model || "default"}"}
+        >
           <.icon name="hero-cpu-chip" class="size-4" />
-          <span class="text-xs hidden sm:inline">
+          <span class="text-xs hidden sm:inline truncate max-w-[10rem] lg:max-w-xs">
             {String.capitalize(@session.backend || "claude")} · {@session.model || "default"}
           </span>
         </div>
