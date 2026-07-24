@@ -338,4 +338,17 @@ defmodule OrcaHub.HubRPC do
 
   def count_projects_for_node(name),
     do: call(OrcaHub.ClusterNodes, :count_projects_for_node, [name])
+
+  # -------------------------------------------------------------------
+  # Skills (hub-managed global skills — see OrcaHub.Skills, OrcaHub.SkillSync)
+  # -------------------------------------------------------------------
+
+  def list_skills, do: call(OrcaHub.Skills, :list_skills, [])
+  def list_enabled_skills, do: call(OrcaHub.Skills, :list_enabled_skills, [])
+  def get_skill!(id), do: call(OrcaHub.Skills, :get_skill!, [id])
+  def get_skill(id), do: call(OrcaHub.Skills, :get_skill, [id])
+  def get_skill_by_name(name), do: call(OrcaHub.Skills, :get_skill_by_name, [name])
+  def create_skill(attrs), do: call(OrcaHub.Skills, :create_skill, [attrs])
+  def update_skill(skill, attrs), do: call(OrcaHub.Skills, :update_skill, [skill, attrs])
+  def delete_skill(skill), do: call(OrcaHub.Skills, :delete_skill, [skill])
 end

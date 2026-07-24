@@ -39,3 +39,9 @@ config :phoenix_live_view,
 # Sort query params output of verified routes for robust url comparisons
 config :phoenix,
   sort_verified_routes_query_params: true
+
+# OrcaHub.SkillSync's boot-time/periodic sync writes real files under a
+# node's home dir (~/.claude, ~/.codex, ~/.pi/agent) — mix test boots the
+# full application against the shared dev DB, so this must stay off here.
+# Tests call OrcaHub.SkillSync.sync/1 directly with an injected :home_dir.
+config :orca_hub, :skill_sync_enabled, false

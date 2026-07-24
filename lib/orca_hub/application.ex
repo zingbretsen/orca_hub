@@ -82,6 +82,10 @@ defmodule OrcaHub.Application do
       # Per-session run_elixir variable bindings (REPL persistence). Must run
       # on both hub and agent nodes — code-exec sessions run on either.
       OrcaHub.MCP.CodeExec.BindingStore,
+      # Materializes hub-managed global skills onto this node's disk for
+      # every installed backend CLI. Runs on hub + agent — see
+      # OrcaHub.SkillSync moduledoc.
+      OrcaHub.SkillSync,
       OrcaHub.MCP.UpstreamClient,
       OrcaHub.Scheduler,
       OrcaHub.TriggerLoader,
@@ -127,6 +131,10 @@ defmodule OrcaHub.Application do
       # Per-session run_elixir variable bindings (REPL persistence). Must run
       # on both hub and agent nodes — code-exec sessions run on either.
       OrcaHub.MCP.CodeExec.BindingStore,
+      # Materializes hub-managed global skills onto this node's disk for
+      # every installed backend CLI. Runs on hub + agent — see
+      # OrcaHub.SkillSync moduledoc.
+      OrcaHub.SkillSync,
       # Agent needs a local HTTP endpoint for MCP (Claude CLI connects to it)
       OrcaHubWeb.Endpoint
     ]
