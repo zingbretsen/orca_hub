@@ -31,6 +31,7 @@ defmodule OrcaHub.MCP.Tools do
 
   alias OrcaHub.MCP.Tools.{
     Artifacts,
+    Databases,
     Discord,
     FeatureRequests,
     Files,
@@ -49,7 +50,8 @@ defmodule OrcaHub.MCP.Tools do
     Heartbeat,
     Discord,
     FeatureRequests,
-    Artifacts
+    Artifacts,
+    Databases
   ]
 
   # Tools visible to regular (non-orchestrator) connections. Orchestrator
@@ -65,7 +67,8 @@ defmodule OrcaHub.MCP.Tools do
                              get_session_tail archive_session file_feature_request
                              list_feature_requests get_feature_request append_feature_request_note
                              close_feature_request save_artifact open_artifact list_artifacts
-                             get_artifact update_artifact_data screenshot_artifact)
+                             get_artifact update_artifact_data screenshot_artifact
+                             provision_database list_databases)
 
   @doc "Return every MCP tool definition map across every category."
   def list do

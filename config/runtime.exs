@@ -114,6 +114,18 @@ config :orca_hub,
        :elevenlabs_voice_id,
        System.get_env("ELEVENLABS_VOICE_ID") || "JBFqnCBsd6RMkjVDRZzb"
 
+# pg-provisioner bearer token — lets Tools.provision_database/list_databases
+# (OrcaHub.MCP.Tools.Databases) call the homelab shared-postgres provisioning
+# API on the session's behalf, so sessions never fetch/hold the token
+# themselves. The MCP server for a session runs on the session's own runner
+# node, so this must be set on every node (k3s pods + systemd hosts), not
+# just the hub.
+config :orca_hub, :pgprov_api_token, System.get_env("PGPROV_API_TOKEN")
+
+config :orca_hub,
+       :pgprov_api_url,
+       System.get_env("PGPROV_API_URL") || "https://pgprov.lab.ingbretsenhome.com"
+
 # Upload sidecar running alongside playwright-mcp in its pod — lets code-exec
 # push a LOCAL (OrcaHub-node) file into that pod's own filesystem so
 # `browser_file_upload`/`browser_drop` (which read `paths` from the pod, not
