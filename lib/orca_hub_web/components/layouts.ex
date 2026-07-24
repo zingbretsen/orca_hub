@@ -25,6 +25,7 @@ defmodule OrcaHubWeb.Layouts do
       %{href: ~p"/projects", label: "Projects"},
       %{href: ~p"/issues", label: "Issues"},
       %{href: ~p"/triggers", label: "Triggers"},
+      %{href: ~p"/skills", label: "Skills"},
       %{href: ~p"/terminals", label: "Terminals"},
       %{href: ~p"/sessions", label: "Sessions"},
       %{href: ~p"/nodes", label: "Nodes"}

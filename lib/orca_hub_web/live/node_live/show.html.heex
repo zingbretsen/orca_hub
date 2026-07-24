@@ -312,6 +312,7 @@
               config_view_mode={@config_view_mode}
               structured_editing={@structured_editing}
               structured_edit_value={@structured_edit_value}
+              managed_skills={Map.get(@managed_skills, backend, MapSet.new())}
             />
           <% end %>
         </div>

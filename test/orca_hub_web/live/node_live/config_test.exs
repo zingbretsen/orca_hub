@@ -188,6 +188,56 @@ defmodule OrcaHubWeb.NodeLive.ConfigTest do
     refute html =~ ~s(phx-click="delete_config_entry" phx-value-key="pi|trust.json")
   end
 
+  test "a hub-managed skill dir is badged and read-only in the node config browser", %{
+    conn: conn,
+    node: n,
+    home: home
+  } do
+    claude_skills = Path.join([home, ".claude", "skills"])
+    skill_dir = Path.join(claude_skills, "hub-skill")
+    File.mkdir_p!(skill_dir)
+    File.write!(Path.join(skill_dir, "SKILL.md"), "---\nname: \"hub-skill\"\n---\n\nBody.")
+
+    File.write!(
+      Path.join(claude_skills, ".orca-managed.json"),
+      Jason.encode!(%{"skills" => %{"hub-skill" => "deadbeef"}})
+    )
+
+    view = open(conn, n)
+    render_click(view, "toggle_config_section", %{"backend" => "claude"})
+    html = render_click(view, "toggle_config_dir", %{"backend" => "claude", "path" => "skills"})
+
+    assert html =~ "hub-skill"
+    assert html =~ "hub-managed"
+    assert html =~ "edit it there instead"
+
+    refute html =~
+             ~s(phx-click="edit_config_entry" phx-value-key="claude|skills/hub-skill/SKILL.md")
+
+    refute html =~
+             ~s(phx-click="delete_config_entry" phx-value-key="claude|skills/hub-skill/SKILL.md")
+  end
+
+  test "an unmanaged (hand-made) skill dir keeps its edit/delete affordances", %{
+    conn: conn,
+    node: n,
+    home: home
+  } do
+    skill_dir = Path.join([home, ".claude", "skills", "hand-made"])
+    File.mkdir_p!(skill_dir)
+    File.write!(Path.join(skill_dir, "SKILL.md"), "hand-written content")
+
+    view = open(conn, n)
+    render_click(view, "toggle_config_section", %{"backend" => "claude"})
+    html = render_click(view, "toggle_config_dir", %{"backend" => "claude", "path" => "skills"})
+
+    assert html =~ "hand-made"
+    refute html =~ "hub-managed"
+
+    assert html =~
+             ~s(phx-click="edit_config_entry" phx-value-key="claude|skills/hand-made/SKILL.md")
+  end
+
   test "a crafted key for a blocked file never leaks its content, even if it exists on disk", %{
     conn: conn,
     node: n,

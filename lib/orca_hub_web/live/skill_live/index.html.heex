@@ -1,0 +1,135 @@
+<.header>
+  Skills
+  <:actions>
+    <.link patch={~p"/skills/new"}>
+      <.button>New Skill</.button>
+    </.link>
+  </:actions>
+</.header>
+
+<div :if={@show_form} class="card bg-base-200 p-4 mt-6">
+  <h4 class="font-semibold mb-3">
+    {if @editing_skill, do: "Edit Skill", else: "New Skill"}
+  </h4>
+  <.form for={@skill_form} phx-submit="save" phx-change="validate" class="space-y-3">
+    <.input
+      field={@skill_form[:name]}
+      type="text"
+      label="Name"
+      placeholder="my-skill"
+      phx-hook="AutoFocus"
+    />
+    <p class="text-xs text-base-content/50 -mt-2">
+      Lowercase, kebab-case — becomes the on-disk skill directory name (e.g. `skills/my-skill/`).
+    </p>
+
+    <.input
+      field={@skill_form[:description]}
+      type="text"
+      label="Description"
+      placeholder="When the agent should use this skill"
+    />
+
+    <.input
+      field={@skill_form[:body]}
+      type="textarea"
+      label="Body"
+      placeholder="Instructions for the agent..."
+      rows="12"
+    />
+    <p class="text-xs text-base-content/50 -mt-2">
+      Markdown that goes AFTER the frontmatter — <code class="font-mono">SkillSync</code>
+      renders the <code class="font-mono">---\nname: ...\ndescription: ...\n---</code>
+      block itself from the Name/Description fields above, so don't repeat it here.
+    </p>
+
+    <div>
+      <label class="label"><span class="label-text">Backends</span></label>
+      <input type="hidden" name="skill[backends][]" value="" />
+      <div class="flex flex-wrap gap-4">
+        <label
+          :for={backend <- known_backends()}
+          class="flex items-center gap-2 text-sm cursor-pointer"
+        >
+          <input
+            type="checkbox"
+            name="skill[backends][]"
+            value={backend}
+            checked={backend in (@skill_form[:backends].value || [])}
+            class="checkbox checkbox-sm"
+          />
+          {backend}
+        </label>
+      </div>
+    </div>
+
+    <.input field={@skill_form[:enabled]} type="checkbox" label="Enabled" />
+
+    <div class="flex justify-end gap-2">
+      <.link patch={~p"/skills"} class="btn btn-sm">Cancel</.link>
+      <.button type="submit" class="btn-sm">
+        {if @editing_skill, do: "Update", else: "Create"}
+      </.button>
+    </div>
+  </.form>
+</div>
+
+<div :if={@skills == [] && !@show_form} class="text-sm text-base-content/50 p-8 text-center mt-6">
+  No skills yet.
+</div>
+
+<div
+  :if={@skills != []}
+  class="mt-6 bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
+>
+  <div
+    :for={skill <- @skills}
+    class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50"
+  >
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="font-mono font-medium">{skill.name}</span>
+        <span class={[
+          "badge badge-xs",
+          if(skill.enabled, do: "badge-success", else: "badge-ghost")
+        ]}>
+          {if skill.enabled, do: "enabled", else: "disabled"}
+        </span>
+        <span :for={backend <- skill.backends} class="badge badge-xs badge-outline opacity-70">
+          {backend}
+        </span>
+      </div>
+      <div :if={skill.description not in [nil, ""]} class="text-base-content/60 text-xs mt-0.5">
+        {truncate(skill.description, 120)}
+      </div>
+      <div class="text-base-content/40 text-xs mt-0.5">
+        Updated {Calendar.strftime(skill.updated_at, "%Y-%m-%d %H:%M UTC")}
+      </div>
+    </div>
+    <div class="flex items-center gap-1">
+      <button
+        phx-click="toggle"
+        phx-value-id={skill.id}
+        class="btn btn-xs btn-ghost"
+        title={if skill.enabled, do: "Disable", else: "Enable"}
+      >
+        <.icon
+          name={if skill.enabled, do: "hero-pause-micro", else: "hero-play-micro"}
+          class="size-4"
+        />
+      </button>
+      <.link patch={~p"/skills/#{skill.id}/edit"} class="btn btn-xs btn-ghost" title="Edit">
+        <.icon name="hero-pencil-micro" class="size-4" />
+      </.link>
+      <button
+        phx-click="delete"
+        phx-value-id={skill.id}
+        data-confirm="Delete this skill? It will be removed from every node's disk on next sync."
+        class="btn btn-xs btn-ghost text-error"
+        title="Delete"
+      >
+        <.icon name="hero-trash-micro" class="size-4" />
+      </button>
+    </div>
+  </div>
+</div>

@@ -184,6 +184,34 @@ defmodule OrcaHub.SkillSyncTest do
     end
   end
 
+  describe "managed_skill_names/2" do
+    test "returns the manifest's skill names for that backend", %{home: home} do
+      s1 = skill(%{name: "my-skill"})
+      s2 = skill(%{name: "other-skill"})
+      :ok = sync_all(home, [s1, s2], [:claude])
+
+      assert SkillSync.managed_skill_names(:claude, home_dir: home) ==
+               MapSet.new(["my-skill", "other-skill"])
+    end
+
+    test "is empty for a backend with no manifest yet", %{home: home} do
+      assert SkillSync.managed_skill_names(:codex, home_dir: home) == MapSet.new()
+    end
+
+    test "excludes an unmanaged hand-made dir the manifest never listed", %{home: home} do
+      dir = Path.join([home, ".claude", "skills", "hand-made"])
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "SKILL.md"), "hand-written")
+
+      s = skill(%{name: "managed-skill"})
+      :ok = sync_all(home, [s], [:claude])
+
+      names = SkillSync.managed_skill_names(:claude, home_dir: home)
+      assert MapSet.member?(names, "managed-skill")
+      refute MapSet.member?(names, "hand-made")
+    end
+  end
+
   describe "sync/1 leaves unrelated directories alone" do
     test "never touches an unmanaged dir it doesn't target", %{home: home} do
       other_dir = Path.join([home, ".claude", "skills", "unrelated"])

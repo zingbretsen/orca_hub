@@ -157,6 +157,22 @@ defmodule OrcaHub.SkillSync do
     :ok
   end
 
+  @doc """
+  Names of skills THIS node's sync process manages for `backend` — read
+  straight from that backend's `skills/.orca-managed.json` ownership
+  manifest (empty `MapSet` if the manifest doesn't exist yet). Used by
+  `NodeLive.Show` to badge/read-only-lock hub-managed skill directories in
+  the on-disk config browser, so a hand-edit there doesn't get silently
+  clobbered by the next sync. Like every other `NodeConfig`-adjacent call,
+  invoke via `Cluster.rpc/4` so `home_root/2` resolves the TARGET node's
+  home directory rather than the caller's.
+  """
+  def managed_skill_names(backend, opts \\ []) do
+    skills_root = Path.join(NodeConfig.home_root(backend, opts), "skills")
+    manifest_path = Path.join(skills_root, @manifest_filename)
+    manifest_path |> read_manifest() |> Map.keys() |> MapSet.new()
+  end
+
   defp sync_backend(backend, skills, opts) do
     backend_str = Atom.to_string(backend)
     skills_root = Path.join(NodeConfig.home_root(backend, opts), "skills")

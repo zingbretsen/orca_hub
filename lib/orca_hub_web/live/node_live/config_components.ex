@@ -7,6 +7,7 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
   `SKILL.md`).
   """
   use Phoenix.Component
+  use OrcaHubWeb, :verified_routes
 
   import OrcaHubWeb.CoreComponents, only: [icon: 1]
 
@@ -41,6 +42,7 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
             {flag_label(flag)}
           </span>
           <span :if={!@entry.exists?} class="badge badge-xs badge-neutral">missing</span>
+          <span :if={managed?(@entry)} class="badge badge-xs badge-info">hub-managed</span>
         </div>
 
         <div class="flex items-center gap-1">
@@ -53,7 +55,7 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
             {if MapSet.member?(@config_expanded, @key), do: "Hide", else: "View"}
           </button>
           <button
-            :if={@entry.exists? && :view_only not in @entry.flags}
+            :if={@entry.exists? && :view_only not in @entry.flags && !managed?(@entry)}
             phx-click="edit_config_entry"
             phx-value-key={@key}
             class="btn btn-xs btn-ghost"
@@ -61,7 +63,7 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
             Edit
           </button>
           <button
-            :if={!@entry.exists? && @entry.create_template}
+            :if={!@entry.exists? && @entry.create_template && !managed?(@entry)}
             phx-click="edit_config_entry"
             phx-value-key={@key}
             class="btn btn-xs btn-primary"
@@ -69,7 +71,7 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
             Create
           </button>
           <button
-            :if={@entry.exists? && :view_only not in @entry.flags}
+            :if={@entry.exists? && :view_only not in @entry.flags && !managed?(@entry)}
             phx-click="delete_config_entry"
             phx-value-key={@key}
             data-confirm={"Delete #{@entry.label}?"}
@@ -82,6 +84,11 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
 
       <p :if={:view_only in @entry.flags} class="text-xs text-warning mt-1">
         View-only — hand-editing this can silently grant a project trust it shouldn't have.
+      </p>
+
+      <p :if={managed?(@entry)} class="text-xs text-info mt-1">
+        Hub-managed — synced from the global <.link navigate={~p"/skills"} class="link">Skills</.link>
+        page; edit it there instead, direct changes here would be overwritten on next sync.
       </p>
 
       <div :if={@config_editing == @key} class="mt-2">
@@ -151,6 +158,7 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
   attr :config_view_mode, :any, required: true
   attr :structured_editing, :any, required: true
   attr :structured_edit_value, :string, required: true
+  attr :managed_skills, :any, default: MapSet.new()
 
   def config_dir_row(assigns) do
     assigns = assign(assigns, :dir_key, {assigns.backend, assigns.entry.path})
@@ -202,7 +210,7 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
         >
           <.config_file_row
             backend={@backend}
-            entry={child_entry(@entry, child)}
+            entry={child_entry(@entry, child, @managed_skills)}
             config_expanded={@config_expanded}
             config_editing={@config_editing}
             config_edit_content={@config_edit_content}
@@ -260,17 +268,24 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
   # parent dir entry. `:flat` children are only ever listed when the file
   # already exists on disk (see `NodeConfig.dir_children/2`); `:skill_dirs`
   # children carry their own `exists?` since a skill's subdirectory can
-  # exist before its `SKILL.md` does.
-  defp child_entry(dir_entry, child) do
+  # exist before its `SKILL.md` does. `managed?` is only ever true for a
+  # `:skill_dirs` child whose name is in `managed_skills` (a backend's
+  # `OrcaHub.SkillSync.managed_skill_names/2` result) — hub-managed skills
+  # get read-only-locked in `config_file_row` since a hand-edit here would
+  # just be overwritten on the next sync.
+  defp child_entry(dir_entry, child, managed_skills) do
     %{
       path: child.path,
       label: child.name,
       format: dir_entry.format,
       flags: dir_entry.flags,
       exists?: Map.get(child, :exists?, true),
-      create_template: dir_entry.create_template
+      create_template: dir_entry.create_template,
+      managed?: dir_entry.dir_kind == :skill_dirs and MapSet.member?(managed_skills, child.name)
     }
   end
+
+  defp managed?(entry), do: Map.get(entry, :managed?, false)
 
   defp new_entry_open?(nil, _backend, _dir_path), do: false
 

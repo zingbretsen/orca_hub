@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.NodeLive.Show do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{BackendInstaller, Cluster, ConfigFile, HubRPC, NodeConfig}
+  alias OrcaHub.{BackendInstaller, Cluster, ConfigFile, HubRPC, NodeConfig, SkillSync}
   alias OrcaHubWeb.Markdown
 
   import OrcaHubWeb.NodeLive.ConfigComponents, only: [config_file_row: 1, config_dir_row: 1]
@@ -15,9 +15,11 @@ defmodule OrcaHubWeb.NodeLive.Show do
     config_node = if connected?, do: resolve_target_node(node.name), else: nil
 
     node_config = if config_node, do: load_all_node_config(config_node), else: nil
+    managed_skills = if config_node, do: load_managed_skills(config_node), else: %{}
 
     if config_node && Phoenix.LiveView.connected?(socket) do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, BackendInstaller.topic(config_node))
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "skills")
     end
 
     socket =
@@ -28,6 +30,7 @@ defmodule OrcaHubWeb.NodeLive.Show do
         connected: connected?,
         config_node: config_node,
         node_config: node_config,
+        managed_skills: managed_skills,
         backend_installer_status: if(config_node, do: load_backend_installer_status(config_node)),
         backend_installer_running:
           if(config_node,
@@ -587,6 +590,31 @@ defmodule OrcaHubWeb.NodeLive.Show do
   end
 
   # -------------------------------------------------------------------
+  # Skills (OrcaHub.SkillSync mirrors this node's disk shortly after every
+  # {:skills_updated} broadcast — delay the refresh past SkillSync's own
+  # debounce so the managed-names/badges we reload actually reflect the
+  # post-sync state instead of racing it).
+  # -------------------------------------------------------------------
+
+  def handle_info({:skills_updated}, socket) do
+    if socket.assigns.config_node do
+      Process.send_after(self(), :refresh_managed_skills, 1_500)
+    end
+
+    {:noreply, socket}
+  end
+
+  def handle_info(:refresh_managed_skills, socket) do
+    config_node = socket.assigns.config_node
+
+    {:noreply,
+     assign(socket,
+       managed_skills: load_managed_skills(config_node),
+       node_config: load_all_node_config(config_node)
+     )}
+  end
+
+  # -------------------------------------------------------------------
   # Private helpers
   # -------------------------------------------------------------------
 
@@ -702,6 +730,18 @@ defmodule OrcaHubWeb.NodeLive.Show do
     node_config
     |> Map.values()
     |> Enum.filter(&match?({:error, _}, &1))
+  end
+
+  defp load_managed_skills(config_node) do
+    Map.new(NodeConfig.backends(), fn backend ->
+      names =
+        case rpc(config_node, SkillSync, :managed_skill_names, [backend]) do
+          %MapSet{} = set -> set
+          _ -> MapSet.new()
+        end
+
+      {backend, names}
+    end)
   end
 
   defp refresh_backend_config(socket, backend) do
