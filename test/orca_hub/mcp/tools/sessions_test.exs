@@ -617,6 +617,45 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
 
       assert Sessions.get_session!(session_id).model == "claude-sonnet-5"
     end
+
+    test "the claude-opus-5 model id is accepted", %{state: state} do
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{
+              "prompt" => "hi",
+              "model" => "claude-opus-5",
+              "notify_on_completion" => false
+            },
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert Sessions.get_session!(session_id).model == "claude-opus-5"
+    end
+
+    test "the bare \"opus\" alias is still accepted now that both claude-opus-5 and claude-opus-4-8 exist",
+         %{state: state} do
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "model" => "opus", "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert Sessions.get_session!(session_id).model == "opus"
+    end
   end
 
   describe "search_sessions — model/backend/error_detail fields" do

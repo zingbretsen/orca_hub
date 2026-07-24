@@ -74,6 +74,7 @@ defmodule OrcaHub.Backend.Claude do
   @impl true
   def models do
     [
+      {"claude-opus-5", "Opus 5"},
       {"claude-fable-5", "Fable 5"},
       {"claude-opus-4-8", "Opus 4.8"},
       {"claude-sonnet-5", "Sonnet 5"},
