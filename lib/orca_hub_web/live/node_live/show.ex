@@ -1,7 +1,16 @@
 defmodule OrcaHubWeb.NodeLive.Show do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{BackendInstaller, Cluster, ConfigFile, HubRPC, NodeConfig, SkillSync}
+  alias OrcaHub.{
+    BackendAuth,
+    BackendInstaller,
+    Cluster,
+    ConfigFile,
+    HubRPC,
+    NodeConfig,
+    SkillSync
+  }
+
   alias OrcaHubWeb.Markdown
 
   import OrcaHubWeb.NodeLive.ConfigComponents, only: [config_file_row: 1, config_dir_row: 1]
@@ -54,7 +63,26 @@ defmodule OrcaHubWeb.NodeLive.Show do
         block_edit_content: nil,
         config_view_mode: %{},
         structured_editing: nil,
-        structured_edit_value: ""
+        structured_edit_value: "",
+        claude_logged_in?: node.name in HubRPC.list_logged_in_nodes(),
+        login_node: nil,
+        login_output: "",
+        login_url: nil,
+        login_status: nil,
+        login_error: nil,
+        codex_status: codex_status_for(config_node),
+        codex_env_conflict?: codex_env_conflict_for(config_node),
+        pi_providers: pi_providers_for(config_node),
+        pi_provider_options: BackendAuth.pi_provider_options(),
+        codex_login_node: nil,
+        codex_login_mode: nil,
+        codex_login_output: "",
+        codex_login_url: nil,
+        codex_login_code: nil,
+        codex_login_status: nil,
+        codex_login_error: nil,
+        pi_key_node: nil,
+        pi_key_sanity: nil
       )
 
     socket =
@@ -185,6 +213,206 @@ defmodule OrcaHubWeb.NodeLive.Show do
       end
     else
       nil -> {:noreply, socket}
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # Node login (Claude Code OAuth)
+  # -------------------------------------------------------------------
+
+  def handle_event("login_node", _params, socket) do
+    target = socket.assigns.config_node
+
+    socket = unsubscribe_login(socket)
+    Phoenix.PubSub.subscribe(OrcaHub.PubSub, "node_login:#{target}")
+
+    socket =
+      assign(socket,
+        login_node: target,
+        login_output: "",
+        login_url: nil,
+        login_status: :running,
+        login_error: nil
+      )
+
+    case Cluster.login_node(target) do
+      {:ok, _pid} ->
+        {:noreply, socket}
+
+      error ->
+        {:noreply, assign(socket, login_status: :error, login_error: inspect(error))}
+    end
+  end
+
+  def handle_event("submit_login_code", %{"code" => code}, socket) do
+    if socket.assigns.login_node do
+      Cluster.submit_login_code(socket.assigns.login_node, code)
+    end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("cancel_login", _params, socket) do
+    if socket.assigns.login_node do
+      Cluster.cancel_login(socket.assigns.login_node)
+    end
+
+    {:noreply, close_login(socket)}
+  end
+
+  def handle_event("close_login", _params, socket) do
+    {:noreply, close_login(socket)}
+  end
+
+  def handle_event("logout_node", _params, socket) do
+    node = socket.assigns.node
+    {:ok, _} = HubRPC.delete_node_token(node.name)
+
+    {:noreply,
+     socket
+     |> assign(claude_logged_in?: false)
+     |> put_flash(:info, "Removed stored credential for #{node.display_name}")}
+  end
+
+  # -------------------------------------------------------------------
+  # Node login (codex device-auth / API key)
+  # -------------------------------------------------------------------
+
+  def handle_event("codex_login_device", _params, socket) do
+    target = socket.assigns.config_node
+
+    socket = unsubscribe_codex_login(socket)
+    Phoenix.PubSub.subscribe(OrcaHub.PubSub, "codex_login:#{target}")
+
+    socket =
+      assign(socket,
+        codex_login_node: target,
+        codex_login_mode: :device_auth,
+        codex_login_output: "",
+        codex_login_url: nil,
+        codex_login_code: nil,
+        codex_login_status: :running,
+        codex_login_error: nil
+      )
+
+    case Cluster.login_node_codex_device(target) do
+      {:ok, _pid} ->
+        {:noreply, socket}
+
+      error ->
+        {:noreply, assign(socket, codex_login_status: :error, codex_login_error: inspect(error))}
+    end
+  end
+
+  def handle_event("codex_login_api_key_open", _params, socket) do
+    target = socket.assigns.config_node
+
+    socket = unsubscribe_codex_login(socket)
+    Phoenix.PubSub.subscribe(OrcaHub.PubSub, "codex_login:#{target}")
+
+    {:noreply,
+     assign(socket,
+       codex_login_node: target,
+       codex_login_mode: :api_key,
+       codex_login_output: "",
+       codex_login_url: nil,
+       codex_login_code: nil,
+       codex_login_status: nil,
+       codex_login_error: nil
+     )}
+  end
+
+  # Strictly write-only, same discipline as add_secret in the old Settings
+  # location: `key` is used to start the login flow and then discarded —
+  # never assigned to socket state, so it can never be rendered back or leak
+  # into a later render.
+  def handle_event("submit_codex_api_key", %{"key" => key}, socket) do
+    key = String.trim(key)
+    node = socket.assigns.codex_login_node
+
+    if node && key != "" do
+      case Cluster.login_node_codex_api_key(node, key) do
+        {:ok, _pid} ->
+          {:noreply, assign(socket, codex_login_status: :running)}
+
+        error ->
+          {:noreply,
+           assign(socket, codex_login_status: :error, codex_login_error: inspect(error))}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("cancel_codex_login", _params, socket) do
+    if socket.assigns.codex_login_node do
+      Cluster.cancel_codex_login(socket.assigns.codex_login_node)
+    end
+
+    {:noreply, close_codex_login(socket)}
+  end
+
+  def handle_event("close_codex_login", _params, socket) do
+    {:noreply, close_codex_login(socket)}
+  end
+
+  # -------------------------------------------------------------------
+  # pi provider keys
+  # -------------------------------------------------------------------
+
+  def handle_event("open_pi_keys", _params, socket) do
+    {:noreply, assign(socket, pi_key_node: socket.assigns.config_node, pi_key_sanity: nil)}
+  end
+
+  def handle_event("close_pi_keys", _params, socket) do
+    {:noreply, assign(socket, pi_key_node: nil, pi_key_sanity: nil)}
+  end
+
+  # Strictly write-only, same discipline as add_secret: `key` is used to
+  # call set_pi_key and then discarded — never assigned to socket state.
+  def handle_event("save_pi_key", %{"provider" => provider, "key" => key} = params, socket) do
+    provider = resolve_pi_provider(provider, params["custom_provider"])
+    key = String.trim(key)
+    node = socket.assigns.pi_key_node
+
+    cond do
+      is_nil(node) ->
+        {:noreply, socket}
+
+      provider == "" or key == "" ->
+        {:noreply, put_flash(socket, :error, "Both a provider and a key are required")}
+
+      true ->
+        case Cluster.set_pi_key(node, provider, key) do
+          :ok ->
+            {:noreply,
+             socket
+             |> refresh_pi_providers()
+             |> assign(pi_key_sanity: pi_sanity_check(node, provider))
+             |> put_flash(:info, "Saved #{provider} key for #{Cluster.node_name(node)}")}
+
+          error ->
+            {:noreply, put_flash(socket, :error, "Failed to save key: #{inspect(error)}")}
+        end
+    end
+  end
+
+  def handle_event("delete_pi_key", %{"provider" => provider}, socket) do
+    node = socket.assigns.pi_key_node
+
+    if node do
+      case Cluster.delete_pi_key(node, provider) do
+        :ok ->
+          {:noreply,
+           socket
+           |> refresh_pi_providers()
+           |> put_flash(:info, "Removed #{provider} key")}
+
+        error ->
+          {:noreply, put_flash(socket, :error, "Failed to remove key: #{inspect(error)}")}
+      end
+    else
+      {:noreply, socket}
     end
   end
 
@@ -570,10 +798,70 @@ defmodule OrcaHubWeb.NodeLive.Show do
   end
 
   # -------------------------------------------------------------------
-  # Backend install/update (PubSub events from OrcaHub.BackendInstaller.Job)
+  # Node login (PubSub events from OrcaHub.LoginRunner / CodexLoginRunner)
   # -------------------------------------------------------------------
 
   @impl true
+  def handle_info({:login_output, text}, socket) do
+    {:noreply, assign(socket, login_output: text)}
+  end
+
+  def handle_info({:login_url, url}, socket) do
+    {:noreply, assign(socket, login_url: url, login_status: :awaiting_code)}
+  end
+
+  def handle_info({:login_status, status}, socket) do
+    # Don't downgrade a terminal status (success/error) from a late event.
+    if socket.assigns.login_status in [:success, :error] do
+      {:noreply, socket}
+    else
+      {:noreply, assign(socket, login_status: status)}
+    end
+  end
+
+  def handle_info({:login_done, :success}, socket) do
+    {:noreply, assign(socket, login_status: :success, claude_logged_in?: true)}
+  end
+
+  def handle_info({:login_done, {:error, msg}}, socket) do
+    {:noreply, assign(socket, login_status: :error, login_error: msg)}
+  end
+
+  def handle_info({:codex_login_output, text}, socket) do
+    {:noreply, assign(socket, codex_login_output: text)}
+  end
+
+  def handle_info({:codex_login_url, url}, socket) do
+    {:noreply, assign(socket, codex_login_url: url)}
+  end
+
+  def handle_info({:codex_login_code, code}, socket) do
+    {:noreply, assign(socket, codex_login_code: code)}
+  end
+
+  def handle_info({:codex_login_status, status}, socket) do
+    if socket.assigns.codex_login_status in [:success, :error] do
+      {:noreply, socket}
+    else
+      {:noreply, assign(socket, codex_login_status: status)}
+    end
+  end
+
+  def handle_info({:codex_login_done, :success}, socket) do
+    {:noreply,
+     socket
+     |> assign(codex_login_status: :success)
+     |> refresh_codex_status()}
+  end
+
+  def handle_info({:codex_login_done, {:error, msg}}, socket) do
+    {:noreply, assign(socket, codex_login_status: :error, codex_login_error: msg)}
+  end
+
+  # -------------------------------------------------------------------
+  # Backend install/update (PubSub events from OrcaHub.BackendInstaller.Job)
+  # -------------------------------------------------------------------
+
   def handle_info({:installer_output, _node, backend, chunk}, socket) do
     {:noreply,
      update(socket, :backend_installer_output, fn output ->
@@ -636,6 +924,104 @@ defmodule OrcaHubWeb.NodeLive.Show do
   defp backend_atom("codex"), do: :codex
   defp backend_atom("pi"), do: :pi
   defp backend_atom(_), do: nil
+
+  defp unsubscribe_login(socket) do
+    if node = socket.assigns[:login_node] do
+      Phoenix.PubSub.unsubscribe(OrcaHub.PubSub, "node_login:#{node}")
+    end
+
+    socket
+  end
+
+  defp close_login(socket) do
+    socket
+    |> unsubscribe_login()
+    |> assign(
+      login_node: nil,
+      login_output: "",
+      login_url: nil,
+      login_status: nil,
+      login_error: nil,
+      claude_logged_in?: socket.assigns.node.name in HubRPC.list_logged_in_nodes()
+    )
+  end
+
+  defp unsubscribe_codex_login(socket) do
+    if node = socket.assigns[:codex_login_node] do
+      Phoenix.PubSub.unsubscribe(OrcaHub.PubSub, "codex_login:#{node}")
+    end
+
+    socket
+  end
+
+  defp close_codex_login(socket) do
+    socket
+    |> unsubscribe_codex_login()
+    |> assign(
+      codex_login_node: nil,
+      codex_login_mode: nil,
+      codex_login_output: "",
+      codex_login_url: nil,
+      codex_login_code: nil,
+      codex_login_status: nil,
+      codex_login_error: nil
+    )
+  end
+
+  defp codex_status_for(nil), do: %{status: :not_logged_in, label: "Not logged in"}
+
+  defp codex_status_for(config_node) do
+    case Cluster.codex_status(config_node) do
+      %{} = s -> s
+      _ -> %{status: :not_logged_in, label: "Not logged in"}
+    end
+  end
+
+  defp codex_env_conflict_for(nil), do: false
+  defp codex_env_conflict_for(config_node), do: Cluster.codex_env_conflict?(config_node) == true
+
+  defp pi_providers_for(nil), do: []
+
+  defp pi_providers_for(config_node) do
+    case Cluster.list_pi_providers(config_node) do
+      list when is_list(list) -> list
+      _ -> []
+    end
+  end
+
+  defp refresh_codex_status(socket) do
+    assign(socket, codex_status: codex_status_for(socket.assigns.config_node))
+  end
+
+  defp refresh_pi_providers(socket) do
+    assign(socket, pi_providers: pi_providers_for(socket.assigns.config_node))
+  end
+
+  defp resolve_pi_provider("custom", custom) when is_binary(custom) do
+    custom |> String.trim() |> String.downcase()
+  end
+
+  defp resolve_pi_provider(provider, _custom), do: provider
+
+  # Optional, non-blocking sanity check (docs/codex_pi_auth_research.md §6):
+  # `pi --list-models` only enumerates providers that already have working
+  # credentials, so if the provider we just saved shows up, the key is at
+  # least well-formed enough for pi to use.
+  defp pi_sanity_check(node, provider) do
+    case Cluster.rpc(node, OrcaHub.Backend.Pi, :models, []) do
+      models when is_list(models) ->
+        if Enum.any?(models, fn {id, _label} -> String.starts_with?(id, "#{provider}/") end) do
+          {:ok, "pi --list-models now sees #{provider}"}
+        else
+          {:warn, "pi --list-models doesn't show #{provider} yet — double-check the key"}
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
 
   defp update_node_default(socket, field, value) do
     case HubRPC.update_node(socket.assigns.node, %{field => value}) do

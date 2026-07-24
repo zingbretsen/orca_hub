@@ -1,17 +1,21 @@
-defmodule OrcaHubWeb.SettingsLive.BackendAuthTest do
+defmodule OrcaHubWeb.NodeLive.BackendAuthTest do
   @moduledoc """
-  LiveView coverage for SettingsLive.Index's codex login (device-auth +
-  API-key) and pi provider-key sections.
+  LiveView coverage for NodeLive.Show's per-backend auth controls: Claude
+  Code OAuth login/logout, codex login (device-auth + API-key), and pi
+  provider-key management.
 
   Not async: uses the `:orca_hub, :backend_auth_home` Application env
   override (`OrcaHub.BackendAuth`) to keep RPCs off the real
-  `~/.codex`/`~/.pi`, and `:codex_executable` to keep the login flow off the
-  real `codex` binary — same rationale/pattern as
-  `NodeLive.BackendInstallerTest`.
+  `~/.codex`/`~/.pi`, `:codex_executable` to keep the login flow off the
+  real `codex` binary, and `:node_config_home` to keep the page's Backend
+  Configuration section off the real `~/.claude`/`~/.codex`/`~/.pi` — same
+  rationale/pattern as `NodeLive.ConfigTest` / `NodeLive.BackendInstallerTest`.
   """
   use OrcaHubWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+
+  alias OrcaHub.ClusterNodes
 
   @fake_codex Path.expand("../../../support/fixtures/fake_codex.sh", __DIR__)
 
@@ -19,18 +23,28 @@ defmodule OrcaHubWeb.SettingsLive.BackendAuthTest do
     original_home = Application.get_env(:orca_hub, :backend_auth_home)
     original_codex = Application.get_env(:orca_hub, :codex_executable)
     original_openai_key = System.get_env("OPENAI_API_KEY")
+    original_node_config_home = Application.get_env(:orca_hub, :node_config_home)
 
     home =
       Path.join(System.tmp_dir!(), "backend_auth_live_test_#{System.unique_integer([:positive])}")
 
+    node_config_home =
+      Path.join(
+        System.tmp_dir!(),
+        "backend_auth_node_config_#{System.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(home)
+    File.mkdir_p!(node_config_home)
     Application.put_env(:orca_hub, :backend_auth_home, home)
     Application.put_env(:orca_hub, :codex_executable, @fake_codex)
+    Application.put_env(:orca_hub, :node_config_home, node_config_home)
     System.delete_env("OPENAI_API_KEY")
 
     on_exit(fn ->
       OrcaHub.CodexLoginRunner.cancel()
       File.rm_rf(home)
+      File.rm_rf(node_config_home)
 
       if original_home,
         do: Application.put_env(:orca_hub, :backend_auth_home, original_home),
@@ -40,12 +54,23 @@ defmodule OrcaHubWeb.SettingsLive.BackendAuthTest do
         do: Application.put_env(:orca_hub, :codex_executable, original_codex),
         else: Application.delete_env(:orca_hub, :codex_executable)
 
+      if original_node_config_home,
+        do: Application.put_env(:orca_hub, :node_config_home, original_node_config_home),
+        else: Application.delete_env(:orca_hub, :node_config_home)
+
       if original_openai_key,
         do: System.put_env("OPENAI_API_KEY", original_openai_key),
         else: System.delete_env("OPENAI_API_KEY")
     end)
 
-    {:ok, home: home}
+    {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "backend-auth-test-node")
+
+    {:ok, home: home, node: n}
+  end
+
+  defp open(conn, n) do
+    {:ok, view, _html} = live(conn, ~p"/nodes/#{n.id}")
+    view
   end
 
   defp wait_until(fun, attempts \\ 100)
@@ -63,8 +88,8 @@ defmodule OrcaHubWeb.SettingsLive.BackendAuthTest do
   end
 
   describe "codex status badge" do
-    test "shows nothing extra when no auth.json exists", %{conn: conn} do
-      {:ok, _view, html} = live(conn, ~p"/settings")
+    test "shows nothing extra when no auth.json exists", %{conn: conn, node: n} do
+      html = open(conn, n) |> render()
 
       refute html =~ "codex: ChatGPT"
       refute html =~ "codex: API key"
@@ -73,6 +98,7 @@ defmodule OrcaHubWeb.SettingsLive.BackendAuthTest do
 
     test "shows the ChatGPT (device) badge once auth.json says so (FAKE values)", %{
       conn: conn,
+      node: n,
       home: home
     } do
       write_codex_auth(home, %{
@@ -80,21 +106,27 @@ defmodule OrcaHubWeb.SettingsLive.BackendAuthTest do
         "tokens" => %{"access_token" => "fake-access-token"}
       })
 
-      {:ok, _view, html} = live(conn, ~p"/settings")
+      html = open(conn, n) |> render()
       assert html =~ "codex: ChatGPT (device)"
     end
 
-    test "shows the codex env conflict warning when OPENAI_API_KEY is set", %{conn: conn} do
+    test "shows the codex env conflict warning when OPENAI_API_KEY is set", %{
+      conn: conn,
+      node: n
+    } do
       System.put_env("OPENAI_API_KEY", "sk-fake-env-key")
 
-      {:ok, _view, html} = live(conn, ~p"/settings")
+      html = open(conn, n) |> render()
       assert html =~ "codex env conflict"
     end
   end
 
   describe "codex API key login" do
-    test "the key form is masked and the submitted key is never rendered back", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/settings")
+    test "the key form is masked and the submitted key is never rendered back", %{
+      conn: conn,
+      node: n
+    } do
+      view = open(conn, n)
 
       html =
         view
@@ -122,8 +154,8 @@ defmodule OrcaHubWeb.SettingsLive.BackendAuthTest do
       refute html =~ secret
     end
 
-    test "reports an error without leaking the key", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/settings")
+    test "reports an error without leaking the key", %{conn: conn, node: n} do
+      view = open(conn, n)
 
       view
       |> element("button[phx-click=codex_login_api_key_open]")
@@ -145,9 +177,10 @@ defmodule OrcaHubWeb.SettingsLive.BackendAuthTest do
 
   describe "pi provider keys" do
     test "save shows a configured badge and never renders the key back; remove clears it", %{
-      conn: conn
+      conn: conn,
+      node: n
     } do
-      {:ok, view, _html} = live(conn, ~p"/settings")
+      view = open(conn, n)
 
       html =
         view

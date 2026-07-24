@@ -1,7 +1,7 @@
 <.header>
   Nodes
   <:actions>
-    <.button phx-click="show_add_node_form" :if={!@adding_node?} id="add-node">
+    <.button :if={!@adding_node?} phx-click="show_add_node_form" id="add-node">
       Add node
     </.button>
     <.button phx-click="sweep_update_all" disabled={@sweep_active?} id="sweep-update-all">

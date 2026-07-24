@@ -139,7 +139,8 @@ defmodule OrcaHub.MCP.Tools.TriggersTest do
       {:ok, project} =
         Projects.create_project(%{
           name: "directory-trigger-project-winner",
-          directory: "/tmp/directory-trigger-project-winner-#{System.unique_integer([:positive])}",
+          directory:
+            "/tmp/directory-trigger-project-winner-#{System.unique_integer([:positive])}",
           node: Atom.to_string(node())
         })
 

@@ -378,7 +378,10 @@ defmodule OrcaHub.SessionsTest do
 
     defp insert_assistant_at(session, data, inserted_at) do
       {:ok, message} = Sessions.create_message(%{session_id: session.id, data: data})
-      from(m in Message, where: m.id == ^message.id) |> Repo.update_all(set: [inserted_at: inserted_at])
+
+      from(m in Message, where: m.id == ^message.id)
+      |> Repo.update_all(set: [inserted_at: inserted_at])
+
       message
     end
 

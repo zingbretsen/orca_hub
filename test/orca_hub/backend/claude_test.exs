@@ -476,7 +476,11 @@ defmodule OrcaHub.Backend.ClaudeTest do
   @expected_disallowed_tools ["ScheduleWakeup", "SendMessage", "Task", "Workflow"]
 
   defp expected_streaming_opts(ctx) do
-    [cwd: ctx.directory, input_format: "stream-json", disallowed_tools: @expected_disallowed_tools]
+    [
+      cwd: ctx.directory,
+      input_format: "stream-json",
+      disallowed_tools: @expected_disallowed_tools
+    ]
     |> expected_maybe_put(:session_id, ctx.claude_session_id)
     |> expected_maybe_put(:model, ctx.model)
     |> expected_maybe_put(:system_prompt, expected_system_prompt(ctx))
@@ -555,7 +559,11 @@ defmodule OrcaHub.Backend.ClaudeTest do
       ctx = ctx(%{tools: ""})
 
       opts =
-        [cwd: ctx.directory, input_format: "stream-json", disallowed_tools: @expected_disallowed_tools]
+        [
+          cwd: ctx.directory,
+          input_format: "stream-json",
+          disallowed_tools: @expected_disallowed_tools
+        ]
         |> expected_maybe_put(:system_prompt, expected_system_prompt_no_mcp(ctx))
         |> Keyword.put(:tools, "")
 
@@ -577,7 +585,11 @@ defmodule OrcaHub.Backend.ClaudeTest do
       ctx = ctx(%{tools: "", api_run_schema?: true})
 
       opts =
-        [cwd: ctx.directory, input_format: "stream-json", disallowed_tools: @expected_disallowed_tools]
+        [
+          cwd: ctx.directory,
+          input_format: "stream-json",
+          disallowed_tools: @expected_disallowed_tools
+        ]
         |> expected_maybe_put(:system_prompt, expected_system_prompt_api_run(ctx))
         |> Keyword.put(:tools, "")
         |> Keyword.put(:mcp_config, expected_mcp_config_json(ctx))

@@ -105,8 +105,13 @@ defmodule OrcaHub.LoginRunner do
 
   @impl true
   def handle_cast({:submit_code, code}, %{port: port} = state) when not is_nil(port) do
-    # The TUI prompt reads a single line; send the code followed by Enter.
-    Port.command(port, String.trim(code) <> "\r")
+    # `setup-token` is an ink TUI. If the code and a trailing "\r" arrive in
+    # the same stdin write, ink treats it as a paste and the "\r" never
+    # registers as an Enter keypress — the field fills but doesn't submit
+    # until a second write arrives. Write the code and the Enter as two
+    # separate port writes, a beat apart, so ink sees a real keypress.
+    Port.command(port, String.trim(code))
+    Process.send_after(self(), :press_enter, 150)
     {:noreply, state}
   end
 
@@ -148,6 +153,13 @@ defmodule OrcaHub.LoginRunner do
     broadcast({:login_done, {:error, "timed out waiting for login (5 min)"}})
     {:stop, :normal, state}
   end
+
+  def handle_info(:press_enter, %{port: port} = state) when not is_nil(port) do
+    Port.command(port, "\r")
+    {:noreply, state}
+  end
+
+  def handle_info(:press_enter, state), do: {:noreply, state}
 
   def handle_info(_msg, state), do: {:noreply, state}
 
