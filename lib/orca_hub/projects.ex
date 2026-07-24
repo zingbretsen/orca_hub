@@ -487,7 +487,6 @@ defmodule OrcaHub.Projects do
   Otherwise checks out an existing branch.
   """
   def git_create_worktree(%Project{directory: dir}, branch_name, opts \\ []) do
-    ensure_worktrees_gitignored(dir)
     worktree_path = Path.join([dir, ".worktrees", branch_name])
 
     args =
@@ -500,25 +499,6 @@ defmodule OrcaHub.Projects do
     case System.cmd("git", args, cd: dir, stderr_to_stdout: true) do
       {_output, 0} -> {:ok, worktree_path}
       {output, _} -> {:error, String.trim(output)}
-    end
-  end
-
-  defp ensure_worktrees_gitignored(dir) do
-    gitignore_path = Path.join(dir, ".gitignore")
-
-    existing =
-      case File.read(gitignore_path) do
-        {:ok, content} -> content
-        {:error, _} -> ""
-      end
-
-    unless String.contains?(existing, ".worktrees") do
-      addition =
-        if String.ends_with?(existing, "\n") or existing == "",
-          do: ".worktrees/\n",
-          else: "\n.worktrees/\n"
-
-      File.write(gitignore_path, existing <> addition)
     end
   end
 

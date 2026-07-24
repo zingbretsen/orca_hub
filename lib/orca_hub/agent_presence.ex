@@ -10,7 +10,6 @@ defmodule OrcaHub.AgentPresence do
   def write(directory, session_id, attrs \\ %{}) do
     dir = Path.join(directory, @agents_dir)
     File.mkdir_p!(dir)
-    ensure_gitignore(dir)
 
     content = format_file(session_id, attrs)
     File.write!(Path.join(dir, "#{session_id}.md"), content)
@@ -129,23 +128,6 @@ defmodule OrcaHub.AgentPresence do
         |> Enum.reject(&(&1 == ".gitignore"))
 
       if remaining == [], do: File.rm_rf(dir)
-    end
-  end
-
-  defp ensure_gitignore(agents_dir) do
-    gitignore_path = Path.join(Path.dirname(agents_dir), ".gitignore")
-
-    if File.exists?(gitignore_path) do
-      content = File.read!(gitignore_path)
-
-      unless String.contains?(content, ".agents/") do
-        File.write!(gitignore_path, String.trim_trailing(content) <> "\n.agents/\n")
-      end
-    else
-      # No .gitignore exists — check if this is a git repo before creating one
-      if File.dir?(Path.join(Path.dirname(agents_dir), ".git")) do
-        File.write!(gitignore_path, ".agents/\n")
-      end
     end
   end
 end

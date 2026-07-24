@@ -6,6 +6,7 @@ defmodule OrcaHubWeb.NodeLive.Show do
     BackendInstaller,
     Cluster,
     ConfigFile,
+    GlobalGitignore,
     HubRPC,
     NodeConfig,
     SkillSync
@@ -48,6 +49,7 @@ defmodule OrcaHubWeb.NodeLive.Show do
           ),
         backend_installer_output: %{},
         backend_installer_result: %{},
+        global_gitignore: if(config_node, do: load_global_gitignore(config_node)),
         session_count: HubRPC.count_sessions_for_node(node.name),
         project_count: HubRPC.count_projects_for_node(node.name),
         config_sections_expanded: MapSet.new(),
@@ -192,6 +194,27 @@ defmodule OrcaHubWeb.NodeLive.Show do
 
   def handle_event("update_default_model", %{"default_model" => value}, socket) do
     update_node_default(socket, :default_model, blank_to_nil(value))
+  end
+
+  def handle_event("ensure_global_gitignore", _params, socket) do
+    config_node = socket.assigns.config_node
+
+    case rpc(config_node, GlobalGitignore, :ensure, []) do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(global_gitignore: load_global_gitignore(config_node))
+         |> put_flash(
+           :info,
+           "Global gitignore on #{Cluster.node_name(config_node)} now covers OrcaHub's working-directory artifacts"
+         )}
+
+      error ->
+        {:noreply,
+         socket
+         |> assign(global_gitignore: load_global_gitignore(config_node))
+         |> put_flash(:error, "Failed to update global gitignore: #{inspect(error)}")}
+    end
   end
 
   def handle_event("run_backend_job", %{"backend" => b, "action" => a}, socket) do
@@ -1116,6 +1139,15 @@ defmodule OrcaHubWeb.NodeLive.Show do
     node_config
     |> Map.values()
     |> Enum.filter(&match?({:error, _}, &1))
+  end
+
+  # Stateless live read of the target node's on-disk git config — no DB
+  # column backs this; it's re-checked on every mount and after every apply.
+  defp load_global_gitignore(config_node) do
+    case rpc(config_node, GlobalGitignore, :status, []) do
+      %{} = status -> status
+      _ -> nil
+    end
   end
 
   defp load_managed_skills(config_node) do

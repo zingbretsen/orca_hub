@@ -146,6 +146,69 @@ defmodule OrcaHubWeb.NodeLive.ShowTest do
     end
   end
 
+  describe "global gitignore section" do
+    # Point GlobalGitignore at its own tmp home so these tests never read
+    # or write this machine's real git config (see OrcaHub.GlobalGitignore).
+    setup do
+      original = Application.get_env(:orca_hub, :global_gitignore_home)
+      home = Path.join(System.tmp_dir!(), "gitignore_home_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(home)
+      Application.put_env(:orca_hub, :global_gitignore_home, home)
+
+      on_exit(fn ->
+        if original,
+          do: Application.put_env(:orca_hub, :global_gitignore_home, original),
+          else: Application.delete_env(:orca_hub, :global_gitignore_home)
+
+        File.rm_rf(home)
+      end)
+
+      {:ok, gitignore_home: home}
+    end
+
+    test "renders all three patterns as missing with an apply button on a fresh node", %{
+      conn: conn
+    } do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+      {:ok, _view, html} = live(conn, ~p"/nodes/#{n.id}")
+
+      assert html =~ "Global gitignore"
+      assert html =~ ".agents/"
+      assert html =~ ".orca_uploads/"
+      assert html =~ ".worktrees/"
+      assert html =~ "is not configured on this node"
+      assert html =~ "Add to global gitignore"
+    end
+
+    test "clicking apply writes the global ignore file and re-renders as covered", %{
+      conn: conn,
+      gitignore_home: home
+    } do
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+      {:ok, view, _html} = live(conn, ~p"/nodes/#{n.id}")
+
+      html = render_click(view, "ensure_global_gitignore")
+
+      assert File.read!(Path.join([home, ".config", "git", "ignore"])) ==
+               ".agents/\n.orca_uploads/\n.worktrees/\n"
+
+      assert html =~ "Managed via"
+      refute html =~ "Add to global gitignore"
+    end
+
+    test "offline node shows the unavailable note instead of live state", %{conn: conn} do
+      {:ok, n} = ClusterNodes.upsert_seen("orca@long-gone", "long-gone-node")
+
+      {:ok, _view, html} = live(conn, ~p"/nodes/#{n.id}")
+
+      assert html =~ "Global gitignore"
+      assert html =~ "needs an active connection"
+      refute html =~ "Add to global gitignore"
+    end
+  end
+
   describe "default backend/model controls" do
     test "with no defaults set, both controls render as '(no default)'", %{conn: conn} do
       {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
