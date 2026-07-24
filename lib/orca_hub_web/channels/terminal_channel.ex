@@ -11,7 +11,15 @@ defmodule OrcaHubWeb.TerminalChannel do
   alias OrcaHub.{Cluster, HubRPC, TerminalRunner}
 
   @impl true
-  def join("terminal:" <> terminal_id, _params, socket) do
+  def join("terminal:" <> rest, _params, socket) do
+    # `rest` is either a bare terminal id or `<terminal_id>:<client_ref>` —
+    # the client_ref makes the topic unique per hook instance so that two
+    # hooks for the same terminal (e.g. desktop panel + CSS-hidden mobile
+    # modal) don't join an identical topic and knock each other's channel
+    # closed. Terminal ids are UUIDs (no colons), so splitting on the first
+    # colon is unambiguous.
+    terminal_id = rest |> String.split(":", parts: 2) |> List.first()
+
     # Subscribe to the TerminalRunner's broadcast topic.
     # We use "term_output:" prefix to avoid collision with the Phoenix
     # Channel's internal PubSub subscription on "terminal:" topic.

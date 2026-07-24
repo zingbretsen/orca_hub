@@ -67,7 +67,13 @@ export const TerminalHook = {
       window.__terminalSocket.connect()
     }
     this.socket = window.__terminalSocket
-    this.channel = this.socket.channel(`terminal:${terminalId}`)
+    // Unique per hook instance: two hooks for the same terminal (e.g. the
+    // desktop panel and the CSS-hidden mobile modal both mounting on the
+    // same page) must not join the identical topic — Phoenix closes the
+    // first channel when a second join for the same topic arrives on the
+    // same socket.
+    const clientRef = crypto.randomUUID()
+    this.channel = this.socket.channel(`terminal:${terminalId}:${clientRef}`)
 
     this.channel
       .join()
