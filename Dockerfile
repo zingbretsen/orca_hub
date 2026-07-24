@@ -180,6 +180,16 @@ exec /app/bin/server
 EOF
 RUN chmod +x /app/bin/entrypoint.sh
 
+# Pre-create git's global config dir, orca-owned, with a default global
+# ignore file at git's default core.excludesFile location (no gitconfig
+# change needed). k8s mounts ConfigMap/Secret files via subPath into
+# /home/orca/.config/git; if the directory doesn't already exist in the
+# image, the container runtime creates it root-owned on mount, and
+# git-as-orca can't create its lock files or this ignore file there.
+RUN mkdir -p /home/orca/.config/git && \
+    printf '.agents/\n.orca_uploads/\n.worktrees/\n.pi_sessions/\n*.local.*\n' > /home/orca/.config/git/ignore && \
+    chown -R orca:orca /home/orca/.config
+
 USER orca
 
 CMD ["/app/bin/entrypoint.sh"]
