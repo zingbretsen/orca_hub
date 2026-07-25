@@ -59,6 +59,8 @@ defmodule OrcaHub.HubRPC do
   def last_assistant_text(session_id),
     do: call(OrcaHub.Sessions, :last_assistant_text, [session_id])
 
+  def count_messages(session_id), do: call(OrcaHub.Sessions, :count_messages, [session_id])
+
   def session_tail(session_id, opts \\ []),
     do: call(OrcaHub.Sessions, :session_tail, [session_id, opts])
 

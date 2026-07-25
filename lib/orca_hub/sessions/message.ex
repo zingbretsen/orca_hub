@@ -12,7 +12,10 @@ defmodule OrcaHub.Sessions.Message do
 
     belongs_to :session, OrcaHub.Sessions.Session
 
-    timestamps()
+    # usec precision: see the widen_message_timestamps_to_microseconds
+    # migration's moduledoc — "most recent message" queries have no
+    # secondary tiebreaker beyond inserted_at.
+    timestamps(type: :naive_datetime_usec)
   end
 
   def changeset(message, attrs) do

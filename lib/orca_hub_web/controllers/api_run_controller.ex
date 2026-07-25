@@ -20,6 +20,23 @@ defmodule OrcaHubWeb.ApiRunController do
   # POST /api/v1/runs
   # ---------------------------------------------------------------------
 
+  # Continuation: deliver the prompt into an EXISTING session instead of
+  # creating a new one (docs/api.md's "Continuing a session" section).
+  # `directory`/`project_id`/`backend`/`model`/`no_tools`/`title` are all
+  # session-creation concerns and are ignored here — the session already has
+  # them.
+  def create(conn, %{"session_id" => session_id} = params)
+      when is_binary(session_id) and session_id != "" do
+    with {:ok, prompt} <- fetch_prompt(params),
+         {:ok, session} <- fetch_existing_session(session_id),
+         runner_node <- Cluster.runner_node_for(session),
+         :ok <- check_node_available(runner_node) do
+      create_continuation_run(conn, params, prompt, session, runner_node)
+    else
+      {:error, status, body} -> conn |> put_status(status) |> json(body)
+    end
+  end
+
   def create(conn, params) do
     with {:ok, prompt} <- fetch_prompt(params),
          {:ok, project} <- fetch_project(params),
@@ -31,6 +48,22 @@ defmodule OrcaHubWeb.ApiRunController do
       create_run(conn, params, prompt, project, directory, backend, runner_node)
     else
       {:error, status, body} -> conn |> put_status(status) |> json(body)
+    end
+  end
+
+  # Same 404 posture as show/2's Ecto.UUID.cast handling below: a malformed
+  # id and a well-formed-but-nonexistent id both just mean "no such session",
+  # not a validation error.
+  defp fetch_existing_session(session_id) do
+    case Ecto.UUID.cast(session_id) do
+      :error ->
+        {:error, 404, %{error: "session not found"}}
+
+      {:ok, _} ->
+        case HubRPC.get_session(session_id) do
+          nil -> {:error, 404, %{error: "session not found"}}
+          session -> {:ok, session}
+        end
     end
   end
 
@@ -133,6 +166,55 @@ defmodule OrcaHubWeb.ApiRunController do
     end
   end
 
+  defp create_continuation_run(conn, params, prompt, session, runner_node) do
+    result_schema = params["result_schema"]
+    # Snapshot BEFORE delivery — see awaiting_new_turn?/2 and the migration
+    # comment on baseline_message_count.
+    baseline_message_count = HubRPC.count_messages(session.id)
+
+    with {:ok, run} <-
+           HubRPC.create_api_run(%{
+             session_id: session.id,
+             result_schema: result_schema,
+             timeout_seconds: params["timeout_seconds"] || @default_timeout_seconds,
+             max_validation_attempts:
+               params["max_validation_attempts"] || @default_max_validation_attempts,
+             baseline_message_count: baseline_message_count
+           }) do
+      deliver_continuation(conn, run, session, runner_node, full_prompt(prompt, result_schema))
+    else
+      {:error, %Ecto.Changeset{} = changeset} ->
+        conn
+        |> put_status(422)
+        |> json(%{error: "invalid parameters", details: changeset_errors(changeset)})
+    end
+  end
+
+  # Reuses the exact mechanism send_message_to_session uses (Cluster.send_message/3,
+  # see OrcaHub.MCP.Tools.Sessions): it starts a torn-down/never-started runner
+  # and unarchives an archived session automatically, so a continuation into an
+  # idle-teardown'd or archived session revives it the same way a sibling
+  # session's send_message_to_session call would.
+  defp deliver_continuation(conn, run, session, runner_node, message) do
+    case Cluster.send_message(runner_node, session.id, message) do
+      :ok ->
+        conn
+        |> put_status(202)
+        |> json(%{run_id: run.id, session_id: session.id, status: "running"})
+
+      {:error, reason} ->
+        message =
+          Cluster.node_unavailable_message(reason) ||
+            "session #{session.id} could not be revived: #{inspect(reason)}"
+
+        {:ok, run} = HubRPC.update_api_run(run, %{status: "failed", error: message})
+
+        conn
+        |> put_status(502)
+        |> json(%{error: message, run_id: run.id, session_id: session.id, status: "failed"})
+    end
+  end
+
   # code_exec is ON by default for new sessions (see Sessions.Session);
   # a schema run's MCP server must expose ONLY submit_result (docs/api.md),
   # so code_exec has to be explicitly turned off — leaving the key out of
@@ -208,14 +290,33 @@ defmodule OrcaHubWeb.ApiRunController do
   end
 
   defp advance_running(conn, run, %{status: "idle"} = session) do
-    text = HubRPC.last_assistant_text(session.id)
-    handle_idle_result(conn, run, session, text)
+    if awaiting_new_turn?(run, session.id) do
+      # Continuation's stale-reply race: the target session can already be
+      # "idle" — from its PREVIOUS turn — the instant send_message returns
+      # (see create_continuation_run/5), so `session.status == "idle"` alone
+      # can't tell "this run's turn is done" apart from "hasn't started yet".
+      # baseline_message_count (snapshotted right before delivery) is the
+      # tiebreaker: no new message yet means don't trust last_assistant_text,
+      # it would just be the prior turn's reply.
+      render_run(conn, run, session_status: session.status, status_override: "in_progress")
+    else
+      text = HubRPC.last_assistant_text(session.id)
+      handle_idle_result(conn, run, session, text)
+    end
   end
 
   # Any other session status (e.g. a freshly created "ready" session whose
   # runner hasn't picked up the turn yet) is still in progress.
   defp advance_running(conn, run, session) do
     render_run(conn, run, session_status: session.status, status_override: "in_progress")
+  end
+
+  # One-shot runs start at baseline_message_count: 0 on a brand-new session
+  # with no messages, so this is always false for them the moment the first
+  # user turn is persisted — the guard only ever actually bites for a
+  # continuation's already-idle target session.
+  defp awaiting_new_turn?(run, session_id) do
+    HubRPC.count_messages(session_id) <= run.baseline_message_count
   end
 
   defp handle_idle_result(conn, run, _session, text) when is_nil(run.result_schema) do

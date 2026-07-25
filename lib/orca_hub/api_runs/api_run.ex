@@ -16,6 +16,7 @@ defmodule OrcaHub.ApiRuns.ApiRun do
     field :timeout_seconds, :integer, default: 3600
     field :validation_attempts, :integer, default: 0
     field :max_validation_attempts, :integer, default: 3
+    field :baseline_message_count, :integer, default: 0
 
     belongs_to :session, OrcaHub.Sessions.Session
 
@@ -33,7 +34,8 @@ defmodule OrcaHub.ApiRuns.ApiRun do
       :result_schema,
       :timeout_seconds,
       :validation_attempts,
-      :max_validation_attempts
+      :max_validation_attempts,
+      :baseline_message_count
     ])
     |> validate_required([:session_id])
     |> validate_inclusion(:status, ~w(running completed failed timed_out))

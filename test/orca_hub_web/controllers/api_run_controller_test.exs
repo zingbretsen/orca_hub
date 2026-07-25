@@ -5,6 +5,8 @@ defmodule OrcaHubWeb.ApiRunControllerTest do
   # same pattern/rationale).
   use OrcaHubWeb.ConnCase, async: false
 
+  import Ecto.Query, only: [from: 2]
+
   alias OrcaHub.{ApiRuns, Projects, SessionSupervisor, Sessions}
 
   @claude_stub Path.expand("../../support/fixtures/claude_stub_noop.sh", __DIR__)
@@ -186,6 +188,227 @@ defmodule OrcaHubWeb.ApiRunControllerTest do
       assert session.code_exec == true
 
       on_exit(fn -> stop_if_alive(session.id) end)
+    end
+  end
+
+  describe "POST /api/v1/runs continuation (session_id)" do
+    setup do
+      Application.put_env(:orca_hub, :claude_executable, @claude_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :claude_executable) end)
+
+      dir = Path.join(System.tmp_dir!(), "api_run_cont_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "Existing session",
+          status: "idle",
+          triggered: true,
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+
+      %{dir: dir, session: session}
+    end
+
+    test "one-shot behavior is unchanged when session_id is absent", %{conn: conn, dir: dir} do
+      conn =
+        conn |> authed() |> post(~p"/api/v1/runs", %{"prompt" => "say hi", "directory" => dir})
+
+      body = json_response(conn, 202)
+      assert body["status"] == "running"
+
+      session = Sessions.get_session!(body["session_id"])
+      assert session.directory == dir
+      assert session.title == "API run"
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+    end
+
+    test "a null session_id also falls back to one-shot behavior", %{conn: conn, dir: dir} do
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{"prompt" => "say hi", "directory" => dir, "session_id" => nil})
+
+      body = json_response(conn, 202)
+      assert is_binary(body["session_id"])
+
+      on_exit(fn -> stop_if_alive(body["session_id"]) end)
+    end
+
+    test "delivers into the existing session instead of creating a new one", %{
+      conn: conn,
+      session: session
+    } do
+      before_count = Sessions.count_messages(session.id)
+
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{"prompt" => "continue please", "session_id" => session.id})
+
+      body = json_response(conn, 202)
+      assert body["status"] == "running"
+      assert body["session_id"] == session.id
+      assert is_binary(body["run_id"])
+
+      run = ApiRuns.get_run(body["run_id"])
+      assert run.session_id == session.id
+      assert run.baseline_message_count == before_count
+
+      # No second session was created for the same directory.
+      sessions_for_dir =
+        OrcaHub.Repo.all(from(s in Sessions.Session, where: s.directory == ^session.directory))
+
+      assert length(sessions_for_dir) == 1
+
+      reloaded = Sessions.get_session!(session.id)
+      assert reloaded.status == "running"
+      assert SessionSupervisor.session_alive?(session.id)
+    end
+
+    test "revives a session whose runner was torn down (idle-teardown equivalent)", %{
+      conn: conn,
+      session: session
+    } do
+      insert_assistant_message(session, "reply from before the teardown")
+
+      {:ok, _pid} = SessionSupervisor.start_session(session.id)
+      assert SessionSupervisor.session_alive?(session.id)
+      :ok = SessionSupervisor.stop_session(session.id)
+      refute SessionSupervisor.session_alive?(session.id)
+
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{"prompt" => "wake back up", "session_id" => session.id})
+
+      json_response(conn, 202)
+
+      assert SessionSupervisor.session_alive?(session.id)
+      assert Sessions.get_session!(session.id).status == "running"
+    end
+
+    test "auto-unarchives an archived session", %{conn: conn, session: session} do
+      {:ok, session} = Sessions.archive_session(session)
+      assert session.archived_at
+
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{"prompt" => "resume", "session_id" => session.id})
+
+      json_response(conn, 202)
+
+      reloaded = Sessions.get_session!(session.id)
+      refute reloaded.archived_at
+      assert reloaded.status == "running"
+    end
+
+    test "404 for a nonexistent session_id", %{conn: conn} do
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{"prompt" => "hi", "session_id" => Ecto.UUID.generate()})
+
+      assert json_response(conn, 404)["error"] == "session not found"
+    end
+
+    test "404 for a malformed session_id", %{conn: conn} do
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{"prompt" => "hi", "session_id" => "not-a-uuid"})
+
+      assert json_response(conn, 404)["error"] == "session not found"
+    end
+
+    test "400 when prompt is missing on a continuation", %{conn: conn, session: session} do
+      conn =
+        conn |> authed() |> post(~p"/api/v1/runs", %{"session_id" => session.id})
+
+      assert json_response(conn, 400)
+    end
+
+    test "503 when the session's node is not connected", %{conn: conn, dir: dir} do
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          status: "idle",
+          runner_node: "orca_test_unreachable@nowhere"
+        })
+
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{"prompt" => "hi", "session_id" => session.id})
+
+      body = json_response(conn, 503)
+      assert body["error"] =~ "not currently connected"
+
+      # No ApiRun row should be left behind for a request that never sent anything.
+      refute ApiRuns.get_run_by_session_id(session.id)
+    end
+  end
+
+  describe "GET /api/v1/runs/:id continuation stale-reply race" do
+    setup %{conn: conn} do
+      dir = Path.join(System.tmp_dir!(), "api_run_race_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          status: "idle",
+          runner_node: Atom.to_string(node())
+        })
+
+      %{conn: authed(conn), session: session}
+    end
+
+    test "does not report the previous turn's reply as this run's result", %{
+      conn: conn,
+      session: session
+    } do
+      insert_assistant_message(session, "old reply from a previous turn")
+      baseline = Sessions.count_messages(session.id)
+
+      {:ok, run} =
+        ApiRuns.create_run(%{session_id: session.id, baseline_message_count: baseline})
+
+      # Session is already back to "idle" (as it would be right after
+      # send_message revives+finishes an already-idle session very fast) but
+      # NO new message has landed yet — must stay in_progress, not complete
+      # with the stale text.
+      conn1 = get(conn, ~p"/api/v1/runs/#{run.id}")
+      body1 = json_response(conn1, 200)
+      assert body1["status"] == "in_progress"
+      refute Map.has_key?(body1, "result_text")
+
+      insert_assistant_message(session, "new reply for this run")
+
+      conn2 = get(conn, ~p"/api/v1/runs/#{run.id}")
+      body2 = json_response(conn2, 200)
+      assert body2["status"] == "completed"
+      assert body2["result_text"] == "new reply for this run"
+    end
+
+    test "a run with baseline 0 on a session with prior history is unaffected (no regression)", %{
+      conn: conn,
+      session: session
+    } do
+      insert_assistant_message(session, "hello there")
+      {:ok, run} = ApiRuns.create_run(%{session_id: session.id})
+
+      conn = get(conn, ~p"/api/v1/runs/#{run.id}")
+      body = json_response(conn, 200)
+      assert body["status"] == "completed"
+      assert body["result_text"] == "hello there"
     end
   end
 

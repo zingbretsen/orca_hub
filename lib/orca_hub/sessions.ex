@@ -587,6 +587,19 @@ defmodule OrcaHub.Sessions do
   @assistant_text_window_seconds 2
 
   @doc """
+  Total message count for a session. Used by the Agent Runs API
+  (`ApiRunController`) as a completion cursor for continuations: a run
+  snapshots this count right before its prompt is delivered, so a poll can
+  tell a session that's idle because THIS run's turn already finished apart
+  from one that's idle because it hasn't started processing yet (the latter
+  matters for a continuation, whose target session can already be idle from
+  a previous turn the instant the prompt is delivered).
+  """
+  def count_messages(session_id) do
+    Repo.aggregate(from(m in Message, where: m.session_id == ^session_id), :count, :id)
+  end
+
+  @doc """
   Return the text of the most recent assistant message that actually carries
   text blocks, or `nil` if there is none (or the latest burst carried no text
   blocks — e.g. only tool_use/thinking).
