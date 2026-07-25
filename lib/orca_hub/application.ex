@@ -86,6 +86,10 @@ defmodule OrcaHub.Application do
       # every installed backend CLI. Runs on hub + agent — see
       # OrcaHub.SkillSync moduledoc.
       OrcaHub.SkillSync,
+      # Serializes per-node agent-memory git snapshot+sync passes, triggered
+      # by SessionRunner idle transitions. Runs on hub + agent — see
+      # OrcaHub.MemoryGit.Server moduledoc.
+      OrcaHub.MemoryGit.Server,
       OrcaHub.MCP.UpstreamClient,
       OrcaHub.Scheduler,
       OrcaHub.TriggerLoader,
@@ -135,6 +139,10 @@ defmodule OrcaHub.Application do
       # every installed backend CLI. Runs on hub + agent — see
       # OrcaHub.SkillSync moduledoc.
       OrcaHub.SkillSync,
+      # Serializes per-node agent-memory git snapshot+sync passes, triggered
+      # by SessionRunner idle transitions. Runs on hub + agent — see
+      # OrcaHub.MemoryGit.Server moduledoc.
+      OrcaHub.MemoryGit.Server,
       # Agent needs a local HTTP endpoint for MCP (Claude CLI connects to it)
       OrcaHubWeb.Endpoint
     ]

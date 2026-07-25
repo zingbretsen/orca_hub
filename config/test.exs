@@ -45,3 +45,11 @@ config :phoenix,
 # full application against the shared dev DB, so this must stay off here.
 # Tests call OrcaHub.SkillSync.sync/1 directly with an injected :home_dir.
 config :orca_hub, :skill_sync_enabled, false
+
+# OrcaHub.MemoryGit.Server's idle-transition hook (invoked from
+# SessionRunner, which mix test's SessionRunner/state-machine tests drive
+# for real) writes real files under a node's home dir (~/.claude, ~/.codex)
+# and would even try to hit Gitea — must stay off here. Tests call
+# OrcaHub.MemoryGit.Server.run_pass/2 (or the MemoryGit/MemorySync
+# functions directly) with an injected :home_dir instead.
+config :orca_hub, :memory_git_enabled, false

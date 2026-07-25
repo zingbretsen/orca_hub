@@ -9,7 +9,7 @@ defmodule OrcaHub.SessionRunner do
   use GenStatem
   require Logger
 
-  alias OrcaHub.{AgentPresence, AskUserQuestion, Backend, Cluster, HubRPC, Streaming}
+  alias OrcaHub.{AgentPresence, AskUserQuestion, Backend, Cluster, HubRPC, MemoryGit, Streaming}
   alias OrcaHub.Claude.StreamParser
 
   # Route a HubRPC call through the node that owns the session's DB record.
@@ -691,6 +691,10 @@ defmodule OrcaHub.SessionRunner do
           maybe_generate_title(data, data.first_prompt)
         end
 
+        if db_status == "idle" do
+          MemoryGit.Server.snapshot_session_async(session)
+        end
+
         next_state = if code == 0, do: :idle, else: :error
         {:next_state, next_state, %{data | port: nil}}
     end
@@ -1294,6 +1298,7 @@ defmodule OrcaHub.SessionRunner do
         broadcast(data.session_id, {:status, :idle})
         AgentPresence.update_status(data.directory, data.session_id, "idle")
         maybe_notify_parent(%{session | status: "idle", error_detail: nil}, :idle)
+        MemoryGit.Server.snapshot_session_async(session)
         {:next_state, :idle, data}
 
       _ ->
@@ -1405,6 +1410,10 @@ defmodule OrcaHub.SessionRunner do
 
     if generate_title? and (session.title == nil or session.title == "") do
       maybe_generate_title(data, data.first_prompt)
+    end
+
+    if db_status == "idle" do
+      MemoryGit.Server.snapshot_session_async(session)
     end
 
     # Turn done, process stays warm awaiting input — evictable by the LRU cap.
