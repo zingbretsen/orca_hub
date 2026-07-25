@@ -32,12 +32,17 @@ defmodule OrcaHub.MemoryGit.Server do
   @doc """
   Fire-and-forget snapshot+sync pass tagged with `session`'s id/title.
   Always returns `:ok` immediately.
+
+  `:task_supervisor` (default `OrcaHub.TaskSupervisor`) is injectable so
+  tests can assert against an isolated supervisor instead of the shared
+  global one (see `OrcaHub.MemoryGit.ServerTest`).
   """
-  def snapshot_session_async(session) do
+  def snapshot_session_async(session, opts \\ []) do
     if MemoryGit.enabled?() do
       label = commit_label(session)
+      supervisor = Keyword.get(opts, :task_supervisor, OrcaHub.TaskSupervisor)
 
-      Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      Task.Supervisor.start_child(supervisor, fn ->
         GenServer.call(__MODULE__, {:run_pass, label, []}, 120_000)
       end)
     end

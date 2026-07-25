@@ -35,11 +35,14 @@ defmodule OrcaHub.MemoryGit.ServerTest do
   end
 
   test "snapshot_session_async/1 no-ops (no Task even started) when disabled" do
-    before = Process.list() |> length()
-    assert :ok = Server.snapshot_session_async(%{id: "s1", title: "hi"})
-    # Give any errant spawn a moment, then confirm nothing new stuck around.
-    Process.sleep(20)
-    assert Process.list() |> length() <= before + 1
+    # A private, uniquely-named Task.Supervisor (not the shared global
+    # OrcaHub.TaskSupervisor other async tests spawn children under) so this
+    # assertion is deterministic instead of racing unrelated process churn.
+    {:ok, sup} = Task.Supervisor.start_link()
+    on_exit(fn -> if Process.alive?(sup), do: Process.exit(sup, :kill) end)
+
+    assert :ok = Server.snapshot_session_async(%{id: "s1", title: "hi"}, task_supervisor: sup)
+    assert Task.Supervisor.children(sup) == []
   end
 
   describe "run_pass/2" do
