@@ -318,7 +318,7 @@ defmodule OrcaHubWeb.ApiRunController do
       {:ok, run} = HubRPC.update_api_run(run, %{status: "timed_out"})
       render_run(conn, run)
     else
-      render_run(conn, run, tool_call: run.pending_tool_call)
+      render_run(conn, run, tool_call: caller_tool_call(run.pending_tool_call))
     end
   end
 
@@ -537,10 +537,50 @@ defmodule OrcaHubWeb.ApiRunController do
      }}
   end
 
+  # The call is normally still parked open on a live MCP.Server (docs/api.md
+  # "Client (frontend) tools"): merge the answer into `pending_tool_call` and
+  # broadcast it — MCP.Server resolves the still-open tools/call, replies
+  # with the real result, THEN clears pending_tool_call and flips status
+  # back to "running" itself (see OrcaHub.MCP.Server's "Client tool call
+  # parking" section). If the hold already timed out (MCP.Server marked
+  # `hold_expired` — the model already got the v1 placeholder and ended its
+  # turn, so there's nothing left parked to reply to), fall back to the v1
+  # path: deliver the answer as a brand-new session message instead.
+  defp deliver_tool_result(conn, run, params) do
+    if run.pending_tool_call["hold_expired"] do
+      deliver_tool_result_via_message(conn, run, params)
+    else
+      deliver_tool_result_realtime(conn, run, params)
+    end
+  end
+
+  defp deliver_tool_result_realtime(conn, run, params) do
+    tool_call = run.pending_tool_call
+    merged_pending_tool_call = Map.merge(tool_call, answer_fields(params))
+
+    case HubRPC.update_api_run(run, %{pending_tool_call: merged_pending_tool_call}) do
+      {:ok, run} ->
+        Phoenix.PubSub.broadcast(
+          OrcaHub.PubSub,
+          api_run_topic(run.id),
+          {:client_tool_result, run.id, tool_call["id"], answer_payload(params)}
+        )
+
+        conn
+        |> put_status(202)
+        |> json(%{run_id: run.id, session_id: run.session_id, status: "running"})
+
+      {:error, changeset} ->
+        conn
+        |> put_status(422)
+        |> json(%{error: "invalid parameters", details: changeset_errors(changeset)})
+    end
+  end
+
   # Reuses deliver_continuation/5's exact revive/error handling — resuming a
   # run after an answered tool call is the same "wake up and deliver a
   # message" operation a continuation's initial delivery is.
-  defp deliver_tool_result(conn, run, params) do
+  defp deliver_tool_result_via_message(conn, run, params) do
     tool_call = run.pending_tool_call
     session = run.session
     runner_node = Cluster.runner_node_for(session)
@@ -572,6 +612,24 @@ defmodule OrcaHubWeb.ApiRunController do
       "```json\n#{result_json}\n```\n\nContinue the task."
   end
 
+  defp answer_fields(%{"error" => error}) when is_binary(error) and error != "" do
+    %{"error" => error}
+  end
+
+  defp answer_fields(params), do: %{"result" => Map.get(params, "result")}
+
+  defp answer_payload(%{"error" => error}) when is_binary(error) and error != "" do
+    {:error, error}
+  end
+
+  defp answer_payload(params), do: {:ok, Map.get(params, "result")}
+
+  # Must match OrcaHub.MCP.Server's api_run_topic/1 exactly — Phoenix.PubSub
+  # auto-distributes across nodes, so the caller-facing hub and the
+  # session's (possibly agent-node) MCP.Server never need direct rpc to
+  # signal each other.
+  defp api_run_topic(run_id), do: "api_run:#{run_id}"
+
   # ---------------------------------------------------------------------
   # Response shaping
   # ---------------------------------------------------------------------
@@ -598,6 +656,14 @@ defmodule OrcaHubWeb.ApiRunController do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  # `pending_tool_call` grows internal bookkeeping fields once an answer is
+  # in flight (`result`/`error`) or the hold has timed out (`hold_expired`,
+  # see MCP.Server) — none of that is part of the documented `tool_call`
+  # shape (docs/api.md: `{"id", "name", "arguments"}`), so it's stripped
+  # here rather than leaking implementation detail into the poll response.
+  defp caller_tool_call(nil), do: nil
+  defp caller_tool_call(pending), do: Map.take(pending, ["id", "name", "arguments"])
 
   defp changeset_errors(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->

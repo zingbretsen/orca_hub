@@ -224,10 +224,11 @@ agent direct network/tool access.
   calling it.
 - **When the model calls one**: the run moves to
   `status: "awaiting_tool_result"` and the call is exposed via `GET
-  /api/v1/runs/:id` as `tool_call: {"id", "name", "arguments"}`. The tool
-  call itself returns a normal (non-error) MCP result telling the model the
-  call was forwarded and to end its turn — the actual answer arrives later,
-  as a new user-turn message, once you post the result back.
+  /api/v1/runs/:id` as `tool_call: {"id", "name", "arguments"}`. The
+  underlying `tools/call` request from the agent is held open server-side
+  (it does **not** get an immediate reply) — this is invisible to you as the
+  caller; it only changes how the answer gets back to the model, not
+  anything about this API's request/response shapes.
 - **One at a time**: if the model calls a second client tool before you've
   answered the first (e.g. two tool calls in the same turn), only the first
   is recorded — the second gets an MCP error result telling the model to
@@ -242,12 +243,30 @@ agent direct network/tool access.
   ```
   `tool_call_id` must match the run's current pending call
   (`409` if it doesn't, or if the run isn't currently
-  `awaiting_tool_result`). On success, the run's status returns to
-  `running`, the result (or error) is delivered into the session as a new
-  message ("Result of your `<name>` tool call (id `<id>`): ...\n\nContinue
-  the task."), and the response is `202 {"run_id", "session_id",
-  "status": "running"}` — poll `GET /api/v1/runs/:id` again from there,
-  exactly like after the initial `POST`.
+  `awaiting_tool_result`). The response is always `202 {"run_id",
+  "session_id", "status": "running"}` — poll `GET /api/v1/runs/:id` again
+  from there, exactly like after the initial `POST`. What happens to the
+  agent depends on timing:
+  - **Usually** (you answered before the hold timed out — see below): your
+    `result`/`error` is delivered as the tool call's actual return value,
+    **within the model's same turn** — the held `tools/call` request
+    resolves right there, and the model continues from that tool result
+    exactly like a normal, synchronously-executed tool call.
+  - **If the hold already timed out** (you took too long — the model has
+    since been told to end its turn, so there's no longer a held request to
+    answer): falls back to v1 behavior — the result is delivered into the
+    session as a **new** message ("Result of your `<name>` tool call (id
+    `<id>`): ...\n\nContinue the task."), waking the session back up for a
+    fresh turn. From your side as the caller this looks identical (`202`
+    then poll) either way; only the agent-facing mechanics differ.
+  - The hold budget defaults to the run's own remaining `timeout_seconds`
+    (capped at 10 minutes) — in practice, only a caller that's slow to
+    answer (or offline) hits the fallback.
+- **Restarts / retries**: if the connection holding a call open is
+  interrupted (e.g. a node restart) before you've answered, the agent CLI
+  will typically retry the identical tool call — that retry is matched
+  against the **same** pending call (same `tool_call_id`) rather than
+  creating a new one you'd have to answer twice.
 - **v1 restriction**: `client_tools` is only supported on **new** sessions,
   not continuations (`session_id`) — `400` if both are given. A
   continuation's MCP connection flag and cached tool list are baked in at

@@ -104,7 +104,7 @@ defmodule OrcaHub.Backend.Claude do
     %{
       executable: claude_path,
       args: args,
-      env: session_env(node_oauth_env(), ctx.project_id),
+      env: session_env(node_oauth_env() ++ client_tool_timeout_env(ctx), ctx.project_id),
       port_opts: port_opts,
       framing: :ndjson
     }
@@ -137,7 +137,7 @@ defmodule OrcaHub.Backend.Claude do
     %{
       executable: script_path,
       args: script_args,
-      env: session_env(node_oauth_env(), ctx.project_id),
+      env: session_env(node_oauth_env() ++ client_tool_timeout_env(ctx), ctx.project_id),
       port_opts: port_opts,
       framing: :ndjson
     }
@@ -171,6 +171,35 @@ defmodule OrcaHub.Backend.Claude do
     # Token lookup must never block opening a session port. If the hub is
     # briefly unreachable, fall back to the node's own credentials.
     _ -> []
+  end
+
+  # Client (frontend) tool calls (docs/api.md) may sit parked server-side for
+  # up to OrcaHub.MCP.Server.client_tool_hold_cap_ms/0 waiting on
+  # `POST /api/v1/runs/:id/tool_result` — the Claude CLI's own client-side
+  # per-tool-call timeout (`MCP_TOOL_TIMEOUT`, milliseconds; verified present
+  # in the installed CLI binary's own `--help`/env-var listing) defaults far
+  # below that and would otherwise error the tool call out from under the
+  # model before the server-side hold ever gets a chance to resolve it. Sized
+  # to whichever is larger of the run's own `timeout_seconds` (the run can't
+  # meaningfully outlive its own overall budget anyway) or the hold cap plus
+  # a buffer, so the CLI never gives up before the server does.
+  @mcp_tool_timeout_buffer_ms 30_000
+
+  defp client_tool_timeout_env(ctx) do
+    if Map.get(ctx, :client_tools?) == true do
+      [{~c"MCP_TOOL_TIMEOUT", Integer.to_charlist(mcp_tool_timeout_ms(ctx))}]
+    else
+      []
+    end
+  end
+
+  defp mcp_tool_timeout_ms(ctx) do
+    timeout_seconds_budget_ms = (Map.get(ctx, :api_run_timeout_seconds) || 0) * 1000
+
+    hold_cap_with_buffer_ms =
+      OrcaHub.MCP.Server.client_tool_hold_cap_ms() + @mcp_tool_timeout_buffer_ms
+
+    max(timeout_seconds_budget_ms, hold_cap_with_buffer_ms)
   end
 
   # `extra` (the OAuth token tuple, when present) is always layered AFTER the

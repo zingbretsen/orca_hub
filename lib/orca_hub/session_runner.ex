@@ -34,13 +34,21 @@ defmodule OrcaHub.SessionRunner do
   # ctx.api_run? (either one) gates the MCP connection's api_run surface as
   # a whole, while the individual flags gate content that's only true of
   # ONE of the two (e.g. the submit_result system-prompt fragment).
+  # `timeout_seconds` is threaded through too so a client_tools session's
+  # spawn can size its client-side MCP tool-call timeout to comfortably
+  # exceed the server's own hold budget for a parked tool call — see
+  # OrcaHub.Backend.Claude.
   defp api_run_flags(init_data, session_id) do
     case db_call(init_data, :get_run_by_session_id, [session_id]) do
-      %{result_schema: schema, client_tools: tools} ->
-        %{result_schema?: is_map(schema), client_tools?: is_list(tools) and tools != []}
+      %{result_schema: schema, client_tools: tools, timeout_seconds: timeout_seconds} ->
+        %{
+          result_schema?: is_map(schema),
+          client_tools?: is_list(tools) and tools != [],
+          timeout_seconds: timeout_seconds
+        }
 
       nil ->
-        %{result_schema?: false, client_tools?: false}
+        %{result_schema?: false, client_tools?: false, timeout_seconds: nil}
     end
   end
 
@@ -230,6 +238,7 @@ defmodule OrcaHub.SessionRunner do
       api_run?: api_run_flags.result_schema? or api_run_flags.client_tools?,
       result_schema?: api_run_flags.result_schema?,
       client_tools?: api_run_flags.client_tools?,
+      api_run_timeout_seconds: api_run_flags.timeout_seconds,
       commit_trailer: commit_trailer?(init_data, session.project_id),
       db_node: db_node,
       # Phase 1 (backend_abstraction_spec.md §4/§5): resolve from the

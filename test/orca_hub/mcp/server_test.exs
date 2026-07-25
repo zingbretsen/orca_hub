@@ -26,6 +26,16 @@ defmodule OrcaHub.MCP.ServerTest do
     }
   }
 
+  @time_tool %{
+    "name" => "get_time",
+    "description" => "Look up the current local time for a city.",
+    "input_schema" => %{
+      "type" => "object",
+      "properties" => %{"city" => %{"type" => "string"}},
+      "required" => ["city"]
+    }
+  }
+
   defp start_api_run_connection(schema) do
     {:ok, session} =
       Sessions.create_session(%{
@@ -73,6 +83,60 @@ defmodule OrcaHub.MCP.ServerTest do
 
   defp result_text(response) do
     response["result"]["content"] |> hd() |> Map.get("text")
+  end
+
+  # A parked client tool call defers its JSON-RPC reply (see
+  # OrcaHub.MCP.Server's "Client tool call parking" section) — calling it
+  # via the plain synchronous `call_tool/3` helper would hang the test
+  # process until it's resolved, so tests that expect to park run it in a
+  # separate Task instead and resolve/await it explicitly.
+  defp async_call_tool(mcp_session_id, name, arguments) do
+    Task.async(fn -> call_tool(mcp_session_id, name, arguments) end)
+  end
+
+  # Simulates ApiRunController's real-time resolution broadcast (see
+  # deliver_tool_result_realtime/3) directly, without going through the HTTP
+  # layer or persisting the answer into pending_tool_call first — sufficient
+  # for exercising MCP.Server's OWN broadcast-handling in isolation, since
+  # `clear_pending_and_resume/2` only reads the DB to confirm the id still
+  # matches, not to fetch the answer (that comes from `payload` here).
+  defp resolve_via_broadcast(run_id, tool_call_id, payload) do
+    Phoenix.PubSub.broadcast(
+      OrcaHub.PubSub,
+      "api_run:#{run_id}",
+      {:client_tool_result, run_id, tool_call_id, payload}
+    )
+  end
+
+  defp wait_for_pending(run_id, attempts \\ 100) do
+    case ApiRuns.get_run(run_id).pending_tool_call do
+      nil when attempts > 0 ->
+        Process.sleep(5)
+        wait_for_pending(run_id, attempts - 1)
+
+      pending ->
+        pending
+    end
+  end
+
+  # MCP.Server replies to a parked caller BEFORE persisting the DB-side
+  # clear/expiry (see resolve_parked/3, handle_info :client_tool_hold_timeout)
+  # — deliberately, so the model isn't stalled on that write. That means
+  # `Task.await/1` returning doesn't guarantee the DB write has landed yet;
+  # assertions on `ApiRuns.get_run/1` right after need to poll briefly rather
+  # than assume the write already happened.
+  defp wait_until(fun, attempts \\ 100) do
+    case fun.() do
+      truthy when truthy not in [nil, false] ->
+        truthy
+
+      _falsy when attempts > 0 ->
+        Process.sleep(5)
+        wait_until(fun, attempts - 1)
+
+      falsy ->
+        falsy
+    end
   end
 
   describe "tools/list — api_run connection" do
@@ -274,46 +338,168 @@ defmodule OrcaHub.MCP.ServerTest do
   end
 
   describe "tools/call — client_tools (docs/api.md, AG-UI-style frontend tools)" do
-    test "recording a call parks it as pending_tool_call and moves the run to awaiting_tool_result" do
+    test "parks the call: pending_tool_call recorded, run moves to awaiting_tool_result, and the " <>
+           "tools/call reply stays open until resolved" do
       %{mcp_session_id: mcp_session_id, run: run} = start_client_tools_connection([@weather_tool])
 
-      response = call_tool(mcp_session_id, "get_weather", %{"city" => "Boston"})
-
-      assert response["result"]["isError"] == false
-      text = result_text(response)
-      assert text =~ "get_weather"
-      assert text =~ "END YOUR TURN"
-
-      reloaded = ApiRuns.get_run(run.id)
-      assert reloaded.status == "awaiting_tool_result"
+      task = async_call_tool(mcp_session_id, "get_weather", %{"city" => "Boston"})
+      pending = wait_for_pending(run.id)
 
       assert %{"name" => "get_weather", "arguments" => %{"city" => "Boston"}, "id" => id} =
-               reloaded.pending_tool_call
+               pending
 
       assert is_binary(id)
+      assert ApiRuns.get_run(run.id).status == "awaiting_tool_result"
+
+      # Still parked — no reply yet.
+      refute Task.yield(task, 50)
+
+      resolve_via_broadcast(run.id, id, {:ok, %{"conditions" => "sunny"}})
+      response = Task.await(task)
+
+      assert response["result"]["isError"] == false
+      assert result_text(response) =~ "sunny"
+
+      reloaded =
+        wait_until(fn ->
+          ApiRuns.get_run(run.id).status == "running" && ApiRuns.get_run(run.id)
+        end)
+
+      assert reloaded.pending_tool_call == nil
+    end
+
+    test "an error answer resolves the parked call with an MCP error result" do
+      %{mcp_session_id: mcp_session_id, run: run} = start_client_tools_connection([@weather_tool])
+
+      task = async_call_tool(mcp_session_id, "get_weather", %{"city" => "Boston"})
+      %{"id" => id} = wait_for_pending(run.id)
+
+      resolve_via_broadcast(run.id, id, {:error, "city not found"})
+      response = Task.await(task)
+
+      assert response["result"]["isError"] == true
+      assert result_text(response) =~ "city not found"
+      assert wait_until(fn -> ApiRuns.get_run(run.id).pending_tool_call == nil end)
     end
 
     test "wrapped (non-object) input_schema: unwraps to the raw shape before storing arguments" do
       tool = %{@weather_tool | "input_schema" => %{"type" => "string"}}
       %{mcp_session_id: mcp_session_id, run: run} = start_client_tools_connection([tool])
 
-      call_tool(mcp_session_id, "get_weather", %{"result" => "Boston"})
+      task = async_call_tool(mcp_session_id, "get_weather", %{"result" => "Boston"})
+      pending = wait_for_pending(run.id)
+      assert pending["arguments"] == "Boston"
 
-      reloaded = ApiRuns.get_run(run.id)
-      assert reloaded.pending_tool_call["arguments"] == "Boston"
+      resolve_via_broadcast(run.id, pending["id"], {:ok, nil})
+      Task.await(task)
     end
 
-    test "a second frontend tool call while one is pending is rejected — only the first is recorded" do
+    test "a second call for the SAME tool name while one is parked re-parks against the existing " <>
+           "pending call instead of creating a duplicate" do
       %{mcp_session_id: mcp_session_id, run: run} = start_client_tools_connection([@weather_tool])
 
-      call_tool(mcp_session_id, "get_weather", %{"city" => "Boston"})
-      response = call_tool(mcp_session_id, "get_weather", %{"city" => "Denver"})
+      task1 = async_call_tool(mcp_session_id, "get_weather", %{"city" => "Boston"})
+      pending = wait_for_pending(run.id)
+
+      task2 = async_call_tool(mcp_session_id, "get_weather", %{"city" => "Boston"})
+      # Parked too (not an immediate error) — and no NEW pending call was created.
+      refute Task.yield(task2, 100)
+      assert ApiRuns.get_run(run.id).pending_tool_call["id"] == pending["id"]
+
+      resolve_via_broadcast(run.id, pending["id"], {:ok, %{"conditions" => "sunny"}})
+
+      assert result_text(Task.await(task1)) =~ "sunny"
+      assert result_text(Task.await(task2)) =~ "sunny"
+    end
+
+    test "a call for a DIFFERENT tool name while one is parked gets the one-at-a-time error" do
+      %{mcp_session_id: mcp_session_id, run: run} =
+        start_client_tools_connection([@weather_tool, @time_tool])
+
+      task = async_call_tool(mcp_session_id, "get_weather", %{"city" => "Boston"})
+      %{"id" => id} = wait_for_pending(run.id)
+
+      response = call_tool(mcp_session_id, "get_time", %{"city" => "Boston"})
 
       assert response["result"]["isError"] == true
       assert result_text(response) =~ "Call one frontend tool at a time"
+      assert result_text(response) =~ "get_weather"
+
+      resolve_via_broadcast(run.id, id, {:ok, %{}})
+      Task.await(task)
+    end
+
+    test "restart mid-hold: a fresh connection re-parks against an existing unanswered " <>
+           "pending_tool_call instead of creating a duplicate" do
+      %{run: run} = start_client_tools_connection([@weather_tool])
+
+      {:ok, run} =
+        ApiRuns.update_run(run, %{
+          status: "awaiting_tool_result",
+          pending_tool_call: %{
+            "id" => "call-existing",
+            "name" => "get_weather",
+            "arguments" => %{"city" => "Boston"}
+          }
+        })
+
+      {:ok, mcp_session_id} = Server.start_session(orca_session_id: run.session_id, api_run: true)
+      on_exit(fn -> Server.stop_session(mcp_session_id) end)
+
+      task = async_call_tool(mcp_session_id, "get_weather", %{"city" => "Boston"})
+      refute Task.yield(task, 100)
+      assert ApiRuns.get_run(run.id).pending_tool_call["id"] == "call-existing"
+
+      resolve_via_broadcast(run.id, "call-existing", {:ok, %{"conditions" => "sunny"}})
+      assert result_text(Task.await(task)) =~ "sunny"
+    end
+
+    test "restart mid-hold: an existing pending call already answered before anyone re-parked " <>
+           "resolves immediately, without parking" do
+      %{run: run} = start_client_tools_connection([@weather_tool])
+
+      {:ok, run} =
+        ApiRuns.update_run(run, %{
+          status: "awaiting_tool_result",
+          pending_tool_call: %{
+            "id" => "call-existing",
+            "name" => "get_weather",
+            "arguments" => %{"city" => "Boston"},
+            "result" => %{"conditions" => "cloudy"}
+          }
+        })
+
+      {:ok, mcp_session_id} = Server.start_session(orca_session_id: run.session_id, api_run: true)
+      on_exit(fn -> Server.stop_session(mcp_session_id) end)
+
+      response = call_tool(mcp_session_id, "get_weather", %{"city" => "Boston"})
+      assert result_text(response) =~ "cloudy"
 
       reloaded = ApiRuns.get_run(run.id)
-      assert reloaded.pending_tool_call["arguments"] == %{"city" => "Boston"}
+      assert reloaded.status == "running"
+      assert reloaded.pending_tool_call == nil
+    end
+
+    test "hold timeout: replies with the v1 placeholder and marks the pending call hold_expired " <>
+           "(not cleared) instead of resolving it" do
+      Application.put_env(:orca_hub, :api_run_tool_hold_cap_ms, 30)
+      on_exit(fn -> Application.delete_env(:orca_hub, :api_run_tool_hold_cap_ms) end)
+
+      %{mcp_session_id: mcp_session_id, run: run} = start_client_tools_connection([@weather_tool])
+
+      task = async_call_tool(mcp_session_id, "get_weather", %{"city" => "Boston"})
+      response = Task.await(task, 2_000)
+
+      assert response["result"]["isError"] == false
+      assert result_text(response) =~ "END YOUR TURN"
+
+      reloaded =
+        wait_until(fn ->
+          ApiRuns.get_run(run.id).pending_tool_call["hold_expired"] && ApiRuns.get_run(run.id)
+        end)
+
+      assert reloaded.status == "awaiting_tool_result"
+      assert is_binary(reloaded.pending_tool_call["id"])
     end
 
     test "an unknown tool name is rejected, mentioning the available client tools + submit_result" do

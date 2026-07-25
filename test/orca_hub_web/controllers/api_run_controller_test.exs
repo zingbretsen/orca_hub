@@ -817,7 +817,14 @@ defmodule OrcaHubWeb.ApiRunControllerTest do
     end
   end
 
-  describe "POST /api/v1/runs/:id/tool_result" do
+  # This describe block covers the v1 message-delivery FALLBACK path: no live
+  # MCP.Server is parked for these runs (`pending_tool_call` is written
+  # directly, never via an actual `tools/call`), which is exactly the state
+  # a run is left in once OrcaHub.MCP.Server's hold has timed out and marked
+  # `hold_expired` — see docs/api.md's "Client (frontend) tools" and the
+  # "real-time resolution via a live MCP.Server" describe block below for the
+  # (now primary) mid-turn path.
+  describe "POST /api/v1/runs/:id/tool_result — v1 fallback (hold already expired)" do
     setup %{conn: conn} do
       Application.put_env(:orca_hub, :claude_executable, @claude_stub)
       on_exit(fn -> Application.delete_env(:orca_hub, :claude_executable) end)
@@ -840,7 +847,8 @@ defmodule OrcaHubWeb.ApiRunControllerTest do
       tool_call = %{
         "id" => "call-1",
         "name" => "get_weather",
-        "arguments" => %{"city" => "Boston"}
+        "arguments" => %{"city" => "Boston"},
+        "hold_expired" => true
       }
 
       {:ok, run} =
@@ -938,7 +946,8 @@ defmodule OrcaHubWeb.ApiRunControllerTest do
       assert reloaded.pending_tool_call == %{
                "id" => "call-1",
                "name" => "get_weather",
-               "arguments" => %{"city" => "Boston"}
+               "arguments" => %{"city" => "Boston"},
+               "hold_expired" => true
              }
     end
 
@@ -978,6 +987,221 @@ defmodule OrcaHubWeb.ApiRunControllerTest do
         })
 
       assert json_response(conn, 404)
+    end
+  end
+
+  # The (now primary) mid-turn path: a REAL OrcaHub.MCP.Server holds the
+  # `tools/call` JSON-RPC reply open (see OrcaHub.MCP.Server's "Client tool
+  # call parking" section) until this POST answers it — no session chat
+  # message is ever sent for this path, unlike the v1 fallback above.
+  describe "POST /api/v1/runs/:id/tool_result — real-time resolution via a live MCP.Server" do
+    setup %{conn: conn} do
+      Application.put_env(:orca_hub, :claude_executable, @claude_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :claude_executable) end)
+
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "api_run_tool_result_live_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, session} =
+        Sessions.create_session(%{directory: dir, runner_node: Atom.to_string(node())})
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+
+      {:ok, run} =
+        ApiRuns.create_run(%{
+          session_id: session.id,
+          client_tools: [
+            %{
+              "name" => "get_weather",
+              "description" => "Look up the weather.",
+              "input_schema" => %{"type" => "object"}
+            }
+          ]
+        })
+
+      {:ok, mcp_session_id} =
+        OrcaHub.MCP.Server.start_session(orca_session_id: session.id, api_run: true)
+
+      on_exit(fn -> OrcaHub.MCP.Server.stop_session(mcp_session_id) end)
+
+      %{conn: authed(conn), session: session, run: run, mcp_session_id: mcp_session_id}
+    end
+
+    # Parks a `get_weather` call in a background Task (a parked tools/call
+    # defers its reply, so calling it synchronously would hang the test) and
+    # waits for `pending_tool_call` to land.
+    defp park_get_weather(mcp_session_id, run_id) do
+      task =
+        Task.async(fn ->
+          OrcaHub.MCP.Server.handle_jsonrpc(mcp_session_id, %{
+            "method" => "tools/call",
+            "id" => 1,
+            "params" => %{"name" => "get_weather", "arguments" => %{"city" => "Boston"}}
+          })
+        end)
+
+      {task, wait_for_pending(run_id)}
+    end
+
+    defp wait_for_pending(run_id, attempts \\ 100) do
+      case ApiRuns.get_run(run_id).pending_tool_call do
+        nil when attempts > 0 ->
+          Process.sleep(5)
+          wait_for_pending(run_id, attempts - 1)
+
+        pending ->
+          pending
+      end
+    end
+
+    # See OrcaHub.MCP.Server's resolve_parked/3: it replies to the parked
+    # caller BEFORE persisting the DB-side clear, so `Task.await/1` returning
+    # doesn't guarantee the write has landed yet.
+    defp wait_until(fun, attempts \\ 100) do
+      case fun.() do
+        truthy when truthy not in [nil, false] ->
+          truthy
+
+        _falsy when attempts > 0 ->
+          Process.sleep(5)
+          wait_until(fun, attempts - 1)
+
+        falsy ->
+          falsy
+      end
+    end
+
+    test "resolves the parked tools/call with the caller's result, mid-turn — no chat message is sent",
+         %{conn: conn, session: session, run: run, mcp_session_id: mcp_session_id} do
+      {task, pending} = park_get_weather(mcp_session_id, run.id)
+      assert ApiRuns.get_run(run.id).status == "awaiting_tool_result"
+
+      conn =
+        post(conn, ~p"/api/v1/runs/#{run.id}/tool_result", %{
+          "tool_call_id" => pending["id"],
+          "result" => %{"conditions" => "sunny", "temp_f" => 72}
+        })
+
+      body = json_response(conn, 202)
+      assert body["status"] == "running"
+      assert body["run_id"] == run.id
+      assert body["session_id"] == session.id
+
+      response = Task.await(task)
+      assert response["result"]["isError"] == false
+      text = response["result"]["content"] |> hd() |> Map.get("text")
+      assert text =~ "sunny"
+      refute text =~ "END YOUR TURN"
+
+      reloaded =
+        wait_until(fn ->
+          ApiRuns.get_run(run.id).status == "running" && ApiRuns.get_run(run.id)
+        end)
+
+      assert reloaded.pending_tool_call == nil
+      # Unlike the v1 fallback, the answer went back through the SAME held
+      # tool call — no new session message was ever created for it.
+      assert Sessions.list_messages(session.id) == []
+    end
+
+    test "an error answer resolves the parked call with an MCP error result — no chat message is sent",
+         %{conn: conn, session: session, run: run, mcp_session_id: mcp_session_id} do
+      {task, pending} = park_get_weather(mcp_session_id, run.id)
+
+      conn =
+        post(conn, ~p"/api/v1/runs/#{run.id}/tool_result", %{
+          "tool_call_id" => pending["id"],
+          "error" => "city not found"
+        })
+
+      json_response(conn, 202)
+
+      response = Task.await(task)
+      assert response["result"]["isError"] == true
+      text = response["result"]["content"] |> hd() |> Map.get("text")
+      assert text =~ "city not found"
+
+      assert wait_until(fn -> ApiRuns.get_run(run.id).pending_tool_call == nil end)
+      assert Sessions.list_messages(session.id) == []
+    end
+
+    test "GET poll surfaces awaiting_tool_result + tool_call while the session's OWN status is " <>
+           "\"running\" (the CLI is blocked mid-turn on the held call)",
+         %{conn: conn, session: session, run: run, mcp_session_id: mcp_session_id} do
+      {task, pending} = park_get_weather(mcp_session_id, run.id)
+      {:ok, _} = Sessions.update_session(session, %{status: "running"})
+
+      conn = get(conn, ~p"/api/v1/runs/#{run.id}")
+      body = json_response(conn, 200)
+      assert body["status"] == "awaiting_tool_result"
+
+      assert body["tool_call"] == %{
+               "id" => pending["id"],
+               "name" => "get_weather",
+               "arguments" => %{"city" => "Boston"}
+             }
+
+      conn =
+        post(conn, ~p"/api/v1/runs/#{run.id}/tool_result", %{
+          "tool_call_id" => pending["id"],
+          "result" => %{}
+        })
+
+      json_response(conn, 202)
+      Task.await(task)
+    end
+
+    test "hold timeout: the model gets the v1 placeholder, then a LATE tool_result POST falls " <>
+           "back to v1 message delivery",
+         %{conn: conn, session: session, run: run, mcp_session_id: mcp_session_id} do
+      Application.put_env(:orca_hub, :api_run_tool_hold_cap_ms, 30)
+      on_exit(fn -> Application.delete_env(:orca_hub, :api_run_tool_hold_cap_ms) end)
+
+      {task, pending} = park_get_weather(mcp_session_id, run.id)
+
+      response = Task.await(task, 2_000)
+      assert response["result"]["isError"] == false
+      text = response["result"]["content"] |> hd() |> Map.get("text")
+      assert text =~ "END YOUR TURN"
+
+      reloaded =
+        wait_until(fn ->
+          run = ApiRuns.get_run(run.id)
+          run.pending_tool_call["hold_expired"] && run
+        end)
+
+      assert reloaded.status == "awaiting_tool_result"
+
+      # The caller answers LATE, after the hold already gave up — falls back
+      # to v1 message delivery exactly like the pre-rework behavior.
+      conn =
+        post(conn, ~p"/api/v1/runs/#{run.id}/tool_result", %{
+          "tool_call_id" => pending["id"],
+          "result" => %{"conditions" => "sunny", "temp_f" => 72}
+        })
+
+      body = json_response(conn, 202)
+      assert body["status"] == "running"
+
+      final_run = ApiRuns.get_run(run.id)
+      assert final_run.status == "running"
+      assert final_run.pending_tool_call == nil
+
+      messages = Sessions.list_messages(session.id)
+
+      last_text =
+        messages
+        |> List.last()
+        |> get_in([Access.key(:data), "message", "content", Access.at(0), "text"])
+
+      assert last_text =~ "sunny"
+      assert last_text =~ "Continue the task."
     end
   end
 end
