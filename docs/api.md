@@ -262,6 +262,16 @@ agent direct network/tool access.
   - The hold budget defaults to the run's own remaining `timeout_seconds`
     (capped at 10 minutes) — in practice, only a caller that's slow to
     answer (or offline) hits the fallback.
+- **Duplicate answers / 409**: a second `POST .../tool_result` for the
+  **same** `tool_call_id` while your first answer is still being consumed
+  is a no-op `202` ack, not an error — safe to retry blindly. `GET
+  /api/v1/runs/:id` also stops showing `tool_call` the instant your answer
+  lands, even before the agent has consumed it, so a poll-driven caller
+  won't re-dispatch the same call in the first place. You can still see a
+  genuine `409` if a stale POST arrives well after the call was fully
+  consumed (run has since moved on, e.g. to a **new** pending call or past
+  `awaiting_tool_result` entirely) — treat that as "already handled, resume
+  polling," not a failure.
 - **Restarts / retries**: if the connection holding a call open is
   interrupted (e.g. a node restart) before you've answered, the agent CLI
   will typically retry the identical tool call — that retry is matched

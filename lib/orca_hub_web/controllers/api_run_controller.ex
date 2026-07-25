@@ -314,11 +314,24 @@ defmodule OrcaHubWeb.ApiRunController do
   # Timeout still wins over an unanswered tool call, same as any other
   # in-progress run.
   defp advance_and_render(conn, %{status: "awaiting_tool_result"} = run) do
-    if timed_out?(run) do
-      {:ok, run} = HubRPC.update_api_run(run, %{status: "timed_out"})
-      render_run(conn, run)
-    else
-      render_run(conn, run, tool_call: caller_tool_call(run.pending_tool_call))
+    cond do
+      timed_out?(run) ->
+        {:ok, run} = HubRPC.update_api_run(run, %{status: "timed_out"})
+        render_run(conn, run)
+
+      tool_call_answered?(run.pending_tool_call) ->
+        # The caller's answer already landed in `pending_tool_call` (POST
+        # /tool_result merged it — see deliver_tool_result_realtime/3) but
+        # the parked MCP.Server hasn't consumed it yet (PubSub broadcast in
+        # flight, or just slow). Rendering the tool_call here would let an
+        # overlapping poll/handler loop see it as still-unanswered and
+        # re-dispatch/double-POST the same answer, which then 409s once
+        # consumption does land a moment later. Render as in_progress with
+        # no tool_call instead — closes that window entirely.
+        render_run(conn, run, session_status: run.session.status, status_override: "in_progress")
+
+      true ->
+        render_run(conn, run, tool_call: caller_tool_call(run.pending_tool_call))
     end
   end
 
@@ -330,6 +343,12 @@ defmodule OrcaHubWeb.ApiRunController do
       advance_running(conn, run, run.session)
     end
   end
+
+  # Shared with POST /tool_result's duplicate-answer idempotency check below
+  # — both sides key off the same "has this pending call already been
+  # answered" question (docs/api.md's "Duplicate answers / 409" note).
+  defp tool_call_answered?(pending),
+    do: Map.has_key?(pending, "result") or Map.has_key?(pending, "error")
 
   defp timed_out?(run) do
     inserted_at = DateTime.from_naive!(run.inserted_at, "Etc/UTC")
@@ -547,11 +566,40 @@ defmodule OrcaHubWeb.ApiRunController do
   # turn, so there's nothing left parked to reply to), fall back to the v1
   # path: deliver the answer as a brand-new session message instead.
   defp deliver_tool_result(conn, run, params) do
-    if run.pending_tool_call["hold_expired"] do
-      deliver_tool_result_via_message(conn, run, params)
-    else
-      deliver_tool_result_realtime(conn, run, params)
+    cond do
+      tool_call_answered?(run.pending_tool_call) ->
+        ack_duplicate_tool_result(conn, run)
+
+      run.pending_tool_call["hold_expired"] ->
+        deliver_tool_result_via_message(conn, run, params)
+
+      true ->
+        deliver_tool_result_realtime(conn, run, params)
     end
+  end
+
+  # A duplicate POST for the same tool_call_id, arriving after an earlier
+  # POST already merged an answer into `pending_tool_call` but before the
+  # parked MCP.Server consumed it (see deliver_tool_result_realtime/3 and
+  # tool_call_answered?/1's GET-side counterpart above) — e.g. the caller's
+  # own request timed out and it retried, landing a second copy of the same
+  # answer. The FIRST POST already did the real work; treat this one as a
+  # no-op ack rather than re-merging (which would be harmless but pointless)
+  # or 409ing (which is what used to happen once consumption raced ahead —
+  # docs/api.md's "Duplicate answers / 409" note). Re-broadcasting is
+  # harmless — MCP.Server ignores it once the call is no longer parked — and
+  # rescues a missed FIRST broadcast faster than the belt-and-braces poll.
+  defp ack_duplicate_tool_result(conn, run) do
+    Phoenix.PubSub.broadcast(
+      OrcaHub.PubSub,
+      api_run_topic(run.id),
+      {:client_tool_result, run.id, run.pending_tool_call["id"],
+       answer_payload(run.pending_tool_call)}
+    )
+
+    conn
+    |> put_status(202)
+    |> json(%{run_id: run.id, session_id: run.session_id, status: "running"})
   end
 
   defp deliver_tool_result_realtime(conn, run, params) do

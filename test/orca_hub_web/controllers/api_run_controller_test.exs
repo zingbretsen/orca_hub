@@ -790,6 +790,59 @@ defmodule OrcaHubWeb.ApiRunControllerTest do
       assert reloaded.status == "awaiting_tool_result"
     end
 
+    test "renders in_progress with no tool_call once the pending call has already been " <>
+           "answered (merged but not yet consumed by MCP.Server)",
+         %{conn: conn, session: session} do
+      {:ok, session} = Sessions.update_session(session, %{status: "running"})
+
+      tool_call = %{
+        "id" => "call-1",
+        "name" => "get_weather",
+        "arguments" => %{"city" => "Boston"},
+        "result" => %{"conditions" => "sunny"}
+      }
+
+      {:ok, run} =
+        ApiRuns.create_run(%{
+          session_id: session.id,
+          status: "awaiting_tool_result",
+          pending_tool_call: tool_call
+        })
+
+      conn = get(conn, ~p"/api/v1/runs/#{run.id}")
+      body = json_response(conn, 200)
+      assert body["status"] == "in_progress"
+      assert body["session_status"] == "running"
+      refute Map.has_key?(body, "tool_call")
+
+      reloaded = ApiRuns.get_run(run.id)
+      assert reloaded.status == "awaiting_tool_result"
+      assert reloaded.pending_tool_call == tool_call
+    end
+
+    test "renders in_progress with no tool_call once the pending call has an error answer " <>
+           "(merged but not yet consumed)",
+         %{conn: conn, session: session} do
+      tool_call = %{
+        "id" => "call-1",
+        "name" => "get_weather",
+        "arguments" => %{},
+        "error" => "city not found"
+      }
+
+      {:ok, run} =
+        ApiRuns.create_run(%{
+          session_id: session.id,
+          status: "awaiting_tool_result",
+          pending_tool_call: tool_call
+        })
+
+      conn = get(conn, ~p"/api/v1/runs/#{run.id}")
+      body = json_response(conn, 200)
+      assert body["status"] == "in_progress"
+      refute Map.has_key?(body, "tool_call")
+    end
+
     test "timeout still wins over an unanswered awaiting_tool_result run", %{
       conn: conn,
       session: session
@@ -1202,6 +1255,87 @@ defmodule OrcaHubWeb.ApiRunControllerTest do
 
       assert last_text =~ "sunny"
       assert last_text =~ "Continue the task."
+    end
+  end
+
+  # A duplicate POST for the SAME tool_call_id landing after the first one
+  # already merged an answer into pending_tool_call but before that answer's
+  # been consumed (no live MCP.Server needed here — the pending_tool_call is
+  # written directly with the answer already merged, exactly the state a
+  # first POST leaves behind).
+  describe "POST /api/v1/runs/:id/tool_result — duplicate answer idempotency" do
+    setup %{conn: conn} do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "api_run_tool_result_dup_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, session} =
+        Sessions.create_session(%{directory: dir, runner_node: Atom.to_string(node())})
+
+      tool_call = %{
+        "id" => "call-1",
+        "name" => "get_weather",
+        "arguments" => %{"city" => "Boston"},
+        "result" => %{"conditions" => "sunny", "temp_f" => 72}
+      }
+
+      {:ok, run} =
+        ApiRuns.create_run(%{
+          session_id: session.id,
+          status: "awaiting_tool_result",
+          pending_tool_call: tool_call
+        })
+
+      %{conn: authed(conn), session: session, run: run, tool_call: tool_call}
+    end
+
+    test "matching tool_call_id: 202 idempotent ack, no re-merge, broadcast re-emitted", %{
+      conn: conn,
+      run: run,
+      tool_call: tool_call
+    } do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "api_run:#{run.id}")
+
+      conn =
+        post(conn, ~p"/api/v1/runs/#{run.id}/tool_result", %{
+          "tool_call_id" => "call-1",
+          "result" => %{"conditions" => "rainy — should NOT overwrite"}
+        })
+
+      body = json_response(conn, 202)
+      assert body["status"] == "running"
+      assert body["run_id"] == run.id
+      assert body["session_id"] == run.session_id
+
+      assert_receive {:client_tool_result, run_id, "call-1",
+                      {:ok, %{"conditions" => "sunny", "temp_f" => 72}}}
+
+      assert run_id == run.id
+
+      # Not re-merged — still exactly the answer the (simulated) first POST
+      # left behind, not the second POST's body.
+      reloaded = ApiRuns.get_run(run.id)
+      assert reloaded.status == "awaiting_tool_result"
+      assert reloaded.pending_tool_call == tool_call
+    end
+
+    test "mismatched tool_call_id still 409s", %{conn: conn, run: run, tool_call: tool_call} do
+      conn =
+        post(conn, ~p"/api/v1/runs/#{run.id}/tool_result", %{
+          "tool_call_id" => "wrong-id",
+          "result" => %{}
+        })
+
+      body = json_response(conn, 409)
+      assert body["error"] =~ "does not match"
+
+      reloaded = ApiRuns.get_run(run.id)
+      assert reloaded.pending_tool_call == tool_call
     end
   end
 end
