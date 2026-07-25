@@ -126,6 +126,26 @@ config :orca_hub,
        :pgprov_api_url,
        System.get_env("PGPROV_API_URL") || "https://pgprov.lab.ingbretsenhome.com"
 
+# phx-app A2A bearer token — lets Tools.phx_list_agents/phx_send_to_agent/
+# phx_get_task (OrcaHub.MCP.Tools.PhxAgents) call phx-app's A2A JSON-RPC
+# surface on the session's behalf, so sessions never fetch/hold the token
+# themselves. Same rationale as PGPROV_API_TOKEN above: the MCP server for a
+# session runs on the session's own runner node, so this must be set on
+# every node (k3s pods + systemd hosts), not just the hub.
+config :orca_hub, :phx_app_a2a_token, System.get_env("PHX_APP_A2A_TOKEN")
+
+config :orca_hub,
+       :phx_app_a2a_url,
+       System.get_env("PHX_APP_A2A_URL") || "https://llm.lab.ingbretsenhome.com"
+
+# Gitea base URL + token for OrcaHub.MemoryGit's per-node agent-memory repo
+# snapshots (~/.claude/projects, ~/.codex/memories), pushed under the
+# "agent-memories" org. Both are soft-degrade: unset on a node just means
+# snapshots stay commit-only, local, no push (see OrcaHub.MemoryGit
+# moduledoc) — not every node has Gitea connectivity/creds yet.
+config :orca_hub, :gitea_url, System.get_env("ORCA_GITEA_URL")
+config :orca_hub, :gitea_token, System.get_env("ORCA_GITEA_TOKEN")
+
 # Upload sidecar running alongside playwright-mcp in its pod — lets code-exec
 # push a LOCAL (OrcaHub-node) file into that pod's own filesystem so
 # `browser_file_upload`/`browser_drop` (which read `paths` from the pod, not
