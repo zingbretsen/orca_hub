@@ -260,12 +260,17 @@ defmodule OrcaHub.Backend.Claude do
     # `Tools.*` surface would describe tools the model doesn't have — skip
     # them rather than mislead the model into calling something nonexistent.
     mcp = mcp_enabled?(ctx)
-    api_run = api_run_schema?(ctx)
+    api_run = api_run?(ctx)
     code_exec = mcp and OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
-    # An api_run connection's orca MCP server exposes ONLY submit_result (see
-    # MCP.Server) — no orchestrator/code-exec/sibling-session tools exist on
-    # it, so skip fragments that reference them even though mcp/1 is true.
+    # An api_run connection's orca MCP server exposes ONLY the api_run surface
+    # (submit_result and/or client tools — see MCP.Server) — no
+    # orchestrator/code-exec/sibling-session tools exist on it, so skip
+    # fragments that reference them even though mcp/1 is true.
     mcp_orchestration = mcp and not api_run
+    # submit_result only exists when the run actually has a result_schema —
+    # a client_tools-only run also sets api_run/mcp_orchestration above, but
+    # has no submit_result tool to steer the model toward.
+    result_schema = Map.get(ctx, :result_schema?) == true
 
     parts =
       [
@@ -282,7 +287,7 @@ defmodule OrcaHub.Backend.Claude do
         ),
         if(!ctx.orchestrator, do: ask_user_question_prompt()),
         if(mcp_orchestration, do: sibling_sessions_prompt(ctx.orchestrator, code_exec)),
-        if(api_run, do: submit_result_prompt()),
+        if(result_schema, do: submit_result_prompt()),
         SharedPrompts.context_files_prompt(ctx.directory)
       ]
       |> Enum.reject(&is_nil/1)
@@ -353,7 +358,7 @@ defmodule OrcaHub.Backend.Claude do
       "[MCP] mcp_config: baking orca_session_id=#{inspect(ctx.session_id)} " <>
         "orchestrator=#{ctx.orchestrator == true} " <>
         "code_exec=#{OrcaHub.MCP.CodeExec.enabled?(ctx.code_exec)} " <>
-        "api_run=#{api_run_schema?(ctx)} " <>
+        "api_run=#{api_run?(ctx)} " <>
         "into /mcp URL at port-open time"
     )
 
@@ -367,7 +372,7 @@ defmodule OrcaHub.Backend.Claude do
     # DIRECTLY into --mcp-config as their own top-level entries (the Claude CLI
     # talks to them independently of orca's own tools/list), so they must be
     # omitted here too, not just filtered out of orca's tool list.
-    scoped_servers = if api_run_schema?(ctx), do: %{}, else: scoped_mcp_servers(ctx)
+    scoped_servers = if api_run?(ctx), do: %{}, else: scoped_mcp_servers(ctx)
 
     Jason.encode!(%{"mcpServers" => Map.merge(scoped_servers, %{"orca" => orca_server})})
   end
@@ -425,9 +430,9 @@ defmodule OrcaHub.Backend.Claude do
   # the run's sole result channel — MCP stays wired up even under tools == ""
   # so submit_result is still reachable. See the Backend.mcp_enabled?/2 doc.
   @impl true
-  def mcp_enabled?(ctx), do: Map.get(ctx, :tools) != "" or api_run_schema?(ctx)
+  def mcp_enabled?(ctx), do: Map.get(ctx, :tools) != "" or api_run?(ctx)
 
-  defp api_run_schema?(ctx), do: Map.get(ctx, :api_run_schema?) == true
+  defp api_run?(ctx), do: Map.get(ctx, :api_run?) == true
 
   defp maybe_put_mcp_config(opts, ctx) do
     if mcp_enabled?(ctx) do

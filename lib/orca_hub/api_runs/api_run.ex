@@ -17,6 +17,11 @@ defmodule OrcaHub.ApiRuns.ApiRun do
     field :validation_attempts, :integer, default: 0
     field :max_validation_attempts, :integer, default: 3
     field :baseline_message_count, :integer, default: 0
+    # AG-UI-style client-defined ("frontend") tools (docs/api.md): tool
+    # definitions supplied by the caller at run creation, and the
+    # currently-outstanding call (if any) waiting on a caller-posted result.
+    field :client_tools, {:array, :map}
+    field :pending_tool_call, :map
 
     belongs_to :session, OrcaHub.Sessions.Session
 
@@ -35,10 +40,12 @@ defmodule OrcaHub.ApiRuns.ApiRun do
       :timeout_seconds,
       :validation_attempts,
       :max_validation_attempts,
-      :baseline_message_count
+      :baseline_message_count,
+      :client_tools,
+      :pending_tool_call
     ])
     |> validate_required([:session_id])
-    |> validate_inclusion(:status, ~w(running completed failed timed_out))
+    |> validate_inclusion(:status, ~w(running completed failed timed_out awaiting_tool_result))
     |> foreign_key_constraint(:session_id)
   end
 end

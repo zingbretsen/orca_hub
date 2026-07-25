@@ -191,6 +191,148 @@ defmodule OrcaHubWeb.ApiRunControllerTest do
     end
   end
 
+  describe "POST /api/v1/runs client_tools" do
+    setup do
+      Application.put_env(:orca_hub, :claude_executable, @claude_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :claude_executable) end)
+
+      dir =
+        Path.join(System.tmp_dir!(), "api_run_client_tools_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      %{dir: dir}
+    end
+
+    @weather_tool %{
+      "name" => "get_weather",
+      "description" => "Look up the current weather for a city.",
+      "input_schema" => %{
+        "type" => "object",
+        "properties" => %{"city" => %{"type" => "string"}},
+        "required" => ["city"]
+      }
+    }
+
+    test "valid client_tools is stored on the run and disables code_exec", %{conn: conn, dir: dir} do
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{
+          "prompt" => "what's the weather",
+          "directory" => dir,
+          "client_tools" => [@weather_tool]
+        })
+
+      body = json_response(conn, 202)
+      run = ApiRuns.get_run(body["run_id"])
+      assert run.client_tools == [@weather_tool]
+
+      session = Sessions.get_session!(body["session_id"])
+      assert session.code_exec == false
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+    end
+
+    test "combined with result_schema: both are stored (client tools + submit_result surface)", %{
+      conn: conn,
+      dir: dir
+    } do
+      schema = %{"type" => "object", "properties" => %{"answer" => %{"type" => "integer"}}}
+
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{
+          "prompt" => "hi",
+          "directory" => dir,
+          "client_tools" => [@weather_tool],
+          "result_schema" => schema
+        })
+
+      body = json_response(conn, 202)
+      run = ApiRuns.get_run(body["run_id"])
+      assert run.client_tools == [@weather_tool]
+      assert run.result_schema == schema
+
+      on_exit(fn -> stop_if_alive(body["session_id"]) end)
+    end
+
+    test "400 for an empty client_tools list", %{conn: conn, dir: dir} do
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{"prompt" => "hi", "directory" => dir, "client_tools" => []})
+
+      assert json_response(conn, 400)["error"] =~ "non-empty"
+    end
+
+    test "400 for duplicate tool names", %{conn: conn, dir: dir} do
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{
+          "prompt" => "hi",
+          "directory" => dir,
+          "client_tools" => [@weather_tool, @weather_tool]
+        })
+
+      assert json_response(conn, 400)["error"] =~ "unique"
+    end
+
+    test "400 for a tool named submit_result (reserved)", %{conn: conn, dir: dir} do
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{
+          "prompt" => "hi",
+          "directory" => dir,
+          "client_tools" => [%{@weather_tool | "name" => "submit_result"}]
+        })
+
+      assert json_response(conn, 400)["error"] =~ "reserved"
+    end
+
+    test "400 for a non-map input_schema", %{conn: conn, dir: dir} do
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{
+          "prompt" => "hi",
+          "directory" => dir,
+          "client_tools" => [%{@weather_tool | "input_schema" => "not a schema"}]
+        })
+
+      assert json_response(conn, 400)
+    end
+
+    test "400 when client_tools is combined with session_id (continuation not yet supported)", %{
+      conn: conn,
+      dir: dir
+    } do
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          status: "idle",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+
+      conn =
+        conn
+        |> authed()
+        |> post(~p"/api/v1/runs", %{
+          "prompt" => "hi",
+          "session_id" => session.id,
+          "client_tools" => [@weather_tool]
+        })
+
+      assert json_response(conn, 400)["error"] =~ "continuation"
+    end
+  end
+
   describe "POST /api/v1/runs continuation (session_id)" do
     setup do
       Application.put_env(:orca_hub, :claude_executable, @claude_stub)
@@ -598,6 +740,244 @@ defmodule OrcaHubWeb.ApiRunControllerTest do
       body = json_response(conn, 200)
       assert body["status"] == "timed_out"
       assert body["session_id"] == session.id
+    end
+
+    test "surfaces awaiting_tool_result + tool_call for a pending client tool call", %{
+      conn: conn,
+      session: session
+    } do
+      tool_call = %{
+        "id" => "call-1",
+        "name" => "get_weather",
+        "arguments" => %{"city" => "Boston"}
+      }
+
+      {:ok, run} =
+        ApiRuns.create_run(%{
+          session_id: session.id,
+          status: "awaiting_tool_result",
+          pending_tool_call: tool_call
+        })
+
+      conn = get(conn, ~p"/api/v1/runs/#{run.id}")
+      body = json_response(conn, 200)
+      assert body["status"] == "awaiting_tool_result"
+      assert body["tool_call"] == tool_call
+      refute Map.has_key?(body, "result")
+    end
+
+    test "a pending tool call does NOT get completed off the session's idle text", %{
+      conn: conn,
+      session: session
+    } do
+      insert_assistant_message(session, "some unrelated idle reply")
+
+      tool_call = %{"id" => "call-1", "name" => "get_weather", "arguments" => %{}}
+
+      {:ok, run} =
+        ApiRuns.create_run(%{
+          session_id: session.id,
+          status: "awaiting_tool_result",
+          pending_tool_call: tool_call
+        })
+
+      conn = get(conn, ~p"/api/v1/runs/#{run.id}")
+      body = json_response(conn, 200)
+      assert body["status"] == "awaiting_tool_result"
+      refute Map.has_key?(body, "result_text")
+
+      reloaded = ApiRuns.get_run(run.id)
+      assert reloaded.status == "awaiting_tool_result"
+    end
+
+    test "timeout still wins over an unanswered awaiting_tool_result run", %{
+      conn: conn,
+      session: session
+    } do
+      tool_call = %{"id" => "call-1", "name" => "get_weather", "arguments" => %{}}
+
+      {:ok, run} =
+        ApiRuns.create_run(%{
+          session_id: session.id,
+          status: "awaiting_tool_result",
+          pending_tool_call: tool_call,
+          timeout_seconds: 1
+        })
+
+      past =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(-10, :second)
+        |> NaiveDateTime.truncate(:second)
+
+      run = OrcaHub.Repo.update!(Ecto.Changeset.change(run, inserted_at: past))
+
+      conn = get(conn, ~p"/api/v1/runs/#{run.id}")
+      body = json_response(conn, 200)
+      assert body["status"] == "timed_out"
+    end
+  end
+
+  describe "POST /api/v1/runs/:id/tool_result" do
+    setup %{conn: conn} do
+      Application.put_env(:orca_hub, :claude_executable, @claude_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :claude_executable) end)
+
+      dir =
+        Path.join(System.tmp_dir!(), "api_run_tool_result_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          status: "idle",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+
+      tool_call = %{
+        "id" => "call-1",
+        "name" => "get_weather",
+        "arguments" => %{"city" => "Boston"}
+      }
+
+      {:ok, run} =
+        ApiRuns.create_run(%{
+          session_id: session.id,
+          status: "awaiting_tool_result",
+          pending_tool_call: tool_call,
+          client_tools: [
+            %{
+              "name" => "get_weather",
+              "description" => "Look up the weather.",
+              "input_schema" => %{"type" => "object"}
+            }
+          ]
+        })
+
+      %{conn: authed(conn), session: session, run: run, tool_call: tool_call}
+    end
+
+    test "happy path: re-snapshots baseline, clears pending_tool_call, delivers the result, resumes running",
+         %{conn: conn, session: session, run: run} do
+      before_count = Sessions.count_messages(session.id)
+
+      conn =
+        post(conn, ~p"/api/v1/runs/#{run.id}/tool_result", %{
+          "tool_call_id" => "call-1",
+          "result" => %{"conditions" => "sunny", "temp_f" => 72}
+        })
+
+      body = json_response(conn, 202)
+      assert body["status"] == "running"
+      assert body["run_id"] == run.id
+      assert body["session_id"] == session.id
+
+      reloaded = ApiRuns.get_run(run.id)
+      assert reloaded.status == "running"
+      assert reloaded.pending_tool_call == nil
+      assert reloaded.baseline_message_count == before_count
+
+      assert SessionSupervisor.session_alive?(session.id)
+      assert Sessions.get_session!(session.id).status == "running"
+
+      messages = Sessions.list_messages(session.id)
+
+      last_text =
+        messages
+        |> List.last()
+        |> get_in([Access.key(:data), "message", "content", Access.at(0), "text"])
+
+      assert last_text =~ "get_weather"
+      assert last_text =~ "call-1"
+      assert last_text =~ "sunny"
+      assert last_text =~ "Continue the task."
+    end
+
+    test "an error result is delivered as a failure message", %{
+      conn: conn,
+      session: session,
+      run: run
+    } do
+      conn =
+        post(conn, ~p"/api/v1/runs/#{run.id}/tool_result", %{
+          "tool_call_id" => "call-1",
+          "error" => "city not found"
+        })
+
+      json_response(conn, 202)
+
+      messages = Sessions.list_messages(session.id)
+
+      last_text =
+        messages
+        |> List.last()
+        |> get_in([Access.key(:data), "message", "content", Access.at(0), "text"])
+
+      assert last_text =~ "failed"
+      assert last_text =~ "city not found"
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+    end
+
+    test "409 when tool_call_id doesn't match the pending call", %{conn: conn, run: run} do
+      conn =
+        post(conn, ~p"/api/v1/runs/#{run.id}/tool_result", %{
+          "tool_call_id" => "wrong-id",
+          "result" => %{}
+        })
+
+      body = json_response(conn, 409)
+      assert body["error"] =~ "does not match"
+
+      reloaded = ApiRuns.get_run(run.id)
+      assert reloaded.status == "awaiting_tool_result"
+
+      assert reloaded.pending_tool_call == %{
+               "id" => "call-1",
+               "name" => "get_weather",
+               "arguments" => %{"city" => "Boston"}
+             }
+    end
+
+    test "409 when the run is not awaiting a tool result", %{conn: conn, session: session} do
+      {:ok, run} = ApiRuns.create_run(%{session_id: session.id, status: "running"})
+
+      conn =
+        post(conn, ~p"/api/v1/runs/#{run.id}/tool_result", %{
+          "tool_call_id" => "call-1",
+          "result" => %{}
+        })
+
+      body = json_response(conn, 409)
+      assert body["error"] =~ "not awaiting a tool result"
+    end
+
+    test "400 when tool_call_id is missing", %{conn: conn, run: run} do
+      conn = post(conn, ~p"/api/v1/runs/#{run.id}/tool_result", %{"result" => %{}})
+      assert json_response(conn, 400)
+    end
+
+    test "404 for a nonexistent run id", %{conn: conn} do
+      conn =
+        post(conn, ~p"/api/v1/runs/#{Ecto.UUID.generate()}/tool_result", %{
+          "tool_call_id" => "x",
+          "result" => %{}
+        })
+
+      assert json_response(conn, 404)
+    end
+
+    test "404 for a malformed run id", %{conn: conn} do
+      conn =
+        post(conn, ~p"/api/v1/runs/not-a-uuid/tool_result", %{
+          "tool_call_id" => "x",
+          "result" => %{}
+        })
+
+      assert json_response(conn, 404)
     end
   end
 end

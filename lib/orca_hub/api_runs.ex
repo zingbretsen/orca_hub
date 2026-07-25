@@ -105,4 +105,78 @@ defmodule OrcaHub.ApiRuns do
   end
 
   defp format_validation_error(other), do: inspect(other)
+
+  @doc """
+  Validates the caller-supplied `client_tools` param on `POST /api/v1/runs`
+  (docs/api.md, AG-UI-style client-defined tools): a list of
+  `{"name", "description", "input_schema"}` maps with unique, non-empty
+  names, none named `"submit_result"` (reserved for the schema-run result
+  channel), and a map `input_schema` — actual JSON-Schema validity of
+  `input_schema` isn't checked here (a malformed one just produces a less
+  useful tool definition, same posture as `result_schema`). Non-object
+  schemas are wrapped for tool advertisement downstream, at `MCP.Server`'s
+  `tools/list` time, not here.
+
+  Returns `{:ok, nil}` when `client_tools` wasn't given at all,
+  `{:ok, normalized_list}` when valid, or `{:error, message}`.
+  """
+  @spec validate_client_tools(term) :: {:ok, [map] | nil} | {:error, String.t()}
+  def validate_client_tools(nil), do: {:ok, nil}
+
+  def validate_client_tools([]), do: {:error, "client_tools must be a non-empty list"}
+
+  def validate_client_tools(tools) when is_list(tools) do
+    with :ok <- validate_each_tool_shape(tools),
+         :ok <- validate_unique_tool_names(tools) do
+      {:ok, Enum.map(tools, &normalize_client_tool/1)}
+    end
+  end
+
+  def validate_client_tools(_other), do: {:error, "client_tools must be a list"}
+
+  defp validate_each_tool_shape(tools) do
+    Enum.reduce_while(tools, :ok, fn tool, :ok ->
+      case validate_tool_shape(tool) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_tool_shape(%{"name" => "submit_result"}) do
+    {:error, "client_tools name \"submit_result\" is reserved"}
+  end
+
+  defp validate_tool_shape(%{
+         "name" => name,
+         "description" => description,
+         "input_schema" => schema
+       })
+       when is_binary(name) and name != "" and is_binary(description) and is_map(schema) do
+    :ok
+  end
+
+  defp validate_tool_shape(tool) do
+    {:error,
+     "each client_tools entry must have a non-empty \"name\" (string, not \"submit_result\"), " <>
+       "a \"description\" (string), and an \"input_schema\" (object) — got #{inspect(tool)}"}
+  end
+
+  defp validate_unique_tool_names(tools) do
+    names = Enum.map(tools, & &1["name"])
+
+    if length(names) == length(Enum.uniq(names)) do
+      :ok
+    else
+      {:error, "client_tools names must be unique"}
+    end
+  end
+
+  defp normalize_client_tool(%{
+         "name" => name,
+         "description" => description,
+         "input_schema" => schema
+       }) do
+    %{"name" => name, "description" => description, "input_schema" => schema}
+  end
 end

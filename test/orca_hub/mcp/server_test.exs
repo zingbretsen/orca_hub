@@ -16,6 +16,16 @@ defmodule OrcaHub.MCP.ServerTest do
   alias OrcaHub.{ApiRuns, Sessions}
   alias OrcaHub.MCP.Server
 
+  @weather_tool %{
+    "name" => "get_weather",
+    "description" => "Look up the current weather for a city.",
+    "input_schema" => %{
+      "type" => "object",
+      "properties" => %{"city" => %{"type" => "string"}},
+      "required" => ["city"]
+    }
+  }
+
   defp start_api_run_connection(schema) do
     {:ok, session} =
       Sessions.create_session(%{
@@ -23,6 +33,25 @@ defmodule OrcaHub.MCP.ServerTest do
       })
 
     {:ok, run} = ApiRuns.create_run(%{session_id: session.id, result_schema: schema})
+
+    {:ok, mcp_session_id} = Server.start_session(orca_session_id: session.id, api_run: true)
+    on_exit(fn -> Server.stop_session(mcp_session_id) end)
+
+    %{session: session, run: run, mcp_session_id: mcp_session_id}
+  end
+
+  defp start_client_tools_connection(client_tools, result_schema \\ nil) do
+    {:ok, session} =
+      Sessions.create_session(%{
+        directory: "/tmp/mcp-server-test-#{System.unique_integer([:positive])}"
+      })
+
+    {:ok, run} =
+      ApiRuns.create_run(%{
+        session_id: session.id,
+        client_tools: client_tools,
+        result_schema: result_schema
+      })
 
     {:ok, mcp_session_id} = Server.start_session(orca_session_id: session.id, api_run: true)
     on_exit(fn -> Server.stop_session(mcp_session_id) end)
@@ -202,6 +231,119 @@ defmodule OrcaHub.MCP.ServerTest do
       assert Server.session_exists?(mcp_session_id)
       follow_up = tools_list(mcp_session_id)
       assert %{"result" => %{"tools" => []}} = follow_up
+    end
+  end
+
+  describe "tools/list — client_tools (docs/api.md, AG-UI-style frontend tools)" do
+    test "client tools only (no result_schema): just the client tool, no submit_result" do
+      %{mcp_session_id: mcp_session_id} = start_client_tools_connection([@weather_tool])
+
+      response = tools_list(mcp_session_id)
+      tools = response["result"]["tools"]
+
+      assert [%{"name" => "get_weather"} = tool] = tools
+      assert tool["inputSchema"] == @weather_tool["input_schema"]
+      assert tool["description"] =~ "Look up the current weather"
+      assert tool["description"] =~ "executed by the calling application"
+      assert tool["description"] =~ "END YOUR TURN"
+    end
+
+    test "client tools + result_schema: both are listed, client tools before submit_result" do
+      schema = %{"type" => "object", "properties" => %{"answer" => %{"type" => "integer"}}}
+      %{mcp_session_id: mcp_session_id} = start_client_tools_connection([@weather_tool], schema)
+
+      response = tools_list(mcp_session_id)
+      names = response["result"]["tools"] |> Enum.map(& &1["name"])
+
+      assert names == ["get_weather", "submit_result"]
+    end
+
+    test "wraps a non-object client tool input_schema under a result property" do
+      tool = %{@weather_tool | "input_schema" => %{"type" => "string"}}
+      %{mcp_session_id: mcp_session_id} = start_client_tools_connection([tool])
+
+      response = tools_list(mcp_session_id)
+      [%{"inputSchema" => input_schema}] = response["result"]["tools"]
+
+      assert input_schema == %{
+               "type" => "object",
+               "properties" => %{"result" => %{"type" => "string"}},
+               "required" => ["result"]
+             }
+    end
+  end
+
+  describe "tools/call — client_tools (docs/api.md, AG-UI-style frontend tools)" do
+    test "recording a call parks it as pending_tool_call and moves the run to awaiting_tool_result" do
+      %{mcp_session_id: mcp_session_id, run: run} = start_client_tools_connection([@weather_tool])
+
+      response = call_tool(mcp_session_id, "get_weather", %{"city" => "Boston"})
+
+      assert response["result"]["isError"] == false
+      text = result_text(response)
+      assert text =~ "get_weather"
+      assert text =~ "END YOUR TURN"
+
+      reloaded = ApiRuns.get_run(run.id)
+      assert reloaded.status == "awaiting_tool_result"
+
+      assert %{"name" => "get_weather", "arguments" => %{"city" => "Boston"}, "id" => id} =
+               reloaded.pending_tool_call
+
+      assert is_binary(id)
+    end
+
+    test "wrapped (non-object) input_schema: unwraps to the raw shape before storing arguments" do
+      tool = %{@weather_tool | "input_schema" => %{"type" => "string"}}
+      %{mcp_session_id: mcp_session_id, run: run} = start_client_tools_connection([tool])
+
+      call_tool(mcp_session_id, "get_weather", %{"result" => "Boston"})
+
+      reloaded = ApiRuns.get_run(run.id)
+      assert reloaded.pending_tool_call["arguments"] == "Boston"
+    end
+
+    test "a second frontend tool call while one is pending is rejected — only the first is recorded" do
+      %{mcp_session_id: mcp_session_id, run: run} = start_client_tools_connection([@weather_tool])
+
+      call_tool(mcp_session_id, "get_weather", %{"city" => "Boston"})
+      response = call_tool(mcp_session_id, "get_weather", %{"city" => "Denver"})
+
+      assert response["result"]["isError"] == true
+      assert result_text(response) =~ "Call one frontend tool at a time"
+
+      reloaded = ApiRuns.get_run(run.id)
+      assert reloaded.pending_tool_call["arguments"] == %{"city" => "Boston"}
+    end
+
+    test "an unknown tool name is rejected, mentioning the available client tools + submit_result" do
+      schema = %{"type" => "object", "properties" => %{"answer" => %{"type" => "integer"}}}
+      %{mcp_session_id: mcp_session_id} = start_client_tools_connection([@weather_tool], schema)
+
+      response = call_tool(mcp_session_id, "open_file", %{})
+
+      assert response["result"]["isError"] == true
+      text = result_text(response)
+      assert text =~ "get_weather"
+      assert text =~ "submit_result"
+    end
+
+    test "submit_result still works normally alongside client_tools" do
+      schema = %{
+        "type" => "object",
+        "properties" => %{"answer" => %{"type" => "integer"}},
+        "required" => ["answer"]
+      }
+
+      %{mcp_session_id: mcp_session_id, run: run} =
+        start_client_tools_connection([@weather_tool], schema)
+
+      response = call_tool(mcp_session_id, "submit_result", %{"answer" => 42})
+
+      assert response["result"]["isError"] == false
+      reloaded = ApiRuns.get_run(run.id)
+      assert reloaded.status == "completed"
+      assert reloaded.result == %{"answer" => 42}
     end
   end
 end

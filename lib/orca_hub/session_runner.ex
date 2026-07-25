@@ -29,11 +29,18 @@ defmodule OrcaHub.SessionRunner do
   end
 
   # Agent Runs API (docs/api.md): does this session back a run with a
-  # result_schema? Resolved once at init/1 (see ctx.api_run_schema? there).
-  defp api_run_schema?(init_data, session_id) do
+  # `result_schema` (submit_result) and/or caller-defined `client_tools`?
+  # Resolved once at init/1 into ctx.result_schema?/ctx.client_tools? —
+  # ctx.api_run? (either one) gates the MCP connection's api_run surface as
+  # a whole, while the individual flags gate content that's only true of
+  # ONE of the two (e.g. the submit_result system-prompt fragment).
+  defp api_run_flags(init_data, session_id) do
     case db_call(init_data, :get_run_by_session_id, [session_id]) do
-      %{result_schema: schema} -> is_map(schema)
-      nil -> false
+      %{result_schema: schema, client_tools: tools} ->
+        %{result_schema?: is_map(schema), client_tools?: is_list(tools) and tools != []}
+
+      nil ->
+        %{result_schema?: false, client_tools?: false}
     end
   end
 
@@ -199,6 +206,8 @@ defmodule OrcaHub.SessionRunner do
       status: to_string(initial_state)
     })
 
+    api_run_flags = api_run_flags(init_data, session_id)
+
     data = %{
       session_id: session_id,
       project_id: session.project_id,
@@ -209,12 +218,18 @@ defmodule OrcaHub.SessionRunner do
       code_exec: session.code_exec || false,
       tools: Map.get(session, :tools),
       # Agent Runs API (docs/api.md): whether this session backs a run with a
-      # `result_schema` — resolved once here (DB work is already fine at this
-      # point, unlike MCP.Server's `initialize`) and baked into the /mcp URL's
-      # `api_run` flag so Backend.Claude's mcp_enabled?/1 keeps MCP wired up
-      # (for `submit_result`) even under `tools == ""`, and MCP.Server can
-      # collapse tools/list to just `submit_result` for the connection.
-      api_run_schema?: api_run_schema?(init_data, session_id),
+      # `result_schema` and/or `client_tools` — resolved once here (DB work
+      # is already fine at this point, unlike MCP.Server's `initialize`) and
+      # baked into the /mcp URL's `api_run` flag so Backend.Claude's
+      # mcp_enabled?/1 keeps MCP wired up (for `submit_result`/client tools)
+      # even under `tools == ""`, and MCP.Server can collapse tools/list to
+      # just the api_run surface for the connection. result_schema?/
+      # client_tools? are threaded through separately so prompt fragments
+      # that only apply to ONE of the two (e.g. submit_result guidance)
+      # don't fire for the other.
+      api_run?: api_run_flags.result_schema? or api_run_flags.client_tools?,
+      result_schema?: api_run_flags.result_schema?,
+      client_tools?: api_run_flags.client_tools?,
       commit_trailer: commit_trailer?(init_data, session.project_id),
       db_node: db_node,
       # Phase 1 (backend_abstraction_spec.md §4/§5): resolve from the

@@ -24,7 +24,7 @@ defmodule OrcaHub.Backend.McpUrl do
     # Agent Runs API (docs/api.md): whether this session backs a run with a
     # result_schema — tells MCP.Server to collapse tools/list down to just
     # `submit_result` for this connection.
-    api_run = Map.get(ctx, :api_run_schema?) == true
+    api_run = Map.get(ctx, :api_run?) == true
 
     "http://localhost:#{port}/mcp?orca_session_id=#{ctx.session_id}" <>
       "&orchestrator=#{ctx.orchestrator == true}" <>

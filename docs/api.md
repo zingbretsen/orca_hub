@@ -36,8 +36,9 @@ Creates a session and a run, sends the prompt, and returns immediately.
 | `model` | string | no, one-shot only | passed through to the backend |
 | `backend` | string | no, one-shot only | `"claude"` (default), `"codex"`, `"pi"` |
 | `title` | string | no, one-shot only | defaults to `"API run"` |
-| `no_tools` | boolean | no, one-shot only | `true` = zero built-in tools (`--tools ""`). Without a `result_schema`, this ALSO drops the MCP config entirely — the session never gets the `orca` MCP server (no `open_file`, `send_message_to_session`, etc.), so there's no file/session access of any kind, pure text-in/JSON-out reasoning. With a `result_schema`, the `orca` MCP server stays wired up (restricted to `submit_result` only — see below), since it's the run's sole result channel. Claude backend only — `400` if combined with a non-`claude` backend |
-| `result_schema` | object | no | a JSON Schema the final result must validate against. On a new (one-shot) session, this synthesizes an `orca` MCP server exposing exactly one tool, `submit_result`, from this schema (see below), with `code_exec` disabled on the session so `submit_result` is the only orca tool reachable. On a **continuation**, the target session's own MCP/tool config is left untouched — `submit_result` is only wired up on a fresh session, so a schema on a continuation relies on the idle-text JSON-extraction fallback (below), not the tool |
+| `no_tools` | boolean | no, one-shot only | `true` = zero built-in tools (`--tools ""`). Without a `result_schema`/`client_tools`, this ALSO drops the MCP config entirely — the session never gets the `orca` MCP server (no `open_file`, `send_message_to_session`, etc.), so there's no file/session access of any kind, pure text-in/JSON-out reasoning. With a `result_schema` and/or `client_tools`, the `orca` MCP server stays wired up (restricted to the api_run surface — see below), since that's the run's sole tool/result channel. Claude backend only — `400` if combined with a non-`claude` backend |
+| `result_schema` | object | no | a JSON Schema the final result must validate against. On a new (one-shot) session, this synthesizes an `orca` MCP server exposing a `submit_result` tool built from this schema (see below), with `code_exec` disabled on the session so the api_run surface is the only thing reachable. On a **continuation**, the target session's own MCP/tool config is left untouched — `submit_result` is only wired up on a fresh session, so a schema on a continuation relies on the idle-text JSON-extraction fallback (below), not the tool |
+| `client_tools` | array | no, **new sessions only** | AG-UI-style client-defined ("frontend") tools — see "Client (frontend) tools" below. A list of `{"name", "description", "input_schema"}` objects. `400` if names aren't unique/non-empty, any name is `"submit_result"` (reserved), `input_schema` isn't an object, or this is combined with `session_id` (continuations aren't supported yet — see below) |
 | `timeout_seconds` | integer | no | default `3600` |
 | `max_validation_attempts` | integer | no | default `3` — how many times to re-prompt on a schema-validation failure before giving up |
 
@@ -48,7 +49,8 @@ Creates a session and a run, sends the prompt, and returns immediately.
 ```
 
 Errors: `400` (missing prompt/directory, `no_tools` with a non-Claude
-backend), `404` (`session_id` given but no such session exists), `422`
+backend, invalid `client_tools`, `client_tools` combined with `session_id`),
+`404` (`session_id` given but no such session exists), `422`
 (invalid session params), `503` (the resolved node isn't currently
 connected), `502` (session_id given but the session could not be revived —
 see below).
@@ -126,18 +128,21 @@ drives completion.
 {
   "run_id": "…",
   "session_id": "…",
-  "status": "running | in_progress | completed | failed | timed_out",
+  "status": "running | in_progress | awaiting_tool_result | completed | failed | timed_out",
   "session_status": "running | idle | error | …",
   "result": { "…": "…" },
   "result_text": "raw final assistant text",
   "error": "…",
-  "validation_attempts": 0
+  "validation_attempts": 0,
+  "tool_call": { "id": "…", "name": "…", "arguments": { "…": "…" } }
 }
 ```
 
 Unused keys are omitted. `result` is only present once the run is
 `completed`. `result_text` is always stored on completion (or failure), even
-when it didn't parse/validate, for debugging.
+when it didn't parse/validate, for debugging. `tool_call` is only present
+while `status` is `awaiting_tool_result` — see "Client (frontend) tools"
+below.
 
 - **No `result_schema`**: on session idle, the final assistant text is
   stored as `result_text`; if it parses as JSON (bare, or inside a ` ```json `
@@ -155,9 +160,16 @@ when it didn't parse/validate, for debugging.
   is re-prompted to call `submit_result` (`status: "in_progress"`,
   `validation_attempts` incremented) until `max_validation_attempts` is
   exhausted, at which point the run is `failed` with the errors in `error`.
+- **With `client_tools`**: when the model calls one, `status` becomes
+  `awaiting_tool_result` and `tool_call` is set — see "Client (frontend)
+  tools" below. `awaiting_tool_result` is authoritative over the session's
+  own status: the idle-text completion path above never fires while a tool
+  call is pending, even if the session itself goes idle in the meantime.
 - A session that errors out marks the run `failed`. A run whose
   `timeout_seconds` has elapsed is marked `timed_out` (the session itself is
-  **not** killed — `session_id` is included so you can inspect it).
+  **not** killed — `session_id` is included so you can inspect it) — this
+  applies even while `awaiting_tool_result`, so a caller that never answers
+  a tool call doesn't leave the run open forever.
 
 ## `submit_result`: the result channel for schema runs
 
@@ -184,8 +196,63 @@ every call:
   round-trip through `GET`/re-prompting required.
 
 No other orca tool, upstream tool, or code-exec meta-tool is reachable on a
-schema run's MCP connection — the session is also created with `code_exec`
-disabled so `submit_result` is the only orca tool that exists at all.
+schema/`client_tools` run's MCP connection — the session is also created
+with `code_exec` disabled so the api_run surface (below) is the only thing
+that exists at all.
+
+## Client (frontend) tools
+
+AG-UI-style client-defined ("frontend") tools: the caller supplies tool
+definitions with the run, the agent can call them, but the call is never
+executed on OrcaHub — it's forwarded back to the caller to run and answer.
+Useful for anything only the calling application can do (query its own
+database, call an internal API, prompt its own user) without giving the
+agent direct network/tool access.
+
+- Pass `client_tools` on `POST /api/v1/runs` (new sessions only — see the
+  v1 restriction below): a list of
+  `{"name": "…", "description": "…", "input_schema": {...}}` objects. Names
+  must be non-empty and unique, and none may be `"submit_result"` (reserved
+  for the schema result channel above). `input_schema` must be an object
+  (a JSON Schema); non-object top-level schemas are wrapped the same way
+  `submit_result`'s is (see above) and unwrapped before you see the call's
+  arguments. `client_tools` may be combined with `result_schema` (the tool
+  surface is client tools + `submit_result`) or used alone (result
+  extraction falls back to the idle-text behavior described above).
+- Each client tool's description gets a short note appended telling the
+  model it's executed by the calling application and to end its turn after
+  calling it.
+- **When the model calls one**: the run moves to
+  `status: "awaiting_tool_result"` and the call is exposed via `GET
+  /api/v1/runs/:id` as `tool_call: {"id", "name", "arguments"}`. The tool
+  call itself returns a normal (non-error) MCP result telling the model the
+  call was forwarded and to end its turn — the actual answer arrives later,
+  as a new user-turn message, once you post the result back.
+- **One at a time**: if the model calls a second client tool before you've
+  answered the first (e.g. two tool calls in the same turn), only the first
+  is recorded — the second gets an MCP error result telling the model to
+  wait for the pending call's result before calling another.
+- **Answer with `POST /api/v1/runs/:id/tool_result`**:
+  ```json
+  {"tool_call_id": "…", "result": {"…": "…"}}
+  ```
+  or, for a failed tool execution:
+  ```json
+  {"tool_call_id": "…", "error": "…"}
+  ```
+  `tool_call_id` must match the run's current pending call
+  (`409` if it doesn't, or if the run isn't currently
+  `awaiting_tool_result`). On success, the run's status returns to
+  `running`, the result (or error) is delivered into the session as a new
+  message ("Result of your `<name>` tool call (id `<id>`): ...\n\nContinue
+  the task."), and the response is `202 {"run_id", "session_id",
+  "status": "running"}` — poll `GET /api/v1/runs/:id` again from there,
+  exactly like after the initial `POST`.
+- **v1 restriction**: `client_tools` is only supported on **new** sessions,
+  not continuations (`session_id`) — `400` if both are given. A
+  continuation's MCP connection flag and cached tool list are baked in at
+  session creation, so there's currently no way to add `client_tools` onto
+  an already-existing session's connection.
 
 ## Example: plain text-in/JSON-out reasoning
 
@@ -243,3 +310,41 @@ curl -s -X POST https://orca.example/api/v1/runs \
 Poll `GET /api/v1/runs/<run_id>` until `status` is `completed`; `result.cuts`
 is the validated cut list, ready to feed back into `auto-editor` without any
 further parsing.
+
+## Example: client (frontend) tool round-trip
+
+```bash
+curl -s -X POST https://orca.example/api/v1/runs \
+  -H "Authorization: Bearer $ORCA_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "What is the weather in Boston right now?",
+    "directory": "/tmp",
+    "client_tools": [
+      {
+        "name": "get_weather",
+        "description": "Look up the current weather for a city.",
+        "input_schema": {
+          "type": "object",
+          "properties": {"city": {"type": "string"}},
+          "required": ["city"]
+        }
+      }
+    ]
+  }'
+# {"run_id":"run-1","session_id":"sess-1","status":"running"}
+
+curl -s https://orca.example/api/v1/runs/run-1 -H "Authorization: Bearer $ORCA_API_TOKEN"
+# The model called get_weather — the run is now waiting on YOU to answer it:
+# {"run_id":"run-1","session_id":"sess-1","status":"awaiting_tool_result",
+#  "tool_call":{"id":"call-1","name":"get_weather","arguments":{"city":"Boston"}}}
+
+# ... look up the weather yourself, then answer the call ...
+
+curl -s -X POST https://orca.example/api/v1/runs/run-1/tool_result \
+  -H "Authorization: Bearer $ORCA_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"tool_call_id": "call-1", "result": {"conditions": "sunny", "temp_f": 72}}'
+# {"run_id":"run-1","session_id":"sess-1","status":"running"}
+
+curl -s https://orca.example/api/v1/runs/run-1 -H "Authorization: Bearer $ORCA_API_TOKEN"
+# {"run_id":"run-1","session_id":"sess-1","status":"completed","result_text":"It's sunny and 72°F in Boston."}
+```

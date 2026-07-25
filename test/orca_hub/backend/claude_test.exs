@@ -406,7 +406,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     "When you have your final answer, call the submit_result tool — your plain response text is not the deliverable."
   end
 
-  # api_run_schema?: true shape (submit_result tool-based result submission,
+  # api_run?: true shape (submit_result tool-based result submission,
   # docs/api.md) — MCP stays enabled (unlike expected_system_prompt_no_mcp/1
   # above) but the orchestrator/sibling-session fragments are skipped since
   # the only orca tool reachable on the connection is submit_result, and a
@@ -431,7 +431,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
   # the "orca" entry.
   defp expected_mcp_config_json(ctx) do
     code_exec = OrcaHub.MCP.CodeExec.enabled?(ctx.code_exec)
-    api_run = Map.get(ctx, :api_run_schema?) == true
+    api_run = Map.get(ctx, :api_run?) == true
 
     Jason.encode!(%{
       "mcpServers" => %{
@@ -581,8 +581,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
       refute "--mcp-config" in spec.args
     end
 
-    test "tools: \"\" + api_run_schema?: true KEEPS --mcp-config (submit_result is the only result channel)" do
-      ctx = ctx(%{tools: "", api_run_schema?: true})
+    test "tools: \"\" + api_run?: true KEEPS --mcp-config (submit_result is the only result channel)" do
+      ctx = ctx(%{tools: "", api_run?: true, result_schema?: true})
 
       opts =
         [
@@ -896,14 +896,24 @@ defmodule OrcaHub.Backend.ClaudeTest do
       refute prompt =~ "submit_result"
     end
 
-    test "api_run_schema?: true (Agent Runs API submit_result mode, docs/api.md): submit_result instruction, no orchestrator/sibling fragments" do
-      ctx = ctx(%{tools: "", api_run_schema?: true})
+    test "api_run?: true (Agent Runs API submit_result mode, docs/api.md): submit_result instruction, no orchestrator/sibling fragments" do
+      ctx = ctx(%{tools: "", api_run?: true, result_schema?: true})
       prompt = Backend.system_prompt(ctx)
 
       assert prompt == expected_system_prompt_api_run(ctx)
       assert prompt =~ "call the submit_result tool"
       refute prompt =~ "Orchestrator Session"
       refute prompt =~ "mcp__orca__start_session"
+      refute prompt =~ "Other agent sessions may be active"
+    end
+
+    test "api_run?: true but result_schema?: false (client_tools-only run, docs/api.md): " <>
+           "no submit_result instruction — there's no submit_result tool to steer toward" do
+      ctx = ctx(%{tools: "", api_run?: true, result_schema?: false})
+      prompt = Backend.system_prompt(ctx)
+
+      refute prompt =~ "submit_result"
+      refute prompt =~ "Orchestrator Session"
       refute prompt =~ "Other agent sessions may be active"
     end
 
@@ -938,18 +948,18 @@ defmodule OrcaHub.Backend.ClaudeTest do
       refute Backend.mcp_enabled?(%{tools: ""})
     end
 
-    test "true when tools == \"\" but api_run_schema?: true — submit_result must stay reachable" do
-      assert Backend.mcp_enabled?(%{tools: "", api_run_schema?: true})
+    test "true when tools == \"\" but api_run?: true — submit_result must stay reachable" do
+      assert Backend.mcp_enabled?(%{tools: "", api_run?: true})
     end
 
-    test "true when tools is unset/non-empty regardless of api_run_schema?" do
+    test "true when tools is unset/non-empty regardless of api_run?" do
       assert Backend.mcp_enabled?(%{tools: nil})
       assert Backend.mcp_enabled?(%{})
-      assert Backend.mcp_enabled?(%{tools: nil, api_run_schema?: false})
+      assert Backend.mcp_enabled?(%{tools: nil, api_run?: false})
     end
   end
 
-  describe "mcp_config_json (via spawn_spec) — api_run_schema?: true excludes project/session-scoped servers" do
+  describe "mcp_config_json (via spawn_spec) — api_run?: true excludes project/session-scoped servers" do
     test "an api_run connection's --mcp-config has ONLY the orca entry, even with a project-scoped upstream server" do
       {:ok, project} =
         OrcaHub.Projects.create_project(%{
@@ -966,7 +976,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
       {:ok, _} = OrcaHub.UpstreamServers.add_server_to_project(project.id, server.id)
 
-      ctx = ctx(%{project_id: project.id, api_run_schema?: true})
+      ctx = ctx(%{project_id: project.id, api_run?: true})
 
       spec = Backend.spawn_spec(:streaming, ctx)
       mcp_config_idx = Enum.find_index(spec.args, &(&1 == "--mcp-config"))

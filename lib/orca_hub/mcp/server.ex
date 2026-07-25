@@ -62,8 +62,9 @@ defmodule OrcaHub.MCP.Server do
     # The kill switch is honored at resolution time so a stale code_exec=true
     # query param can never re-enable the feature node-wide.
     code_exec = OrcaHub.MCP.CodeExec.enabled?(Keyword.get(opts, :code_exec, false))
-    # Agent Runs API (docs/api.md): whether this connection is scoped to a
-    # single `submit_result` tool synthesized from a run's result_schema.
+    # Agent Runs API (docs/api.md): whether this connection is scoped to the
+    # api_run tool surface — a `submit_result` tool synthesized from a run's
+    # result_schema, and/or caller-defined client (frontend) tools.
     api_run = Keyword.get(opts, :api_run, false)
 
     Logger.info(
@@ -77,10 +78,10 @@ defmodule OrcaHub.MCP.Server do
     # SessionRunner) rather than resolved via a hub/DB lookup. This keeps the
     # MCP handshake fast — no erpc, no DB — so tools/list is ready before the
     # model emits its first tool call, and a hub outage can't strip the
-    # orchestrator tool set. `api_run_schema` (the run's actual result_schema)
-    # is fetched lazily at tools/list time instead — see
-    # `ensure_api_run_schema/1` — since THAT round-trip can tolerate the
-    # latency (nothing to hand-shake against it).
+    # orchestrator tool set. `api_run_config` (the run's actual result_schema
+    # and/or client_tools) is fetched lazily at tools/list (and, defensively,
+    # tools/call) time instead — see `ensure_api_run_config/1` — since THAT
+    # round-trip can tolerate the latency (nothing to hand-shake against it).
     {:ok,
      %{
        session_id: session_id,
@@ -88,7 +89,7 @@ defmodule OrcaHub.MCP.Server do
        orchestrator: orchestrator,
        code_exec: code_exec,
        api_run: api_run,
-       api_run_schema: nil,
+       api_run_config: nil,
        initialized: false
      }}
   end
@@ -138,18 +139,19 @@ defmodule OrcaHub.MCP.Server do
   @orchestrator_only_tools ~w(cancel_heartbeat schedule_heartbeat)
 
   # Agent Runs API (docs/api.md): an api_run connection's tool surface is
-  # exactly one synthesized tool, submit_result, built from the run's
+  # built entirely from the run's config — caller-defined client (frontend)
+  # tools, plus a synthesized submit_result tool when the run has a
   # result_schema — no other orca tool, no code-exec meta-tools, no upstream
   # tools. `initialize` deliberately did no hub work (see init/1's doc), so
-  # the schema is fetched here, on first tools/list, and cached in state.
+  # the config is fetched here, on first tools/list, and cached in state.
   defp dispatch(%{"method" => "tools/list", "id" => id}, %{api_run: true} = state) do
-    # ensure_api_run_schema/1 does a HubRPC call, which RAISES on erpc/hub
+    # ensure_api_run_config/1 does a HubRPC call, which RAISES on erpc/hub
     # failures — same defensive wrapper as the general tools/call dispatcher
-    # (and the submit_result tools/call clause below) so a hub blip degrades
+    # (and the api_run tools/call clauses below) so a hub blip degrades
     # to an empty tool list instead of crashing this GenServer.
     state =
       try do
-        ensure_api_run_schema(state)
+        ensure_api_run_config(state)
       rescue
         e ->
           Logger.error(
@@ -167,17 +169,18 @@ defmodule OrcaHub.MCP.Server do
       end
 
     tools =
-      case state.api_run_schema do
+      case state.api_run_config do
         nil ->
           Logger.error(
-            "[MCP] api_run tools/list: no result_schema found for orca_session_id=" <>
+            "[MCP] api_run tools/list: no run found for orca_session_id=" <>
               inspect(state.orca_session_id)
           )
 
           []
 
-        schema ->
-          [submit_result_tool(schema)]
+        %{result_schema: schema, client_tools: client_tools} ->
+          Enum.map(client_tools, &client_tool_definition/1) ++
+            if(is_map(schema), do: [submit_result_tool(schema)], else: [])
       end
 
     log_tools_list_size("api_run", state, tools)
@@ -235,8 +238,12 @@ defmodule OrcaHub.MCP.Server do
   end
 
   # Agent Runs API (docs/api.md): an api_run connection may only call
-  # submit_result — every other name is rejected outright rather than falling
-  # through to the general dispatcher below.
+  # submit_result or one of the run's client (frontend) tools — every other
+  # name is rejected outright rather than falling through to the general
+  # dispatcher below. submit_result is matched here by literal name (it's
+  # never a caller-supplied client tool name — see the validation in
+  # ApiRuns.validate_client_tools/1); every other name goes through the
+  # client-tool clause below.
   defp dispatch(
          %{
            "method" => "tools/call",
@@ -276,21 +283,41 @@ defmodule OrcaHub.MCP.Server do
     {%{"jsonrpc" => "2.0", "id" => id, "result" => result}, state}
   end
 
+  # Client (frontend) tool call (docs/api.md, AG-UI-style): the tool call is
+  # never dispatched locally — it's parked on the run as `pending_tool_call`
+  # (status `awaiting_tool_result`) for the caller to pick up via `GET
+  # /api/v1/runs/:id` and answer via `POST /api/v1/runs/:id/tool_result`.
   defp dispatch(
          %{"method" => "tools/call", "id" => id, "params" => params},
          %{api_run: true} = state
        ) do
     tool_name = params["name"]
+    arguments = params["arguments"] || %{}
 
-    Logger.warning(
-      "[MCP] api_run tools/call: rejected name=#{inspect(tool_name)} — only submit_result " <>
-        "is reachable on this connection"
-    )
+    # Same defensive wrapper the submit_result clause above uses —
+    # handle_client_tool_call/3 does its own HubRPC calls, which RAISE on
+    # erpc/hub failures.
+    {result, state} =
+      try do
+        handle_client_tool_call(tool_name, arguments, state)
+      rescue
+        e ->
+          Logger.error(
+            "[MCP] api_run client tool call raised: " <>
+              Exception.format(:error, e, __STACKTRACE__)
+          )
 
-    result =
-      OrcaHub.MCP.Tools.Result.error(
-        "Unknown tool: #{tool_name}. This connection only exposes submit_result."
-      )
+          {OrcaHub.MCP.Tools.Result.error("Tool #{tool_name} raised: #{Exception.message(e)}"),
+           state}
+      catch
+        kind, reason ->
+          Logger.error(
+            "[MCP] api_run client tool call #{kind}: " <>
+              Exception.format(kind, reason, __STACKTRACE__)
+          )
+
+          {OrcaHub.MCP.Tools.Result.error("Tool #{tool_name} failed: #{inspect(reason)}"), state}
+      end
 
     {%{"jsonrpc" => "2.0", "id" => id, "result" => result}, state}
   end
@@ -396,38 +423,66 @@ defmodule OrcaHub.MCP.Server do
 
   # ── Agent Runs API (api_run connections, docs/api.md) ─────────────────
 
-  defp ensure_api_run_schema(%{api_run_schema: schema} = state) when not is_nil(schema), do: state
+  defp ensure_api_run_config(%{api_run_config: config} = state) when not is_nil(config),
+    do: state
 
-  defp ensure_api_run_schema(state) do
+  defp ensure_api_run_config(state) do
     case OrcaHub.HubRPC.get_run_by_session_id(state.orca_session_id) do
-      %{result_schema: schema} when is_map(schema) -> %{state | api_run_schema: schema}
-      _ -> state
+      nil ->
+        state
+
+      run ->
+        %{
+          state
+          | api_run_config: %{
+              result_schema: run.result_schema,
+              client_tools: run.client_tools || []
+            }
+        }
     end
   end
 
   # The caller's schema is used directly as the tool's inputSchema when it's
   # already a JSON object schema (the common case: `result_schema` describes
   # an object). Anything else (array, string, ...) is wrapped so submit_result
-  # still has a valid object-shaped inputSchema — see `unwrap_submission/2`.
+  # still has a valid object-shaped inputSchema — see `unwrap_wrapped_arguments/2`.
   defp submit_result_tool(schema) do
     %{
       "name" => "submit_result",
       "description" =>
         "Submit the final structured result for this run. Input must conform to the schema.",
-      "inputSchema" => submit_result_input_schema(schema)
+      "inputSchema" => wrapped_input_schema(schema)
     }
   end
 
-  defp submit_result_input_schema(%{"type" => "object"} = schema), do: schema
+  # This tool is executed by the calling application, not this server — the
+  # call is only ever parked as a pending_tool_call (see
+  # handle_client_tool_call/3) and answered out-of-band via
+  # POST /api/v1/runs/:id/tool_result.
+  @client_tool_note "This tool is executed by the calling application. After calling it, " <>
+                      "END YOUR TURN — the result will arrive as your next user message."
 
-  defp submit_result_input_schema(schema) do
+  defp client_tool_definition(tool) do
+    schema = tool["input_schema"]
+
+    %{
+      "name" => tool["name"],
+      "description" =>
+        String.trim_trailing(tool["description"] || "") <> " " <> @client_tool_note,
+      "inputSchema" => wrapped_input_schema(schema)
+    }
+  end
+
+  defp wrapped_input_schema(%{"type" => "object"} = schema), do: schema
+
+  defp wrapped_input_schema(schema) do
     %{"type" => "object", "properties" => %{"result" => schema}, "required" => ["result"]}
   end
 
   defp wrapped_schema?(%{"type" => "object"}), do: false
   defp wrapped_schema?(_schema), do: true
 
-  defp unwrap_submission(arguments, schema) do
+  defp unwrap_wrapped_arguments(arguments, schema) do
     if wrapped_schema?(schema), do: Map.get(arguments, "result"), else: arguments
   end
 
@@ -447,7 +502,7 @@ defmodule OrcaHub.MCP.Server do
   end
 
   defp validate_and_complete_run(run, arguments) do
-    submission = unwrap_submission(arguments, run.result_schema)
+    submission = unwrap_wrapped_arguments(arguments, run.result_schema)
 
     case OrcaHub.ApiRuns.validate_against_schema(submission, run.result_schema) do
       :ok ->
@@ -460,6 +515,110 @@ defmodule OrcaHub.MCP.Server do
 
       {:schema_error, message} ->
         OrcaHub.MCP.Tools.Result.error("Invalid result_schema: #{message}")
+    end
+  end
+
+  # A client (frontend) tool call is never dispatched locally — find the
+  # named tool in the run's config, park it as pending_tool_call, and tell
+  # the model to end its turn. Unknown names (not a client tool, and not
+  # submit_result — that's matched by literal name in the dispatch clause
+  # above) are rejected the same way the old submit_result-only surface
+  # rejected everything else.
+  defp handle_client_tool_call(tool_name, arguments, state) do
+    state = ensure_api_run_config(state)
+
+    case find_client_tool(state, tool_name) do
+      nil ->
+        Logger.warning(
+          "[MCP] api_run tools/call: rejected name=#{inspect(tool_name)} — not a known " <>
+            "client tool/submit_result on this connection"
+        )
+
+        {OrcaHub.MCP.Tools.Result.error(unknown_tool_message(tool_name, state)), state}
+
+      tool ->
+        {record_pending_tool_call(tool, arguments, state), state}
+    end
+  end
+
+  defp find_client_tool(%{api_run_config: %{client_tools: client_tools}}, tool_name) do
+    Enum.find(client_tools, &(&1["name"] == tool_name))
+  end
+
+  defp find_client_tool(_state, _tool_name), do: nil
+
+  defp unknown_tool_message(tool_name, %{
+         api_run_config: %{client_tools: client_tools, result_schema: schema}
+       }) do
+    names =
+      Enum.map(client_tools, & &1["name"]) ++ if(is_map(schema), do: ["submit_result"], else: [])
+
+    case names do
+      [] -> "Unknown tool: #{tool_name}. This connection exposes no tools."
+      _ -> "Unknown tool: #{tool_name}. This connection only exposes #{Enum.join(names, ", ")}."
+    end
+  end
+
+  defp unknown_tool_message(tool_name, _state) do
+    "Unknown tool: #{tool_name}. This connection only exposes submit_result."
+  end
+
+  # One frontend tool call in flight at a time: if the model calls a second
+  # client tool before the caller has answered the first (e.g. two tool
+  # calls in the same turn), only the first is recorded — the second gets
+  # an error telling the model to wait.
+  defp record_pending_tool_call(tool, arguments, state) do
+    case OrcaHub.HubRPC.get_run_by_session_id(state.orca_session_id) do
+      nil ->
+        OrcaHub.MCP.Tools.Result.error(
+          "No matching run found for orca_session_id=#{inspect(state.orca_session_id)}."
+        )
+
+      %{pending_tool_call: pending} when is_map(pending) ->
+        OrcaHub.MCP.Tools.Result.error(
+          "A frontend tool call (#{pending["name"]}, id #{pending["id"]}) is already " <>
+            "pending. Call one frontend tool at a time — wait for its result before " <>
+            "calling another."
+        )
+
+      run ->
+        persist_pending_tool_call(run, tool, arguments)
+    end
+  end
+
+  # The `api_runs.pending_tool_call` column casts as a plain map — arguments
+  # are unwrapped back to the caller's raw shape (see wrapped_input_schema/1)
+  # before being stored, so the caller sees exactly the shape matching the
+  # `input_schema` they supplied, not an internal `{"result": ...}` wrapper.
+  defp persist_pending_tool_call(run, tool, arguments) do
+    tool_call_id = Ecto.UUID.generate()
+    real_arguments = unwrap_wrapped_arguments(arguments, tool["input_schema"])
+
+    pending_tool_call = %{
+      "id" => tool_call_id,
+      "name" => tool["name"],
+      "arguments" => real_arguments
+    }
+
+    case OrcaHub.HubRPC.update_api_run(run, %{
+           status: "awaiting_tool_result",
+           pending_tool_call: pending_tool_call
+         }) do
+      {:ok, _run} ->
+        OrcaHub.MCP.Tools.Result.text(
+          "Forwarded #{tool["name"]} (id #{tool_call_id}) to the calling application. " <>
+            "END YOUR TURN now and wait — the result will arrive as your next user message."
+        )
+
+      {:error, changeset} ->
+        Logger.error(
+          "[MCP] api_run client tool call: failed to persist pending_tool_call for run " <>
+            "#{run.id}: #{inspect(changeset.errors)}"
+        )
+
+        OrcaHub.MCP.Tools.Result.error(
+          "Tool call recorded but could not be stored: " <> inspect(changeset.errors)
+        )
     end
   end
 

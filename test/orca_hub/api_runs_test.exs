@@ -114,4 +114,56 @@ defmodule OrcaHub.ApiRunsTest do
                ApiRuns.validate_against_schema(%{"name" => "hi"}, %{"type" => "not-a-real-type"})
     end
   end
+
+  describe "validate_client_tools/1 (docs/api.md, AG-UI-style client-defined tools)" do
+    @tool %{
+      "name" => "get_weather",
+      "description" => "Look up the weather.",
+      "input_schema" => %{"type" => "object", "properties" => %{"city" => %{"type" => "string"}}}
+    }
+
+    test "nil is valid — client_tools wasn't given at all" do
+      assert ApiRuns.validate_client_tools(nil) == {:ok, nil}
+    end
+
+    test "a valid list round-trips, normalized to just the 3 known keys" do
+      assert {:ok, [normalized]} = ApiRuns.validate_client_tools([@tool])
+      assert normalized == @tool
+    end
+
+    test "an empty list is rejected" do
+      assert {:error, message} = ApiRuns.validate_client_tools([])
+      assert message =~ "non-empty"
+    end
+
+    test "a non-list is rejected" do
+      assert {:error, message} = ApiRuns.validate_client_tools(%{"not" => "a list"})
+      assert message =~ "must be a list"
+    end
+
+    test "duplicate names are rejected" do
+      assert {:error, message} = ApiRuns.validate_client_tools([@tool, @tool])
+      assert message =~ "unique"
+    end
+
+    test "a tool named submit_result is rejected (reserved)" do
+      assert {:error, message} =
+               ApiRuns.validate_client_tools([%{@tool | "name" => "submit_result"}])
+
+      assert message =~ "reserved"
+    end
+
+    test "a missing/empty name is rejected" do
+      assert {:error, _} = ApiRuns.validate_client_tools([Map.delete(@tool, "name")])
+      assert {:error, _} = ApiRuns.validate_client_tools([%{@tool | "name" => ""}])
+    end
+
+    test "a non-map input_schema is rejected" do
+      assert {:error, _} = ApiRuns.validate_client_tools([%{@tool | "input_schema" => "nope"}])
+    end
+
+    test "a non-string description is rejected" do
+      assert {:error, _} = ApiRuns.validate_client_tools([%{@tool | "description" => 42}])
+    end
+  end
 end

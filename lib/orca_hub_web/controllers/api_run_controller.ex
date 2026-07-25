@@ -27,7 +27,8 @@ defmodule OrcaHubWeb.ApiRunController do
   # them.
   def create(conn, %{"session_id" => session_id} = params)
       when is_binary(session_id) and session_id != "" do
-    with {:ok, prompt} <- fetch_prompt(params),
+    with :ok <- validate_no_client_tools_on_continuation(params),
+         {:ok, prompt} <- fetch_prompt(params),
          {:ok, session} <- fetch_existing_session(session_id),
          runner_node <- Cluster.runner_node_for(session),
          :ok <- check_node_available(runner_node) do
@@ -43,11 +44,16 @@ defmodule OrcaHubWeb.ApiRunController do
          {:ok, directory} <- resolve_directory(params, project),
          {:ok, backend} <- resolve_backend(params),
          :ok <- validate_no_tools(params, backend),
+         {:ok, client_tools} <- ApiRuns.validate_client_tools(params["client_tools"]),
          runner_node <- resolve_runner_node(project),
          :ok <- check_node_available(runner_node) do
-      create_run(conn, params, prompt, project, directory, backend, runner_node)
+      create_run(conn, params, prompt, project, directory, backend, client_tools, runner_node)
     else
-      {:error, status, body} -> conn |> put_status(status) |> json(body)
+      {:error, status, body} ->
+        conn |> put_status(status) |> json(body)
+
+      {:error, message} when is_binary(message) ->
+        conn |> put_status(400) |> json(%{error: message})
     end
   end
 
@@ -104,6 +110,23 @@ defmodule OrcaHubWeb.ApiRunController do
 
   defp validate_no_tools(_params, _backend), do: :ok
 
+  # v1 restriction (docs/api.md): a continuation's MCP connection flag and
+  # cached tool list are baked in at session creation (see
+  # SessionRunner.init/1's api_run_flags), so client_tools can't be wired up
+  # onto an already-existing session's connection.
+  defp validate_no_client_tools_on_continuation(%{"client_tools" => client_tools})
+       when not is_nil(client_tools) do
+    {:error, 400,
+     %{
+       error:
+         "client_tools is not yet supported on continuations (session_id) — the MCP " <>
+           "connection's tool surface is baked in at session creation. Start a new run " <>
+           "without session_id to use client_tools."
+     }}
+  end
+
+  defp validate_no_client_tools_on_continuation(_params), do: :ok
+
   defp resolve_runner_node(nil), do: node()
   defp resolve_runner_node(project), do: Cluster.project_node_for(project)
 
@@ -115,7 +138,7 @@ defmodule OrcaHubWeb.ApiRunController do
     end
   end
 
-  defp create_run(conn, params, prompt, project, directory, backend, runner_node) do
+  defp create_run(conn, params, prompt, project, directory, backend, client_tools, runner_node) do
     result_schema = params["result_schema"]
     no_tools = params["no_tools"] == true
 
@@ -131,20 +154,23 @@ defmodule OrcaHubWeb.ApiRunController do
         backend: backend,
         tools: if(no_tools, do: "", else: nil)
       }
-      |> maybe_disable_code_exec(result_schema)
+      |> maybe_disable_code_exec(result_schema, client_tools)
 
     with {:ok, session} <- HubRPC.create_session(session_attrs),
          {:ok, run} <-
            HubRPC.create_api_run(%{
              session_id: session.id,
              result_schema: result_schema,
+             client_tools: client_tools,
              timeout_seconds: params["timeout_seconds"] || @default_timeout_seconds,
              max_validation_attempts:
                params["max_validation_attempts"] || @default_max_validation_attempts
            }) do
       Cluster.start_session(runner_node, session.id, session)
 
-      case Cluster.send_message(runner_node, session.id, full_prompt(prompt, result_schema)) do
+      message = full_prompt(prompt, result_schema, client_tools)
+
+      case Cluster.send_message(runner_node, session.id, message) do
         :ok ->
           :ok
 
@@ -216,22 +242,44 @@ defmodule OrcaHubWeb.ApiRunController do
   end
 
   # code_exec is ON by default for new sessions (see Sessions.Session);
-  # a schema run's MCP server must expose ONLY submit_result (docs/api.md),
-  # so code_exec has to be explicitly turned off — leaving the key out of
-  # session_attrs entirely (rather than passing `code_exec: nil`) would
-  # otherwise apply the column's `true` default via the changeset.
-  defp maybe_disable_code_exec(attrs, nil), do: attrs
-  defp maybe_disable_code_exec(attrs, _result_schema), do: Map.put(attrs, :code_exec, false)
+  # a schema/client-tools run's MCP server must expose ONLY the api_run
+  # surface (docs/api.md), so code_exec has to be explicitly turned off —
+  # leaving the key out of session_attrs entirely (rather than passing
+  # `code_exec: nil`) would otherwise apply the column's `true` default via
+  # the changeset.
+  defp maybe_disable_code_exec(attrs, nil, nil), do: attrs
 
-  defp full_prompt(prompt, nil), do: prompt
+  defp maybe_disable_code_exec(attrs, _result_schema, _client_tools),
+    do: Map.put(attrs, :code_exec, false)
 
-  defp full_prompt(prompt, result_schema) do
+  defp full_prompt(prompt, result_schema, client_tools \\ nil) do
+    prompt
+    |> append_schema_instructions(result_schema)
+    |> append_client_tools_instructions(client_tools)
+  end
+
+  defp append_schema_instructions(prompt, nil), do: prompt
+
+  defp append_schema_instructions(prompt, result_schema) do
     schema_json = Jason.encode!(result_schema, pretty: true)
 
     prompt <>
       "\n\nWhen you have your final answer, call the submit_result tool with a JSON object " <>
       "conforming to this JSON Schema (shown here for reference; the tool's input schema " <>
       "enforces it):\n```json\n#{schema_json}\n```"
+  end
+
+  defp append_client_tools_instructions(prompt, tools) when tools in [nil, []], do: prompt
+
+  defp append_client_tools_instructions(prompt, client_tools) do
+    names = Enum.map_join(client_tools, ", ", & &1["name"])
+
+    prompt <>
+      "\n\nSome of your tools (#{names}) are executed by the calling application, not by " <>
+      "you directly — calling one forwards the call to the caller instead of running it " <>
+      "yourself. After calling one of them, END YOUR TURN immediately (don't keep working " <>
+      "or call another tool); the result will arrive as your next user message and you can " <>
+      "continue from there. Only one such tool call may be in flight at a time."
   end
 
   # ---------------------------------------------------------------------
@@ -255,6 +303,23 @@ defmodule OrcaHubWeb.ApiRunController do
   defp advance_and_render(conn, %{status: status} = run)
        when status in ~w(completed failed timed_out) do
     render_run(conn, run)
+  end
+
+  # A pending client (frontend) tool call (docs/api.md) parks the run here
+  # until the caller POSTs /tool_result — the run's own status, not the
+  # session's, is authoritative while this is set, so this MUST be checked
+  # before falling into advance_running/3's session-status-driven
+  # idle-completion logic below (which would otherwise be free to complete
+  # the run off whatever the session's final assistant text happens to be).
+  # Timeout still wins over an unanswered tool call, same as any other
+  # in-progress run.
+  defp advance_and_render(conn, %{status: "awaiting_tool_result"} = run) do
+    if timed_out?(run) do
+      {:ok, run} = HubRPC.update_api_run(run, %{status: "timed_out"})
+      render_run(conn, run)
+    else
+      render_run(conn, run, tool_call: run.pending_tool_call)
+    end
   end
 
   defp advance_and_render(conn, run) do
@@ -413,6 +478,101 @@ defmodule OrcaHubWeb.ApiRunController do
   end
 
   # ---------------------------------------------------------------------
+  # POST /api/v1/runs/:id/tool_result
+  # ---------------------------------------------------------------------
+
+  # Answers a pending client (frontend) tool call (docs/api.md): body is
+  # `{"tool_call_id": "...", "result": <any JSON>}`, or
+  # `{"tool_call_id": "...", "error": "..."}` for a failed tool execution.
+  def tool_result(conn, %{"id" => id} = params) do
+    case Ecto.UUID.cast(id) do
+      :error -> conn |> put_status(404) |> json(%{error: "not found"})
+      {:ok, _} -> do_tool_result(conn, id, params)
+    end
+  end
+
+  defp do_tool_result(conn, id, params) do
+    case HubRPC.get_api_run(id) do
+      nil -> conn |> put_status(404) |> json(%{error: "not found"})
+      run -> validate_and_deliver_tool_result(conn, run, params)
+    end
+  end
+
+  defp validate_and_deliver_tool_result(conn, %{status: "awaiting_tool_result"} = run, params) do
+    with {:ok, tool_call_id} <- fetch_tool_call_id(params),
+         :ok <- validate_tool_call_id_match(run, tool_call_id) do
+      deliver_tool_result(conn, run, params)
+    else
+      {:error, status, body} -> conn |> put_status(status) |> json(body)
+    end
+  end
+
+  defp validate_and_deliver_tool_result(conn, run, _params) do
+    conn
+    |> put_status(409)
+    |> json(%{
+      error: "run #{run.id} is not awaiting a tool result (status: #{run.status})",
+      run_id: run.id,
+      status: run.status
+    })
+  end
+
+  defp fetch_tool_call_id(%{"tool_call_id" => tool_call_id})
+       when is_binary(tool_call_id) and tool_call_id != "" do
+    {:ok, tool_call_id}
+  end
+
+  defp fetch_tool_call_id(_params), do: {:error, 400, %{error: "tool_call_id is required"}}
+
+  defp validate_tool_call_id_match(%{pending_tool_call: %{"id" => tool_call_id}}, tool_call_id),
+    do: :ok
+
+  defp validate_tool_call_id_match(run, tool_call_id) do
+    {:error, 409,
+     %{
+       error:
+         "tool_call_id #{inspect(tool_call_id)} does not match the pending tool call " <>
+           "#{inspect(run.pending_tool_call["id"])}",
+       run_id: run.id
+     }}
+  end
+
+  # Reuses deliver_continuation/5's exact revive/error handling — resuming a
+  # run after an answered tool call is the same "wake up and deliver a
+  # message" operation a continuation's initial delivery is.
+  defp deliver_tool_result(conn, run, params) do
+    tool_call = run.pending_tool_call
+    session = run.session
+    runner_node = Cluster.runner_node_for(session)
+    # Re-snapshot BEFORE delivery — see awaiting_new_turn?/2 and the
+    # migration comment on baseline_message_count; the session may have
+    # gone further idle while this run sat awaiting_tool_result.
+    baseline_message_count = HubRPC.count_messages(session.id)
+
+    {:ok, run} =
+      HubRPC.update_api_run(run, %{
+        status: "running",
+        pending_tool_call: nil,
+        baseline_message_count: baseline_message_count
+      })
+
+    deliver_continuation(conn, run, session, runner_node, tool_result_message(tool_call, params))
+  end
+
+  defp tool_result_message(tool_call, %{"error" => error})
+       when is_binary(error) and error != "" do
+    "Your #{tool_call["name"]} tool call (id #{tool_call["id"]}) failed:\n#{error}\n\n" <>
+      "Continue the task."
+  end
+
+  defp tool_result_message(tool_call, params) do
+    result_json = Jason.encode!(Map.get(params, "result"), pretty: true)
+
+    "Result of your #{tool_call["name"]} tool call (id #{tool_call["id"]}):\n" <>
+      "```json\n#{result_json}\n```\n\nContinue the task."
+  end
+
+  # ---------------------------------------------------------------------
   # Response shaping
   # ---------------------------------------------------------------------
 
@@ -429,6 +589,7 @@ defmodule OrcaHubWeb.ApiRunController do
         validation_attempts: run.validation_attempts
       }
       |> maybe_put(:note, Keyword.get(opts, :note))
+      |> maybe_put(:tool_call, Keyword.get(opts, :tool_call))
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
 

@@ -85,6 +85,7 @@ defmodule OrcaHubWeb.Router do
     pipe_through :api_authed
     post "/runs", ApiRunController, :create
     get "/runs/:id", ApiRunController, :show
+    post "/runs/:id/tool_result", ApiRunController, :tool_result
   end
 
   # MCP Streamable HTTP endpoint
