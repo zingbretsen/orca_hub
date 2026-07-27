@@ -106,7 +106,10 @@ config :orca_hub, :discord_guild_ids, discord_guild_ids
 config :orca_hub, OrcaHubWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
-config :orca_hub, :gotify_url, System.get_env("GOTIFY_URL")
+# Gotify push-notification creds for the send_notification MCP tool
+# (OrcaHub.Notify). ONLY the hub needs these — the tool routes delivery
+# through the hub via HubRPC, so agent/systemd nodes hold nothing.
+config :orca_hub, :gotify_url, System.get_env("GOTIFY_URL") || "https://gotify.ingbretsenhome.com"
 config :orca_hub, :gotify_token, System.get_env("GOTIFY_TOKEN")
 config :orca_hub, :elevenlabs_api_key, System.get_env("ELEVENLABS_API_KEY")
 

@@ -342,6 +342,12 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.ClusterNodes, :count_projects_for_node, [name])
 
   # -------------------------------------------------------------------
+  # Notifications (Gotify push, see OrcaHub.Notify — hub-only creds)
+  # -------------------------------------------------------------------
+
+  def send_notification(payload), do: call(OrcaHub.Notify, :deliver, [payload])
+
+  # -------------------------------------------------------------------
   # Skills (hub-managed global skills — see OrcaHub.Skills, OrcaHub.SkillSync)
   # -------------------------------------------------------------------
 
