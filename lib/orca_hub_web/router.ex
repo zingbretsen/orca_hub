@@ -88,6 +88,15 @@ defmodule OrcaHubWeb.Router do
     post "/runs/:id/tool_result", ApiRunController, :tool_result
   end
 
+  # Inbound A2A (Agent2Agent) v0.3.0 server surface (docs/a2a.md). Hub-only —
+  # not on OrcaHubWeb.Endpoint.agent_mode_allowed?/1's allow-list.
+  scope "/a2a", OrcaHubWeb do
+    pipe_through :api_authed
+    get "/agents", A2AController, :agents
+    get "/agents/:id/.well-known/agent-card.json", A2AController, :agent_card
+    post "/agents/:agent_id", A2AController, :rpc
+  end
+
   # MCP Streamable HTTP endpoint
   forward "/mcp", OrcaHub.MCP.Plug
 

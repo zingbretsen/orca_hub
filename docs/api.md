@@ -9,6 +9,9 @@ Async by design: `POST` creates a run and returns immediately; the caller
 polls `GET` until the run reaches a terminal status. There are no callbacks
 and no long-blocking requests.
 
+For dispatching work over the standard A2A (Agent2Agent) protocol instead
+of this OrcaHub-specific API, see [`docs/a2a.md`](a2a.md).
+
 ## Auth
 
 Every request needs a static bearer token:
