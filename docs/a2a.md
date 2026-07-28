@@ -266,28 +266,188 @@ against this controller (see the symmetry test in
 `test/orca_hub_web/controllers/a2a_controller_test.exs`), so OrcaHub could
 in principle call its own `/a2a` endpoint, or another OrcaHub instance's.
 
+## v2 (DRAFT — not implemented): client tools + structured results
+
+> **⚠️ Draft contract — not implemented.** This section describes a
+> proposed contract under review between the A2A implementer-orchestrator
+> and its first prospective consumer. Nothing below is served by the
+> current deployment: no code, no schema, no endpoint behavior described
+> here exists yet. The authoritative, shipped surface is everything
+> **above** this section. Treat this as a specification for future work,
+> not documentation of current behavior.
+
+### Declaration (session-creating `message/send` only)
+
+- `message.metadata.client_tools`: `[{"name", "description", "input_schema"}]`
+  — the same validation rules as the Agent Runs API's `client_tools`
+  (docs/api.md "Client (frontend) tools"): names must be non-empty and
+  unique, none may be `"submit_result"` (reserved), and `input_schema`
+  must be an object.
+- `message.metadata.result_schema`: a JSON Schema the final result must
+  validate against, same as the Runs API's `result_schema`.
+  `message.metadata.max_validation_attempts` (default `3`) caps corrective
+  retries, same as the Runs API field of the same name.
+- Both are inherited by `contextId` continuations — declared once at
+  session creation, they apply to every task in that conversation.
+- **Declaring either on a continuation is rejected `-32602`** — a
+  deliberate asymmetry with `no_tools` (silently ignored on continuations,
+  see "Metadata extensions" above). A silently-dropped `client_tools`/
+  `result_schema` on a continuation would be a correctness trap (the
+  caller believes structured output/tool routing is active when it isn't);
+  a silently-ignored `no_tools` is harmless, since the session's tool
+  surface was already fixed at creation either way.
+- Backend restriction mirrors the Runs API where applicable — today only
+  `no_tools` itself carries the Claude-only restriction; `client_tools`/
+  `result_schema` don't add any further restriction beyond that.
+
+### Tool-call loop (A2A-native)
+
+- When the agent calls a client tool, the task transitions to state
+  `"input-required"` (nonterminal — same "poll again" contract as
+  `submitted`/`working`).
+- `tasks/get` on an `input-required` task returns the pending call as a
+  `DataPart` on `status.message.parts`:
+  ```json
+  {"kind": "data", "data": {"tool_call_id": "…", "name": "…", "arguments": {"...": "..."}},
+   "metadata": {"orcahub_part": "tool_call"}}
+  ```
+- The client answers by calling `message/send` **with `taskId` set on the
+  message object** — this narrows v1's blanket `-32602` on `message.taskId`
+  (see the error table above): a `taskId`-bearing send is valid **iff**
+  that task is currently `input-required`; any other state is still
+  `-32602`. The message must carry a `DataPart`:
+  ```json
+  {"kind": "data", "data": {"tool_call_id": "…", "result": "<any JSON>"}}
+  ```
+  or, for a failed client-side tool execution:
+  ```json
+  {"kind": "data", "data": {"tool_call_id": "…", "error": "…"}}
+  ```
+  Response `result` is the task object, state back to `"working"`.
+- **Idempotent ack semantics** (spelled out precisely — this was
+  negotiated carefully): answering **any** `tool_call_id` that was
+  previously issued for this task/session — including one already
+  answered — returns success with the task's current object; no error, no
+  client-side dedup required. Only a `tool_call_id` that was **never**
+  issued for this session is rejected `-32602`. Rationale: during the
+  stale re-advertisement window below, a poll may still show an
+  already-answered call #1 after the agent has already moved on to call
+  #2 — a dedup-free client that re-answers #1 must not fail the run.
+- **Stale re-advertisement**: an answered call may continue to appear in
+  `tasks/get` for a few more polls before server-side state catches up to
+  the agent's actual progress. Combined with idempotent acks above, this
+  is harmless — re-answering a stale call is a no-op, not an error.
+- Multiple sequential tool calls per turn are normal (the agent can call
+  several client tools one after another); only **one** call is ever
+  pending (`input-required`) at a time.
+
+### Structured results
+
+- With `result_schema` declared, the hub synthesizes a `submit_result`
+  tool (same mechanics as the Runs API — see "`submit_result`: the result
+  channel for schema runs" above) and validates it server-side, with up to
+  `max_validation_attempts` corrective retries.
+- The completed task's `status.message.parts` then contains the
+  **validated** result as a `DataPart`:
+  ```json
+  {"kind": "data", "data": {"...": "..."}, "metadata": {"orcahub_part": "result"}}
+  ```
+  alongside an optional `TextPart` carrying the raw prose reply. The
+  `metadata.orcahub_part` discriminator (`"tool_call"` vs `"result"`) is
+  the documented way to tell the two `DataPart` shapes apart — no
+  structural shape-sniffing needed.
+- Text-only v1 clients are unaffected either way — prose still arrives in
+  `TextPart`s exactly as it does today.
+
+### Timeouts & holds
+
+- Time spent parked in `"input-required"` does **not** count against the
+  task's `timeout_seconds` budget (mirrors the Runs API's
+  `awaiting_tool_result` exemption).
+- Server-side, a pending tool call is held open for at most the shared
+  client-tool hold cap (~10 minutes — see
+  `OrcaHub.MCP.Server.client_tool_hold_cap_ms/0`); past that the loop
+  degrades gracefully exactly like the Runs API's fallback — the answer is
+  delivered as a new message into the session instead of resolving the
+  held call, transparent to the client apart from one extra turn of
+  latency.
+- There is a known CLI-side hold-timeout issue where the Claude CLI can
+  cut the effective hold to roughly 4m50s rather than the full cap —
+  tracked separately, not a v2-spec concern.
+
+### Example (draft): declare → input-required → answer via taskId → completed with result
+
+```bash
+curl -s -X POST https://orca.example/a2a/agents/<project-id> \
+  -H "Authorization: Bearer $ORCA_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0", "id": 1, "method": "message/send",
+    "params": {"message": {"messageId": "m1", "role": "user",
+      "parts": [{"kind": "text", "text": "What is the weather in Boston right now?"}],
+      "metadata": {
+        "client_tools": [{
+          "name": "get_weather",
+          "description": "Look up the current weather for a city.",
+          "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+        }],
+        "result_schema": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}
+      }}}
+  }'
+# {"jsonrpc":"2.0","id":1,"result":{"id":"task-1","contextId":"sess-1","kind":"task","status":{"state":"submitted","timestamp":"…"}}}
+
+curl -s -X POST https://orca.example/a2a/agents/<project-id> \
+  -H "Authorization: Bearer $ORCA_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 2, "method": "tasks/get", "params": {"id": "task-1"}}'
+# The model called get_weather — the task is now waiting on the CALLER to answer it:
+# {"jsonrpc":"2.0","id":2,"result":{"id":"task-1","contextId":"sess-1","kind":"task",
+#  "status":{"state":"input-required","timestamp":"…",
+#    "message":{"role":"agent","messageId":"…","kind":"message",
+#      "parts":[{"kind":"data","data":{"tool_call_id":"call-1","name":"get_weather","arguments":{"city":"Boston"}},
+#                "metadata":{"orcahub_part":"tool_call"}}]}}}}
+
+# ... look up the weather, then answer via message/send WITH taskId ...
+curl -s -X POST https://orca.example/a2a/agents/<project-id> \
+  -H "Authorization: Bearer $ORCA_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0", "id": 3, "method": "message/send",
+    "params": {"message": {"messageId": "m2", "role": "user", "taskId": "task-1",
+      "parts": [{"kind": "data", "data": {"tool_call_id": "call-1", "result": {"conditions": "sunny", "temp_f": 72}}}]}}
+  }'
+# {"jsonrpc":"2.0","id":3,"result":{"id":"task-1","contextId":"sess-1","kind":"task","status":{"state":"working","timestamp":"…"}}}
+
+curl -s -X POST https://orca.example/a2a/agents/<project-id> \
+  -H "Authorization: Bearer $ORCA_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 4, "method": "tasks/get", "params": {"id": "task-1"}}'
+# Agent called submit_result next, validated against result_schema:
+# {"jsonrpc":"2.0","id":4,"result":{"id":"task-1","contextId":"sess-1","kind":"task",
+#  "status":{"state":"completed","timestamp":"…",
+#    "message":{"role":"agent","messageId":"…","kind":"message",
+#      "parts":[{"kind":"text","text":"It's sunny and 72°F in Boston."},
+#                {"kind":"data","data":{"summary":"It's sunny and 72°F in Boston."},
+#                 "metadata":{"orcahub_part":"result"}}]}}}}
+```
+
 ## Roadmap / not in v1
 
 This v1 deliberately covers the plain text-in/text-out conversational
-subset of A2A. A few things stay out of scope for now and remain on the
+subset of A2A. A few things stay out of scope for v1 and remain on the
 [Agent Runs API](api.md) instead:
 
+- **Structured/schema-validated results** — specified in the "v2 (DRAFT —
+  not implemented)" section above; not implemented yet. An A2A task's
+  result today is always plain reply text (`status.message.parts`), never
+  a validated JSON object.
+- **Client-defined ("frontend") tools** — likewise specified in the v2
+  draft above, via the `input-required` task state (task pauses, caller
+  supplies more input, task resumes); not implemented yet.
 - **A2A protocol-level artifacts** — A2A's `artifact` concept (structured,
   named outputs attached to a task, distinct from the reply message) isn't
-  implemented. Only `status.message` text parts are produced.
-- **Structured/schema-validated results** — the Agent Runs API's
-  `result_schema` + server-side `ExJsonSchema` validation has no A2A
-  equivalent yet. An A2A task's result is always plain reply text
-  (`status.message.parts`), never a validated JSON object.
-- **Client-defined ("frontend") tools** — the Agent Runs API's
-  `client_tools` + `submit_result`/tool-call round-trip (docs/api.md
-  "Client (frontend) tools") isn't ported here. The natural A2A mapping
-  would be the `input-required` task state (task pauses, caller supplies
-  more input, task resumes) but that's a larger protocol surface than v1
-  needs.
+  implemented and has no draft yet either. Only `status.message` text
+  parts are produced.
 
 A caller that needs schema-validated results or client-side tool execution
-today should use the Agent Runs API directly. These are reasonable
-candidates for a later A2A version — if/when they land, expect them to
-extend the task object (new states, an `artifacts` field) rather than
-change anything documented above.
+today should use the Agent Runs API directly — the v2 draft above is a
+proposed contract under review, not shipped behavior. If/when it lands,
+expect it to extend the task object exactly as specified above (the
+`input-required` state, `DataPart`-shaped status messages) rather than
+changing anything else documented in this file.
