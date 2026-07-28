@@ -136,6 +136,25 @@ to form the prompt. `400`/`-32602` if there's no non-empty text part.
 Response `result` is a task object in state `"submitted"` or `"working"`
 (see "Task object shape" below) — poll `tasks/get` to drive it forward.
 
+### Metadata extensions
+
+`message.metadata` is A2A's standard per-message extension point. One key
+is currently recognized:
+
+- **`no_tools: true`** — creates the new session with an empty tool
+  allow-list (mirrors the [Agent Runs API](api.md)'s `no_tools` option),
+  useful for a pure text-in/text-out "polish"-style agent that shouldn't be
+  able to call any tools at all. Only supported when the effective backend
+  for the request is `"claude"` (same restriction as the Agent Runs API) —
+  a request with `no_tools: true` against a project whose node defaults to
+  a non-Claude backend is rejected `-32602`. Any value other than `true`
+  (including `false` or the key being absent) is the default — no error,
+  normal tool access.
+- **Ignored on continuations**: `contextId` present means an *existing*
+  session, whose tool surface was already baked in at creation time — a
+  `no_tools` in `message.metadata` on a continuation is silently ignored.
+- Any other `metadata` key is ignored (forward-compatible).
+
 ## `tasks/get`
 
 ```json

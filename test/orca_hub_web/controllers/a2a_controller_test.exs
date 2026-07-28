@@ -5,10 +5,11 @@ defmodule OrcaHubWeb.A2AControllerTest do
   # pattern/rationale).
   use OrcaHubWeb.ConnCase, async: false
 
-  alias OrcaHub.{A2ATasks, Projects, SessionSupervisor, Sessions}
+  alias OrcaHub.{A2ATasks, ClusterNodes, Projects, SessionSupervisor, Sessions}
 
   @claude_stub Path.expand("../../support/fixtures/claude_stub_noop.sh", __DIR__)
   @token "test-a2a-token"
+  @local_name Atom.to_string(node())
 
   setup do
     Application.put_env(:orca_hub, :api_token, @token)
@@ -34,6 +35,30 @@ defmodule OrcaHubWeb.A2AControllerTest do
   defp stop_if_alive(session_id) do
     if SessionSupervisor.session_alive?(session_id),
       do: SessionSupervisor.stop_session(session_id)
+  end
+
+  # Mirrors NodePolicyTest's pattern: the local node already has a `nodes`
+  # row from hub boot (ClusterNodeTracker), so restore its previous
+  # default_backend on exit rather than leaving a non-claude default behind
+  # for the shared dev DB other tests run against.
+  defp with_local_default_backend(backend, fun) do
+    node_row = ClusterNodes.get_by_name(@local_name) || insert_local_row()
+    previous_default_backend = node_row.default_backend
+
+    {:ok, _} = ClusterNodes.update_node(node_row, %{default_backend: backend})
+
+    on_exit(fn ->
+      if row = ClusterNodes.get_by_name(@local_name) do
+        ClusterNodes.update_node(row, %{default_backend: previous_default_backend})
+      end
+    end)
+
+    fun.()
+  end
+
+  defp insert_local_row do
+    {:ok, node_row} = ClusterNodes.upsert_seen(@local_name, @local_name)
+    node_row
   end
 
   defp rpc_post(conn, agent_id, method, params, rpc_id \\ 1) do
@@ -235,6 +260,72 @@ defmodule OrcaHubWeb.A2AControllerTest do
       assert body["error"]["code"] == -32602
       assert body["error"]["message"] =~ "contextId"
     end
+
+    test "metadata.no_tools: true creates the session with an empty tool allow-list", %{
+      conn: conn,
+      project: project
+    } do
+      message = Map.put(text_message("say hi"), "metadata", %{"no_tools" => true})
+      conn = rpc_post(conn, project.id, "message/send", %{"message" => message})
+      body = json_response(conn, 200)
+
+      task = body["result"]
+      session = Sessions.get_session!(task["contextId"])
+      assert session.tools == ""
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+    end
+
+    test "no metadata leaves tools unset (nil)", %{conn: conn, project: project} do
+      conn = rpc_post(conn, project.id, "message/send", %{"message" => text_message("say hi")})
+      body = json_response(conn, 200)
+
+      task = body["result"]
+      session = Sessions.get_session!(task["contextId"])
+      assert session.tools == nil
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+    end
+
+    test "metadata.no_tools: false leaves tools unset (nil)", %{conn: conn, project: project} do
+      message = Map.put(text_message("say hi"), "metadata", %{"no_tools" => false})
+      conn = rpc_post(conn, project.id, "message/send", %{"message" => message})
+      body = json_response(conn, 200)
+
+      task = body["result"]
+      session = Sessions.get_session!(task["contextId"])
+      assert session.tools == nil
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+    end
+
+    test "unknown metadata keys are ignored", %{conn: conn, project: project} do
+      message = Map.put(text_message("say hi"), "metadata", %{"some_other_key" => "value"})
+      conn = rpc_post(conn, project.id, "message/send", %{"message" => message})
+      body = json_response(conn, 200)
+
+      task = body["result"]
+      assert task["kind"] == "task"
+
+      session = Sessions.get_session!(task["contextId"])
+      assert session.tools == nil
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+    end
+
+    test "-32602 when no_tools is requested but the node defaults to a non-claude backend", %{
+      conn: conn,
+      project: project
+    } do
+      with_local_default_backend("codex", fn ->
+        message = Map.put(text_message("say hi"), "metadata", %{"no_tools" => true})
+        conn = rpc_post(conn, project.id, "message/send", %{"message" => message})
+        body = json_response(conn, 200)
+
+        assert body["error"]["code"] == -32602
+        assert body["error"]["message"] =~ "claude"
+      end)
+    end
   end
 
   describe "message/send — continuation (contextId)" do
@@ -279,6 +370,23 @@ defmodule OrcaHubWeb.A2AControllerTest do
 
       reloaded = Sessions.get_session!(session.id)
       assert reloaded.status == "running"
+    end
+
+    test "metadata.no_tools is ignored on a continuation — the session's tool surface is already baked in",
+         %{conn: conn, project: project, session: session} do
+      refute session.tools == ""
+
+      message =
+        text_message("continue please")
+        |> Map.put("contextId", session.id)
+        |> Map.put("metadata", %{"no_tools" => true})
+
+      conn = rpc_post(conn, project.id, "message/send", %{"message" => message})
+      body = json_response(conn, 200)
+      assert body["result"]["contextId"] == session.id
+
+      reloaded = Sessions.get_session!(session.id)
+      assert reloaded.tools == session.tools
     end
 
     test "-32001 when contextId belongs to a session in a DIFFERENT project", %{

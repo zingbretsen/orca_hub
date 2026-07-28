@@ -144,7 +144,7 @@ defmodule OrcaHubWeb.A2AController do
     with {:ok, text} <- extract_text(message),
          :ok <- reject_task_id(message) do
       case Map.get(message, "contextId") do
-        nil -> create_new_session_task(conn, project, text, rpc_id)
+        nil -> create_new_session_task(conn, project, text, no_tools?(message), rpc_id)
         context_id -> continue_session_task(conn, project, context_id, text, rpc_id)
       end
     else
@@ -182,24 +182,58 @@ defmodule OrcaHubWeb.A2AController do
 
   defp reject_task_id(_message), do: :ok
 
-  defp create_new_session_task(conn, project, text, rpc_id) do
+  # message.metadata (A2A's standard per-message extension point, docs/a2a.md
+  # "Metadata extensions"): only "no_tools" is recognized, any other key is
+  # forward-compatibly ignored. Mirrors the Agent Runs API's `no_tools`
+  # (ApiRunController.validate_no_tools/2) — anything other than exactly
+  # `true` is treated as "not requested", no error.
+  defp no_tools?(%{"metadata" => %{"no_tools" => true}}), do: true
+  defp no_tools?(_message), do: false
+
+  defp create_new_session_task(conn, project, text, no_tools, rpc_id) do
     runner_node = Cluster.project_node_for(project)
 
-    if Cluster.node_available?(runner_node) do
-      do_create_new_session_task(conn, project, runner_node, text, rpc_id)
-    else
-      node_unavailable_error(conn, rpc_id, runner_node)
+    cond do
+      not Cluster.node_available?(runner_node) ->
+        node_unavailable_error(conn, rpc_id, runner_node)
+
+      no_tools and not claude_backend?(runner_node) ->
+        rpc_error(
+          conn,
+          rpc_id,
+          @invalid_params,
+          "no_tools is only supported with backend \"claude\" — this project's node " <>
+            "defaults to a different backend"
+        )
+
+      true ->
+        do_create_new_session_task(conn, project, runner_node, text, no_tools, rpc_id)
     end
   end
 
-  defp do_create_new_session_task(conn, project, runner_node, text, rpc_id) do
+  # Mirrors OrcaHub.Sessions.apply_node_defaults/merge_node_defaults: with no
+  # explicit `backend` in session_attrs, the effective backend is the node's
+  # configured default_backend, falling back to "claude" (the Session
+  # schema's own column default) when the node has none set. Resolving this
+  # BEFORE creating the session (rather than checking the changeset result
+  # after the fact) avoids leaving behind an orphaned session row when the
+  # request is rejected.
+  defp claude_backend?(runner_node) do
+    case HubRPC.get_node_by_name(Atom.to_string(runner_node)) do
+      nil -> true
+      node -> (node.default_backend || "claude") == "claude"
+    end
+  end
+
+  defp do_create_new_session_task(conn, project, runner_node, text, no_tools, rpc_id) do
     session_attrs = %{
       directory: project.directory,
       project_id: project.id,
       title: SessionRunner.fallback_title(text),
       status: "ready",
       triggered: true,
-      runner_node: Atom.to_string(runner_node)
+      runner_node: Atom.to_string(runner_node),
+      tools: if(no_tools, do: "", else: nil)
     }
 
     with {:ok, session} <- HubRPC.create_session(session_attrs),
