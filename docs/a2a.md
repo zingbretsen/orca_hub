@@ -94,7 +94,7 @@ JSON-RPC errors are returned with **HTTP 200** (standard JSON-RPC practice
 |---|---|
 | `-32600` | Invalid Request — `jsonrpc` isn't `"2.0"` |
 | `-32601` | Method not found |
-| `-32602` | Invalid params (e.g. no text parts in `message.parts`, or `message.taskId` given instead of `contextId`; **v2 draft**: a `taskId`-bearing send whose `tool_call_id` was never issued for that task and whose task isn't `input-required`, or `client_tools`/`result_schema`/`max_validation_attempts` declared on a continuation) |
+| `-32602` | Invalid params (e.g. no text parts in `message.parts`, or `message.taskId` given instead of `contextId`; **v2 draft**: a `taskId`-bearing send whose `tool_call_id` was never issued for that task (regardless of the task's current state), or `client_tools`/`result_schema`/`max_validation_attempts` declared on a continuation) |
 | `-32001` | Task not found (unknown/malformed task id on `tasks/get`/`tasks/cancel`; also used for an unknown/foreign `contextId` on `message/send` — see below) |
 | `-32002` | Task not cancelable (already terminal) |
 | `-32003` | Push notifications not supported (`tasks/pushNotificationConfig/*`) |
