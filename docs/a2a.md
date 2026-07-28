@@ -94,7 +94,7 @@ JSON-RPC errors are returned with **HTTP 200** (standard JSON-RPC practice
 |---|---|
 | `-32600` | Invalid Request — `jsonrpc` isn't `"2.0"` |
 | `-32601` | Method not found |
-| `-32602` | Invalid params (e.g. no text parts in `message.parts`, or `message.taskId` given instead of `contextId`) |
+| `-32602` | Invalid params (e.g. no text parts in `message.parts`, or `message.taskId` given instead of `contextId`; **v2 draft**: a `taskId`-bearing send whose `tool_call_id` was never issued for that task and whose task isn't `input-required`, or `client_tools`/`result_schema`/`max_validation_attempts` declared on a continuation) |
 | `-32001` | Task not found (unknown/malformed task id on `tasks/get`/`tasks/cancel`; also used for an unknown/foreign `contextId` on `message/send` — see below) |
 | `-32002` | Task not cancelable (already terminal) |
 | `-32003` | Push notifications not supported (`tasks/pushNotificationConfig/*`) |
@@ -289,13 +289,16 @@ in principle call its own `/a2a` endpoint, or another OrcaHub instance's.
   retries, same as the Runs API field of the same name.
 - Both are inherited by `contextId` continuations — declared once at
   session creation, they apply to every task in that conversation.
-- **Declaring either on a continuation is rejected `-32602`** — a
-  deliberate asymmetry with `no_tools` (silently ignored on continuations,
-  see "Metadata extensions" above). A silently-dropped `client_tools`/
-  `result_schema` on a continuation would be a correctness trap (the
-  caller believes structured output/tool routing is active when it isn't);
-  a silently-ignored `no_tools` is harmless, since the session's tool
-  surface was already fixed at creation either way.
+- **Declaring any of `client_tools`, `result_schema`, or
+  `max_validation_attempts` on a continuation is rejected `-32602`** —
+  including `max_validation_attempts` given alone, with neither of the
+  other two present. This is a deliberate asymmetry with `no_tools`
+  (silently ignored on continuations, see "Metadata extensions" above): a
+  silently-dropped `client_tools`/`result_schema` on a continuation would
+  be a correctness trap (the caller believes structured output/tool
+  routing is active when it isn't); a silently-ignored `no_tools` is
+  harmless, since the session's tool surface was already fixed at
+  creation either way.
 - Backend restriction mirrors the Runs API where applicable — today only
   `no_tools` itself carries the Claude-only restriction; `client_tools`/
   `result_schema` don't add any further restriction beyond that.
@@ -313,9 +316,7 @@ in principle call its own `/a2a` endpoint, or another OrcaHub instance's.
   ```
 - The client answers by calling `message/send` **with `taskId` set on the
   message object** — this narrows v1's blanket `-32602` on `message.taskId`
-  (see the error table above): a `taskId`-bearing send is valid **iff**
-  that task is currently `input-required`; any other state is still
-  `-32602`. The message must carry a `DataPart`:
+  (see the error table above). The message must carry a `DataPart`:
   ```json
   {"kind": "data", "data": {"tool_call_id": "…", "result": "<any JSON>"}}
   ```
@@ -323,23 +324,42 @@ in principle call its own `/a2a` endpoint, or another OrcaHub instance's.
   ```json
   {"kind": "data", "data": {"tool_call_id": "…", "error": "…"}}
   ```
-  Response `result` is the task object, state back to `"working"`.
-- **Idempotent ack semantics** (spelled out precisely — this was
-  negotiated carefully): answering **any** `tool_call_id` that was
-  previously issued for this task/session — including one already
-  answered — returns success with the task's current object; no error, no
-  client-side dedup required. Only a `tool_call_id` that was **never**
-  issued for this session is rejected `-32602`. Rationale: during the
-  stale re-advertisement window below, a poll may still show an
-  already-answered call #1 after the agent has already moved on to call
-  #2 — a dedup-free client that re-answers #1 must not fail the run.
+  `contextId` is optional alongside `taskId` here; if present it must
+  match the task's own `contextId` (mismatch → `-32602`) — `taskId` alone
+  is sufficient to identify the task. Response `result` is the task
+  object; state moves to `"working"`, except when the idempotent-ack
+  precedence below applies, in which case the task's current (possibly
+  terminal) state is returned unchanged.
+- **Precedence: idempotent ack beats the state gate** (spelled out
+  precisely — this was negotiated carefully). Answering **any**
+  `tool_call_id` that was previously **issued** for that task — including
+  one already answered, and regardless of the task's current state —
+  always succeeds, returning the task's current (possibly terminal)
+  object; no client-side dedup required. This takes precedence over the
+  state check below because it covers a legitimate transport-retry of an
+  answer arriving *after* the task has already moved on (e.g. the agent
+  went straight from this tool call to `submit_result`, and the task is
+  now `completed`) — exactly the case idempotency exists for.
+- The `-32602` **state gate** ("task is not awaiting input") applies
+  **only** to a `taskId`-bearing send whose `tool_call_id` was **never**
+  issued for that task in the first place — i.e. one that isn't a retry
+  of anything real.
 - **Stale re-advertisement**: an answered call may continue to appear in
   `tasks/get` for a few more polls before server-side state catches up to
-  the agent's actual progress. Combined with idempotent acks above, this
-  is harmless — re-answering a stale call is a no-op, not an error.
+  the agent's actual progress. Combined with the idempotent-ack precedence
+  above, this is harmless — re-answering a stale call is a no-op, not an
+  error.
+- The idempotent-ack guarantee assumes the **client's own tool handler is
+  idempotent or read-only** — the server can safely ack a duplicate
+  answer, but it cannot un-run a side effect the client already performed
+  once.
 - Multiple sequential tool calls per turn are normal (the agent can call
   several client tools one after another); only **one** call is ever
   pending (`input-required`) at a time.
+- `tasks/cancel` is allowed on an `input-required` task: the parked tool
+  call is simply abandoned (never answered), the underlying session's
+  turn is interrupted best-effort exactly as in v1, and the task moves to
+  `"canceled"`.
 
 ### Structured results
 
@@ -347,6 +367,18 @@ in principle call its own `/a2a` endpoint, or another OrcaHub instance's.
   tool (same mechanics as the Runs API — see "`submit_result`: the result
   channel for schema runs" above) and validates it server-side, with up to
   `max_validation_attempts` corrective retries.
+- Corrective retries are never observable as a distinct task state: the
+  primary channel (the `submit_result` tool returning a validation error)
+  retries within the same agent turn, and even the idle-text fallback's
+  corrective re-prompt keeps the task `"working"` to pollers. A poller
+  only ever sees `submitted`/`working`/`input-required` → terminal —
+  there's no separate "validating" state.
+- **If `max_validation_attempts` is exhausted without a valid
+  submission**, the task moves to `"failed"` with error text
+  `"validation failed after N attempts: <errors>"`, and `status.message`
+  carries a `TextPart` with the last raw (invalid) response — no result
+  `DataPart` is produced, since nothing ever validated. This mirrors the
+  Agent Runs API's identical failure case.
 - The completed task's `status.message.parts` then contains the
   **validated** result as a `DataPart`:
   ```json
@@ -361,19 +393,26 @@ in principle call its own `/a2a` endpoint, or another OrcaHub instance's.
 
 ### Timeouts & holds
 
-- Time spent parked in `"input-required"` does **not** count against the
-  task's `timeout_seconds` budget (mirrors the Runs API's
-  `awaiting_tool_result` exemption).
+- The task's `timeout_seconds` budget is wall-clock from task creation and
+  **includes** time spent parked in `"input-required"` — there is no
+  `awaiting_tool_result`-style exemption; this matches the Agent Runs API
+  exactly (docs/api.md: the budget applies even while
+  `awaiting_tool_result`). A caller with a slow tool handler should keep
+  its answers well inside the task's own timeout budget.
 - Server-side, a pending tool call is held open for at most the shared
   client-tool hold cap (~10 minutes — see
-  `OrcaHub.MCP.Server.client_tool_hold_cap_ms/0`); past that the loop
-  degrades gracefully exactly like the Runs API's fallback — the answer is
+  `OrcaHub.MCP.Server.client_tool_hold_cap_ms/0`), which bounds how long
+  any single parked call can consume; past that the loop degrades
+  gracefully exactly like the Runs API's fallback — the answer is
   delivered as a new message into the session instead of resolving the
   held call, transparent to the client apart from one extra turn of
   latency.
 - There is a known CLI-side hold-timeout issue where the Claude CLI can
   cut the effective hold to roughly 4m50s rather than the full cap —
   tracked separately, not a v2-spec concern.
+- If a consumer ever needs more headroom than the task's own
+  `timeout_seconds` provides, a `metadata.timeout_seconds` declaration is
+  the natural future extension — not specified here.
 
 ### Example (draft): declare → input-required → answer via taskId → completed with result
 
