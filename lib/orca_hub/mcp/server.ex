@@ -7,6 +7,7 @@ defmodule OrcaHub.MCP.Server do
   require Logger
 
   alias OrcaHub.MCP.Tools
+  alias OrcaHub.MCP.ToolCallHolder
 
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
@@ -78,10 +79,12 @@ defmodule OrcaHub.MCP.Server do
     # SessionRunner) rather than resolved via a hub/DB lookup. This keeps the
     # MCP handshake fast — no erpc, no DB — so tools/list is ready before the
     # model emits its first tool call, and a hub outage can't strip the
-    # orchestrator tool set. `api_run_config` (the run's actual result_schema
-    # and/or client_tools) is fetched lazily at tools/list (and, defensively,
-    # tools/call) time instead — see `ensure_api_run_config/1` — since THAT
-    # round-trip can tolerate the latency (nothing to hand-shake against it).
+    # orchestrator tool set. `tool_holder` (the actual result_schema and/or
+    # client_tools, plus which holder module backs this connection — see
+    # `OrcaHub.MCP.ToolCallHolder`) is fetched lazily at tools/list (and,
+    # defensively, tools/call) time instead — see `ensure_tool_holder/1` —
+    # since THAT round-trip can tolerate the latency (nothing to hand-shake
+    # against it).
     {:ok,
      %{
        session_id: session_id,
@@ -89,7 +92,7 @@ defmodule OrcaHub.MCP.Server do
        orchestrator: orchestrator,
        code_exec: code_exec,
        api_run: api_run,
-       api_run_config: nil,
+       tool_holder: nil,
        initialized: false,
        # Client (frontend) tool call currently holding a `tools/call` JSON-RPC
        # response open (docs/api.md) — see the "Client tool call parking"
@@ -138,7 +141,7 @@ defmodule OrcaHub.MCP.Server do
         %{parked_tool_call: %{tool_call_id: tool_call_id} = parked} = state
       ) do
     reply_to_froms(parked.froms, placeholder_result())
-    mark_hold_expired(parked.run_id, tool_call_id)
+    mark_hold_expired(parked.holder_mod, parked.holder_id, tool_call_id)
     cleanup_parked(parked)
     {:noreply, %{state | parked_tool_call: nil}}
   end
@@ -162,8 +165,8 @@ defmodule OrcaHub.MCP.Server do
   # broadcasts this after `POST /api/v1/runs/:id/tool_result` — see
   # "Client tool call parking" below.
   def handle_info(
-        {:client_tool_result, run_id, tool_call_id, payload},
-        %{parked_tool_call: %{run_id: run_id, tool_call_id: tool_call_id} = parked} = state
+        {:client_tool_result, holder_id, tool_call_id, payload},
+        %{parked_tool_call: %{holder_id: holder_id, tool_call_id: tool_call_id} = parked} = state
       ) do
     {:noreply, resolve_parked(parked, payload, state)}
   end
@@ -216,13 +219,13 @@ defmodule OrcaHub.MCP.Server do
   # tools. `initialize` deliberately did no hub work (see init/1's doc), so
   # the config is fetched here, on first tools/list, and cached in state.
   defp dispatch(%{"method" => "tools/list", "id" => id}, %{api_run: true} = state) do
-    # ensure_api_run_config/1 does a HubRPC call, which RAISES on erpc/hub
+    # ensure_tool_holder/1 does a HubRPC call, which RAISES on erpc/hub
     # failures — same defensive wrapper as the general tools/call dispatcher
     # (and the api_run tools/call clauses below) so a hub blip degrades
     # to an empty tool list instead of crashing this GenServer.
     state =
       try do
-        ensure_api_run_config(state)
+        ensure_tool_holder(state)
       rescue
         e ->
           Logger.error(
@@ -240,7 +243,7 @@ defmodule OrcaHub.MCP.Server do
       end
 
     tools =
-      case state.api_run_config do
+      case state.tool_holder do
         nil ->
           Logger.error(
             "[MCP] api_run tools/list: no run found for orca_session_id=" <>
@@ -453,22 +456,30 @@ defmodule OrcaHub.MCP.Server do
     {:accepted, state}
   end
 
-  # ── Agent Runs API (api_run connections, docs/api.md) ─────────────────
+  # ── api_run connections (Agent Runs API, docs/api.md, and A2A v2 client-tool/
+  # result_schema declarations, docs/a2a.md) ─────────────────────────────────
+  #
+  # A connection with `api_run: true` exposes ONLY a synthesized submit_result
+  # tool and/or caller-defined client (frontend) tools, resolved from whichever
+  # `OrcaHub.MCP.ToolCallHolder` (see that module) backs this session — either
+  # an Agent Runs API run or an A2A task. A session only ever has ONE holder
+  # kind, so `ToolCallHolder.find_by_session_id/1` trying each registered
+  # module in turn is enough to find it without threading an extra "which
+  # holder kind" flag through the MCP connection/URL.
 
-  defp ensure_api_run_config(%{api_run_config: config} = state) when not is_nil(config),
-    do: state
+  defp ensure_tool_holder(%{tool_holder: holder} = state) when not is_nil(holder), do: state
 
-  defp ensure_api_run_config(state) do
-    case OrcaHub.HubRPC.get_run_by_session_id(state.orca_session_id) do
+  defp ensure_tool_holder(state) do
+    case ToolCallHolder.find_by_session_id(state.orca_session_id) do
       nil ->
         state
 
-      run ->
+      {_mod, holder} ->
         %{
           state
-          | api_run_config: %{
-              result_schema: run.result_schema,
-              client_tools: run.client_tools || []
+          | tool_holder: %{
+              result_schema: holder.result_schema,
+              client_tools: holder.client_tools || []
             }
         }
     end
@@ -519,26 +530,26 @@ defmodule OrcaHub.MCP.Server do
   end
 
   defp handle_submit_result(arguments, state) do
-    case OrcaHub.HubRPC.get_run_by_session_id(state.orca_session_id) do
+    case ToolCallHolder.find_by_session_id(state.orca_session_id) do
       nil ->
         OrcaHub.MCP.Tools.Result.error(
           "No matching run found for orca_session_id=#{inspect(state.orca_session_id)}."
         )
 
-      %{status: "completed"} ->
+      {_mod, %{status: "completed"}} ->
         OrcaHub.MCP.Tools.Result.text("Result already submitted.")
 
-      run ->
-        validate_and_complete_run(run, arguments)
+      {mod, holder} ->
+        validate_and_complete_run(mod, holder, arguments)
     end
   end
 
-  defp validate_and_complete_run(run, arguments) do
-    submission = unwrap_wrapped_arguments(arguments, run.result_schema)
+  defp validate_and_complete_run(mod, holder, arguments) do
+    submission = unwrap_wrapped_arguments(arguments, holder.result_schema)
 
-    case OrcaHub.ApiRuns.validate_against_schema(submission, run.result_schema) do
+    case OrcaHub.ApiRuns.validate_against_schema(submission, holder.result_schema) do
       :ok ->
-        persist_completed_run(run, submission)
+        persist_completed_run(mod, holder, submission)
 
       {:error, errors} ->
         OrcaHub.MCP.Tools.Result.error(
@@ -550,14 +561,14 @@ defmodule OrcaHub.MCP.Server do
     end
   end
 
-  defp find_client_tool(%{api_run_config: %{client_tools: client_tools}}, tool_name) do
+  defp find_client_tool(%{tool_holder: %{client_tools: client_tools}}, tool_name) do
     Enum.find(client_tools, &(&1["name"] == tool_name))
   end
 
   defp find_client_tool(_state, _tool_name), do: nil
 
   defp unknown_tool_message(tool_name, %{
-         api_run_config: %{client_tools: client_tools, result_schema: schema}
+         tool_holder: %{client_tools: client_tools, result_schema: schema}
        }) do
     names =
       Enum.map(client_tools, & &1["name"]) ++ if(is_map(schema), do: ["submit_result"], else: [])
@@ -636,7 +647,7 @@ defmodule OrcaHub.MCP.Server do
   end
 
   defp resolve_client_tool_call(tool_name, arguments, from_entry, state) do
-    state = ensure_api_run_config(state)
+    state = ensure_tool_holder(state)
 
     case find_client_tool(state, tool_name) do
       nil ->
@@ -676,27 +687,27 @@ defmodule OrcaHub.MCP.Server do
          from_entry,
          %{parked_tool_call: nil} = state
        ) do
-    case OrcaHub.HubRPC.get_run_by_session_id(state.orca_session_id) do
+    case ToolCallHolder.find_by_session_id(state.orca_session_id) do
       nil ->
         {{:reply,
           OrcaHub.MCP.Tools.Result.error(
             "No matching run found for orca_session_id=#{inspect(state.orca_session_id)}."
           )}, state}
 
-      %{pending_tool_call: nil} = run ->
-        persist_and_park(run, tool, arguments, from_entry, state)
+      {mod, %{pending_tool_call: nil} = holder} ->
+        persist_and_park(mod, holder, tool, arguments, from_entry, state)
 
-      %{pending_tool_call: %{"name" => ^tool_name} = pending} = run ->
+      {mod, %{pending_tool_call: %{"name" => ^tool_name} = pending} = holder} ->
         if Map.has_key?(pending, "result") or Map.has_key?(pending, "error") do
           # Already answered while nobody was parked to consume it (e.g. a
           # broadcast/poll raced this restart) — resolve inline, no parking.
           {{:reply, mcp_result_from_pending(pending)},
-           clear_pending_and_resume(run, pending["id"])}
+           clear_pending_and_resume(mod, holder, pending["id"])}
         else
-          {:parked, repark_existing(run, pending, from_entry, state)}
+          {:parked, repark_existing(mod, holder, pending, from_entry, state)}
         end
 
-      %{pending_tool_call: pending} ->
+      {_mod, %{pending_tool_call: pending}} ->
         {{:reply, one_at_a_time_message(pending["name"], pending["id"])}, state}
     end
   end
@@ -708,11 +719,11 @@ defmodule OrcaHub.MCP.Server do
     )
   end
 
-  # The `api_runs.pending_tool_call` column casts as a plain map — arguments
+  # The holder's `pending_tool_call` column casts as a plain map — arguments
   # are unwrapped back to the caller's raw shape (see wrapped_input_schema/1)
   # before being stored, so the caller sees exactly the shape matching the
   # `input_schema` they supplied, not an internal `{"result": ...}` wrapper.
-  defp persist_and_park(run, tool, arguments, from_entry, state) do
+  defp persist_and_park(mod, holder, tool, arguments, from_entry, state) do
     tool_call_id = Ecto.UUID.generate()
     real_arguments = unwrap_wrapped_arguments(arguments, tool["input_schema"])
 
@@ -722,17 +733,17 @@ defmodule OrcaHub.MCP.Server do
       "arguments" => real_arguments
     }
 
-    case OrcaHub.HubRPC.update_api_run(run, %{
-           status: "awaiting_tool_result",
+    case mod.update(holder, %{
+           status: mod.parked_status(),
            pending_tool_call: pending_tool_call
          }) do
-      {:ok, updated_run} ->
-        {:parked, begin_park(updated_run, tool_call_id, tool["name"], from_entry, state)}
+      {:ok, updated_holder} ->
+        {:parked, begin_park(mod, updated_holder, tool_call_id, tool["name"], from_entry, state)}
 
       {:error, changeset} ->
         Logger.error(
-          "[MCP] api_run client tool call: failed to persist pending_tool_call for run " <>
-            "#{run.id}: #{inspect(changeset.errors)}"
+          "[MCP] api_run client tool call: failed to persist pending_tool_call for holder " <>
+            "#{holder.id}: #{inspect(changeset.errors)}"
         )
 
         {{:reply,
@@ -744,19 +755,18 @@ defmodule OrcaHub.MCP.Server do
 
   # Re-parking against an existing, unanswered pending_tool_call (restart
   # mid-hold — see moduledoc above): clear any stale `hold_expired` marker so
-  # ApiRunController.deliver_tool_result/3 takes the real-time path again now
-  # that someone IS parked once more. Best-effort — still park even if this
-  # write fails, since the pending call itself is unaffected either way.
-  defp repark_existing(run, pending, from_entry, state) do
-    run =
-      case OrcaHub.HubRPC.update_api_run(run, %{
-             pending_tool_call: Map.delete(pending, "hold_expired")
-           }) do
-        {:ok, updated_run} -> updated_run
-        {:error, _changeset} -> run
+  # ApiRunController.deliver_tool_result/3 (or its A2A counterpart) takes the
+  # real-time path again now that someone IS parked once more. Best-effort —
+  # still park even if this write fails, since the pending call itself is
+  # unaffected either way.
+  defp repark_existing(mod, holder, pending, from_entry, state) do
+    holder =
+      case mod.update(holder, %{pending_tool_call: Map.delete(pending, "hold_expired")}) do
+        {:ok, updated_holder} -> updated_holder
+        {:error, _changeset} -> holder
       end
 
-    begin_park(run, pending["id"], pending["name"], from_entry, state)
+    begin_park(mod, holder, pending["id"], pending["name"], from_entry, state)
   end
 
   # `parked.froms` is a list of `{genserver_from, jsonrpc_id}` pairs, not bare
@@ -764,11 +774,12 @@ defmodule OrcaHub.MCP.Server do
   # request with its own JSON-RPC `id`, and the eventual reply must be
   # wrapped with the MATCHING id (see reply_to_froms/2) or the CLI can't
   # correlate the response back to its request.
-  defp begin_park(run, tool_call_id, tool_name, from_entry, state) do
-    Phoenix.PubSub.subscribe(OrcaHub.PubSub, api_run_topic(run.id))
+  defp begin_park(mod, holder, tool_call_id, tool_name, from_entry, state) do
+    Phoenix.PubSub.subscribe(OrcaHub.PubSub, mod.topic(holder.id))
 
     parked = %{
-      run_id: run.id,
+      holder_mod: mod,
+      holder_id: holder.id,
       tool_call_id: tool_call_id,
       tool_name: tool_name,
       froms: [from_entry],
@@ -776,7 +787,7 @@ defmodule OrcaHub.MCP.Server do
         Process.send_after(
           self(),
           {:client_tool_hold_timeout, tool_call_id},
-          hold_timeout_ms(run)
+          hold_timeout_ms(holder)
         ),
       poll_ref: schedule_poll(tool_call_id)
     }
@@ -798,11 +809,11 @@ defmodule OrcaHub.MCP.Server do
     Process.send_after(self(), {:client_tool_poll, tool_call_id}, poll_interval_ms())
   end
 
-  # Re-fetches the run and resolves if the caller's answer has landed
+  # Re-fetches the holder and resolves if the caller's answer has landed
   # (belt-and-braces fallback for a missed PubSub broadcast — see moduledoc
   # above); otherwise just reschedules the next poll tick.
   defp poll_parked_call(%{parked_tool_call: parked} = state) do
-    case OrcaHub.HubRPC.get_api_run(parked.run_id) do
+    case parked.holder_mod.get(parked.holder_id) do
       %{pending_tool_call: %{"id" => tool_call_id} = pending}
       when tool_call_id == parked.tool_call_id ->
         if Map.has_key?(pending, "result") or Map.has_key?(pending, "error") do
@@ -836,7 +847,7 @@ defmodule OrcaHub.MCP.Server do
   defp resolve_parked(parked, payload, state) do
     mcp_result = mcp_result_from_payload(payload)
     reply_to_froms(parked.froms, mcp_result)
-    clear_pending_and_resume(parked.run_id, parked.tool_call_id)
+    clear_pending_and_resume(parked.holder_mod, parked.holder_id, parked.tool_call_id)
     cleanup_parked(parked)
     %{state | parked_tool_call: nil}
   end
@@ -849,30 +860,32 @@ defmodule OrcaHub.MCP.Server do
     do: OrcaHub.MCP.Tools.Result.text(Jason.encode!(result, pretty: true))
 
   # MCP.Server resolves, replies, THEN clears pending_tool_call and flips
-  # status back to "running" — kept as a distinct last step so a crash
-  # between reply and clear just re-triggers the (idempotent) restart/re-park
-  # path above instead of losing the answer.
-  defp clear_pending_and_resume(run_id, tool_call_id) when is_binary(run_id) do
-    case OrcaHub.HubRPC.get_api_run(run_id) do
-      %{pending_tool_call: %{"id" => ^tool_call_id}} = run ->
-        clear_pending_and_resume(run, tool_call_id)
+  # status back to the holder's own `resumed_status()` — kept as a distinct
+  # last step so a crash between reply and clear just re-triggers the
+  # (idempotent) restart/re-park path above instead of losing the answer.
+  defp clear_pending_and_resume(mod, holder_id, tool_call_id) when is_binary(holder_id) do
+    case mod.get(holder_id) do
+      %{pending_tool_call: %{"id" => ^tool_call_id}} = holder ->
+        clear_pending_and_resume(mod, holder, tool_call_id)
 
       _other ->
         :ok
     end
   end
 
-  defp clear_pending_and_resume(%{pending_tool_call: %{"id" => tool_call_id}} = run, tool_call_id) do
-    OrcaHub.HubRPC.update_api_run(run, %{status: "running", pending_tool_call: nil})
-    run
+  defp clear_pending_and_resume(
+         mod,
+         %{pending_tool_call: %{"id" => tool_call_id}} = holder,
+         tool_call_id
+       ) do
+    mod.update(holder, %{status: mod.resumed_status(), pending_tool_call: nil})
+    holder
   end
 
-  defp mark_hold_expired(run_id, tool_call_id) do
-    case OrcaHub.HubRPC.get_api_run(run_id) do
-      %{pending_tool_call: %{"id" => ^tool_call_id} = pending} = run ->
-        OrcaHub.HubRPC.update_api_run(run, %{
-          pending_tool_call: Map.put(pending, "hold_expired", true)
-        })
+  defp mark_hold_expired(mod, holder_id, tool_call_id) do
+    case mod.get(holder_id) do
+      %{pending_tool_call: %{"id" => ^tool_call_id} = pending} = holder ->
+        mod.update(holder, %{pending_tool_call: Map.put(pending, "hold_expired", true)})
 
       _other ->
         :ok
@@ -882,10 +895,8 @@ defmodule OrcaHub.MCP.Server do
   defp cleanup_parked(parked) do
     if parked.hold_ref, do: Process.cancel_timer(parked.hold_ref)
     if parked.poll_ref, do: Process.cancel_timer(parked.poll_ref)
-    Phoenix.PubSub.unsubscribe(OrcaHub.PubSub, api_run_topic(parked.run_id))
+    Phoenix.PubSub.unsubscribe(OrcaHub.PubSub, parked.holder_mod.topic(parked.holder_id))
   end
-
-  defp api_run_topic(run_id), do: "api_run:#{run_id}"
 
   # v1 placeholder text (unchanged from the pre-rework behavior) — used only
   # as the hold-timeout fallback now; the happy path replies with the
@@ -921,10 +932,10 @@ defmodule OrcaHub.MCP.Server do
   def client_tool_hold_cap_ms,
     do: Application.get_env(:orca_hub, :api_run_tool_hold_cap_ms, @default_hold_cap_ms)
 
-  defp hold_timeout_ms(run) do
-    inserted_at = DateTime.from_naive!(run.inserted_at, "Etc/UTC")
+  defp hold_timeout_ms(holder) do
+    inserted_at = DateTime.from_naive!(holder.inserted_at, "Etc/UTC")
     elapsed_ms = DateTime.diff(DateTime.utc_now(), inserted_at, :millisecond)
-    remaining_ms = run.timeout_seconds * 1000 - elapsed_ms
+    remaining_ms = holder.timeout_seconds * 1000 - elapsed_ms
 
     remaining_ms |> min(client_tool_hold_cap_ms()) |> max(0)
   end
@@ -934,23 +945,20 @@ defmodule OrcaHub.MCP.Server do
   defp poll_interval_ms,
     do: Application.get_env(:orca_hub, :api_run_tool_poll_interval_ms, @default_poll_interval_ms)
 
-  # The `api_runs.result` column casts as a plain map (see ApiRun schema) —
-  # a schema-valid but non-object top-level submission (e.g. a wrapped array
-  # schema) fails THIS cast even though it passed JSON Schema validation.
-  # Handled as an ordinary tool error rather than crashing the GenServer (the
-  # general tools/call dispatcher's try/rescue doesn't cover this clause).
-  defp persist_completed_run(run, submission) do
-    case OrcaHub.HubRPC.update_api_run(run, %{
-           status: "completed",
-           result: submission,
-           result_text: nil
-         }) do
-      {:ok, _run} ->
+  # The holder's `result` column casts as a plain map (see ApiRun/A2ATask
+  # schemas) — a schema-valid but non-object top-level submission (e.g. a
+  # wrapped array schema) fails THIS cast even though it passed JSON Schema
+  # validation. Handled as an ordinary tool error rather than crashing the
+  # GenServer (the general tools/call dispatcher's try/rescue doesn't cover
+  # this clause).
+  defp persist_completed_run(mod, holder, submission) do
+    case mod.update(holder, %{status: "completed", result: submission, result_text: nil}) do
+      {:ok, _holder} ->
         OrcaHub.MCP.Tools.Result.text("Result accepted.")
 
       {:error, changeset} ->
         Logger.error(
-          "[MCP] api_run submit_result: failed to persist run #{run.id}: " <>
+          "[MCP] api_run submit_result: failed to persist holder #{holder.id}: " <>
             inspect(changeset.errors)
         )
 
