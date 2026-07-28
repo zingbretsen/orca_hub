@@ -12,10 +12,16 @@ defmodule OrcaHub.A2A do
   Covers the subset of the A2A v0.3.0 surface phx-app implements today:
   `message/send`, `tasks/get`, `tasks/cancel`, plus the plain-HTTP agent
   discovery endpoints (`GET /a2a/agents`, agent cards). `message/stream`
-  (SSE) and non-text message parts (file/data) are deliberately out of scope
-  for now — `reply_text/1` only reads `"kind" => "text"` parts, and
-  `send_message/4` only writes them; extending both to other part kinds
-  later is additive, not a redesign.
+  (SSE) is deliberately out of scope for now.
+
+  Additive v2 support (docs/a2a.md "v2: client tools + structured results"):
+  `send_message/4`'s `:metadata` option carries a session-creating send's
+  `client_tools`/`result_schema`/`max_validation_attempts` declaration (or
+  `no_tools`); `answer_tool_call/6` answers a parked client-tool call via a
+  `taskId`-bearing send; `data_parts/1`, `result_data/1`, and
+  `pending_tool_call/1` read the `DataPart` shapes v2 introduces, keyed off
+  the `metadata.orcahub_part` discriminator. `reply_text/1`'s `TextPart`-only
+  behavior is unchanged — a v1-only caller doesn't need to touch any of this.
   """
 
   defmodule Server do
@@ -48,6 +54,10 @@ defmodule OrcaHub.A2A do
     * `:context_id` — a prior task's `id` (== `contextId`), to continue
       that same conversation instead of starting a new one.
     * `:message_id` — override the generated message UUID (rarely needed).
+    * `:metadata` — a map merged onto `message.metadata` (e.g. `no_tools`,
+      or the v2 declaration keys `client_tools`/`result_schema`/
+      `max_validation_attempts` on a session-creating send — docs/a2a.md
+      "v2: client tools + structured results").
 
   Returns `{:ok, task}` — the JSON-RPC `result`, a task map with `"id"`
   (== `"contextId"` == the underlying phx-app chat id), `"status"`, `"kind"`.
@@ -60,9 +70,47 @@ defmodule OrcaHub.A2A do
         "parts" => [%{"kind" => "text", "text" => text}]
       }
       |> put_context_id(Keyword.get(opts, :context_id))
+      |> put_metadata(Keyword.get(opts, :metadata))
 
     rpc(server, agent_id, "message/send", %{"message" => message})
   end
+
+  @doc """
+  v2 (docs/a2a.md "Tool-call loop"): answers a client-tool call parked by
+  `agent_id` against `task_id` — a `message/send` WITH `taskId` set, carrying
+  a `DataPart` instead of a `TextPart`. `answer` is `{:result, value}` (any
+  JSON-encodable value) or `{:error, reason}` (a string, for a failed
+  client-side tool execution).
+
+  Options:
+    * `:context_id` — optional; if given it's checked server-side against
+      the task's own `contextId` (mismatch is rejected). `task_id` alone is
+      sufficient to identify the task.
+    * `:message_id` — override the generated message UUID.
+
+  Returns `{:ok, task}` exactly like `send_message/4` — per the idempotent-
+  ack precedence rule (docs/a2a.md), answering the SAME `tool_call_id` again
+  later (even after the task has moved on) is always safe to retry.
+  """
+  def answer_tool_call(%Server{} = server, agent_id, task_id, tool_call_id, answer, opts \\ [])
+      when is_binary(task_id) and is_binary(tool_call_id) do
+    message =
+      %{
+        "messageId" => Keyword.get(opts, :message_id, Ecto.UUID.generate()),
+        "role" => "user",
+        "taskId" => task_id,
+        "parts" => [%{"kind" => "data", "data" => tool_call_answer_data(tool_call_id, answer)}]
+      }
+      |> put_context_id(Keyword.get(opts, :context_id))
+
+    rpc(server, agent_id, "message/send", %{"message" => message})
+  end
+
+  defp tool_call_answer_data(tool_call_id, {:result, value}),
+    do: %{"tool_call_id" => tool_call_id, "result" => value}
+
+  defp tool_call_answer_data(tool_call_id, {:error, reason}) when is_binary(reason),
+    do: %{"tool_call_id" => tool_call_id, "error" => reason}
 
   @doc "`tasks/get` — current state of a task."
   def get_task(%Server{} = server, agent_id, task_id) do
@@ -100,6 +148,39 @@ defmodule OrcaHub.A2A do
   end
 
   def reply_text(_task), do: nil
+
+  @doc """
+  v2 (docs/a2a.md "v2: client tools + structured results"): every
+  `"kind": "data"` part on a task's `status.message`, if any — `[]` for a
+  text-only (v1) task or one with no message at all.
+  """
+  def data_parts(%{"status" => %{"message" => %{"parts" => parts}}}) when is_list(parts) do
+    Enum.filter(parts, &(&1["kind"] == "data"))
+  end
+
+  def data_parts(_task), do: []
+
+  @doc """
+  v2: the validated structured result (`metadata.orcahub_part: "result"`) on
+  a `"completed"` task, or `nil` if the task has no result data part yet
+  (still in progress, failed before validating, or a plain text-only v1
+  reply).
+  """
+  def result_data(task), do: data_part(task, "result")
+
+  @doc """
+  v2: the pending client-tool call (`metadata.orcahub_part: "tool_call"`) on
+  an `"input-required"` task — `%{"tool_call_id", "name", "arguments"}` — or
+  `nil` if none is pending.
+  """
+  def pending_tool_call(task), do: data_part(task, "tool_call")
+
+  defp data_part(task, orcahub_part) do
+    case Enum.find(data_parts(task), &(get_in(&1, ["metadata", "orcahub_part"]) == orcahub_part)) do
+      %{"data" => data} -> data
+      nil -> nil
+    end
+  end
 
   @doc "Whether `state` is one of the terminal A2A task states."
   def terminal_state?(state), do: state in @terminal_states
@@ -170,4 +251,9 @@ defmodule OrcaHub.A2A do
 
   defp put_context_id(message, nil), do: message
   defp put_context_id(message, context_id), do: Map.put(message, "contextId", context_id)
+
+  defp put_metadata(message, nil), do: message
+
+  defp put_metadata(message, metadata) when is_map(metadata),
+    do: Map.put(message, "metadata", metadata)
 end

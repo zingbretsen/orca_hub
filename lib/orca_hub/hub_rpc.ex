@@ -325,6 +325,21 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.ApiRuns, :get_run_by_session_id, [session_id])
 
   # -------------------------------------------------------------------
+  # A2A Tasks (inbound A2A server, docs/a2a.md) — reached from MCP.Server
+  # (which may run on an agent node) via OrcaHub.MCP.ToolCallHolder.A2ATaskHolder.
+  # Task CREATION stays direct-Repo in A2ATasks/A2AController (hub-only), so
+  # only the get/update surface a client-tool-call holder needs is wrapped
+  # here.
+  # -------------------------------------------------------------------
+
+  def get_a2a_task(id), do: call(OrcaHub.A2ATasks, :get_task, [id])
+
+  def get_a2a_task_by_session_id(session_id),
+    do: call(OrcaHub.A2ATasks, :get_task_by_session_id, [session_id])
+
+  def update_a2a_task(task, attrs), do: call(OrcaHub.A2ATasks, :update_task, [task, attrs])
+
+  # -------------------------------------------------------------------
   # Cluster Nodes (/nodes UI — currently and previously connected nodes)
   # -------------------------------------------------------------------
 

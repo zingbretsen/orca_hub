@@ -94,7 +94,7 @@ JSON-RPC errors are returned with **HTTP 200** (standard JSON-RPC practice
 |---|---|
 | `-32600` | Invalid Request — `jsonrpc` isn't `"2.0"` |
 | `-32601` | Method not found |
-| `-32602` | Invalid params (e.g. no text parts in `message.parts`, or `message.taskId` given instead of `contextId`; **v2 draft**: a `taskId`-bearing send whose `tool_call_id` was never issued for that task (regardless of the task's current state), or `client_tools`/`result_schema`/`max_validation_attempts` declared on a continuation) |
+| `-32602` | Invalid params (e.g. no text parts in `message.parts`, or `message.taskId` given instead of `contextId`; **v2**: a `taskId`-bearing send whose `tool_call_id` was never issued for that task (regardless of the task's current state), or `client_tools`/`result_schema`/`max_validation_attempts` declared on a continuation) |
 | `-32001` | Task not found (unknown/malformed task id on `tasks/get`/`tasks/cancel`; also used for an unknown/foreign `contextId` on `message/send` — see below) |
 | `-32002` | Task not cancelable (already terminal) |
 | `-32003` | Push notifications not supported (`tasks/pushNotificationConfig/*`) |
@@ -127,11 +127,13 @@ to form the prompt. `400`/`-32602` if there's no non-empty text part.
   IS the session id (see "contextId == session id" below). The session must
   belong to the same agent (project); a `contextId` for a session in a
   different project, or one that doesn't exist, is rejected `-32001`.
-- **`message.taskId`**: not supported for follow-ups and rejected
-  `-32602` — one OrcaHub A2A task maps to exactly one turn, so there's no
-  "add another message to an existing task" concept. Use `contextId`
-  (the *session's* id) to continue a conversation across multiple tasks
-  instead.
+- **`message.taskId`**: one OrcaHub A2A task still maps to exactly one
+  turn, so there's no "add another message to an existing task" concept for
+  a **plain text follow-up** — use `contextId` (the *session's* id) to
+  continue a conversation across multiple tasks instead. The one exception
+  is **v2**'s tool-call answers (see below): a `taskId`-bearing send whose
+  `message.parts` carries a `DataPart` answers a parked client-tool call on
+  that task rather than starting/continuing a conversation turn.
 
 Response `result` is a task object in state `"submitted"` or `"working"`
 (see "Task object shape" below) — poll `tasks/get` to drive it forward.
@@ -265,16 +267,19 @@ phx-app). It's wire-compatible with this server: `OrcaHub.A2A.send_message/4`,
 against this controller (see the symmetry test in
 `test/orca_hub_web/controllers/a2a_controller_test.exs`), so OrcaHub could
 in principle call its own `/a2a` endpoint, or another OrcaHub instance's.
+The client also has additive v2 support — `send_message/4`'s `:metadata`
+option, `answer_tool_call/6`, and the `data_parts/1`/`result_data/1`/
+`pending_tool_call/1` readers — see the "v2" section below.
 
-## v2 (DRAFT — not implemented): client tools + structured results
+## v2: client tools + structured results
 
-> **⚠️ Draft contract — not implemented.** This section describes a
-> proposed contract under review between the A2A implementer-orchestrator
-> and its first prospective consumer. Nothing below is served by the
-> current deployment: no code, no schema, no endpoint behavior described
-> here exists yet. The authoritative, shipped surface is everything
-> **above** this section. Treat this as a specification for future work,
-> not documentation of current behavior.
+> **Implemented — deployment may lag.** This section is now implemented
+> and covered by tests (`test/orca_hub_web/controllers/a2a_controller_test.exs`,
+> `test/orca_hub/mcp/server_test.exs`). As with any change, a given running
+> instance may not yet be on a commit that includes it — check
+> `GET /api/version` against the SHA this landed at, or just try it and
+> watch for `-32601`/unexpected shapes if you're unsure. Everything below
+> (and above) describes the shipped contract.
 
 ### Declaration (session-creating `message/send` only)
 
@@ -302,6 +307,13 @@ in principle call its own `/a2a` endpoint, or another OrcaHub instance's.
 - Backend restriction mirrors the Runs API where applicable — today only
   `no_tools` itself carries the Claude-only restriction; `client_tools`/
   `result_schema` don't add any further restriction beyond that.
+- `no_tools` composes independently with `client_tools`/`result_schema` on
+  the same session-creating send — exactly like the Agent Runs API's
+  identical combination (docs/api.md): `no_tools` only ever empties the
+  session's **built-in** tool allow-list, while the synthesized
+  `submit_result`/client-tools MCP surface (driven by `client_tools`/
+  `result_schema`) is wired up independently of it. All three metadata keys
+  are a plain merge — none of them gate or suppress one another.
 
 ### Tool-call loop (A2A-native)
 
@@ -414,7 +426,7 @@ in principle call its own `/a2a` endpoint, or another OrcaHub instance's.
   `timeout_seconds` provides, a `metadata.timeout_seconds` declaration is
   the natural future extension — not specified here.
 
-### Example (draft): declare → input-required → answer via taskId → completed with result
+### Example: declare → input-required → answer via taskId → completed with result
 
 ```bash
 curl -s -X POST https://orca.example/a2a/agents/<project-id> \
@@ -466,27 +478,13 @@ curl -s -X POST https://orca.example/a2a/agents/<project-id> \
 #                 "metadata":{"orcahub_part":"result"}}]}}}}
 ```
 
-## Roadmap / not in v1
+## Roadmap / not implemented
 
-This v1 deliberately covers the plain text-in/text-out conversational
-subset of A2A. A few things stay out of scope for v1 and remain on the
-[Agent Runs API](api.md) instead:
+Structured/schema-validated results and client-defined ("frontend") tools
+are now covered by the "v2" section above (implemented). One thing remains
+out of scope and stays on the [Agent Runs API](api.md) instead:
 
-- **Structured/schema-validated results** — specified in the "v2 (DRAFT —
-  not implemented)" section above; not implemented yet. An A2A task's
-  result today is always plain reply text (`status.message.parts`), never
-  a validated JSON object.
-- **Client-defined ("frontend") tools** — likewise specified in the v2
-  draft above, via the `input-required` task state (task pauses, caller
-  supplies more input, task resumes); not implemented yet.
 - **A2A protocol-level artifacts** — A2A's `artifact` concept (structured,
   named outputs attached to a task, distinct from the reply message) isn't
-  implemented and has no draft yet either. Only `status.message` text
-  parts are produced.
-
-A caller that needs schema-validated results or client-side tool execution
-today should use the Agent Runs API directly — the v2 draft above is a
-proposed contract under review, not shipped behavior. If/when it lands,
-expect it to extend the task object exactly as specified above (the
-`input-required` state, `DataPart`-shaped status messages) rather than
-changing anything else documented in this file.
+  implemented and has no draft yet either. Only `status.message` text and
+  data parts are produced.

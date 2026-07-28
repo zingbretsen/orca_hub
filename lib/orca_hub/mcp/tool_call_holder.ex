@@ -7,14 +7,14 @@ defmodule OrcaHub.MCP.ToolCallHolder do
 
   Extracted from the Agent Runs API's `api_runs` table (docs/api.md) so the
   exact same parking mechanics (park, hold-timeout, poll fallback, PubSub
-  resolution, idempotent re-park on restart) can be reused by a second
-  holder kind later without duplicating any of that logic — see
-  `ApiRunHolder` (the only registered holder today). A concrete holder wraps
-  a schema/struct with matching field names (`result_schema`,
-  `client_tools`, `pending_tool_call`, `timeout_seconds`, `inserted_at`,
-  `session_id`) so `MCP.Server`'s shared code can read those fields directly
-  off whichever holder struct it's handed, without a holder-specific
-  accessor for each one.
+  resolution, idempotent re-park on restart) are reused, unmodified, by the
+  inbound A2A v2 tool-call loop (docs/a2a.md) against `a2a_tasks` — see
+  `ApiRunHolder` and `A2ATaskHolder`. A concrete holder wraps a
+  schema/struct with matching field names (`result_schema`, `client_tools`,
+  `pending_tool_call`, `timeout_seconds`, `inserted_at`, `session_id`) so
+  `MCP.Server`'s shared code can read those fields directly off whichever
+  holder struct it's handed, without a holder-specific accessor for each
+  one.
   """
 
   @type holder :: struct()
@@ -39,7 +39,8 @@ defmodule OrcaHub.MCP.ToolCallHolder do
 
   @doc "Every registered holder module, tried in order by session-id lookup."
   @spec modules() :: [module()]
-  def modules, do: [OrcaHub.MCP.ToolCallHolder.ApiRunHolder]
+  def modules,
+    do: [OrcaHub.MCP.ToolCallHolder.ApiRunHolder, OrcaHub.MCP.ToolCallHolder.A2ATaskHolder]
 
   @doc """
   Finds the holder (if any) backing `session_id`, trying each registered

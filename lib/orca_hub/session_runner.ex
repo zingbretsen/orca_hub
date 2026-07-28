@@ -28,28 +28,42 @@ defmodule OrcaHub.SessionRunner do
     db_call(data, :update_session, [session, attrs])
   end
 
-  # Agent Runs API (docs/api.md): does this session back a run with a
-  # `result_schema` (submit_result) and/or caller-defined `client_tools`?
-  # Resolved once at init/1 into ctx.result_schema?/ctx.client_tools? —
-  # ctx.api_run? (either one) gates the MCP connection's api_run surface as
-  # a whole, while the individual flags gate content that's only true of
-  # ONE of the two (e.g. the submit_result system-prompt fragment).
-  # `timeout_seconds` is threaded through too so a client_tools session's
-  # spawn can size its client-side MCP tool-call timeout to comfortably
-  # exceed the server's own hold budget for a parked tool call — see
-  # OrcaHub.Backend.Claude.
+  # Agent Runs API (docs/api.md) AND inbound A2A v2 declarations (docs/a2a.md
+  # "Declaration"): does this session back a run/task with a `result_schema`
+  # (submit_result) and/or caller-defined `client_tools`? Resolved once at
+  # init/1 into ctx.result_schema?/ctx.client_tools? — ctx.api_run? (either
+  # one) gates the MCP connection's api_run surface as a whole (see
+  # OrcaHub.MCP.ToolCallHolder — a session is only ever backed by ONE of the
+  # two holder kinds, so checking api_runs then a2a_tasks in turn is enough),
+  # while the individual flags gate content that's only true of ONE of the
+  # two (e.g. the submit_result system-prompt fragment). `timeout_seconds` is
+  # threaded through too so a client_tools session's spawn can size its
+  # client-side MCP tool-call timeout to comfortably exceed the server's own
+  # hold budget for a parked tool call — see OrcaHub.Backend.Claude.
   defp api_run_flags(init_data, session_id) do
     case db_call(init_data, :get_run_by_session_id, [session_id]) do
-      %{result_schema: schema, client_tools: tools, timeout_seconds: timeout_seconds} ->
-        %{
-          result_schema?: is_map(schema),
-          client_tools?: is_list(tools) and tools != [],
-          timeout_seconds: timeout_seconds
-        }
-
-      nil ->
-        %{result_schema?: false, client_tools?: false, timeout_seconds: nil}
+      nil -> a2a_task_flags(init_data, session_id)
+      run -> holder_flags(run)
     end
+  end
+
+  defp a2a_task_flags(init_data, session_id) do
+    case db_call(init_data, :get_a2a_task_by_session_id, [session_id]) do
+      nil -> %{result_schema?: false, client_tools?: false, timeout_seconds: nil}
+      task -> holder_flags(task)
+    end
+  end
+
+  defp holder_flags(%{
+         result_schema: schema,
+         client_tools: tools,
+         timeout_seconds: timeout_seconds
+       }) do
+    %{
+      result_schema?: is_map(schema),
+      client_tools?: is_list(tools) and tools != [],
+      timeout_seconds: timeout_seconds
+    }
   end
 
   # Project-level toggle for the OrcaHub-Session commit trailer prompt
