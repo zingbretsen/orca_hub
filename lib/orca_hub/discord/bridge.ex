@@ -203,7 +203,7 @@ defmodule OrcaHub.Discord.Bridge do
     """
     #{prompt}
 
-    [Files saved to inbox/]
+    [Files saved under inbox/]
     #{Enum.join(saved, "\n")}
     """
     |> String.trim_trailing()
@@ -224,7 +224,7 @@ defmodule OrcaHub.Discord.Bridge do
     """
     #{prompt}
 
-    [You can call Tools.send_discord_message(%{...}) inside the run_elixir MCP tool to send files/attachments or interim updates to this channel. Pass one of the `[id: ...]` values shown above as `reply_to_message_id` to thread your post as a Discord reply to that specific message. To retroactively grab files from an earlier message (e.g. one uploaded without a text mention, or outside this transcript), call Tools.fetch_discord_attachments(%{"message_id" => "..."}) with that message's `[id: ...]` value — it re-fetches the message fresh and saves its attachments into inbox/. Your final reply is posted here automatically when you finish — don't duplicate it with this tool.]
+    [You can call Tools.send_discord_message(%{...}) inside the run_elixir MCP tool to send files/attachments or interim updates to this channel. Pass one of the `[id: ...]` values shown above as `reply_to_message_id` to thread your post as a Discord reply to that specific message. To retroactively grab files from an earlier message (e.g. one uploaded without a text mention, or outside this transcript), call Tools.fetch_discord_attachments(%{"message_id" => "..."}) with that message's `[id: ...]` value — it re-fetches the message fresh and saves its attachments into a folder under inbox/ named for that message. Your final reply is posted here automatically when you finish — don't duplicate it with this tool.]
     """
     |> String.trim_trailing()
   end
@@ -400,60 +400,79 @@ defmodule OrcaHub.Discord.Bridge do
   end
 
   # ------------------------------------------------------------------
-  # Attachments → inbox/
+  # Attachments → inbox/<message_id>/
   # ------------------------------------------------------------------
   #
-  # Copy every attachment on the mention into `<project.directory>/inbox/` so a
-  # session can read them later. Runs on the Discord agent node, which owns the
-  # shared mount, so local File writes + Req downloads work here. Each download
-  # is isolated: a failure logs and is skipped, never crashing dispatch. On any
+  # Copy every attachment on the mention into
+  # `<project.directory>/inbox/<message_id>/` so a session can read them
+  # later. Runs on the Discord agent node, which owns the shared mount, so
+  # local File writes + Req downloads work here. Each download is isolated:
+  # a failure logs and is skipped, never crashing dispatch. On any
   # successful save we react ✅ to the triggering message as feedback.
   #
-  # Returns the list of saved relative paths (e.g. "inbox/report.pdf").
+  # Returns the list of saved relative paths, e.g.
+  # "inbox/123456789/report-987654321.pdf".
 
   defp save_attachments(project, msg, message_id) do
-    saved = save_attachments_to_inbox(project.directory, msg[:attachments] || [])
+    saved = save_attachments_to_inbox(project.directory, message_id, msg[:attachments] || [])
     if saved != [], do: ack_reaction(msg, message_id)
-    saved
+    Enum.map(saved, &elem(&1, 1))
   end
 
   @doc """
   Download `attachments` (a list of `%Nostrum.Struct.Message.Attachment{}`,
-  or anything shaped like one) into `<directory>/inbox/`, returning the list
-  of saved paths relative to `directory` (e.g. `"inbox/report.pdf"`). A
-  single failed download is logged and skipped — never raises.
+  or anything shaped like one) into
+  `<directory>/inbox/<message_id>/`, returning a list of
+  `{:downloaded, rel_path} | {:existing, rel_path}` tuples — `rel_path` is
+  relative to `directory`, e.g. `"inbox/123456789/report-987654321.pdf"`. A
+  single failed download is logged and skipped (omitted from the result) —
+  never raises.
+
+  The saved path is a PURE FUNCTION of `{message_id, attachment.id,
+  attachment.filename}`: nesting by message id and always suffixing the
+  stem with the attachment id means re-saving the same attachment — a
+  retried dispatch, or a later `fetch_discord_attachments` call for a
+  message already auto-copied on mention — resolves to the exact same path
+  every time. When that path already exists we skip the download entirely
+  (`:existing`) rather than re-fetch-and-overwrite: it may be the identical
+  bytes already there, or it may be a copy the agent has since edited
+  locally — either way, clobbering it would be wrong. Attachment ids are
+  unique within one Discord message, so within one message's directory a
+  name collision can ONLY be this idempotency case, never two different
+  attachments fighting over a name — no collision-avoidance/retry loop is
+  needed, just the existence check.
 
   Shared by the on-mention auto-copy path (`save_attachments/3` above) and
   the `fetch_discord_attachments` MCP tool, which re-fetches a message fresh
-  (Discord CDN URLs expire) and then hands its attachments here to reuse the
-  exact same collision-safe naming/download logic.
+  (Discord CDN URLs expire) and then hands its attachments here.
   """
-  def save_attachments_to_inbox(_directory, []), do: []
+  def save_attachments_to_inbox(_directory, _message_id, []), do: []
 
-  def save_attachments_to_inbox(directory, attachments) do
-    inbox = Path.join(directory, "inbox")
-    File.mkdir_p!(inbox)
+  def save_attachments_to_inbox(directory, message_id, attachments) do
+    message_id = to_string(message_id)
+    message_dir = Path.join([directory, "inbox", message_id])
+    File.mkdir_p!(message_dir)
 
     attachments
-    |> Enum.reduce([], fn attachment, acc ->
-      case save_one(inbox, attachment, acc) do
-        {:ok, rel} -> [rel | acc]
-        :error -> acc
-      end
-    end)
-    |> Enum.reverse()
+    |> Enum.map(&save_one(message_dir, message_id, &1))
+    |> Enum.reject(&is_nil/1)
   end
 
-  # Download a single attachment into `inbox`, avoiding collisions with anything
-  # already saved this dispatch (`taken`, a list of "inbox/<name>" rel paths).
-  # Returns {:ok, rel_path} or :error (logged) — never raises.
-  defp save_one(inbox, attachment, taken) do
-    name = unique_name(inbox, sanitize_filename(attachment.filename), attachment.id, taken)
-    path = Path.join(inbox, name)
+  # Download (or skip, if already present) a single attachment into
+  # `message_dir`. Returns {:downloaded, rel_path} | {:existing, rel_path} or
+  # nil on failure (logged) — never raises.
+  defp save_one(message_dir, message_id, attachment) do
+    name = attachment_filename(sanitize_filename(attachment.filename), attachment.id)
+    path = Path.join(message_dir, name)
+    rel = Path.join(["inbox", message_id, name])
 
-    %{body: body} = Req.get!(attachment.url)
-    File.write!(path, body)
-    {:ok, Path.join("inbox", name)}
+    if File.exists?(path) do
+      {:existing, rel}
+    else
+      %{body: body} = Req.get!(attachment.url)
+      File.write!(path, body)
+      {:downloaded, rel}
+    end
   rescue
     e ->
       Logger.warning(
@@ -461,27 +480,17 @@ defmodule OrcaHub.Discord.Bridge do
           Exception.message(e)
       )
 
-      :error
+      nil
   end
 
-  # Pick a name that collides with neither an existing file on disk nor one we
-  # just wrote this dispatch. First tries the sanitized name, then appends the
-  # Discord attachment id, then a numeric counter as a last resort.
-  defp unique_name(inbox, base, attachment_id, taken) do
-    candidates =
-      [base, disambiguate(base, to_string(attachment_id))] ++
-        Enum.map(1..50, fn n -> disambiguate(base, Integer.to_string(n)) end)
-
-    Enum.find(candidates, fn name ->
-      not File.exists?(Path.join(inbox, name)) and Path.join("inbox", name) not in taken
-    end) || disambiguate(base, "#{attachment_id}-#{System.unique_integer([:positive])}")
-  end
-
-  # Insert `suffix` before the extension: "report.pdf" + "12" -> "report-12.pdf".
-  defp disambiguate(base, suffix) do
+  # Insert the attachment id before the extension: "report.pdf" + 12 ->
+  # "report-12.pdf". Always applied (not just on collision) so the resulting
+  # name is a pure function of the attachment's identity — see
+  # `save_attachments_to_inbox/3` doc above.
+  defp attachment_filename(base, attachment_id) do
     ext = Path.extname(base)
     stem = Path.basename(base, ext)
-    "#{stem}-#{suffix}#{ext}"
+    "#{stem}-#{attachment_id}#{ext}"
   end
 
   @doc """
@@ -489,18 +498,37 @@ defmodule OrcaHub.Discord.Bridge do
 
   Takes the basename only (drops any path), whitelists alphanumerics plus
   `-`, `_`, and `.`, collapses every other run of characters to a single `-`,
-  and strips leading/trailing separators. Falls back to `"file"` when the
-  result is empty. The output can never be absolute or escape `inbox/`.
+  and strips leading/trailing separators. A single LEADING dot is preserved
+  so dotfiles keep their real name (`.env` stays `.env`, not `env`) — only
+  the fully-dots case (`.`, `..`, `...`) is special-cased away, since those
+  collide with self/parent-directory references once used as a path
+  component. Falls back to `"file"` when the result is empty. The output can
+  never be absolute, never equal `.` or `..`, and never escape the target
+  directory.
   """
   def sanitize_filename(name) when is_binary(name) do
-    name
-    |> Path.basename()
-    |> String.replace(~r/[^A-Za-z0-9._-]+/u, "-")
-    |> String.trim("-")
-    |> String.trim(".")
-    |> case do
+    basename =
+      name
+      |> Path.basename()
+      |> String.replace(~r/[^A-Za-z0-9._-]+/u, "-")
+
+    {dot_prefix, body} =
+      case basename do
+        "." <> rest when rest != "" -> {".", rest}
+        other -> {"", other}
+      end
+
+    sanitized =
+      body
+      |> String.trim("-")
+      |> String.trim(".")
+      |> String.trim("-")
+
+    case dot_prefix <> sanitized do
       "" -> "file"
-      sanitized -> sanitized
+      "." -> "file"
+      ".." -> "file"
+      result -> result
     end
   end
 

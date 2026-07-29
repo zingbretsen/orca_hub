@@ -239,7 +239,7 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
     end
   end
 
-  describe "save_selected/3 (fetch_discord_attachments filenames filter + size cap)" do
+  describe "save_selected/5 (fetch_discord_attachments filenames/attachment_ids filter + size cap)" do
     setup do
       dir =
         Path.join(
@@ -252,30 +252,32 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
 
       project = fixture_project("discord-tool-save-selected", dir)
       session = fixture_session(project)
-      {:ok, session_id: session.id}
+      {:ok, session_id: session.id, message_id: 42, dir: dir}
     end
 
-    test "no filenames given: falls straight through to the size cap over every attachment", %{
-      session_id: session_id
-    } do
-      attachments = [%{filename: "a.txt", size: 10}]
+    test "no filenames/attachment_ids given: falls straight through to the size cap over every attachment",
+         %{session_id: session_id, message_id: message_id} do
+      attachments = [%{id: 1, filename: "a.txt", size: 10}]
 
       # No size violation and no real download target: hits the download
       # branch and (since these fixtures have no real :url) reports a clean
       # "failed to download" error rather than crashing — proving the
       # filenames-omitted path reached the save step at all.
       assert %{"isError" => true, "content" => [%{"text" => text}]} =
-               DiscordTool.save_selected(attachments, [], session_id)
+               DiscordTool.save_selected(attachments, [], [], message_id, session_id)
 
       assert text =~ "Failed to download"
     end
 
     test "requesting a filename not present on the message errors clearly, listing what IS available",
-         %{session_id: session_id} do
-      attachments = [%{filename: "a.txt", size: 10}, %{filename: "b.txt", size: 10}]
+         %{session_id: session_id, message_id: message_id} do
+      attachments = [
+        %{id: 1, filename: "a.txt", size: 10},
+        %{id: 2, filename: "b.txt", size: 10}
+      ]
 
       assert %{"isError" => true, "content" => [%{"text" => text}]} =
-               DiscordTool.save_selected(attachments, ["missing.txt"], session_id)
+               DiscordTool.save_selected(attachments, ["missing.txt"], [], message_id, session_id)
 
       assert text =~ "not found on that message"
       assert text =~ "missing.txt"
@@ -284,14 +286,15 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
     end
 
     test "filenames filter selects only the matching attachment for the size-cap check", %{
-      session_id: session_id
+      session_id: session_id,
+      message_id: message_id
     } do
-      small = %{filename: "small.txt", size: 10}
-      big = %{filename: "big.bin", size: 30 * 1024 * 1024}
+      small = %{id: 1, filename: "small.txt", size: 10}
+      big = %{id: 2, filename: "big.bin", size: 30 * 1024 * 1024}
 
       # Requesting only the oversized file: the cap error must name it.
       assert %{"isError" => true, "content" => [%{"text" => text}]} =
-               DiscordTool.save_selected([small, big], ["big.bin"], session_id)
+               DiscordTool.save_selected([small, big], ["big.bin"], [], message_id, session_id)
 
       assert text =~ "big.bin"
       assert text =~ "exceeding"
@@ -300,19 +303,101 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
       # consideration entirely, so the cap never trips (falls through to the
       # download attempt instead, which fails cleanly with no real :url).
       assert %{"isError" => true, "content" => [%{"text" => text2}]} =
-               DiscordTool.save_selected([small, big], ["small.txt"], session_id)
+               DiscordTool.save_selected([small, big], ["small.txt"], [], message_id, session_id)
 
       refute text2 =~ "exceeding"
       assert text2 =~ "Failed to download"
     end
 
-    test "size-cap rejection names the offending file and does not silently truncate", %{
-      session_id: session_id
+    test "a filename shared by two attachments selects BOTH, not just the last one", %{
+      session_id: session_id,
+      message_id: message_id
     } do
-      oversized = %{filename: "huge.zip", size: 26 * 1024 * 1024}
+      dup1 = %{id: 1, filename: "screenshot.png", size: 15 * 1024 * 1024}
+      dup2 = %{id: 2, filename: "screenshot.png", size: 15 * 1024 * 1024}
+
+      # Neither is individually oversized, but the two together exceed the
+      # 25MB cap — this only trips if BOTH same-named attachments made it
+      # into the selected set (the old Map.new-by-filename bug would have
+      # kept only the last one and never crossed the cap).
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               DiscordTool.save_selected(
+                 [dup1, dup2],
+                 ["screenshot.png"],
+                 [],
+                 message_id,
+                 session_id
+               )
+
+      assert text =~ "Total attachment size"
+    end
+
+    test "requesting the same filename twice does not download it twice", %{
+      session_id: session_id,
+      message_id: message_id
+    } do
+      only = %{id: 1, filename: "a.txt", size: 26 * 1024 * 1024}
+
+      # If the dedupe were missing, "a.txt" would be selected twice and the
+      # (doubled) total would trip the cap even though a single copy alone
+      # would trip the PER-FILE cap instead — assert the per-file message,
+      # proving only one copy was selected.
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               DiscordTool.save_selected([only], ["a.txt", "a.txt"], [], message_id, session_id)
+
+      assert text =~ "per-file limit"
+    end
+
+    test "attachment_ids selects the precise attachment among duplicate filenames", %{
+      session_id: session_id,
+      message_id: message_id
+    } do
+      small = %{id: 1, filename: "screenshot.png", size: 10}
+      big = %{id: 2, filename: "screenshot.png", size: 30 * 1024 * 1024}
 
       assert %{"isError" => true, "content" => [%{"text" => text}]} =
-               DiscordTool.save_selected([oversized], [], session_id)
+               DiscordTool.save_selected([small, big], [], [2], message_id, session_id)
+
+      assert text =~ "exceeding"
+
+      assert %{"isError" => true, "content" => [%{"text" => text2}]} =
+               DiscordTool.save_selected([small, big], [], [1], message_id, session_id)
+
+      refute text2 =~ "exceeding"
+      assert text2 =~ "Failed to download"
+    end
+
+    test "requesting an attachment_id not present on the message errors clearly", %{
+      session_id: session_id,
+      message_id: message_id
+    } do
+      attachments = [%{id: 1, filename: "a.txt", size: 10}]
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               DiscordTool.save_selected(attachments, [], [999], message_id, session_id)
+
+      assert text =~ "not found on that message"
+      assert text =~ "999"
+    end
+
+    test "providing both filenames and attachment_ids is a clear error, not a silent precedence",
+         %{session_id: session_id, message_id: message_id} do
+      attachments = [%{id: 1, filename: "a.txt", size: 10}]
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               DiscordTool.save_selected(attachments, ["a.txt"], [1], message_id, session_id)
+
+      assert text =~ "at most one"
+    end
+
+    test "size-cap rejection names the offending file and does not silently truncate", %{
+      session_id: session_id,
+      message_id: message_id
+    } do
+      oversized = %{id: 1, filename: "huge.zip", size: 26 * 1024 * 1024}
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               DiscordTool.save_selected([oversized], [], [], message_id, session_id)
 
       assert text =~ "huge.zip"
       assert text =~ "exceeding"
@@ -320,27 +405,53 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
     end
 
     test "total size over the cap is rejected even when no single file is oversized", %{
-      session_id: session_id
+      session_id: session_id,
+      message_id: message_id
     } do
       attachments = [
-        %{filename: "a.bin", size: 15 * 1024 * 1024},
-        %{filename: "b.bin", size: 15 * 1024 * 1024}
+        %{id: 1, filename: "a.bin", size: 15 * 1024 * 1024},
+        %{id: 2, filename: "b.bin", size: 15 * 1024 * 1024}
       ]
 
       assert %{"isError" => true, "content" => [%{"text" => text}]} =
-               DiscordTool.save_selected(attachments, [], session_id)
+               DiscordTool.save_selected(attachments, [], [], message_id, session_id)
 
       assert text =~ "Total attachment size"
       assert text =~ "exceeds"
     end
 
     test "an empty attachments list (message has none) errors clearly", %{
-      session_id: session_id
+      session_id: session_id,
+      message_id: message_id
     } do
       assert %{"isError" => true, "content" => [%{"text" => text}]} =
-               DiscordTool.save_selected([], [], session_id)
+               DiscordTool.save_selected([], [], [], message_id, session_id)
 
       assert text =~ "no attachments"
+    end
+
+    test "idempotent re-fetch: an attachment already saved from an earlier fetch is reported as already present, not re-downloaded",
+         %{session_id: session_id, message_id: message_id, dir: dir} do
+      # Pre-seed the exact path a prior save would have produced, with
+      # sentinel content — if `save_selected` attempted a real download it
+      # would either overwrite this content or (since there's no real
+      # :url here) fail and be omitted from the result entirely. Getting
+      # a clean "already present" success back proves neither happened —
+      # no live HTTP needed.
+      target = Path.join([dir, "inbox", to_string(message_id), "report-7.pdf"])
+      File.mkdir_p!(Path.dirname(target))
+      File.write!(target, "already downloaded")
+
+      attachment = %{id: 7, filename: "report.pdf", size: 10}
+
+      result = DiscordTool.save_selected([attachment], [], [], message_id, session_id)
+      assert %{"content" => [%{"text" => text}]} = result
+
+      refute result["isError"]
+      assert text =~ "already present"
+      refute text =~ "downloaded"
+      assert text =~ "inbox/#{message_id}/report-7.pdf"
+      assert File.read!(target) == "already downloaded"
     end
   end
 

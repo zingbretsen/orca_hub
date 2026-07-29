@@ -98,8 +98,10 @@ defmodule OrcaHub.MCP.Tools.Discord do
             "attachments (only works for Discord-bridged sessions) — the discovery path " <>
             "for files uploaded outside the backfilled history window, or in an untagged " <>
             "message. Returns each message's id, author, a short content snippet, and " <>
-            "per-attachment filename/size/content_type. Pass a returned message id to " <>
-            "`fetch_discord_attachments` to actually download its files.",
+            "per-attachment id/filename/size/content_type. Pass a returned message id to " <>
+            "`fetch_discord_attachments`, and (if two attachments on the same message " <>
+            "share a filename) their attachment ids as `attachment_ids` to pick a " <>
+            "specific one.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -128,8 +130,11 @@ defmodule OrcaHub.MCP.Tools.Discord do
             "— use this for any other message, discovered via `list_discord_attachments` " <>
             "or an `[id: ...]` tag in your prompt's channel history. Re-fetches the " <>
             "message fresh before downloading (Discord CDN links are signed/expiring, so " <>
-            "an old URL can't just be reused). Returns the saved paths relative to the " <>
-            "session directory (e.g. \"inbox/report.pdf\") so you can Read them directly.",
+            "an old URL can't just be reused). Idempotent: re-fetching a message you " <>
+            "already pulled resolves to the same path instead of writing a duplicate. " <>
+            "Returns the saved paths relative to the session directory, nested under a " <>
+            "per-message folder (e.g. \"inbox/123456789/report-987654321.pdf\") so you " <>
+            "can Read them directly.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -145,7 +150,21 @@ defmodule OrcaHub.MCP.Tools.Discord do
               "items" => %{"type" => "string"},
               "description" =>
                 "Optional: only download attachments whose filename exactly matches one " <>
-                  "of these. Omit to download every attachment on the message."
+                  "of these — every attachment with that filename is downloaded (Discord " <>
+                  "allows duplicate filenames on one message). Omit to download every " <>
+                  "attachment on the message. Provide at most one of `filenames` / " <>
+                  "`attachment_ids` — combining both is an error."
+            },
+            "attachment_ids" => %{
+              "type" => "array",
+              "items" => %{"type" => "string"},
+              "description" =>
+                "Optional: only download attachments with one of these exact numeric " <>
+                  "attachment ids — the precise selector, needed when two attachments on " <>
+                  "the same message share a filename (see the `id` field from " <>
+                  "`list_discord_attachments`). Must be numeric snowflake strings. " <>
+                  "Provide at most one of `filenames` / `attachment_ids` — combining both " <>
+                  "is an error."
             }
           },
           "required" => ["message_id"]
@@ -192,10 +211,18 @@ defmodule OrcaHub.MCP.Tools.Discord do
     filenames = normalize_filenames(args["filenames"])
 
     with {:ok, message_id} <- validate_message_id(args["message_id"]),
+         {:ok, attachment_ids} <- validate_attachment_ids(args["attachment_ids"]),
+         :ok <- validate_selector_exclusivity(filenames, attachment_ids),
          {:ok, session_id} <- require_session(state),
          :ok <- require_discord_node(),
          {:ok, mapping} <- require_mapping(session_id) do
-      fetch_and_save(mapping.discord_channel_id, message_id, filenames, session_id)
+      fetch_and_save(
+        mapping.discord_channel_id,
+        message_id,
+        filenames,
+        attachment_ids,
+        session_id
+      )
     else
       {:error, reason} -> error(reason)
     end
@@ -284,6 +311,45 @@ defmodule OrcaHub.MCP.Tools.Discord do
       :error -> {:error, snowflake_error("message_id", id)}
     end
   end
+
+  @doc """
+  Validate the optional `attachment_ids` arg on `fetch_discord_attachments`:
+  a list of numeric Discord attachment-id (snowflake) strings — the precise
+  selector for when two attachments on one message share a filename. `nil`
+  (omitted) is valid and returns `{:ok, []}`. Reuses `parse_snowflake/1`, the
+  same numeric-string shape as every other snowflake arg. Returns
+  `{:ok, [integer]}` or `{:error, message}` naming the first invalid entry.
+  """
+  def validate_attachment_ids(nil), do: {:ok, []}
+
+  def validate_attachment_ids(ids) when is_list(ids) do
+    Enum.reduce_while(ids, {:ok, []}, fn id, {:ok, acc} ->
+      case parse_snowflake(id) do
+        {:ok, int} -> {:cont, {:ok, [int | acc]}}
+        :error -> {:halt, {:error, snowflake_error("attachment_ids", id)}}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      error -> error
+    end
+  end
+
+  def validate_attachment_ids(_ids),
+    do: {:error, "`attachment_ids` must be a list of numeric Discord attachment ids."}
+
+  @doc """
+  `filenames` and `attachment_ids` are two ways to select the same thing —
+  supporting both at once would mean picking a (silent) precedence or
+  union rule, so we just reject the ambiguity outright.
+  """
+  def validate_selector_exclusivity([], _attachment_ids), do: :ok
+  def validate_selector_exclusivity(_filenames, []), do: :ok
+
+  def validate_selector_exclusivity(_filenames, _attachment_ids),
+    do:
+      {:error,
+       "Provide at most one of `filenames` / `attachment_ids` — combining both is not supported."}
 
   defp parse_snowflake(id) when is_binary(id) do
     if String.match?(id, ~r/^\d+$/), do: {:ok, String.to_integer(id)}, else: :error
@@ -496,6 +562,7 @@ defmodule OrcaHub.MCP.Tools.Discord do
 
   defp summarize_attachment(a) do
     %{
+      "id" => to_string(a.id),
       "filename" => a.filename,
       "size" => a.size,
       # Nostrum's Attachment struct doesn't carry Discord's raw `content_type`
@@ -527,15 +594,17 @@ defmodule OrcaHub.MCP.Tools.Discord do
   # Re-fetches the message fresh (never trusts a URL surfaced by an earlier
   # `list_discord_attachments` call or the history backfill) so the CDN
   # download always has a live signed URL, then hands off to
-  # `Bridge.save_attachments_to_inbox/2` — the exact same collision-safe
-  # download/naming logic the on-mention auto-copy path uses.
+  # `Bridge.save_attachments_to_inbox/3` — the exact same identity-based
+  # naming/download logic the on-mention auto-copy path uses, nested under
+  # this `message_id` so a fetch of an already-auto-copied message resolves
+  # to the same paths instead of duplicating them.
 
-  defp fetch_and_save(discord_channel_id, message_id, filenames, session_id) do
+  defp fetch_and_save(discord_channel_id, message_id, filenames, attachment_ids, session_id) do
     channel_id = String.to_integer(discord_channel_id)
 
     case Nostrum.Api.Message.get(channel_id, message_id) do
       {:ok, %{attachments: attachments}} ->
-        save_selected(attachments || [], filenames, session_id)
+        save_selected(attachments || [], filenames, attachment_ids, message_id, session_id)
 
       {:error, %Nostrum.Error.ApiError{status_code: status, response: response}} ->
         error(
@@ -550,26 +619,46 @@ defmodule OrcaHub.MCP.Tools.Discord do
 
   @doc """
   Core `fetch_discord_attachments` logic once a message's `attachments` have
-  already been fetched: apply the optional `filenames` filter, enforce the
-  size cap, and save via `Bridge.save_attachments_to_inbox/2`. Split out from
-  `fetch_and_save/3` (which owns the Nostrum re-fetch) so it's directly
-  unit-testable with plain attachment maps — no live Discord connection
-  needed for the filter/size-cap branches, which never reach `session_id`.
+  already been fetched: apply the optional `filenames`/`attachment_ids`
+  filter, enforce the size cap, and save via
+  `Bridge.save_attachments_to_inbox/3`. Split out from `fetch_and_save/5`
+  (which owns the Nostrum re-fetch) so it's directly unit-testable with
+  plain attachment maps — no live Discord connection needed for the
+  filter/size-cap branches, which never reach `session_id`.
+
+  `filenames` selects by exact filename match — since Discord allows
+  duplicate filenames on one message, a requested name selects EVERY
+  attachment with that name, not just one. `attachment_ids` selects by
+  exact attachment id, the precise selector for disambiguating those
+  duplicates. Both `filenames` and `attachment_ids` are deduped so
+  requesting the same value twice doesn't download it twice. Callers are
+  expected to have already enforced mutual exclusivity
+  (`validate_selector_exclusivity/2`); this function still refuses to guess
+  a precedence if it somehow receives both non-empty.
   """
-  def save_selected([], _filenames, _session_id),
+  def save_selected([], _filenames, _attachment_ids, _message_id, _session_id),
     do: error("That message has no attachments.")
 
-  def save_selected(attachments, [], session_id), do: save_with_size_cap(attachments, session_id)
+  def save_selected(_attachments, filenames, attachment_ids, _message_id, _session_id)
+      when filenames != [] and attachment_ids != [] do
+    error(
+      "Provide at most one of `filenames` / `attachment_ids` — combining both is not supported."
+    )
+  end
 
-  def save_selected(attachments, filenames, session_id) do
-    by_name = Map.new(attachments, &{&1.filename, &1})
+  def save_selected(attachments, [], [], message_id, session_id),
+    do: save_with_size_cap(attachments, message_id, session_id)
 
-    case Enum.split_with(filenames, &Map.has_key?(by_name, &1)) do
-      {_present, []} ->
-        selected = Enum.map(filenames, &Map.fetch!(by_name, &1))
-        save_with_size_cap(selected, session_id)
+  def save_selected(attachments, filenames, [], message_id, session_id) do
+    by_name = Enum.group_by(attachments, & &1.filename)
+    requested = Enum.uniq(filenames)
 
-      {_present, missing} ->
+    case Enum.reject(requested, &Map.has_key?(by_name, &1)) do
+      [] ->
+        selected = Enum.flat_map(requested, &Map.fetch!(by_name, &1))
+        save_with_size_cap(selected, message_id, session_id)
+
+      missing ->
         available = Enum.map_join(attachments, ", ", & &1.filename)
 
         error(
@@ -579,7 +668,27 @@ defmodule OrcaHub.MCP.Tools.Discord do
     end
   end
 
-  defp save_with_size_cap(attachments, session_id) do
+  def save_selected(attachments, [], attachment_ids, message_id, session_id) do
+    by_id = Map.new(attachments, &{&1.id, &1})
+    requested = Enum.uniq(attachment_ids)
+
+    case Enum.reject(requested, &Map.has_key?(by_id, &1)) do
+      [] ->
+        selected = Enum.map(requested, &Map.fetch!(by_id, &1))
+        save_with_size_cap(selected, message_id, session_id)
+
+      missing ->
+        available = Enum.map_join(attachments, ", ", &to_string(&1.id))
+
+        error(
+          "Requested attachment_id(s) not found on that message: " <>
+            "#{Enum.map_join(missing, ", ", &to_string/1)}. " <>
+            "Attachment ids on that message: #{available}"
+        )
+    end
+  end
+
+  defp save_with_size_cap(attachments, message_id, session_id) do
     case Enum.find(attachments, &(&1.size > @max_fetch_bytes)) do
       %{filename: filename, size: size} ->
         error(
@@ -588,43 +697,53 @@ defmodule OrcaHub.MCP.Tools.Discord do
         )
 
       nil ->
-        check_fetch_total_size(attachments, session_id)
+        check_fetch_total_size(attachments, message_id, session_id)
     end
   end
 
-  defp check_fetch_total_size(attachments, session_id) do
+  defp check_fetch_total_size(attachments, message_id, session_id) do
     total = Enum.reduce(attachments, 0, &(&1.size + &2))
 
     if total > @max_fetch_bytes do
       error(
         "Total attachment size #{format_bytes(total)} exceeds the " <>
           "#{format_bytes(@max_fetch_bytes)} limit for a single fetch_discord_attachments " <>
-          "call. Narrow the request with `filenames`."
+          "call. Narrow the request with `filenames` or `attachment_ids`."
       )
     else
       directory = HubRPC.get_session(session_id).directory
-      saved = Bridge.save_attachments_to_inbox(directory, attachments)
+      saved = Bridge.save_attachments_to_inbox(directory, message_id, attachments)
       report_saved(saved, attachments)
     end
   end
 
-  # `save_attachments_to_inbox/2` silently skips (and logs) individual
+  # `save_attachments_to_inbox/3` silently skips (and logs) individual
   # download failures rather than raising, so the count of saved paths can be
   # fewer than the attachment count — surface that instead of pretending
-  # everything succeeded.
+  # everything succeeded. Each entry is `{:downloaded, path} | {:existing,
+  # path}` — split those out so the model isn't misled into thinking an
+  # idempotent no-op (the file was already there from an earlier fetch or
+  # the on-mention auto-copy) was a fresh download.
   defp report_saved([], _attachments),
     do: error("Failed to download any of the requested attachment(s) — see server logs.")
 
-  defp report_saved(saved, attachments) when length(saved) == length(attachments) do
-    text("Saved #{length(saved)} attachment(s) to: #{Enum.join(saved, ", ")}")
-  end
-
   defp report_saved(saved, attachments) do
+    {downloaded, existing} = Enum.split_with(saved, &match?({:downloaded, _}, &1))
+    paths = Enum.map(saved, &elem(&1, 1))
     failed = length(attachments) - length(saved)
 
+    breakdown =
+      [
+        downloaded != [] && "#{length(downloaded)} downloaded",
+        existing != [] && "#{length(existing)} already present from an earlier fetch",
+        failed > 0 && "#{failed} failed to download — see server logs"
+      ]
+      |> Enum.filter(& &1)
+      |> Enum.join(", ")
+
     text(
-      "Saved #{length(saved)} of #{length(attachments)} attachment(s) to: " <>
-        "#{Enum.join(saved, ", ")} (#{failed} failed to download — see server logs)."
+      "Saved #{length(saved)} of #{length(attachments)} attachment(s) (#{breakdown}) to: " <>
+        Enum.join(paths, ", ")
     )
   end
 end
