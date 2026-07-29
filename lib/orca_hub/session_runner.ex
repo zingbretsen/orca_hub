@@ -296,7 +296,12 @@ defmodule OrcaHub.SessionRunner do
       # port so the NEXT turn cold-reopens with the re-baked /mcp URL
       pending_rebake: false,
       req_counter: 0,
-      turn_result: nil
+      turn_result: nil,
+      # Wall-clock start of the turn currently in flight (UTC, matches
+      # session_interactions.inserted_at) — set at every transition into a
+      # new turn by mark_turn_started/1. Used only to scope the redundant-
+      # notification check in maybe_notify_parent/3; nil until the first turn.
+      turn_started_at: nil
     }
 
     {:ok, initial_state, data}
@@ -682,7 +687,7 @@ defmodule OrcaHub.SessionRunner do
 
         {:keep_state,
          %{
-           data
+           mark_turn_started(data)
            | port: new_port,
              framing: framing,
              buffer: "",
@@ -718,7 +723,8 @@ defmodule OrcaHub.SessionRunner do
 
         maybe_notify_parent(
           %{session | status: db_status, error_detail: session_error_detail},
-          notify_status(db_status)
+          notify_status(db_status),
+          Map.get(data, :turn_started_at)
         )
 
         if code == 0 && (session.title == nil || session.title == "") do
@@ -900,48 +906,97 @@ defmodule OrcaHub.SessionRunner do
   defp notify_status("error"), do: :error
   defp notify_status(_status), do: nil
 
-  defp maybe_notify_parent(_session, nil), do: :ok
+  defp maybe_notify_parent(_session, nil, _turn_started_at), do: :ok
 
   # Never notify a session about itself, and nothing to do without a parent
   # (also covers the parent being deleted — its FK is `on_delete: :nilify_all`,
   # so a freshly-fetched `session` already has `parent_session_id: nil` by then).
-  defp maybe_notify_parent(%{parent_session_id: parent_id, id: id}, _status)
+  defp maybe_notify_parent(%{parent_session_id: parent_id, id: id}, _status, _turn_started_at)
        when is_nil(parent_id) or parent_id == id do
     :ok
   end
 
-  defp maybe_notify_parent(%{notify_parent: false}, _status), do: :ok
+  defp maybe_notify_parent(%{notify_parent: false}, _status, _turn_started_at), do: :ok
 
-  defp maybe_notify_parent(session, status) when status in [:idle, :error] do
+  defp maybe_notify_parent(session, status, turn_started_at) when status in [:idle, :error] do
     Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-      deliver_parent_notification(session, status)
+      deliver_parent_notification(session, status, turn_started_at)
     end)
 
     :ok
   end
 
+  # A redundant-idle window: how far back to look for a child->parent
+  # session_interactions edge when `turn_started_at` is unavailable (e.g. a
+  # runner resumed mid-flight without ever recording a turn start). Errs
+  # toward a wider net than the true turn length, since the fallback only
+  # narrows an already-fail-open check.
+  @redundant_idle_lookback_seconds 120
+
+  # The child already told its parent explicitly this turn (a
+  # send_message_to_session call recorded as a session_interactions edge) —
+  # firing the generic "[Session lifecycle] ... is now idle." on top of that
+  # is a redundant interrupt for the orchestrator, mid-thought on the report
+  # it just received. Scoped to :idle only — an :error notification carries
+  # genuinely new information (the error detail) even if the child messaged
+  # the parent earlier in the turn, so it's never suppressed. Fails OPEN
+  # (returns false, i.e. "not redundant, send it") on any lookup error — a
+  # missed notification is worse than a redundant one.
+  defp redundant_idle_notification?(session, turn_started_at) do
+    since =
+      turn_started_at ||
+        NaiveDateTime.add(NaiveDateTime.utc_now(), -@redundant_idle_lookback_seconds, :second)
+
+    case HubRPC.list_session_interactions(
+           sender_session_id: session.id,
+           recipient_session_id: session.parent_session_id,
+           since: since
+         ) do
+      [] -> false
+      [_ | _] -> true
+    end
+  rescue
+    e ->
+      Logger.warning(
+        "[lifecycle notify] redundant-notification lookup failed for child #{session.id}: " <>
+          Exception.message(e) <> " — sending notification (fail open)"
+      )
+
+      false
+  end
+
   # Public (@doc false) as a test seam — lets tests exercise delivery
   # (including the deleted-parent race) synchronously, without depending on
-  # Task.Supervisor scheduling.
+  # Task.Supervisor scheduling. `turn_started_at` defaults to nil so existing
+  # 2-arity callers (e.g. the deleted-parent test) are unaffected.
   @doc false
-  def deliver_parent_notification(session, status) do
-    case Cluster.find_session(session.parent_session_id) do
-      # Parent not found — deleted (a race with the nilify_all FK) or gone.
-      # Skip silently, never crash the caller.
-      nil ->
-        :ok
+  def deliver_parent_notification(session, status, turn_started_at \\ nil) do
+    if status == :idle and redundant_idle_notification?(session, turn_started_at) do
+      Logger.info(
+        "[lifecycle notify] suppressed idle notification for child #{session.id} -> parent " <>
+          "#{session.parent_session_id}: child already messaged the parent this turn"
+      )
 
-      {node, parent} ->
-        case Cluster.send_message(node, parent.id, lifecycle_message(session, status)) do
-          :ok ->
-            :ok
+      :ok
+    else
+      case Cluster.find_session(session.parent_session_id) do
+        # Parent not found — deleted (a race with the nilify_all FK) or gone.
+        # Skip silently, never crash the caller.
+        nil ->
+          :ok
 
-          {:error, reason} ->
-            Logger.warning(
-              "[lifecycle notify] failed to notify parent #{parent.id} of child " <>
-                "#{session.id}: #{inspect(reason)}"
-            )
-        end
+        {node, parent} ->
+          case Cluster.send_message(node, parent.id, lifecycle_message(session, status)) do
+            :ok ->
+              :ok
+
+            {:error, reason} ->
+              Logger.warning(
+                "[lifecycle notify] failed to notify parent #{parent.id} of child " <>
+                  "#{session.id}: #{inspect(reason)}"
+              )
+          end
+      end
     end
   rescue
     e ->
@@ -1027,7 +1082,7 @@ defmodule OrcaHub.SessionRunner do
 
       {:next_state, :running,
        %{
-         data
+         mark_turn_started(data)
          | port: port,
            framing: framing,
            buffer: "",
@@ -1047,6 +1102,15 @@ defmodule OrcaHub.SessionRunner do
   # path clears it (see also start_running/start_streaming below).
   defp clear_progress_attrs,
     do: %{progress_phase: nil, progress_note: nil, progress_updated_at: nil}
+
+  # Stamps the wall-clock start of a turn (UTC, matches
+  # session_interactions.inserted_at) — called at every point a new turn
+  # actually begins: one-shot open_port (fresh spawn or auto-resume), the
+  # streaming stdin-write helpers (write_user_turn/write_steer_turn, which
+  # also cover the post-warmup/interrupt flush via flush_pending_to_stdin/1),
+  # and the kill-switch downgrade re-open. Consumed by maybe_notify_parent/3
+  # to scope the redundant-idle-notification check to the CURRENT turn only.
+  defp mark_turn_started(data), do: %{data | turn_started_at: NaiveDateTime.utc_now()}
 
   # When a hung run is resumed by a queued answer, leave "waiting" behind and
   # reflect that the session is running again. Also called (with
@@ -1335,7 +1399,13 @@ defmodule OrcaHub.SessionRunner do
         db_call(data, :update_session, [session, %{status: "idle", error_detail: nil}])
         broadcast(data.session_id, {:status, :idle})
         AgentPresence.update_status(data.directory, data.session_id, "idle")
-        maybe_notify_parent(%{session | status: "idle", error_detail: nil}, :idle)
+
+        maybe_notify_parent(
+          %{session | status: "idle", error_detail: nil},
+          :idle,
+          Map.get(data, :turn_started_at)
+        )
+
         MemoryGit.Server.snapshot_session_async(session)
         {:next_state, :idle, data}
 
@@ -1352,7 +1422,7 @@ defmodule OrcaHub.SessionRunner do
 
         {:next_state, :running,
          %{
-           data
+           mark_turn_started(data)
            | port: new_port,
              framing: framing,
              buffer: "",
@@ -1387,7 +1457,13 @@ defmodule OrcaHub.SessionRunner do
         db_call(data, :update_session, [session, %{status: "error", error_detail: error_detail}])
         broadcast(data.session_id, {:status, :error})
         AgentPresence.update_status(data.directory, data.session_id, "error")
-        maybe_notify_parent(%{session | status: "error", error_detail: error_detail}, :error)
+
+        maybe_notify_parent(
+          %{session | status: "error", error_detail: error_detail},
+          :error,
+          Map.get(data, :turn_started_at)
+        )
+
         # A turn-level error must not leave a stale warm process behind — it may be
         # wedged (e.g. spawned before login credentials existed, so every retry on
         # the same process fails identically). Tear it down now instead of leaving
@@ -1443,7 +1519,8 @@ defmodule OrcaHub.SessionRunner do
 
     maybe_notify_parent(
       %{session | status: db_status, error_detail: nil},
-      notify_status(db_status)
+      notify_status(db_status),
+      Map.get(data, :turn_started_at)
     )
 
     if generate_title? and (session.title == nil or session.title == "") do
@@ -1491,7 +1568,13 @@ defmodule OrcaHub.SessionRunner do
       db_call(data, :update_session, [session, %{status: "error", error_detail: error_detail}])
       broadcast(data.session_id, {:status, :error})
       AgentPresence.update_status(data.directory, data.session_id, "error")
-      maybe_notify_parent(%{session | status: "error", error_detail: error_detail}, :error)
+
+      maybe_notify_parent(
+        %{session | status: "error", error_detail: error_detail},
+        :error,
+        Map.get(data, :turn_started_at)
+      )
+
       {:next_state, :error, data}
     else
       # Crash while idle/errored (no turn in flight): silently go cold; the next
@@ -1631,7 +1714,7 @@ defmodule OrcaHub.SessionRunner do
   defp write_user_turn(%{port: port, backend: backend} = data, prompt) do
     {iodata, ctx} = backend.encode_user_turn(prompt, data)
     Port.command(port, iodata)
-    flush_pending_writes(ctx)
+    ctx |> flush_pending_writes() |> mark_turn_started()
   end
 
   # spec §12.6 — whether the current backend supports mid-turn steering
@@ -1646,7 +1729,7 @@ defmodule OrcaHub.SessionRunner do
   defp write_steer_turn(%{port: port, backend: backend} = data, prompt) do
     {iodata, ctx} = backend.encode_steer_turn(prompt, data)
     Port.command(port, iodata)
-    flush_pending_writes(ctx)
+    ctx |> flush_pending_writes() |> mark_turn_started()
   end
 
   defp write_warmup_turn(data), do: write_user_turn(data, @warmup_prompt)

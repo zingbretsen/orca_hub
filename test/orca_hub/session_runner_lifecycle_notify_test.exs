@@ -322,4 +322,113 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
       assert SessionRunner.deliver_parent_notification(stale_child, :idle) == :ok
     end
   end
+
+  # ── redundant idle suppression (deliver_parent_notification/3) ──────────
+  # The orchestration annoyance this closes: a worker's last act is often an
+  # explicit send_message_to_session report to its parent, immediately
+  # followed by the automatic "[Session lifecycle] ... is now idle." ping —
+  # a redundant interrupt on top of the report the parent already has. When
+  # a session_interactions edge (child -> parent) already exists since the
+  # turn started, the idle ping is skipped; an error ping never is.
+
+  describe "deliver_parent_notification/3 — redundant idle suppression" do
+    setup %{dir: dir} do
+      {:ok, parent} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "the parent",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(parent.id) end)
+
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "child-title",
+          parent_session_id: parent.id,
+          notify_parent: true
+        })
+
+      {:ok, parent: parent, child: child}
+    end
+
+    test "idle is suppressed when a child->parent interaction exists since turn start",
+         %{parent: parent, child: child} do
+      turn_started_at = NaiveDateTime.utc_now()
+
+      {:ok, _interaction} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: child.id,
+          recipient_session_id: parent.id
+        })
+
+      assert SessionRunner.deliver_parent_notification(child, :idle, turn_started_at) == :ok
+      assert Sessions.list_messages(parent.id) == []
+    end
+
+    test "idle is still delivered when no such interaction exists",
+         %{parent: parent, child: child} do
+      turn_started_at = NaiveDateTime.utc_now()
+
+      assert SessionRunner.deliver_parent_notification(child, :idle, turn_started_at) == :ok
+
+      message =
+        wait_for_message(
+          parent.id,
+          ~r/^\[Session lifecycle\] Child session #{child.id} \("child-title"\) is now idle\.$/
+        )
+
+      refute is_nil(message), "expected a [Session lifecycle] idle message on the parent"
+    end
+
+    test "idle is still delivered when the interaction predates turn start",
+         %{parent: parent, child: child} do
+      stale_interaction_at = NaiveDateTime.add(NaiveDateTime.utc_now(), -600, :second)
+
+      {:ok, _interaction} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: child.id,
+          recipient_session_id: parent.id,
+          inserted_at: stale_interaction_at
+        })
+
+      turn_started_at = NaiveDateTime.utc_now()
+
+      assert SessionRunner.deliver_parent_notification(child, :idle, turn_started_at) == :ok
+
+      message =
+        wait_for_message(
+          parent.id,
+          ~r/^\[Session lifecycle\] Child session #{child.id} \("child-title"\) is now idle\.$/
+        )
+
+      refute is_nil(message), "expected a [Session lifecycle] idle message on the parent"
+    end
+
+    test "error is delivered even when a child->parent interaction exists this turn",
+         %{parent: parent, child: child} do
+      turn_started_at = NaiveDateTime.utc_now()
+
+      {:ok, _interaction} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: child.id,
+          recipient_session_id: parent.id
+        })
+
+      error_child = %{child | error_detail: "boom"}
+
+      assert SessionRunner.deliver_parent_notification(error_child, :error, turn_started_at) ==
+               :ok
+
+      message =
+        wait_for_message(
+          parent.id,
+          ~r/^\[Session lifecycle\] Child session #{child.id} \("child-title"\) is now error\. Error: boom$/
+        )
+
+      refute is_nil(message),
+             "expected a [Session lifecycle] error message despite the interaction"
+    end
+  end
 end
