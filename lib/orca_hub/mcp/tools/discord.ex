@@ -28,12 +28,18 @@ defmodule OrcaHub.MCP.Tools.Discord do
 
   import OrcaHub.MCP.Tools.Result
 
-  alias OrcaHub.Discord.Bridge
+  require Logger
+
+  alias OrcaHub.Discord.{Bridge, FileFilter}
   alias OrcaHub.HubRPC
 
   # Discord's hard attachment-count limit, and a conservative total-size cap to
   # stay under Discord's default (non-boosted-server) 8MB per-file upload limit
-  # even when several small files are sent together.
+  # even when several small files are sent together. This is a Discord API
+  # upload constraint, not a FileFilter abuse-prevention policy, so it stays
+  # local — but the comparison itself still delegates to
+  # `FileFilter.check_total/2` (see `check_total_size/1`) rather than
+  # reimplementing the ">" check here too.
   @max_files 10
   @max_total_bytes 8 * 1024 * 1024
   @discord_max_len 2000
@@ -42,11 +48,12 @@ defmodule OrcaHub.MCP.Tools.Discord do
   @default_list_limit 50
   @max_list_limit 100
 
-  # fetch_discord_attachments: retroactive fetches aren't subject to Discord's
-  # per-message upload limit (we're downloading, not posting), so this is just
-  # a defensive cap against accidentally pulling down something huge — applied
-  # both per-file and to the batch total.
-  @max_fetch_bytes 25 * 1024 * 1024
+  # fetch_discord_attachments' per-file and total caps are
+  # `FileFilter.max_file_bytes/0` and `FileFilter.max_inbound_total_bytes/0`
+  # — the same ones the auto-copy path uses (see `save_with_size_cap/4` /
+  # `check_fetch_total_size/5` below). No local constant here on purpose:
+  # this used to keep its own separate `@max_fetch_bytes`, which is exactly
+  # the kind of drift `OrcaHub.Discord.FileFilter` exists to prevent.
 
   def list do
     [
@@ -56,12 +63,14 @@ defmodule OrcaHub.MCP.Tools.Discord do
           "Send a message and/or file attachments to the Discord channel this session " <>
             "is bridged to (only works for Discord-bridged sessions). Provide `message`, " <>
             "`file_paths`, or both — at least one is required. `file_paths` are resolved " <>
-            "relative to the session's working directory (absolute paths are also " <>
-            "accepted). Note: when this session finishes its turn, the bridge " <>
-            "automatically posts the session's final assistant text to the channel — so " <>
-            "this tool is mainly for attachments and interim/progress updates mid-turn; " <>
-            "avoid using it to duplicate your final reply. Pass `reply_to_message_id` to " <>
-            "thread the post as a Discord reply to a specific earlier message.",
+            "relative to the session's working directory; an absolute path is only " <>
+            "accepted if it resolves inside that directory — anything outside it " <>
+            "(including via `..` or a symlink) is rejected. Note: when this session " <>
+            "finishes its turn, the bridge automatically posts the session's final " <>
+            "assistant text to the channel — so this tool is mainly for attachments and " <>
+            "interim/progress updates mid-turn; avoid using it to duplicate your final " <>
+            "reply. Pass `reply_to_message_id` to thread the post as a Discord reply to a " <>
+            "specific earlier message.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -75,8 +84,9 @@ defmodule OrcaHub.MCP.Tools.Discord do
               "type" => "array",
               "items" => %{"type" => "string"},
               "description" =>
-                "Files to attach, relative to the session's working directory (or " <>
-                  "absolute). Up to #{@max_files} files, #{div(@max_total_bytes, 1_048_576)}MB total."
+                "Files to attach, relative to the session's working directory. An " <>
+                  "absolute path is accepted only if it resolves inside that directory. " <>
+                  "Up to #{@max_files} files, #{div(@max_total_bytes, 1_048_576)}MB total."
             },
             "reply_to_message_id" => %{
               "type" => "string",
@@ -182,7 +192,7 @@ defmodule OrcaHub.MCP.Tools.Discord do
          {:ok, session_id} <- require_session(state),
          :ok <- require_discord_node(),
          {:ok, mapping} <- require_mapping(session_id),
-         {:ok, resolved_paths} <- resolve_files(session_id, file_paths) do
+         {:ok, resolved_paths} <- resolve_files(session_id, mapping, file_paths) do
       post_to_discord(mapping.discord_channel_id, message, resolved_paths, reply_to)
     else
       {:error, reason} -> error(reason)
@@ -216,13 +226,7 @@ defmodule OrcaHub.MCP.Tools.Discord do
          {:ok, session_id} <- require_session(state),
          :ok <- require_discord_node(),
          {:ok, mapping} <- require_mapping(session_id) do
-      fetch_and_save(
-        mapping.discord_channel_id,
-        message_id,
-        filenames,
-        attachment_ids,
-        session_id
-      )
+      fetch_and_save(mapping, message_id, filenames, attachment_ids, session_id)
     else
       {:error, reason} -> error(reason)
     end
@@ -386,52 +390,219 @@ defmodule OrcaHub.MCP.Tools.Discord do
     end
   end
 
-  defp resolve_files(_session_id, []), do: {:ok, []}
+  defp resolve_files(_session_id, _mapping, []), do: {:ok, []}
 
-  defp resolve_files(session_id, file_paths) do
+  defp resolve_files(session_id, mapping, file_paths) do
     directory = HubRPC.get_session(session_id).directory
-    validate_file_paths(directory, file_paths)
+    validate_file_paths(directory, file_paths, session_id, mapping)
   end
 
   @doc """
   Validate and resolve `file_paths` against the session's working `directory`.
-  Aside from filesystem reads (`File.regular?/1`, `File.stat!/1`) this has no
-  Nostrum/HubRPC dependency, so it's directly unit-testable with real tmp
-  files. Returns `{:ok, resolved_absolute_paths}` or `{:error, message}`.
+  Aside from filesystem reads (`File.lstat/1`, `File.regular?/1`,
+  `File.stat!/1`) this has no Nostrum/HubRPC dependency, so it's directly
+  unit-testable with real tmp files/symlinks. `session_id`/`mapping` are
+  optional (default `nil`) — only used to build `OrcaHub.Discord.FileFilter`
+  context for `check_outbound/1`, which today's only rule (size) doesn't
+  read anyway. Returns `{:ok, resolved_absolute_paths}` or
+  `{:error, message}`.
+
+  Order: 1) path CONFINEMENT (every entry must resolve — after expanding
+  `..`/symlinks — inside the session's own directory; see `confine/2`), 2)
+  existence, 3) `FileFilter.check_outbound/1` per file, 4) the total-size
+  cap. Confinement runs first and fails closed on the FIRST offending path,
+  before any filesystem stat beyond what resolving it required — a session
+  can't use a missing-file or size-cap error to distinguish "outside the
+  sandbox" from "doesn't exist" for a path it's not allowed to reference.
   """
-  def validate_file_paths(directory, file_paths) do
+  def validate_file_paths(directory, file_paths, session_id \\ nil, mapping \\ nil) do
     if length(file_paths) > @max_files do
       {:error,
        "Too many files (#{length(file_paths)}) — Discord allows at most #{@max_files} attachments per message."}
     else
-      resolved = Enum.map(file_paths, &{&1, resolve_path(directory, &1)})
+      case resolve_confined_paths(directory, file_paths) do
+        {:error, reason} ->
+          {:error, reason}
 
-      case Enum.reject(resolved, fn {_orig, abs} -> File.regular?(abs) end) do
-        [] -> check_total_size(resolved)
-        missing -> {:error, "File(s) not found: " <> Enum.map_join(missing, ", ", &elem(&1, 0))}
+        {:ok, resolved} ->
+          case Enum.reject(resolved, fn {_orig, abs} -> File.regular?(abs) end) do
+            [] ->
+              check_outbound_then_total(resolved, directory, session_id, mapping)
+
+            missing ->
+              {:error, "File(s) not found: " <> Enum.map_join(missing, ", ", &elem(&1, 0))}
+          end
       end
     end
   end
 
-  defp resolve_path(directory, path) do
-    if Path.type(path) == :absolute, do: path, else: Path.join(directory, path)
+  # Confine every `file_paths` entry to `directory`'s subtree, resolving
+  # symlinks first so a manipulated agent can't create a symlink INSIDE its
+  # own directory pointing anywhere on the filesystem and use it as an
+  # escape hatch. Fails on the first offending path (in caller order).
+  defp resolve_confined_paths(directory, file_paths) do
+    file_paths
+    |> Enum.reduce_while({:ok, []}, fn path, {:ok, acc} ->
+      case confine(directory, path) do
+        {:ok, abs} -> {:cont, {:ok, [{path, abs} | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      error -> error
+    end
   end
 
-  defp check_total_size(resolved) do
-    sized = Enum.map(resolved, fn {orig, abs} -> {orig, abs, File.stat!(abs).size} end)
+  # The confinement allow-list. Just the session directory today — structured
+  # as a list so a future additional root (e.g. a shared read-only assets
+  # dir) is a one-line addition here, not a signature change at every call
+  # site.
+  defp allowed_roots(directory), do: [directory]
+
+  defp confine(directory, path) do
+    resolved = path |> Path.expand(directory) |> realpath()
+
+    if within_any_root?(resolved, allowed_roots(directory)) do
+      {:ok, resolved}
+    else
+      Logger.warning(
+        "send_discord_message denied file_paths entry outside session directory: #{inspect(path)}"
+      )
+
+      # Deliberately non-leaky: name the path as the CALLER supplied it, say
+      # it's outside the session directory, and never echo `resolved` (a
+      # real filesystem path, potentially outside the sandbox entirely) back
+      # to a Discord channel.
+      {:error, "File path #{inspect(path)} is outside the session directory."}
+    end
+  end
+
+  defp within_any_root?(resolved, roots) do
+    Enum.any?(roots, fn root ->
+      resolved_root = realpath(Path.expand(root))
+      resolved == resolved_root or String.starts_with?(resolved, resolved_root <> "/")
+    end)
+  end
+
+  # Bounds how many symlink hops `realpath/1` will follow before giving up —
+  # specifically so a symlink LOOP (a -> b -> a) can't hang this call. Well
+  # above any legitimate chain length.
+  @max_realpath_iterations 40
+
+  @doc """
+  A small `realpath`-style resolver: walks `path` (already absolute)
+  component by component, resolving any symlink encountered along the way,
+  and returns the fully-resolved absolute path. Nonexistent components are
+  passed through literally (not an error) — resolving `.../missing.txt`
+  still confines correctly even though the file doesn't exist yet, letting
+  the caller's separate existence check report "not found" instead of a
+  confusing confinement error. Bounded to `#{@max_realpath_iterations}`
+  symlink hops so a loop can't hang the caller — if the bound is hit, the
+  partially-resolved path is returned as-is (almost certain to then fail
+  `within_any_root?/2`, which is the safe outcome for something we couldn't
+  fully resolve). Public + directly unit-testable with real tmp symlinks —
+  no Nostrum/HubRPC/session dependency.
+  """
+  def realpath(path) do
+    path
+    |> Path.split()
+    |> do_realpath("/", 0)
+  end
+
+  defp do_realpath(_remaining, resolved, iterations) when iterations > @max_realpath_iterations,
+    do: resolved
+
+  defp do_realpath([], resolved, _iterations), do: resolved
+  defp do_realpath(["/" | rest], _resolved, iterations), do: do_realpath(rest, "/", iterations)
+
+  defp do_realpath(["." | rest], resolved, iterations),
+    do: do_realpath(rest, resolved, iterations)
+
+  defp do_realpath([".." | rest], resolved, iterations),
+    do: do_realpath(rest, Path.dirname(resolved), iterations)
+
+  defp do_realpath([comp | rest], resolved, iterations) do
+    candidate = Path.join(resolved, comp)
+
+    case File.lstat(candidate) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        follow_symlink(candidate, rest, iterations)
+
+      _not_a_symlink_or_missing ->
+        do_realpath(rest, candidate, iterations)
+    end
+  end
+
+  defp follow_symlink(candidate, rest, iterations) do
+    case File.read_link(candidate) do
+      {:ok, target} ->
+        target_parts = Path.split(target)
+
+        if Path.type(target) == :absolute do
+          do_realpath(target_parts ++ rest, "/", iterations + 1)
+        else
+          # A relative symlink target is relative to the symlink's OWN
+          # directory, not to `candidate` itself (which is the symlink, not
+          # a directory).
+          do_realpath(target_parts ++ rest, Path.dirname(candidate), iterations + 1)
+        end
+
+      {:error, _reason} ->
+        # lstat said symlink but the link couldn't be read (race, permission)
+        # — treat the path literally rather than raising.
+        do_realpath(rest, candidate, iterations)
+    end
+  end
+
+  defp check_outbound_then_total(resolved, directory, session_id, mapping) do
+    checked =
+      Enum.map(resolved, fn {orig, abs} ->
+        size = File.stat!(abs).size
+        {orig, abs, size, outbound_check(orig, abs, size, directory, session_id, mapping)}
+      end)
+
+    case Enum.find(checked, fn {_orig, _abs, _size, result} -> match?({:deny, _}, result) end) do
+      {orig, _abs, _size, {:deny, reason}} ->
+        Logger.warning("send_discord_message denied file #{inspect(orig)}: #{reason}")
+        {:error, "File #{inspect(orig)} #{reason}"}
+
+      nil ->
+        check_total_size(
+          Enum.map(checked, fn {orig, abs, size, _result} -> {orig, abs, size} end)
+        )
+    end
+  end
+
+  defp outbound_check(orig, abs, size, directory, session_id, mapping) do
+    FileFilter.check_outbound(%{
+      direction: :outbound,
+      session_id: session_id,
+      directory: directory,
+      path: abs,
+      filename: Path.basename(orig),
+      size: size,
+      content_type: MIME.from_path(orig),
+      mapping: mapping
+    })
+  end
+
+  defp check_total_size(sized) do
     total = Enum.reduce(sized, 0, fn {_orig, _abs, size}, acc -> acc + size end)
 
-    if total > @max_total_bytes do
-      offenders =
-        sized
-        |> Enum.sort_by(fn {_orig, _abs, size} -> -size end)
-        |> Enum.map_join(", ", fn {orig, _abs, size} -> "#{orig} (#{format_bytes(size)})" end)
+    case FileFilter.check_total(total, @max_total_bytes) do
+      :allow ->
+        {:ok, Enum.map(sized, fn {_orig, abs, _size} -> abs end)}
 
-      {:error,
-       "Total attachment size #{format_bytes(total)} exceeds the #{format_bytes(@max_total_bytes)} " <>
-         "limit. Files: #{offenders}"}
-    else
-      {:ok, Enum.map(sized, fn {_orig, abs, _size} -> abs end)}
+      {:deny, _reason} ->
+        offenders =
+          sized
+          |> Enum.sort_by(fn {_orig, _abs, size} -> -size end)
+          |> Enum.map_join(", ", fn {orig, _abs, size} -> "#{orig} (#{format_bytes(size)})" end)
+
+        {:error,
+         "Total attachment size #{format_bytes(total)} exceeds the #{format_bytes(@max_total_bytes)} " <>
+           "limit. Files: #{offenders}"}
     end
   end
 
@@ -594,17 +765,25 @@ defmodule OrcaHub.MCP.Tools.Discord do
   # Re-fetches the message fresh (never trusts a URL surfaced by an earlier
   # `list_discord_attachments` call or the history backfill) so the CDN
   # download always has a live signed URL, then hands off to
-  # `Bridge.save_attachments_to_inbox/3` — the exact same identity-based
-  # naming/download logic the on-mention auto-copy path uses, nested under
-  # this `message_id` so a fetch of an already-auto-copied message resolves
-  # to the same paths instead of duplicating them.
+  # `Bridge.save_attachments_to_inbox/4` — the exact same identity-based
+  # naming/download logic (and the same `OrcaHub.Discord.FileFilter` hooks)
+  # the on-mention auto-copy path uses, nested under this `message_id` so a
+  # fetch of an already-auto-copied message resolves to the same paths
+  # instead of duplicating them.
 
-  defp fetch_and_save(discord_channel_id, message_id, filenames, attachment_ids, session_id) do
-    channel_id = String.to_integer(discord_channel_id)
+  defp fetch_and_save(mapping, message_id, filenames, attachment_ids, session_id) do
+    channel_id = String.to_integer(mapping.discord_channel_id)
 
     case Nostrum.Api.Message.get(channel_id, message_id) do
       {:ok, %{attachments: attachments}} ->
-        save_selected(attachments || [], filenames, attachment_ids, message_id, session_id)
+        save_selected(
+          attachments || [],
+          filenames,
+          attachment_ids,
+          message_id,
+          session_id,
+          mapping
+        )
 
       {:error, %Nostrum.Error.ApiError{status_code: status, response: response}} ->
         error(
@@ -621,10 +800,12 @@ defmodule OrcaHub.MCP.Tools.Discord do
   Core `fetch_discord_attachments` logic once a message's `attachments` have
   already been fetched: apply the optional `filenames`/`attachment_ids`
   filter, enforce the size cap, and save via
-  `Bridge.save_attachments_to_inbox/3`. Split out from `fetch_and_save/5`
+  `Bridge.save_attachments_to_inbox/4`. Split out from `fetch_and_save/5`
   (which owns the Nostrum re-fetch) so it's directly unit-testable with
   plain attachment maps — no live Discord connection needed for the
-  filter/size-cap branches, which never reach `session_id`.
+  filter/size-cap branches, which never reach `session_id`. `mapping`
+  defaults to `nil` for callers that don't have one; only used to build
+  `FileFilter` context (today's only rule doesn't read it).
 
   `filenames` selects by exact filename match — since Discord allows
   duplicate filenames on one message, a requested name selects EVERY
@@ -636,27 +817,36 @@ defmodule OrcaHub.MCP.Tools.Discord do
   (`validate_selector_exclusivity/2`); this function still refuses to guess
   a precedence if it somehow receives both non-empty.
   """
-  def save_selected([], _filenames, _attachment_ids, _message_id, _session_id),
+  def save_selected(
+        attachments,
+        filenames,
+        attachment_ids,
+        message_id,
+        session_id,
+        mapping \\ nil
+      )
+
+  def save_selected([], _filenames, _attachment_ids, _message_id, _session_id, _mapping),
     do: error("That message has no attachments.")
 
-  def save_selected(_attachments, filenames, attachment_ids, _message_id, _session_id)
+  def save_selected(_attachments, filenames, attachment_ids, _message_id, _session_id, _mapping)
       when filenames != [] and attachment_ids != [] do
     error(
       "Provide at most one of `filenames` / `attachment_ids` — combining both is not supported."
     )
   end
 
-  def save_selected(attachments, [], [], message_id, session_id),
-    do: save_with_size_cap(attachments, message_id, session_id)
+  def save_selected(attachments, [], [], message_id, session_id, mapping),
+    do: save_with_size_cap(attachments, message_id, session_id, mapping)
 
-  def save_selected(attachments, filenames, [], message_id, session_id) do
+  def save_selected(attachments, filenames, [], message_id, session_id, mapping) do
     by_name = Enum.group_by(attachments, & &1.filename)
     requested = Enum.uniq(filenames)
 
     case Enum.reject(requested, &Map.has_key?(by_name, &1)) do
       [] ->
         selected = Enum.flat_map(requested, &Map.fetch!(by_name, &1))
-        save_with_size_cap(selected, message_id, session_id)
+        save_with_size_cap(selected, message_id, session_id, mapping)
 
       missing ->
         available = Enum.map_join(attachments, ", ", & &1.filename)
@@ -668,14 +858,14 @@ defmodule OrcaHub.MCP.Tools.Discord do
     end
   end
 
-  def save_selected(attachments, [], attachment_ids, message_id, session_id) do
+  def save_selected(attachments, [], attachment_ids, message_id, session_id, mapping) do
     by_id = Map.new(attachments, &{&1.id, &1})
     requested = Enum.uniq(attachment_ids)
 
     case Enum.reject(requested, &Map.has_key?(by_id, &1)) do
       [] ->
         selected = Enum.map(requested, &Map.fetch!(by_id, &1))
-        save_with_size_cap(selected, message_id, session_id)
+        save_with_size_cap(selected, message_id, session_id, mapping)
 
       missing ->
         available = Enum.map_join(attachments, ", ", &to_string(&1.id))
@@ -688,62 +878,105 @@ defmodule OrcaHub.MCP.Tools.Discord do
     end
   end
 
-  defp save_with_size_cap(attachments, message_id, session_id) do
-    case Enum.find(attachments, &(&1.size > @max_fetch_bytes)) do
-      %{filename: filename, size: size} ->
-        error(
-          "Attachment #{filename} is #{format_bytes(size)}, exceeding the " <>
-            "#{format_bytes(@max_fetch_bytes)} per-file limit for fetch_discord_attachments."
-        )
+  # Pre-download gate: per-file then total, both delegating the actual cap
+  # comparison to `FileFilter` (`max_file_bytes/0` / `check_total/2` +
+  # `max_inbound_total_bytes/0`) instead of reimplementing it — this used to
+  # be the ONLY size check in this module; `Bridge.save_one/5` now applies
+  # the same rule again once bytes are actually in hand (metadata here can't
+  # see past a missing/lying declared size — content can), so this is a
+  # cheap early rejection, not the last line of defense.
+  defp save_with_size_cap(attachments, message_id, session_id, mapping) do
+    directory = HubRPC.get_session(session_id).directory
+
+    checked =
+      Enum.map(attachments, &{&1, fetch_metadata_check(&1, message_id, directory, mapping)})
+
+    case Enum.find(checked, fn {_a, result} -> match?({:deny, _}, result) end) do
+      {%{filename: filename}, {:deny, reason}} ->
+        Logger.warning("fetch_discord_attachments denied #{inspect(filename)}: #{reason}")
+        error("Attachment #{filename} #{reason} for fetch_discord_attachments.")
 
       nil ->
-        check_fetch_total_size(attachments, message_id, session_id)
+        check_fetch_total_size(attachments, message_id, session_id, directory, mapping)
     end
   end
 
-  defp check_fetch_total_size(attachments, message_id, session_id) do
+  defp fetch_metadata_check(attachment, message_id, directory, mapping) do
+    FileFilter.check_inbound_metadata(%{
+      direction: :inbound,
+      project: mapping && mapping.project,
+      directory: directory,
+      message_id: message_id,
+      original_filename: attachment.filename,
+      sanitized_filename: Bridge.sanitize_filename(attachment.filename),
+      size: attachment.size,
+      content_type: MIME.from_path(attachment.filename),
+      mapping: mapping
+    })
+  end
+
+  defp check_fetch_total_size(attachments, message_id, _session_id, directory, mapping) do
     total = Enum.reduce(attachments, 0, &(&1.size + &2))
 
-    if total > @max_fetch_bytes do
-      error(
-        "Total attachment size #{format_bytes(total)} exceeds the " <>
-          "#{format_bytes(@max_fetch_bytes)} limit for a single fetch_discord_attachments " <>
-          "call. Narrow the request with `filenames` or `attachment_ids`."
-      )
-    else
-      directory = HubRPC.get_session(session_id).directory
-      saved = Bridge.save_attachments_to_inbox(directory, message_id, attachments)
-      report_saved(saved, attachments)
+    case FileFilter.check_total(total, FileFilter.max_inbound_total_bytes()) do
+      {:deny, _reason} ->
+        error(
+          "Total attachment size #{format_bytes(total)} exceeds the " <>
+            "#{format_bytes(FileFilter.max_inbound_total_bytes())} limit for a single " <>
+            "fetch_discord_attachments call. Narrow the request with `filenames` or " <>
+            "`attachment_ids`."
+        )
+
+      :allow ->
+        saved = Bridge.save_attachments_to_inbox(directory, message_id, attachments, mapping)
+        report_saved(saved, attachments)
     end
   end
 
-  # `save_attachments_to_inbox/3` silently skips (and logs) individual
-  # download failures rather than raising, so the count of saved paths can be
-  # fewer than the attachment count — surface that instead of pretending
-  # everything succeeded. Each entry is `{:downloaded, path} | {:existing,
-  # path}` — split those out so the model isn't misled into thinking an
-  # idempotent no-op (the file was already there from an earlier fetch or
-  # the on-mention auto-copy) was a fresh download.
-  defp report_saved([], _attachments),
+  @doc """
+  `save_attachments_to_inbox/4` silently skips (and logs) individual
+  download failures rather than raising, so the count of raw results can be
+  fewer than the attachment count — and now, since it also runs the
+  `FileFilter` hooks, some results may be `{:denied, filename, reason}`
+  rather than a save at all. Surface all three outcomes distinctly instead
+  of pretending everything succeeded, or lumping a policy denial in with a
+  transient network/write failure. Public (not doc-hidden) so it's directly
+  unit-testable with a synthetic `results` list — no live download needed to
+  exercise the reporting/categorization logic itself.
+  """
+  def report_saved([], _attachments),
     do: error("Failed to download any of the requested attachment(s) — see server logs.")
 
-  defp report_saved(saved, attachments) do
-    {downloaded, existing} = Enum.split_with(saved, &match?({:downloaded, _}, &1))
-    paths = Enum.map(saved, &elem(&1, 1))
-    failed = length(attachments) - length(saved)
+  def report_saved(results, attachments) do
+    {denied, saves} = Enum.split_with(results, &match?({:denied, _, _}, &1))
+    {downloaded, existing} = Enum.split_with(saves, &match?({:downloaded, _}, &1))
+    paths = Enum.map(saves, &elem(&1, 1))
+    failed = length(attachments) - length(results)
+    succeeded = length(saves)
 
     breakdown =
       [
         downloaded != [] && "#{length(downloaded)} downloaded",
         existing != [] && "#{length(existing)} already present from an earlier fetch",
+        denied != [] && "#{length(denied)} blocked by the file filter",
         failed > 0 && "#{failed} failed to download — see server logs"
       ]
       |> Enum.filter(& &1)
       |> Enum.join(", ")
 
     text(
-      "Saved #{length(saved)} of #{length(attachments)} attachment(s) (#{breakdown}) to: " <>
-        Enum.join(paths, ", ")
+      "Saved #{succeeded} of #{length(attachments)} attachment(s) (#{breakdown})" <>
+        paths_suffix(paths) <> denied_suffix(denied)
     )
+  end
+
+  defp paths_suffix([]), do: ""
+  defp paths_suffix(paths), do: " to: " <> Enum.join(paths, ", ")
+
+  defp denied_suffix([]), do: ""
+
+  defp denied_suffix(denied) do
+    ". Blocked: " <>
+      Enum.map_join(denied, "; ", fn {:denied, filename, reason} -> "#{filename} (#{reason})" end)
   end
 end

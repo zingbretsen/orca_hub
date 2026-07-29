@@ -32,6 +32,7 @@ defmodule OrcaHub.Discord.Bridge do
   require Logger
 
   alias OrcaHub.{Cluster, HubRPC}
+  alias OrcaHub.Discord.FileFilter
 
   # Root of the isolated shared subtree for Discord-provisioned projects. Must
   # match the container mountPath in the orca-agent-discord k3s manifest.
@@ -112,13 +113,14 @@ defmodule OrcaHub.Discord.Bridge do
 
   defp drive(%{project: %{} = project} = mapping, %{message_id: message_id} = msg) do
     # Always save attachments first so a file-only mention still lands the files.
-    saved = save_attachments(project, msg, message_id)
+    {saved, denied} = save_attachments(mapping, msg, message_id)
 
     text_len = String.length(String.trim(msg[:text] || ""))
     branch = if text_len == 0, do: "file_only", else: "converse"
 
     Logger.info(
-      "Discord dispatch: channel=#{mapping.discord_channel_id} saved=#{length(saved)} text_len=#{text_len} branch=#{branch}"
+      "Discord dispatch: channel=#{mapping.discord_channel_id} saved=#{length(saved)} " <>
+        "denied=#{length(denied)} text_len=#{text_len} branch=#{branch}"
     )
 
     runner_node = Cluster.project_node_for(project)
@@ -127,6 +129,12 @@ defmodule OrcaHub.Discord.Bridge do
       String.trim(msg[:text] || "") == "" ->
         # File-only mention: no conversation. Do NOT advance the watermark, so the
         # backfill window stays open for the next text mention.
+        #
+        # Known gap: any `denied` entries above have nowhere to surface but the
+        # log line — there's no session/prompt to append a "[Blocked by file
+        # filter]" note to on a pure file-only mention. Not fixed here; a human
+        # watching the log is the only way to learn about a block in this
+        # specific case.
         :ok
 
       not Cluster.node_available?(runner_node) ->
@@ -149,7 +157,7 @@ defmodule OrcaHub.Discord.Bridge do
           Cluster.start_session(runner_node, session_id, session)
         end
 
-        Cluster.send_message(runner_node, session_id, build_prompt(mapping, msg, saved))
+        Cluster.send_message(runner_node, session_id, build_prompt(mapping, msg, saved, denied))
         capture_reply(session_id, mapping.discord_channel_id, message_id)
         # Advance the watermark only after a successful dispatch, so a failed send
         # (which raises out of here) leaves the backfill window open for a retry.
@@ -178,11 +186,12 @@ defmodule OrcaHub.Discord.Bridge do
   # said untagged, then "@bot what should you call me?"). Bounded and defensive:
   # any Discord API failure falls back to sending just the mention text.
 
-  defp build_prompt(mapping, msg, saved) do
+  defp build_prompt(mapping, msg, saved, denied) do
     mapping
     |> fetch_history(msg)
     |> format_prompt(msg)
     |> append_saved_files(saved)
+    |> append_denied_files(denied)
     |> append_discord_tool_hint()
   rescue
     e ->
@@ -193,6 +202,7 @@ defmodule OrcaHub.Discord.Bridge do
       # session must always be able to reply to the message that triggered it.
       format_prompt([], msg)
       |> append_saved_files(saved)
+      |> append_denied_files(denied)
       |> append_discord_tool_hint()
   end
 
@@ -205,6 +215,26 @@ defmodule OrcaHub.Discord.Bridge do
 
     [Files saved under inbox/]
     #{Enum.join(saved, "\n")}
+    """
+    |> String.trim_trailing()
+  end
+
+  @doc """
+  Tack a `[Blocked by file filter]` section onto the prompt listing every
+  `{filename, reason}` pair `save_attachments/3` couldn't save, so the
+  session can tell the user why an upload didn't arrive instead of silently
+  saying nothing about it. Public (not doc-hidden) so it's directly
+  unit-testable — no HTTP/DB dependency, same rationale as
+  `format_prompt/2`.
+  """
+  def append_denied_files(prompt, []), do: prompt
+
+  def append_denied_files(prompt, denied) do
+    """
+    #{prompt}
+
+    [Blocked by file filter]
+    #{Enum.map_join(denied, "\n", fn {filename, reason} -> "#{filename}: #{reason}" end)}
     """
     |> String.trim_trailing()
   end
@@ -410,23 +440,52 @@ defmodule OrcaHub.Discord.Bridge do
   # a failure logs and is skipped, never crashing dispatch. On any
   # successful save we react ✅ to the triggering message as feedback.
   #
-  # Returns the list of saved relative paths, e.g.
-  # "inbox/123456789/report-987654321.pdf".
+  # Returns `{saved_rel_paths, denied_entries}` — `denied_entries` is a list
+  # of `{filename, reason}`, split out from the raw `{:downloaded, _} |
+  # {:existing, _} | {:denied, _, _}` tuples `save_attachments_to_inbox/4`
+  # returns, so `drive/2` can surface blocks into the prompt distinctly from
+  # the plain list of paths it already appended.
 
-  defp save_attachments(project, msg, message_id) do
-    saved = save_attachments_to_inbox(project.directory, message_id, msg[:attachments] || [])
-    if saved != [], do: ack_reaction(msg, message_id)
-    Enum.map(saved, &elem(&1, 1))
+  defp save_attachments(mapping, msg, message_id) do
+    results =
+      save_attachments_to_inbox(
+        mapping.project.directory,
+        message_id,
+        msg[:attachments] || [],
+        mapping
+      )
+
+    {saved, denied} = Enum.split_with(results, &(elem(&1, 0) in [:downloaded, :existing]))
+    saved_paths = Enum.map(saved, &elem(&1, 1))
+    denied_entries = Enum.map(denied, fn {:denied, filename, reason} -> {filename, reason} end)
+
+    if saved_paths != [], do: ack_reaction(msg, message_id)
+
+    {saved_paths, denied_entries}
   end
 
   @doc """
   Download `attachments` (a list of `%Nostrum.Struct.Message.Attachment{}`,
   or anything shaped like one) into
   `<directory>/inbox/<message_id>/`, returning a list of
-  `{:downloaded, rel_path} | {:existing, rel_path}` tuples — `rel_path` is
-  relative to `directory`, e.g. `"inbox/123456789/report-987654321.pdf"`. A
-  single failed download is logged and skipped (omitted from the result) —
-  never raises.
+  `{:downloaded, rel_path} | {:existing, rel_path} | {:denied, filename,
+  reason}` tuples — `rel_path` is relative to `directory`, e.g.
+  `"inbox/123456789/report-987654321.pdf"`. A single failed download
+  (network/write error, not a filter denial) is logged and skipped (omitted
+  from the result entirely) — never raises. `mapping` is the
+  `OrcaHub.DiscordChannels.DiscordChannel` row this download is happening
+  under, threaded through to `OrcaHub.Discord.FileFilter` context — may be
+  `nil` for callers that don't have one (only the size rule runs today,
+  which never reads it).
+
+  Every attachment in `attachments` is first checked as a batch against
+  `FileFilter`'s per-message total cap (using each attachment's Discord-
+  declared `:size` — no download needed to sum). If the batch total is over
+  cap, EVERY attachment in this call is denied (no downloads attempted) —
+  see `FileFilter.max_inbound_total_bytes/0`. Otherwise each attachment is
+  saved individually via `save_one/5`, which applies the PER-FILE hooks
+  (`check_inbound_metadata/1` before download, `check_inbound_content/1`
+  after download but before the bytes are written).
 
   The saved path is a PURE FUNCTION of `{message_id, attachment.id,
   attachment.filename}`: nesting by message id and always suffixing the
@@ -434,44 +493,85 @@ defmodule OrcaHub.Discord.Bridge do
   retried dispatch, or a later `fetch_discord_attachments` call for a
   message already auto-copied on mention — resolves to the exact same path
   every time. When that path already exists we skip the download entirely
-  (`:existing`) rather than re-fetch-and-overwrite: it may be the identical
-  bytes already there, or it may be a copy the agent has since edited
-  locally — either way, clobbering it would be wrong. Attachment ids are
-  unique within one Discord message, so within one message's directory a
-  name collision can ONLY be this idempotency case, never two different
-  attachments fighting over a name — no collision-avoidance/retry loop is
-  needed, just the existence check.
+  (`:existing`, and skip the filter too — see `save_one/5`) rather than
+  re-fetch-and-overwrite: it may be the identical bytes already there, or it
+  may be a copy the agent has since edited locally — either way, clobbering
+  it would be wrong. Attachment ids are unique within one Discord message,
+  so within one message's directory a name collision can ONLY be this
+  idempotency case, never two different attachments fighting over a name —
+  no collision-avoidance/retry loop is needed, just the existence check.
 
   Shared by the on-mention auto-copy path (`save_attachments/3` above) and
   the `fetch_discord_attachments` MCP tool, which re-fetches a message fresh
   (Discord CDN URLs expire) and then hands its attachments here.
   """
-  def save_attachments_to_inbox(_directory, _message_id, []), do: []
+  def save_attachments_to_inbox(directory, message_id, attachments, mapping \\ nil)
 
-  def save_attachments_to_inbox(directory, message_id, attachments) do
+  def save_attachments_to_inbox(_directory, _message_id, [], _mapping), do: []
+
+  def save_attachments_to_inbox(directory, message_id, attachments, mapping) do
     message_id = to_string(message_id)
     message_dir = Path.join([directory, "inbox", message_id])
     File.mkdir_p!(message_dir)
 
-    attachments
-    |> Enum.map(&save_one(message_dir, message_id, &1))
-    |> Enum.reject(&is_nil/1)
+    total = attachments |> Enum.map(&(Map.get(&1, :size) || 0)) |> Enum.sum()
+
+    case FileFilter.check_total(total, FileFilter.max_inbound_total_bytes()) do
+      {:deny, reason} ->
+        Enum.map(attachments, fn a -> deny_download(a.filename, reason, :total) end)
+
+      :allow ->
+        attachments
+        |> Enum.map(&save_one(message_dir, directory, message_id, mapping, &1))
+        |> Enum.reject(&is_nil/1)
+    end
   end
 
   # Download (or skip, if already present) a single attachment into
-  # `message_dir`. Returns {:downloaded, rel_path} | {:existing, rel_path} or
-  # nil on failure (logged) — never raises.
-  defp save_one(message_dir, message_id, attachment) do
-    name = attachment_filename(sanitize_filename(attachment.filename), attachment.id)
+  # `message_dir`. Returns {:downloaded, rel_path} | {:existing, rel_path} |
+  # {:denied, filename, reason}, or nil on a non-filter failure (logged) —
+  # never raises. An already-present file skips the filter entirely (see
+  # `save_attachments_to_inbox/4` doc above on why re-judging an idempotent
+  # hit would be wrong).
+  defp save_one(message_dir, directory, message_id, mapping, attachment) do
+    original_filename = attachment.filename
+    sanitized = sanitize_filename(original_filename)
+    name = attachment_filename(sanitized, attachment.id)
     path = Path.join(message_dir, name)
     rel = Path.join(["inbox", message_id, name])
 
     if File.exists?(path) do
       {:existing, rel}
     else
-      %{body: body} = Req.get!(attachment.url)
-      File.write!(path, body)
-      {:downloaded, rel}
+      ctx = %{
+        direction: :inbound,
+        project: mapping && mapping.project,
+        directory: directory,
+        message_id: message_id,
+        original_filename: original_filename,
+        sanitized_filename: sanitized,
+        size: Map.get(attachment, :size),
+        content_type: MIME.from_path(original_filename),
+        mapping: mapping
+      }
+
+      case FileFilter.check_inbound_metadata(ctx) do
+        {:deny, reason} ->
+          deny_download(original_filename, reason, :metadata)
+
+        :allow ->
+          %{body: body} = Req.get!(attachment.url)
+          content_ctx = ctx |> Map.put(:size, byte_size(body)) |> Map.put(:bytes, body)
+
+          case FileFilter.check_inbound_content(content_ctx) do
+            :allow ->
+              File.write!(path, body)
+              {:downloaded, rel}
+
+            {:deny, reason} ->
+              deny_download(original_filename, reason, :content)
+          end
+      end
     end
   rescue
     e ->
@@ -481,6 +581,14 @@ defmodule OrcaHub.Discord.Bridge do
       )
 
       nil
+  end
+
+  defp deny_download(filename, reason, stage) do
+    Logger.warning(
+      "Discord inbound attachment denied (#{stage}): #{inspect(filename)} - #{reason}"
+    )
+
+    {:denied, filename, reason}
   end
 
   # Insert the attachment id before the extension: "report.pdf" + 12 ->

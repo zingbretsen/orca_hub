@@ -282,4 +282,72 @@ defmodule OrcaHub.Discord.BridgeTest do
       end
     end
   end
+
+  describe "save_attachments_to_inbox/4 — FileFilter wiring" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "bridge_filter_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+      {:ok, dir: dir}
+    end
+
+    test "an oversized attachment is denied before any download attempt, leaving no file on disk",
+         %{dir: dir} do
+      # No :url at all — if this reached the download branch, Req.get! would
+      # raise (see the "failed download" test above) and the attachment
+      # would be silently omitted, NOT returned as :denied. Getting a clean
+      # :denied tuple back proves the metadata hook caught it first.
+      oversized = %{id: 1, filename: "huge.bin", size: 30 * 1024 * 1024}
+
+      assert [{:denied, "huge.bin", reason}] =
+               Bridge.save_attachments_to_inbox(dir, 1, [oversized])
+
+      assert reason =~ "per-file limit"
+      refute File.exists?(Path.join([dir, "inbox", "1", "huge-1.bin"]))
+      assert File.ls!(Path.join([dir, "inbox", "1"])) == []
+    end
+
+    test "a batch whose declared sizes sum over the inbound total cap denies every attachment, even ones individually under the per-file cap",
+         %{dir: dir} do
+      a = %{id: 1, filename: "a.bin", size: 21 * 1024 * 1024}
+      b = %{id: 2, filename: "b.bin", size: 21 * 1024 * 1024}
+
+      assert [{:denied, "a.bin", reason1}, {:denied, "b.bin", reason2}] =
+               Bridge.save_attachments_to_inbox(dir, 2, [a, b])
+
+      assert reason1 =~ "exceeding"
+      assert reason2 =~ "exceeding"
+      assert File.ls!(Path.join([dir, "inbox", "2"])) == []
+    end
+
+    test "an attachment within both caps is unaffected by the filter (passthrough)", %{dir: dir} do
+      # No :url — proves this reaches the real download attempt (and fails
+      # there, cleanly, exactly as it did before FileFilter existed) rather
+      # than being denied.
+      ok = %{id: 1, filename: "small.txt", size: 10}
+
+      assert Bridge.save_attachments_to_inbox(dir, 3, [ok]) == []
+      refute File.exists?(Path.join([dir, "inbox", "3", "small-1.txt"]))
+    end
+  end
+
+  describe "append_denied_files/2" do
+    test "no denials: prompt is returned unchanged" do
+      assert Bridge.append_denied_files("hello", []) == "hello"
+    end
+
+    test "appends a [Blocked by file filter] section listing every filename and reason" do
+      denied = [{"a.txt", "is too big"}, {"b.txt", "also too big"}]
+
+      assert Bridge.append_denied_files("hello", denied) ==
+               """
+               hello
+
+               [Blocked by file filter]
+               a.txt: is too big
+               b.txt: also too big
+               """
+               |> String.trim_trailing()
+    end
+  end
 end

@@ -145,6 +145,151 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
     end
   end
 
+  describe "validate_file_paths/2 — path confinement" do
+    import ExUnit.CaptureLog
+
+    setup do
+      dir = Path.join(System.tmp_dir!(), "discord_confine_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+      {:ok, dir: dir}
+    end
+
+    test "rejects a `..` escape, naming the path as given and never leaking the resolved target",
+         %{dir: dir} do
+      outside_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "discord_confine_outside_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(outside_dir)
+      on_exit(fn -> File.rm_rf(outside_dir) end)
+      File.write!(Path.join(outside_dir, "secrets"), "top secret")
+
+      escape = "../#{Path.basename(outside_dir)}/secrets"
+
+      log =
+        capture_log(fn ->
+          assert {:error, msg} = DiscordTool.validate_file_paths(dir, [escape])
+          # Echoing the path exactly as the caller supplied it is expected
+          # (and fine — it's just their own input echoed back). What must
+          # NOT appear is the RESOLVED absolute filesystem path.
+          assert msg =~ inspect(escape)
+          assert msg =~ "outside the session directory"
+          refute msg =~ outside_dir
+        end)
+
+      assert log =~ "denied"
+    end
+
+    test "rejects an absolute path outside the session directory" do
+      dir =
+        Path.join(System.tmp_dir!(), "discord_confine_a_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      assert {:error, msg} = DiscordTool.validate_file_paths(dir, ["/etc/passwd"])
+      assert msg =~ "/etc/passwd"
+      assert msg =~ "outside the session directory"
+    end
+
+    test "allows a legitimate relative path and an absolute path inside the root", %{dir: dir} do
+      File.write!(Path.join(dir, "report.txt"), "hi")
+      abs = Path.join(dir, "abs.txt")
+      File.write!(abs, "hi")
+
+      assert {:ok, [resolved]} = DiscordTool.validate_file_paths(dir, ["report.txt"])
+      assert resolved == Path.join(dir, "report.txt")
+
+      assert {:ok, [^abs]} = DiscordTool.validate_file_paths(dir, [abs])
+    end
+
+    test "rejects a symlink inside the session directory pointing outside it", %{dir: dir} do
+      outside_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "discord_confine_target_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(outside_dir)
+      on_exit(fn -> File.rm_rf(outside_dir) end)
+
+      outside_file = Path.join(outside_dir, "secret.txt")
+      File.write!(outside_file, "top secret")
+
+      link = Path.join(dir, "escape_link")
+      File.ln_s!(outside_file, link)
+
+      assert {:error, msg} = DiscordTool.validate_file_paths(dir, ["escape_link"])
+      assert msg =~ "escape_link"
+      assert msg =~ "outside the session directory"
+      refute msg =~ "secret.txt"
+      refute msg =~ outside_dir
+    end
+
+    test "allows a symlink inside the session directory pointing to another in-tree file", %{
+      dir: dir
+    } do
+      real = Path.join(dir, "real.txt")
+      File.write!(real, "hi")
+
+      link = Path.join(dir, "link_to_real.txt")
+      File.ln_s!("real.txt", link)
+
+      assert {:ok, [resolved]} = DiscordTool.validate_file_paths(dir, ["link_to_real.txt"])
+      assert resolved == DiscordTool.realpath(real)
+    end
+
+    test "a symlink loop does not hang and resolves to something outside (or not) the root, never crashing",
+         %{dir: dir} do
+      a = Path.join(dir, "loop_a")
+      b = Path.join(dir, "loop_b")
+      File.ln_s!("loop_b", a)
+      File.ln_s!("loop_a", b)
+
+      {elapsed_us, result} = :timer.tc(fn -> DiscordTool.validate_file_paths(dir, ["loop_a"]) end)
+
+      assert elapsed_us < 5_000_000
+      assert match?({:error, _msg}, result)
+    end
+
+    test "realpath/1 on a symlink loop is bounded and returns without hanging", %{dir: dir} do
+      a = Path.join(dir, "loop_a")
+      b = Path.join(dir, "loop_b")
+      File.ln_s!("loop_b", a)
+      File.ln_s!("loop_a", b)
+
+      {elapsed_us, resolved} = :timer.tc(fn -> DiscordTool.realpath(a) end)
+
+      assert elapsed_us < 5_000_000
+      assert is_binary(resolved)
+    end
+  end
+
+  describe "validate_file_paths/2 — outbound per-file size cap" do
+    setup do
+      dir =
+        Path.join(System.tmp_dir!(), "discord_outbound_cap_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+      {:ok, dir: dir}
+    end
+
+    test "rejects a single file over FileFilter's 25MB per-file cap, before the 8MB total check ever runs",
+         %{dir: dir} do
+      big = Path.join(dir, "big.bin")
+      File.write!(big, :binary.copy(<<0>>, 26 * 1024 * 1024))
+
+      assert {:error, msg} = DiscordTool.validate_file_paths(dir, ["big.bin"])
+      assert msg =~ "big.bin"
+      assert msg =~ "per-file limit"
+      refute msg =~ "Total attachment size"
+    end
+  end
+
   describe "call/3 — no OrcaHub session linked" do
     test "friendly error when orca_session_id is nil" do
       result =
@@ -313,13 +458,14 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
       session_id: session_id,
       message_id: message_id
     } do
-      dup1 = %{id: 1, filename: "screenshot.png", size: 15 * 1024 * 1024}
-      dup2 = %{id: 2, filename: "screenshot.png", size: 15 * 1024 * 1024}
+      dup1 = %{id: 1, filename: "screenshot.png", size: 21 * 1024 * 1024}
+      dup2 = %{id: 2, filename: "screenshot.png", size: 21 * 1024 * 1024}
 
-      # Neither is individually oversized, but the two together exceed the
-      # 25MB cap — this only trips if BOTH same-named attachments made it
-      # into the selected set (the old Map.new-by-filename bug would have
-      # kept only the last one and never crossed the cap).
+      # Neither is individually oversized (each under the 25MB per-file
+      # cap), but the two together exceed FileFilter's 40MB inbound total
+      # cap — this only trips if BOTH same-named attachments made it into
+      # the selected set (the old Map.new-by-filename bug would have kept
+      # only the last one and never crossed the cap).
       assert %{"isError" => true, "content" => [%{"text" => text}]} =
                DiscordTool.save_selected(
                  [dup1, dup2],
@@ -409,8 +555,8 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
       message_id: message_id
     } do
       attachments = [
-        %{id: 1, filename: "a.bin", size: 15 * 1024 * 1024},
-        %{id: 2, filename: "b.bin", size: 15 * 1024 * 1024}
+        %{id: 1, filename: "a.bin", size: 21 * 1024 * 1024},
+        %{id: 2, filename: "b.bin", size: 21 * 1024 * 1024}
       ]
 
       assert %{"isError" => true, "content" => [%{"text" => text}]} =
@@ -452,6 +598,59 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
       refute text =~ "downloaded"
       assert text =~ "inbox/#{message_id}/report-7.pdf"
       assert File.read!(target) == "already downloaded"
+    end
+  end
+
+  describe "report_saved/2 — denied entries are reported distinctly from silent failures" do
+    test "an all-denied batch is a success response (not the empty-results error), naming each denial" do
+      attachments = [%{id: 1, filename: "a.bin"}, %{id: 2, filename: "b.bin"}]
+
+      results = [
+        {:denied, "a.bin", "is 30.0MB, exceeding the 25.0MB per-file limit"},
+        {:denied, "b.bin", "is 30.0MB, exceeding the 25.0MB per-file limit"}
+      ]
+
+      result = DiscordTool.report_saved(results, attachments)
+      assert %{"content" => [%{"text" => text}]} = result
+
+      refute result["isError"]
+      assert text =~ "0 of 2"
+      assert text =~ "2 blocked by the file filter"
+      assert text =~ "a.bin (is 30.0MB"
+      assert text =~ "b.bin (is 30.0MB"
+    end
+
+    test "a mix of downloaded, denied, and silently-failed attachments are each counted separately" do
+      attachments = [
+        %{id: 1, filename: "ok.txt"},
+        %{id: 2, filename: "denied.bin"},
+        %{id: 3, filename: "gone.bin"}
+      ]
+
+      # Only 2 results for 3 attachments: the third was a silent (non-filter)
+      # failure, omitted entirely by save_attachments_to_inbox/4.
+      results = [
+        {:downloaded, "inbox/1/ok-1.txt"},
+        {:denied, "denied.bin", "is too big"}
+      ]
+
+      result = DiscordTool.report_saved(results, attachments)
+      assert %{"content" => [%{"text" => text}]} = result
+
+      refute result["isError"]
+      assert text =~ "1 of 3"
+      assert text =~ "1 downloaded"
+      assert text =~ "1 blocked by the file filter"
+      assert text =~ "1 failed to download"
+      assert text =~ "inbox/1/ok-1.txt"
+      assert text =~ "denied.bin (is too big)"
+    end
+
+    test "an empty results list (nothing saved, nothing denied) is still the plain failure error" do
+      result = DiscordTool.report_saved([], [%{id: 1, filename: "a.bin"}])
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "Failed to download"
     end
   end
 
