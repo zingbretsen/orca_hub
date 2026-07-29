@@ -216,6 +216,169 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
     end
   end
 
+  describe "validate_message_id/1 (required snowflake, used by fetch_discord_attachments)" do
+    test "nil (omitted) is an error — unlike reply_to_message_id, this arg is required" do
+      assert {:error, msg} = DiscordTool.validate_message_id(nil)
+      assert msg =~ "required"
+    end
+
+    test "a numeric snowflake string is valid and parsed to an integer" do
+      assert DiscordTool.validate_message_id("123456789012345678") ==
+               {:ok, 123_456_789_012_345_678}
+    end
+
+    test "rejects a non-numeric string" do
+      assert {:error, msg} = DiscordTool.validate_message_id("not-a-snowflake")
+      assert msg =~ "numeric"
+      assert msg =~ "message_id"
+    end
+
+    test "rejects a non-string type" do
+      assert {:error, msg} = DiscordTool.validate_message_id(123_456)
+      assert msg =~ "numeric"
+    end
+  end
+
+  describe "save_selected/3 (fetch_discord_attachments filenames filter + size cap)" do
+    setup do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "discord_tool_save_selected_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      project = fixture_project("discord-tool-save-selected", dir)
+      session = fixture_session(project)
+      {:ok, session_id: session.id}
+    end
+
+    test "no filenames given: falls straight through to the size cap over every attachment", %{
+      session_id: session_id
+    } do
+      attachments = [%{filename: "a.txt", size: 10}]
+
+      # No size violation and no real download target: hits the download
+      # branch and (since these fixtures have no real :url) reports a clean
+      # "failed to download" error rather than crashing — proving the
+      # filenames-omitted path reached the save step at all.
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               DiscordTool.save_selected(attachments, [], session_id)
+
+      assert text =~ "Failed to download"
+    end
+
+    test "requesting a filename not present on the message errors clearly, listing what IS available",
+         %{session_id: session_id} do
+      attachments = [%{filename: "a.txt", size: 10}, %{filename: "b.txt", size: 10}]
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               DiscordTool.save_selected(attachments, ["missing.txt"], session_id)
+
+      assert text =~ "not found on that message"
+      assert text =~ "missing.txt"
+      assert text =~ "a.txt"
+      assert text =~ "b.txt"
+    end
+
+    test "filenames filter selects only the matching attachment for the size-cap check", %{
+      session_id: session_id
+    } do
+      small = %{filename: "small.txt", size: 10}
+      big = %{filename: "big.bin", size: 30 * 1024 * 1024}
+
+      # Requesting only the oversized file: the cap error must name it.
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               DiscordTool.save_selected([small, big], ["big.bin"], session_id)
+
+      assert text =~ "big.bin"
+      assert text =~ "exceeding"
+
+      # Requesting only the small file: the big one must be excluded from
+      # consideration entirely, so the cap never trips (falls through to the
+      # download attempt instead, which fails cleanly with no real :url).
+      assert %{"isError" => true, "content" => [%{"text" => text2}]} =
+               DiscordTool.save_selected([small, big], ["small.txt"], session_id)
+
+      refute text2 =~ "exceeding"
+      assert text2 =~ "Failed to download"
+    end
+
+    test "size-cap rejection names the offending file and does not silently truncate", %{
+      session_id: session_id
+    } do
+      oversized = %{filename: "huge.zip", size: 26 * 1024 * 1024}
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               DiscordTool.save_selected([oversized], [], session_id)
+
+      assert text =~ "huge.zip"
+      assert text =~ "exceeding"
+      assert text =~ "per-file limit"
+    end
+
+    test "total size over the cap is rejected even when no single file is oversized", %{
+      session_id: session_id
+    } do
+      attachments = [
+        %{filename: "a.bin", size: 15 * 1024 * 1024},
+        %{filename: "b.bin", size: 15 * 1024 * 1024}
+      ]
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               DiscordTool.save_selected(attachments, [], session_id)
+
+      assert text =~ "Total attachment size"
+      assert text =~ "exceeds"
+    end
+
+    test "an empty attachments list (message has none) errors clearly", %{
+      session_id: session_id
+    } do
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               DiscordTool.save_selected([], [], session_id)
+
+      assert text =~ "no attachments"
+    end
+  end
+
+  describe "call/3 — invalid message_id on fetch_discord_attachments" do
+    test "errors before even checking the session" do
+      result =
+        DiscordTool.call(
+          "fetch_discord_attachments",
+          %{"message_id" => "not-a-snowflake"},
+          %{orca_session_id: nil}
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "numeric"
+    end
+
+    test "errors when message_id is omitted entirely" do
+      result = DiscordTool.call("fetch_discord_attachments", %{}, %{orca_session_id: nil})
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "required"
+    end
+  end
+
+  describe "call/3 — invalid before_message_id on list_discord_attachments" do
+    test "errors before even checking the session" do
+      result =
+        DiscordTool.call(
+          "list_discord_attachments",
+          %{"before_message_id" => "not-a-snowflake"},
+          %{orca_session_id: nil}
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "numeric"
+    end
+  end
+
   describe "call/3 — bridged session with a missing file" do
     test "surfaces the file-not-found error before ever touching Nostrum" do
       dir =

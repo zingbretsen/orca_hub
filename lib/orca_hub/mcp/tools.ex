@@ -15,13 +15,15 @@ defmodule OrcaHub.MCP.Tools do
   Orchestrator connections see every tool; regular connections see only the
   tools in `@regular_session_tools` — messaging another session, opening
   files, spawning a child session and peeking at/archiving it, filing
-  feature requests, and creating/browsing artifacts — plus
-  `send_discord_message` when (and only when) the
-  connection's session is actually Discord-bridged. That one exception needs a
-  hub lookup, so it is done lazily in `list/1` itself, gated behind
-  `Discord.enabled?()` first (a cheap local check) so every non-Discord node's
-  `tools/list` stays free of hub work. `initialize` itself never does a hub
-  lookup.
+  feature requests, and creating/browsing artifacts — plus every tool in the
+  `Discord` category module (`send_discord_message`,
+  `list_discord_attachments`, `fetch_discord_attachments` — the module holds
+  nothing but Discord-bridge tools, so "all of them" is the right rule) when
+  (and only when) the connection's session is actually Discord-bridged. That
+  exception needs a hub lookup, so it is done lazily in `list/1` itself,
+  gated behind `Discord.enabled?()` first (a cheap local check) so every
+  non-Discord node's `tools/list` stays free of hub work. `initialize` itself
+  never does a hub lookup.
 
   `call/3` does **not** gate by role: any known tool may be called. Only
   genuinely-unknown tool names are rejected.
@@ -65,8 +67,9 @@ defmodule OrcaHub.MCP.Tools do
   # (get_session_tail), and clean it up when done (archive_session) — but not
   # the full session-management surface. search_sessions and the heartbeat
   # tools (schedule_heartbeat, cancel_heartbeat) stay orchestrator-only.
-  # `send_discord_message` is deliberately absent here — its visibility is
-  # conditional (see moduledoc), not static.
+  # The Discord category's tools (send_discord_message,
+  # list_discord_attachments, fetch_discord_attachments) are deliberately
+  # absent here — their visibility is conditional (see moduledoc), not static.
   @regular_session_tools ~w(send_message_to_session open_file report_progress start_session
                              get_session_tail archive_session file_feature_request
                              list_feature_requests get_feature_request append_feature_request_note
@@ -133,14 +136,17 @@ defmodule OrcaHub.MCP.Tools do
   defp orchestrator?(%{orchestrator: true}), do: true
   defp orchestrator?(_state), do: false
 
-  # Adds `send_discord_message` when this connection's session is actually
-  # Discord-bridged. `Discord.enabled?()` is checked first (no hub work) so
+  # Adds every tool in the Discord category module when this connection's
+  # session is actually Discord-bridged — the module holds nothing but
+  # Discord-bridge tools, so appending all of `Discord.list()` (rather than
+  # naming individual tools) is the correct rule and stays correct as that
+  # module grows. `Discord.enabled?()` is checked first (no hub work) so
   # every non-Discord node's tools/list short-circuits before ever calling
   # HubRPC. `discord_bridged?/1` is defensive on top of that: any lookup
-  # failure just omits the tool rather than raising out of `list/1`.
+  # failure just omits the tools rather than raising out of `list/1`.
   defp maybe_add_discord_tool(tools, %{orca_session_id: session_id}) when is_binary(session_id) do
     if OrcaHub.Discord.enabled?() and discord_bridged?(session_id) do
-      tools ++ Enum.filter(list(), &(&1["name"] == "send_discord_message"))
+      tools ++ Discord.list()
     else
       tools
     end

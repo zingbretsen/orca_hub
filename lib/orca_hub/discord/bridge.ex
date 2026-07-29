@@ -210,19 +210,21 @@ defmodule OrcaHub.Discord.Bridge do
   end
 
   # Reminder on every dispatch, since the model has no other way to discover
-  # this tool exists: `send_discord_message` lets it post attachments or
-  # interim updates mid-turn. It should NOT use it to repeat the final reply —
-  # `post_reply/2` below already posts that automatically once the session
-  # goes idle. Discord-bridged sessions run in code-exec mode, where
-  # `send_discord_message` is reachable ONLY as a `Tools.*` function inside
-  # `run_elixir` (it was never a standalone MCP tool, even before the
-  # code-exec passthrough removal — pointing at a bare `send_discord_message`
-  # tool call here was a real, hit-in-production bug).
+  # these tools exist: `send_discord_message` lets it post attachments or
+  # interim updates mid-turn, and `fetch_discord_attachments` lets it
+  # retroactively pull files off an earlier message (auto-copy only ever
+  # covers the mentioning message itself). Neither should be used to repeat
+  # the final reply — `post_reply/2` below already posts that automatically
+  # once the session goes idle. Discord-bridged sessions run in code-exec
+  # mode, where both are reachable ONLY as `Tools.*` functions inside
+  # `run_elixir` (send_discord_message was never a standalone MCP tool, even
+  # before the code-exec passthrough removal — pointing at a bare
+  # `send_discord_message` tool call here was a real, hit-in-production bug).
   defp append_discord_tool_hint(prompt) do
     """
     #{prompt}
 
-    [You can call Tools.send_discord_message(%{...}) inside the run_elixir MCP tool to send files/attachments or interim updates to this channel. Pass one of the `[id: ...]` values shown above as `reply_to_message_id` to thread your post as a Discord reply to that specific message. Your final reply is posted here automatically when you finish — don't duplicate it with this tool.]
+    [You can call Tools.send_discord_message(%{...}) inside the run_elixir MCP tool to send files/attachments or interim updates to this channel. Pass one of the `[id: ...]` values shown above as `reply_to_message_id` to thread your post as a Discord reply to that specific message. To retroactively grab files from an earlier message (e.g. one uploaded without a text mention, or outside this transcript), call Tools.fetch_discord_attachments(%{"message_id" => "..."}) with that message's `[id: ...]` value — it re-fetches the message fresh and saves its attachments into inbox/. Your final reply is posted here automatically when you finish — don't duplicate it with this tool.]
     """
     |> String.trim_trailing()
   end
@@ -258,18 +260,33 @@ defmodule OrcaHub.Discord.Bridge do
     end
   end
 
-  # Drop our own bot's messages, the current mention itself, anything at/below
-  # the watermark, and content-less messages (attachments/embeds) that would add
-  # blank transcript lines.
-  defp filter_history(messages, current_message_id, watermark) do
+  @doc """
+  Filter raw Nostrum messages down to backfill-worthy history: drop our own
+  bot's messages, the current mention itself, and anything at/below the
+  watermark. A message is otherwise kept only if it has something to show —
+  non-blank `content` OR at least one attachment. Previously any blank-content
+  message was dropped outright, which silently erased image/file-only
+  uploads from the transcript (the session never even learned the file
+  existed). Public (not doc-hidden) so it's directly unit-testable with
+  plain maps — `bot_id()` needs a live Nostrum cache, but that's fine in
+  tests since a nil bot_id never equals a real author id.
+  """
+  def filter_history(messages, current_message_id, watermark) do
     bot_id = bot_id()
 
     Enum.filter(messages, fn m ->
       m.id != current_message_id and
         m.author.id != bot_id and
         (is_nil(watermark) or m.id > watermark) and
-        String.trim(m.content || "") != ""
+        has_content?(m)
     end)
+  end
+
+  # Both fields are read defensively via Map.get: real Nostrum messages
+  # always have `:content` and `:attachments`, but this is also exercised
+  # directly in tests with plain maps that may omit `:attachments` entirely.
+  defp has_content?(m) do
+    String.trim(Map.get(m, :content) || "") != "" or (Map.get(m, :attachments) || []) != []
   end
 
   @doc """
@@ -278,25 +295,53 @@ defmodule OrcaHub.Discord.Bridge do
   triggering mention, also id-tagged. Every line carries its Discord message
   id so the session can pass one back as `reply_to_message_id` to the
   `send_discord_message` MCP tool and thread its post under that message.
+  Attachments (if any) are called out with a trailing `[attachments: ...]`
+  annotation, since that's the only visible trace of a file/image-only
+  message once its content is blank.
 
   Pure string-building (no Nostrum/HubRPC dependency) — directly unit-testable.
   """
   def format_prompt([], %{text: text} = msg) do
-    "[id: #{msg.message_id}] [#{display_name(msg[:author])} mentioned you]: #{text}"
+    "[id: #{msg.message_id}] [#{display_name(msg[:author])} mentioned you]: " <>
+      annotate(text, Map.get(msg, :attachments))
   end
 
   def format_prompt(history, %{text: text} = msg) do
     transcript =
       history
-      |> Enum.map_join("\n", fn m -> "[id: #{m.id}] #{display_name(m.author)}: #{m.content}" end)
+      |> Enum.map_join("\n", fn m ->
+        "[id: #{m.id}] #{display_name(m.author)}: " <>
+          annotate(Map.get(m, :content), Map.get(m, :attachments))
+      end)
 
     """
     [Channel messages since your last reply]
     #{transcript}
 
-    [id: #{msg.message_id}] [#{display_name(msg[:author])} mentioned you]: #{text}
+    [id: #{msg.message_id}] [#{display_name(msg[:author])} mentioned you]: #{annotate(text, Map.get(msg, :attachments))}
     """
     |> String.trim_trailing()
+  end
+
+  # Builds the "<content> [attachments: ...]" tail of a transcript line.
+  # Blank content with attachments collapses to just the annotation (no
+  # leading space) so a file-only message doesn't render as "name: [attachments:...]"
+  # with a stray space, matching the "name: content" shape when content is present.
+  defp annotate(content, attachments) do
+    trimmed = String.trim(content || "")
+
+    case attachment_annotation(attachments) do
+      "" -> trimmed
+      annotation when trimmed == "" -> annotation
+      annotation -> "#{trimmed} #{annotation}"
+    end
+  end
+
+  defp attachment_annotation(attachments) do
+    case Enum.map(attachments || [], & &1.filename) do
+      [] -> ""
+      names -> "[attachments: #{Enum.join(names, ", ")}]"
+    end
   end
 
   # Prefer the Discord display name, fall back to username, then a neutral label.
@@ -304,11 +349,17 @@ defmodule OrcaHub.Discord.Bridge do
   defp display_name(%{username: name}) when is_binary(name) and name != "", do: name
   defp display_name(_), do: "someone"
 
+  # A GenServer exit (not a raised exception — `rescue` alone won't catch it)
+  # if Nostrum's cache isn't running: normally only during a startup race, but
+  # also every time `filter_history/3` is unit-tested directly with plain
+  # maps, with no live Nostrum supervision tree at all.
   defp bot_id do
     case Nostrum.Cache.Me.get() do
       %{id: id} -> id
       _ -> nil
     end
+  catch
+    :exit, _ -> nil
   end
 
   # Never let a watermark write break dispatch — the reply is already on its way.
@@ -361,28 +412,36 @@ defmodule OrcaHub.Discord.Bridge do
   # Returns the list of saved relative paths (e.g. "inbox/report.pdf").
 
   defp save_attachments(project, msg, message_id) do
-    attachments = msg[:attachments] || []
+    saved = save_attachments_to_inbox(project.directory, msg[:attachments] || [])
+    if saved != [], do: ack_reaction(msg, message_id)
+    saved
+  end
 
-    case attachments do
-      [] ->
-        []
+  @doc """
+  Download `attachments` (a list of `%Nostrum.Struct.Message.Attachment{}`,
+  or anything shaped like one) into `<directory>/inbox/`, returning the list
+  of saved paths relative to `directory` (e.g. `"inbox/report.pdf"`). A
+  single failed download is logged and skipped — never raises.
 
-      list ->
-        inbox = Path.join(project.directory, "inbox")
-        File.mkdir_p!(inbox)
+  Shared by the on-mention auto-copy path (`save_attachments/3` above) and
+  the `fetch_discord_attachments` MCP tool, which re-fetches a message fresh
+  (Discord CDN URLs expire) and then hands its attachments here to reuse the
+  exact same collision-safe naming/download logic.
+  """
+  def save_attachments_to_inbox(_directory, []), do: []
 
-        saved =
-          Enum.reduce(list, [], fn attachment, acc ->
-            case save_one(inbox, attachment, acc) do
-              {:ok, rel} -> [rel | acc]
-              :error -> acc
-            end
-          end)
-          |> Enum.reverse()
+  def save_attachments_to_inbox(directory, attachments) do
+    inbox = Path.join(directory, "inbox")
+    File.mkdir_p!(inbox)
 
-        if saved != [], do: ack_reaction(msg, message_id)
-        saved
-    end
+    attachments
+    |> Enum.reduce([], fn attachment, acc ->
+      case save_one(inbox, attachment, acc) do
+        {:ok, rel} -> [rel | acc]
+        :error -> acc
+      end
+    end)
+    |> Enum.reverse()
   end
 
   # Download a single attachment into `inbox`, avoiding collisions with anything

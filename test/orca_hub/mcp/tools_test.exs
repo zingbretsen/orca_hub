@@ -43,18 +43,22 @@ defmodule OrcaHub.MCP.ToolsTest do
       refute "search_sessions" in names
     end
 
-    test "regular connections never see send_discord_message when the node has no linked session" do
+    test "regular connections never see any Discord tool when the node has no linked session" do
       names = Tools.list(%{orchestrator: false}) |> Enum.map(& &1["name"])
       refute "send_discord_message" in names
+      refute "list_discord_attachments" in names
+      refute "fetch_discord_attachments" in names
     end
 
-    test "orchestrator connections always see send_discord_message (full tool set)" do
+    test "orchestrator connections always see every Discord tool (full tool set)" do
       names = Tools.list(%{orchestrator: true}) |> Enum.map(& &1["name"])
       assert "send_discord_message" in names
+      assert "list_discord_attachments" in names
+      assert "fetch_discord_attachments" in names
     end
   end
 
-  describe "list/1 send_discord_message visibility for regular connections" do
+  describe "list/1 Discord tool visibility for regular connections" do
     setup do
       dir =
         Path.join(System.tmp_dir!(), "mcp_tools_discord_#{System.unique_integer([:positive])}")
@@ -86,6 +90,8 @@ defmodule OrcaHub.MCP.ToolsTest do
         Tools.list(%{orchestrator: false, orca_session_id: session.id}) |> Enum.map(& &1["name"])
 
       refute "send_discord_message" in names
+      refute "list_discord_attachments" in names
+      refute "fetch_discord_attachments" in names
     end
 
     test "hidden when a mapping exists but Discord.enabled?() is false (the test default)", %{
@@ -106,6 +112,8 @@ defmodule OrcaHub.MCP.ToolsTest do
         Tools.list(%{orchestrator: false, orca_session_id: session.id}) |> Enum.map(& &1["name"])
 
       refute "send_discord_message" in names
+      refute "list_discord_attachments" in names
+      refute "fetch_discord_attachments" in names
     end
 
     test "visible only when Discord is enabled AND the session is bridged", %{
@@ -132,6 +140,8 @@ defmodule OrcaHub.MCP.ToolsTest do
         Tools.list(%{orchestrator: false, orca_session_id: session.id}) |> Enum.map(& &1["name"])
 
       assert "send_discord_message" in names
+      assert "list_discord_attachments" in names
+      assert "fetch_discord_attachments" in names
     end
   end
 
