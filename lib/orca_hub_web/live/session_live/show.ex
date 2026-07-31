@@ -8,6 +8,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   import OrcaHubWeb.AskUserQuestionComponent
 
+  # Deliberately shorter than Cluster's 10s default: the commit list is an
+  # optional side panel loaded off the critical path (see
+  # load_session_commits/1), and the `git log --all --grep` behind it can hang
+  # for tens of seconds in a large repo — so there's nothing to gain from
+  # waiting longer, and a hung call shouldn't hold a remote process open for
+  # 10s every time the session goes idle.
+  @commits_timeout 5_000
+
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     {session_node, session} = find_session!(id)
@@ -2194,21 +2202,43 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  # Fetched asynchronously, never inline: `Sessions.list_session_commits/2`
+  # shells out to `git log --all --grep=...`, which is fast in most repos and
+  # tens of seconds in a big one — far too slow to sit in front of first paint
+  # for a side panel. @commits starts empty and fills in when (if) the call
+  # comes back, so mount returns immediately either way. Skipped on the dead
+  # render, which can't receive the result anyway.
   defp load_session_commits(socket) do
-    session_node = socket.assigns[:session_node] || node()
+    if connected?(socket) do
+      session_node = socket.assigns[:session_node] || node()
+      %{directory: directory, id: id} = socket.assigns.session
 
-    commits =
-      case Cluster.rpc(session_node, Sessions, :list_session_commits, [
-             socket.assigns.session.directory,
-             socket.assigns.session.id
-           ]) do
-        list when is_list(list) -> list
-        # node_unassigned/node_unavailable (or any other rpc failure) — no
-        # commits to show rather than propagating the raw error tuple.
-        _ -> []
-      end
+      start_async(socket, :commits, fn ->
+        Cluster.rpc(
+          session_node,
+          Sessions,
+          :list_session_commits,
+          [directory, id],
+          @commits_timeout
+        )
+      end)
+    else
+      socket
+    end
+  end
 
-    assign(socket, :commits, commits)
+  @impl true
+  def handle_async(:commits, result, socket) do
+    case result do
+      {:ok, commits} when is_list(commits) ->
+        {:noreply, assign(socket, :commits, commits)}
+
+      # node_unassigned/node_unavailable/rpc timeout, or the task itself
+      # crashed. Keep whatever we already have (nothing, on first load)
+      # rather than surfacing an error for an optional panel.
+      _ ->
+        {:noreply, socket}
+    end
   end
 
   # -- Todo helpers --

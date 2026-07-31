@@ -118,7 +118,13 @@ defmodule OrcaHub.Cluster do
   when the target node IS connected but doesn't export `mod.fun/arity` — the
   hub+agent topology deploys nodes independently, so a connected node running
   an older release is an expected, recoverable state (same treatment as an
-  unavailable node), not a crash.
+  unavailable node), not a crash. `{:error, {:rpc_timeout, {mod, fun, arity}}}`
+  covers the other half of that: a connected node that simply took longer than
+  `timeout` to answer.
+
+  Only `:erpc`-level failures are converted. An exception raised by the remote
+  function itself still propagates to the caller, so `mod.fun/arity`'s own
+  contract (`get_terminal!/1` raising `Ecto.NoResultsError`, etc.) is intact.
 
   The hub+agent topology is not guaranteed to be a full mesh: agent nodes
   each connect to the hub, but two agents may never connect directly to each
@@ -163,6 +169,24 @@ defmodule OrcaHub.Cluster do
         {:exception, :undef, _stacktrace} ->
           {:error, {:rpc_undef, {mod, fun, length(args)}}}
 
+        # The node dropped out between our availability check and the call
+        # landing. Indistinguishable to the caller from the pre-flight
+        # refusal in attempt_rpc/5, so it gets the same shape — including
+        # rpc/5's hub-relay retry, since our own view may just be stale.
+        {:erpc, :noconnection} ->
+          {:error, {:node_unavailable, n}}
+
+        # The node IS connected but didn't answer within `timeout` — a slow
+        # remote call (a `git log --all` walk on a loaded node, say), not a
+        # cluster fault. Same posture as :rpc_undef: a recoverable condition
+        # the caller can degrade on. Previously this escaped every caller's
+        # `{:error, _}` handling and crashed them instead — a >10s git call
+        # on one agent node was 500ing the session page in production.
+        {:erpc, :timeout} ->
+          {:error, {:rpc_timeout, {mod, fun, length(args)}}}
+
+        # Genuine remote exceptions ({:exception, reason, stacktrace}) still
+        # propagate — those are bugs to surface, not cluster conditions.
         _ ->
           reraise e, __STACKTRACE__
       end

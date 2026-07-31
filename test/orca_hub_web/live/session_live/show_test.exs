@@ -299,6 +299,44 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
   end
 
+  # The commit panel's `git log --all --grep` can take tens of seconds in a
+  # large repo (>20s on a loaded agent node in production, which used to 500
+  # the page via an uncaught {:erpc, :timeout}), so it's fetched with
+  # start_async and must never be on the critical path of first paint.
+  describe "commit panel — loaded asynchronously" do
+    setup %{claude_session: session} do
+      dir = session.directory
+      git = fn args -> System.cmd("git", args, cd: dir, stderr_to_stdout: true) end
+
+      {_, 0} = git.(["init", "-q"])
+      {_, 0} = git.(["config", "user.email", "test@example.com"])
+      {_, 0} = git.(["config", "user.name", "Test"])
+      File.write!(Path.join(dir, "committed.txt"), "hi")
+      {_, 0} = git.(["add", "committed.txt"])
+
+      {_, 0} =
+        git.(["commit", "-q", "-m", "Async panel subject\n\nOrcaHub-Session: #{session.id}"])
+
+      :ok
+    end
+
+    test "mount renders before the commits are fetched, then they fill in", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # First paint didn't wait for git...
+      refute html =~ ~s(title="Commits")
+
+      # ...and the panel appears once the async fetch lands.
+      assert render_async(view) =~ ~s(title="Commits")
+
+      assert view |> element(~s(button[title="Commits"])) |> render_click() =~
+               "Async panel subject"
+    end
+  end
+
   # spec §12.8 — header context-window meter + "Compact now". Both are gated
   # on @capabilities.session_stats && @context_percent (the meter's presence
   # covers the compact button too — it lives in the meter's own dropdown).

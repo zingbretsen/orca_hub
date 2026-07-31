@@ -25,7 +25,7 @@ defmodule OrcaHub.ClusterDistributedTest do
 
   @offline_node :"debian@totally-offline-host"
 
-  describe "rpc/5 — connected node running an older release (rolling deploy / version skew)" do
+  describe "rpc/5 — connected node that can't answer (older release / too slow)" do
     setup do
       # ClusterNodeTracker writes to the DB (from its own process, outside
       # this test's Ecto sandbox checkout) whenever a real :nodeup fires —
@@ -63,6 +63,16 @@ defmodule OrcaHub.ClusterDistributedTest do
       # the classic "page keeps refreshing" symptom).
       assert Cluster.rpc(peer_node, OrcaHub.BackendInstaller, :running_backends, [], 2_000) ==
                {:error, {:rpc_undef, {OrcaHub.BackendInstaller, :running_backends, 0}}}
+    end
+
+    test "a connected node too slow to answer returns {:error, {:rpc_timeout, mfa}} instead of crashing the caller",
+         %{peer_node: peer_node} do
+      # The production case: Sessions.list_session_commits/2's
+      # `git log --all --grep` took >20s on a loaded agent node, :erpc.call
+      # raised {:erpc, :timeout} past SessionLive.Show's `_ -> []` fallback,
+      # and every mount of that session 500ed.
+      assert Cluster.rpc(peer_node, :timer, :sleep, [30_000], 200) ==
+               {:error, {:rpc_timeout, {:timer, :sleep, 1}}}
     end
 
     test "relays through the hub, preserving {:node_unavailable, target} once the hub also fails to reach it",
