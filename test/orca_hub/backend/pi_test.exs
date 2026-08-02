@@ -1307,5 +1307,23 @@ defmodule OrcaHub.Backend.PiTest do
       assert prompt =~ "Tools.send_message_to_session"
       refute prompt =~ "mcp__orca__"
     end
+
+    # Unlike Claude/Codex, pi omits SharedPrompts.context_files_prompt/1
+    # entirely — inlining the whole .context/*.{md,mmd} doc set verbatim was
+    # blowing up pi sessions' context budget at startup.
+    test "does not inline .context/*.md files, unlike Claude/Codex" do
+      dir = Path.join(System.tmp_dir!(), "pi_backend_test_#{System.unique_integer([:positive])}")
+      context_dir = Path.join(dir, ".context")
+      File.mkdir_p!(context_dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      marker = "sentinel-content-#{System.unique_integer([:positive])}"
+      File.write!(Path.join(context_dir, "architecture.md"), "# Architecture\n\n#{marker}")
+
+      prompt = Backend.system_prompt(ctx(%{directory: dir}))
+
+      refute prompt =~ marker
+      refute prompt =~ "# Project Context"
+    end
   end
 end

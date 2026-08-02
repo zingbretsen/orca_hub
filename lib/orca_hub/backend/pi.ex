@@ -974,6 +974,10 @@ defmodule OrcaHub.Backend.Pi do
   # both included here now, mirroring `Backend.Claude.system_prompt/1`
   # closely (this backend still has no AskUserQuestion-fallback text or
   # sibling-session prompt — out of scope for the MCP bridge itself).
+  # Deliberately DOES NOT include `SharedPrompts.context_files_prompt/1`
+  # (unlike Claude/Codex) — inlining the whole `.context/*.{md,mmd}` doc set
+  # verbatim is by far the largest fragment and was blowing up pi sessions'
+  # context budget at startup; Claude and Codex still get it.
 
   @impl true
   def system_prompt(ctx) do
@@ -986,8 +990,7 @@ defmodule OrcaHub.Backend.Pi do
       if(Map.get(ctx, :commit_trailer, true),
         do: SharedPrompts.commit_trailer_prompt(ctx.session_id)
       ),
-      if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec)),
-      SharedPrompts.context_files_prompt(ctx.directory)
+      if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec))
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n\n")
