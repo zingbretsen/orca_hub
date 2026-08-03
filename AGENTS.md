@@ -1,4 +1,4 @@
-This is a web application written using the Phoenix web framework.
+This is an application that allows a user to orchestrate agentic sessions across physical nodes and backend harnesses.
 
 ## Project guidelines
 
