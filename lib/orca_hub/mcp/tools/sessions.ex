@@ -108,7 +108,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "start_session",
         "description" =>
-          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session. The new session is automatically linked as your child: when it finishes its turn (goes idle) or errors, you automatically receive a \"[Session lifecycle]\" message — no need to instruct the worker to message you back, and no need to poll with search_sessions/heartbeats just to detect completion. Set notify_on_completion to false to opt out for a true fire-and-forget spawn. Returns structured JSON: session_id, node, model, backend, directory, already_exists, orchestrator.",
+          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session. The new session is automatically linked as your child: when it finishes its turn (goes idle) or errors, you automatically receive a \"[Session lifecycle]\" message — no need to instruct the worker to message you back, and no need to poll with search_sessions/heartbeats just to detect completion. Set notify_on_completion to false to opt out for a true fire-and-forget spawn. Exception: orchestrator: true is a HANDOFF to a sibling session, not a child spawn — see the orchestrator param. Returns structured JSON: session_id, node, model, backend, directory, already_exists, orchestrator.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -139,7 +139,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "notify_on_completion" => %{
               "type" => "boolean",
               "description" =>
-                "Whether the new session should automatically message you (the caller) when it goes idle or errors. Applies whenever this call is made from within another OrcaHub session — a parent link is always created in that case. Default: true. Set false for a fire-and-forget spawn you don't want a callback from. No effect on a direct HTTP/API-triggered start_session call with no calling session, since no parent link is created there."
+                "Whether the new session should automatically message you (the caller) when it goes idle or errors. Applies whenever this call is made from within another OrcaHub session — a parent link is always created in that case. Default: true. Set false for a fire-and-forget spawn you don't want a callback from. No effect on a direct HTTP/API-triggered start_session call with no calling session, since no parent link is created there. Exception: for an orchestrator: true spawn (a handoff, see the orchestrator param), the default flips to no parent link/no callback — pass notify_on_completion: true explicitly if you want this orchestrator spawn linked and reported back as a child instead."
             },
             "idempotency_key" => %{
               "type" => "string",
@@ -149,7 +149,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "orchestrator" => %{
               "type" => "boolean",
               "description" =>
-                "If true, the new session is created as an orchestrator session — it gets the orchestrator system prompt and coordination tool surface, and is expected to delegate work to its own child sessions rather than implement directly. Default: false (a normal worker session). Use for a coordinator managing a large multi-part effort as a sub-tree."
+                "If true, the new session is created as an orchestrator session — it gets the orchestrator system prompt and coordination tool surface, and is expected to delegate work to its own child sessions rather than implement directly. Default: false (a normal worker session). Use for a coordinator managing a large multi-part effort as a sub-tree. IMPORTANT: spawning another orchestrator is a HANDOFF to a sibling session by default, not a child spawn — the new orchestrator gets the caller's own parent (often none, making it a root session), notify_on_completion defaults to false, and you will NOT get a \"[Session lifecycle]\" callback or see it in watch_children. Pass notify_on_completion: true explicitly if you actually want this orchestrator spawn treated as a reporting child (the old behavior)."
             }
           },
           "required" => ["prompt"]
@@ -269,7 +269,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
           case Cluster.send_message(node, target_id, signed_message) do
             :ok ->
-              maybe_record_interaction(sender_id, session.id)
+              maybe_record_interaction(sender_id, session.id, "message")
               text("Message delivered to session #{target_id}")
 
             {:error, reason} ->
@@ -436,23 +436,27 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   end
 
   # Structural edge for the session graph feature. Best-effort: the actual
-  # message delivery already succeeded by the time this runs, so a failure
-  # here (bad sender id, transient DB/erpc error) must never surface as a
-  # tool error — just log and move on.
-  defp maybe_record_interaction(nil, _recipient_id), do: :ok
+  # message delivery / session creation already succeeded by the time this
+  # runs, so a failure here (bad sender id, transient DB/erpc error) must
+  # never surface as a tool error — just log and move on. `kind` is
+  # "message" for a send_message_to_session delivery or "handoff" for an
+  # orchestrator-spawns-orchestrator sibling link (see maybe_link_parent/4)
+  # — the latter is how that spawn's lineage survives not being captured by
+  # parent_session_id anymore.
+  defp maybe_record_interaction(nil, _recipient_id, _kind), do: :ok
 
-  defp maybe_record_interaction(sender_id, recipient_id) do
+  defp maybe_record_interaction(sender_id, recipient_id, kind) do
     case HubRPC.create_session_interaction(%{
            sender_session_id: sender_id,
            recipient_session_id: recipient_id,
-           kind: "message"
+           kind: kind
          }) do
       {:ok, _interaction} ->
         :ok
 
       {:error, changeset} ->
         Logger.warning(
-          "[MCP] send_message_to_session: failed to record session_interactions edge " <>
+          "[MCP] failed to record session_interactions #{kind} edge " <>
             "(#{sender_id} -> #{recipient_id}): #{inspect(changeset.errors)}"
         )
 
@@ -461,7 +465,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   rescue
     error ->
       Logger.warning(
-        "[MCP] send_message_to_session: failed to record session_interactions edge " <>
+        "[MCP] failed to record session_interactions #{kind} edge " <>
           "(#{sender_id} -> #{recipient_id}): #{Exception.format(:error, error)}"
       )
 
@@ -614,6 +618,10 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
             case HubRPC.create_session(session_attrs) do
               {:ok, session} ->
+                if orchestrator_handoff?(session_attrs, args["notify_on_completion"]) do
+                  maybe_record_interaction(caller_session_id, session.id, "handoff")
+                end
+
                 case Cluster.start_session(runner_node, session.id, session) do
                   {:ok, _} ->
                     Cluster.send_message(runner_node, session.id, args["prompt"])
@@ -832,14 +840,34 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   # is invoked with no calling session at all (e.g. an HTTP/API-triggered
   # spawn) — `caller_session_id` is nil in that case and no parent/notify
   # fields are set.
-  defp maybe_link_parent(attrs, _caller, caller_session_id, notify_on_completion)
+  #
+  # Exception: spawning another ORCHESTRATOR (`attrs[:orchestrator] == true`,
+  # already stamped in by the time this runs) defaults to a HANDOFF to a
+  # sibling rather than a supervised child — otherwise a chain of
+  # orchestrator-spawns-orchestrator produces a wake-up cascade every time an
+  # inner one finishes. The new orchestrator inherits the CALLER's own
+  # parent (often nil, making it a root session — intended) and gets no
+  # notify-back. `notify_on_completion: true` is the explicit escape hatch
+  # back to the old child-link behavior, for a deliberate reporting
+  # sub-orchestrator.
+  defp maybe_link_parent(attrs, caller, caller_session_id, notify_on_completion)
        when is_binary(caller_session_id) do
-    attrs
-    |> Map.put(:parent_session_id, caller_session_id)
-    |> Map.put(:notify_parent, notify_on_completion != false)
+    if orchestrator_handoff?(attrs, notify_on_completion) do
+      attrs
+      |> Map.put(:parent_session_id, caller.parent_session_id)
+      |> Map.put(:notify_parent, false)
+    else
+      attrs
+      |> Map.put(:parent_session_id, caller_session_id)
+      |> Map.put(:notify_parent, notify_on_completion != false)
+    end
   end
 
   defp maybe_link_parent(attrs, _caller, _caller_session_id, _notify_on_completion), do: attrs
+
+  defp orchestrator_handoff?(attrs, notify_on_completion) do
+    attrs[:orchestrator] == true and notify_on_completion != true
+  end
 
   # ── search_sessions helpers ───────────────────────────────────────────
 

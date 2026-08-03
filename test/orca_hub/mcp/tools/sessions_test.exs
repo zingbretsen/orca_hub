@@ -1282,6 +1282,121 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     end
   end
 
+  describe "start_session — orchestrator spawns are siblings, not children (handoff)" do
+    test "orchestrator: true (default notify_on_completion) links as a sibling of the caller, suppresses notify_parent, and records a handoff interaction",
+         %{state: state} do
+      caller = Sessions.get_session!(state.orca_session_id)
+      assert caller.parent_session_id == nil
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "orchestrator" => true},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      new_session = Sessions.get_session!(session_id)
+      # The caller has no parent of its own, so the new orchestrator inherits
+      # nil — becoming a root session, which is intended.
+      assert new_session.parent_session_id == caller.parent_session_id
+      assert new_session.notify_parent == false
+
+      assert [interaction] =
+               Sessions.list_session_interactions(recipient_session_id: session_id)
+
+      assert interaction.sender_session_id == caller.id
+      assert interaction.recipient_session_id == session_id
+      assert interaction.kind == "handoff"
+    end
+
+    test "orchestrator: true + notify_on_completion: true keeps the old child-link behavior and records no handoff edge",
+         %{state: state} do
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "orchestrator" => true, "notify_on_completion" => true},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      new_session = Sessions.get_session!(session_id)
+      assert new_session.parent_session_id == state.orca_session_id
+      assert new_session.notify_parent == true
+
+      assert Sessions.list_session_interactions(recipient_session_id: session_id) == []
+    end
+
+    test "non-orchestrator spawn is completely unchanged: still child + notify by default, no handoff edge",
+         %{state: state} do
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call("start_session", %{"prompt" => "hi"}, state)
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      new_session = Sessions.get_session!(session_id)
+      assert new_session.orchestrator == false
+      assert new_session.parent_session_id == state.orca_session_id
+      assert new_session.notify_parent == true
+
+      assert Sessions.list_session_interactions(recipient_session_id: session_id) == []
+    end
+
+    test "orchestrator: true from a caller that itself has a parent links the new session to the GRANDparent",
+         %{dir: dir} do
+      {:ok, grandparent} = Sessions.create_session(%{directory: dir, orchestrator: true})
+      on_exit(fn -> stop_if_alive(grandparent.id) end)
+
+      {:ok, caller} =
+        Sessions.create_session(%{
+          directory: dir,
+          orchestrator: true,
+          parent_session_id: grandparent.id
+        })
+
+      on_exit(fn -> stop_if_alive(caller.id) end)
+
+      state = %{orca_session_id: caller.id, orchestrator: true}
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "orchestrator" => true},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      new_session = Sessions.get_session!(session_id)
+      assert new_session.parent_session_id == grandparent.id
+      assert new_session.notify_parent == false
+
+      assert [interaction] =
+               Sessions.list_session_interactions(recipient_session_id: session_id)
+
+      assert interaction.sender_session_id == caller.id
+      assert interaction.kind == "handoff"
+    end
+  end
+
   describe "cross-node isolation enforcement" do
     defp isolate_local_node! do
       node_row =
