@@ -264,6 +264,349 @@ defmodule OrcaHub.Sessions do
     )
   end
 
+  # `task_*` system events (subagent progress broadcasts) are matched by
+  # `tool_use_id` rather than `parent_tool_use_id` — see
+  # MessageComponents.message_feed/1, which this mirrors.
+  @task_event_subtypes ~w(task_started task_progress task_notification)
+
+  @doc """
+  A windowed page of a session's message feed, keyset-paginated over
+  TOP-LEVEL items (oldest-first in the returned list) with every subagent
+  descendant of those items pulled in alongside them — never a bare "last N
+  rows" slice, which could split a parent tool_use from its
+  `parent_tool_use_id` children / `task_*` progress events (see
+  MessageComponents.message_feed/1's grouping, which this stays consistent
+  with by construction: a descendant is included whenever ITS parent's
+  tool_use id appears among the fetched top-level messages, regardless of
+  how the descendant's own `inserted_at` compares to the page boundary).
+
+  `opts`:
+    - `:limit` (required) — how many TOP-LEVEL messages to return (the
+      window size — descendants are extra, uncounted).
+    - `:before` — a `%{inserted_at:, id:}` cursor (see `:cursor` below);
+      when given, only top-level messages strictly older than it are
+      considered. Omit for the first ("most recent") page.
+
+  Returns `%{messages:, has_more:, cursor:}`:
+    - `:messages` — oldest-first, ready to prepend/render as-is (each entry
+      already carries the `"timestamp"` key SessionRunner's live events do).
+    - `:has_more` — whether an OLDER top-level message exists beyond this
+      page (drives the "load older" affordance).
+    - `:cursor` — the oldest loaded top-level message's `%{inserted_at:,
+      id:}`, to pass as the next call's `:before` — `nil` if this page (and
+      therefore the session) has no top-level messages at all.
+
+  Ordered by `(inserted_at, id)` rather than a raw offset: messages are
+  appended continuously by a live session, so an offset would skip or
+  duplicate rows as new ones land mid-scroll. `id` is the tiebreak for
+  messages sharing a timestamp (usec precision still ties under load — see
+  the `widen_message_timestamps_to_microseconds` migration's moduledoc).
+  """
+  def list_messages_window(session_id, opts) do
+    limit = Keyword.fetch!(opts, :limit)
+    cursor = Keyword.get(opts, :before)
+
+    page = fetch_top_level_page(session_id, limit, cursor)
+    {top_level, has_more} = split_page(page, limit)
+    top_level_asc = Enum.reverse(top_level)
+
+    messages =
+      (top_level_asc ++ fetch_descendants(session_id, top_level_asc))
+      |> Enum.sort_by(&{&1.inserted_at, &1.id})
+      |> Enum.map(&row_to_event/1)
+
+    %{messages: messages, has_more: has_more, cursor: window_cursor(top_level_asc)}
+  end
+
+  defp fetch_top_level_page(session_id, limit, cursor) do
+    from(m in Message,
+      where: m.session_id == ^session_id,
+      where: ^top_level_condition()
+    )
+    |> apply_cursor(cursor)
+    |> order_by([m], desc: m.inserted_at, desc: m.id)
+    # Fetch one extra row to learn whether an older page exists without a
+    # separate count query.
+    |> limit(^(limit + 1))
+    |> Repo.all()
+  end
+
+  defp top_level_condition do
+    dynamic(
+      [m],
+      fragment("? ->> 'parent_tool_use_id' IS NULL", m.data) and
+        not fragment(
+          "(? ->> 'type' = 'system' AND ? ->> 'subtype' = ANY(?) AND ? ->> 'tool_use_id' IS NOT NULL)",
+          m.data,
+          m.data,
+          ^@task_event_subtypes,
+          m.data
+        )
+    )
+  end
+
+  defp apply_cursor(query, nil), do: query
+
+  defp apply_cursor(query, %{inserted_at: at, id: id}) do
+    from(m in query, where: fragment("(?, ?) < (?, ?)", m.inserted_at, m.id, ^at, ^id))
+  end
+
+  defp split_page(page, limit) do
+    if length(page) > limit, do: {Enum.take(page, limit), true}, else: {page, false}
+  end
+
+  defp window_cursor([]), do: nil
+  defp window_cursor([oldest | _]), do: %{inserted_at: oldest.inserted_at, id: oldest.id}
+
+  defp fetch_descendants(_session_id, []), do: []
+
+  defp fetch_descendants(session_id, top_level_asc) do
+    case extract_tool_use_ids(top_level_asc) do
+      [] ->
+        []
+
+      ids ->
+        Repo.all(
+          from m in Message,
+            where: m.session_id == ^session_id,
+            where:
+              fragment("? ->> 'parent_tool_use_id' = ANY(?)", m.data, ^ids) or
+                (fragment("? ->> 'type' = 'system'", m.data) and
+                   fragment("? ->> 'subtype' = ANY(?)", m.data, ^@task_event_subtypes) and
+                   fragment("? ->> 'tool_use_id' = ANY(?)", m.data, ^ids))
+        )
+    end
+  end
+
+  defp extract_tool_use_ids(messages) do
+    messages
+    |> Enum.filter(&(&1.data["type"] == "assistant"))
+    |> Enum.flat_map(fn m ->
+      m.data
+      |> get_in(["message", "content"])
+      |> List.wrap()
+      |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use"))
+      |> Enum.map(& &1["id"])
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp row_to_event(%Message{data: data, inserted_at: inserted_at}) do
+    Map.put(data, "timestamp", inserted_at)
+  end
+
+  # -------------------------------------------------------------------
+  # Targeted derived-state queries — see SessionLive.Show's mount, which
+  # needs plan mode / todos / pending questions / pending pi dialogs /
+  # context percent computed from a session's FULL history even though the
+  # message feed itself only loads a bounded window (see
+  # list_messages_window/2 above). Each of these is a single/bounded
+  # targeted query (WHERE-pushed to Postgres, LIMIT 1 or a handful of rows)
+  # rather than pulling the whole history into the app just to fold over it.
+  # -------------------------------------------------------------------
+
+  @doc """
+  The most recent unanswered `AskUserQuestion`, or `nil` — same "most
+  recent still-pending" semantics as `OrcaHub.AskUserQuestion.pending_questions/1`,
+  but as one targeted query instead of a full-history scan. Safe because a
+  real (non-error) answering `tool_result` is exceptionally rare in practice
+  (see that module's doc) — an `AskUserQuestion` is, for all practical
+  purposes, always still open once asked, so only the LATEST one need be
+  considered.
+
+  Returns `%{tool_use_id:, questions:}` with the RAW (un-normalized)
+  questions list — callers wanting the UI-ready shape should pass it through
+  `OrcaHub.AskUserQuestion.normalize_questions/1`.
+  """
+  def pending_ask_user_question(session_id) do
+    case latest_message_with_tool_use(session_id, ["AskUserQuestion"]) do
+      nil -> nil
+      data -> extract_pending_ask_user_question(session_id, data)
+    end
+  end
+
+  defp extract_pending_ask_user_question(session_id, data) do
+    data
+    |> get_in(["message", "content"])
+    |> List.wrap()
+    |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use" && &1["name"] == "AskUserQuestion"))
+    |> List.last()
+    |> case do
+      %{"id" => id, "input" => %{"questions" => questions}}
+      when is_binary(id) and is_list(questions) ->
+        if tool_use_answered?(session_id, id) do
+          nil
+        else
+          %{tool_use_id: id, questions: questions}
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
+  The tool_use `"name"` (`"EnterPlanMode"` or `"ExitPlanMode"`) of the most
+  recent plan-mode toggle in a session's full history, or `nil` if neither
+  ever fired — mirrors `OrcaHubWeb.SessionLive.PlanMode.detect/1`'s
+  "last Enter/Exit wins" reconstruction via one targeted query.
+  """
+  def latest_plan_mode_tool_use_name(session_id) do
+    case latest_message_with_tool_use(session_id, ["EnterPlanMode", "ExitPlanMode"]) do
+      nil -> nil
+      data -> last_tool_use_name(data, ["EnterPlanMode", "ExitPlanMode"])
+    end
+  end
+
+  defp last_tool_use_name(data, names) do
+    data
+    |> get_in(["message", "content"])
+    |> List.wrap()
+    |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use" && &1["name"] in names))
+    |> List.last()
+    |> case do
+      %{"name" => name} -> name
+      _ -> nil
+    end
+  end
+
+  @doc """
+  The raw `todos` input of a session's most recent `TodoWrite` tool call, or
+  `nil` if none — mirrors `OrcaHubWeb.SessionLive.Todos.from_messages/1`'s
+  "last TodoWrite wins" reconstruction via one targeted query. Callers
+  should pass the result through `Todos.parse/1` (handles both the list and
+  JSON-string-encoded shapes a `todos` arg can arrive in).
+  """
+  def latest_todos_input(session_id) do
+    case latest_message_with_tool_use(session_id, ["TodoWrite"]) do
+      nil ->
+        nil
+
+      data ->
+        data
+        |> get_in(["message", "content"])
+        |> List.wrap()
+        |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use" && &1["name"] == "TodoWrite"))
+        |> List.last()
+        |> case do
+          nil -> nil
+          tool_use -> get_in(tool_use, ["input", "todos"])
+        end
+    end
+  end
+
+  @doc """
+  The most recent unanswered pi extension-UI dialog request event, or `nil`
+  — mirrors `SessionLive.Show`'s `pending_ui_request_from_messages/1`
+  reconstruction ("last pi_ui_request with no later pi_ui_response for the
+  same id") via one targeted query plus one existence check.
+  """
+  def pending_pi_ui_request(session_id) do
+    case latest_event_of_type(session_id, "pi_ui_request") do
+      %{"id" => id} = data ->
+        if event_id_exists?(session_id, "pi_ui_response", id), do: nil, else: data
+
+      other ->
+        other
+    end
+  end
+
+  @doc """
+  Whether the most recent `pi_plan_mode` broadcast in a session's history
+  left plan mode enabled — mirrors `SessionLive.Show`'s
+  `pi_plan_mode_from_messages/1` reconstruction.
+  """
+  def latest_pi_plan_mode_enabled?(session_id) do
+    match?(%{"enabled" => true}, latest_event_of_type(session_id, "pi_plan_mode"))
+  end
+
+  # How many of the most recent `pi_session_stats` events to consider before
+  # giving up — bounds the (rare) case where the newest one(s) lack a numeric
+  # `context_usage.percent`, without an unbounded fallback scan.
+  @context_stats_scan_limit 5
+
+  @doc """
+  The context-window percent from the most recent `pi_session_stats` event
+  that actually carries a numeric `context_usage.percent`, or `nil` —
+  mirrors `SessionLive.Show`'s `context_percent_from_messages/1`
+  reconstruction via a small bounded query instead of a full scan.
+  """
+  def latest_context_percent(session_id) do
+    from(m in Message,
+      where: m.session_id == ^session_id,
+      where: fragment("? ->> 'type' = 'pi_session_stats'", m.data),
+      order_by: [desc: m.inserted_at],
+      limit: ^@context_stats_scan_limit,
+      select: m.data
+    )
+    |> Repo.all()
+    |> Enum.find_value(fn
+      %{"context_usage" => %{"percent" => p}} when is_number(p) -> p
+      _ -> nil
+    end)
+  end
+
+  # Latest assistant message containing a tool_use block whose name is in
+  # `names`, or `nil` — the shared primitive behind the plan-mode/todos/
+  # AskUserQuestion targeted queries above. Returns the whole message `data`
+  # (not just the matching block) since a message can carry several tool_use
+  # blocks and callers need to pick the last matching one in content order
+  # to match the full-history fold semantics they're mirroring.
+  defp latest_message_with_tool_use(session_id, names) do
+    from(m in Message,
+      where: m.session_id == ^session_id,
+      where: fragment("? ->> 'type' = 'assistant'", m.data),
+      where:
+        fragment(
+          "EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(?->'message'->'content', '[]'::jsonb)) AS block WHERE block->>'type' = 'tool_use' AND block->>'name' = ANY(?))",
+          m.data,
+          ^names
+        ),
+      order_by: [desc: m.inserted_at],
+      limit: 1,
+      select: m.data
+    )
+    |> Repo.one()
+  end
+
+  # Is there any NON-error tool_result for `tool_use_id` anywhere in the
+  # session's history? (The synthetic `is_error: true` result Claude's CLI
+  # always injects for AskUserQuestion under `-p` must not count — see
+  # OrcaHub.AskUserQuestion's moduledoc.)
+  defp tool_use_answered?(session_id, tool_use_id) do
+    Repo.exists?(
+      from m in Message,
+        where: m.session_id == ^session_id,
+        where: fragment("? ->> 'type' = 'user'", m.data),
+        where:
+          fragment(
+            "EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(?->'message'->'content', '[]'::jsonb)) AS block WHERE block->>'type' = 'tool_result' AND block->>'tool_use_id' = ? AND COALESCE(block->>'is_error', 'false') <> 'true')",
+            m.data,
+            ^tool_use_id
+          )
+    )
+  end
+
+  defp latest_event_of_type(session_id, type) do
+    from(m in Message,
+      where: m.session_id == ^session_id,
+      where: fragment("? ->> 'type' = ?", m.data, ^type),
+      order_by: [desc: m.inserted_at],
+      limit: 1,
+      select: m.data
+    )
+    |> Repo.one()
+  end
+
+  defp event_id_exists?(session_id, type, id) do
+    Repo.exists?(
+      from m in Message,
+        where: m.session_id == ^session_id,
+        where: fragment("? ->> 'type' = ?", m.data, ^type),
+        where: fragment("? ->> 'id' = ?", m.data, ^id)
+    )
+  end
+
   def create_message(attrs) do
     %Message{}
     |> Message.changeset(attrs)
@@ -813,10 +1156,21 @@ defmodule OrcaHub.Sessions do
   Returns a list of maps with :hash, :short_hash, :subject, :author, :date keys.
   """
   def list_session_commits(directory, session_id) do
+    git_log_by_grep(directory, "OrcaHub-Session: #{session_id}")
+  end
+
+  @doc """
+  Lists git commits in `directory`'s history whose message matches
+  `grep_term` (passed directly to `git log --grep`). Same output shape as
+  `list_session_commits/2` (which is just this with an
+  `OrcaHub-Session: <id>` grep term) — reused by `OrcaHub.Issues` to find
+  commits tagged with the `OrcaHub-Issue:` trailer (issues_spec.md §4.2).
+  """
+  def git_log_by_grep(directory, grep_term) do
     args = [
       "log",
       "--all",
-      "--grep=OrcaHub-Session: #{session_id}",
+      "--grep=#{grep_term}",
       "--format=%H%n%h%n%s%n%an%n%aI",
       "--max-count=50"
     ]

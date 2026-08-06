@@ -61,6 +61,14 @@ defmodule OrcaHub.Sessions.Session do
     # duplicate. Not unique at the DB level — archived sessions with the same
     # key are ignored by that lookup, not deleted.
     field :idempotency_key, :string
+    # Links this session to an issue as an ATTEMPT at it (issues_spec.md
+    # §3.3) — a session can be linked to at most one issue at a time, but
+    # an issue can have many attempt sessions across its lifetime. Set via
+    # start_session's issue_id arg (Phase 2). Real DB FK
+    # (on_delete: :nilify_all, see 20260228022231_create_issues.exs) —
+    # already existed at the DB level, only the application-layer
+    # schema/changeset needed reviving.
+    field :issue_id, :binary_id
 
     has_many :messages, OrcaHub.Sessions.Message
     belongs_to :project, OrcaHub.Projects.Project
@@ -92,7 +100,8 @@ defmodule OrcaHub.Sessions.Session do
       :progress_phase,
       :progress_note,
       :progress_updated_at,
-      :idempotency_key
+      :idempotency_key,
+      :issue_id
     ])
     # Cast separately with empty_values: [] — cast/4's default empty_values
     # ([""]) would otherwise silently turn an explicit `tools: ""` (the "no
