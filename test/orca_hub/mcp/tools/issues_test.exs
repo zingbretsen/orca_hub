@@ -21,7 +21,7 @@ defmodule OrcaHub.MCP.Tools.IssuesTest do
       Projects.create_project(%{
         name: "issues-tool-test",
         directory: dir,
-        node: "n1@x",
+        node: Atom.to_string(node()),
         key_prefix: unique_key_prefix()
       })
 
@@ -252,7 +252,7 @@ defmodule OrcaHub.MCP.Tools.IssuesTest do
         Projects.create_project(%{
           name: "other-project",
           directory: Path.join(System.tmp_dir!(), "other_#{System.unique_integer([:positive])}"),
-          node: "n1@x",
+          node: Atom.to_string(node()),
           key_prefix: unique_key_prefix("OQ")
         })
 
@@ -654,7 +654,7 @@ defmodule OrcaHub.MCP.Tools.IssuesTest do
         Projects.create_project(%{
           name: "isolated-orca-hub-#{System.unique_integer([:positive])}",
           directory: @orca_hub_directory,
-          node: "n1@x"
+          node: Atom.to_string(node())
         })
 
       {:ok, fr_project: isolated}
