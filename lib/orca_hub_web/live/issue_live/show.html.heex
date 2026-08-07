@@ -1,34 +1,233 @@
 <.header>
   <.link navigate={~p"/issues"} class="text-sm opacity-70">&larr; Issues</.link>
+  <span :if={@key} class="ml-2 font-mono text-sm opacity-70">{@key}</span>
   <span class="ml-2">{@issue.title}</span>
-  <span class={[
-    "badge ml-2",
-    @issue.status == "open" && "badge-info",
-    @issue.status == "in_progress" && "badge-warning",
-    @issue.status == "closed" && "badge-success"
-  ]}>
-    {@issue.status}
-  </span>
+  <span class={["ml-2", status_badge_class(@issue.status)]}>{@issue.status}</span>
+  <span class="badge badge-sm ml-1">{@issue.kind}</span>
 
   <:actions>
     <button
-      :if={@issue.status != "closed"}
-      phx-click="close"
+      :if={@issue.status in ["open", "in_progress"] and not @closing}
+      phx-click="open_close_form"
       class="btn btn-sm btn-outline"
     >
       Close
     </button>
-    <button :if={@issue.status == "closed"} phx-click="reopen" class="btn btn-sm btn-outline">
+    <button
+      :if={@issue.status in ["closed", "abandoned"]}
+      phx-click="reopen"
+      class="btn btn-sm btn-outline"
+    >
       Reopen
     </button>
   </:actions>
 </.header>
 
+<div :if={@closing} class="mt-4 p-4 bg-base-200 rounded-lg space-y-3">
+  <h3 class="text-sm font-semibold opacity-70">Close issue</h3>
+
+  <div :if={@close_error} class="text-sm text-error">{@close_error}</div>
+
+  <form id="close-issue-form" phx-submit="submit_close" class="space-y-3">
+    <div class="flex items-center gap-2">
+      <label class="text-sm opacity-70 w-28" for="close-outcome">Outcome</label>
+      <select id="close-outcome" name="outcome" class="select select-sm select-bordered">
+        <option value="resolved" selected={@close_form["outcome"] == "resolved"}>
+          Resolved — the work landed
+        </option>
+        <option value="abandoned" selected={@close_form["outcome"] == "abandoned"}>
+          Abandoned — stopping without finishing
+        </option>
+      </select>
+    </div>
+
+    <div>
+      <label class="text-sm opacity-70" for="close-resolution">
+        Resolution — what actually happened
+      </label>
+      <textarea
+        id="close-resolution"
+        name="resolution"
+        required
+        rows="4"
+        class="textarea textarea-bordered w-full mt-1"
+      >{@close_form["resolution"]}</textarea>
+    </div>
+
+    <div>
+      <label class="text-sm opacity-70" for="close-superseded-by">
+        Superseded by (optional — issue key or id)
+      </label>
+      <input
+        id="close-superseded-by"
+        type="text"
+        name="superseded_by"
+        value={@close_form["superseded_by"]}
+        placeholder="ORCA-201"
+        class="input input-sm input-bordered w-full mt-1"
+      />
+    </div>
+
+    <div class="flex gap-2">
+      <button type="submit" class="btn btn-sm btn-primary">Close Issue</button>
+      <button type="button" phx-click="cancel_close" class="btn btn-sm btn-ghost">Cancel</button>
+    </div>
+  </form>
+</div>
+
+<div :if={@issue.premise && @issue.premise != ""} class="mt-4">
+  <h3 class="text-sm font-semibold mb-1 opacity-70">Premise</h3>
+  <div class="p-4 bg-base-200 rounded-lg whitespace-pre-wrap text-sm">{@issue.premise}</div>
+</div>
+
+<div :if={@issue.description} class="mt-4">
+  <h3 class="text-sm font-semibold mb-1 opacity-70">Description</h3>
+  <div class="p-4 bg-base-200 rounded-lg whitespace-pre-wrap text-sm">{@issue.description}</div>
+</div>
+
+<div :if={@issue.plan && @issue.plan != ""} class="mt-4">
+  <h3 class="text-sm font-semibold mb-1 opacity-70">Plan</h3>
+  <div class="p-4 bg-base-200 rounded-lg whitespace-pre-wrap text-sm">{@issue.plan}</div>
+</div>
+
+<div :if={@issue.resolution && @issue.resolution != ""} class="mt-4">
+  <h3 class="text-sm font-semibold mb-1 opacity-70">Resolution</h3>
+  <div class="p-4 bg-base-200 rounded-lg whitespace-pre-wrap text-sm">{@issue.resolution}</div>
+</div>
+
 <div
-  :if={@issue.description}
-  class="mt-4 p-4 bg-base-200 rounded-lg whitespace-pre-wrap text-sm"
+  :if={@issue.status in ["closed", "abandoned"]}
+  class="mt-4 text-sm text-base-content/70 flex flex-wrap gap-4"
 >
-  {@issue.description}
+  <span>Closed {format_timestamp(@issue.closed_at)}</span>
+  <span :if={@issue.closed_by_session_id}>
+    by
+    <.link navigate={~p"/sessions/#{@issue.closed_by_session_id}"} class="link link-hover">
+      session {String.slice(@issue.closed_by_session_id, 0, 8)}
+    </.link>
+  </span>
+</div>
+
+<div :if={@superseded_by_issue} class="mt-4">
+  <h3 class="text-sm font-semibold mb-1 opacity-70">Superseded by</h3>
+  <.link
+    navigate={~p"/issues/#{@superseded_by_issue.key || @superseded_by_issue.id}"}
+    class="link link-hover text-sm"
+  >
+    {@superseded_by_issue.key || @superseded_by_issue.id} — {@superseded_by_issue.title}
+    <span class={["badge badge-xs ml-1", status_badge_class(@superseded_by_issue.status)]}>
+      {@superseded_by_issue.status}
+    </span>
+  </.link>
+</div>
+
+<div :if={@issue.commits != []} class="mt-4">
+  <h3 class="text-sm font-semibold mb-1 opacity-70">Commits ({length(@issue.commits)})</h3>
+  <div class="p-3 bg-base-200 rounded-lg">
+    <ul class="space-y-1">
+      <li :for={commit <- @issue.commits}>
+        <button
+          phx-click="toggle_commit_detail"
+          phx-value-hash={mfield(commit, :hash)}
+          class="flex items-start gap-2 text-sm w-full text-left hover:bg-base-300/50 rounded px-1 -mx-1 py-0.5 transition-colors"
+        >
+          <code class="text-xs text-primary shrink-0">{mfield(commit, :short_hash)}</code>
+          <span class="truncate">{mfield(commit, :subject)}</span>
+          <span class="text-xs text-base-content/40 shrink-0 ml-auto whitespace-nowrap">
+            {format_timestamp(mfield(commit, :date))}
+          </span>
+        </button>
+        <div
+          :if={@expanded_commit == mfield(commit, :hash) && @commit_detail}
+          class="ml-6 mt-1 mb-2 text-xs space-y-2"
+        >
+          <pre :if={@commit_detail.body != ""} class="whitespace-pre-wrap text-base-content/70">{@commit_detail.body}</pre>
+          <pre
+            :if={@commit_detail.stat != ""}
+            class="whitespace-pre-wrap text-base-content/50 font-mono"
+          >{@commit_detail.stat}</pre>
+        </div>
+      </li>
+    </ul>
+  </div>
+</div>
+
+<div class="mt-4">
+  <h3 class="text-sm font-semibold mb-1 opacity-70">
+    Attempts
+    <span :if={is_list(attempts_for(@issue, @live_attempts))}>
+      ({length(attempts_for(@issue, @live_attempts))})
+    </span>
+  </h3>
+
+  <div
+    :if={attempts_for(@issue, @live_attempts) == :loading}
+    class="text-sm text-base-content/50 p-3"
+  >
+    Loading attempts&hellip;
+  </div>
+
+  <div :if={attempts_for(@issue, @live_attempts) == []} class="text-sm text-base-content/50 p-3">
+    No sessions have attempted this issue yet.
+  </div>
+
+  <ul
+    :if={
+      is_list(attempts_for(@issue, @live_attempts)) && attempts_for(@issue, @live_attempts) != []
+    }
+    class="space-y-2"
+  >
+    <li :for={attempt <- attempts_for(@issue, @live_attempts)} class="p-3 bg-base-200 rounded-lg">
+      <div class="flex items-center gap-2 flex-wrap">
+        <.link
+          navigate={~p"/sessions/#{mfield(attempt, :session_id)}"}
+          class="link link-hover font-mono text-xs"
+        >
+          {String.slice(to_string(mfield(attempt, :session_id)), 0, 8)}
+        </.link>
+        <span class={["badge badge-xs", status_badge_class(mfield(attempt, :status))]}>
+          {mfield(attempt, :status)}
+        </span>
+        <span :if={mfield(attempt, :progress_phase)} class="badge badge-xs badge-ghost">
+          {mfield(attempt, :progress_phase)}
+        </span>
+        <span :if={!frozen_attempt?(attempt)} class="text-xs text-base-content/40 ml-auto">
+          {format_timestamp(mfield(attempt, :updated_at))}
+        </span>
+      </div>
+
+      <div :if={frozen_attempt?(attempt)} class="text-sm mt-1">
+        {mfield(attempt, :outcome)}
+      </div>
+
+      <div
+        :if={!frozen_attempt?(attempt) && live_full_detail?(attempt)}
+        class="text-sm mt-1 space-y-1"
+      >
+        <div :if={mfield(attempt, :progress_note)} class="text-base-content/70">
+          {mfield(attempt, :progress_note)}
+        </div>
+        <div
+          :if={mfield(attempt, :last_assistant_text)}
+          class="whitespace-pre-wrap text-base-content/80"
+        >
+          {mfield(attempt, :last_assistant_text)}
+        </div>
+        <div :if={mfield(attempt, :commits) not in [nil, []]} class="text-xs text-base-content/50">
+          <span :for={c <- mfield(attempt, :commits)} class="mr-2">
+            <code class="text-primary">{mfield(c, :short_hash)}</code> {mfield(c, :subject)}
+          </span>
+        </div>
+      </div>
+    </li>
+  </ul>
+</div>
+
+<div :if={@issue.approaches_tried && @issue.approaches_tried != ""} class="mt-4">
+  <h3 class="text-sm font-semibold mb-1 opacity-70">Approaches Tried</h3>
+  <div class="p-4 bg-base-200 rounded-lg whitespace-pre-wrap text-sm">
+    {@issue.approaches_tried}
+  </div>
 </div>
 
 <div :if={@issue.notes && @issue.notes != ""} class="mt-4">

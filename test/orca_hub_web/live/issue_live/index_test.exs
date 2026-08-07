@@ -9,54 +9,82 @@ defmodule OrcaHubWeb.IssueLive.IndexTest do
     dir = Path.join(System.tmp_dir!(), "issue_index_test_#{System.unique_integer([:positive])}")
 
     {:ok, project} =
-      Projects.create_project(%{name: "issue-index-test", directory: dir, node: "n1@x"})
+      Projects.create_project(%{
+        name: "issue-index-test",
+        directory: dir,
+        node: "n1@x",
+        key_prefix: unique_key_prefix()
+      })
 
     {:ok, project: project}
   end
 
-  test "lists issues with title, status, category, and inserted_at", %{
-    conn: conn,
-    project: project
-  } do
+  defp unique_key_prefix(base \\ "IDX") do
+    (base <> Integer.to_string(System.unique_integer([:positive]))) |> String.slice(0, 10)
+  end
+
+  test "lists issues with short key, kind, and status", %{conn: conn, project: project} do
     {:ok, issue} =
       Issues.create_issue(%{
-        title: "[agent-fr] Missing thing",
+        title: "Missing thing",
         project_id: project.id,
-        description: "pain\n\n---\nCategory: tooling\n"
+        description: "pain",
+        kind: "feature_request"
       })
 
     {:ok, _view, html} = live(conn, ~p"/issues")
 
     assert html =~ issue.title
+    assert html =~ Issues.render_key(issue)
     assert html =~ "open"
-    assert html =~ "tooling"
+    assert html =~ "feature_request"
   end
 
-  test "shows a dash when no category is parseable", %{conn: conn, project: project} do
-    {:ok, _issue} =
+  test "kind filter narrows the list to the selected kind", %{conn: conn, project: project} do
+    {:ok, task} = Issues.create_issue(%{title: "A task", project_id: project.id, kind: "task"})
+
+    {:ok, fr} =
       Issues.create_issue(%{
-        title: "Human filed, no category",
+        title: "A feature request",
         project_id: project.id,
-        description: "just a description"
+        kind: "feature_request"
       })
 
-    {:ok, _view, html} = live(conn, ~p"/issues")
+    {:ok, view, html} = live(conn, ~p"/issues")
+    assert html =~ task.title
+    assert html =~ fr.title
 
-    assert html =~ "Human filed, no category"
-    assert html =~ "—"
+    html = view |> element("button", "Feature request") |> render_click()
+
+    refute html =~ task.title
+    assert html =~ fr.title
   end
 
-  test "lists open issues before closed issues", %{conn: conn, project: project} do
+  test "status filter defaults to showing everything, including closed", %{
+    conn: conn,
+    project: project
+  } do
     {:ok, closed} = Issues.create_issue(%{title: "Closed issue", project_id: project.id})
     {:ok, _} = Issues.update_issue(closed, %{status: "closed"})
-    {:ok, _open} = Issues.create_issue(%{title: "Open issue", project_id: project.id})
+    {:ok, open} = Issues.create_issue(%{title: "Open issue", project_id: project.id})
 
     {:ok, _view, html} = live(conn, ~p"/issues")
 
-    open_index = :binary.match(html, "Open issue") |> elem(0)
-    closed_index = :binary.match(html, "Closed issue") |> elem(0)
+    assert html =~ closed.title
+    assert html =~ open.title
+  end
 
-    assert open_index < closed_index
+  test "status filter narrows to just the selected status", %{conn: conn, project: project} do
+    {:ok, closed} = Issues.create_issue(%{title: "Closed issue", project_id: project.id})
+    {:ok, _} = Issues.update_issue(closed, %{status: "closed"})
+    {:ok, open} = Issues.create_issue(%{title: "Open issue", project_id: project.id})
+
+    {:ok, view, _html} = live(conn, ~p"/issues")
+
+    html = view |> element("button", "Open") |> render_click()
+
+    assert html =~ open.title
+    refute html =~ closed.title
   end
 
   test "closed issues render with dimmed styling", %{conn: conn, project: project} do
@@ -68,8 +96,18 @@ defmodule OrcaHubWeb.IssueLive.IndexTest do
     assert html =~ "opacity-50"
   end
 
-  test "row links to the issue's show page", %{conn: conn, project: project} do
+  test "row links to the issue's show page via its short key", %{conn: conn, project: project} do
     {:ok, issue} = Issues.create_issue(%{title: "Linked issue", project_id: project.id})
+
+    {:ok, _view, html} = live(conn, ~p"/issues")
+
+    assert html =~ ~p"/issues/#{Issues.render_key(issue)}"
+  end
+
+  test "an issue without a project key_prefix falls back to linking by id", %{conn: conn} do
+    dir = Path.join(System.tmp_dir!(), "issue_index_nokey_#{System.unique_integer([:positive])}")
+    {:ok, project} = Projects.create_project(%{name: "no-prefix", directory: dir, node: "n1@x"})
+    {:ok, issue} = Issues.create_issue(%{title: "Keyless issue", project_id: project.id})
 
     {:ok, _view, html} = live(conn, ~p"/issues")
 

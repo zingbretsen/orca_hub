@@ -2,40 +2,79 @@
   Issues
 </.header>
 
+<div class="flex flex-wrap items-center gap-4 mt-4">
+  <div class="flex gap-1">
+    <button
+      :for={{label, value} <- kind_filters()}
+      phx-click="set_kind_filter"
+      phx-value-kind={value}
+      class={["btn btn-sm", @kind_filter == value && "btn-active"]}
+    >
+      {label}
+    </button>
+  </div>
+  <div class="flex gap-1">
+    <button
+      :for={{label, value} <- status_filters()}
+      phx-click="set_status_filter"
+      phx-value-status={value}
+      class={["btn btn-sm", @status_filter == value && "btn-active"]}
+    >
+      {label}
+    </button>
+  </div>
+</div>
+
 <.table
   :if={@issues != []}
   id="issues"
   rows={@issues}
-  row_click={fn issue -> JS.navigate(~p"/issues/#{issue.id}") end}
+  row_click={fn issue -> JS.navigate(~p"/issues/#{issue_key(issue) || issue.id}") end}
 >
+  <:col :let={issue} label="Key">
+    <span class={["font-mono text-xs", issue.status in ["closed", "abandoned"] && "opacity-50"]}>
+      {issue_key(issue) || "—"}
+    </span>
+  </:col>
   <:col :let={issue} label="Title">
     <.link
-      navigate={~p"/issues/#{issue.id}"}
-      class={["link link-hover", issue.status == "closed" && "opacity-50"]}
+      navigate={~p"/issues/#{issue_key(issue) || issue.id}"}
+      class={[
+        "link link-hover",
+        issue.status in ["closed", "abandoned"] && "opacity-50"
+      ]}
     >
       {issue.title}
     </.link>
   </:col>
+  <:col :let={issue} label="Kind">
+    <span class={[
+      "badge badge-sm",
+      issue.kind == "feature_request" && "badge-secondary",
+      issue.kind == "task" && "badge-ghost",
+      issue.status in ["closed", "abandoned"] && "opacity-50"
+    ]}>
+      {issue.kind}
+    </span>
+  </:col>
   <:col :let={issue} label="Status">
     <span class={[
-      "badge",
+      "badge badge-sm",
       issue.status == "open" && "badge-info",
       issue.status == "in_progress" && "badge-warning",
-      issue.status == "closed" && "badge-success opacity-60"
+      issue.status == "closed" && "badge-success opacity-60",
+      issue.status == "abandoned" && "badge-neutral opacity-60"
     ]}>
       {issue.status}
     </span>
   </:col>
-  <:col :let={issue} label="Category">
-    <span class={issue.status == "closed" && "opacity-50"}>{category(issue) || "—"}</span>
-  </:col>
   <:col :let={issue} label="Filed">
-    <span class={issue.status == "closed" && "opacity-50"}>
+    <span class={issue.status in ["closed", "abandoned"] && "opacity-50"}>
       {Calendar.strftime(issue.inserted_at, "%Y-%m-%d %H:%M")}
     </span>
   </:col>
 </.table>
 
 <div :if={@issues == []} class="text-sm text-base-content/50 p-4 text-center">
-  No issues filed yet.
+  No issues match this filter.
 </div>
