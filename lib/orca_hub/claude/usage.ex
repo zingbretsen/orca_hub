@@ -60,24 +60,44 @@ defmodule OrcaHub.Claude.Usage do
   file-based credentials are expired (or the API rejects the token) the token
   is refreshed via the Claude CLI before retrying.
 
-  Returns `{:ok, %Usage{}}` or `{:error, reason}`.
+  Returns `{:ok, %Usage{}}` or `{:error, reason}` — a `{:credential_expired,
+  cli_reason}` reason means the CLI-driven refresh itself failed (e.g. the
+  OAuth session can no longer be refreshed at all) and someone needs to
+  re-`claude login` on this node; any other reason is a lower-level failure
+  (CLI not found, credentials file missing/corrupt, network/parse error).
   """
   @spec fetch() :: {:ok, t()} | {:error, term()}
   def fetch do
-    with {:ok, token} <- resolve_token() do
-      case fetch_with_token(token) do
-        {:error, {:http_error, 22, _}} = err ->
-          # 401 from the usage endpoint (curl exit 22). The token may have been
-          # invalidated server-side before its stored expiry; force the CLI to
-          # refresh and retry once.
-          case refresh_via_cli() do
-            {:ok, fresh} -> fetch_with_token(fresh)
-            {:error, _} -> err
-          end
+    case resolve_token() do
+      {:ok, token} ->
+        fetch_with_resolved_token(token)
 
-        result ->
-          result
-      end
+      # A {:credential_expired, _} here means resolve_token/0 already
+      # attempted (and failed) a CLI refresh for a known-expired token — the
+      # credential is confirmed bad, so short-circuit instead of falling
+      # through to fetch_with_resolved_token, which is what used to shell
+      # out to `claude -p` a second, doomed time for the exact same failure
+      # (plus the HTTP round trip in between) — see
+      # perf_audit_projects_queue.md §1. Any other resolve_token/0 error
+      # (CLI not found, no credentials at all, ...) passes through as-is.
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp fetch_with_resolved_token(token) do
+    case fetch_with_token(token) do
+      {:error, {:http_error, 22, _}} ->
+        # 401 from the usage endpoint (curl exit 22). The token may have been
+        # invalidated server-side before its stored expiry; force the CLI to
+        # refresh and retry once.
+        case refresh_via_cli() do
+          {:ok, fresh} -> fetch_with_token(fresh)
+          {:error, reason} -> {:error, {:credential_expired, reason}}
+        end
+
+      result ->
+        result
     end
   end
 
@@ -143,12 +163,14 @@ defmodule OrcaHub.Claude.Usage do
     case read_credentials_file() do
       {:ok, data} ->
         if expired?(data) do
-          # Proactively refresh so the usage call doesn't have a guaranteed 401.
+          # Proactively refresh so the usage call doesn't have a guaranteed
+          # 401. If the refresh itself fails, the credential is confirmed
+          # bad — tag it distinctly so `fetch/0` can fail fast instead of
+          # calling the API with a token already known to be stale (which
+          # would just 401 and trigger an identical, doomed second refresh).
           case refresh_via_cli() do
             {:ok, token} -> {:ok, token}
-            # Refresh failed (e.g. CLI not on PATH); fall back to whatever token
-            # we have and let the caller surface the error.
-            {:error, _} -> extract_token(data)
+            {:error, reason} -> {:error, {:credential_expired, reason}}
           end
         else
           extract_token(data)

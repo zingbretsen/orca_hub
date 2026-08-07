@@ -110,6 +110,16 @@ defmodule OrcaHub.BackendInstaller do
   @npm_timeout 4_000
   @status_task_timeout 9_000
 
+  # `npm view <pkg> version` is a real network round trip to the npm
+  # registry (~1.5-3.5s observed in prod, see perf_audit_admin_pages.md §3)
+  # and was previously uncached, paid on every single NodeLive.Show mount.
+  # "Latest published version of a CLI" doesn't need to be fresh per page
+  # view — a new release lands every few days at most — so cache it well
+  # past a single visit, mirroring `Backend.available_on/1`/`models_for/2`'s
+  # existing `Backend.Cache` usage for the same "cheap but network-bound
+  # node fact" shape.
+  @latest_version_ttl_ms :timer.hours(1)
+
   @doc "The PubSub topic a backend-installer job on `node` broadcasts to."
   @spec topic(node | String.t()) :: String.t()
   def topic(node), do: "backend_installer:#{node}"
@@ -241,12 +251,14 @@ defmodule OrcaHub.BackendInstaller do
 
   defp latest_version(backend, npm_available?) when backend in [:codex, :pi] do
     if npm_available? do
-      pkg = Map.fetch!(@npm_packages, backend)
+      OrcaHub.Backend.Cache.get_or_run({:latest_version, backend}, @latest_version_ttl_ms, fn ->
+        pkg = Map.fetch!(@npm_packages, backend)
 
-      case exec(npm_executable(), ["view", pkg, "version"], @npm_timeout) do
-        {:ok, output, 0} -> parse_version(output)
-        _ -> nil
-      end
+        case exec(npm_executable(), ["view", pkg, "version"], @npm_timeout) do
+          {:ok, output, 0} -> parse_version(output)
+          _ -> nil
+        end
+      end)
     end
   end
 

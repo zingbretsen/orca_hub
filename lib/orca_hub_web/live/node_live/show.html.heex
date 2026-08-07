@@ -224,6 +224,13 @@
 
   <div :if={@connected} class="space-y-3" id="backend-installer-sections">
     <div
+      :if={is_nil(@backend_installer_status)}
+      id="backend-installer-status-loading"
+      class="text-sm text-base-content/50 p-4 text-center bg-base-200 rounded-lg flex items-center justify-center gap-2"
+    >
+      <span class="loading loading-spinner loading-xs" /> Checking installed backends&hellip;
+    </div>
+    <div
       :for={row <- @backend_installer_status || []}
       id={"backend-installer-#{row.backend}"}
       class="card bg-base-200 p-4"

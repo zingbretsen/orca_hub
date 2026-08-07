@@ -89,7 +89,7 @@ defmodule OrcaHubWeb.NodeLive.BackendAuthTest do
 
   describe "codex status badge" do
     test "shows nothing extra when no auth.json exists", %{conn: conn, node: n} do
-      html = open(conn, n) |> render()
+      html = open(conn, n) |> render_async(5_000)
 
       refute html =~ "codex: ChatGPT"
       refute html =~ "codex: API key"
@@ -106,7 +106,7 @@ defmodule OrcaHubWeb.NodeLive.BackendAuthTest do
         "tokens" => %{"access_token" => "fake-access-token"}
       })
 
-      html = open(conn, n) |> render()
+      html = open(conn, n) |> render_async(5_000)
       assert html =~ "codex: ChatGPT (device)"
     end
 
@@ -116,7 +116,7 @@ defmodule OrcaHubWeb.NodeLive.BackendAuthTest do
     } do
       System.put_env("OPENAI_API_KEY", "sk-fake-env-key")
 
-      html = open(conn, n) |> render()
+      html = open(conn, n) |> render_async(5_000)
       assert html =~ "codex env conflict"
     end
   end
@@ -127,6 +127,7 @@ defmodule OrcaHubWeb.NodeLive.BackendAuthTest do
       node: n
     } do
       view = open(conn, n)
+      render_async(view, 5_000)
 
       html =
         view
@@ -156,6 +157,7 @@ defmodule OrcaHubWeb.NodeLive.BackendAuthTest do
 
     test "reports an error without leaking the key", %{conn: conn, node: n} do
       view = open(conn, n)
+      render_async(view, 5_000)
 
       view
       |> element("button[phx-click=codex_login_api_key_open]")
@@ -181,6 +183,7 @@ defmodule OrcaHubWeb.NodeLive.BackendAuthTest do
       node: n
     } do
       view = open(conn, n)
+      render_async(view, 5_000)
 
       html =
         view

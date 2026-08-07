@@ -97,7 +97,7 @@ defmodule OrcaHubWeb.NodeLive.BackendInstallerTest do
     conn: conn,
     node: n
   } do
-    html = open(conn, n) |> render()
+    html = open(conn, n) |> render_async(5_000)
 
     assert html =~ "backend-installer-claude"
     assert html =~ "backend-installer-codex"
@@ -128,7 +128,7 @@ defmodule OrcaHubWeb.NodeLive.BackendInstallerTest do
       "definitely-not-a-real-binary-#{System.unique_integer([:positive])}"
     )
 
-    html = open(conn, n) |> render()
+    html = open(conn, n) |> render_async(5_000)
 
     assert html =~ "unavailable"
     assert html =~ "npm not available on this node"
@@ -142,7 +142,7 @@ defmodule OrcaHubWeb.NodeLive.BackendInstallerTest do
 
     html =
       try do
-        open(conn, n) |> render()
+        open(conn, n) |> render_async(5_000)
       after
         System.delete_env("KUBERNETES_SERVICE_HOST")
       end
@@ -158,6 +158,7 @@ defmodule OrcaHubWeb.NodeLive.BackendInstallerTest do
     })
 
     view = open(conn, n)
+    render_async(view, 5_000)
 
     html = render_click(view, "run_backend_job", %{"backend" => "claude", "action" => "update"})
     assert html =~ "loading-spinner"

@@ -41,7 +41,7 @@ defmodule OrcaHubWeb.NodeLive.Show do
         config_node: config_node,
         node_config: node_config,
         managed_skills: managed_skills,
-        backend_installer_status: if(config_node, do: load_backend_installer_status(config_node)),
+        backend_installer_status: nil,
         backend_installer_running:
           if(config_node,
             do: load_backend_installer_running(config_node),
@@ -98,7 +98,37 @@ defmodule OrcaHubWeb.NodeLive.Show do
         socket
       end
 
+    socket = load_backend_installer_status_async(socket, config_node)
+
     {:ok, socket}
+  end
+
+  # `BackendInstaller.status/0` shells out to `npm view` for codex/pi and is
+  # cached (see `BackendInstaller`'s `@latest_version_ttl_ms`), but a cache
+  # miss (first mount after boot, or a TTL expiry) still costs ~1.5-2.2s per
+  # backend, see perf_audit_admin_pages.md §3 — too slow to sit in front of
+  # first paint. Off the critical path, same pattern as
+  # `SessionLive.Show`'s commits panel / `IssueLive.Show`'s live_attempts:
+  # `@backend_installer_status` starts `nil` (template renders it as `[]`)
+  # and fills in once (if) the async fetch lands. Skipped on the dead
+  # render, which can't receive the result anyway.
+  defp load_backend_installer_status_async(socket, config_node) do
+    if config_node && Phoenix.LiveView.connected?(socket) do
+      start_async(socket, :backend_installer_status, fn ->
+        load_backend_installer_status(config_node)
+      end)
+    else
+      socket
+    end
+  end
+
+  @impl true
+  def handle_async(:backend_installer_status, {:ok, list}, socket) when is_list(list) do
+    {:noreply, assign(socket, :backend_installer_status, list)}
+  end
+
+  def handle_async(:backend_installer_status, _result, socket) do
+    {:noreply, socket}
   end
 
   def last_connected_label(true, _last_connected_at), do: "Connected now"
