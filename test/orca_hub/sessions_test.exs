@@ -359,6 +359,65 @@ defmodule OrcaHub.SessionsTest do
       assert parent.id in ids
       refute child.id in ids
     end
+
+    # Pins the LATERAL join's message-selection semantics against the old
+    # whole-table `DISTINCT ON` subquery it replaced (see
+    # perf_audit_projects_queue.md §2) — same session, same message, same
+    # ordering.
+    test "picks the most recent assistant message, ignoring non-assistant messages and older ones",
+         %{project: project} do
+      session = create_session(project, %{title: "S", status: "idle"})
+
+      insert_message_at(
+        session,
+        %{"type" => "assistant", "text" => "first"},
+        ~N[2026-01-01 00:00:00]
+      )
+
+      insert_message_at(
+        session,
+        %{"type" => "user", "text" => "ignored, not assistant"},
+        ~N[2026-01-01 00:00:02]
+      )
+
+      insert_message_at(
+        session,
+        %{"type" => "assistant", "text" => "second"},
+        ~N[2026-01-01 00:00:01]
+      )
+
+      insert_message_at(
+        session,
+        %{"type" => "assistant", "text" => "latest"},
+        ~N[2026-01-01 00:00:03]
+      )
+
+      results = Sessions.list_idle_sessions_with_last_assistant_message()
+      {_s, msg} = Enum.find(results, fn {s, _msg} -> s.id == session.id end)
+
+      assert msg.data["text"] == "latest"
+    end
+
+    test "returns nil for the message when a session has no assistant message yet",
+         %{project: project} do
+      session = create_session(project, %{title: "No replies yet", status: "idle"})
+
+      insert_message_at(session, %{"type" => "user", "text" => "hi"}, ~N[2026-01-01 00:00:00])
+
+      results = Sessions.list_idle_sessions_with_last_assistant_message()
+      {_s, msg} = Enum.find(results, fn {s, _msg} -> s.id == session.id end)
+
+      assert msg == nil
+    end
+
+    defp insert_message_at(session, data, inserted_at) do
+      {:ok, message} = Sessions.create_message(%{session_id: session.id, data: data})
+
+      from(m in Message, where: m.id == ^message.id)
+      |> Repo.update_all(set: [inserted_at: inserted_at])
+
+      message
+    end
   end
 
   describe "last_assistant_text/1" do

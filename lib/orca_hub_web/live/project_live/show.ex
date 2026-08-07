@@ -76,7 +76,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        agents_edit_text: "",
        codex_expanded: MapSet.new(),
        codex_editing_filename: nil,
-       codex_edit_content: ""
+       codex_edit_content: "",
+       codex_section_expanded: false
      )}
   end
 
@@ -857,6 +858,21 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   # Agent Memory — Codex (native)
 
+  # Loads the (node-global, not project-scoped) Codex memory list on first
+  # expand only — see `load_agent_memory/2` — then just toggles visibility on
+  # subsequent clicks without re-fetching.
+  def handle_event("toggle_codex_section", _params, socket) do
+    socket =
+      if !socket.assigns.codex_section_expanded and
+           socket.assigns.agent_memory.codex == :not_loaded do
+        refresh_codex(socket)
+      else
+        socket
+      end
+
+    {:noreply, update(socket, :codex_section_expanded, &(!&1))}
+  end
+
   def handle_event("toggle_codex_memory", %{"filename" => filename}, socket) do
     expanded = socket.assigns.codex_expanded
 
@@ -1129,6 +1145,15 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   # Agent Memory
   # -------------------------------------------------------------------
 
+  # `list_codex_memories/0` returns every Codex memory file for the node's
+  # whole user (252 files / 963KB on the busiest node) — identical for all
+  # 180 project pages routed to that node, since it isn't project-scoped at
+  # all (see AgentMemory's moduledoc). Deferred until the Codex section is
+  # actually expanded (`"toggle_codex_section"`) instead of fetched
+  # unconditionally on every mount — see perf_audit_projects_queue.md §5.
+  # `codex_memories_enabled?/1` stays eager: it's a single config-file read
+  # (~1ms, not the expensive part) used to pick the right message once the
+  # section IS expanded but the fetch comes back empty.
   defp load_agent_memory(project_node, project) do
     %{
       claude:
@@ -1139,7 +1164,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
         agent_memory_result(
           rpc(project_node, AgentMemory, :list_agents_md_memories, [project.directory])
         ),
-      codex: agent_memory_result(rpc(project_node, AgentMemory, :list_codex_memories, [])),
+      codex: :not_loaded,
       codex_enabled: bool_result(rpc(project_node, AgentMemory, :codex_memories_enabled?, []))
     }
   end

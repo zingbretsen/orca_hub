@@ -48,19 +48,31 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
   defp memory_dir(project_dir, home),
     do: AgentMemory.claude_memory_dir(project_dir, home_dir: home)
 
+  # The Codex memory list is node-global (not project-scoped) and expensive
+  # to fetch/render at scale (963KB/252 files on a busy node — see
+  # perf_audit_projects_queue.md §5), so it's deferred until the section is
+  # actually expanded instead of loaded on every mount. Tests that need
+  # Codex content visible must expand it first.
+  defp expand_codex(view) do
+    view |> element("#codex-section-toggle") |> render_click()
+  end
+
   test "renders the Agent Memory section with all three groups", %{
     conn: conn,
     project: project
   } do
-    {:ok, _view, html} = live(conn, ~p"/projects/#{project.id}")
+    {:ok, view, html} = live(conn, ~p"/projects/#{project.id}")
 
     assert html =~ "Agent Memory"
     assert html =~ "Claude Code"
     assert html =~ "Shared AGENTS.md"
     assert html =~ "Codex (native)"
     assert html =~ "No Claude Code memory directory found on this node."
-    assert html =~ "Codex built-in memories not enabled on this node."
     assert html =~ "pi has no memory store of its own"
+    refute html =~ "Codex built-in memories not enabled on this node."
+
+    html = expand_codex(view)
+    assert html =~ "Codex built-in memories not enabled on this node."
   end
 
   test "an offline project node disables the section instead of crashing", %{conn: conn} do
@@ -456,9 +468,25 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
       :ok
     end
 
-    test "lists and edits Codex memory files", %{conn: conn, project: project, home: home} do
+    test "the file list is not fetched/rendered until the section is expanded", %{
+      conn: conn,
+      project: project
+    } do
       {:ok, view, html} = live(conn, ~p"/projects/#{project.id}")
 
+      refute html =~ "note.md"
+      assert html =~ "click"
+      assert html =~ "to load them"
+
+      html = expand_codex(view)
+      assert html =~ "note.md"
+      refute html =~ "to load them"
+    end
+
+    test "lists and edits Codex memory files", %{conn: conn, project: project, home: home} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+      html = expand_codex(view)
       assert html =~ "note.md"
 
       view
@@ -475,6 +503,7 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
 
     test "deleting a Codex memory removes the file", %{conn: conn, project: project, home: home} do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+      expand_codex(view)
 
       view
       |> element("#codex-memory-delete-note\\.md")
@@ -498,6 +527,8 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
 
       refute render(view) =~ "A codex note."
 
+      expand_codex(view)
+
       view
       |> element("[phx-click=toggle_codex_memory][phx-value-filename='note.md']")
       |> render_click()
@@ -511,6 +542,7 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
     test "editing a block in an expanded Codex memory persists via AgentMemory.save_codex_memory",
          %{conn: conn, project: project, home: home} do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+      expand_codex(view)
 
       view
       |> element("[phx-click=toggle_codex_memory][phx-value-filename='note.md']")
@@ -534,6 +566,7 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
       home: home
     } do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+      expand_codex(view)
 
       view
       |> element("[phx-click=toggle_codex_memory][phx-value-filename='note.md']")
@@ -553,8 +586,9 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
       File.mkdir_p!(rollout_dir)
       File.write!(Path.join(rollout_dir, "2026-07-08.md"), "A rollout summary.")
 
-      {:ok, view, html} = live(conn, ~p"/projects/#{project.id}")
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
+      html = expand_codex(view)
       assert html =~ "rollout_summaries/2026-07-08.md"
       assert html =~ "rollout summary"
 
@@ -585,8 +619,9 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
       File.mkdir_p!(ad_hoc_dir)
       File.write!(Path.join(ad_hoc_dir, "instructions.md"), "Ad-hoc extension notes.")
 
-      {:ok, view, html} = live(conn, ~p"/projects/#{project.id}")
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
+      html = expand_codex(view)
       assert html =~ "extensions/ad_hoc/instructions.md"
       assert html =~ "extension"
 
@@ -600,8 +635,9 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
 
   describe "Codex feature-flag messaging when the dir doesn't exist yet" do
     test "says 'not enabled' when no config.toml is present", %{conn: conn, project: project} do
-      {:ok, _view, html} = live(conn, ~p"/projects/#{project.id}")
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
+      html = expand_codex(view)
       assert html =~ "Codex built-in memories not enabled on this node."
       refute html =~ "none have been consolidated yet"
     end
@@ -616,7 +652,9 @@ defmodule OrcaHubWeb.ProjectLive.AgentMemoryTest do
       memories = true
       """)
 
-      {:ok, _view, html} = live(conn, ~p"/projects/#{project.id}")
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+      html = expand_codex(view)
 
       assert html =~
                "Codex memories are enabled on this node, but none have been consolidated yet."

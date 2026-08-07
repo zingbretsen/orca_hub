@@ -909,16 +909,25 @@ defmodule OrcaHub.Sessions do
   def list_idle_sessions_with_last_assistant_message do
     reset_front_of_queue_priority()
 
-    last_messages =
+    # LATERAL join instead of a DISTINCT ON subquery over the whole `messages`
+    # table (was a full sequential scan + disk-spilled sort of 300K+ rows to
+    # answer a question about ~50 idle sessions — see perf_audit_projects_queue.md
+    # §2). This runs one indexed "last assistant message" lookup per
+    # already-filtered idle/waiting session instead, served by the
+    # `(session_id, inserted_at, id)` index added in 84c2664.
+    last_message =
       from m in Message,
-        where: fragment("? ->> 'type' = 'assistant'", m.data),
-        distinct: m.session_id,
-        order_by: [asc: m.session_id, desc: m.inserted_at]
+        where:
+          m.session_id == parent_as(:session).id and
+            fragment("? ->> 'type' = 'assistant'", m.data),
+        order_by: [desc: m.inserted_at],
+        limit: 1
 
     Repo.all(
       from s in Session,
-        left_join: m in subquery(last_messages),
-        on: m.session_id == s.id,
+        as: :session,
+        left_lateral_join: m in subquery(last_message),
+        on: true,
         left_join: p in assoc(s, :project),
         where:
           is_nil(s.archived_at) and s.status in ["idle", "waiting"] and

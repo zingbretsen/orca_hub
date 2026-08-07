@@ -1041,29 +1041,44 @@
 
     <%!-- Codex native memories --%>
     <div id="agent-memory-codex">
-      <h4 class="font-semibold text-sm mb-1">Codex (native)</h4>
+      <div class="flex items-center justify-between mb-1">
+        <h4 class="font-semibold text-sm">Codex (native)</h4>
+        <button
+          id="codex-section-toggle"
+          phx-click="toggle_codex_section"
+          class="btn btn-xs btn-ghost"
+        >
+          {if @codex_section_expanded, do: "Hide", else: "Show"}
+        </button>
+      </div>
       <p class="text-xs text-base-content/50 mb-2">
         Global to this node's user, not scoped to this project — editing or deleting a file here
         affects every project routed to this node.
       </p>
 
       <div
-        :if={@agent_memory.codex == {:error, :not_enabled} && !@agent_memory.codex_enabled}
-        id="codex-memory-not-enabled"
+        :if={!@codex_section_expanded}
+        id="codex-memory-not-loaded"
         class="text-sm text-base-content/50 p-3 text-center bg-base-200 rounded-lg"
       >
-        Codex built-in memories not enabled on this node.
+        Codex memories are global to this node, not this project — click "Show" to load them.
       </div>
 
       <div
-        :if={@agent_memory.codex == {:error, :not_enabled} && @agent_memory.codex_enabled}
-        id="codex-memory-enabled-not-consolidated"
+        :if={@codex_section_expanded && @agent_memory.codex == {:error, :not_enabled}}
+        id={
+          if @agent_memory.codex_enabled,
+            do: "codex-memory-enabled-not-consolidated",
+            else: "codex-memory-not-enabled"
+        }
         class="text-sm text-base-content/50 p-3 text-center bg-base-200 rounded-lg"
       >
-        Codex memories are enabled on this node, but none have been consolidated yet.
+        {if @agent_memory.codex_enabled,
+          do: "Codex memories are enabled on this node, but none have been consolidated yet.",
+          else: "Codex built-in memories not enabled on this node."}
       </div>
 
-      <div :if={match?({:ok, _}, @agent_memory.codex)}>
+      <div :if={@codex_section_expanded && match?({:ok, _}, @agent_memory.codex)}>
         <% {:ok, files} = @agent_memory.codex %>
 
         <div
@@ -1137,8 +1152,6 @@
               </div>
             </form>
 
-            <% {_codex_frontmatter, codex_blocks} =
-              split_body_blocks("codex_memory", file.content) %>
             <div
               :if={
                 @codex_editing_filename != file.filename &&
@@ -1146,6 +1159,8 @@
               }
               class="mt-3"
             >
+              <% {_codex_frontmatter, codex_blocks} =
+                split_body_blocks("codex_memory", file.content) %>
               <BlockEditor.block_editor
                 scope="codex_memory"
                 target_key={file.filename}
