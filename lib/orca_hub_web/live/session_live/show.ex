@@ -16,6 +16,25 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # 10s every time the session goes idle.
   @commits_timeout 5_000
 
+  # How many TOP-LEVEL messages (see Sessions.list_messages_window/2 — a
+  # subagent block never counts against this on its own) to load per page of
+  # the message feed. A phone screen can be filled by a single message, so
+  # the historical "load everything" behavior (sometimes thousands of rows)
+  # made long sessions painfully slow to open; 20 is enough to fill a
+  # desktop viewport on first paint while staying trivially fast. Tunable
+  # here — nothing else hardcodes this number.
+  @window_size 20
+
+  # Delay before the first background prefetch of the page just older than
+  # the initial window (see handle_info(:prefetch_older_messages, ...)) —
+  # long enough that it never competes with first paint for DB/CPU time.
+  @prefetch_delay_ms 800
+
+  # Test seam only — lets tests assert against the real constant instead of
+  # a hardcoded copy that could silently drift from it.
+  @doc false
+  def window_size, do: @window_size
+
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     {session_node, session} = find_session!(id)
@@ -27,7 +46,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     maybe_subscribe(socket, id, remote?)
 
-    runner_state = load_runner_state(session_node, id, session)
+    # Status comes from the live runner when there is one (cheap — no
+    # messages payload, see SessionRunner.get_status/1) or from the
+    # persisted column for a dead one. Message HISTORY always comes from the
+    # DB, windowed (see load_message_window/1) — safe even against a live
+    # runner because SessionRunner persists every event synchronously
+    # before broadcasting/appending it to its own in-memory list, so the DB
+    # is never behind what get_status/get_state could have reported anyway.
+    runner_status = load_runner_status(session_node, id, session)
+    window = load_message_window(id)
 
     {prev_session_id, next_session_id} = HubRPC.get_adjacent_session_ids(session)
 
@@ -53,8 +80,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
        node_unavailable && Cluster.node_unavailable_message(node_unavailable)
      )
      |> assign(:cluster_nodes, Cluster.node_info())
-     |> assign(:status, runner_state.status)
-     |> assign(:messages, runner_state.messages)
+     |> assign(:status, runner_status.status)
+     |> assign(:messages, window.messages)
+     |> assign(:messages_cursor, window.cursor)
+     |> assign(:has_more_messages, window.has_more)
+     |> assign(:loading_older_messages, false)
+     # See buffer_older_page/1: a background-prefetched page that hasn't
+     # been committed to @messages (and therefore the DOM) yet.
+     |> assign(:buffered_older_page, nil)
      # spec §12.6 — latest pending steer/follow-up queue (pi only; stays
      # empty and unused for backends without `capabilities.steering`).
      # Transient live state, not persisted — refreshed by the runner's
@@ -81,16 +114,19 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:scroll_to_block, nil)
      |> assign(:editing_title, false)
      # Claude: model-initiated EnterPlanMode/ExitPlanMode tool_use pair
-     # (PlanMode.detect/1). pi: user-toggled `/plan` (spec §12.4) — there is
-     # no tool_use to detect, so `pi_plan_mode_from_messages/1` reconstructs
-     # from the last `pi_plan_mode` broadcast instead. `||` is safe: a
-     # backend only ever produces events one of the two detectors reacts to
-     # (Claude never emits `pi_plan_mode`; pi never emits EnterPlanMode), so
-     # exactly one side is non-`false` per session.
-     |> assign(
-       :plan_mode,
-       PlanMode.detect(runner_state.messages) || pi_plan_mode_from_messages(runner_state.messages)
-     )
+     # (initial_plan_mode/1, a targeted-query mirror of PlanMode.detect/1).
+     # pi: user-toggled `/plan` (spec §12.4) — there is no tool_use to
+     # detect, so `initial_pi_plan_mode/1` reconstructs from the last
+     # `pi_plan_mode` broadcast instead. `||` is safe: a backend only ever
+     # produces events one of the two detectors reacts to (Claude never
+     # emits `pi_plan_mode`; pi never emits EnterPlanMode), so exactly one
+     # side is non-`false` per session. Sourced from full history via
+     # targeted DB queries (NOT from @messages, which is now only the
+     # windowed feed — see @window_size) since the deciding event can be
+     # arbitrarily far back; kept correct thereafter by the incremental
+     # handle_plan_events/2 and handle_pi_plan_events/2 clauses below, which
+     # already react to each live event rather than rescanning @messages.
+     |> assign(:plan_mode, initial_plan_mode(id) || initial_pi_plan_mode(id))
      |> assign(:pending_plan_file, nil)
      |> assign(:plan_file_path, nil)
      |> assign(:plan_file_original_mtime, nil)
@@ -112,21 +148,22 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:show_mcp_server_picker, false)
      |> assign(:show_heartbeat_modal, false)
      |> assign(:heartbeat_info, HubRPC.get_heartbeat(id))
-     |> assign_ask_user_question(runner_state.status, runner_state.messages)
+     |> assign_ask_user_question(runner_status.status, id)
      # pi's extension-UI reply loop (spec §12.3): reconstructed purely from
      # message history (a "pi_ui_request" with no later matching
      # "pi_ui_response") rather than tracked as separate runner state, so a
-     # page reload — even against a dead runner falling back to
-     # HubRPC.list_messages/1 below — still shows the pending card. Kept
-     # independent of the AskUserQuestion wizard's status/aq_open dance:
-     # pi's dialog blocks the port directly, so the session status stays
-     # "running" the whole time (no "waiting" transition to key off).
-     |> assign(:pending_ui_request, pending_ui_request_from_messages(runner_state.messages))
+     # page reload — even against a dead runner — still shows the pending
+     # card. Kept independent of the AskUserQuestion wizard's status/aq_open
+     # dance: pi's dialog blocks the port directly, so the session status
+     # stays "running" the whole time (no "waiting" transition to key off).
+     # Targeted query (full history), same reasoning as @plan_mode above.
+     |> assign(:pending_ui_request, HubRPC.pending_pi_ui_request(id))
      # spec §12.8 — header context-window meter (pi only, capability-gated on
      # @capabilities.session_stats). Reconstructed from the last
-     # `pi_session_stats` event in history, mirroring @plan_mode's
-     # reconstruction; nil (hidden) until the first stats event ever arrives.
-     |> assign(:context_percent, context_percent_from_messages(runner_state.messages))
+     # `pi_session_stats` event in history (targeted query, full history —
+     # same reasoning as @plan_mode above); nil (hidden) until the first
+     # stats event ever arrives.
+     |> assign(:context_percent, initial_context_percent(id))
      # Conversation/Tree toggle (view param persisted via handle_params) —
      # tree_* assigns only get populated by load_tree_data/1 once @view is
      # :tree; tree_compose is the per-node "message this session" modal,
@@ -136,7 +173,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:tree_has_subagents, %{})
      |> assign(:tree_compose, nil)
      |> assign(:sessions_topic_subscribed, false)
-     |> load_session_todos()
+     |> load_session_todos(id)
      |> load_session_commits()
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
@@ -149,7 +186,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
        max_entries: 5,
        max_file_size: 50_000_000,
        auto_upload: true
-     )}
+     )
+     |> schedule_prefetch_older_messages(window.has_more)}
   end
 
   @impl true
@@ -233,28 +271,152 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
-  defp load_runner_state(session_node, id, session) do
+  # Status from the live runner (cheap — SessionRunner.get_status/1, no
+  # messages payload) when there is one, else the persisted column. Kept
+  # separate from message loading (load_message_window/1) — see mount/2's
+  # comment on why message history no longer goes through the runner.
+  defp load_runner_status(session_node, id, session) do
     if Cluster.session_alive?(session_node, id) do
-      Cluster.get_state(session_node, id)
+      Cluster.get_status(session_node, id)
     else
-      saved_messages =
-        id
-        |> HubRPC.list_messages()
-        |> Enum.map(fn msg -> Map.put(msg.data, "timestamp", msg.inserted_at) end)
-
-      %{status: session.status || "error", messages: saved_messages}
+      %{status: session.status || "error"}
     end
   end
 
-  # Derive the pending AskUserQuestion from history and open the modal when the
-  # session is waiting on the user. Resets wizard page/selection state.
+  # First page of the message feed — see @window_size and
+  # Sessions.list_messages_window/2.
+  defp load_message_window(id) do
+    HubRPC.list_messages_window(id, limit: @window_size)
+  end
+
+  # Schedules a one-shot background prefetch of the next-older page (see
+  # handle_info(:prefetch_older_messages, ...)) so scrolling up usually
+  # finds it ready to commit instantly instead of waiting on a fetch —
+  # skipped entirely when there's nothing older to fetch, or on the
+  # disconnected initial render (no process to receive the message anyway).
+  defp schedule_prefetch_older_messages(socket, has_more?) do
+    if connected?(socket) and has_more? do
+      Process.send_after(self(), :prefetch_older_messages, @prefetch_delay_ms)
+    end
+
+    socket
+  end
+
+  # Fetches the next-older page and holds it in :buffered_older_page WITHOUT
+  # touching @messages/the DOM. Deliberately NOT committed on arrival: each
+  # rendered message mounts its own hooks (TTSPlayer notably — one per
+  # assistant message with text, phx-update="ignore" — so mount cost scales
+  # with rendered message count, not just bytes), so silently growing
+  # @messages in the background would reintroduce the exact "messages
+  # appear, then the page stalls" symptom windowing was meant to fix. Only
+  # commit_buffered_older_page/1 (driven by the user actually scrolling
+  # near the top) puts a page in front of the renderer. No-ops if a page is
+  # already buffered, there's nothing older, or a fetch is already in
+  # flight.
+  defp buffer_older_page(socket) do
+    %{
+      has_more_messages: has_more?,
+      loading_older_messages: loading?,
+      buffered_older_page: buffered,
+      messages_cursor: cursor,
+      session: session
+    } = socket.assigns
+
+    if has_more? and not loading? and is_nil(buffered) and cursor do
+      socket = assign(socket, :loading_older_messages, true)
+      page = HubRPC.list_messages_window(session.id, limit: @window_size, before: cursor)
+
+      socket
+      |> assign(:buffered_older_page, page)
+      |> assign(:loading_older_messages, false)
+    else
+      socket
+    end
+  end
+
+  # Commits whatever's buffered (instant — no fetch) and immediately starts
+  # buffering the NEXT page behind it, so repeated scrolling up stays fast.
+  # Falls back to a synchronous fetch+commit only when nothing was buffered
+  # yet (e.g. the user scrolled up before the background prefetch landed, or
+  # scrolled past what's buffered) — same "commit only on approach" posture,
+  # just without the instant hand-off.
+  defp commit_buffered_older_page(socket) do
+    case socket.assigns.buffered_older_page do
+      nil ->
+        socket |> fetch_and_commit_older_page() |> buffer_older_page()
+
+      page ->
+        socket
+        |> commit_older_page(page)
+        |> assign(:buffered_older_page, nil)
+        |> buffer_older_page()
+    end
+  end
+
+  defp fetch_and_commit_older_page(socket) do
+    %{has_more_messages: has_more?, loading_older_messages: loading?, messages_cursor: cursor} =
+      socket.assigns
+
+    if has_more? and not loading? and cursor do
+      page =
+        HubRPC.list_messages_window(socket.assigns.session.id,
+          limit: @window_size,
+          before: cursor
+        )
+
+      commit_older_page(socket, page)
+    else
+      socket
+    end
+  end
+
+  defp commit_older_page(socket, %{messages: older, has_more: has_more?, cursor: new_cursor}) do
+    socket
+    |> assign(:messages, older ++ socket.assigns.messages)
+    |> assign(:messages_cursor, new_cursor || socket.assigns.messages_cursor)
+    |> assign(:has_more_messages, has_more?)
+  end
+
+  # Most recent EnterPlanMode/ExitPlanMode tool_use in FULL history (targeted
+  # query — see Sessions.latest_plan_mode_tool_use_name/1), mapped the same
+  # way PlanMode.detect/1 maps its full-history fold's final tool_use.
+  defp initial_plan_mode(id) do
+    case HubRPC.latest_plan_mode_tool_use_name(id) do
+      "EnterPlanMode" -> :planning
+      _ -> false
+    end
+  end
+
+  defp initial_pi_plan_mode(id) do
+    if HubRPC.latest_pi_plan_mode_enabled?(id), do: :planning, else: false
+  end
+
+  defp initial_context_percent(id) do
+    case HubRPC.latest_context_percent(id) do
+      p when is_number(p) -> MessageComponents.format_context_percent(p)
+      _ -> nil
+    end
+  end
+
+  # Derive the pending AskUserQuestion from FULL history (targeted query —
+  # see Sessions.pending_ask_user_question/1, NOT @messages, which is only
+  # the windowed feed) and open the modal when the session is waiting on the
+  # user. Resets wizard page/selection state.
   #
   # Capability-gated (spec §7/§6.3(5)): backends without `AskUserQuestion`
   # (Codex) never emit that tool name, so `pending` is naturally always nil
   # for them — but the modal-open flag is gated explicitly too, so the
   # interactive wizard can never initiate off a foreign tool name.
-  defp assign_ask_user_question(socket, status, messages) do
-    pending = AskUserQuestion.pending_questions(messages)
+  defp assign_ask_user_question(socket, status, session_id) do
+    pending =
+      case HubRPC.pending_ask_user_question(session_id) do
+        nil ->
+          nil
+
+        %{tool_use_id: id, questions: questions} ->
+          %{tool_use_id: id, questions: AskUserQuestion.normalize_questions(questions)}
+      end
+
     aq_capable? = socket.assigns.capabilities.ask_user_question
 
     socket
@@ -264,10 +426,57 @@ defmodule OrcaHubWeb.SessionLive.Show do
     |> assign(:aq_selections, %{})
   end
 
-  # Refresh just the pending questions (keep wizard page/selection state).
-  defp refresh_pending_questions(socket) do
-    assign(socket, :pending_questions, AskUserQuestion.pending_questions(socket.assigns.messages))
+  # Incrementally updates :pending_questions from a single newly-arrived
+  # event, mirroring the two message shapes OrcaHub.AskUserQuestion.
+  # pending_questions/1 cares about — but driven by just the one new event
+  # rather than a full-history (or even full-@messages) rescan, since
+  # @messages is now a bounded window (see @window_size) and a plain rescan
+  # would incorrectly "forget" a pending question once its originating
+  # tool_use scrolls outside the window.
+  defp handle_ask_user_question_events(
+         socket,
+         %{"type" => "assistant", "message" => %{"content" => content}}
+       )
+       when is_list(content) do
+    content
+    |> Enum.find(&(is_map(&1) && &1["type"] == "tool_use" && &1["name"] == "AskUserQuestion"))
+    |> case do
+      %{"id" => id, "input" => %{"questions" => questions}}
+      when is_binary(id) and is_list(questions) ->
+        assign(socket, :pending_questions, %{
+          tool_use_id: id,
+          questions: AskUserQuestion.normalize_questions(questions)
+        })
+
+      _ ->
+        socket
+    end
   end
+
+  defp handle_ask_user_question_events(
+         socket,
+         %{"type" => "user", "message" => %{"content" => content}}
+       )
+       when is_list(content) do
+    case socket.assigns.pending_questions do
+      %{tool_use_id: id} ->
+        if Enum.any?(content, &non_error_tool_result_for?(&1, id)) do
+          assign(socket, :pending_questions, nil)
+        else
+          socket
+        end
+
+      _ ->
+        socket
+    end
+  end
+
+  defp handle_ask_user_question_events(socket, _event), do: socket
+
+  defp non_error_tool_result_for?(%{"type" => "tool_result", "tool_use_id" => id} = block, id),
+    do: block["is_error"] != true
+
+  defp non_error_tool_result_for?(_block, _id), do: false
 
   # Open the modal (resetting the wizard) when the session is waiting and a
   # question is present; close it once the session is no longer waiting. The
@@ -312,44 +521,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp handle_pi_ui_events(socket, _event), do: socket
 
-  # Reconstructs the pending pi extension-UI dialog (if any) from message
-  # history: the most recent "pi_ui_request" whose id has no later matching
-  # "pi_ui_response". Used at mount so a page reload — including against a
-  # dead runner, whose fallback message source is HubRPC.list_messages/1 —
-  # still shows the card.
-  defp pending_ui_request_from_messages(messages) do
-    responded_ids =
-      messages
-      |> Enum.filter(&(&1["type"] == "pi_ui_response"))
-      |> Enum.map(& &1["id"])
-      |> MapSet.new()
-
-    messages
-    |> Enum.reverse()
-    |> Enum.find(fn
-      %{"type" => "pi_ui_request", "id" => id} -> not MapSet.member?(responded_ids, id)
-      _ -> false
-    end)
-  end
-
   # -- pi plan-mode helpers (spec §12.4) --
-
-  # Reconstructs pi's user-toggled plan-mode state from the most recent
-  # `pi_plan_mode` broadcast (see Backend.Pi.handle_peer_request/2's
-  # "orca-plan-mode" setStatus clause) — mirrors PlanMode.detect/1's role for
+  #
+  # Initial reconstruction (mount time, full history) lives in
+  # initial_pi_plan_mode/1 above, sourced from Sessions.
+  # latest_pi_plan_mode_enabled?/1 — mirrors PlanMode.detect/1's role for
   # Claude, but off a different wire signal since pi has no
   # EnterPlanMode/ExitPlanMode tool_use to scan for. Maps straight to
   # `:planning` (no distinct "review" phase for pi — the post-plan "what
   # next?" moment is handled by the extension-UI dialog, not a persisted
-  # review state) or `false`.
-  defp pi_plan_mode_from_messages(messages) do
-    last_event = messages |> Enum.reverse() |> Enum.find(&(&1["type"] == "pi_plan_mode"))
-
-    case last_event do
-      %{"enabled" => true} -> :planning
-      _ -> false
-    end
-  end
+  # review state) or `false`. handle_pi_plan_events/2 below keeps it correct
+  # live, per-event.
 
   defp handle_pi_plan_events(socket, %{"type" => "pi_plan_mode", "enabled" => enabled}) do
     assign(socket, :plan_mode, if(enabled, do: :planning, else: false))
@@ -358,25 +540,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
   defp handle_pi_plan_events(socket, _event), do: socket
 
   # -- pi context meter helpers (spec §12.8) --
-
-  # Reconstructs the LATEST context-window percent from the most recent
-  # `pi_session_stats` event (Backend.Pi.normalize/2, spec §12.3) — mirrors
-  # pi_plan_mode_from_messages/1's "scan for the last matching event"
-  # pattern, so a page reload (even against a dead runner falling back to
-  # HubRPC.list_messages/1) still shows the meter. `nil` (not yet arrived, or
-  # a non-pi backend that never emits this event) keeps the meter hidden.
-  defp context_percent_from_messages(messages) do
-    messages
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      %{"type" => "pi_session_stats", "context_usage" => %{"percent" => p}}
-      when is_number(p) ->
-        MessageComponents.format_context_percent(p)
-
-      _ ->
-        nil
-    end)
-  end
+  #
+  # Initial reconstruction (mount time, full history) lives in
+  # initial_context_percent/1 above, sourced from Sessions.
+  # latest_context_percent/1. `nil` (not yet arrived, or a non-pi backend
+  # that never emits this event) keeps the meter hidden.
 
   defp handle_context_stats_events(socket, %{
          "type" => "pi_session_stats",
@@ -1420,6 +1588,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
     )
   end
 
+  # Scroll-triggered "near the top" load (see app.js's ScrollToBottom hook) —
+  # the one place a background-buffered page (see buffer_older_page/1)
+  # actually lands in @messages/the DOM, since this only fires once the user
+  # has genuinely scrolled near the top.
+  def handle_event("load_older_messages", _params, socket) do
+    {:noreply, commit_buffered_older_page(socket)}
+  end
+
   # Mode 1, "direct": delivered to the TARGET session exactly like typing
   # into that session's own composer — Cluster.send_message already
   # restarts a dead runner and unarchives on send (SessionRunner's
@@ -1677,8 +1853,18 @@ defmodule OrcaHubWeb.SessionLive.Show do
     socket = handle_pi_ui_events(socket, event)
     socket = handle_pi_plan_events(socket, event)
     socket = handle_context_stats_events(socket, event)
-    socket = socket |> refresh_pending_questions() |> sync_question_modal()
+    socket = handle_ask_user_question_events(socket, event)
+    socket = sync_question_modal(socket)
     {:noreply, socket}
+  end
+
+  # One-shot background prefetch scheduled by schedule_prefetch_older_messages/2
+  # at mount — buffers the next-older page (see buffer_older_page/1) WITHOUT
+  # touching @messages/the DOM, so it never disturbs scroll position or
+  # mounts any hooks the user hasn't scrolled up to see yet.
+  @impl true
+  def handle_info(:prefetch_older_messages, socket) do
+    {:noreply, buffer_older_page(socket)}
   end
 
   # spec §12.6 — pi's pending steer/follow-up queue changed. Transient
@@ -1697,8 +1883,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   @impl true
   def handle_info({:status, status}, socket) do
-    socket =
-      socket |> assign(:status, status) |> refresh_pending_questions() |> sync_question_modal()
+    # No refresh_pending_questions/1 call here — :pending_questions is now
+    # kept correct incrementally by handle_ask_user_question_events/2 in the
+    # {:event, event} clause above (which always arrives with or before this
+    # status broadcast), not by rescanning @messages on every status change.
+    socket = socket |> assign(:status, status) |> sync_question_modal()
 
     socket =
       if status == :idle do
@@ -2243,8 +2432,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   # -- Todo helpers --
 
-  defp load_session_todos(socket) do
-    assign(socket, :todos, Todos.from_messages(socket.assigns.messages))
+  # Full-history targeted query (Sessions.latest_todos_input/1), NOT
+  # @messages (only the windowed feed — see @window_size): a session can go
+  # a long stretch without touching its todo list, so the deciding
+  # TodoWrite call may be well outside the window. handle_todo_events/2
+  # keeps this correct live, per-event, same as the other derived facts.
+  defp load_session_todos(socket, session_id) do
+    assign(socket, :todos, Todos.parse(HubRPC.latest_todos_input(session_id)))
   end
 
   # -- Plan mode helpers --

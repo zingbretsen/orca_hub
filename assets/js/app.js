@@ -644,11 +644,14 @@ let Hooks = {
       this.following = true
       this.scrollToBottom(false)
 
-      // When the user scrolls, check if they're at the bottom to toggle follow mode
+      // When the user scrolls, check if they're at the bottom to toggle follow
+      // mode, and whether they've scrolled near the top far enough to warrant
+      // loading older messages (see SessionLive.Show's windowed feed).
       this.el.addEventListener("scroll", () => {
         const threshold = 30
         const atBottom = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < threshold
         this.following = atBottom
+        this.maybeLoadOlder()
       })
 
       this.handleEvent("tts-autoplay", () => {
@@ -663,9 +666,40 @@ let Hooks = {
         }, 200)
       })
     },
+    // Pushes "load_older_messages" once the user has scrolled near the top,
+    // gated on the server-driven data-has-more/data-loading-older attributes
+    // (see show.html.heex) so we never spam a request that can't do
+    // anything (nothing older, or one already in flight — either a
+    // background prefetch or a prior "load_older_messages" still resolving).
+    maybeLoadOlder() {
+      const nearTopThreshold = 150
+      const hasMore = this.el.dataset.hasMore === "true"
+      const loading = this.el.dataset.loadingOlder === "true"
+
+      if (hasMore && !loading && this.el.scrollTop < nearTopThreshold) {
+        this.pushEvent("load_older_messages", {})
+      }
+    },
     beforeUpdate() {
       this._prevScrollTop = this.el.scrollTop
       this._prevScrollHeight = this.el.scrollHeight
+
+      // Anchor for restoring scroll position across this patch. Chosen over
+      // blindly diffing scrollHeight because that can't distinguish a
+      // PREPEND (older messages loaded above, when not following) from an
+      // ordinary bottom append (a streaming reply) — both change
+      // scrollHeight by the same amount, but only a prepend should shift
+      // scrollTop. Re-locating the same element (by its stable per-item id
+      // — see MessageComponents.message_feed/1) after the patch and
+      // diffing ITS viewport offset self-distinguishes the two cases with
+      // no server-side signal needed: a prepend pushes it down (compensate
+      // by that delta), a bottom append leaves it exactly where it was (no
+      // compensation, falls through to the scrollTop restore below anyway
+      // since the delta is 0).
+      const anchor = this.el.querySelector('[id^="feed-"]')
+      this._anchorId = anchor ? anchor.id : null
+      this._anchorOffset = anchor ? anchor.getBoundingClientRect().top : null
+
       // Freeze scroll position during DOM patch to prevent reflow flash
       this.el.style.overflowY = "hidden"
     },
@@ -678,8 +712,20 @@ let Hooks = {
         // Instant for layout shifts, smooth for new messages
         this.scrollToBottom(newContent)
       } else {
-        this.el.scrollTop = this._prevScrollTop
+        const anchor = this._anchorId && document.getElementById(this._anchorId)
+
+        if (anchor) {
+          this.el.scrollTop += anchor.getBoundingClientRect().top - this._anchorOffset
+        } else {
+          this.el.scrollTop = this._prevScrollTop
+        }
       }
+
+      // Keep loading while the user holds near the top (e.g. scrolled all
+      // the way up) — each commit's next page is already being buffered
+      // server-side (see SessionLive.Show's buffer_older_page/1), so this
+      // usually just requests an instant hand-off rather than a fresh fetch.
+      this.maybeLoadOlder()
     },
     scrollToBottom(smooth) {
       this.el.scrollTo({

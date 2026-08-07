@@ -56,7 +56,7 @@ defmodule OrcaHubWeb.MessageComponents do
       |> assign(:subagent_map, subagent_map)
 
     ~H"""
-    <div :for={item <- @feed_items}>
+    <div :for={item <- @feed_items} id={feed_item_anchor_id(item)}>
       <%= case item do %>
         <% {:thinking_group, id, blocks} -> %>
           <.thinking_block id={id} blocks={blocks} />
@@ -104,6 +104,23 @@ defmodule OrcaHubWeb.MessageComponents do
   # a feed card would be noisy; the header badge already reflects the state.
   defp hidden_message?(%{"type" => "pi_plan_mode"}), do: true
   defp hidden_message?(_), do: false
+
+  # Stable per-item DOM id — the anchor app.js's ScrollToBottom hook uses to
+  # tell a prepend (older messages loaded above, see SessionLive.Show's
+  # windowed feed) apart from a plain bottom append, by re-locating the same
+  # element after a patch and comparing its viewport offset. Doesn't need to
+  # be globally unique, just stable across re-renders of the SAME item —
+  # uuid/id when the message carries one (assistant/user messages do),
+  # falling back to a content hash otherwise. Deliberately opaque (not
+  # `"#{type}-#{timestamp}"`): several tests assert a message's raw `"type"`
+  # string never leaks into rendered output outside its own dedicated
+  # component (e.g. "falls back to raw JSON" checks) — a human-readable
+  # fallback here would be a false positive for those.
+  defp feed_item_anchor_id({:thinking_group, id, _blocks}), do: "feed-#{id}"
+
+  defp feed_item_anchor_id({:msg, msg}) do
+    "feed-#{msg["uuid"] || msg["id"] || "h#{:erlang.phash2(msg)}"}"
+  end
 
   defp build_feed_items(messages) do
     messages

@@ -106,6 +106,16 @@ defmodule OrcaHub.SessionRunner do
     GenStatem.call(via(session_id), :get_state)
   end
 
+  # Cheap sibling of get_state/1: SessionLive.Show's mount now sources message
+  # HISTORY from the DB (windowed — see Sessions.list_messages_window/2)
+  # rather than the runner's in-memory list, so shipping the full
+  # `data.messages` over :erpc just to read `status` off it would be pure
+  # waste for a long session. Same "waiting" status override as get_state/1
+  # (see status_snapshot/2), just without the messages payload.
+  def get_status(session_id) do
+    GenStatem.call(via(session_id), :get_status)
+  end
+
   def interrupt(session_id) do
     GenStatem.call(via(session_id), :interrupt)
   end
@@ -388,6 +398,10 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:ready, data)}]}
   end
 
+  def ready({:call, from}, :get_status, data) do
+    {:keep_state_and_data, [{:reply, from, %{status: effective_status(:ready, data)}}]}
+  end
+
   def ready({:call, from}, {:downgrade, _mode}, data), do: downgrade_no_turn(from, data)
   def ready({:call, from}, :evict_warm, _data), do: {:keep_state_and_data, [{:reply, from, :ok}]}
   def ready(:cast, :reresolve_engine, data), do: reresolve_no_turn(data)
@@ -474,6 +488,10 @@ defmodule OrcaHub.SessionRunner do
 
   def idle({:call, from}, :get_state, data) do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:idle, data)}]}
+  end
+
+  def idle({:call, from}, :get_status, data) do
+    {:keep_state_and_data, [{:reply, from, %{status: effective_status(:idle, data)}}]}
   end
 
   # Streaming: warm process timed out → tear it down (go cold). Crash detection
@@ -584,6 +602,10 @@ defmodule OrcaHub.SessionRunner do
 
   def running({:call, from}, :get_state, data) do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:running, data)}]}
+  end
+
+  def running({:call, from}, :get_status, data) do
+    {:keep_state_and_data, [{:reply, from, %{status: effective_status(:running, data)}}]}
   end
 
   # toggle_plan_mode/1 refuses only here (spec §12.8 — every other state
@@ -790,6 +812,10 @@ defmodule OrcaHub.SessionRunner do
 
   def error({:call, from}, :get_state, data) do
     {:keep_state_and_data, [{:reply, from, state_snapshot(:error, data)}]}
+  end
+
+  def error({:call, from}, :get_status, data) do
+    {:keep_state_and_data, [{:reply, from, %{status: effective_status(:error, data)}}]}
   end
 
   # Streaming: a genuine turn error leaves the process ALIVE, so :error can hold a
@@ -1820,13 +1846,17 @@ defmodule OrcaHub.SessionRunner do
     })
   end
 
-  defp state_snapshot(status, data) do
-    # An unanswered AskUserQuestion surfaces as the "waiting" status even though
-    # the GenStatem state is :idle (clean exit) or :running (hung run).
-    effective = if data.pending_questions != nil, do: :waiting, else: status
+  # An unanswered AskUserQuestion surfaces as the "waiting" status even though
+  # the GenStatem state is :idle (clean exit) or :running (hung run). Shared
+  # by state_snapshot/2 and get_status/1's per-state clauses so the two never
+  # drift on what "effective" status means.
+  defp effective_status(status, data) do
+    if data.pending_questions != nil, do: :waiting, else: status
+  end
 
+  defp state_snapshot(status, data) do
     %{
-      status: effective,
+      status: effective_status(status, data),
       messages: data.messages,
       claude_session_id: data.claude_session_id,
       pending_questions: data.pending_questions

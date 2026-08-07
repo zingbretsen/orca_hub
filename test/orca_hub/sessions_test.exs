@@ -874,4 +874,436 @@ defmodule OrcaHub.SessionsTest do
       assert Enum.map(result, & &1.id) == ["toolu_agent_a", "toolu_agent_b"]
     end
   end
+
+  describe "list_messages_window/2" do
+    defp text_msg(text) do
+      %{"type" => "assistant", "message" => %{"content" => [%{"type" => "text", "text" => text}]}}
+    end
+
+    defp window_insert_at(session, data, inserted_at) do
+      {:ok, message} = Sessions.create_message(%{session_id: session.id, data: data})
+
+      from(m in Message, where: m.id == ^message.id)
+      |> Repo.update_all(set: [inserted_at: inserted_at])
+
+      %{message | inserted_at: inserted_at}
+    end
+
+    defp texts(window) do
+      Enum.map(window, &get_in(&1, ["message", "content", Access.at(0), "text"]))
+    end
+
+    test "returns only the last N top-level messages, oldest-first, with a cursor + has_more",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      msgs =
+        for i <- 1..5,
+            do:
+              window_insert_at(session, text_msg("msg#{i}"), NaiveDateTime.add(base, i, :second))
+
+      %{messages: window, has_more: has_more, cursor: cursor} =
+        Sessions.list_messages_window(session.id, limit: 3)
+
+      assert texts(window) == ["msg3", "msg4", "msg5"]
+      assert has_more
+
+      third_oldest = Enum.at(msgs, 2)
+      assert cursor == %{inserted_at: third_oldest.inserted_at, id: third_oldest.id}
+    end
+
+    test "has_more is false and cursor is nil-safe when the window covers the whole history",
+         %{project: project} do
+      session = create_session(project)
+      window_insert_at(session, text_msg("only"), ~N[2026-01-01 00:00:00.000000])
+
+      %{messages: window, has_more: has_more} =
+        Sessions.list_messages_window(session.id, limit: 20)
+
+      assert texts(window) == ["only"]
+      refute has_more
+    end
+
+    test "an empty session returns an empty window, no cursor, no has_more", %{project: project} do
+      session = create_session(project)
+
+      assert Sessions.list_messages_window(session.id, limit: 20) ==
+               %{messages: [], has_more: false, cursor: nil}
+    end
+
+    test "keyset paging via :before doesn't skip or duplicate rows as new messages arrive between pages",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      for i <- 1..5,
+          do: window_insert_at(session, text_msg("m#{i}"), NaiveDateTime.add(base, i, :second))
+
+      %{messages: page1, cursor: cursor1} = Sessions.list_messages_window(session.id, limit: 2)
+      assert texts(page1) == ["m4", "m5"]
+
+      # A new message lands (e.g. a live turn) timestamped AFTER everything
+      # already paged — an offset-based "page 2" would shift under this, but
+      # a keyset :before cursor must be immune to it.
+      window_insert_at(session, text_msg("m6-live"), NaiveDateTime.add(base, 100, :second))
+
+      %{messages: page2, cursor: cursor2, has_more: has_more2} =
+        Sessions.list_messages_window(session.id, limit: 2, before: cursor1)
+
+      assert texts(page2) == ["m2", "m3"]
+      assert has_more2
+
+      %{messages: page3, has_more: has_more3} =
+        Sessions.list_messages_window(session.id, limit: 2, before: cursor2)
+
+      assert texts(page3) == ["m1"]
+      refute has_more3
+    end
+
+    test "a subagent block (children + task_* progress events) is never split across the window boundary",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      parent = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [%{"type" => "tool_use", "id" => "T1", "name" => "Agent", "input" => %{}}]
+        }
+      }
+
+      window_insert_at(session, parent, NaiveDateTime.add(base, 1, :second))
+
+      # Unrelated top-level messages land between the parent and its own
+      # descendants — a naive "last N ROWS" slice (counting children against
+      # the same budget as top-level items) would separate "T1" from them.
+      for i <- 2..6,
+          do:
+            window_insert_at(session, text_msg("filler#{i}"), NaiveDateTime.add(base, i, :second))
+
+      child = %{
+        "type" => "assistant",
+        "parent_tool_use_id" => "T1",
+        "message" => %{"content" => [%{"type" => "text", "text" => "child reply"}]}
+      }
+
+      window_insert_at(session, child, NaiveDateTime.add(base, 7, :second))
+
+      task_event = %{
+        "type" => "system",
+        "subtype" => "task_progress",
+        "tool_use_id" => "T1",
+        "note" => "working..."
+      }
+
+      window_insert_at(session, task_event, NaiveDateTime.add(base, 8, :second))
+
+      # limit: 6 = parent + 5 filler messages = exactly every top-level row;
+      # "T1" is the OLDEST item in the window, right at the boundary.
+      %{messages: window} = Sessions.list_messages_window(session.id, limit: 6)
+
+      assert Enum.any?(window, fn msg ->
+               get_in(msg, ["message", "content", Access.at(0), "id"]) == "T1"
+             end)
+
+      assert Enum.any?(window, &(&1["parent_tool_use_id"] == "T1"))
+      assert Enum.any?(window, &(&1["type"] == "system" and &1["tool_use_id"] == "T1"))
+
+      # Sanity check on the flip side: when "T1" itself is NOT in the loaded
+      # top-level window, its descendants must not leak in either — a
+      # smaller-than-boundary limit only ever returns the filler messages.
+      %{messages: narrow_window} = Sessions.list_messages_window(session.id, limit: 3)
+      refute Enum.any?(narrow_window, &(&1["parent_tool_use_id"] == "T1"))
+      refute Enum.any?(narrow_window, &(&1["type"] == "system" and &1["tool_use_id"] == "T1"))
+    end
+
+    test "a subagent block is pulled in fully even when it's the ONLY top-level item in the window",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      parent = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [%{"type" => "tool_use", "id" => "T1", "name" => "Agent", "input" => %{}}]
+        }
+      }
+
+      window_insert_at(session, parent, base)
+
+      child = %{
+        "type" => "assistant",
+        "parent_tool_use_id" => "T1",
+        "message" => %{"content" => [%{"type" => "text", "text" => "child reply"}]}
+      }
+
+      window_insert_at(session, child, NaiveDateTime.add(base, 1, :second))
+
+      %{messages: window} = Sessions.list_messages_window(session.id, limit: 1)
+
+      assert Enum.any?(window, &(&1["parent_tool_use_id"] == "T1"))
+    end
+  end
+
+  describe "targeted derived-state queries (see SessionLive.Show mount)" do
+    defp derived_insert_at(session, data, inserted_at) do
+      {:ok, message} = Sessions.create_message(%{session_id: session.id, data: data})
+
+      from(m in Message, where: m.id == ^message.id)
+      |> Repo.update_all(set: [inserted_at: inserted_at])
+
+      message
+    end
+
+    defp derived_noise(session, base, count) do
+      for i <- 1..count,
+          do:
+            derived_insert_at(session, text_msg("noise#{i}"), NaiveDateTime.add(base, i, :second))
+    end
+
+    test "latest_plan_mode_tool_use_name/1 finds an EnterPlanMode far outside a small window",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      enter = %{
+        "type" => "assistant",
+        "message" => %{"content" => [%{"type" => "tool_use", "name" => "EnterPlanMode"}]}
+      }
+
+      derived_insert_at(session, enter, base)
+      derived_noise(session, base, 30)
+
+      assert Sessions.latest_plan_mode_tool_use_name(session.id) == "EnterPlanMode"
+    end
+
+    test "latest_plan_mode_tool_use_name/1 reflects the LAST toggle when Exit follows Enter",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      enter = %{
+        "type" => "assistant",
+        "message" => %{"content" => [%{"type" => "tool_use", "name" => "EnterPlanMode"}]}
+      }
+
+      exit_ = %{
+        "type" => "assistant",
+        "message" => %{"content" => [%{"type" => "tool_use", "name" => "ExitPlanMode"}]}
+      }
+
+      derived_insert_at(session, enter, base)
+      derived_noise(session, base, 10)
+      derived_insert_at(session, exit_, NaiveDateTime.add(base, 50, :second))
+      derived_noise(session, NaiveDateTime.add(base, 50, :second), 20)
+
+      assert Sessions.latest_plan_mode_tool_use_name(session.id) == "ExitPlanMode"
+    end
+
+    test "latest_plan_mode_tool_use_name/1 is nil when plan mode was never toggled",
+         %{project: project} do
+      session = create_session(project)
+      derived_noise(session, ~N[2026-01-01 00:00:00.000000], 5)
+
+      assert Sessions.latest_plan_mode_tool_use_name(session.id) == nil
+    end
+
+    test "latest_todos_input/1 survives many unrelated messages after the last TodoWrite",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      todo_write = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "name" => "TodoWrite",
+              "input" => %{"todos" => [%{"content" => "write tests", "status" => "pending"}]}
+            }
+          ]
+        }
+      }
+
+      derived_insert_at(session, todo_write, base)
+      derived_noise(session, base, 30)
+
+      assert Sessions.latest_todos_input(session.id) == [
+               %{"content" => "write tests", "status" => "pending"}
+             ]
+    end
+
+    test "pending_ask_user_question/1 finds a still-open question far outside a small window",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      ask = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "aq1",
+              "name" => "AskUserQuestion",
+              "input" => %{"questions" => [%{"header" => "Which approach?"}]}
+            }
+          ]
+        }
+      }
+
+      derived_insert_at(session, ask, base)
+      derived_noise(session, base, 25)
+
+      assert %{tool_use_id: "aq1", questions: [%{"header" => "Which approach?"}]} =
+               Sessions.pending_ask_user_question(session.id)
+    end
+
+    test "pending_ask_user_question/1 clears once a non-error tool_result answers it",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      ask = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "aq1",
+              "name" => "AskUserQuestion",
+              "input" => %{"questions" => [%{"header" => "Which approach?"}]}
+            }
+          ]
+        }
+      }
+
+      answer = %{
+        "type" => "user",
+        "message" => %{
+          "content" => [%{"type" => "tool_result", "tool_use_id" => "aq1", "content" => "A"}]
+        }
+      }
+
+      derived_insert_at(session, ask, base)
+      derived_insert_at(session, answer, NaiveDateTime.add(base, 1, :second))
+
+      assert Sessions.pending_ask_user_question(session.id) == nil
+    end
+
+    test "pending_ask_user_question/1 stays pending against the synthetic is_error tool_result",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      ask = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "aq1",
+              "name" => "AskUserQuestion",
+              "input" => %{"questions" => [%{"header" => "Which approach?"}]}
+            }
+          ]
+        }
+      }
+
+      synthetic_error = %{
+        "type" => "user",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_result",
+              "tool_use_id" => "aq1",
+              "is_error" => true,
+              "content" => "Answer questions?"
+            }
+          ]
+        }
+      }
+
+      derived_insert_at(session, ask, base)
+      derived_insert_at(session, synthetic_error, NaiveDateTime.add(base, 1, :second))
+
+      assert %{tool_use_id: "aq1"} = Sessions.pending_ask_user_question(session.id)
+    end
+
+    test "pending_pi_ui_request/1 finds a still-open request far outside a small window",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      request = %{"type" => "pi_ui_request", "id" => "req1", "method" => "select"}
+
+      derived_insert_at(session, request, base)
+      derived_noise(session, base, 25)
+
+      assert Sessions.pending_pi_ui_request(session.id)["id"] == "req1"
+    end
+
+    test "pending_pi_ui_request/1 clears once a matching pi_ui_response arrives",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      request = %{"type" => "pi_ui_request", "id" => "req1", "method" => "select"}
+      response = %{"type" => "pi_ui_response", "id" => "req1", "value" => "yes"}
+
+      derived_insert_at(session, request, base)
+      derived_insert_at(session, response, NaiveDateTime.add(base, 1, :second))
+
+      assert Sessions.pending_pi_ui_request(session.id) == nil
+    end
+
+    test "latest_pi_plan_mode_enabled?/1 reflects the last broadcast far outside a small window",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      derived_insert_at(session, %{"type" => "pi_plan_mode", "enabled" => true}, base)
+      derived_noise(session, base, 25)
+
+      assert Sessions.latest_pi_plan_mode_enabled?(session.id)
+    end
+
+    test "latest_pi_plan_mode_enabled?/1 is false when the last broadcast disabled it",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      derived_insert_at(session, %{"type" => "pi_plan_mode", "enabled" => true}, base)
+
+      derived_insert_at(
+        session,
+        %{"type" => "pi_plan_mode", "enabled" => false},
+        NaiveDateTime.add(base, 1, :second)
+      )
+
+      refute Sessions.latest_pi_plan_mode_enabled?(session.id)
+    end
+
+    test "latest_context_percent/1 finds the last numeric percent far outside a small window",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      stats = %{"type" => "pi_session_stats", "context_usage" => %{"percent" => 42.5}}
+      derived_insert_at(session, stats, base)
+      derived_noise(session, base, 25)
+
+      assert Sessions.latest_context_percent(session.id) == 42.5
+    end
+
+    test "latest_context_percent/1 is nil when no pi_session_stats event ever arrived",
+         %{project: project} do
+      session = create_session(project)
+      derived_noise(session, ~N[2026-01-01 00:00:00.000000], 5)
+
+      assert Sessions.latest_context_percent(session.id) == nil
+    end
+  end
 end

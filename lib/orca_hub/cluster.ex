@@ -358,6 +358,10 @@ defmodule OrcaHub.Cluster do
   def interrupt(n, session_id), do: rpc(n, SessionRunner, :interrupt, [session_id])
   def get_state(n, session_id), do: rpc(n, SessionRunner, :get_state, [session_id])
 
+  # Cheap sibling of get_state/2 — status only, no messages payload. See
+  # SessionRunner.get_status/1's doc for why this exists.
+  def get_status(n, session_id), do: rpc(n, SessionRunner, :get_status, [session_id])
+
   def update_model(n, session_id, model),
     do: rpc(n, SessionRunner, :update_model, [session_id, model])
 

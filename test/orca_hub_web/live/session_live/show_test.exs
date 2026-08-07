@@ -21,8 +21,10 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
   use OrcaHubWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Ecto.Query
 
-  alias OrcaHub.{SessionSupervisor, Sessions}
+  alias OrcaHub.{Repo, SessionSupervisor, Sessions}
+  alias OrcaHub.Sessions.Message
 
   setup do
     dir = Path.join(System.tmp_dir!(), "show_caps_#{System.unique_integer([:positive])}")
@@ -1027,6 +1029,245 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       assert expected in user_message_texts(root.id)
       assert user_message_texts(target.id) == []
+    end
+  end
+
+  describe "windowed message feed" do
+    defp feed_text_msg(text) do
+      %{"type" => "assistant", "message" => %{"content" => [%{"type" => "text", "text" => text}]}}
+    end
+
+    defp feed_insert_at(session, data, inserted_at) do
+      {:ok, message} = Sessions.create_message(%{session_id: session.id, data: data})
+
+      from(m in Message, where: m.id == ^message.id)
+      |> Repo.update_all(set: [inserted_at: inserted_at])
+
+      message
+    end
+
+    defp feed_seed(session, count) do
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      for i <- 1..count,
+          do:
+            feed_insert_at(session, feed_text_msg("msg#{i}"), NaiveDateTime.add(base, i, :second))
+    end
+
+    test "loads only the last @window_size messages, not the whole history", %{
+      conn: conn,
+      claude_session: session
+    } do
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+      feed_seed(session, window_size + 5)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert length(assigns.messages) == window_size
+      assert assigns.has_more_messages
+      # Oldest-first: the tail of the seeded history is what's loaded.
+      assert List.first(assigns.messages)["message"]["content"] |> hd() |> Map.get("text") ==
+               "msg6"
+
+      assert List.last(assigns.messages)["message"]["content"] |> hd() |> Map.get("text") ==
+               "msg#{window_size + 5}"
+    end
+
+    test "has_more_messages is false when the whole history fits in one window", %{
+      conn: conn,
+      claude_session: session
+    } do
+      feed_seed(session, 3)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      refute assigns.has_more_messages
+      assert length(assigns.messages) == 3
+    end
+
+    test "load_older_messages commits another page ahead of what's loaded, without disturbing the tail",
+         %{conn: conn, claude_session: session} do
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+      feed_seed(session, window_size + 5)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assert length(:sys.get_state(view.pid).socket.assigns.messages) == window_size
+
+      render_hook(view, "load_older_messages", %{})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert length(assigns.messages) == window_size + 5
+      refute assigns.has_more_messages
+
+      # Nothing at the tail moved — only older messages were prepended.
+      assert List.last(assigns.messages)["message"]["content"] |> hd() |> Map.get("text") ==
+               "msg#{window_size + 5}"
+
+      assert List.first(assigns.messages)["message"]["content"] |> hd() |> Map.get("text") ==
+               "msg1"
+    end
+
+    test "a live {:event, ...} broadcast still appends to the loaded window normally", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{session.id}",
+        {:event, feed_text_msg("live reply")}
+      )
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert List.last(assigns.messages)["message"]["content"] |> hd() |> Map.get("text") ==
+               "live reply"
+    end
+  end
+
+  describe "derived state survives outside the loaded window" do
+    defp derived_text_msg(text) do
+      %{"type" => "assistant", "message" => %{"content" => [%{"type" => "text", "text" => text}]}}
+    end
+
+    defp derived_insert_at(session, data, inserted_at) do
+      {:ok, message} = Sessions.create_message(%{session_id: session.id, data: data})
+
+      from(m in Message, where: m.id == ^message.id)
+      |> Repo.update_all(set: [inserted_at: inserted_at])
+
+      message
+    end
+
+    defp derived_noise(session, base, count) do
+      for i <- 1..count,
+          do:
+            derived_insert_at(
+              session,
+              derived_text_msg("noise#{i}"),
+              NaiveDateTime.add(base, i, :second)
+            )
+    end
+
+    test "plan_mode is :planning even though EnterPlanMode is outside the window", %{
+      conn: conn,
+      claude_session: session
+    } do
+      base = ~N[2026-01-01 00:00:00.000000]
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+
+      enter = %{
+        "type" => "assistant",
+        "message" => %{"content" => [%{"type" => "tool_use", "name" => "EnterPlanMode"}]}
+      }
+
+      derived_insert_at(session, enter, base)
+      derived_noise(session, base, window_size + 10)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert length(assigns.messages) == window_size
+      assert assigns.plan_mode == :planning
+    end
+
+    test "todos reflect the last TodoWrite even though it's outside the window", %{
+      conn: conn,
+      claude_session: session
+    } do
+      base = ~N[2026-01-01 00:00:00.000000]
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+
+      todo_write = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "name" => "TodoWrite",
+              "input" => %{"todos" => [%{"content" => "ship it", "status" => "pending"}]}
+            }
+          ]
+        }
+      }
+
+      derived_insert_at(session, todo_write, base)
+      derived_noise(session, base, window_size + 10)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert assigns.todos == [%{"content" => "ship it", "status" => "pending"}]
+    end
+
+    test "a pending AskUserQuestion opens the wizard even though it's outside the window", %{
+      conn: conn,
+      claude_session: session
+    } do
+      base = ~N[2026-01-01 00:00:00.000000]
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+
+      ask = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "aq1",
+              "name" => "AskUserQuestion",
+              "input" => %{"questions" => [%{"header" => "Which approach?"}]}
+            }
+          ]
+        }
+      }
+
+      derived_insert_at(session, ask, base)
+      derived_noise(session, base, window_size + 10)
+      {:ok, _} = Sessions.update_session(session, %{status: "waiting"})
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert %{tool_use_id: "aq1"} = assigns.pending_questions
+      assert assigns.aq_open
+    end
+
+    test "context_percent reflects the last pi_session_stats even outside the window", %{
+      conn: conn,
+      pi_session: session
+    } do
+      base = ~N[2026-01-01 00:00:00.000000]
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+
+      stats = %{"type" => "pi_session_stats", "context_usage" => %{"percent" => 77.4}}
+      derived_insert_at(session, stats, base)
+      derived_noise(session, base, window_size + 10)
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert assigns.context_percent == 77.4
+      assert html =~ "77.4%"
+    end
+
+    test "pending_ui_request (pi extension-UI dialog) survives outside the window", %{
+      conn: conn,
+      pi_session: session
+    } do
+      base = ~N[2026-01-01 00:00:00.000000]
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+
+      request = %{"type" => "pi_ui_request", "id" => "req1", "method" => "select"}
+      derived_insert_at(session, request, base)
+      derived_noise(session, base, window_size + 10)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert assigns.pending_ui_request["id"] == "req1"
     end
   end
 end

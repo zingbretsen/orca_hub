@@ -347,8 +347,16 @@ defmodule OrcaHub.Sessions do
 
   defp apply_cursor(query, nil), do: query
 
+  # Standard operators (not a raw `fragment("(?, ?) < (?, ?)", ...)` tuple
+  # comparison) deliberately: a bare fragment gives Ecto no type context for
+  # `^id`, and Postgrex can't guess it needs `:binary_id` encoding — this OR
+  # form lets `m.id`'s schema type drive that inference normally, while
+  # still being the same "seek past this row" shape the composite
+  # `(session_id, inserted_at, id)` index (see the migration) supports.
   defp apply_cursor(query, %{inserted_at: at, id: id}) do
-    from(m in query, where: fragment("(?, ?) < (?, ?)", m.inserted_at, m.id, ^at, ^id))
+    from(m in query,
+      where: m.inserted_at < ^at or (m.inserted_at == ^at and m.id < ^id)
+    )
   end
 
   defp split_page(page, limit) do

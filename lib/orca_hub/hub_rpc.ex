@@ -50,6 +50,28 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.Sessions, :list_running_sessions_for_node, [node_name])
 
   def list_messages(session_id), do: call(OrcaHub.Sessions, :list_messages, [session_id])
+
+  def list_messages_window(session_id, opts),
+    do: call(OrcaHub.Sessions, :list_messages_window, [session_id, opts])
+
+  def pending_ask_user_question(session_id),
+    do: call(OrcaHub.Sessions, :pending_ask_user_question, [session_id])
+
+  def latest_plan_mode_tool_use_name(session_id),
+    do: call(OrcaHub.Sessions, :latest_plan_mode_tool_use_name, [session_id])
+
+  def latest_todos_input(session_id),
+    do: call(OrcaHub.Sessions, :latest_todos_input, [session_id])
+
+  def pending_pi_ui_request(session_id),
+    do: call(OrcaHub.Sessions, :pending_pi_ui_request, [session_id])
+
+  def latest_pi_plan_mode_enabled?(session_id),
+    do: call(OrcaHub.Sessions, :latest_pi_plan_mode_enabled?, [session_id])
+
+  def latest_context_percent(session_id),
+    do: call(OrcaHub.Sessions, :latest_context_percent, [session_id])
+
   def create_message(attrs), do: call(OrcaHub.Sessions, :create_message, [attrs])
   def count_idle_sessions, do: call(OrcaHub.Sessions, :count_idle_sessions, [])
 
