@@ -1,5 +1,8 @@
 defmodule OrcaHub.SessionRunnerTest do
-  use ExUnit.Case, async: true
+  # async: true (not plain ExUnit.Case) because build_system_prompt/1 now
+  # queries issues via open_issues_prompt/1 (issues_spec.md §10) — needs a
+  # checked-out sandbox connection like any other DB-touching test.
+  use OrcaHub.DataCase, async: true
 
   alias OrcaHub.SessionRunner
 
@@ -8,7 +11,7 @@ defmodule OrcaHub.SessionRunnerTest do
       prompt =
         SessionRunner.build_system_prompt(%{
           orchestrator: false,
-          session_id: "abc",
+          session_id: Ecto.UUID.generate(),
           directory: "/nonexistent-dir-#{System.unique_integer([:positive])}"
         })
 
@@ -22,7 +25,7 @@ defmodule OrcaHub.SessionRunnerTest do
       prompt =
         SessionRunner.build_system_prompt(%{
           orchestrator: true,
-          session_id: "abc",
+          session_id: Ecto.UUID.generate(),
           directory: "/nonexistent-dir-#{System.unique_integer([:positive])}"
         })
 
