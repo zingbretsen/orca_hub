@@ -14,7 +14,10 @@ defmodule OrcaHubWeb.IssueLive.ShowTest do
       Projects.create_project(%{
         name: "issue-show-test",
         directory: dir,
-        node: "n1@x",
+        # The real local test node, not a placeholder like "n1@x" —
+        # OrcaHub.Issues.derive_commits/1 routes git through Cluster.rpc/4
+        # to this node, so the close path below needs it resolvable.
+        node: Atom.to_string(node()),
         key_prefix: unique_key_prefix()
       })
 
@@ -98,7 +101,15 @@ defmodule OrcaHubWeb.IssueLive.ShowTest do
     key = Issues.render_key(issue)
 
     {:ok, session} =
-      Sessions.create_session(%{directory: dir, project_id: project.id, issue_id: issue.id})
+      Sessions.create_session(%{
+        directory: dir,
+        project_id: project.id,
+        issue_id: issue.id,
+        # Cluster.runner_node_for/1 treats a nil runner_node as
+        # unassigned (not local) — needs an explicit, locally-resolvable
+        # node for the close path's per-attempt git derivation to succeed.
+        runner_node: Atom.to_string(node())
+      })
 
     commit_in(
       dir,

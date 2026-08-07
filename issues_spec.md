@@ -586,7 +586,11 @@ issue-trailer grep uses the project directory since that's the one stable
 "home" a project-scoped issue has.
 
 `--max-count=50` risk and the commit-trailer-disabled-project risk are
-both covered in §13.
+both covered in §13. **This algorithm must run on the node that actually
+has the directory on disk, not wherever the calling code happens to
+execute** — see §4.4, added after this was shipped without that
+requirement and found to silently produce empty results for any
+non-hub-hosted project.
 
 ### 4.3 Close-time derivation algorithm — attempt summaries (new this revision)
 
@@ -627,6 +631,86 @@ compact frozen triple, read straight from the DB column with no fan-out.
 This is a different open→closed transition than `commits` (which goes
 empty→populated, not rich→compact) — called out explicitly so the two
 don't get assumed to behave identically. See §6.3.
+
+### 4.4 Node routing (added post-implementation — read this before touching §4.2/§4.3 again)
+
+**Correction to the algorithms above, found during implementation and
+recorded here so a future rewrite doesn't reintroduce it:** §4.2's and
+§4.3's pseudocode, as originally written, implicitly assumed
+`derive_commits/1`/`live_attempts/1` run wherever the repo's working
+directory actually lives. That assumption is false in a hub+agent
+deployment (`.context/clustering.md`). **Every call into `OrcaHub.Issues`
+arrives via `HubRPC.call/3`, which always executes locally on — or
+`:erpc`-forwards to — the hub**, the single DB owner (§2.5's precedent,
+`sessions.issue_id`, already established this module talks to the DB
+through no other path). `Sessions.git_log_by_grep/2` and
+`list_session_commits/2` are plain `System.cmd/3` shell-outs against a
+`directory` argument — a local filesystem operation wherever they happen
+to run. Before this was fixed, both functions ran `git` unconditionally
+on the hub's own filesystem, regardless of which node a project's
+`directory` or an attempt session's `directory` actually lived on.
+
+**Impact, and why it was worse than a merely-wrong live view:** for any
+project or attempt session hosted on an **agent** node, this silently
+produced `[]` — indistinguishable from "genuinely no commits." At
+`close_issue`'s freeze (§4.2/§4.3), that `[]` is written **permanently**:
+reopening (§3.5.1) doesn't restore lost history, it just resumes the live
+projection going forward. This was a one-way, unrecoverable data-loss bug
+for any non-hub-hosted project — not a display bug, an archival one.
+
+**The fix**: route every `git`-touching call through `Cluster.rpc/4` (or
+`/5` with an explicit timeout) to the node that actually owns the
+directory being grepped — the same pattern `ProjectLive.Show` already
+uses for `Projects.git_log/1` (`rpc(project_node, Projects, :git_log,
+[project])`):
+
+- The project-level trailer grep (§4.2's `issue_trailer_commits`) routes
+  via `Cluster.project_node_for(issue.project)`.
+- Each attempt's own commit lookup (§4.2's `attempt_commits`, and §4.3's
+  live per-attempt commits) routes via `Cluster.runner_node_for(session)`
+  **per attempt** — not the project's node — since an attempt's
+  `directory` can differ from its project's (`start_session`'s `directory`
+  override, noted in §4.2's original text but not carried through to how
+  it should be *executed*).
+
+This never falls back to running `git` locally when the owning node is
+unreachable — the codebase's standing rule (`.context` /
+`feedback-never-reassign-sessions.md`) is to surface "node unavailable,"
+never silently reassign work to a node that doesn't actually have the
+data.
+
+**An unreachable node's failure mode deliberately differs between the two
+call sites in §4.2/§4.3, and this is not an inconsistency to "fix" later:**
+
+- **`close_issue`'s freeze (§4.2/§4.3) fails hard.** If the project's node
+  or *any* attempt's node is unreachable, `derive_commits/1` returns
+  `{:error, reason}` and `close_issue` **refuses to close at all** —
+  it does not freeze a partial or empty `commits`/`attempts` snapshot.
+  Freezing is a one-way door (§3.1's `commits`/`attempts` are only ever
+  written by `close_issue`, and reopening clears rather than restores
+  them, §3.5.1) — a retryable "couldn't reach node X" error is strictly
+  better than a permanently wrong closed issue with no way to tell, later,
+  that its record was ever incomplete. This is true even if only *one* of
+  several attempt sessions is unreachable: a partial union frozen as
+  though it were complete is the same failure mode as an empty one, just
+  less obviously wrong, so the whole derivation aborts rather than
+  silently dropping the unreachable source.
+- **The live projection (§3.5/§6.3, `live_attempts/1`) degrades instead of
+  failing.** This is a best-effort READ of an issue that's still open —
+  nothing gets persisted — so one unreachable attempt blanking out every
+  *other* attempt's detail would trade a small, real problem for a bigger
+  one. Instead, that one attempt's entry keeps `commits: []` but adds a
+  sibling `commits_unavailable: reason` field (`nil` when commits really
+  were derived, a `Cluster.node_unavailable_error?/1`-recognized reason
+  otherwise) — so "no commits (yet)" and "couldn't check" stay
+  distinguishable in the response instead of collapsing into the same
+  `[]`, without failing the whole `get_issue`/`close_issue`-preview call
+  over one bad attempt.
+
+Both rules serve the same underlying requirement — **an unreachable node
+must never be indistinguishable from a genuinely empty result** — applied
+differently because one call site is a permanent write and the other
+isn't.
 
 ---
 

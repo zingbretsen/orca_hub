@@ -14,7 +14,7 @@ defmodule OrcaHub.IssuesTest do
   """
   use OrcaHub.DataCase, async: true
 
-  alias OrcaHub.{Issues, Projects, Sessions}
+  alias OrcaHub.{Cluster, Issues, Projects, Sessions}
   alias OrcaHub.Issues.Issue
 
   setup do
@@ -26,7 +26,14 @@ defmodule OrcaHub.IssuesTest do
       Projects.create_project(%{
         name: "issues-ctx-test",
         directory: dir,
-        node: "n1@x",
+        # The real local test node, NOT a placeholder like "n1@x" — since
+        # 93233b1, derive_commits/1 routes git through Cluster.rpc/4 to
+        # this node, so a project fixture that wants close_issue/2's git
+        # derivation to actually succeed needs to resolve back to a node
+        # this process can reach. Cluster.rpc/5 takes the fast local path
+        # when the target == node(), same as pi_test.exs's
+        # scrub_session_env block already does.
+        node: Atom.to_string(node()),
         key_prefix: unique_key_prefix()
       })
 
@@ -401,7 +408,18 @@ defmodule OrcaHub.IssuesTest do
       key = Issues.render_key(Repo.preload(issue, :project))
 
       {:ok, session} =
-        Sessions.create_session(%{directory: dir, project_id: project.id, issue_id: issue.id})
+        Sessions.create_session(%{
+          directory: dir,
+          project_id: project.id,
+          issue_id: issue.id,
+          # Cluster.runner_node_for/1 treats a nil runner_node as
+          # UNASSIGNED (not "local"), unlike project_node_for/1's nil ->
+          # node() fallback — an attempt session needs an explicit,
+          # locally-resolvable runner_node for derive_commits/1's
+          # per-attempt git_rpc/4 call to succeed rather than short-
+          # circuiting on :node_unassigned.
+          runner_node: Atom.to_string(node())
+        })
 
       commit_in(
         dir,
@@ -475,6 +493,157 @@ defmodule OrcaHub.IssuesTest do
     end
   end
 
+  describe "node-routed git derivation (issues_spec.md §4.2/§4.3 addendum)" do
+    # A distinct, plausible-but-nonexistent node name — never resolvable
+    # locally or connectable, so Cluster.rpc/4 reliably reports it
+    # unavailable rather than silently taking the local fast path (same
+    # role Cluster.cluster_test.exs's own @offline_node plays).
+    @unreachable_node "n1@definitely-not-a-real-node"
+
+    test "derives commits from the project's own node, not wherever this call happens to run",
+         %{project: project, dir: dir} do
+      init_git_repo(dir)
+      {:ok, issue} = Issues.create_issue(%{title: "routed derivation", project_id: project.id})
+      key = Issues.render_key(Repo.preload(issue, :project))
+      commit_in(dir, "a.txt", "Routed fix\n\nOrcaHub-Issue: #{key}")
+
+      # project.node (setup/0) is the real local test node, so
+      # Cluster.rpc/4 takes the fast local path and actually finds it —
+      # proving derivation is keyed off the project's node, not a fixed
+      # "always run here" assumption.
+      assert {:ok, [%{subject: "Routed fix"}]} = Issues.derive_commits(issue)
+    end
+
+    test "refuses to derive when the project's node is unreachable, instead of silently returning []",
+         %{dir: dir} do
+      init_git_repo(dir)
+      commit_in(dir, "a.txt", "a real commit that must not be lost")
+
+      {:ok, unreachable_project} =
+        Projects.create_project(%{
+          name: "unreachable-node-project",
+          directory: dir,
+          node: @unreachable_node,
+          key_prefix: unique_key_prefix("UNR")
+        })
+
+      {:ok, issue} =
+        Issues.create_issue(%{
+          title: "on an unreachable node",
+          project_id: unreachable_project.id
+        })
+
+      assert {:error, reason} = Issues.derive_commits(issue)
+      assert Cluster.node_unavailable_error?({:error, reason})
+    end
+
+    test "close_issue/2 refuses to close (and leaves the issue open/unfrozen) when the project's node is unreachable — the unrecoverable-data-loss guard",
+         %{dir: dir} do
+      init_git_repo(dir)
+      commit_in(dir, "a.txt", "a real commit that must not be lost")
+
+      {:ok, unreachable_project} =
+        Projects.create_project(%{
+          name: "unreachable-close-project",
+          directory: dir,
+          node: @unreachable_node,
+          key_prefix: unique_key_prefix("UNC")
+        })
+
+      {:ok, issue} =
+        Issues.create_issue(%{
+          title: "must not silently close",
+          project_id: unreachable_project.id
+        })
+
+      assert {:error, reason} =
+               Issues.close_issue(issue, %{outcome: "resolved", resolution: "landed it"})
+
+      assert Cluster.node_unavailable_error?({:error, reason})
+
+      # The property that actually matters: freezing never happened.
+      reloaded = Issues.get_issue!(issue.id)
+      assert reloaded.status == "open"
+      assert reloaded.commits == []
+      assert reloaded.closed_at == nil
+    end
+
+    test "an attempt session on an unreachable node also refuses derivation, even when the project's own trailer grep would have succeeded",
+         %{project: project, dir: dir} do
+      init_git_repo(dir)
+      {:ok, issue} = Issues.create_issue(%{title: "mixed reachability", project_id: project.id})
+      key = Issues.render_key(Repo.preload(issue, :project))
+      commit_in(dir, "a.txt", "Reachable via trailer\n\nOrcaHub-Issue: #{key}")
+
+      {:ok, _unreachable_attempt} =
+        Sessions.create_session(%{
+          directory: dir,
+          project_id: project.id,
+          issue_id: issue.id,
+          runner_node: @unreachable_node
+        })
+
+      assert {:error, reason} = Issues.derive_commits(issue)
+      assert Cluster.node_unavailable_error?({:error, reason})
+    end
+
+    test "genuinely-empty commits stay distinguishable from underivable ones", %{
+      project: project,
+      dir: dir
+    } do
+      init_git_repo(dir)
+
+      {:ok, empty_issue} =
+        Issues.create_issue(%{title: "truly nothing here", project_id: project.id})
+
+      assert {:ok, []} = Issues.derive_commits(empty_issue)
+
+      {:ok, unreachable_project} =
+        Projects.create_project(%{
+          name: "underivable-project",
+          directory: dir,
+          node: @unreachable_node,
+          key_prefix: unique_key_prefix("UND")
+        })
+
+      {:ok, underivable_issue} =
+        Issues.create_issue(%{title: "cannot be checked", project_id: unreachable_project.id})
+
+      assert {:error, _reason} = Issues.derive_commits(underivable_issue)
+    end
+
+    test "live_attempts/1 degrades an unreachable attempt with commits_unavailable instead of failing the whole call",
+         %{project: project, dir: dir} do
+      init_git_repo(dir)
+      {:ok, issue} = Issues.create_issue(%{title: "live degrade", project_id: project.id})
+
+      {:ok, reachable} =
+        Sessions.create_session(%{
+          directory: dir,
+          project_id: project.id,
+          issue_id: issue.id,
+          runner_node: Atom.to_string(node())
+        })
+
+      {:ok, unreachable} =
+        Sessions.create_session(%{
+          directory: dir,
+          project_id: project.id,
+          issue_id: issue.id,
+          runner_node: @unreachable_node
+        })
+
+      attempts = Issues.live_attempts(issue)
+      by_id = Map.new(attempts, &{&1.session_id, &1})
+
+      assert by_id[reachable.id].commits == []
+      assert by_id[reachable.id].commits_unavailable == nil
+
+      assert by_id[unreachable.id].commits == []
+      assert Cluster.node_unavailable_error?({:error, by_id[unreachable.id].commits_unavailable})
+    end
+  end
+
   describe "reopen_issue/2 — preserve-then-clear (issues_spec.md §3.5.1)" do
     test "archives the frozen snapshot into notes before clearing it", %{
       project: project,
@@ -484,7 +653,18 @@ defmodule OrcaHub.IssuesTest do
       {:ok, issue} = Issues.create_issue(%{title: "flaky test", project_id: project.id})
 
       {:ok, session} =
-        Sessions.create_session(%{directory: dir, project_id: project.id, issue_id: issue.id})
+        Sessions.create_session(%{
+          directory: dir,
+          project_id: project.id,
+          issue_id: issue.id,
+          # Cluster.runner_node_for/1 treats a nil runner_node as
+          # UNASSIGNED (not "local"), unlike project_node_for/1's nil ->
+          # node() fallback — an attempt session needs an explicit,
+          # locally-resolvable runner_node for derive_commits/1's
+          # per-attempt git_rpc/4 call to succeed rather than short-
+          # circuiting on :node_unassigned.
+          runner_node: Atom.to_string(node())
+        })
 
       key = Issues.render_key(Repo.preload(issue, :project))
       commit_in(dir, "fix.txt", "Fix flaky test\n\nOrcaHub-Issue: #{key}")
