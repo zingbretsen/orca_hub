@@ -19,20 +19,37 @@ defmodule OrcaHub.Issues do
   2a, `OrcaHub.MCP.Tools.FeatureRequests` no longer exists — its five tool
   names live on as a deprecated shim inside `OrcaHub.MCP.Tools.Issues`,
   which calls the full-spec `close_issue/2`/`reopen_issue/2`/`update_issue/3`
-  like every other Phase 2a tool. Only `IssueLive` (still on the pre-spec
-  contract; migrating it is a §12 UI follow-up, not this module's job)
-  still calls the arity-1 `close_issue/1`/`reopen_issue/1` today. Those
-  particular functions do NOT freeze commits/attempts or archive anything
-  — they're the old, unconditional "just flip status" behavior, left alone
-  on purpose.
+  like every other Phase 2a tool. `IssueLive` was migrated to the same
+  full-spec `close_issue/2`/`reopen_issue/2` too — the arity-1
+  `close_issue/1`/`reopen_issue/1` (no freeze/archive behavior, just the
+  old unconditional "flip status") have no remaining callers in this repo,
+  but stay for now as a documented legacy contract rather than being
+  removed outright.
 
   The spec's actual close/reopen semantics live in the new `close_issue/2`
   and `reopen_issue/2` (different arity, so both old and new call sites
   compile side by side) — see their docs.
+
+  ## Node routing for git-touching derivation (issues_spec.md §4.2/§4.3 addendum)
+
+  `derive_commits/1` (closed-time freeze and the `derive_trailer_commits/1`/
+  `derive_attempt_commits/1` helpers it composes) and the live attempt
+  projection's per-attempt commit lookup (`live_attempts/1` ->
+  `live_attempt_detail/1`) shell out to `git` against a project's or a
+  session's own `directory` — a local filesystem operation. Every one of
+  those calls is routed through `Cluster.rpc/4` to the node that actually
+  owns that directory (`Cluster.project_node_for/1` for the project-level
+  trailer grep, `Cluster.runner_node_for/1` per attempt session for its own
+  commits — an attempt's directory can differ from its project's, §4.2),
+  the same pattern `ProjectLive.Show` uses for `Projects.git_log/1`. This
+  module never runs `git` unconditionally on whichever node happens to be
+  executing the call (i.e. the hub, since every call into this module
+  arrives via `HubRPC.call/3`) — see `git_rpc/4`'s doc for why that
+  mattered enough to fix.
   """
 
   import Ecto.Query
-  alias OrcaHub.{Issues.Issue, Projects.Project, Repo, Sessions, Sessions.Session}
+  alias OrcaHub.{Cluster, Issues.Issue, Projects.Project, Repo, Sessions, Sessions.Session}
 
   # ── create ────────────────────────────────────────────────────────────
 
@@ -470,19 +487,27 @@ defmodule OrcaHub.Issues do
     * `:superseded_by_issue_id` (optional)
 
   Returns `{:ok, issue}`, `{:error, changeset}`, `{:error, :invalid_outcome}`,
-  or `{:error, :resolution_required}`. Enforcing "outcome/resolution
-  required to actually close" here (rather than in the changeset) keeps
+  `{:error, :resolution_required}`, or `{:error, reason}` where
+  `Cluster.node_unavailable_error?/1` is true — meaning the node that owns
+  the project's or an attempt's directory couldn't be reached to derive
+  `commits` (see `derive_commits/1`). That last case refuses to close at
+  all rather than freezing an empty/incomplete `commits`/`attempts`
+  snapshot: freezing is a one-way door (issues_spec.md §4), so a
+  retryable "couldn't reach node X" error is strictly better than a
+  permanently wrong closed issue. Enforcing "outcome/resolution required
+  to actually close" here (rather than in the changeset) keeps
   `update_issue/2`/legacy `close_issue/1` free to keep setting
   `status: "closed"` directly with no resolution, same as today.
   """
   def close_issue(%Issue{} = issue, attrs) do
     with {:ok, outcome} <- fetch_outcome(attrs),
-         {:ok, resolution} <- fetch_resolution(attrs) do
+         {:ok, resolution} <- fetch_resolution(attrs),
+         {:ok, commits} <- derive_commits(issue) do
       update_attrs =
         %{
           status: outcome_to_status(outcome),
           resolution: resolution,
-          commits: derive_commits(issue),
+          commits: commits,
           attempts: derive_attempt_summary(issue),
           closed_at: DateTime.utc_now() |> DateTime.truncate(:second),
           closed_by_session_id: attrs[:session_id]
@@ -641,29 +666,65 @@ defmodule OrcaHub.Issues do
   can differ from the project's), deduped by hash and sorted by date.
   Also usable standalone as a retroactive/fallback query (§5.1) or as
   `close_issue`'s first-call "harvested evidence" preview (§6.6).
+
+  Returns `{:ok, commits}`, or `{:error, reason}` (a
+  `Cluster.node_unavailable_error?/1`-recognized reason — pass it to
+  `Cluster.node_unavailable_message/1` for display text) if the project's
+  or any attempt session's node couldn't be reached to run `git` there.
+  **A node-unavailable error must never be swallowed into `{:ok, []}`** —
+  `close_issue/2` relies on this to refuse freezing an incomplete snapshot
+  as though it were a genuinely-empty one (issues_spec.md §4.2 addendum).
   """
   def derive_commits(%Issue{} = issue) do
     issue = ensure_project_preloaded(issue)
 
-    trailer_commits =
-      case issue.project do
-        %Project{directory: directory} when is_binary(directory) ->
-          [render_key(issue), issue.id]
-          |> Enum.reject(&is_nil/1)
-          |> Enum.flat_map(&Sessions.git_log_by_grep(directory, "OrcaHub-Issue: #{&1}"))
+    with {:ok, trailer_commits} <- derive_trailer_commits(issue),
+         {:ok, attempt_commits} <- derive_attempt_commits(issue) do
+      {:ok,
+       (trailer_commits ++ attempt_commits)
+       |> Enum.uniq_by(& &1.hash)
+       |> Enum.sort_by(& &1.date)}
+    end
+  end
 
-        _ ->
-          []
+  # Grep the PROJECT's directory (its one stable "home") for the
+  # OrcaHub-Issue trailer, on the node that owns it (§3.2.5/§4.2). No
+  # project/directory at all is a genuine "nothing to grep" {:ok, []} —
+  # distinct from a directory that exists but whose node is unreachable.
+  defp derive_trailer_commits(%Issue{project: %Project{directory: directory} = project} = issue)
+       when is_binary(directory) do
+    node = Cluster.project_node_for(project)
+
+    [render_key(issue), issue.id]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reduce_while({:ok, []}, fn grep_key, {:ok, acc} ->
+      case git_rpc(node, Sessions, :git_log_by_grep, [directory, "OrcaHub-Issue: #{grep_key}"]) do
+        {:ok, commits} -> {:cont, {:ok, acc ++ commits}}
+        {:error, _reason} = error -> {:halt, error}
       end
+    end)
+  end
 
-    attempt_commits =
-      issue.id
-      |> attempt_sessions()
-      |> Enum.flat_map(&Sessions.list_session_commits(&1.directory, &1.id))
+  defp derive_trailer_commits(_issue), do: {:ok, []}
 
-    (trailer_commits ++ attempt_commits)
-    |> Enum.uniq_by(& &1.hash)
-    |> Enum.sort_by(& &1.date)
+  # Each attempt's OWN directory/node, which can differ from the
+  # project's (§4.2) — routed via Cluster.runner_node_for/1, same as
+  # SessionRunner/SessionLive.Show route every other session-scoped
+  # action. Short-circuits (does not partially freeze) on the first
+  # unreachable attempt, for the same reason derive_commits/1 as a whole
+  # does — a partial union frozen as if complete is the same failure mode
+  # as an empty one, just less obviously wrong.
+  defp derive_attempt_commits(%Issue{} = issue) do
+    issue.id
+    |> attempt_sessions()
+    |> Enum.reduce_while({:ok, []}, fn session, {:ok, acc} ->
+      node = Cluster.runner_node_for(session)
+
+      case git_rpc(node, Sessions, :list_session_commits, [session.directory, session.id]) do
+        {:ok, commits} -> {:cont, {:ok, acc ++ commits}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
 
   @doc """
@@ -673,6 +734,7 @@ defmodule OrcaHub.Issues do
   transcript and NOT per-attempt commit detail (that's already covered by
   `derive_commits/1`). `outcome` is the first line of the session's last
   assistant message, truncated to ~150 chars, or `"(no final message)"`.
+  Pure DB reads (no `git`, no node routing needed) — always succeeds.
   """
   def derive_attempt_summary(%Issue{} = issue) do
     issue.id
@@ -715,6 +777,16 @@ defmodule OrcaHub.Issues do
   status}` for any older than that. Nothing here is persisted — this is
   assembled fresh on every call, the read-time counterpart to
   `derive_attempt_summary/1`'s close-time freeze.
+
+  Unlike `derive_commits/1`, an unreachable attempt node does NOT fail
+  this whole call — this is a live, best-effort READ (nothing gets
+  frozen), so one unreachable attempt shouldn't blank out every other
+  attempt's detail. Instead that attempt's entry carries
+  `commits: []` alongside `commits_unavailable: reason` (a
+  `Cluster.node_unavailable_error?/1`-recognized reason, or `nil` when
+  commits were actually derived) — so "no commits (yet)" and "could not
+  check" stay distinguishable in the response instead of collapsing into
+  the same `[]`.
   """
   def live_attempts(%Issue{} = issue) do
     sessions = attempt_sessions(issue.id)
@@ -732,15 +804,67 @@ defmodule OrcaHub.Issues do
   end
 
   defp live_attempt_detail(session) do
+    node = Cluster.runner_node_for(session)
+
+    {commits, commits_unavailable} =
+      case git_rpc(node, Sessions, :list_session_commits, [session.directory, session.id]) do
+        {:ok, commits} -> {commits, nil}
+        {:error, reason} -> {[], reason}
+      end
+
     %{
       session_id: session.id,
       status: session.status,
       last_assistant_text: Sessions.last_assistant_text(session.id),
       progress_phase: session.progress_phase,
       progress_note: session.progress_note,
-      commits: Sessions.list_session_commits(session.directory, session.id),
+      commits: commits,
+      commits_unavailable: commits_unavailable,
       started_at: session.inserted_at,
       updated_at: session.updated_at
     }
+  end
+
+  # ── node-routed git dispatch ─────────────────────────────────────────
+
+  @doc """
+  Runs `mod.fun(*args)` (always one of the `Sessions` git helpers here) on
+  the node that actually owns the filesystem directory being grepped, via
+  `Cluster.rpc/4` — never on whichever node happens to be executing this
+  module's caller.
+
+  This mattered because every call into `OrcaHub.Issues` arrives through
+  `HubRPC.call/3`, which always runs locally on (or is `:erpc`-forwarded
+  to) the HUB — the single DB owner. Before this existed, `derive_commits/1`
+  and `live_attempt_detail/1` ran `git` unconditionally wherever that
+  landed, ignoring the project's/session's actual `directory`. For any
+  project or attempt session hosted on an AGENT node, that silently
+  produced an empty result indistinguishable from a genuine "no commits"
+  — including at `close_issue/2`'s permanent, one-way freeze (issues_spec.md
+  §4.2/§4.3), which is the specific failure mode this routing exists to
+  close off.
+
+  Returns `{:ok, result}` on success, or `{:error, reason}` — the same
+  `:node_unassigned` / `{:node_unavailable, n}` / `{:node_check_failed, n}`
+  shapes `Cluster.rpc/5` itself returns (see `Cluster.node_unavailable_message/1`
+  and `node_unavailable_error?/1`), plus `{:node_unavailable, node}` for the
+  narrow case where `:erpc` raises or exits mid-call (e.g. the node
+  disconnects between `Cluster.rpc/5`'s own availability check and the
+  call landing) rather than returning one of its own error tuples —
+  deliberately reusing that exact shape rather than inventing a new one,
+  so every caller can keep treating `Cluster.node_unavailable_error?/1` as
+  the one check that matters. Per the standing "never silently reassign
+  work to a different node" rule, this NEVER falls back to running `git`
+  locally when `node` is unreachable.
+  """
+  def git_rpc(node, mod, fun, args) do
+    case Cluster.rpc(node, mod, fun, args) do
+      {:error, reason} -> {:error, reason}
+      result -> {:ok, result}
+    end
+  rescue
+    _exception -> {:error, {:node_unavailable, node}}
+  catch
+    :exit, _reason -> {:error, {:node_unavailable, node}}
   end
 end

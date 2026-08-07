@@ -169,7 +169,17 @@ defmodule OrcaHubWeb.IssueLive.Show do
   defp close_error_message(:resolution_required), do: "A resolution is required to close."
   defp close_error_message(message) when is_binary(message), do: message
   defp close_error_message(%Ecto.Changeset{} = cs), do: changeset_error_message(cs)
-  defp close_error_message(_other), do: "Could not close this issue."
+
+  # OrcaHub.Issues.derive_commits/1 refuses to close when the node that owns
+  # the project's or an attempt's directory is unreachable (issues_spec.md
+  # §4.2 addendum), rather than freezing an empty/incomplete commits list —
+  # reuse Cluster's own shared wording for that instead of a generic
+  # fallback, so this reads the same way node-unavailable errors do
+  # everywhere else in the app.
+  defp close_error_message(reason) do
+    Cluster.node_unavailable_message(reason) ||
+      "Could not close this issue — #{inspect(reason)}."
+  end
 
   defp changeset_error_message(changeset) do
     changeset.errors
