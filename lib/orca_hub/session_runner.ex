@@ -89,6 +89,31 @@ defmodule OrcaHub.SessionRunner do
       true
   end
 
+  # Rendered short key (e.g. "ORCA-142") for the session's linked issue, if
+  # any — resolved once at init/1 and baked into ctx.issue_key so a cold
+  # spawn's system prompt can pre-fill OrcaHub.Backend.SharedPrompts.
+  # issue_commit_trailer_prompt/1 with a literal string instead of asking
+  # the model to construct one (issues_spec.md §5 — construction is where
+  # trailer compliance dies). Fails CLOSED (nil, fragment omitted) on any
+  # lookup failure — unlike commit_trailer?/2's fail-open, there's no safe
+  # "assume linked" default when we can't confirm the issue actually
+  # exists/still resolves to a key.
+  defp issue_key(_init_data, nil), do: nil
+
+  defp issue_key(init_data, issue_id) do
+    case db_call(init_data, :get_issue, [issue_id]) do
+      nil -> nil
+      issue -> db_call(init_data, :render_issue_key, [issue])
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "[SessionRunner] failed to look up issue key for issue #{issue_id}: #{Exception.format(:error, error)} — omitting issue trailer prompt"
+      )
+
+      nil
+  end
+
   # API
 
   def start_link(opts) do
@@ -197,6 +222,17 @@ defmodule OrcaHub.SessionRunner do
   @impl true
   def callback_mode, do: :state_functions
 
+  # How many recent TOP-LEVEL messages init/1 pulls in to seed `data.messages`
+  # and (when applicable) reconstruct `pending_questions` — see init/1's
+  # comment. Not tied to SessionLive.Show's own @window_size (a UI concern);
+  # this is a data-safety margin, generous enough that the invariant below
+  # can't realistically be violated by a wider gap than we accounted for.
+  @init_history_window 50
+
+  # Test seam only — see SessionLive.Show.window_size/0 for the same pattern.
+  @doc false
+  def init_history_window, do: @init_history_window
+
   @impl true
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
@@ -206,9 +242,23 @@ defmodule OrcaHub.SessionRunner do
     # Placeholder data map so db_call works during init
     init_data = %{db_node: db_node}
 
+    # Bounded tail, NOT full history (see perf_session_load.md — this used
+    # to be a `list_messages` load of the ENTIRE conversation, the dominant
+    # cold-start cost for a long session: 264-330ms one-time tax on a
+    # 4,000+-message session, paid synchronously in front of Show's mount).
+    # Nothing here needs more than a tail:
+    #   - `:ready` vs `:idle` only needs to know whether ANY message exists.
+    #   - `pending_questions` is only reconstructed when the session was
+    #     persisted "waiting" — which means the runner went cold
+    #     IMMEDIATELY after the AskUserQuestion tool_use with nothing after
+    #     it (see AskUserQuestion's moduledoc), so it's always among the
+    #     most recent messages, never buried deep in old history.
+    # `data.messages` itself only grows from here via live turn events
+    # (append-only elsewhere in this module) — it was never a full mirror
+    # of DB history except immediately after a cold init, so seeding it
+    # with a tail instead of everything changes nothing turns rely on.
     saved_messages =
-      db_call(init_data, :list_messages, [session_id])
-      |> Enum.map(fn msg -> Map.put(msg.data, "timestamp", msg.inserted_at) end)
+      db_call(init_data, :list_messages_window, [session_id, [limit: @init_history_window]]).messages
 
     initial_state = if saved_messages == [], do: :ready, else: :idle
 
@@ -264,6 +314,7 @@ defmodule OrcaHub.SessionRunner do
       client_tools?: api_run_flags.client_tools?,
       api_run_timeout_seconds: api_run_flags.timeout_seconds,
       commit_trailer: commit_trailer?(init_data, session.project_id),
+      issue_key: issue_key(init_data, session.issue_id),
       db_node: db_node,
       # Phase 1 (backend_abstraction_spec.md §4/§5): resolve from the
       # session's persisted `backend` column. Unknown values raise (loud
