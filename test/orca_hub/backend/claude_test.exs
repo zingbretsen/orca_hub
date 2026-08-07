@@ -135,6 +135,14 @@ defmodule OrcaHub.Backend.ClaudeTest do
     orchestrator's workers do. Reach for this only for genuinely parallel or \
     offloadable subtasks — it is not a substitute for doing your own assigned \
     work.
+    - Closing an issue? Call close_issue with just `id` first — it hands back \
+    the harvested attempt evidence instead of closing anything. Write \
+    `resolution` from THAT, not from your own memory of the work (it may \
+    have been compacted since you started).
+    - You can cite `OrcaHub-Issue: <key>` on any commit you recognize as \
+    addressing an issue, even one you weren't spawned against (no \
+    session.issue_id needed) — it's the primary link from a commit back to \
+    the issue it resolved.
     """
     |> String.trim()
   end
@@ -173,9 +181,10 @@ defmodule OrcaHub.Backend.ClaudeTest do
           Tools.start_session(%{"directory" => "...", "prompt" => "..."})
           Tools.search_sessions(%{"status" => "error"})
           Tools.schedule_heartbeat(%{"interval_seconds" => 300, "message" => "..."})
-          # feature-request backlog:
-          Tools.file_feature_request(%{"title" => "...", "description" => "..."})
-          Tools.list_feature_requests(%{})
+          # issues — durable work-item narrative, not standing guidance:
+          Tools.create_issue(%{"title" => "...", "description" => "..."})
+          Tools.list_issues(%{})
+          Tools.close_issue(%{"id" => "..."})  # bare id first: harvests evidence, doesn't close
 
     - Before first using a deferred-schema CLI-native tool (`Monitor`, \
       `TaskCreate`, `WebFetch`), load its real schema with ToolSearch; never \
@@ -282,7 +291,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - Spawning another orchestrator (`orchestrator: true`) is a handoff to a peer, not a child — you get no `[Session lifecycle]` callback from it and it's not in your `watch_children` set, so hand off the remaining context in the prompt; watch it explicitly via `Tools.schedule_heartbeat(...)`'s `watch_session_ids` if you need to track it.
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
-    - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `Tools.list_feature_requests(...)` first — if it's already tracked, add what you found with `Tools.append_feature_request_note(...)` instead of filing a duplicate with `Tools.file_feature_request(...)`. Once a fix for a tracked request has shipped AND been verified, close it with `Tools.close_feature_request(...)` (pass a resolution note referencing the commit).
+    - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `Tools.list_issues(...)` (kind: "feature_request", directory: "/home/zach/orca_hub") first — if it's already tracked, add what you found with `Tools.append_issue_note(...)` instead of filing a duplicate with `Tools.create_issue(...)` (kind: "feature_request", directory: "/home/zach/orca_hub", ...). Once a fix has shipped AND been verified, close it with `Tools.close_issue(...)` (outcome: "resolved", resolution: ...) — call close_issue with just `id` first to read back the harvested evidence and synthesize `resolution` from that, not from memory.
     - Scheduled heartbeats do NOT survive a restart of your own host (e.g. a deploy) — re-call `Tools.schedule_heartbeat(...)` as your first action after waking from one.
     - Pre-deploy gate pattern: run the full suite once at the pipeline tip via a dedicated worker with an explicit allow-list of known flakes; treat any NEW failure as fix-at-root, never expand the allow-list.
 
@@ -340,7 +349,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - Spawning another orchestrator (`orchestrator: true`) is a handoff to a peer, not a child — you get no `[Session lifecycle]` callback from it and it's not in your `watch_children` set, so hand off the remaining context in the prompt; watch it explicitly via `mcp__orca__schedule_heartbeat`'s `watch_session_ids` if you need to track it.
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
-    - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `mcp__orca__list_feature_requests` first — if it's already tracked, add what you found with `mcp__orca__append_feature_request_note` instead of filing a duplicate with `mcp__orca__file_feature_request`. Once a fix for a tracked request has shipped AND been verified, close it with `mcp__orca__close_feature_request` (pass a resolution note referencing the commit).
+    - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `mcp__orca__list_issues` (kind: "feature_request", directory: "/home/zach/orca_hub") first — if it's already tracked, add what you found with `mcp__orca__append_issue_note` instead of filing a duplicate with `mcp__orca__create_issue` (kind: "feature_request", directory: "/home/zach/orca_hub", ...). Once a fix has shipped AND been verified, close it with `mcp__orca__close_issue` (outcome: "resolved", resolution: ...) — call close_issue with just `id` first to read back the harvested evidence and synthesize `resolution` from that, not from memory.
     - Scheduled heartbeats do NOT survive a restart of your own host (e.g. a deploy) — re-call `mcp__orca__schedule_heartbeat` as your first action after waking from one.
     - Pre-deploy gate pattern: run the full suite once at the pipeline tip via a dedicated worker with an explicit allow-list of known flakes; treat any NEW failure as fix-at-root, never expand the allow-list.
 
@@ -971,6 +980,45 @@ defmodule OrcaHub.Backend.ClaudeTest do
     end
   end
 
+  describe "system_prompt/1 — open_issues_prompt (issues_spec.md §10 resume hook)" do
+    test "lists issues this session created that are still open/in_progress, with plan" do
+      dir = "/tmp/claude_open_issues_test_#{System.unique_integer([:positive])}"
+
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "resume-hook-test-#{System.unique_integer([:positive])}",
+          directory: dir,
+          node: "n1@x",
+          key_prefix:
+            ("RH" <> Integer.to_string(System.unique_integer([:positive]))) |> String.slice(0, 10)
+        })
+
+      {:ok, session} = OrcaHub.Sessions.create_session(%{directory: dir, project_id: project.id})
+
+      {:ok, issue} =
+        OrcaHub.Issues.create_issue(%{
+          title: "resume hook coverage",
+          project_id: project.id,
+          created_by_session_id: session.id,
+          plan: "write the tests"
+        })
+
+      key = OrcaHub.Issues.render_key(issue)
+      prompt = Backend.system_prompt(ctx(%{session_id: session.id}))
+
+      assert prompt =~ "# Your Open Issues"
+      assert prompt =~ "[#{key}] resume hook coverage (open) — plan: write the tests"
+    end
+
+    test "omitted when the session has no open/in_progress issues of its own" do
+      refute Backend.system_prompt(ctx()) =~ "Your Open Issues"
+    end
+
+    test "omitted for an orchestrator: false, tools: \"\" (no-MCP) session — nothing can act on it" do
+      refute Backend.system_prompt(ctx(%{tools: ""})) =~ "Your Open Issues"
+    end
+  end
+
   describe "mcp_enabled?/1 (Agent Runs API, docs/api.md)" do
     test "false when tools == \"\" and no api_run schema" do
       refute Backend.mcp_enabled?(%{tools: ""})
@@ -1039,29 +1087,3 @@ defmodule OrcaHub.Backend.ClaudeTest do
     end
   end
 end
-
-    test "issue_key set includes the OrcaHub-Issue trailer instruction alongside the session one" do
-      ctx = ctx(%{issue_key: "ORCA-142"})
-      prompt = Backend.system_prompt(ctx)
-
-      assert prompt =~ "OrcaHub-Issue: ORCA-142"
-      assert prompt =~ "OrcaHub-Session: #{ctx.session_id}"
-    end
-
-    test "issue_key unset omits the OrcaHub-Issue trailer instruction (no linked issue)" do
-      # NOTE: refutes the automatic per-session fragment's distinctive lead-in
-      # text, not the bare "OrcaHub-Issue:" substring — the opportunistic-
-      # citation bullet in worker_practices_prompt mentions "OrcaHub-Issue:
-      # <key>" unconditionally (see SharedPrompts), independent of this toggle.
-      refute Backend.system_prompt(ctx()) =~ "linked issue ("
-    end
-
-    test "issue_key set but commit_trailer: false omits the issue trailer too (follows the same toggle)" do
-      ctx = ctx(%{issue_key: "ORCA-142", commit_trailer: false})
-      refute Backend.system_prompt(ctx) =~ "linked issue ("
-    end
-
-    test "issue_key set but orchestrator: true omits the issue trailer (already omitted for orchestrators)" do
-      ctx = ctx(%{issue_key: "ORCA-142", orchestrator: true})
-      refute Backend.system_prompt(ctx) =~ "linked issue ("
-    end

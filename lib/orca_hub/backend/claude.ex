@@ -320,7 +320,8 @@ defmodule OrcaHub.Backend.Claude do
         if(!ctx.orchestrator, do: ask_user_question_prompt()),
         if(mcp_orchestration, do: sibling_sessions_prompt(ctx.orchestrator, code_exec)),
         if(result_schema, do: submit_result_prompt()),
-        SharedPrompts.context_files_prompt(ctx.directory)
+        SharedPrompts.context_files_prompt(ctx.directory),
+        if(mcp_orchestration, do: SharedPrompts.open_issues_prompt(ctx.session_id))
       ]
       |> Enum.reject(&is_nil/1)
 

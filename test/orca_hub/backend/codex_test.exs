@@ -15,7 +15,13 @@ defmodule OrcaHub.Backend.CodexTest do
   requests and `turn/interrupt` encoding.
   """
 
-  use ExUnit.Case, async: true
+  # OrcaHub.DataCase (Ecto sandbox), not plain ExUnit.Case — as of the
+  # issues_spec.md §10 resume hook (SharedPrompts.open_issues_prompt/1),
+  # system_prompt/1 does a real (if cheap, indexed) DB read, so every test
+  # exercising it needs a checked-out sandboxed connection now. Every other
+  # test in this file is unaffected: DataCase only adds an unused sandbox
+  # connection for tests that don't touch the DB.
+  use OrcaHub.DataCase, async: true
 
   alias OrcaHub.Backend.Codex, as: Backend
 
@@ -879,14 +885,12 @@ defmodule OrcaHub.Backend.CodexTest do
   end
 
   # ── spawn_spec/2 — scrub_session_env (OrcaHub.NodePolicy) ─────────────────
-  # Not DataCase (this module is plain ExUnit.Case) — checks out a sandboxed
-  # DB connection just for this describe block so the local node's row can be
-  # flagged, then reverts on exit like any other DataCase test.
+  # The module-level DataCase `use` already checks out a sandboxed DB
+  # connection for every test (see the resume-hook note at the top of this
+  # file) — no need for this describe block to check out its own anymore.
 
   describe "spawn_spec/2 — scrub_session_env" do
     setup do
-      OrcaHub.DataCase.setup_sandbox(%{async: true})
-
       {:ok, node_row} = OrcaHub.ClusterNodes.upsert_seen(Atom.to_string(node()), "test")
       {:ok, _} = OrcaHub.ClusterNodes.update_node(node_row, %{scrub_session_env: true})
 
@@ -1038,6 +1042,39 @@ defmodule OrcaHub.Backend.CodexTest do
       assert prompt =~ "Tools.cancel_heartbeat"
       refute prompt =~ "the `search_sessions` orca MCP tool"
       refute prompt =~ "You have orca MCP tools available"
+    end
+
+    test "issues_spec.md §10 resume hook: lists this session's own open/in_progress issues, with plan" do
+      dir = "/tmp/codex_open_issues_test_#{System.unique_integer([:positive])}"
+
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "codex-resume-hook-test-#{System.unique_integer([:positive])}",
+          directory: dir,
+          node: "n1@x",
+          key_prefix:
+            ("CH" <> Integer.to_string(System.unique_integer([:positive]))) |> String.slice(0, 10)
+        })
+
+      {:ok, session} = OrcaHub.Sessions.create_session(%{directory: dir, project_id: project.id})
+
+      {:ok, issue} =
+        OrcaHub.Issues.create_issue(%{
+          title: "codex resume hook coverage",
+          project_id: project.id,
+          created_by_session_id: session.id,
+          plan: "keep going"
+        })
+
+      key = OrcaHub.Issues.render_key(issue)
+      prompt = Backend.system_prompt(ctx(%{session_id: session.id}))
+
+      assert prompt =~ "# Your Open Issues"
+      assert prompt =~ "[#{key}] codex resume hook coverage (open) — plan: keep going"
+    end
+
+    test "issues_spec.md §10 resume hook: omitted when the session created no open/in_progress issues" do
+      refute Backend.system_prompt(ctx()) =~ "Your Open Issues"
     end
   end
 end

@@ -993,7 +993,8 @@ defmodule OrcaHub.Backend.Pi do
       if(Map.get(ctx, :commit_trailer, true) && Map.get(ctx, :issue_key),
         do: SharedPrompts.issue_commit_trailer_prompt(ctx.issue_key)
       ),
-      if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec))
+      if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec)),
+      SharedPrompts.open_issues_prompt(ctx.session_id)
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n\n")
