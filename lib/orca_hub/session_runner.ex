@@ -233,6 +233,35 @@ defmodule OrcaHub.SessionRunner do
   @doc false
   def init_history_window, do: @init_history_window
 
+  # list_messages_window/2 is new alongside this bounded-tail change — on a
+  # db node that hasn't been upgraded yet (hub and agents don't restart
+  # atomically, same hazard as SessionLive.Show.load_runner_status/3) the
+  # RPC raises instead of returning, since db_call/HubRPC.call does a raw
+  # :erpc.call and doesn't convert :undef into a tagged error tuple the way
+  # Cluster.rpc/5 does. Left uncaught, that would crash init/1 — refusing to
+  # start EVERY session on this node until the db node finishes upgrading,
+  # worse than the status glitch a92cd11 fixed. Degrades to the always-present
+  # list_messages/1 (the exact pre-9ddb4bf init/1 path) on that specific
+  # failure only; any other error still crashes init/1 as before.
+  defp load_init_messages(init_data, session_id) do
+    db_call(init_data, :list_messages_window, [session_id, [limit: @init_history_window]]).messages
+  rescue
+    e in ErlangError ->
+      case e.original do
+        {:exception, :undef, _stacktrace} ->
+          Logger.warning(
+            "[SessionRunner] list_messages_window/2 undefined on db node for session #{session_id} " <>
+              "(mixed-version rollout) — falling back to list_messages/1"
+          )
+
+          db_call(init_data, :list_messages, [session_id])
+          |> Enum.map(fn msg -> Map.put(msg.data, "timestamp", msg.inserted_at) end)
+
+        _ ->
+          reraise e, __STACKTRACE__
+      end
+  end
+
   @impl true
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
@@ -257,8 +286,7 @@ defmodule OrcaHub.SessionRunner do
     # (append-only elsewhere in this module) — it was never a full mirror
     # of DB history except immediately after a cold init, so seeding it
     # with a tail instead of everything changes nothing turns rely on.
-    saved_messages =
-      db_call(init_data, :list_messages_window, [session_id, [limit: @init_history_window]]).messages
+    saved_messages = load_init_messages(init_data, session_id)
 
     initial_state = if saved_messages == [], do: :ready, else: :idle
 
