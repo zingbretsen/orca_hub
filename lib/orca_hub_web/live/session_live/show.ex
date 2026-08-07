@@ -304,10 +304,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   # Fetches the next-older page and holds it in :buffered_older_page WITHOUT
-  # touching @messages/the DOM. Deliberately NOT committed on arrival: each
-  # rendered message mounts its own hooks (TTSPlayer notably — one per
-  # assistant message with text, phx-update="ignore" — so mount cost scales
-  # with rendered message count, not just bytes), so silently growing
+  # touching @messages/the DOM. Deliberately NOT committed on arrival: mount
+  # cost still scales with rendered message count for other reasons (e.g.
+  # per-message hooks elsewhere — TTS's own hook moved off this pattern in
+  # the tts_rewrite_spec.md rewrite, since it's now a single delegated hook
+  # on the feed container instead of one per message), so silently growing
   # @messages in the background would reintroduce the exact "messages
   # appear, then the page stalls" symptom windowing was meant to fix. Only
   # commit_buffered_older_page/1 (driven by the user actually scrolling
