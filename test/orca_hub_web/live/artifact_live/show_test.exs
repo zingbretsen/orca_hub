@@ -48,6 +48,13 @@ defmodule OrcaHubWeb.ArtifactLive.ShowTest do
     assert html =~ artifact.name
   end
 
+  test "renders a download link pointed at the download route", %{conn: conn, artifact: artifact} do
+    {:ok, _view, html} = live(conn, ~p"/artifacts/#{artifact.id}")
+
+    assert html =~ ~s(href="/artifacts/#{artifact.id}/download")
+    assert html =~ "Download"
+  end
+
   test "redirects to /projects with a flash for an unknown id", %{conn: conn} do
     assert {:error, {:live_redirect, %{to: "/projects"}}} =
              live(conn, ~p"/artifacts/#{Ecto.UUID.generate()}")

@@ -73,6 +73,7 @@ defmodule OrcaHubWeb.Router do
   scope "/artifacts", OrcaHubWeb do
     pipe_through :artifact_raw
     get "/:id/raw", ArtifactController, :raw
+    get "/:id/download", ArtifactController, :download
   end
 
   scope "/api", OrcaHubWeb do

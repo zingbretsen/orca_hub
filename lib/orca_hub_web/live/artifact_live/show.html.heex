@@ -13,6 +13,14 @@
   </div>
   <:actions>
     <.link
+      href={~p"/artifacts/#{@artifact.id}/download"}
+      download
+      class="btn btn-sm btn-ghost gap-1"
+      title="Download artifact"
+    >
+      <.icon name="hero-arrow-down-tray-micro" class="size-4" /> Download
+    </.link>
+    <.link
       :if={@project}
       navigate={~p"/projects/#{@project.id}"}
       class="btn btn-sm btn-ghost gap-1"

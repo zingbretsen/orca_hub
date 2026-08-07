@@ -74,6 +74,24 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
       assert html =~ artifact.name
     end
 
+    test "the tab panel includes a download link pointed at the download route", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{session.id}",
+        {:open_artifact, artifact.id, "split"}
+      )
+
+      html = render(view)
+      assert html =~ ~s(href="/artifacts/#{artifact.id}/download")
+      assert html =~ "Download"
+    end
+
     test "reopening the same artifact reuses the existing tab (doesn't duplicate it)", %{
       conn: conn,
       session: session,

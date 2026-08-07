@@ -286,6 +286,137 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
     end
   end
 
+  describe "GET /artifacts/:id/download" do
+    test "404 for an unknown id", %{conn: conn} do
+      conn = get(conn, ~p"/artifacts/#{Ecto.UUID.generate()}/download")
+      assert conn.status == 404
+    end
+
+    test "html download has attachment disposition, .html filename, and a body identical to /raw",
+         %{conn: conn, project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "my dashboard",
+          kind: "html",
+          content: "<html><body><h1>Hi</h1></body></html>"
+        })
+
+      raw_conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
+      download_conn = get(build_conn(), ~p"/artifacts/#{artifact.id}/download")
+
+      assert download_conn.status == 200
+      assert get_resp_content_type(download_conn) == "text/html"
+      assert download_conn.resp_body == raw_conn.resp_body
+
+      assert Plug.Conn.get_resp_header(download_conn, "content-disposition") == [
+               "attachment; filename=\"my-dashboard.html\""
+             ]
+    end
+
+    test "svg download uses image/svg+xml and a .svg filename", %{conn: conn, project: project} do
+      svg = ~s(<svg xmlns="http://www.w3.org/2000/svg"><circle r="5"/></svg>)
+
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "my-icon",
+          kind: "svg",
+          content: svg
+        })
+
+      conn = get(conn, ~p"/artifacts/#{artifact.id}/download")
+
+      assert conn.status == 200
+      assert get_resp_content_type(conn) == "image/svg+xml"
+      assert conn.resp_body == svg
+
+      assert Plug.Conn.get_resp_header(conn, "content-disposition") == [
+               "attachment; filename=\"my-icon.svg\""
+             ]
+    end
+
+    test "markdown downloads the rendered HTML doc (matching /raw), not the raw markdown", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "readme",
+          kind: "markdown",
+          content: "# Title\n\nSome **bold** text."
+        })
+
+      raw_conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
+      download_conn = get(build_conn(), ~p"/artifacts/#{artifact.id}/download")
+
+      assert get_resp_content_type(download_conn) == "text/html"
+      assert download_conn.resp_body == raw_conn.resp_body
+      assert download_conn.resp_body =~ "<h1>"
+
+      assert Plug.Conn.get_resp_header(download_conn, "content-disposition") == [
+               "attachment; filename=\"readme.html\""
+             ]
+    end
+
+    test "a name with spaces/slashes/quotes is sanitized into a safe filename", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: ~s(weird "name"/with\\ spaces & slashes),
+          kind: "html",
+          content: "<p>hi</p>"
+        })
+
+      conn = get(conn, ~p"/artifacts/#{artifact.id}/download")
+
+      [disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
+      assert disposition =~ ~r/^attachment; filename="[A-Za-z0-9._-]+\.html"$/
+    end
+
+    test "a name that already ends in the right extension isn't double-appended", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "already-named.html",
+          kind: "html",
+          content: "<p>hi</p>"
+        })
+
+      conn = get(conn, ~p"/artifacts/#{artifact.id}/download")
+
+      assert Plug.Conn.get_resp_header(conn, "content-disposition") == [
+               "attachment; filename=\"already-named.html\""
+             ]
+    end
+
+    test "falls back to artifact-<id> when sanitizing strips the name to nothing", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "???///",
+          kind: "html",
+          content: "<p>hi</p>"
+        })
+
+      conn = get(conn, ~p"/artifacts/#{artifact.id}/download")
+
+      assert Plug.Conn.get_resp_header(conn, "content-disposition") == [
+               "attachment; filename=\"artifact-#{artifact.id}.html\""
+             ]
+    end
+  end
+
   defp get_resp_content_type(conn) do
     [content_type] = Plug.Conn.get_resp_header(conn, "content-type")
     content_type |> String.split(";") |> hd()

@@ -2214,13 +2214,23 @@ defmodule OrcaHubWeb.SessionLive.Show do
           <span class="badge badge-xs badge-outline">{@tab.artifact.kind}</span>
           <span class="badge badge-xs badge-ghost">v{@tab.artifact.version}</span>
         </div>
-        <.link
-          navigate={~p"/artifacts/#{@tab.artifact_id}"}
-          class="btn btn-xs btn-ghost gap-1 shrink-0"
-          title="Open fullscreen"
-        >
-          <.icon name="hero-arrows-pointing-out-micro" class="size-3" /> Fullscreen
-        </.link>
+        <div class="flex items-center gap-1 shrink-0">
+          <.link
+            href={~p"/artifacts/#{@tab.artifact_id}/download"}
+            download
+            class="btn btn-xs btn-ghost gap-1"
+            title="Download artifact"
+          >
+            <.icon name="hero-arrow-down-tray-micro" class="size-3" /> Download
+          </.link>
+          <.link
+            navigate={~p"/artifacts/#{@tab.artifact_id}"}
+            class="btn btn-xs btn-ghost gap-1"
+            title="Open fullscreen"
+          >
+            <.icon name="hero-arrows-pointing-out-micro" class="size-3" /> Fullscreen
+          </.link>
+        </div>
       </div>
       <iframe
         id={"artifact-iframe-#{@variant}-#{@tab.artifact_id}"}
