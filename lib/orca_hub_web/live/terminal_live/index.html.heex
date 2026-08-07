@@ -89,7 +89,7 @@
               :if={@clustered && Map.get(@node_map, terminal.id)}
               class="badge badge-xs badge-outline opacity-60"
             >
-              {OrcaHub.Cluster.node_name(Map.get(@node_map, terminal.id))}
+              {Map.get(@node_names, Map.get(@node_map, terminal.id))}
             </span>
           </div>
           <div class="text-base-content/50 text-xs mt-0.5 font-mono truncate">

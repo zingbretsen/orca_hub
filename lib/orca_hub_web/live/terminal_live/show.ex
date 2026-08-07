@@ -100,13 +100,14 @@ defmodule OrcaHubWeb.TerminalLive.Show do
     end
   end
 
-  defp find_terminal!(id) do
-    # Fan out to find the terminal across all hub DBs
-    results = Cluster.fan_out(HubRPC, :get_terminal, [id])
-
-    case Enum.find(results, fn {_n, t} -> t != nil end) do
-      {_n, terminal} -> terminal
-      nil -> raise Ecto.NoResultsError, queryable: OrcaHub.Terminals.Terminal
-    end
-  end
+  # The hub+agent topology has ONE database — HubRPC.get_terminal!/1 already
+  # resolves to it directly regardless of which node calls it, so fanning
+  # this out to every connected node and waiting for the slowest to answer
+  # (or time out, up to `fan_out`'s timeout + 2s) was pure overhead with a
+  # latent multi-second stall risk, not something the single-DB topology
+  # needs. See perf_audit_admin_pages.md §2b. runner_node routing for a
+  # remote-owned terminal is unaffected: it's derived below from the
+  # terminal's own `runner_node` field via Cluster.runner_node_for/1, not
+  # from which node happened to answer the fan-out.
+  defp find_terminal!(id), do: HubRPC.get_terminal!(id)
 end

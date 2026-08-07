@@ -186,4 +186,61 @@ defmodule OrcaHub.ClusterTest do
       refute Cluster.node_unavailable_error?(3)
     end
   end
+
+  # A remote node_name/1 resolution is a blocking :erpc call (5s timeout);
+  # for a node that's reachable-but-not-answering rather than cleanly
+  # refused, that cost is paid PER CALL with no cap — see
+  # perf_audit_projects_queue.md §3/§4 (the ymir ghost node), which found
+  # deduping call count alone doesn't help when one specific node is always
+  # slow. node_name/1 now caches the remote result (real or fallback) for
+  # @node_name_cache_ttl_ms so repeat callers within the TTL never re-attempt
+  # the erpc call at all.
+  describe "node_name/1 — remote resolution is cached" do
+    test "the local node bypasses the cache entirely (no erpc cost to cache)" do
+      OrcaHub.Backend.Cache.invalidate({:cluster_node_name, node()})
+      assert Cluster.node_name(node()) == Cluster.display_name()
+
+      # node_name/1's local-node branch returns display_name() directly
+      # without ever calling get_or_run/3 — so this key stays uncached, and
+      # a fresh lookup still runs (and returns) its own fun.
+      assert OrcaHub.Backend.Cache.get_or_run({:cluster_node_name, node()}, 60_000, fn ->
+               :still_uncached
+             end) == :still_uncached
+    end
+
+    test "a remote/offline node's resolved name is cached under {:cluster_node_name, node}" do
+      OrcaHub.Backend.Cache.invalidate({:cluster_node_name, @offline_node})
+
+      name = Cluster.node_name(@offline_node)
+      assert name == "totally-offline-host"
+
+      # get_or_run/3 only calls its fun on a cache miss — a fun that flunks
+      # proves the entry above is already cached, not a coincidental repeat
+      # computation.
+      cached =
+        OrcaHub.Backend.Cache.get_or_run({:cluster_node_name, @offline_node}, 60_000, fn ->
+          flunk("node_name/1 should have populated the cache, not left it to us")
+        end)
+
+      assert cached == name
+    end
+  end
+
+  describe "node_names/1 — batched, deduped node_name/1" do
+    test "resolves each distinct node exactly once, keyed by node atom" do
+      other = :"debian@totally-offline-host-node-names-test"
+      OrcaHub.Backend.Cache.invalidate({:cluster_node_name, other})
+
+      node_map = %{"a" => node(), "b" => node(), "c" => other}
+      names = Cluster.node_names(node_map)
+
+      assert map_size(names) == 2
+      assert names[node()] == Cluster.node_name(node())
+      assert names[other] == "totally-offline-host-node-names-test"
+    end
+
+    test "an empty node_map resolves nothing" do
+      assert Cluster.node_names(%{}) == %{}
+    end
+  end
 end

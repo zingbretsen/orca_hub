@@ -21,6 +21,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
        projects: projects,
        triggers: triggers,
        node_map: node_map,
+       node_names: Cluster.node_names(node_map),
        clustered: clustered,
        show_trigger_form: false,
        editing_trigger: nil,
@@ -117,6 +118,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
          |> assign(
            triggers: triggers,
            node_map: node_map,
+           node_names: Cluster.node_names(node_map),
            show_trigger_form: false,
            editing_trigger: nil
          )
@@ -134,7 +136,13 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     tagged_triggers = Cluster.list_triggers()
     node_map = Cluster.build_node_map(tagged_triggers)
     triggers = Enum.map(tagged_triggers, fn {_n, t} -> t end)
-    {:noreply, assign(socket, triggers: triggers, node_map: node_map)}
+
+    {:noreply,
+     assign(socket,
+       triggers: triggers,
+       node_map: node_map,
+       node_names: Cluster.node_names(node_map)
+     )}
   end
 
   def handle_event("toggle_trigger", %{"id" => id}, socket) do
@@ -144,7 +152,13 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     tagged_triggers = Cluster.list_triggers()
     node_map = Cluster.build_node_map(tagged_triggers)
     triggers = Enum.map(tagged_triggers, fn {_n, t} -> t end)
-    {:noreply, assign(socket, triggers: triggers, node_map: node_map)}
+
+    {:noreply,
+     assign(socket,
+       triggers: triggers,
+       node_map: node_map,
+       node_names: Cluster.node_names(node_map)
+     )}
   end
 
   def handle_event("fire_trigger", %{"id" => id}, socket) do
@@ -170,7 +184,13 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(node_filter)
     projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
 
-    {:noreply, assign(socket, triggers: triggers, node_map: node_map, projects: projects)}
+    {:noreply,
+     assign(socket,
+       triggers: triggers,
+       node_map: node_map,
+       node_names: Cluster.node_names(node_map),
+       projects: projects
+     )}
   end
 
   defp maybe_build_cron(params, "hourly") do

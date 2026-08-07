@@ -14,6 +14,18 @@ defmodule OrcaHub.Cluster do
 
   @timeout 10_000
 
+  # A node's display name changes essentially never, but resolving it for a
+  # remote node is a blocking :erpc call (5s timeout) — cheap for a healthy
+  # node, but a node that's reachable-but-not-answering (a firewall-
+  # blackholed port, not a clean refusal) can cost 1.5-3s PER CALL with no
+  # upper bound on how often it's paid. Caching turns "pay ~3s on every
+  # single render" into "pay ~3s once per TTL window" regardless of how many
+  # times/pages call node_name/1 in between. See perf_audit_projects_queue.md
+  # §3/§4 (the ymir@192.168.1.19 ghost node) — deduping call *count* alone
+  # (§3b there) does NOT fix this, since the cost is dominated by one
+  # always-slow node, not by how many times it's resolved.
+  @node_name_cache_ttl_ms 30_000
+
   # -------------------------------------------------------------------
   # Node helpers
   # -------------------------------------------------------------------
@@ -26,17 +38,23 @@ defmodule OrcaHub.Cluster do
 
   - For atoms: Uses NODE_DISPLAY_NAME for local node, calls remote for display_name, falls back to hostname.
   - For strings: Preserves disconnected node identity by extracting hostname from node string.
+
+  Remote lookups (including the disconnected-node fallback string) are
+  cached for #{@node_name_cache_ttl_ms}ms — see the moduledoc note on
+  @node_name_cache_ttl_ms above.
   """
   def node_name(n) when is_atom(n) do
     if n == node() do
       display_name()
     else
-      try do
-        :erpc.call(n, __MODULE__, :display_name, [], 5_000)
-      catch
-        _, _ ->
-          n |> Atom.to_string() |> String.split("@") |> List.last()
-      end
+      OrcaHub.Backend.Cache.get_or_run({:cluster_node_name, n}, @node_name_cache_ttl_ms, fn ->
+        try do
+          :erpc.call(n, __MODULE__, :display_name, [], 5_000)
+        catch
+          _, _ ->
+            n |> Atom.to_string() |> String.split("@") |> List.last()
+        end
+      end)
     end
   end
 
@@ -432,6 +450,28 @@ defmodule OrcaHub.Cluster do
   """
   def build_node_map(tagged_results, id_fn \\ & &1.id) do
     Map.new(tagged_results, fn {n, item} -> {id_fn.(item), n} end)
+  end
+
+  @doc """
+  Batched, deduped version of node_name/1 for pages that render one node
+  badge per row (Triggers Index, Terminals Index, ...). Takes a
+  `%{item_id => node}` map — typically build_node_map/2's own output — and
+  resolves each DISTINCT node's display name exactly once instead of once
+  per row, returning `%{node => name}`.
+
+  This is the same per-row-vs-per-node N+1 already fixed on Sessions Index
+  (a456865) — see perf_audit_admin_pages.md §1/§2. Look results up with
+  Map.fetch!/2 once a row is known to have a node (every value in the input
+  map is a key in the output), not Map.get/3 with a function-call default:
+  that default is evaluated EAGERLY on every lookup regardless of whether it
+  hits, which is exactly how a456865's first pass silently reintroduced a
+  per-row node_name/1 call even after the "obvious" fix.
+  """
+  def node_names(node_map) when is_map(node_map) do
+    node_map
+    |> Map.values()
+    |> Enum.uniq()
+    |> Map.new(&{&1, node_name(&1)})
   end
 
   @doc "Is node `n` currently connected to this cluster (or is it this node)?"

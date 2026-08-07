@@ -213,7 +213,7 @@
               :if={@clustered && Map.get(@node_map, trigger.id)}
               class="badge badge-xs badge-outline opacity-60"
             >
-              {OrcaHub.Cluster.node_name(Map.get(@node_map, trigger.id))}
+              {Map.get(@node_names, Map.get(@node_map, trigger.id))}
             </span>
           </div>
           <div

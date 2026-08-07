@@ -24,6 +24,7 @@ defmodule OrcaHubWeb.TerminalLive.Index do
        projects: projects,
        terminals: terminals,
        node_map: node_map,
+       node_names: Cluster.node_names(node_map),
        clustered: Node.list() != [],
        show_form: false,
        terminal_form: to_form(Terminals.change_terminal(%Terminal{}))
@@ -163,6 +164,11 @@ defmodule OrcaHubWeb.TerminalLive.Index do
 
     node_map = Cluster.build_node_map(tagged_terminals)
     terminals = Enum.map(tagged_terminals, fn {_node, terminal} -> terminal end)
-    assign(socket, terminals: terminals, node_map: node_map)
+
+    assign(socket,
+      terminals: terminals,
+      node_map: node_map,
+      node_names: Cluster.node_names(node_map)
+    )
   end
 end
