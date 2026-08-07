@@ -340,4 +340,56 @@ defmodule OrcaHub.ClusterNodesTest do
       assert ClusterNodes.count_sessions_for_node("orca@nonexistent") == 0
     end
   end
+
+  describe "session_counts_by_node/0 and project_counts_by_node/0" do
+    test "grouped aggregates match the per-node counts, in a single query each" do
+      {:ok, _} = Projects.create_project(%{name: "p1", directory: "/tmp/p1", node: "orca@a"})
+      {:ok, _} = Projects.create_project(%{name: "p2", directory: "/tmp/p2", node: "orca@b"})
+
+      {:ok, _} = Sessions.create_session(%{directory: "/tmp/s1", runner_node: "orca@a"})
+      {:ok, _} = Sessions.create_session(%{directory: "/tmp/s2", runner_node: "orca@a"})
+      {:ok, _} = Sessions.create_session(%{directory: "/tmp/s3", runner_node: "orca@b"})
+      {:ok, _} = Sessions.create_session(%{directory: "/tmp/s4", runner_node: nil})
+
+      {queries, {session_counts, project_counts}} =
+        count_queries(fn ->
+          {ClusterNodes.session_counts_by_node(), ClusterNodes.project_counts_by_node()}
+        end)
+
+      assert queries == 2
+      assert session_counts["orca@a"] == 2
+      assert session_counts["orca@b"] == 1
+      refute Map.has_key?(session_counts, nil)
+      assert project_counts["orca@a"] == 1
+      assert project_counts["orca@b"] == 1
+    end
+  end
+
+  defp count_queries(fun) do
+    ref = make_ref()
+    self_pid = self()
+
+    handler = fn _event, _measurements, _metadata, _config ->
+      send(self_pid, {ref, :query})
+    end
+
+    :telemetry.attach("count-queries-#{inspect(ref)}", [:orca_hub, :repo, :query], handler, nil)
+
+    result = fun.()
+
+    :telemetry.detach("count-queries-#{inspect(ref)}")
+
+    count =
+      Stream.repeatedly(fn ->
+        receive do
+          {^ref, :query} -> :query
+        after
+          0 -> nil
+        end
+      end)
+      |> Enum.take_while(&(&1 != nil))
+      |> length()
+
+    {count, result}
+  end
 end

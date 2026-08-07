@@ -378,6 +378,9 @@ defmodule OrcaHub.HubRPC do
   def count_projects_for_node(name),
     do: call(OrcaHub.ClusterNodes, :count_projects_for_node, [name])
 
+  def session_counts_by_node, do: call(OrcaHub.ClusterNodes, :session_counts_by_node, [])
+  def project_counts_by_node, do: call(OrcaHub.ClusterNodes, :project_counts_by_node, [])
+
   # -------------------------------------------------------------------
   # Notifications (Gotify push, see OrcaHub.Notify — hub-only creds)
   # -------------------------------------------------------------------
@@ -396,4 +399,42 @@ defmodule OrcaHub.HubRPC do
   def create_skill(attrs), do: call(OrcaHub.Skills, :create_skill, [attrs])
   def update_skill(skill, attrs), do: call(OrcaHub.Skills, :update_skill, [skill, attrs])
   def delete_skill(skill), do: call(OrcaHub.Skills, :delete_skill, [skill])
+
+  # -------------------------------------------------------------------
+  # Issues — full issues_spec.md tool-surface API (Phase 2a). The minimal
+  # wrappers above (create_issue/get_issue/list_issues/0/list_issues_for_project/
+  # list_issues_by_id_prefix/append_issue_note/close_issue(1)/reopen_issue(1))
+  # predate this section and stay as-is — see OrcaHub.Issues moduledoc for why
+  # both old and new arities coexist.
+  # -------------------------------------------------------------------
+
+  def list_issues(opts), do: call(OrcaHub.Issues, :list_issues, [opts])
+
+  def update_issue(issue, attrs, session_id),
+    do: call(OrcaHub.Issues, :update_issue, [issue, attrs, session_id])
+
+  def close_issue(issue, attrs), do: call(OrcaHub.Issues, :close_issue, [issue, attrs])
+
+  def reopen_issue(issue, session_id),
+    do: call(OrcaHub.Issues, :reopen_issue, [issue, session_id])
+
+  def resolve_issue_id(id), do: call(OrcaHub.Issues, :resolve_id, [id])
+  def render_issue_key(issue), do: call(OrcaHub.Issues, :render_key, [issue])
+  def derive_issue_commits(issue), do: call(OrcaHub.Issues, :derive_commits, [issue])
+
+  def derive_issue_attempt_summary(issue),
+    do: call(OrcaHub.Issues, :derive_attempt_summary, [issue])
+
+  def live_issue_attempts(issue), do: call(OrcaHub.Issues, :live_attempts, [issue])
+
+  def find_similar_open_issue(project_id, kind, title),
+    do: call(OrcaHub.Issues, :find_similar_open_issue, [project_id, kind, title])
+
+  def list_open_issues_created_by(session_id),
+    do: call(OrcaHub.Issues, :list_open_issues_created_by, [session_id])
+
+  # Plain, no-side-effect field update (distinct from the session-aware
+  # update_issue/3 above) — used for start_session's best-effort
+  # open -> in_progress auto-transition (issues_spec.md §9).
+  def update_issue(issue, attrs), do: call(OrcaHub.Issues, :update_issue, [issue, attrs])
 end

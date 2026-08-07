@@ -447,17 +447,33 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
     if clustered do
       # In cluster mode, group by {node_name, project}
-      # First, build a map of session_id -> node_name
-      # Use session.runner_node directly to preserve disconnected node identity
+      # First, resolve each DISTINCT runner node's display name once —
+      # Cluster.node_name/1 is a blocking :erpc call for any non-local node
+      # (5s timeout), so resolving it per-session instead of per-node lets a
+      # single slow/unresponsive node multiply into many redundant waits.
+      node_names_by_runner_node =
+        tagged_sessions
+        |> Enum.map(fn {_node, session} -> session.runner_node || node() end)
+        |> Enum.uniq()
+        |> Map.new(fn runner_node -> {runner_node, Cluster.node_name(runner_node)} end)
+
+      # Then build a map of session_id -> node_name from the resolved names
+      # above. Use session.runner_node directly to preserve disconnected node
+      # identity.
       session_node_names =
         Map.new(tagged_sessions, fn {_node, session} ->
-          {session.id, Cluster.node_name(session.runner_node || node())}
+          {session.id, Map.fetch!(node_names_by_runner_node, session.runner_node || node())}
         end)
 
-      # Group sessions by {node_name, project}
+      # Group sessions by {node_name, project}. Every session here came from
+      # tagged_sessions, so session_node_names always has an entry — no
+      # fallback default needed. (`Map.get/3`'s default arg is NOT lazy: a
+      # `Cluster.node_name(node())` fallback here would eagerly re-evaluate
+      # on every single session regardless of whether it's ever used,
+      # silently reintroducing the same per-session N+1 this fix removes.)
       groups =
         Enum.group_by(sessions, fn session ->
-          node_name = Map.get(session_node_names, session.id, Cluster.node_name(node()))
+          node_name = Map.fetch!(session_node_names, session.id)
           {node_name, session.project}
         end)
 

@@ -144,4 +144,34 @@ defmodule OrcaHub.ClusterNodes do
       from p in Project, where: p.node == ^name and is_nil(p.deleted_at), select: count(p.id)
     )
   end
+
+  @doc """
+  Session counts grouped by `runner_node` in a single query, `%{name =>
+  count}` — used by the /nodes index to avoid one `count_sessions_for_node/1`
+  query per row.
+  """
+  def session_counts_by_node do
+    Repo.all(
+      from s in Session,
+        where: not is_nil(s.runner_node) and s.runner_node != "",
+        group_by: s.runner_node,
+        select: {s.runner_node, count(s.id)}
+    )
+    |> Map.new()
+  end
+
+  @doc """
+  Project counts grouped by `node` in a single query, `%{name => count}` —
+  used by the /nodes index to avoid one `count_projects_for_node/1` query per
+  row.
+  """
+  def project_counts_by_node do
+    Repo.all(
+      from p in Project,
+        where: not is_nil(p.node) and p.node != "" and is_nil(p.deleted_at),
+        group_by: p.node,
+        select: {p.node, count(p.id)}
+    )
+    |> Map.new()
+  end
 end

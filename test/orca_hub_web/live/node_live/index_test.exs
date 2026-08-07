@@ -9,7 +9,17 @@ defmodule OrcaHubWeb.NodeLive.IndexTest do
 
   import Phoenix.LiveViewTest
 
-  alias OrcaHub.ClusterNodes
+  alias OrcaHub.{ClusterNodes, Projects, Sessions}
+
+  test "load_nodes issues the same number of queries regardless of node count", %{conn: conn} do
+    seed_nodes_with_sessions_and_projects(2)
+    {few_count, {:ok, _view, _html}} = count_queries(fn -> live(conn, ~p"/nodes") end)
+
+    seed_nodes_with_sessions_and_projects(12)
+    {many_count, {:ok, _view, _html}} = count_queries(fn -> live(conn, ~p"/nodes") end)
+
+    assert few_count == many_count
+  end
 
   test "renders the local node as connected and a stale node as offline", %{conn: conn} do
     {:ok, _local} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
@@ -247,6 +257,50 @@ defmodule OrcaHubWeb.NodeLive.IndexTest do
 
       true ->
         flunk("condition not met within timeout; last render:\n#{html}")
+    end
+  end
+
+  defp seed_nodes_with_sessions_and_projects(count) do
+    for _ <- 1..count do
+      n = System.unique_integer([:positive])
+      name = "orca@load-node-#{n}"
+      {:ok, _} = ClusterNodes.upsert_seen(name, "load-node-#{n}")
+      {:ok, _} = Sessions.create_session(%{directory: "/tmp/load-node-#{n}", runner_node: name})
+
+      {:ok, _} =
+        Projects.create_project(%{name: "load-p-#{n}", directory: "/tmp/load-p-#{n}", node: name})
+    end
+
+    :ok
+  end
+
+  # Counts Ecto queries issued by `fun`, regardless of which process(es)
+  # actually run them (a connected LiveView mount runs in its own process,
+  # not the calling test process) — mirrors the methodology in
+  # perf_session_load.md.
+  defp count_queries(fun) do
+    ref = make_ref()
+    test_pid = self()
+    handler_id = {__MODULE__, ref}
+
+    :telemetry.attach(
+      handler_id,
+      [:orca_hub, :repo, :query],
+      fn _event, _measurements, _metadata, _config -> send(test_pid, {ref, :query}) end,
+      nil
+    )
+
+    result = fun.()
+    :telemetry.detach(handler_id)
+
+    {flush_query_count(ref), result}
+  end
+
+  defp flush_query_count(ref, count \\ 0) do
+    receive do
+      {^ref, :query} -> flush_query_count(ref, count + 1)
+    after
+      0 -> count
     end
   end
 end

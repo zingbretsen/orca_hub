@@ -138,6 +138,23 @@ defmodule OrcaHubWeb.NodeLive.Index do
   end
 
   # -------------------------------------------------------------------
+  # Restore-running-sweep: per-node result arrives (async, one hung node
+  # can't stall connected mount for the rest of the page — see
+  # restore_running_sweep/1's moduledoc reference)
+  # -------------------------------------------------------------------
+
+  @impl true
+  def handle_async({:restore_running, name}, result, socket) do
+    socket =
+      case result do
+        {:ok, backends} when backends != [] -> apply_restored_backends(socket, name, backends)
+        _ -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  # -------------------------------------------------------------------
   # Sweep: job progress (OrcaHub.BackendInstaller.Job PubSub events)
   # -------------------------------------------------------------------
 
@@ -167,6 +184,8 @@ defmodule OrcaHubWeb.NodeLive.Index do
 
   defp load_nodes do
     connected_names = Cluster.nodes() |> MapSet.new(&Atom.to_string/1)
+    session_counts = HubRPC.session_counts_by_node()
+    project_counts = HubRPC.project_counts_by_node()
 
     rows =
       HubRPC.list_nodes()
@@ -174,8 +193,8 @@ defmodule OrcaHubWeb.NodeLive.Index do
         %{
           node: n,
           connected: MapSet.member?(connected_names, n.name),
-          session_count: HubRPC.count_sessions_for_node(n.name),
-          project_count: HubRPC.count_projects_for_node(n.name)
+          session_count: Map.get(session_counts, n.name, 0),
+          project_count: Map.get(project_counts, n.name, 0)
         }
       end)
 
@@ -236,32 +255,32 @@ defmodule OrcaHubWeb.NodeLive.Index do
     end
   end
 
+  # Dispatches one start_async per connected node instead of awaiting a
+  # Task.async_stream inside mount/3 — a single hung-but-connected node used
+  # to block the whole connected mount for up to 6s; now each node's result
+  # lands independently in handle_async({:restore_running, name}, ...) as it
+  # arrives, off the critical path.
   defp restore_running_sweep(socket) do
     targets = connected_targets(socket.assigns.nodes)
 
-    running_by_node =
-      targets
-      |> Task.async_stream(fn {name, atom} -> {name, atom, safe_running_backends(atom)} end,
-        timeout: 6_000,
-        on_timeout: :kill_task
-      )
-      |> Enum.flat_map(fn
-        {:ok, {name, atom, backends}} when backends != [] -> [{name, atom, backends}]
-        _ -> []
-      end)
+    Enum.reduce(targets, socket, fn {name, atom}, acc ->
+      start_async(acc, {:restore_running, name}, fn -> safe_running_backends(atom) end)
+    end)
+  end
 
-    if running_by_node == [] do
-      socket
-    else
-      socket = assign(socket, sweep_active?: true)
+  defp apply_restored_backends(socket, name, backends) do
+    socket = assign(socket, sweep_active?: true)
 
-      Enum.reduce(running_by_node, socket, fn {name, atom, backends}, acc ->
+    case resolve_atom(name) do
+      nil ->
+        socket
+
+      atom ->
         Phoenix.PubSub.subscribe(OrcaHub.PubSub, BackendInstaller.topic(atom))
 
-        Enum.reduce(backends, acc, fn backend, acc2 ->
-          put_cell(acc2, name, backend, cell(:running, :update, nil, nil))
+        Enum.reduce(backends, socket, fn backend, acc ->
+          put_cell(acc, name, backend, cell(:running, :update, nil, nil))
         end)
-      end)
     end
   end
 
