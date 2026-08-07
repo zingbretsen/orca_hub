@@ -119,7 +119,27 @@ defmodule OrcaHubWeb.MessageComponents do
   defp feed_item_anchor_id({:thinking_group, id, _blocks}), do: "feed-#{id}"
 
   defp feed_item_anchor_id({:msg, msg}) do
-    "feed-#{msg["uuid"] || msg["id"] || "h#{:erlang.phash2(msg)}"}"
+    "feed-#{tts_message_id(msg)}"
+  end
+
+  # Stable identity for a message used to address it for read-aloud (TTS
+  # rewrite spec §5, Option A): the delegated hook resolves "which message"
+  # purely by this id (via `document.getElementById`), never by DOM
+  # position, and SessionLive.Show pushes this same id explicitly for
+  # autoplay-latest. Public (not defp) so both sides derive it identically
+  # from the same message map. Same fallback order as feed_item_anchor_id/1
+  # above, deliberately kept in sync with it.
+  @doc false
+  def tts_message_id(msg), do: msg["uuid"] || msg["id"] || "h#{:erlang.phash2(msg)}"
+
+  # Plain assistant text (all "text" content blocks joined), used both to
+  # render the message and — from SessionLive.Show — to decide whether a
+  # message is a valid autoplay target at all (tool-only turns aren't).
+  @doc false
+  def assistant_text(msg) do
+    (get_in(msg, ["message", "content"]) || [])
+    |> Enum.filter(&(is_map(&1) && &1["type"] == "text"))
+    |> Enum.map_join("\n", & &1["text"])
   end
 
   defp build_feed_items(messages) do
@@ -238,10 +258,6 @@ defmodule OrcaHubWeb.MessageComponents do
   defp assistant_message(assigns) do
     content_blocks = get_in(assigns.msg, ["message", "content"]) || []
 
-    text_blocks =
-      content_blocks
-      |> Enum.filter(&(is_map(&1) && &1["type"] == "text"))
-
     tool_use_blocks =
       content_blocks
       |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use"))
@@ -250,7 +266,7 @@ defmodule OrcaHubWeb.MessageComponents do
     {agent_tools, regular_tools} =
       Enum.split_with(tool_use_blocks, &(&1["name"] == "Agent"))
 
-    text = Enum.map_join(text_blocks, "\n", & &1["text"])
+    text = assistant_text(assigns.msg)
 
     assigns =
       assigns
@@ -258,18 +274,22 @@ defmodule OrcaHubWeb.MessageComponents do
       |> assign(:has_text, text != "")
       |> assign(:tool_uses, regular_tools)
       |> assign(:agent_tools, agent_tools)
-      |> assign(:msg_id, assigns.msg["id"] || System.unique_integer([:positive]))
+      |> assign(:msg_id, tts_message_id(assigns.msg))
 
     ~H"""
-    <div :if={@has_text} class="chat chat-start" data-tts-container>
+    <div :if={@has_text} class="chat chat-start">
       <div class="chat-header text-xs opacity-50 mb-1">
         <.icon name="hero-sparkles-micro" class="size-3" /> Assistant
         <.timestamp value={@msg["timestamp"]} />
       </div>
-      <div class="chat-bubble prose prose-sm prose-invert max-w-none" data-tts-text>
+      <div
+        id={"tts-text-#{@msg_id}"}
+        class="chat-bubble prose prose-sm prose-invert max-w-none"
+        data-tts-text
+      >
         {@html}
       </div>
-      <div class="chat-footer mt-1" id={"tts-#{@msg_id}"} phx-hook="TTSPlayer" phx-update="ignore">
+      <div class="chat-footer mt-1" id={"tts-footer-#{@msg_id}"} data-tts-target={@msg_id}>
         <div class="flex items-center gap-1">
           <button data-tts-action="toggle" class="btn btn-ghost btn-xs btn-circle" title="Read aloud">
             <svg

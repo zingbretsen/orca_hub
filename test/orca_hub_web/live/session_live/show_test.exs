@@ -1270,4 +1270,126 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert assigns.pending_ui_request["id"] == "req1"
     end
   end
+
+  # tts_rewrite_spec.md §5 (Option A): autoplay is driven by an explicit id
+  # from the server, never a client-side DOM scan — these pin that the right
+  # id gets pushed (or withheld) server-side.
+  describe "read-aloud (TTS) autoplay" do
+    defp insert_assistant_text(session, id, text) do
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "assistant",
+            "id" => id,
+            "message" => %{"content" => [%{"type" => "text", "text" => text}]}
+          }
+        })
+    end
+
+    test "pushes the newest assistant-text message's id when a turn goes idle with autoplay on",
+         %{conn: conn, claude_session: session} do
+      insert_assistant_text(session, "msg-1", "hello there")
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      render_hook(view, "tts_autoplay_init", %{"enabled" => true})
+
+      send(view.pid, {:status, :idle})
+
+      assert_push_event(view, "tts-autoplay", %{message_id: "msg-1"})
+    end
+
+    test "pushes nothing when autoplay is off", %{conn: conn, claude_session: session} do
+      insert_assistant_text(session, "msg-1", "hello there")
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      send(view.pid, {:status, :idle})
+
+      refute_push_event(view, "tts-autoplay", %{message_id: "msg-1"})
+    end
+
+    test "skips a tool-only final message — nothing to read, so no autoplay target", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "assistant",
+            "id" => "msg-1",
+            "message" => %{
+              "content" => [
+                %{"type" => "tool_use", "id" => "t1", "name" => "Bash", "input" => %{}}
+              ]
+            }
+          }
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      render_hook(view, "tts_autoplay_init", %{"enabled" => true})
+
+      send(view.pid, {:status, :idle})
+
+      refute_push_event(view, "tts-autoplay", %{message_id: "msg-1"})
+    end
+
+    test "finds the newest TEXT message even when a later tool-only message came after it", %{
+      conn: conn,
+      claude_session: session
+    } do
+      insert_assistant_text(session, "msg-1", "hello there")
+
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "assistant",
+            "id" => "msg-2",
+            "message" => %{
+              "content" => [
+                %{"type" => "tool_use", "id" => "t1", "name" => "Bash", "input" => %{}}
+              ]
+            }
+          }
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      render_hook(view, "tts_autoplay_init", %{"enabled" => true})
+
+      send(view.pid, {:status, :idle})
+
+      assert_push_event(view, "tts-autoplay", %{message_id: "msg-1"})
+    end
+
+    test "tts_autoplay_init hydrates :tts_autoplay from the client's localStorage on connect " <>
+           "(the assign itself still defaults to false on every mount)",
+         %{conn: conn, claude_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      refute :sys.get_state(view.pid).socket.assigns.tts_autoplay
+
+      render_hook(view, "tts_autoplay_init", %{"enabled" => true})
+      assert :sys.get_state(view.pid).socket.assigns.tts_autoplay
+    end
+
+    test "toggling autoplay pushes the new value back to the client for localStorage persistence",
+         %{conn: conn, claude_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      view |> element("button[phx-click='toggle_tts']") |> render_click()
+
+      assert_push_event(view, "tts_autoplay_persisted", %{enabled: true})
+    end
+
+    test "the ORCA_API_TOKEN for /api/tts is pushed once connected, never rendered into the page",
+         %{conn: conn, claude_session: session} do
+      Application.put_env(:orca_hub, :api_token, "tts-test-token")
+      on_exit(fn -> Application.delete_env(:orca_hub, :api_token) end)
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      refute html =~ "tts-test-token"
+      assert_push_event(view, "tts-config", %{api_token: "tts-test-token"})
+    end
+  end
 end

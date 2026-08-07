@@ -57,6 +57,410 @@ function legacyCopy(text) {
   })
 }
 
+// Read-aloud (TTS) playback engine — shared between ScrollToBottom (session
+// page, mounted on #message-feed) and TTSFeed (queue page, mounted on the
+// card list). Exactly ONE instance of this state exists per page (TTS
+// rewrite spec §5, Option A): a single Audio() element, chunk cache, and
+// abort-tracking map, addressed entirely by message id rather than by which
+// DOM node a hook happens to live on. Message footers are dumb markup
+// (`data-tts-target`/`data-tts-action`) with no hook of their own — a single
+// delegated click listener on the container resolves both the id and the
+// action, and the text to speak is looked up by id (`tts-text-<id>`), never
+// by DOM position. Mixed into each hook's methods via object spread so both
+// surfaces share one implementation (no second copy-pasted player).
+const TTS_AUTOPLAY_KEY = "orca:tts-autoplay"
+
+const TTS_ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor"><path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z"/></svg>`
+const TTS_ICON_PAUSE = `<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor"><path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zM12.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75a.75.75 0 00-.75-.75h-1.5z"/></svg>`
+
+const TTSMethods = {
+  // --- lifecycle -----------------------------------------------------
+  ttsMountShared() {
+    this.audio = null
+    this.chunks = []
+    this.currentIndex = 0
+    this.playing = false
+    this.activeId = null
+    this.activeNode = null
+    this.audioCache = {}
+    this.pendingControllers = new Map()
+    this.pendingFetches = new Map()
+    this.ttsApiToken = null
+
+    this.el.addEventListener("click", (e) => {
+      const target = e.target.closest("[data-tts-target]")
+      if (!target) return
+      const action = e.target.closest("[data-tts-action]")?.dataset.ttsAction
+      if (!action) return
+      this.ttsHandleAction(target.dataset.ttsTarget, action)
+    })
+
+    // Explicit id from the server (SessionLive.Show / QueueLive push this on
+    // turn-idle when autoplay is on) — NOT a DOM scan for "the last player".
+    // That scan broke the moment older pages could be spliced back above the
+    // newest message (windowed feed + pagination); an id LiveView already
+    // knows is correct regardless of DOM order or windowing.
+    this.handleEvent("tts-autoplay", ({ message_id }) => this.ttsPlayById(message_id))
+
+    // Bearer credential for POST /api/tts (now behind :api_authed — see
+    // router.ex). Delivered once over the already-connected LiveView socket
+    // rather than rendered into static HTML, so it never appears in a
+    // disconnected page response.
+    this.handleEvent("tts-config", ({ api_token }) => {
+      this.ttsApiToken = api_token
+    })
+
+    // Autoplay-toggle persistence (localStorage, since :tts_autoplay is a
+    // plain socket assign that would otherwise reset on every mount/reload —
+    // see tts_rewrite_spec.md). Same init/persisted round-trip pattern as
+    // the NodeFilter hook's node-filter localStorage sync above.
+    const storedAutoplay = localStorage.getItem(TTS_AUTOPLAY_KEY) === "1"
+    this.pushEvent("tts_autoplay_init", { enabled: storedAutoplay })
+    this.handleEvent("tts_autoplay_persisted", ({ enabled }) => {
+      if (enabled) {
+        localStorage.setItem(TTS_AUTOPLAY_KEY, "1")
+      } else {
+        localStorage.removeItem(TTS_AUTOPLAY_KEY)
+      }
+    })
+  },
+
+  // Called from each hook's `updated()` — after every LiveView patch, check
+  // whether the message currently being read is still in the DOM. Nothing
+  // in this app evicts rendered messages today, but the windowed/paginated
+  // feed makes it possible in principle (a message scrolling out from under
+  // an active player has no visible controls left to drive) — decision:
+  // stop rather than keep playing silently detached from any UI.
+  ttsCheckStillPresent() {
+    if (this.activeNode && !this.activeNode.isConnected) {
+      this.ttsStop()
+    }
+  },
+
+  // --- click delegation / transport -----------------------------------
+  ttsHandleAction(id, action) {
+    if (action === "toggle") {
+      if (this.activeId === id) {
+        this.playing ? this.ttsPause() : this.ttsResumeOrStart(id)
+      } else {
+        this.ttsStop()
+        this.ttsStart(id)
+      }
+      return
+    }
+
+    if (this.activeId !== id) return // prev/next/stop only apply to the active message
+
+    if (action === "prev") this.ttsPrev()
+    else if (action === "next") this.ttsNext()
+    else if (action === "stop") this.ttsStop()
+  },
+
+  ttsPlayById(id) {
+    if (!id) return
+    // Small delay to ensure LiveView has patched the DOM (the new message's
+    // text/footer need to exist before we can read/target them).
+    setTimeout(() => {
+      if (document.getElementById(`tts-footer-${id}`)) {
+        this.ttsHandleAction(id, "toggle")
+      }
+    }, 200)
+  },
+
+  ttsHeaders() {
+    const headers = { "content-type": "application/json" }
+    if (this.ttsApiToken) headers["authorization"] = `Bearer ${this.ttsApiToken}`
+    return headers
+  },
+
+  // --- chunking / text extraction (unchanged from the per-message player) --
+  ttsSplitIntoChunks(text) {
+    // Split on sentence-ending punctuation followed by whitespace
+    const raw = text.split(/(?<=[.!?])\s+/)
+    const minChars = 80
+    const chunks = []
+    let buffer = ""
+
+    for (const sentence of raw) {
+      if (buffer) {
+        buffer += " " + sentence
+      } else {
+        buffer = sentence
+      }
+      if (buffer.length >= minChars) {
+        chunks.push(buffer.trim())
+        buffer = ""
+      }
+    }
+    if (buffer.trim()) {
+      // Merge remainder into last chunk if it's too short, otherwise add as new chunk
+      if (chunks.length > 0 && buffer.trim().length < minChars) {
+        chunks[chunks.length - 1] += " " + buffer.trim()
+      } else {
+        chunks.push(buffer.trim())
+      }
+    }
+    return chunks
+  },
+
+  ttsExtractText(id) {
+    // Locate the message's text bubble by id lookup — never by DOM
+    // position (see TTSMethods' header comment / tts_rewrite_spec.md §5).
+    const bubble = document.getElementById(`tts-text-${id}`)
+    if (!bubble) return ""
+    return this.ttsCleanText(bubble.innerText || "")
+  },
+
+  ttsCleanText(text) {
+    // Strip markdown artifacts that innerText might preserve
+    text = text.replace(/^#{1,6}\s+/gm, "")          // markdown headers
+    text = text.replace(/```[\s\S]*?```/g, "")        // code blocks
+    text = text.replace(/`([^`]+)`/g, "$1")           // inline code (keep content)
+
+    // Elixir/programming term pronunciations (run BEFORE path/hash replacements)
+    const termMap = {
+      "HEEx": "heeks",
+      "EEx": "eeks",
+      "heex": "heeks",
+      "eex": "eeks",
+      "defp": "def p",
+      "defmodule": "def module",
+      "GenServer": "gen server",
+      "PubSub": "pub sub",
+      "LiveView": "live view",
+      "ExUnit": "ex unit",
+      "iex": "I E X",
+      "CSRF": "C S R F",
+      "JSONL": "JSON lines",
+      "nginx": "engine x",
+      "stdin": "standard in",
+      "stdout": "standard out",
+      "stderr": "standard error",
+      "CLI": "C L I",
+      "OTP": "O T P",
+      "npm": "N P M",
+      "UUID": "U U I D",
+      "regex": "regex",
+      "phx": "phoenix",
+    }
+
+    for (const [term, replacement] of Object.entries(termMap)) {
+      text = text.replace(new RegExp(`\\b${term}\\b`, "g"), replacement)
+    }
+
+    // Symbols
+    text = text.replace(/->/g, " to ")
+
+    // File paths with directories: extract just the filename
+    text = text.replace(/(?:\/[\w.-]+)+\/([\w.-]+)/g, (match, filename) => {
+      return filename
+        .replace(/_/g, " ")
+        .replace(/\.(\w+)$/, " dot $1")
+    })
+
+    // Standalone filenames (word.ext): "show.ex" -> "show dot ex"
+    text = text.replace(/\b(\w[\w-]*)\.(ex|exs|js|ts|css|html|json|md|yml|yaml|toml|txt|rb|py|go|rs|sh|heex|eex|leex)\b/g,
+      (match, name, ext) => `${name.replace(/_/g, " ")} dot ${ext}`
+    )
+
+    // Remaining underscores to spaces (variable names etc.)
+    text = text.replace(/_/g, " ")
+
+    // Clean up excessive whitespace
+    text = text.replace(/\n{2,}/g, ". ")
+    text = text.replace(/\s+/g, " ")
+
+    return text.trim()
+  },
+
+  // --- playback control (per-message state, keyed by this.activeId) ------
+  ttsStart(id) {
+    const text = this.ttsExtractText(id)
+    if (!text) return
+
+    const chunks = this.ttsSplitIntoChunks(text)
+    if (chunks.length === 0) return
+
+    this.activeId = id
+    this.activeNode = document.getElementById(`tts-footer-${id}`)
+    this.chunks = chunks
+    this.currentIndex = 0
+    this.playing = true
+    this.ttsUpdateUI(id)
+    this.ttsPlayCurrentChunk()
+  },
+
+  ttsPause() {
+    this.playing = false
+    if (this.audio) this.audio.pause()
+    this.ttsUpdateUI(this.activeId)
+  },
+
+  ttsResumeOrStart(id) {
+    if (this.chunks.length > 0) {
+      this.playing = true
+      if (this.audio) {
+        this.audio.play()
+      } else {
+        this.ttsPlayCurrentChunk()
+      }
+      this.ttsUpdateUI(id)
+    } else {
+      this.ttsStart(id)
+    }
+  },
+
+  // Stops playback entirely, revokes every cached blob URL (the old
+  // per-message player never did — see tts_rewrite_spec.md §3.4), and
+  // aborts every in-flight fetch including a prefetch (the old player only
+  // tracked the CURRENT chunk's controller, leaving a second, un-aborted
+  // prefetch request in flight on every stop/rapid-toggle).
+  ttsStop() {
+    this.playing = false
+    if (this.audio) {
+      this.audio.pause()
+      this.audio.src = ""
+      this.audio = null
+    }
+    for (const controller of this.pendingControllers.values()) controller.abort()
+    this.pendingControllers.clear()
+    this.pendingFetches.clear()
+    for (const url of Object.values(this.audioCache)) URL.revokeObjectURL(url)
+    this.audioCache = {}
+
+    const prevId = this.activeId
+    this.chunks = []
+    this.currentIndex = 0
+    this.activeId = null
+    this.activeNode = null
+    if (prevId) this.ttsResetUI(prevId)
+  },
+
+  ttsPrev() {
+    if (this.currentIndex > 0) {
+      if (this.audio) { this.audio.pause(); this.audio = null }
+      this.currentIndex--
+      this.ttsUpdateUI(this.activeId)
+      if (this.playing) this.ttsPlayCurrentChunk()
+    }
+  },
+
+  ttsNext() {
+    if (this.currentIndex < this.chunks.length - 1) {
+      if (this.audio) { this.audio.pause(); this.audio = null }
+      this.currentIndex++
+      this.ttsUpdateUI(this.activeId)
+      if (this.playing) this.ttsPlayCurrentChunk()
+    } else {
+      this.ttsStop()
+    }
+  },
+
+  // Fetches (or returns the cached URL for) one chunk. Every in-flight
+  // request — current chunk AND prefetch alike — is tracked in
+  // `pendingControllers`/`pendingFetches` so ttsStop() can abort/dedupe
+  // either, and a second call for the same index while one is already in
+  // flight reuses the same promise instead of firing a duplicate request.
+  ttsFetchAudio(index) {
+    if (this.audioCache[index] != null) return Promise.resolve(this.audioCache[index])
+    if (index < 0 || index >= this.chunks.length) return Promise.resolve(null)
+    if (this.pendingFetches.has(index)) return this.pendingFetches.get(index)
+
+    const controller = new AbortController()
+    this.pendingControllers.set(index, controller)
+
+    const promise = fetch("/api/tts", {
+      method: "POST",
+      headers: this.ttsHeaders(),
+      body: JSON.stringify({ text: this.chunks[index] }),
+      signal: controller.signal
+    })
+      .then((resp) => {
+        if (!resp.ok) throw new Error(`TTS failed: ${resp.status}`)
+        return resp.blob()
+      })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob)
+        this.audioCache[index] = url
+        return url
+      })
+      .finally(() => {
+        this.pendingControllers.delete(index)
+        this.pendingFetches.delete(index)
+      })
+
+    this.pendingFetches.set(index, promise)
+    return promise
+  },
+
+  async ttsPlayCurrentChunk() {
+    const id = this.activeId
+    const index = this.currentIndex
+
+    try {
+      const url = await this.ttsFetchAudio(index)
+      // Stale by the time the fetch resolved (stopped, switched message, or
+      // skipped ahead/back) — drop it rather than starting playback for a
+      // chunk nobody asked for anymore.
+      if (!url || !this.playing || this.activeId !== id || this.currentIndex !== index) return
+
+      this.audio = new Audio()
+      this.audio.preload = "auto"
+      this.audio.addEventListener("ended", () => {
+        if (this.activeId !== id) return
+        if (this.currentIndex < this.chunks.length - 1) {
+          this.currentIndex++
+          this.ttsUpdateUI(id)
+          this.ttsPlayCurrentChunk()
+        } else {
+          this.ttsStop()
+        }
+      })
+      this.audio.addEventListener("canplaythrough", () => {
+        if (this.playing && this.activeId === id) this.audio.play()
+      }, { once: true })
+      this.audio.src = url
+
+      // Pre-fetch next chunk
+      if (this.currentIndex + 1 < this.chunks.length) {
+        this.ttsFetchAudio(this.currentIndex + 1).catch(() => {})
+      }
+    } catch (e) {
+      if (e.name !== "AbortError") console.error("TTS playback error:", e)
+      if (this.activeId === id) this.ttsStop()
+    }
+  },
+
+  ttsUpdateUI(id) {
+    const footer = document.getElementById(`tts-footer-${id}`)
+    if (!footer) {
+      this.ttsStop()
+      return
+    }
+    const controls = footer.querySelector("[data-tts-controls]")
+    const playBtn = footer.querySelector("[data-tts-action='toggle']")
+
+    if (this.chunks.length === 0) {
+      if (controls) controls.classList.add("hidden")
+      if (playBtn) playBtn.innerHTML = TTS_ICON_PLAY
+    } else {
+      if (controls) controls.classList.remove("hidden")
+      const counter = footer.querySelector("[data-tts-counter]")
+      if (counter) counter.textContent = `${this.currentIndex + 1}/${this.chunks.length}`
+      if (playBtn) playBtn.innerHTML = this.playing ? TTS_ICON_PAUSE : TTS_ICON_PLAY
+    }
+  },
+
+  ttsResetUI(id) {
+    const footer = document.getElementById(`tts-footer-${id}`)
+    if (!footer) return
+    const controls = footer.querySelector("[data-tts-controls]")
+    const playBtn = footer.querySelector("[data-tts-action='toggle']")
+    if (controls) controls.classList.add("hidden")
+    if (playBtn) playBtn.innerHTML = TTS_ICON_PLAY
+  }
+}
+
 let Hooks = {
   ...colocatedHooks,
   Terminal: TerminalHook,
@@ -639,6 +1043,12 @@ let Hooks = {
       })
     }
   },
+  // Merges the read-aloud delegated hook (TTSMethods, see above) into the
+  // same element as scroll management — both are single-instance-per-page
+  // concerns anchored on #message-feed, and TTS's autoplay handling was
+  // already living inside this hook (as a DOM scan) before the rewrite, so
+  // this keeps that same pairing while fixing how it addresses "the newest
+  // message" (see TTSMethods' "tts-autoplay" handler).
   ScrollToBottom: {
     mounted() {
       this.following = true
@@ -654,17 +1064,10 @@ let Hooks = {
         this.maybeLoadOlder()
       })
 
-      this.handleEvent("tts-autoplay", () => {
-        // Small delay to ensure LiveView has patched the DOM and hooks are mounted
-        setTimeout(() => {
-          const players = this.el.querySelectorAll("[phx-hook='TTSPlayer']")
-          if (players.length > 0) {
-            const last = players[players.length - 1]
-            const toggleBtn = last.querySelector("[data-tts-action='toggle']")
-            if (toggleBtn) toggleBtn.click()
-          }
-        }, 200)
-      })
+      this.ttsMountShared()
+    },
+    destroyed() {
+      this.ttsStop()
     },
     // Pushes "load_older_messages" once the user has scrolled near the top,
     // gated on the server-driven data-has-more/data-loading-older attributes
@@ -726,290 +1129,33 @@ let Hooks = {
       // server-side (see SessionLive.Show's buffer_older_page/1), so this
       // usually just requests an instant hand-off rather than a fresh fetch.
       this.maybeLoadOlder()
+
+      // See TTSMethods.ttsCheckStillPresent — stop reading a message that
+      // just got patched out of the DOM.
+      this.ttsCheckStillPresent()
     },
     scrollToBottom(smooth) {
       this.el.scrollTo({
         top: this.el.scrollHeight,
         behavior: smooth ? "smooth" : "instant"
       })
-    }
+    },
+    ...TTSMethods
   },
 
-  TTSPlayer: {
+  // Same delegated read-aloud engine as ScrollToBottom above, mounted on the
+  // queue page's card list instead of the message feed — see TTSMethods.
+  TTSFeed: {
     mounted() {
-      this.audio = null
-      this.chunks = []
-      this.currentIndex = 0
-      this.playing = false
-      this.audioCache = {}
-      this.abortController = null
-
-      this.el.addEventListener("click", (e) => {
-        const action = e.target.closest("[data-tts-action]")?.dataset.ttsAction
-        if (action === "toggle") this.toggle()
-        else if (action === "prev") this.prev()
-        else if (action === "next") this.next()
-        else if (action === "stop") this.stop()
-      })
-
-      // Auto-start if flagged for autoplay
-      if (this.el.hasAttribute("data-tts-autoplay")) {
-        this.start()
-      }
+      this.ttsMountShared()
     },
-
     destroyed() {
-      this.stop()
+      this.ttsStop()
     },
-
-    splitIntoChunks(text) {
-      // Split on sentence-ending punctuation followed by whitespace
-      const raw = text.split(/(?<=[.!?])\s+/)
-      const minChars = 80
-      const chunks = []
-      let buffer = ""
-
-      for (const sentence of raw) {
-        if (buffer) {
-          buffer += " " + sentence
-        } else {
-          buffer = sentence
-        }
-        if (buffer.length >= minChars) {
-          chunks.push(buffer.trim())
-          buffer = ""
-        }
-      }
-      if (buffer.trim()) {
-        // Merge remainder into last chunk if it's too short, otherwise add as new chunk
-        if (chunks.length > 0 && buffer.trim().length < minChars) {
-          chunks[chunks.length - 1] += " " + buffer.trim()
-        } else {
-          chunks.push(buffer.trim())
-        }
-      }
-      return chunks
+    updated() {
+      this.ttsCheckStillPresent()
     },
-
-    extractText() {
-      // Get the text content from the adjacent message bubble
-      const bubble = this.el.closest("[data-tts-container]")?.querySelector("[data-tts-text]")
-      if (!bubble) return ""
-      return this.cleanTextForTTS(bubble.innerText || "")
-    },
-
-    cleanTextForTTS(text) {
-      // Strip markdown artifacts that innerText might preserve
-      text = text.replace(/^#{1,6}\s+/gm, "")          // markdown headers
-      text = text.replace(/```[\s\S]*?```/g, "")        // code blocks
-      text = text.replace(/`([^`]+)`/g, "$1")           // inline code (keep content)
-
-      // Elixir/programming term pronunciations (run BEFORE path/hash replacements)
-      const termMap = {
-        "HEEx": "heeks",
-        "EEx": "eeks",
-        "heex": "heeks",
-        "eex": "eeks",
-        "defp": "def p",
-        "defmodule": "def module",
-        "GenServer": "gen server",
-        "PubSub": "pub sub",
-        "LiveView": "live view",
-        "ExUnit": "ex unit",
-        "iex": "I E X",
-        "CSRF": "C S R F",
-        "JSONL": "JSON lines",
-        "nginx": "engine x",
-        "stdin": "standard in",
-        "stdout": "standard out",
-        "stderr": "standard error",
-        "CLI": "C L I",
-        "OTP": "O T P",
-        "npm": "N P M",
-        "UUID": "U U I D",
-        "regex": "regex",
-        "phx": "phoenix",
-      }
-
-      for (const [term, replacement] of Object.entries(termMap)) {
-        text = text.replace(new RegExp(`\\b${term}\\b`, "g"), replacement)
-      }
-
-      // Symbols
-      text = text.replace(/->/g, " to ")
-
-      // File paths with directories: extract just the filename
-      text = text.replace(/(?:\/[\w.-]+)+\/([\w.-]+)/g, (match, filename) => {
-        return filename
-          .replace(/_/g, " ")
-          .replace(/\.(\w+)$/, " dot $1")
-      })
-
-      // Standalone filenames (word.ext): "show.ex" -> "show dot ex"
-      text = text.replace(/\b(\w[\w-]*)\.(ex|exs|js|ts|css|html|json|md|yml|yaml|toml|txt|rb|py|go|rs|sh|heex|eex|leex)\b/g,
-        (match, name, ext) => `${name.replace(/_/g, " ")} dot ${ext}`
-      )
-
-      // Remaining underscores to spaces (variable names etc.)
-      text = text.replace(/_/g, " ")
-
-      // Clean up excessive whitespace
-      text = text.replace(/\n{2,}/g, ". ")
-      text = text.replace(/\s+/g, " ")
-
-      return text.trim()
-    },
-
-    toggle() {
-      if (this.playing) {
-        this.pause()
-      } else if (this.chunks.length > 0) {
-        this.resume()
-      } else {
-        this.start()
-      }
-    },
-
-    start() {
-      const text = this.extractText()
-      if (!text) return
-
-      this.chunks = this.splitIntoChunks(text)
-      if (this.chunks.length === 0) return
-
-      this.currentIndex = 0
-      this.playing = true
-      this.updateUI()
-      this.playCurrentChunk()
-    },
-
-    pause() {
-      this.playing = false
-      if (this.audio) {
-        this.audio.pause()
-      }
-      this.updateUI()
-    },
-
-    resume() {
-      this.playing = true
-      if (this.audio) {
-        this.audio.play()
-      } else {
-        this.playCurrentChunk()
-      }
-      this.updateUI()
-    },
-
-    stop() {
-      this.playing = false
-      if (this.audio) {
-        this.audio.pause()
-        this.audio = null
-      }
-      if (this.abortController) {
-        this.abortController.abort()
-        this.abortController = null
-      }
-      this.chunks = []
-      this.currentIndex = 0
-      this.audioCache = {}
-      this.updateUI()
-    },
-
-    prev() {
-      if (this.currentIndex > 0) {
-        if (this.audio) { this.audio.pause(); this.audio = null }
-        this.currentIndex--
-        this.updateUI()
-        if (this.playing) this.playCurrentChunk()
-      }
-    },
-
-    next() {
-      if (this.currentIndex < this.chunks.length - 1) {
-        if (this.audio) { this.audio.pause(); this.audio = null }
-        this.currentIndex++
-        this.updateUI()
-        if (this.playing) this.playCurrentChunk()
-      } else {
-        this.stop()
-      }
-    },
-
-    async fetchAudio(index) {
-      if (this.audioCache[index]) return this.audioCache[index]
-      if (index >= this.chunks.length) return null
-
-      const text = this.chunks[index]
-      this.abortController = new AbortController()
-
-      const csrfToken = document.querySelector("meta[name='csrf-token']")?.getAttribute("content")
-      const resp = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-csrf-token": csrfToken },
-        body: JSON.stringify({ text }),
-        signal: this.abortController.signal
-      })
-
-      if (!resp.ok) throw new Error(`TTS failed: ${resp.status}`)
-
-      const blob = await resp.blob()
-      const url = URL.createObjectURL(blob)
-      this.audioCache[index] = url
-      return url
-    },
-
-    async playCurrentChunk() {
-      try {
-        const url = await this.fetchAudio(this.currentIndex)
-        if (!url || !this.playing) return
-
-        this.audio = new Audio()
-        this.audio.preload = "auto"
-        this.audio.addEventListener("ended", () => {
-          if (this.currentIndex < this.chunks.length - 1) {
-            this.currentIndex++
-            this.updateUI()
-            this.playCurrentChunk()
-          } else {
-            this.stop()
-          }
-        })
-        this.audio.addEventListener("canplaythrough", () => {
-          if (this.playing) this.audio.play()
-        }, { once: true })
-        this.audio.src = url
-
-        // Pre-fetch next chunk
-        if (this.currentIndex + 1 < this.chunks.length) {
-          this.fetchAudio(this.currentIndex + 1).catch(() => {})
-        }
-      } catch (e) {
-        if (e.name !== "AbortError") console.error("TTS playback error:", e)
-        this.stop()
-      }
-    },
-
-    updateUI() {
-      const controls = this.el.querySelector("[data-tts-controls]")
-      const playBtn = this.el.querySelector("[data-tts-action='toggle']")
-
-      if (this.chunks.length === 0) {
-        if (controls) controls.classList.add("hidden")
-        if (playBtn) playBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor"><path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z"/></svg>`
-      } else {
-        if (controls) controls.classList.remove("hidden")
-        const counter = this.el.querySelector("[data-tts-counter]")
-        if (counter) counter.textContent = `${this.currentIndex + 1}/${this.chunks.length}`
-
-        if (playBtn) {
-          playBtn.innerHTML = this.playing
-            ? `<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor"><path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zM12.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75a.75.75 0 00-.75-.75h-1.5z"/></svg>`
-            : `<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor"><path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z"/></svg>`
-        }
-      }
-    }
+    ...TTSMethods
   },
 
   // Live-data channel for artifacts (see OrcaHub.Artifacts.update_artifact_data/2),

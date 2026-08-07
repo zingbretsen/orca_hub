@@ -138,6 +138,87 @@ defmodule OrcaHubWeb.MessageComponentsTest do
     refute html =~ "\"sleep\""
   end
 
+  # tts_rewrite_spec.md §5 (Option A): the footer is dumb markup with no hook
+  # of its own — a single delegated hook elsewhere resolves the target by id
+  # lookup, never by DOM position, so the id has to be stable and present.
+  describe "read-aloud (TTS) markup" do
+    test "assistant text renders dumb data-tts-target markup, addressed by the message's own id" do
+      msg = %{
+        "type" => "assistant",
+        "id" => "msg-abc",
+        "message" => %{"content" => [%{"type" => "text", "text" => "hello there"}]}
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{messages: [msg], session_node: nil})
+
+      assert html =~ ~s(id="tts-text-msg-abc")
+      assert html =~ ~s(data-tts-text)
+      assert html =~ ~s(id="tts-footer-msg-abc")
+      assert html =~ ~s(data-tts-target="msg-abc")
+      refute html =~ "phx-hook=\"TTSPlayer\""
+      refute html =~ "data-tts-container"
+    end
+
+    test "falls back to a uuid, then a content hash, when no id is present (same order as the " <>
+           "feed's own anchor id — see feed_item_anchor_id/1)" do
+      with_uuid = %{
+        "type" => "assistant",
+        "uuid" => "u-1",
+        "id" => "should-not-win",
+        "message" => %{"content" => [%{"type" => "text", "text" => "a"}]}
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [with_uuid],
+          session_node: nil
+        })
+
+      assert html =~ ~s(data-tts-target="u-1")
+
+      no_id_at_all = %{
+        "type" => "assistant",
+        "message" => %{"content" => [%{"type" => "text", "text" => "b"}]}
+      }
+
+      html2 =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [no_id_at_all],
+          session_node: nil
+        })
+
+      assert html2 =~ ~r/data-tts-target="h-?\d+"/
+    end
+
+    test "a tool-only assistant message (no text) renders no TTS footer at all" do
+      msg = %{
+        "type" => "assistant",
+        "id" => "msg-tool-only",
+        "message" => %{
+          "content" => [%{"type" => "tool_use", "id" => "t1", "name" => "Bash", "input" => %{}}]
+        }
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{messages: [msg], session_node: nil})
+
+      refute html =~ "tts-footer-msg-tool-only"
+      refute html =~ "tts-text-msg-tool-only"
+    end
+  end
+
+  test "MessageComponents.tts_message_id/1 and assistant_text/1 agree with what's rendered" do
+    msg = %{
+      "type" => "assistant",
+      "id" => "msg-xyz",
+      "message" => %{"content" => [%{"type" => "text", "text" => "hi there"}]}
+    }
+
+    assert MessageComponents.tts_message_id(msg) == "msg-xyz"
+    assert MessageComponents.assistant_text(msg) == "hi there"
+  end
+
   defp run_elixir_message(code) do
     %{
       "type" => "assistant",

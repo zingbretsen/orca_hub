@@ -31,11 +31,11 @@ defmodule OrcaHubWeb.QueueLive do
      |> assign(:form_key, 0)
      |> assign(:show_all, false)
      |> assign(:tts_autoplay, false)
-     |> assign(:tts_autoplay_pending, false)
      |> assign(:page_title, "Queue")
      |> assign(:undo_archive_session, nil)
      |> assign(:undo_archive_timer, nil)
-     |> assign(:queue_filter, queue_filter)}
+     |> assign(:queue_filter, queue_filter)
+     |> maybe_push_tts_config()}
   end
 
   @impl true
@@ -356,7 +356,19 @@ defmodule OrcaHubWeb.QueueLive do
   end
 
   def handle_event("toggle_tts", _params, socket) do
-    {:noreply, assign(socket, :tts_autoplay, !socket.assigns.tts_autoplay)}
+    enabled = !socket.assigns.tts_autoplay
+
+    {:noreply,
+     socket
+     |> assign(:tts_autoplay, enabled)
+     |> push_event("tts_autoplay_persisted", %{enabled: enabled})}
+  end
+
+  # Hydrates :tts_autoplay from the client's localStorage on connect — see
+  # SessionLive.Show's identical clause and app.js's ttsMountShared (shared
+  # storage key, so toggling autoplay on either page reflects on both).
+  def handle_event("tts_autoplay_init", %{"enabled" => enabled}, socket) do
+    {:noreply, assign(socket, :tts_autoplay, enabled)}
   end
 
   def handle_event("show_all", _params, socket) do
@@ -431,15 +443,31 @@ defmodule OrcaHubWeb.QueueLive do
       |> assign(:entries, entries)
       |> assign(:node_map, node_map)
       |> assign(:aq_questions, aq_questions)
-      |> assign(
-        :tts_autoplay_pending,
-        was_empty && now_has_entries && socket.assigns.tts_autoplay
-      )
+
+    socket =
+      if was_empty && now_has_entries && socket.assigns.tts_autoplay do
+        push_autoplay_target(socket, hd(entries))
+      else
+        socket
+      end
 
     {:noreply, socket}
   end
 
   defp handle_status_change(_status, socket), do: {:noreply, socket}
+
+  # Explicit id from the server (the new entry's session id — see
+  # extract_assistant_text/1's nil branch for why we skip messages with
+  # nothing to read), mirroring SessionLive.Show's push_autoplay_target/1.
+  # Replaces the old `data-tts-autoplay` attribute + per-card self-start,
+  # which only worked because every card had its own TTSPlayer hook.
+  defp push_autoplay_target(socket, {session, message}) do
+    if extract_assistant_text(message) do
+      push_event(socket, "tts-autoplay", %{message_id: session.id})
+    else
+      socket
+    end
+  end
 
   defp schedule_undo_archive(socket, session_id) do
     socket = cancel_undo_timer(socket)
@@ -495,6 +523,18 @@ defmodule OrcaHubWeb.QueueLive do
 
   defp reject_session(entries, id) do
     Enum.reject(entries, fn {session, _} -> session.id == id end)
+  end
+
+  # Delivered once over the connected socket (never rendered into static
+  # HTML) so the bearer credential for POST /api/tts (now behind
+  # :api_authed, see router.ex) never appears in a disconnected page
+  # response. Mirrors SessionLive.Show's identical helper.
+  defp maybe_push_tts_config(socket) do
+    if connected?(socket) do
+      push_event(socket, "tts-config", %{api_token: Application.get_env(:orca_hub, :api_token)})
+    else
+      socket
+    end
   end
 
   defp aq_state_for(socket, id) do

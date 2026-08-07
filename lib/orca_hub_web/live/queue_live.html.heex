@@ -35,10 +35,9 @@
 </div>
 
 <% visible_entries = if @show_all, do: @entries, else: Enum.take(@entries, 1) %>
-<% visible_entries = Enum.with_index(visible_entries) %>
-<div class="space-y-4 mt-4">
+<div id="queue-feed" class="space-y-4 mt-4" phx-hook="TTSFeed">
   <div
-    :for={{{session, message}, idx} <- visible_entries}
+    :for={{session, message} <- visible_entries}
     id={"queue-#{session.id}"}
     class="card bg-base-100 shadow-sm border border-base-300"
   >
@@ -95,20 +94,15 @@
       <% else %>
         <%!-- Last assistant message --%>
         <% text = extract_assistant_text(message) %>
-        <div :if={text} data-tts-container>
+        <div :if={text}>
           <div
+            id={"tts-text-#{session.id}"}
             class="prose prose-sm max-w-none bg-base-200 rounded-lg p-3 max-h-48 overflow-y-auto"
             data-tts-text
           >
             {Markdown.render(text)}
           </div>
-          <div
-            class="mt-1"
-            id={"tts-queue-#{session.id}"}
-            phx-hook="TTSPlayer"
-            phx-update="ignore"
-            data-tts-autoplay={idx == 0 && @tts_autoplay_pending}
-          >
+          <div class="mt-1" id={"tts-footer-#{session.id}"} data-tts-target={session.id}>
             <div class="flex items-center gap-1">
               <button
                 data-tts-action="toggle"

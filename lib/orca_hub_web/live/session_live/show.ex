@@ -187,7 +187,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
        max_file_size: 50_000_000,
        auto_upload: true
      )
-     |> schedule_prefetch_older_messages(window.has_more)}
+     |> schedule_prefetch_older_messages(window.has_more)
+     |> maybe_push_tts_config()}
   end
 
   @impl true
@@ -768,7 +769,20 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("toggle_tts", _params, socket) do
-    {:noreply, assign(socket, :tts_autoplay, !socket.assigns.tts_autoplay)}
+    enabled = !socket.assigns.tts_autoplay
+
+    {:noreply,
+     socket
+     |> assign(:tts_autoplay, enabled)
+     |> push_event("tts_autoplay_persisted", %{enabled: enabled})}
+  end
+
+  # Hydrates :tts_autoplay from the client's localStorage on connect (see
+  # app.js's ttsMountShared) — the assign itself still defaults to `false`
+  # on every mount (see mount/2), so without this the toggle silently
+  # resets on every reload/reconnect/navigation (tts_rewrite_spec.md).
+  def handle_event("tts_autoplay_init", %{"enabled" => enabled}, socket) do
+    {:noreply, assign(socket, :tts_autoplay, enabled)}
   end
 
   def handle_event("toggle_todos", _params, socket) do
@@ -1894,7 +1908,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
         socket = load_session_commits(socket)
 
         if socket.assigns.tts_autoplay do
-          push_event(socket, "tts-autoplay", %{})
+          push_autoplay_target(socket)
         else
           socket
         end
@@ -2527,4 +2541,43 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp remote_session?(socket), do: socket.assigns.remote_session
+
+  # -- Read-aloud (TTS) helpers — tts_rewrite_spec.md §5, Option A --
+
+  # Explicit id from the server, NOT a client-side DOM scan for "the last
+  # player" — the old approach assumed DOM order == chronological order,
+  # which breaks the moment older pages get spliced back in above the
+  # newest message (see @window_size / buffer_older_page/1). Only fires for
+  # the newest message that actually HAS text to read — a tool-only final
+  # turn has nothing to speak and is silently skipped, same as before this
+  # rewrite (the old DOM scan simply found no `TTSPlayer` to click in that
+  # case; this is the equivalent no-op, just decided server-side).
+  defp push_autoplay_target(socket) do
+    case last_spoken_message_id(socket.assigns.messages) do
+      nil -> socket
+      id -> push_event(socket, "tts-autoplay", %{message_id: id})
+    end
+  end
+
+  defp last_spoken_message_id(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find_value(fn msg ->
+      if msg["type"] == "assistant" and MessageComponents.assistant_text(msg) != "" do
+        MessageComponents.tts_message_id(msg)
+      end
+    end)
+  end
+
+  # Delivered once over the connected socket (never rendered into static
+  # HTML) so the bearer credential for POST /api/tts (now behind
+  # :api_authed, see router.ex) never appears in a disconnected page
+  # response.
+  defp maybe_push_tts_config(socket) do
+    if connected?(socket) do
+      push_event(socket, "tts-config", %{api_token: Application.get_env(:orca_hub, :api_token)})
+    else
+      socket
+    end
+  end
 end

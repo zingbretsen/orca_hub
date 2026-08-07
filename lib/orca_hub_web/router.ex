@@ -77,8 +77,19 @@ defmodule OrcaHubWeb.Router do
 
   scope "/api", OrcaHubWeb do
     pipe_through :api
-    post "/tts", TTSController, :create
     post "/webhooks/:secret", WebhookController, :create
+  end
+
+  # /api/tts sits behind :api_authed (not the bare :api pipeline) because
+  # Authelia bypasses `^/api/.*` at the ingress for this host — without
+  # app-level auth here, this route had none at any layer and proxied
+  # straight to a metered ElevenLabs call with caller-supplied text (see
+  # tts_rewrite_spec.md §3.5). The browser client sends the same
+  # ORCA_API_TOKEN bearer credential ApiAuth expects (see
+  # SessionLive.Show/QueueLive's tts-config push + app.js's ttsHeaders).
+  scope "/api", OrcaHubWeb do
+    pipe_through :api_authed
+    post "/tts", TTSController, :create
   end
 
   scope "/api/v1", OrcaHubWeb do
