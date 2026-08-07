@@ -182,3 +182,45 @@
   border-top: 1px solid oklch(50% 0 0 / 0.2);
   margin: 0.75em 0;
 }
+
+/* Mobile x-overflow containment for the session message feed. Scoped under
+   #message-feed's ID (rather than patching .chat-bubble/.prose directly) so
+   this outranks utility classes like `max-w-none` with no `!important` and
+   has zero effect on the same classes used elsewhere (editor previews,
+   artifact panels, etc).
+   - Flex/grid descendants default to `min-width: auto`, which floors their
+     shrink at their content's intrinsic width — so a `<pre>`/long token
+     inside a bubble stretches the bubble (and everything above it) instead
+     of scrolling in place. Zeroing it out here lets `.chat-bubble`'s own
+     `width: fit-content` actually shrink to the track it's given.
+   - Prose text needs `overflow-wrap: anywhere` (not `break-all`) so URLs,
+     paths, base64, and UUIDs break as a last resort while still preferring
+     natural word boundaries. `<pre>` keeps its own `whitespace-pre-wrap`
+     and must NOT get this — it already scrolls, not wraps.
+   - `<pre>`, `<table>`, and images get a hard `max-width: 100%` so they
+     never widen the feed; `<pre>`/`<table>` additionally scroll on their
+     own axis instead of clipping. */
+#message-feed {
+  overflow-x: hidden;
+}
+#message-feed * {
+  min-width: 0;
+}
+#message-feed .chat-bubble {
+  max-width: 100%;
+}
+#message-feed :where(p, li, td, th, span, a, div):not(pre):not(pre *) {
+  overflow-wrap: anywhere;
+}
+#message-feed pre,
+#message-feed table,
+#message-feed img {
+  max-width: 100%;
+}
+#message-feed pre {
+  overflow-x: auto;
+}
+#message-feed table {
+  display: block;
+  overflow-x: auto;
+}
