@@ -18,7 +18,15 @@ defmodule OrcaHub.Backend.SharedPrompts do
   `Tools.*` function called from inside `run_elixir`, none are standalone
   MCP tools, so there's nothing here to keep in sync with a promoted-tools
   list anymore.
+
+  `open_issues_prompt/1` is the issues_spec.md §10 resume hook — the
+  fragment that makes an issue's `plan` survive a compaction instead of
+  being forgotten the moment context gets summarized.
   """
+
+  alias OrcaHub.HubRPC
+
+  @orca_hub_directory "/home/zach/orca_hub"
 
   @doc "Teaches a code-exec session its collapsed tool surface, when enabled."
   def code_exec_prompt(false), do: nil
@@ -55,9 +63,10 @@ defmodule OrcaHub.Backend.SharedPrompts do
           Tools.start_session(%{"directory" => "...", "prompt" => "..."})
           Tools.search_sessions(%{"status" => "error"})
           Tools.schedule_heartbeat(%{"interval_seconds" => 300, "message" => "..."})
-          # feature-request backlog:
-          Tools.file_feature_request(%{"title" => "...", "description" => "..."})
-          Tools.list_feature_requests(%{})
+          # issues — durable work-item narrative, not standing guidance:
+          Tools.create_issue(%{"title" => "...", "description" => "..."})
+          Tools.list_issues(%{})
+          Tools.close_issue(%{"id" => "..."})  # bare id first: harvests evidence, doesn't close
 
     - Before first using a deferred-schema CLI-native tool (`Monitor`, \
       `TaskCreate`, `WebFetch`), load its real schema with ToolSearch; never \
@@ -253,25 +262,17 @@ defmodule OrcaHub.Backend.SharedPrompts do
     start_session_ref =
       if code_exec, do: "`Tools.start_session(...)`", else: "`mcp__orca__start_session`"
 
-    feature_request_ref =
-      if code_exec,
-        do: "`Tools.file_feature_request(...)`",
-        else: "`mcp__orca__file_feature_request`"
+    create_issue_ref =
+      if code_exec, do: "`Tools.create_issue(...)`", else: "`mcp__orca__create_issue`"
 
-    list_feature_requests_ref =
-      if code_exec,
-        do: "`Tools.list_feature_requests(...)`",
-        else: "`mcp__orca__list_feature_requests`"
+    list_issues_ref =
+      if code_exec, do: "`Tools.list_issues(...)`", else: "`mcp__orca__list_issues`"
 
-    append_feature_request_note_ref =
-      if code_exec,
-        do: "`Tools.append_feature_request_note(...)`",
-        else: "`mcp__orca__append_feature_request_note`"
+    append_issue_note_ref =
+      if code_exec, do: "`Tools.append_issue_note(...)`", else: "`mcp__orca__append_issue_note`"
 
-    close_feature_request_ref =
-      if code_exec,
-        do: "`Tools.close_feature_request(...)`",
-        else: "`mcp__orca__close_feature_request`"
+    close_issue_ref =
+      if code_exec, do: "`Tools.close_issue(...)`", else: "`mcp__orca__close_issue`"
 
     """
     ## Orchestration Practices (tl;dr)
@@ -284,7 +285,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - Spawning another orchestrator (`orchestrator: true`) is a handoff to a peer, not a child — you get no `[Session lifecycle]` callback from it and it's not in your `watch_children` set, so hand off the remaining context in the prompt; watch it explicitly via #{heartbeat_ref}'s `watch_session_ids` if you need to track it.
     - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
-    - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with #{list_feature_requests_ref} first — if it's already tracked, add what you found with #{append_feature_request_note_ref} instead of filing a duplicate with #{feature_request_ref}. Once a fix for a tracked request has shipped AND been verified, close it with #{close_feature_request_ref} (pass a resolution note referencing the commit).
+    - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with #{list_issues_ref} (kind: "feature_request", directory: "#{@orca_hub_directory}") first — if it's already tracked, add what you found with #{append_issue_note_ref} instead of filing a duplicate with #{create_issue_ref} (kind: "feature_request", directory: "#{@orca_hub_directory}", ...). Once a fix has shipped AND been verified, close it with #{close_issue_ref} (outcome: "resolved", resolution: ...) — call close_issue with just `id` first to read back the harvested evidence and synthesize `resolution` from that, not from memory.
     - Scheduled heartbeats do NOT survive a restart of your own host (e.g. a deploy) — re-call #{heartbeat_ref} as your first action after waking from one.
     - Pre-deploy gate pattern: run the full suite once at the pipeline tip via a dedicated worker with an explicit allow-list of known flakes; treat any NEW failure as fix-at-root, never expand the allow-list.
     """
@@ -313,6 +314,59 @@ defmodule OrcaHub.Backend.SharedPrompts do
       end
     else
       nil
+    end
+  end
+
+  @doc """
+  The resume-hook prompt fragment (issues_spec.md §10) — lists issues this
+  session created that are still open/in_progress, with their `plan` (the
+  one issue field meant to be rewritten in place as understanding
+  develops). This is what makes a plan survive a compaction instead of
+  being forgotten the moment context gets summarized.
+
+  One indexed query (`OrcaHub.Issues.list_open_issues_created_by/1`), NOT
+  the `get_issue`-style live-attempts fan-out (§3.5) — cheap enough to run
+  on every cold session spawn. Reliably fires on a fresh spawn or any
+  session whose warm port was torn down and reopened; does NOT reliably
+  fire after an in-place, CLI-native compaction inside an already-warm
+  port that never gets torn down (§10.2 — an explicitly flagged gap in the
+  spec, not solved here). `list_issues(mine: true)` is the self-serve
+  fallback for that gap (§10.3).
+
+  Returns `nil` when the session has no open/in_progress issues of its own
+  (including when `session_id` is `nil`), same convention as
+  `context_files_prompt/1`.
+  """
+  def open_issues_prompt(nil), do: nil
+
+  def open_issues_prompt(session_id) do
+    case HubRPC.list_open_issues_created_by(session_id) do
+      [] -> nil
+      issues -> "# Your Open Issues\n\n" <> Enum.map_join(issues, "\n", &open_issue_line/1)
+    end
+  end
+
+  defp open_issue_line(issue) do
+    ref = HubRPC.render_issue_key(issue) || issue.id
+    plan = if is_binary(issue.plan) and issue.plan != "", do: issue.plan, else: "(none set)"
+    base = "- [#{ref}] #{issue.title} (#{issue.status}) — plan: #{plan}"
+
+    case superseded_by_note(issue.superseded_by_issue_id) do
+      nil -> base
+      note -> base <> " " <> note
+    end
+  end
+
+  defp superseded_by_note(nil), do: nil
+
+  defp superseded_by_note(superseded_by_issue_id) do
+    case HubRPC.get_issue(superseded_by_issue_id) do
+      nil ->
+        nil
+
+      superseding ->
+        ref = HubRPC.render_issue_key(superseding) || superseding.id
+        "[superseded by #{ref} — consider closing]"
     end
   end
 
@@ -373,6 +427,14 @@ defmodule OrcaHub.Backend.SharedPrompts do
     orchestrator's workers do. Reach for this only for genuinely parallel or \
     offloadable subtasks — it is not a substitute for doing your own assigned \
     work.
+    - Closing an issue? Call close_issue with just `id` first — it hands back \
+    the harvested attempt evidence instead of closing anything. Write \
+    `resolution` from THAT, not from your own memory of the work (it may \
+    have been compacted since you started).
+    - You can cite `OrcaHub-Issue: <key>` on any commit you recognize as \
+    addressing an issue, even one you weren't spawned against (no \
+    session.issue_id needed) — it's the primary link from a commit back to \
+    the issue it resolved.
     """
     |> String.trim()
   end
@@ -387,6 +449,20 @@ defmodule OrcaHub.Backend.SharedPrompts do
     This links the commit to your OrcaHub session. Add it as a git trailer \
     (blank line after the commit body, then the trailer line). \
     Never omit this trailer.\
+    """
+    |> String.trim()
+  end
+
+  @doc "Instructs the model to append the OrcaHub-Issue git trailer for a linked issue."
+  def issue_commit_trailer_prompt(issue_key) do
+    """
+    When making a commit that addresses this session's linked issue (#{issue_key}), also add:
+
+    OrcaHub-Issue: #{issue_key}
+
+    as its own trailer line, alongside (not instead of) the OrcaHub-Session \
+    trailer. If a single commit addresses more than one open issue, add one \
+    OrcaHub-Issue: line per issue — trailers repeat.\
     """
     |> String.trim()
   end

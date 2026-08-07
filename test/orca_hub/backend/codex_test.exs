@@ -982,6 +982,41 @@ defmodule OrcaHub.Backend.CodexTest do
       refute Backend.system_prompt(c) =~ "OrcaHub-Session:"
     end
 
+    test "issue_key set includes the OrcaHub-Issue trailer instruction alongside the session one" do
+      c = ctx(%{issue_key: "ORCA-142"})
+      prompt = Backend.system_prompt(c)
+
+      assert prompt =~ "OrcaHub-Issue: ORCA-142"
+      assert prompt =~ "OrcaHub-Session:"
+    end
+
+    test "issue_key unset omits the OrcaHub-Issue trailer instruction (no linked issue)" do
+      c = ctx()
+      # NOTE: refutes the automatic per-session fragment's distinctive lead-in
+      # text, not the bare "OrcaHub-Issue:" substring — the opportunistic-
+      # citation bullet in worker_practices_prompt mentions "OrcaHub-Issue:
+      # <key>" unconditionally (see SharedPrompts), independent of this toggle.
+      refute Backend.system_prompt(c) =~ "linked issue ("
+    end
+
+    test "issue_key set but commit_trailer: false omits the issue trailer too (follows the same toggle)" do
+      c = ctx(%{issue_key: "ORCA-142", commit_trailer: false})
+      # NOTE: refutes the automatic per-session fragment's distinctive lead-in
+      # text, not the bare "OrcaHub-Issue:" substring — the opportunistic-
+      # citation bullet in worker_practices_prompt mentions "OrcaHub-Issue:
+      # <key>" unconditionally (see SharedPrompts), independent of this toggle.
+      refute Backend.system_prompt(c) =~ "linked issue ("
+    end
+
+    test "issue_key set but orchestrator: true omits the issue trailer (already omitted for orchestrators)" do
+      c = ctx(%{issue_key: "ORCA-142", orchestrator: true})
+      # NOTE: refutes the automatic per-session fragment's distinctive lead-in
+      # text, not the bare "OrcaHub-Issue:" substring — the opportunistic-
+      # citation bullet in worker_practices_prompt mentions "OrcaHub-Issue:
+      # <key>" unconditionally (see SharedPrompts), independent of this toggle.
+      refute Backend.system_prompt(c) =~ "linked issue ("
+    end
+
     test "code_exec: true swaps the sibling-sessions guidance to Tools.* inside run_elixir" do
       c = ctx(%{code_exec: true})
       prompt = Backend.system_prompt(c)

@@ -1804,4 +1804,104 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert decoded["already_exists"] == false
     end
   end
+
+  describe "start_session — issue_id (issues_spec.md §9)" do
+    defp unique_issue_key_prefix(base \\ "ISL") do
+      (base <> Integer.to_string(System.unique_integer([:positive]))) |> String.slice(0, 10)
+    end
+
+    setup %{dir: dir} do
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "issue-link-test-#{System.unique_integer([:positive])}",
+          directory: dir,
+          node: "n1@x",
+          key_prefix: unique_issue_key_prefix()
+        })
+
+      {:ok, issue} = OrcaHub.Issues.create_issue(%{title: "linked work", project_id: project.id})
+
+      {:ok, project: project, issue: issue}
+    end
+
+    test "links the new session's issue_id and auto-transitions the issue to in_progress", %{
+      state: state,
+      issue: issue
+    } do
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "issue_id" => issue.id, "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      session_id = decoded["session_id"]
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert decoded["issue_id"] == issue.id
+      assert Sessions.get_session!(session_id).issue_id == issue.id
+      assert OrcaHub.Issues.get_issue!(issue.id).status == "in_progress"
+    end
+
+    test "accepts the issue's rendered key instead of a raw id", %{state: state, issue: issue} do
+      key = OrcaHub.Issues.render_key(issue)
+      refute is_nil(key)
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "issue_id" => key, "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      on_exit(fn -> stop_if_alive(decoded["session_id"]) end)
+
+      assert decoded["issue_id"] == issue.id
+    end
+
+    test "an unresolvable issue_id fails the spawn with a friendly error, no session created",
+         %{state: state, dir: dir} do
+      existing = Sessions.list_sessions() |> length()
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "issue_id" => "NOPE-999", "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} = result
+      assert msg =~ "issue"
+      assert Sessions.list_sessions() |> length() == existing
+      assert File.exists?(dir)
+    end
+
+    test "does not clobber an issue that's already in_progress", %{state: state, issue: issue} do
+      {:ok, issue} = OrcaHub.Issues.update_issue(issue, %{status: "in_progress"})
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "issue_id" => issue.id, "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      on_exit(fn -> stop_if_alive(session_id_from!(text)) end)
+
+      assert OrcaHub.Issues.get_issue!(issue.id).status == "in_progress"
+    end
+  end
 end

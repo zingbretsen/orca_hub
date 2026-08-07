@@ -1013,3 +1013,29 @@ defmodule OrcaHub.Backend.ClaudeTest do
     end
   end
 end
+
+    test "issue_key set includes the OrcaHub-Issue trailer instruction alongside the session one" do
+      ctx = ctx(%{issue_key: "ORCA-142"})
+      prompt = Backend.system_prompt(ctx)
+
+      assert prompt =~ "OrcaHub-Issue: ORCA-142"
+      assert prompt =~ "OrcaHub-Session: #{ctx.session_id}"
+    end
+
+    test "issue_key unset omits the OrcaHub-Issue trailer instruction (no linked issue)" do
+      # NOTE: refutes the automatic per-session fragment's distinctive lead-in
+      # text, not the bare "OrcaHub-Issue:" substring — the opportunistic-
+      # citation bullet in worker_practices_prompt mentions "OrcaHub-Issue:
+      # <key>" unconditionally (see SharedPrompts), independent of this toggle.
+      refute Backend.system_prompt(ctx()) =~ "linked issue ("
+    end
+
+    test "issue_key set but commit_trailer: false omits the issue trailer too (follows the same toggle)" do
+      ctx = ctx(%{issue_key: "ORCA-142", commit_trailer: false})
+      refute Backend.system_prompt(ctx) =~ "linked issue ("
+    end
+
+    test "issue_key set but orchestrator: true omits the issue trailer (already omitted for orchestrators)" do
+      ctx = ctx(%{issue_key: "ORCA-142", orchestrator: true})
+      refute Backend.system_prompt(ctx) =~ "linked issue ("
+    end

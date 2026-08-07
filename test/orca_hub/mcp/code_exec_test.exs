@@ -535,7 +535,8 @@ defmodule OrcaHub.MCP.CodeExecTest do
       assert description =~ "Tools.start_session"
       assert description =~ "Tools.search_sessions"
       assert description =~ "Tools.schedule_heartbeat"
-      assert description =~ "Tools.file_feature_request"
+      assert description =~ "Tools.create_issue"
+      assert description =~ "Tools.list_issues"
     end
   end
 

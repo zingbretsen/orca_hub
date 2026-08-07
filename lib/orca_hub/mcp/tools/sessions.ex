@@ -150,6 +150,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "type" => "boolean",
               "description" =>
                 "If true, the new session is created as an orchestrator session — it gets the orchestrator system prompt and coordination tool surface, and is expected to delegate work to its own child sessions rather than implement directly. Default: false (a normal worker session). Use for a coordinator managing a large multi-part effort as a sub-tree. IMPORTANT: spawning another orchestrator is a HANDOFF to a sibling session by default, not a child spawn — the new orchestrator gets the caller's own parent (often none, making it a root session), notify_on_completion defaults to false, and you will NOT get a \"[Session lifecycle]\" callback or see it in watch_children. Pass notify_on_completion: true explicitly if you actually want this orchestrator spawn treated as a reporting child (the old behavior)."
+            },
+            "issue_id" => %{
+              "type" => "string",
+              "description" =>
+                "Link the new session to an issue as an attempt at it (session.issue_id) — the primary way issues get worked. Same id format as get_issue (key, UUID, or UUID prefix). If the issue is currently \"open\", it's automatically moved to \"in_progress\" (best-effort, non-blocking)."
             }
           },
           "required" => ["prompt"]
@@ -603,43 +608,99 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             error(message)
 
           {:ok, model} ->
-            session_attrs =
-              %{
-                directory: directory,
-                project_id: project_id,
-                runner_node: Atom.to_string(runner_node)
-              }
-              |> maybe_put_field(:title, args["title"])
-              |> maybe_put_field(:backend, backend)
-              |> maybe_put_field(:model, model)
-              |> maybe_put_field(:orchestrator, args["orchestrator"])
-              |> maybe_put_field(:idempotency_key, idempotency_key)
-              |> maybe_link_parent(caller, caller_session_id, args["notify_on_completion"])
+            case resolve_issue_id_arg(args["issue_id"]) do
+              {:error, message} ->
+                error(message)
 
-            case HubRPC.create_session(session_attrs) do
-              {:ok, session} ->
-                if orchestrator_handoff?(session_attrs, args["notify_on_completion"]) do
-                  maybe_record_interaction(caller_session_id, session.id, "handoff")
+              {:ok, issue_id} ->
+                session_attrs =
+                  %{
+                    directory: directory,
+                    project_id: project_id,
+                    runner_node: Atom.to_string(runner_node)
+                  }
+                  |> maybe_put_field(:title, args["title"])
+                  |> maybe_put_field(:backend, backend)
+                  |> maybe_put_field(:model, model)
+                  |> maybe_put_field(:orchestrator, args["orchestrator"])
+                  |> maybe_put_field(:idempotency_key, idempotency_key)
+                  |> maybe_put_field(:issue_id, issue_id)
+                  |> maybe_link_parent(caller, caller_session_id, args["notify_on_completion"])
+
+                case HubRPC.create_session(session_attrs) do
+                  {:ok, session} ->
+                    if orchestrator_handoff?(session_attrs, args["notify_on_completion"]) do
+                      maybe_record_interaction(caller_session_id, session.id, "handoff")
+                    end
+
+                    maybe_auto_progress_issue(issue_id, session.id)
+
+                    case Cluster.start_session(runner_node, session.id, session) do
+                      {:ok, _} ->
+                        Cluster.send_message(runner_node, session.id, args["prompt"])
+                        text(Jason.encode!(start_session_result(session, false)))
+
+                      {:error, reason} ->
+                        message =
+                          Cluster.node_unavailable_message(reason) ||
+                            "Session #{session.id} created but failed to start: #{inspect(reason)}"
+
+                        error(message)
+                    end
+
+                  {:error, changeset} ->
+                    error("Failed to create session: #{inspect(changeset.errors)}")
                 end
-
-                case Cluster.start_session(runner_node, session.id, session) do
-                  {:ok, _} ->
-                    Cluster.send_message(runner_node, session.id, args["prompt"])
-                    text(Jason.encode!(start_session_result(session, false)))
-
-                  {:error, reason} ->
-                    message =
-                      Cluster.node_unavailable_message(reason) ||
-                        "Session #{session.id} created but failed to start: #{inspect(reason)}"
-
-                    error(message)
-                end
-
-              {:error, changeset} ->
-                error("Failed to create session: #{inspect(changeset.errors)}")
             end
         end
     end
+  end
+
+  # Same id-resolution as get_issue (key, UUID, or UUID prefix — see
+  # OrcaHub.Issues.resolve_id/1) — issues_spec.md §9's start_session link.
+  defp resolve_issue_id_arg(nil), do: {:ok, nil}
+  defp resolve_issue_id_arg(""), do: {:ok, nil}
+
+  defp resolve_issue_id_arg(id) do
+    case HubRPC.resolve_issue_id(id) do
+      {:ok, issue} -> {:ok, issue.id}
+      {:error, message} -> {:error, message}
+    end
+  end
+
+  # Best-effort open -> in_progress transition when a session is linked to
+  # an issue at spawn time (issues_spec.md §9) — never allowed to block or
+  # fail the actual session spawn, same defensive pattern
+  # maybe_record_interaction/3 already uses.
+  defp maybe_auto_progress_issue(nil, _session_id), do: :ok
+
+  defp maybe_auto_progress_issue(issue_id, session_id) do
+    case HubRPC.get_issue(issue_id) do
+      %{status: "open"} = issue ->
+        case HubRPC.update_issue(issue, %{status: "in_progress"}) do
+          {:ok, _} ->
+            :ok
+
+          {:error, changeset} ->
+            Logger.warning(
+              "[MCP] start_session: failed to auto-transition issue #{issue_id} to " <>
+                "in_progress for session #{session_id}: #{inspect(changeset.errors)}"
+            )
+
+            :ok
+        end
+
+      _ ->
+        :ok
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "[MCP] start_session: failed to auto-transition issue #{issue_id} to in_progress " <>
+          "for session #{session_id}: #{Exception.format(:error, error)}"
+      )
+
+      :ok
   end
 
   # Automatic idempotency key (issue c7eeef06) — derived when the caller
@@ -704,7 +765,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       backend: session.backend,
       directory: session.directory,
       already_exists: already_exists,
-      orchestrator: session.orchestrator
+      orchestrator: session.orchestrator,
+      issue_id: session.issue_id
     }
   end
 

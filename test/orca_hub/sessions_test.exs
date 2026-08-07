@@ -571,6 +571,67 @@ defmodule OrcaHub.SessionsTest do
     end
   end
 
+  describe "git_log_by_grep/2 and list_session_commits/2 (issues_spec.md §4.2/§5.1)" do
+    defp init_git_repo(dir) do
+      File.mkdir_p!(dir)
+      System.cmd("git", ["init", "-q"], cd: dir)
+      System.cmd("git", ["config", "user.email", "test@example.com"], cd: dir)
+      System.cmd("git", ["config", "user.name", "Test"], cd: dir)
+    end
+
+    defp commit_in(dir, filename, message) do
+      File.write!(Path.join(dir, filename), Ecto.UUID.generate())
+      System.cmd("git", ["add", "."], cd: dir)
+      System.cmd("git", ["commit", "-q", "-m", message], cd: dir)
+    end
+
+    setup do
+      dir =
+        Path.join(System.tmp_dir!(), "sessions-git-grep-#{System.unique_integer([:positive])}")
+
+      init_git_repo(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+      %{dir: dir}
+    end
+
+    test "list_session_commits/2 finds a commit tagged with the OrcaHub-Session trailer", %{
+      dir: dir
+    } do
+      session_id = Ecto.UUID.generate()
+      commit_in(dir, "a.txt", "Fix the thing\n\nOrcaHub-Session: #{session_id}")
+
+      assert [%{subject: "Fix the thing"}] = Sessions.list_session_commits(dir, session_id)
+    end
+
+    test "list_session_commits/2 returns [] when no commit references the session", %{dir: dir} do
+      commit_in(dir, "a.txt", "Unrelated commit")
+
+      assert Sessions.list_session_commits(dir, Ecto.UUID.generate()) == []
+    end
+
+    # issues_spec.md §5: "Repeated trailers must be supported — one commit
+    # can carry N issue trailers, and `git log --grep` handles repeats
+    # natively." A commit citing two issues shows up independently under
+    # EACH issue's own grep — no special multi-trailer parsing needed.
+    test "a commit carrying repeated OrcaHub-Issue trailers is found by each issue's own grep", %{
+      dir: dir
+    } do
+      commit_in(
+        dir,
+        "a.txt",
+        "Fix two things at once\n\nOrcaHub-Issue: ORCA-1\nOrcaHub-Issue: ORCA-2"
+      )
+
+      assert [%{subject: "Fix two things at once"}] =
+               Sessions.git_log_by_grep(dir, "OrcaHub-Issue: ORCA-1")
+
+      assert [%{subject: "Fix two things at once"}] =
+               Sessions.git_log_by_grep(dir, "OrcaHub-Issue: ORCA-2")
+
+      assert Sessions.git_log_by_grep(dir, "OrcaHub-Issue: ORCA-3") == []
+    end
+  end
+
   describe "get_session_by_idempotency_key/1" do
     test "returns nil for nil/blank keys" do
       assert Sessions.get_session_by_idempotency_key(nil) == nil

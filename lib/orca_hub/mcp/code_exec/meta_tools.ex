@@ -154,9 +154,9 @@ defmodule OrcaHub.MCP.CodeExec.MetaTools do
         Tools.start_session(%{"directory" => "...", "prompt" => "..."})
         Tools.search_sessions(%{"status" => "error"})
         Tools.schedule_heartbeat(%{"interval_seconds" => 300, "message" => "..."})
-        # feature-request backlog:
-        Tools.file_feature_request(%{"title" => "...", "description" => "..."})
-        Tools.list_feature_requests(%{})
+        # issues — durable work-item narrative, not standing guidance:
+        Tools.create_issue(%{"title" => "...", "description" => "..."})
+        Tools.list_issues(%{})
 
     First-party OrcaHub tools available as Tools.* in every session: \
     #{first_party_tool_names()}. #{upstream_prefixes_line()}

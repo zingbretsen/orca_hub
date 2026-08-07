@@ -1294,6 +1294,34 @@ defmodule OrcaHub.Backend.PiTest do
       refute Backend.system_prompt(c) =~ "OrcaHub-Session:"
     end
 
+    test "issue_key set includes the OrcaHub-Issue trailer instruction alongside the session one" do
+      c = ctx(%{issue_key: "ORCA-142"})
+      prompt = Backend.system_prompt(c)
+
+      assert prompt =~ "OrcaHub-Issue: ORCA-142"
+      assert prompt =~ "OrcaHub-Session:"
+    end
+
+    # NOTE: refutes the automatic per-session fragment's distinctive lead-in
+    # text, not the bare "OrcaHub-Issue:" substring — the opportunistic-
+    # citation bullet in worker_practices_prompt mentions "OrcaHub-Issue:
+    # <key>" unconditionally (see SharedPrompts), independent of this toggle.
+    test "issue_key unset omits the OrcaHub-Issue trailer instruction (no linked issue)" do
+      refute Backend.system_prompt(ctx()) =~ "linked issue ("
+    end
+
+    test "issue_key set but commit_trailer: false omits the issue trailer too (follows the same toggle)" do
+      c = ctx(%{issue_key: "ORCA-142", commit_trailer: false})
+      refute Backend.system_prompt(c) =~ "linked issue ("
+    end
+
+    # No orchestrator gate on pi's issue trailer either — mirrors the
+    # session trailer's own no-gate behavior above.
+    test "orchestrator: true still includes the issue trailer when commit_trailer is unset" do
+      c = ctx(%{orchestrator: true, issue_key: "ORCA-142"})
+      assert Backend.system_prompt(c) =~ "OrcaHub-Issue: ORCA-142"
+    end
+
     # lib/orca_hub/mcp/server.ex:130 collapses the MCP surface to run_elixir
     # ONLY regardless of the orchestrator flag, so orchestrator + code_exec
     # together must rewrite the orchestrator guidance to Tools.*(...) inside

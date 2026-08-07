@@ -89,6 +89,31 @@ defmodule OrcaHub.SessionRunner do
       true
   end
 
+  # Rendered short key (e.g. "ORCA-142") for the session's linked issue, if
+  # any — resolved once at init/1 and baked into ctx.issue_key so a cold
+  # spawn's system prompt can pre-fill OrcaHub.Backend.SharedPrompts.
+  # issue_commit_trailer_prompt/1 with a literal string instead of asking
+  # the model to construct one (issues_spec.md §5 — construction is where
+  # trailer compliance dies). Fails CLOSED (nil, fragment omitted) on any
+  # lookup failure — unlike commit_trailer?/2's fail-open, there's no safe
+  # "assume linked" default when we can't confirm the issue actually
+  # exists/still resolves to a key.
+  defp issue_key(_init_data, nil), do: nil
+
+  defp issue_key(init_data, issue_id) do
+    case db_call(init_data, :get_issue, [issue_id]) do
+      nil -> nil
+      issue -> db_call(init_data, :render_issue_key, [issue])
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "[SessionRunner] failed to look up issue key for issue #{issue_id}: #{Exception.format(:error, error)} — omitting issue trailer prompt"
+      )
+
+      nil
+  end
+
   # API
 
   def start_link(opts) do
@@ -289,6 +314,7 @@ defmodule OrcaHub.SessionRunner do
       client_tools?: api_run_flags.client_tools?,
       api_run_timeout_seconds: api_run_flags.timeout_seconds,
       commit_trailer: commit_trailer?(init_data, session.project_id),
+      issue_key: issue_key(init_data, session.issue_id),
       db_node: db_node,
       # Phase 1 (backend_abstraction_spec.md §4/§5): resolve from the
       # session's persisted `backend` column. Unknown values raise (loud

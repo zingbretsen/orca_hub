@@ -15,7 +15,7 @@ defmodule OrcaHub.MCP.Tools do
   Orchestrator connections see every tool; regular connections see only the
   tools in `@regular_session_tools` — messaging another session, opening
   files, spawning a child session and peeking at/archiving it, filing
-  feature requests, and creating/browsing artifacts — plus every tool in the
+  issues, and creating/browsing artifacts — plus every tool in the
   `Discord` category module (`send_discord_message`,
   `list_discord_attachments`, `fetch_discord_attachments` — the module holds
   nothing but Discord-bridge tools, so "all of them" is the right rule) when
@@ -35,9 +35,9 @@ defmodule OrcaHub.MCP.Tools do
     Artifacts,
     Databases,
     Discord,
-    FeatureRequests,
     Files,
     Heartbeat,
+    Issues,
     Notify,
     PhxAgents,
     Projects,
@@ -53,7 +53,7 @@ defmodule OrcaHub.MCP.Tools do
     Files,
     Heartbeat,
     Discord,
-    FeatureRequests,
+    Issues,
     Artifacts,
     Databases,
     PhxAgents,
@@ -71,11 +71,12 @@ defmodule OrcaHub.MCP.Tools do
   # list_discord_attachments, fetch_discord_attachments) are deliberately
   # absent here — their visibility is conditional (see moduledoc), not static.
   @regular_session_tools ~w(send_message_to_session open_file report_progress start_session
-                             get_session_tail archive_session file_feature_request
-                             list_feature_requests get_feature_request append_feature_request_note
-                             close_feature_request save_artifact open_artifact list_artifacts
-                             get_artifact update_artifact_data screenshot_artifact
-                             provision_database list_databases
+                             get_session_tail archive_session create_issue list_issues
+                             get_issue update_issue append_issue_note close_issue
+                             file_feature_request list_feature_requests get_feature_request
+                             append_feature_request_note close_feature_request save_artifact
+                             open_artifact list_artifacts get_artifact update_artifact_data
+                             screenshot_artifact provision_database list_databases
                              phx_list_agents phx_send_to_agent phx_get_task
                              send_notification)
 

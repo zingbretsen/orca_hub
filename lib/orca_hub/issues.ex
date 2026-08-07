@@ -15,13 +15,16 @@ defmodule OrcaHub.Issues do
   `create_issue/1`, `get_issue/1,!`, `list_open_issues_for_project/1`,
   `list_issues_for_project/1`, `list_issues_by_id_prefix/1`,
   `list_issues/0`, `update_issue/2`, `append_note/2`, `close_issue/1`, and
-  `reopen_issue/1` all keep their original signature/behavior — they're
-  relied on by `OrcaHub.MCP.Tools.FeatureRequests` and `IssueLive`
-  (both still on the pre-spec contract; migrating them is Phase 2/a UI
-  follow-up, not this module's job). `close_issue/1`/`reopen_issue/1` in
-  particular do NOT freeze commits/attempts or archive anything — they're
-  the old, unconditional "just flip status" behavior, left alone on
-  purpose.
+  `reopen_issue/1` all keep their original signature/behavior. As of Phase
+  2a, `OrcaHub.MCP.Tools.FeatureRequests` no longer exists — its five tool
+  names live on as a deprecated shim inside `OrcaHub.MCP.Tools.Issues`,
+  which calls the full-spec `close_issue/2`/`reopen_issue/2`/`update_issue/3`
+  like every other Phase 2a tool. Only `IssueLive` (still on the pre-spec
+  contract; migrating it is a §12 UI follow-up, not this module's job)
+  still calls the arity-1 `close_issue/1`/`reopen_issue/1` today. Those
+  particular functions do NOT freeze commits/attempts or archive anything
+  — they're the old, unconditional "just flip status" behavior, left alone
+  on purpose.
 
   The spec's actual close/reopen semantics live in the new `close_issue/2`
   and `reopen_issue/2` (different arity, so both old and new call sites
@@ -116,6 +119,23 @@ defmodule OrcaHub.Issues do
     )
   end
 
+  @doc """
+  Non-terminal (open/in_progress) issues created by `session_id`, most
+  recently filed first, with `:project` preloaded — backs the resume-hook
+  prompt fragment (issues_spec.md §10.1, `SharedPrompts.open_issues_prompt/1`).
+  One indexed query plus one batched preload query, deliberately NOT the
+  live-attempts/commits fan-out `get_issue`/`close_issue` do — cheap enough
+  to run on every cold session spawn.
+  """
+  def list_open_issues_created_by(session_id) do
+    Repo.all(
+      from i in Issue,
+        where: i.created_by_session_id == ^session_id and i.status in ["open", "in_progress"],
+        order_by: [desc: i.inserted_at],
+        preload: :project
+    )
+  end
+
   @doc "Every issue for a project regardless of status, most recently filed first."
   def list_issues_for_project(project_id) do
     Repo.all(
@@ -168,6 +188,7 @@ defmodule OrcaHub.Issues do
     |> filter_by_query_opt(Map.get(opts, :query))
     |> order_by([i], desc: i.inserted_at)
     |> limit(^Map.get(opts, :limit, 50))
+    |> preload(:project)
     |> Repo.all()
   end
 
@@ -334,6 +355,86 @@ defmodule OrcaHub.Issues do
     |> Repo.update()
   end
 
+  @doc """
+  The `update_issue` MCP tool's full write path (issues_spec.md §6.4) — a
+  session-aware wrapper around `update_issue/2` that adds the two side
+  effects a bare changeset update can't express on its own:
+
+    * Setting `attrs[:status]` to `"open"` on a currently closed/abandoned
+      issue REOPENS it — delegates to `reopen_issue/2` (archive-then-clear,
+      §3.5.1), stamping `session_id` on the archive note; any other keys in
+      `attrs` besides `:status` are then applied as a plain follow-up
+      update against the now-reopened issue.
+    * `:resolution`/`:premise` set on an issue that's ALREADY closed/
+      abandoned, and NOT being reopened in the same call, are AMENDED: the
+      prior value is preserved via `append_note/2` before the new one is
+      applied — never silently overwritten (§6.4 "amendment semantics").
+
+  `:resolution` is rejected outright — `{:error, :resolution_requires_close}`
+  — if the issue's status after any `:status` change in this same call
+  would be open/in_progress; that's `close_issue/2`'s exclusive first-write
+  path, not this function's.
+
+  Every other field is a plain, no-side-effect update via `update_issue/2`
+  (including `:superseded_by_issue_id`, settable regardless of status).
+  """
+  def update_issue(%Issue{} = issue, attrs, session_id) do
+    effective_status = Map.get(attrs, :status, issue.status)
+
+    cond do
+      Map.has_key?(attrs, :resolution) and effective_status in ["open", "in_progress"] ->
+        {:error, :resolution_requires_close}
+
+      reopening?(issue, attrs) ->
+        apply_reopen(issue, attrs, session_id)
+
+      amending?(issue, attrs) ->
+        apply_amendment(issue, attrs, session_id)
+
+      true ->
+        update_issue(issue, attrs)
+    end
+  end
+
+  defp reopening?(issue, attrs),
+    do: attrs[:status] == "open" and issue.status in ["closed", "abandoned"]
+
+  defp amending?(issue, attrs) do
+    issue.status in ["closed", "abandoned"] and not reopening?(issue, attrs) and
+      (Map.has_key?(attrs, :resolution) or Map.has_key?(attrs, :premise))
+  end
+
+  defp apply_reopen(issue, attrs, session_id) do
+    with {:ok, reopened} <- reopen_issue(issue, session_id) do
+      case Map.drop(attrs, [:status]) do
+        empty when map_size(empty) == 0 -> {:ok, reopened}
+        remaining -> update_issue(reopened, remaining)
+      end
+    end
+  end
+
+  defp apply_amendment(issue, attrs, session_id) do
+    with {:ok, noted} <- append_note(issue, amendment_archive_note(issue, attrs, session_id)) do
+      update_issue(noted, attrs)
+    end
+  end
+
+  defp amendment_archive_note(issue, attrs, session_id) do
+    parts =
+      [
+        if Map.has_key?(attrs, :resolution) do
+          "Prior resolution:\n#{issue.resolution || "(none recorded)"}"
+        end,
+        if Map.has_key?(attrs, :premise) do
+          "Prior premise:\n#{issue.premise || "(none recorded)"}"
+        end
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n\n")
+
+    "[amended #{now_iso8601()}, session #{session_id}]\n#{parts}"
+  end
+
   @doc "Appends `note` to an issue's append-only `notes` field, separated by a blank line."
   def append_note(%Issue{} = issue, note) do
     updated =
@@ -346,7 +447,7 @@ defmodule OrcaHub.Issues do
     update_issue(issue, %{notes: updated})
   end
 
-  # ── legacy close/reopen (unchanged; back FeatureRequests + IssueLive) ──
+  # ── legacy close/reopen (unchanged; backs IssueLive only, see moduledoc) ──
 
   @doc "Transitions an issue to closed status. Legacy — see moduledoc; use close_issue/2 for new code."
   def close_issue(%Issue{} = issue), do: update_issue(issue, %{status: "closed"})

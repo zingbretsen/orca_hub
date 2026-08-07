@@ -311,6 +311,9 @@ defmodule OrcaHub.Backend.Claude do
         if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true),
           do: SharedPrompts.commit_trailer_prompt(ctx.session_id)
         ),
+        if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true) && Map.get(ctx, :issue_key),
+          do: SharedPrompts.issue_commit_trailer_prompt(ctx.issue_key)
+        ),
         if(!ctx.orchestrator,
           do: SharedPrompts.worker_practices_prompt(mcp_orchestration, code_exec)
         ),
