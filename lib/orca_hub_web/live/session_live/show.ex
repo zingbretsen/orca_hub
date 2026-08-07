@@ -276,11 +276,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # messages payload) when there is one, else the persisted column. Kept
   # separate from message loading (load_message_window/1) — see mount/2's
   # comment on why message history no longer goes through the runner.
+  # The RPC can fail even when the runner is alive — most notably
+  # {:error, {:rpc_undef, ...}} from an agent node still running a release
+  # that predates get_status/1 (hub and agents don't restart atomically) —
+  # so anything but a status map degrades to the persisted column rather
+  # than crashing mount.
   defp load_runner_status(session_node, id, session) do
-    if Cluster.session_alive?(session_node, id) do
-      Cluster.get_status(session_node, id)
+    with true <- Cluster.session_alive?(session_node, id),
+         %{status: _} = status <- Cluster.get_status(session_node, id) do
+      status
     else
-      %{status: session.status || "error"}
+      _ -> %{status: session.status || "error"}
     end
   end
 
