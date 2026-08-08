@@ -1166,6 +1166,50 @@ defmodule OrcaHub.SessionsTest do
     end
   end
 
+  describe "fetch_tool_use_message/2" do
+    test "finds the assistant message that owns a given tool_use id", %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      parent = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [%{"type" => "tool_use", "id" => "T1", "name" => "Agent", "input" => %{}}]
+        }
+      }
+
+      window_insert_at(session, parent, base)
+
+      assert %{"message" => %{"content" => [%{"id" => "T1"}]}, "timestamp" => %NaiveDateTime{}} =
+               Sessions.fetch_tool_use_message(session.id, "T1")
+    end
+
+    test "returns nil when no message carries that tool_use id", %{project: project} do
+      session = create_session(project)
+      assert Sessions.fetch_tool_use_message(session.id, "does-not-exist") == nil
+    end
+
+    test "ignores a tool_use id belonging to a different session", %{project: project} do
+      session = create_session(project)
+      other = create_session(project)
+
+      window_insert_at(
+        session,
+        %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{"type" => "tool_use", "id" => "T1", "name" => "Agent", "input" => %{}}
+            ]
+          }
+        },
+        ~N[2026-01-01 00:00:00.000000]
+      )
+
+      assert Sessions.fetch_tool_use_message(other.id, "T1") == nil
+    end
+  end
+
   describe "targeted derived-state queries (see SessionLive.Show mount)" do
     defp derived_insert_at(session, data, inserted_at) do
       {:ok, message} = Sessions.create_message(%{session_id: session.id, data: data})

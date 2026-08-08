@@ -1126,6 +1126,119 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert List.last(assigns.messages)["message"]["content"] |> hd() |> Map.get("text") ==
                "live reply"
     end
+
+    test "a live subagent reply whose parent tool_use fell outside the window still renders somewhere",
+         %{conn: conn, claude_session: session} do
+      base = ~N[2026-01-01 00:00:00.000000]
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+
+      # The subagent-spawning tool_use — inserted first, then pushed out of
+      # the window by window_size+5 younger top-level messages below.
+      parent = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "toolu_orphan_parent",
+              "name" => "Agent",
+              "input" => %{"description" => "investigate the flake"}
+            }
+          ]
+        }
+      }
+
+      feed_insert_at(session, parent, base)
+
+      for i <- 1..(window_size + 5),
+          do: feed_insert_at(session, feed_text_msg("noise#{i}"), NaiveDateTime.add(base, i))
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Parent tool_use is confirmed out of the loaded window.
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      refute Enum.any?(assigns.messages, fn m ->
+               m["message"]["content"]
+               |> List.wrap()
+               |> Enum.any?(&(is_map(&1) && &1["id"] == "toolu_orphan_parent"))
+             end)
+
+      # A live final reply from that subagent arrives mid-turn.
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{session.id}",
+        {:event,
+         %{
+           "type" => "assistant",
+           "parent_tool_use_id" => "toolu_orphan_parent",
+           "message" => %{"content" => [%{"type" => "text", "text" => "orphaned final reply"}]}
+         }}
+      )
+
+      html = render(view)
+      assert html =~ "orphaned final reply"
+    end
+
+    test "a live-pulled ancestor doesn't get duplicated once 'load older messages' reaches its real DB position",
+         %{conn: conn, claude_session: session} do
+      base = ~N[2026-01-01 00:00:00.000000]
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+
+      parent = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "toolu_orphan_parent2",
+              "name" => "Agent",
+              "input" => %{"description" => "investigate the other flake"}
+            }
+          ]
+        }
+      }
+
+      feed_insert_at(session, parent, base)
+
+      for i <- 1..(window_size + 5),
+          do: feed_insert_at(session, feed_text_msg("noise#{i}"), NaiveDateTime.add(base, i))
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{session.id}",
+        {:event,
+         %{
+           "type" => "assistant",
+           "parent_tool_use_id" => "toolu_orphan_parent2",
+           "message" => %{"content" => [%{"type" => "text", "text" => "orphaned final reply 2"}]}
+         }}
+      )
+
+      assert MapSet.member?(
+               :sys.get_state(view.pid).socket.assigns.live_pulled_ancestor_ids,
+               "toolu_orphan_parent2"
+             )
+
+      # Scroll all the way back — the older page(s) now reach the ancestor's
+      # real (older-than-everything) DB row.
+      render_hook(view, "load_older_messages", %{})
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      refute assigns.has_more_messages
+
+      ancestor_occurrences =
+        Enum.count(assigns.messages, fn m ->
+          m["message"]["content"]
+          |> List.wrap()
+          |> Enum.any?(&(is_map(&1) && &1["id"] == "toolu_orphan_parent2"))
+        end)
+
+      assert ancestor_occurrences == 1
+      assert render(view) |> String.split("orphaned final reply 2") |> length() == 2
+    end
   end
 
   describe "derived state survives outside the loaded window" do

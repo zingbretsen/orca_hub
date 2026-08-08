@@ -54,6 +54,9 @@ defmodule OrcaHub.HubRPC do
   def list_messages_window(session_id, opts),
     do: call(OrcaHub.Sessions, :list_messages_window, [session_id, opts])
 
+  def fetch_tool_use_message(session_id, tool_use_id),
+    do: call(OrcaHub.Sessions, :fetch_tool_use_message, [session_id, tool_use_id])
+
   def pending_ask_user_question(session_id),
     do: call(OrcaHub.Sessions, :pending_ask_user_question, [session_id])
 

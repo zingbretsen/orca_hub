@@ -403,6 +403,39 @@ defmodule OrcaHub.Sessions do
     Map.put(data, "timestamp", inserted_at)
   end
 
+  @doc """
+  The single assistant message that contains a `tool_use` block with the
+  given id, or `nil` — used by `SessionLive.Show` to pull a subagent's
+  parent tool_use into an already-loaded windowed feed (see
+  `list_messages_window/2`) when a LIVE event's `parent_tool_use_id` (or a
+  `task_*` progress event's `tool_use_id`) references a tool_use that fell
+  outside the window. Without this, `MessageComponents.message_feed/1`
+  groups the descendant under a parent that's never rendered, silently
+  dropping it (and everything nested under it, including a subagent's
+  final reply) from the DOM.
+
+  Returns the same shape as a `list_messages_window/2` entry (raw event
+  map plus a `"timestamp"` key).
+  """
+  def fetch_tool_use_message(session_id, tool_use_id) do
+    from(m in Message,
+      where: m.session_id == ^session_id,
+      where: fragment("? ->> 'type' = 'assistant'", m.data),
+      where:
+        fragment(
+          "EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(?->'message'->'content', '[]'::jsonb)) AS block WHERE block->>'type' = 'tool_use' AND block->>'id' = ?)",
+          m.data,
+          ^tool_use_id
+        ),
+      limit: 1
+    )
+    |> Repo.one()
+    |> case do
+      nil -> nil
+      message -> row_to_event(message)
+    end
+  end
+
   # -------------------------------------------------------------------
   # Targeted derived-state queries — see SessionLive.Show's mount, which
   # needs plan mode / todos / pending questions / pending pi dialogs /

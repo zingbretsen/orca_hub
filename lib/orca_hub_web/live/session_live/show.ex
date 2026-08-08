@@ -30,6 +30,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # long enough that it never competes with first paint for DB/CPU time.
   @prefetch_delay_ms 800
 
+  # Mirrors Sessions.list_messages_window/2's own copy of this list (and
+  # MessageComponents.message_feed/1's) — a task_* system event is anchored
+  # under its subagent by `tool_use_id` rather than `parent_tool_use_id`.
+  # See ensure_ancestor_messages_loaded/2 below.
+  @task_event_subtypes ~w(task_started task_progress task_notification)
+
   # Test seam only — lets tests assert against the real constant instead of
   # a hardcoded copy that could silently drift from it.
   @doc false
@@ -88,6 +94,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
      # See buffer_older_page/1: a background-prefetched page that hasn't
      # been committed to @messages (and therefore the DOM) yet.
      |> assign(:buffered_older_page, nil)
+     # Tool_use ids of subagent ancestors pulled in ad hoc by
+     # ensure_ancestor_messages_loaded/2 (a live event's parent fell
+     # outside the window). Tracked so a later "load older messages" page
+     # that reaches this same row (now legitimately, via normal
+     # pagination) doesn't render it — and everything DB-persisted
+     # underneath it — a second time; see commit_older_page/2.
+     |> assign(:live_pulled_ancestor_ids, MapSet.new())
      # spec §12.6 — latest pending steer/follow-up queue (pi only; stays
      # empty and unused for backends without `capabilities.steering`).
      # Transient live state, not persisted — refreshed by the runner's
@@ -296,6 +309,80 @@ defmodule OrcaHubWeb.SessionLive.Show do
     HubRPC.list_messages_window(id, limit: @window_size)
   end
 
+  # A LIVE event can arrive whose subagent-anchor tool_use fell outside the
+  # loaded window (see @window_size): the window is keyset-paginated over
+  # TOP-LEVEL messages only, so a long-running session's Agent tool_use can
+  # easily be older than the last @window_size top-level messages by the
+  # time one of its descendants (including its own final reply) streams
+  # in. MessageComponents.message_feed/1 only ever renders a descendant
+  # nested inside its parent tool_use's subagent block — an orphaned
+  # parent means the descendant renders NOWHERE, silently. The DB-loaded
+  # window itself can't have this gap (Sessions.list_messages_window/2
+  # only ever fetches descendants of the top-level messages it already
+  # fetched), so this is purely a live-arrival concern.
+  #
+  # Fetches just the missing ancestor(s) — never a full-history reload —
+  # and prepends them to @messages so the next render has an anchor to
+  # group the new event under. Walks further up if a fetched ancestor is
+  # itself a nested subagent whose own parent is also missing.
+  defp ensure_ancestor_messages_loaded(socket, event) do
+    case referenced_tool_use_id(event) do
+      nil -> socket
+      tool_use_id -> load_missing_ancestor(socket, tool_use_id, MapSet.new())
+    end
+  end
+
+  defp referenced_tool_use_id(%{"parent_tool_use_id" => id}) when is_binary(id), do: id
+
+  defp referenced_tool_use_id(%{"type" => "system", "subtype" => subtype, "tool_use_id" => id})
+       when is_binary(id) and subtype in @task_event_subtypes,
+       do: id
+
+  defp referenced_tool_use_id(_event), do: nil
+
+  defp tool_use_present?(messages, tool_use_id) do
+    Enum.any?(messages, fn m ->
+      m["type"] == "assistant" &&
+        m
+        |> get_in(["message", "content"])
+        |> List.wrap()
+        |> Enum.any?(&(is_map(&1) && &1["type"] == "tool_use" && &1["id"] == tool_use_id))
+    end)
+  end
+
+  defp load_missing_ancestor(socket, tool_use_id, seen) do
+    cond do
+      tool_use_present?(socket.assigns.messages, tool_use_id) ->
+        socket
+
+      # Cycle/bad-data guard — never loop on the same id twice.
+      MapSet.member?(seen, tool_use_id) ->
+        socket
+
+      true ->
+        case HubRPC.fetch_tool_use_message(socket.assigns.session.id, tool_use_id) do
+          # Already archived/deleted, or a malformed/synthetic id — render
+          # without the anchor rather than blocking the live event.
+          nil ->
+            socket
+
+          ancestor ->
+            socket =
+              socket
+              |> assign(:messages, [ancestor | socket.assigns.messages])
+              |> assign(
+                :live_pulled_ancestor_ids,
+                MapSet.put(socket.assigns.live_pulled_ancestor_ids, tool_use_id)
+              )
+
+            case referenced_tool_use_id(ancestor) do
+              nil -> socket
+              parent_id -> load_missing_ancestor(socket, parent_id, MapSet.put(seen, tool_use_id))
+            end
+        end
+    end
+  end
+
   # Schedules a one-shot background prefetch of the next-older page (see
   # handle_info(:prefetch_older_messages, ...)) so scrolling up usually
   # finds it ready to commit instantly instead of waiting on a fetch —
@@ -379,11 +466,47 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp commit_older_page(socket, %{messages: older, has_more: has_more?, cursor: new_cursor}) do
+    older = drop_already_pulled_ancestors(older, socket.assigns.live_pulled_ancestor_ids)
+
     socket
     |> assign(:messages, older ++ socket.assigns.messages)
     |> assign(:messages_cursor, new_cursor || socket.assigns.messages_cursor)
     |> assign(:has_more_messages, has_more?)
   end
+
+  # An older page can legitimately reach the true DB position of a subagent
+  # ancestor already pulled in ad hoc by ensure_ancestor_messages_loaded/2 —
+  # at that point the page also re-fetches every one of that ancestor's
+  # descendants (Sessions.list_messages_window/2's fetch_descendants), which
+  # would duplicate whatever already streamed in live under the ad hoc copy.
+  # Drop both the ancestor's own row and anything anchored under it from the
+  # newly fetched page; the ad hoc copy (and its live descendants) already
+  # covers that ground, just without this page's other, unrelated messages.
+  defp drop_already_pulled_ancestors(older, ancestor_ids) do
+    if MapSet.size(ancestor_ids) == 0 do
+      older
+    else
+      Enum.reject(older, &pulled_live_duplicate?(&1, ancestor_ids))
+    end
+  end
+
+  defp pulled_live_duplicate?(message, ancestor_ids) do
+    case referenced_tool_use_id(message) do
+      id when is_binary(id) -> MapSet.member?(ancestor_ids, id)
+      nil -> Enum.any?(own_tool_use_ids(message), &MapSet.member?(ancestor_ids, &1))
+    end
+  end
+
+  defp own_tool_use_ids(%{"type" => "assistant"} = message) do
+    message
+    |> get_in(["message", "content"])
+    |> List.wrap()
+    |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use"))
+    |> Enum.map(& &1["id"])
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp own_tool_use_ids(_message), do: []
 
   # Most recent EnterPlanMode/ExitPlanMode tool_use in FULL history (targeted
   # query — see Sessions.latest_plan_mode_tool_use_name/1), mapped the same
@@ -1868,6 +1991,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   @impl true
   def handle_info({:event, event}, socket) do
+    socket = ensure_ancestor_messages_loaded(socket, event)
     socket = assign(socket, :messages, socket.assigns.messages ++ [event])
     socket = handle_plan_events(socket, event)
     socket = handle_todo_events(socket, event)
