@@ -1310,6 +1310,62 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert html |> String.split("live final reply") |> length() == 2
       assert html |> String.split("pre-mount context gathering") |> length() == 2
     end
+
+    test "a live descendant that arrives AFTER the background prefetch buffered its page still survives scroll-back",
+         %{conn: conn, claude_session: session} do
+      base = ~N[2026-01-01 00:00:00.000000]
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+
+      parent = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "toolu_stale_buffer",
+              "name" => "Agent",
+              "input" => %{"description" => "long-running task"}
+            }
+          ]
+        }
+      }
+
+      feed_insert_at(session, parent, base)
+
+      for i <- 1..(window_size + 5),
+          do: feed_insert_at(session, feed_text_msg("noise#{i}"), NaiveDateTime.add(base, i))
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Force the background prefetch (normally @prefetch_delay_ms after
+      # mount) to fire NOW, deterministically — this buffers a page that
+      # already contains "toolu_stale_buffer"'s row but, since nothing has
+      # streamed in for it yet, none of its descendants.
+      send(view.pid, :prefetch_older_messages)
+      assert :sys.get_state(view.pid).socket.assigns.buffered_older_page != nil
+
+      # A live descendant arrives only NOW — strictly after the buffer was
+      # fetched, strictly before the user scrolls back to it.
+      live_reply = %{
+        "type" => "assistant",
+        "parent_tool_use_id" => "toolu_stale_buffer",
+        "message" => %{"content" => [%{"type" => "text", "text" => "reply after stale buffer"}]}
+      }
+
+      feed_insert_at(session, live_reply, NaiveDateTime.add(base, window_size + 6))
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session.id}", {:event, live_reply})
+
+      assert MapSet.member?(
+               :sys.get_state(view.pid).socket.assigns.live_pulled_ancestor_ids,
+               "toolu_stale_buffer"
+             )
+
+      render_hook(view, "load_older_messages", %{})
+
+      html = render(view)
+      assert html =~ "reply after stale buffer"
+      assert html |> String.split("reply after stale buffer") |> length() == 2
+    end
   end
 
   describe "derived state survives outside the loaded window" do

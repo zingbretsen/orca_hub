@@ -441,11 +441,34 @@ defmodule OrcaHubWeb.SessionLive.Show do
         socket |> fetch_and_commit_older_page() |> buffer_older_page()
 
       page ->
-        socket
-        |> commit_older_page(page)
-        |> assign(:buffered_older_page, nil)
-        |> buffer_older_page()
+        if stale_for_pulled_ancestors?(page.messages, socket.assigns.live_pulled_ancestor_ids) do
+          # This page was fetched in the background (buffer_older_page/1, up
+          # to @prefetch_delay_ms ago) — a live event can easily have landed
+          # since, been pulled in ad hoc by ensure_ancestor_messages_loaded/2
+          # (adding to live_pulled_ancestor_ids), and be sitting in @messages
+          # with no counterpart in this now-stale page. commit_older_page/2's
+          # reconcile step assumes the opposite: that `older` is the
+          # complete, up-to-date picture for any ancestor it resolves — true
+          # only for a page fetched synchronously right here (no live event
+          # can interleave with a single LiveView handler call). Discard the
+          # stale buffer and fall through to that synchronous path instead
+          # of committing it as-is and losing the live descendant.
+          socket
+          |> assign(:buffered_older_page, nil)
+          |> fetch_and_commit_older_page()
+          |> buffer_older_page()
+        else
+          socket
+          |> commit_older_page(page)
+          |> assign(:buffered_older_page, nil)
+          |> buffer_older_page()
+        end
     end
+  end
+
+  defp stale_for_pulled_ancestors?(page, ancestor_ids) do
+    MapSet.size(ancestor_ids) > 0 and
+      Enum.any?(ancestor_ids, &page_contains_ancestor_row?(page, &1))
   end
 
   defp fetch_and_commit_older_page(socket) do
@@ -496,10 +519,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # so structural/timestamp equality can't tell "already streamed live"
   # apart from "genuinely new". So: purge the ad hoc ancestor copy (and
   # anything that streamed in live under it) from CURRENT @messages and let
-  # `older`'s own fetch — necessarily up to date, since every live event is
-  # persisted synchronously before it's broadcast (see load_message_window/1's
-  # comment) — replace it wholesale, rather than trying to reconcile the two
-  # copies message-by-message.
+  # `older`'s own fetch replace it wholesale, rather than trying to
+  # reconcile the two copies message-by-message.
+  #
+  # This is only correct when `older` was fetched SYNCHRONOUSLY, in this
+  # same handler call — every live event is persisted before it's broadcast
+  # (see load_message_window/1's comment), and a LiveView process handles
+  # one message at a time, so nothing can land between that fetch and this
+  # purge to be missed. A page fetched earlier and merely handed to this
+  # function (buffer_older_page/1's background prefetch) carries no such
+  # guarantee — see commit_buffered_older_page/1, which discards a stale
+  # buffer rather than ever passing one here.
   defp reconcile_pulled_ancestors(older, messages, ancestor_ids) do
     if MapSet.size(ancestor_ids) == 0 do
       {messages, ancestor_ids}
