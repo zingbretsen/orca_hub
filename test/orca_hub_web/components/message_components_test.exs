@@ -471,4 +471,104 @@ defmodule OrcaHubWeb.MessageComponentsTest do
       assert html =~ "Compaction failed: API quota exceeded"
     end
   end
+
+  # A windowed feed (see SessionLive.Show's @window_size) can hand
+  # message_feed/1 a descendant whose subagent-anchor tool_use isn't among
+  # the messages it was given — the anchor fell outside the window, was
+  # never loaded, or the id is simply bad. message_feed/1 must be TOTAL: it
+  # renders every message it's handed somewhere, never silently drops one
+  # because it can't be nested.
+  describe "orphaned subagent descendants (missing anchor tool_use)" do
+    test "a descendant with no matching parent tool_use renders at top level, marked as orphaned" do
+      orphan = %{
+        "type" => "assistant",
+        "parent_tool_use_id" => "toolu_missing",
+        "message" => %{"content" => [%{"type" => "text", "text" => "orphaned descendant text"}]}
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [orphan],
+          session_node: nil
+        })
+
+      assert html =~ "orphaned descendant text"
+      assert html =~ "orphaned subagent fragment"
+    end
+
+    test "an orphaned task_* progress event (missing tool_use_id anchor) also renders at top level" do
+      orphan_task_event = %{
+        "type" => "system",
+        "subtype" => "task_progress",
+        "tool_use_id" => "toolu_missing",
+        "message" => "orphaned task progress note"
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [orphan_task_event],
+          session_node: nil
+        })
+
+      assert html =~ "orphaned task progress note"
+      assert html =~ "orphaned subagent fragment"
+    end
+
+    test "normal nesting is unchanged: a descendant WITH a present parent tool_use nests, unmarked" do
+      parent = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{"type" => "tool_use", "id" => "toolu_present", "name" => "Agent", "input" => %{}}
+          ]
+        }
+      }
+
+      child = %{
+        "type" => "assistant",
+        "parent_tool_use_id" => "toolu_present",
+        "message" => %{"content" => [%{"type" => "text", "text" => "nested child reply"}]}
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [parent, child],
+          session_node: nil
+        })
+
+      assert html =~ "nested child reply"
+      refute html =~ "orphaned subagent fragment"
+    end
+
+    test "normal task_* progress nesting is unchanged when its tool_use anchor is present" do
+      parent = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{"type" => "tool_use", "id" => "toolu_present2", "name" => "Agent", "input" => %{}}
+          ]
+        }
+      }
+
+      # subagent_block reads "description" for its progress-text header
+      # (unlike the generic system_message component, which reads
+      # "message" — hence the different field name from the orphaned case
+      # above).
+      task_event = %{
+        "type" => "system",
+        "subtype" => "task_progress",
+        "tool_use_id" => "toolu_present2",
+        "description" => "nested task progress note"
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [parent, task_event],
+          session_node: nil
+        })
+
+      assert html =~ "nested task progress note"
+      refute html =~ "orphaned subagent fragment"
+    end
+  end
 end

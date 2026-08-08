@@ -361,8 +361,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
       true ->
         case HubRPC.fetch_tool_use_message(socket.assigns.session.id, tool_use_id) do
-          # Already archived/deleted, or a malformed/synthetic id — render
-          # without the anchor rather than blocking the live event.
+          # Already archived/deleted, or a malformed/synthetic id — give up
+          # on finding the anchor rather than blocking the live event.
+          # MessageComponents.message_feed/1 renders it top-level instead of
+          # dropping it in this case (its own `known_tool_use_ids` check).
           nil ->
             socket
 

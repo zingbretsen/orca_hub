@@ -11,11 +11,28 @@ defmodule OrcaHubWeb.MessageComponents do
   alias OrcaHub.MCP.CodeExec.Analyzer
   alias OrcaHubWeb.Markdown
 
+  # Mirrors Sessions.list_messages_window/2's own copy of this list (and
+  # SessionLive.Show's) — a task_* system event is anchored under its
+  # subagent by `tool_use_id` rather than `parent_tool_use_id`.
+  @task_event_subtypes ~w(task_started task_progress task_notification)
+
   attr :messages, :list, required: true
   attr :session_node, :atom, default: nil
 
   def message_feed(assigns) do
     messages = Enum.reject(assigns.messages, &hidden_message?/1)
+
+    # A descendant is only ever rendered NESTED — inside the subagent block
+    # of the tool_use it's anchored under (below, and in assistant_message/
+    # subagent_block's own recursive message_feed call for a nested agent).
+    # If that anchor isn't among the messages THIS CALL was handed — window
+    # eviction, a not-yet-loaded ancestor, a deleted/malformed id, whatever
+    # the cause — there is no nesting to fall back into, and this component
+    # must not silently drop it. `known_tool_use_ids` is what decides that:
+    # an anchor id missing from it means "render at top level instead",
+    # keeping message_feed/1 total (every message it's given ends up
+    # SOMEWHERE in the DOM) rather than partial.
+    known_tool_use_ids = collect_tool_use_ids(messages)
 
     # Group subagent messages by parent_tool_use_id
     subagent_map =
@@ -24,12 +41,10 @@ defmodule OrcaHubWeb.MessageComponents do
       |> Enum.group_by(& &1["parent_tool_use_id"])
 
     # Collect task_* system events by tool_use_id (these are subagent progress events)
-    task_event_subtypes = ~w(task_started task_progress task_notification)
-
     task_events_map =
       messages
       |> Enum.filter(fn msg ->
-        msg["type"] == "system" and msg["subtype"] in task_event_subtypes and
+        msg["type"] == "system" and msg["subtype"] in @task_event_subtypes and
           msg["tool_use_id"] != nil
       end)
       |> Enum.group_by(& &1["tool_use_id"])
@@ -40,20 +55,19 @@ defmodule OrcaHubWeb.MessageComponents do
         msgs ++ tasks
       end)
 
-    # Filter out subagent messages and task_* system events from main list
-    task_tool_use_ids = Map.keys(task_events_map) |> MapSet.new()
-
+    # Filter out subagent messages and task_* system events from the main
+    # list — but ONLY the ones with a resolvable anchor; an orphan (see
+    # known_tool_use_ids above) stays in top_level instead.
     top_level =
       Enum.reject(messages, fn msg ->
-        msg["parent_tool_use_id"] != nil or
-          (msg["type"] == "system" and msg["subtype"] in task_event_subtypes and
-             MapSet.member?(task_tool_use_ids, msg["tool_use_id"]))
+        anchored_and_resolvable?(msg, known_tool_use_ids)
       end)
 
     assigns =
       assigns
       |> assign(:feed_items, build_feed_items(top_level))
       |> assign(:subagent_map, subagent_map)
+      |> assign(:known_tool_use_ids, known_tool_use_ids)
 
     ~H"""
     <div :for={item <- @feed_items} id={feed_item_anchor_id(item)}>
@@ -61,6 +75,7 @@ defmodule OrcaHubWeb.MessageComponents do
         <% {:thinking_group, id, blocks} -> %>
           <.thinking_block id={id} blocks={blocks} />
         <% {:msg, msg} -> %>
+          <.orphaned_fragment_marker :if={orphaned_fragment?(msg, @known_tool_use_ids)} />
           <%= case msg["type"] do %>
             <% "user" -> %>
               <.user_message msg={msg} session_node={@session_node} />
@@ -88,6 +103,72 @@ defmodule OrcaHubWeb.MessageComponents do
               </div>
           <% end %>
       <% end %>
+    </div>
+    """
+  end
+
+  defp collect_tool_use_ids(messages) do
+    messages
+    |> Enum.filter(&(&1["type"] == "assistant"))
+    |> Enum.flat_map(fn m ->
+      m
+      |> get_in(["message", "content"])
+      |> List.wrap()
+      |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use"))
+      |> Enum.map(& &1["id"])
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> MapSet.new()
+  end
+
+  # True for a descendant (or task_* progress event) whose anchor tool_use
+  # IS among `known_tool_use_ids` — the normal case, where nesting under
+  # that tool_use's subagent block is possible and this message should be
+  # excluded from `top_level`. False (stays top-level) for a genuinely
+  # top-level message OR an orphan whose anchor is missing.
+  defp anchored_and_resolvable?(%{"parent_tool_use_id" => id}, known) when is_binary(id) do
+    MapSet.member?(known, id)
+  end
+
+  defp anchored_and_resolvable?(
+         %{"type" => "system", "subtype" => subtype, "tool_use_id" => id},
+         known
+       )
+       when is_binary(id) and subtype in @task_event_subtypes do
+    MapSet.member?(known, id)
+  end
+
+  defp anchored_and_resolvable?(_msg, _known), do: false
+
+  defp orphaned_fragment?(msg, known) do
+    case msg["parent_tool_use_id"] do
+      id when is_binary(id) -> not MapSet.member?(known, id)
+      nil -> orphaned_task_event?(msg, known)
+    end
+  end
+
+  defp orphaned_task_event?(
+         %{"type" => "system", "subtype" => subtype, "tool_use_id" => id},
+         known
+       )
+       when is_binary(id) and subtype in @task_event_subtypes do
+    not MapSet.member?(known, id)
+  end
+
+  defp orphaned_task_event?(_msg, _known), do: false
+
+  # Visible, deliberately unsubtle marker for a message that couldn't be
+  # nested under its subagent (see message_feed/1's known_tool_use_ids) —
+  # readable on its own, but flags that surrounding context (the tool_use
+  # that spawned it, sibling messages in the same subagent turn) may be
+  # missing from view.
+  defp orphaned_fragment_marker(assigns) do
+    ~H"""
+    <div
+      class="ml-4 mb-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-warning/10 text-warning text-[10px]"
+      title="This message's subagent tool call isn't loaded, so it's shown standalone instead of nested under it."
+    >
+      <.icon name="hero-exclamation-triangle-micro" class="size-3" /> orphaned subagent fragment
     </div>
     """
   end
