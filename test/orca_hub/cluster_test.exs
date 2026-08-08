@@ -13,6 +13,7 @@ defmodule OrcaHub.ClusterTest do
 
   alias OrcaHub.Cluster
   alias OrcaHub.{Projects, Sessions, Terminals}
+  alias OrcaHub.Sessions.Session
 
   @offline_node :"debian@totally-offline-host"
 
@@ -82,6 +83,53 @@ defmodule OrcaHub.ClusterTest do
         })
 
       assert Cluster.project_node_for(project) == @offline_node
+    end
+  end
+
+  describe "sort_by_priority_then_recency/1 — chronological ordering" do
+    # Regression for the 2026-08-08 windowed-feed incident: a bare
+    # `Enum.sort_by/2` on a `{priority, updated_at}` tuple compares
+    # `%NaiveDateTime{}` ties via default struct/term ordering — fields in
+    # ALPHABETICAL order (microsecond before minute/month/second) — not
+    # `NaiveDateTime.compare/2`. Two sessions sharing the same (default)
+    # priority and the same hour, but with the EARLIER session given the
+    # LARGER microsecond component, would sort backwards under that bug.
+    #
+    # Exercised directly against in-memory structs (not persisted) because
+    # `sessions.updated_at` is currently second-precision — persisting
+    # would silently truncate the deliberately-inverted microseconds below
+    # and mask the bug through the DB round-trip, independent of whether
+    # the comparator itself is correct.
+    test "same-priority sessions sort earliest-first even when microsecond components are inverted relative to real time" do
+      earlier = %Session{id: "earlier", priority: 0, updated_at: ~N[2026-01-01 00:25:45.900000]}
+      later = %Session{id: "later", priority: 0, updated_at: ~N[2026-01-01 00:26:02.100000]}
+
+      tagged = [{node(), {later, nil}}, {node(), {earlier, nil}}]
+
+      assert Cluster.sort_by_priority_then_recency(tagged) ==
+               [{node(), {earlier, nil}}, {node(), {later, nil}}]
+    end
+
+    test "a higher (deferred) priority always sorts after a lower one, regardless of updated_at" do
+      low_priority_but_older = %Session{
+        id: "low",
+        priority: 0,
+        updated_at: ~N[2026-01-01 00:00:00.000000]
+      }
+
+      high_priority_but_newer = %Session{
+        id: "high",
+        priority: 1,
+        updated_at: ~N[2026-01-01 12:00:00.000000]
+      }
+
+      tagged = [
+        {node(), {high_priority_but_newer, nil}},
+        {node(), {low_priority_but_older, nil}}
+      ]
+
+      assert Cluster.sort_by_priority_then_recency(tagged) ==
+               [{node(), {low_priority_but_older, nil}}, {node(), {high_priority_but_newer, nil}}]
     end
   end
 

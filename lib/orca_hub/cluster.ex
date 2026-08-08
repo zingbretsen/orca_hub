@@ -288,10 +288,28 @@ defmodule OrcaHub.Cluster do
   def list_idle_sessions_with_last_assistant_message do
     results = HubRPC.list_idle_sessions_with_last_assistant_message()
 
-    Enum.map(results, fn {s, msg} ->
-      {runner_node_for(s), {s, msg}}
-    end)
-    |> Enum.sort_by(fn {_n, {s, _msg}} -> {s.priority || 0, s.updated_at} end)
+    results
+    |> Enum.map(fn {s, msg} -> {runner_node_for(s), {s, msg}} end)
+    |> sort_by_priority_then_recency()
+  end
+
+  # Extracted (not inlined into list_idle_sessions_with_last_assistant_message/0
+  # above) so it's unit-testable with in-memory structs, independent of
+  # `sessions.updated_at`'s current column precision — see test seam note
+  # below and the 2026-08-08 windowed-feed incident. Bare `Enum.sort_by/2` on
+  # a `{priority, updated_at}` tuple would compare ties (default priority 0
+  # for nearly every session) via `updated_at`'s default struct/term
+  # ordering — alphabetical field order (microsecond before minute/month/
+  # second), NOT chronological — hence the explicit comparator.
+  @doc false
+  def sort_by_priority_then_recency(tagged) do
+    Enum.sort_by(
+      tagged,
+      fn {_n, {s, _msg}} -> {s.priority || 0, s.updated_at} end,
+      fn {p1, t1}, {p2, t2} ->
+        if p1 == p2, do: NaiveDateTime.compare(t1, t2) != :gt, else: p1 <= p2
+      end
+    )
   end
 
   def count_idle_sessions, do: HubRPC.count_idle_sessions()

@@ -1164,6 +1164,31 @@ defmodule OrcaHub.SessionsTest do
 
       assert Enum.any?(window, &(&1["parent_tool_use_id"] == "T1"))
     end
+
+    # Regression for the 2026-08-08 windowed-feed out-of-order/dropped-reply
+    # incident: a bare `Enum.sort_by(&{&1.inserted_at, &1.id})` compares
+    # `%NaiveDateTime{}` structs via default struct/term ordering — fields in
+    # ALPHABETICAL order (microsecond before minute/month/second), NOT
+    # `NaiveDateTime.compare/2`. Real inserted_at values (usec precision,
+    # `widen_message_timestamps_to_microseconds`) essentially never tie, so
+    # this dominates and silently scrambles any window spanning more than one
+    # minute within the same hour — exactly the common case. Timestamps below
+    # are deliberately constructed so the microsecond ordering is INVERTED
+    # relative to real elapsed time, so this test fails against the old line.
+    test "renders in true chronological order even when microsecond components are inverted relative to real time",
+         %{project: project} do
+      session = create_session(project)
+
+      window_insert_at(session, text_msg("read"), ~N[2026-01-01 00:25:12.973732])
+      window_insert_at(session, text_msg("write"), ~N[2026-01-01 00:25:40.587361])
+      window_insert_at(session, text_msg("edit"), ~N[2026-01-01 00:25:45.154764])
+      window_insert_at(session, text_msg("final_text"), ~N[2026-01-01 00:26:02.373864])
+      window_insert_at(session, text_msg("result"), ~N[2026-01-01 00:26:02.465493])
+
+      %{messages: window} = Sessions.list_messages_window(session.id, limit: 20)
+
+      assert texts(window) == ["read", "write", "edit", "final_text", "result"]
+    end
   end
 
   describe "fetch_tool_use_message/2" do

@@ -301,6 +301,14 @@ defmodule OrcaHub.Sessions do
   duplicate rows as new ones land mid-scroll. `id` is the tiebreak for
   messages sharing a timestamp (usec precision still ties under load — see
   the `widen_message_timestamps_to_microseconds` migration's moduledoc).
+
+  The merge sort below MUST use `NaiveDateTime.compare/2` (via the explicit
+  comparator, not a bare `Enum.sort_by/2`) — comparing `%NaiveDateTime{}`
+  structs with the default term/struct ordering compares fields in
+  ALPHABETICAL key order (`microsecond` before `minute`/`month`/`second`),
+  which is unrelated to chronological order and silently scrambles any two
+  timestamps that share an `hour`. See the 2026-08-08 windowed-feed
+  out-of-order/dropped-message incident.
   """
   def list_messages_window(session_id, opts) do
     limit = Keyword.fetch!(opts, :limit)
@@ -312,7 +320,7 @@ defmodule OrcaHub.Sessions do
 
     messages =
       (top_level_asc ++ fetch_descendants(session_id, top_level_asc))
-      |> Enum.sort_by(&{&1.inserted_at, &1.id})
+      |> Enum.sort_by(& &1, &message_order/2)
       |> Enum.map(&row_to_event/1)
 
     %{messages: messages, has_more: has_more, cursor: window_cursor(top_level_asc)}
@@ -365,6 +373,18 @@ defmodule OrcaHub.Sessions do
 
   defp window_cursor([]), do: nil
   defp window_cursor([oldest | _]), do: %{inserted_at: oldest.inserted_at, id: oldest.id}
+
+  # Chronological (inserted_at, id) comparator for the top-level/descendant
+  # merge above — NEVER replace this with a bare `Enum.sort_by(&{&1.inserted_at,
+  # &1.id})`: comparing `%NaiveDateTime{}` structs via `<=` falls back to
+  # struct/term ordering (alphabetical field order), not calendar time.
+  defp message_order(a, b) do
+    case NaiveDateTime.compare(a.inserted_at, b.inserted_at) do
+      :lt -> true
+      :gt -> false
+      :eq -> a.id <= b.id
+    end
+  end
 
   defp fetch_descendants(_session_id, []), do: []
 
