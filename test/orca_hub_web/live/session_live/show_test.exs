@@ -1206,16 +1206,19 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
-      Phoenix.PubSub.broadcast(
-        OrcaHub.PubSub,
-        "session:#{session.id}",
-        {:event,
-         %{
-           "type" => "assistant",
-           "parent_tool_use_id" => "toolu_orphan_parent2",
-           "message" => %{"content" => [%{"type" => "text", "text" => "orphaned final reply 2"}]}
-         }}
-      )
+      live_reply = %{
+        "type" => "assistant",
+        "parent_tool_use_id" => "toolu_orphan_parent2",
+        "message" => %{"content" => [%{"type" => "text", "text" => "orphaned final reply 2"}]}
+      }
+
+      # A real SessionRunner event is always PERSISTED before it's broadcast
+      # (see session_runner.ex's persist_message/stamp — the invariant
+      # commit_older_page's reconcile_pulled_ancestors/3 relies on) — mirror
+      # that ordering here rather than only broadcasting.
+      feed_insert_at(session, live_reply, NaiveDateTime.add(base, window_size + 6))
+
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session.id}", {:event, live_reply})
 
       assert MapSet.member?(
                :sys.get_state(view.pid).socket.assigns.live_pulled_ancestor_ids,
@@ -1228,6 +1231,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       assigns = :sys.get_state(view.pid).socket.assigns
       refute assigns.has_more_messages
+      refute MapSet.member?(assigns.live_pulled_ancestor_ids, "toolu_orphan_parent2")
 
       ancestor_occurrences =
         Enum.count(assigns.messages, fn m ->
@@ -1238,6 +1242,73 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       assert ancestor_occurrences == 1
       assert render(view) |> String.split("orphaned final reply 2") |> length() == 2
+    end
+
+    test "a subagent block straddling the mount boundary keeps its PRE-mount descendants too, once scrolled back to",
+         %{conn: conn, claude_session: session} do
+      base = ~N[2026-01-01 00:00:00.000000]
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+
+      parent = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "toolu_straddle",
+              "name" => "Agent",
+              "input" => %{"description" => "gather context"}
+            }
+          ]
+        }
+      }
+
+      feed_insert_at(session, parent, base)
+
+      # This descendant is persisted BEFORE the LiveView ever mounts — never
+      # streamed over PubSub during this view's lifetime, and (since its
+      # parent tool_use is about to be pushed out of the window below) never
+      # loaded by the initial windowed fetch either. The only chance it ever
+      # gets rendered is a later "load older messages" reaching it directly.
+      pre_mount_child = %{
+        "type" => "assistant",
+        "parent_tool_use_id" => "toolu_straddle",
+        "message" => %{
+          "content" => [%{"type" => "text", "text" => "pre-mount context gathering"}]
+        }
+      }
+
+      feed_insert_at(session, pre_mount_child, NaiveDateTime.add(base, 1))
+
+      for i <- 1..(window_size + 5),
+          do: feed_insert_at(session, feed_text_msg("noise#{i}"), NaiveDateTime.add(base, i + 1))
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Confirm it's genuinely missing pre-scroll-back — not already covered
+      # by the initial window some other way.
+      refute render(view) =~ "pre-mount context gathering"
+
+      live_reply = %{
+        "type" => "assistant",
+        "parent_tool_use_id" => "toolu_straddle",
+        "message" => %{"content" => [%{"type" => "text", "text" => "live final reply"}]}
+      }
+
+      feed_insert_at(session, live_reply, NaiveDateTime.add(base, window_size + 7))
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session.id}", {:event, live_reply})
+
+      html = render(view)
+      assert html =~ "live final reply"
+      refute html =~ "pre-mount context gathering"
+
+      render_hook(view, "load_older_messages", %{})
+
+      html = render(view)
+      assert html =~ "pre-mount context gathering"
+      assert html =~ "live final reply"
+      assert html |> String.split("live final reply") |> length() == 2
+      assert html |> String.split("pre-mount context gathering") |> length() == 2
     end
   end
 

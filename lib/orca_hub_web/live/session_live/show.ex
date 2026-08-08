@@ -466,28 +466,58 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp commit_older_page(socket, %{messages: older, has_more: has_more?, cursor: new_cursor}) do
-    older = drop_already_pulled_ancestors(older, socket.assigns.live_pulled_ancestor_ids)
+    {messages, ancestor_ids} =
+      reconcile_pulled_ancestors(
+        older,
+        socket.assigns.messages,
+        socket.assigns.live_pulled_ancestor_ids
+      )
 
     socket
-    |> assign(:messages, older ++ socket.assigns.messages)
+    |> assign(:messages, older ++ messages)
+    |> assign(:live_pulled_ancestor_ids, ancestor_ids)
     |> assign(:messages_cursor, new_cursor || socket.assigns.messages_cursor)
     |> assign(:has_more_messages, has_more?)
   end
 
   # An older page can legitimately reach the true DB position of a subagent
-  # ancestor already pulled in ad hoc by ensure_ancestor_messages_loaded/2 —
-  # at that point the page also re-fetches every one of that ancestor's
-  # descendants (Sessions.list_messages_window/2's fetch_descendants), which
-  # would duplicate whatever already streamed in live under the ad hoc copy.
-  # Drop both the ancestor's own row and anything anchored under it from the
-  # newly fetched page; the ad hoc copy (and its live descendants) already
-  # covers that ground, just without this page's other, unrelated messages.
-  defp drop_already_pulled_ancestors(older, ancestor_ids) do
+  # ancestor already pulled in ad hoc by ensure_ancestor_messages_loaded/2.
+  # At that point `older` is the COMPLETE, authoritative picture of that
+  # subtree — every descendant persisted so far, both whatever streamed in
+  # live during this LiveView's lifetime AND whatever predates its mount
+  # (never loaded at all, since the ancestor was out of the initial window
+  # too). Filtering `older` down to "only what's new" would need a stable
+  # cross-transport identity for each descendant to compare against, and
+  # there isn't one: a live-broadcast event's "timestamp" is stamped by
+  # SessionRunner at `NaiveDateTime.utc_now()` (session_runner.ex's
+  # `stamp/1`) BEFORE persistence, while `Sessions.row_to_event/1` (what an
+  # older-page fetch returns) overwrites that same key with the DB row's
+  # own `inserted_at` — a different clock read for the same logical event,
+  # so structural/timestamp equality can't tell "already streamed live"
+  # apart from "genuinely new". So: purge the ad hoc ancestor copy (and
+  # anything that streamed in live under it) from CURRENT @messages and let
+  # `older`'s own fetch — necessarily up to date, since every live event is
+  # persisted synchronously before it's broadcast (see load_message_window/1's
+  # comment) — replace it wholesale, rather than trying to reconcile the two
+  # copies message-by-message.
+  defp reconcile_pulled_ancestors(older, messages, ancestor_ids) do
     if MapSet.size(ancestor_ids) == 0 do
-      older
+      {messages, ancestor_ids}
     else
-      Enum.reject(older, &pulled_live_duplicate?(&1, ancestor_ids))
+      resolved = Enum.filter(ancestor_ids, &page_contains_ancestor_row?(older, &1))
+
+      if resolved == [] do
+        {messages, ancestor_ids}
+      else
+        resolved_ids = MapSet.new(resolved)
+        messages = Enum.reject(messages, &pulled_live_duplicate?(&1, resolved_ids))
+        {messages, MapSet.difference(ancestor_ids, resolved_ids)}
+      end
     end
+  end
+
+  defp page_contains_ancestor_row?(page, ancestor_id) do
+    Enum.any?(page, &(ancestor_id in own_tool_use_ids(&1)))
   end
 
   defp pulled_live_duplicate?(message, ancestor_ids) do
