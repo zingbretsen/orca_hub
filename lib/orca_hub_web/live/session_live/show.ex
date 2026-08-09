@@ -1018,6 +1018,25 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  # orca.setState/getState write-through user-state channel (see
+  # OrcaHub.Artifacts.merge_user_state/2): an artifact's [data-orca-persist]
+  # auto-persist shim (or hand-written JS) forwards a shallow-merge patch
+  # here via the ArtifactData hook. Unlike artifact_send above, this never
+  # touches Cluster.send_message/delivers a session message and is NOT
+  # throttled — artifact_send's throttle *drops* events, which for state
+  # would silently lose a checkbox tick; the shim's own ~300ms debounce is
+  # the only smoothing on this path. Several artifact tabs can be open at
+  # once in this split panel, so validate against the OPEN tabs rather than
+  # a single "the" artifact (contrast ArtifactLive.Show's single-artifact
+  # guard).
+  def handle_event("artifact_state", %{"artifact_id" => artifact_id, "patch" => patch}, socket) do
+    if artifact_tab_open?(socket, artifact_id) do
+      apply_artifact_state(socket, artifact_id, patch)
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_event("edit_title", _params, socket) do
     {:noreply, assign(socket, :editing_title, true)}
   end
@@ -2322,6 +2341,28 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
             {:noreply, put_flash(socket, :error, error_message)}
         end
+    end
+  end
+
+  defp artifact_tab_open?(socket, artifact_id) do
+    Enum.any?(socket.assigns.open_files, fn
+      %{kind: :artifact, artifact_id: id} -> id == artifact_id
+      _ -> false
+    end)
+  end
+
+  defp apply_artifact_state(socket, artifact_id, patch) do
+    cond do
+      not is_map(patch) ->
+        {:noreply, socket}
+
+      ArtifactSend.too_large?(patch) ->
+        {:noreply,
+         put_flash(socket, :error, "Artifact state payload too large (max 16KB) — dropped.")}
+
+      true ->
+        HubRPC.merge_user_state(artifact_id, patch)
+        {:noreply, socket}
     end
   end
 

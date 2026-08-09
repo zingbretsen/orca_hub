@@ -216,4 +216,56 @@ defmodule OrcaHubWeb.ArtifactLive.ShowTest do
       assert delivered_text(creator.id) =~ ~s("n": 1)
     end
   end
+
+  describe "user-state persistence (orca.setState/[data-orca-persist])" do
+    test "an \"artifact_state\" hook event for the viewed artifact is merged into _user_state", %{
+      conn: conn,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/artifacts/#{artifact.id}")
+
+      render_hook(view, "artifact_state", %{
+        "artifact_id" => artifact.id,
+        "patch" => %{"done" => true}
+      })
+
+      assert Artifacts.get_artifact(artifact.id).data["_user_state"] == %{"done" => true}
+    end
+
+    test "is ignored for a different artifact_id than the one being viewed", %{
+      conn: conn,
+      project: project,
+      artifact: artifact
+    } do
+      {:ok, other} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "other", content: "<p>x</p>"})
+
+      {:ok, view, _html} = live(conn, ~p"/artifacts/#{artifact.id}")
+
+      render_hook(view, "artifact_state", %{
+        "artifact_id" => other.id,
+        "patch" => %{"done" => true}
+      })
+
+      assert Artifacts.get_artifact(other.id).data == %{}
+    end
+
+    test "an oversized patch is dropped with a flash and never persisted", %{
+      conn: conn,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/artifacts/#{artifact.id}")
+
+      big_patch = %{"blob" => String.duplicate("x", 17 * 1024)}
+
+      html =
+        render_hook(view, "artifact_state", %{
+          "artifact_id" => artifact.id,
+          "patch" => big_patch
+        })
+
+      assert html =~ "too large"
+      assert Artifacts.get_artifact(artifact.id).data == %{}
+    end
+  end
 end

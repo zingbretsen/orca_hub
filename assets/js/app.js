@@ -1175,6 +1175,14 @@ let Hooks = {
   //     trigger a send. Client-side guards: drop (+ console.warn) payloads
   //     over ~16KB serialized, and rate-limit to 1 send per 500ms — a
   //     buggy/looping artifact shouldn't be able to flood the session.
+  //   - listens for "orca:state" postMessages the artifact's injected
+  //     `window.orca.setState(patch)`/auto-persist shim posts, and forwards
+  //     them to the LiveView as an "artifact_state" event — write-through
+  //     user-state persistence (OrcaHub.Artifacts.merge_user_state/2), same
+  //     identity filter as orca:send. Deliberately NOT routed through the
+  //     500ms orca:send throttle: that limiter drops events, which for
+  //     state would mean silently losing a checkbox tick. The shim's own
+  //     ~300ms input debounce is the only smoothing on this path.
   ArtifactData: {
     mounted() {
       this._lastData = undefined
@@ -1193,8 +1201,11 @@ let Hooks = {
 
       this._onMessage = (e) => {
         if (e.source !== this.el.contentWindow) return
-        if (e.data?.type !== "orca:send") return
-        this._handleOrcaSend(e.data.payload)
+        if (e.data?.type === "orca:send") {
+          this._handleOrcaSend(e.data.payload)
+        } else if (e.data?.type === "orca:state") {
+          this.pushEvent("artifact_state", { artifact_id: this.el.dataset.artifactId, patch: e.data.patch })
+        }
       }
       window.addEventListener("message", this._onMessage)
     },

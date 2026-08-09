@@ -128,6 +128,23 @@ defmodule OrcaHub.ArtifactsTest do
       assert id == artifact.id
       assert updated.version == 2
     end
+
+    test "re-saving content preserves the existing data map (including _user_state)", %{
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "sticky-state", content: "v1"})
+
+      {:ok, artifact} = Artifacts.merge_user_state(artifact, %{"done" => true})
+
+      {:ok, resaved} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "sticky-state", content: "v2"})
+
+      assert resaved.id == artifact.id
+      assert resaved.version == 2
+      assert resaved.content == "v2"
+      assert resaved.data == %{"_user_state" => %{"done" => true}}
+    end
   end
 
   describe "update_artifact_data/2" do
@@ -174,6 +191,119 @@ defmodule OrcaHub.ArtifactsTest do
       assert id == artifact.id
       refute_received {:artifact_updated, _}
       assert updated.version == artifact.version
+    end
+
+    test "preserves _user_state when the incoming data omits it", %{project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "dashboard", content: "x"})
+
+      {:ok, artifact} = Artifacts.merge_user_state(artifact, %{"checked" => true})
+
+      {:ok, updated} = Artifacts.update_artifact_data(artifact, %{"count" => 7})
+
+      assert updated.data == %{"count" => 7, "_user_state" => %{"checked" => true}}
+    end
+
+    test "an explicit _user_state in the incoming data wins (the agent reset path)", %{
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "dashboard", content: "x"})
+
+      {:ok, artifact} = Artifacts.merge_user_state(artifact, %{"checked" => true})
+
+      {:ok, updated} =
+        Artifacts.update_artifact_data(artifact, %{"count" => 7, "_user_state" => %{}})
+
+      assert updated.data == %{"count" => 7, "_user_state" => %{}}
+    end
+  end
+
+  describe "merge_user_state/2" do
+    test "shallow-merges a patch into data[\"_user_state\"], leaving other data keys alone", %{
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "checklist", content: "x"})
+
+      {:ok, artifact} = Artifacts.update_artifact_data(artifact, %{"top" => ["a"]})
+      {:ok, artifact} = Artifacts.merge_user_state(artifact, %{"item1" => true})
+
+      assert {:ok, updated} = Artifacts.merge_user_state(artifact, %{"item2" => false})
+
+      assert updated.data == %{
+               "top" => ["a"],
+               "_user_state" => %{"item1" => true, "item2" => false}
+             }
+    end
+
+    test "an existing _user_state key survives a patch that doesn't mention it", %{
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "checklist", content: "x"})
+
+      {:ok, artifact} = Artifacts.merge_user_state(artifact, %{"a" => 1, "b" => 2})
+      {:ok, updated} = Artifacts.merge_user_state(artifact, %{"c" => 3})
+
+      assert updated.data["_user_state"] == %{"a" => 1, "b" => 2, "c" => 3}
+    end
+
+    test "a null value in the patch deletes that key", %{project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "checklist", content: "x"})
+
+      {:ok, artifact} = Artifacts.merge_user_state(artifact, %{"a" => 1, "b" => 2})
+      {:ok, updated} = Artifacts.merge_user_state(artifact, %{"a" => nil})
+
+      assert updated.data["_user_state"] == %{"b" => 2}
+    end
+
+    test "accepts an artifact id (string) as well as an %Artifact{}", %{project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "checklist", content: "x"})
+
+      assert {:ok, updated} = Artifacts.merge_user_state(artifact.id, %{"a" => 1})
+      assert updated.data["_user_state"] == %{"a" => 1}
+    end
+
+    test "does not bump version", %{project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "checklist", content: "x"})
+
+      assert artifact.version == 1
+      {:ok, updated} = Artifacts.merge_user_state(artifact, %{"a" => 1})
+      assert updated.version == 1
+    end
+
+    test "broadcasts {:artifact_data_updated, artifact} on \"artifact:<id>\" (no new message type)",
+         %{project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "checklist", content: "x"})
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "artifact:#{artifact.id}")
+
+      {:ok, updated} = Artifacts.merge_user_state(artifact, %{"a" => 1})
+
+      assert_receive {:artifact_data_updated, %Artifact{id: id}}
+      assert id == artifact.id
+      assert updated.data["_user_state"] == %{"a" => 1}
+    end
+
+    test "returns {:error, :not_found} for a missing artifact id" do
+      assert Artifacts.merge_user_state(Ecto.UUID.generate(), %{"a" => 1}) ==
+               {:error, :not_found}
+    end
+
+    test "two concurrent merges each survive (genuine merge, not last-write-wins on the whole data map)",
+         %{project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "checklist", content: "x"})
+
+      {:ok, _} = Artifacts.merge_user_state(artifact, %{"item1" => true})
+      {:ok, updated} = Artifacts.merge_user_state(artifact, %{"item2" => true})
+
+      assert updated.data["_user_state"] == %{"item1" => true, "item2" => true}
     end
   end
 

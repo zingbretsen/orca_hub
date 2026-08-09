@@ -327,4 +327,94 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
       assert delivered_text(session.id) =~ ~s("n": 1)
     end
   end
+
+  describe "user-state persistence (orca.setState/[data-orca-persist])" do
+    test "an \"artifact_state\" hook event for an OPEN tab is merged into _user_state", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{session.id}",
+        {:open_artifact, artifact.id, "split"}
+      )
+
+      render(view)
+
+      render_hook(view, "artifact_state", %{
+        "artifact_id" => artifact.id,
+        "patch" => %{"done" => true}
+      })
+
+      assert Artifacts.get_artifact(artifact.id).data["_user_state"] == %{"done" => true}
+      # Unlike artifact_send, this never delivers a session message.
+      assert Sessions.list_messages(session.id) == []
+    end
+
+    test "is ignored for an artifact whose tab isn't open in this panel", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      render_hook(view, "artifact_state", %{
+        "artifact_id" => artifact.id,
+        "patch" => %{"done" => true}
+      })
+
+      assert Artifacts.get_artifact(artifact.id).data == %{}
+    end
+
+    test "an oversized patch is dropped with a flash and never persisted", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{session.id}",
+        {:open_artifact, artifact.id, "split"}
+      )
+
+      render(view)
+
+      big_patch = %{"blob" => String.duplicate("x", 17 * 1024)}
+
+      html =
+        render_hook(view, "artifact_state", %{
+          "artifact_id" => artifact.id,
+          "patch" => big_patch
+        })
+
+      assert html =~ "too large"
+      assert Artifacts.get_artifact(artifact.id).data == %{}
+    end
+
+    test "not rate-limited by the artifact_send throttle — back-to-back writes both land", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{session.id}",
+        {:open_artifact, artifact.id, "split"}
+      )
+
+      render(view)
+
+      render_hook(view, "artifact_state", %{"artifact_id" => artifact.id, "patch" => %{"a" => 1}})
+      render_hook(view, "artifact_state", %{"artifact_id" => artifact.id, "patch" => %{"b" => 2}})
+
+      assert Artifacts.get_artifact(artifact.id).data["_user_state"] == %{"a" => 1, "b" => 2}
+    end
+  end
 end

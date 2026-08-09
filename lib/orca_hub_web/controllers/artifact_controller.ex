@@ -14,6 +14,68 @@ defmodule OrcaHubWeb.ArtifactController do
   alias OrcaHub.HubRPC
   alias OrcaHubWeb.Markdown
 
+  # Declarative auto-persist helper for [data-orca-persist="key"] elements,
+  # injected into every html-kind artifact (see inject_scripts/2 below).
+  # Dependency-free plain DOM APIs only — this runs inside the sandboxed
+  # iframe (`allow-scripts`, no `allow-same-origin`), which has no
+  # localStorage/sessionStorage/cookies/IndexedDB (opaque origin), so
+  # setState/getState → postMessage → the parent → the DB is the only
+  # persistence path. Idempotent by construction: applying the same state
+  # twice just re-sets the same .checked/.value, and setting those
+  # programmatically never fires "change", so an incoming orca:data message
+  # can never trigger a write-back loop.
+  @persist_shim """
+  (function() {
+    function valueOf(el) {
+      return (el.type === "checkbox" || el.type === "radio") ? el.checked : el.value;
+    }
+    function applyValue(el, v) {
+      if (el.type === "checkbox" || el.type === "radio") {
+        el.checked = !!v;
+      } else {
+        el.value = v;
+      }
+    }
+    function applyState(state) {
+      state = state || {};
+      document.querySelectorAll("[data-orca-persist]").forEach(function(el) {
+        var key = el.getAttribute("data-orca-persist");
+        if (Object.prototype.hasOwnProperty.call(state, key)) applyValue(el, state[key]);
+      });
+    }
+    var pendingPatch = {};
+    var debounceTimer = null;
+    function flush() {
+      if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+      if (Object.keys(pendingPatch).length === 0) return;
+      var patch = pendingPatch;
+      pendingPatch = {};
+      window.orca.setState(patch);
+    }
+    function wire(el) {
+      var key = el.getAttribute("data-orca-persist");
+      el.addEventListener("change", function() {
+        var patch = {};
+        patch[key] = valueOf(el);
+        window.orca.setState(patch);
+      });
+      el.addEventListener("input", function() {
+        pendingPatch[key] = valueOf(el);
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(flush, 300);
+      });
+    }
+    document.addEventListener("DOMContentLoaded", function() {
+      applyState(window.ORCA_DATA && window.ORCA_DATA._user_state);
+      document.querySelectorAll("[data-orca-persist]").forEach(wire);
+    });
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("message", function(e) {
+      if (e.data && e.data.type === "orca:data") applyState(e.data.data && e.data.data._user_state);
+    });
+  })();
+  """
+
   def raw(conn, %{"id" => id}) do
     case HubRPC.get_artifact(id) do
       nil ->
@@ -105,28 +167,42 @@ defmodule OrcaHubWeb.ArtifactController do
 
   defp body(%{content: content}), do: content || ""
 
-  # Injects two <script> tags immediately after the opening <head> tag (or
-  # prepended if there's no <head> at all):
+  # Injects three <script> tags immediately after the opening <head> tag (or
+  # prepended if there's no <head> at all), html kind only:
   #
   #   1. window.ORCA_DATA = <json>; — the initial snapshot half of the
   #      live-data channel (OrcaHub.Artifacts.update_artifact_data/2 carries
   #      later updates via postMessage instead, since the iframe's opaque
   #      sandbox origin can't fetch() this host).
-  #   2. window.orca = { send: ... }; — the orca.send bridge (Phase 3):
-  #      artifact authors call `orca.send(payload)` to submit interaction
-  #      data back into the session as a user-visible message. The parent
-  #      hook (`ArtifactData` in assets/js/app.js) listens for the resulting
-  #      postMessage and forwards it to the LiveView.
+  #   2. window.orca = { send, setState, getState }; — send is the Phase-3
+  #      bridge (submit interaction data back into the session as a
+  #      user-visible message); setState/getState are the user-state
+  #      persistence channel (OrcaHub.Artifacts.merge_user_state/2): a
+  #      shallow-merge patch written through to `data["_user_state"]`. The
+  #      parent hook (`ArtifactData` in assets/js/app.js) listens for both
+  #      postMessage types and forwards them to the LiveView.
+  #   3. the auto-persist shim — wires any `[data-orca-persist="key"]`
+  #      element to setState/getState with no JS required from the artifact
+  #      author: restores its value from `_user_state` on load and on every
+  #      `orca:data` postMessage (so a second viewer's ticks show up live),
+  #      writes through on `change` immediately and on `input` debounced
+  #      (flushed on `pagehide`). See PERSIST_SHIM below.
   #
   # safe_json/1 replaces every "<" in the encoded JSON with its JS unicode
   # escape so no data value (e.g. one literally containing the string
   # "</script>") can break out of the injected tag — JSON only ever uses "<"
   # inside string values, never as structural syntax, so the escape can
-  # never corrupt otherwise-valid JSON.
+  # never corrupt otherwise-valid JSON. The persist shim has no interpolated
+  # data, so it's injected verbatim.
   defp inject_scripts(html, data) do
     scripts =
       "<script>window.ORCA_DATA = #{safe_json(data)};</script>" <>
-        "<script>window.orca = { send: function(payload) { window.parent.postMessage({type: \"orca:send\", payload: payload}, \"*\"); } };</script>"
+        "<script>window.orca = { " <>
+        "send: function(payload) { window.parent.postMessage({type: \"orca:send\", payload: payload}, \"*\"); }, " <>
+        "setState: function(patch) { window.parent.postMessage({type: \"orca:state\", patch: patch}, \"*\"); }, " <>
+        "getState: function() { return (window.ORCA_DATA && window.ORCA_DATA._user_state) || {}; } " <>
+        "};</script>" <>
+        "<script>#{@persist_shim}</script>"
 
     case Regex.run(~r/<head[^>]*>/i, html, return: :index) do
       [{start, len}] ->

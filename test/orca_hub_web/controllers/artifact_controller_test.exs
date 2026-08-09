@@ -34,8 +34,68 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
     assert conn.status == 404
   end
 
-  @orca_send_script "<script>window.orca = { send: function(payload) { " <>
-                      "window.parent.postMessage({type: \"orca:send\", payload: payload}, \"*\"); } };</script>"
+  @orca_send_script "<script>window.orca = { " <>
+                      "send: function(payload) { window.parent.postMessage({type: \"orca:send\", payload: payload}, \"*\"); }, " <>
+                      "setState: function(patch) { window.parent.postMessage({type: \"orca:state\", patch: patch}, \"*\"); }, " <>
+                      "getState: function() { return (window.ORCA_DATA && window.ORCA_DATA._user_state) || {}; } " <>
+                      "};</script>"
+
+  # Verbatim copy of ArtifactController's @persist_shim, wrapped in its
+  # <script> tag — kept as an exact duplicate (like @orca_send_script above)
+  # so these tests pin the actual injected bytes rather than a loose
+  # substring match.
+  @persist_shim_script "<script>" <>
+                         """
+                         (function() {
+                           function valueOf(el) {
+                             return (el.type === "checkbox" || el.type === "radio") ? el.checked : el.value;
+                           }
+                           function applyValue(el, v) {
+                             if (el.type === "checkbox" || el.type === "radio") {
+                               el.checked = !!v;
+                             } else {
+                               el.value = v;
+                             }
+                           }
+                           function applyState(state) {
+                             state = state || {};
+                             document.querySelectorAll("[data-orca-persist]").forEach(function(el) {
+                               var key = el.getAttribute("data-orca-persist");
+                               if (Object.prototype.hasOwnProperty.call(state, key)) applyValue(el, state[key]);
+                             });
+                           }
+                           var pendingPatch = {};
+                           var debounceTimer = null;
+                           function flush() {
+                             if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+                             if (Object.keys(pendingPatch).length === 0) return;
+                             var patch = pendingPatch;
+                             pendingPatch = {};
+                             window.orca.setState(patch);
+                           }
+                           function wire(el) {
+                             var key = el.getAttribute("data-orca-persist");
+                             el.addEventListener("change", function() {
+                               var patch = {};
+                               patch[key] = valueOf(el);
+                               window.orca.setState(patch);
+                             });
+                             el.addEventListener("input", function() {
+                               pendingPatch[key] = valueOf(el);
+                               if (debounceTimer) clearTimeout(debounceTimer);
+                               debounceTimer = setTimeout(flush, 300);
+                             });
+                           }
+                           document.addEventListener("DOMContentLoaded", function() {
+                             applyState(window.ORCA_DATA && window.ORCA_DATA._user_state);
+                             document.querySelectorAll("[data-orca-persist]").forEach(wire);
+                           });
+                           window.addEventListener("pagehide", flush);
+                           window.addEventListener("message", function(e) {
+                             if (e.data && e.data.type === "orca:data") applyState(e.data.data && e.data.data._user_state);
+                           });
+                         })();
+                         """ <> "</script>"
 
   test "serves html content as text/html, prefixed with the (empty-data) ORCA_DATA script and the orca.send shim",
        %{
@@ -57,7 +117,8 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
 
     assert conn.resp_body ==
              "<script>window.ORCA_DATA = {};</script>" <>
-               @orca_send_script <> "<html><body><h1>Hi</h1></body></html>"
+               @orca_send_script <>
+               @persist_shim_script <> "<html><body><h1>Hi</h1></body></html>"
   end
 
   test "serves svg content as image/svg+xml verbatim", %{conn: conn, project: project} do
@@ -110,7 +171,8 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
     assert conn.status == 200
 
     assert conn.resp_body ==
-             "<script>window.ORCA_DATA = {};</script>" <> @orca_send_script <> "<p>v1</p>"
+             "<script>window.ORCA_DATA = {};</script>" <>
+               @orca_send_script <> @persist_shim_script <> "<p>v1</p>"
   end
 
   describe "ORCA_DATA injection (live-data channel)" do
@@ -133,6 +195,7 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
       assert conn.resp_body ==
                "<html><head><script>window.ORCA_DATA = {\"count\":3};</script>" <>
                  @orca_send_script <>
+                 @persist_shim_script <>
                  "<title>T</title></head><body>Hi</body></html>"
     end
 
@@ -149,7 +212,7 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
 
       assert conn.resp_body ==
                ~s(<html><head lang="en"><script>window.ORCA_DATA = {};</script>) <>
-                 @orca_send_script <> ~s(</head><body></body></html>)
+                 @orca_send_script <> @persist_shim_script <> ~s(</head><body></body></html>)
     end
 
     test "prepends window.ORCA_DATA when there's no <head> tag at all", %{
@@ -167,7 +230,8 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
       conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
 
       assert conn.resp_body ==
-               "<script>window.ORCA_DATA = {};</script>" <> @orca_send_script <> "<p>hi</p>"
+               "<script>window.ORCA_DATA = {};</script>" <>
+                 @orca_send_script <> @persist_shim_script <> "<p>hi</p>"
     end
 
     test "reflects the artifact's current data, not what it was saved with", %{
@@ -209,11 +273,11 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
       conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
       body = conn.resp_body
 
-      # Exactly two <script>/</script> pairs — ORCA_DATA + the orca.send
-      # shim we inject. If the payload's literal "</script>" had survived
-      # unescaped, this would be 4.
-      assert length(String.split(body, "<script>")) == 3
-      assert length(String.split(body, "</script>")) == 3
+      # Exactly three <script>/</script> pairs — ORCA_DATA + the orca.send
+      # shim + the auto-persist shim we inject. If the payload's literal
+      # "</script>" had survived unescaped, this would be 5.
+      assert length(String.split(body, "<script>")) == 4
+      assert length(String.split(body, "</script>")) == 4
 
       [_, injected_json] = Regex.run(~r/window\.ORCA_DATA = (.*?);<\/script>/, body)
       assert Jason.decode!(injected_json) == payload
@@ -253,8 +317,11 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
       conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
 
       assert conn.resp_body =~ @orca_send_script
+      assert conn.resp_body =~ @persist_shim_script
       assert conn.resp_body =~ "window.orca = { send: function(payload)"
       assert conn.resp_body =~ ~s({type: "orca:send", payload: payload})
+      assert conn.resp_body =~ "setState: function(patch)"
+      assert conn.resp_body =~ "getState: function()"
     end
 
     test "NOT injected for svg content", %{conn: conn, project: project} do
@@ -270,6 +337,7 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
 
       conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
       refute conn.resp_body =~ "window.orca"
+      refute conn.resp_body =~ "data-orca-persist"
     end
 
     test "NOT injected for markdown content", %{conn: conn, project: project} do
@@ -283,6 +351,7 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
 
       conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
       refute conn.resp_body =~ "window.orca"
+      refute conn.resp_body =~ "data-orca-persist"
     end
   end
 

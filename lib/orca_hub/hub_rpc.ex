@@ -180,6 +180,9 @@ defmodule OrcaHub.HubRPC do
   def update_artifact_data(artifact, data),
     do: call(OrcaHub.Artifacts, :update_artifact_data, [artifact, data])
 
+  def merge_user_state(artifact_or_id, patch),
+    do: call(OrcaHub.Artifacts, :merge_user_state, [artifact_or_id, patch])
+
   def get_artifact(id), do: call(OrcaHub.Artifacts, :get_artifact, [id])
 
   def get_artifact_by_name(project_id, name),

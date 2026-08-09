@@ -79,7 +79,23 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             "Verify how it actually renders with screenshot_artifact (drives a shared " <>
             "playwright browser server-side across a few viewport widths and returns " <>
             "saved screenshot file paths for you to Read) before telling the user it's " <>
-            "ready.",
+            "ready.\n\n" <>
+            "USER STATE: to make a checklist/form remember what the user ticked/typed " <>
+            "across reloads, tabs, and devices — with zero JS — mark each input " <>
+            "`data-orca-persist=\"some-key\"`. It's restored on load (checkbox/radio -> " <>
+            "checked, everything else -> value) and written through automatically " <>
+            "(`change` immediately, `input` debounced ~300ms). For anything the " <>
+            "declarative attribute can't express, call `window.orca.setState(patch)` " <>
+            "with a flat JSON object yourself (shallow-merged into storage — existing " <>
+            "keys not in `patch` are left alone; a key set to `null` deletes it) and " <>
+            "`window.orca.getState()` to read the current state back synchronously. " <>
+            "State lives under the reserved `_user_state` key in this artifact's `data` " <>
+            "(visible via get_artifact) and survives re-saving this artifact's content, " <>
+            "but is lost if you rename it (a rename is a different artifact row). It's " <>
+            "shared by every viewer of this artifact, not scoped per user. There's no " <>
+            "dedicated reset tool — call update_artifact_data with " <>
+            "`data: {\"_user_state\": {}}` to clear it. Writing state never wakes this " <>
+            "or any other session and never costs tokens — it's a direct DB write.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -152,7 +168,11 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
         "description" =>
           "Fetch an artifact's full content by name (within this session's project) or by " <>
             "artifact_id, so it can be inspected or iterated on (e.g. from a later " <>
-            "session).",
+            "session). The returned `data` includes the reserved `_user_state` key if " <>
+            "the user has ticked/typed anything into a `data-orca-persist` field or " <>
+            "called `window.orca.setState` (see save_artifact's description) — read it " <>
+            "here to see what the user has persisted, or reset it via " <>
+            "update_artifact_data with `data: {\"_user_state\": {}}`.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -193,7 +213,11 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
               "type" => "object",
               "description" =>
                 "The new data snapshot — a JSON object. Replaces the artifact's entire " <>
-                  "previous data payload (not a merge)."
+                  "previous data payload (not a merge) — EXCEPT the reserved " <>
+                  "`_user_state` key (see save_artifact's USER STATE section), which is " <>
+                  "carried over automatically when you omit it here, so a routine data " <>
+                  "refresh doesn't wipe out what the user has persisted. Pass " <>
+                  "`_user_state` explicitly (e.g. `{}`) to reset it."
             }
           },
           "required" => ["data"]

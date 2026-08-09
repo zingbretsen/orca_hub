@@ -71,6 +71,30 @@ defmodule OrcaHubWeb.ArtifactLive.Show do
     end
   end
 
+  # orca.setState/getState write-through user-state channel (see
+  # OrcaHub.Artifacts.merge_user_state/2) — mirrors artifact_send's
+  # single-artifact guard above (there's only ever the one viewed artifact
+  # here, unlike SessionLive.Show's several-open-tabs split panel). Never
+  # touches Cluster.send_message and is NOT throttled — see the
+  # SessionLive.Show handler's moduledoc note for why.
+  def handle_event("artifact_state", %{"artifact_id" => artifact_id, "patch" => patch}, socket) do
+    cond do
+      artifact_id != socket.assigns.artifact.id ->
+        {:noreply, socket}
+
+      not is_map(patch) ->
+        {:noreply, socket}
+
+      ArtifactSend.too_large?(patch) ->
+        {:noreply,
+         put_flash(socket, :error, "Artifact state payload too large (max 16KB) — dropped.")}
+
+      true ->
+        HubRPC.merge_user_state(artifact_id, patch)
+        {:noreply, socket}
+    end
+  end
+
   @impl true
   def handle_info({:artifact_updated, artifact}, socket) do
     {:noreply, assign(socket, :artifact, artifact)}

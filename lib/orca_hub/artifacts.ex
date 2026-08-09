@@ -71,12 +71,92 @@ defmodule OrcaHub.Artifacts do
   `save_artifact/1`'s `{:artifact_updated, ...}` — on `"artifact:<artifact_id>"`
   so a viewer can tell a live-data push (forward via `postMessage`, no reload)
   apart from a content/version change (reload the iframe).
+
+  Preserves the reserved `"_user_state"` key (user-ticked checkbox/input
+  state — see `merge_user_state/2`) when `data` doesn't mention it, so an
+  agent's routine `update_artifact_data` calls don't silently wipe out
+  whatever the user has persisted. Passing `"_user_state"` explicitly (e.g.
+  `%{"_user_state" => %{}}` to reset it) always wins — there's no dedicated
+  reset tool, this is that path.
   """
   def update_artifact_data(%Artifact{} = artifact, data) when is_map(data) do
     artifact
-    |> Artifact.changeset(%{data: data})
+    |> Artifact.changeset(%{data: preserve_user_state(artifact, data)})
     |> Repo.update()
     |> broadcast_data_update()
+  end
+
+  defp preserve_user_state(artifact, data) do
+    if Map.has_key?(data, "_user_state") do
+      data
+    else
+      case Map.get(artifact.data || %{}, "_user_state") do
+        nil -> data
+        user_state -> Map.put(data, "_user_state", user_state)
+      end
+    end
+  end
+
+  @doc """
+  Atomically shallow-merges `patch` (a flat map) into an artifact's
+  `data["_user_state"]` — the reserved key user-state persistence lives at
+  (e.g. checkbox ticks in an agent-authored HTML artifact, written through
+  via `orca.setState`/`[data-orca-persist]`). Done in ONE `UPDATE` statement
+  (`jsonb_set`/`||` in Postgres, not a Repo.get→merge→Repo.update round
+  trip) so two viewers ticking different boxes at nearly the same moment
+  can't clobber each other.
+
+  A `nil` value in `patch` deletes that key (via `jsonb_strip_nulls`, which
+  only strips at the top level of `_user_state` — it can't reach into
+  `data`'s other keys or into nested values, since patch is documented as
+  flat).
+
+  Does NOT bump `version` (same rationale as `update_artifact_data/2`) and
+  reuses `{:artifact_data_updated, artifact}` on `"artifact:<artifact_id>"`
+  — no new message type, no reload, just a `postMessage` to any open
+  viewer.
+
+  State is shared per artifact, not per user — there's no users table (auth
+  is Authelia at the ingress), so every open viewer of the same artifact
+  reads/writes the same `_user_state`. Renaming an artifact (a different
+  `(project_id, name)` row) loses it. Stale keys left behind when an agent
+  drops a checklist item are harmless clutter, not bugs.
+  """
+  def merge_user_state(%Artifact{id: id}, patch), do: merge_user_state(id, patch)
+
+  def merge_user_state(id, patch) when is_binary(id) and is_map(patch) do
+    query =
+      from a in Artifact,
+        where: a.id == ^id,
+        update: [
+          set: [
+            data:
+              fragment(
+                """
+                jsonb_set(
+                  coalesce(?, '{}'::jsonb),
+                  '{_user_state}',
+                  jsonb_strip_nulls(coalesce(? -> '_user_state', '{}'::jsonb) || ?),
+                  true
+                )
+                """,
+                a.data,
+                a.data,
+                type(^patch, :map)
+              )
+          ]
+        ]
+
+    case Repo.update_all(query, []) do
+      {1, _} ->
+        case get_artifact(id) do
+          nil -> {:error, :not_found}
+          artifact -> broadcast_data_update({:ok, artifact})
+        end
+
+      {0, _} ->
+        {:error, :not_found}
+    end
   end
 
   def get_artifact(id) do
