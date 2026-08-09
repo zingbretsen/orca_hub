@@ -428,7 +428,20 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
     assert result_event["is_error"] == true
 
     # The warm slot must be released immediately, not just eventually via the
-    # 15-min idle_teardown timer.
+    # 15-min idle_teardown timer. `teardown_port/1` (called from within the
+    # SAME synchronous state-transition handler that flips status to
+    # "error") issues `Streaming.WarmPool.release/1` as a `GenServer.cast` —
+    # so by the time `wait_until_terminal/1` observes status == :error, the
+    # release message is guaranteed to already be sitting in WarmPool's
+    # mailbox (enqueued earlier in that same handler, strictly before the
+    # runner could reply to our get_state poll), but not necessarily
+    # *processed* yet. `:sys.get_state/1` is a synchronous round trip
+    # through that same mailbox, so it can only return after every message
+    # queued ahead of it — including that release — has been handled,
+    # giving us a real synchronization point instead of racing the ETS
+    # delete. See test-isolation notes for why this flaked under a full run.
+    :sys.get_state(OrcaHub.Streaming.WarmPool)
+
     refute Enum.any?(OrcaHub.Streaming.WarmPool.warm_rows(), fn {sid, _pid, _ts, _status} ->
              sid == session.id
            end)

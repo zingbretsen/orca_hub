@@ -401,11 +401,11 @@ defmodule OrcaHub.ArtifactsTest do
       {:ok, artifact} =
         Artifacts.save_artifact(%{project_id: project.id, name: "to-delete-bcast", content: "x"})
 
+      artifact_id = artifact.id
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "artifacts")
       assert {:ok, _} = Artifacts.delete_artifact(artifact)
 
-      assert_receive {:artifact_changed, id}
-      assert id == artifact.id
+      assert_receive {:artifact_changed, ^artifact_id}
     end
   end
 
@@ -521,15 +521,14 @@ defmodule OrcaHub.ArtifactsTest do
       {:ok, artifact} =
         Artifacts.save_artifact(%{project_id: project.id, name: "pin-bcast", content: "x"})
 
+      artifact_id = artifact.id
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "artifacts")
 
       {:ok, pinned} = Artifacts.pin_artifact(artifact)
-      assert_receive {:artifact_changed, id}
-      assert id == artifact.id
+      assert_receive {:artifact_changed, ^artifact_id}
 
       {:ok, _} = Artifacts.unpin_artifact(pinned)
-      assert_receive {:artifact_changed, id}
-      assert id == artifact.id
+      assert_receive {:artifact_changed, ^artifact_id}
     end
   end
 
@@ -542,8 +541,8 @@ defmodule OrcaHub.ArtifactsTest do
       {:ok, artifact} =
         Artifacts.save_artifact(%{project_id: project.id, name: "agg-save", content: "x"})
 
-      assert_receive {:artifact_changed, id}
-      assert id == artifact.id
+      artifact_id = artifact.id
+      assert_receive {:artifact_changed, ^artifact_id}
     end
 
     test "update_artifact_data/2 also broadcasts {:artifact_changed, id} on \"artifacts\"", %{
@@ -552,12 +551,12 @@ defmodule OrcaHub.ArtifactsTest do
       {:ok, artifact} =
         Artifacts.save_artifact(%{project_id: project.id, name: "agg-data", content: "x"})
 
+      artifact_id = artifact.id
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "artifacts")
 
       {:ok, _} = Artifacts.update_artifact_data(artifact, %{"n" => 1})
 
-      assert_receive {:artifact_changed, id}
-      assert id == artifact.id
+      assert_receive {:artifact_changed, ^artifact_id}
     end
   end
 end

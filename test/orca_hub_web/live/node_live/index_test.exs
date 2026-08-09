@@ -274,10 +274,17 @@ defmodule OrcaHubWeb.NodeLive.IndexTest do
     :ok
   end
 
-  # Counts Ecto queries issued by `fun`, regardless of which process(es)
-  # actually run them (a connected LiveView mount runs in its own process,
-  # not the calling test process) — mirrors the methodology in
-  # perf_session_load.md.
+  # Counts Ecto queries issued by `fun`, scoped to the process that actually
+  # ran them. `fun` is `live(conn, ...)`, whose mount executes in the new
+  # LiveView's own process, not this test process — so the handler tags
+  # every query with its emitting pid and we filter down to the mounted
+  # view's pid afterward (known only once `fun.()` returns `{:ok, view, _}`).
+  # A naive `self() == test_pid` filter (the fix used for the identical bug
+  # in ClusterNodesTest, 8cc57dd) would count zero queries here for that
+  # reason. Filtering to the view's pid also incidentally excludes noise
+  # from unrelated background queries (e.g. NodeDialer's ~5s
+  # list_dial_targets/0 tick) that a fully unscoped handler picks up,
+  # which is what made this assertion flaky under a full-suite run.
   defp count_queries(fun) do
     ref = make_ref()
     test_pid = self()
@@ -286,19 +293,20 @@ defmodule OrcaHubWeb.NodeLive.IndexTest do
     :telemetry.attach(
       handler_id,
       [:orca_hub, :repo, :query],
-      fn _event, _measurements, _metadata, _config -> send(test_pid, {ref, :query}) end,
+      fn _event, _measurements, _metadata, _config -> send(test_pid, {ref, :query, self()}) end,
       nil
     )
 
-    result = fun.()
+    {:ok, view, _html} = result = fun.()
     :telemetry.detach(handler_id)
 
-    {flush_query_count(ref), result}
+    {flush_query_count(ref, view.pid), result}
   end
 
-  defp flush_query_count(ref, count \\ 0) do
+  defp flush_query_count(ref, pid, count \\ 0) do
     receive do
-      {^ref, :query} -> flush_query_count(ref, count + 1)
+      {^ref, :query, ^pid} -> flush_query_count(ref, pid, count + 1)
+      {^ref, :query, _other_pid} -> flush_query_count(ref, pid, count)
     after
       0 -> count
     end
