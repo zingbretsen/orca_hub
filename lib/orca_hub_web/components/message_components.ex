@@ -165,10 +165,11 @@ defmodule OrcaHubWeb.MessageComponents do
   defp orphaned_fragment_marker(assigns) do
     ~H"""
     <div
-      class="ml-4 mb-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-warning/10 text-warning text-[10px]"
+      class="ml-4 mb-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-warning/10 text-warning text-[10px] shrink-0 whitespace-nowrap"
       title="This message's subagent tool call isn't loaded, so it's shown standalone instead of nested under it."
     >
-      <.icon name="hero-exclamation-triangle-micro" class="size-3" /> orphaned subagent fragment
+      <.icon name="hero-exclamation-triangle-micro" class="size-3 shrink-0" />
+      orphaned subagent fragment
     </div>
     """
   end
@@ -432,8 +433,8 @@ defmodule OrcaHubWeb.MessageComponents do
     <div class="ml-4 my-1">
       <details id={"thinking-group-#{@id}"} class="group">
         <summary class="flex items-center gap-2 cursor-pointer text-xs font-medium opacity-70 hover:opacity-100 transition-opacity">
-          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-info/10 text-info">
-            <.icon name="hero-sparkles-micro" class="size-3" /> Thinking
+          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-info/10 text-info shrink-0 whitespace-nowrap">
+            <.icon name="hero-sparkles-micro" class="size-3 shrink-0" /> Thinking
           </span>
           <span :if={@count > 0} class="opacity-40 text-[10px]">
             {@count} {if @count == 1, do: "thought", else: "thoughts"}
@@ -473,11 +474,11 @@ defmodule OrcaHubWeb.MessageComponents do
     <div class="ml-4 my-1">
       <details class="group">
         <summary class="flex items-center gap-2 cursor-pointer text-xs font-medium opacity-70 hover:opacity-100 transition-opacity">
-          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-info/10 text-info">
+          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-info/10 text-info shrink-0 whitespace-nowrap">
             <.tool_icon name={@tool_name} />
             {@tool_name}
           </span>
-          <span class="opacity-50 truncate max-w-md">
+          <span class="opacity-50 truncate max-w-md min-w-0">
             <.tool_summary name={@tool_name} input={@input} />
           </span>
           <.icon
@@ -546,10 +547,10 @@ defmodule OrcaHubWeb.MessageComponents do
     <div class="ml-4 my-2">
       <details class="group">
         <summary class="flex items-center gap-2 cursor-pointer text-xs font-medium opacity-70 hover:opacity-100 transition-opacity">
-          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-warning/10 text-warning">
-            <.icon name="hero-cpu-chip-micro" class="size-3" /> Agent
+          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-warning/10 text-warning shrink-0 whitespace-nowrap">
+            <.icon name="hero-cpu-chip-micro" class="size-3 shrink-0" /> Agent
           </span>
-          <span class="opacity-50 truncate max-w-md">{@description}</span>
+          <span class="opacity-50 truncate max-w-md min-w-0">{@description}</span>
           <span :if={@subagent_type} class="opacity-40 text-[10px]">{@subagent_type}</span>
           <span :if={@model} class="opacity-40 text-[10px]">{@model}</span>
           <span :if={@msg_count > 0} class="opacity-30 text-[10px]">{@msg_count} msgs</span>
@@ -579,8 +580,8 @@ defmodule OrcaHubWeb.MessageComponents do
     <div :if={@content != ""} class="ml-4 my-1">
       <details class="group">
         <summary class="flex items-center gap-2 cursor-pointer text-xs font-medium opacity-70 hover:opacity-100 transition-opacity">
-          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-success/10 text-success">
-            <.icon name="hero-check-circle-micro" class="size-3" /> Result
+          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-success/10 text-success shrink-0 whitespace-nowrap">
+            <.icon name="hero-check-circle-micro" class="size-3 shrink-0" /> Result
           </span>
           <.icon
             name="hero-chevron-right-micro"
@@ -779,55 +780,55 @@ defmodule OrcaHubWeb.MessageComponents do
 
   defp tool_icon(%{name: "Bash"} = assigns) do
     ~H"""
-    <.icon name="hero-command-line-micro" class="size-3" />
+    <.icon name="hero-command-line-micro" class="size-3 shrink-0" />
     """
   end
 
   defp tool_icon(%{name: name} = assigns) when name in ~w(Read Write) do
     ~H"""
-    <.icon name="hero-document-text-micro" class="size-3" />
+    <.icon name="hero-document-text-micro" class="size-3 shrink-0" />
     """
   end
 
   defp tool_icon(%{name: "Edit"} = assigns) do
     ~H"""
-    <.icon name="hero-pencil-square-micro" class="size-3" />
+    <.icon name="hero-pencil-square-micro" class="size-3 shrink-0" />
     """
   end
 
   defp tool_icon(%{name: name} = assigns) when name in ~w(Glob Grep) do
     ~H"""
-    <.icon name="hero-magnifying-glass-micro" class="size-3" />
+    <.icon name="hero-magnifying-glass-micro" class="size-3 shrink-0" />
     """
   end
 
   defp tool_icon(%{name: "Agent"} = assigns) do
     ~H"""
-    <.icon name="hero-cpu-chip-micro" class="size-3" />
+    <.icon name="hero-cpu-chip-micro" class="size-3 shrink-0" />
     """
   end
 
   defp tool_icon(%{name: name} = assigns) when name in ~w(WebFetch WebSearch) do
     ~H"""
-    <.icon name="hero-globe-alt-micro" class="size-3" />
+    <.icon name="hero-globe-alt-micro" class="size-3 shrink-0" />
     """
   end
 
   defp tool_icon(%{name: "TodoWrite"} = assigns) do
     ~H"""
-    <.icon name="hero-clipboard-document-list-micro" class="size-3" />
+    <.icon name="hero-clipboard-document-list-micro" class="size-3 shrink-0" />
     """
   end
 
   defp tool_icon(%{name: "AskUserQuestion"} = assigns) do
     ~H"""
-    <.icon name="hero-question-mark-circle-micro" class="size-3" />
+    <.icon name="hero-question-mark-circle-micro" class="size-3 shrink-0" />
     """
   end
 
   defp tool_icon(assigns) do
     ~H"""
-    <.icon name="hero-wrench-screwdriver-micro" class="size-3" />
+    <.icon name="hero-wrench-screwdriver-micro" class="size-3 shrink-0" />
     """
   end
 
