@@ -314,6 +314,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             kind: artifact.kind,
             version: artifact.version,
             content: artifact.content,
+            data: artifact.data,
             raw_url: raw_url(artifact),
             updated_at: artifact.updated_at
           })

@@ -275,6 +275,41 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
       assert body["content"] == "<p>the body</p>"
     end
 
+    test "returns the exact expected key set", %{state: state} do
+      ArtifactsTool.call("save_artifact", %{"name" => "keyset", "content" => "<p>x</p>"}, state)
+
+      body = ArtifactsTool.call("get_artifact", %{"name" => "keyset"}, state) |> decode()
+
+      assert Map.keys(body) |> Enum.sort() ==
+               Enum.sort(~w(id name kind version content data raw_url updated_at))
+    end
+
+    test "returns an empty data map for a freshly-saved artifact", %{state: state} do
+      ArtifactsTool.call("save_artifact", %{"name" => "no-data-yet", "content" => "x"}, state)
+
+      body = ArtifactsTool.call("get_artifact", %{"name" => "no-data-yet"}, state) |> decode()
+      assert body["data"] == %{}
+    end
+
+    test "round-trips a populated _user_state through data", %{state: state} do
+      %{"id" => id} =
+        ArtifactsTool.call(
+          "save_artifact",
+          %{"name" => "with-state", "content" => "<p>x</p>"},
+          state
+        )
+        |> decode()
+
+      ArtifactsTool.call(
+        "update_artifact_data",
+        %{"artifact_id" => id, "data" => %{"_user_state" => %{"checked" => true}}},
+        state
+      )
+
+      body = ArtifactsTool.call("get_artifact", %{"artifact_id" => id}, state) |> decode()
+      assert body["data"] == %{"_user_state" => %{"checked" => true}}
+    end
+
     test "returns full content by artifact_id from a different session (later iteration)", %{
       state: state
     } do
