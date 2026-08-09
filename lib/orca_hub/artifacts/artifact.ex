@@ -23,6 +23,7 @@ defmodule OrcaHub.Artifacts.Artifact do
     field :data, :map, default: %{}
     field :version, :integer, default: 1
     field :session_id, :binary_id
+    field :pinned_at, :utc_datetime
 
     belongs_to :project, OrcaHub.Projects.Project
 
@@ -31,7 +32,16 @@ defmodule OrcaHub.Artifacts.Artifact do
 
   def changeset(artifact, attrs) do
     artifact
-    |> cast(attrs, [:project_id, :session_id, :name, :kind, :content, :data, :version])
+    |> cast(attrs, [
+      :project_id,
+      :session_id,
+      :name,
+      :kind,
+      :content,
+      :data,
+      :version,
+      :pinned_at
+    ])
     |> validate_required([:project_id, :name])
     |> validate_inclusion(:kind, ~w(html svg markdown))
     |> foreign_key_constraint(:project_id)

@@ -1,0 +1,140 @@
+<.header>
+  Artifacts
+</.header>
+
+<div class="flex flex-wrap items-center gap-3 mt-4">
+  <form phx-change="filter_name" class="flex-1 min-w-48">
+    <input
+      type="text"
+      name="name"
+      value={@name_filter}
+      placeholder="Filter by name…"
+      phx-debounce="150"
+      class="input input-bordered input-sm w-full"
+    />
+  </form>
+  <form phx-change="filter_project">
+    <select name="project_id" class="select select-bordered select-sm">
+      <option value="">All projects</option>
+      <option
+        :for={project <- @projects}
+        value={project.id}
+        selected={@project_filter == project.id}
+      >
+        {project.name}
+      </option>
+    </select>
+  </form>
+</div>
+
+<div :if={@artifacts == []} class="text-sm text-base-content/50 p-8 text-center mt-6">
+  <%= if @name_filter == "" && @project_filter == "" do %>
+    <p class="mb-2">No artifacts yet.</p>
+    <p class="text-xs max-w-md mx-auto">
+      Artifacts are rich HTML/SVG/markdown documents an agent session saves with the
+      <code class="font-mono">save_artifact</code>
+      MCP tool — dashboards, checklists, reports — that outlive the session that made them.
+      Ask an agent to save one, or open a project page to see artifacts already created there.
+    </p>
+  <% else %>
+    No artifacts match this filter.
+  <% end %>
+</div>
+
+<div :if={@pinned_artifacts != []} class="mt-6">
+  <h3 class="text-sm font-semibold text-base-content/70 flex items-center gap-2 mb-2">
+    <.icon name="hero-star-solid" class="size-4 text-warning" /> Pinned
+  </h3>
+  <.table
+    id="pinned-artifacts"
+    rows={@pinned_artifacts}
+    row_click={fn artifact -> JS.navigate(~p"/artifacts/#{artifact.id}") end}
+  >
+    <:col :let={artifact} label="" class="w-8">
+      <button
+        type="button"
+        phx-click="unpin"
+        phx-value-id={artifact.id}
+        class="btn btn-ghost btn-xs btn-circle"
+        title="Unpin"
+      >
+        <.icon name="hero-star-solid" class="size-4 text-warning" />
+      </button>
+    </:col>
+    <:col :let={artifact} label="Name">
+      <.link navigate={~p"/artifacts/#{artifact.id}"} class="link link-hover">
+        {artifact.name}
+      </.link>
+    </:col>
+    <:col :let={artifact} label="Kind">
+      <span class="badge badge-sm badge-outline">{artifact.kind}</span>
+    </:col>
+    <:col :let={artifact} label="Version">v{artifact.version}</:col>
+    <:col :let={artifact} label="Project">
+      <.link navigate={~p"/projects/#{artifact.project_id}"} class="link link-hover text-xs">
+        {artifact.project.name}
+      </.link>
+    </:col>
+    <:col :let={artifact} label="Updated" class="whitespace-nowrap text-xs text-base-content/60">
+      {Calendar.strftime(artifact.updated_at, "%b %d, %H:%M")}
+    </:col>
+    <:action :let={artifact}>
+      <.link
+        phx-click="delete"
+        phx-value-id={artifact.id}
+        data-confirm="Delete this artifact? This cannot be undone."
+      >
+        Delete
+      </.link>
+    </:action>
+  </.table>
+</div>
+
+<div :if={@grouped_artifacts != []} class="mt-6">
+  <div :for={{project, project_artifacts} <- @grouped_artifacts} class="mb-6">
+    <h3 class="text-sm font-semibold text-base-content/70 flex items-center gap-2 mb-2">
+      <.link navigate={~p"/projects/#{project.id}"} class="hover:underline">
+        {project.name}
+      </.link>
+      <span class="badge badge-sm badge-ghost">{length(project_artifacts)}</span>
+    </h3>
+    <.table
+      id={"artifacts-#{project.id}"}
+      rows={project_artifacts}
+      row_click={fn artifact -> JS.navigate(~p"/artifacts/#{artifact.id}") end}
+    >
+      <:col :let={artifact} label="" class="w-8">
+        <button
+          type="button"
+          phx-click="pin"
+          phx-value-id={artifact.id}
+          class="btn btn-ghost btn-xs btn-circle"
+          title="Pin"
+        >
+          <.icon name="hero-star" class="size-4 text-base-content/40" />
+        </button>
+      </:col>
+      <:col :let={artifact} label="Name">
+        <.link navigate={~p"/artifacts/#{artifact.id}"} class="link link-hover">
+          {artifact.name}
+        </.link>
+      </:col>
+      <:col :let={artifact} label="Kind">
+        <span class="badge badge-sm badge-outline">{artifact.kind}</span>
+      </:col>
+      <:col :let={artifact} label="Version">v{artifact.version}</:col>
+      <:col :let={artifact} label="Updated" class="whitespace-nowrap text-xs text-base-content/60">
+        {Calendar.strftime(artifact.updated_at, "%b %d, %H:%M")}
+      </:col>
+      <:action :let={artifact}>
+        <.link
+          phx-click="delete"
+          phx-value-id={artifact.id}
+          data-confirm="Delete this artifact? This cannot be undone."
+        >
+          Delete
+        </.link>
+      </:action>
+    </.table>
+  </div>
+</div>

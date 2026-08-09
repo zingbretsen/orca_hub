@@ -6,9 +6,12 @@ defmodule OrcaHub.ArtifactsTest do
   """
   use OrcaHub.DataCase, async: true
 
+  import Ecto.Query
+
   alias OrcaHub.Artifacts
   alias OrcaHub.Artifacts.Artifact
   alias OrcaHub.Projects
+  alias OrcaHub.Repo
 
   setup do
     dir = Path.join(System.tmp_dir!(), "artifacts_test_#{System.unique_integer([:positive])}")
@@ -390,6 +393,171 @@ defmodule OrcaHub.ArtifactsTest do
 
       assert {:ok, _} = Artifacts.delete_artifact(artifact)
       assert Artifacts.get_artifact(artifact.id) == nil
+    end
+
+    test "broadcasts {:artifact_changed, id} on the aggregate \"artifacts\" topic", %{
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "to-delete-bcast", content: "x"})
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "artifacts")
+      assert {:ok, _} = Artifacts.delete_artifact(artifact)
+
+      assert_receive {:artifact_changed, id}
+      assert id == artifact.id
+    end
+  end
+
+  describe "list_all_artifacts/1" do
+    test "returns artifacts from every project, with :project preloaded", %{project: project} do
+      {:ok, other_project} =
+        Projects.create_project(%{
+          name: "artifacts-ctx-test-all-1",
+          directory: "/tmp/artifacts-ctx-all-1-#{System.unique_integer([:positive])}",
+          node: "n1@x"
+        })
+
+      {:ok, mine} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "all-a", content: "a"})
+
+      {:ok, theirs} =
+        Artifacts.save_artifact(%{project_id: other_project.id, name: "all-b", content: "b"})
+
+      artifacts = Artifacts.list_all_artifacts()
+      ids = Enum.map(artifacts, & &1.id)
+
+      assert mine.id in ids
+      assert theirs.id in ids
+
+      found = Enum.find(artifacts, &(&1.id == mine.id))
+      assert %OrcaHub.Projects.Project{} = found.project
+      assert found.project.id == project.id
+    end
+
+    test "orders most recently updated first", %{project: project} do
+      {:ok, older} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "order-older", content: "x"})
+
+      {:ok, newer} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "order-newer", content: "x"})
+
+      # updated_at is second-precision (plain `timestamps()`, not
+      # `_usec`) — backdate explicitly rather than relying on wall-clock
+      # gaps between the two saves above, which could tie within the same
+      # second and make this assertion flaky.
+      old_time = NaiveDateTime.utc_now() |> NaiveDateTime.add(-60, :second)
+
+      from(a in Artifact, where: a.id == ^older.id)
+      |> Repo.update_all(set: [updated_at: old_time])
+
+      ids =
+        Artifacts.list_all_artifacts(%{project_id: project.id})
+        |> Enum.map(& &1.id)
+        |> Enum.filter(&(&1 in [older.id, newer.id]))
+
+      assert ids == [newer.id, older.id]
+    end
+
+    test "filters by name (case-insensitive substring)", %{project: project} do
+      {:ok, groceries} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "Grocery List", content: "x"})
+
+      {:ok, _other} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "Dashboard", content: "x"})
+
+      ids =
+        Artifacts.list_all_artifacts(%{name: "grocery", project_id: project.id})
+        |> Enum.map(& &1.id)
+
+      assert ids == [groceries.id]
+    end
+
+    test "filters by project_id", %{project: project} do
+      {:ok, other_project} =
+        Projects.create_project(%{
+          name: "artifacts-ctx-test-all-2",
+          directory: "/tmp/artifacts-ctx-all-2-#{System.unique_integer([:positive])}",
+          node: "n1@x"
+        })
+
+      {:ok, mine} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "scoped-a", content: "a"})
+
+      {:ok, _theirs} =
+        Artifacts.save_artifact(%{project_id: other_project.id, name: "scoped-b", content: "b"})
+
+      ids =
+        Artifacts.list_all_artifacts(%{project_id: project.id}) |> Enum.map(& &1.id)
+
+      assert ids == [mine.id]
+    end
+  end
+
+  describe "pin_artifact/1 and unpin_artifact/1" do
+    test "pin_artifact/1 stamps pinned_at", %{project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "pin-me", content: "x"})
+
+      refute artifact.pinned_at
+
+      assert {:ok, pinned} = Artifacts.pin_artifact(artifact)
+      assert %DateTime{} = pinned.pinned_at
+    end
+
+    test "unpin_artifact/1 clears pinned_at", %{project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "unpin-me", content: "x"})
+
+      {:ok, pinned} = Artifacts.pin_artifact(artifact)
+      assert pinned.pinned_at
+
+      assert {:ok, unpinned} = Artifacts.unpin_artifact(pinned)
+      assert unpinned.pinned_at == nil
+    end
+
+    test "pin_artifact/1 and unpin_artifact/1 broadcast {:artifact_changed, id} on \"artifacts\"",
+         %{project: project} do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "pin-bcast", content: "x"})
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "artifacts")
+
+      {:ok, pinned} = Artifacts.pin_artifact(artifact)
+      assert_receive {:artifact_changed, id}
+      assert id == artifact.id
+
+      {:ok, _} = Artifacts.unpin_artifact(pinned)
+      assert_receive {:artifact_changed, id}
+      assert id == artifact.id
+    end
+  end
+
+  describe "aggregate \"artifacts\" broadcast on save/data-update (in addition to per-artifact broadcasts)" do
+    test "save_artifact/1 also broadcasts {:artifact_changed, id} on \"artifacts\"", %{
+      project: project
+    } do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "artifacts")
+
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "agg-save", content: "x"})
+
+      assert_receive {:artifact_changed, id}
+      assert id == artifact.id
+    end
+
+    test "update_artifact_data/2 also broadcasts {:artifact_changed, id} on \"artifacts\"", %{
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{project_id: project.id, name: "agg-data", content: "x"})
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "artifacts")
+
+      {:ok, _} = Artifacts.update_artifact_data(artifact, %{"n" => 1})
+
+      assert_receive {:artifact_changed, id}
+      assert id == artifact.id
     end
   end
 end

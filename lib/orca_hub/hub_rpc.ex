@@ -194,6 +194,12 @@ defmodule OrcaHub.HubRPC do
   def list_artifacts_for_session(session_id),
     do: call(OrcaHub.Artifacts, :list_artifacts_for_session, [session_id])
 
+  def list_all_artifacts(opts \\ %{}), do: call(OrcaHub.Artifacts, :list_all_artifacts, [opts])
+
+  def pin_artifact(artifact), do: call(OrcaHub.Artifacts, :pin_artifact, [artifact])
+
+  def unpin_artifact(artifact), do: call(OrcaHub.Artifacts, :unpin_artifact, [artifact])
+
   def delete_artifact(artifact), do: call(OrcaHub.Artifacts, :delete_artifact, [artifact])
 
   # -------------------------------------------------------------------

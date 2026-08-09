@@ -21,6 +21,12 @@ defmodule OrcaHub.Artifacts do
   the artifact has a `session_id`, it also broadcasts `{:artifact_saved,
   artifact}` on `"session:<session_id>"` so the creator session's header
   (Artifacts button count + dropdown) can stay in sync without a remount.
+
+  Every save/data-update/pin/unpin/delete ALSO broadcasts
+  `{:artifact_changed, artifact_id}` on the aggregate `"artifacts"` topic —
+  the same aggregate-topic pattern `TerminalRunner` uses for `"terminals"`
+  (`.context/terminals.md`) — so `ArtifactLive.Index` can live-refresh
+  without knowing which specific artifact changed or how.
   """
 
   import Ecto.Query
@@ -159,6 +165,62 @@ defmodule OrcaHub.Artifacts do
     end
   end
 
+  @doc """
+  Every artifact across every project, most recently updated first, with
+  `:project` preloaded — one indexed query plus one batched preload query
+  (same shape as `OrcaHub.Terminals.list_terminals/0`), NOT an N+1 —
+  so `ArtifactLive.Index` can group/label by project without a per-row
+  lookup. `opts` (map or keyword list, all keys optional):
+
+    * `:name` - case-insensitive substring match against `name`
+    * `:project_id` - scope to one project
+  """
+  def list_all_artifacts(opts \\ %{}) do
+    opts = Map.new(opts)
+
+    Artifact
+    |> filter_by_name_opt(Map.get(opts, :name))
+    |> filter_by_project_id_opt(Map.get(opts, :project_id))
+    |> order_by([a], desc: a.updated_at)
+    |> preload(:project)
+    |> Repo.all()
+  end
+
+  defp filter_by_name_opt(query, name) when name in [nil, ""], do: query
+
+  defp filter_by_name_opt(query, name) do
+    like = "%#{name}%"
+    where(query, [a], ilike(a.name, ^like))
+  end
+
+  defp filter_by_project_id_opt(query, project_id) when project_id in [nil, ""], do: query
+
+  defp filter_by_project_id_opt(query, project_id) do
+    where(query, [a], a.project_id == ^project_id)
+  end
+
+  @doc """
+  Pins an artifact by stamping `pinned_at` — a nullable timestamp (not a
+  boolean) so `ArtifactLive.Index`'s Pinned section can order by when each
+  artifact was pinned, the same rationale as `Session.archived_at`. Two
+  explicit functions (`pin_artifact/1`/`unpin_artifact/1`) rather than one
+  generic toggle, mirroring `archive_session/1`/`unarchive_session/1`.
+  """
+  def pin_artifact(%Artifact{} = artifact) do
+    artifact
+    |> Artifact.changeset(%{pinned_at: DateTime.utc_now() |> DateTime.truncate(:second)})
+    |> Repo.update()
+    |> broadcast_artifacts_changed()
+  end
+
+  @doc "Unpins an artifact — clears `pinned_at`. See `pin_artifact/1`."
+  def unpin_artifact(%Artifact{} = artifact) do
+    artifact
+    |> Artifact.changeset(%{pinned_at: nil})
+    |> Repo.update()
+    |> broadcast_artifacts_changed()
+  end
+
   def get_artifact(id) do
     case Ecto.UUID.cast(id) do
       {:ok, _} -> Repo.get(Artifact, id)
@@ -187,7 +249,11 @@ defmodule OrcaHub.Artifacts do
     )
   end
 
-  def delete_artifact(%Artifact{} = artifact), do: Repo.delete(artifact)
+  def delete_artifact(%Artifact{} = artifact) do
+    artifact
+    |> Repo.delete()
+    |> broadcast_artifacts_changed()
+  end
 
   defp broadcast_on_save({:ok, artifact} = result) do
     Phoenix.PubSub.broadcast(
@@ -204,7 +270,7 @@ defmodule OrcaHub.Artifacts do
       )
     end
 
-    result
+    broadcast_artifacts_changed(result)
   end
 
   defp broadcast_on_save(error), do: error
@@ -216,8 +282,15 @@ defmodule OrcaHub.Artifacts do
       {:artifact_data_updated, artifact}
     )
 
-    result
+    broadcast_artifacts_changed(result)
   end
 
   defp broadcast_data_update(error), do: error
+
+  defp broadcast_artifacts_changed({:ok, artifact} = result) do
+    Phoenix.PubSub.broadcast(OrcaHub.PubSub, "artifacts", {:artifact_changed, artifact.id})
+    result
+  end
+
+  defp broadcast_artifacts_changed(error), do: error
 end

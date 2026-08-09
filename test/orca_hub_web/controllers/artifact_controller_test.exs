@@ -29,6 +29,30 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
     assert conn.status == 404
   end
 
+  # Regression guard for the `/artifacts` index route added alongside
+  # `ArtifactLive.Index` — that route lives in a DIFFERENT scope
+  # (`:browser`/live_session) than this one (`:artifact_raw`), and the two
+  # have a different path-segment count (`/artifacts` vs `/artifacts/:id/raw`),
+  # but assert explicitly that route precedence still resolves `/raw` to
+  # this controller rather than to the LiveView.
+  test "still serves raw bytes at /artifacts/:id/raw now that /artifacts (index) also exists", %{
+    conn: conn,
+    project: project
+  } do
+    {:ok, artifact} =
+      Artifacts.save_artifact(%{
+        project_id: project.id,
+        name: "route-precedence",
+        content: "<p>still raw</p>"
+      })
+
+    conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
+
+    assert conn.status == 200
+    assert get_resp_header(conn, "content-type") |> hd() =~ "text/html"
+    assert conn.resp_body =~ "<p>still raw</p>"
+  end
+
   test "404 (not a crash) for a non-uuid id", %{conn: conn} do
     conn = get(conn, ~p"/artifacts/not-a-uuid/raw")
     assert conn.status == 404

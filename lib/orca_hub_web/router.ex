@@ -62,6 +62,7 @@ defmodule OrcaHubWeb.Router do
       live "/sessions/new", SessionLive.Index, :new
       live "/sessions/:id", SessionLive.Show, :show
 
+      live "/artifacts", ArtifactLive.Index, :index
       live "/artifacts/:id", ArtifactLive.Show, :show
 
       live "/settings", SettingsLive.Index, :index
