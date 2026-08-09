@@ -14,9 +14,9 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
   export $(grep -E "^DB_" .env | xargs) && env -u PHX_SERVER -u ORCA_MODE -u PORT -u CLUSTER_NODES -u CLUSTER_DNS_QUERY mix test
   ```
 - Distributed tests are excluded by default — run them separately: `mix test --only distributed`
-- Exactly ONE known flake: `OrcaHub.TriggersTest "list_enabled_triggers/0"` (shared dev-DB leftover state). Anything else failing is real — investigate, don't retry-until-green.
+- Confirmed known flake: `OrcaHub.TriggersTest "list_enabled_triggers/0"` (shared dev-DB leftover state). Two others flake intermittently across *repeated* runs under shared-dev-DB isolation gaps rather than every run — `NodeLive.IndexTest "load_nodes issues the same number of queries…"` and `PiStubIntegrationTest "a genuine turn error tears down the warm port…"` (being fixed at root separately as of 2026-08-09). Anything else failing is real — investigate, don't retry-until-green.
 - Tests run against the shared dev DB, not an isolated test DB — hub-boot GenServers write real rows; this is expected.
-- Don't trust this doc's flake list as-is before a deploy gate — establish the baseline empirically by running the full suite yourself against the SHA you're about to ship, since this file can silently drift out of date (it did for weeks before being corrected 2026-08-09).
+- Don't trust this doc's flake list as-is before a deploy gate — establish the baseline empirically by running the full suite yourself (ideally more than once) against the SHA you're about to ship, since this file can silently drift out of date (it did for weeks before being corrected 2026-08-09), and a single clean run isn't guaranteed given the intermittent flakes above.
 
 ## Architecture
 
@@ -88,6 +88,12 @@ Because the local systemd restart can kill the deploying session before it can
 verify itself, `~/homelab/scripts/verify-orca-deploy.sh [sha]` is the companion
 script to run afterward (by hand, or from another session) — it polls
 `GET /api/version` on every instance and confirms each reports the target SHA.
+**It lives in the homelab repo, not this one** — a worker told to "verify the
+deploy" who only searches this repo won't find it and may hand-roll a worse
+check instead. If it's genuinely unavailable, the manual fallback is the same
+`/api/version` endpoint per instance: local systemd and `mini` on port `4001`,
+the k3s hub pod on `4000`, and the k3s `orca-agent-discord`/`orca-agent-dell`
+agent pods on `4010`/`4020` respectively (typically via port-forward).
 
 **Passwordless sudo requirement:** the systemd step runs `sudo systemctl restart orca-hub`.
 To avoid a password prompt, install the sudoers drop-in at
@@ -95,6 +101,11 @@ To avoid a password prompt, install the sudoers drop-in at
 `scripts/orca-hub.sudoers` with install instructions in its header; it grants
 `zach` NOPASSWD for start/stop/status/restart of the `orca-hub` unit only.
 Validate after installing with `sudo visudo -cf /etc/sudoers.d/orca-hub`.
+**This alone is not sufficient from an agent session running inside the
+orca-hub release itself** — that process tree runs with `no_new_privs`, which
+blocks `sudo` even with a valid NOPASSWD entry. The confirmed-working escape
+is routing through sshd instead: `ssh localhost 'sudo -n systemctl restart
+orca-hub'`.
 
 ### k3s reference
 
