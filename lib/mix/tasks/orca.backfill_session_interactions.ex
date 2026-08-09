@@ -96,7 +96,11 @@ defmodule Mix.Tasks.Orca.BackfillSessionInteractions do
                  sender_session_id: sender_id,
                  recipient_session_id: message.session_id,
                  kind: "message",
-                 inserted_at: message.inserted_at
+                 # Message.inserted_at is :naive_datetime_usec, but
+                 # SessionInteraction.inserted_at is plain :naive_datetime
+                 # (no usec) — Ecto's dumper rejects a usec-precision value
+                 # for a non-usec field, so it must be truncated here.
+                 inserted_at: NaiveDateTime.truncate(message.inserted_at, :second)
                }}
             else
               :no_sender

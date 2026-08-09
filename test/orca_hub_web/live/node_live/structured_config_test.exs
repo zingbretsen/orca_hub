@@ -26,10 +26,29 @@ defmodule OrcaHubWeb.NodeLive.StructuredConfigTest do
     }
     """)
 
+    # Mounting NodeLive.Show for a connected node also runs
+    # BackendInstaller.status/0, which (absent an override) shells out to
+    # the REAL host `npm` for codex/pi `latest_version` — and that result
+    # gets cached process-globally for an hour (OrcaHub.Backend.Cache), so a
+    # real npm call here can poison other tests' assertions on that cache
+    # key. Point npm_executable at a nonexistent binary so this file never
+    # makes that call.
+    original_npm = Application.get_env(:orca_hub, :npm_executable)
+
+    Application.put_env(
+      :orca_hub,
+      :npm_executable,
+      "no-such-npm-#{System.unique_integer([:positive])}"
+    )
+
     on_exit(fn ->
       if original_home,
         do: Application.put_env(:orca_hub, :node_config_home, original_home),
         else: Application.delete_env(:orca_hub, :node_config_home)
+
+      if original_npm,
+        do: Application.put_env(:orca_hub, :npm_executable, original_npm),
+        else: Application.delete_env(:orca_hub, :npm_executable)
 
       File.rm_rf(home)
     end)

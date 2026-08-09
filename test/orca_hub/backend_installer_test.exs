@@ -45,6 +45,14 @@ defmodule OrcaHub.BackendInstallerTest do
     Application.put_env(:orca_hub, :pi_executable, pi)
     Application.put_env(:orca_hub, :npm_executable, npm)
 
+    # `latest_version/2` reads through OrcaHub.Backend.Cache (1hr TTL,
+    # process-global ETS) — another test that ran BackendInstaller.status/0
+    # against the real host npm before this setup swapped the fixture in
+    # would leave a stale entry here. Same pattern as backend_test.exs's
+    # `Cache.invalidate({:available_on, node()})`.
+    OrcaHub.Backend.Cache.invalidate({:latest_version, :codex})
+    OrcaHub.Backend.Cache.invalidate({:latest_version, :pi})
+
     on_exit(fn ->
       File.rm_rf(tmp_dir)
       restore_env(:backend_installer_commands, original.commands)

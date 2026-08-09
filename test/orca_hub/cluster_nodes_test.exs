@@ -369,8 +369,14 @@ defmodule OrcaHub.ClusterNodesTest do
     ref = make_ref()
     self_pid = self()
 
+    # :telemetry.attach/4 is process-global, but the handler runs IN the
+    # process that emitted the event — i.e. whichever process actually ran
+    # the query. Scoping to self_pid keeps this safe under `async: true`:
+    # queries from concurrently-running test files or background
+    # GenServers (e.g. NodeDialer) execute in their own processes and are
+    # filtered out, rather than inflating the count.
     handler = fn _event, _measurements, _metadata, _config ->
-      send(self_pid, {ref, :query})
+      if self() == self_pid, do: send(self_pid, {ref, :query})
     end
 
     :telemetry.attach("count-queries-#{inspect(ref)}", [:orca_hub, :repo, :query], handler, nil)

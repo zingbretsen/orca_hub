@@ -18,7 +18,11 @@ defmodule Mix.Tasks.Orca.BackfillSessionInteractionsTest do
   end
 
   defp insert_message!(session_id, data, inserted_at) do
-    ts = inserted_at |> NaiveDateTime.truncate(:second)
+    # Message.inserted_at/updated_at are :naive_datetime_usec — Ecto's
+    # dumper requires microsecond precision 6 even when the microsecond
+    # value itself is zero, so pad the precision marker rather than
+    # truncating it away.
+    ts = %{inserted_at | microsecond: {elem(inserted_at.microsecond, 0), 6}}
 
     {1, _} =
       Repo.insert_all(Message, [

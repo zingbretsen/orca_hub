@@ -142,15 +142,19 @@ defmodule OrcaHub.ClaudeImport do
           )
         end
 
-        # Bulk insert messages
-        now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+        # Bulk insert messages. Message.inserted_at/updated_at are
+        # :naive_datetime_usec (see Message's moduledoc comment), so these
+        # timestamps must carry microsecond precision — unlike the Session
+        # timestamps above, which are plain :naive_datetime and must NOT.
+        now = NaiveDateTime.utc_now()
 
         message_rows =
           messages
           |> Enum.with_index()
           |> Enum.map(fn {entry, idx} ->
             msg_ts =
-              parse_naive_timestamp(entry["timestamp"]) || NaiveDateTime.add(now, idx, :second)
+              parse_naive_timestamp(entry["timestamp"]) ||
+                pad_usec(NaiveDateTime.add(now, idx, :second))
 
             %{
               id: Ecto.UUID.generate(),
@@ -381,11 +385,43 @@ defmodule OrcaHub.ClaudeImport do
     |> NaiveDateTime.truncate(:second)
   end
 
-  defp parse_naive_timestamp(ts), do: parse_timestamp(ts)
+  # Message.inserted_at/updated_at are :naive_datetime_usec — unlike
+  # parse_timestamp/1 above (used for Session, which is plain
+  # :naive_datetime and must NOT carry microseconds), this must always
+  # return a value with microsecond precision so Repo.insert_all (which
+  # bypasses changesets/autogeneration) doesn't raise Ecto's check_usec!.
+  defp parse_naive_timestamp(nil), do: nil
+
+  defp parse_naive_timestamp(ts) when is_binary(ts) do
+    case NaiveDateTime.from_iso8601(ts) do
+      {:ok, ndt} -> pad_usec(ndt)
+      _ -> nil
+    end
+  end
+
+  defp parse_naive_timestamp(ts) when is_integer(ts) do
+    ts
+    |> DateTime.from_unix!(:millisecond)
+    |> DateTime.to_naive()
+    |> pad_usec()
+  end
+
+  defp parse_naive_timestamp(_ts), do: nil
+
+  defp pad_usec(%NaiveDateTime{microsecond: {us, _}} = ndt), do: %{ndt | microsecond: {us, 6}}
 
   defp resolve_claude_dir(target_node) do
-    home = rpc_call(target_node, System, :user_home!, [])
-    Path.join(home, ".claude")
+    # Test seam — mirrors OrcaHub.NodeConfig's :node_config_home pattern —
+    # so tests can point this at a tmp directory instead of the real
+    # ~/.claude on whatever host runs the suite.
+    case Application.get_env(:orca_hub, :claude_home_override) do
+      nil ->
+        home = rpc_call(target_node, System, :user_home!, [])
+        Path.join(home, ".claude")
+
+      override ->
+        override
+    end
   end
 
   # RPC helper — local passthrough, remote via :erpc
