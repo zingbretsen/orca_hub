@@ -53,3 +53,10 @@ config :orca_hub, :skill_sync_enabled, false
 # OrcaHub.MemoryGit.Server.run_pass/2 (or the MemoryGit/MemorySync
 # functions directly) with an injected :home_dir instead.
 config :orca_hub, :memory_git_enabled, false
+
+# OrcaHub.JobWatcher's poll/kill-grace intervals — fast in test so
+# OrcaHub.JobWatcher/JobResumer tests that drive a real detached process to
+# completion don't each cost multiple seconds of real wall-clock waiting.
+config :orca_hub, job_poll_interval_ms: 100
+config :orca_hub, job_kill_grace_ms: 300
+config :orca_hub, job_progress_command_timeout_ms: 200

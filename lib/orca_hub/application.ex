@@ -59,6 +59,8 @@ defmodule OrcaHub.Application do
       # Consulted by the delayed abandoned-session cleanup (SessionLive.Show)
       # so a page reload doesn't archive a session someone is still looking at.
       {Registry, keys: :duplicate, name: OrcaHub.SessionViewersRegistry},
+      # One entry per watched job (OrcaHub.JobWatcher) — see OrcaHub.Jobs.
+      {Registry, keys: :unique, name: OrcaHub.JobRegistry},
       # TTL cache for node-dependent backend facts (installed CLIs, pi's live
       # model catalog) — see OrcaHub.Backend.Cache.
       OrcaHub.Backend.Cache,
@@ -72,6 +74,14 @@ defmodule OrcaHub.Application do
       # by a node restart (deploy). See OrcaHub.SessionResumer moduledoc.
       OrcaHub.SessionResumer,
       OrcaHub.TerminalSupervisor,
+      # Per-node DynamicSupervisor for OrcaHub.JobWatcher processes — the
+      # detached OS processes themselves are NOT children of this
+      # supervisor (see OrcaHub.Jobs.Launcher); it only supervises the
+      # disposable watchers that observe them.
+      OrcaHub.JobSupervisor,
+      # Re-attaches job watchers orphaned by this restart — the job-subsystem
+      # analog of OrcaHub.SessionResumer above. See OrcaHub.JobResumer moduledoc.
+      OrcaHub.JobResumer,
       OrcaHub.LoginSupervisor,
       {Registry, keys: :unique, name: OrcaHub.BackendInstallerRegistry},
       OrcaHub.BackendInstallerSupervisor,
@@ -114,6 +124,8 @@ defmodule OrcaHub.Application do
       # Consulted by the delayed abandoned-session cleanup (SessionLive.Show)
       # so a page reload doesn't archive a session someone is still looking at.
       {Registry, keys: :duplicate, name: OrcaHub.SessionViewersRegistry},
+      # One entry per watched job (OrcaHub.JobWatcher) — see OrcaHub.Jobs.
+      {Registry, keys: :unique, name: OrcaHub.JobRegistry},
       # TTL cache for node-dependent backend facts (installed CLIs, pi's live
       # model catalog) — see OrcaHub.Backend.Cache.
       OrcaHub.Backend.Cache,
@@ -125,6 +137,12 @@ defmodule OrcaHub.Application do
       # by a node restart (deploy). See OrcaHub.SessionResumer moduledoc.
       OrcaHub.SessionResumer,
       OrcaHub.TerminalSupervisor,
+      # Per-node DynamicSupervisor for OrcaHub.JobWatcher processes — see
+      # the matching hub_children/1 comment above.
+      OrcaHub.JobSupervisor,
+      # Re-attaches job watchers orphaned by this restart. See
+      # OrcaHub.JobResumer moduledoc.
+      OrcaHub.JobResumer,
       OrcaHub.LoginSupervisor,
       {Registry, keys: :unique, name: OrcaHub.BackendInstallerRegistry},
       OrcaHub.BackendInstallerSupervisor,
