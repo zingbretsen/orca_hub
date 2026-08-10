@@ -10,18 +10,40 @@ defmodule OrcaHub.SessionHeartbeat do
   Heartbeats are ephemeral (in-memory only) and automatically cancelled
   when the session is archived or deleted.
 
-  State is `%{heartbeats: %{session_id => entry}, lifecycle_snapshots: %{session_id => snapshot}}`:
-  `heartbeats` is the scheduled-timer state described above; `lifecycle_snapshots`
-  is an unrelated small cache used by `lifecycle_snapshot_changed?/2` (see its doc)
-  to de-dupe `SessionRunner`'s automatic "[Session lifecycle] ... is now idle"
-  parent notifications — colocated here only because it reuses this module's
-  `Digest.changed?/2` and needs the same hub-authoritative, cross-node-reachable
-  home (this GenServer is hub-only; agent nodes reach it via `HubRPC.call/3`).
+  ## Job wakes (ORCAHUB3-26 item 1)
+
+  A heartbeat's timer is a backstop, not the only way to fire. `schedule/4`
+  accepts `:watch_job_ids`/`:wake_on` so a scheduled heartbeat can also wake
+  EARLY the moment a watched `OrcaHub.Jobs` job reaches a terminal status
+  (`succeeded`/`failed`/`verification_failed`/`timed_out`/`cancelled` — a job
+  passing through `verifying` does NOT wake anything; see `OrcaHub.Jobs`'s
+  verify-before-terminal invariant). `watch_job/2` is the standalone
+  equivalent for `start_job`'s `wake_when_done` — it works WITHOUT a
+  heartbeat ever being scheduled, tracked independently per job_id so
+  multiple simultaneous `wake_when_done` jobs on one session each resolve on
+  their own rather than clobbering each other. Both paths subscribe to
+  `OrcaHub.JobWatcher.topic/1` and both re-use `send_heartbeat/2`/
+  `flush_pending_delivery/2` — a wake to a `:running` session queues and
+  flushes at turn end exactly like a timer fire, never a second delivery
+  mechanism.
+
+  State is `%{heartbeats: %{session_id => entry}, lifecycle_snapshots: %{session_id => snapshot}, job_watches: %{job_id => watch}, subscribed_job_ids: MapSet.t()}`:
+  `heartbeats` is the scheduled-timer state described above (entries also
+  carry `watch_job_ids`/`wake_on`/`job_results` for the job-wake feature);
+  `lifecycle_snapshots` is an unrelated small cache used by
+  `lifecycle_snapshot_changed?/2` (see its doc) to de-dupe `SessionRunner`'s
+  automatic "[Session lifecycle] ... is now idle" parent notifications —
+  colocated here only because it reuses this module's `Digest.changed?/2`
+  and needs the same hub-authoritative, cross-node-reachable home (this
+  GenServer is hub-only; agent nodes reach it via `HubRPC.call/3`);
+  `job_watches` holds the standalone (non-timer) `watch_job/2` watches, keyed
+  by job_id so each resolves independently; `subscribed_job_ids` de-dupes
+  `Phoenix.PubSub.subscribe/2` calls against a job's topic.
   """
   use GenServer
   require Logger
 
-  alias OrcaHub.Cluster
+  alias OrcaHub.{Cluster, Jobs, JobWatcher}
   alias OrcaHub.SessionHeartbeat.Digest
 
   @min_interval_seconds 30
@@ -33,6 +55,11 @@ defmodule OrcaHub.SessionHeartbeat do
   # `SessionRunner.broadcast/2` and `Sessions.archive_session/1`) that mark a
   # turn having ended - a good moment to flush a queued heartbeat delivery.
   @turn_end_statuses [:idle, :ready, :error, :waiting]
+
+  # Job statuses that count as "finished" for wake purposes - anything NOT
+  # in `Jobs.Job.nonterminal_statuses/0` (running/verifying). A job mid
+  # verify_command must not wake anything - see OrcaHub.Jobs moduledoc.
+  defp job_terminal?(status), do: status not in Jobs.Job.nonterminal_statuses()
 
   # -------------------------------------------------------------------
   # Public API
@@ -53,11 +80,37 @@ defmodule OrcaHub.SessionHeartbeat do
       resolved fresh at fire time
     - `:only_if_changed` - skip delivering a fire when nothing watched changed
       since the previous fire (no-op when there's no watch list)
+    - `:watch_job_ids` - `OrcaHub.Jobs` job ids to wake EARLY for, on top of
+      the normal timer (which keeps firing as the backstop). A job passing
+      through `verifying` does not count - only a terminal status does.
+    - `:wake_on` - `"any"` (default; fire as soon as ONE watched job reaches
+      a terminal status) or `"all"` (fire once every watched job has). Either
+      way this is a ONE-SHOT early wake: once it fires, the watch list is
+      cleared and the timer resets to a fresh full interval - it does not
+      re-arm for a later reschedule of the same jobs.
 
   Returns :ok on success, {:error, reason} on failure.
   """
   def schedule(session_id, interval_seconds, message, opts \\ %{}) do
     GenServer.call(__MODULE__, {:schedule, session_id, interval_seconds, message, opts})
+  end
+
+  @doc """
+  Standalone job wake, independent of `schedule/4` - the backing call for
+  `start_job`'s `wake_when_done`. Works with NO heartbeat ever scheduled for
+  `session_id`: requiring one first is exactly the ceremony that makes
+  agents skip it. Each `job_id` resolves on its own (tracked separately, not
+  merged into a shared any/all watch list), so multiple simultaneous
+  `wake_when_done` jobs on the same session each deliver independently
+  rather than the first one finishing silently cancelling the others.
+
+  Delivery goes through the same queue-while-running/flush-at-turn-end path
+  as a timer heartbeat. Idempotent per job_id - a second call while the
+  first is still pending just replaces it (there is exactly one thing to
+  say about a job: how it finished).
+  """
+  def watch_job(session_id, job_id) do
+    GenServer.call(__MODULE__, {:watch_job, session_id, job_id})
   end
 
   @doc """
@@ -112,7 +165,14 @@ defmodule OrcaHub.SessionHeartbeat do
     # Subscribe to session events to auto-cancel on archive/delete and to
     # flush queued heartbeat deliveries at turn end.
     Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
-    {:ok, %{heartbeats: %{}, lifecycle_snapshots: %{}}}
+
+    {:ok,
+     %{
+       heartbeats: %{},
+       lifecycle_snapshots: %{},
+       job_watches: %{},
+       subscribed_job_ids: MapSet.new()
+     }}
   end
 
   @impl true
@@ -125,6 +185,7 @@ defmodule OrcaHub.SessionHeartbeat do
 
       interval_ms = interval_seconds * 1000
       timer_ref = Process.send_after(self(), {:heartbeat, session_id}, interval_ms)
+      watch_job_ids = Map.get(opts, :watch_job_ids, [])
 
       new_entry = %{
         interval_seconds: interval_seconds,
@@ -136,13 +197,40 @@ defmodule OrcaHub.SessionHeartbeat do
         watch_children: Map.get(opts, :watch_children, false),
         only_if_changed: Map.get(opts, :only_if_changed, false),
         last_snapshot: nil,
-        pending_delivery: nil
+        pending_delivery: nil,
+        watch_job_ids: watch_job_ids,
+        wake_on: Map.get(opts, :wake_on, "any"),
+        job_results: %{}
       }
 
       Logger.info("Scheduled heartbeat for session #{session_id}: every #{interval_seconds}s")
 
-      {:reply, :ok, %{state | heartbeats: Map.put(heartbeats, session_id, new_entry)}}
+      state = %{state | heartbeats: Map.put(heartbeats, session_id, new_entry)}
+      state = ingest_job_ids(session_id, watch_job_ids, state)
+
+      {:reply, :ok, state}
     end
+  end
+
+  @impl true
+  def handle_call({:watch_job, session_id, job_id}, _from, state) do
+    state = subscribe_job(job_id, state)
+
+    watch = %{session_id: session_id, pending_delivery: nil}
+    state = %{state | job_watches: Map.put(state.job_watches, job_id, watch)}
+
+    state =
+      case Jobs.get_job(job_id) do
+        %{status: status} = job ->
+          if job_terminal?(status),
+            do: apply_standalone_job_watch(state, job_id, job),
+            else: state
+
+        nil ->
+          state
+      end
+
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -160,7 +248,7 @@ defmodule OrcaHub.SessionHeartbeat do
   def handle_call({:get, session_id}, _from, state) do
     case Map.get(state.heartbeats, session_id) do
       nil -> {:reply, nil, state}
-      entry -> {:reply, Map.drop(entry, [:timer_ref, :last_snapshot]), state}
+      entry -> {:reply, Map.drop(entry, [:timer_ref, :last_snapshot, :job_results]), state}
     end
   end
 
@@ -168,7 +256,7 @@ defmodule OrcaHub.SessionHeartbeat do
   def handle_call(:list_all, _from, state) do
     result =
       Enum.map(state.heartbeats, fn {id, entry} ->
-        {id, Map.drop(entry, [:timer_ref, :last_snapshot])}
+        {id, Map.drop(entry, [:timer_ref, :last_snapshot, :job_results])}
       end)
 
     {:reply, result, state}
@@ -231,6 +319,30 @@ defmodule OrcaHub.SessionHeartbeat do
     handle_status_broadcast(session_id, status, state)
   end
 
+  # `OrcaHub.JobWatcher.broadcast_finished/1` - a job we're watching (via
+  # `watch_job_ids`/`wake_on` or standalone `watch_job/2`) just reached a
+  # terminal status. Re-fetches the job row for its exit code(s)/label since
+  # the broadcast itself only carries the status. A job we were never asked
+  # to watch (already resolved, or this process restarted mid-watch) is a
+  # harmless no-op on both paths below.
+  @impl true
+  def handle_info({:job_finished, job_id, _status}, state) do
+    state = unsubscribe_job(job_id, state)
+
+    state =
+      case Jobs.get_job(job_id) do
+        nil ->
+          state
+
+        job ->
+          state
+          |> apply_job_result_to_all_watchers(job_id, job)
+          |> apply_standalone_job_watch(job_id, job)
+      end
+
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
@@ -275,23 +387,60 @@ defmodule OrcaHub.SessionHeartbeat do
   end
 
   defp handle_status_broadcast(session_id, status, state) when status in @turn_end_statuses do
-    case Map.get(state.heartbeats, session_id) do
-      %{pending_delivery: pending} = entry when not is_nil(pending) ->
-        flush_pending_delivery(session_id, pending)
-        new_entry = %{entry | pending_delivery: nil}
-        {:noreply, %{state | heartbeats: Map.put(state.heartbeats, session_id, new_entry)}}
+    state =
+      state
+      |> flush_heartbeat_pending(session_id)
+      |> flush_standalone_job_watches(session_id)
 
-      _ ->
-        {:noreply, state}
-    end
+    {:noreply, state}
   end
 
   defp handle_status_broadcast(_session_id, _status, state), do: {:noreply, state}
 
+  defp flush_heartbeat_pending(state, session_id) do
+    case Map.get(state.heartbeats, session_id) do
+      %{pending_delivery: pending} = entry when not is_nil(pending) ->
+        flush_pending_delivery(session_id, pending)
+        new_entry = %{entry | pending_delivery: nil}
+        %{state | heartbeats: Map.put(state.heartbeats, session_id, new_entry)}
+
+      _ ->
+        state
+    end
+  end
+
+  # Standalone `watch_job/2` watches are one-shot: flush whichever of THIS
+  # session's watches are queued, then drop them (a delivered job wake has
+  # nothing left to say). Watches still waiting on their job (pending_delivery
+  # still nil) are untouched - a turn ending is not evidence their job is done.
+  defp flush_standalone_job_watches(state, session_id) do
+    {to_flush, remaining} =
+      Enum.split_with(state.job_watches, fn {_job_id, w} ->
+        w.session_id == session_id and not is_nil(w.pending_delivery)
+      end)
+
+    Enum.each(to_flush, fn {_job_id, w} ->
+      flush_pending_delivery(session_id, w.pending_delivery)
+    end)
+
+    %{state | job_watches: Map.new(remaining)}
+  end
+
   defp drop_session(state, session_id) do
     heartbeats = state.heartbeats |> cancel_timer(session_id) |> Map.delete(session_id)
     lifecycle_snapshots = Map.delete(state.lifecycle_snapshots, session_id)
-    %{state | heartbeats: heartbeats, lifecycle_snapshots: lifecycle_snapshots}
+
+    job_watches =
+      state.job_watches
+      |> Enum.reject(fn {_job_id, w} -> w.session_id == session_id end)
+      |> Map.new()
+
+    %{
+      state
+      | heartbeats: heartbeats,
+        lifecycle_snapshots: lifecycle_snapshots,
+        job_watches: job_watches
+    }
   end
 
   defp cancel_timer(heartbeats, session_id) do
@@ -348,12 +497,29 @@ defmodule OrcaHub.SessionHeartbeat do
       Cluster.start_session(node, session_id, session)
     end
 
-    case Cluster.send_message(node, session_id, message) do
-      :ok ->
-        :ok
+    # `Cluster.send_message/3` already re-checks aliveness/restarts before
+    # its own GenStatem.call, but that's a check-then-act gap, not a lock -
+    # the target can still die in the window between the check and the call
+    # actually landing (e.g. torn down by whoever spawned this delivery,
+    # same class of race its own moduledoc calls out for the not-alive-yet
+    # case). A delivery is already documented as best-effort elsewhere in
+    # this module (queued/dropped are both normal outcomes) - losing this
+    # one to a losing race must not crash the singleton GenServer and take
+    # every OTHER session's heartbeats down with it.
+    try do
+      case Cluster.send_message(node, session_id, message) do
+        :ok ->
+          :ok
 
-      {:error, reason} ->
-        Logger.warning("Heartbeat to session #{session_id} failed: #{inspect(reason)}")
+        {:error, reason} ->
+          Logger.warning("Heartbeat to session #{session_id} failed: #{inspect(reason)}")
+      end
+    catch
+      kind, reason ->
+        Logger.warning(
+          "Heartbeat to session #{session_id} failed (target exited mid-delivery): " <>
+            "#{kind} #{inspect(reason)}"
+        )
     end
   end
 
@@ -384,4 +550,164 @@ defmodule OrcaHub.SessionHeartbeat do
       "\"#{queued_status}\", so it couldn't be delivered without interrupting that turn. " <>
       "It was queued and is being delivered now that the turn has ended.\n\n" <> message
   end
+
+  # -------------------------------------------------------------------
+  # Job wakes (ORCAHUB3-26 item 1)
+  # -------------------------------------------------------------------
+
+  defp subscribe_job(job_id, state) do
+    if MapSet.member?(state.subscribed_job_ids, job_id) do
+      state
+    else
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, JobWatcher.topic(job_id))
+      %{state | subscribed_job_ids: MapSet.put(state.subscribed_job_ids, job_id)}
+    end
+  end
+
+  defp unsubscribe_job(job_id, state) do
+    Phoenix.PubSub.unsubscribe(OrcaHub.PubSub, JobWatcher.topic(job_id))
+    %{state | subscribed_job_ids: MapSet.delete(state.subscribed_job_ids, job_id)}
+  end
+
+  # Subscribes to every newly-scheduled watch_job_id and, for any that's
+  # ALREADY terminal (the job finished in the gap between it starting and
+  # this schedule/4 call), resolves it immediately rather than waiting on a
+  # broadcast that job's watcher already sent (and will never send again).
+  defp ingest_job_ids(session_id, job_ids, state) do
+    Enum.reduce(job_ids, state, fn job_id, state ->
+      state = subscribe_job(job_id, state)
+
+      case Jobs.get_job(job_id) do
+        %{status: status} = job ->
+          if job_terminal?(status),
+            do: apply_job_result(state, session_id, job_id, job),
+            else: state
+
+        nil ->
+          state
+      end
+    end)
+  end
+
+  # Group watch (schedule_heartbeat's watch_job_ids/wake_on): folds `job`'s
+  # result into every heartbeat entry currently watching `job_id`.
+  defp apply_job_result_to_all_watchers(state, job_id, job) do
+    state.heartbeats
+    |> Enum.filter(fn {_session_id, entry} -> job_id in (entry.watch_job_ids || []) end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.reduce(state, fn session_id, state ->
+      apply_job_result(state, session_id, job_id, job)
+    end)
+  end
+
+  defp apply_job_result(state, session_id, job_id, job) do
+    case Map.get(state.heartbeats, session_id) do
+      %{watch_job_ids: watch_ids} = entry when watch_ids != [] ->
+        if job_id in watch_ids do
+          results = Map.put(entry.job_results, job_id, job_result_view(job))
+          remaining = List.delete(watch_ids, job_id)
+
+          if wake_condition_met?(entry.wake_on, remaining) do
+            deliver_job_wake(state, session_id, entry, results)
+          else
+            new_entry = %{entry | watch_job_ids: remaining, job_results: results}
+            %{state | heartbeats: Map.put(state.heartbeats, session_id, new_entry)}
+          end
+        else
+          state
+        end
+
+      _ ->
+        state
+    end
+  end
+
+  defp wake_condition_met?("all", remaining_job_ids), do: remaining_job_ids == []
+  defp wake_condition_met?(_any, _remaining_job_ids), do: true
+
+  # Delivers (or queues) the early wake and resets the entry: watch list and
+  # accumulated results clear (one-shot), and the timer restarts at a fresh
+  # full interval so the backstop doesn't fire again moments later on top of
+  # this early wake.
+  defp deliver_job_wake(state, session_id, entry, results) do
+    message = full_wake_message(entry.message, results)
+
+    if is_reference(entry.timer_ref), do: Process.cancel_timer(entry.timer_ref)
+    timer_ref = Process.send_after(self(), {:heartbeat, session_id}, entry.interval_ms)
+
+    pending_delivery =
+      case send_heartbeat(session_id, message) do
+        {:queued, queued_status} -> %{message: message, queued_status: queued_status}
+        _delivered_or_dropped -> nil
+      end
+
+    new_entry = %{
+      entry
+      | watch_job_ids: [],
+        job_results: %{},
+        timer_ref: timer_ref,
+        pending_delivery: pending_delivery
+    }
+
+    %{state | heartbeats: Map.put(state.heartbeats, session_id, new_entry)}
+  end
+
+  # Standalone `watch_job/2` watch: independent of any heartbeat entry, keyed
+  # by job_id so simultaneous wake_when_done jobs on one session don't
+  # clobber each other. No-op if nothing is watching `job_id` (already
+  # resolved, or a process restart lost the watch - the job itself is
+  # unaffected either way, only the wake is missed).
+  defp apply_standalone_job_watch(state, job_id, job) do
+    case Map.get(state.job_watches, job_id) do
+      nil ->
+        state
+
+      %{session_id: session_id} ->
+        message = full_wake_message(nil, %{job_id => job_result_view(job)})
+
+        case send_heartbeat(session_id, message) do
+          {:queued, queued_status} ->
+            watch = %{
+              session_id: session_id,
+              pending_delivery: %{message: message, queued_status: queued_status}
+            }
+
+            %{state | job_watches: Map.put(state.job_watches, job_id, watch)}
+
+          _delivered_or_dropped ->
+            %{state | job_watches: Map.delete(state.job_watches, job_id)}
+        end
+    end
+  end
+
+  defp job_result_view(job) do
+    %{
+      status: job.status,
+      exit_code: job.exit_code,
+      verify_exit_code: job.verify_exit_code,
+      label: job.label
+    }
+  end
+
+  defp full_wake_message(nil, results), do: job_wake_digest(results)
+  defp full_wake_message(base_message, results), do: base_message <> job_wake_digest(results)
+
+  defp job_wake_digest(results) do
+    lines =
+      results |> Enum.map(fn {job_id, r} -> format_job_result(job_id, r) end) |> Enum.join("\n")
+
+    "\n\n[Job wake] #{map_size(results)} watched job(s) reached a terminal status:\n" <> lines
+  end
+
+  defp format_job_result(job_id, %{status: status} = r) do
+    name = if present?(r.label), do: "#{r.label} (#{job_id})", else: job_id
+    "- #{name}: status=#{status}#{format_exit(r)}"
+  end
+
+  defp format_exit(%{verify_exit_code: nil, exit_code: exit_code}), do: ", exit_code=#{exit_code}"
+
+  defp format_exit(%{verify_exit_code: verify_exit_code, exit_code: exit_code}),
+    do: ", exit_code=#{exit_code}, verify_exit_code=#{verify_exit_code}"
+
+  defp present?(str), do: is_binary(str) and String.trim(str) != ""
 end

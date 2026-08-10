@@ -11,7 +11,7 @@ defmodule OrcaHub.MCP.Tools.Heartbeat do
       %{
         "name" => "schedule_heartbeat",
         "description" =>
-          "Schedule periodic heartbeat messages to your session. Unlike the Claude-CLI-native ScheduleWakeup tool (delaySeconds/prompt), this tool takes interval_seconds (integer seconds) and message. Use this when you're orchestrating other sessions or waiting for external events and need to periodically wake up to check status. The heartbeat will send the specified message to your session at the given interval, with an auto-digest of any watched sessions appended. Only one heartbeat can be active per session - calling this again updates the existing heartbeat. Call cancel_heartbeat when you're done with your task.",
+          "Schedule periodic heartbeat messages to your session. Unlike the Claude-CLI-native ScheduleWakeup tool (delaySeconds/prompt), this tool takes interval_seconds (integer seconds) and message. Use this when you're orchestrating other sessions or waiting for external events and need to periodically wake up to check status. The heartbeat will send the specified message to your session at the given interval, with an auto-digest of any watched sessions appended, plus watch_job_ids (see below) for waking early on a start_job job finishing. Only one heartbeat can be active per session - calling this again updates the existing heartbeat. Call cancel_heartbeat when you're done with your task. A heartbeat does not prevent teardown - it only wakes you afterwards. It is the polling mechanism, not the durability mechanism; start_job is what makes the underlying work survive.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -45,6 +45,25 @@ defmodule OrcaHub.MCP.Tools.Heartbeat do
               "type" => "boolean",
               "description" =>
                 "If true, skip delivering a fire entirely when no watched session's status/phase/activity changed since the previous fire. No effect if there's no watch list. Default: false."
+            },
+            "watch_job_ids" => %{
+              "type" => "array",
+              "items" => %{"type" => "string"},
+              "description" =>
+                "Optional start_job job ids to wake EARLY for, on top of the normal timer (which " <>
+                  "keeps firing as the backstop even if a watched job never finishes). Only a " <>
+                  "job reaching a TERMINAL status wakes you - one still in verifying (its " <>
+                  "verify_command hasn't finished) does not; see start_job. This is a one-shot " <>
+                  "early wake: once it fires, watch_job_ids is cleared and the timer resets to a " <>
+                  "fresh full interval. A heartbeat does not prevent teardown, it only wakes you " <>
+                  "afterwards - the job itself survives on its own via start_job, not because " <>
+                  "anything is watching it."
+            },
+            "wake_on" => %{
+              "type" => "string",
+              "description" =>
+                "\"any\" (default) fires as soon as ONE watch_job_ids job reaches a terminal " <>
+                  "status; \"all\" waits for every one of them. No effect without watch_job_ids."
             }
           },
           "required" => ["message"]
@@ -77,7 +96,9 @@ defmodule OrcaHub.MCP.Tools.Heartbeat do
         opts = %{
           watch_session_ids: normalize_watch_ids(args["watch_session_ids"]),
           watch_children: args["watch_children"] == true,
-          only_if_changed: args["only_if_changed"] == true
+          only_if_changed: args["only_if_changed"] == true,
+          watch_job_ids: normalize_watch_ids(args["watch_job_ids"]),
+          wake_on: if(args["wake_on"] == "all", do: "all", else: "any")
         }
 
         interval = resolve_interval(args["interval_seconds"], args["interval_minutes"])

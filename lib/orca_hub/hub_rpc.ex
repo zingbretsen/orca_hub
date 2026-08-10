@@ -347,6 +347,9 @@ defmodule OrcaHub.HubRPC do
   def get_heartbeat(session_id),
     do: call(OrcaHub.SessionHeartbeat, :get, [session_id])
 
+  def watch_job(session_id, job_id),
+    do: call(OrcaHub.SessionHeartbeat, :watch_job, [session_id, job_id])
+
   # -------------------------------------------------------------------
   # API Runs (Agent Runs API, docs/api.md)
   # -------------------------------------------------------------------

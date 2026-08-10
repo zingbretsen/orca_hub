@@ -54,10 +54,14 @@ defmodule OrcaHub.MCP.Tools.Jobs do
             "VERIFIED artifact, never just a present one (e.g. verify_command for a big " <>
             "download might be a checksum check) — don't start consuming the artifact " <>
             "until check_job shows a terminal status.\n\n" <>
-            "wake_when_done: stored on the job now, but the actual wake-you-up wiring " <>
-            "(a follow-up feature) doesn't exist yet — for now you still need to poll " <>
-            "(check_job/wait_for_job) or schedule your own heartbeat to notice " <>
-            "completion. " <> @heartbeat_caveat,
+            "wake_when_done: pass true and you'll be woken (same queue-while-running/" <>
+            "flush-at-turn-end delivery as schedule_heartbeat) the moment this job reaches " <>
+            "a TERMINAL status — succeeded/failed/verification_failed/timed_out/cancelled. " <>
+            "verifying does NOT wake you: a consumer woken while verify_command is still " <>
+            "running would get an unverified artifact, which is the one thing this design " <>
+            "exists to prevent. Works standalone, with no schedule_heartbeat call needed " <>
+            "first. For watching several jobs together with any/all semantics, use " <>
+            "schedule_heartbeat's watch_job_ids/wake_on instead. " <> @heartbeat_caveat,
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -109,8 +113,8 @@ defmodule OrcaHub.MCP.Tools.Jobs do
             "wake_when_done" => %{
               "type" => "boolean",
               "description" =>
-                "Stored for a future wake-on-completion feature — has NO effect yet. See " <>
-                  "this tool's description."
+                "Wake this session when the job reaches a terminal status (not on entering " <>
+                  "verifying). See this tool's description."
             }
           },
           "required" => ["command"]
@@ -282,21 +286,33 @@ defmodule OrcaHub.MCP.Tools.Jobs do
       |> Map.merge(progress_attrs_from_args(args))
 
     case HubRPC.create_job(attrs) do
-      {:ok, job} -> start_and_report(job)
+      {:ok, job} -> start_and_report(job, args["wake_when_done"] == true)
       {:error, changeset} -> error("Failed to create job: #{inspect(changeset.errors)}")
     end
   end
 
-  defp start_and_report(job) do
+  defp start_and_report(job, wake_when_done?) do
     case JobSupervisor.start_job(job.id) do
       {:ok, started} ->
+        note =
+          if wake_when_done? do
+            HubRPC.watch_job(started.session_id, started.id)
+
+            "Job launched detached — it will keep running even if this session ends. " <>
+              "You'll be woken (via the same delivery path as schedule_heartbeat) once it " <>
+              "reaches a terminal status — verifying does not wake you, only " <>
+              "succeeded/failed/verification_failed/timed_out/cancelled do."
+          else
+            "Job launched detached — it will keep running even if this session ends."
+          end
+
         text(
           Jason.encode!(%{
             job_id: started.id,
             status: started.status,
             pid: started.pid,
             log_path: started.log_path,
-            note: "Job launched detached — it will keep running even if this session ends."
+            note: note
           })
         )
 
