@@ -1062,26 +1062,55 @@ defmodule OrcaHub.SessionRunner do
   # Fails OPEN (returns false, i.e. "not redundant, send it") on any lookup
   # error — a missed notification is worse than a redundant one.
   defp redundant_idle_notification?(session, turn_started_at) do
-    since =
-      turn_started_at ||
-        NaiveDateTime.add(NaiveDateTime.utc_now(), -@redundant_idle_lookback_seconds, :second)
+    fail_open_on_lookup_failure("redundant-notification lookup for child #{session.id}", fn ->
+      since =
+        turn_started_at ||
+          NaiveDateTime.add(NaiveDateTime.utc_now(), -@redundant_idle_lookback_seconds, :second)
 
-    already_messaged_parent? =
-      case HubRPC.list_session_interactions(
-             sender_session_id: session.id,
-             recipient_session_id: session.parent_session_id,
-             since: since
-           ) do
-        [] -> false
-        [_ | _] -> true
-      end
+      already_messaged_parent? =
+        case HubRPC.list_session_interactions(
+               sender_session_id: session.id,
+               recipient_session_id: session.parent_session_id,
+               since: since
+             ) do
+          [] -> false
+          [_ | _] -> true
+        end
 
-    already_messaged_parent? or not lifecycle_content_changed?(session)
+      already_messaged_parent? or not lifecycle_content_changed?(session)
+    end)
+  end
+
+  # Runs `fun` and fails open (returns `false`, i.e. "not redundant, send the
+  # notification") on ANY failure - a missed notification is worse than a
+  # redundant one. Catches both raised exceptions (`rescue`) AND process
+  # exits (`catch :exit, _`): `lifecycle_content_changed?/1`'s
+  # `GenServer.call`/`:erpc.call` chain (via `HubRPC.call/3`) EXITS, it does
+  # not raise, on a busy/dead/unreachable target (`:timeout`, `:noproc`, an
+  # unreachable hub node) - a bare `rescue` alone silently misses exactly
+  # that failure mode and would let the notification Task crash instead of
+  # falling back, losing the notification entirely.
+  #
+  # Extracted as its own (@doc false) function so tests can drive a genuine
+  # EXIT deterministically (e.g. `GenServer.call` to an already-dead local
+  # pid) without needing to disrupt the real, shared, globally-relied-on
+  # `SessionHeartbeat` process to provoke one.
+  @doc false
+  def fail_open_on_lookup_failure(context, fun) do
+    fun.()
   rescue
     e ->
       Logger.warning(
-        "[lifecycle notify] redundant-notification lookup failed for child #{session.id}: " <>
+        "[lifecycle notify] #{context} raised: " <>
           Exception.message(e) <> " — sending notification (fail open)"
+      )
+
+      false
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "[lifecycle notify] #{context} exited: " <>
+          inspect(reason) <> " — sending notification (fail open)"
       )
 
       false
@@ -1100,6 +1129,16 @@ defmodule OrcaHub.SessionRunner do
   # `HubRPC.call/3` (the same generic hub-dispatch every other cross-node
   # `SessionHeartbeat` call in this codebase already uses) rather than a
   # direct `GenServer.call`.
+  #
+  # NOTE: this is a synchronous hub round-trip (local GenServer.call on the
+  # hub, `:erpc.call` from an agent) on every :idle transition with a
+  # notify_parent-linked parent - synchronous within the async notification
+  # Task `maybe_notify_parent/3` already dispatches this under (so it still
+  # never blocks the GenStatem itself), but serialized through the single
+  # SessionHeartbeat GenServer alongside every other heartbeat op. Fine at
+  # current scale (one fast in-memory lookup per call); revisit if
+  # idle-transition or heartbeat volume ever makes that one process a
+  # bottleneck.
   defp lifecycle_content_changed?(session) do
     snapshot = {session.status, session.progress_phase, session.progress_note}
     HubRPC.call(SessionHeartbeat, :lifecycle_snapshot_changed?, [session.id, snapshot])

@@ -540,6 +540,37 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
     end
   end
 
+  # ── fail_open_on_lookup_failure/2 — exits, not just raises ───────────────
+  # `redundant_idle_notification?/2` must fail open on a genuine process EXIT
+  # (a busy/dead SessionHeartbeat, an unreachable hub - GenServer.call/
+  # :erpc.call surface these as exits, not raised exceptions), not just on a
+  # raised exception - a `rescue`-only guard would let the notification Task
+  # itself crash on that failure mode, silently losing the notification
+  # (worse than the churn this whole item set out to reduce). Drives a real
+  # exit against a throwaway local pid rather than disrupting the shared,
+  # globally-relied-on SessionHeartbeat process to provoke one.
+  describe "fail_open_on_lookup_failure/2" do
+    test "catches a process EXIT (GenServer.call to an already-dead pid) and fails open" do
+      {:ok, pid} = Agent.start(fn -> :ok end)
+      :ok = Agent.stop(pid)
+      refute Process.alive?(pid)
+
+      assert SessionRunner.fail_open_on_lookup_failure("test exit", fn ->
+               GenServer.call(pid, :whatever)
+             end) == false
+    end
+
+    test "still catches a raised exception and fails open" do
+      assert SessionRunner.fail_open_on_lookup_failure("test raise", fn ->
+               raise "boom"
+             end) == false
+    end
+
+    test "returns the function's result unchanged when it doesn't fail" do
+      assert SessionRunner.fail_open_on_lookup_failure("test ok", fn -> true end) == true
+    end
+  end
+
   defp wait_until_count_grows(session_id, before_count, timeout_ms \\ 2000) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
     poll_count_grows(session_id, before_count, deadline)
