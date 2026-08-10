@@ -25,6 +25,14 @@ defmodule OrcaHub.MCP.Tools.HeartbeatTest do
       assert schedule_tool["inputSchema"]["required"] == ["message"]
       assert schedule_tool["description"] =~ "ScheduleWakeup"
     end
+
+    test "cancel_heartbeat exposes an optional session_id" do
+      [_schedule_tool, cancel_tool] = HeartbeatTool.list()
+
+      assert cancel_tool["name"] == "cancel_heartbeat"
+      assert %{"type" => "string"} = cancel_tool["inputSchema"]["properties"]["session_id"]
+      refute Map.has_key?(cancel_tool["inputSchema"], "required")
+    end
   end
 
   describe "call/3 schedule_heartbeat" do
@@ -198,6 +206,131 @@ defmodule OrcaHub.MCP.Tools.HeartbeatTest do
 
       assert msg =~ "cancelled"
       assert HubRPC.get_heartbeat(id) == nil
+    end
+
+    test "an explicit session_id matching the caller's own id cancels the caller's heartbeat" do
+      id = unique_id()
+
+      HeartbeatTool.call(
+        "schedule_heartbeat",
+        %{"interval_seconds" => 30, "message" => "check in"},
+        state_for(id)
+      )
+
+      assert %{"isError" => false, "content" => [%{"text" => msg}]} =
+               HeartbeatTool.call("cancel_heartbeat", %{"session_id" => id}, state_for(id))
+
+      assert msg =~ "cancelled"
+      assert HubRPC.get_heartbeat(id) == nil
+    end
+  end
+
+  describe "call/3 cancel_heartbeat — parent/child permission (item 3, ORCAHUB3-26)" do
+    alias OrcaHub.Sessions
+
+    defp fixture_session(attrs) do
+      dir =
+        Path.join(System.tmp_dir!(), "heartbeat-tool-test-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, session} = Sessions.create_session(Map.merge(%{directory: dir}, attrs))
+      session
+    end
+
+    test "a parent can cancel its direct child's heartbeat" do
+      parent = fixture_session(%{})
+      child = fixture_session(%{parent_session_id: parent.id})
+
+      HeartbeatTool.call(
+        "schedule_heartbeat",
+        %{"interval_seconds" => 30, "message" => "check in"},
+        state_for(child.id)
+      )
+
+      assert %{"isError" => false, "content" => [%{"text" => msg}]} =
+               HeartbeatTool.call(
+                 "cancel_heartbeat",
+                 %{"session_id" => child.id},
+                 state_for(parent.id)
+               )
+
+      assert msg =~ "cancelled"
+      assert msg =~ child.id
+      assert HubRPC.get_heartbeat(child.id) == nil
+    end
+
+    test "a session cannot cancel an unrelated session's heartbeat" do
+      caller = fixture_session(%{})
+      unrelated = fixture_session(%{})
+
+      HeartbeatTool.call(
+        "schedule_heartbeat",
+        %{"interval_seconds" => 30, "message" => "check in"},
+        state_for(unrelated.id)
+      )
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               HeartbeatTool.call(
+                 "cancel_heartbeat",
+                 %{"session_id" => unrelated.id},
+                 state_for(caller.id)
+               )
+
+      assert msg =~ "Permission denied"
+      # Untouched - still active.
+      refute HubRPC.get_heartbeat(unrelated.id) == nil
+      HubRPC.cancel_heartbeat(unrelated.id)
+    end
+
+    test "a grandparent cannot cancel a grandchild's heartbeat (parent/child only, not full ancestry)" do
+      grandparent = fixture_session(%{})
+      parent = fixture_session(%{parent_session_id: grandparent.id})
+      child = fixture_session(%{parent_session_id: parent.id})
+
+      HeartbeatTool.call(
+        "schedule_heartbeat",
+        %{"interval_seconds" => 30, "message" => "check in"},
+        state_for(child.id)
+      )
+
+      assert %{"isError" => true} =
+               HeartbeatTool.call(
+                 "cancel_heartbeat",
+                 %{"session_id" => child.id},
+                 state_for(grandparent.id)
+               )
+
+      refute HubRPC.get_heartbeat(child.id) == nil
+      HubRPC.cancel_heartbeat(child.id)
+    end
+
+    test "cancelling a heartbeat for a nonexistent target session errors" do
+      caller = fixture_session(%{})
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               HeartbeatTool.call(
+                 "cancel_heartbeat",
+                 %{"session_id" => Ecto.UUID.generate()},
+                 state_for(caller.id)
+               )
+
+      assert msg =~ "not found"
+    end
+
+    test "cancelling a child's heartbeat when it has none reports nothing to cancel" do
+      parent = fixture_session(%{})
+      child = fixture_session(%{parent_session_id: parent.id})
+
+      assert %{"isError" => false, "content" => [%{"text" => msg}]} =
+               HeartbeatTool.call(
+                 "cancel_heartbeat",
+                 %{"session_id" => child.id},
+                 state_for(parent.id)
+               )
+
+      assert msg =~ "No active heartbeat"
     end
   end
 end

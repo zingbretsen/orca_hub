@@ -53,10 +53,16 @@ defmodule OrcaHub.MCP.Tools.Heartbeat do
       %{
         "name" => "cancel_heartbeat",
         "description" =>
-          "Cancel the active heartbeat for your session. Call this when you no longer need periodic wake-ups, such as when the orchestration task has completed or the event you were waiting for has occurred.",
+          "Cancel the active heartbeat for your session, or (optionally) for a direct child session of yours. Call this when you no longer need periodic wake-ups, such as when the orchestration task has completed or the event you were waiting for has occurred. Also useful when archiving/tearing down a child you spawned: pass its session_id so you don't have to ask it to cancel its own heartbeat first.",
         "inputSchema" => %{
           "type" => "object",
-          "properties" => %{}
+          "properties" => %{
+            "session_id" => %{
+              "type" => "string",
+              "description" =>
+                "Optional. Defaults to your own session. If set to a DIFFERENT session id, that session must be your direct child (its parent_session_id must be you) - cancelling an unrelated session's heartbeat is rejected."
+            }
+          }
         }
       }
     ]
@@ -79,23 +85,13 @@ defmodule OrcaHub.MCP.Tools.Heartbeat do
     end
   end
 
-  def call("cancel_heartbeat", _args, state) do
+  def call("cancel_heartbeat", args, state) do
     case state.orca_session_id do
       nil ->
         error("No OrcaHub session linked to this MCP connection.")
 
-      session_id ->
-        case HubRPC.get_heartbeat(session_id) do
-          nil ->
-            text("No active heartbeat to cancel.")
-
-          _info ->
-            HubRPC.cancel_heartbeat(session_id)
-
-            text(
-              "Heartbeat cancelled. Your session will no longer receive periodic wake-up messages."
-            )
-        end
+      caller_id ->
+        do_cancel_heartbeat(args["session_id"] || caller_id, caller_id)
     end
   end
 
@@ -138,4 +134,37 @@ defmodule OrcaHub.MCP.Tools.Heartbeat do
 
   defp normalize_watch_ids(ids) when is_list(ids), do: Enum.filter(ids, &is_binary/1)
   defp normalize_watch_ids(_), do: []
+
+  # ── cancel_heartbeat helpers ─────────────────────────────────────────
+
+  defp do_cancel_heartbeat(target_id, caller_id) when target_id == caller_id do
+    cancel_and_report(target_id, "your session")
+  end
+
+  defp do_cancel_heartbeat(target_id, caller_id) do
+    case HubRPC.get_session(target_id) do
+      nil ->
+        error("Session #{target_id} not found.")
+
+      %{parent_session_id: ^caller_id} ->
+        cancel_and_report(target_id, "child session #{target_id}")
+
+      _ ->
+        error(
+          "Permission denied: you can only cancel your own heartbeat or a direct child's " <>
+            "(session #{target_id} is not your child)."
+        )
+    end
+  end
+
+  defp cancel_and_report(session_id, label) do
+    case HubRPC.get_heartbeat(session_id) do
+      nil ->
+        text("No active heartbeat to cancel for #{label}.")
+
+      _info ->
+        HubRPC.cancel_heartbeat(session_id)
+        text("Heartbeat cancelled for #{label}. No more periodic wake-up messages will be sent.")
+    end
+  end
 end
