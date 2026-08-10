@@ -38,6 +38,7 @@ defmodule OrcaHub.MCP.Tools do
     Files,
     Heartbeat,
     Issues,
+    Jobs,
     Notify,
     PhxAgents,
     Projects,
@@ -57,7 +58,8 @@ defmodule OrcaHub.MCP.Tools do
     Artifacts,
     Databases,
     PhxAgents,
-    Notify
+    Notify,
+    Jobs
   ]
 
   # Tools visible to regular (non-orchestrator) connections. Orchestrator
@@ -78,7 +80,8 @@ defmodule OrcaHub.MCP.Tools do
                              open_artifact list_artifacts get_artifact update_artifact_data
                              screenshot_artifact provision_database list_databases
                              phx_list_agents phx_send_to_agent phx_get_task
-                             send_notification)
+                             send_notification start_job check_job list_jobs cancel_job
+                             wait_for_job update_job_progress_metric)
 
   @doc "Return every MCP tool definition map across every category."
   def list do

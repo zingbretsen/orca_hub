@@ -91,13 +91,15 @@ defmodule OrcaHub.JobWatcher do
 
   @impl true
   def handle_cast(:cancel, %{killing: nil} = state) do
-    case HubRPC.get_job(state.job_id) do
-      %{status: status} = job when status in ["running", "verifying"] ->
-        {:noreply, begin_kill(job, state, "cancelled")}
+    guarded("cancel", state, fn ->
+      case HubRPC.get_job(state.job_id) do
+        %{status: status} = job when status in ["running", "verifying"] ->
+          {:noreply, begin_kill(job, state, "cancelled")}
 
-      _other ->
-        {:stop, :normal, state}
-    end
+        _other ->
+          {:stop, :normal, state}
+      end
+    end)
   end
 
   def handle_cast(:cancel, state), do: {:noreply, state}
@@ -107,7 +109,7 @@ defmodule OrcaHub.JobWatcher do
     cancel_timer(state.poll_timer)
     state = %{state | poll_timer: nil}
 
-    try do
+    guarded("poll", state, fn ->
       case HubRPC.get_job(state.job_id) do
         nil ->
           {:stop, :normal, state}
@@ -118,49 +120,34 @@ defmodule OrcaHub.JobWatcher do
         job ->
           tick(job, state)
       end
-    rescue
-      e ->
-        # A transient DB/erpc hiccup (pool exhaustion under heavy concurrent
-        # load, a momentary hub blip on an agent node) must not silently
-        # drop this job's watcher — reschedule and try again rather than
-        # crashing, since the alternative is an orphaned running job nobody
-        # is polling until the next restart's JobResumer sweep.
-        Logger.warning(
-          "[JobWatcher] job #{state.job_id} poll raised, retrying next tick: #{Exception.format(:error, e, __STACKTRACE__)}"
-        )
-
-        {:noreply, schedule_poll(state)}
-    catch
-      kind, reason ->
-        Logger.warning(
-          "[JobWatcher] job #{state.job_id} poll #{kind}, retrying next tick: #{inspect(reason)}"
-        )
-
-        {:noreply, schedule_poll(state)}
-    end
+    end)
   end
 
   def handle_info(:force_kill, state) do
-    case HubRPC.get_job(state.job_id) do
-      %{status: status} = job when status in ["running", "verifying"] ->
-        signal(job.pgid, "KILL")
-        Process.send_after(self(), :confirm_kill, @confirm_kill_delay_ms)
-        {:noreply, state}
+    guarded("force_kill", state, fn ->
+      case HubRPC.get_job(state.job_id) do
+        %{status: status} = job when status in ["running", "verifying"] ->
+          signal(job.pgid, "KILL")
+          Process.send_after(self(), :confirm_kill, @confirm_kill_delay_ms)
+          {:noreply, state}
 
-      _other ->
-        {:stop, :normal, state}
-    end
+        _other ->
+          {:stop, :normal, state}
+      end
+    end)
   end
 
   def handle_info(:confirm_kill, state) do
-    case HubRPC.get_job(state.job_id) do
-      %{status: status} = job when status in ["running", "verifying"] ->
-        finalize(job, state.killing, %{})
-        {:stop, :normal, state}
+    guarded("confirm_kill", state, fn ->
+      case HubRPC.get_job(state.job_id) do
+        %{status: status} = job when status in ["running", "verifying"] ->
+          finalize(job, state.killing, %{})
+          {:stop, :normal, state}
 
-      _other ->
-        {:stop, :normal, state}
-    end
+        _other ->
+          {:stop, :normal, state}
+      end
+    end)
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -362,4 +349,29 @@ defmodule OrcaHub.JobWatcher do
 
   defp cancel_timer(nil), do: :ok
   defp cancel_timer(ref), do: Process.cancel_timer(ref)
+
+  # A transient DB/erpc hiccup (pool exhaustion under heavy concurrent load,
+  # a momentary hub blip on an agent node) reaching ANY of this GenServer's
+  # handlers must not silently crash it — the alternative is an orphaned
+  # running/verifying job nobody is polling (and, mid-cancel, one stuck
+  # half-signaled) until the next restart's JobResumer sweep. Falls back to
+  # rescheduling a normal poll, which re-derives everything from fresh DB
+  # state on its next tick regardless of which handler actually failed.
+  defp guarded(label, state, fun) do
+    fun.()
+  rescue
+    e ->
+      Logger.warning(
+        "[JobWatcher] job #{state.job_id} #{label} raised, retrying next tick: #{Exception.format(:error, e, __STACKTRACE__)}"
+      )
+
+      {:noreply, schedule_poll(state)}
+  catch
+    kind, reason ->
+      Logger.warning(
+        "[JobWatcher] job #{state.job_id} #{label} #{kind}, retrying next tick: #{inspect(reason)}"
+      )
+
+      {:noreply, schedule_poll(state)}
+  end
 end
