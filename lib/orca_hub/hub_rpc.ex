@@ -449,4 +449,18 @@ defmodule OrcaHub.HubRPC do
   # update_issue/3 above) — used for start_session's best-effort
   # open -> in_progress auto-transition (issues_spec.md §9).
   def update_issue(issue, attrs), do: call(OrcaHub.Issues, :update_issue, [issue, attrs])
+
+  # -------------------------------------------------------------------
+  # Jobs (ORCAHUB3-25 — durable, detached background jobs; see OrcaHub.Jobs)
+  # -------------------------------------------------------------------
+
+  def get_job(id), do: call(OrcaHub.Jobs, :get_job, [id])
+  def get_job!(id), do: call(OrcaHub.Jobs, :get_job!, [id])
+  def create_job(attrs), do: call(OrcaHub.Jobs, :create_job, [attrs])
+  def update_job(job, attrs), do: call(OrcaHub.Jobs, :update_job, [job, attrs])
+
+  def list_nonterminal_jobs_for_node(node_name),
+    do: call(OrcaHub.Jobs, :list_nonterminal_jobs_for_node, [node_name])
+
+  def list_jobs(opts \\ %{}), do: call(OrcaHub.Jobs, :list_jobs, [opts])
 end
