@@ -32,7 +32,13 @@ defmodule OrcaHub.Jobs.LauncherTest do
       Paths.log_path(id),
       Paths.sentinel_path(id),
       Paths.pid_path(id),
-      Paths.sentinel_path(id) <> ".tmp"
+      Paths.sentinel_path(id) <> ".tmp",
+      Paths.verify_cmd_script_path(id),
+      Paths.verify_wrapper_script_path(id),
+      Paths.verify_log_path(id),
+      Paths.verify_sentinel_path(id),
+      Paths.verify_pid_path(id),
+      Paths.verify_sentinel_path(id) <> ".tmp"
     ]
     |> Enum.each(&File.rm/1)
   end
