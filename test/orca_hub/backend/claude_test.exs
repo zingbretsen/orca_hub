@@ -107,6 +107,13 @@ defmodule OrcaHub.Backend.ClaudeTest do
     isn't guaranteed.
     - Tests failing for environmental/flaky reasons? Root-cause and fix the \
     flake rather than retrying until green — report what you found.
+    - Long-running work (a big download, a long build) should be RESUMABLE, \
+    not restarted from scratch — checkpoint/resume flags, ranged downloads, \
+    etc. — so a lost process costs minutes, not the whole 46GB.
+    - Call `report_progress` PERIODICALLY during anything taking more than a \
+    couple minutes, not just at phase boundaries — leaving \
+    `progress_phase`/`progress_note` nil through a long stretch forces \
+    whoever's watching to guess your state from tool-call histograms alone.
     """
     |> String.trim()
   end
@@ -129,6 +136,13 @@ defmodule OrcaHub.Backend.ClaudeTest do
     isn't guaranteed.
     - Tests failing for environmental/flaky reasons? Root-cause and fix the \
     flake rather than retrying until green — report what you found.
+    - Long-running work (a big download, a long build) should be RESUMABLE, \
+    not restarted from scratch — checkpoint/resume flags, ranged downloads, \
+    etc. — so a lost process costs minutes, not the whole 46GB.
+    - Call `report_progress` PERIODICALLY during anything taking more than a \
+    couple minutes, not just at phase boundaries — leaving \
+    `progress_phase`/`progress_note` nil through a long stretch forces \
+    whoever's watching to guess your state from tool-call histograms alone.
     - You can spawn child sessions of your own via #{start_session_ref} — the \
     child is automatically linked as your child and will send you a \
     "[Session lifecycle]" message when it goes idle or errors, just like an \
@@ -199,6 +213,11 @@ defmodule OrcaHub.Backend.ClaudeTest do
       kill-switch downgrade, or a deploy), so the wakeup may silently never \
       fire. Use `Tools.schedule_heartbeat(...)` instead (`interval_seconds`, \
       `message`), and call `Tools.cancel_heartbeat(...)` when done.
+    - **A heartbeat does not prevent teardown. It only wakes you \
+      afterwards. It is the polling mechanism, not the durability \
+      mechanism.** Detach + resume (`Tools.start_job(...)`) is what makes \
+      the work survive — a scheduled heartbeat is not a reason to believe \
+      the underlying work is safe.
     - **Never use a CLI-native inter-session messaging tool** (e.g. \
       `SendMessage`) to reach another session — it cannot reach OrcaHub \
       sessions at all. Always use `Tools.send_message_to_session(...)` \
@@ -209,9 +228,14 @@ defmodule OrcaHub.Backend.ClaudeTest do
       notifies you with a `[Session lifecycle]` message when it goes idle or \
       errors, and — unlike a CLI-native subagent — is visible and \
       coordinable from the hub.
-    - **`Monitor`-yield background watchers can die the same way** while a \
-      session sits idle for a long stretch — for long waits, prefer polling \
-      via `Tools.schedule_heartbeat(...)` over leaving a `Monitor` unattended.
+    - **Never use `run_in_background` Bash, a `Monitor` background watcher, \
+      or a hand-rolled `until ...; sleep` loop for work that should outlive \
+      this turn** — all three die with this session (idle teardown, \
+      warm-pool eviction, a kill-switch downgrade, a deploy) just like \
+      `ScheduleWakeup`/`SendMessage`/`Task` do. Use `Tools.start_job(...)` \
+      instead — a genuinely DETACHED process this session's own lifecycle \
+      can't take down — and `wake_when_done` or `schedule_heartbeat`'s \
+      `watch_job_ids` to notice completion instead of polling.
     - **Call a tool** as `Tools.<raw_mcp_name>(args)`, e.g. \
       `Tools.open_file(%{"file_path" => "lib/foo.ex"})` or \
       `Tools.github__get_issue(%{"number" => 7})`. Named functions \

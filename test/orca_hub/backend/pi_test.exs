@@ -1275,6 +1275,28 @@ defmodule OrcaHub.Backend.PiTest do
       assert prompt =~ "run_elixir"
     end
 
+    # ORCAHUB3-27: the heartbeat-vs-durability framing, and steering off
+    # background-wait antipatterns toward start_job, both live in the
+    # code_exec fragment (present on every code_exec session regardless of
+    # orchestrator/worker role).
+    test "code_exec: true includes the heartbeat-does-not-prevent-teardown framing" do
+      prompt = Backend.system_prompt(ctx(%{code_exec: true}))
+
+      assert prompt =~ "does not prevent teardown"
+      assert prompt =~ "polling mechanism"
+      assert prompt =~ "not the durability"
+      assert prompt =~ "Tools.start_job"
+    end
+
+    test "code_exec: true steers off run_in_background/Monitor/hand-rolled sleep loops toward start_job" do
+      prompt = Backend.system_prompt(ctx(%{code_exec: true}))
+
+      assert prompt =~ "run_in_background"
+      assert prompt =~ "until ...; sleep"
+      assert prompt =~ "wake_when_done"
+      assert prompt =~ "watch_job_ids"
+    end
+
     test "commit_trailer: false omits the OrcaHub-Session trailer instruction" do
       c = ctx(%{commit_trailer: false})
       refute Backend.system_prompt(c) =~ "OrcaHub-Session:"
@@ -1324,6 +1346,18 @@ defmodule OrcaHub.Backend.PiTest do
     test "orchestrator: true still includes the issue trailer when commit_trailer is unset" do
       c = ctx(%{orchestrator: true, issue_key: "ORCA-142"})
       assert Backend.system_prompt(c) =~ "OrcaHub-Issue: ORCA-142"
+    end
+
+    # ORCAHUB3-27: worker_practices_prompt gains a resumability bullet and a
+    # periodic-report_progress requirement — a worker ctx (orchestrator not
+    # set) gets worker_practices_prompt(true, code_exec) unconditionally on
+    # pi (see Backend.Pi.system_prompt/1), unlike Claude's threaded
+    # can_spawn_children? flag.
+    test "a worker session's prompt requires resumable long work and periodic report_progress" do
+      prompt = Backend.system_prompt(ctx())
+
+      assert prompt =~ "RESUMABLE"
+      assert prompt =~ "report_progress` PERIODICALLY"
     end
 
     # lib/orca_hub/mcp/server.ex:130 collapses the MCP surface to run_elixir
