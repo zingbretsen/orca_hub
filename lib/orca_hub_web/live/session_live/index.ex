@@ -1,9 +1,23 @@
 defmodule OrcaHubWeb.SessionLive.Index do
   use OrcaHubWeb, :live_view
 
+  alias OrcaHub.Backend.Cache
   alias OrcaHub.{Cluster, HubRPC, Projects, SessionHeartbeat}
   alias OrcaHub.Sessions.Session
   alias OrcaHubWeb.NodeFilter
+
+  # Worktree branch labels (`split_worktree_sessions/2`) are looked up via
+  # Cluster.rpc against the OWNING project's node — never inline/synchronous
+  # in the render path, since every session event on the global "sessions"
+  # PubSub topic re-derives @grouped_sessions (see `reload_session_data/1`).
+  # Without memoization + async, that turns a per-broadcast, per-project
+  # cross-node shell-out into a fanout storm (and, before routing was fixed
+  # at all, a silently-always-empty result on prod's hub pod — see the task
+  # this landed under). TTL is intentionally short: worktree lists change
+  # rarely, but a stale label should still self-heal within one refresh
+  # cycle after someone creates/removes a worktree.
+  @worktree_cache_ttl_ms 8_000
+  @worktree_rpc_timeout 5_000
 
   @impl true
   def mount(_params, _session, socket) do
@@ -23,12 +37,15 @@ defmodule OrcaHubWeb.SessionLive.Index do
     project_node_map = Map.new(filtered_projects, fn {n, p} -> {p.id, n} end)
     clustered = Node.list() != []
 
+    {grouped_sessions, worktree_fetches_needed} =
+      group_sessions(filtered_sessions, filtered_projects, clustered)
+
     {:ok,
      socket
      |> assign(
        projects: filtered_projects,
        session_filter: filter,
-       grouped_sessions: group_sessions(filtered_sessions, filtered_projects, clustered),
+       grouped_sessions: grouped_sessions,
        node_map: node_map,
        project_node_map: project_node_map,
        clustered: clustered,
@@ -39,8 +56,10 @@ defmodule OrcaHubWeb.SessionLive.Index do
        undo_archive_session: nil,
        undo_archive_timer: nil,
        heartbeat_session_ids: heartbeat_session_ids,
-       selected_sessions: MapSet.new()
-     )}
+       selected_sessions: MapSet.new(),
+       worktree_fetch_pending: MapSet.new()
+     )
+     |> kick_worktree_fetches(worktree_fetches_needed)}
   end
 
   @impl true
@@ -161,14 +180,19 @@ defmodule OrcaHubWeb.SessionLive.Index do
     node_map = Cluster.build_node_map(tagged_sessions)
     clustered = socket.assigns.clustered
 
+    {grouped_sessions, worktree_fetches_needed} =
+      group_sessions(tagged_sessions, socket.assigns.projects, clustered)
+
     {:noreply,
-     assign(socket,
+     socket
+     |> assign(
        session_filter: filter,
-       grouped_sessions: group_sessions(tagged_sessions, socket.assigns.projects, clustered),
+       grouped_sessions: grouped_sessions,
        node_map: node_map,
        heartbeat_session_ids: heartbeat_session_ids,
        selected_sessions: MapSet.new()
-     )}
+     )
+     |> kick_worktree_fetches(worktree_fetches_needed)}
   end
 
   def handle_event("stop_session", %{"id" => id}, socket) do
@@ -187,12 +211,16 @@ defmodule OrcaHubWeb.SessionLive.Index do
     node_map = Cluster.build_node_map(tagged_sessions)
     clustered = socket.assigns.clustered
 
+    {grouped_sessions, worktree_fetches_needed} =
+      group_sessions(tagged_sessions, socket.assigns.projects, clustered)
+
     socket =
       socket
       |> assign(
-        grouped_sessions: group_sessions(tagged_sessions, socket.assigns.projects, clustered),
+        grouped_sessions: grouped_sessions,
         node_map: node_map
       )
+      |> kick_worktree_fetches(worktree_fetches_needed)
       |> schedule_undo_archive(id)
 
     {:noreply, socket}
@@ -208,14 +236,18 @@ defmodule OrcaHubWeb.SessionLive.Index do
       node_map = Cluster.build_node_map(tagged_sessions)
       clustered = socket.assigns.clustered
 
+      {grouped_sessions, worktree_fetches_needed} =
+        group_sessions(tagged_sessions, socket.assigns.projects, clustered)
+
       {:noreply,
        socket
        |> cancel_undo_timer()
        |> assign(undo_archive_session: nil)
        |> assign(
-         grouped_sessions: group_sessions(tagged_sessions, socket.assigns.projects, clustered),
+         grouped_sessions: grouped_sessions,
          node_map: node_map
-       )}
+       )
+       |> kick_worktree_fetches(worktree_fetches_needed)}
     else
       {:noreply, socket}
     end
@@ -353,13 +385,17 @@ defmodule OrcaHubWeb.SessionLive.Index do
     node_map = Cluster.build_node_map(tagged_sessions)
     clustered = socket.assigns.clustered
 
+    {grouped_sessions, worktree_fetches_needed} =
+      group_sessions(tagged_sessions, socket.assigns.projects, clustered)
+
     {:noreply,
      socket
      |> assign(
-       grouped_sessions: group_sessions(tagged_sessions, socket.assigns.projects, clustered),
+       grouped_sessions: grouped_sessions,
        node_map: node_map,
        selected_sessions: MapSet.new()
      )
+     |> kick_worktree_fetches(worktree_fetches_needed)
      |> put_flash(:info, "Archived #{MapSet.size(selected)} session(s)")}
   end
 
@@ -370,6 +406,31 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
   def handle_info({_session_id, _payload}, socket) do
     {:noreply, reload_session_data(socket)}
+  end
+
+  # Populated by `kick_worktree_fetches/2` via `start_async/3`. Stores the
+  # result (branch list on success, an {:error, _} tuple on any RPC failure —
+  # see OrcaHub.Cluster.rpc/5's contract) into the shared TTL cache
+  # regardless of outcome, so a repeatedly-unreachable node doesn't get
+  # re-dialed on every broadcast either — it just keeps degrading to the
+  # basename label until the node comes back. Then re-derives the groups so
+  # the real branch label (or confirmed fallback) actually reaches the page.
+  @impl true
+  def handle_async({:worktree_list, project_id}, async_result, socket) do
+    value =
+      case async_result do
+        {:ok, result} -> result
+        {:exit, reason} -> {:error, {:worktree_fetch_crashed, reason}}
+      end
+
+    Cache.put({:worktree_list, project_id}, @worktree_cache_ttl_ms, value)
+
+    pending = MapSet.delete(socket.assigns.worktree_fetch_pending, project_id)
+
+    {:noreply,
+     socket
+     |> assign(worktree_fetch_pending: pending)
+     |> reload_session_data()}
   end
 
   # New-session form's currently-selected backend, for scoping the model
@@ -431,20 +492,42 @@ defmodule OrcaHubWeb.SessionLive.Index do
     node_map = Cluster.build_node_map(tagged_sessions)
     clustered = Node.list() != []
 
-    assign(socket,
+    {grouped_sessions, worktree_fetches_needed} =
+      group_sessions(tagged_sessions, projects, clustered)
+
+    socket
+    |> assign(
       projects: projects,
-      grouped_sessions: group_sessions(tagged_sessions, projects, clustered),
+      grouped_sessions: grouped_sessions,
       node_map: node_map,
       clustered: clustered,
       heartbeat_session_ids: heartbeat_session_ids
     )
+    |> kick_worktree_fetches(worktree_fetches_needed)
   end
 
+  # Returns `{grouped_sessions, projects_needing_worktree_fetch}` —
+  # `grouped_sessions` is the template-ready `{{node_name, project},
+  # main_sessions, worktree_groups}` list (unchanged shape); the second
+  # element is the list of distinct `Project` structs whose worktree branch
+  # labels are NOT currently cached, for the caller to hand to
+  # `kick_worktree_fetches/2`. Pure/side-effect-free — never fetches
+  # anything itself, just reports what's missing.
   defp group_sessions(tagged_sessions, tagged_projects, clustered) do
     # Extract sessions from {node, session} tuples
     sessions = Enum.map(tagged_sessions, fn {_node, session} -> session end)
     projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
 
+    sorted_groups = sorted_project_groups(tagged_sessions, sessions, projects, clustered)
+
+    Enum.map_reduce(sorted_groups, [], fn {{node_name, project}, sessions}, needs_fetch ->
+      {main_sessions, worktree_groups, fetch?} = split_worktree_sessions(project, sessions)
+      needs_fetch = if fetch?, do: [project | needs_fetch], else: needs_fetch
+      {{{node_name, project}, main_sessions, worktree_groups}, needs_fetch}
+    end)
+  end
+
+  defp sorted_project_groups(tagged_sessions, sessions, projects, clustered) do
     if clustered do
       # In cluster mode, group by {node_name, project}
       # First, resolve each DISTINCT runner node's display name once —
@@ -495,10 +578,6 @@ defmodule OrcaHubWeb.SessionLive.Index do
           {_, date_a}, {_, date_b} -> NaiveDateTime.compare(date_a, date_b) != :lt
         end
       )
-      |> Enum.map(fn {{node_name, project}, sessions} ->
-        {main_sessions, worktree_groups} = split_worktree_sessions(project, sessions)
-        {{node_name, project}, main_sessions, worktree_groups}
-      end)
     else
       # Single-node mode: group by project only (original behavior)
       groups = Enum.group_by(sessions, & &1.project)
@@ -532,15 +611,11 @@ defmodule OrcaHubWeb.SessionLive.Index do
           {_, date_a}, {_, date_b} -> NaiveDateTime.compare(date_a, date_b) != :lt
         end
       )
-      |> Enum.map(fn {{node_name, project}, sessions} ->
-        {main_sessions, worktree_groups} = split_worktree_sessions(project, sessions)
-        {{node_name, project}, main_sessions, worktree_groups}
-      end)
     end
   end
 
   # No worktree sub-grouping for unassigned sessions
-  defp split_worktree_sessions(nil, sessions), do: {order_with_children(sessions), []}
+  defp split_worktree_sessions(nil, sessions), do: {order_with_children(sessions), [], false}
 
   defp split_worktree_sessions(project, sessions) do
     project_dir = Path.expand(project.directory)
@@ -552,14 +627,12 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
     main = order_with_children(main)
 
-    worktree_groups =
-      if worktree == [] do
-        []
-      else
-        # Look up git worktrees for branch name display
-        worktrees = Projects.git_worktree_list(project)
-        worktree_map = Map.new(worktrees, fn wt -> {Path.expand(wt[:path]), wt} end)
+    if worktree == [] do
+      {main, [], false}
+    else
+      {worktree_map, fetch?} = worktree_lookup(project)
 
+      worktree_groups =
         worktree
         |> Enum.group_by(& &1.directory)
         |> Enum.map(fn {dir, dir_sessions} ->
@@ -573,9 +646,67 @@ defmodule OrcaHubWeb.SessionLive.Index do
           end,
           {:desc, NaiveDateTime}
         )
-      end
 
-    {main, worktree_groups}
+      {main, worktree_groups, fetch?}
+    end
+  end
+
+  # Reads the TTL cache populated by `kick_worktree_fetches/2` — NEVER runs
+  # the RPC itself. That's the whole point: this is called from
+  # `split_worktree_sessions/2`, which runs inline on every `group_sessions/3`
+  # call (mount, every filter/archive event, and every single "sessions"
+  # PubSub broadcast via `reload_session_data/1`). A cache miss just means
+  # "not fetched yet, or the last fetch expired" — falls back to the
+  # `Path.basename` label either way (same as a cached failure), and reports
+  # whether a fetch is needed so the caller can kick one asynchronously.
+  defp worktree_lookup(project) do
+    case Cache.peek({:worktree_list, project.id}) do
+      {:ok, worktrees} when is_list(worktrees) ->
+        {Map.new(worktrees, fn wt -> {Path.expand(wt[:path]), wt} end), false}
+
+      # Either genuinely uncached (:miss) or a cached failure tuple from a
+      # previous fetch (node unavailable / rpc_undef / rpc_timeout — see
+      # OrcaHub.Cluster.rpc/5) — the latter is memoized too, on purpose, so a
+      # persistently-offline node's project doesn't get re-dialed on every
+      # broadcast for the rest of that TTL window.
+      {:ok, _cached_failure} ->
+        {%{}, false}
+
+      :miss ->
+        {%{}, true}
+    end
+  end
+
+  # Async-fetches (never inline — see `worktree_lookup/1`) the worktree list
+  # for each project reported by `group_sessions/3`, deduped against
+  # `worktree_fetch_pending` so a burst of broadcasts before the first fetch
+  # lands doesn't spawn a redundant RPC per broadcast (`start_async/3` does
+  # NOT dedupe same-key calls itself — a second call while the first is
+  # in-flight just orphans the first task's result and starts another).
+  # `Cluster.rpc/5` is only ever called against the project's OWN node
+  # (`Cluster.project_node_for/1`) — never a local fallback — so an
+  # unreachable/outdated node degrades via `handle_async/3` rather than
+  # silently computing on the wrong node. No-ops on a disconnected socket
+  # (`start_async/3`'s own contract), so the dead static-render mount doesn't
+  # spawn a task nobody can receive.
+  defp kick_worktree_fetches(socket, projects) do
+    projects
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.reduce(socket, fn project, socket ->
+      if MapSet.member?(socket.assigns.worktree_fetch_pending, project.id) do
+        socket
+      else
+        target_node = Cluster.project_node_for(project)
+
+        socket
+        |> start_async({:worktree_list, project.id}, fn ->
+          Cluster.rpc(target_node, Projects, :git_worktree_list, [project], @worktree_rpc_timeout)
+        end)
+        |> assign(
+          worktree_fetch_pending: MapSet.put(socket.assigns.worktree_fetch_pending, project.id)
+        )
+      end
+    end)
   end
 
   # Reorder a flat list of sessions so that orchestrator-spawned children render

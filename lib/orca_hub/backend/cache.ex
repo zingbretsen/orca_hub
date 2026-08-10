@@ -37,6 +37,33 @@ defmodule OrcaHub.Backend.Cache do
     end
   end
 
+  @doc """
+  Read-only lookup: returns `{:ok, value}` on a live hit, `:miss` on a
+  miss/expiry — unlike `get_or_run/3`, NEVER runs anything to fill the gap.
+  For callers that must stay non-blocking (e.g. inside a LiveView's
+  `handle_info`) and populate the cache out-of-band instead (via `put/3`,
+  from a `start_async`/Task callback).
+  """
+  def peek(key) do
+    now = System.monotonic_time(:millisecond)
+
+    case :ets.lookup(@table, key) do
+      [{^key, value, expires_at}] when expires_at > now -> {:ok, value}
+      _ -> :miss
+    end
+  end
+
+  @doc """
+  Unconditionally store `value` under `key` with the given TTL — the write
+  side of the `peek/1` pattern above, for a value computed by the caller
+  itself (e.g. an async task result) rather than by a `fun` run inline.
+  """
+  def put(key, ttl_ms, value) do
+    now = System.monotonic_time(:millisecond)
+    :ets.insert(@table, {key, value, now + ttl_ms})
+    value
+  end
+
   @doc "Drop a cached entry (test helper / manual invalidation)."
   def invalidate(key), do: :ets.delete(@table, key)
 
