@@ -256,7 +256,19 @@ defmodule OrcaHub.Sessions do
     |> Repo.update()
   end
 
-  def delete_session(%Session{} = session), do: Repo.delete(session)
+  # No prior caller broadcasts anything on delete today (ORCAHUB3-26 item 4)
+  # even though `SessionHeartbeat` has always had a handler for it - added
+  # here to match `archive_session/1`'s pattern so that handler actually
+  # fires, and so any future caller doesn't silently reintroduce the same gap.
+  def delete_session(%Session{} = session) do
+    result = Repo.delete(session)
+
+    with {:ok, deleted} <- result do
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {deleted.id, {:status, :deleted}})
+    end
+
+    result
+  end
 
   def list_messages(session_id) do
     Repo.all(

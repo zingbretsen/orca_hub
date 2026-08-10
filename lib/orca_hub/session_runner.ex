@@ -9,7 +9,17 @@ defmodule OrcaHub.SessionRunner do
   use GenStatem
   require Logger
 
-  alias OrcaHub.{AgentPresence, AskUserQuestion, Backend, Cluster, HubRPC, MemoryGit, Streaming}
+  alias OrcaHub.{
+    AgentPresence,
+    AskUserQuestion,
+    Backend,
+    Cluster,
+    HubRPC,
+    MemoryGit,
+    SessionHeartbeat,
+    Streaming
+  }
+
   alias OrcaHub.Claude.StreamParser
 
   # Route a HubRPC call through the node that owns the session's DB record.
@@ -1039,27 +1049,34 @@ defmodule OrcaHub.SessionRunner do
   @redundant_idle_lookback_seconds 120
 
   # The child already told its parent explicitly this turn (a
-  # send_message_to_session call recorded as a session_interactions edge) —
-  # firing the generic "[Session lifecycle] ... is now idle." on top of that
-  # is a redundant interrupt for the orchestrator, mid-thought on the report
-  # it just received. Scoped to :idle only — an :error notification carries
-  # genuinely new information (the error detail) even if the child messaged
-  # the parent earlier in the turn, so it's never suppressed. Fails OPEN
-  # (returns false, i.e. "not redundant, send it") on any lookup error — a
-  # missed notification is worse than a redundant one.
+  # send_message_to_session call recorded as a session_interactions edge), OR
+  # nothing about the child's own reportable state has materially changed
+  # since the last time we told the parent about it (item 5, ORCAHUB3-26) —
+  # firing the generic "[Session lifecycle] ... is now idle." in either case
+  # is a redundant interrupt for the orchestrator: either it already has the
+  # report, or there's nothing new to report (a worker that woke, checked
+  # briefly, and re-parked without doing anything). Scoped to :idle only —
+  # an :error notification carries genuinely new information (the error
+  # detail) even if the child messaged the parent earlier in the turn or its
+  # status/progress snapshot happens to match, so it's never suppressed.
+  # Fails OPEN (returns false, i.e. "not redundant, send it") on any lookup
+  # error — a missed notification is worse than a redundant one.
   defp redundant_idle_notification?(session, turn_started_at) do
     since =
       turn_started_at ||
         NaiveDateTime.add(NaiveDateTime.utc_now(), -@redundant_idle_lookback_seconds, :second)
 
-    case HubRPC.list_session_interactions(
-           sender_session_id: session.id,
-           recipient_session_id: session.parent_session_id,
-           since: since
-         ) do
-      [] -> false
-      [_ | _] -> true
-    end
+    already_messaged_parent? =
+      case HubRPC.list_session_interactions(
+             sender_session_id: session.id,
+             recipient_session_id: session.parent_session_id,
+             since: since
+           ) do
+        [] -> false
+        [_ | _] -> true
+      end
+
+    already_messaged_parent? or not lifecycle_content_changed?(session)
   rescue
     e ->
       Logger.warning(
@@ -1068,6 +1085,24 @@ defmodule OrcaHub.SessionRunner do
       )
 
       false
+  end
+
+  # Whether the child's own reportable state - status, progress phase/note -
+  # differs from the last such snapshot we notified this parent about.
+  # Deliberately excludes message/activity timestamps (unlike
+  # `SessionHeartbeat.Digest`'s watch-list snapshot): a completed turn always
+  # produces at least one new message, so including that dimension here would
+  # make this check never suppress anything. Delegates the actual
+  # snapshot-diff (and its "level-triggered" persistence across calls) to
+  # `SessionHeartbeat.lifecycle_snapshot_changed?/2`, which already implements
+  # this exact comparison for `only_if_changed` heartbeats — reused rather
+  # than reimplemented here. That GenServer is hub-only, so this goes through
+  # `HubRPC.call/3` (the same generic hub-dispatch every other cross-node
+  # `SessionHeartbeat` call in this codebase already uses) rather than a
+  # direct `GenServer.call`.
+  defp lifecycle_content_changed?(session) do
+    snapshot = {session.status, session.progress_phase, session.progress_note}
+    HubRPC.call(SessionHeartbeat, :lifecycle_snapshot_changed?, [session.id, snapshot])
   end
 
   # Public (@doc false) as a test seam — lets tests exercise delivery

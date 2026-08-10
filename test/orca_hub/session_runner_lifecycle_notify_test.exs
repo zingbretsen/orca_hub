@@ -431,4 +431,131 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
              "expected a [Session lifecycle] error message despite the interaction"
     end
   end
+
+  # ── item 5 (ORCAHUB3-26): gate idle notifications on material change ────
+  # A child whose status/progress hasn't moved since the LAST idle
+  # notification carries nothing new - suppress it (extends 3ac9069's
+  # already-messaged-parent suppression). Any actual change (a fresh
+  # progress_phase/note, or a status other than idle e.g. :error) always
+  # notifies. Uses distinct child ids per test since the underlying baseline
+  # (`SessionHeartbeat.lifecycle_snapshot_changed?/2`) is a real, global,
+  # per-session-id cache.
+
+  describe "deliver_parent_notification/3 — idle content-change gate" do
+    setup %{dir: dir} do
+      {:ok, parent} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "the parent",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(parent.id) end)
+      {:ok, parent: parent}
+    end
+
+    test "the first idle notification for a child always delivers", %{parent: parent, dir: dir} do
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "child-title",
+          parent_session_id: parent.id,
+          notify_parent: true
+        })
+
+      assert SessionRunner.deliver_parent_notification(child, :idle) == :ok
+
+      message =
+        wait_for_message(
+          parent.id,
+          ~r/^\[Session lifecycle\] Child session #{child.id} \("child-title"\) is now idle\.$/
+        )
+
+      refute is_nil(message)
+    end
+
+    test "a second idle notification with an unchanged status/progress snapshot is suppressed",
+         %{parent: parent, dir: dir} do
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "child-title",
+          parent_session_id: parent.id,
+          notify_parent: true
+        })
+
+      assert SessionRunner.deliver_parent_notification(child, :idle) == :ok
+      refute is_nil(wait_for_message(parent.id, ~r/is now idle/))
+
+      before_count = length(Sessions.list_messages(parent.id))
+
+      # Same child struct (same status/progress_phase/progress_note) - a
+      # second running->idle cycle that produced nothing new to report.
+      assert SessionRunner.deliver_parent_notification(child, :idle) == :ok
+
+      # Give the (suppressed) async path a moment, then assert nothing new
+      # landed - unlike the positive cases there's no message to poll for.
+      Process.sleep(150)
+      assert length(Sessions.list_messages(parent.id)) == before_count
+    end
+
+    test "a changed progress_phase/note still notifies even with no explicit parent message",
+         %{parent: parent, dir: dir} do
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "child-title",
+          parent_session_id: parent.id,
+          notify_parent: true
+        })
+
+      assert SessionRunner.deliver_parent_notification(child, :idle) == :ok
+      refute is_nil(wait_for_message(parent.id, ~r/is now idle/))
+
+      before_count = length(Sessions.list_messages(parent.id))
+      progressed_child = %{child | progress_phase: "implementing", progress_note: "writing tests"}
+
+      assert SessionRunner.deliver_parent_notification(progressed_child, :idle) == :ok
+
+      wait_until_count_grows(parent.id, before_count)
+    end
+
+    test "error is never gated by the content-change check, even with an identical snapshot to a prior idle",
+         %{parent: parent, dir: dir} do
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "child-title",
+          parent_session_id: parent.id,
+          notify_parent: true
+        })
+
+      assert SessionRunner.deliver_parent_notification(child, :idle) == :ok
+      refute is_nil(wait_for_message(parent.id, ~r/is now idle/))
+
+      error_child = %{child | status: "error", error_detail: "boom"}
+      assert SessionRunner.deliver_parent_notification(error_child, :error) == :ok
+
+      refute is_nil(wait_for_message(parent.id, ~r/is now error\. Error: boom/))
+    end
+  end
+
+  defp wait_until_count_grows(session_id, before_count, timeout_ms \\ 2000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    poll_count_grows(session_id, before_count, deadline)
+  end
+
+  defp poll_count_grows(session_id, before_count, deadline) do
+    cond do
+      length(Sessions.list_messages(session_id)) > before_count ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        flunk("expected a new message on session #{session_id}, but the count never grew")
+
+      true ->
+        Process.sleep(25)
+        poll_count_grows(session_id, before_count, deadline)
+    end
+  end
 end

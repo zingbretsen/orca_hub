@@ -142,4 +142,103 @@ defmodule OrcaHub.SessionHeartbeatTest do
       assert second.deliver? == true
     end
   end
+
+  # ── item 4: auto-cancel wiring matches the REAL broadcast shape ─────────
+  # Regression coverage for ORCAHUB3-26 item 4: the old handle_info clauses
+  # matched {:session_archived, id}/{:session_deleted, id}, tuples nothing in
+  # `lib/` ever broadcasts — the real shape (see `SessionRunner.broadcast/2`,
+  # `Sessions.archive_session/1`, `Sessions.delete_session/1`) is
+  # `{session_id, {:status, atom}}` on the "sessions" PubSub topic. These
+  # tests drive the real broadcast path (not a synthetic message shape) so a
+  # regression back to the wrong tuple shape would actually fail them.
+  describe "auto-cancel on archive/delete" do
+    defp wait_until(fun, attempts \\ 100)
+    defp wait_until(_fun, 0), do: flunk("condition not met within timeout")
+
+    defp wait_until(fun, attempts) do
+      if fun.() do
+        :ok
+      else
+        Process.sleep(20)
+        wait_until(fun, attempts - 1)
+      end
+    end
+
+    test "archiving a session auto-cancels its heartbeat" do
+      session = fixture_session(%{})
+      assert :ok = SessionHeartbeat.schedule(session.id, 30, "hello")
+      on_exit(fn -> SessionHeartbeat.cancel(session.id) end)
+
+      assert {:ok, _} = Sessions.archive_session(session)
+
+      wait_until(fn -> SessionHeartbeat.get(session.id) == nil end)
+    end
+
+    test "deleting a session auto-cancels its heartbeat" do
+      session = fixture_session(%{})
+      assert :ok = SessionHeartbeat.schedule(session.id, 30, "hello")
+      on_exit(fn -> SessionHeartbeat.cancel(session.id) end)
+
+      assert {:ok, _} = Sessions.delete_session(session)
+
+      wait_until(fn -> SessionHeartbeat.get(session.id) == nil end)
+    end
+
+    test "a status broadcast unrelated to archive/delete does not touch the heartbeat" do
+      session = fixture_session(%{})
+      assert :ok = SessionHeartbeat.schedule(session.id, 30, "hello")
+      on_exit(fn -> SessionHeartbeat.cancel(session.id) end)
+
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session.id, {:status, :running}})
+
+      # No async cancellation to wait for; give the (non-)event a moment to
+      # land, then assert the heartbeat is still there.
+      Process.sleep(50)
+      refute SessionHeartbeat.get(session.id) == nil
+    end
+  end
+
+  # ── item 5: lifecycle_snapshot_changed?/2 ────────────────────────────────
+  describe "lifecycle_snapshot_changed?/2" do
+    test "the first check for a session id always reports changed" do
+      id = Ecto.UUID.generate()
+      assert SessionHeartbeat.lifecycle_snapshot_changed?(id, {"idle", nil, nil}) == true
+    end
+
+    test "an identical follow-up snapshot reports unchanged" do
+      id = Ecto.UUID.generate()
+      snapshot = {"idle", "implementing", "writing tests"}
+
+      assert SessionHeartbeat.lifecycle_snapshot_changed?(id, snapshot) == true
+      assert SessionHeartbeat.lifecycle_snapshot_changed?(id, snapshot) == false
+      # Still unchanged on a third identical check - not a one-shot latch.
+      assert SessionHeartbeat.lifecycle_snapshot_changed?(id, snapshot) == false
+    end
+
+    test "a differing snapshot reports changed, then settles back to unchanged" do
+      id = Ecto.UUID.generate()
+
+      assert SessionHeartbeat.lifecycle_snapshot_changed?(id, {"idle", nil, nil}) == true
+
+      assert SessionHeartbeat.lifecycle_snapshot_changed?(
+               id,
+               {"idle", "implementing", "writing tests"}
+             ) == true
+
+      assert SessionHeartbeat.lifecycle_snapshot_changed?(
+               id,
+               {"idle", "implementing", "writing tests"}
+             ) == false
+    end
+
+    test "different session ids track independent baselines" do
+      id_a = Ecto.UUID.generate()
+      id_b = Ecto.UUID.generate()
+      snapshot = {"idle", "implementing", nil}
+
+      assert SessionHeartbeat.lifecycle_snapshot_changed?(id_a, snapshot) == true
+      # id_b has never been checked, so it's still a fresh baseline too.
+      assert SessionHeartbeat.lifecycle_snapshot_changed?(id_b, snapshot) == true
+    end
+  end
 end
