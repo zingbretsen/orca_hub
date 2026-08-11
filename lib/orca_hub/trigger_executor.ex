@@ -38,7 +38,9 @@ defmodule OrcaHub.TriggerExecutor do
           Cluster.start_session(runner_node, session_id, session)
         end
 
-        Cluster.send_message(runner_node, session_id, build_prompt(trigger))
+        # :queue (ORCAHUB3-29): an overlapping cron fire (reuse_session) must not
+        # cancel a still-running prior firing's in-progress work.
+        Cluster.send_message(runner_node, session_id, build_prompt(trigger), :queue)
 
         if trigger.archive_on_complete do
           subscribe_for_completion(session_id)
@@ -87,7 +89,9 @@ defmodule OrcaHub.TriggerExecutor do
         end
 
         prompt = build_prompt(trigger, payload)
-        Cluster.send_message(runner_node, session_id, prompt)
+        # :queue (ORCAHUB3-29): same reasoning as execute/1 — an overlapping webhook
+        # fire must not cancel in-progress work from a prior firing.
+        Cluster.send_message(runner_node, session_id, prompt, :queue)
 
         if trigger.archive_on_complete do
           subscribe_for_completion(session_id)

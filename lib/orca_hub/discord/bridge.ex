@@ -157,7 +157,15 @@ defmodule OrcaHub.Discord.Bridge do
           Cluster.start_session(runner_node, session_id, session)
         end
 
-        Cluster.send_message(runner_node, session_id, build_prompt(mapping, msg, saved, denied))
+        # :queue (ORCAHUB3-29): a fast Discord follow-up shouldn't cancel the
+        # bot's in-progress work on the prior message in the same channel.
+        Cluster.send_message(
+          runner_node,
+          session_id,
+          build_prompt(mapping, msg, saved, denied),
+          :queue
+        )
+
         capture_reply(session_id, mapping.discord_channel_id, message_id)
         # Advance the watermark only after a successful dispatch, so a failed send
         # (which raises out of here) leaves the backfill window open for a retry.

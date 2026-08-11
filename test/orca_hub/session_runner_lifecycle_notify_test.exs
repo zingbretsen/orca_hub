@@ -73,6 +73,21 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
     poll_for_message(session_id, pattern, deadline)
   end
 
+  # ORCAHUB3-29: deliver_parent_notification/3 now delivers via :queue, so
+  # a SECOND notification arriving while the parent's (stub-driven, never
+  # completing) turn from the FIRST one is still "running" would otherwise
+  # just sit queued forever in this fixture — the stub never finishes a
+  # turn to flush it naturally. Resets the parent back to a deliverable
+  # state exactly like a real turn ending would (DB status + the same
+  # "sessions" PubSub broadcast SessionHeartbeat's flush logic reacts to),
+  # so tests asserting on a SECOND/THIRD notification's delivery/content
+  # aren't coupled to the stub CLI's turn-completion behavior.
+  defp finish_parent_turn(parent_id) do
+    parent = Sessions.get_session!(parent_id)
+    {:ok, _} = Sessions.update_session(parent, %{status: "idle"})
+    Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {parent_id, {:status, :idle}})
+  end
+
   defp poll_for_message(session_id, pattern, deadline) do
     match =
       session_id
@@ -511,6 +526,7 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
 
       assert SessionRunner.deliver_parent_notification(child, :idle) == :ok
       refute is_nil(wait_for_message(parent.id, ~r/is now idle/))
+      finish_parent_turn(parent.id)
 
       before_count = length(Sessions.list_messages(parent.id))
       progressed_child = %{child | progress_phase: "implementing", progress_note: "writing tests"}
@@ -532,6 +548,7 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
 
       assert SessionRunner.deliver_parent_notification(child, :idle) == :ok
       refute is_nil(wait_for_message(parent.id, ~r/is now idle/))
+      finish_parent_turn(parent.id)
 
       error_child = %{child | status: "error", error_detail: "boom"}
       assert SessionRunner.deliver_parent_notification(error_child, :error) == :ok

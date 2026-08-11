@@ -170,8 +170,14 @@ defmodule OrcaHubWeb.ApiRunController do
 
       message = full_prompt(prompt, result_schema, client_tools)
 
-      case Cluster.send_message(runner_node, session.id, message) do
+      # :queue (ORCAHUB3-29): session was just created (status "ready") so this
+      # always delivers immediately either way — :queue for consistency with the
+      # rest of this controller.
+      case Cluster.send_message(runner_node, session.id, message, :queue) do
         :ok ->
+          :ok
+
+        {:queued, _status} ->
           :ok
 
         other ->
@@ -216,14 +222,23 @@ defmodule OrcaHubWeb.ApiRunController do
     end
   end
 
-  # Reuses the exact mechanism send_message_to_session uses (Cluster.send_message/3,
+  # Reuses the exact mechanism send_message_to_session uses (Cluster.send_message/4,
   # see OrcaHub.MCP.Tools.Sessions): it starts a torn-down/never-started runner
   # and unarchives an archived session automatically, so a continuation into an
   # idle-teardown'd or archived session revives it the same way a sibling
   # session's send_message_to_session call would.
+  #
+  # :queue (ORCAHUB3-29): a fast/duplicate continuation POST must not cancel a
+  # still-running prior turn on the same session — the client is already
+  # polling GET /api/v1/runs/:id, so a deferred delivery is invisible to it.
   defp deliver_continuation(conn, run, session, runner_node, message) do
-    case Cluster.send_message(runner_node, session.id, message) do
+    case Cluster.send_message(runner_node, session.id, message, :queue) do
       :ok ->
+        conn
+        |> put_status(202)
+        |> json(%{run_id: run.id, session_id: session.id, status: "running"})
+
+      {:queued, _status} ->
         conn
         |> put_status(202)
         |> json(%{run_id: run.id, session_id: session.id, status: "running"})
@@ -455,8 +470,14 @@ defmodule OrcaHubWeb.ApiRunController do
       runner_node = Cluster.runner_node_for(session)
       corrective_prompt = corrective_prompt(errors)
 
-      case Cluster.send_message(runner_node, session.id, corrective_prompt) do
+      # :queue (ORCAHUB3-29): fires after the turn we're correcting already ended
+      # (validation runs post-turn); no reason to destructively interrupt on the
+      # rare race where the session started running again in the meantime.
+      case Cluster.send_message(runner_node, session.id, corrective_prompt, :queue) do
         :ok ->
+          :ok
+
+        {:queued, _status} ->
           :ok
 
         other ->

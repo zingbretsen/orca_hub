@@ -38,6 +38,28 @@ defmodule OrcaHubWeb.QueueLive do
      |> maybe_push_tts_config()}
   end
 
+  # ORCAHUB3-29: every send_message-style event below uses :queue delivery
+  # (this page only lists idle-ish sessions — the human reviewing the queue
+  # already has a dedicated Stop/Interrupt action on the session page if a
+  # send genuinely needs to cancel in-flight work). `{:queued, status}` is
+  # exactly as much a success as `:ok` from here — the message still
+  # arrives, just deferred to the target's turn end — so both route to
+  # `on_success`, keeping the 9 near-identical call sites below from each
+  # growing an extra clause.
+  defp handle_delivery_result(:ok, _socket, on_success), do: on_success.()
+  defp handle_delivery_result({:queued, _status}, _socket, on_success), do: on_success.()
+
+  defp handle_delivery_result({:error, :busy}, socket, _on_success) do
+    {:noreply, put_flash(socket, :error, "Session is busy")}
+  end
+
+  defp handle_delivery_result({:error, reason}, socket, _on_success) do
+    message =
+      Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
+
+    {:noreply, put_flash(socket, :error, message)}
+  end
+
   @impl true
   def handle_event("archive", %{"id" => id}, socket) do
     node = Map.get(socket.assigns.node_map, id, node())
@@ -87,24 +109,14 @@ defmodule OrcaHubWeb.QueueLive do
         node = Map.get(socket.assigns.node_map, session.id, node())
         ensure_runner(node, session.id)
 
-        case Cluster.send_message(node, session.id, prompt) do
-          :ok ->
-            {:noreply,
-             socket
-             |> assign(:entries, reject_session(socket.assigns.entries, session.id))
-             |> assign(:prompt, "")
-             |> update(:form_key, &(&1 + 1))}
-
-          {:error, :busy} ->
-            {:noreply, put_flash(socket, :error, "Session is busy")}
-
-          {:error, reason} ->
-            message =
-              Cluster.node_unavailable_message(reason) ||
-                "Failed to send message: #{inspect(reason)}"
-
-            {:noreply, put_flash(socket, :error, message)}
-        end
+        Cluster.send_message(node, session.id, prompt, :queue)
+        |> handle_delivery_result(socket, fn ->
+          {:noreply,
+           socket
+           |> assign(:entries, reject_session(socket.assigns.entries, session.id))
+           |> assign(:prompt, "")
+           |> update(:form_key, &(&1 + 1))}
+        end)
     end
   end
 
@@ -117,20 +129,10 @@ defmodule OrcaHubWeb.QueueLive do
       node = Map.get(socket.assigns.node_map, id, node())
       ensure_runner(node, id)
 
-      case Cluster.send_message(node, id, prompt) do
-        :ok ->
-          {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
-
-        {:error, :busy} ->
-          {:noreply, put_flash(socket, :error, "Session is busy")}
-
-        {:error, reason} ->
-          message =
-            Cluster.node_unavailable_message(reason) ||
-              "Failed to send message: #{inspect(reason)}"
-
-          {:noreply, put_flash(socket, :error, message)}
-      end
+      Cluster.send_message(node, id, prompt, :queue)
+      |> handle_delivery_result(socket, fn ->
+        {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
+      end)
     end
   end
 
@@ -173,24 +175,14 @@ defmodule OrcaHubWeb.QueueLive do
             "Give it enough context to work independently." <>
             if(prompt != "", do: "\n\nThe user says: #{prompt}", else: "")
 
-        case Cluster.send_message(node, id, delegate_prompt) do
-          :ok ->
-            {:noreply,
-             socket
-             |> assign(:entries, reject_session(socket.assigns.entries, id))
-             |> assign(:prompt, "")
-             |> update(:form_key, &(&1 + 1))}
-
-          {:error, :busy} ->
-            {:noreply, put_flash(socket, :error, "Session is busy")}
-
-          {:error, reason} ->
-            message =
-              Cluster.node_unavailable_message(reason) ||
-                "Failed to send message: #{inspect(reason)}"
-
-            {:noreply, put_flash(socket, :error, message)}
-        end
+        Cluster.send_message(node, id, delegate_prompt, :queue)
+        |> handle_delivery_result(socket, fn ->
+          {:noreply,
+           socket
+           |> assign(:entries, reject_session(socket.assigns.entries, id))
+           |> assign(:prompt, "")
+           |> update(:form_key, &(&1 + 1))}
+        end)
 
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Failed to create delegate session")}
@@ -201,111 +193,70 @@ defmodule OrcaHubWeb.QueueLive do
     node = Map.get(socket.assigns.node_map, id, node())
     ensure_runner(node, id)
 
-    case Cluster.send_message(
-           node,
-           id,
-           "Commit all current changes. Use a descriptive commit message based on the diff."
-         ) do
-      :ok ->
-        {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
-
-      {:error, :busy} ->
-        {:noreply, put_flash(socket, :error, "Session is busy")}
-
-      {:error, reason} ->
-        message =
-          Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
-
-        {:noreply, put_flash(socket, :error, message)}
-    end
+    Cluster.send_message(
+      node,
+      id,
+      "Commit all current changes. Use a descriptive commit message based on the diff.",
+      :queue
+    )
+    |> handle_delivery_result(socket, fn ->
+      {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
+    end)
   end
 
   def handle_event("add_tests", %{"id" => id}, socket) do
     node = Map.get(socket.assigns.node_map, id, node())
     ensure_runner(node, id)
 
-    case Cluster.send_message(
-           node,
-           id,
-           "Check if there are tests for the recent changes. If there aren't any, add comprehensive tests."
-         ) do
-      :ok ->
-        {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
-
-      {:error, :busy} ->
-        {:noreply, put_flash(socket, :error, "Session is busy")}
-
-      {:error, reason} ->
-        message =
-          Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
-
-        {:noreply, put_flash(socket, :error, message)}
-    end
+    Cluster.send_message(
+      node,
+      id,
+      "Check if there are tests for the recent changes. If there aren't any, add comprehensive tests.",
+      :queue
+    )
+    |> handle_delivery_result(socket, fn ->
+      {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
+    end)
   end
 
   def handle_event("rebase", %{"id" => id}, socket) do
     node = Map.get(socket.assigns.node_map, id, node())
     ensure_runner(node, id)
 
-    case Cluster.send_message(
-           node,
-           id,
-           "Rebase this branch onto main. If there are conflicts, resolve them intelligently based on the intent of both changes."
-         ) do
-      :ok ->
-        {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
-
-      {:error, :busy} ->
-        {:noreply, put_flash(socket, :error, "Session is busy")}
-
-      {:error, reason} ->
-        message =
-          Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
-
-        {:noreply, put_flash(socket, :error, message)}
-    end
+    Cluster.send_message(
+      node,
+      id,
+      "Rebase this branch onto main. If there are conflicts, resolve them intelligently based on the intent of both changes.",
+      :queue
+    )
+    |> handle_delivery_result(socket, fn ->
+      {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
+    end)
   end
 
   def handle_event("merge_to_main", %{"id" => id}, socket) do
     node = Map.get(socket.assigns.node_map, id, node())
     ensure_runner(node, id)
 
-    case Cluster.send_message(
-           node,
-           id,
-           "Switch to the main branch, merge this worktree's branch in, and resolve any conflicts if they arise."
-         ) do
-      :ok ->
-        {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
-
-      {:error, :busy} ->
-        {:noreply, put_flash(socket, :error, "Session is busy")}
-
-      {:error, reason} ->
-        message =
-          Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
-
-        {:noreply, put_flash(socket, :error, message)}
-    end
+    Cluster.send_message(
+      node,
+      id,
+      "Switch to the main branch, merge this worktree's branch in, and resolve any conflicts if they arise.",
+      :queue
+    )
+    |> handle_delivery_result(socket, fn ->
+      {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
+    end)
   end
 
   def handle_event("approve_session", %{"id" => id}, socket) do
     node = Map.get(socket.assigns.node_map, id, node())
     ensure_runner(node, id)
 
-    case Cluster.send_message(node, id, "That sounds great, go for it!") do
-      :ok ->
-        {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
-
-      {:error, :busy} ->
-        {:noreply, put_flash(socket, :error, "Session is busy")}
-
-      {:error, reason} ->
-        message =
-          Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
-
-        {:noreply, put_flash(socket, :error, message)}
-    end
+    Cluster.send_message(node, id, "That sounds great, go for it!", :queue)
+    |> handle_delivery_result(socket, fn ->
+      {:noreply, assign(socket, :entries, reject_session(socket.assigns.entries, id))}
+    end)
   end
 
   # AskUserQuestion wizard events (per-session state keyed by id)
@@ -337,22 +288,13 @@ defmodule OrcaHubWeb.QueueLive do
 
     prompt = AskUserQuestion.format_answers(questions, state.selections)
 
-    case Cluster.send_message(node, id, prompt) do
-      :ok ->
-        {:noreply,
-         socket
-         |> assign(:entries, reject_session(socket.assigns.entries, id))
-         |> assign(:aq_state, Map.delete(socket.assigns.aq_state, id))}
-
-      {:error, :busy} ->
-        {:noreply, put_flash(socket, :error, "Session is busy")}
-
-      {:error, reason} ->
-        message =
-          Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
-
-        {:noreply, put_flash(socket, :error, message)}
-    end
+    Cluster.send_message(node, id, prompt, :queue)
+    |> handle_delivery_result(socket, fn ->
+      {:noreply,
+       socket
+       |> assign(:entries, reject_session(socket.assigns.entries, id))
+       |> assign(:aq_state, Map.delete(socket.assigns.aq_state, id))}
+    end)
   end
 
   def handle_event("toggle_tts", _params, socket) do

@@ -12,7 +12,8 @@ defmodule OrcaHub.SessionResumer do
   `OrcaHub.AgentPresence.cleanup_all_stale/0` uses for stale presence files —
   every such row is provably orphaned. Each orphan gets its runner restarted
   and a "[System] ... continue" message sent through the normal
-  `Cluster.send_message/3` path, so lifecycle notifications/parent links/etc.
+  `Cluster.send_message/4` path (`:interrupt` delivery — see resume_session/1),
+  so lifecycle notifications/parent links/etc.
   all behave exactly as if the user had re-prompted it.
 
   Rails:
@@ -153,7 +154,11 @@ defmodule OrcaHub.SessionResumer do
   def resume_session(session) do
     Logger.info("SessionResumer: resuming orphaned session #{session.id}")
 
-    case Cluster.send_message(node(), session.id, @continue_message) do
+    # :interrupt (ORCAHUB3-29): `session` is a PROVABLY orphaned row (status
+    # "running" with no live process — see moduledoc). :queue would read that
+    # stale status as "mid-turn, wait" and queue behind a turn-end broadcast
+    # that can only ever come from this exact resume landing — a deadlock.
+    case Cluster.send_message(node(), session.id, @continue_message, :interrupt) do
       :ok ->
         :ok
 

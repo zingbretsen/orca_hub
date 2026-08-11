@@ -181,6 +181,73 @@ defmodule OrcaHub.StreamingRunnerTest do
     end
   end
 
+  describe "annotate_interrupted_prompt/1 (ORCAHUB3-29 item 1 / FR 53f5b223)" do
+    test "prefixes the resumed prompt with an explanation, before the original text" do
+      annotated = SessionRunner.annotate_interrupted_prompt("do the other thing instead")
+
+      assert annotated =~ "interrupted your in-progress tool call"
+      assert String.ends_with?(annotated, "do the other thing instead")
+
+      [prefix, _] = String.split(annotated, "do the other thing instead", parts: 2)
+      assert prefix =~ "interrupted"
+    end
+  end
+
+  describe "flush_pending_to_stdin/2 wiring — the annotation actually reaches the port" do
+    defp queue_data(port, prompts) do
+      %{
+        session_id: "sess-#{System.unique_integer([:positive])}",
+        port: port,
+        backend: OrcaHub.Backend.Claude,
+        backend_state: %{},
+        pending_prompts: prompts,
+        turn_started_at: nil,
+        buffer: "",
+        error_output: ""
+      }
+    end
+
+    test "annotate?: true wraps the combined prompt with the interrupt explanation before writing" do
+      port = Port.open({:spawn, "cat"}, [:binary])
+      data = queue_data(port, ["please stop and do X instead"])
+
+      SessionRunner.flush_pending_to_stdin(data, true)
+
+      assert_receive {^port, {:data, echoed}}, 1000
+      assert echoed =~ "interrupted your in-progress tool call"
+      assert echoed =~ "please stop and do X instead"
+
+      Port.close(port)
+    end
+
+    test "annotate?: false (the warm-up-completion flush) writes the combined prompt unannotated" do
+      port = Port.open({:spawn, "cat"}, [:binary])
+      data = queue_data(port, ["just the real first prompt"])
+
+      SessionRunner.flush_pending_to_stdin(data, false)
+
+      assert_receive {^port, {:data, echoed}}, 1000
+      refute echoed =~ "interrupted your in-progress tool call"
+      assert echoed =~ "just the real first prompt"
+
+      Port.close(port)
+    end
+
+    test "multiple queued prompts are combined, with the annotation only once at the front" do
+      port = Port.open({:spawn, "cat"}, [:binary])
+      data = queue_data(port, ["first thing", "second thing"])
+
+      SessionRunner.flush_pending_to_stdin(data, true)
+
+      assert_receive {^port, {:data, echoed}}, 1000
+      assert echoed =~ "first thing"
+      assert echoed =~ "second thing"
+      assert echoed |> String.split("interrupted your in-progress tool call") |> length() == 2
+
+      Port.close(port)
+    end
+  end
+
   describe "self-applying /mcp flag toggles (orchestrator/code_exec) under streaming" do
     # Minimal data map carrying just the fields the flag-change handlers and the
     # warm-port teardown touch. A real OS port lets us assert it actually closes.

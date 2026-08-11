@@ -22,7 +22,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "send_message_to_session",
         "description" =>
-          "Send a message to another active Claude Code session. The message will interrupt the target session and deliver your message. Your session ID will be included automatically so the recipient knows who sent it. Use this to coordinate with sibling sessions working in the same directory — check the .agents/ directory to discover active sessions and their IDs. If the target session is archived, it will be automatically unarchived.",
+          "Send a message to another active Claude Code session. By default (delivery: \"queue\") the message waits until the target's current turn ends, then delivers — this never cancels anything in-progress. Pass delivery: \"interrupt\" for a genuine urgent correction: it delivers immediately, cancelling the target's in-progress tool call if it's mid-turn (the target is told why). Your session ID will be included automatically so the recipient knows who sent it. Use this to coordinate with sibling sessions working in the same directory — check the .agents/ directory to discover active sessions and their IDs. If the target session is archived, it will be automatically unarchived.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -33,6 +33,23 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "message" => %{
               "type" => "string",
               "description" => "The message to send to the target session"
+            },
+            "delivery" => %{
+              "type" => "string",
+              "enum" => ["queue", "interrupt"],
+              "description" =>
+                "How to deliver this if the target is currently running a turn. \"queue\" " <>
+                  "(default): wait until the target's current turn ends, then deliver — " <>
+                  "safe, never cancels anything in-progress; costs at most one turn's " <>
+                  "delay (and if that turn hangs, delivery auto-escalates to interrupt " <>
+                  "rather than waiting forever). Use this unless your message is a genuine " <>
+                  "urgent correction. \"interrupt\": deliver immediately, cancelling the " <>
+                  "target's in-progress tool call if it's mid-turn — the target is told " <>
+                  "why its tool call was interrupted, but still loses whatever that tool " <>
+                  "call was doing. If the target backend supports non-destructive mid-turn " <>
+                  "steering, both modes may deliver immediately without cancelling " <>
+                  "anything, since steering has no destructive cost. Ignored (delivers " <>
+                  "immediately) if the target isn't currently running a turn."
             },
             "sender_session_id" => %{
               "type" => "string",
@@ -257,6 +274,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     # OrcaHub session this MCP connection is linked to (state.orca_session_id),
     # set once at connection time — see MCP.Server/MCP.Tools dispatch.
     sender_id = args["sender_session_id"] || state.orca_session_id
+    delivery = parse_delivery(args["delivery"])
 
     signed_message =
       if sender_id do
@@ -268,14 +286,23 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     case Cluster.find_session(target_id) do
       {node, session} ->
         if NodePolicy.cross_node_allowed?(node) do
-          unless Cluster.session_alive?(node, target_id) do
-            Cluster.start_session(node, target_id, session)
-          end
-
-          case Cluster.send_message(node, target_id, signed_message) do
+          # No manual session_alive?/start_session pre-check needed here —
+          # Cluster.send_message/4 handles that internally for BOTH delivery
+          # modes (directly for :interrupt; via SessionHeartbeat.deliver_or_queue/2's
+          # own immediate-delivery branch for :queue).
+          case Cluster.send_message(node, target_id, signed_message, delivery) do
             :ok ->
               maybe_record_interaction(sender_id, session.id, "message")
               text("Message delivered to session #{target_id}")
+
+            {:queued, queued_status} ->
+              maybe_record_interaction(sender_id, session.id, "message")
+
+              text(
+                "Message queued for session #{target_id} (currently \"#{queued_status}\") — " <>
+                  "it will be delivered once the session's current turn ends, or " <>
+                  "automatically escalated to an interrupt if that takes too long."
+              )
 
             {:error, reason} ->
               message =
@@ -448,6 +475,15 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   # orchestrator-spawns-orchestrator sibling link (see maybe_link_parent/4)
   # — the latter is how that spawn's lineage survives not being captured by
   # parent_session_id anymore.
+  # ORCAHUB3-29: anything other than the literal "interrupt" — including a
+  # typo, an unrecognized value, or an omitted arg — falls to the SAFE
+  # default (never-interrupt "queue"), not the destructive one. The cost
+  # asymmetry that makes "queue" the default in the first place (a bad
+  # queue guess costs one turn; a bad interrupt guess costs real work) means
+  # invalid input should fail toward the cheap mistake.
+  defp parse_delivery("interrupt"), do: :interrupt
+  defp parse_delivery(_), do: :queue
+
   defp maybe_record_interaction(nil, _recipient_id, _kind), do: :ok
 
   defp maybe_record_interaction(sender_id, recipient_id, kind) do
@@ -637,7 +673,9 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
                     case Cluster.start_session(runner_node, session.id, session) do
                       {:ok, _} ->
-                        Cluster.send_message(runner_node, session.id, args["prompt"])
+                        # :queue: brand-new session (status "ready"), so this always
+                        # delivers immediately either way — :queue for consistency.
+                        Cluster.send_message(runner_node, session.id, args["prompt"], :queue)
                         text(Jason.encode!(start_session_result(session, false)))
 
                       {:error, reason} ->

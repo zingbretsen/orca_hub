@@ -350,6 +350,10 @@ defmodule OrcaHub.HubRPC do
   def watch_job(session_id, job_id),
     do: call(OrcaHub.SessionHeartbeat, :watch_job, [session_id, job_id])
 
+  # ORCAHUB3-29: backs Cluster.send_message/4's :queue delivery mode.
+  def deliver_or_queue_message(session_id, message),
+    do: call(OrcaHub.SessionHeartbeat, :deliver_or_queue, [session_id, message])
+
   # -------------------------------------------------------------------
   # API Runs (Agent Runs API, docs/api.md)
   # -------------------------------------------------------------------

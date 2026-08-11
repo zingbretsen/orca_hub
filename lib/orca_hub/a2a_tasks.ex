@@ -187,7 +187,10 @@ defmodule OrcaHub.A2ATasks do
       {:ok, task} = update_task(task, %{validation_attempts: task.validation_attempts + 1})
 
       runner_node = Cluster.runner_node_for(session)
-      Cluster.send_message(runner_node, session.id, corrective_prompt(errors))
+      # :queue (ORCAHUB3-29): fires after the turn we're correcting already ended
+      # (validation runs post-turn); no reason to destructively interrupt on the
+      # rare race where the session started running again in the meantime.
+      Cluster.send_message(runner_node, session.id, corrective_prompt(errors), :queue)
 
       set_working(task)
     else

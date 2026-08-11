@@ -349,8 +349,13 @@ defmodule OrcaHubWeb.A2AController do
          {:ok, task} <- A2ATasks.create_task(task_attrs) do
       Cluster.start_session(runner_node, session.id, session)
 
-      case Cluster.send_message(runner_node, session.id, full_prompt(text, declarations)) do
+      # :queue (ORCAHUB3-29): session was just created (status "ready") so this
+      # always delivers immediately either way — :queue for consistency.
+      case Cluster.send_message(runner_node, session.id, full_prompt(text, declarations), :queue) do
         :ok ->
+          :ok
+
+        {:queued, _status} ->
           :ok
 
         other ->
@@ -481,9 +486,14 @@ defmodule OrcaHubWeb.A2AController do
     end
   end
 
+  # :queue (ORCAHUB3-29): a fast/duplicate continuation call must not cancel a
+  # still-running prior turn on the same session.
   defp deliver_continuation(conn, task, session, runner_node, text, rpc_id) do
-    case Cluster.send_message(runner_node, session.id, text) do
+    case Cluster.send_message(runner_node, session.id, text, :queue) do
       :ok ->
+        rpc_result(conn, rpc_id, render_task(task))
+
+      {:queued, _status} ->
         rpc_result(conn, rpc_id, render_task(task))
 
       {:error, reason} ->

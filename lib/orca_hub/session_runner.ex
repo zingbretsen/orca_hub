@@ -784,8 +784,12 @@ defmodule OrcaHub.SessionRunner do
 
     case data.pending_prompts do
       [_ | _] = prompts ->
-        # Auto-resume with queued prompts bundled into a single message
-        combined_prompt = Enum.join(prompts, "\n\n\n")
+        # Auto-resume with queued prompts bundled into a single message. One-shot's
+        # pending_prompts is populated ONLY by the :interrupt delivery path (the
+        # running/2 clause above always calls interrupt_port/2 first) — annotate so
+        # the agent understands its in-flight tool call was actually cut off. See
+        # ORCAHUB3-29 item 1 / FR 53f5b223.
+        combined_prompt = annotate_interrupted_prompt(Enum.join(prompts, "\n\n\n"))
 
         Logger.info(
           "Auto-resuming session #{data.session_id} with #{length(prompts)} pending prompt(s)"
@@ -1165,8 +1169,15 @@ defmodule OrcaHub.SessionRunner do
           :ok
 
         {node, parent} ->
-          case Cluster.send_message(node, parent.id, lifecycle_message(session, status)) do
+          # :queue (ORCAHUB3-29): a "child finished" ping is exactly the low-urgency,
+          # zero-time-sensitivity notification queue delivery exists for — an
+          # orchestrator's own in-flight tool call shouldn't be cancelled just to
+          # learn a child is done a few seconds early.
+          case Cluster.send_message(node, parent.id, lifecycle_message(session, status), :queue) do
             :ok ->
+              :ok
+
+            {:queued, _status} ->
               :ok
 
             {:error, reason} ->
@@ -1621,9 +1632,18 @@ defmodule OrcaHub.SessionRunner do
 
     case decision do
       :flush_queue ->
-        # Interrupt or queued message(s): resume on the SAME warm process.
+        # pending_prompts is non-empty here ONLY via the :interrupt delivery
+        # path (running/2's non-steerable branch, which always sends a real
+        # control_request alongside queuing — see its own comment; the
+        # warm-up-turn queue is flushed separately via the :warmup_done
+        # turn_result, never through here). Annotate so the agent
+        # understands its in-flight tool call was actually cut off — see
+        # ORCAHUB3-29 item 1 / FR 53f5b223.
         data = resume_clears_waiting(data)
-        data = flush_pending_to_stdin(%{data | interrupting: false, pending_questions: nil})
+
+        data =
+          flush_pending_to_stdin(%{data | interrupting: false, pending_questions: nil}, true)
+
         {:keep_state, %{data | buffer: "", error_output: ""}}
 
       :idle_stop ->
@@ -1951,13 +1971,35 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
-  defp flush_pending_to_stdin(%{pending_prompts: []} = data), do: data
+  # Public (@doc false) as a test seam — lets a test verify the ANNOTATED
+  # write actually reaches the port (e.g. via a real `cat` echo) without
+  # needing to drive a full finalize_streaming_turn/2 cycle (DB-backed
+  # session, real result-event NDJSON, ...).
+  @doc false
+  def flush_pending_to_stdin(data, annotate? \\ false)
+  def flush_pending_to_stdin(%{pending_prompts: []} = data, _annotate?), do: data
 
-  defp flush_pending_to_stdin(%{pending_prompts: prompts} = data) do
+  def flush_pending_to_stdin(%{pending_prompts: prompts} = data, annotate?) do
     combined = Enum.join(prompts, "\n\n\n")
+    combined = if annotate?, do: annotate_interrupted_prompt(combined), else: combined
     Streaming.WarmPool.touch(data.session_id, :running)
     data = write_user_turn(data, combined)
     %{data | pending_prompts: [], buffer: "", error_output: ""}
+  end
+
+  # ORCAHUB3-29 item 1 / FR 53f5b223: an interrupted worker shown a new
+  # message with no explanation for why its previous tool call never
+  # completed (and nothing else about its environment changed) has evidence
+  # that reality is inconsistent, not evidence that it was interrupted. Wraps
+  # the combined resume prompt(s) so the model sees the explanation BEFORE
+  # its own queued message text. Public (@doc false) as a pure-function test
+  # seam, mirroring control_interrupt_json/1 and streaming_turn_decision/1.
+  @doc false
+  def annotate_interrupted_prompt(combined) do
+    "[Note: an incoming message interrupted your in-progress tool call just now. " <>
+      "The tool call may not have completed, and its result may be missing or " <>
+      "partial as a result — this is expected, not a system malfunction. Your " <>
+      "message follows below.]\n\n" <> combined
   end
 
   defp teardown_port(%{port: port} = data) when not is_nil(port) do

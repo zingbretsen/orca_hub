@@ -135,8 +135,11 @@ defmodule OrcaHubWeb.ArtifactLive.Show do
 
           message = ArtifactSend.format_message(artifact.name, payload)
 
-          case Cluster.send_message(node, session.id, message) do
+          case Cluster.send_message(node, session.id, message, :queue) do
             :ok ->
+              {:noreply, put_flash(socket, :info, "Sent to session.")}
+
+            {:queued, _status} ->
               {:noreply, put_flash(socket, :info, "Sent to session.")}
 
             {:error, reason} ->

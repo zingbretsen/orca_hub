@@ -219,6 +219,26 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, socket}
   end
 
+  # ORCAHUB3-29: shared success/error handling for :queue-delivered
+  # send_message calls below. `{:queued, status}` is exactly as much a
+  # success as `:ok` here — the message still arrives, just deferred to the
+  # target's turn end — a dedicated Stop/Interrupt action already exists
+  # (handle_event("interrupt", ...) below, via Cluster.interrupt/2 directly)
+  # for when a send genuinely needs to cancel in-flight work.
+  defp handle_delivery_result(:ok, _socket, on_success), do: on_success.()
+  defp handle_delivery_result({:queued, _status}, _socket, on_success), do: on_success.()
+
+  defp handle_delivery_result({:error, :busy}, socket, _on_success) do
+    {:noreply, put_flash(socket, :error, "Session is busy")}
+  end
+
+  defp handle_delivery_result({:error, reason}, socket, _on_success) do
+    message =
+      Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
+
+    {:noreply, put_flash(socket, :error, message)}
+  end
+
   defp maybe_subscribe_sessions_topic(socket) do
     if connected?(socket) and not socket.assigns.sessions_topic_subscribed do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
@@ -799,24 +819,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
       end
 
     if full_prompt do
-      case Cluster.send_message(
-             socket.assigns.session_node,
-             socket.assigns.session.id,
-             full_prompt
-           ) do
-        :ok ->
-          {:noreply, push_event(socket, "clear-prompt", %{})}
-
-        {:error, :busy} ->
-          {:noreply, put_flash(socket, :error, "Session is busy")}
-
-        {:error, reason} ->
-          message =
-            Cluster.node_unavailable_message(reason) ||
-              "Failed to send message: #{inspect(reason)}"
-
-          {:noreply, put_flash(socket, :error, message)}
-      end
+      Cluster.send_message(
+        socket.assigns.session_node,
+        socket.assigns.session.id,
+        full_prompt,
+        :queue
+      )
+      |> handle_delivery_result(socket, fn ->
+        {:noreply, push_event(socket, "clear-prompt", %{})}
+      end)
     else
       {:noreply, socket}
     end
@@ -1264,7 +1275,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
     case socket.assigns.pending_questions do
       %{questions: questions} ->
         prompt = AskUserQuestion.format_answers(questions, socket.assigns.aq_selections)
-        Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, prompt)
+
+        Cluster.send_message(
+          socket.assigns.session_node,
+          socket.assigns.session.id,
+          prompt,
+          :queue
+        )
 
         {:noreply,
          socket
@@ -1373,17 +1390,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
         "The plan looks good. Please exit plan mode and proceed with implementation."
       end
 
-    case Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, prompt) do
-      :ok ->
-        {:noreply,
-         assign(socket, plan_mode: false, plan_file_path: nil, plan_file_original_mtime: nil)}
-
-      {:error, :busy} ->
-        {:noreply, put_flash(socket, :error, "Session is busy")}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to send message: #{inspect(reason)}")}
-    end
+    Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, prompt, :queue)
+    |> handle_delivery_result(socket, fn ->
+      {:noreply,
+       assign(socket, plan_mode: false, plan_file_path: nil, plan_file_original_mtime: nil)}
+    end)
   end
 
   def handle_event("reject_plan", _params, socket) do
@@ -1398,16 +1409,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
     prompt =
       "Commit the changes you made in this session. Only stage files you actually modified — do not use `git add -A` or `git add .`. Use a descriptive commit message based on the diff. Remember to include the trailer: OrcaHub-Session: #{session_id}"
 
-    case Cluster.send_message(socket.assigns.session_node, session_id, prompt) do
-      :ok ->
-        {:noreply, socket}
-
-      {:error, :busy} ->
-        {:noreply, put_flash(socket, :error, "Session is busy")}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to send message: #{inspect(reason)}")}
-    end
+    Cluster.send_message(socket.assigns.session_node, session_id, prompt, :queue)
+    |> handle_delivery_result(socket, fn -> {:noreply, socket} end)
   end
 
   # -- Autocomplete events --
@@ -1828,7 +1831,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # above.
   defp send_tree_compose_message(_socket, "direct", target_id, _target_title, text) do
     case Cluster.find_session(target_id) do
-      {node, _session} -> Cluster.send_message(node, target_id, text)
+      {node, _session} -> Cluster.send_message(node, target_id, text, :queue)
       nil -> {:error, :not_found}
     end
   end
@@ -1838,11 +1841,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # that records a session_interactions edge automatically.
   defp send_tree_compose_message(socket, "relay", target_id, target_title, text) do
     nudge = "Please message session #{target_id} (#{target_title}) about the following: #{text}"
-    Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, nudge)
+    Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, nudge, :queue)
   end
 
   defp handle_tree_compose_result(socket, :ok) do
     socket |> assign(:tree_compose, nil) |> put_flash(:info, "Message sent.")
+  end
+
+  defp handle_tree_compose_result(socket, {:queued, _status}) do
+    socket
+    |> assign(:tree_compose, nil)
+    |> put_flash(:info, "Message queued — will be delivered once the target's current turn ends.")
   end
 
   defp handle_tree_compose_result(socket, {:error, :not_found}) do
@@ -2330,8 +2339,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
       artifact ->
         message = ArtifactSend.format_message(artifact.name, payload)
 
-        case Cluster.send_message(socket.assigns.session_node, socket.assigns.session.id, message) do
+        case Cluster.send_message(
+               socket.assigns.session_node,
+               socket.assigns.session.id,
+               message,
+               :queue
+             ) do
           :ok ->
+            {:noreply, put_flash(socket, :info, "Sent to session.")}
+
+          {:queued, _status} ->
             {:noreply, put_flash(socket, :info, "Sent to session.")}
 
           {:error, reason} ->

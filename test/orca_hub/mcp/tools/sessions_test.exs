@@ -535,6 +535,116 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     end
   end
 
+  describe "send_message_to_session — delivery modes (ORCAHUB3-29)" do
+    test "default (no delivery arg) queues rather than delivers/interrupts a running target",
+         %{state: state, dir: dir} do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          status: "running",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result =
+        SessionsTool.call(
+          "send_message_to_session",
+          %{"session_id" => target.id, "message" => "hello"},
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text =~ "queued"
+      assert text =~ "\"running\""
+      assert Sessions.list_messages(target.id) == []
+      refute SessionSupervisor.session_alive?(target.id)
+      # Queueing is still a real (recorded) delivery from the sender's POV.
+      assert [interaction] = Sessions.list_session_interactions(recipient_session_id: target.id)
+      assert interaction.kind == "message"
+    end
+
+    test "an unrecognized delivery value falls back to the safe default (queue), not interrupt",
+         %{state: state, dir: dir} do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          status: "running",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result =
+        SessionsTool.call(
+          "send_message_to_session",
+          %{"session_id" => target.id, "message" => "hello", "delivery" => "bogus"},
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text =~ "queued"
+      refute SessionSupervisor.session_alive?(target.id)
+    end
+
+    test "delivery: \"interrupt\" delivers immediately (today's behavior), cold-starting a runner",
+         %{state: state, dir: dir} do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          status: "running",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "send_message_to_session",
+            %{"session_id" => target.id, "message" => "hello", "delivery" => "interrupt"},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text =~ "delivered"
+      # An :interrupt delivery to a not-yet-alive target cold-starts a runner
+      # rather than queuing — the DB's stale "running" status is irrelevant.
+      assert SessionSupervisor.session_alive?(target.id)
+    end
+
+    test "queue delivers immediately (unqueued) when the target isn't mid-turn", %{
+      state: state,
+      dir: dir
+    } do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "send_message_to_session",
+            %{"session_id" => target.id, "message" => "hello"},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text =~ "delivered"
+      refute text =~ "queued"
+    end
+  end
+
   describe "start_session backend/model params — model" do
     test "model passes through onto the created session row", %{state: state} do
       Application.put_env(:orca_hub, :codex_executable, @codex_stub)

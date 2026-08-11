@@ -10,6 +10,22 @@ defmodule OrcaHub.SessionHeartbeat do
   Heartbeats are ephemeral (in-memory only) and automatically cancelled
   when the session is archived or deleted.
 
+  ## `send_message_to_session` `:queue` delivery (ORCAHUB3-29)
+
+  `deliver_or_queue/2` backs `Cluster.send_message/4`'s `:queue` delivery
+  mode — the third standalone "pending, keyed independently, flushed at
+  turn end" feature alongside `pending_delivery` (heartbeats) and
+  `job_watches` above, tracked in `message_queue`. Unlike a heartbeat fire
+  (which drops/auto-cancels against an archived or vanished target — there's
+  nothing left to ping), a `:queue`-delivered message always still WANTS
+  delivery, so it's held (accumulating, not replacing, since multiple
+  messages can queue behind the same busy turn) and flushed, annotated,
+  once the turn ends. A turn that never ends would otherwise queue forever
+  — `@queue_escalate_ms` after the first message in a batch queues, an
+  escalation timer forces the whole batch through as a real `:interrupt`
+  delivery instead, so `:queue` trades "might wait" for "might wait
+  indefinitely," never the latter alone.
+
   ## Job wakes (ORCAHUB3-26 item 1)
 
   A heartbeat's timer is a backstop, not the only way to fire. `schedule/4`
@@ -43,13 +59,21 @@ defmodule OrcaHub.SessionHeartbeat do
   use GenServer
   require Logger
 
-  alias OrcaHub.{Cluster, Jobs, JobWatcher}
+  alias OrcaHub.{Backend, Cluster, Jobs, JobWatcher}
   alias OrcaHub.SessionHeartbeat.Digest
 
   @min_interval_seconds 30
 
-  # Statuses `send_heartbeat/2` will deliver to immediately.
+  # Statuses `send_heartbeat/2` (and `deliver_or_queue/2`) will deliver to
+  # immediately.
   @deliverable_statuses ["idle", "ready", "error", "waiting"]
+
+  # ORCAHUB3-29 escape hatch: how long a `:queue`-delivered message batch may
+  # sit waiting on a still-running turn before it's force-delivered as a real
+  # `:interrupt` instead of queuing forever. Matches SessionRunner's own
+  # @idle_timeout_ms (15 min) - "generous enough that a normal turn finishes
+  # first" is the same bar that constant was picked against.
+  @queue_escalate_ms 15 * 60 * 1000
 
   # Status broadcasts (atoms, as put on the "sessions" PubSub topic - see
   # `SessionRunner.broadcast/2` and `Sessions.archive_session/1`) that mark a
@@ -114,6 +138,35 @@ defmodule OrcaHub.SessionHeartbeat do
   end
 
   @doc """
+  Delivers `message` to `session_id` under ORCAHUB3-29's `:queue` semantics
+  (backs `Cluster.send_message/4`'s `:queue` mode) — never interrupts.
+
+  Delivers immediately (via `Cluster.send_message/4`'s `:interrupt` mode,
+  which is a no-op distinction once nothing is actually running) if the
+  session is archived, isn't currently mid-turn, or its backend can steer
+  (`Backend.capabilities_for/1`'s `steering` flag - pi only, today - covers
+  "lands mid-turn, cancels nothing", so there's no destructive cost left to
+  avoid by waiting). Otherwise the message is appended to a per-session
+  queue and flushed, annotated, once the turn ends (see the moduledoc); a
+  turn that never ends escalates to a forced `:interrupt` delivery after
+  `@queue_escalate_ms` instead of queuing forever.
+
+  Returns `:ok | {:error, :not_found} | {:error, reason} | {:queued, status}`.
+  """
+  def deliver_or_queue(session_id, message) do
+    GenServer.call(__MODULE__, {:deliver_or_queue, session_id, message})
+  end
+
+  @doc false
+  # Test seam (mirrors get/1's role for heartbeats): inspects the raw
+  # message_queue entry for session_id without going through the
+  # deliver/flush machinery. Lets tests grab `escalate_ref` to simulate an
+  # escalation firing early instead of waiting out @queue_escalate_ms.
+  def peek_message_queue(session_id) do
+    GenServer.call(__MODULE__, {:peek_message_queue, session_id})
+  end
+
+  @doc """
   Cancel a session's heartbeat.
   """
   def cancel(session_id) do
@@ -171,7 +224,8 @@ defmodule OrcaHub.SessionHeartbeat do
        heartbeats: %{},
        lifecycle_snapshots: %{},
        job_watches: %{},
-       subscribed_job_ids: MapSet.new()
+       subscribed_job_ids: MapSet.new(),
+       message_queue: %{}
      }}
   end
 
@@ -210,6 +264,42 @@ defmodule OrcaHub.SessionHeartbeat do
 
       {:reply, :ok, state}
     end
+  end
+
+  @impl true
+  def handle_call({:deliver_or_queue, session_id, message}, _from, state) do
+    case Cluster.find_session(session_id) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      {node, session} ->
+        cond do
+          # Unlike a heartbeat (which drops + auto-cancels against an
+          # archived target - see send_heartbeat/2), a directed message
+          # still wants delivery: send_message_to_session's contract is
+          # that messaging an archived session auto-unarchives it (see
+          # SessionRunner's start_running/start_streaming), so route it
+          # through immediately rather than queuing behind a turn that, by
+          # definition, isn't the live one anymore.
+          not is_nil(session.archived_at) ->
+            {:reply, deliver_message_now(node, session_id, message), state}
+
+          session.status in @deliverable_statuses ->
+            {:reply, deliver_message_now(node, session_id, message), state}
+
+          Backend.capabilities_for(session).steering ->
+            {:reply, deliver_message_now(node, session_id, message), state}
+
+          true ->
+            {:reply, {:queued, session.status},
+             enqueue_message(state, session_id, message, session.status)}
+        end
+    end
+  end
+
+  @impl true
+  def handle_call({:peek_message_queue, session_id}, _from, state) do
+    {:reply, Map.get(state.message_queue, session_id), state}
   end
 
   @impl true
@@ -343,6 +433,32 @@ defmodule OrcaHub.SessionHeartbeat do
     {:noreply, state}
   end
 
+  # ORCAHUB3-29 escape hatch: the turn a queued message batch was waiting on
+  # hasn't ended @queue_escalate_ms after the FIRST message in the batch was
+  # queued. Force it through as a real :interrupt instead of queuing
+  # forever. `ref` guards against a stale timer: if the batch already
+  # flushed normally (flush_message_queue/2 cancels the timer, but
+  # Process.cancel_timer/1 can't retract a message already in this
+  # process's mailbox) or was replaced, the entry is gone or has a
+  # different ref, and this is a silent no-op.
+  @impl true
+  def handle_info({:queue_escalate, session_id, ref}, state) do
+    case Map.get(state.message_queue, session_id) do
+      %{escalate_ref: ^ref} = entry ->
+        Logger.warning(
+          "Escalating #{length(entry.messages)} queued message(s) for session #{session_id} " <>
+            "to :interrupt delivery - turn did not end within #{@queue_escalate_ms}ms of " <>
+            "queuing (see ORCAHUB3-29)"
+        )
+
+        deliver_queued_messages(session_id, entry, :escalated_after_timeout)
+        {:noreply, %{state | message_queue: Map.delete(state.message_queue, session_id)}}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
@@ -378,8 +494,19 @@ defmodule OrcaHub.SessionHeartbeat do
   # -------------------------------------------------------------------
 
   defp handle_status_broadcast(session_id, status, state) when status in [:archived, :deleted] do
-    if Map.has_key?(state.heartbeats, session_id) do
-      Logger.info("Auto-cancelling heartbeat for #{status} session #{session_id}")
+    # drop_session/2 itself is a safe no-op against any of these three maps
+    # missing session_id - the has_key? guard here is purely to skip the log
+    # line (and the pointless map churn) when there's truly nothing to drop.
+    # A message_queue-only session (queued while running, no heartbeat ever
+    # scheduled) must still be checked here, or its entry - and escalate
+    # timer - would leak forever: unlike an archived/deleted TARGET at
+    # delivery time (deliver_or_queue/2's own archived check routes that
+    # case through immediate delivery instead), this is the sender-side
+    # session itself going away mid-queue, so there's nothing left to
+    # deliver to.
+    if Map.has_key?(state.heartbeats, session_id) or
+         Map.has_key?(state.message_queue, session_id) do
+      Logger.info("Auto-cancelling heartbeat/queued messages for #{status} session #{session_id}")
       {:noreply, drop_session(state, session_id)}
     else
       {:noreply, state}
@@ -391,6 +518,7 @@ defmodule OrcaHub.SessionHeartbeat do
       state
       |> flush_heartbeat_pending(session_id)
       |> flush_standalone_job_watches(session_id)
+      |> flush_message_queue(session_id)
 
     {:noreply, state}
   end
@@ -435,11 +563,17 @@ defmodule OrcaHub.SessionHeartbeat do
       |> Enum.reject(fn {_job_id, w} -> w.session_id == session_id end)
       |> Map.new()
 
+    case Map.get(state.message_queue, session_id) do
+      nil -> :ok
+      entry -> cancel_escalate(entry)
+    end
+
     %{
       state
       | heartbeats: heartbeats,
         lifecycle_snapshots: lifecycle_snapshots,
-        job_watches: job_watches
+        job_watches: job_watches,
+        message_queue: Map.delete(state.message_queue, session_id)
     }
   end
 
@@ -497,7 +631,7 @@ defmodule OrcaHub.SessionHeartbeat do
       Cluster.start_session(node, session_id, session)
     end
 
-    # `Cluster.send_message/3` already re-checks aliveness/restarts before
+    # `Cluster.send_message/4` already re-checks aliveness/restarts before
     # its own GenStatem.call, but that's a check-then-act gap, not a lock -
     # the target can still die in the window between the check and the call
     # actually landing (e.g. torn down by whoever spawned this delivery,
@@ -506,8 +640,13 @@ defmodule OrcaHub.SessionHeartbeat do
     # this module (queued/dropped are both normal outcomes) - losing this
     # one to a losing race must not crash the singleton GenServer and take
     # every OTHER session's heartbeats down with it.
+    #
+    # :interrupt (not :queue): send_heartbeat/2's caller already decided
+    # delivery is safe right now (deliverable status, or this IS the
+    # post-flush delivery) - routing back through :queue here would either
+    # double-queue or just be a no-op-but-wasteful re-check.
     try do
-      case Cluster.send_message(node, session_id, message) do
+      case Cluster.send_message(node, session_id, message, :interrupt) do
         :ok ->
           :ok
 
@@ -549,6 +688,126 @@ defmodule OrcaHub.SessionHeartbeat do
     "[Heartbeat - delivered late]\n\nThis heartbeat fired while your session was " <>
       "\"#{queued_status}\", so it couldn't be delivered without interrupting that turn. " <>
       "It was queued and is being delivered now that the turn has ended.\n\n" <> message
+  end
+
+  # -------------------------------------------------------------------
+  # send_message_to_session :queue delivery (ORCAHUB3-29)
+  # -------------------------------------------------------------------
+
+  # "Deliver now" branches of deliver_or_queue/2 already decided delivery is
+  # safe (idle-ish status, steerable backend, or an archived target that
+  # should auto-unarchive) - :interrupt here just means "now, unconditionally"
+  # via the normal path; it's a no-op distinction whenever nothing is
+  # actually running. Must NOT be :queue - that would loop back into this
+  # same module and either double-queue or (once already queued) no-op.
+  defp deliver_message_now(node, session_id, message) do
+    case Cluster.send_message(node, session_id, message, :interrupt) do
+      :ok -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  # Appends to an existing batch (never replaces - see moduledoc: multiple
+  # messages queued behind the same busy turn must ALL be delivered, unlike
+  # a heartbeat's single-slot pending_delivery) or starts a new one and arms
+  # its escalation timer. The timer is anchored to the FIRST message in a
+  # batch, not reset by later arrivals, so a chatty sender can't push the
+  # deadline out indefinitely.
+  defp enqueue_message(state, session_id, message, queued_status) do
+    case Map.get(state.message_queue, session_id) do
+      nil ->
+        ref = make_ref()
+        Process.send_after(self(), {:queue_escalate, session_id, ref}, @queue_escalate_ms)
+
+        entry = %{
+          messages: [message],
+          queued_status: queued_status,
+          queued_at: DateTime.utc_now(),
+          escalate_ref: ref
+        }
+
+        %{state | message_queue: Map.put(state.message_queue, session_id, entry)}
+
+      entry ->
+        entry = %{entry | messages: entry.messages ++ [message]}
+        %{state | message_queue: Map.put(state.message_queue, session_id, entry)}
+    end
+  end
+
+  defp flush_message_queue(state, session_id) do
+    case Map.get(state.message_queue, session_id) do
+      nil ->
+        state
+
+      entry ->
+        cancel_escalate(entry)
+        deliver_queued_messages(session_id, entry, :turn_ended)
+        %{state | message_queue: Map.delete(state.message_queue, session_id)}
+    end
+  end
+
+  defp cancel_escalate(%{escalate_ref: ref}) when is_reference(ref) do
+    Process.cancel_timer(ref)
+    :ok
+  end
+
+  # Re-checks the session fresh (mirrors flush_pending_delivery/2's own
+  # re-check comment) before delivering a queued batch, annotating it so the
+  # agent understands why an unprompted message just arrived - see
+  # ORCAHUB3-29 item 1 / FR 53f5b223. `delivered_because` distinguishes a
+  # normal turn-end flush from a forced escalation, since only the latter
+  # may actually be cancelling live work and needs to say so.
+  defp deliver_queued_messages(session_id, entry, delivered_because) do
+    case Cluster.find_session(session_id) do
+      {node, session} ->
+        if is_nil(session.archived_at) do
+          combined = Enum.join(entry.messages, "\n\n\n")
+
+          annotated =
+            annotate_queued_send_message(combined, entry.queued_status, delivered_because)
+
+          Logger.info(
+            "Delivering #{length(entry.messages)} queued message(s) for session #{session_id} " <>
+              "(#{delivered_because}, was queued while status: #{entry.queued_status})"
+          )
+
+          try do
+            case Cluster.send_message(node, session_id, annotated, :interrupt) do
+              :ok ->
+                :ok
+
+              {:error, reason} ->
+                Logger.warning(
+                  "Queued message delivery to session #{session_id} failed: #{inspect(reason)}"
+                )
+            end
+          catch
+            kind, reason ->
+              Logger.warning(
+                "Queued message delivery to session #{session_id} failed (target exited " <>
+                  "mid-delivery): #{kind} #{inspect(reason)}"
+              )
+          end
+        end
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp annotate_queued_send_message(combined, queued_status, :turn_ended) do
+    "[Message delivery note]\n\nThis message was sent with queued delivery while your " <>
+      "session was \"#{queued_status}\", so it waited rather than interrupting your " <>
+      "in-progress turn. It's being delivered now that your turn has ended.\n\n" <> combined
+  end
+
+  defp annotate_queued_send_message(combined, queued_status, :escalated_after_timeout) do
+    "[Message delivery note - escalated]\n\nThis message was queued while your session " <>
+      "was \"#{queued_status}\", but your turn did not end within " <>
+      "#{div(@queue_escalate_ms, 60_000)} minutes, so it has been delivered now by " <>
+      "interrupting your in-progress work instead of waiting indefinitely. If a tool " <>
+      "call was cancelled as a result, its output may be missing or incomplete - this " <>
+      "is expected, not a system malfunction.\n\n" <> combined
   end
 
   # -------------------------------------------------------------------

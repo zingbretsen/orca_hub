@@ -362,11 +362,50 @@ defmodule OrcaHub.Cluster do
     end
   end
 
+  @doc """
+  Delivers `message` to a session per `delivery` (ORCAHUB3-29):
+
+    - `:interrupt` (default) — deliver now, unconditionally. On a `:running`
+      turn, `SessionRunner` decides the mechanism itself: it auto-steers
+      when the target backend advertises `capabilities().steering` (pi
+      only, today) — which cancels nothing — or otherwise interrupts the
+      in-flight tool call and queues `message` to resume once the
+      interrupt's result lands, annotated so the agent understands why (see
+      FR 53f5b223).
+    - `:queue` — never interrupts. Delivers immediately if the session
+      isn't mid-turn, or if its backend can steer (steering has no
+      destructive cost, so there's no reason to wait for it); otherwise the
+      message is held and flushed, annotated, once the turn ends — see
+      `OrcaHub.SessionHeartbeat.deliver_or_queue/2`. A turn that never ends
+      escalates to a forced `:interrupt` delivery after a timeout rather
+      than queuing forever.
+
+  Every caller should pass `delivery` explicitly — see ORCAHUB3-29's
+  per-caller audit. The default here exists only so an unmigrated/future
+  caller doesn't silently start queueing instead of getting today's
+  behavior.
+  """
+  def send_message(n, session_id, message, delivery \\ :interrupt)
+
+  def send_message(n, session_id, message, :interrupt) do
+    deliver_message(n, session_id, message)
+  end
+
+  # `n` is intentionally unused here — a deferred delivery re-resolves the
+  # owning node fresh at flush time (SessionHeartbeat.deliver_or_queue/2
+  # already does its own Cluster.find_session/1), the same way
+  # send_heartbeat/2's existing queue-while-running path does. Kept as a
+  # same-shape 4th clause (rather than dropping the arg) so every caller can
+  # pass delivery without branching on it.
+  def send_message(_n, session_id, message, :queue) do
+    HubRPC.deliver_or_queue_message(session_id, message)
+  end
+
   # The runner may have been stopped between page load and send — e.g. the
   # abandoned-session cleanup in SessionLive.Show.terminate/2 racing a page
   # reload — so restart it instead of letting the GenStatem call crash the
   # caller with :noproc.
-  def send_message(n, session_id, prompt) do
+  defp deliver_message(n, session_id, prompt) do
     ensure_started =
       if session_alive?(n, session_id) do
         :ok
