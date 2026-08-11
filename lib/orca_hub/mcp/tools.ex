@@ -41,6 +41,7 @@ defmodule OrcaHub.MCP.Tools do
     Jobs,
     Notify,
     PhxAgents,
+    Probes,
     Projects,
     Result,
     Sessions,
@@ -59,7 +60,8 @@ defmodule OrcaHub.MCP.Tools do
     Databases,
     PhxAgents,
     Notify,
-    Jobs
+    Jobs,
+    Probes
   ]
 
   # Tools visible to regular (non-orchestrator) connections. Orchestrator
@@ -69,6 +71,10 @@ defmodule OrcaHub.MCP.Tools do
   # (get_session_tail), and clean it up when done (archive_session) — but not
   # the full session-management surface. search_sessions and the heartbeat
   # tools (schedule_heartbeat, cancel_heartbeat) stay orchestrator-only.
+  # git_probe/stat_paths/disk_free (ORCAHUB3-28) get the same regular-session
+  # visibility as get_session_tail — they're the same "peek at a child
+  # without interrupting it" category, just node-routed and file/git-shaped
+  # instead of activity-shaped.
   # The Discord category's tools (send_discord_message,
   # list_discord_attachments, fetch_discord_attachments) are deliberately
   # absent here — their visibility is conditional (see moduledoc), not static.
@@ -81,7 +87,8 @@ defmodule OrcaHub.MCP.Tools do
                              screenshot_artifact provision_database list_databases
                              phx_list_agents phx_send_to_agent phx_get_task
                              send_notification start_job check_job list_jobs cancel_job
-                             wait_for_job update_job_progress_metric)
+                             wait_for_job update_job_progress_metric
+                             git_probe stat_paths disk_free)
 
   @doc "Return every MCP tool definition map across every category."
   def list do
