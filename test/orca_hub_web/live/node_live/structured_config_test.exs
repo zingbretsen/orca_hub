@@ -166,6 +166,48 @@ defmodule OrcaHubWeb.NodeLive.StructuredConfigTest do
     assert content =~ ~s("flag": true)
   end
 
+  # Regression: a `phx-value-value` attribute on a <button> is silently
+  # clobbered to "" by Phoenix LiveView's client-side extractMeta, which
+  # always captures the element's native `.value` DOM property (empty
+  # string by default, absent an explicit `value=` HTML attribute) AFTER
+  # reading phx-value-* attrs, overwriting whatever phx-value-value set.
+  # The boolean toggle button must use the native `value=` attribute
+  # directly instead — never `phx-value-value` — or every click silently
+  # sends value: "" (which ConfigFile.coerce(:boolean, _) turns into
+  # `false` regardless of the intended direction, see below).
+  test "boolean toggle button uses a native value attribute, not phx-value-value", %{
+    conn: conn,
+    node: n
+  } do
+    {view, _html} = open_expanded(conn, n)
+    html = render(view)
+
+    refute html =~ ~s(phx-value-value=)
+    assert html =~ ~s(value="false")
+  end
+
+  test "clicking the boolean toggle turns a false flag on", %{
+    conn: conn,
+    node: n,
+    home: home
+  } do
+    File.write!(Path.join([home, ".claude", "settings.json"]), """
+    {
+      "permissions": {"allow": ["Bash(git *)", "Read"]},
+      "flag": false
+    }
+    """)
+
+    {view, _html} = open_expanded(conn, n)
+
+    view
+    |> element("button.badge-neutral")
+    |> render_click()
+
+    content = File.read!(Path.join([home, ".claude", "settings.json"]))
+    assert content =~ ~s("flag": true)
+  end
+
   test "switching to Raw shows the untouched raw text with no structured tree", %{
     conn: conn,
     node: n

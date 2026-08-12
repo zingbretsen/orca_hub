@@ -289,7 +289,7 @@ defmodule OrcaHubWeb.StructuredEditor do
           phx-value-key={@target_key}
           phx-value-path={ConfigFile.encode_path(@node.path)}
           phx-value-value_type="boolean"
-          phx-value-value={to_string(!@node.value)}
+          value={to_string(!@node.value)}
           class={["badge badge-xs", if(@node.value, do: "badge-success", else: "badge-neutral")]}
         >
           {@node.value}

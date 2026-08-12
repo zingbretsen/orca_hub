@@ -1509,6 +1509,64 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       assert assigns.pending_ui_request["id"] == "req1"
     end
+
+    # Regression (ORCAHUB3-30-class bug): `phx-value-value` on a <button>
+    # is silently clobbered to "" by Phoenix LiveView's client-side
+    # extractMeta, which always captures the element's native `.value` DOM
+    # property (empty string by default, absent an explicit `value=` HTML
+    # attribute) AFTER reading phx-value-* attrs — overwriting whatever
+    # phx-value-value set moments earlier. That made every pi option-select
+    # click send answer: "" instead of the chosen option, and the
+    # force-command guard's Confirm button send confirmed: false regardless
+    # of the click. The fix is a native `value=` HTML attribute instead of
+    # `phx-value-value` — verified here against the actual rendered HTML,
+    # since a render_click/render_submit simulation bypasses the browser JS
+    # entirely and would not catch this class of bug.
+    test "option-select buttons use a native value attribute, not phx-value-value", %{
+      conn: conn,
+      pi_session: session
+    } do
+      base = ~N[2026-01-01 00:00:00.000000]
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+
+      request = %{
+        "type" => "pi_ui_request",
+        "id" => "req2",
+        "method" => "select",
+        "title" => "Pick one",
+        "options" => ["Alpha — first", "Beta — second"]
+      }
+
+      derived_insert_at(session, request, base)
+      derived_noise(session, base, window_size + 10)
+
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      refute html =~ ~s(phx-value-value=)
+      assert html =~ ~s(value="Alpha — first")
+      assert html =~ ~s(value="Beta — second")
+    end
+
+    test "the force-command guard's Confirm button uses a native value attribute, not phx-value-value",
+         %{conn: conn, pi_session: session} do
+      base = ~N[2026-01-01 00:00:00.000000]
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+
+      request = %{
+        "type" => "pi_ui_request",
+        "id" => "req3",
+        "method" => "confirm",
+        "title" => "Run dangerous command?"
+      }
+
+      derived_insert_at(session, request, base)
+      derived_noise(session, base, window_size + 10)
+
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      refute html =~ ~s(phx-value-value=)
+      assert html =~ ~s(value="true")
+    end
   end
 
   # tts_rewrite_spec.md §5 (Option A): autoplay is driven by an explicit id
