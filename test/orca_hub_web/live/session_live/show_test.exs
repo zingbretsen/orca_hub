@@ -1690,4 +1690,52 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert_push_event(view, "tts-config", %{api_token: "tts-test-token"})
     end
   end
+
+  describe "project autocomplete (\"##\" mention)" do
+    test "value carries the full project_id and the RAW node name, so start_session can target it directly",
+         %{conn: conn, claude_session: session} do
+      dir =
+        Path.join(System.tmp_dir!(), "show_project_mention_#{System.unique_integer([:positive])}")
+
+      unique_name = "mention-target-#{System.unique_integer([:positive])}"
+
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{name: unique_name, directory: dir, node: "orca@debian"})
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      render_hook(view, "autocomplete", %{"type" => "project", "query" => unique_name})
+
+      expected_value = "##" <> unique_name <> " (project_id: #{project.id}, node: orca@debian)"
+
+      assert_push_event(view, "autocomplete_results", %{
+        items: [%{value: ^expected_value, label: ^unique_name, type: "project"}],
+        type: "project"
+      })
+    end
+
+    test "omits the node clause when the project has no node set", %{
+      conn: conn,
+      claude_session: session
+    } do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "show_project_mention_nil_node_#{System.unique_integer([:positive])}"
+        )
+
+      unique_name = "mention-nilnode-#{System.unique_integer([:positive])}"
+
+      {:ok, project} = OrcaHub.Projects.create_project(%{name: unique_name, directory: dir})
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      render_hook(view, "autocomplete", %{"type" => "project", "query" => unique_name})
+
+      expected_value = "##" <> unique_name <> " (project_id: #{project.id})"
+
+      assert_push_event(view, "autocomplete_results", %{
+        items: [%{value: ^expected_value}],
+        type: "project"
+      })
+    end
+  end
 end

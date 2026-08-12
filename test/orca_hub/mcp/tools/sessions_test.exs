@@ -344,6 +344,400 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     end
   end
 
+  describe "start_session — project_id targeting" do
+    test "project_id alone routes to that project's node/id and defaults directory to the project's own directory",
+         %{state: state} do
+      target_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_project_id_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "project-id-target",
+          directory: target_dir,
+          node: Atom.to_string(node())
+        })
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "project_id" => project.id, "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      session = Sessions.get_session!(session_id)
+      assert session.project_id == project.id
+      assert session.runner_node == Atom.to_string(node())
+      assert session.directory == target_dir
+    end
+
+    test "project_id + a hex-prefix id resolves via the prefix", %{state: state} do
+      target_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_project_prefix_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "project-id-prefix-target",
+          directory: target_dir,
+          node: Atom.to_string(node())
+        })
+
+      prefix = String.slice(String.replace(project.id, "-", ""), 0, 8)
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "project_id" => prefix, "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert Sessions.get_session!(session_id).project_id == project.id
+    end
+
+    test "project_id + a directory under the project's own directory (a worktree) sets the session's cwd",
+         %{state: state} do
+      target_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_project_worktree_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "project-id-worktree-target",
+          directory: target_dir,
+          node: Atom.to_string(node())
+        })
+
+      worktree_dir = Path.join(target_dir, ".worktrees/feature-x")
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{
+              "prompt" => "hi",
+              "project_id" => project.id,
+              "directory" => worktree_dir,
+              "notify_on_completion" => false
+            },
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      session = Sessions.get_session!(session_id)
+      assert session.project_id == project.id
+      assert session.directory == worktree_dir
+    end
+
+    test "project_id + a directory OUTSIDE the project's directory is rejected", %{state: state} do
+      target_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_project_outside_#{System.unique_integer([:positive])}"
+        )
+
+      unrelated_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_unrelated_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "project-id-outside-target",
+          directory: target_dir,
+          node: Atom.to_string(node())
+        })
+
+      count_before = Sessions.list_sessions(:all) |> length()
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "project_id" => project.id, "directory" => unrelated_dir},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "not project_id's own directory"
+      assert Sessions.list_sessions(:all) |> length() == count_before
+    end
+
+    test "a malformed (non-UUID, non-hex) project_id is rejected with a friendly error instead of raising",
+         %{state: state} do
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "project_id" => "not-a-real-id!!"},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "isn't a valid project id"
+    end
+
+    test "a well-formed but unknown project_id UUID is rejected", %{state: state} do
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "project_id" => Ecto.UUID.generate()},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "No project found"
+    end
+
+    test "project_id + a node that AGREES with the project's own node succeeds", %{state: state} do
+      target_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_project_node_agree_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "project-id-node-agree",
+          directory: target_dir,
+          node: Atom.to_string(node())
+        })
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{
+              "prompt" => "hi",
+              "project_id" => project.id,
+              "node" => Atom.to_string(node()),
+              "notify_on_completion" => false
+            },
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+    end
+
+    test "project_id + a node that CONTRADICTS the project's own node is rejected", %{
+      state: state
+    } do
+      target_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_project_node_contradict_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "project-id-node-contradict",
+          directory: target_dir,
+          node: "debian@totally-offline-host"
+        })
+
+      count_before = Sessions.list_sessions(:all) |> length()
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "project_id" => project.id, "node" => Atom.to_string(node())},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "contradicts project_id's own node"
+      assert Sessions.list_sessions(:all) |> length() == count_before
+    end
+  end
+
+  describe "start_session — explicit directory + node targeting" do
+    test "an unregistered directory that actually exists on the target node spawns a project-less session",
+         %{state: state} do
+      target_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_dir_node_new_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(target_dir)
+      on_exit(fn -> File.rm_rf(target_dir) end)
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{
+              "prompt" => "hi",
+              "directory" => target_dir,
+              "node" => Atom.to_string(node()),
+              "notify_on_completion" => false
+            },
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      session = Sessions.get_session!(session_id)
+      assert session.project_id == nil
+      assert session.runner_node == Atom.to_string(node())
+      assert session.directory == target_dir
+    end
+
+    test "an unregistered directory that does NOT exist on the target node is rejected (preflight)",
+         %{state: state} do
+      missing_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_dir_node_missing_#{System.unique_integer([:positive])}"
+        )
+
+      count_before = Sessions.list_sessions(:all) |> length()
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "directory" => missing_dir, "node" => Atom.to_string(node())},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "does not exist"
+      assert Sessions.list_sessions(:all) |> length() == count_before
+    end
+
+    test "a directory that's already registered on the SAME given node reuses that project's id",
+         %{state: state} do
+      target_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_dir_node_match_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, project} =
+        OrcaHub.Projects.create_project(%{
+          name: "dir-node-match-target",
+          directory: target_dir,
+          node: Atom.to_string(node())
+        })
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{
+              "prompt" => "hi",
+              "directory" => target_dir,
+              "node" => Atom.to_string(node()),
+              "notify_on_completion" => false
+            },
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert Sessions.get_session!(session_id).project_id == project.id
+    end
+
+    test "a directory already registered on a DIFFERENT node than the given one is rejected (contradiction)",
+         %{state: state} do
+      target_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_dir_node_contradict_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, _project} =
+        OrcaHub.Projects.create_project(%{
+          name: "dir-node-contradict-target",
+          directory: target_dir,
+          node: "debian@totally-offline-host"
+        })
+
+      count_before = Sessions.list_sessions(:all) |> length()
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "directory" => target_dir, "node" => Atom.to_string(node())},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "already registered to project"
+      assert Sessions.list_sessions(:all) |> length() == count_before
+    end
+
+    test "an unknown/disconnected node name is rejected with a friendly error, not an atom-table growth attempt",
+         %{state: state} do
+      target_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_dir_node_unknown_#{System.unique_integer([:positive])}"
+        )
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{
+            "prompt" => "hi",
+            "directory" => target_dir,
+            "node" => "totally-bogus-node-name-#{System.unique_integer([:positive])}@nowhere"
+          },
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "Unknown or disconnected node"
+    end
+  end
+
+  describe "start_session — node without directory or project_id" do
+    test "is rejected with a clear error", %{state: state} do
+      count_before = Sessions.list_sessions(:all) |> length()
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "node" => Atom.to_string(node())},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "isn't a coherent target"
+      assert Sessions.list_sessions(:all) |> length() == count_before
+    end
+  end
+
   describe "send_message_to_session — offline target node" do
     test "returns a clean node-unavailable error, never starts a runner locally", %{dir: dir} do
       {:ok, target} =

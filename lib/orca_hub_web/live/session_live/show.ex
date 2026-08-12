@@ -1550,7 +1550,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
       Enum.map(projects, fn p ->
         %{
           label: p.name,
-          value: "###{p.name}",
+          value: project_mention_value(p),
           hint: Path.basename(p.directory),
           type: "project"
         }
@@ -1822,6 +1822,23 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # has genuinely scrolled near the top.
   def handle_event("load_older_messages", _params, socket) do
     {:noreply, commit_buffered_older_page(socket)}
+  end
+
+  # The literal text inserted into the textarea for a "##" project mention
+  # (assets/js/app.js's selectItem uses item.value verbatim) — carries
+  # everything start_session needs to target this project directly: the
+  # FULL project_id (never a prefix — the human never types this, so
+  # there's no reason to trade ambiguity for fewer characters) and the RAW
+  # Erlang node name straight from the projects.node column, NOT
+  # Cluster.node_name/1's display form (e.g. "debian"), which does not
+  # round-trip back into start_session's node arg (see
+  # OrcaHub.MCP.Tools.Sessions / OrcaHub.MCP.Tools.NodeArg).
+  defp project_mention_value(%{node: nil} = project) do
+    "###{project.name} (project_id: #{project.id})"
+  end
+
+  defp project_mention_value(project) do
+    "###{project.name} (project_id: #{project.id}, node: #{project.node})"
   end
 
   # Mode 1, "direct": delivered to the TARGET session exactly like typing

@@ -140,6 +140,7 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.Projects, :get_commit_trailer, [project_id])
 
   def get_project_by_directory(dir), do: call(OrcaHub.Projects, :get_project_by_directory, [dir])
+  def resolve_project_id(id), do: call(OrcaHub.Projects, :resolve_id, [id])
   def create_project(attrs), do: call(OrcaHub.Projects, :create_project, [attrs])
 
   def update_project(project, attrs),

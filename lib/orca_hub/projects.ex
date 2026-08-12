@@ -49,6 +49,96 @@ defmodule OrcaHub.Projects do
     )
   end
 
+  # ── id resolution ────────────────────────────────────────────────────
+  #
+  # Mirrors OrcaHub.Issues.resolve_id/1's full-UUID/hex-prefix contract
+  # (minus the rendered-key form, which has no project analogue) — added
+  # for start_session's `project_id` arg (OrcaHub.MCP.Tools.Sessions),
+  # which needs to accept a UUID a caller copy-pasted (possibly truncated)
+  # from list_projects output without ever handing raw caller text straight
+  # to Repo.get/get_project, which raises Ecto.Query.CastError on non-UUID
+  # input instead of returning a friendly error.
+
+  @full_uuid_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  @hex_only_regex ~r/^[0-9a-f]+$/i
+
+  @doc """
+  Resolves a project id string: a full UUID (exact match) or a hex prefix
+  (>= 8 hex chars, dashes optional, disambiguated the same way as
+  `OrcaHub.Issues.resolve_id/1`'s hex-prefix form). Excludes soft-deleted
+  projects. Returns `{:ok, project} | {:error, message}` with a
+  ready-to-surface error string — never raises on garbage input.
+  """
+  def resolve_id(id) when is_binary(id) do
+    if Regex.match?(@full_uuid_regex, id) do
+      resolve_by_uuid(id)
+    else
+      resolve_by_hex_prefix(id)
+    end
+  end
+
+  def resolve_id(_), do: {:error, "Project id must be a string."}
+
+  defp resolve_by_uuid(id) do
+    query = from p in Project, where: p.id == ^id and is_nil(p.deleted_at)
+
+    case Repo.one(query) do
+      nil -> {:error, "No project found with id #{id}."}
+      project -> {:ok, project}
+    end
+  end
+
+  defp resolve_by_hex_prefix(id) do
+    hex = String.replace(id, "-", "")
+
+    if Regex.match?(@hex_only_regex, hex) and String.length(hex) in 8..32 do
+      hex
+      |> String.downcase()
+      |> uuid_prefix_pattern()
+      |> list_by_id_prefix()
+      |> resolve_prefix_matches(id)
+    else
+      {:error,
+       "\"#{id}\" isn't a valid project id — pass a full UUID or a hex prefix of at least " <>
+         "8 characters. Use the list_projects tool to look up a project's UUID."}
+    end
+  end
+
+  defp list_by_id_prefix(pattern) do
+    Repo.all(
+      from p in Project,
+        where: fragment("?::text LIKE ?", p.id, ^"#{pattern}%") and is_nil(p.deleted_at)
+    )
+  end
+
+  defp resolve_prefix_matches([project], _id), do: {:ok, project}
+
+  defp resolve_prefix_matches([], id),
+    do: {:error, "No project found with id starting \"#{id}\"."}
+
+  defp resolve_prefix_matches(projects, id) do
+    matches = Enum.map_join(projects, ", ", &"#{&1.id} (#{&1.name})")
+
+    {:error,
+     "Multiple projects match id prefix \"#{id}\": #{matches}. Use a longer prefix, the " <>
+       "full id, or the list_projects tool."}
+  end
+
+  # Splits a hex prefix at canonical UUID group boundaries (8-4-4-4-12) and
+  # rejoins with dashes — same helper shape as
+  # OrcaHub.Issues's private uuid_prefix_pattern/1.
+  defp uuid_prefix_pattern(hex) do
+    {a, rest} = String.split_at(hex, 8)
+    {b, rest} = String.split_at(rest, 4)
+    {c, rest} = String.split_at(rest, 4)
+    {d, rest} = String.split_at(rest, 4)
+    {e, _} = String.split_at(rest, 12)
+
+    [a, b, c, d, e]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("-")
+  end
+
   def create_project(attrs) do
     %Project{}
     |> Project.changeset(attrs)

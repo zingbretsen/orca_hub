@@ -79,19 +79,16 @@ defmodule OrcaHub.MCP.Tools.Probes do
 
   ## Node argument safety
 
-  The `node` argument arrives as caller-supplied text, unlike every other
-  place a node atom is derived in this codebase (always from a trusted DB
-  column via `Cluster.runner_node_for/1`/`project_node_for/1`, which is
-  safe to `String.to_atom/1` because it was written by our own code). This
-  module never calls `String.to_atom/1` on it — `resolve_node/1` only
-  matches it against `Cluster.nodes/0`, the list of ALREADY-existing,
-  currently-connected node atoms, so an arbitrary/garbage `node` string
-  can never grow the atom table.
+  The `node` argument arrives as caller-supplied text — resolved via
+  `OrcaHub.MCP.Tools.NodeArg.resolve/1`, shared with `start_session`'s
+  `node` targeting param, see that module's moduledoc for the atom-table
+  safety argument.
   """
 
   import OrcaHub.MCP.Tools.Result
 
   alias OrcaHub.{Cluster, HubRPC, NodePolicy, Probes}
+  alias OrcaHub.MCP.Tools.NodeArg
 
   @max_paths 25
   @git_actions ~w(status head log touches diff_stat)
@@ -242,7 +239,7 @@ defmodule OrcaHub.MCP.Tools.Probes do
         error("action \"diff_stat\" requires both from_sha and to_sha.")
 
       true ->
-        with {:ok, target_node} <- resolve_node(args["node"]),
+        with {:ok, target_node} <- NodeArg.resolve(args["node"]),
              :ok <- check_isolation(target_node),
              :ok <- check_scope(directory, state) do
           run_git_probe(target_node, directory, action, args)
@@ -264,7 +261,7 @@ defmodule OrcaHub.MCP.Tools.Probes do
         error("Too many paths (#{length(paths)}); max #{@max_paths} per call.")
 
       true ->
-        with {:ok, target_node} <- resolve_node(args["node"]),
+        with {:ok, target_node} <- NodeArg.resolve(args["node"]),
              :ok <- check_isolation(target_node) do
           run_stat_paths(target_node, paths, max_entries, state)
         else
@@ -281,7 +278,7 @@ defmodule OrcaHub.MCP.Tools.Probes do
         error("path is required.")
 
       true ->
-        with {:ok, target_node} <- resolve_node(args["node"]),
+        with {:ok, target_node} <- NodeArg.resolve(args["node"]),
              :ok <- check_isolation(target_node),
              :ok <- check_scope(path, state) do
           rpc_probe_result(Cluster.rpc(target_node, Probes, :disk_free, [path]))
@@ -365,20 +362,6 @@ defmodule OrcaHub.MCP.Tools.Probes do
 
   defp rpc_probe_result({:error, reason}) do
     error("Probe failed: #{Cluster.node_unavailable_message(reason) || inspect(reason)}")
-  end
-
-  defp resolve_node(nil), do: {:ok, node()}
-  defp resolve_node(""), do: {:ok, node()}
-
-  defp resolve_node(name) when is_binary(name) do
-    case Enum.find(Cluster.nodes(), &(Atom.to_string(&1) == name)) do
-      nil ->
-        connected = Enum.map_join(Cluster.nodes(), ", ", &Atom.to_string/1)
-        {:error, "Unknown or disconnected node: #{name}. Connected nodes: #{connected}"}
-
-      n ->
-        {:ok, n}
-    end
   end
 
   defp check_isolation(target_node) do

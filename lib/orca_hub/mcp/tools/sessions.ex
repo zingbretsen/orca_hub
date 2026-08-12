@@ -7,7 +7,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   require Logger
 
   alias OrcaHub.MCP.CodeExec.Analyzer
-  alias OrcaHub.{Cluster, HubRPC, NodePolicy}
+  alias OrcaHub.MCP.Tools.NodeArg
+  alias OrcaHub.{Cluster, HubRPC, NodePolicy, Probes}
 
   # Time bound for AUTO-derived idempotency keys only (see
   # auto_idempotency_key/3) — belt-and-braces against a pathological hash
@@ -136,7 +137,17 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "directory" => %{
               "type" => "string",
               "description" =>
-                "Override the working directory for the new session. Defaults to the calling session's directory. If this directory belongs to a DIFFERENT registered project than the caller's, the new session is routed to THAT project's node and project_id instead of the caller's — use this to delegate work to another node. An unregistered directory (no matching project) falls back to the caller's own node/project, with only the working directory changed."
+                "Override the working directory for the new session. Defaults to the calling session's directory (or, if project_id is given, that project's own directory). If this directory belongs to a DIFFERENT registered project than the caller's, the new session is routed to THAT project's node and project_id instead of the caller's — use this to delegate work to another node. An unregistered directory (no matching project) falls back to the caller's own node/project, with only the working directory changed. If project_id is ALSO given, directory instead sets the new session's working directory under that project — it must equal the project's own directory or a sub-path of it (e.g. a worktree); a directory outside the project is rejected. If node is ALSO given (without project_id), directory + node together explicitly target an unregistered directory on that node — see node."
+            },
+            "project_id" => %{
+              "type" => "string",
+              "description" =>
+                "The UUID of the project to route the new session to — takes precedence over directory for project/node routing (directory can still be given alongside this to set the working directory; see directory). Accepts a full UUID or an unambiguous hex prefix (>= 8 chars, as copy-pasted from list_projects output). node is not needed here — this project's own node is used; if node is also given, it must match."
+            },
+            "node" => %{
+              "type" => "string",
+              "description" =>
+                "Explicit target node, used together with directory to spawn a session in a directory OrcaHub has no project row for yet — the two together are an explicit, caller-vouched-for override of the normal directory-based routing (a node is never inferred on its own). Must be the RAW Erlang node name (e.g. \"orca@dell\"), NOT the display name shown by list_projects/the UI (e.g. \"debian\" or \"orca-agent-dell.lab\") — that display form does not round-trip back into this argument. The directory is verified to exist on the target node before the session is created; a missing directory is rejected rather than silently spawning a broken session. Passing node without directory (and without project_id) is rejected — \"my own directory, but on some other node\" isn't a coherent target."
             },
             "title" => %{
               "type" => "string",
@@ -607,21 +618,25 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
   defp do_start_session(args, caller_session_id, idempotency_key) do
     caller = HubRPC.get_session!(caller_session_id)
-    directory = args["directory"] || caller.directory
-    {project_id, runner_node} = resolve_routing(directory, caller)
 
-    if NodePolicy.cross_node_allowed?(runner_node) do
-      create_and_start_session(
-        args,
-        directory,
-        project_id,
-        runner_node,
-        caller,
-        caller_session_id,
-        idempotency_key
-      )
-    else
-      error(NodePolicy.denial_message(runner_node))
+    case resolve_routing(args, caller) do
+      {:ok, {project_id, runner_node, directory}} ->
+        if NodePolicy.cross_node_allowed?(runner_node) do
+          create_and_start_session(
+            args,
+            directory,
+            project_id,
+            runner_node,
+            caller,
+            caller_session_id,
+            idempotency_key
+          )
+        else
+          error(NodePolicy.denial_message(runner_node))
+        end
+
+      {:error, message} ->
+        error(message)
     end
   end
 
@@ -773,21 +788,189 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     "auto:" <> (:crypto.hash(:sha256, material) |> Base.encode16(case: :lower))
   end
 
-  # An explicit `directory` that differs from the caller's own directory may
-  # belong to a DIFFERENT project (registered on a different node) — route
-  # the child there instead of blindly inheriting the caller's project_id
-  # and node, which used to silently spawn cross-node delegation attempts on
-  # the WRONG node against the WRONG project_id (issue 6c304aec). An
-  # unregistered directory (no project row for it) falls back to the
-  # caller's own routing unchanged — never invent or reassign a node for a
-  # directory OrcaHub doesn't have on file.
-  defp resolve_routing(directory, %{directory: directory} = caller),
-    do: {caller.project_id, caller_runner_node(caller)}
+  # Routing precedence for start_session, extending the directory-only
+  # design from issue 6c304aec (see the directory-only clauses below):
+  #
+  #   1. `project_id` given -> that project's routing wins outright. An
+  #      explicit `directory` alongside it is NOT an alternate way to name
+  #      the project (unlike triggers.ex's directory param) — it instead
+  #      sets the session's cwd, validated to be at/under the project's own
+  #      directory (worktree/subdir support).
+  #   2. `directory` + `node` (no project_id) -> explicit, caller-vouched
+  #      unregistered-spawn targeting. A node the CALLER passes here is not
+  #      "invented" — 6c304aec only ever ruled out OrcaHub GUESSING one.
+  #   3. `directory` alone (no project_id, no node) -> unchanged: matches
+  #      an existing project by directory, or falls back to the caller's
+  #      own routing.
+  #   4. `node` alone (no directory, no project_id) -> rejected outright;
+  #      "the caller's own directory, but on some other node" is not a
+  #      real use case.
+  #   5. none of the three -> unchanged: caller's own directory + routing.
+  #
+  # Returns {:ok, {project_id, runner_node, directory}} | {:error, message}.
+  defp resolve_routing(args, caller) do
+    project_id = blank_to_nil(args["project_id"])
+    directory_arg = blank_to_nil(args["directory"])
+    node_arg = blank_to_nil(args["node"])
 
-  defp resolve_routing(directory, caller) do
+    cond do
+      project_id ->
+        resolve_routing_by_project_id(project_id, directory_arg, node_arg)
+
+      directory_arg && node_arg ->
+        resolve_routing_by_directory_and_node(directory_arg, node_arg)
+
+      node_arg ->
+        {:error,
+         "node was given without project_id or directory — \"the caller's own directory, " <>
+           "but on some other node\" isn't a coherent target. Pass project_id, or pass " <>
+           "directory together with node."}
+
+      true ->
+        directory = directory_arg || caller.directory
+        {:ok, resolve_directory_only_routing(directory, caller)}
+    end
+  end
+
+  defp blank_to_nil(nil), do: nil
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(val), do: val
+
+  # project_id given: that project's own routing wins outright. An
+  # explicit node must agree with it (never silently overridden); an
+  # explicit directory must be at/under the project's own directory.
+  defp resolve_routing_by_project_id(project_id, directory_arg, node_arg) do
+    case HubRPC.resolve_project_id(project_id) do
+      {:error, message} ->
+        {:error, message}
+
+      {:ok, project} ->
+        runner_node = Cluster.project_node_for(project)
+
+        with :ok <- check_node_matches_project(node_arg, runner_node),
+             {:ok, directory} <- resolve_directory_under_project(directory_arg, project) do
+          {:ok, {project.id, runner_node, directory}}
+        end
+    end
+  end
+
+  defp check_node_matches_project(nil, _runner_node), do: :ok
+
+  defp check_node_matches_project(node_arg, runner_node) do
+    case NodeArg.resolve(node_arg) do
+      {:ok, ^runner_node} ->
+        :ok
+
+      {:ok, other_node} ->
+        {:error,
+         "node #{inspect(Atom.to_string(other_node))} contradicts project_id's own node " <>
+           "#{inspect(Atom.to_string(runner_node))}. Omit node when passing project_id — " <>
+           "its routing already determines the node."}
+
+      {:error, message} ->
+        {:error, message}
+    end
+  end
+
+  defp resolve_directory_under_project(nil, project), do: {:ok, project.directory}
+
+  defp resolve_directory_under_project(directory, project) do
+    if directory == project.directory or
+         String.starts_with?(directory, project.directory <> "/") do
+      {:ok, directory}
+    else
+      {:error,
+       "directory #{inspect(directory)} is not project_id's own directory " <>
+         "(#{inspect(project.directory)}) or a sub-path of it (e.g. a worktree). Omit " <>
+         "directory to use the project's own directory, or pass a path under it."}
+    end
+  end
+
+  # directory + node (no project_id): explicit unregistered-spawn
+  # targeting. A registered project for this exact directory, if any,
+  # still wins (and must agree with the given node — a contradiction
+  # between the caller's model and the DB is exactly how issue 6c304aec
+  # happened, so it's rejected rather than guessed at). With no project
+  # row nothing vouches for the directory, so it's pre-flight verified to
+  # actually exist on the target node before a session is created against
+  # it — a cross-node call, so isolation is checked first.
+  defp resolve_routing_by_directory_and_node(directory, node_arg) do
+    with {:ok, runner_node} <- NodeArg.resolve(node_arg) do
+      case HubRPC.get_project_by_directory(directory) do
+        %{} = project ->
+          if Cluster.project_node_for(project) == runner_node do
+            {:ok, {project.id, runner_node, directory}}
+          else
+            {:error,
+             "directory #{inspect(directory)} is already registered to project " <>
+               "#{inspect(project.name)} on node #{inspect(project.node)}, which differs " <>
+               "from the given node #{inspect(node_arg)}. Pass the project's own node, " <>
+               "omit node and let the registered project's routing win, or pass " <>
+               "project_id directly."}
+          end
+
+        nil ->
+          with :ok <- check_cross_node_allowed(runner_node),
+               :ok <- preflight_directory_exists(directory, runner_node) do
+            {:ok, {nil, runner_node, directory}}
+          end
+      end
+    end
+  end
+
+  defp check_cross_node_allowed(runner_node) do
+    if NodePolicy.cross_node_allowed?(runner_node) do
+      :ok
+    else
+      {:error, NodePolicy.denial_message(runner_node)}
+    end
+  end
+
+  # A single-path, shallow (max_entries: 1) OrcaHub.Probes.stat_paths/2
+  # RPC — cheap existence/type check, not a real listing. Mirrors
+  # OrcaHub.MCP.Tools.Probes' own stat_paths dispatch (same primitive,
+  # same {:error, reason} shape from Cluster.rpc/5 for an unreachable
+  # node).
+  defp preflight_directory_exists(directory, runner_node) do
+    case Cluster.rpc(runner_node, Probes, :stat_paths, [[directory], 1]) do
+      [%{exists: true, type: "directory"}] ->
+        :ok
+
+      [%{exists: true}] ->
+        {:error,
+         "#{inspect(directory)} exists on node #{inspect(Atom.to_string(runner_node))} but " <>
+           "is not a directory."}
+
+      [%{exists: false}] ->
+        {:error,
+         "directory #{inspect(directory)} does not exist on node " <>
+           "#{inspect(Atom.to_string(runner_node))}."}
+
+      {:error, reason} ->
+        {:error,
+         "Could not verify directory #{inspect(directory)} on node " <>
+           "#{inspect(Atom.to_string(runner_node))}: " <>
+           "#{Cluster.node_unavailable_message(reason) || inspect(reason)}"}
+    end
+  end
+
+  # directory alone (no project_id, no node) — UNCHANGED back-compat
+  # behavior from issue 6c304aec: an explicit `directory` that differs
+  # from the caller's own directory may belong to a DIFFERENT project
+  # (registered on a different node) — route the child there instead of
+  # blindly inheriting the caller's project_id and node, which used to
+  # silently spawn cross-node delegation attempts on the WRONG node
+  # against the WRONG project_id. An unregistered directory (no project
+  # row for it) falls back to the caller's own routing unchanged — never
+  # invent or reassign a node for a directory OrcaHub doesn't have on
+  # file.
+  defp resolve_directory_only_routing(directory, %{directory: directory} = caller),
+    do: {caller.project_id, caller_runner_node(caller), directory}
+
+  defp resolve_directory_only_routing(directory, caller) do
     case HubRPC.get_project_by_directory(directory) do
-      %{} = project -> {project.id, Cluster.project_node_for(project)}
-      nil -> {caller.project_id, caller_runner_node(caller)}
+      %{} = project -> {project.id, Cluster.project_node_for(project), directory}
+      nil -> {caller.project_id, caller_runner_node(caller), directory}
     end
   end
 
