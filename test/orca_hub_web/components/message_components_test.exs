@@ -262,7 +262,7 @@ defmodule OrcaHubWeb.MessageComponentsTest do
   end
 
   describe "pi backend groundwork event types (spec §12.3)" do
-    test "pi_session_stats renders tokens/cost/context% instead of falling back to raw JSON" do
+    test "pi_session_stats renders cost/context% instead of falling back to raw JSON, without the cumulative token count" do
       stats = %{
         "type" => "pi_session_stats",
         "tokens" => %{"input" => 50_000, "output" => 10_000, "cacheRead" => 0, "total" => 60_000},
@@ -276,9 +276,10 @@ defmodule OrcaHubWeb.MessageComponentsTest do
           session_node: nil
         })
 
-      assert html =~ "60000 tokens"
       assert html =~ "$0.45"
       assert html =~ "30% context"
+      refute html =~ "60000 tokens"
+      refute html =~ "tokens"
       refute html =~ "pi_session_stats"
     end
 
@@ -296,7 +297,8 @@ defmodule OrcaHubWeb.MessageComponentsTest do
           session_node: nil
         })
 
-      assert html =~ "100 tokens"
+      assert html =~ "$0.0"
+      refute html =~ "tokens"
       refute html =~ "context"
     end
 

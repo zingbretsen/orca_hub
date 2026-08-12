@@ -687,22 +687,16 @@ defmodule OrcaHubWeb.MessageComponents do
   # `Capabilities.session_stats` flag session_live/show.ex checks before
   # wiring the request loop up at all.
   defp pi_session_stats_message(assigns) do
-    tokens = assigns.msg["tokens"] || %{}
     cost = assigns.msg["cost"]
     context = assigns.msg["context_usage"]
 
     assigns =
       assigns
-      |> assign(:total_tokens, tokens["total"])
       |> assign(:cost_str, if(is_number(cost), do: "$#{Float.round(cost * 1.0, 4)}", else: "?"))
       |> assign(:context_percent, format_context_percent(context && context["percent"]))
 
     ~H"""
     <div class="flex items-center gap-3 text-xs opacity-50 py-1 flex-wrap">
-      <span class="inline-flex items-center gap-1">
-        <.icon name="hero-cpu-chip-micro" class="size-3" />
-        {@total_tokens || "?"} tokens
-      </span>
       <span class="inline-flex items-center gap-1">
         <.icon name="hero-banknotes-micro" class="size-3" />
         {@cost_str}
