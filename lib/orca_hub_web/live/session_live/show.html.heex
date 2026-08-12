@@ -1678,7 +1678,7 @@
             phx-click="piui_answer"
             phx-value-request_id={@pending_ui_request["id"]}
             phx-value-method={@pending_ui_request["method"]}
-            phx-value-value={opt}
+            value={opt}
             class="text-left rounded-lg border border-base-300 p-3 transition-colors hover:border-base-content/30 hover:bg-base-200"
           >
             {opt}
@@ -1704,7 +1704,7 @@
             phx-click="piui_answer"
             phx-value-request_id={@pending_ui_request["id"]}
             phx-value-method="confirm"
-            phx-value-value="true"
+            value="true"
             class="btn btn-sm btn-error"
           >
             Confirm
