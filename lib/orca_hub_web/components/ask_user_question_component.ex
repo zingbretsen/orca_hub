@@ -41,7 +41,7 @@ defmodule OrcaHubWeb.AskUserQuestionComponent do
       @variant == :inline && "w-full"
     ]}>
       <div class={[
-        @variant == :modal && "modal-box max-w-xl",
+        @variant == :modal && "modal-box max-w-xl max-h-[85dvh] overflow-y-auto",
         @variant == :inline &&
           "card bg-base-100 border-2 border-info/50 shadow-sm w-full"
       ]}>
