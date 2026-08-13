@@ -9,8 +9,11 @@ layer's prompt cache turns the child's first turn from a ~26s cold prefill
 into a ~2s warm resume. Forking is a pi-native primitive
 (`pi --fork`); the work here is OrcaHub plumbing plus one prompt-determinism
 refactor that makes the inherited prefix actually byte-identical.
+**Hard requirement (operator, 2026-08-13): no caching, no forking.** Cache
+reuse across EVERY fork is the feature's admission criterion, not an
+optimization — see the go/no-go gate (§1.1).
 **Non-goal:** general cross-backend forking. Claude/Codex have no equivalent
-file-level fork primitive; this is pi-only (§9).
+file-level fork primitive; this is pi-only (§10).
 
 **Scope note:** everything here targets the hub's self-hosted serving path —
 pi provider `gb10-coder` → llama-server on the GB10 box — where prompt-cache
@@ -72,6 +75,23 @@ byte-identical (§5) and (b) forked first turns are serialized (§6). Get
 either wrong and a fork costs a full cold prefill *plus* degrades every
 co-tenant on a shared public endpoint.
 
+### 1.1 Go/no-go gate: no caching, no forking
+
+Operator framing, adopted as the ship criterion: a fork that cold-prefills
+its inherited history is strictly worse than a plain spawn — it pays full
+prefill for tokens that may not even be useful to the child, while
+degrading every co-tenant. So the feature ships **only** with a mechanism
+that makes every forked child's first turn a cache hit, plus detection
+when one isn't (§6.1). The measured data says this IS achievable on
+llama.cpp today: serialized forks all hit at ~2s, and each slot that
+serves a fork acquires the prefix (§1's fan-out-survival observation) —
+so the gate is about *enforcing* the serialized regime mechanically, not
+hoping orchestrators follow guidance. Concretely, v1 does not ship
+without all three of: byte-identical prefixes (§5, pinned by §11.1's
+tests), the mandatory first-turn gate (§6), and per-fork cache-miss
+detection (§6.1). If serving moves to vLLM (§9), the serialization half
+of the gate relaxes; the requirement itself does not.
+
 ---
 
 ## 2. Current state (inventory)
@@ -122,7 +142,7 @@ before the row is created):
   and `code_exec` matter because they change the rendered prompt prefix
   (system-prompt fragments *and* the MCP tool list `orca-mcp.ts` registers,
   which serializes into the model-side prompt) — a flag-changing fork
-  diverges at byte 0 and inherits nothing (§9).
+  diverges at byte 0 and inherits nothing (§10).
   - ⚠ Deviation from a naive reading of the code: since `start_session`
     has no `code_exec` arg (inventory #1), "inherit" here means the
     creation path must **explicitly copy the parent's `code_exec` value**
@@ -193,7 +213,7 @@ serving-side cache for that prefix is hottest.
 is dir-scoped): copy the parent file into the child's session dir, rewrite
 the header `id` (fresh uuid) + `parentSession` (absolute parent path), and
 spawn with plain `--session-id <fresh-uuid>`. Byte-identical history either
-way; verify before building it (§10.0).
+way; verify before building it (§11.0).
 
 **`cleanup_session/1` unchanged.** Forks share no mutable files — the child
 copied nothing and its `--session-dir` is its own; removing it can never
@@ -228,7 +248,7 @@ flags only and are NOT divergence sources.
 For the pi backend only, `system_prompt/1` becomes a pure function of
 `(orchestrator, code_exec, commit_trailer-enabled)` — fragments 1–4 are
 removed from the flag entirely. Two pi sessions with the same flags then
-render byte-identical system prompts (§10.1 pins this with a unit test).
+render byte-identical system prompts (§11.1 pins this with a unit test).
 
 Identity instead becomes a pi **`custom_message`** session entry — these
 participate in LLM context (`docs/extensions.md`: "Custom messages
@@ -273,15 +293,16 @@ advisory).
 The identity entry itself, `ORCA_MCP_URL`, the issue trailer, and the
 child's own turns — all *at or after* the divergence point, where variance
 is free. The invariant to protect is: **no per-session byte before the
-inherited history.** §10.1's tests are the regression fence.
+inherited history.** §11.1's tests are the regression fence.
 
 ---
 
-## 6. First-turn serialization (fan-out protocol)
+## 6. First-turn serialization (mandatory, mechanical)
 
 Measured (§1): concurrent same-prefix first turns get 1 warm + N−1 full
 cold prefills — checkpoints are slot-local, and firing while a sibling is
-still *generating* also cold-prefills. So:
+still *generating* also cold-prefills. Under §1.1's gate, serialization is
+therefore a correctness mechanism, not an optimization:
 
 **Rule: forked children's FIRST turns are serialized at full-turn
 granularity** — child N+1's first prompt goes out only after child N's
@@ -289,32 +310,70 @@ first `result` event lands ("prefill finished" is NOT sufficient —
 verified). After its first turn, each child has its own slot-resident
 state and needs no further coordination.
 
-- **(a) v0, prompt guidance:** a bullet in
-  `SharedPrompts.orchestrator_prompt/3` — fork serially, wait for each
-  child's first reply. Zero mechanism; relies on orchestrator discipline.
-- **(b) v1, mechanical (recommended):** a per-parent gate. Fork children
-  are *created* immediately (so ids/links/UI exist), but
-  `create_and_start_session/7` routes a fork child's initial prompt through
-  a small per-runner-node coordinator (e.g. `OrcaHub.ForkGate`, a GenServer
-  holding one FIFO per parent id) instead of calling
-  `Cluster.send_message` directly. The gate releases the next child's
-  first prompt when the previous child's first turn completes (it
-  subscribes to the sibling's `session:<id>` PubSub topic — the same events
-  `SessionLive.Show` consumes).
+Enforcement is MECHANICAL and mandatory. Prompt guidance to orchestrators
+("fork serially, wait for each child's first reply") is not a shippable
+version of this rule — at most a dev-mode stopgap behind a config flag
+while the gate is built, never the production posture. The enforcement
+point: for a fork child, `create_and_start_session/7` (inventory #2)
+never calls `Cluster.send_message` with the initial prompt directly. The
+child is *created* immediately (ids/links/UI exist), but its first prompt
+is handed to a per-runner-node coordinator — `OrcaHub.ForkGate`, a
+GenServer holding one FIFO per parent id — that owns delivery. The gate
+releases the next child's first prompt when the previous child's first
+turn completes, observed via the sibling's `session:<id>` PubSub topic
+(the same events `SessionLive.Show` consumes). Non-fork spawns are
+untouched.
 
-  Failure handling: a child erroring mid-first-turn releases the next
-  anyway (an error event is a turn end); a per-child release timeout
-  (default ~10 min, roughly one worst-case long first turn) unsticks the
-  queue if a child hangs mid-turn; gate state is per-node and in-memory —
-  a node restart drops the queue, and `SessionResumer`-recovered children
-  just send their (already-persisted-as-pending) prompts unserialized,
-  degrading to today's cost, not to wrongness.
+Failure handling:
 
-Ship (a) immediately with the fork flag; (b) in the same release if cheap,
-else fast-follow. Also in the guidance either way: **fan out promptly after
-the parent idles** — the host-memory prompt cache holds only 2-3
-long-session states (§1), so a delayed fork's warm hit may have been
-evicted by unrelated (public-endpoint) traffic.
+- **Child errors mid-first-turn:** an error event ends the turn — release
+  the next child immediately. A later re-prompt of the errored child goes
+  back through the gate only if its first turn never completed.
+- **Child hangs mid-first-turn:** per-child release timeout (default
+  ~10 min, roughly one worst-case long first turn) releases the next and
+  emits a warning on both the parent's and child's session topics.
+- **Node restart:** gate state is per-node and in-memory — the queue
+  drops, and `SessionResumer`-recovered children send their pending
+  prompts unserialized. §6.1's miss detection turns that from a silent
+  regression into a visible one.
+
+Also mandatory posture, not guidance: **a fork fan-out is a prompt,
+contiguous operation.** The window between the parent going idle and the
+LAST fork's first turn must stay bounded — the host-memory prompt cache
+holds only 2-3 long-session states (§1), and unrelated (public-endpoint)
+traffic can evict the parent's prefix mid-fan-out. The gate provides the
+bound structurally: it releases children back-to-back with zero think
+time between them, so the exposure window is (fan-out width × first-turn
+duration), a function of the work itself rather than of orchestrator
+diligence.
+
+### 6.1 Cache-miss detection (eviction is a correctness concern)
+
+Eviction cannot be *prevented* from OrcaHub — the box serves external
+traffic — so it must be *detected*, per fork. The signal already flows:
+pi reports per-response `usage.cacheRead` and `usage.input`, and the
+adapter already folds both into the synthesized `result` event
+(`accumulate_usage/1`, `pi.ex` ~768 — `cache_read_input_tokens` /
+`input_tokens`); in the §1 experiments these exactly matched the server's
+own counters. A forked child's first `result` is therefore self-reporting:
+
+- **Hit:** `cache_read_input_tokens` ≈ parent context size (same
+  `pi_session_stats` read as §3's `parent_context_tokens`), with fresh
+  `input_tokens` in the tens.
+- **Miss:** `input_tokens` ≈ parent context size — the child just paid
+  full prefill.
+
+`ForkGate` performs this check on each first `result` before releasing
+the next child. Miss threshold: fresh `input_tokens` > ~25% of
+`parent_context_tokens` — chosen so checkpoint-granularity partial hits
+(≤8k-token reprocess on this hybrid arch, §1) don't false-positive. On a
+detected miss: emit a warning event on the parent's and child's session
+topics (and annotate the child's synthetic fork marker, §8), and —
+configurable, default ON for the gb10 profile — **pause the remaining
+fan-out** and notify the orchestrator (a `[Session lifecycle]`-style
+message) rather than serially paying full prefill for every remaining
+sibling against an evicted prefix. The orchestrator resumes the queue
+(accepting cold cost) or aborts it.
 
 ---
 
@@ -334,7 +393,9 @@ provider-specific (a hosted-provider fork has no such budget), OrcaHub
 can't see the llama-server's other tenants anyway, and the failure mode
 (slot thrash → slow, not wrong) matches a warning's severity. Hard
 enforcement, and whether the threshold should live in per-node policy, is
-Q6.
+Q6. This guard is distinct from §6.1's miss detection: the guard
+*predicts* slot-residency pressure at spawn time; miss detection
+*observes* actual cache behavior at first-turn time.
 
 ---
 
@@ -361,7 +422,41 @@ Q6.
 
 ---
 
-## 9. Out of scope (v1)
+## 9. Alternative: vLLM serving backend (open decision)
+
+vLLM's automatic prefix caching shares KV blocks across CONCURRENT
+requests — cached prefix blocks are global to the engine, not slot-local —
+so §1's 1-warm + N−1-cold pathology does not exist there and §6's
+serialization would be unnecessary (miss detection, §6.1, stays useful as
+a cheap assertion). The catch for this stack: qwen3-coder-next is a
+hybrid (GatedDeltaNet) architecture, and hybrid-model prefix caching only
+landed in vLLM ~2026-07-12 (PR #46384, "support partial prefix cache hit
+for hybrid model", building on the hybrid KV cache manager) — recent
+enough that its maturity on this model class is unproven here.
+
+A parallel serving-engine evaluation is underway in the llm-serving
+project. This spec treats the engine choice as an **open decision** and
+layers the feature so it works over either:
+
+- **Engine-agnostic (the bulk):** the `fork_from_parent` surface (§3),
+  file-level fork mechanics (§4), prompt determinism + identity injection
+  (§5), and the UI/DB treatment (§8). None of it knows what serves the
+  tokens.
+- **llama.cpp-specific (isolated):** the mandatory `ForkGate`
+  serialization, the miss-detection threshold (§6/§6.1), and the
+  unified-KV budget guard (§7). These live behind a per-node/per-provider
+  serving profile (where §7's threshold already wanted to live — Q6), so
+  a vLLM cutover disables serialization by configuration without touching
+  the fork feature itself.
+
+Decision rule: if vLLM's hybrid prefix caching proves out on
+qwen3-coder-next before this ships, §6 collapses to miss-detection-only
+and §1.1's gate is satisfied by the engine instead of by OrcaHub
+scheduling. No caching, no forking — on either engine.
+
+---
+
+## 10. Out of scope (v1)
 
 - **Cross-node forks** — needs parent-file transfer; same-node covers the
   motivating single-GB10 topology.
@@ -381,7 +476,7 @@ Q6.
 
 ---
 
-## 10. Verification plan
+## 11. Verification plan
 
 0. **Pre-implementation spike (gates §4's shape):** Q1 — does `--fork`
    accept an absolute path outside the child's `--session-dir`? Five
@@ -401,18 +496,25 @@ Q6.
    proper — fork an idle ~20k-token pi session, expect the child's first
    turn ≈ ~2s / ~tens of tokens reprocessed (vs ~26s cold), confirmed via
    llama-server slot logs.
-4. **Fan-out serialization:** 3-child fork through the §6(b) gate — assert
+4. **Fan-out serialization:** 3-child fork through the §6 gate — assert
    first prompts are released strictly after the prior sibling's first
    `result`, including the error-release and timeout-release paths (stub
    level), plus one live 2-child run confirming no cold prefill on either.
+5. **Miss detection (§6.1):** stub-level — a first `result` whose usage
+   reports full-prefill-sized `input_tokens` triggers the warning event
+   and pauses the remaining queue; a checkpoint-partial hit (≈8k fresh
+   tokens against a large parent) does not. Live — force an eviction
+   (restart llama-server, or flood `--cache-ram` with unrelated traffic)
+   between parent-idle and fork, and confirm the miss is detected and
+   surfaced rather than silently absorbed.
 
 ---
 
-## 11. Open questions
+## 12. Open questions
 
 - **Q1:** Does `--fork` accept an absolute path outside the child's
   `--session-dir`? (Fallback documented in §4: copy + rewrite header
-  `id`/`parentSession`. Verify first — §10.0.)
+  `id`/`parentSession`. Verify first — §11.0.)
 - **Q2:** Forking a parent whose history contains compaction entries
   (`branch_summary`), or captured mid-plan-mode / with pending
   extension-UI state — does replay reconstruct all of it cleanly, and does
