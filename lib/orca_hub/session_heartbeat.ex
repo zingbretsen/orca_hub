@@ -770,11 +770,13 @@ defmodule OrcaHub.SessionHeartbeat do
   # target is already gone, or dies mid-call, the caller sees a `:DOWN`
   # carrying the target's actual exit reason - and since message order from
   # one sender to one receiver is preserved by the BEAM, that `:DOWN` cannot
-  # arrive after a reply the target already sent. So `:noproc` (never
-  # existed / already gone), `:normal`/`:shutdown`/`{:shutdown, _}` (exited
-  # cleanly mid-call, e.g. idle teardown or a kill-switch downgrade racing
-  # this exact delivery) are genuinely "definitely not delivered" - retrying
-  # is safe.
+  # arrive after a reply the target already sent (though a mid-callback
+  # death after partial side effects but before any reply remains a narrow
+  # accepted window - see the module's failure-handling notes). So
+  # `:noproc` (never existed / already gone), `:normal`/`:shutdown`/
+  # `{:shutdown, _}` (exited cleanly mid-call, e.g. idle teardown or a
+  # kill-switch downgrade racing this exact delivery) are genuinely
+  # "definitely not delivered" - retrying is safe.
   #
   # `{:timeout, _}` is the opposite: the call's OWN timeout fired, which says
   # NOTHING about whether the target already received and started (or even
