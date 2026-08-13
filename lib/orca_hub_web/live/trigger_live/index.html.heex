@@ -222,6 +222,11 @@
         label="Hide from queue when done"
       />
     </div>
+    <p :if={@trigger_type == "email"} class="text-xs text-base-content/60 -mt-2">
+      With <strong>Reuse previous session</strong>
+      on, forwarded mail accumulates into one long-running session per trigger; with it off,
+      every accepted email gets its own new session.
+    </p>
     <div class="flex justify-end gap-2">
       <.link patch={~p"/triggers"} class="btn btn-sm">Cancel</.link>
       <.button type="submit" class="btn-sm">

@@ -56,6 +56,19 @@ defmodule OrcaHubWeb.TriggerLive.EmailTriggerTest do
     refute html =~ "set_schedule_mode"
   end
 
+  test "fields common to every trigger type stay visible for the email type", %{conn: conn} do
+    inbox_fixture()
+    {:ok, view, _html} = live(conn, ~p"/triggers/new")
+
+    html = render_click(view, "set_trigger_type", %{"type" => "email"})
+
+    assert html =~ "Project"
+    assert html =~ "Prompt"
+    assert html =~ "Reuse previous session"
+    assert html =~ "Hide from queue when done"
+    assert html =~ "accumulates into one long-running session"
+  end
+
   test "prompts to configure an inbox first when none exist", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/triggers/new")
 
