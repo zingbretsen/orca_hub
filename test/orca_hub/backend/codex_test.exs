@@ -24,6 +24,7 @@ defmodule OrcaHub.Backend.CodexTest do
   use OrcaHub.DataCase, async: true
 
   alias OrcaHub.Backend.Codex, as: Backend
+  alias OrcaHub.PromptGolden
 
   defp ctx(overrides \\ %{}) do
     base = %{
@@ -1075,6 +1076,29 @@ defmodule OrcaHub.Backend.CodexTest do
 
     test "issues_spec.md §10 resume hook: omitted when the session created no open/in_progress issues" do
       refute Backend.system_prompt(ctx()) =~ "Your Open Issues"
+    end
+  end
+
+  # ── Golden fence (pi_fork_spec.md §5) ──────────────────────────────────
+  # Byte-pins Codex's system prompt across the whole flag matrix. Same
+  # rationale as the Claude fence: `SharedPrompts` is shared with `Backend.Pi`,
+  # whose fork work (§5.1) makes pi's prompt flags-only, and that refactor must
+  # be additive to `SharedPrompts` — never a mutation of an existing fragment.
+  # See `OrcaHub.PromptGolden` for the determinism contract and regeneration.
+
+  describe "system_prompt/1 — golden fence" do
+    test "renders byte-identically to the committed golden across the flag matrix" do
+      # open_issues_prompt/1 is a LIVE DB query — the golden is only stable
+      # because the pinned session id owns no issues. Assert it, don't assume.
+      assert OrcaHub.Backend.SharedPrompts.open_issues_prompt(PromptGolden.session_id()) == nil
+
+      rendered = PromptGolden.render(PromptGolden.matrix(), &Backend.system_prompt/1)
+      if PromptGolden.regenerate?(), do: PromptGolden.write!("codex", rendered)
+
+      case PromptGolden.compare("codex", rendered) do
+        :ok -> :ok
+        {:error, report} -> flunk(report)
+      end
     end
   end
 end

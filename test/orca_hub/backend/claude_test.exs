@@ -22,6 +22,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
   alias OrcaHub.Backend.Claude, as: Backend
   alias OrcaHub.Claude.Config
+  alias OrcaHub.PromptGolden
 
   # ── ctx fixture ──────────────────────────────────────────────────────
   # Mirrors the fields SessionRunner's `data` map carries (see
@@ -1040,6 +1041,38 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     test "omitted for an orchestrator: false, tools: \"\" (no-MCP) session — nothing can act on it" do
       refute Backend.system_prompt(ctx(%{tools: ""})) =~ "Your Open Issues"
+    end
+  end
+
+  # ── Golden fence (pi_fork_spec.md §5) ──────────────────────────────────
+  # Byte-pins Claude's system prompt across the whole flag matrix. The
+  # fragments below come from `SharedPrompts`, which `Backend.Pi` also uses —
+  # and pi's fork work (§5.1) makes pi's prompt flags-only. That refactor must
+  # be purely additive to `SharedPrompts`: any *mutation* of a shared fragment
+  # would silently reword every Claude session's system prompt, and this
+  # fixture is what makes that impossible to do by accident. See
+  # `OrcaHub.PromptGolden` for the determinism contract and how to regenerate.
+
+  describe "system_prompt/1 — golden fence" do
+    test "renders byte-identically to the committed golden across the flag matrix" do
+      # open_issues_prompt/1 is a LIVE DB query — the golden is only stable
+      # because the pinned session id owns no issues. Assert it, don't assume.
+      assert OrcaHub.Backend.SharedPrompts.open_issues_prompt(PromptGolden.session_id()) == nil
+
+      extra = [
+        {"no_mcp (tools=\"\")", %{tools: ""}},
+        {"api_run", %{api_run: true}},
+        {"api_run + result_schema", %{api_run: true, result_schema?: true}},
+        {"api_run + code_exec", %{api_run: true, code_exec: true}}
+      ]
+
+      rendered = PromptGolden.render(PromptGolden.matrix(extra), &Backend.system_prompt/1)
+      if PromptGolden.regenerate?(), do: PromptGolden.write!("claude", rendered)
+
+      case PromptGolden.compare("claude", rendered) do
+        :ok -> :ok
+        {:error, report} -> flunk(report)
+      end
     end
   end
 
