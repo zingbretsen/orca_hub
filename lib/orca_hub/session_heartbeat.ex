@@ -700,11 +700,32 @@ defmodule OrcaHub.SessionHeartbeat do
   # via the normal path; it's a no-op distinction whenever nothing is
   # actually running. Must NOT be :queue - that would loop back into this
   # same module and either double-queue or (once already queued) no-op.
+  #
+  # The target runner can go away DURING this call - idle teardown,
+  # warm-pool eviction, a kill-switch downgrade, or a caller stopping it -
+  # and `SessionRunner.send_message/2`'s `GenStatem.call` surfaces that as a
+  # raised GenError (remote) or a process EXIT (local), not a return value.
+  # Letting either escape kills THIS GenServer, which owns the whole node's
+  # queued-message and heartbeat state, and a few of those in a row exceeds
+  # the supervisor's restart intensity and takes the node down with it. A
+  # vanished target is an ordinary delivery failure, so report it as one.
   defp deliver_message_now(node, session_id, message) do
     case Cluster.send_message(node, session_id, message, :interrupt) do
       :ok -> :ok
       {:error, _reason} = error -> error
     end
+  rescue
+    e ->
+      Logger.warning(
+        "[heartbeat] delivery to session #{session_id} failed: " <> Exception.message(e)
+      )
+
+      {:error, :delivery_failed}
+  catch
+    :exit, reason ->
+      Logger.warning("[heartbeat] delivery to session #{session_id} exited: " <> inspect(reason))
+
+      {:error, :delivery_failed}
   end
 
   # Appends to an existing batch (never replaces - see moduledoc: multiple

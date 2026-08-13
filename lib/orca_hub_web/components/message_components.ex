@@ -747,12 +747,13 @@ defmodule OrcaHubWeb.MessageComponents do
     linkify_session_ids("Forked from session #{msg["parent_session_id"]}#{suffix}")
   end
 
-  # pi_fork_spec.md §6/§6.1 — ForkGate's own warnings (a fork whose first
-  # turn cold-prefilled, or one whose first turn ran past the gate's release
-  # timeout). Both carry a self-describing "message"; linkify so the sibling/
-  # parent ids in it stay clickable.
+  # pi_fork_spec.md §6/§6.1 — fork-gate warnings: a fork whose first turn
+  # cold-prefilled, one whose first turn ran past the gate's release timeout,
+  # or one delivered without the gate at all. All carry a self-describing
+  # "message"; linkify so the sibling/parent ids in it stay clickable.
   defp system_message_label(%{"subtype" => subtype, "message" => message})
-       when subtype in ["fork_cache_miss", "fork_gate_timeout"] and is_binary(message) do
+       when subtype in ["fork_cache_miss", "fork_gate_timeout", "fork_gate_bypass"] and
+              is_binary(message) do
     linkify_session_ids(message)
   end
 

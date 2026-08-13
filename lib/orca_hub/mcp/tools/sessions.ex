@@ -8,6 +8,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
   alias OrcaHub.MCP.CodeExec.Analyzer
   alias OrcaHub.MCP.Tools.NodeArg
+  alias OrcaHub.ForkGate
+  alias OrcaHub.ForkGate.ServingProfile
   alias OrcaHub.{Cluster, HubRPC, NodePolicy, Probes}
 
   # Time bound for AUTO-derived idempotency keys only (see
@@ -820,9 +822,13 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
                     case Cluster.start_session(runner_node, session.id, session) do
                       {:ok, _} ->
-                        # :queue: brand-new session (status "ready"), so this always
-                        # delivers immediately either way — :queue for consistency.
-                        Cluster.send_message(runner_node, session.id, args["prompt"], :queue)
+                        deliver_initial_prompt(
+                          forked_from,
+                          runner_node,
+                          session,
+                          args["prompt"]
+                        )
+
                         text(Jason.encode!(start_session_result(session, false)))
 
                       {:error, reason} ->
@@ -839,6 +845,81 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             end
         end
     end
+  end
+
+  # ── Initial-prompt delivery ──────────────────────────────────────────
+  # Non-fork spawn (`forked_from == nil`) — EVERY claude/codex/non-fork pi
+  # spawn — takes exactly the path it always has: one Cluster.send_message
+  # with :queue, nothing else in the way. That guardrail is why this is a
+  # two-clause split on the fork discriminant rather than a branch inside a
+  # shared delivery function.
+  #
+  # :queue: brand-new session (status "ready"), so this always delivers
+  # immediately either way — :queue for consistency.
+  defp deliver_initial_prompt(nil, runner_node, session, prompt) do
+    Cluster.send_message(runner_node, session.id, prompt, :queue)
+  end
+
+  # Fork spawn (pi_fork_spec.md §6): the child is CREATED here (ids, links,
+  # marker, UI all exist already) but its first prompt is NOT sent — it is
+  # handed to the per-node ForkGate, which releases it only once the
+  # previous forked sibling's first turn has completed. Concurrent
+  # same-prefix first turns get 1 warm hit + N−1 full cold prefills (§1), so
+  # this serialization is the ship gate (§1.1), not a nicety.
+  #
+  # The gate lives on the node that owns the queue, which is this node: a
+  # fork child is same-node with its parent (§3), and this MCP connection is
+  # served by the parent's own node.
+  defp deliver_initial_prompt(parent_id, runner_node, session, prompt) do
+    case ForkGate.enqueue_first_turn(parent_id, session.id, prompt,
+           runner_node: runner_node,
+           parent_context_tokens: HubRPC.last_context_tokens(parent_id)
+         ) do
+      :ok ->
+        :ok
+
+      other ->
+        fork_gate_bypass(parent_id, runner_node, session, prompt, other)
+    end
+  rescue
+    error -> fork_gate_bypass(parent_id, runner_node, session, prompt, error)
+  catch
+    :exit, reason -> fork_gate_bypass(parent_id, runner_node, session, prompt, reason)
+  end
+
+  # The gate being unreachable must not strand a child that was already
+  # created — but silently unserializing is exactly the regression §1.1 is
+  # about, so the fallback is LOUD: deliver, and warn on the child's and the
+  # parent's session topics the same way ForkGate's own failure paths do.
+  # A cold prefill here shows up in the child's own first `result`, which
+  # nothing is left watching, so this warning is the only signal.
+  defp fork_gate_bypass(parent_id, runner_node, session, prompt, reason) do
+    Logger.warning(
+      "[MCP] start_session: ForkGate unavailable for fork child #{session.id} " <>
+        "(parent #{parent_id}): #{inspect(reason)} — delivering the first prompt " <>
+        "UNSERIALIZED"
+    )
+
+    event = %{
+      "type" => "system",
+      "subtype" => "fork_gate_bypass",
+      "child_session_id" => session.id,
+      "parent_session_id" => parent_id,
+      "message" =>
+        "Fork gate unavailable — this fork's first prompt was sent WITHOUT first-turn " <>
+          "serialization, so its inherited context may have been cold-prefilled " <>
+          "(pi_fork_spec.md §6)."
+    }
+
+    for topic_session_id <- [session.id, parent_id] do
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{topic_session_id}",
+        {:event, event}
+      )
+    end
+
+    Cluster.send_message(runner_node, session.id, prompt, :queue)
   end
 
   # Same id-resolution as get_issue (key, UUID, or UUID prefix — see
@@ -1148,22 +1229,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   end
 
   # Unified-KV budget (pi_fork_spec.md §7) — total slot-resident cells on
-  # the gb10 llama-server serving profile. Configurable since it's a
-  # property of the serving box, not of OrcaHub.
-  @default_fork_kv_budget 262_144
-
-  defp fork_kv_budget do
-    case System.get_env("ORCA_FORK_KV_BUDGET") do
-      nil ->
-        @default_fork_kv_budget
-
-      val ->
-        case Integer.parse(val) do
-          {n, ""} when n > 0 -> n
-          _ -> @default_fork_kv_budget
-        end
-    end
-  end
+  # the gb10 llama-server serving profile. A property of the serving box,
+  # not of OrcaHub, so it lives with the rest of the llama.cpp-specific
+  # knobs in the §9 serving profile (still `ORCA_FORK_KV_BUDGET`, still
+  # 262_144 by default) rather than being parsed a second time here.
+  defp fork_kv_budget, do: ServingProfile.kv_budget()
 
   # v1 is a SOFT guard only (§7) — this never refuses a spawn, it only
   # appends a warning string to the tool result.

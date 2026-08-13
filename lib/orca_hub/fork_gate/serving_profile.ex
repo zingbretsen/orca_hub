@@ -121,8 +121,17 @@ defmodule OrcaHub.ForkGate.ServingProfile do
   """
   def release_timeout_ms, do: config().release_timeout_ms
 
-  @doc "§7's unified-KV soft budget, in tokens."
-  def kv_budget, do: config().kv_budget
+  @doc """
+  §7's unified-KV soft budget, in tokens. A non-positive configured value
+  falls back to the profile default rather than making every fork warn — a
+  budget of zero is a misconfiguration, not "warn on everything".
+  """
+  def kv_budget do
+    case config().kv_budget do
+      n when is_integer(n) and n > 0 -> n
+      _ -> Map.fetch!(@profiles, name()).kv_budget
+    end
+  end
 
   # ── Private ──────────────────────────────────────────────────────────
 
