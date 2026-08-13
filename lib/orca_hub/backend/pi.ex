@@ -288,9 +288,15 @@ defmodule OrcaHub.Backend.Pi do
   # exists (there is none — `pi_env/1` always has a real ctx), so the
   # extension's "degrade silently if unset" path only ever fires if URL
   # construction itself fails, not from a missing var in practice.
+  #
+  # ORCA_IDENTITY (§5.1) rides alongside it, for the same reason `orca-mcp.ts`
+  # gets its URL this way: env is invisible to the serving layer's prompt
+  # cache, so it is the one channel that can carry per-session bytes into a
+  # fork child without moving the inherited prefix. See `orca_identity_json/1`.
   defp pi_env(ctx) do
     extra = [
-      {~c"ORCA_MCP_URL", String.to_charlist(OrcaHub.Backend.McpUrl.orca_url(ctx))}
+      {~c"ORCA_MCP_URL", String.to_charlist(OrcaHub.Backend.McpUrl.orca_url(ctx))},
+      {~c"ORCA_IDENTITY", String.to_charlist(orca_identity_json(ctx))}
       | provider_api_key_env()
     ]
 
@@ -333,6 +339,7 @@ defmodule OrcaHub.Backend.Pi do
     |> Kernel.++(["--session-dir", pi_session_dir(ctx)])
     |> maybe_add_fork_or_resume_arg(ctx)
     |> Kernel.++(["--append-system-prompt", system_prompt(ctx)])
+    |> Kernel.++(["-e", orca_identity_extension_path()])
     |> Kernel.++(["-e", orca_extension_path()])
     |> Kernel.++(["-e", orca_mcp_extension_path()])
     |> Kernel.++(["-e", orca_plan_extension_path()])
@@ -355,6 +362,17 @@ defmodule OrcaHub.Backend.Pi do
   # rather than living at the checkout path — `priv` files ship in releases
   # by default, no extra release config needed.
   defp orca_extension_path, do: Application.app_dir(:orca_hub, "priv/pi/orca.ts")
+
+  # priv/pi/orca-identity.ts — injects the session identity that
+  # `system_prompt/1` can no longer carry (pi_fork_spec.md §5.1), read from
+  # `ORCA_IDENTITY` at `session_start` exactly like orca-mcp.ts reads
+  # `ORCA_MCP_URL`. Loaded FIRST in `common_args/1`, deliberately outside the
+  # orca.ts -> orca-plan.ts -> orca-guard.ts ordering contract described in
+  # this section: it registers no tools and no `tool_call` handler, so it
+  # takes no part in the first-`block: true`-wins chain those three depend
+  # on, and going first means identity is queued before anything else runs.
+  defp orca_identity_extension_path,
+    do: Application.app_dir(:orca_hub, "priv/pi/orca-identity.ts")
 
   # priv/pi/orca-mcp.ts — bridges the orca `/mcp` endpoint's tools onto
   # dynamically-`pi.registerTool`'d tools (spec §12.5). `pi -e` accepts
@@ -1128,25 +1146,103 @@ defmodule OrcaHub.Backend.Pi do
   # (unlike Claude/Codex) — inlining the whole `.context/*.{md,mmd}` doc set
   # verbatim is by far the largest fragment and was blowing up pi sessions'
   # context budget at startup; Claude and Codex still get it.
+  #
+  # ── FLAGS ONLY: no per-session bytes may appear here (§5.1) ────────────
+  # This string is `--append-system-prompt`'s value, i.e. byte 0 of the
+  # prompt. A forked child (§4) only gets its cheap warm resume if its
+  # inherited prefix is byte-identical to the parent's, and the serving layer
+  # matches longest-common-prefix from byte 0 — so ONE differing byte here
+  # discards cache reuse of the entire prefix (~26s cold prefill instead of
+  # ~2s, plus it craters every co-tenant on the shared llama-server).
+  #
+  # So `system_prompt/1` is now a PURE FUNCTION of
+  # `(orchestrator, code_exec, commit_trailer)`. The four fragments that used
+  # to diverge per session moved into `ORCA_IDENTITY` (`orca_identity_json/1`
+  # below) and are delivered by `priv/pi/orca-identity.ts` as a
+  # `custom_message` session entry instead:
+  #
+  #   1. the "Your OrcaHub session ID is …" line
+  #   2. `SharedPrompts.commit_trailer_prompt/1`  (embeds the id)
+  #   3. `SharedPrompts.issue_commit_trailer_prompt/1` (embeds the issue key)
+  #   4. `SharedPrompts.open_issues_prompt/1` — a LIVE DB query, so it varied
+  #      per session AND per moment; it was already busting same-session
+  #      prefix caching on every cold reopen, forks aside.
+  #
+  # `orchestrator_prompt/3` and `worker_practices_prompt/2` still take a
+  # session id but ignore it (`_session_id`), so they are not divergence
+  # sources and stay exactly as they were.
+  #
+  # `commit_trailer` remains a *flag* input: when the project has opted out,
+  # the model should not be told about a trailer convention at all. The
+  # generic reminder below is id-free, so two sessions with the same flags
+  # still render identical bytes; the concrete `OrcaHub-Session: <id>` line
+  # rides the identity entry.
+  #
+  # This determinism is pinned by "system_prompt/1 — byte determinism" in
+  # test/orca_hub/backend/pi_test.exs. Claude and Codex are UNAFFECTED (they
+  # keep all four fragments inline) and are byte-pinned by the golden fence in
+  # their own test files — `SharedPrompts` was extended, never mutated.
 
   @impl true
   def system_prompt(ctx) do
     code_exec = OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
 
     [
-      "Your OrcaHub session ID is #{ctx.session_id}.",
-      SharedPrompts.orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec),
+      SharedPrompts.orchestrator_prompt(ctx.orchestrator, nil, code_exec),
       SharedPrompts.code_exec_prompt(code_exec),
-      if(Map.get(ctx, :commit_trailer, true),
-        do: SharedPrompts.commit_trailer_prompt(ctx.session_id)
-      ),
-      if(Map.get(ctx, :commit_trailer, true) && Map.get(ctx, :issue_key),
-        do: SharedPrompts.issue_commit_trailer_prompt(ctx.issue_key)
-      ),
-      if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec)),
-      SharedPrompts.open_issues_prompt(ctx.session_id)
+      if(Map.get(ctx, :commit_trailer, true), do: commit_trailer_flag_prompt()),
+      if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec))
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n\n")
+  end
+
+  # The id-free half of the commit-trailer instruction — the part that is a
+  # function of the flag alone. Its `OrcaHub-Session: <id>` counterpart
+  # (`SharedPrompts.commit_trailer_prompt/1`, unchanged and still used
+  # verbatim by Claude/Codex) is delivered via ORCA_IDENTITY, which is also
+  # what re-states it with the CHILD's id at a fork's divergence point.
+  defp commit_trailer_flag_prompt do
+    """
+    Every git commit you make must carry an `OrcaHub-Session:` git trailer \
+    naming your session id. Your session id, and the exact trailer to use, \
+    are given to you in the `orca-identity` message in this conversation — \
+    always take the id from the LATEST such message, since it changes if \
+    this session was forked from another one.\
+    """
+    |> String.trim()
+  end
+
+  # ── ORCA_IDENTITY (§5.1) ──────────────────────────────────────────────
+  # Everything `system_prompt/1` can no longer say, in one env-var payload.
+  # Env is invisible to the KV cache, so this varying per session — and per
+  # fork child — costs nothing, unlike the same text in the system prompt.
+  #
+  # `priv/pi/orca-identity.ts` consumes it at `session_start` and appends it
+  # as a `custom_message` entry ONLY when the latest existing identity entry
+  # names a different session id. That single rule covers both cases with no
+  # fork-specific code: a cold reopen no-ops (stable prefix), and a fork child
+  # — whose inherited history names the PARENT — appends one identity update
+  # exactly at the divergence point.
+  #
+  # Gating mirrors what `system_prompt/1` used to do here, deliberately
+  # including pi's two deviations from Claude/Codex: the trailer fragments are
+  # gated on the `commit_trailer` flag ALONE (no `!orchestrator` gate), and
+  # the open-issues resume hook is unconditional.
+  defp orca_identity_json(ctx) do
+    commit_trailer? = Map.get(ctx, :commit_trailer, true)
+    issue_key = Map.get(ctx, :issue_key)
+
+    %{
+      "session_id" => to_string(ctx.session_id),
+      "commit_trailer" =>
+        if(commit_trailer?, do: SharedPrompts.commit_trailer_prompt(ctx.session_id)),
+      "issue_trailer" =>
+        if(commit_trailer? && issue_key,
+          do: SharedPrompts.issue_commit_trailer_prompt(issue_key)
+        ),
+      "open_issues" => SharedPrompts.open_issues_prompt(ctx.session_id)
+    }
+    |> Jason.encode!()
   end
 end

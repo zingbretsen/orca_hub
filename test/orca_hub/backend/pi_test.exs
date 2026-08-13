@@ -53,6 +53,40 @@ defmodule OrcaHub.Backend.PiTest do
     Application.get_env(:orca_hub, :pi_executable) || System.find_executable("pi")
   end
 
+  # Decodes the ORCA_IDENTITY env payload a spawn would hand the pi process
+  # (pi_fork_spec.md §5.1) — everything system_prompt/1 can no longer carry.
+  defp identity_payload(c, engine \\ :streaming) do
+    spec = Backend.spawn_spec(engine, c)
+    {_, value} = List.keyfind(spec.env, ~c"ORCA_IDENTITY", 0)
+    value |> to_string() |> Jason.decode!()
+  end
+
+  # A real session owning one open issue, so SharedPrompts.open_issues_prompt/1
+  # (a live DB query) actually has something to say for it.
+  defp session_with_open_issue(title) do
+    dir = "/tmp/pi_open_issues_test_#{System.unique_integer([:positive])}"
+
+    {:ok, project} =
+      OrcaHub.Projects.create_project(%{
+        name: "pi-resume-hook-test-#{System.unique_integer([:positive])}",
+        directory: dir,
+        node: "n1@x",
+        key_prefix:
+          ("PH" <> Integer.to_string(System.unique_integer([:positive]))) |> String.slice(0, 10)
+      })
+
+    {:ok, session} = OrcaHub.Sessions.create_session(%{directory: dir, project_id: project.id})
+
+    {:ok, issue} =
+      OrcaHub.Issues.create_issue(%{
+        title: title,
+        project_id: project.id,
+        created_by_session_id: session.id
+      })
+
+    %{session: session, issue: issue, key: OrcaHub.Issues.render_key(issue)}
+  end
+
   # ── capabilities/0 (spec §12.2 capability row) ────────────────────────
 
   describe "capabilities/0" do
@@ -178,38 +212,46 @@ defmodule OrcaHub.Backend.PiTest do
       refute "--model" in spec2.args
     end
 
+    # The session id is deliberately NOT in this flag anymore (pi_fork_spec.md
+    # §5.1) — it moved to ORCA_IDENTITY. What the flag carries is the
+    # flags-only prompt; see the "byte determinism" block below.
     test "--append-system-prompt carries the built system prompt" do
       c = ctx()
       spec = Backend.spawn_spec(:streaming, c)
       idx = Enum.find_index(spec.args, &(&1 == "--append-system-prompt"))
       prompt = Enum.at(spec.args, idx + 1)
-      assert prompt =~ "Your OrcaHub session ID is #{c.session_id}"
+
+      assert prompt == Backend.system_prompt(c)
+      assert prompt =~ "OrcaHub-Session:"
+      refute prompt =~ c.session_id
     end
 
     test "-e loads priv/pi/orca.ts, resolved via Application.app_dir/2 (release-safe)" do
       spec = Backend.spawn_spec(:streaming, ctx())
-      idx = Enum.find_index(spec.args, &(&1 == "-e"))
-      refute is_nil(idx)
 
       expected = Application.app_dir(:orca_hub, "priv/pi/orca.ts")
-      assert Enum.at(spec.args, idx + 1) == expected
+      assert expected in spec.args
       assert File.exists?(expected)
     end
 
-    test "all four orca extensions load via -e, orca.ts first (spec §12.3/§12.4/§12.5/§12.7)" do
+    test "all five orca extensions load via -e, orca-identity.ts first (spec §12.3/§12.4/§12.5/§12.7, fork §5.1)" do
       spec = Backend.spawn_spec(:streaming, ctx())
       e_indices = for {"-e", i} <- Enum.with_index(spec.args), do: i
-      assert length(e_indices) == 4
+      assert length(e_indices) == 5
 
       loaded = Enum.map(e_indices, &Enum.at(spec.args, &1 + 1))
 
       assert loaded == [
+               Application.app_dir(:orca_hub, "priv/pi/orca-identity.ts"),
                Application.app_dir(:orca_hub, "priv/pi/orca.ts"),
                Application.app_dir(:orca_hub, "priv/pi/orca-mcp.ts"),
                Application.app_dir(:orca_hub, "priv/pi/orca-plan.ts"),
                Application.app_dir(:orca_hub, "priv/pi/orca-guard.ts")
              ]
 
+      # orca-identity.ts is first but takes no part in the ordering contract
+      # the other three share — it registers no tools and no `tool_call`
+      # handler (pi_fork_spec.md §5.1).
       # orca.ts must precede orca-plan.ts: the plan extension's read-only
       # tool list references the `question` tool orca.ts registers.
       # orca-guard.ts must load LAST (after orca-plan.ts): pi's per-extension
@@ -1447,12 +1489,17 @@ defmodule OrcaHub.Backend.PiTest do
   # ── system_prompt/1 ──────────────────────────────────────────────────────
 
   describe "system_prompt/1" do
-    test "includes the session id line and commit trailer; drops the Claude-only AskUserQuestion fallback" do
+    test "carries the flags-only commit-trailer reminder, NOT the session id; drops the Claude-only AskUserQuestion fallback" do
       c = ctx()
       prompt = Backend.system_prompt(c)
 
-      assert prompt =~ "Your OrcaHub session ID is #{c.session_id}"
-      assert prompt =~ "OrcaHub-Session: #{c.session_id}"
+      # pi_fork_spec.md §5.1: the "Your OrcaHub session ID is <id>" line and
+      # the concrete `OrcaHub-Session: <id>` trailer both moved to
+      # ORCA_IDENTITY. What survives here is the id-free reminder.
+      refute prompt =~ "Your OrcaHub session ID is"
+      refute prompt =~ c.session_id
+      assert prompt =~ "`OrcaHub-Session:` git trailer"
+      assert prompt =~ "orca-identity"
       # AskUserQuestion is Claude's built-in tool; pi has its own `question`
       # tool (priv/pi/orca.ts) with no equivalent fallback-guidance prompt.
       refute prompt =~ "AskUserQuestion"
@@ -1530,32 +1577,28 @@ defmodule OrcaHub.Backend.PiTest do
       refute Backend.system_prompt(c) =~ "OrcaHub-Session:"
     end
 
-    test "issue_key set includes the OrcaHub-Issue trailer instruction alongside the session one" do
-      c = ctx(%{issue_key: "ORCA-142"})
-      prompt = Backend.system_prompt(c)
-
-      assert prompt =~ "OrcaHub-Issue: ORCA-142"
-      assert prompt =~ "OrcaHub-Session:"
-    end
-
+    # The issue trailer moved to ORCA_IDENTITY wholesale (pi_fork_spec.md
+    # §5.1 fragment 3): it embeds a per-session issue key, so it can never
+    # appear in the shared prefix. Its gating is re-pinned against the
+    # identity payload in the ORCA_IDENTITY describe block below; here we only
+    # assert it is ABSENT from the prompt no matter what.
+    #
     # NOTE: refutes the automatic per-session fragment's distinctive lead-in
     # text, not the bare "OrcaHub-Issue:" substring — the opportunistic-
     # citation bullet in worker_practices_prompt mentions "OrcaHub-Issue:
     # <key>" unconditionally (see SharedPrompts), independent of this toggle.
-    test "issue_key unset omits the OrcaHub-Issue trailer instruction (no linked issue)" do
+    test "the issue trailer never appears in the system prompt, issue_key set or not" do
       refute Backend.system_prompt(ctx()) =~ "linked issue ("
-    end
 
-    test "issue_key set but commit_trailer: false omits the issue trailer too (follows the same toggle)" do
-      c = ctx(%{issue_key: "ORCA-142", commit_trailer: false})
-      refute Backend.system_prompt(c) =~ "linked issue ("
-    end
-
-    # No orchestrator gate on pi's issue trailer either — mirrors the
-    # session trailer's own no-gate behavior above.
-    test "orchestrator: true still includes the issue trailer when commit_trailer is unset" do
-      c = ctx(%{orchestrator: true, issue_key: "ORCA-142"})
-      assert Backend.system_prompt(c) =~ "OrcaHub-Issue: ORCA-142"
+      for overrides <- [
+            %{issue_key: "ORCA-142"},
+            %{issue_key: "ORCA-142", commit_trailer: false},
+            %{issue_key: "ORCA-142", orchestrator: true}
+          ] do
+        prompt = Backend.system_prompt(ctx(overrides))
+        refute prompt =~ "linked issue ("
+        refute prompt =~ "ORCA-142"
+      end
     end
 
     # ORCAHUB3-27: worker_practices_prompt gains a resumability bullet and a
@@ -1602,36 +1645,199 @@ defmodule OrcaHub.Backend.PiTest do
       refute prompt =~ "# Project Context"
     end
 
-    test "issues_spec.md §10 resume hook: lists this session's own open/in_progress issues, with plan" do
-      dir = "/tmp/pi_open_issues_test_#{System.unique_integer([:positive])}"
+    # The §10 resume hook moved to ORCA_IDENTITY too (pi_fork_spec.md §5.1
+    # fragment 4) — it is a LIVE DB query, so it varied per session AND per
+    # moment, busting prefix caching on every cold reopen even without forks.
+    # Its content is re-pinned against the identity payload below; here we
+    # only assert it is gone from the prompt even when the session HAS issues.
+    test "issues_spec.md §10 resume hook is no longer in the system prompt, even with open issues" do
+      %{session: session} = session_with_open_issue("pi resume hook coverage")
 
-      {:ok, project} =
-        OrcaHub.Projects.create_project(%{
-          name: "pi-resume-hook-test-#{System.unique_integer([:positive])}",
-          directory: dir,
-          node: "n1@x",
-          key_prefix:
-            ("PH" <> Integer.to_string(System.unique_integer([:positive]))) |> String.slice(0, 10)
-        })
-
-      {:ok, session} = OrcaHub.Sessions.create_session(%{directory: dir, project_id: project.id})
-
-      {:ok, issue} =
-        OrcaHub.Issues.create_issue(%{
-          title: "pi resume hook coverage",
-          project_id: project.id,
-          created_by_session_id: session.id
-        })
-
-      key = OrcaHub.Issues.render_key(issue)
       prompt = Backend.system_prompt(ctx(%{session_id: session.id}))
 
-      assert prompt =~ "# Your Open Issues"
-      assert prompt =~ "[#{key}] pi resume hook coverage (open) — plan: (none set)"
+      refute prompt =~ "Your Open Issues"
+      refute prompt =~ "pi resume hook coverage"
+      refute Backend.system_prompt(ctx()) =~ "Your Open Issues"
+    end
+  end
+
+  # ── system_prompt/1 — byte determinism (pi_fork_spec.md §5.1) ───────────
+  # THE crux of the fork feature. `--append-system-prompt` is byte 0 of the
+  # prompt; the serving layer matches longest-common-prefix from there, so a
+  # single per-session byte here throws away cache reuse of the ENTIRE
+  # inherited prefix and turns a forked child's ~2s warm resume back into a
+  # ~26s cold prefill.
+
+  describe "system_prompt/1 — byte determinism" do
+    test "two sessions with the same flags render byte-identically despite different ids, issue keys and DB issue state" do
+      # Session A owns an open issue (so open_issues_prompt/1 has something to
+      # say for it) and is linked to an issue key; session B has neither. Under
+      # the old prompt these produced three separate divergences.
+      %{session: session_a} = session_with_open_issue("determinism probe")
+
+      a = ctx(%{session_id: session_a.id, issue_key: "ORCA-142"})
+      b = ctx(%{session_id: Ecto.UUID.generate()})
+
+      # Guard the fixture itself: if the DB state weren't actually different,
+      # this test would pass vacuously.
+      assert OrcaHub.Backend.SharedPrompts.open_issues_prompt(session_a.id) =~ "determinism probe"
+      assert OrcaHub.Backend.SharedPrompts.open_issues_prompt(b.session_id) == nil
+      refute a.session_id == b.session_id
+
+      assert Backend.system_prompt(a) == Backend.system_prompt(b)
     end
 
-    test "issues_spec.md §10 resume hook: omitted when the session created no open/in_progress issues" do
-      refute Backend.system_prompt(ctx()) =~ "Your Open Issues"
+    test "holds across every flag combination that IS allowed to vary the prompt" do
+      for orchestrator <- [false, true],
+          code_exec <- [false, true],
+          commit_trailer <- [false, true] do
+        flags = %{
+          orchestrator: orchestrator,
+          code_exec: code_exec,
+          commit_trailer: commit_trailer
+        }
+
+        a = ctx(Map.merge(flags, %{issue_key: "ORCA-1"}))
+        b = ctx(Map.merge(flags, %{issue_key: nil}))
+
+        assert Backend.system_prompt(a) == Backend.system_prompt(b),
+               "prompt diverged for flags #{inspect(flags)}"
+      end
+    end
+
+    test "the prompt still VARIES with each of the three flags it is a function of" do
+      base = Backend.system_prompt(ctx())
+
+      refute base == Backend.system_prompt(ctx(%{orchestrator: true}))
+      refute base == Backend.system_prompt(ctx(%{code_exec: true}))
+      refute base == Backend.system_prompt(ctx(%{commit_trailer: false}))
+    end
+
+    test "no session id, directory, or project id leaks into the prompt" do
+      c = ctx(%{issue_key: "ORCA-142", project_id: Ecto.UUID.generate()})
+      prompt = Backend.system_prompt(c)
+
+      refute prompt =~ c.session_id
+      refute prompt =~ c.directory
+      refute prompt =~ c.project_id
+      refute prompt =~ "ORCA-142"
+    end
+  end
+
+  # ── ORCA_IDENTITY (pi_fork_spec.md §5.1) ───────────────────────────────
+  # Everything the system prompt can no longer carry, moved into an env
+  # payload — env being invisible to the KV cache is exactly why it can vary
+  # per session (and per fork child) for free. Consumed by
+  # priv/pi/orca-identity.ts at session_start.
+
+  describe "pi_env/1 — ORCA_IDENTITY payload" do
+    test "carries the session id on both engines" do
+      c = ctx()
+
+      assert identity_payload(c)["session_id"] == c.session_id
+      assert identity_payload(Map.put(c, :prompt, "hi"), :one_shot)["session_id"] == c.session_id
+    end
+
+    test "carries the concrete OrcaHub-Session trailer the prompt no longer can" do
+      c = ctx()
+      payload = identity_payload(c)
+
+      assert payload["commit_trailer"] =~ "OrcaHub-Session: #{c.session_id}"
+    end
+
+    test "commit_trailer: false drops both trailer fragments" do
+      payload = identity_payload(ctx(%{commit_trailer: false, issue_key: "ORCA-142"}))
+
+      assert payload["commit_trailer"] == nil
+      assert payload["issue_trailer"] == nil
+    end
+
+    test "issue_key adds the OrcaHub-Issue trailer; unset leaves it null" do
+      assert identity_payload(ctx(%{issue_key: "ORCA-142"}))["issue_trailer"] =~
+               "OrcaHub-Issue: ORCA-142"
+
+      assert identity_payload(ctx())["issue_trailer"] == nil
+    end
+
+    # Preserves pi's long-standing deviation from Claude/Codex: the trailer
+    # fragments are gated on the commit_trailer flag ALONE, with no
+    # `!orchestrator` gate. Moving them to the identity payload must not
+    # quietly change who gets them.
+    test "an orchestrator still gets both trailers (no orchestrator gate on pi)" do
+      payload = identity_payload(ctx(%{orchestrator: true, issue_key: "ORCA-142"}))
+
+      assert payload["commit_trailer"] =~ "OrcaHub-Session:"
+      assert payload["issue_trailer"] =~ "OrcaHub-Issue: ORCA-142"
+    end
+
+    test "carries the issues_spec.md §10 resume hook, with plan" do
+      %{session: session, key: key} = session_with_open_issue("pi identity resume hook")
+
+      payload = identity_payload(ctx(%{session_id: session.id}))
+
+      assert payload["open_issues"] =~ "# Your Open Issues"
+
+      assert payload["open_issues"] =~
+               "[#{key}] pi identity resume hook (open) — plan: (none set)"
+    end
+
+    test "open_issues is null when the session created no open/in_progress issues" do
+      assert identity_payload(ctx())["open_issues"] == nil
+    end
+
+    # The payload is UTF-8 (every SharedPrompts fragment is full of em
+    # dashes). Erlang port env values are charlists of CODEPOINTS which erts
+    # re-encodes to UTF-8 — pre-encoding to bytes here would double-encode, so
+    # this pins that the value round-trips intact.
+    test "non-ASCII prompt text survives the charlist round-trip intact" do
+      payload = identity_payload(ctx(%{issue_key: "ORCA-142"}))
+
+      # "…one OrcaHub-Issue: line per issue — trailers repeat."
+      assert payload["issue_trailer"] =~ "—"
+      # The mojibake a bytes-instead-of-codepoints charlist would produce.
+      refute payload["issue_trailer"] =~ "Ã"
+    end
+  end
+
+  # ── priv/pi/orca-identity.ts (pi_fork_spec.md §5.1) ────────────────────
+  # The extension is TypeScript, so its idempotence rule is exercised by
+  # driving it against a fake `pi` + `ctx.sessionManager` under node —
+  # test/support/fixtures/pi_identity_harness.mjs, which asserts the three
+  # cases that matter (fresh append, cold-reopen no-op, fork update) plus the
+  # degradation paths. node >= 22.18 strips TS types natively; no build step.
+  #
+  # SCOPE, honestly stated: this pins the extension's LOGIC against a
+  # faithful stand-in for pi's API, not against a live pi process. What it
+  # cannot prove is that real pi hands `session_start` the entry shapes
+  # modeled here — that half is ground-truthed in
+  # pi_fork_spike_findings.md (getEntries() returns the full inherited
+  # history synchronously on a --fork'ed child; sendMessage's nextTurn write
+  # is lazy; a CLI --fork reports reason "startup", not "fork") and remains
+  # live-verifiable only on a real gb10 fork run (spec §11.3).
+
+  describe "orca-identity.ts idempotence" do
+    @harness Path.expand("../../support/fixtures/pi_identity_harness.mjs", __DIR__)
+
+    test "reopen appends nothing, fork appends exactly one update, missing APIs degrade" do
+      case System.find_executable("node") do
+        nil ->
+          IO.puts(:stderr, "[pi_test] SKIPPED orca-identity.ts harness — no `node` on PATH")
+
+        node ->
+          {out, status} = System.cmd(node, [@harness], stderr_to_stdout: true)
+
+          assert status == 0, "harness failed to run:\n#{out}"
+
+          results =
+            out
+            |> String.split("\n", trim: true)
+            |> List.last()
+            |> Jason.decode!()
+
+          assert results["failed"] == []
+          # Guards against a harness that silently stops asserting anything.
+          assert length(results["passed"]) >= 10
+      end
     end
   end
 end
