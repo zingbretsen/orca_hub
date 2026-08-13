@@ -143,14 +143,15 @@ defmodule OrcaHub.EmailInbox.Ingest do
 
   defp parse(raw) do
     message = Mail.parse(raw)
+    subject = header_string(message, "subject")
 
     {:ok,
      %{
        to: recipients(message),
-       subject: header_string(message, "subject"),
+       subject: subject,
        message_id: header_string(message, "message-id"),
        in_reply_to: header_string(message, "in-reply-to"),
-       body: message |> extract_body() |> strip_quoted_reply() |> cap_body(),
+       body: message |> extract_body() |> strip_quoted_reply(subject) |> cap_body(),
        attachments: extract_attachments(message)
      }}
   rescue
@@ -331,32 +332,69 @@ defmodule OrcaHub.EmailInbox.Ingest do
     |> String.trim()
   end
 
-  # Heuristic, not exact: drop `>`-quoted lines and everything after a
-  # recognizable attribution/forward separator. Good enough to keep a reply
-  # chain from dominating the prompt.
-  defp strip_quoted_reply(body) do
-    body
-    |> String.split(~r/\r?\n/)
-    |> Enum.reduce_while([], fn line, acc ->
-      cond do
-        quote_separator?(line) -> {:halt, acc}
-        String.starts_with?(String.trim_leading(line), ">") -> {:cont, acc}
-        true -> {:cont, [line | acc]}
-      end
-    end)
-    |> Enum.reverse()
-    |> Enum.join("\n")
-    |> String.trim()
+  # Heuristic, not exact — and the two cases it distinguishes call for
+  # OPPOSITE handling:
+  #
+  #   * A REPLY's quoted prior message is trimmed away (kept small so it
+  #     doesn't dominate the prompt) — everything from the first attribution
+  #     line/separator onward is dropped.
+  #   * A FORWARD's body is the entire point of the email — forwarding a
+  #     newsletter or a third party's message is this feature's primary use
+  #     case — so everything from the separator onward is KEPT, just
+  #     DE-QUOTED (leading `>` markers stripped), since the client that
+  #     forwarded it typically quotes the whole thing.
+  #
+  # We tell them apart by an `Fwd:`/`Fw:` subject or a forward-flavored
+  # separator (`Original`/`Forwarded message`, `Begin forwarded message:`).
+  # When no separator is found at all, the body is returned UNTOUCHED — the
+  # invariant this function must never violate is "never drop the payload";
+  # when in doubt, preserve.
+  defp strip_quoted_reply(body, subject) do
+    lines = String.split(body, ~r/\r?\n/)
+
+    case Enum.find_index(lines, &quote_separator?/1) do
+      nil ->
+        String.trim(body)
+
+      index ->
+        {before, [_separator | after_lines]} = Enum.split(lines, index)
+
+        if forward?(subject, lines) do
+          (before ++ Enum.map(after_lines, &dequote_line/1)) |> Enum.join("\n") |> String.trim()
+        else
+          before |> Enum.reject(&quoted_line?/1) |> Enum.join("\n") |> String.trim()
+        end
+    end
+  end
+
+  defp forward?(subject, lines) do
+    fwd_subject?(subject) or Enum.any?(lines, &forward_separator?/1)
+  end
+
+  defp fwd_subject?(nil), do: false
+  defp fwd_subject?(subject), do: String.match?(String.trim(subject), ~r/^fwd?\s*:/i)
+
+  defp forward_separator?(line) do
+    trimmed = String.trim(line)
+
+    String.match?(trimmed, ~r/^-{2,}\s*(Original|Forwarded) Message\s*-{2,}$/i) or
+      String.match?(trimmed, ~r/^Begin forwarded message:$/i)
   end
 
   defp quote_separator?(line) do
     trimmed = String.trim(line)
 
     String.match?(trimmed, ~r/^On .*wrote:$/i) or
-      String.match?(trimmed, ~r/^-{2,}\s*Original Message\s*-{2,}$/i) or
-      String.match?(trimmed, ~r/^-{2,}\s*Forwarded message\s*-{2,}$/i) or
+      forward_separator?(line) or
       String.match?(trimmed, ~r/^_{10,}$/)
   end
+
+  defp quoted_line?(line), do: String.starts_with?(String.trim_leading(line), ">")
+
+  # Strips one or more leading `>` quote markers (with their trailing space,
+  # if any), so nested quoting (`> > text`) is fully unwound too. A no-op on
+  # a line that isn't quoted.
+  defp dequote_line(line), do: Regex.replace(~r/^(?:>+\s?)+/, line, "")
 
   defp cap_body(body) when byte_size(body) <= @max_body_bytes, do: body
 

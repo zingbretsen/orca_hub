@@ -239,6 +239,32 @@ defmodule OrcaHub.EmailInbox.IngestTest do
       assert payload["body"] =~ "[truncated]"
       assert byte_size(payload["body"]) < 20_000
     end
+
+    test "a Fwd: subject with a Gmail-style forward separator retains and de-quotes the body" do
+      body = """
+      FYI, see below.
+
+      ---------- Forwarded message ---------
+      From: Someone <s@y.com>
+
+      > the forwarded content
+      > every line of it quoted
+      """
+
+      raw = message(subject: "Fwd: heads up", body: body)
+      assert {:accept, _, payload} = Ingest.decide(@inbox, raw, [trigger()])
+      assert payload["body"] =~ "FYI, see below."
+      assert payload["body"] =~ "the forwarded content"
+      assert payload["body"] =~ "every line of it quoted"
+      refute payload["body"] =~ "> the forwarded"
+    end
+
+    test "preserves the body untouched when no recognizable separator is present at all" do
+      body = "Some intro text.\n> a stray quoted line with no attribution\nMore text."
+      assert {:accept, _, payload} = Ingest.decide(@inbox, message(body: body), [trigger()])
+      assert payload["body"] =~ "a stray quoted line"
+      assert payload["body"] =~ "More text."
+    end
   end
 
   describe "decide/3 — attachments" do
@@ -289,6 +315,134 @@ defmodule OrcaHub.EmailInbox.IngestTest do
       assert {:accept, _, payload} = Ingest.decide(@inbox, raw, [trigger()])
       assert payload["attachments"] == []
       assert payload["body"] =~ "see attached"
+    end
+  end
+
+  # A real forwarded message (headers/structure lightly redacted), used to
+  # regression-test two bugs found against it: the authserv-id pin rejecting
+  # legitimate mail because Migadu load-balances inbound across mx11/mx12/
+  # mx13.migadu.com, and quoted-reply stripping deleting an entire forwarded
+  # newsletter because it's `>`-quoted throughout.
+  defp forwarded_newsletter_quoted_body do
+    filler =
+      1..150
+      |> Enum.map(fn _ ->
+        "> Save the date for our Fall Festival and other school happenings."
+      end)
+      |> Enum.join("\n")
+
+    """
+    Sent from [Proton Mail](https://proton.me/mail/home) for Android.
+
+    -------- Original Message --------
+    On Thursday, 08/13/26 at 14:04 Gathering Waters Charter School <info@synd.ccsend.com> wrote:
+
+    > We can't wait to see you at the Rose Ceremony this Friday!
+    #{filler}
+    > Don't forget the Family Picnic next weekend — RSVP by Wednesday.
+    """
+  end
+
+  defp migadu_forward_message(opts \\ []) do
+    authserv_id = Keyword.get(opts, :authserv_id, "mx13.migadu.com")
+    from = Keyword.get(opts, :from, "Zach Ingbretsen <zach@zingbretsen.com>")
+    plain_body = forwarded_newsletter_quoted_body()
+    html_body = "<p>html alternative should never appear in the payload body</p>"
+
+    crlf("""
+    From: #{from}
+    To: orca@ymirtechnology.com
+    Subject: Fw: Reminder: Back-to-School News
+    Message-ID: <abc123@zingbretsen.com>
+    In-Reply-To: <orig@synd.ccsend.com>
+    MIME-Version: 1.0
+    Authentication-Results: #{authserv_id};
+    \tdkim=pass header.d=zingbretsen.com header.s=protonmail3 header.b=S8K4WdpF;
+    \tspf=pass (#{authserv_id}: domain of zach@zingbretsen.com designates 109.224.244.118 as permitted sender) smtp.mailfrom=zach@zingbretsen.com;
+    \tdmarc=pass (policy=none) header.from=zingbretsen.com
+    Content-Type: multipart/alternative; boundary="b1=_lkvKj"
+
+    --b1=_lkvKj
+    Content-Type: text/plain; charset=utf-8
+    Content-Transfer-Encoding: base64
+
+    #{Base.encode64(plain_body)}
+    --b1=_lkvKj
+    Content-Type: text/html; charset=utf-8
+    Content-Transfer-Encoding: base64
+
+    #{Base.encode64(html_body)}
+    --b1=_lkvKj--
+    """)
+  end
+
+  describe "decide/3 — real forwarded message (Migadu pin + forward stripping regressions)" do
+    test "accepted with allow-list on the exact address, pinned to .migadu.com" do
+      inbox = %EmailInbox{name: "migadu", trusted_authserv_id: ".migadu.com"}
+      raw = migadu_forward_message()
+
+      assert {:accept, _, payload} =
+               Ingest.decide(inbox, raw, [
+                 trigger(%{sender_allowlist: ["zach@zingbretsen.com"]})
+               ])
+
+      assert payload["from"] == "zach@zingbretsen.com"
+    end
+
+    test "accepted with allow-list on the bare domain, pinned to .migadu.com" do
+      inbox = %EmailInbox{name: "migadu", trusted_authserv_id: ".migadu.com"}
+      raw = migadu_forward_message()
+
+      assert {:accept, _, _} =
+               Ingest.decide(inbox, raw, [trigger(%{sender_allowlist: ["zingbretsen.com"]})])
+    end
+
+    test "still accepted when the handling host rotates to mx11.migadu.com" do
+      inbox = %EmailInbox{name: "migadu", trusted_authserv_id: ".migadu.com"}
+      raw = migadu_forward_message(authserv_id: "mx11.migadu.com")
+
+      assert {:accept, _, _} =
+               Ingest.decide(inbox, raw, [
+                 trigger(%{sender_allowlist: ["zach@zingbretsen.com"]})
+               ])
+    end
+
+    test "rejected when the authserv-id is a lookalike domain, not a real Migadu host" do
+      inbox = %EmailInbox{name: "migadu", trusted_authserv_id: ".migadu.com"}
+      raw = migadu_forward_message(authserv_id: "mx13.evilmigadu.com")
+
+      assert {:reject, :untrusted_authserv_id} =
+               Ingest.decide(inbox, raw, [
+                 trigger(%{sender_allowlist: ["zach@zingbretsen.com"]})
+               ])
+    end
+
+    test "the extracted body retains forwarded newsletter content instead of deleting it" do
+      inbox = %EmailInbox{name: "migadu", trusted_authserv_id: ".migadu.com"}
+      raw = migadu_forward_message()
+
+      assert {:accept, _, payload} =
+               Ingest.decide(inbox, raw, [
+                 trigger(%{sender_allowlist: ["zach@zingbretsen.com"]})
+               ])
+
+      assert payload["body"] =~ "Rose Ceremony"
+      assert payload["body"] =~ "Family Picnic"
+      # De-quoted: the forwarded lines read as clean text, not `>`-prefixed.
+      refute payload["body"] =~ "> We can't wait"
+    end
+
+    test "the multipart/alternative text/plain part is preferred and decodes correctly" do
+      inbox = %EmailInbox{name: "migadu", trusted_authserv_id: ".migadu.com"}
+      raw = migadu_forward_message()
+
+      assert {:accept, _, payload} =
+               Ingest.decide(inbox, raw, [
+                 trigger(%{sender_allowlist: ["zach@zingbretsen.com"]})
+               ])
+
+      assert payload["body"] =~ "Sent from"
+      refute payload["body"] =~ "html alternative"
     end
   end
 

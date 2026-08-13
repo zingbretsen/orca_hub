@@ -229,6 +229,56 @@ defmodule OrcaHub.EmailInbox.SecurityTest do
     end
   end
 
+  describe "trusted_authentication_results/2 with a domain-suffix pin" do
+    defp raw_with_authserv(authserv_id) do
+      crlf("""
+      Authentication-Results: #{authserv_id}; dmarc=pass header.from=x.com
+      From: zach@x.com
+
+      body
+      """)
+    end
+
+    test "a bare domain pin matches any host under it (Migadu-style rotation)" do
+      for host <- ["mx11.migadu.com", "mx12.migadu.com", "mx13.migadu.com"] do
+        raw = raw_with_authserv(host)
+
+        assert Security.trusted_authentication_results(raw, "migadu.com") ==
+                 "#{host}; dmarc=pass header.from=x.com"
+
+        assert :ok = Security.verify_authentication(raw, "zach@x.com", "migadu.com")
+      end
+    end
+
+    test "a leading-dot pin behaves identically to the bare form" do
+      raw = raw_with_authserv("mx13.migadu.com")
+
+      assert "mx13.migadu.com; dmarc=pass header.from=x.com" =
+               Security.trusted_authentication_results(raw, ".migadu.com")
+    end
+
+    test "a domain-suffix pin still matches the bare domain itself" do
+      raw = raw_with_authserv("migadu.com")
+      assert :ok = Security.verify_authentication(raw, "zach@x.com", "migadu.com")
+    end
+
+    test "requires a dot boundary: migadu.com never matches evilmigadu.com" do
+      raw = raw_with_authserv("mx13.evilmigadu.com")
+
+      assert {:error, :untrusted_authserv_id} =
+               Security.verify_authentication(raw, "zach@x.com", "migadu.com")
+
+      refute Security.authserv_id_matches_pin?("mx13.evilmigadu.com", "migadu.com")
+    end
+
+    test "an exact-host pin still only matches that one host, not its siblings" do
+      raw = raw_with_authserv("mx14.migadu.com")
+
+      assert {:error, :untrusted_authserv_id} =
+               Security.verify_authentication(raw, "zach@x.com", "mx13.migadu.com")
+    end
+  end
+
   describe "allowed_sender?/2" do
     test "matches an exact address, case-insensitively" do
       assert Security.allowed_sender?("zach@x.com", ["Zach@X.com"])

@@ -307,14 +307,20 @@
         phx-debounce="blur"
       />
       <p class="text-xs text-base-content/50 -mt-2">
-        Pins the exact authserv-id this inbox will accept in a message's
+        Pins the authserv-id this inbox will accept in a message's
         <code class="bg-base-300 px-1 rounded">Authentication-Results</code>
         header — set it to the first token (before the first <code>;</code>) of the
         <strong>TOP-MOST</strong>
         <code class="bg-base-300 px-1 rounded">Authentication-Results</code>
         header on a real message you've received in this mailbox (that header is added by your own
         receiving mail server, e.g. <code class="bg-base-300 px-1 rounded">mx.google.com</code>
-        for Gmail — never trust a header further down, a sender can forge those). Leaving this
+        for Gmail — never trust a header further down, a sender can forge those). Accepts either an
+        <strong>exact host</strong>
+        (<code class="bg-base-300 px-1 rounded">mx13.migadu.com</code>) or a
+        <strong>domain suffix</strong>
+        (<code class="bg-base-300 px-1 rounded">migadu.com</code>, with or without a leading dot) that
+        matches any host under it — use a suffix if your provider load-balances inbound mail across
+        multiple hosts (e.g. Migadu rotates <code class="bg-base-300 px-1 rounded">mx11</code>/<code class="bg-base-300 px-1 rounded">mx12</code>/<code class="bg-base-300 px-1 rounded">mx13.migadu.com</code>). Leaving this
         blank still requires an aligned <code>dmarc=pass</code>
         or <code>dkim=pass</code>
         to accept any message, but skips this extra pin, which weakens sender authentication.

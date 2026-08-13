@@ -19,8 +19,15 @@ defmodule OrcaHub.EmailInbox.Security do
 
   "Top-most is trustworthy" holds as long as the receiving MTA strips inbound
   untrusted `Authentication-Results` headers before adding its own — standard
-  practice at Gmail/SES/etc. `EmailInbox.trusted_authserv_id` pins the exact
-  authserv-id to accept as defense in depth on top of that.
+  practice at Gmail/SES/etc. `EmailInbox.trusted_authserv_id` pins the
+  authserv-id(s) to accept as defense in depth on top of that: either an
+  EXACT host (`mx.google.com`) or a DOMAIN SUFFIX (`migadu.com` /
+  `.migadu.com`, both spelled identically) that matches any host under it —
+  needed because some providers (e.g. Migadu) load-balance inbound mail
+  across several hosts (`mx11`/`mx12`/`mx13.migadu.com`), so pinning one
+  exact host would reject mail legitimately handled by the others. The
+  suffix match uses the same dot-boundary discipline as `aligned?/2` below —
+  `migadu.com` never matches `evilmigadu.com`.
 
   `From:` is read from the raw source for the same reason, and a message
   carrying more than one `From:` header is rejected outright (RFC 5322 allows
@@ -169,19 +176,39 @@ defmodule OrcaHub.EmailInbox.Security do
   @doc """
   The `Authentication-Results` value we're willing to trust: the TOP-MOST
   occurrence, or — when the inbox pins a `trusted_authserv_id` — the top-most
-  occurrence whose authserv-id matches that pin. `nil` if there is none.
+  occurrence whose authserv-id matches that pin (exact host, or dot-bounded
+  domain suffix — see `authserv_id_matches_pin?/2`). `nil` if there is none.
   """
   def trusted_authentication_results(raw, trusted_authserv_id \\ nil) do
     values = header_values(raw, "authentication-results")
-    pin = normalize_entry(trusted_authserv_id)
+    pin = normalize_entry(trusted_authserv_id) |> String.trim_leading(".")
 
     if pin == "" do
       List.first(values)
     else
       Enum.find(values, fn value ->
-        parse_authentication_results(value).authserv_id == pin
+        authserv_id_matches_pin?(parse_authentication_results(value).authserv_id, pin)
       end)
     end
+  end
+
+  @doc """
+  Does `authserv_id` satisfy pin `pin` (already normalized: trimmed,
+  downcased, and with any leading "." stripped)?
+
+  True on an exact match, or when `authserv_id` is a dot-bounded subdomain of
+  `pin` — i.e. `pin` is treated as a domain suffix. `migadu.com` matches
+  `mx11.migadu.com`/`mx12.migadu.com`/`mx13.migadu.com` but never
+  `evilmigadu.com`, since the match requires a literal `"."` immediately
+  before the pin, not just a trailing-substring match.
+
+      iex> OrcaHub.EmailInbox.Security.authserv_id_matches_pin?("mx13.migadu.com", "migadu.com")
+      true
+      iex> OrcaHub.EmailInbox.Security.authserv_id_matches_pin?("mx13.evilmigadu.com", "migadu.com")
+      false
+  """
+  def authserv_id_matches_pin?(authserv_id, pin) when is_binary(authserv_id) and is_binary(pin) do
+    authserv_id == pin or String.ends_with?(authserv_id, "." <> pin)
   end
 
   @doc """
