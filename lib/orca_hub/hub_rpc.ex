@@ -278,6 +278,35 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.UpstreamServers, :server_in_session?, [session_id, server_id])
 
   # -------------------------------------------------------------------
+  # Email Inboxes (IMAP mailboxes polled for inbound email triggers; see
+  # OrcaHub.EmailInboxes moduledoc — hub-only, same as the poller itself)
+  # -------------------------------------------------------------------
+
+  def list_email_inboxes, do: call(OrcaHub.EmailInboxes, :list_email_inboxes, [])
+  def get_email_inbox!(id), do: call(OrcaHub.EmailInboxes, :get_email_inbox!, [id])
+
+  def create_email_inbox(attrs),
+    do: call(OrcaHub.EmailInboxes, :create_email_inbox, [attrs])
+
+  def update_email_inbox(inbox, attrs),
+    do: call(OrcaHub.EmailInboxes, :update_email_inbox, [inbox, attrs])
+
+  def delete_email_inbox(inbox),
+    do: call(OrcaHub.EmailInboxes, :delete_email_inbox, [inbox])
+
+  def change_email_inbox(inbox, attrs \\ %{}),
+    do: call(OrcaHub.EmailInboxes, :change_email_inbox, [inbox, attrs])
+
+  def test_email_inbox_connection(attrs),
+    do: call(OrcaHub.EmailInboxes, :test_connection, [attrs])
+
+  # Starts a poller for any enabled inbox that doesn't have one running yet —
+  # see OrcaHub.EmailInboxLoader moduledoc. Safe to call more than once;
+  # edits/disables to an already-running poller take effect on its next poll
+  # cycle without this (it re-reads the inbox row every tick).
+  def sync_email_inbox_pollers, do: call(OrcaHub.EmailInboxLoader, :sync, [])
+
+  # -------------------------------------------------------------------
   # Terminals
   # -------------------------------------------------------------------
 

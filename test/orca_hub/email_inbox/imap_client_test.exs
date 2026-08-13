@@ -123,6 +123,44 @@ defmodule OrcaHub.EmailInbox.ImapClientTest do
     assert {:error, {:connect_failed, _}} = ImapClient.connect("127.0.0.1", 1, false)
   end
 
+  describe "test_connection/1" do
+    test "connects, authenticates, selects the folder, and disconnects", %{port: port} do
+      assert :ok =
+               ImapClient.test_connection(%{
+                 host: "127.0.0.1",
+                 port: port,
+                 tls: false,
+                 username: "ops@example.com",
+                 password: "hunter2",
+                 folder: "INBOX"
+               })
+    end
+
+    test "surfaces a bad login without crashing, and still closes the socket", %{port: port} do
+      assert {:error, :login_failed} =
+               ImapClient.test_connection(%{
+                 host: "127.0.0.1",
+                 port: port,
+                 tls: false,
+                 username: "ops@example.com",
+                 password: "wrong",
+                 folder: "INBOX"
+               })
+    end
+
+    test "a refused connection is an error, not a hang" do
+      assert {:error, {:connect_failed, _}} =
+               ImapClient.test_connection(%{
+                 host: "127.0.0.1",
+                 port: 1,
+                 tls: false,
+                 username: "ops@example.com",
+                 password: "hunter2",
+                 folder: "INBOX"
+               })
+    end
+  end
+
   # ── fake server ─────────────────────────────────────────────────────────
 
   defp accept_loop(listen) do

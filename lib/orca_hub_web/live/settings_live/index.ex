@@ -3,6 +3,7 @@ defmodule OrcaHubWeb.SettingsLive.Index do
 
   alias OrcaHub.Cluster
   alias OrcaHub.Cluster.CodeSync
+  alias OrcaHub.EmailInboxes.EmailInbox
   alias OrcaHub.HubRPC
   alias OrcaHub.UpstreamServers.UpstreamServer
 
@@ -30,7 +31,11 @@ defmodule OrcaHubWeb.SettingsLive.Index do
        code_sync_result: nil,
        code_sync_loading: false,
        drift_results: nil,
-       secret_keys: HubRPC.list_secret_keys()
+       secret_keys: HubRPC.list_secret_keys(),
+       email_inboxes: HubRPC.list_email_inboxes(),
+       show_inbox_form: false,
+       editing_inbox: nil,
+       inbox_form: to_form(HubRPC.change_email_inbox(%EmailInbox{}))
      )}
   end
 
@@ -40,7 +45,12 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   end
 
   defp apply_action(socket, :index, _params) do
-    assign(socket, show_form: false, editing_server: nil)
+    assign(socket,
+      show_form: false,
+      editing_server: nil,
+      show_inbox_form: false,
+      editing_inbox: nil
+    )
   end
 
   defp apply_action(socket, :new, _params) do
@@ -51,7 +61,9 @@ defmodule OrcaHubWeb.SettingsLive.Index do
       show_form: true,
       editing_server: nil,
       form: to_form(changeset),
-      header_pairs: [%{key: "", value: ""}]
+      header_pairs: [%{key: "", value: ""}],
+      show_inbox_form: false,
+      editing_inbox: nil
     )
   end
 
@@ -73,8 +85,27 @@ defmodule OrcaHubWeb.SettingsLive.Index do
       show_form: true,
       editing_server: server,
       form: to_form(changeset),
-      header_pairs: header_pairs
+      header_pairs: header_pairs,
+      show_inbox_form: false,
+      editing_inbox: nil
     )
+  end
+
+  defp apply_action(socket, :new_inbox, _params) do
+    changeset = HubRPC.change_email_inbox(%EmailInbox{})
+
+    socket
+    |> assign(show_form: false, editing_server: nil)
+    |> assign(show_inbox_form: true, editing_inbox: nil, inbox_form: to_form(changeset))
+  end
+
+  defp apply_action(socket, :edit_inbox, %{"id" => id}) do
+    inbox = HubRPC.get_email_inbox!(id)
+    changeset = HubRPC.change_email_inbox(inbox)
+
+    socket
+    |> assign(show_form: false, editing_server: nil)
+    |> assign(show_inbox_form: true, editing_inbox: inbox, inbox_form: to_form(changeset))
   end
 
   @impl true
@@ -237,6 +268,134 @@ defmodule OrcaHubWeb.SettingsLive.Index do
      |> put_flash(:info, "Secret #{key} deleted")}
   end
 
+  # ── Email Inboxes (IMAP mailboxes polled for inbound email triggers) ──
+  #
+  # The password field is strictly write-only, same posture as Secrets
+  # above: `EmailInbox.changeset/2`'s virtual `:password` is cast straight
+  # into `:password_encrypted` and dropped, so it is never assigned back
+  # into `inbox_form` here.
+  #
+  # A blank submit on the EDIT form means "unchanged" — but the schema casts
+  # `:password` with `empty_values: []` deliberately (an explicit blank is a
+  # real "can't be blank" error on CREATE, not a silent no-op), so an empty
+  # string here would be read as "the user is explicitly clearing it" rather
+  # than "left untouched". `drop_blank_password_on_edit/2` is what actually
+  # implements "unchanged" for an edit: it removes the key entirely so the
+  # changeset never sees a change to cast in the first place.
+
+  def handle_event("validate_inbox", %{"email_inbox" => params}, socket) do
+    inbox = socket.assigns.editing_inbox || %EmailInbox{}
+    params = drop_blank_password_on_edit(params, socket.assigns.editing_inbox)
+    changeset = HubRPC.change_email_inbox(inbox, params)
+    {:noreply, assign(socket, inbox_form: to_form(changeset, action: :validate))}
+  end
+
+  def handle_event("save_inbox", %{"email_inbox" => params}, socket) do
+    params = drop_blank_password_on_edit(params, socket.assigns.editing_inbox)
+
+    result =
+      case socket.assigns.editing_inbox do
+        nil -> HubRPC.create_email_inbox(params)
+        inbox -> HubRPC.update_email_inbox(inbox, params)
+      end
+
+    case result do
+      {:ok, inbox} ->
+        # Starts a poller immediately for a newly-created (or just
+        # re-enabled) inbox; a no-op otherwise — see EmailInboxLoader.sync/0.
+        if inbox.enabled, do: HubRPC.sync_email_inbox_pollers()
+
+        {:noreply,
+         socket
+         |> assign(
+           email_inboxes: HubRPC.list_email_inboxes(),
+           show_inbox_form: false,
+           editing_inbox: nil
+         )
+         |> put_flash(:info, "Email inbox saved")
+         |> push_patch(to: ~p"/settings")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, inbox_form: to_form(changeset))}
+    end
+  end
+
+  def handle_event("delete_inbox", %{"id" => id}, socket) do
+    inbox = HubRPC.get_email_inbox!(id)
+    {:ok, _} = HubRPC.delete_email_inbox(inbox)
+
+    {:noreply,
+     socket
+     |> assign(email_inboxes: HubRPC.list_email_inboxes())
+     |> put_flash(:info, "Email inbox deleted")}
+  end
+
+  def handle_event("toggle_inbox", %{"id" => id}, socket) do
+    inbox = HubRPC.get_email_inbox!(id)
+    {:ok, inbox} = HubRPC.update_email_inbox(inbox, %{enabled: !inbox.enabled})
+
+    if inbox.enabled, do: HubRPC.sync_email_inbox_pollers()
+
+    {:noreply, assign(socket, email_inboxes: HubRPC.list_email_inboxes())}
+  end
+
+  def handle_event("cancel_inbox", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(show_inbox_form: false, editing_inbox: nil)
+     |> push_patch(to: ~p"/settings")}
+  end
+
+  # Reads the CURRENT (possibly-unsaved) form state out of `inbox_form`
+  # rather than requiring its own params — `inbox_form` is already kept live
+  # by "validate_inbox" on every keystroke, so this works identically for a
+  # brand-new inbox and an edit-in-progress. Connects, authenticates, and
+  # SELECTs the folder on the HUB (EmailInboxes.test_connection/1 ->
+  # ImapClient.test_connection/1); never fetches or mutates messages.
+  def handle_event("test_inbox_connection", _params, socket) do
+    form = socket.assigns.inbox_form
+
+    attrs = %{
+      host: Phoenix.HTML.Form.input_value(form, :host) |> blank_to_nil(),
+      port: Phoenix.HTML.Form.input_value(form, :port) || 993,
+      tls: tls_value(form),
+      username: Phoenix.HTML.Form.input_value(form, :username) |> blank_to_nil(),
+      folder: Phoenix.HTML.Form.input_value(form, :folder) |> blank_to_nil() || "INBOX",
+      password: Phoenix.HTML.Form.input_value(form, :password) |> blank_to_nil()
+    }
+
+    attrs =
+      case socket.assigns.editing_inbox do
+        nil -> attrs
+        inbox -> Map.put(attrs, :inbox_id, inbox.id)
+      end
+
+    socket =
+      case validate_test_attrs(attrs) do
+        :ok ->
+          case safe_test_connection(attrs) do
+            :ok ->
+              put_flash(
+                socket,
+                :info,
+                ~s(Connected to #{attrs.host}:#{attrs.port} and selected "#{attrs.folder}" successfully.)
+              )
+
+            {:error, reason} ->
+              put_flash(
+                socket,
+                :error,
+                "Connection test failed: #{format_connection_error(reason)}"
+              )
+          end
+
+        {:error, message} ->
+          put_flash(socket, :error, message)
+      end
+
+    {:noreply, socket}
+  end
+
   @impl true
   def handle_info(:do_push_all, socket) do
     result = CodeSync.push_all()
@@ -319,4 +478,85 @@ defmodule OrcaHubWeb.SettingsLive.Index do
     prefix = "#{server.prefix}__"
     Enum.count(upstream_tools, fn tool -> String.starts_with?(tool["name"], prefix) end)
   end
+
+  defp drop_blank_password_on_edit(params, nil), do: params
+
+  defp drop_blank_password_on_edit(params, %EmailInbox{}) do
+    if params["password"] == "", do: Map.delete(params, "password"), else: params
+  end
+
+  defp blank_to_nil(nil), do: nil
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
+
+  # The `.input` checkbox component always submits a real "true"/"false"
+  # value (a hidden hedge input pairs with the checkbox — see
+  # CoreComponents.input/1), so a live changeset's :tls is already the
+  # correctly-typed boolean; this only covers the untouched-form case, where
+  # the schema's own `field :tls, :boolean, default: true` applies.
+  defp tls_value(form) do
+    case Phoenix.HTML.Form.input_value(form, :tls) do
+      nil -> true
+      value -> value
+    end
+  end
+
+  defp validate_test_attrs(attrs) do
+    cond do
+      blank_to_nil(attrs.host) == nil ->
+        {:error, "Host is required to test the connection."}
+
+      blank_to_nil(attrs.username) == nil ->
+        {:error, "Username is required to test the connection."}
+
+      true ->
+        :ok
+    end
+  end
+
+  # Isolates the HubRPC round-trip so a genuinely unreachable hub (see
+  # OrcaHub.HubRPC moduledoc) surfaces as a flash message instead of
+  # crashing this LiveView.
+  defp safe_test_connection(attrs) do
+    HubRPC.test_email_inbox_connection(attrs)
+  rescue
+    e -> {:error, {:hub_unreachable, Exception.message(e)}}
+  catch
+    :exit, reason -> {:error, {:hub_unreachable, inspect(reason)}}
+  end
+
+  defp format_connection_error({:connect_failed, reason}),
+    do: "Could not connect: #{inspect(reason)}"
+
+  defp format_connection_error({:greeting_failed, line}),
+    do: "Unexpected server greeting: #{line}"
+
+  defp format_connection_error(:login_failed),
+    do: "Login failed — check the username and password."
+
+  defp format_connection_error({:command_failed, line}),
+    do: "IMAP command failed: #{line}"
+
+  defp format_connection_error({:send_failed, reason}),
+    do: "Connection error while sending: #{inspect(reason)}"
+
+  defp format_connection_error({:recv_failed, reason}),
+    do: "Connection error while reading: #{inspect(reason)}"
+
+  defp format_connection_error(:timeout),
+    do: "Timed out waiting for the server to respond."
+
+  defp format_connection_error({:crashed, reason}),
+    do: "Unexpected error: #{inspect(reason)}"
+
+  defp format_connection_error(:inbox_not_found),
+    do: "This inbox no longer exists."
+
+  defp format_connection_error(:password_required),
+    do: "Enter a password to test the connection."
+
+  defp format_connection_error({:hub_unreachable, message}),
+    do: "Could not reach the hub node to test this connection: #{message}"
+
+  defp format_connection_error(other), do: inspect(other)
 end

@@ -108,4 +108,43 @@ defmodule OrcaHub.EmailInboxes do
     |> Ecto.Changeset.cast(attrs, [:last_uid, :uid_validity])
     |> Repo.update()
   end
+
+  @doc """
+  Connect, authenticate, and `SELECT` the folder for the (possibly-unsaved)
+  connection details in `attrs` — without fetching or mutating any messages
+  — then disconnect. Returns `:ok` or `{:error, reason}`. Backs the Settings
+  "Test connection" button.
+
+  `attrs` is a map with `:host`, `:port`, `:tls`, `:username`, `:folder`,
+  and either:
+
+    * a non-blank `:password` (a freshly typed one, not yet saved), or
+    * an `:inbox_id` to resolve the currently-stored password for (the edit
+      form leaves `:password` blank to mean "unchanged").
+
+  Resolving the stored password happens entirely here — callers (in
+  particular any LiveView) must never call `password!/1` directly; see its
+  doc.
+  """
+  def test_connection(attrs) do
+    with {:ok, password} <- resolve_test_password(attrs) do
+      attrs
+      |> Map.take([:host, :port, :tls, :username, :folder])
+      |> Map.put(:password, password)
+      |> OrcaHub.EmailInbox.ImapClient.test_connection()
+    end
+  end
+
+  defp resolve_test_password(%{password: password}) when is_binary(password) and password != "" do
+    {:ok, password}
+  end
+
+  defp resolve_test_password(%{inbox_id: id}) when is_binary(id) and id != "" do
+    case get_email_inbox(id) do
+      nil -> {:error, :inbox_not_found}
+      inbox -> {:ok, password!(inbox)}
+    end
+  end
+
+  defp resolve_test_password(_attrs), do: {:error, :password_required}
 end

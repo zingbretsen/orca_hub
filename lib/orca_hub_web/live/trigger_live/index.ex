@@ -27,7 +27,8 @@ defmodule OrcaHubWeb.TriggerLive.Index do
        editing_trigger: nil,
        trigger_type: "scheduled",
        schedule_mode: "daily",
-       trigger_form: to_form(Triggers.change_trigger(%Trigger{}))
+       trigger_form: to_form(Triggers.change_trigger(%Trigger{})),
+       email_inboxes: HubRPC.list_email_inboxes()
      )}
   end
 
@@ -86,13 +87,21 @@ defmodule OrcaHubWeb.TriggerLive.Index do
 
   def handle_event("validate_trigger", %{"trigger" => params}, socket) do
     trigger = socket.assigns.editing_trigger || %Trigger{}
-    params = Map.put(params, "type", socket.assigns.trigger_type)
+
+    params =
+      params
+      |> Map.put("type", socket.assigns.trigger_type)
+      |> parse_sender_allowlist_param()
+
     changeset = Triggers.change_trigger(trigger, params)
     {:noreply, assign(socket, trigger_form: to_form(changeset, action: :validate))}
   end
 
   def handle_event("save_trigger", %{"trigger" => params}, socket) do
-    params = Map.put(params, "type", socket.assigns.trigger_type)
+    params =
+      params
+      |> Map.put("type", socket.assigns.trigger_type)
+      |> parse_sender_allowlist_param()
 
     params =
       if socket.assigns.trigger_type == "scheduled" do
@@ -212,6 +221,17 @@ defmodule OrcaHubWeb.TriggerLive.Index do
   end
 
   defp maybe_build_cron(params, _custom), do: params
+
+  # The email-trigger form submits sender_allowlist as free text
+  # (comma/space/newline separated, one address-or-domain per line reads
+  # the same way); Trigger.changeset/2 casts :sender_allowlist as
+  # {:array, :string}, so turn that text into a list before it gets there.
+  defp parse_sender_allowlist_param(%{"sender_allowlist" => text} = params)
+       when is_binary(text) do
+    Map.put(params, "sender_allowlist", OrcaHubWeb.EnvAllowlistInput.parse(text))
+  end
+
+  defp parse_sender_allowlist_param(params), do: params
 
   defp detect_schedule_mode(cron) when is_binary(cron) do
     case String.split(cron) do

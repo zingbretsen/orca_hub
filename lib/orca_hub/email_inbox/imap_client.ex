@@ -23,6 +23,7 @@ defmodule OrcaHub.EmailInbox.ImapClient do
 
   @connect_timeout 15_000
   @recv_timeout 30_000
+  @test_connection_timeout 20_000
 
   @type t :: %__MODULE__{}
 
@@ -170,6 +171,47 @@ defmodule OrcaHub.EmailInbox.ImapClient do
   def uid_mark_seen(client, uid) when is_integer(uid) do
     with {:ok, client, _lines} <- command(client, "UID STORE #{uid} +FLAGS (\\Seen)") do
       {:ok, client, :ok}
+    end
+  end
+
+  @doc """
+  Connect, `LOGIN`, `SELECT` `folder`, then `LOGOUT` and disconnect —
+  without fetching or mutating any messages. For "test connection" UI
+  buttons only.
+
+  Bounded to #{@test_connection_timeout}ms wall-clock via a supervised task,
+  independent of (and shorter than) the `@connect_timeout` / `@recv_timeout`
+  used internally — a bad hostname or a server that accepts the TCP
+  connection but never answers would otherwise be able to hold the caller
+  for the internal timeouts' full duration.
+  """
+  def test_connection(%{
+        host: host,
+        port: port,
+        tls: tls,
+        username: username,
+        password: password,
+        folder: folder
+      }) do
+    task = Task.async(fn -> run_test_connection(host, port, tls, username, password, folder) end)
+
+    case Task.yield(task, @test_connection_timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      {:exit, reason} -> {:error, {:crashed, reason}}
+      nil -> {:error, :timeout}
+    end
+  end
+
+  defp run_test_connection(host, port, tls, username, password, folder) do
+    with {:ok, client} <- connect(host, port, tls) do
+      try do
+        with {:ok, client} <- login(client, username, password),
+             {:ok, _client, _info} <- select(client, folder) do
+          :ok
+        end
+      after
+        close(client)
+      end
     end
   end
 

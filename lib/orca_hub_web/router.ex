@@ -68,6 +68,8 @@ defmodule OrcaHubWeb.Router do
       live "/settings", SettingsLive.Index, :index
       live "/settings/upstream/new", SettingsLive.Index, :new
       live "/settings/upstream/:id/edit", SettingsLive.Index, :edit
+      live "/settings/email-inboxes/new", SettingsLive.Index, :new_inbox
+      live "/settings/email-inboxes/:id/edit", SettingsLive.Index, :edit_inbox
     end
   end
 

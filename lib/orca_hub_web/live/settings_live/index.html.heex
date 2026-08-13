@@ -233,6 +233,184 @@
 </div>
 
 <div class="mt-10">
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">Email Inboxes</h3>
+    <.link patch={~p"/settings/email-inboxes/new"}>
+      <.button class="btn-sm">Add Inbox</.button>
+    </.link>
+  </div>
+
+  <p class="text-sm text-base-content/60 mb-4">
+    IMAP mailboxes polled for inbound email triggers (see the <strong>Triggers</strong>
+    page — trigger type <strong>Email</strong>). Polling only ever runs on the hub node.
+  </p>
+
+  <div :if={@show_inbox_form} class="card bg-base-200 p-4 mb-6">
+    <h4 class="font-semibold mb-3">
+      {if @editing_inbox, do: "Edit Email Inbox", else: "Add Email Inbox"}
+    </h4>
+    <.form for={@inbox_form} phx-submit="save_inbox" phx-change="validate_inbox" class="space-y-3">
+      <.input
+        field={@inbox_form[:name]}
+        type="text"
+        label="Name"
+        placeholder="ops mailbox"
+        phx-debounce="blur"
+      />
+      <div class="flex gap-2">
+        <div class="flex-1">
+          <.input
+            field={@inbox_form[:host]}
+            type="text"
+            label="Host"
+            placeholder="imap.migadu.com"
+            phx-debounce="blur"
+          />
+        </div>
+        <div class="w-28">
+          <.input field={@inbox_form[:port]} type="number" label="Port" phx-debounce="blur" />
+        </div>
+      </div>
+      <.input field={@inbox_form[:tls]} type="checkbox" label="Use TLS/SSL" />
+      <.input
+        field={@inbox_form[:username]}
+        type="text"
+        label="Username"
+        placeholder="orca@ymirtechnology.com"
+        autocomplete="off"
+        phx-debounce="blur"
+      />
+      <.input
+        field={@inbox_form[:password]}
+        type="password"
+        label="Password"
+        placeholder={if @editing_inbox, do: "Leave blank to keep the current password", else: nil}
+        autocomplete="new-password"
+        phx-debounce="blur"
+      />
+      <p class="text-xs text-base-content/50 -mt-2">
+        Write-only: stored encrypted, and never shown here again once saved.
+        <span :if={@editing_inbox}>Leave blank to keep the current password unchanged.</span>
+      </p>
+      <.input
+        field={@inbox_form[:folder]}
+        type="text"
+        label="Folder"
+        placeholder="INBOX"
+        phx-debounce="blur"
+      />
+      <.input
+        field={@inbox_form[:trusted_authserv_id]}
+        type="text"
+        label="Trusted authserv-id (optional but recommended)"
+        placeholder="mx.google.com"
+        phx-debounce="blur"
+      />
+      <p class="text-xs text-base-content/50 -mt-2">
+        Pins the exact authserv-id this inbox will accept in a message's
+        <code class="bg-base-300 px-1 rounded">Authentication-Results</code>
+        header — set it to the first token (before the first <code>;</code>) of the
+        <strong>TOP-MOST</strong>
+        <code class="bg-base-300 px-1 rounded">Authentication-Results</code>
+        header on a real message you've received in this mailbox (that header is added by your own
+        receiving mail server, e.g. <code class="bg-base-300 px-1 rounded">mx.google.com</code>
+        for Gmail — never trust a header further down, a sender can forge those). Leaving this
+        blank still requires an aligned <code>dmarc=pass</code>
+        or <code>dkim=pass</code>
+        to accept any message, but skips this extra pin, which weakens sender authentication.
+      </p>
+      <.input field={@inbox_form[:enabled]} type="checkbox" label="Enabled" />
+
+      <div class="flex justify-between items-center gap-2 mt-4">
+        <button
+          type="button"
+          phx-click="test_inbox_connection"
+          phx-disable-with="Testing…"
+          class="btn btn-sm btn-ghost"
+        >
+          <.icon name="hero-signal-micro" class="size-4" /> Test connection
+        </button>
+        <div class="flex gap-2">
+          <.link patch={~p"/settings"} class="btn btn-sm">Cancel</.link>
+          <.button type="submit" class="btn-sm">
+            {if @editing_inbox, do: "Update", else: "Add"}
+          </.button>
+        </div>
+      </div>
+    </.form>
+  </div>
+
+  <div
+    :if={@email_inboxes == [] && !@show_inbox_form}
+    class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg"
+  >
+    No email inboxes configured.
+  </div>
+
+  <div
+    :if={@email_inboxes != []}
+    class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
+  >
+    <div
+      :for={inbox <- @email_inboxes}
+      class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50"
+    >
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="font-medium">{inbox.name}</span>
+          <span class={[
+            "badge badge-xs",
+            if(inbox.enabled, do: "badge-success", else: "badge-ghost")
+          ]}>
+            {if inbox.enabled, do: "enabled", else: "disabled"}
+          </span>
+          <span :if={inbox.tls} class="badge badge-xs badge-info">TLS</span>
+          <span
+            :if={!inbox.trusted_authserv_id}
+            class="badge badge-xs badge-warning"
+            title="No trusted authserv-id pinned — sender authentication is weaker"
+          >
+            no authserv-id pin
+          </span>
+        </div>
+        <div class="text-base-content/50 text-xs mt-0.5 font-mono">
+          {inbox.username}@{inbox.host}:{inbox.port}/{inbox.folder}
+        </div>
+      </div>
+      <div class="flex items-center gap-1">
+        <button
+          phx-click="toggle_inbox"
+          phx-value-id={inbox.id}
+          class="btn btn-xs btn-ghost"
+          title={if inbox.enabled, do: "Disable", else: "Enable"}
+        >
+          <.icon
+            name={if inbox.enabled, do: "hero-pause-micro", else: "hero-play-micro"}
+            class="size-4"
+          />
+        </button>
+        <.link
+          patch={~p"/settings/email-inboxes/#{inbox.id}/edit"}
+          class="btn btn-xs btn-ghost"
+          title="Edit"
+        >
+          <.icon name="hero-pencil-micro" class="size-4" />
+        </.link>
+        <button
+          phx-click="delete_inbox"
+          phx-value-id={inbox.id}
+          data-confirm="Delete this email inbox? Any triggers pointed at it will stop firing."
+          class="btn btn-xs btn-ghost text-error"
+          title="Delete"
+        >
+          <.icon name="hero-trash-micro" class="size-4" />
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mt-10">
   <h3 class="text-lg font-semibold mb-4">Secrets</h3>
 
   <p class="text-sm text-base-content/60 mb-4">

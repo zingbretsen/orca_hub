@@ -73,6 +73,63 @@ defmodule OrcaHub.EmailInboxesTest do
     end
   end
 
+  describe "test_connection/1" do
+    test "requires a password when there is neither a fresh one nor an inbox to resolve" do
+      assert {:error, :password_required} =
+               EmailInboxes.test_connection(%{
+                 host: "127.0.0.1",
+                 port: 1,
+                 tls: false,
+                 username: "ops@example.com",
+                 password: "",
+                 folder: "INBOX"
+               })
+    end
+
+    test "reports a missing inbox distinctly from a missing password" do
+      assert {:error, :inbox_not_found} =
+               EmailInboxes.test_connection(%{
+                 host: "127.0.0.1",
+                 port: 1,
+                 tls: false,
+                 username: "ops@example.com",
+                 password: "",
+                 folder: "INBOX",
+                 inbox_id: Ecto.UUID.generate()
+               })
+    end
+
+    test "resolves the stored password when the form field is left blank" do
+      {:ok, inbox} = EmailInboxes.create_email_inbox(valid_attrs(%{port: 1}))
+
+      # Port 1 refuses the connection immediately — proving resolution got
+      # past :password_required / :inbox_not_found and actually attempted to
+      # dial out with the decrypted stored password.
+      assert {:error, {:connect_failed, _}} =
+               EmailInboxes.test_connection(%{
+                 host: "127.0.0.1",
+                 port: 1,
+                 tls: false,
+                 username: inbox.username,
+                 password: "",
+                 folder: "INBOX",
+                 inbox_id: inbox.id
+               })
+    end
+
+    test "a freshly typed password is used as-is, without needing an inbox_id" do
+      assert {:error, {:connect_failed, _}} =
+               EmailInboxes.test_connection(%{
+                 host: "127.0.0.1",
+                 port: 1,
+                 tls: false,
+                 username: "ops@example.com",
+                 password: "hunter2",
+                 folder: "INBOX"
+               })
+    end
+  end
+
   describe "list_enabled_email_inboxes/0" do
     test "excludes disabled inboxes" do
       {:ok, _enabled} = EmailInboxes.create_email_inbox(valid_attrs(%{name: "enabled one"}))

@@ -7,7 +7,7 @@ defmodule OrcaHub.Triggers do
   alias OrcaHub.{Repo, Triggers.Trigger}
 
   def list_triggers do
-    Repo.all(from t in Trigger, order_by: [asc: t.name], preload: [:project])
+    Repo.all(from t in Trigger, order_by: [asc: t.name], preload: [:project, :email_inbox])
   end
 
   def list_triggers_for_project(project_id) do
