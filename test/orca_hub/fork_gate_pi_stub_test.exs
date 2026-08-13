@@ -160,13 +160,16 @@ defmodule OrcaHub.ForkGatePiStubTest do
        %{gate: gate, parent: parent, children: [c1, c2, _] = children} do
     Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{c1.id}")
 
-    # The stub's turn reports input_tokens: 130. Against a 100-token parent
-    # context that is >25% — a cold prefill of the inherited prefix.
+    # The stub's turn runs a tool-call loop: first response input_tokens: 100
+    # (bash toolCall), second response input_tokens: 30 (text). §6.1 is
+    # FIRST-RESPONSE-ONLY, so the check sees just the 100 — against a
+    # 100-token parent context that is >25% either way — a cold prefill of
+    # the inherited prefix.
     fan_out(gate, parent, Enum.take(children, 2), parent_context_tokens: 100)
 
     assert_receive {:event, %{"subtype" => "fork_cache_miss"} = warning}, 15_000
     assert warning["child_session_id"] == c1.id
-    assert warning["input_tokens"] == 130
+    assert warning["input_tokens"] == 100
     assert warning["paused"] == true
 
     assert_receive {:notified, parent_id, message}, 5_000
@@ -191,8 +194,8 @@ defmodule OrcaHub.ForkGatePiStubTest do
     Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
     Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{c1.id}")
 
-    # 130 fresh tokens against a 100k-token parent context is 0.13% — the
-    # inherited prefix was served from cache.
+    # The FIRST response's 100 fresh tokens against a 100k-token parent
+    # context is 0.1% — the inherited prefix was served from cache.
     fan_out(gate, parent, Enum.take(children, 2), parent_context_tokens: 100_000)
 
     stream = collect([c1.id, c2.id])

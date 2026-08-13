@@ -78,10 +78,24 @@ defmodule OrcaHub.ForkGate do
   ## §6.1 cache-miss detection
 
   Before releasing the next child, the gate inspects the completed child's
-  first `result`. `Backend.Pi.accumulate_usage/1` already folds pi's
-  per-response `usage.cacheRead`/`usage.input` into it as
-  `cache_read_input_tokens` / `input_tokens`; in §1's experiments these
-  exactly matched the server's own counters.
+  first `result`. **Amendment (post-ship): the comparison is FIRST-RESPONSE-
+  ONLY, not the turn-summed usage.** `Backend.Pi.accumulate_usage/1` folds
+  pi's per-response `usage.cacheRead`/`usage.input` into the synthesized
+  `result` as `cache_read_input_tokens` / `input_tokens` — but that sum spans
+  every assistant response in the turn, and a forked child's first turn
+  running a long tool loop legitimately grows later responses' inputs (each
+  tool result appends to the prompt). Only the FIRST response's prompt is
+  exactly `[shared system prompt + inherited history + identity entry +
+  first prompt]` — the prefix this check actually means to test — so a tool
+  loop could inflate the summed `input_tokens` past the threshold with zero
+  relationship to whether the inherited prefix was served from cache,
+  false-positiving into a spurious pause. `Backend.Pi.agent_end_result/2`
+  additionally surfaces `first_response_usage` (`input_tokens` /
+  `cache_read_input_tokens` from just the first assistant response) on the
+  same `result` event, additive alongside the unchanged accumulated `usage`
+  fields (other code and the UI read those). The gate reads
+  `first_response_usage` when present, falling back to `usage` for events
+  that don't carry it (e.g. non-pi test payloads).
 
     * **Hit** — `cache_read_input_tokens` ≈ parent context size, fresh
       `input_tokens` in the tens.
@@ -94,15 +108,6 @@ defmodule OrcaHub.ForkGate do
   comes from the parent's latest `pi_session_stats` `context_usage.tokens`
   via `Sessions.last_context_tokens/1`; when it is unknown (the parent has no
   stats yet) detection is SKIPPED rather than guessed at.
-
-  > Known limitation: `input_tokens` on the synthesized `result` is summed
-  > across every assistant response in the turn, so a first turn with a very
-  > long tool loop accumulates fresh tokens and can trip the threshold
-  > without a genuine cold prefill. The check is deliberately single-sided
-  > anyway (a real miss's later rounds DO report large `cache_read`, so
-  > requiring low `cache_read` would mask real misses). A false positive
-  > costs a warning plus a pause the orchestrator can resume — the safe
-  > direction under §1.1.
 
   On a detected miss the gate: emits a `fork_cache_miss` warning on the
   parent's and child's session topics, annotates the child's synthetic
@@ -443,7 +448,10 @@ defmodule OrcaHub.ForkGate do
 
   defp check_cache_hit(state, child_id, %{parent_context_tokens: parent_tokens} = watch, event)
        when is_number(parent_tokens) and parent_tokens > 0 do
-    usage = event["usage"] || %{}
+    # First-response-only (amendment, §6.1 doc above): prefer the
+    # first-response-scoped usage pi.ex now surfaces; fall back to the
+    # turn-summed `usage` for events that don't carry it.
+    usage = event["first_response_usage"] || event["usage"] || %{}
     fresh = usage["input_tokens"] || 0
     cache_read = usage["cache_read_input_tokens"] || 0
     ratio = ServingProfile.miss_threshold_ratio()

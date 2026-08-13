@@ -342,6 +342,46 @@ defmodule OrcaHub.ForkGateTest do
       assert id2 == c2.id
     end
 
+    test "a tool loop's SUMMED input_tokens would breach the threshold but a clean FIRST response is not flagged",
+         %{gate: gate, parent: parent, children: [c1, c2, _]} do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{c1.id}")
+
+      enqueue(gate, parent, c1, parent_context_tokens: 20_000)
+      enqueue(gate, parent, c2, parent_context_tokens: 20_000)
+      assert_receive {:delivered, _, _, _}
+
+      # A first turn with a long tool loop: the turn-SUMMED input_tokens
+      # (what `Backend.Pi.accumulate_usage/1` reports) breaches the 25%
+      # threshold on its own (12,000 > 0.25 * 20,000)...
+      broadcast(
+        c1,
+        {:event,
+         %{
+           "type" => "result",
+           "is_error" => false,
+           "usage" => %{
+             "input_tokens" => 12_000,
+             "output_tokens" => 400,
+             "cache_read_input_tokens" => 20_000
+           },
+           # ...but the FIRST response of the turn — the only one whose
+           # prompt prefix is exactly the inherited prefix §6.1 means to
+           # check — was a clean cache hit.
+           "first_response_usage" => %{
+             "input_tokens" => 18,
+             "cache_read_input_tokens" => 20_000
+           }
+         }}
+      )
+
+      refute_receive {:event, %{"subtype" => "fork_cache_miss"}}, 200
+      refute_receive {:notified, _, _}, 100
+
+      # ...and the queue keeps flowing rather than pausing on a phantom miss.
+      assert_receive {:delivered, id2, _, _}
+      assert id2 == c2.id
+    end
+
     test "detection is SKIPPED (not guessed) when the parent's context size is unknown", %{
       gate: gate,
       parent: parent,

@@ -112,6 +112,30 @@ files, line numbers as of `master` @ 173f1a1:
 | 9 | pi extensions | `priv/pi/orca.ts`, `orca-mcp.ts`, `orca-plan.ts`, `orca-guard.ts` | Load via `-e`; `orca-mcp.ts` reads `ORCA_MCP_URL` at `session_start` — the precedent for §5's env-fed identity extension. |
 | 10 | Session schema | `lib/orca_hub/sessions/session.ex` | `parent_session_id` (~33), `code_exec` default `true` (~32), `claude_session_id` (~13). |
 
+**Post-implementation addition — `fork_queue` MCP tool** (not in the table
+above, since it didn't exist at the pre-implementation baseline; added by
+`ForkGate`, `lib/orca_hub/mcp/tools/fork_queue.ex`): the orchestrator-facing
+half of §6.1. It only matters in one situation — the gate detected a fork
+child's first turn was a prompt-cache miss and PAUSED the remaining fan-out
+(§6.1) — and without it that pause's `[Session lifecycle]` notification
+would name an unreachable action. Minimal surface by design, one tool with
+an `action` enum:
+
+- `"status"` (default) — reports the parent's queue: `active_child_session_id`,
+  `pending_child_session_ids`, whether it's `paused` and why. Defaults
+  `parent_session_id` to the caller's own session (the queue is keyed by the
+  parent), so a paused orchestrator can call it with no args.
+- `"resume"` — releases the next pending child's first prompt and clears the
+  pause, accepting that it (and every remaining sibling) may pay a cold
+  prefill.
+- `"abort"` — drops every pending first prompt for that parent without
+  touching the child sessions themselves; they stay created and un-prompted
+  so the orchestrator can message or archive them by hand.
+
+Dispatches locally, no cross-node routing: a fork child always runs on its
+parent's node (§3's same-node restriction), which is also the node serving
+this MCP connection, and `ForkGate` is itself a per-node process.
+
 ---
 
 ## 3. API surface
@@ -214,6 +238,11 @@ is dir-scoped): copy the parent file into the child's session dir, rewrite
 the header `id` (fresh uuid) + `parentSession` (absolute parent path), and
 spawn with plain `--session-id <fresh-uuid>`. Byte-identical history either
 way; verify before building it (§11.0).
+
+> **Q1 RESOLVED (spike, 2026-08-13):** the absolute-path form of `--fork`
+> IS accepted with no rejection (`pi_fork_spike_findings.md` Q1) — the flag
+> alone is what shipped in §4's adapter code. This copy + rewrite-header
+> fallback was **not built**.
 
 **`cleanup_session/1` unchanged.** Forks share no mutable files — the child
 copied nothing and its `--session-dir` is its own; removing it can never
@@ -349,13 +378,39 @@ diligence.
 
 ### 6.1 Cache-miss detection (eviction is a correctness concern)
 
+> **Amendment (post-ship):** the original text below said "fresh
+> `input_tokens`" without qualifying which response's `input_tokens` — as
+> written it read as the synthesized `result` event's accumulated,
+> turn-SUMMED `input_tokens` (`accumulate_usage/1`). That is wrong for a
+> forked child's first turn that runs a tool loop: `input_tokens` is
+> summed across every assistant response in the turn, and later responses'
+> inputs legitimately grow (each tool result appends to the prompt) —
+> nothing to do with whether the inherited prefix hit the cache. A long
+> first-turn tool loop could therefore inflate the sum past the 25%
+> threshold and false-positive a pause even on a clean cache hit. The
+> comparison is now **FIRST-RESPONSE-ONLY**: only the turn's first LLM
+> response has a prompt prefix that is exactly `[shared system prompt +
+> inherited history + identity entry + first prompt]` — the one prefix
+> this check is actually testing. `Backend.Pi.agent_end_result/2` now also
+> surfaces a `first_response_usage` field (`input_tokens` /
+> `cache_read_input_tokens` from just the first assistant response of the
+> turn) alongside the unchanged, still-summed `usage` field (other code
+> and the UI keep reading `usage`). `ForkGate` reads `first_response_usage`
+> when present, falling back to `usage` otherwise. See
+> `lib/orca_hub/fork_gate.ex`'s §6.1 moduledoc section for the
+> implementation-level detail. The rest of this section (threshold,
+> hit/miss framing, pause-and-notify behavior) is unchanged by the
+> amendment — only the definition of "fresh input tokens" changed.
+
 Eviction cannot be *prevented* from OrcaHub — the box serves external
 traffic — so it must be *detected*, per fork. The signal already flows:
 pi reports per-response `usage.cacheRead` and `usage.input`, and the
 adapter already folds both into the synthesized `result` event
 (`accumulate_usage/1`, `pi.ex` ~768 — `cache_read_input_tokens` /
 `input_tokens`); in the §1 experiments these exactly matched the server's
-own counters. A forked child's first `result` is therefore self-reporting:
+own counters. A forked child's first `result` is therefore self-reporting
+(per the amendment above, "first `result`" here means the FIRST assistant
+response inside that result, not the turn-summed total):
 
 - **Hit:** `cache_read_input_tokens` ≈ parent context size (same
   `pi_session_stats` read as §3's `parent_context_tokens`), with fresh
@@ -481,7 +536,9 @@ scheduling. No caching, no forking — on either engine.
 0. **Pre-implementation spike (gates §4's shape):** Q1 — does `--fork`
    accept an absolute path outside the child's `--session-dir`? Five
    minutes with two temp dirs; decides flag-vs-copy before any Elixir is
-   written.
+   written. **RESOLVED, 2026-08-13:** yes — see `pi_fork_spike_findings.md`
+   Q1; §4 ships flag-only. The same spike also resolved Q7 (§12) as LAZY
+   materialization.
 1. **Unit:** two pi sessions, same flags, different ids → byte-identical
    `system_prompt/1` output (pins §5.1; `test/orca_hub/backend/pi_test.exs`
    is where prompt-content assertions already live). Identity-extension
@@ -512,9 +569,11 @@ scheduling. No caching, no forking — on either engine.
 
 ## 12. Open questions
 
-- **Q1:** Does `--fork` accept an absolute path outside the child's
-  `--session-dir`? (Fallback documented in §4: copy + rewrite header
-  `id`/`parentSession`. Verify first — §11.0.)
+- **Q1 — RESOLVED (spike, 2026-08-13):** Does `--fork` accept an absolute
+  path outside the child's `--session-dir`? **Yes, no rejection** — see
+  `pi_fork_spike_findings.md` Q1. §4 ships the plain `--fork <absolute-path>`
+  flag; the copy + rewrite-header `id`/`parentSession` fallback was
+  **not built** (not needed).
 - **Q2:** Forking a parent whose history contains compaction entries
   (`branch_summary`), or captured mid-plan-mode / with pending
   extension-UI state — does replay reconstruct all of it cleanly, and does
@@ -544,10 +603,52 @@ scheduling. No caching, no forking — on either engine.
 - **Q6:** Hard enforcement for the §7 KV budget (refuse vs warn), and
   whether the threshold belongs in per-node policy (`nodes` table) since
   it's a property of the serving box, not of OrcaHub.
-- **Q7:** Does `pi.sendMessage(…, {deliverAs: "nextTurn"})` at
-  `session_start` write the `custom_message` entry to the JSONL
-  immediately, or only when the next prompt arrives? §5.1's idempotence
-  check reads the file's entries; a lazily-materialized entry could make a
-  quick reopen-before-first-prompt double-append. Verify; if lazy, the
-  extension can track a session-local "already queued" flag as a
-  belt-and-braces.
+- **Q7 — RESOLVED (spike, 2026-08-13):** Does `pi.sendMessage(…, {deliverAs:
+  "nextTurn"})` at `session_start` write the `custom_message` entry to the
+  JSONL immediately, or only when the next prompt arrives? **LAZY** —
+  materialized only when the next prompt/turn actually arrives, confirmed
+  empirically not written yet even within the same `session_start` handler
+  invocation that queued it (see `pi_fork_spike_findings.md` Q7). §5.1's
+  idempotence check (walk entries at `session_start`, compare the latest
+  `orca-identity` entry's session id) remains correct and sufficient for the
+  steady-state case; the spike also found the one gap this implies (a
+  process torn down before its first prompt loses the queued entry) is
+  self-healing on the next reopen, so no extra "already queued" flag was
+  needed.
+
+---
+
+## 13. Known limitations (v1, accepted)
+
+Distinct from §12's open questions above — these are not undecided, they
+are shipped-with-eyes-open tradeoffs `ForkGate` (§6/§6.1) makes, recorded
+here so they don't get rediscovered as surprise bugs later.
+
+- **The per-child release timeout is an unmeasured guess.**
+  `ServingProfile.release_timeout_ms/0` defaults to ~10 minutes, documented
+  in §6 and in `lib/orca_hub/fork_gate.ex`'s moduledoc as "roughly one
+  worst-case long first turn." That figure was never measured against a
+  real worst-case forked first turn on the gb10 box — it's a round-number
+  guess, not a number derived from §1's timing data. If it turns out too
+  short, a legitimately-long first turn (a large tool loop) gets its
+  sibling released early, possibly cold-prefilling for no reason; too long,
+  and a genuinely hung child holds up the whole fan-out longer than
+  necessary. Revisit once there's real distribution data on forked
+  first-turn durations.
+- **A node restart mid-fan-out silently unserializes the remaining
+  children.** `ForkGate`'s queue is per-node and in-memory by explicit §6
+  design (see "Node restart" under Failure handling, both in §6 and in the
+  module's moduledoc) — a restart drops the queue, and
+  `SessionResumer`-recovered children send their pending first prompts
+  unserialized, with no gate left to pause them. §6.1's cache-miss
+  detection is the only remaining signal at that point: it will flag and
+  warn on whichever of those children happens to miss, but by then there is
+  no queue to pause — the "pause the remaining fan-out" recovery path in
+  §6.1 requires a live gate holding pending siblings, which a restart has
+  already lost. This is deliberate (a queue resurrected minutes after a
+  restart is fanning out against a prefix the host-memory cache has very
+  likely already evicted anyway, so serializing it further buys little),
+  but it means a restart during a fan-out is observably worse than a
+  restart between fan-outs, and there is no v1 mechanism to detect "a fork
+  fan-out was in flight when this node went down" after the fact beyond
+  reading the miss warnings the resumed children happen to produce.

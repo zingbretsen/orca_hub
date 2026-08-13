@@ -911,6 +911,7 @@ defmodule OrcaHub.Backend.Pi do
     |> put_error_message(is_error, last_assistant)
     |> put_if_present("total_cost_usd", total_cost)
     |> put_if_present("usage", usage)
+    |> put_if_present("first_response_usage", first_response_usage(assistant_messages))
   end
 
   defp duration_ms(ctx) do
@@ -955,6 +956,27 @@ defmodule OrcaHub.Backend.Pi do
     }
 
     {totals.cost, usage_shape}
+  end
+
+  # ForkGate §6.1 amendment: the accumulated `usage` above is SUMMED across
+  # every assistant response in the turn, so a forked child's first turn
+  # running a long tool loop inflates `input_tokens` and can false-positive
+  # into a spurious cache miss. Only the FIRST response's prompt is exactly
+  # [shared system prompt + inherited history + identity entry + first
+  # prompt] — the prefix §6.1 actually means to check; later responses in
+  # the same turn legitimately have grown inputs (each tool result appends
+  # to the prompt) and were never part of what "did this fork hit the
+  # cache" is asking. Additive alongside `usage`, not a replacement for it —
+  # other code and the UI read the accumulated fields.
+  defp first_response_usage([]), do: nil
+
+  defp first_response_usage([first | _rest]) do
+    usage = first["usage"] || %{}
+
+    %{
+      "input_tokens" => usage["input"] || 0,
+      "cache_read_input_tokens" => usage["cacheRead"] || 0
+    }
   end
 
   # ── Peer requests (extension UI protocol) ──────────────────────────────
