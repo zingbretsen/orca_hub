@@ -150,14 +150,32 @@ defmodule OrcaHub.SessionHeartbeatTest do
   # describes. An injected `send_fn` pins the retry-then-succeed and
   # retry-then-give-up paths deterministically, without depending on a
   # genuine, timing-dependent teardown race.
+  #
+  # Reasons matter, not just "did it raise/exit": only UNAMBIGUOUSLY
+  # not-delivered reasons (:noproc, :normal, :shutdown, {:shutdown, _}) may
+  # retry - a real `GenStatem.call/3` failure with one of these means the
+  # target's exit :DOWN raced (and preceded) any possible reply, per
+  # `retry_decision/1`'s doc. `{:timeout, _}` and anything unrecognized is
+  # AMBIGUOUS (the target may have already processed the message before the
+  # timeout fired) and must give up immediately rather than retry - retrying
+  # an ambiguous outcome is exactly the bug class that caused the duplicate
+  # fork-child-spawn incident (project-duplicate-child-spawns-rca).
+  defp gen_error(reason) do
+    GenStatem.GenError.exception(
+      class: :exit,
+      reason: reason,
+      mfargs: {GenStatem, :call, [:some_ref, :some_request, :infinity]}
+    )
+  end
+
   describe "deliver_with_retry/5" do
-    test "a single raise is retried and the next attempt's success is returned" do
+    test "a GenError with :noproc IS retried and the next attempt's success is returned" do
       {:ok, counter} = Agent.start_link(fn -> 0 end)
 
       send_fn = fn _node, _session_id, _message, :interrupt ->
         Agent.get_and_update(counter, fn n -> {n, n + 1} end)
         |> case do
-          0 -> raise "target vanished mid-call"
+          0 -> raise gen_error(:noproc)
           _ -> :ok
         end
       end
@@ -166,13 +184,13 @@ defmodule OrcaHub.SessionHeartbeatTest do
       assert Agent.get(counter, & &1) == 2
     end
 
-    test "a process EXIT is retried the same as a raise" do
+    test "a process EXIT with :shutdown IS retried the same as a raise" do
       {:ok, counter} = Agent.start_link(fn -> 0 end)
 
       send_fn = fn _node, _session_id, _message, :interrupt ->
         Agent.get_and_update(counter, fn n -> {n, n + 1} end)
         |> case do
-          0 -> exit(:noproc)
+          0 -> exit(:shutdown)
           _ -> :ok
         end
       end
@@ -181,12 +199,12 @@ defmodule OrcaHub.SessionHeartbeatTest do
       assert Agent.get(counter, & &1) == 2
     end
 
-    test "exhausting every attempt gives up and reports an ordinary delivery failure" do
+    test "exhausting every attempt on a persistently-noproc target gives up and reports an ordinary delivery failure" do
       {:ok, counter} = Agent.start_link(fn -> 0 end)
 
       send_fn = fn _node, _session_id, _message, :interrupt ->
         Agent.update(counter, &(&1 + 1))
-        raise "target permanently gone"
+        raise gen_error(:noproc)
       end
 
       assert {:error, :delivery_failed} =
@@ -194,6 +212,36 @@ defmodule OrcaHub.SessionHeartbeatTest do
 
       # Exactly the configured attempt count - not one more, not fewer.
       assert Agent.get(counter, & &1) == 3
+    end
+
+    test "a GenError with {:timeout, _} is NOT retried - the target may have already received it" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      send_fn = fn _node, _session_id, _message, :interrupt ->
+        Agent.update(counter, &(&1 + 1))
+        raise gen_error({:timeout, {GenStatem, :call, [:some_ref, :some_request, 5_000]}})
+      end
+
+      assert {:error, :delivery_failed} =
+               SessionHeartbeat.deliver_with_retry("n", "s", "hi", 3, send_fn)
+
+      # A single attempt only - a timeout is ambiguous, not evidence of
+      # non-delivery, so it must NOT be retried.
+      assert Agent.get(counter, & &1) == 1
+    end
+
+    test "a process EXIT with an unrecognized reason is NOT retried" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      send_fn = fn _node, _session_id, _message, :interrupt ->
+        Agent.update(counter, &(&1 + 1))
+        exit({:some_crash, [some: :details]})
+      end
+
+      assert {:error, :delivery_failed} =
+               SessionHeartbeat.deliver_with_retry("n", "s", "hi", 3, send_fn)
+
+      assert Agent.get(counter, & &1) == 1
     end
 
     test "an ordinary {:error, reason} return is passed through, not retried" do

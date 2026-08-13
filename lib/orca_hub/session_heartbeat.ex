@@ -738,25 +738,78 @@ defmodule OrcaHub.SessionHeartbeat do
   # race" motivation as build_fire/2 above) so the retry-then-succeed and
   # retry-then-give-up paths can be pinned deterministically: tests inject a
   # `send_fn` stub that raises/exits a controlled number of times instead of
-  # depending on a genuine, timing-dependent teardown race. Only a raised
-  # exception or a process EXIT triggers a retry - an ordinary
+  # depending on a genuine, timing-dependent teardown race. An ordinary
   # `{:error, reason}` return (e.g. ORCA_MODE=agent's owning node genuinely
   # refusing) is passed through unchanged, exactly as before this retry was
   # added; retrying a deliberate refusal would just be wasted attempts
-  # against an outcome that won't change.
+  # against an outcome that won't change. A raised exception or process EXIT
+  # only retries when `retry_decision/1` classifies the reason as
+  # UNAMBIGUOUSLY not-delivered (see its doc) - `{:timeout, _}` and anything
+  # else is treated as possibly-already-delivered and given up on
+  # immediately, never retried.
   def deliver_with_retry(node, session_id, message, attempts_left, send_fn) do
     case send_fn.(node, session_id, message, :interrupt) do
       :ok -> :ok
       {:error, _reason} = error -> error
     end
   rescue
-    e -> retry_or_give_up(node, session_id, message, attempts_left, send_fn, Exception.message(e))
+    e ->
+      {safe?, reason_text} = retry_decision(e)
+      continue_or_stop(node, session_id, message, attempts_left, send_fn, safe?, reason_text)
   catch
     :exit, reason ->
-      retry_or_give_up(node, session_id, message, attempts_left, send_fn, inspect(reason))
+      {safe?, reason_text} = retry_decision(reason)
+      continue_or_stop(node, session_id, message, attempts_left, send_fn, safe?, reason_text)
   end
 
-  defp retry_or_give_up(node, session_id, message, attempts_left, send_fn, reason_text)
+  # Classifies a caught failure as safe to retry (the target definitely
+  # never received/finished processing the message) or not (`{safe?,
+  # human-readable reason text}`).
+  #
+  # `GenStatem.call/3` monitors the target BEFORE sending the request; if the
+  # target is already gone, or dies mid-call, the caller sees a `:DOWN`
+  # carrying the target's actual exit reason - and since message order from
+  # one sender to one receiver is preserved by the BEAM, that `:DOWN` cannot
+  # arrive after a reply the target already sent. So `:noproc` (never
+  # existed / already gone), `:normal`/`:shutdown`/`{:shutdown, _}` (exited
+  # cleanly mid-call, e.g. idle teardown or a kill-switch downgrade racing
+  # this exact delivery) are genuinely "definitely not delivered" - retrying
+  # is safe.
+  #
+  # `{:timeout, _}` is the opposite: the call's OWN timeout fired, which says
+  # NOTHING about whether the target already received and started (or even
+  # finished) processing the message before the timeout won the race -
+  # that's a real possibility with `:interrupt` semantics landing mid-turn.
+  # Retrying an ambiguous outcome can double-deliver (a duplicate prompt
+  # interrupting the session) - this exact failure class (retrying instead
+  # of treating an ambiguous outcome as possibly-already-succeeded) is what
+  # caused the duplicate fork-child-spawn incident (see project memory
+  # project-duplicate-child-spawns-rca). Anything not explicitly recognized
+  # gets the same treatment as `{:timeout, _}` - give up rather than guess.
+  # inspect/1, not `GenStatem.GenError`'s own `Exception.message/1` - that
+  # callback interpolates the raw reason with `"#{reason}"`, which raises
+  # `Protocol.UndefinedError` for a tuple reason (exactly the `{:timeout,
+  # _}` shape this function exists to classify), producing a confusing
+  # fallback wall of text in the log instead of the actual reason.
+  defp retry_decision(%GenStatem.GenError{reason: reason}),
+    do: {safe_to_retry?(reason), "GenStatem call failed: " <> inspect(reason)}
+
+  defp retry_decision(reason) when is_exception(reason),
+    do: {false, Exception.message(reason)}
+
+  defp retry_decision(reason), do: {safe_to_retry?(reason), inspect(reason)}
+
+  # Unwraps the classic `gen`-style `{reason, {Mod, Fun, Args}}` exit shape,
+  # in case a raw (non-GenStatem-mediated) `:exit` ever reaches the outer
+  # `catch` with that older wrapping intact.
+  defp safe_to_retry?({reason, {_mod, _fun, _args}}), do: safe_to_retry?(reason)
+  defp safe_to_retry?(:noproc), do: true
+  defp safe_to_retry?(:normal), do: true
+  defp safe_to_retry?(:shutdown), do: true
+  defp safe_to_retry?({:shutdown, _}), do: true
+  defp safe_to_retry?(_), do: false
+
+  defp continue_or_stop(node, session_id, message, attempts_left, send_fn, true, reason_text)
        when attempts_left > 1 do
     Logger.warning(
       "[heartbeat] delivery to session #{session_id} failed (#{reason_text}) - retrying, " <>
@@ -766,10 +819,19 @@ defmodule OrcaHub.SessionHeartbeat do
     deliver_with_retry(node, session_id, message, attempts_left - 1, send_fn)
   end
 
-  defp retry_or_give_up(_node, session_id, _message, _attempts_left, _send_fn, reason_text) do
+  defp continue_or_stop(_node, session_id, _message, _attempts_left, _send_fn, true, reason_text) do
     Logger.warning(
       "[heartbeat] delivery to session #{session_id} failed after " <>
         "#{@delivery_max_attempts} attempt(s), giving up: #{reason_text}"
+    )
+
+    {:error, :delivery_failed}
+  end
+
+  defp continue_or_stop(_node, session_id, _message, _attempts_left, _send_fn, false, reason_text) do
+    Logger.warning(
+      "[heartbeat] delivery to session #{session_id} failed with an ambiguous outcome - NOT " <>
+        "retrying, since the target may already have received it (#{reason_text})"
     )
 
     {:error, :delivery_failed}
