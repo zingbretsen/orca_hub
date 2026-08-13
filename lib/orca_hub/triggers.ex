@@ -18,6 +18,19 @@ defmodule OrcaHub.Triggers do
     Repo.all(from t in Trigger, where: t.enabled == true, preload: [:project])
   end
 
+  @doc """
+  Enabled `type: "email"` triggers bound to `inbox_id` — the candidate set
+  `OrcaHub.EmailInbox.Ingest` routes an incoming message across.
+  """
+  def list_enabled_email_triggers_for_inbox(inbox_id) do
+    Repo.all(
+      from t in Trigger,
+        where: t.enabled == true and t.type == "email" and t.email_inbox_id == ^inbox_id,
+        order_by: [asc: t.name],
+        preload: [:project]
+    )
+  end
+
   def get_trigger!(id), do: Repo.get!(Trigger, id) |> Repo.preload(:project)
 
   def get_trigger_by_secret!(secret) do

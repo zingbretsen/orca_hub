@@ -1,5 +1,5 @@
 defmodule OrcaHub.Triggers.Trigger do
-  @moduledoc "Schema for a scheduled or webhook trigger."
+  @moduledoc "Schema for a scheduled, webhook, or inbound-email trigger."
 
   use Ecto.Schema
   import Ecto.Changeset
@@ -19,7 +19,19 @@ defmodule OrcaHub.Triggers.Trigger do
     field :last_session_id, :binary_id
     field :last_fired_at, :utc_datetime
 
+    # type: "email" only. Addresses (or bare domains) allowed to fire this
+    # trigger, matched case-insensitively against the authenticated From:
+    # addr-spec. Must be non-empty — see validate_by_type/1.
+    field :sender_allowlist, {:array, :string}, default: []
+    # Optional routing when several triggers share one inbox: the recipient
+    # address the message must have been sent to (exact, case-insensitive
+    # match against To:/Cc:), and a case-insensitive SUBSTRING the subject
+    # must contain (not a regex — see OrcaHub.EmailInbox.Ingest).
+    field :to_address, :string
+    field :subject_pattern, :string
+
     belongs_to :project, OrcaHub.Projects.Project
+    belongs_to :email_inbox, OrcaHub.EmailInboxes.EmailInbox
 
     timestamps()
   end
@@ -37,13 +49,18 @@ defmodule OrcaHub.Triggers.Trigger do
       :enabled,
       :project_id,
       :last_session_id,
-      :last_fired_at
+      :last_fired_at,
+      :email_inbox_id,
+      :sender_allowlist,
+      :to_address,
+      :subject_pattern
     ])
     |> validate_required([:name, :prompt, :project_id, :type])
-    |> validate_inclusion(:type, ["scheduled", "webhook"])
+    |> validate_inclusion(:type, ["scheduled", "webhook", "email"])
     |> maybe_generate_webhook_secret()
     |> validate_by_type()
     |> foreign_key_constraint(:project_id)
+    |> foreign_key_constraint(:email_inbox_id)
     |> unique_constraint(:webhook_secret)
   end
 
@@ -71,8 +88,30 @@ defmodule OrcaHub.Triggers.Trigger do
       "webhook" ->
         changeset
 
+      "email" ->
+        changeset
+        |> validate_required([:email_inbox_id])
+        |> validate_non_empty_allowlist()
+
       _ ->
         changeset
+    end
+  end
+
+  # An email trigger with an empty sender_allowlist would fire for mail from
+  # ANY authenticated sender — refuse to create one. Entries that are blank
+  # after trimming don't count, so `[""]` is rejected too.
+  defp validate_non_empty_allowlist(changeset) do
+    allowlist = get_field(changeset, :sender_allowlist) || []
+
+    if Enum.any?(allowlist, fn entry -> is_binary(entry) and String.trim(entry) != "" end) do
+      changeset
+    else
+      add_error(
+        changeset,
+        :sender_allowlist,
+        "must contain at least one address or domain for an email trigger"
+      )
     end
   end
 

@@ -53,9 +53,21 @@ config :orca_hub,
        System.get_env("ORCA_AUTO_RESUME") not in ~w(0 false)
 
 # Base64-encoded 32-byte key used by OrcaHub.Secrets to encrypt/decrypt
-# upstream-injection secrets at rest (AES-256-GCM). Hub-only; raises a clear
-# error at use time (not at boot) if unset or malformed.
+# upstream-injection secrets at rest (AES-256-GCM). Also encrypts inbound
+# mailbox passwords (OrcaHub.EmailInboxes). Hub-only; raises a clear error at
+# use time (not at boot) if unset or malformed.
 config :orca_hub, :secrets_key, System.get_env("ORCA_SECRETS_KEY")
+
+# How often each OrcaHub.EmailInbox.Poller checks its mailbox over IMAP.
+config :orca_hub,
+       :email_poll_interval_ms,
+       String.to_integer(System.get_env("ORCA_EMAIL_POLL_INTERVAL_MS") || "60000")
+
+# Total decoded attachment bytes kept per inbound email. Over the cap, the
+# attachments are dropped (with a warning) but the email is still processed.
+config :orca_hub,
+       :email_max_attachment_bytes,
+       String.to_integer(System.get_env("ORCA_EMAIL_MAX_ATTACHMENT_BYTES") || "10485760")
 
 # Static bearer token for the Agent Runs API (docs/api.md), homelab-internal
 # auth via OrcaHubWeb.Plugs.ApiAuth. Unset/empty means the API is disabled

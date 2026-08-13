@@ -1,7 +1,7 @@
 defmodule OrcaHub.TriggersTest do
   use OrcaHub.DataCase, async: true
 
-  alias OrcaHub.{Projects, Triggers, Triggers.Trigger}
+  alias OrcaHub.{EmailInboxes, Projects, Triggers, Triggers.Trigger}
 
   setup do
     {:ok, project} = Projects.create_project(%{name: "Test Project", directory: "/tmp/test"})
@@ -127,6 +127,127 @@ defmodule OrcaHub.TriggersTest do
     test "returns a changeset" do
       changeset = Triggers.change_trigger(%Trigger{})
       assert %Ecto.Changeset{} = changeset
+    end
+  end
+
+  describe "email triggers" do
+    defp email_inbox(name \\ "ops mailbox") do
+      {:ok, inbox} =
+        EmailInboxes.create_email_inbox(%{
+          name: name,
+          host: "imap.example.com",
+          username: "ops@example.com",
+          password: "hunter2"
+        })
+
+      inbox
+    end
+
+    defp email_attrs(project, inbox, overrides \\ %{}) do
+      Map.merge(
+        %{
+          name: "Inbox trigger",
+          prompt: "Summarize this",
+          type: "email",
+          project_id: project.id,
+          email_inbox_id: inbox.id,
+          sender_allowlist: ["zach@x.com"]
+        },
+        overrides
+      )
+    end
+
+    test "creates an email trigger", %{project: project} do
+      inbox = email_inbox()
+
+      assert {:ok, trigger} = Triggers.create_trigger(email_attrs(project, inbox))
+      assert trigger.type == "email"
+      assert trigger.email_inbox_id == inbox.id
+      assert trigger.sender_allowlist == ["zach@x.com"]
+      # No cron and no webhook secret are generated for this type.
+      assert is_nil(trigger.cron_expression)
+      assert is_nil(trigger.webhook_secret)
+    end
+
+    test "requires an email_inbox_id", %{project: project} do
+      inbox = email_inbox()
+      attrs = email_attrs(project, inbox) |> Map.delete(:email_inbox_id)
+
+      assert {:error, changeset} = Triggers.create_trigger(attrs)
+      assert %{email_inbox_id: ["can't be blank"]} = errors_on(changeset)
+    end
+
+    test "refuses an empty sender_allowlist", %{project: project} do
+      inbox = email_inbox()
+
+      assert {:error, changeset} =
+               Triggers.create_trigger(email_attrs(project, inbox, %{sender_allowlist: []}))
+
+      assert %{sender_allowlist: [message]} = errors_on(changeset)
+      assert message =~ "at least one address or domain"
+    end
+
+    test "refuses an allow-list of only blank entries", %{project: project} do
+      inbox = email_inbox()
+
+      assert {:error, changeset} =
+               Triggers.create_trigger(
+                 email_attrs(project, inbox, %{sender_allowlist: ["", " "]})
+               )
+
+      assert %{sender_allowlist: _} = errors_on(changeset)
+    end
+
+    test "an empty sender_allowlist is fine for non-email types", %{project: project} do
+      assert {:ok, trigger} = Triggers.create_trigger(valid_attrs(project))
+      assert trigger.sender_allowlist == []
+    end
+
+    test "rejects an unknown trigger type", %{project: project} do
+      assert {:error, changeset} =
+               Triggers.create_trigger(valid_attrs(project, %{type: "carrier-pigeon"}))
+
+      assert %{type: _} = errors_on(changeset)
+    end
+
+    test "stores optional routing fields", %{project: project} do
+      inbox = email_inbox()
+
+      attrs =
+        email_attrs(project, inbox, %{
+          to_address: "ops+alerts@example.com",
+          subject_pattern: "ALERT"
+        })
+
+      assert {:ok, trigger} = Triggers.create_trigger(attrs)
+      assert trigger.to_address == "ops+alerts@example.com"
+      assert trigger.subject_pattern == "ALERT"
+    end
+  end
+
+  describe "list_enabled_email_triggers_for_inbox/1" do
+    test "returns only enabled email triggers bound to that inbox", %{project: project} do
+      inbox = email_inbox("inbox a")
+      other_inbox = email_inbox("inbox b")
+
+      {:ok, _wanted} =
+        Triggers.create_trigger(email_attrs(project, inbox, %{name: "Wanted"}))
+
+      {:ok, disabled} =
+        Triggers.create_trigger(email_attrs(project, inbox, %{name: "Disabled"}))
+
+      {:ok, _} = Triggers.update_trigger(disabled, %{enabled: false})
+
+      {:ok, _other} =
+        Triggers.create_trigger(email_attrs(project, other_inbox, %{name: "Other inbox"}))
+
+      # A non-email trigger on the same project must not leak in.
+      {:ok, _cron} = Triggers.create_trigger(valid_attrs(project, %{name: "Cron"}))
+
+      assert [%{name: "Wanted"} = trigger] =
+               Triggers.list_enabled_email_triggers_for_inbox(inbox.id)
+
+      assert trigger.project.id == project.id
     end
   end
 end

@@ -75,6 +75,13 @@ defmodule OrcaHub.Sessions.Session do
     # EVERY child spawn — this is the unambiguous fork discriminant.
     field :forked_from_session_id, :binary_id
 
+    # Threading headers of the inbound email that fired this session, if any
+    # (OrcaHub.EmailInbox.Ingest). Recorded but not yet read — replying into
+    # the original thread is deliberately out of scope for v1; persisting
+    # them now means that feature won't need a migration.
+    field :email_message_id, :string
+    field :email_in_reply_to, :string
+
     has_many :messages, OrcaHub.Sessions.Message
     belongs_to :project, OrcaHub.Projects.Project
 
@@ -107,7 +114,9 @@ defmodule OrcaHub.Sessions.Session do
       :progress_updated_at,
       :idempotency_key,
       :issue_id,
-      :forked_from_session_id
+      :forked_from_session_id,
+      :email_message_id,
+      :email_in_reply_to
     ])
     # Cast separately with empty_values: [] — cast/4's default empty_values
     # ([""]) would otherwise silently turn an explicit `tools: ""` (the "no

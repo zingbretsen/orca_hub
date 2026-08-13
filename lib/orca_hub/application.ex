@@ -106,6 +106,13 @@ defmodule OrcaHub.Application do
       OrcaHub.MCP.UpstreamClient,
       OrcaHub.Scheduler,
       OrcaHub.TriggerLoader,
+      # Inbound email ingestion (OrcaHub.EmailInbox.*). Hub-only, like the
+      # scheduler above: agent nodes must never poll a mailbox — an inbox's
+      # credentials and its watermark are hub state, and two nodes polling
+      # the same mailbox would race to fire the same trigger twice.
+      {Registry, keys: :unique, name: OrcaHub.EmailInboxRegistry},
+      OrcaHub.EmailInboxSupervisor,
+      OrcaHub.EmailInboxLoader,
       OrcaHub.ClusterNodeTracker,
       # Dials out to every `nodes` row flagged `dial: true` — see
       # OrcaHub.NodeDialer moduledoc. Hub-only: agents never dial out on
