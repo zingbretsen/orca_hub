@@ -64,6 +64,16 @@ defmodule OrcaHub.SessionHeartbeat do
 
   @min_interval_seconds 30
 
+  # deliver_message_now/3's bounded retry count (initial attempt + 2 retries)
+  # for the check-then-act race documented on that function: no artificial
+  # delay between attempts, because each retry re-runs Cluster.send_message's
+  # own fresh aliveness check + restart-if-needed (deliver_message/3's
+  # `ensure_started`), which is exactly what heals the race - not a matter of
+  # waiting for something to settle. Bounded so a session that's genuinely,
+  # persistently gone (not just mid-teardown) fails fast instead of retrying
+  # forever.
+  @delivery_max_attempts 3
+
   # Statuses `send_heartbeat/2` (and `deliver_or_queue/2`) will deliver to
   # immediately.
   @deliverable_statuses ["idle", "ready", "error", "waiting"]
@@ -708,24 +718,55 @@ defmodule OrcaHub.SessionHeartbeat do
   # Letting either escape kills THIS GenServer, which owns the whole node's
   # queued-message and heartbeat state, and a few of those in a row exceeds
   # the supervisor's restart intensity and takes the node down with it. A
-  # vanished target is an ordinary delivery failure, so report it as one.
+  # vanished target is an ordinary delivery failure, so report it as one -
+  # but not without first retrying: this is a pure check-then-act race (the
+  # target was alive a moment ago), not evidence the session is actually
+  # unreachable, and `deliver_with_retry/5` below self-heals it by simply
+  # trying again (see @delivery_max_attempts).
   defp deliver_message_now(node, session_id, message) do
-    case Cluster.send_message(node, session_id, message, :interrupt) do
+    deliver_with_retry(node, session_id, message, @delivery_max_attempts, &Cluster.send_message/4)
+  end
+
+  @doc false
+  # Pulled out of deliver_message_now/3 (same "testable without the real
+  # race" motivation as build_fire/2 above) so the retry-then-succeed and
+  # retry-then-give-up paths can be pinned deterministically: tests inject a
+  # `send_fn` stub that raises/exits a controlled number of times instead of
+  # depending on a genuine, timing-dependent teardown race. Only a raised
+  # exception or a process EXIT triggers a retry - an ordinary
+  # `{:error, reason}` return (e.g. ORCA_MODE=agent's owning node genuinely
+  # refusing) is passed through unchanged, exactly as before this retry was
+  # added; retrying a deliberate refusal would just be wasted attempts
+  # against an outcome that won't change.
+  def deliver_with_retry(node, session_id, message, attempts_left, send_fn) do
+    case send_fn.(node, session_id, message, :interrupt) do
       :ok -> :ok
       {:error, _reason} = error -> error
     end
   rescue
-    e ->
-      Logger.warning(
-        "[heartbeat] delivery to session #{session_id} failed: " <> Exception.message(e)
-      )
-
-      {:error, :delivery_failed}
+    e -> retry_or_give_up(node, session_id, message, attempts_left, send_fn, Exception.message(e))
   catch
     :exit, reason ->
-      Logger.warning("[heartbeat] delivery to session #{session_id} exited: " <> inspect(reason))
+      retry_or_give_up(node, session_id, message, attempts_left, send_fn, inspect(reason))
+  end
 
-      {:error, :delivery_failed}
+  defp retry_or_give_up(node, session_id, message, attempts_left, send_fn, reason_text)
+       when attempts_left > 1 do
+    Logger.warning(
+      "[heartbeat] delivery to session #{session_id} failed (#{reason_text}) - retrying, " <>
+        "#{attempts_left - 1} attempt(s) left"
+    )
+
+    deliver_with_retry(node, session_id, message, attempts_left - 1, send_fn)
+  end
+
+  defp retry_or_give_up(_node, session_id, _message, _attempts_left, _send_fn, reason_text) do
+    Logger.warning(
+      "[heartbeat] delivery to session #{session_id} failed after " <>
+        "#{@delivery_max_attempts} attempt(s), giving up: #{reason_text}"
+    )
+
+    {:error, :delivery_failed}
   end
 
   # Appends to an existing batch (never replaces - see moduledoc: multiple

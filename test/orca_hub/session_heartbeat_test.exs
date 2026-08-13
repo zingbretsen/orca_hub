@@ -143,6 +143,86 @@ defmodule OrcaHub.SessionHeartbeatTest do
     end
   end
 
+  # ── deliver_message_now/3's bounded retry (Track D fix) ─────────────────
+  # A raised exception or process EXIT from `send_fn` simulates the target
+  # runner vanishing mid-call (idle teardown, warm-pool eviction, a
+  # kill-switch downgrade) - the exact race deliver_message_now/3's own doc
+  # describes. An injected `send_fn` pins the retry-then-succeed and
+  # retry-then-give-up paths deterministically, without depending on a
+  # genuine, timing-dependent teardown race.
+  describe "deliver_with_retry/5" do
+    test "a single raise is retried and the next attempt's success is returned" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      send_fn = fn _node, _session_id, _message, :interrupt ->
+        Agent.get_and_update(counter, fn n -> {n, n + 1} end)
+        |> case do
+          0 -> raise "target vanished mid-call"
+          _ -> :ok
+        end
+      end
+
+      assert :ok = SessionHeartbeat.deliver_with_retry("n", "s", "hi", 3, send_fn)
+      assert Agent.get(counter, & &1) == 2
+    end
+
+    test "a process EXIT is retried the same as a raise" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      send_fn = fn _node, _session_id, _message, :interrupt ->
+        Agent.get_and_update(counter, fn n -> {n, n + 1} end)
+        |> case do
+          0 -> exit(:noproc)
+          _ -> :ok
+        end
+      end
+
+      assert :ok = SessionHeartbeat.deliver_with_retry("n", "s", "hi", 3, send_fn)
+      assert Agent.get(counter, & &1) == 2
+    end
+
+    test "exhausting every attempt gives up and reports an ordinary delivery failure" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      send_fn = fn _node, _session_id, _message, :interrupt ->
+        Agent.update(counter, &(&1 + 1))
+        raise "target permanently gone"
+      end
+
+      assert {:error, :delivery_failed} =
+               SessionHeartbeat.deliver_with_retry("n", "s", "hi", 3, send_fn)
+
+      # Exactly the configured attempt count - not one more, not fewer.
+      assert Agent.get(counter, & &1) == 3
+    end
+
+    test "an ordinary {:error, reason} return is passed through, not retried" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      send_fn = fn _node, _session_id, _message, :interrupt ->
+        Agent.update(counter, &(&1 + 1))
+        {:error, :node_unavailable}
+      end
+
+      assert {:error, :node_unavailable} =
+               SessionHeartbeat.deliver_with_retry("n", "s", "hi", 3, send_fn)
+
+      assert Agent.get(counter, & &1) == 1
+    end
+
+    test "a clean first-attempt success never retries" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      send_fn = fn _node, _session_id, _message, :interrupt ->
+        Agent.update(counter, &(&1 + 1))
+        :ok
+      end
+
+      assert :ok = SessionHeartbeat.deliver_with_retry("n", "s", "hi", 3, send_fn)
+      assert Agent.get(counter, & &1) == 1
+    end
+  end
+
   # ── item 4: auto-cancel wiring matches the REAL broadcast shape ─────────
   # Regression coverage for ORCAHUB3-26 item 4: the old handle_info clauses
   # matched {:session_archived, id}/{:session_deleted, id}, tuples nothing in
