@@ -655,6 +655,35 @@ defmodule OrcaHub.Sessions do
     |> Repo.aggregate(:count)
   end
 
+  @doc """
+  Merges `annotations` into a fork child's synthetic `forked_from` marker
+  message (pi_fork_spec.md §8) — how `OrcaHub.ForkGate` stamps §6.1's
+  cache-hit/miss outcome onto the marker at the top of the child's feed.
+
+  Returns `{:ok, message}`, or `{:error, :not_found}` when the child has no
+  marker (a fork whose marker creation itself failed — that path is already
+  best-effort, so this stays non-fatal too).
+  """
+  def annotate_fork_marker(session_id, annotations) when is_map(annotations) do
+    query =
+      from(m in Message,
+        where: m.session_id == ^session_id,
+        where: fragment("? ->> 'subtype' = 'forked_from'", m.data),
+        order_by: [desc: m.inserted_at],
+        limit: 1
+      )
+
+    case Repo.one(query) do
+      nil ->
+        {:error, :not_found}
+
+      message ->
+        message
+        |> Message.changeset(%{data: Map.merge(message.data, annotations)})
+        |> Repo.update()
+    end
+  end
+
   # Latest assistant message containing a tool_use block whose name is in
   # `names`, or `nil` — the shared primitive behind the plan-mode/todos/
   # AskUserQuestion targeted queries above. Returns the whole message `data`

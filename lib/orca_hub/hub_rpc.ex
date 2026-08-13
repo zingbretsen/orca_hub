@@ -81,6 +81,9 @@ defmodule OrcaHub.HubRPC do
   def count_active_fork_children(parent_id),
     do: call(OrcaHub.Sessions, :count_active_fork_children, [parent_id])
 
+  def annotate_fork_marker(session_id, annotations),
+    do: call(OrcaHub.Sessions, :annotate_fork_marker, [session_id, annotations])
+
   def create_message(attrs), do: call(OrcaHub.Sessions, :create_message, [attrs])
   def count_idle_sessions, do: call(OrcaHub.Sessions, :count_idle_sessions, [])
 

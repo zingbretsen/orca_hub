@@ -73,6 +73,9 @@ defmodule OrcaHub.Application do
       # Auto-resumes this node's own sessions orphaned in `status: "running"`
       # by a node restart (deploy). See OrcaHub.SessionResumer moduledoc.
       OrcaHub.SessionResumer,
+      # Serializes forked pi children's first turns (pi_fork_spec.md §6).
+      # Runs on hub + agent — a fork child runs wherever its parent does.
+      OrcaHub.ForkGate,
       OrcaHub.TerminalSupervisor,
       # Per-node DynamicSupervisor for OrcaHub.JobWatcher processes — the
       # detached OS processes themselves are NOT children of this
@@ -136,6 +139,9 @@ defmodule OrcaHub.Application do
       # Auto-resumes this node's own sessions orphaned in `status: "running"`
       # by a node restart (deploy). See OrcaHub.SessionResumer moduledoc.
       OrcaHub.SessionResumer,
+      # Serializes forked pi children's first turns (pi_fork_spec.md §6) —
+      # see the matching hub_children/1 comment above.
+      OrcaHub.ForkGate,
       OrcaHub.TerminalSupervisor,
       # Per-node DynamicSupervisor for OrcaHub.JobWatcher processes — see
       # the matching hub_children/1 comment above.

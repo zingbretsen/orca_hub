@@ -36,6 +36,7 @@ defmodule OrcaHub.MCP.Tools do
     Databases,
     Discord,
     Files,
+    ForkQueue,
     Heartbeat,
     Issues,
     Jobs,
@@ -54,6 +55,7 @@ defmodule OrcaHub.MCP.Tools do
     Projects,
     Files,
     Heartbeat,
+    ForkQueue,
     Discord,
     Issues,
     Artifacts,
@@ -78,7 +80,11 @@ defmodule OrcaHub.MCP.Tools do
   # The Discord category's tools (send_discord_message,
   # list_discord_attachments, fetch_discord_attachments) are deliberately
   # absent here — their visibility is conditional (see moduledoc), not static.
+  # fork_queue rides with start_session for the same reason: any pi session
+  # may fork (pi_fork_spec.md §3), so any pi session can end up holding a
+  # paused fan-out it needs to resume or abort.
   @regular_session_tools ~w(send_message_to_session open_file report_progress start_session
+                             fork_queue
                              get_session_tail archive_session create_issue list_issues
                              get_issue update_issue append_issue_note close_issue
                              file_feature_request list_feature_requests get_feature_request
