@@ -54,7 +54,7 @@ defmodule OrcaHub.ForkGate do
       one (e.g. an interrupted/empty turn); it releases the next child but
       can't run miss detection.
 
-  ## Failure handling (all three of §6's cases)
+  ## Failure handling (all three of §6's cases, plus delivery itself)
 
     * **Child errors mid-first-turn** — an error event ends the turn, so the
       next child is released immediately. The errored child is dropped from
@@ -74,6 +74,17 @@ defmodule OrcaHub.ForkGate do
       out against a prefix the host-memory cache has very likely already
       evicted anyway. §6.1's per-fork miss detection is what turns that from
       a silent regression into a visible one.
+    * **Delivery of the first prompt itself fails** (`release/2`'s off-process
+      `Task` gets an `{:error, reason}` back from `deliver.(...)`, e.g. the
+      runner vanished between admission and the `Cluster.send_message` call
+      actually landing) — this is orthogonal to §6's three first-TURN cases
+      above, since the child's first turn never even started. The next child
+      is released immediately, and a `fork_gate_deliver_failed` warning is
+      emitted on BOTH the parent's and the child's session topics (same
+      persist-on-child/broadcast-on-parent split as every other warning here)
+      — otherwise a fork child left prompt-less in its pre-turn state would be
+      visible only in a server log, not to the orchestrator watching the
+      parent.
 
   ## §6.1 cache-miss detection
 
@@ -320,6 +331,24 @@ defmodule OrcaHub.ForkGate do
           "[fork gate] failed to deliver the first prompt to fork child #{child_id}: " <>
             inspect(reason)
         )
+
+        message =
+          "Fork gate: delivery of child session #{child_id}'s first prompt failed " <>
+            "(#{inspect(reason)}). Releasing the next forked sibling anyway — this child was " <>
+            "never prompted and stays in its pre-turn state until you send it a message " <>
+            "yourself (pi_fork_spec.md §6)."
+
+        event = %{
+          "type" => "system",
+          "subtype" => "fork_gate_deliver_failed",
+          "child_session_id" => child_id,
+          "parent_session_id" => watch.parent_id,
+          "reason" => inspect(reason),
+          "message" => message
+        }
+
+        emit_warning(child_id, event, persist: true)
+        emit_warning(watch.parent_id, event, persist: false)
 
         {:noreply, complete_child(state, child_id, watch, :deliver_failed)}
     end

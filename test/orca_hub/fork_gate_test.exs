@@ -80,6 +80,35 @@ defmodule OrcaHub.ForkGateTest do
     )
   end
 
+  # Same shape as start_gate/1, but delivery to `failing_child_id` fails
+  # (as the off-process Task in ForkGate.release/2 does on a real
+  # Cluster.send_message error) instead of succeeding.
+  defp start_gate_with_failing_child(failing_child_id) do
+    test = self()
+
+    name = :"fork_gate_test_#{System.unique_integer([:positive])}"
+
+    {:ok, _pid} =
+      start_supervised(
+        {ForkGate,
+         name: name,
+         deliver: fn node, child_id, prompt ->
+           if child_id == failing_child_id do
+             {:error, :noproc}
+           else
+             send(test, {:delivered, child_id, prompt, node})
+             :ok
+           end
+         end,
+         notify: fn parent_id, message ->
+           send(test, {:notified, parent_id, message})
+           :ok
+         end}
+      )
+
+    name
+  end
+
   # Exactly the payload SessionRunner.broadcast/2 publishes for a completed
   # streaming turn, on the aggregate topic the gate listens to.
   defp finish_turn(child, usage) do
@@ -246,6 +275,48 @@ defmodule OrcaHub.ForkGateTest do
 
       # The sessions themselves are untouched — abort only drops prompts.
       assert Sessions.get_session!(c2.id).id == c2.id
+    end
+  end
+
+  # ── delivery failure ({:deliver_failed}) ─────────────────────────────
+  # No `setup [:start_gate_ctx]` here — this describe starts its own gate
+  # per test (with a failing deliver fn for one child), so the shared
+  # default-deliver gate the other describes use would just be an unused,
+  # ID-colliding second `start_supervised({ForkGate, ...})` call.
+
+  describe "delivery failure" do
+    test "a FAILED delivery warns on both topics and releases the next sibling", %{
+      parent: parent,
+      children: [c1, c2, _]
+    } do
+      gate = start_gate_with_failing_child(c1.id)
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{parent.id}")
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{c1.id}")
+
+      assert enqueue(gate, parent, c1) == :ok
+      assert enqueue(gate, parent, c2) == :ok
+
+      # c1's first prompt never reached the runner — the gate is told via
+      # {:deliver_failed, ...} rather than a turn-ending event.
+      assert_receive {:event, %{"subtype" => "fork_gate_deliver_failed"} = child_warning}, 1_000
+      assert child_warning["child_session_id"] == c1.id
+      assert child_warning["parent_session_id"] == parent.id
+      assert child_warning["reason"] =~ "noproc"
+
+      # ...on BOTH topics (the parent's copy).
+      assert_receive {:event, %{"subtype" => "fork_gate_deliver_failed"}}, 1_000
+
+      # c1 is dropped from the gate and the next sibling is released anyway —
+      # a failed delivery must not stall the rest of the fan-out.
+      assert_receive {:delivered, id2, _, _}, 1_000
+      assert id2 == c2.id
+
+      # The warning is persisted on the child's own feed, not just broadcast.
+      assert Enum.any?(
+               Sessions.list_messages(c1.id),
+               &(&1.data["subtype"] == "fork_gate_deliver_failed")
+             )
     end
   end
 

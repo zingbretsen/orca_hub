@@ -722,7 +722,13 @@ defmodule OrcaHub.SessionHeartbeat do
   # but not without first retrying: this is a pure check-then-act race (the
   # target was alive a moment ago), not evidence the session is actually
   # unreachable, and `deliver_with_retry/5` below self-heals it by simply
-  # trying again (see @delivery_max_attempts).
+  # trying again (see @delivery_max_attempts). This function is only called
+  # from `deliver_or_queue/2`'s synchronous `GenServer.call` handler, so a
+  # final `{:error, :delivery_failed}` propagates straight back to the
+  # ORIGINAL caller as the call's reply - the caller sees the failure and
+  # owns any further retry decision; nothing is queued in this GenServer's
+  # own state at this point (unlike the busy-turn branch, which is a
+  # different code path entirely - see `enqueue_message/4`).
   defp deliver_message_now(node, session_id, message) do
     deliver_with_retry(node, session_id, message, @delivery_max_attempts, &Cluster.send_message/4)
   end
