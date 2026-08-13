@@ -737,6 +737,16 @@ defmodule OrcaHubWeb.MessageComponents do
     "Compacted context" <> token_suffix(msg)
   end
 
+  # pi_fork_spec.md §8 — the synthetic marker bridging the gap between an
+  # empty OrcaHub feed and the LLM context the fork actually inherited.
+  # linkify_session_ids/1 turns the embedded parent id into a clickable
+  # link, same as any other session id appearing in message text.
+  defp system_message_label(%{"subtype" => "forked_from"} = msg) do
+    tokens = msg["inherited_tokens"]
+    suffix = if is_integer(tokens), do: " (#{tokens} tokens inherited)", else: ""
+    linkify_session_ids("Forked from session #{msg["parent_session_id"]}#{suffix}")
+  end
+
   defp system_message_label(%{"subtype" => subtype}), do: subtype
 
   defp reason_suffix(reason) when is_binary(reason), do: " (#{reason})"

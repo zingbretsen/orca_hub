@@ -70,6 +70,11 @@ defmodule OrcaHub.Sessions.Session do
     # schema/changeset needed reviving.
     field :issue_id, :binary_id
 
+    # pi_fork_spec.md §3/§4: set at spawn time on a fork child (v1: pi
+    # backend only). Distinct from `parent_session_id`, which is set for
+    # EVERY child spawn — this is the unambiguous fork discriminant.
+    field :forked_from_session_id, :binary_id
+
     has_many :messages, OrcaHub.Sessions.Message
     belongs_to :project, OrcaHub.Projects.Project
 
@@ -101,7 +106,8 @@ defmodule OrcaHub.Sessions.Session do
       :progress_note,
       :progress_updated_at,
       :idempotency_key,
-      :issue_id
+      :issue_id,
+      :forked_from_session_id
     ])
     # Cast separately with empty_values: [] — cast/4's default empty_values
     # ([""]) would otherwise silently turn an explicit `tools: ""` (the "no

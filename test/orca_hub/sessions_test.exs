@@ -1494,5 +1494,47 @@ defmodule OrcaHub.SessionsTest do
 
       assert Sessions.latest_context_percent(session.id) == nil
     end
+
+    test "last_context_tokens/1 finds the last numeric token count far outside a small window",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      stats = %{"type" => "pi_session_stats", "context_usage" => %{"tokens" => 22_507}}
+      derived_insert_at(session, stats, base)
+      derived_noise(session, base, 25)
+
+      assert Sessions.last_context_tokens(session.id) == 22_507
+    end
+
+    test "last_context_tokens/1 is nil when no pi_session_stats event ever arrived",
+         %{project: project} do
+      session = create_session(project)
+      derived_noise(session, ~N[2026-01-01 00:00:00.000000], 5)
+
+      assert Sessions.last_context_tokens(session.id) == nil
+    end
+  end
+
+  describe "count_active_fork_children/1" do
+    test "counts only non-archived children forked from the given parent", %{project: project} do
+      parent = create_session(project)
+      other_parent = create_session(project)
+
+      child1 = create_session(project, %{forked_from_session_id: parent.id})
+      _child2 = create_session(project, %{forked_from_session_id: parent.id})
+      _unrelated_child = create_session(project, %{forked_from_session_id: other_parent.id})
+      _plain_child = create_session(project, %{parent_session_id: parent.id})
+
+      assert Sessions.count_active_fork_children(parent.id) == 2
+
+      {:ok, _} = Sessions.archive_session(child1)
+      assert Sessions.count_active_fork_children(parent.id) == 1
+    end
+
+    test "is 0 when the session has no fork children", %{project: project} do
+      parent = create_session(project)
+      assert Sessions.count_active_fork_children(parent.id) == 0
+    end
   end
 end

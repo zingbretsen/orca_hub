@@ -183,6 +183,14 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "type" => "string",
               "description" =>
                 "Link the new session to an issue as an attempt at it (session.issue_id) — the primary way issues get worked. Same id format as get_issue (key, UUID, or UUID prefix). If the issue is currently \"open\", it's automatically moved to \"in_progress\" (best-effort, non-blocking)."
+            },
+            "fork_from_parent" => %{
+              "type" => "boolean",
+              "description" =>
+                "pi-backend only. Fork the CALLER's session: the new child starts with a " <>
+                  "byte-identical copy of your full conversation context (cheap on a " <>
+                  "prompt-cached provider) instead of a blank context. The child is a " <>
+                  "normal child session in every other respect. Default: false."
             }
           },
           "required" => ["prompt"]
@@ -619,24 +627,135 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   defp do_start_session(args, caller_session_id, idempotency_key) do
     caller = HubRPC.get_session!(caller_session_id)
 
-    case resolve_routing(args, caller) do
-      {:ok, {project_id, runner_node, directory}} ->
-        if NodePolicy.cross_node_allowed?(runner_node) do
-          create_and_start_session(
-            args,
-            directory,
-            project_id,
-            runner_node,
-            caller,
-            caller_session_id,
-            idempotency_key
-          )
+    case prepare_fork_args(args, caller) do
+      {:error, message} ->
+        error(message)
+
+      {:ok, args} ->
+        case resolve_routing(args, caller) do
+          {:ok, {project_id, runner_node, directory}} ->
+            if NodePolicy.cross_node_allowed?(runner_node) do
+              create_and_start_session(
+                args,
+                directory,
+                project_id,
+                runner_node,
+                caller,
+                caller_session_id,
+                idempotency_key
+              )
+            else
+              error(NodePolicy.denial_message(runner_node))
+            end
+
+          {:error, message} ->
+            error(message)
+        end
+    end
+  end
+
+  # ── pi session forking (pi_fork_spec.md §3) ───────────────────────────
+  # Validation + inheritance-forcing lives entirely in this block so it
+  # stays a single, easily-lifted unit: everything downstream of
+  # prepare_fork_args/2 (routing, backend/model validation, attrs building,
+  # row creation, delivery) is UNCHANGED for a fork spawn — it just
+  # receives caller-matching args instead of whatever the tool call itself
+  # passed.
+
+  defp fork?(args), do: args["fork_from_parent"] == true
+
+  # Not forking: args pass through untouched. Forking: validate the caller
+  # is pi-backed and that no arg explicitly conflicts with what it must
+  # inherit, then FORCE backend/model/orchestrator onto the caller's own
+  # values (directory/project_id/node inheritance already falls out of
+  # resolve_routing/2's existing "no override args → caller's own routing"
+  # default, once conflicts are ruled out below; code_exec has no `args`
+  # slot at all and is copied directly onto the child row in
+  # create_and_start_session/7 instead).
+  defp prepare_fork_args(args, caller) do
+    if fork?(args) do
+      with :ok <- validate_fork_backend(caller),
+           :ok <- validate_fork_no_override(args, caller) do
+        {:ok,
+         args
+         |> Map.put("backend", caller.backend)
+         |> Map.put("model", caller.model)
+         |> Map.put("orchestrator", caller.orchestrator)}
+      end
+    else
+      {:ok, args}
+    end
+  end
+
+  defp validate_fork_backend(%{backend: "pi"}), do: :ok
+
+  defp validate_fork_backend(%{backend: backend}) do
+    {:error,
+     "fork_from_parent requires the calling session's own backend to be \"pi\" (this " <>
+       "session's backend is #{inspect(backend)}). Forking is a pi-native primitive " <>
+       "with no equivalent for other backends."}
+  end
+
+  defp validate_fork_no_override(args, caller) do
+    with :ok <- reject_fork_override(args["backend"], caller.backend, "backend"),
+         :ok <- reject_fork_override(args["model"], caller.model, "model"),
+         :ok <- reject_fork_override(args["directory"], caller.directory, "directory"),
+         :ok <- reject_fork_override(args["orchestrator"], caller.orchestrator, "orchestrator"),
+         :ok <- reject_fork_project_id_override(args["project_id"], caller),
+         :ok <- reject_fork_node_override(args["node"], caller) do
+      :ok
+    end
+  end
+
+  defp reject_fork_override(nil, _caller_value, _label), do: :ok
+  defp reject_fork_override("", _caller_value, _label), do: :ok
+  defp reject_fork_override(value, value, _label), do: :ok
+
+  defp reject_fork_override(value, caller_value, label) do
+    {:error,
+     "fork_from_parent: #{label} #{inspect(value)} conflicts with the caller's own " <>
+       "#{label} (#{inspect(caller_value)}) — a fork child inherits #{label} from its " <>
+       "parent and cannot override it. Omit #{label} to inherit it."}
+  end
+
+  defp reject_fork_project_id_override(nil, _caller), do: :ok
+  defp reject_fork_project_id_override("", _caller), do: :ok
+
+  defp reject_fork_project_id_override(project_id_arg, caller) do
+    case HubRPC.resolve_project_id(project_id_arg) do
+      {:ok, %{id: id}} when id == caller.project_id ->
+        :ok
+
+      {:ok, project} ->
+        {:error,
+         "fork_from_parent: project_id #{inspect(project_id_arg)} resolves to " <>
+           "#{inspect(project.id)}, which conflicts with the caller's own project_id " <>
+           "#{inspect(caller.project_id)} — a fork child inherits project_id and cannot " <>
+           "override it. Omit project_id to inherit it."}
+
+      {:error, message} ->
+        {:error, message}
+    end
+  end
+
+  defp reject_fork_node_override(nil, _caller), do: :ok
+  defp reject_fork_node_override("", _caller), do: :ok
+
+  defp reject_fork_node_override(node_arg, caller) do
+    case NodeArg.resolve(node_arg) do
+      {:ok, node} ->
+        if Atom.to_string(node) == caller.runner_node do
+          :ok
         else
-          error(NodePolicy.denial_message(runner_node))
+          {:error,
+           "fork_from_parent: node #{inspect(node_arg)} conflicts with the caller's own " <>
+             "runner node #{inspect(caller.runner_node)} — a fork child must run on the " <>
+             "same node as its parent (its session file must be readable at spawn time). " <>
+             "Omit node to inherit it."}
         end
 
       {:error, message} ->
-        error(message)
+        {:error, message}
     end
   end
 
@@ -664,6 +783,12 @@ defmodule OrcaHub.MCP.Tools.Sessions do
                 error(message)
 
               {:ok, issue_id} ->
+                # `code_exec` has no `args` slot (inventory #1) — inherit
+                # it directly rather than via the schema default, which
+                # would silently break forking from a `code_exec: false`
+                # parent (pi_fork_spec.md §3 ⚠).
+                forked_from = if fork?(args), do: caller.id
+
                 session_attrs =
                   %{
                     directory: directory,
@@ -676,12 +801,19 @@ defmodule OrcaHub.MCP.Tools.Sessions do
                   |> maybe_put_field(:orchestrator, args["orchestrator"])
                   |> maybe_put_field(:idempotency_key, idempotency_key)
                   |> maybe_put_field(:issue_id, issue_id)
+                  |> maybe_put_field(:code_exec, forked_from && caller.code_exec)
+                  |> maybe_put_field(:forked_from_session_id, forked_from)
                   |> maybe_link_parent(caller, caller_session_id, args["notify_on_completion"])
 
                 case HubRPC.create_session(session_attrs) do
                   {:ok, session} ->
                     if orchestrator_handoff?(session_attrs, args["notify_on_completion"]) do
                       maybe_record_interaction(caller_session_id, session.id, "handoff")
+                    end
+
+                    if forked_from do
+                      create_fork_marker_message(session.id, forked_from)
+                      maybe_record_interaction(caller_session_id, session.id, "fork")
                     end
 
                     maybe_auto_progress_issue(issue_id, session.id)
@@ -989,6 +1121,65 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       orchestrator: session.orchestrator,
       issue_id: session.issue_id
     }
+    |> maybe_put_fork_fields(session.forked_from_session_id)
+  end
+
+  # pi_fork_spec.md §3/§7: a fork spawn's result additionally carries the
+  # parent id, the parent's last known context size, and — above the KV
+  # budget threshold — a soft warning. Threaded through start_session_result/2
+  # (rather than a separate value at the call site) so a fresh fork spawn
+  # AND an idempotency-key replay of one get the same fields, computed
+  # fresh each time.
+  defp maybe_put_fork_fields(result, nil), do: result
+
+  defp maybe_put_fork_fields(result, parent_id) do
+    parent_tokens = HubRPC.last_context_tokens(parent_id)
+    # Counted AFTER this child's row exists (or already existed, on a
+    # replay), so this total already includes the spec's "+1".
+    concurrent_total = HubRPC.count_active_fork_children(parent_id)
+
+    result
+    |> Map.put(:forked_from, parent_id)
+    |> Map.put(:parent_context_tokens, parent_tokens)
+    |> maybe_put_field(
+      :fork_budget_warning,
+      fork_budget_warning(parent_tokens, concurrent_total)
+    )
+  end
+
+  # Unified-KV budget (pi_fork_spec.md §7) — total slot-resident cells on
+  # the gb10 llama-server serving profile. Configurable since it's a
+  # property of the serving box, not of OrcaHub.
+  @default_fork_kv_budget 262_144
+
+  defp fork_kv_budget do
+    case System.get_env("ORCA_FORK_KV_BUDGET") do
+      nil ->
+        @default_fork_kv_budget
+
+      val ->
+        case Integer.parse(val) do
+          {n, ""} when n > 0 -> n
+          _ -> @default_fork_kv_budget
+        end
+    end
+  end
+
+  # v1 is a SOFT guard only (§7) — this never refuses a spawn, it only
+  # appends a warning string to the tool result.
+  defp fork_budget_warning(nil, _concurrent_total), do: nil
+
+  defp fork_budget_warning(parent_tokens, concurrent_total) do
+    projected = concurrent_total * parent_tokens
+    budget = fork_kv_budget()
+
+    if projected > budget do
+      "KV budget pressure: #{concurrent_total} concurrently-resident fork context(s) x " <>
+        "~#{parent_tokens} parent tokens ~= #{projected}, above the #{budget}-cell budget " <>
+        "for this serving profile (pi_fork_spec.md §7). Soft guard only — this does not " <>
+        "block spawning, but slot thrash may slow turns; consider spacing out concurrent " <>
+        "forks."
+    end
   end
 
   # No `backend` arg (nil, or blank) → leave it unset so the schema default
@@ -1133,6 +1324,43 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   # notify-back. `notify_on_completion: true` is the explicit escape hatch
   # back to the old child-link behavior, for a deliberate reporting
   # sub-orchestrator.
+  # pi_fork_spec.md §8: bridges the gap between an empty OrcaHub `messages`
+  # feed and a full LLM context the fork actually inherited. Best-effort —
+  # same posture as maybe_record_interaction/3, since the session itself
+  # was already successfully created by the time this runs.
+  defp create_fork_marker_message(child_session_id, parent_session_id) do
+    inherited_tokens = HubRPC.last_context_tokens(parent_session_id)
+
+    case HubRPC.create_message(%{
+           session_id: child_session_id,
+           data: %{
+             "type" => "system",
+             "subtype" => "forked_from",
+             "parent_session_id" => parent_session_id,
+             "inherited_tokens" => inherited_tokens
+           }
+         }) do
+      {:ok, _message} ->
+        :ok
+
+      {:error, changeset} ->
+        Logger.warning(
+          "[MCP] start_session: failed to create fork marker message for child " <>
+            "#{child_session_id} (parent #{parent_session_id}): #{inspect(changeset.errors)}"
+        )
+
+        :ok
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "[MCP] start_session: failed to create fork marker message for child " <>
+          "#{child_session_id} (parent #{parent_session_id}): #{Exception.format(:error, error)}"
+      )
+
+      :ok
+  end
+
   defp maybe_link_parent(attrs, caller, caller_session_id, notify_on_completion)
        when is_binary(caller_session_id) do
     if orchestrator_handoff?(attrs, notify_on_completion) do

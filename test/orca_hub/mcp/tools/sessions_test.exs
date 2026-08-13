@@ -2408,4 +2408,227 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert OrcaHub.Issues.get_issue!(issue.id).status == "in_progress"
     end
   end
+
+  describe "start_session — fork_from_parent (pi_fork_spec.md §3)" do
+    setup %{dir: dir} do
+      Application.put_env(:orca_hub, :pi_executable, @pi_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :pi_executable) end)
+
+      {:ok, pi_caller} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "pi",
+          code_exec: false,
+          orchestrator: false
+        })
+
+      {:ok, pi_state: %{orca_session_id: pi_caller.id}, pi_caller: pi_caller}
+    end
+
+    defp with_fork_kv_budget(value, fun) do
+      original = System.get_env("ORCA_FORK_KV_BUDGET")
+      System.put_env("ORCA_FORK_KV_BUDGET", to_string(value))
+
+      try do
+        fun.()
+      after
+        if original,
+          do: System.put_env("ORCA_FORK_KV_BUDGET", original),
+          else: System.delete_env("ORCA_FORK_KV_BUDGET")
+      end
+    end
+
+    test "fork from a non-pi caller is rejected, no session created", %{state: state} do
+      # the module-level `state` fixture's caller is backend "claude".
+      count_before = Repo.aggregate(Session, :count)
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "fork_from_parent" => true},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "pi"
+      assert text =~ "claude"
+      assert Repo.aggregate(Session, :count) == count_before
+    end
+
+    test "a conflicting model arg is rejected, no session created", %{
+      pi_state: pi_state
+    } do
+      count_before = Repo.aggregate(Session, :count)
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "fork_from_parent" => true, "model" => "some-other-model"},
+          pi_state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "model"
+      assert Repo.aggregate(Session, :count) == count_before
+    end
+
+    test "a conflicting directory arg is rejected, no session created", %{
+      pi_state: pi_state
+    } do
+      other_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mcp_start_session_fork_other_#{System.unique_integer([:positive])}"
+        )
+
+      count_before = Repo.aggregate(Session, :count)
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "fork_from_parent" => true, "directory" => other_dir},
+          pi_state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "directory"
+      assert Repo.aggregate(Session, :count) == count_before
+    end
+
+    test "a conflicting orchestrator arg is rejected, no session created", %{
+      pi_state: pi_state
+    } do
+      count_before = Repo.aggregate(Session, :count)
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "fork_from_parent" => true, "orchestrator" => true},
+          pi_state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "orchestrator"
+      assert Repo.aggregate(Session, :count) == count_before
+    end
+
+    test "a successful fork inherits code_exec, links lineage, and creates the synthetic marker",
+         %{pi_state: pi_state, pi_caller: pi_caller} do
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "fork_from_parent" => true, "notify_on_completion" => false},
+          pi_state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      session_id = decoded["session_id"]
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert decoded["forked_from"] == pi_caller.id
+      assert decoded["parent_context_tokens"] == nil
+
+      child = Sessions.get_session!(session_id)
+      assert child.backend == "pi"
+      assert child.code_exec == false
+      assert child.forked_from_session_id == pi_caller.id
+      assert child.parent_session_id == pi_caller.id
+
+      assert [marker] =
+               Sessions.list_messages(session_id)
+               |> Enum.filter(&(&1.data["subtype"] == "forked_from"))
+
+      assert marker.data["type"] == "system"
+      assert marker.data["parent_session_id"] == pi_caller.id
+      assert marker.data["inherited_tokens"] == nil
+
+      assert [interaction] =
+               Sessions.list_session_interactions(recipient_session_id: session_id)
+
+      assert interaction.sender_session_id == pi_caller.id
+      assert interaction.kind == "fork"
+    end
+
+    test "result and marker carry the parent's last known context token count", %{
+      pi_state: pi_state,
+      pi_caller: pi_caller
+    } do
+      {:ok, _stats} =
+        Sessions.create_message(%{
+          session_id: pi_caller.id,
+          data: %{"type" => "pi_session_stats", "context_usage" => %{"tokens" => 22_507}}
+        })
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "fork_from_parent" => true, "notify_on_completion" => false},
+          pi_state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      session_id = decoded["session_id"]
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert decoded["parent_context_tokens"] == 22_507
+
+      assert [marker] =
+               Sessions.list_messages(session_id)
+               |> Enum.filter(&(&1.data["subtype"] == "forked_from"))
+
+      assert marker.data["inherited_tokens"] == 22_507
+    end
+
+    test "budget warning appears above the (lowered) threshold", %{
+      pi_state: pi_state,
+      pi_caller: pi_caller
+    } do
+      {:ok, _stats} =
+        Sessions.create_message(%{
+          session_id: pi_caller.id,
+          data: %{"type" => "pi_session_stats", "context_usage" => %{"tokens" => 22_507}}
+        })
+
+      result =
+        with_fork_kv_budget(10_000, fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "fork_from_parent" => true, "notify_on_completion" => false},
+            pi_state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      on_exit(fn -> stop_if_alive(decoded["session_id"]) end)
+
+      assert decoded["fork_budget_warning"] =~ "KV budget"
+    end
+
+    test "no budget warning under the default threshold", %{
+      pi_state: pi_state,
+      pi_caller: pi_caller
+    } do
+      {:ok, _stats} =
+        Sessions.create_message(%{
+          session_id: pi_caller.id,
+          data: %{"type" => "pi_session_stats", "context_usage" => %{"tokens" => 22_507}}
+        })
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "fork_from_parent" => true, "notify_on_completion" => false},
+          pi_state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      on_exit(fn -> stop_if_alive(decoded["session_id"]) end)
+
+      refute Map.has_key?(decoded, "fork_budget_warning")
+    end
+  end
 end

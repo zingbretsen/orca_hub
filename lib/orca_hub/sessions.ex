@@ -619,6 +619,42 @@ defmodule OrcaHub.Sessions do
     end)
   end
 
+  @doc """
+  The context-window TOKEN count from the most recent `pi_session_stats`
+  event that actually carries a numeric `context_usage.tokens`, or `nil` —
+  same scan pattern as `latest_context_percent/1`. Read by pi session
+  forking (pi_fork_spec.md §3/§7) both to report `parent_context_tokens` on
+  a fork spawn's result and to drive the soft KV-budget guard.
+  """
+  def last_context_tokens(session_id) do
+    from(m in Message,
+      where: m.session_id == ^session_id,
+      where: fragment("? ->> 'type' = 'pi_session_stats'", m.data),
+      order_by: [desc: m.inserted_at],
+      limit: ^@context_stats_scan_limit,
+      select: m.data
+    )
+    |> Repo.all()
+    |> Enum.find_value(fn
+      %{"context_usage" => %{"tokens" => t}} when is_number(t) -> t
+      _ -> nil
+    end)
+  end
+
+  @doc """
+  Count of non-archived sessions forked from `parent_id` — the "concurrent
+  fork-children" term in pi_fork_spec.md §7's soft KV-budget guard. Called
+  AFTER a new fork child is created, so the count already includes that
+  child (the spec's "+1").
+  """
+  def count_active_fork_children(parent_id) do
+    from(s in Session,
+      where: s.forked_from_session_id == ^parent_id,
+      where: is_nil(s.archived_at)
+    )
+    |> Repo.aggregate(:count)
+  end
+
   # Latest assistant message containing a tool_use block whose name is in
   # `names`, or `nil` — the shared primitive behind the plan-mode/todos/
   # AskUserQuestion targeted queries above. Returns the whole message `data`

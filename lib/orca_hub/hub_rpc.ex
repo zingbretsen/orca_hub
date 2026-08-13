@@ -75,6 +75,12 @@ defmodule OrcaHub.HubRPC do
   def latest_context_percent(session_id),
     do: call(OrcaHub.Sessions, :latest_context_percent, [session_id])
 
+  def last_context_tokens(session_id),
+    do: call(OrcaHub.Sessions, :last_context_tokens, [session_id])
+
+  def count_active_fork_children(parent_id),
+    do: call(OrcaHub.Sessions, :count_active_fork_children, [parent_id])
+
   def create_message(attrs), do: call(OrcaHub.Sessions, :create_message, [attrs])
   def count_idle_sessions, do: call(OrcaHub.Sessions, :count_idle_sessions, [])
 
