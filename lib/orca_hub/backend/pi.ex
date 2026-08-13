@@ -115,6 +115,7 @@ defmodule OrcaHub.Backend.Pi do
   require Logger
 
   alias OrcaHub.Backend.SharedPrompts
+  alias OrcaHub.HubRPC
 
   # Extension UI methods that block waiting for an `extension_ui_response`
   # (spec's Extension UI Protocol) — everything else (`notify`, `setStatus`,
@@ -330,7 +331,7 @@ defmodule OrcaHub.Backend.Pi do
     []
     |> maybe_add_model_arg(ctx[:model])
     |> Kernel.++(["--session-dir", pi_session_dir(ctx)])
-    |> maybe_add_session_id_arg(ctx[:claude_session_id])
+    |> maybe_add_fork_or_resume_arg(ctx)
     |> Kernel.++(["--append-system-prompt", system_prompt(ctx)])
     |> Kernel.++(["-e", orca_extension_path()])
     |> Kernel.++(["-e", orca_mcp_extension_path()])
@@ -403,6 +404,155 @@ defmodule OrcaHub.Backend.Pi do
   end
 
   defp maybe_add_session_id_arg(args, _sid), do: args
+
+  # pi_fork_spec.md §4 — `ctx[:claude_session_id]` is nil exactly on first
+  # spawn (inventory #5); every later cold reopen has it set, so `--fork` is
+  # structurally unreachable from then on and this falls straight through to
+  # the pre-existing `--session-id` resume path. On first spawn, `--fork` is
+  # only attempted when `forked_from_session_id` is present — otherwise this
+  # is a completely ordinary first spawn (unchanged from before this feature).
+  defp maybe_add_fork_or_resume_arg(args, %{claude_session_id: sid} = ctx)
+       when is_binary(sid) and sid != "" do
+    maybe_add_session_id_arg(args, ctx[:claude_session_id])
+  end
+
+  defp maybe_add_fork_or_resume_arg(args, ctx) do
+    maybe_add_fork_arg(args, ctx, ctx[:forked_from_session_id])
+  end
+
+  defp maybe_add_fork_arg(args, _ctx, nil), do: args
+  defp maybe_add_fork_arg(args, _ctx, ""), do: args
+
+  defp maybe_add_fork_arg(args, ctx, parent_id) do
+    case resolve_fork_parent_file(ctx, parent_id) do
+      {:ok, path} ->
+        args ++ ["--fork", path]
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Backend.Pi] fork requested for session #{ctx.session_id} " <>
+            "(parent=#{parent_id}) but could not resolve the parent session " <>
+            "file: #{reason} — spawning normally with a blank context instead"
+        )
+
+        emit_fork_fallback_warning(ctx, parent_id, reason)
+        args
+    end
+  end
+
+  # spec §4 "Locating the parent file": deterministic dir
+  # (`<parent.directory>/.pi_sessions/<parent OrcaHub session id>/`, the SAME
+  # pi_session_dir/1 computation below, keyed by the parent's OWN OrcaHub id —
+  # NOT this child's), then pick the `*.jsonl` whose header `id` matches the
+  # parent's `claude_session_id` (defensive against sibling files ever
+  # landing in that dir). Resolved to an absolute path per the spike
+  # findings' recommendation #1 (bare-id `--fork` is `--session-dir`-scoped
+  # and unusable here; only the absolute-path form works across dirs).
+  # Fails soft everywhere: a missing parent row, a parent that hasn't
+  # captured a claude_session_id yet (never spawned), an unreadable dir, or
+  # no matching file all resolve to `{:error, reason}` rather than raising —
+  # the caller degrades to a plain spawn (§4 "fail soft").
+  defp resolve_fork_parent_file(ctx, parent_id) do
+    case db_call(ctx, :get_session, [parent_id]) do
+      nil ->
+        {:error, "parent session #{parent_id} not found"}
+
+      %{claude_session_id: nil} ->
+        {:error, "parent session #{parent_id} has no claude_session_id yet (never spawned)"}
+
+      %{claude_session_id: ""} ->
+        {:error, "parent session #{parent_id} has no claude_session_id yet (never spawned)"}
+
+      %{directory: directory, claude_session_id: claude_sid} ->
+        %{directory: directory, session_id: parent_id}
+        |> pi_session_dir()
+        |> find_parent_session_file(claude_sid)
+    end
+  rescue
+    e -> {:error, "parent session lookup failed: #{Exception.message(e)}"}
+  end
+
+  defp find_parent_session_file(dir, claude_session_id) do
+    case File.ls(dir) do
+      {:ok, files} ->
+        files
+        |> Enum.filter(&String.ends_with?(&1, ".jsonl"))
+        |> Enum.find(fn f -> session_file_header_id(Path.join(dir, f)) == claude_session_id end)
+        |> case do
+          nil -> {:error, "no session file with id #{claude_session_id} found under #{dir}"}
+          file -> {:ok, dir |> Path.join(file) |> Path.expand()}
+        end
+
+      {:error, reason} ->
+        {:error, "cannot read parent session dir #{dir}: #{:file.format_error(reason)}"}
+    end
+  end
+
+  # Reads only the FIRST line (the session header, `docs/session-format.md`)
+  # rather than the whole file — parent histories can be large and only the
+  # header's `id` is needed to pick the right file.
+  defp session_file_header_id(path) do
+    case File.open(path, [:read, :utf8]) do
+      {:ok, io} ->
+        line = IO.read(io, :line)
+        File.close(io)
+
+        with data when is_binary(data) <- line,
+             {:ok, %{"id" => id}} <- Jason.decode(data) do
+          id
+        else
+          _ -> nil
+        end
+
+      {:error, _} ->
+        nil
+    end
+  end
+
+  # spec §4 "fail soft": persists + broadcasts a visible warning on the
+  # child's OWN session topic (same shape/plumbing SessionRunner's
+  # persist_message/broadcast use — duplicated here rather than exposed from
+  # SessionRunner, mirroring Backend.Claude's own private db_call/3 dup for
+  # the identical multi-hub db_node-routing reason) so a fork silently
+  # becoming a plain spawn is never invisible. Renders via
+  # MessageComponents' generic "system" fallback (raw subtype string) plus
+  # its pre-existing "message" extra-text support (same mechanism
+  # `pi_notify` events use) — no new UI component needed.
+  defp emit_fork_fallback_warning(ctx, parent_id, reason) do
+    event = %{
+      "type" => "system",
+      "subtype" => "fork_fallback",
+      "message" =>
+        "Could not fork from session #{parent_id} (#{reason}) — " <>
+          "started as a normal session with a blank context instead.",
+      "timestamp" => NaiveDateTime.utc_now()
+    }
+
+    db_call(ctx, :create_message, [%{session_id: ctx.session_id, data: event}])
+    broadcast_fork_fallback(ctx.session_id, event)
+  rescue
+    e ->
+      Logger.error(
+        "[Backend.Pi] failed to persist/broadcast fork_fallback warning: #{Exception.message(e)}"
+      )
+  end
+
+  defp broadcast_fork_fallback(session_id, event) do
+    Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", {:event, event})
+    Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session_id, {:event, event}})
+  end
+
+  # Same db_node-routing duplication as Backend.Claude's private db_call/3
+  # (multi-hub mode: a session's DB record may be owned by a different node
+  # than the one running this spawn) — see that module's comment for why
+  # this isn't shared instead.
+  defp db_call(%{db_node: db_node}, fun, args) when not is_nil(db_node) and db_node != node() do
+    :erpc.call(db_node, HubRPC, fun, args, 10_000)
+  end
+
+  defp db_call(_ctx, fun, args) do
+    apply(HubRPC, fun, args)
+  end
 
   # pi model handling (mirrors Codex's omit-if-foreign guard, spec step 3):
   # passthrough string; omit when empty or a Claude model id, letting pi fall

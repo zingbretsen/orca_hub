@@ -303,6 +303,216 @@ defmodule OrcaHub.Backend.PiTest do
     end
   end
 
+  # pi_fork_spec.md §4/§11.2 — fork mechanics. First-spawn-only, resolved via
+  # the same pi_session_dir/1 computation keyed by the PARENT's own OrcaHub
+  # session id (not the child's), picking the *.jsonl whose header `id`
+  # matches the parent's claude_session_id. Fails soft (plain spawn + a
+  # persisted/broadcast "fork_fallback" system warning) rather than crashing
+  # or passing a bogus --fork whenever the parent can't be resolved.
+  describe "spawn_spec/2 — fork (pi_fork_spec.md §4)" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "pi_fork_test_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+      {:ok, directory: dir}
+    end
+
+    defp create_pi_session(attrs) do
+      {:ok, session} =
+        OrcaHub.Sessions.create_session(
+          Map.merge(
+            %{directory: "/tmp/pi_fork_dir_#{System.unique_integer([:positive])}", backend: "pi"},
+            attrs
+          )
+        )
+
+      session
+    end
+
+    # Mirrors the spike's real on-disk shape (pi_fork_spike_findings.md's Q1
+    # capture): a session-header line as the FIRST line of the file, keyed by
+    # parent OrcaHub session id under .pi_sessions/.
+    defp write_parent_session_file(directory, parent_orca_id, claude_session_id) do
+      dir = Path.join([directory, ".pi_sessions", parent_orca_id])
+      File.mkdir_p!(dir)
+      path = Path.join(dir, "2026-08-13T00-00-00-000Z_#{claude_session_id}.jsonl")
+
+      header =
+        Jason.encode!(%{
+          "type" => "session",
+          "version" => 3,
+          "id" => claude_session_id,
+          "timestamp" => "2026-08-13T00:00:00.000Z",
+          "cwd" => directory
+        })
+
+      File.write!(path, header <> "\n")
+      path
+    end
+
+    test "first spawn of a fork child carries --fork <absolute parent file>, no --session-id", %{
+      directory: dir
+    } do
+      parent = create_pi_session(%{directory: dir, claude_session_id: "parent-native-id"})
+      parent_file = write_parent_session_file(dir, parent.id, "parent-native-id")
+
+      c =
+        ctx(%{
+          directory: dir,
+          claude_session_id: nil,
+          forked_from_session_id: parent.id
+        })
+
+      spec = Backend.spawn_spec(:streaming, c)
+
+      idx = Enum.find_index(spec.args, &(&1 == "--fork"))
+      refute is_nil(idx)
+      assert Enum.at(spec.args, idx + 1) == Path.expand(parent_file)
+      refute "--session-id" in spec.args
+    end
+
+    test "second spawn (claude_session_id captured) resumes via --session-id, no --fork", %{
+      directory: dir
+    } do
+      parent = create_pi_session(%{directory: dir, claude_session_id: "parent-native-id"})
+      write_parent_session_file(dir, parent.id, "parent-native-id")
+
+      c =
+        ctx(%{
+          directory: dir,
+          claude_session_id: "child-native-id",
+          forked_from_session_id: parent.id
+        })
+
+      spec = Backend.spawn_spec(:streaming, c)
+
+      idx = Enum.find_index(spec.args, &(&1 == "--session-id"))
+      assert Enum.at(spec.args, idx + 1) == "child-native-id"
+      refute "--fork" in spec.args
+    end
+
+    test "a non-fork pi session's args are unaffected — no forked_from_session_id set" do
+      spec = Backend.spawn_spec(:streaming, ctx())
+      refute "--fork" in spec.args
+      refute "--session-id" in spec.args
+    end
+
+    test "also applies to :one_shot spawns", %{directory: dir} do
+      parent = create_pi_session(%{directory: dir, claude_session_id: "parent-native-id"})
+      parent_file = write_parent_session_file(dir, parent.id, "parent-native-id")
+
+      c =
+        ctx(%{
+          directory: dir,
+          claude_session_id: nil,
+          forked_from_session_id: parent.id,
+          prompt: "hi"
+        })
+
+      spec = Backend.spawn_spec(:one_shot, c)
+      idx = Enum.find_index(spec.args, &(&1 == "--fork"))
+      assert Enum.at(spec.args, idx + 1) == Path.expand(parent_file)
+    end
+
+    test "fail-soft: parent session not found -> plain spawn + persisted/broadcast warning", %{
+      directory: dir
+    } do
+      child = create_pi_session(%{directory: dir})
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{child.id}")
+
+      missing_parent_id = Ecto.UUID.generate()
+
+      c =
+        ctx(%{
+          session_id: child.id,
+          directory: dir,
+          claude_session_id: nil,
+          forked_from_session_id: missing_parent_id
+        })
+
+      spec = Backend.spawn_spec(:streaming, c)
+      refute "--fork" in spec.args
+
+      assert_receive {:event, %{"type" => "system", "subtype" => "fork_fallback"} = event}
+      assert event["message"] =~ "not found"
+
+      assert [persisted] = OrcaHub.Sessions.list_messages(child.id)
+      assert persisted.data["subtype"] == "fork_fallback"
+    end
+
+    test "fail-soft: parent has no claude_session_id yet (never spawned) -> plain spawn + warning",
+         %{directory: dir} do
+      child = create_pi_session(%{directory: dir})
+      parent = create_pi_session(%{directory: dir})
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{child.id}")
+
+      c =
+        ctx(%{
+          session_id: child.id,
+          directory: dir,
+          claude_session_id: nil,
+          forked_from_session_id: parent.id
+        })
+
+      spec = Backend.spawn_spec(:streaming, c)
+      refute "--fork" in spec.args
+
+      assert_receive {:event, %{"subtype" => "fork_fallback"} = event}
+      assert event["message"] =~ "no claude_session_id"
+    end
+
+    test "fail-soft: parent's session file missing on disk -> plain spawn + warning", %{
+      directory: dir
+    } do
+      child = create_pi_session(%{directory: dir})
+      parent = create_pi_session(%{directory: dir, claude_session_id: "parent-native-id"})
+      # Deliberately does NOT call write_parent_session_file/3 — no
+      # .pi_sessions dir ever created for this parent.
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{child.id}")
+
+      c =
+        ctx(%{
+          session_id: child.id,
+          directory: dir,
+          claude_session_id: nil,
+          forked_from_session_id: parent.id
+        })
+
+      spec = Backend.spawn_spec(:streaming, c)
+      refute "--fork" in spec.args
+
+      assert_receive {:event, %{"subtype" => "fork_fallback"} = event}
+      assert event["message"] =~ "cannot read parent session dir"
+    end
+
+    test "fail-soft: parent dir exists but no file matches claude_session_id -> plain spawn + warning",
+         %{directory: dir} do
+      child = create_pi_session(%{directory: dir})
+      parent = create_pi_session(%{directory: dir, claude_session_id: "parent-native-id"})
+      # A sibling file exists in the parent's dir, but its header id does NOT
+      # match the parent's claude_session_id — defensive case from §4.
+      write_parent_session_file(dir, parent.id, "some-other-id")
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{child.id}")
+
+      c =
+        ctx(%{
+          session_id: child.id,
+          directory: dir,
+          claude_session_id: nil,
+          forked_from_session_id: parent.id
+        })
+
+      spec = Backend.spawn_spec(:streaming, c)
+      refute "--fork" in spec.args
+
+      assert_receive {:event, %{"subtype" => "fork_fallback"} = event}
+      assert event["message"] =~ "no session file with id"
+    end
+  end
+
   describe "spawn_spec/2 — :one_shot" do
     test "pi -p --mode json, prompt is the last positional arg" do
       c = ctx(%{prompt: "hello there"})

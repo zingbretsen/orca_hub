@@ -353,6 +353,12 @@ defmodule OrcaHub.SessionRunner do
       api_run_timeout_seconds: api_run_flags.timeout_seconds,
       commit_trailer: commit_trailer?(init_data, session.project_id),
       issue_key: issue_key(init_data, session.issue_id),
+      # pi_fork_spec.md §4: the ONLY fork-specific thing SessionRunner
+      # contributes — carries the parent's OrcaHub session id from the row
+      # into the runner `data` map (same posture as `plan_mode_pending`
+      # below; ctx IS `data` at every spawn_spec/2 call site). Resolving it
+      # into an actual parent-file path is entirely Backend.Pi's job.
+      forked_from_session_id: Map.get(session, :forked_from_session_id),
       db_node: db_node,
       # Phase 1 (backend_abstraction_spec.md §4/§5): resolve from the
       # session's persisted `backend` column. Unknown values raise (loud
