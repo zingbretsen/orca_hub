@@ -25,6 +25,8 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
   # process-wide $PATH env var.
   use OrcaHub.DataCase, async: false
 
+  require Logger
+
   alias OrcaHub.Backend.Cache
   alias OrcaHub.MCP.Tools.Sessions, as: SessionsTool
   alias OrcaHub.Sessions.Session
@@ -110,11 +112,22 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     end
   end
 
+  # Snapshot only — a runner that both registers AND fully terminates
+  # entirely WITHIN `fun()` (before `await_new_runners_settled/1` takes its
+  # post-`fun` snapshot) is invisible to the before/after diff below and
+  # never gets waited on. Never observed in practice, but not structurally
+  # ruled out — if a future failure looks like this race despite this fix,
+  # check for a runner that's already gone by the time cleanup runs.
   defp alive_session_ids do
     Registry.select(OrcaHub.SessionRegistry, [{{:"$1", :_, :_}, [], [:"$1"]}])
     |> MapSet.new()
   end
 
+  # Never observed to be hit in ~80 runs across isolated and concurrent-load
+  # batches, but that's inference from stable suite runtimes, not an
+  # instrumented count — the Logger.warning below on expiry is the tripwire
+  # that would actually prove it, since silently falling through and
+  # cleaning up anyway re-opens the exact race this helper exists to close.
   @settle_timeout_ms 2_000
   @settled_statuses ~w(ready idle error)a
 
@@ -150,6 +163,17 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
         :ok
 
       System.monotonic_time(:millisecond) >= deadline ->
+        # Loud on purpose: falling through silently here would clean up
+        # $PATH/the tmpdir anyway, re-opening the exact race this helper
+        # exists to close, with zero signal that it happened. A warning
+        # (not a raise) — this is teardown code and a flaky-by-timing test
+        # failure downstream is already a clear enough signal without also
+        # risking destabilizing the rest of the suite from an `after` block.
+        Logger.warning(
+          "[with_fake_claude_on_path] session #{session_id} still #{inspect(status)} " <>
+            "after #{@settle_timeout_ms}ms — cleaning up $PATH/tmpdir anyway"
+        )
+
         :ok
 
       true ->
