@@ -28,7 +28,7 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
   alias OrcaHub.Backend.Cache
   alias OrcaHub.MCP.Tools.Sessions, as: SessionsTool
   alias OrcaHub.Sessions.Session
-  alias OrcaHub.{ClusterNodes, Sessions, SessionSupervisor}
+  alias OrcaHub.{ClusterNodes, Sessions, SessionRunner, SessionSupervisor}
 
   @codex_stub Path.expand("../../../support/fixtures/codex_stub_app_server.py", __DIR__)
   @pi_stub Path.expand("../../../support/fixtures/pi_stub_rpc.py", __DIR__)
@@ -76,6 +76,17 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
   # `System.find_executable("claude")` (resolved synchronously inside
   # `Sessions.call/3`, via `Cluster.send_message`'s `Port.open/2`) finds a
   # stand-in instead of spawning the real CLI against the network.
+  #
+  # `fun` only SYNCHRONOUSLY STARTS the runner: `Port.open/2` returns once
+  # the fork has happened, not once the forked process has actually execve'd
+  # our stub script — so restoring $PATH and deleting bin_dir right after
+  # `fun.()` returns races that not-yet-exec'd fork (observed as "cannot
+  # open .../claude: No such file"), and also races the runner's own async
+  # DB writes against the Ecto sandbox checkin that ExUnit performs right
+  # after this test function returns. Waiting here, synchronously, for
+  # every SessionRunner that became alive during `fun` to reach a terminal
+  # status closes both races: the test process (and therefore ExUnit's
+  # teardown) doesn't move on until the runner is done with $PATH/the DB.
   defp with_fake_claude_on_path(fun) do
     bin_dir =
       Path.join(System.tmp_dir!(), "fake_claude_bin_#{System.unique_integer([:positive])}")
@@ -88,11 +99,62 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     original_path = System.get_env("PATH") || ""
     System.put_env("PATH", bin_dir <> ":" <> original_path)
 
+    before_ids = alive_session_ids()
+
     try do
       fun.()
     after
+      await_new_runners_settled(before_ids)
       System.put_env("PATH", original_path)
       File.rm_rf!(bin_dir)
+    end
+  end
+
+  defp alive_session_ids do
+    Registry.select(OrcaHub.SessionRegistry, [{{:"$1", :_, :_}, [], [:"$1"]}])
+    |> MapSet.new()
+  end
+
+  @settle_timeout_ms 2_000
+  @settled_statuses ~w(ready idle error)a
+
+  # Bounded poll (not a blind sleep) on each runner's real GenStatem status —
+  # only session ids that were NOT already alive before `fun` ran are new
+  # work `fun` itself kicked off, so this only ever waits on runners this
+  # helper's own PATH shadowing is responsible for.
+  defp await_new_runners_settled(before_ids) do
+    deadline = System.monotonic_time(:millisecond) + @settle_timeout_ms
+
+    alive_session_ids()
+    |> MapSet.difference(before_ids)
+    |> Enum.each(&await_runner_settled(&1, deadline))
+  end
+
+  defp await_runner_settled(session_id, deadline) do
+    status =
+      try do
+        %{status: status} = SessionRunner.get_status(session_id)
+        status
+      rescue
+        # GenStatem.call/3 (this repo's gen_statem wrapper) catches the raw
+        # :exit itself and re-raises it as a GenStatem.GenError exception —
+        # a bare `catch :exit, _` here never fires. Either way, the runner
+        # already terminated entirely — nothing left to race.
+        GenStatem.GenError -> :gone
+      catch
+        :exit, _ -> :gone
+      end
+
+    cond do
+      status == :gone or status in @settled_statuses ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        :ok
+
+      true ->
+        Process.sleep(20)
+        await_runner_settled(session_id, deadline)
     end
   end
 
