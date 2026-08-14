@@ -26,6 +26,29 @@ ENV MIX_ENV=prod
 # single build — ARG is declared here only so it's in scope for that RUN.
 ARG GIT_SHA
 
+# Short hash of mix.lock, passed by the deploy script as
+# --build-arg MIX_LOCK_SHA=$(sha256sum mix.lock | cut -c1-12). It is woven
+# into the /app/deps and /app/_build cache-mount IDs below so that a lockfile
+# change lands on FRESH mounts instead of reusing artifacts compiled against
+# the previous lock. This exists because of the 2026-08-14 deploy failure:
+# a warm /app/_build held a compiled plug_crypto 2.1.1 .app from the old lock
+# while deps/ correctly held 2.2.0, and `mix compile`'s convergence check
+# reads the dep version from the BUILD PATH — so it reported 2.1.1 against
+# phoenix 1.8.11's `~> 2.2` and failed, twice, against a perfectly correct
+# mix.lock. Keying the IDs makes that class of staleness unreachable rather
+# than relying on Mix's own staleness detection, which is what missed it.
+#
+# NO DEFAULT VALUE, deliberately: an unset ARG would expand to "" and
+# collapse every build onto one shared ID — the same bug wearing a fix's
+# clothing. The guard below turns that into a loud failure instead. The
+# deploy script carries the matching -n check on its side.
+ARG MIX_LOCK_SHA
+RUN test -n "$MIX_LOCK_SHA" || { \
+      echo "ERROR: MIX_LOCK_SHA build-arg is required (got empty/unset)." >&2; \
+      echo "       Pass --build-arg MIX_LOCK_SHA=\$(sha256sum mix.lock | cut -c1-12)." >&2; \
+      exit 1; \
+    }
+
 # Install dependencies first (layer caching). Cache-mounted /app/deps,
 # /app/_build, /root/.hex, /root/.cache/rebar3 persist across builds keyed
 # by BuildKit's own cache store (not the Docker layer cache) — so even when
@@ -33,15 +56,23 @@ ARG GIT_SHA
 # hit a warm cache instead of a cold re-fetch + full rebuild. Cache-mounted
 # paths are NOT committed into the image layer when a RUN exits, so nothing
 # outside these RUNs may read from /app/deps or /app/_build directly.
+#
+# /app/deps and /app/_build are ID-keyed on MIX_LOCK_SHA (see above); every
+# mount of the same target MUST carry the identical id or the RUNs below stop
+# sharing one cache and silently rebuild from scratch. /root/.hex,
+# /root/.cache/rebar3 and /root/.npm are deliberately NOT keyed: .hex holds
+# version-addressed package tarballs that make a re-fetch fast and cannot
+# carry a version mismatch, and .npm is keyed by assets/package-lock.json,
+# not by mix.lock.
 COPY mix.exs mix.lock ./
-RUN --mount=type=cache,target=/app/deps,sharing=locked \
+RUN --mount=type=cache,target=/app/deps,id=orca-deps-${MIX_LOCK_SHA},sharing=locked \
     --mount=type=cache,target=/root/.hex,sharing=locked \
     --mount=type=cache,target=/root/.cache/rebar3,sharing=locked \
     mix deps.get --only prod
 RUN mkdir config
 COPY config/config.exs config/prod.exs config/runtime.exs config/
-RUN --mount=type=cache,target=/app/deps,sharing=locked \
-    --mount=type=cache,target=/app/_build,sharing=locked \
+RUN --mount=type=cache,target=/app/deps,id=orca-deps-${MIX_LOCK_SHA},sharing=locked \
+    --mount=type=cache,target=/app/_build,id=orca-build-${MIX_LOCK_SHA},sharing=locked \
     --mount=type=cache,target=/root/.hex,sharing=locked \
     --mount=type=cache,target=/root/.cache/rebar3,sharing=locked \
     mix deps.compile
@@ -85,8 +116,8 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 # release dir. Without this flag every build after the first would keep
 # assembling the SAME stale release forever, regardless of what actually
 # got recompiled above.
-RUN --mount=type=cache,target=/app/deps,sharing=locked \
-    --mount=type=cache,target=/app/_build,sharing=locked \
+RUN --mount=type=cache,target=/app/deps,id=orca-deps-${MIX_LOCK_SHA},sharing=locked \
+    --mount=type=cache,target=/app/_build,id=orca-build-${MIX_LOCK_SHA},sharing=locked \
     --mount=type=cache,target=/root/.hex,sharing=locked \
     --mount=type=cache,target=/root/.cache/rebar3,sharing=locked \
     mix compile && \
