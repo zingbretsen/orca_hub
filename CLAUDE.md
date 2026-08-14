@@ -188,3 +188,88 @@ deploy script can restart them non-interactively over ssh too.
 - Phoenix LiveView ~> 1.1
 - Req for HTTP requests
 - DaisyUI/Tailwind for styling
+
+### Routine dependency upgrades
+
+`mix hex.outdated` is the entry point. Its **"Update not possible"** status does
+NOT mean incompatible — it means the version is outside the requirement in
+`mix.exs`, so it needs a requirement bump to even be considered. Run
+`mix hex.outdated <dep>` to see the requirement AND which packages constrain it;
+that table is how you find the real blocker in a chain.
+
+**Where the changelogs live.** Nearly every Elixir dep keeps a `CHANGELOG.md` at
+its repo root, and `raw.githubusercontent.com/<org>/<repo>/<main|master>/CHANGELOG.md`
+is the fastest way to read it. Repo URL comes from `mix hex.info <dep>`. Confirmed
+paths for this project's deps:
+
+| Dep | Changelog |
+|---|---|
+| phoenix | `github.com/phoenixframework/phoenix` /CHANGELOG.md |
+| phoenix_live_view | `phoenix-live-view.hexdocs.pm/<version>/changelog.html` (hexdocs 301-redirects to this host) |
+| phoenix_live_dashboard / phoenix_live_reload / tailwind / esbuild | `github.com/phoenixframework/<dep>` /CHANGELOG.md |
+| ecto, ecto_sql | `github.com/elixir-ecto/<dep>` /CHANGELOG.md (ecto is `master`, not `main`) |
+| bandit | `github.com/mtrudel/bandit` /CHANGELOG.md |
+| req | `github.com/wojtekmach/req` /CHANGELOG.md |
+| swoosh | `github.com/swoosh/swoosh` /CHANGELOG.md |
+| ex_json_schema | **no changelog** — diff tags instead: `gh api repos/jonasschmidt/ex_json_schema/compare/v<old>...v<new> --jq '.commits[].commit.message'` |
+
+That `gh api .../compare/v<old>...v<new>` trick is the general fallback for any
+dep with no changelog and no GitHub Releases.
+
+**Gotchas learned the hard way (2026-08-14 run):**
+
+- **`mix deps.update <dep>` cascades.** It re-resolves transitive deps too and
+  will opportunistically pull unrelated packages forward — updating `swoosh`
+  silently dragged `req` 0.5→0.7 along. Always read the `Upgraded:` block it
+  prints. To hold something back while you update its neighbours, temporarily
+  tighten its `mix.exs` requirement (e.g. `~> 0.5` -> `~> 0.5.17`), re-resolve,
+  then restore the requirement — the lock keeps the pinned version.
+- **One capped dep can freeze a whole chain.** `ex_json_schema` 0.10.2 required
+  `decimal ~> 2.0`, which capped `decimal`, which blocked `ecto` 3.14 (wants
+  `decimal ~> 3.0`), which blocked `ecto_sql` 3.14. Nothing in `hex.outdated`
+  points at the culprit — `mix hex.outdated decimal` did, via its constraint
+  table. When a dep "should" be updatable but resolution refuses, walk that table.
+- **Other agents share this worktree, `_build`, and the git index.** Commit
+  dependency files by explicit path (`git commit -o mix.exs mix.lock -m ...`) so
+  you never sweep a sibling's staged work into your commit, and expect a
+  `Waiting for lock on the build directory` pause. A `mix.lock` change forces a
+  full dep recompile for everyone — tell active sessions (`.agents/`, or
+  `search_sessions` by directory) before you land one.
+- **Attribute failures carefully.** Establish a full-suite baseline BEFORE
+  upgrading. A sibling editing a test file mid-run produced a failure that looked
+  like the upgrade's fault; re-running that file alone cleared it.
+
+**Verifying the app actually boots.** The test suite uses `ConnTest`/
+`LiveViewTest`, which bypass the HTTP adapter entirely — so it does NOT cover
+bandit / thousand_island / websock_adapter / plug. After upgrading any of those,
+smoke-test the real socket. `config/dev.exs` clobbers shell env from `.env`
+(see the mix-task env note), so override in-process rather than editing `.env`:
+
+```
+mix run --no-start --eval '
+  Application.put_env(:orca_hub, :mode, :hub)   # OrcaHub.Mode reads app env, not ORCA_MODE, at runtime
+  ep = Application.get_env(:orca_hub, OrcaHubWeb.Endpoint)
+  Application.put_env(:orca_hub, OrcaHubWeb.Endpoint,
+    Keyword.merge(ep, http: [ip: {127,0,0,1}, port: 4099], server: true,
+                  watchers: [], code_reloader: false))   # watchers: [] or esbuild/tailwind --watch hangs
+  {:ok, _} = Application.ensure_all_started(:orca_hub)
+  Process.sleep(4000)
+  {:ok, r} = Req.get("http://127.0.0.1:4099/api/version", retry: false)
+  IO.inspect({r.status, r.body})'
+```
+
+Use a port other than 4001 — the local systemd agent holds that. For the
+WebSocket path, open a raw `:gen_tcp` connection to `/live/websocket?vsn=2.0.0`
+with the `Upgrade: websocket` / `Sec-WebSocket-Key` headers and assert
+`101 Switching Protocols`.
+
+**Deferred as of 2026-08-14: phoenix_live_view 1.1 -> 1.2.** Everything else is
+current. 1.2 needs `mix.exs` `~> 1.1.0` -> `~> 1.2` and carries real breaking
+changes: the `Phoenix.Component` global-attribute list was realigned to MDN and
+the removed attributes are NOT enumerated in the changelog (fix per-site with
+`attr :rest, :global, include: ~w(...)`); `:colocated_js` config is deprecated in
+favour of `:colocated_assets` (we consume colocated hooks via
+`phoenix-colocated/orca_hub` in `assets/js/app.js`); and `:test_warnings` now
+warns by default for `phx-change` forms without an `id` (~49 such sites here).
+Staying on the latest 1.1.x is a supported position — don't take 1.2 as part of a
+routine patch sweep.
