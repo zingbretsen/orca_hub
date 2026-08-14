@@ -1212,11 +1212,37 @@ defmodule OrcaHub.Backend.Pi do
     [
       SharedPrompts.orchestrator_prompt(ctx.orchestrator, nil, code_exec),
       SharedPrompts.code_exec_prompt(code_exec),
+      if(ctx.orchestrator, do: fork_timing_prompt()),
       if(Map.get(ctx, :commit_trailer, true), do: commit_trailer_flag_prompt()),
       if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec))
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n\n")
+  end
+
+  # pi-ONLY, and deliberately not in `SharedPrompts`: forking is a pi-native
+  # primitive, and Claude's/Codex's rendered prompts are byte-pinned by the
+  # golden fence in `test/support/fixtures/prompt_goldens/`. A fixed constant
+  # string keeps `system_prompt/1` a pure function of its three flags (§5.1),
+  # so it costs nothing in fork determinism.
+  #
+  # Why it earns its bytes: `fork_from_parent` forks the CALLER, so the gate
+  # (§6) must hold the first child until the caller's CURRENT turn ends —
+  # otherwise the caller's own next LLM call keeps the slot that caches the
+  # inherited prefix and the child cold-prefills (measured 3/3, 25.7-32.0s).
+  # The gate's wait is for the WHOLE turn, so an orchestrator that forks and
+  # then works for another five minutes holds its own children that long.
+  # One sentence of guidance converts that worst case into the best case.
+  defp fork_timing_prompt do
+    """
+    When you spawn forked children (`fork_from_parent`), make those spawns \
+    the LAST action of your turn and end the turn promptly. A fork inherits \
+    your session's cached context, and the first child's prompt is held \
+    until YOUR current turn finishes — until then your own turn is still \
+    holding the cache that makes the fork cheap. Fork, then stop; don't fork \
+    and keep working.\
+    """
+    |> String.trim()
   end
 
   # The id-free half of the commit-trailer instruction — the part that is a

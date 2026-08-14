@@ -1668,6 +1668,33 @@ defmodule OrcaHub.Backend.PiTest do
   # inherited prefix and turns a forked child's ~2s warm resume back into a
   # ~26s cold prefill.
 
+  # pi_fork_spec.md §6: the gate holds a fan-out's first child until the
+  # CALLER's own turn ends, so an orchestrator that forks and then keeps
+  # working holds its own children that long. One line of guidance converts
+  # that worst case into the best case — and it must live here, in the
+  # pi-only prompt, because Claude's/Codex's rendered prompts are byte-pinned
+  # by the golden fence.
+  describe "system_prompt/1 — fork timing guidance (§6)" do
+    test "orchestrators are told to make fork spawns the last action of a turn" do
+      prompt = Backend.system_prompt(ctx(%{orchestrator: true}))
+
+      assert prompt =~ "fork_from_parent"
+      assert prompt =~ "LAST action of your turn"
+      assert prompt =~ "held"
+    end
+
+    test "workers do not carry it — they don't fan out" do
+      refute Backend.system_prompt(ctx(%{orchestrator: false})) =~ "LAST action of your turn"
+    end
+
+    test "it is a fixed constant, so it cannot become a fork-determinism divergence" do
+      a = ctx(%{orchestrator: true, session_id: Ecto.UUID.generate()})
+      b = ctx(%{orchestrator: true, session_id: Ecto.UUID.generate()})
+
+      assert Backend.system_prompt(a) == Backend.system_prompt(b)
+    end
+  end
+
   describe "system_prompt/1 — byte determinism" do
     test "two sessions with the same flags render byte-identically despite different ids, issue keys and DB issue state" do
       # Session A owns an open issue (so open_issues_prompt/1 has something to

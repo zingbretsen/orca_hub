@@ -128,7 +128,13 @@ defmodule OrcaHub.MCP.Tools.ForkQueue do
       active_child_session_id: snapshot.active_child,
       pending_child_session_ids: snapshot.pending,
       paused: snapshot.paused != nil,
-      paused_reason: snapshot.paused && snapshot.paused[:reason]
+      paused_reason: snapshot.paused && snapshot.paused[:reason],
+      # Not a pause and not an error: the first child is held until the
+      # parent's OWN in-flight turn ends, because that turn is holding the
+      # slot caching the inherited prefix (pi_fork_spec.md §6). It clears by
+      # itself when the parent's turn produces its result — end your turn
+      # and the fan-out starts.
+      waiting_on_parent_turn: snapshot.waiting_on_parent_turn
     }
   end
 end

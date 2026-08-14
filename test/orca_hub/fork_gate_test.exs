@@ -497,6 +497,204 @@ defmodule OrcaHub.ForkGateTest do
     end
   end
 
+  # ── §6: the parent is child zero ─────────────────────────────────────
+  # `fork_from_parent` forks the CALLER, so at spawn time the parent is
+  # normally mid-turn and holding the one slot that caches the prefix the
+  # child needs. Releasing then makes llama-server LRU-fall-back the child
+  # onto a cold slot: measured 3/3 parents at `cache_read_input_tokens` = 0,
+  # 25.7-32.0s. So the FIRST child additionally waits for the parent's own
+  # turn to end.
+
+  describe "parent-turn precondition" do
+    setup [:start_gate_ctx]
+
+    test "a parent that is NOT mid-turn releases the first child immediately", %{
+      gate: gate,
+      parent: parent,
+      children: [c1, _, _]
+    } do
+      running(parent, "idle")
+
+      assert enqueue(gate, parent, c1) == :ok
+
+      assert_receive {:delivered, id1, _, _}
+      assert id1 == c1.id
+
+      assert %{active_child: active, waiting_on_parent_turn: waiting} =
+               ForkGate.status(parent.id, server: gate)
+
+      assert active == c1.id
+      refute waiting
+    end
+
+    test "a torn-down/unknown parent does not block the fan-out (file-level fork needs no live parent)",
+         %{gate: gate, children: [c1, _, _]} do
+      # A parent id with no row at all — the §12 Q4 case: the gate must not
+      # require a live parent runner.
+      assert ForkGate.enqueue_first_turn(
+               Ecto.UUID.generate(),
+               c1.id,
+               "first prompt",
+               server: gate,
+               runner_node: node()
+             ) == :ok
+
+      assert_receive {:delivered, id1, _, _}
+      assert id1 == c1.id
+    end
+
+    test "a parent that IS mid-turn holds the first child until its own result lands", %{
+      gate: gate,
+      parent: parent,
+      children: [c1, c2, _]
+    } do
+      running(parent)
+
+      assert enqueue(gate, parent, c1) == :ok
+      assert enqueue(gate, parent, c2) == :ok
+
+      # Nothing goes out: the parent's in-flight turn still owns the slot.
+      refute_receive {:delivered, _, _, _}, 200
+
+      assert %{active_child: nil, pending: pending, waiting_on_parent_turn: true} =
+               ForkGate.status(parent.id, server: gate)
+
+      assert pending == [c1.id, c2.id]
+
+      # The parent's OWN turn ends -> and only then does the head go out.
+      finish_turn(parent, hit_usage(20_000))
+
+      assert_receive {:delivered, id1, _, _}
+      assert id1 == c1.id
+      refute_receive {:delivered, _, _, _}, 100
+
+      # ...and the sibling chain then runs exactly as before, unchanged.
+      finish_turn(c1, hit_usage(20_000))
+      assert_receive {:delivered, id2, _, _}
+      assert id2 == c2.id
+    end
+
+    test "the parent is only waited on ONCE — later siblings are not re-gated on it", %{
+      gate: gate,
+      parent: parent,
+      children: [c1, c2, _]
+    } do
+      running(parent)
+      assert enqueue(gate, parent, c1) == :ok
+      assert enqueue(gate, parent, c2) == :ok
+
+      finish_turn(parent, hit_usage(20_000))
+      assert_receive {:delivered, id1, _, _}
+      assert id1 == c1.id
+
+      # The parent starts a NEW turn (a queued follow-up, a heartbeat, an
+      # operator message) while the fan-out is still draining. That must not
+      # re-arm the hold: by now the child's own state is slot-resident.
+      broadcast(parent, {:status, :running})
+      finish_turn(c1, hit_usage(20_000))
+
+      assert_receive {:delivered, id2, _, _}
+      assert id2 == c2.id
+      refute ForkGate.status(parent.id, server: gate).waiting_on_parent_turn
+    end
+
+    test "a parent whose turn CRASHES releases the first child instead of stranding the fan-out",
+         %{gate: gate, parent: parent, children: [c1, _, _]} do
+      running(parent)
+      assert enqueue(gate, parent, c1) == :ok
+      refute_receive {:delivered, _, _, _}, 200
+
+      broadcast(parent, {:status, :error})
+
+      assert_receive {:delivered, id1, _, _}
+      assert id1 == c1.id
+    end
+
+    test "a parent cli_error also ends the wait", %{
+      gate: gate,
+      parent: parent,
+      children: [c1, _, _]
+    } do
+      running(parent)
+      assert enqueue(gate, parent, c1) == :ok
+      refute_receive {:delivered, _, _, _}, 200
+
+      broadcast(parent, {:event, %{"type" => "cli_error", "exit_code" => 1, "message" => "boom"}})
+
+      assert_receive {:delivered, id1, _, _}
+      assert id1 == c1.id
+    end
+
+    test "a parent turn that HANGS releases on the SAME release timeout and warns on both topics",
+         %{gate: gate, parent: parent, children: [c1, _, _]} do
+      # Deliberately the same `release_timeout_ms` knob the per-child hang
+      # backstop uses — one timeout mechanism, not two (§6).
+      profile(%{release_timeout_ms: 120})
+      running(parent)
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{parent.id}")
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{c1.id}")
+
+      assert enqueue(gate, parent, c1) == :ok
+      refute_receive {:delivered, _, _, _}, 100
+
+      # The parent's turn never ends — the hold is broken anyway, loudly.
+      assert_receive {:event, %{"subtype" => "fork_gate_parent_timeout"} = warning}, 1_000
+      assert warning["parent_session_id"] == parent.id
+      assert warning["child_session_id"] == c1.id
+      assert warning["timeout_ms"] == 120
+      assert warning["message"] =~ "may cold-prefill"
+
+      # ...on BOTH topics (the parent's broadcast-only copy).
+      assert_receive {:event, %{"subtype" => "fork_gate_parent_timeout"}}, 1_000
+
+      assert_receive {:delivered, id1, _, _}, 1_000
+      assert id1 == c1.id
+
+      # Persisted on the held child's own feed, like every other gate warning.
+      assert eventually(fn ->
+               Enum.any?(
+                 Sessions.list_messages(c1.id),
+                 &(&1.data["subtype"] == "fork_gate_parent_timeout")
+               )
+             end)
+    end
+
+    test "abort clears a parent-turn hold without leaving the queue behind", %{
+      gate: gate,
+      parent: parent,
+      children: [c1, c2, _]
+    } do
+      running(parent)
+      for child <- [c1, c2], do: enqueue(gate, parent, child)
+      refute_receive {:delivered, _, _, _}, 200
+
+      assert {:ok, dropped} = ForkGate.abort(parent.id, server: gate)
+      assert dropped == [c1.id, c2.id]
+
+      # The parent's turn ending afterwards must not resurrect anything.
+      finish_turn(parent, hit_usage(20_000))
+      refute_receive {:delivered, _, _, _}, 200
+      assert ForkGate.status(parent.id, server: gate) == nil
+    end
+
+    test "with serialization off (vLLM) the parent's turn is not waited on at all", %{
+      gate: gate,
+      parent: parent,
+      children: [c1, _, _]
+    } do
+      profile(%{serialize_first_turns: false})
+      running(parent)
+
+      assert enqueue(gate, parent, c1) == :ok
+
+      # §9: the whole serialization half — parent included — is off by
+      # configuration alone, no fork-code change.
+      assert_receive {:delivered, id1, _, _}
+      assert id1 == c1.id
+    end
+  end
+
   # ── §9: serving-profile isolation ────────────────────────────────────
 
   describe "serving profile" do
@@ -594,6 +792,14 @@ defmodule OrcaHub.ForkGateTest do
       })
 
     message
+  end
+
+  # Puts the parent in the state `fork_from_parent` actually finds it in: the
+  # caller is blocked on its own `start_session` tool call, so its row says
+  # "running" until that turn produces a result.
+  defp running(session, status \\ "running") do
+    {:ok, updated} = Sessions.update_session(session, %{status: status})
+    updated
   end
 
   defp reload_message(session, message) do

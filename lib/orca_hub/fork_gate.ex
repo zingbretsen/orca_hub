@@ -32,6 +32,47 @@ defmodule OrcaHub.ForkGate do
   §6's other mandate: the parent-idle → last-fork-first-turn window stays a
   function of the work itself, not of orchestrator diligence.
 
+  ## The parent is child zero (§6, widened after the 2026-08-14 live smoke)
+
+  Sibling-vs-sibling serialization is NOT sufficient on its own, because
+  `fork_from_parent` forks the CALLER: at the instant `start_session`
+  returns, the parent is BY CONSTRUCTION mid-turn — it has emitted a tool
+  call and still has to consume the tool result and produce a final message.
+  That next parent LLM call is routed straight back onto the slot holding
+  the prefix the child needs (measured: `selected slot by LCP similarity,
+  f_sim_best = 0.994`) and holds it for the rest of the turn. A child
+  arriving ~1.6s later finds that slot busy, falls back to `selected slot by
+  LRU` onto a slot holding nothing relevant, and pays a FULL cold prefill.
+  Measured 3/3 parents on gb10: `cache_read_input_tokens` exactly 0,
+  25.7-32.0s — the very "strictly worse than a plain spawn" outcome §1.1
+  exists to exclude. The parent's slot freed ~4s AFTER the child had already
+  finished cold-prefilling.
+
+  So the FIRST child of a fan-out has one additional precondition: the
+  parent's own in-flight turn must have ENDED. Verified before implementing,
+  same box, same model, parent process not mid-turn: the child's first turn
+  reprocessed **20 fresh tokens against `cacheRead 31,813`** in 4.97s, and
+  llama-server picked `selected slot by LCP similarity, f_sim_best = 0.999`
+  — the parent's own slot — with no intervening task switch. (That also
+  answers the smoke report's open question: the prefix does NOT need to be
+  written to the host prompt cache first; slot-resident is enough.)
+
+  Mechanically the parent is just **child zero** in the same chain, watched
+  through the same aggregate-topic subscription, with the same four
+  turn-ending signals and the same `release_timeout_ms` backstop. Once its
+  turn is seen to end, the queue is marked `parent_turn: :clear` and every
+  later sibling is gated by siblings alone, exactly as before. A parent that
+  is idle, `ready`, torn down, cold, or simply gone at enqueue time clears
+  the check immediately and adds ZERO latency — file-level fork needs no
+  live parent runner, and a non-running parent is not holding a slot.
+
+  The cost is honest: the gate waits for the parent's ENTIRE current turn,
+  not just the tool call that spawned the fork. An orchestrator that forks
+  and then runs five more minutes of tool calls holds its children for five
+  minutes. That is inherent to the API shape (the caller is always mid-turn);
+  the pi orchestrator prompt therefore advises making fork spawns the LAST
+  action of a turn.
+
   ## Observing turn completion
 
   The gate watches the same events `SessionLive.Show` consumes, but
@@ -66,6 +107,14 @@ defmodule OrcaHub.ForkGate do
       (`ServingProfile.release_timeout_ms/0`, ~10 min) releases the next child
       and emits a `fork_gate_timeout` warning on BOTH the parent's and the
       child's session topics.
+    * **Parent's turn errors, or never ends** — the parent-as-child-zero wait
+      honours the same four turn-ending signals as any child, so a CRASHING
+      parent (`cli_error` / `{:status, :error}`) releases the first child
+      immediately rather than stranding the whole fan-out behind a dead
+      turn. A parent that simply hangs is covered by the SAME
+      `release_timeout_ms` knob (not a second timeout mechanism), which
+      releases anyway and emits a `fork_gate_parent_timeout` warning on both
+      topics.
     * **Node restart** — gate state is per-node and IN-MEMORY, by design. A
       restart drops the queue, and `SessionResumer`-recovered children send
       their pending prompts unserialized. This is deliberately not made
@@ -197,8 +246,9 @@ defmodule OrcaHub.ForkGate do
     do: GenServer.call(server(opts), {:abort, parent_id})
 
   @doc """
-  Snapshot of one parent's queue: `%{active_child, pending, paused}`, or
-  `nil` when this parent has nothing in flight.
+  Snapshot of one parent's queue:
+  `%{active_child, pending, paused, waiting_on_parent_turn}`, or `nil` when
+  this parent has nothing in flight.
   """
   def status(parent_id, opts \\ []) when is_binary(parent_id),
     do: GenServer.call(server(opts), {:status, parent_id})
@@ -214,7 +264,8 @@ defmodule OrcaHub.ForkGate do
   def init(opts) do
     {:ok,
      %{
-       # parent_id => %{pending: [entry], active_child: child_id | nil, paused: nil | map}
+       # parent_id => %{pending: [entry], active_child: child_id | nil,
+       #                paused: nil | map, parent_turn: :unchecked | :clear | map}
        queues: %{},
        # child_id => %{parent_id, parent_context_tokens, timer_ref, gating?}
        watching: %{},
@@ -262,9 +313,17 @@ defmodule OrcaHub.ForkGate do
       {:ok, queue} ->
         dropped = Enum.map(queue.pending, & &1.child_id)
 
+        # Nothing left to release, so a pending parent-turn hold is dead
+        # weight — cancel its timer rather than leaving it to fire into an
+        # already-dropped queue.
+        case queue.parent_turn do
+          %{timer_ref: ref} -> cancel_timer(ref)
+          _ -> :ok
+        end
+
         state =
           state
-          |> put_queue(parent_id, %{queue | pending: [], paused: nil})
+          |> put_queue(parent_id, %{queue | pending: [], paused: nil, parent_turn: :clear})
           |> prune_queue(parent_id)
 
         {:reply, {:ok, dropped}, state}
@@ -283,10 +342,16 @@ defmodule OrcaHub.ForkGate do
   # Aggregate "sessions" topic: {session_id, payload}. Anything about a
   # session we're not watching is not ours — ignore it cheaply.
   def handle_info({session_id, payload}, state) when is_binary(session_id) do
-    case Map.fetch(state.watching, session_id) do
-      :error -> {:noreply, state}
-      {:ok, watch} -> {:noreply, handle_child_payload(state, session_id, watch, payload)}
-    end
+    state =
+      case Map.fetch(state.watching, session_id) do
+        :error -> state
+        {:ok, watch} -> handle_child_payload(state, session_id, watch, payload)
+      end
+
+    # ...and independently, the same id may be a PARENT whose in-flight turn
+    # a fan-out is waiting on. A session can be both at once (a fork child
+    # that itself fans out), so these are two lookups, not two branches.
+    {:noreply, handle_parent_payload(state, session_id, payload)}
   end
 
   def handle_info({:release_timeout, child_id}, state) do
@@ -318,6 +383,41 @@ defmodule OrcaHub.ForkGate do
         emit_warning(watch.parent_id, event, persist: false)
 
         {:noreply, complete_child(state, child_id, watch, :timeout)}
+    end
+  end
+
+  def handle_info({:parent_wait_timeout, parent_id}, state) do
+    case Map.fetch(state.queues, parent_id) do
+      {:ok, %{parent_turn: %{} = hold} = queue} ->
+        held_child_id = queue.pending |> List.first() |> then(&(&1 && &1.child_id))
+
+        Logger.warning(
+          "[fork gate] parent #{parent_id}'s in-flight turn did not end within " <>
+            "#{ServingProfile.release_timeout_ms()}ms — releasing its first forked child anyway"
+        )
+
+        message =
+          "Fork gate: parent session #{parent_id}'s own in-flight turn did not end within " <>
+            "#{div(ServingProfile.release_timeout_ms(), 60_000)} minutes. Releasing the first " <>
+            "forked child anyway — its first turn may cold-prefill, because the parent is " <>
+            "still holding the slot that caches the inherited prefix (pi_fork_spec.md §6)."
+
+        event = %{
+          "type" => "system",
+          "subtype" => "fork_gate_parent_timeout",
+          "child_session_id" => held_child_id,
+          "parent_session_id" => parent_id,
+          "timeout_ms" => ServingProfile.release_timeout_ms(),
+          "message" => message
+        }
+
+        if held_child_id, do: emit_warning(held_child_id, event, persist: true)
+        emit_warning(parent_id, event, persist: false)
+
+        {:noreply, clear_parent_turn(state, parent_id, hold)}
+
+      _ ->
+        {:noreply, state}
     end
   end
 
@@ -359,7 +459,12 @@ defmodule OrcaHub.ForkGate do
   # ── Queue mechanics ──────────────────────────────────────────────────
 
   defp queue_for(state, parent_id) do
-    Map.get(state.queues, parent_id, %{pending: [], active_child: nil, paused: nil})
+    Map.get(state.queues, parent_id, %{
+      pending: [],
+      active_child: nil,
+      paused: nil,
+      parent_turn: :unchecked
+    })
   end
 
   defp put_queue(state, parent_id, queue),
@@ -381,13 +486,98 @@ defmodule OrcaHub.ForkGate do
   defp maybe_release(state, parent_id) do
     case Map.fetch(state.queues, parent_id) do
       {:ok, %{active_child: nil, paused: nil, pending: [entry | rest]} = queue} ->
-        state
-        |> put_queue(parent_id, %{queue | pending: rest, active_child: entry.child_id})
-        |> release(entry, true)
+        case await_parent_turn(state, parent_id, queue) do
+          {:clear, state} ->
+            queue = queue_for(state, parent_id)
+
+            state
+            |> put_queue(parent_id, %{queue | pending: rest, active_child: entry.child_id})
+            |> release(entry, true)
+
+          {:holding, state} ->
+            state
+        end
 
       _ ->
         prune_queue(state, parent_id)
     end
+  end
+
+  # ── Parent-as-child-zero (§6) ────────────────────────────────────────
+  # The additional precondition on the FIRST release of a fan-out: the
+  # parent's own in-flight turn must have ended, or the child's request
+  # races it for the one slot holding the prefix and loses (moduledoc,
+  # "The parent is child zero"). Once cleared it stays cleared, so siblings
+  # 2..N are gated by siblings alone, exactly as before.
+  defp await_parent_turn(state, _parent_id, %{parent_turn: :clear}), do: {:clear, state}
+
+  # Already holding: the timer and the subscription are live, nothing to do.
+  defp await_parent_turn(state, _parent_id, %{parent_turn: %{}}), do: {:holding, state}
+
+  defp await_parent_turn(state, parent_id, queue) do
+    # SUBSCRIBE BEFORE READING the status, never the other way round.
+    # `SessionRunner` persists a status change and only then broadcasts it,
+    # so a parent that still reads "running" here cannot have already
+    # published the turn-ending payload we're about to wait for.
+    state = ensure_subscribed(state)
+
+    if parent_turn_in_flight?(parent_id) do
+      timer_ref =
+        Process.send_after(
+          self(),
+          {:parent_wait_timeout, parent_id},
+          ServingProfile.release_timeout_ms()
+        )
+
+      Logger.debug(
+        "[fork gate] holding the first fork child of parent #{parent_id} until its " <>
+          "in-flight turn ends"
+      )
+
+      {:holding, put_queue(state, parent_id, %{queue | parent_turn: %{timer_ref: timer_ref}})}
+    else
+      {:clear, put_queue(state, parent_id, %{queue | parent_turn: :clear})}
+    end
+  end
+
+  # Only `running`/`compacting` are unambiguously mid-turn. Everything else —
+  # idle, ready, waiting, error, a torn-down or never-started runner, a row
+  # that no longer exists — means nothing is holding a slot, so the child is
+  # released with ZERO added latency. Fails OPEN (release) on any lookup
+  # error, matching this module's other best-effort HubRPC calls: a DB blip
+  # must not strand a fan-out that a plain `send_message` would have run.
+  defp parent_turn_in_flight?(parent_id) do
+    case HubRPC.get_session(parent_id) do
+      %{status: status} -> status in ["running", "compacting"]
+      _ -> false
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "[fork gate] could not read parent #{parent_id}'s status, releasing anyway: " <>
+          Exception.format(:error, error)
+      )
+
+      false
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "[fork gate] could not read parent #{parent_id}'s status, releasing anyway: " <>
+          inspect(reason)
+      )
+
+      false
+  end
+
+  # The parent's turn ended (or was declared over by the timeout): drop the
+  # hold and let the queue advance.
+  defp clear_parent_turn(state, parent_id, %{timer_ref: timer_ref}) do
+    cancel_timer(timer_ref)
+    queue = queue_for(state, parent_id)
+
+    state
+    |> put_queue(parent_id, %{queue | parent_turn: :clear})
+    |> maybe_release(parent_id)
   end
 
   # Registers the child as watched BEFORE delivery is attempted, so no
@@ -449,6 +639,30 @@ defmodule OrcaHub.ForkGate do
     do: complete_child(state, child_id, watch, :idle)
 
   defp handle_child_payload(state, _child_id, _watch, _payload), do: state
+
+  # Parent-as-child-zero: the same four turn-ending signals a child is
+  # judged by (§6's error path included, so a parent whose turn CRASHES
+  # releases the fan-out instead of stranding it behind a dead turn).
+  defp handle_parent_payload(state, parent_id, payload) do
+    case Map.fetch(state.queues, parent_id) do
+      {:ok, %{parent_turn: %{} = hold}} ->
+        if turn_ended?(payload) do
+          Logger.debug("[fork gate] parent #{parent_id}'s turn ended — releasing its first fork")
+          clear_parent_turn(state, parent_id, hold)
+        else
+          state
+        end
+
+      _ ->
+        state
+    end
+  end
+
+  defp turn_ended?({:event, %{"type" => "result"}}), do: true
+  defp turn_ended?({:event, %{"type" => "cli_error"}}), do: true
+  defp turn_ended?({:status, :error}), do: true
+  defp turn_ended?({:status, :idle}), do: true
+  defp turn_ended?(_payload), do: false
 
   # Drops the child from the gate and lets its parent's queue advance. The
   # child is independent from here on: a later re-prompt of it does NOT come
@@ -663,7 +877,10 @@ defmodule OrcaHub.ForkGate do
     %{
       active_child: queue.active_child,
       pending: Enum.map(queue.pending, & &1.child_id),
-      paused: queue.paused
+      paused: queue.paused,
+      # Distinct from `paused`: nothing went wrong, the queue is simply
+      # holding its first child until the parent's own turn ends (§6).
+      waiting_on_parent_turn: is_map(queue.parent_turn)
     }
   end
 end

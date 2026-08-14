@@ -226,11 +226,27 @@ the `*.jsonl` whose header `id` equals the parent's `claude_session_id`
 (defensive against pi ever writing siblings into one dir). Resolved at
 spawn time on the runner node — hence §3's same-node restriction.
 
-**Mid-turn forks are consistent but discouraged.** The JSONL is
-append-only, so forking while the parent is mid-turn still yields a
-well-formed (just possibly turn-truncated) prefix. Guidance + the §6 gate
-both push toward forking a *just-idled* parent — which is also when the
-serving-side cache for that prefix is hottest.
+**Every fork is a mid-turn fork.** The JSONL is append-only, so forking
+while the parent is mid-turn still yields a well-formed (just possibly
+turn-truncated) prefix — which is fortunate, because it is the ONLY case
+that exists. `fork_from_parent` forks the CALLER, and the caller is by
+construction mid-turn at the instant `start_session` runs: it has emitted a
+tool call and still has to consume the tool result and produce a final
+message.
+
+> **Amendment (live smoke, 2026-08-14).** This paragraph previously said
+> "guidance + the §6 gate both push toward forking a *just-idled* parent."
+> That is unachievable through this API — there is no way for a caller to
+> fork itself while idle — and the advice was actively misleading, because
+> it implied a *state* the orchestrator could reach rather than a *race*
+> the gate has to own. Correctness therefore does not rest on parent
+> idleness at spawn time at all: §6's gate holds the first child until the
+> parent's in-flight turn ENDS, which is what actually frees the slot
+> caching the prefix. What the orchestrator still controls is the eviction
+> exposure window, and that window runs **parent-turn-end → last child's
+> first turn**, not "parent-idle → last fork" — so the guidance that
+> survives is: make fork spawns the last action of your turn and end the
+> turn promptly (§6).
 
 **Fallback if `--fork` rejects an absolute path outside the child's
 `--session-dir`** (Q1 — plausible, since `--session <path|id>`'s id lookup
@@ -353,11 +369,87 @@ turn completes, observed via the sibling's `session:<id>` PubSub topic
 (the same events `SessionLive.Show` consumes). Non-fork spawns are
 untouched.
 
+#### Amendment (live smoke, 2026-08-14): the parent is child zero
+
+Sibling-vs-sibling serialization as written above is **necessary but not
+sufficient**, and the case it misses is not an edge case — it is every
+fan-out's first child. Measured live on gb10 across 3 independent parents,
+3/3: the FIRST fork off a parent context cold-prefilled its entire
+inherited history (`cache_read_input_tokens` **exactly 0**, 25.7-32.0 s),
+i.e. precisely the outcome §1.1 exists to exclude. Every *later* sibling
+hit cleanly.
+
+Root cause, confirmed against llama-server's own slot logs. Because
+`fork_from_parent` forks the caller (§4), the parent is mid-turn at spawn
+time by construction. Its next LLM call — consuming the very tool result
+that created the child — is routed straight back onto the slot holding the
+prefix (`selected slot by LCP similarity, f_sim_best = 0.994`) and holds it
+for the rest of the turn. The child's request arrives ~1.6 s later, finds
+that slot busy, falls back to `selected slot by LRU` onto a slot holding
+nothing relevant, and pays a full prefill. The parent's slot freed ~4 s
+*after* the child had already finished cold-prefilling. Later siblings hit
+only because the first child's cold prefill seeded a second copy of the
+prefix — i.e. the first fork pays a full cold prefill to subsidize the rest
+of the fan-out, which is exactly the economics §1.1 rejects.
+
+**Rule (widened):** the first child of a fan-out has one ADDITIONAL
+precondition — the parent's own in-flight turn must have ended. Mechanically
+the parent is just **child zero** in the same serialization chain: same
+`session:<id>` observation, same four turn-ending signals, same
+`release_timeout_ms` backstop. Everything above about sibling-vs-sibling
+serialization is unchanged; this is a precondition on the FIRST release,
+not a replacement for it.
+
+Verified before implementing (same box, same model, ~32 k-token parent,
+parent process NOT mid-turn): the child's first turn reprocessed **20 fresh
+tokens against `cacheRead` 31,813 in 4.97 s**, and llama-server chose
+`selected slot by LCP similarity, f_sim_best = 0.999` — the parent's own
+slot — with no intervening task switch. That also settles the open question
+the smoke report raised: the prefix does **not** need to be written to the
+host prompt cache before LCP can route to it; still being slot-resident is
+enough.
+
+**A parent that is idle, `ready`, `error`, torn down, cold, or simply gone
+clears this check immediately** and adds zero latency. File-level fork needs
+no live parent runner (§12 Q4), and a non-running parent is not holding a
+slot.
+
+**Honest cost.** "One parent-turn's latency" is the BEST case, not the
+typical one. The gate waits for the parent's ENTIRE current turn to end, not
+just the tool call that spawned the fork — so an orchestrator that forks and
+then runs five more minutes of tool calls holds every one of its children
+for five minutes. That is inherent to the API shape (the caller is always
+mid-turn), not a bug in the gate, and it is still strictly better than the
+25-32 s guaranteed cold prefill plus co-tenant decode collapse (30 → 4.7
+t/s) it replaces. It is also cheap to avoid, which is the one piece of
+orchestrator guidance this feature does carry (in the **pi** system prompt
+only — forking is pi-native and Claude/Codex prompts are byte-pinned):
+*make fork spawns the LAST action of your turn and end the turn promptly;
+the gate releases on your result.* Following it converts the worst case into
+the best case.
+
+**Residual race (accepted, documented rather than fixed).** When the
+parent's turn ends, the parent may immediately consume a queued follow-up
+(heartbeat, operator message, `[Session lifecycle]` ping) and start a NEW
+turn that re-grabs the slot. The gate releases off the turn-ending EVENT,
+not off a status poll, so it is on the same +6-8 ms footing as the measured
+sibling releases — it should win that race essentially always. If it ever
+loses, the outcome is not corruption but a cold prefill, which §6.1 detects
+and reports like any other miss.
+
 Failure handling:
 
 - **Child errors mid-first-turn:** an error event ends the turn — release
   the next child immediately. A later re-prompt of the errored child goes
   back through the gate only if its first turn never completed.
+- **Parent's turn errors, or never ends:** the parent-as-child-zero wait
+  honours the same turn-ending signals, so a CRASHING parent (`cli_error` /
+  `{:status, :error}`) releases the first child immediately rather than
+  stranding the whole fan-out behind a dead turn. A parent that merely hangs
+  is covered by the SAME per-child `release_timeout_ms` knob — deliberately
+  not a second timeout mechanism — which releases anyway and emits a
+  `fork_gate_parent_timeout` warning on both the parent's and the held
+  child's session topics.
 - **Child hangs mid-first-turn:** per-child release timeout (default
   ~10 min, roughly one worst-case long first turn) releases the next and
   emits a warning on both the parent's and child's session topics.
@@ -414,9 +506,38 @@ response inside that result, not the turn-summed total):
 
 - **Hit:** `cache_read_input_tokens` ≈ parent context size (same
   `pi_session_stats` read as §3's `parent_context_tokens`), with fresh
-  `input_tokens` in the tens.
+  `input_tokens` a small fraction of it — see the amendment just below for
+  what "small" actually measures at.
 - **Miss:** `input_tokens` ≈ parent context size — the child just paid
   full prefill.
+
+> **Amendment (live smoke, 2026-08-14): "in the tens" was optimistic by
+> ~2 orders of magnitude, and there are TWO hit regimes, not one.** Every
+> real hit observed through OrcaHub reprocessed **1,798-2,097 fresh tokens**
+> (children B/C/D/G/H, against parent contexts of 26,688-32,152) — not
+> "tens". Those children were LRU-routed onto a slot that did *not* already
+> hold the prefix, so the hit came from RESTORING it, and restore lands at
+> hybrid/DeltaNet checkpoint granularity (§1) rather than at the exact
+> divergence point. The "tens" figure describes the *other* regime: when the
+> child lands by LCP similarity on the slot still holding the prefix, no
+> restore is needed and the reprocess is genuinely tiny — the §6 verification
+> run measured **20 fresh tokens against `cacheRead` 31,813**. Both are
+> clean hits. A future maintainer reading "tens" and seeing 2,000 would
+> reasonably conclude a partial miss; they should not. The 25% threshold is
+> **vindicated by exactly this**: it was chosen so checkpoint-granularity
+> partial hits don't false-positive, and at ~6-7% of the parent context the
+> observed hits sit comfortably inside it while the observed misses sat at
+> ~100%. No threshold change is warranted — only this expectation is
+> corrected.
+
+**Field note (live smoke, 2026-08-14): this half of the gate worked
+perfectly, and caught its own feature failing.** Against all three
+structurally-caused misses above it detected 3/3, emitted the warning on
+both topics, annotated the child's §8 marker, paused the remaining fan-out,
+notified the orchestrator with an actionable `[Session lifecycle]` message,
+and reported correct `fork_queue` status/resume. The feature failed exactly
+as it was designed to fail — visibly, with the fan-out stopped rather than
+silently paying full prefill for every remaining sibling.
 
 `ForkGate` performs this check on each first `result` before releasing
 the next child. Miss threshold: fresh `input_tokens` > ~25% of
@@ -635,6 +756,25 @@ here so they don't get rediscovered as surprise bugs later.
   and a genuinely hung child holds up the whole fan-out longer than
   necessary. Revisit once there's real distribution data on forked
   first-turn durations.
+- **§7's KV budget models one resident copy of the prefix; a fan-out can
+  produce N.** The soft guard computes
+  `(concurrent fork-children + 1) × parent_context_tokens` as if the shared
+  prefix were resident once. The 2026-08-14 smoke shows it need not be:
+  llama-server routes a child by LCP similarity only when the matching slot
+  is FREE, and otherwise falls back to `selected slot by LRU` — so N forks
+  of a P-token parent can end up spread across N distinct slots, each
+  holding its own copy, for N×P cells against the 262,144-cell unified pool
+  rather than the ~P the guard implicitly assumes. The §6 parent-turn wait
+  makes the *first* child likely to land back on the parent's own slot
+  (verified: `f_sim_best = 0.999`), which helps, but nothing forces siblings
+  2..N onto it — B/C/D were each LRU-routed to different slots and still hit
+  (from restore), which is fine for latency and invisible to the guard's
+  arithmetic. Consequence: the guard under-predicts residency pressure for
+  wide fan-outs of deep parents, in the direction of warning too little. Not
+  fixed in v1 — it is a soft warning either way, and modelling slot
+  placement would mean modelling a scheduler OrcaHub cannot see (it also
+  cannot see the box's other tenants at all, §7). Fold into Q6 if the guard
+  is ever made hard.
 - **A node restart mid-fan-out silently unserializes the remaining
   children.** `ForkGate`'s queue is per-node and in-memory by explicit §6
   design (see "Node restart" under Failure handling, both in §6 and in the
