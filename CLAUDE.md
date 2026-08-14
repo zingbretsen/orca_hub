@@ -17,6 +17,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - Confirmed known flake: `OrcaHub.TriggersTest "list_enabled_triggers/0"` (shared dev-DB leftover state). Two others flake intermittently across *repeated* runs under shared-dev-DB isolation gaps rather than every run — `NodeLive.IndexTest "load_nodes issues the same number of queries…"` and `PiStubIntegrationTest "a genuine turn error tears down the warm port…"` (being fixed at root separately as of 2026-08-09). Anything else failing is real — investigate, don't retry-until-green.
 - Tests run against the shared dev DB, not an isolated test DB — hub-boot GenServers write real rows; this is expected.
 - Don't trust this doc's flake list as-is before a deploy gate — establish the baseline empirically by running the full suite yourself (ideally more than once) against the SHA you're about to ship, since this file can silently drift out of date (it did for weeks before being corrected 2026-08-09), and a single clean run isn't guaranteed given the intermittent flakes above.
+- 2026-08-13/14 observation: four consecutive full-suite runs (2×2316 tests @ `4dc631d`, 2×2325 tests @ `340489a`) each produced exactly ONE failure — the known `TriggersTest` flake above. The other two listed intermittents (`NodeLive.IndexTest`, `PiStubIntegrationTest`) did not occur in any of the four. Four runs isn't proof they're fixed — keep running the baseline yourself per the advice above, don't drop them from the list on this evidence alone.
 
 ## Architecture
 
@@ -42,13 +43,18 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 
 ## Deployment
 
-There are FIVE prod instances; a full deploy updates all of them:
+There are SIX prod instances; a full deploy updates all of them:
 
 1. **k3s deployments `orca-hub`, `orca-agent-discord`, `orca-agent-dell`** (namespace
-   `lab`) — share one Docker image from `registry.lab.ingbretsenhome.com`.
+   `lab`) — share one Docker image from `registry.lab.ingbretsenhome.com`, built as a
+   real multi-arch (`linux/amd64,linux/arm64`) manifest list even though nothing
+   schedules an arm64 pod today.
 2. **`mini`** — a standalone host (same physical k3s cluster node, but runs its own
    OTP release + systemd unit outside k3s).
-3. **Local systemd service `orca-hub`** — runs an OTP release installed under
+3. **`gb10`** (`192.168.1.77`, the aarch64 GB10 box) — also a standalone agent, same
+   `/home/zach/orca-hub-releases/<sha>/` + `current` symlink convention as `mini` and
+   local, but needs a NATIVE aarch64 OTP release rather than the amd64 one.
+4. **Local systemd service `orca-hub`** — runs an OTP release installed under
    `/home/zach/orca-hub-releases/<sha>/` (symlink-flipped into place), NOT a
    `_build/prod/rel/orca_hub` local `mix release` build.
 
@@ -58,54 +64,115 @@ The canonical deploy script is a LOCAL/PRIVATE script that lives in the homelab
 repo at `~/homelab/scripts/deploy-orca-hub.sh` — it is intentionally NOT checked
 into this repo (`scripts/deploy.sh` is gitignored here as a guard against
 accidental re-add). **Read the script itself before trusting a summary of it —
-this section has been wrong before.** It builds from this checkout (`ORCA_REPO`,
-default `/home/zach/orca_hub`) with **one build step**: a single multi-stage
-`docker build` (builder → `artifact` | `runtime`) that produces both the SHA-tagged
-runtime image (for k3s) and the extracted release directory (for local + `mini`) —
-there is no separate local `mix release`. In order:
+this section has been wrong before, more than once — and re-check it before
+briefing a deploy worker rather than reusing a stale mental model.**
 
-1. Guard: abort if the checkout is dirty (`git status --porcelain`, which includes
-   untracked files) unless `--allow-dirty` is passed.
-2. `git push` the deployed commit to origin.
-3. The one `docker build` (+ extracted artifact).
-4. Push the SHA-tagged image, then commit the new image tag into this repo's k3s
-   manifests and push — **Flux (GitOps) notices the commit and rolls all three k3s
-   deployments itself.** This script never runs `kubectl rollout restart`, and a
-   direct `kubectl edit` against a Flux-managed resource gets silently reverted
-   within ~5 minutes (see the `homelab-flux-gitops` skill).
-5. Install the artifact on `mini` over ssh, restart its systemd service.
-6. Install the artifact locally, `sudo systemctl restart orca-hub` — **runs LAST**,
-   since a deploy driven from inside the local `orca-hub` process kills the script's
-   own process tree the moment this restart fires.
+It builds from this checkout (`ORCA_REPO`, default `/home/zach/orca_hub`) with a
+**NATIVE multi-arch build, every deploy**: a persistent two-node `docker buildx`
+builder named `orca` — this host builds `linux/amd64` on its own node, `gb10`
+builds `linux/arm64` natively on its own node over an ssh docker context, no QEMU.
+The builder is created once and reused forever (recreating it would destroy each
+node's BuildKit cache); each node's cache stays warm independently across deploys,
+with no cross-arch cache for one arch to poison the other. Exactly TWO
+`docker buildx build` invocations against that one builder per deploy:
+
+1. the runtime image, `--platform linux/amd64,linux/arm64 --push`, assembling ONE
+   multi-arch manifest list (SHA-tagged + `:latest`) for k3s;
+2. the same compiled release, `--target artifact --platform linux/amd64,linux/arm64
+   --output type=local`, a multi-platform local export that writes PER-PLATFORM
+   subdirectories (`linux_amd64/`, `linux_arm64/`) rather than one flat release
+   dir — consumed by local + `mini` (amd64) and `gb10` (arm64).
+
+Each extracted artifact gets a hard `file`-based architecture assertion before
+anything is installed — added after two real cache-poisoning incidents on the old
+single-shared-cache builder (2026-07-31: an amd64 build silently served as arm64;
+2026-08-02: the reverse, an arm64-poisoned amd64 image shipped to every instance
+that existed then). The native per-arch nodes make that failure mode structurally
+impossible now, but the assertions stay as a cheap belt-and-suspenders check.
+
+Before any of the seven steps below run, three guards abort the whole deploy on
+failure: the checkout-dirty guard (`git status --porcelain`, `--allow-dirty` to
+skip); a `gb10`-reachable + buildx-arm64-platform-support guard (`--skip-arm64` to
+skip and build amd64-only instead); and a systemd bootstrap guard confirming
+local/`mini`/`gb10` (whichever aren't skipped) all `ExecStart` from
+`orca-hub-releases/current`, and that `mini`/`gb10` both carry the NOPASSWD
+sudoers rule needed to restart non-interactively over ssh — `gb10` needed a
+one-time bootstrap for that rule (the same scope `mini` already had); the guard
+prints the exact setup command if it's missing rather than hanging or failing
+deep inside a later step.
+
+In order (seven steps):
+
+1. `git push` the deployed commit to origin.
+2. The two `buildx` builds above, plus the architecture assertions.
+3. Prune stale local image tags + cap both builders' BuildKit caches; commit the
+   new image tag into this repo's k3s manifests and push — **Flux (GitOps) notices
+   the commit and rolls all three k3s deployments itself.** This script never runs
+   `kubectl rollout restart`, and a direct `kubectl edit` against a Flux-managed
+   resource gets silently reverted within ~5 minutes (see the `homelab-flux-gitops`
+   skill). Polls each k3s instance's `/api/version` to confirm the rollout landed.
+4. Install per-host env files (local + `mini`; `gb10` manages its own `.env`
+   separately, out of scope here) — the ONE step besides the dirty-checkout guard
+   that ABORTS the whole deploy on failure, since starting a service against a
+   stale/missing env is worse than a hard stop.
+5. Install the artifact on `mini` over ssh, restart its systemd service. A failure
+   here is a WARNING, not an abort — a remote, lower-stakes target.
+6. Install the arm64 artifact on `gb10` over ssh, restart its systemd service. Same
+   WARNING-not-abort philosophy as `mini`. (Different from an arm64 BUILD failure
+   in step 2 above, which always aborts the whole deploy — silently shipping
+   amd64-only bits under a SHA tag that claims multi-arch is worse than refusing.)
+7. Install the artifact locally, restart `orca-hub` — **runs LAST**, since a deploy
+   driven from inside the local `orca-hub` process kills the script's own process
+   tree the moment this restart fires. The script now performs the `no_new_privs`
+   ssh escape (see below) itself for this step, so a worker driving the script by
+   hand doesn't need to route around it manually.
 
 Flags: `--skip-push`, `--skip-build`, `--skip-local`, `--skip-k3s`, `--skip-env`,
-`--skip-mini`, `--allow-dirty`, `--arm64` (extra GB10/aarch64 artifact pass, off by
-default, `--no-cache` by default — see the script header for why). **There is no
-`--skip-release` flag** (no separate release-build step exists to skip). Run
-`~/homelab/scripts/deploy-orca-hub.sh --help` for details.
+`--skip-mini`, `--skip-gb10`, `--skip-arm64`, `--allow-dirty`, `-h`/`--help`.
+**The old opt-in `--arm64` flag is GONE — passing it is now a fatal "Unknown flag"
+error.** arm64/`gb10` are ON by default: `--skip-arm64` builds `linux/amd64` only
+(no arm64 artifact at all, no `gb10` install, single-platform image), while
+`--skip-gb10` still builds the arm64 artifact but skips installing it on `gb10`
+specifically. There is still no `--skip-release` flag (no separate release-build
+step exists to skip). Run `~/homelab/scripts/deploy-orca-hub.sh --help` for the
+full current text — it's generated straight from the script's own header comment,
+so it can't drift from the flags above the way this doc can.
 
 Because the local systemd restart can kill the deploying session before it can
 verify itself, `~/homelab/scripts/verify-orca-deploy.sh [sha]` is the companion
 script to run afterward (by hand, or from another session) — it polls
-`GET /api/version` on every instance and confirms each reports the target SHA.
-**It lives in the homelab repo, not this one** — a worker told to "verify the
-deploy" who only searches this repo won't find it and may hand-roll a worse
-check instead. If it's genuinely unavailable, the manual fallback is the same
-`/api/version` endpoint per instance: local systemd and `mini` on port `4001`,
-the k3s hub pod on `4000`, and the k3s `orca-agent-discord`/`orca-agent-dell`
-agent pods on `4010`/`4020` respectively (typically via port-forward).
+`GET /api/version` on local systemd, `mini`, and all three k3s instances, and
+confirms each reports the target SHA. **It does NOT check `gb10`** — a clean
+"all instances confirmed" from this script never covers `gb10`; check it by hand
+(`ssh zach@192.168.1.77 curl -s http://localhost:4001/api/version`). It also
+**lives in the homelab repo, not this one** — a worker told to "verify the
+deploy" who only searches this repo won't find it and may hand-roll a worse check
+instead. Per-instance endpoints it polls: local systemd and `mini` on port
+`4001` (`mini` polled over ssh, since it's a LAN host); the k3s hub pod via the
+Authelia-fronted ingress (`https://orca.lab.ingbretsenhome.com/api/version`,
+since it runs on the pod network with no LAN host IP); the k3s
+`orca-agent-discord`/`orca-agent-dell` pods (no Service/Ingress) via `kubectl
+exec` + curl against their own pod-local ports `4010`/`4020`.
 
-**Passwordless sudo requirement:** the systemd step runs `sudo systemctl restart orca-hub`.
-To avoid a password prompt, install the sudoers drop-in at
-`/etc/sudoers.d/orca-hub` (root:root, mode 0440). A reference copy lives at
-`scripts/orca-hub.sudoers` with install instructions in its header; it grants
-`zach` NOPASSWD for start/stop/status/restart of the `orca-hub` unit only.
-Validate after installing with `sudo visudo -cf /etc/sudoers.d/orca-hub`.
-**This alone is not sufficient from an agent session running inside the
-orca-hub release itself** — that process tree runs with `no_new_privs`, which
-blocks `sudo` even with a valid NOPASSWD entry. The confirmed-working escape
-is routing through sshd instead: `ssh localhost 'sudo -n systemctl restart
-orca-hub'`.
+**Passwordless sudo requirement:** the deploy script's mini/gb10/local restart
+steps all run `sudo systemctl restart orca-hub` over a non-interactive session.
+To avoid a password prompt, each host needs the sudoers drop-in at
+`/etc/sudoers.d/orca-hub` (root:root, mode 0440) — a reference copy lives at
+`scripts/orca-hub.sudoers` with install instructions in its header. It grants
+`zach` NOPASSWD for `start`/`stop`/`status`/`restart` of the `orca-hub` unit
+ONLY — **it does NOT cover `systemctl is-active`**, which still prompts for a
+password; hitting that can look exactly like the ssh escape below is broken when
+it's really just an uncovered subcommand (a worker hit this and misdiagnosed it
+on 2026-08-14). Validate after installing with `sudo visudo -cf
+/etc/sudoers.d/orca-hub`. **The drop-in alone is not sufficient from an agent
+session running inside the orca-hub release itself** — that process tree runs
+with `no_new_privs`, which blocks `sudo` even with a valid NOPASSWD entry. The
+confirmed-working escape is routing through sshd instead: `ssh localhost 'sudo
+-n systemctl restart orca-hub'` — the deploy script itself now does exactly this
+for its own local-restart step (step 7 above), so this mainly matters if you're
+restarting the service by hand from inside a session rather than via the script.
+`mini` and `gb10` need the identical NOPASSWD scope (same drop-in content) so the
+deploy script can restart them non-interactively over ssh too.
 
 ### k3s reference
 
