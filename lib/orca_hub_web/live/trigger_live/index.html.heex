@@ -259,7 +259,9 @@
       >
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2">
-            <span class="font-medium">{trigger.name}</span>
+            <.link navigate={~p"/triggers/#{trigger.id}"} class="font-medium hover:underline">
+              {trigger.name}
+            </.link>
             <span class={[
               "badge badge-xs",
               case trigger.type do

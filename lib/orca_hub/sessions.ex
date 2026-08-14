@@ -77,6 +77,21 @@ defmodule OrcaHub.Sessions do
     )
   end
 
+  @doc """
+  Every session a trigger has ever spawned, newest first — INCLUDING
+  archived ones, since `archive_on_complete` triggers archive their
+  sessions and excluding them would usually show an empty list on the
+  trigger's show page.
+  """
+  def list_sessions_for_trigger(trigger_id) do
+    Repo.all(
+      from s in Session,
+        where: s.trigger_id == ^trigger_id,
+        order_by: [desc: s.inserted_at, desc: s.id],
+        preload: [:project]
+    )
+  end
+
   def archive_session(%Session{} = session) do
     result =
       session

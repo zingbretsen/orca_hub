@@ -31,7 +31,7 @@ defmodule OrcaHub.Triggers do
     )
   end
 
-  def get_trigger!(id), do: Repo.get!(Trigger, id) |> Repo.preload(:project)
+  def get_trigger!(id), do: Repo.get!(Trigger, id) |> Repo.preload([:project, :email_inbox])
 
   def get_trigger_by_secret!(secret) do
     Repo.get_by!(Trigger, webhook_secret: secret) |> Repo.preload(:project)

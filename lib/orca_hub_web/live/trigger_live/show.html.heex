@@ -1,0 +1,150 @@
+<.header>
+  <.link navigate={~p"/triggers"} class="text-sm opacity-70">&larr; Triggers</.link>
+  <span class="ml-2">{@trigger.name}</span>
+  <span class={[
+    "badge badge-sm ml-1",
+    if(@trigger.enabled, do: "badge-success", else: "badge-ghost")
+  ]}>
+    {if @trigger.enabled, do: "active", else: "disabled"}
+  </span>
+  <:actions>
+    <button
+      :if={@trigger.type == "scheduled"}
+      phx-click="fire_trigger"
+      class="btn btn-sm btn-ghost"
+      title="Fire now"
+    >
+      <.icon name="hero-play-micro" class="size-4" /> Fire now
+    </button>
+    <button phx-click="toggle_trigger" class="btn btn-sm btn-ghost">
+      <.icon
+        name={if @trigger.enabled, do: "hero-pause-micro", else: "hero-play-micro"}
+        class="size-4"
+      /> {if @trigger.enabled, do: "Disable", else: "Enable"}
+    </button>
+    <.link navigate={~p"/triggers/#{@trigger.id}/edit"} class="btn btn-sm btn-ghost">
+      <.icon name="hero-pencil-micro" class="size-4" /> Edit
+    </.link>
+    <button
+      phx-click="delete_trigger"
+      data-confirm="Delete this trigger?"
+      class="btn btn-sm btn-ghost text-error"
+    >
+      <.icon name="hero-trash-micro" class="size-4" /> Delete
+    </button>
+  </:actions>
+</.header>
+
+<div class="card bg-base-200 p-4 mt-4">
+  <.list>
+    <:item title="Project">
+      <.link navigate={~p"/projects/#{@trigger.project.id}"} class="link link-hover">
+        {@trigger.project.name}
+      </.link>
+    </:item>
+    <:item title="Node">
+      <span class="font-mono text-sm">{OrcaHub.Cluster.node_name(@runner_node)}</span>
+    </:item>
+    <:item title="Type">
+      <span class={[
+        "badge badge-sm",
+        case @trigger.type do
+          "webhook" -> "badge-info"
+          "email" -> "badge-secondary"
+          _ -> "badge-neutral"
+        end
+      ]}>
+        {@trigger.type}
+      </span>
+    </:item>
+    <:item :if={@trigger.type == "scheduled"} title="Cron expression">
+      <span class="font-mono">{@trigger.cron_expression}</span>
+    </:item>
+    <:item :if={@trigger.type == "webhook"} title="Webhook URL">
+      <code class="bg-base-300 px-3 py-2 rounded text-xs break-all">{webhook_url(@trigger)}</code>
+    </:item>
+    <:item :if={@trigger.type == "email"} title="Inbox">
+      {if @trigger.email_inbox, do: @trigger.email_inbox.name, else: "(inbox deleted)"}
+    </:item>
+    <:item :if={@trigger.type == "email"} title="Sender allow-list">
+      <span class="font-mono text-sm">{Enum.join(@trigger.sender_allowlist, ", ")}</span>
+    </:item>
+    <:item :if={@trigger.type == "email" && @trigger.to_address} title="To address">
+      <span class="font-mono text-sm">{@trigger.to_address}</span>
+    </:item>
+    <:item :if={@trigger.type == "email" && @trigger.subject_pattern} title="Subject contains">
+      <span class="font-mono text-sm">{@trigger.subject_pattern}</span>
+    </:item>
+    <:item title="Reuse session">{if @trigger.reuse_session, do: "yes", else: "no"}</:item>
+    <:item title="Hide from queue when done">
+      {if @trigger.archive_on_complete, do: "yes", else: "no"}
+    </:item>
+    <:item title="Last fired">
+      {if @trigger.last_fired_at,
+        do: Calendar.strftime(@trigger.last_fired_at, "%Y-%m-%d %H:%M UTC"),
+        else: "never"}
+    </:item>
+    <:item title="Prompt">
+      <pre class="whitespace-pre-wrap font-sans text-sm">{@trigger.prompt}</pre>
+    </:item>
+  </.list>
+</div>
+
+<div class="mt-6">
+  <div class="flex items-center justify-between mb-2">
+    <h3 class="text-lg font-semibold">Sessions</h3>
+    <div class="flex items-center gap-2">
+      <span :if={rotate_disabled_reason(@trigger)} class="text-xs text-base-content/50">
+        {rotate_disabled_reason(@trigger)}
+      </span>
+      <button
+        :if={!rotate_disabled_reason(@trigger)}
+        phx-click="rotate_session"
+        data-confirm="Start a fresh session on the next firing? The current session stays reachable."
+        class="btn btn-sm btn-outline"
+        title="Clear the reused session so the next firing starts a new one"
+      >
+        <.icon name="hero-arrow-path-micro" class="size-4" /> Rotate session
+      </button>
+    </div>
+  </div>
+
+  <div :if={@sessions == []} class="text-sm text-base-content/50 p-4 text-center">
+    No sessions yet.
+  </div>
+
+  <.table
+    :if={@sessions != []}
+    id="trigger-sessions"
+    rows={@sessions}
+    row_click={fn session -> JS.navigate(~p"/sessions/#{session.id}") end}
+  >
+    <:col :let={session} label="Title">
+      <.link navigate={~p"/sessions/#{session.id}"} class="link link-hover">
+        {session.title || "Untitled"}
+      </.link>
+      <span :if={session.id == @trigger.last_session_id} class="badge badge-xs badge-primary ml-1">
+        current
+      </span>
+    </:col>
+    <:col :let={session} label="Status">
+      <span :if={session.archived_at} class="badge badge-ghost">archived</span>
+      <span
+        :if={!session.archived_at}
+        class={[
+          "badge",
+          session.status == "ready" && "badge-ghost",
+          session.status == "idle" && "badge-ghost",
+          session.status == "running" && "badge-warning",
+          session.status == "waiting" && "badge-info",
+          session.status == "error" && "badge-error"
+        ]}
+      >
+        {session.status}
+      </span>
+    </:col>
+    <:col :let={session} label="Created">
+      {Calendar.strftime(session.inserted_at, "%b %d, %H:%M")}
+    </:col>
+  </.table>
+</div>

@@ -901,6 +901,61 @@ defmodule OrcaHub.SessionsTest do
     end
   end
 
+  describe "list_sessions_for_trigger/1" do
+    test "returns sessions for the trigger, newest first, including archived", %{
+      project: project
+    } do
+      {:ok, trigger} =
+        OrcaHub.Triggers.create_trigger(%{
+          name: "Some trigger",
+          prompt: "hi",
+          type: "webhook",
+          project_id: project.id
+        })
+
+      {:ok, other_trigger} =
+        OrcaHub.Triggers.create_trigger(%{
+          name: "Other trigger",
+          prompt: "hi",
+          type: "webhook",
+          project_id: project.id
+        })
+
+      first = create_session(project, %{title: "First", trigger_id: trigger.id})
+      second = create_session(project, %{title: "Second", trigger_id: trigger.id})
+
+      from(s in Session, where: s.id == ^first.id)
+      |> Repo.update_all(set: [inserted_at: ~N[2026-01-01 00:00:00]])
+
+      from(s in Session, where: s.id == ^second.id)
+      |> Repo.update_all(set: [inserted_at: ~N[2026-01-02 00:00:00]])
+
+      {:ok, second} = Sessions.archive_session(second)
+      _unrelated = create_session(project, %{title: "Unrelated", trigger_id: other_trigger.id})
+      _untriggered = create_session(project, %{title: "Untriggered"})
+
+      results = Sessions.list_sessions_for_trigger(trigger.id)
+
+      assert Enum.map(results, & &1.id) == [second.id, first.id]
+      assert Enum.find(results, &(&1.id == second.id)).archived_at != nil
+      assert Enum.all?(results, & &1.project)
+    end
+
+    test "returns an empty list when the trigger has no sessions", %{project: project} do
+      {:ok, trigger} =
+        OrcaHub.Triggers.create_trigger(%{
+          name: "Lonely trigger",
+          prompt: "hi",
+          type: "webhook",
+          project_id: project.id
+        })
+
+      _other = create_session(project, %{title: "Other"})
+
+      assert Sessions.list_sessions_for_trigger(trigger.id) == []
+    end
+  end
+
   describe "list_task_invocations/1" do
     defp assistant_with_tool_uses(blocks) do
       %{"type" => "assistant", "message" => %{"content" => blocks}}

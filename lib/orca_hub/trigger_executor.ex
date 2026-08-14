@@ -208,7 +208,7 @@ defmodule OrcaHub.TriggerExecutor do
 
   defp resolve_session(trigger), do: create_new_session(trigger)
 
-  defp create_new_session(%{project: project, name: name}) do
+  defp create_new_session(%{id: trigger_id, project: project, name: name}) do
     runner_node = Cluster.project_node_for(project)
 
     {:ok, session} =
@@ -218,6 +218,7 @@ defmodule OrcaHub.TriggerExecutor do
         title: "Trigger: #{name}",
         status: "ready",
         triggered: true,
+        trigger_id: trigger_id,
         runner_node: Atom.to_string(runner_node)
       })
 

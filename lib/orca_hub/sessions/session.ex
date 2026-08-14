@@ -75,6 +75,12 @@ defmodule OrcaHub.Sessions.Session do
     # EVERY child spawn — this is the unambiguous fork discriminant.
     field :forked_from_session_id, :binary_id
 
+    # The trigger that created this session (TriggerExecutor.create_new_session/1),
+    # if any. Distinct from `triggers.last_session_id`, which only ever
+    # points at the MOST RECENT session for a trigger — this field is how a
+    # trigger's show page lists every session it has ever spawned.
+    field :trigger_id, :binary_id
+
     # Threading headers of the inbound email that fired this session, if any
     # (OrcaHub.EmailInbox.Ingest). Recorded but not yet read — replying into
     # the original thread is deliberately out of scope for v1; persisting
@@ -116,7 +122,8 @@ defmodule OrcaHub.Sessions.Session do
       :issue_id,
       :forked_from_session_id,
       :email_message_id,
-      :email_in_reply_to
+      :email_in_reply_to,
+      :trigger_id
     ])
     # Cast separately with empty_values: [] — cast/4's default empty_values
     # ([""]) would otherwise silently turn an explicit `tools: ""` (the "no

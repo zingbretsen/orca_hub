@@ -131,6 +131,9 @@ defmodule OrcaHub.HubRPC do
 
   def list_sessions_by_ids(ids), do: call(OrcaHub.Sessions, :list_sessions_by_ids, [ids])
 
+  def list_sessions_for_trigger(trigger_id),
+    do: call(OrcaHub.Sessions, :list_sessions_for_trigger, [trigger_id])
+
   def list_task_invocations(session_id),
     do: call(OrcaHub.Sessions, :list_task_invocations, [session_id])
 
