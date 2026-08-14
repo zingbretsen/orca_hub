@@ -141,18 +141,20 @@ so it can't drift from the flags above the way this doc can.
 Because the local systemd restart can kill the deploying session before it can
 verify itself, `~/homelab/scripts/verify-orca-deploy.sh [sha]` is the companion
 script to run afterward (by hand, or from another session) — it polls
-`GET /api/version` on local systemd, `mini`, and all three k3s instances, and
-confirms each reports the target SHA. **It does NOT check `gb10`** — a clean
-"all instances confirmed" from this script never covers `gb10`; check it by hand
-(`ssh zach@192.168.1.77 curl -s http://localhost:4001/api/version`). It also
+`GET /api/version` on all SIX instances — local systemd, `mini`, `gb10`, and all
+three k3s instances — and confirms each reports the target SHA, treating a
+missed/mismatched `gb10` as a hard failure (exit 1) exactly like every other
+instance (no skip flag), so a clean "all instances confirmed" now genuinely
+does cover `gb10` too. It also
 **lives in the homelab repo, not this one** — a worker told to "verify the
 deploy" who only searches this repo won't find it and may hand-roll a worse check
-instead. Per-instance endpoints it polls: local systemd and `mini` on port
-`4001` (`mini` polled over ssh, since it's a LAN host); the k3s hub pod via the
-Authelia-fronted ingress (`https://orca.lab.ingbretsenhome.com/api/version`,
-since it runs on the pod network with no LAN host IP); the k3s
-`orca-agent-discord`/`orca-agent-dell` pods (no Service/Ingress) via `kubectl
-exec` + curl against their own pod-local ports `4010`/`4020`.
+instead. Per-instance endpoints it polls: local systemd, `mini`, and `gb10` all
+on port `4001` (`mini`/`gb10` polled over ssh, since they're LAN hosts); the
+k3s hub pod via the Authelia-fronted ingress
+(`https://orca.lab.ingbretsenhome.com/api/version`, since it runs on the pod
+network with no LAN host IP); the k3s `orca-agent-discord`/`orca-agent-dell`
+pods (no Service/Ingress) via `kubectl exec` + curl against their own
+pod-local ports `4010`/`4020`.
 
 **Passwordless sudo requirement:** the deploy script's mini/gb10/local restart
 steps all run `sudo systemctl restart orca-hub` over a non-interactive session.
