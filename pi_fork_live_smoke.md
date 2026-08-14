@@ -1,5 +1,16 @@
 # pi Session Forking — LIVE SMOKE against gb10 (2026-08-14)
 
+> **⚠ THIS DOCUMENT HAS TWO PARTS.**
+> **Part 1 (below) is the PRE-FIX run against `7d73b58` — verdict FAIL.** It is retained
+> unedited as the evidence that motivated the §6 scope amendment.
+> **Part 2 ("POST-FIX RE-MEASUREMENT", at the end) is the run against `56a18ba`, which
+> contains the fix — verdict PASS.** If you want the current status of the feature, read
+> Part 2. Part 1's FAIL verdict is **historical** and no longer describes shipped behaviour.
+
+---
+
+# PART 1 — PRE-FIX RUN (`7d73b58`)
+
 **Verdict against `pi_fork_spec.md` §1.1 ("no caching, no forking"): FAIL.**
 
 The gate requires that **every** forked child's first turn be a cache hit. It is not.
@@ -479,3 +490,240 @@ JSONLs under `.pi_sessions/<orca-session-id>/`.
 
 Measurements sourced from: the `orca_hub_prod` `messages` table (event JSON verbatim), pi's
 own session JSONLs, and `docker logs llama-qwen3coder` on `192.168.1.77`.
+
+---
+---
+
+# PART 2 — POST-FIX RE-MEASUREMENT (`56a18ba`), 2026-08-14 18:43–18:47 UTC
+
+**Verdict against `pi_fork_spec.md` §1.1 ("no caching, no forking"): PASS.**
+
+First-forks now hit **3/3 on three independent parents**, each forked immediately after
+idling, each against content the box had never served. Every one was routed by
+**`selected slot by LCP similarity` onto the parent's own slot** — the LRU fallback that
+caused the pre-fix failure did not occur once for any fork child. `cache_read_input_tokens`
+went from **0 / 0 / 0** to **27,292 / 27,353 / 28,147**; first-turn duration went from
+**32.0 / 25.7 / 26.8 s** to **1.03 / 1.07 / 0.97 s**. Zero `fork_cache_miss` events were
+emitted across the entire post-fix run.
+
+## Setup deltas from Part 1
+
+| | Part 1 (pre-fix) | Part 2 (post-fix) |
+|---|---|---|
+| SHA under test | `7d73b58` | **`56a18ba`** (`GET /api/version` on local agent: `{"sha":"56a18ba","built_at":"2026-08-14T15:57:29.906620Z"}`) |
+| llama-server | b10223, 4 slots, `Restarts=0` | **unchanged** — `StartedAt=2026-08-10T14:57:57.746318044Z Restarts=0`, `GET /health` → `{"status":"ok"}` at 18:43:33 UTC |
+| Corpora | smoke / smoke2 / smoke3 | **NEW: smoke4 / smoke5 / smoke6, fresh salts** |
+
+**Why fresh corpora rather than reusing smoke2/smoke3 as suggested.** Those prefixes were
+served ~5 h earlier. A residual host-cache entry would have produced a hit *independent of
+the fix* — a false PASS, the one error direction that matters here. New salts guarantee the
+prefill is genuinely novel. The Part 1 directories were left in place untouched.
+
+- `/home/zach/pi_fork_smoke4` — salt `cad09512fbf84b2e86d465d7bfb2f15a`, 105,309 bytes
+- `/home/zach/pi_fork_smoke5` — salt `b70a7438819c4ffc9dd7a8e5efd10786`, 105,417 bytes
+- `/home/zach/pi_fork_smoke6` — salt `32a8d5d4264c48f7bd8f24e4142b405b`, 105,851 bytes
+
+Log-clock anchor re-derived for this run (it does not carry over): container start
+`2026-08-10T14:57:57.746Z` + 5986 min ⇒ **log minute `5986` sec `0` ↔ `18:43:57.7 UTC`**,
+cross-checked against child P4's prompt-eval completion (`5986.52.776` ↔ DB `18:44:51.006`,
+~0.5 s of pipeline lag). Same `<uptime-min>.<sec>.<ms>.<µs>` format as Part 1.
+
+## 1. The three first-forks — the §1.1 gate
+
+| Parent | ctx (`context_usage.tokens`) | first-fork child | `first_response_usage.input_tokens` | `cache_read_input_tokens` | `duration_ms` | slot selection |
+|---|---|---|---|---|---|---|
+| `18912c73` parent4 | 26,653 | `86fe76fb` P4 | **343** | **27,292** | **1,029** | slot 2, **LCP** `f_sim_best = 0.988` |
+| `ea8f32af` parent5 | 26,726 | `6d9b3880` P5 | **351** | **27,353** | **1,073** | slot 2, **LCP** `f_sim_best = 0.987` |
+| `7ff38d63` parent6 | 26,758 | `d288c7f9` J | **343** | **28,147** | **973** | slot 2, **LCP** `f_sim_best = 0.988` |
+
+Result events, verbatim:
+
+```json
+P4: {"type": "result", "usage": {"input_tokens": 343, "output_tokens": 5, "cache_read_input_tokens": 27292}, "is_error": false, "timestamp": "2026-08-14T18:44:51.006065", "duration_ms": 1029, "total_cost_usd": 0.0, "first_response_usage": {"input_tokens": 343, "cache_read_input_tokens": 27292}}
+P5: {"type": "result", "usage": {"input_tokens": 351, "output_tokens": 5, "cache_read_input_tokens": 27353}, "is_error": false, "timestamp": "2026-08-14T18:46:13.785476", "duration_ms": 1073, "total_cost_usd": 0.0, "first_response_usage": {"input_tokens": 351, "cache_read_input_tokens": 27353}}
+J:  {"type": "result", "usage": {"input_tokens": 343, "output_tokens": 3, "cache_read_input_tokens": 28147}, "is_error": false, "timestamp": "2026-08-14T18:47:22.252386", "duration_ms": 973, "total_cost_usd": 0.0, "first_response_usage": {"input_tokens": 343, "cache_read_input_tokens": 28147}}
+```
+
+**llama-server slot logs — the LCP-vs-LRU signal, verbatim.** In every case the child is
+selected onto **slot 2, the parent's own slot**, by LCP similarity, and evaluates only its
+own divergence:
+
+```
+# child P4 (task 88946)
+5986.52.065.305 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.988 (> 0.100 thold), f_keep = 1.000
+5986.52.065.678 I slot launch_slot_: id  2 | task 88946 | processing task, is_child = 0
+5986.52.776.491 I slot print_timing: id  2 | task 88946 | prompt eval time =     581.69 ms /   343 tokens (    1.70 ms per token,   589.66 tokens per second)
+
+# child P5 (task 89439)
+5988.14.723.495 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.987 (> 0.100 thold), f_keep = 1.000
+5988.15.558.508 I slot print_timing: id  2 | task 89439 | prompt eval time =     700.55 ms /   351 tokens (    2.00 ms per token,   501.03 tokens per second)
+
+# child J (task 90253)
+5989.23.250.688 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.988 (> 0.100 thold), f_keep = 1.000
+5989.23.251.079 I slot launch_slot_: id  2 | task 90253 | processing task, is_child = 0
+5989.24.029.743 I slot print_timing: id  2 | task 90253 | prompt eval time =     707.03 ms /   343 tokens (    2.06 ms per token,   485.13 tokens per second)
+```
+
+**Audit of every slot selection in the post-fix window** (log minutes 5986–5990, 22
+selections): **21 by LCP similarity, 1 by LRU.** The single LRU selection was
+`5986.02.395.179 … task 88523` — **parent4's very first LLM call**, a brand-new session with
+no prior context anywhere on the box (5,719 tokens = system prompt + first prompt). That is
+correct behaviour for a cold non-fork spawn, not a fork miss. **No fork child was
+LRU-selected.**
+
+## 2. The parent-as-child-zero hold, measured
+
+ForkGate held each first child from creation until the parent's own turn emitted `result`,
+then released within single-digit milliseconds:
+
+| Parent | child row created | parent `result` | child first prompt released | hold | release latency |
+|---|---|---|---|---|---|
+| parent4 | 18:44:42.437 | 18:44:48.199 | 18:44:48.207 | **5.77 s** | **+8 ms** |
+| parent5 | 18:46:05.495 | 18:46:11.190 | 18:46:11.193 | **5.70 s** | **+3 ms** |
+| parent6 (J) | 18:47:02.391 | 18:47:19.797 | 18:47:19.800 | **17.41 s** | **+3 ms** |
+
+This is the mechanism working exactly as the amendment describes: the parent is child zero,
+release is driven by the `result` **event** (not a status poll — a 3 ms latency is not
+pollable), and the cost is honest (the gate waits out the parent's whole turn — 17.4 s for
+parent6, whose fan-out turn was long).
+
+## 3. §11.4 fan-out — serialization intact, first child no longer pays
+
+Parent6 fanned out to J/K/L in one `run_elixir` call (all three created 18:47:02.39–.44).
+
+| Child | first prompt released | first `result` | gap after prior sibling's `result` | fresh `input_tokens` | `cache_read` | `duration_ms` |
+|---|---|---|---|---|---|---|
+| J | 18:47:19.800 | 18:47:22.252 | +3 ms after **parent's** result | 343 | 28,147 | 973 |
+| K | 18:47:22.256 | 18:47:24.722 | **+4 ms** after J's result | 344 | 28,212 | 977 |
+| L | 18:47:24.726 | 18:47:27.178 | **+4 ms** after K's result | 351 | 28,271 | 972 |
+
+Serialization is unchanged from Part 1 (there it was +6–8 ms; here +3–4 ms). The material
+difference is **J**: pre-fix the first fan-out child cold-prefilled 32,254 tokens in 32 s and
+that cold prefill was what seeded a second slot so B/C/D could hit. Post-fix **J costs 343
+tokens / 0.97 s**, and K and L are no longer riding a sacrifice — all three simply share the
+parent's slot. The Part 1 caveat ("B/C/D only hit because A paid") no longer applies.
+
+§8 markers rendered on all five post-fix children, none carrying a `cache_miss` annotation:
+
+```json
+{"type": "system", "subtype": "forked_from", "inherited_tokens": 26653, "parent_session_id": "18912c73-534b-4747-ae9c-85d06f429e46"}
+{"type": "system", "subtype": "forked_from", "inherited_tokens": 26726, "parent_session_id": "ea8f32af-bffa-4684-b274-01f23b2757f5"}
+{"type": "system", "subtype": "forked_from", "inherited_tokens": 26758, "parent_session_id": "7ff38d63-e873-48cf-9bde-e50d9b4e71fd"}   (×3, J/K/L)
+```
+
+`fork_cache_miss` events emitted in the entire post-fix run: **0**.
+
+## 4. The release race — it FIRED three times and LOST three times
+
+The spec author's concern was real and did materialize: fork children carry `notify_parent`,
+so each child going idle sends its parent a `[Session lifecycle]` message, which starts a
+**new parent turn** that can re-grab the slot. During parent6's fan-out this happened after
+every child:
+
+```
+18:47:22.252  J  result
+18:47:22.256  K  first prompt released   <-- ForkGate, +4 ms
+18:47:22.280  PARENT  user               <-- J-idle notification, +24 ms (LOST by 24 ms)
+18:47:22.807  PARENT  result
+18:47:24.722  K  result
+18:47:24.726  L  first prompt released   <-- ForkGate, +4 ms
+18:47:24.749  PARENT  user               <-- K-idle notification, +23 ms (LOST by 23 ms)
+```
+
+**ForkGate won all three times, by 20–24 ms.** But the more interesting finding is that the
+race is **benign even in the losing case here**, because the parent and its children share
+~99 % of one prefix and therefore trade the *same* slot rather than contending for different
+ones. The slot log shows a strict alternation on slot 2, every hop LCP-selected:
+
+```
+5989.23.250  LCP 0.988  task 90253  child J   343 tok / 707 ms
+5989.24.213  LCP 0.998  task 90259  PARENT     63 tok / 296 ms   (f_keep 0.988)
+5989.25.679  LCP 0.988  task 90266  child K   344 tok / 717 ms
+5989.26.650  LCP 0.998  task 90273  PARENT     63 tok / 297 ms   (f_keep 0.988)
+5989.28.139  LCP 0.988  task 90279  child L   351 tok / 718 ms
+5989.29.051  LCP 0.998  task 90286  PARENT     70 tok / 341 ms   (f_keep 0.988)
+```
+
+The parent's interleaved turns cost **63–70 tokens each**, kept 98.8 % of slot state, and
+evicted nothing. K and L hit identically to J (344 / 351 vs 343 fresh) despite running with
+the parent interleaving, which is the empirical answer: the race did not bite.
+
+**Bounded claim, stated deliberately.** What was measured is a race against a *short* queued
+follow-up (a lifecycle notification producing a 63–70-token turn). A queued message that
+starts *real* work — an operator ping or a heartbeat that triggers a tool loop — would hold
+the slot far longer, and that case remains **unmeasured**. The 20–24 ms margin is a property
+of ForkGate's event-driven release, not of the follow-up's size, so the ordering should still
+hold; but "ForkGate wins the release" and "a lost race would be harmless" are two different
+claims, and only the first is established for arbitrary follow-ups.
+
+## 5. Pre-fix vs post-fix, side by side
+
+| | pre-fix (`7d73b58`) | post-fix (`56a18ba`) |
+|---|---|---|
+| first-fork #1 | A: **32,254** fresh, cache_read **0**, **32,013 ms**, LRU→slot 2 | P4: **343** fresh, cache_read **27,292**, **1,029 ms**, LCP→slot 2 |
+| first-fork #2 | E: **27,534** fresh, cache_read **0**, **25,734 ms**, LRU→slot 0 | P5: **351** fresh, cache_read **27,353**, **1,073 ms**, LCP→slot 2 |
+| first-fork #3 | F: **27,906** fresh, cache_read **0**, **26,752 ms**, LRU→slot 2 | J: **343** fresh, cache_read **28,147**, **973 ms**, LCP→slot 2 |
+| first-forks that hit | **0 / 3** | **3 / 3** |
+| `fork_cache_miss` events | 3 | **0** |
+| fan-out 1st child | cold prefill, seeded the slot for its siblings | 343 tok / 0.97 s, no sacrifice |
+| co-tenant decode during fork | parent dragged 30 → **4.7 t/s** | no measurable degradation |
+
+A first fork went from **indistinguishable from a cold spawn** (~100 % of context reprocessed,
+25–32 s) to **~1.3 % reprocessed, ~1 s** — better than the ~2 s §1 predicted, and better than
+the 1,798–2,100-token cross-slot-restore band, because same-slot LCP reuse avoids the
+checkpoint-granularity penalty entirely.
+
+## 6. Notes on the corrections that landed
+
+- **§6.1's "tens" → checkpoint granularity.** Confirmed with more resolution now that both
+  regimes are observable in one run: **same-slot LCP reuse costs 343–351 fresh tokens**
+  (the child's identity entry + first prompt + divergence), while **cross-slot restore costs
+  1,798–2,100** (Part 1's B/C/D/G/H). Both are hits; neither is "tens". The spec's revised
+  two-band framing matches the data.
+- **§9 open question, settled — and my Part 1 prediction was correct.** I predicted the child
+  would land on the parent's own slot via LCP, with a small prompt eval, and that the prefix
+  would *not* need writing to the host prompt cache first. That is exactly what happened
+  (`f_sim_best 0.987–0.988`, slot 2, 343–351 tokens), matching the fix worker's pre-implementation
+  experiment (`f_sim_best = 0.999`, cacheRead 31,813 / fresh 20). Slot residency alone is
+  sufficient for LCP routing. No disagreement to report.
+- **§4's "just-idled parent" framing.** Now achievable in practice, but only because ForkGate
+  manufactures the condition — the API still forks a mid-turn caller; the gate is what makes
+  the parent idle by the time the child's prompt goes out.
+
+## 7. Verdict
+
+**§1.1: PASS.** Every forked child's first turn in this run was a prompt-cache hit — 3/3
+first-forks on independent parents, plus 2 further fan-out siblings, 5/5 children total, 0
+misses. The three v1 prerequisites:
+
+| Prerequisite | Status |
+|---|---|
+| Byte-identical prefixes (§5) | ✅ Holds — 343–351 fresh tokens against ~27 k inherited |
+| Mandatory first-turn gate (§6, widened) | ✅ **Now correct in scope** — parent-as-child-zero hold measured at 5.7 / 5.7 / 17.4 s, release at +3–8 ms; sibling serialization intact at +3–4 ms |
+| Per-fork cache-miss detection (§6.1) | ✅ Still armed — 0 false positives across 5 children; its true-positive behaviour was proven live in Part 1 |
+
+Caveats a future reader should carry: the release race was measured only against short
+queued follow-ups (§4 above); and this run, like Part 1, is a single-node, single-box,
+~27 k-token-parent sample — nothing here speaks to 100 k-token parents or to the §7 KV-budget
+regime, where N children resident on N slots was the pre-fix failure mode and is no longer
+what happens (they now share one slot, which is *better* for the budget but changes the §7
+arithmetic and may deserve a re-read).
+
+## Appendix — post-fix artifacts
+
+Sessions created and **archived** (8 total; nothing pre-existing touched):
+
+```
+18912c73-534b-4747-ae9c-85d06f429e46  SMOKE2 parent4 (post-fix §11.3)
+  86fe76fb-82f4-4ab0-9957-815abd8776ce  child P4 (HIT)
+ea8f32af-bffa-4684-b274-01f23b2757f5  SMOKE2 parent5 (post-fix §11.3)
+  6d9b3880-682c-43c7-b05f-7b242b963630  child P5 (HIT)
+7ff38d63-e873-48cf-9bde-e50d9b4e71fd  SMOKE2 parent6 (post-fix §11.4 fan-out)
+  d288c7f9-58ad-4425-991a-7b8f850ce154  child J (HIT)
+  d3740841-3287-482d-870e-351cc822ec34  child K (HIT)
+  82d08429-a47b-4f57-a00d-f0810f5852f6  child L (HIT)
+```
+
+Corpora retained for reproduction: `/home/zach/pi_fork_smoke` … `smoke6` (Part 1 salts
+`de4be78a…`, `df94e12c…`; Part 2 salts `cad09512…`, `b70a7438…`, `32a8d5d4…`), each with pi
+JSONLs under `.pi_sessions/<orca-session-id>/`.
