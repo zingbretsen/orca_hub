@@ -511,24 +511,33 @@ response inside that result, not the turn-summed total):
 - **Miss:** `input_tokens` ≈ parent context size — the child just paid
   full prefill.
 
-> **Amendment (live smoke, 2026-08-14): "in the tens" was optimistic by
-> ~2 orders of magnitude, and there are TWO hit regimes, not one.** Every
-> real hit observed through OrcaHub reprocessed **1,798-2,097 fresh tokens**
-> (children B/C/D/G/H, against parent contexts of 26,688-32,152) — not
-> "tens". Those children were LRU-routed onto a slot that did *not* already
-> hold the prefix, so the hit came from RESTORING it, and restore lands at
+> **Amendment (live smoke, 2026-08-14; finalized post-fix): "in the tens"
+> was optimistic by ~2 orders of magnitude, and a hit lands in one of TWO
+> regimes — both clean, neither anomalous.** The common post-fix case is
+> **same-slot LCP reuse**: §6's parent-as-child-zero hold routes the child
+> onto the parent's OWN slot by LCP similarity, no restore is needed, and
+> the reprocess is genuinely tiny — **343-351 fresh tokens**, measured
+> across three independent first-forks plus two fan-out siblings
+> (`pi_fork_live_smoke.md` Part 2 §1/§3, children P4/P5/J/K/L). This
+> supersedes this amendment's original single-data-point figure (one
+> pre-implementation spike measurement of 20 fresh tokens, §6) with the
+> fuller post-fix picture — 343-351, not 20, is the number to expect. The
+> other regime is **cross-slot checkpoint restore**: when the child is
+> LRU-routed onto a slot that does not already hold the prefix (the routine
+> case pre-fix, and still the shape of things if LCP ever fails to route
+> onto a shared slot), the hit comes from RESTORING the prefix at
 > hybrid/DeltaNet checkpoint granularity (§1) rather than at the exact
-> divergence point. The "tens" figure describes the *other* regime: when the
-> child lands by LCP similarity on the slot still holding the prefix, no
-> restore is needed and the reprocess is genuinely tiny — the §6 verification
-> run measured **20 fresh tokens against `cacheRead` 31,813**. Both are
-> clean hits. A future maintainer reading "tens" and seeing 2,000 would
-> reasonably conclude a partial miss; they should not. The 25% threshold is
-> **vindicated by exactly this**: it was chosen so checkpoint-granularity
-> partial hits don't false-positive, and at ~6-7% of the parent context the
-> observed hits sit comfortably inside it while the observed misses sat at
-> ~100%. No threshold change is warranted — only this expectation is
-> corrected.
+> divergence point — **1,798-2,100 fresh tokens**, measured on children
+> B/C/D/G/H against parent contexts of 26,688-32,152 (`pi_fork_live_smoke.md`
+> Part 1 §4/§6). Both are clean hits; a future maintainer reading "tens" and
+> seeing either 350 or 2,000 should not conclude a partial miss. The 25%
+> threshold is **vindicated by exactly this**: it was chosen so
+> checkpoint-granularity partial hits don't false-positive, and both
+> regimes — ~1.3% and ~6-7% of the parent context, respectively — sit
+> comfortably inside it while the observed misses sat at ~100%. No
+> threshold change is warranted; only the expected-magnitude figure is
+> corrected, now against real post-fix production data rather than a
+> single pre-implementation spike measurement.
 
 **Field note (live smoke, 2026-08-14): this half of the gate worked
 perfectly, and caught its own feature failing.** Against all three
@@ -559,6 +568,31 @@ Unified KV means fan-out width × context depth is a single shared budget:
 262,144 cells ≈ 4×65k, 2×130k, or 1×260k concurrently-resident contexts.
 A 4-wide fan-out of a 100k-token parent physically cannot be
 simultaneously slot-resident.
+
+> **Amendment (post-fix live smoke, 2026-08-14): the N×P arithmetic below
+> models CONCURRENT DIVERGED children, not the fan-out itself — that
+> distinction didn't exist before the fix.** The original framing assumed a
+> fan-out of N children of a P-token parent occupies N slots (N×P cells);
+> that followed directly from the pre-fix LRU fallback (§6's amendment),
+> which really did scatter each first-fork child onto its own slot. Post-fix,
+> §6's parent-as-child-zero hold routes children onto the parent's OWN slot
+> by LCP similarity instead, and they trade it rather than each pinning a
+> copy: `pi_fork_live_smoke.md` Part 2 §4 measured strict alternation on one
+> slot across a 3-child fan-out, every hop LCP-selected, with the parent's
+> own interleaved turns — consuming its queued `[Session lifecycle]`
+> notifications between releases — costing only 63-70 tokens each and
+> retaining ~98.8% of slot state. While children share an undiverged prefix,
+> a fan-out costs close to **one** resident copy of P, not N.
+>
+> **The limit is the important half.** That sharing depends on the children
+> still having a common prefix to LCP-match against. Once each child has
+> taken its own turn(s) and grown its own context past the shared prefix,
+> there is no longer a common prefix for LCP to route on, and N
+> **concurrently active, diverged** children each pin their own slot with
+> their own growing token count — the original N×P-shaped pressure, just
+> deferred to AFTER the fan-out rather than binding during it. The guard's
+> arithmetic below still approximates that post-divergence bound correctly;
+> what changed is that it no longer also describes the fan-out itself.
 
 v1 is a **soft guard**: `start_session` computes
 `(concurrent fork-children of this parent + 1) × parent_context_tokens`
@@ -792,3 +826,30 @@ here so they don't get rediscovered as surprise bugs later.
   restart between fan-outs, and there is no v1 mechanism to detect "a fork
   fan-out was in flight when this node went down" after the fact beyond
   reading the miss warnings the resumed children happen to produce.
+- **The release race was only measured against short queued follow-ups.**
+  §6's "Residual race (accepted, documented rather than fixed)" describes a
+  parent immediately consuming a queued follow-up when its turn ends and
+  re-grabbing the slot before the gate releases the next child. Live smoke
+  measured this race firing for real — three times, during parent6's
+  fan-out (`pi_fork_live_smoke.md` Part 2 §4) — and **ForkGate won all
+  three, by 20-24 ms.** The race also proved benign even in the losing case:
+  parent and children share ~99% of one prefix, so a lost race trades the
+  same slot rather than contending for a different one (measured: the
+  parent's interleaved turns cost only 63-70 tokens and evicted nothing).
+  But every follow-up measured was short — a 63-70-token `[Session
+  lifecycle]` notification. **A queued message that starts REAL work (an
+  operator ping, or a heartbeat that triggers a tool loop) would hold the
+  slot far longer, and that case is UNMEASURED.** The 20-24 ms margin is a
+  property of the gate's event-driven release, not of the follow-up's size,
+  so the ordering should still hold — but "the gate wins the release" and
+  "a lost race is harmless" are separate claims, and only the first has
+  been established for arbitrary follow-ups.
+- **All live evidence is single-node, single-box, ~27k-token parents.**
+  Every measurement in this spec and in `pi_fork_live_smoke.md` (both
+  parts) comes from one gb10 box, one llama-server, and parent contexts in
+  the 20-32k range. **100k-token-parent behaviour is UNMEASURED** — and not
+  just quantitatively different: the host-memory prompt cache holds only
+  2-3 long-session states at that size (§1), so eviction pressure bites
+  much harder than anything observed here, and neither the same-slot-LCP
+  regime (§6.1) nor the §7 budget model above has been exercised at that
+  scale.
