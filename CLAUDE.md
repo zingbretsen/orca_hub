@@ -239,6 +239,25 @@ dep with no changelog and no GitHub Releases.
   upgrading. A sibling editing a test file mid-run produced a failure that looked
   like the upgrade's fault; re-running that file alone cleared it.
 
+**An upgrade isn't done until a clean PROD resolution succeeds.** A green
+`mix test` proves nothing here: it runs against the already-populated dev
+`deps/` and never re-resolves, so a lock that can't actually resolve still
+passes locally and then fails the docker build at `mix deps.get --only prod`.
+Prove it from a pristine tree with its own empty `deps/`/`_build/`:
+
+```
+rm -rf /tmp/prod-proof && mkdir -p /tmp/prod-proof
+git archive HEAD | tar -x -C /tmp/prod-proof
+cd /tmp/prod-proof && MIX_ENV=prod mix deps.get && MIX_ENV=prod mix compile
+```
+
+`git archive` (not a copy) keeps the shared worktree's `deps/` untouched, so
+this can't disturb sibling sessions. If that passes but the build still fails,
+the lock is fine and the culprit is the Dockerfile's `--mount=type=cache`
+`deps/` — the tell is an "Unchecked dependencies" version that appears nowhere
+in `mix.lock` (it's the previous deploy's pin, carried over). Fix that on the
+buildx node, not in the lockfile.
+
 **Verifying the app actually boots.** The test suite uses `ConnTest`/
 `LiveViewTest`, which bypass the HTTP adapter entirely — so it does NOT cover
 bandit / thousand_island / websock_adapter / plug. After upgrading any of those,
