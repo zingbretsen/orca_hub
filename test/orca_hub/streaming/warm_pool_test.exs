@@ -155,6 +155,27 @@ defmodule OrcaHub.Streaming.WarmPoolTest do
     end
   end
 
+  describe "backend filtering (Phase 2 pi config federation)" do
+    test "warm_rows returns 5-tuples with backend for filtering" do
+      Streaming.set_warm_cap(3)
+      WarmPool.request_slot("claude1", self(), :claude)
+      WarmPool.request_slot("pi1", self(), :pi)
+      WarmPool.request_slot("codex1", self(), :codex)
+
+      rows = :ets.tab2list(@table)
+
+      # All rows should be 5-tuples with backend as last element
+      assert Enum.all?(rows, &(tuple_size(&1) == 5))
+
+      # Verify backend filtering works
+      pi_rows = Enum.filter(rows, fn {_sid, _pid, _ts, _status, backend} -> backend == :pi end)
+      claude_rows = Enum.filter(rows, fn {_sid, _pid, _ts, _status, backend} -> backend == :claude end)
+
+      assert length(pi_rows) == 1
+      assert length(claude_rows) == 1
+    end
+  end
+
   defp busy_victim(sid, ts, backend \\ :claude) do
     {:ok, pid} = Victim.start_link(:busy)
     :ets.insert(@table, {sid, pid, ts, :idle, backend})
