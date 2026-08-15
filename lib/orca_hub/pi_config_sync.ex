@@ -78,13 +78,11 @@ defmodule OrcaHub.PiConfigSync do
 
   alias OrcaHub.{
     Backend,
-    Cluster,
     HubRPC,
     Mode,
     NodeConfig,
     PiConfig.Entry,
-    SessionRunner,
-    Streaming
+    SessionRunner
   }
 
   @manifest_filename ".orca-managed-pi-config.json"
@@ -485,41 +483,27 @@ defmodule OrcaHub.PiConfigSync do
     )
   end
 
-  # When called with a node_name (cross-node), this is now unused but kept for
-  # backwards compatibility during mixed-version rollout. It tolerates RPC errors.
-  @doc false
-  defp evict_idle_pi_ports(node_name) when is_atom(node_name) do
-    case Cluster.rpc(node_name, Streaming.WarmPool, :warm_rows, []) do
-      {:error, _} = err ->
-        Logger.warning(
-          "PiConfigSync: evict_idle_pi_ports rpc to #{node_name} failed: #{inspect(err)}"
-        )
+  # When called with a node_name (cross-node), this was used before the fix that
+  # makes only the target node evict its own ports. Kept as documentation that
+  # the old path did cross-node RPC (which has been removed in favor of local
+  # eviction). The old implementation had RPC error tolerance; now only local
+  # eviction is used (evict_idle_pi_ports/0 below).
+  #
+  # defp evict_idle_pi_ports(node_name) do
+  #   case Cluster.rpc(node_name, Streaming.WarmPool, :warm_rows, []) do
+  #     {:error, _} = err ->
+  #       Logger.warning("PiConfigSync: evict_idle_pi_ports rpc failed: #{inspect(err)}")
+  #       :ok
+  #     rows when is_list(rows) ->
+  #       rows
+  #       |> Enum.filter(fn {_sid, _pid, _ts, _status, backend} -> backend == :pi end)
+  #       |> Enum.map(fn {session_id, _pid, _ts, _status, _backend} -> session_id end)
+  #       |> Enum.each(&SessionRunner.evict_warm/1)
+  #   end
+  # end
 
-        :ok
-
-      rows when is_list(rows) ->
-        sessions_on_node =
-          rows
-          |> Enum.filter(fn {_sid, _pid, _ts, _status, backend} -> backend == :pi end)
-          |> Enum.map(fn {session_id, _pid, _ts, _status, _backend} -> session_id end)
-
-        # Call evict_warm on each session - this will close the port if idle
-        Enum.each(sessions_on_node, fn session_id ->
-          case Cluster.rpc(node_name, SessionRunner, :evict_warm, [session_id]) do
-            {:error, _} = err ->
-              Logger.warning(
-                "PiConfigSync: evict_warm rpc to #{node_name} for #{session_id} failed: #{inspect(err)}"
-              )
-
-            _ ->
-              :ok
-          end
-        end)
-    end
-  end
-
-  # When called with no args (local eviction), use direct WarmPool.warm_rows/0
-  # and SessionRunner.evict_warm/1 calls on this node only.
+  # Local eviction: get all warm sessions on this node, filter for pi backend,
+  # and call evict_warm on each.
   defp evict_idle_pi_ports do
     case OrcaHub.Streaming.WarmPool.warm_rows() do
       [] ->
