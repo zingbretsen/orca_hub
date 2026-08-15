@@ -46,6 +46,13 @@ config :phoenix,
 # Tests call OrcaHub.SkillSync.sync/1 directly with an injected :home_dir.
 config :orca_hub, :skill_sync_enabled, false
 
+# Same hazard for OrcaHub.PiConfigSync, which writes ~/.pi/agent/models.json,
+# settings.json, extensions/, prompts/, and themes/. The ENTIRE GenServer loop
+# is gated on this (not just the boot sync), so a live {:pi_config_updated}
+# broadcast during mix test can't reach it either. Tests call
+# OrcaHub.PiConfigSync.sync/1 directly with an injected :home_dir.
+config :orca_hub, :pi_config_sync_enabled, false
+
 # OrcaHub.MemoryGit.Server's idle-transition hook (invoked from
 # SessionRunner, which mix test's SessionRunner/state-machine tests drive
 # for real) writes real files under a node's home dir (~/.claude, ~/.codex)

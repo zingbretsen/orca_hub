@@ -99,6 +99,10 @@ defmodule OrcaHub.Application do
       # every installed backend CLI. Runs on hub + agent — see
       # OrcaHub.SkillSync moduledoc.
       OrcaHub.SkillSync,
+      # Materializes hub-managed pi config (providers/settings/extensions/
+      # prompts/themes) into this node's ~/.pi/agent. Runs on hub + agent —
+      # see OrcaHub.PiConfigSync moduledoc.
+      OrcaHub.PiConfigSync,
       # Serializes per-node agent-memory git snapshot+sync passes, triggered
       # by SessionRunner idle transitions. Runs on hub + agent — see
       # OrcaHub.MemoryGit.Server moduledoc.
@@ -170,6 +174,10 @@ defmodule OrcaHub.Application do
       # every installed backend CLI. Runs on hub + agent — see
       # OrcaHub.SkillSync moduledoc.
       OrcaHub.SkillSync,
+      # Materializes hub-managed pi config (providers/settings/extensions/
+      # prompts/themes) into this node's ~/.pi/agent. Runs on hub + agent —
+      # see OrcaHub.PiConfigSync moduledoc.
+      OrcaHub.PiConfigSync,
       # Serializes per-node agent-memory git snapshot+sync passes, triggered
       # by SessionRunner idle transitions. Runs on hub + agent — see
       # OrcaHub.MemoryGit.Server moduledoc.

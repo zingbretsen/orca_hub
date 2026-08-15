@@ -462,6 +462,31 @@ defmodule OrcaHub.HubRPC do
   def delete_skill(skill), do: call(OrcaHub.Skills, :delete_skill, [skill])
 
   # -------------------------------------------------------------------
+  # pi config federation (hub-managed ~/.pi/agent config — see
+  # OrcaHub.PiConfig, OrcaHub.PiConfigSync)
+  # -------------------------------------------------------------------
+
+  def list_pi_config_entries, do: call(OrcaHub.PiConfig, :list_entries, [])
+  def list_pi_config_entries(kind), do: call(OrcaHub.PiConfig, :list_entries, [kind])
+  def list_enabled_pi_config_entries, do: call(OrcaHub.PiConfig, :list_enabled_entries, [])
+
+  def list_enabled_pi_config_entries(kind),
+    do: call(OrcaHub.PiConfig, :list_enabled_entries, [kind])
+
+  def get_pi_config_entry!(id), do: call(OrcaHub.PiConfig, :get_entry!, [id])
+  def get_pi_config_entry(id), do: call(OrcaHub.PiConfig, :get_entry, [id])
+
+  def get_pi_config_entry_by_kind_and_name(kind, name),
+    do: call(OrcaHub.PiConfig, :get_entry_by_kind_and_name, [kind, name])
+
+  def create_pi_config_entry(attrs), do: call(OrcaHub.PiConfig, :create_entry, [attrs])
+
+  def update_pi_config_entry(entry, attrs),
+    do: call(OrcaHub.PiConfig, :update_entry, [entry, attrs])
+
+  def delete_pi_config_entry(entry), do: call(OrcaHub.PiConfig, :delete_entry, [entry])
+
+  # -------------------------------------------------------------------
   # Issues — full issues_spec.md tool-surface API (Phase 2a). The minimal
   # wrappers above (create_issue/get_issue/list_issues/0/list_issues_for_project/
   # list_issues_by_id_prefix/append_issue_note/close_issue(1)/reopen_issue(1))
