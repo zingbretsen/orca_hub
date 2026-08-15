@@ -46,6 +46,10 @@ defmodule OrcaHubWeb.Router do
       live "/skills/new", SkillLive.Index, :new
       live "/skills/:id/edit", SkillLive.Index, :edit
 
+      live "/pi-config", PiConfigLive.Index, :index
+      live "/pi-config/new", PiConfigLive.Index, :new
+      live "/pi-config/:id/edit", PiConfigLive.Index, :edit
+
       live "/issues", IssueLive.Index, :index
       live "/issues/:id", IssueLive.Show, :show
 

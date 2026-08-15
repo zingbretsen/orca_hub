@@ -26,6 +26,7 @@ defmodule OrcaHubWeb.Layouts do
       %{href: ~p"/issues", label: "Issues"},
       %{href: ~p"/triggers", label: "Triggers"},
       %{href: ~p"/skills", label: "Skills"},
+      %{href: ~p"/pi-config", label: "Pi Config"},
       %{href: ~p"/terminals", label: "Terminals"},
       %{href: ~p"/sessions", label: "Sessions"},
       %{href: ~p"/artifacts", label: "Artifacts"},

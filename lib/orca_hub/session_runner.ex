@@ -155,6 +155,10 @@ defmodule OrcaHub.SessionRunner do
     GenStatem.call(via(session_id), :interrupt)
   end
 
+  def evict_warm(session_id) do
+    GenStatem.call(via(session_id), :evict_warm)
+  end
+
   def update_model(session_id, model) do
     GenStatem.cast(via(session_id), {:update_model, model})
   end
@@ -1492,7 +1496,7 @@ defmodule OrcaHub.SessionRunner do
           # prompt to flush once it completes; others (Codex included — its
           # handshake is the on_open/1 leg above, not a warm-up turn) write the
           # real turn immediately.
-          Streaming.WarmPool.request_slot(base.session_id, self())
+          Streaming.WarmPool.request_slot(base.session_id, self(), base.backend.name)
           {port, framing} = open_port_streaming(base)
           base = run_on_open(%{base | port: port, framing: framing})
 

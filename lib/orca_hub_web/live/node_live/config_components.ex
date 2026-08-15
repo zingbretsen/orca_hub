@@ -28,6 +28,7 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
   attr :config_view_mode, :any, required: true
   attr :structured_editing, :any, required: true
   attr :structured_edit_value, :string, required: true
+  attr :managed_pi_config, :any, default: %{}
 
   def config_file_row(assigns) do
     assigns = assign(assigns, :key, entry_key(assigns.backend, assigns.entry.path))
@@ -42,7 +43,9 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
             {flag_label(flag)}
           </span>
           <span :if={!@entry.exists?} class="badge badge-xs badge-neutral">missing</span>
-          <span :if={managed?(@entry)} class="badge badge-xs badge-info">hub-managed</span>
+          <span :if={managed?(@entry, @managed_pi_config)} class="badge badge-xs badge-info">
+            hub-managed
+          </span>
         </div>
 
         <div class="flex items-center gap-1">
@@ -55,7 +58,10 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
             {if MapSet.member?(@config_expanded, @key), do: "Hide", else: "View"}
           </button>
           <button
-            :if={@entry.exists? && :view_only not in @entry.flags && !managed?(@entry)}
+            :if={
+              @entry.exists? && :view_only not in @entry.flags &&
+                !managed?(@entry, @managed_pi_config)
+            }
             phx-click="edit_config_entry"
             phx-value-key={@key}
             class="btn btn-xs btn-ghost"
@@ -63,7 +69,7 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
             Edit
           </button>
           <button
-            :if={!@entry.exists? && @entry.create_template && !managed?(@entry)}
+            :if={!@entry.exists? && @entry.create_template && !managed?(@entry, @managed_pi_config)}
             phx-click="edit_config_entry"
             phx-value-key={@key}
             class="btn btn-xs btn-primary"
@@ -71,7 +77,10 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
             Create
           </button>
           <button
-            :if={@entry.exists? && :view_only not in @entry.flags && !managed?(@entry)}
+            :if={
+              @entry.exists? && :view_only not in @entry.flags &&
+                !managed?(@entry, @managed_pi_config)
+            }
             phx-click="delete_config_entry"
             phx-value-key={@key}
             data-confirm={"Delete #{@entry.label}?"}
@@ -86,7 +95,12 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
         View-only — hand-editing this can silently grant a project trust it shouldn't have.
       </p>
 
-      <p :if={managed?(@entry)} class="text-xs text-info mt-1">
+      <p :if={managed?(@entry, @managed_pi_config)} class="text-xs text-info mt-1">
+        :if @entry.backend == :pi
+        Hub-managed — synced from the global
+        <.link navigate={~p"/pi-config"} class="link">Pi Config</.link>
+        page; edit it there instead, direct changes here would be overwritten on next sync.
+        :else
         Hub-managed — synced from the global <.link navigate={~p"/skills"} class="link">Skills</.link>
         page; edit it there instead, direct changes here would be overwritten on next sync.
       </p>
@@ -159,6 +173,7 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
   attr :structured_editing, :any, required: true
   attr :structured_edit_value, :string, required: true
   attr :managed_skills, :any, default: MapSet.new()
+  attr :managed_pi_config, :any, default: %{}
 
   def config_dir_row(assigns) do
     assigns = assign(assigns, :dir_key, {assigns.backend, assigns.entry.path})
@@ -210,7 +225,7 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
         >
           <.config_file_row
             backend={@backend}
-            entry={child_entry(@entry, child, @managed_skills)}
+            entry={child_entry(@entry, child, @managed_skills, @managed_pi_config)}
             config_expanded={@config_expanded}
             config_editing={@config_editing}
             config_edit_content={@config_edit_content}
@@ -268,12 +283,15 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
   # parent dir entry. `:flat` children are only ever listed when the file
   # already exists on disk (see `NodeConfig.dir_children/2`); `:skill_dirs`
   # children carry their own `exists?` since a skill's subdirectory can
-  # exist before its `SKILL.md` does. `managed?` is only ever true for a
-  # `:skill_dirs` child whose name is in `managed_skills` (a backend's
-  # `OrcaHub.SkillSync.managed_skill_names/2` result) — hub-managed skills
-  # get read-only-locked in `config_file_row` since a hand-edit here would
-  # just be overwritten on the next sync.
-  defp child_entry(dir_entry, child, managed_skills) do
+  # exist before its `SKILL.md` does. `managed?` is true for:
+  # - `:skill_dirs` child whose name is in `managed_skills`
+  # - a pi config entry (provider, setting, extension, prompt, theme) managed by PiConfigSync
+  defp child_entry(dir_entry, child, managed_skills, managed_pi_config) do
+    skill_managed =
+      dir_entry.dir_kind == :skill_dirs and MapSet.member?(managed_skills, child.name)
+
+    pi_managed = managed_by_pi?(%{path: child.path, label: child.name}, managed_pi_config)
+
     %{
       path: child.path,
       label: child.name,
@@ -281,11 +299,51 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
       flags: dir_entry.flags,
       exists?: Map.get(child, :exists?, true),
       create_template: dir_entry.create_template,
-      managed?: dir_entry.dir_kind == :skill_dirs and MapSet.member?(managed_skills, child.name)
+      managed?: skill_managed or pi_managed
     }
   end
 
-  defp managed?(entry), do: Map.get(entry, :managed?, false)
+  defp managed?(entry, managed_pi_config) do
+    case Map.get(entry, :managed?, false) do
+      true -> true
+      false -> managed_by_pi?(entry, managed_pi_config)
+    end
+  end
+
+  # Check if entry is managed by PiConfigSync
+  # managed_pi_config is %{"providers" => ["p1", ...], "settings" => ["s1", ...], ...}
+  defp managed_by_pi?(%{path: "models.json", format: :json}, managed_pi_config) do
+    Enum.any?(Map.get(managed_pi_config, "providers", []), fn _ -> true end)
+  end
+
+  defp managed_by_pi?(%{path: "settings.json", format: :json}, managed_pi_config) do
+    Enum.any?(Map.get(managed_pi_config, "settings", []), fn _ -> true end)
+  end
+
+  defp managed_by_pi?(%{label: label}, managed_pi_config) do
+    # Check if this is a file in extensions/, prompts/, or themes/
+    case String.split(label, ".", parts: 2) do
+      [name, ext] ->
+        section =
+          case ext do
+            "ts" -> "extensions"
+            "md" -> "prompts"
+            "json" -> "themes"
+            _ -> nil
+          end
+
+        if section do
+          Enum.member?(Map.get(managed_pi_config, section, []), name)
+        else
+          false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp managed_by_pi?(_, _), do: false
 
   defp new_entry_open?(nil, _backend, _dir_path), do: false
 

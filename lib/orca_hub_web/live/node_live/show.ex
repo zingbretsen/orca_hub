@@ -9,6 +9,7 @@ defmodule OrcaHubWeb.NodeLive.Show do
     GlobalGitignore,
     HubRPC,
     NodeConfig,
+    PiConfigSync,
     SkillSync
   }
 
@@ -26,10 +27,12 @@ defmodule OrcaHubWeb.NodeLive.Show do
 
     node_config = if config_node, do: load_all_node_config(config_node), else: nil
     managed_skills = if config_node, do: load_managed_skills(config_node), else: %{}
+    managed_pi_config = if config_node, do: load_managed_pi_config(config_node), else: %{}
 
     if config_node && Phoenix.LiveView.connected?(socket) do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, BackendInstaller.topic(config_node))
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "skills")
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "pi_config")
     end
 
     socket =
@@ -41,6 +44,7 @@ defmodule OrcaHubWeb.NodeLive.Show do
         config_node: config_node,
         node_config: node_config,
         managed_skills: managed_skills,
+        managed_pi_config: managed_pi_config,
         backend_installer_status: nil,
         backend_installer_running:
           if(config_node,
@@ -956,6 +960,31 @@ defmodule OrcaHubWeb.NodeLive.Show do
   end
 
   # -------------------------------------------------------------------
+  # Pi Config (OrcaHub.PiConfigSync mirrors this node's disk shortly after every
+  # {:pi_config_updated} broadcast — delay the refresh past PiConfigSync's own
+  # debounce so the managed-names/badges we reload actually reflect the
+  # post-sync state instead of racing it).
+  # -------------------------------------------------------------------
+
+  def handle_info({:pi_config_updated}, socket) do
+    if socket.assigns.config_node do
+      Process.send_after(self(), :refresh_managed_pi_config, 1_500)
+    end
+
+    {:noreply, socket}
+  end
+
+  def handle_info(:refresh_managed_pi_config, socket) do
+    config_node = socket.assigns.config_node
+
+    {:noreply,
+     assign(socket,
+       managed_pi_config: load_managed_pi_config(config_node),
+       node_config: load_all_node_config(config_node)
+     )}
+  end
+
+  # -------------------------------------------------------------------
   # Private helpers
   # -------------------------------------------------------------------
 
@@ -1190,6 +1219,13 @@ defmodule OrcaHubWeb.NodeLive.Show do
 
       {backend, names}
     end)
+  end
+
+  defp load_managed_pi_config(config_node) do
+    case rpc(config_node, PiConfigSync, :managed_names, []) do
+      %{} = result -> result
+      _ -> %{}
+    end
   end
 
   defp refresh_backend_config(socket, backend) do

@@ -76,7 +76,7 @@ defmodule OrcaHub.PiConfigSync do
   use GenServer
   require Logger
 
-  alias OrcaHub.{Backend, HubRPC, Mode, NodeConfig, PiConfig.Entry}
+  alias OrcaHub.{Backend, Cluster, HubRPC, Mode, NodeConfig, PiConfig.Entry}
 
   @manifest_filename ".orca-managed-pi-config.json"
   @models_filename "models.json"
@@ -163,6 +163,14 @@ defmodule OrcaHub.PiConfigSync do
     {:noreply, state}
   end
 
+  # A node whose pi config changed and needs warm port eviction broadcasts this.
+  # Every node evicts idle pi ports on the TARGET node (not itself).
+  @impl true
+  def handle_info({:pi_config_warm_port_evict, node_name}, state) do
+    evict_idle_pi_ports(node_name)
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
@@ -219,6 +227,11 @@ defmodule OrcaHub.PiConfigSync do
       end
 
       if models_changed?, do: notify_models_changed()
+
+      # Evict idle pi ports on this node if any providers were added or removed
+      if models_changed? do
+        notify_warm_port_evict(node())
+      end
     end
 
     :ok
@@ -448,6 +461,27 @@ defmodule OrcaHub.PiConfigSync do
       OrcaHub.PiConfig.topic(),
       {:pi_models_changed, node()}
     )
+  end
+
+  defp notify_warm_port_evict(node_name) do
+    Phoenix.PubSub.broadcast(
+      OrcaHub.PubSub,
+      OrcaHub.PiConfig.topic(),
+      {:pi_config_warm_port_evict, node_name}
+    )
+  end
+
+  defp evict_idle_pi_ports(node_name) do
+    # Get all warm sessions on the target node, filter for pi backend
+    sessions_on_node =
+      Cluster.rpc(node_name, Streaming.WarmPool, :warm_rows, [])
+      |> Enum.filter(fn {_sid, _pid, _ts, _status, backend} -> backend == :pi end)
+      |> Enum.map(fn {session_id, _pid, _ts, _status, _backend} -> session_id end)
+
+    # Call evict_warm on each session - this will close the port if idle
+    Enum.each(sessions_on_node, fn session_id ->
+      Cluster.rpc(node_name, SessionRunner, :evict_warm, [session_id])
+    end)
   end
 
   defp hub_reachable? do

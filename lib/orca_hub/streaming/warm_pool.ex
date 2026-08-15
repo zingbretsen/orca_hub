@@ -40,7 +40,7 @@ defmodule OrcaHub.Streaming.WarmPool do
   @table __MODULE__
   @evict_timeout 2_000
 
-  # ETS row: {session_id, pid, last_active_monotonic, status :: :running | :idle | :error}
+  # ETS row: {session_id, pid, last_active_monotonic, status :: :running | :idle | :error, backend}
 
   # ── Client API ───────────────────────────────────────────────────────
 
@@ -52,8 +52,12 @@ defmodule OrcaHub.Streaming.WarmPool do
   Request a warm slot before opening a streaming port. Serialized; may evict an
   LRU idle victim. Returns `:ok` or `{:ok, :over_cap}`. Never blocks the caller's
   turn (admission is best-effort). Safe to call if the pool isn't running.
+
+  The `backend` argument is the backend atom (:claude, :codex, :pi, etc.) for
+  this session, used by phase 2 pi config federation to evict idle pi ports
+  when models.json changes.
   """
-  def request_slot(session_id, pid) do
+  def request_slot(session_id, pid, _backend) do
     GenServer.call(__MODULE__, {:request_slot, session_id, pid}, 10_000)
   catch
     :exit, _ -> :ok
@@ -109,8 +113,8 @@ defmodule OrcaHub.Streaming.WarmPool do
 
   defp lru_idle(rows) do
     rows
-    |> Enum.filter(fn {_sid, _pid, _ts, status} -> status in [:idle, :error] end)
-    |> Enum.sort_by(fn {_sid, _pid, ts, _status} -> ts end)
+    |> Enum.filter(fn {_sid, _pid, _ts, status, _backend} -> status in [:idle, :error] end)
+    |> Enum.sort_by(fn {_sid, _pid, ts, _status, _backend} -> ts end)
     |> case do
       [] -> :over_cap
       [victim | _] -> victim
@@ -133,14 +137,14 @@ defmodule OrcaHub.Streaming.WarmPool do
   end
 
   @impl true
-  def handle_call({:request_slot, session_id, pid}, _from, state) do
+  def handle_call({:request_slot, session_id, pid, backend}, _from, state) do
     cap = Streaming.warm_cap()
     rows = :ets.tab2list(@table)
 
     result =
       cond do
         cap in [0, nil] or length(rows) < cap ->
-          register(session_id, pid)
+          register(session_id, pid, backend)
           :ok
 
         true ->
@@ -151,7 +155,7 @@ defmodule OrcaHub.Streaming.WarmPool do
 
           case evict_one(candidates) do
             :ok ->
-              register(session_id, pid)
+              register(session_id, pid, backend)
               :ok
 
             :none ->
@@ -160,7 +164,7 @@ defmodule OrcaHub.Streaming.WarmPool do
                   "#{node()} — admitting #{session_id} over-cap"
               )
 
-              register(session_id, pid)
+              register(session_id, pid, backend)
               {:ok, :over_cap}
           end
       end
@@ -171,8 +175,8 @@ defmodule OrcaHub.Streaming.WarmPool do
   @impl true
   def handle_cast({:touch, session_id, status}, state) do
     case :ets.lookup(@table, session_id) do
-      [{^session_id, pid, _ts, _old}] ->
-        :ets.insert(@table, {session_id, pid, now(), status})
+      [{^session_id, pid, _ts, _old, backend}] ->
+        :ets.insert(@table, {session_id, pid, now(), status, backend})
 
       [] ->
         :ok
@@ -188,13 +192,14 @@ defmodule OrcaHub.Streaming.WarmPool do
 
   # ── Private ──────────────────────────────────────────────────────────
 
-  defp register(session_id, pid), do: :ets.insert(@table, {session_id, pid, now(), :running})
+  defp register(session_id, pid, backend),
+    do: :ets.insert(@table, {session_id, pid, now(), :running, backend})
 
   # Evict the first LRU idle/error candidate that's still evictable. A victim that
   # just went :running replies :busy → try the next. None evictable → :none.
   defp evict_one([]), do: :none
 
-  defp evict_one([{vsid, vpid, _ts, _status} | rest]) do
+  defp evict_one([{vsid, vpid, _ts, _status, _backend} | rest]) do
     case evict(vpid) do
       :ok ->
         :ets.delete(@table, vsid)

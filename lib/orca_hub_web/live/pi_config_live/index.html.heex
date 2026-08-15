@@ -1,0 +1,184 @@
+<.header>
+  Pi Config
+  <:actions>
+    <.link patch={~p"/pi-config/new"}>
+      <.button>New Entry</.button>
+    </.link>
+  </:actions>
+</.header>
+
+<div :if={@show_form} class="card bg-base-200 p-4 mt-6">
+  <h4 class="font-semibold mb-3">
+    {if @editing_entry, do: "Edit Pi Config Entry", else: "New Pi Config Entry"}
+  </h4>
+
+  <.form
+    for={@entry_form}
+    phx-submit="save"
+    phx-change="validate"
+    id="pi-config-entry-form"
+    class="space-y-3"
+  >
+    <div class="space-y-2">
+      <label class="label"><span class="label-text">Kind</span></label>
+      <select
+        name="pi_config_entry[kind]"
+        phx-change="kind_select"
+        class="select select-bordered w-full"
+      >
+        <option :for={kind <- kinds_for_template()} value={kind} selected={kind == @current_kind}>
+          {kind_label(kind)}
+        </option>
+      </select>
+      <p class="text-xs text-base-content/50 -mt-2">
+        {kind_help(@current_kind)}
+      </p>
+    </div>
+
+    <.input
+      field={@entry_form[:name]}
+      type="text"
+      label="Name"
+      placeholder="my-entry"
+      phx-hook="AutoFocus"
+    />
+    <p class="text-xs text-base-content/50 -mt-2">
+      Case-sensitive key/file stem (letters, digits, dots, hyphens, underscores; starts with letter/digit).
+    </p>
+
+    <div :if={@current_kind == "provider" || @current_kind == "setting"}>
+      <.input
+        type="textarea"
+        name="pi_config_entry[spec]"
+        label="JSON Spec"
+        placeholder='{\"key\": \"value\"}'
+        rows="10"
+        value={spec_as_string(@editing_entry || %Entry{})}
+        phx-change="validate"
+      />
+      <p class="text-xs text-base-content/50 -mt-2">
+        <span class="font-mono">spec</span>
+        for <span class="font-mono">{@current_kind}</span>
+        — valid JSON that parses to a map.
+      </p>
+      <p
+        :if={@current_kind == "provider" && literal_api_key_warning(@editing_entry || %Entry{})}
+        class="text-xs text-warning mt-2"
+      >
+        <.icon name="hero-exclamation-triangle" class="inline size-4 align-middle" />
+        Warning: Literal API keys are stored in the hub DB and visible in this UI — prefer <code class="font-mono">$ENV_VAR</code>, <code class="font-mono">${ENV_VAR}</code>,
+        or <code class="font-mono">!command</code>
+        references.
+      </p>
+    </div>
+
+    <div :if={
+      @current_kind == "extension" || @current_kind == "prompt" || @current_kind == "theme"
+    }>
+      <.input
+        type="textarea"
+        name="pi_config_entry[spec]"
+        label="Body"
+        placeholder="Code content..."
+        rows="12"
+        value={spec_as_string(@editing_entry || %Entry{})}
+        phx-change="validate"
+      />
+      <p class="text-xs text-base-content/50 -mt-2">
+        Body for
+        <span class="font-mono">
+          {if @current_kind == "extension",
+            do: "extensions/",
+            else: if(@current_kind == "prompt", do: "prompts/", else: "themes/")}
+        </span>
+        (file extension is auto-appended: .ts, .md, .json).
+      </p>
+    </div>
+
+    <.input field={@entry_form[:enabled]} type="checkbox" label="Enabled" />
+
+    <div class="flex justify-end gap-2">
+      <.link patch={~p"/pi-config"} class="btn btn-sm">Cancel</.link>
+      <.button type="submit" class="btn-sm">
+        {if @editing_entry, do: "Update", else: "Create"}
+      </.button>
+    </div>
+  </.form>
+</div>
+
+<div :if={@entries == [] && !@show_form} class="text-sm text-base-content/50 p-8 text-center mt-6">
+  No pi config entries yet.
+</div>
+
+<div :if={@entries != []} class="mt-6 space-y-6">
+  <div
+    :for={kind <- kinds_for_template()}
+    :if={!Enum.empty?(Map.get(entries_by_kind(@entries), kind, []))}
+    class="bg-base-200 rounded-lg overflow-hidden"
+  >
+    <div class="bg-base-300 px-4 py-2 font-semibold">
+      {kind_label(kind)}
+    </div>
+
+    <div class="divide-y divide-base-300">
+      <div
+        :for={entry <- Map.get(entries_by_kind(@entries), kind, [])}
+        class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50"
+      >
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="font-mono font-medium">{entry.name}</span>
+            <span class={[
+              "badge badge-xs",
+              if(entry.enabled, do: "badge-success", else: "badge-ghost")
+            ]}>
+              {if entry.enabled, do: "enabled", else: "disabled"}
+            </span>
+          </div>
+          <div class="text-base-content/60 text-xs mt-0.5">
+            <span :if={kind in ["provider", "setting"]}>
+              JSON spec (first 200 chars):
+              <span class="font-mono">
+                {String.slice(Jason.encode!(entry.spec), 0, 200) <> "…"}
+              </span>
+            </span>
+            <span :if={kind in ["extension", "prompt", "theme"]}>
+              Body preview (first 200 chars):
+              <span class="font-mono">
+                {String.slice(entry.spec["body"] || "", 0, 200) <> "…"}
+              </span>
+            </span>
+          </div>
+          <div class="text-base-content/40 text-xs mt-0.5">
+            Updated {Calendar.strftime(entry.updated_at, "%Y-%m-%d %H:%M UTC")}
+          </div>
+        </div>
+        <div class="flex items-center gap-1">
+          <button
+            phx-click="toggle"
+            phx-value-id={entry.id}
+            class="btn btn-xs btn-ghost"
+            title={if entry.enabled, do: "Disable", else: "Enable"}
+          >
+            <.icon
+              name={if entry.enabled, do: "hero-pause-micro", else: "hero-play-micro"}
+              class="size-4"
+            />
+          </button>
+          <.link patch={~p"/pi-config/#{entry.id}/edit"} class="btn btn-xs btn-ghost" title="Edit">
+            <.icon name="hero-pencil-micro" class="size-4" />
+          </.link>
+          <button
+            phx-click="delete"
+            phx-value-id={entry.id}
+            data-confirm="Delete this pi config entry? It will be removed from every node's disk on next sync."
+            class="btn btn-xs btn-ghost text-error"
+            title="Delete"
+          >
+            <.icon name="hero-trash-micro" class="size-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
