@@ -1351,6 +1351,22 @@ topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})
 window.addEventListener("phx:page-loading-start", _info => topbar.show(300))
 window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 
+// Close focus-based daisyUI dropdowns after a server patch. A `.dropdown`
+// without `dropdown-open` stays open purely because something inside it holds
+// focus, and clicking a menu button (e.g. the header backend/model picker's
+// phx-click="set_model") leaves focus in the `.dropdown-content` — a LiveView
+// patch doesn't drop it, so the menu lingers open after selection. Every
+// dropdown in the app is an action menu, so blurring globally is correct.
+// Text inputs are excluded so a dropdown-hosted form (the "Custom model"
+// field) can't lose focus mid-typing on an unrelated patch.
+window.addEventListener("phx:update", () => {
+  const el = document.activeElement
+  if (el && el.closest && el.closest(".dropdown-content") &&
+      !(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) {
+    el.blur()
+  }
+})
+
 // connect if there are any LiveViews on the page
 liveSocket.connect()
 
