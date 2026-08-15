@@ -442,7 +442,7 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
     # delete. See test-isolation notes for why this flaked under a full run.
     :sys.get_state(OrcaHub.Streaming.WarmPool)
 
-    refute Enum.any?(OrcaHub.Streaming.WarmPool.warm_rows(), fn {sid, _pid, _ts, _status} ->
+    refute Enum.any?(OrcaHub.Streaming.WarmPool.warm_rows(), fn {sid, _pid, _ts, _status, _backend} ->
              sid == session.id
            end)
 

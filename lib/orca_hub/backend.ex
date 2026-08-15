@@ -500,4 +500,13 @@ defmodule OrcaHub.Backend do
       true
     end
   end
+
+  @doc """
+  Returns the backend atom name for a backend module.
+  Used by WarmPool to track backend-specific slots.
+  """
+  @spec name(module) :: :claude | :codex | :pi
+  def name(OrcaHub.Backend.Claude), do: :claude
+  def name(OrcaHub.Backend.Codex), do: :codex
+  def name(OrcaHub.Backend.Pi), do: :pi
 end

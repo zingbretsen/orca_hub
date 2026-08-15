@@ -1496,7 +1496,7 @@ defmodule OrcaHub.SessionRunner do
           # prompt to flush once it completes; others (Codex included — its
           # handshake is the on_open/1 leg above, not a warm-up turn) write the
           # real turn immediately.
-          Streaming.WarmPool.request_slot(base.session_id, self(), base.backend.name)
+          Streaming.WarmPool.request_slot(base.session_id, self(), Backend.name(base.backend))
           {port, framing} = open_port_streaming(base)
           base = run_on_open(%{base | port: port, framing: framing})
 
