@@ -47,15 +47,19 @@
     </p>
 
     <div :if={@current_kind == "provider" || @current_kind == "setting"}>
-      <.input
-        field={@entry_form[:spec]}
-        type="textarea"
-        label="JSON Spec"
-        placeholder='{\"key\": \"value\"}'
-        rows="10"
-        value={spec_as_string(@editing_entry || %Entry{})}
+      <textarea
+        id="spec-text-area"
+        phx-hook="SpecTextArea"
+        phx-value-spec={@spec_text || ""}
         phx-change="validate"
-      />
+        class="textarea textarea-bordered w-full h-48 font-mono text-sm"
+        placeholder='{"key": "value"}'
+        value={@spec_text || ""}
+        name="pi_config_entry[spec]"
+      >{@spec_text || ""}</textarea>
+      <p :if={@spec_error} class="text-error text-xs mt-1">
+        {@spec_error}
+      </p>
       <p :for={msg <- @entry_form[:spec].errors} class="text-error text-xs mt-1">
         {OrcaHubWeb.CoreComponents.translate_error(msg)}
       </p>
@@ -78,15 +82,19 @@
     <div :if={
       @current_kind == "extension" || @current_kind == "prompt" || @current_kind == "theme"
     }>
-      <.input
-        field={@entry_form[:spec]}
-        type="textarea"
-        label="Body"
-        placeholder="Code content..."
-        rows="12"
-        value={spec_as_string(@editing_entry || %Entry{})}
+      <textarea
+        id="spec-text-area"
+        phx-hook="SpecTextArea"
+        phx-value-spec={@spec_text || ""}
         phx-change="validate"
-      />
+        class="textarea textarea-bordered w-full h-96 font-mono text-sm"
+        placeholder="Code content..."
+        value={@spec_text || ""}
+        name="pi_config_entry[spec]"
+      >{@spec_text || ""}</textarea>
+      <p :if={@spec_error} class="text-error text-xs mt-1">
+        {@spec_error}
+      </p>
       <p :for={msg <- @entry_form[:spec].errors} class="text-error text-xs mt-1">
         {OrcaHubWeb.CoreComponents.translate_error(msg)}
       </p>

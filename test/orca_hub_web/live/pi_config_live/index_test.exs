@@ -115,7 +115,13 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
       # Submit valid form data
       html =
         view
-        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "test-provider", "kind" => "provider", "spec" => ~s|{"baseUrl": "http://localhost:11434"}|}})
+        |> form("#pi-config-entry-form", %{
+          "pi_config_entry" => %{
+            "name" => "test-provider",
+            "kind" => "provider",
+            "spec" => ~s|{"baseUrl": "http://localhost:11434"}|
+          }
+        })
         |> render_submit()
 
       # Verify entry was created
@@ -130,7 +136,13 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
       # Submit form with invalid JSON spec
       html =
         view
-        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "invalid-provider", "kind" => "provider", "spec" => "not valid json{"}})
+        |> form("#pi-config-entry-form", %{
+          "pi_config_entry" => %{
+            "name" => "invalid-provider",
+            "kind" => "provider",
+            "spec" => "not valid json{"
+          }
+        })
         |> render_submit()
 
       # Verify error is shown (invalid JSON becomes empty map, triggering spec validation)
@@ -147,7 +159,13 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
       # Submit form with empty name
       html =
         view
-        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "", "kind" => "provider", "spec" => ~s|{"baseUrl": "http://localhost:11434"}|}})
+        |> form("#pi-config-entry-form", %{
+          "pi_config_entry" => %{
+            "name" => "",
+            "kind" => "provider",
+            "spec" => ~s|{"baseUrl": "http://localhost:11434"}|
+          }
+        })
         |> render_submit()
 
       # Verify error is shown (HTML-encoded as can&#39;t be blank)
@@ -162,7 +180,13 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
       # Submit form for extension type
       html =
         view
-        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "test-extension", "kind" => "extension", "spec" => "console.log('extension content')"}})
+        |> form("#pi-config-entry-form", %{
+          "pi_config_entry" => %{
+            "name" => "test-extension",
+            "kind" => "extension",
+            "spec" => "console.log('extension content')"
+          }
+        })
         |> render_submit()
 
       # Verify entry was created
@@ -179,7 +203,13 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
       # Submit form for setting type
       html =
         view
-        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "default-timeout", "kind" => "setting", "spec" => ~s|{"value": 30}|}})
+        |> form("#pi-config-entry-form", %{
+          "pi_config_entry" => %{
+            "name" => "default-timeout",
+            "kind" => "setting",
+            "spec" => ~s|{"value": 30}|
+          }
+        })
         |> render_submit()
 
       # Verify entry was created
@@ -195,7 +225,13 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
       # Submit form with enabled checkbox checked
       html =
         view
-        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "enabled-provider", "kind" => "provider", "spec" => ~s|{"baseUrl": "http://localhost:11434"}|}})
+        |> form("#pi-config-entry-form", %{
+          "pi_config_entry" => %{
+            "name" => "enabled-provider",
+            "kind" => "provider",
+            "spec" => ~s|{"baseUrl": "http://localhost:11434"}|
+          }
+        })
         |> render_submit()
 
       # Verify entry was created and is enabled
@@ -223,7 +259,13 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
       # Submit form with updated data
       html =
         view
-        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "new-name", "kind" => "provider", "spec" => ~s|{"baseUrl": "http://new-host:11434"}|}})
+        |> form("#pi-config-entry-form", %{
+          "pi_config_entry" => %{
+            "name" => "new-name",
+            "kind" => "provider",
+            "spec" => ~s|{"baseUrl": "http://new-host:11434"}|
+          }
+        })
         |> render_submit()
 
       # Verify entry was updated

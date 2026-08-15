@@ -27,7 +27,9 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
        show_form: false,
        editing_entry: nil,
        entry_form: to_form(PiConfig.change_entry(%Entry{}), as: "pi_config_entry"),
-       current_kind: "provider"
+       current_kind: "provider",
+       spec_text: "",
+       spec_error: nil
      )}
   end
 
@@ -46,7 +48,9 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
       show_form: true,
       editing_entry: nil,
       entry_form: to_form(PiConfig.change_entry(%Entry{}), as: "pi_config_entry"),
-      current_kind: "provider"
+      current_kind: "provider",
+      spec_text: "",
+      spec_error: nil
     )
   end
 
@@ -58,21 +62,47 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
       show_form: true,
       editing_entry: entry,
       entry_form: to_form(PiConfig.change_entry(entry), as: "pi_config_entry"),
-      current_kind: entry.kind
+      current_kind: entry.kind,
+      spec_text: spec_as_string(entry),
+      spec_error: nil
     )
   end
 
   @impl true
   def handle_event("validate", %{"pi_config_entry" => params}, socket) do
     entry = socket.assigns.editing_entry || %Entry{}
-    # Normalize spec based on current kind before passing to changeset
-    params = normalize_spec_for_kind(params)
+    # Extract spec from pi_config_entry params (textarea is now a form field)
+    spec_text = Map.get(params, "spec", socket.assigns.spec_text || "")
+    # Get kind from params (it may have been changed by the user)
+    kind = Map.get(params, "kind", socket.assigns.current_kind)
+
+    # Normalize params for changeset (parse spec_text for provider/setting)
+    params = normalize_spec_for_kind_with_text(params, spec_text, kind)
     changeset = PiConfig.change_entry(entry, params)
-    {:noreply, assign(socket, entry_form: to_form(changeset, action: :validate, as: "pi_config_entry"))}
+
+    # Extract any spec error for display
+    spec_error =
+      case Enum.find(changeset.errors, fn {field, _} -> field == :spec end) do
+        {:spec, {msg, _}} -> msg
+        _ -> nil
+      end
+
+    {:noreply,
+     assign(socket,
+       entry_form: to_form(changeset, action: :validate, as: "pi_config_entry"),
+       spec_text: spec_text,
+       spec_error: spec_error
+     )}
   end
 
   def handle_event("save", %{"pi_config_entry" => params}, socket) do
-    params = normalize_spec_for_kind(params)
+    # Extract spec from pi_config_entry params (textarea is now a form field)
+    spec_text = Map.get(params, "spec", socket.assigns.spec_text || "")
+    # Get kind from params (it may have been changed by the user)
+    kind = Map.get(params, "kind", socket.assigns.current_kind)
+
+    # Normalize params for save (parse spec_text for provider/setting)
+    params = normalize_spec_for_kind_with_text(params, spec_text, kind)
 
     result =
       case socket.assigns.editing_entry do
@@ -84,12 +114,30 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
       {:ok, _entry} ->
         {:noreply,
          socket
-         |> assign(entries: HubRPC.list_pi_config_entries(), show_form: false, editing_entry: nil)
+         |> assign(
+           entries: HubRPC.list_pi_config_entries(),
+           show_form: false,
+           editing_entry: nil,
+           spec_text: "",
+           spec_error: nil
+         )
          |> put_flash(:info, "Pi config entry saved")
          |> push_patch(to: ~p"/pi-config")}
 
       {:error, changeset} ->
-        {:noreply, assign(socket, entry_form: to_form(changeset, action: :validate, as: "pi_config_entry"))}
+        # Extract spec error for display
+        spec_error =
+          case Enum.find(changeset.errors, fn {field, _} -> field == :spec end) do
+            {:spec, {msg, _}} -> msg
+            _ -> nil
+          end
+
+        {:noreply,
+         assign(socket,
+           entry_form: to_form(changeset, action: :validate, as: "pi_config_entry"),
+           spec_text: spec_text,
+           spec_error: spec_error
+         )}
     end
   end
 
@@ -113,20 +161,22 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
   def handle_event("cancel", _params, socket) do
     {:noreply,
      socket
-     |> assign(show_form: false, editing_entry: nil)
+     |> assign(show_form: false, editing_entry: nil, spec_text: "", spec_error: nil)
      |> push_patch(to: ~p"/pi-config")}
   end
 
   def handle_event("kind_select", %{"kind" => kind}, socket) do
     entry = socket.assigns.editing_entry || %Entry{}
-    # Clear spec when changing kind
-    params = %{"kind" => kind}
-
-    form =
-      PiConfig.change_entry(entry, params)
-      |> to_form(action: :validate, as: "pi_config_entry")
-
-    {:noreply, assign(socket, current_kind: kind, entry_form: form)}
+    # Reset spec_text when changing kind
+    {:noreply,
+     assign(socket,
+       current_kind: kind,
+       spec_text: "",
+       spec_error: nil,
+       entry_form:
+         PiConfig.change_entry(entry, %{kind: kind})
+         |> to_form(action: :validate, as: "pi_config_entry")
+     )}
   end
 
   @impl true
@@ -134,38 +184,40 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
     {:noreply, assign(socket, entries: HubRPC.list_pi_config_entries())}
   end
 
-  # Normalize spec based on kind before DB storage
-  defp normalize_spec_for_kind(%{"kind" => kind, "spec" => spec} = params)
+  # Normalize spec based on kind before DB storage, using spec_text assign
+  defp normalize_spec_for_kind_with_text(params, spec_text, kind)
        when kind in ["provider", "setting"] do
-    # For provider and setting, spec should be a JSON string that we parse
+    # For provider and setting, spec_text should be JSON that we parse
     spec_value =
-      case spec do
+      case String.trim(spec_text || "") do
         "" ->
           %{}
 
-        s when is_binary(s) ->
-          case Jason.decode(s) do
-            {:ok, v} -> v
-            {:error, _} -> %{}
-          end
-
         s ->
-          s
+          case Jason.decode(s) do
+            {:ok, v} ->
+              v
+
+            {:error, _} ->
+              # On parse error, use empty map - validation will catch it
+              %{}
+          end
       end
 
     Map.put(params, "spec", spec_value)
   end
 
-  defp normalize_spec_for_kind(%{"kind" => kind, "spec" => spec} = params)
+  defp normalize_spec_for_kind_with_text(params, spec_text, kind)
        when kind in ["extension", "prompt", "theme"] do
-    # For file kinds, body is stored directly
-    spec_value = %{"body" => spec || ""}
+    # For file kinds, body is stored directly from spec_text
+    spec_value = %{"body" => spec_text || ""}
     Map.put(params, "spec", spec_value)
   end
 
-  defp normalize_spec_for_kind(params), do: params
+  defp normalize_spec_for_kind_with_text(params, _spec_text, _kind), do: params
 
   # Check if spec contains a literal API key (not a reference)
+  # This checks the spec_text (raw JSON) since we're not round-tripping through the changeset
   def literal_api_key_warning(%{kind: "provider", spec: spec}) when is_map(spec) do
     case Map.get(spec, "apiKey") do
       key when is_binary(key) ->
@@ -174,6 +226,20 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
       _ ->
         false
     end
+  end
+
+  def literal_api_key_warning(%{kind: "provider", spec_text: spec_text})
+      when is_binary(spec_text) do
+    # Check the raw spec_text for an apiKey field
+    case Jason.decode(spec_text) do
+      {:ok, %{"apiKey" => key}} when is_binary(key) ->
+        not starts_with_reference?(key)
+
+      _ ->
+        false
+    end
+  rescue
+    _ -> false
   end
 
   def literal_api_key_warning(_), do: false

@@ -1325,6 +1325,26 @@ let Hooks = {
         if (this._focusedIndex >= 0) this._focusItem(items[this._focusedIndex])
       }
     }
+  },
+  SpecTextArea: {
+    mounted() {
+      // Sync textarea content to hidden input on blur (form submit) and phx-change
+      this.syncHiddenInput()
+      this.el.addEventListener("input", () => this.syncHiddenInput())
+    },
+    updated() {
+      // Re-sync on LiveView updates
+      this.syncHiddenInput()
+    },
+    destroyed() {
+      this.el.removeEventListener("input", () => this.syncHiddenInput())
+    },
+    syncHiddenInput() {
+      const hiddenInput = document.getElementById("spec-hidden-input")
+      if (hiddenInput) {
+        hiddenInput.value = this.el.value
+      }
+    }
   }
 }
 
