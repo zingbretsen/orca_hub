@@ -9,7 +9,7 @@ defmodule OrcaHub.Streaming.WarmPool do
 
   ## How it fits together
 
-    * A runner calls `request_slot/2` at the streaming cold path, BEFORE opening
+    * A runner calls `request_slot/3` at the streaming cold path, BEFORE opening
       its persistent port. Admission is serialized through this GenServer so two
       simultaneous opens can't both think there's room.
     * Under cap → admit. At/over cap → evict the LRU victim among `:idle`/`:error`
@@ -20,7 +20,7 @@ defmodule OrcaHub.Streaming.WarmPool do
     * Runners `touch/2` their activity (`:running` at turn start, `:idle`/`:error`
       at finalize) and `release/1` on teardown/crash/terminate (idempotent).
 
-  Admission NEVER blocks the user: `request_slot/2` always returns `:ok` (or
+  Admission NEVER blocks the user: `request_slot/3` always returns `:ok` (or
   `{:ok, :over_cap}`); it only decides whether to evict someone first.
 
   The cap is `OrcaHub.Streaming.warm_cap/0` (env `ORCA_MAX_WARM_SESSIONS`,
@@ -57,8 +57,8 @@ defmodule OrcaHub.Streaming.WarmPool do
   this session, used by phase 2 pi config federation to evict idle pi ports
   when models.json changes.
   """
-  def request_slot(session_id, pid, _backend) do
-    GenServer.call(__MODULE__, {:request_slot, session_id, pid}, 10_000)
+  def request_slot(session_id, pid, backend) do
+    GenServer.call(__MODULE__, {:request_slot, session_id, pid, backend}, 10_000)
   catch
     :exit, _ -> :ok
   end
@@ -150,8 +150,10 @@ defmodule OrcaHub.Streaming.WarmPool do
         true ->
           candidates =
             rows
-            |> Enum.filter(fn {_sid, _pid, _ts, status} -> status in [:idle, :error] end)
-            |> Enum.sort_by(fn {_sid, _pid, ts, _status} -> ts end)
+            |> Enum.filter(fn {_sid, _pid, _ts, status, _backend} ->
+              status in [:idle, :error]
+            end)
+            |> Enum.sort_by(fn {_sid, _pid, ts, _status, _backend} -> ts end)
 
           case evict_one(candidates) do
             :ok ->

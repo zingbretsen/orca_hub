@@ -30,15 +30,15 @@ defmodule OrcaHub.Streaming.WarmPoolTest do
     :ok
   end
 
-  defp seed(sid, status, ts) do
+  defp seed(sid, status, ts, backend \\ :claude) do
     {:ok, pid} = Victim.start_link(:ok)
-    :ets.insert(@table, {sid, pid, ts, status})
+    :ets.insert(@table, {sid, pid, ts, status, backend})
     pid
   end
 
   describe "pick_lru_victim/2 (pure)" do
     test "returns nil when under cap or cap disabled" do
-      rows = [{"a", self(), 1, :idle}]
+      rows = [{"a", self(), 1, :idle, :claude}]
       assert WarmPool.pick_lru_victim(rows, 5) == nil
       assert WarmPool.pick_lru_victim(rows, 0) == nil
       assert WarmPool.pick_lru_victim(rows, nil) == nil
@@ -47,29 +47,29 @@ defmodule OrcaHub.Streaming.WarmPoolTest do
 
     test "picks the smallest last_active among idle/error, skipping running" do
       rows = [
-        {"old_running", self(), 1, :running},
-        {"newest_idle", self(), 100, :idle},
-        {"oldest_idle", self(), 5, :idle},
-        {"mid_error", self(), 20, :error}
+        {"old_running", self(), 1, :running, :claude},
+        {"newest_idle", self(), 100, :idle, :claude},
+        {"oldest_idle", self(), 5, :idle, :claude},
+        {"mid_error", self(), 20, :error, :claude}
       ]
 
-      assert {"oldest_idle", _, 5, :idle} = WarmPool.pick_lru_victim(rows, 3)
+      assert {"oldest_idle", _, 5, :idle, :claude} = WarmPool.pick_lru_victim(rows, 3)
     end
 
     test "returns :over_cap when at/over cap but every warm runner is running" do
       rows = [
-        {"r1", self(), 1, :running},
-        {"r2", self(), 2, :running}
+        {"r1", self(), 1, :running, :claude},
+        {"r2", self(), 2, :running, :claude}
       ]
 
       assert WarmPool.pick_lru_victim(rows, 2) == :over_cap
     end
   end
 
-  describe "request_slot/2 admission + eviction" do
+  describe "request_slot/3 admission + eviction" do
     test "under cap admits without eviction" do
       Streaming.set_warm_cap(3)
-      assert WarmPool.request_slot("s1", self()) == :ok
+      assert WarmPool.request_slot("s1", self(), :claude) == :ok
       assert WarmPool.warm_count() == 1
     end
 
@@ -78,7 +78,7 @@ defmodule OrcaHub.Streaming.WarmPoolTest do
       lru = seed("lru", :idle, 1)
       _newer = seed("newer", :idle, 50)
 
-      assert WarmPool.request_slot("incoming", self()) == :ok
+      assert WarmPool.request_slot("incoming", self(), :claude) == :ok
       # evicted the oldest idle victim, admitted the newcomer -> still 2
       assert WarmPool.warm_count() == 2
       assert Victim.evicts(lru) == 1
@@ -91,7 +91,7 @@ defmodule OrcaHub.Streaming.WarmPoolTest do
       busy = busy_victim("busy", 1)
       free = seed("free", :idle, 2)
 
-      assert WarmPool.request_slot("incoming", self()) == :ok
+      assert WarmPool.request_slot("incoming", self(), :claude) == :ok
       assert Victim.evicts(busy) == 1
       assert Victim.evicts(free) == 1
       # busy stayed, free evicted, incoming admitted -> busy + incoming = 2
@@ -103,7 +103,7 @@ defmodule OrcaHub.Streaming.WarmPoolTest do
       Streaming.set_warm_cap(1)
       seed("running1", :running, 1)
 
-      assert WarmPool.request_slot("incoming", self()) == {:ok, :over_cap}
+      assert WarmPool.request_slot("incoming", self(), :claude) == {:ok, :over_cap}
       assert WarmPool.warm_count() == 2
     end
 
@@ -114,7 +114,7 @@ defmodule OrcaHub.Streaming.WarmPoolTest do
 
       tasks =
         for i <- 1..cap do
-          Task.async(fn -> WarmPool.request_slot("new#{i}", self()) end)
+          Task.async(fn -> WarmPool.request_slot("new#{i}", self(), :claude) end)
         end
 
       assert Enum.all?(Task.await_many(tasks), &(&1 == :ok))
@@ -125,7 +125,7 @@ defmodule OrcaHub.Streaming.WarmPoolTest do
 
     test "cap = 0 disables admission control (unlimited, ships dark)" do
       Streaming.set_warm_cap(0)
-      for i <- 1..5, do: assert(WarmPool.request_slot("s#{i}", self()) == :ok)
+      for i <- 1..5, do: assert(WarmPool.request_slot("s#{i}", self(), :claude) == :ok)
       assert WarmPool.warm_count() == 5
     end
   end
@@ -133,11 +133,14 @@ defmodule OrcaHub.Streaming.WarmPoolTest do
   describe "touch/2 + release/1 idempotency" do
     test "touch updates an existing row's status; no-op for an absent session" do
       Streaming.set_warm_cap(3)
-      WarmPool.request_slot("s", self())
+      WarmPool.request_slot("s", self(), :claude)
       WarmPool.touch("s", :idle)
 
-      assert [{"s", _pid, _ts, :idle}] =
-               wait_until(fn -> :ets.lookup(@table, "s") end, &match?([{_, _, _, :idle}], &1))
+      assert [{"s", _pid, _ts, :idle, :claude}] =
+               wait_until(
+                 fn -> :ets.lookup(@table, "s") end,
+                 &match?([{_, _, _, :idle, :claude}], &1)
+               )
 
       WarmPool.touch("ghost", :idle)
       assert :ets.lookup(@table, "ghost") == []
@@ -145,16 +148,16 @@ defmodule OrcaHub.Streaming.WarmPoolTest do
 
     test "release is idempotent" do
       Streaming.set_warm_cap(3)
-      WarmPool.request_slot("s", self())
+      WarmPool.request_slot("s", self(), :claude)
       WarmPool.release("s")
       WarmPool.release("s")
       assert wait_until(fn -> WarmPool.warm_count() end, &(&1 == 0)) == 0
     end
   end
 
-  defp busy_victim(sid, ts) do
+  defp busy_victim(sid, ts, backend \\ :claude) do
     {:ok, pid} = Victim.start_link(:busy)
-    :ets.insert(@table, {sid, pid, ts, :idle})
+    :ets.insert(@table, {sid, pid, ts, :idle, backend})
     pid
   end
 
