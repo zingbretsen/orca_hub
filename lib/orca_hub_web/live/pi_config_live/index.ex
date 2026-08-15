@@ -26,7 +26,7 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
        entries: HubRPC.list_pi_config_entries(),
        show_form: false,
        editing_entry: nil,
-       entry_form: to_form(PiConfig.change_entry(%Entry{})),
+       entry_form: to_form(PiConfig.change_entry(%Entry{}), as: "pi_config_entry"),
        current_kind: "provider"
      )}
   end
@@ -45,7 +45,7 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
       page_title: "New Pi Config Entry",
       show_form: true,
       editing_entry: nil,
-      entry_form: to_form(PiConfig.change_entry(%Entry{})),
+      entry_form: to_form(PiConfig.change_entry(%Entry{}), as: "pi_config_entry"),
       current_kind: "provider"
     )
   end
@@ -57,7 +57,7 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
       page_title: "Edit Pi Config Entry",
       show_form: true,
       editing_entry: entry,
-      entry_form: to_form(PiConfig.change_entry(entry)),
+      entry_form: to_form(PiConfig.change_entry(entry), as: "pi_config_entry"),
       current_kind: entry.kind
     )
   end
@@ -68,7 +68,7 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
     # Normalize spec based on current kind before passing to changeset
     params = normalize_spec_for_kind(params)
     changeset = PiConfig.change_entry(entry, params)
-    {:noreply, assign(socket, entry_form: to_form(changeset, action: :validate))}
+    {:noreply, assign(socket, entry_form: to_form(changeset, action: :validate, as: "pi_config_entry"))}
   end
 
   def handle_event("save", %{"pi_config_entry" => params}, socket) do
@@ -89,7 +89,7 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
          |> push_patch(to: ~p"/pi-config")}
 
       {:error, changeset} ->
-        {:noreply, assign(socket, entry_form: to_form(changeset))}
+        {:noreply, assign(socket, entry_form: to_form(changeset, action: :validate, as: "pi_config_entry"))}
     end
   end
 
@@ -124,7 +124,7 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
 
     form =
       PiConfig.change_entry(entry, params)
-      |> to_form(action: :validate)
+      |> to_form(action: :validate, as: "pi_config_entry")
 
     {:noreply, assign(socket, current_kind: kind, entry_form: form)}
   end

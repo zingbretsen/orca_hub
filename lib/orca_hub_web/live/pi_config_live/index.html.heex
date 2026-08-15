@@ -48,14 +48,17 @@
 
     <div :if={@current_kind == "provider" || @current_kind == "setting"}>
       <.input
+        field={@entry_form[:spec]}
         type="textarea"
-        name="pi_config_entry[spec]"
         label="JSON Spec"
         placeholder='{\"key\": \"value\"}'
         rows="10"
         value={spec_as_string(@editing_entry || %Entry{})}
         phx-change="validate"
       />
+      <p :for={msg <- @entry_form[:spec].errors} class="text-error text-xs mt-1">
+        {OrcaHubWeb.CoreComponents.translate_error(msg)}
+      </p>
       <p class="text-xs text-base-content/50 -mt-2">
         <span class="font-mono">spec</span>
         for <span class="font-mono">{@current_kind}</span>
@@ -76,14 +79,17 @@
       @current_kind == "extension" || @current_kind == "prompt" || @current_kind == "theme"
     }>
       <.input
+        field={@entry_form[:spec]}
         type="textarea"
-        name="pi_config_entry[spec]"
         label="Body"
         placeholder="Code content..."
         rows="12"
         value={spec_as_string(@editing_entry || %Entry{})}
         phx-change="validate"
       />
+      <p :for={msg <- @entry_form[:spec].errors} class="text-error text-xs mt-1">
+        {OrcaHubWeb.CoreComponents.translate_error(msg)}
+      </p>
       <p class="text-xs text-base-content/50 -mt-2">
         Body for
         <span class="font-mono">

@@ -10,7 +10,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
 
   import Phoenix.LiveViewTest
 
-  alias OrcaHub.{PiConfig, PiConfig.Entry}
+  alias OrcaHub.{HubRPC, PiConfig, PiConfig.Entry}
 
   @pi_config_sync_enabled Application.get_env(:orca_hub, :pi_config_sync_enabled, true)
 
@@ -104,63 +104,181 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
   end
 
   describe "create entry" do
-    test "creates a provider entry via direct HubRPC call (form rendering tested manually)", %{
-      conn: conn
-    } do
-      # Just test that the form renders correctly - actual CRUD testing is done at context level
-      {:ok, _view, html} = live(conn, ~p"/pi-config/new")
+    test "creates a provider entry via form", %{conn: conn} do
+      {:ok, view, html} = live(conn, ~p"/pi-config/new")
 
-      assert html =~ "New Pi Config Entry"
-      assert html =~ "JSON Spec"
-      assert html =~ "Enabled"
-      assert html =~ "Provider (models.json)"
+      # Verify form renders with correct param namespace
+      assert html =~ ~s{name="pi_config_entry[name]"}
+      assert html =~ ~s{name="pi_config_entry[enabled]"}
+      assert html =~ ~s{name="pi_config_entry[kind]"}
+
+      # Submit valid form data
+      html =
+        view
+        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "test-provider", "kind" => "provider", "spec" => ~s|{"baseUrl": "http://localhost:11434"}|}})
+        |> render_submit()
+
+      # Verify entry was created
+      entry = PiConfig.get_entry_by_kind_and_name("provider", "test-provider")
+      assert entry
+      assert HubRPC.list_pi_config_entries() |> Enum.any?(&(&1.name == "test-provider"))
+    end
+
+    test "shows error for invalid JSON spec", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+
+      # Submit form with invalid JSON spec
+      html =
+        view
+        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "invalid-provider", "kind" => "provider", "spec" => "not valid json{"}})
+        |> render_submit()
+
+      # Verify error is shown (invalid JSON becomes empty map, triggering spec validation)
+      # The actual error is "must contain the provider config (baseUrl, api, models, ...)"
+      assert html =~ "must contain the provider config"
+      assert html =~ "baseUrl"
+      refute PiConfig.get_entry_by_kind_and_name("provider", "invalid-provider")
+      assert HubRPC.list_pi_config_entries() |> Enum.empty?()
+    end
+
+    test "shows error for missing name", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+
+      # Submit form with empty name
+      html =
+        view
+        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "", "kind" => "provider", "spec" => ~s|{"baseUrl": "http://localhost:11434"}|}})
+        |> render_submit()
+
+      # Verify error is shown (HTML-encoded as can&#39;t be blank)
+      assert html =~ "can&#39;t be blank"
+      refute PiConfig.get_entry_by_kind_and_name("provider", "")
+      assert HubRPC.list_pi_config_entries() |> Enum.empty?()
+    end
+
+    test "creates extension entry via form", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+
+      # Submit form for extension type
+      html =
+        view
+        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "test-extension", "kind" => "extension", "spec" => "console.log('extension content')"}})
+        |> render_submit()
+
+      # Verify entry was created
+      entry = PiConfig.get_entry_by_kind_and_name("extension", "test-extension")
+      assert entry
+      assert entry.kind == "extension"
+      assert entry.spec["body"] == "console.log('extension content')"
+      assert HubRPC.list_pi_config_entries() |> Enum.any?(&(&1.name == "test-extension"))
+    end
+
+    test "creates setting entry via form", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+
+      # Submit form for setting type
+      html =
+        view
+        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "default-timeout", "kind" => "setting", "spec" => ~s|{"value": 30}|}})
+        |> render_submit()
+
+      # Verify entry was created
+      entry = PiConfig.get_entry_by_kind_and_name("setting", "default-timeout")
+      assert entry
+      assert entry.kind == "setting"
+      assert entry.spec["value"] == 30
+    end
+
+    test "creates enabled entry via form", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+
+      # Submit form with enabled checkbox checked
+      html =
+        view
+        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "enabled-provider", "kind" => "provider", "spec" => ~s|{"baseUrl": "http://localhost:11434"}|}})
+        |> render_submit()
+
+      # Verify entry was created and is enabled
+      entry = PiConfig.get_entry_by_kind_and_name("provider", "enabled-provider")
+      assert entry
+      assert entry.enabled == true
     end
   end
 
   describe "edit entry" do
-    test "renders edit form with existing entry data", %{conn: conn} do
+    test "edits an existing entry via form", %{conn: conn} do
       {:ok, entry} =
         PiConfig.create_entry(%{
           kind: "provider",
-          name: "ollama",
+          name: "old-name",
           spec: %{"baseUrl" => "http://localhost:11434"}
         })
 
-      {:ok, _view, html} = live(conn, ~p"/pi-config/#{entry.id}/edit")
+      {:ok, view, html} = live(conn, ~p"/pi-config/#{entry.id}/edit")
 
+      # Verify form renders with existing data
       assert html =~ "Edit Pi Config Entry"
-      assert html =~ "ollama"
-    end
-  end
+      assert html =~ "old-name"
 
-  describe "delete entry" do
-    test "deletes an entry via HubRPC", %{conn: conn} do
+      # Submit form with updated data
+      html =
+        view
+        |> form("#pi-config-entry-form", %{"pi_config_entry" => %{"name" => "new-name", "kind" => "provider", "spec" => ~s|{"baseUrl": "http://new-host:11434"}|}})
+        |> render_submit()
+
+      # Verify entry was updated
+      updated_entry = PiConfig.get_entry!(entry.id)
+      assert updated_entry.name == "new-name"
+      assert updated_entry.spec["baseUrl"] == "http://new-host:11434"
+    end
+
+    test "toggles enabled state via UI button", %{conn: conn} do
       {:ok, entry} =
         PiConfig.create_entry(%{
           kind: "provider",
-          name: "ollama",
-          spec: %{"baseUrl" => "http://localhost:11434"}
-        })
-
-      {:ok, _} = PiConfig.delete_entry(entry)
-      refute PiConfig.get_entry(entry.id)
-    end
-  end
-
-  describe "toggle entry" do
-    test "toggles enabled state via HubRPC", %{conn: conn} do
-      {:ok, entry} =
-        PiConfig.create_entry(%{
-          kind: "provider",
-          name: "ollama",
+          name: "toggle-provider",
           spec: %{"baseUrl" => "http://localhost:11434"},
           enabled: false
         })
 
-      refute PiConfig.get_entry!(entry.id).enabled
+      {:ok, view, html} = live(conn, ~p"/pi-config")
 
-      {:ok, _} = PiConfig.update_entry(entry, %{enabled: true})
-      assert PiConfig.get_entry!(entry.id).enabled
+      # Verify initial state
+      assert html =~ "disabled"
+
+      # Click toggle button
+      html = render_click(view, "toggle", %{"id" => entry.id})
+
+      # Verify state changed
+      updated_entry = PiConfig.get_entry!(entry.id)
+      assert updated_entry.enabled == true
+
+      # Verify UI updated
+      assert html =~ "enabled"
+    end
+  end
+
+  describe "delete entry" do
+    test "deletes an entry via UI button", %{conn: conn} do
+      {:ok, entry} =
+        PiConfig.create_entry(%{
+          kind: "provider",
+          name: "delete-provider",
+          spec: %{"baseUrl" => "http://localhost:11434"}
+        })
+
+      {:ok, view, html} = live(conn, ~p"/pi-config")
+
+      # Verify entry exists
+      assert html =~ "delete-provider"
+      assert PiConfig.get_entry(entry.id)
+
+      # Click delete button - render_click returns the new HTML
+      html = render_click(view, "delete", %{"id" => entry.id})
+
+      # Verify entry was deleted
+      refute PiConfig.get_entry(entry.id)
+      assert html =~ "No pi config entries yet"
     end
   end
 
@@ -185,7 +303,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
 
   describe "live refresh" do
     test "subscribes to pi_config topic", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/pi-config")
+      {:ok, _view, html} = live(conn, ~p"/pi-config")
 
       # Verify subscription by creating an entry and re-loading
       {:ok, _} =
