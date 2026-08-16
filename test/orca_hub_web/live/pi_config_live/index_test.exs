@@ -359,4 +359,92 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
       assert html =~ "test-broadcast"
     end
   end
+
+  describe "form validation preserves user input" do
+    test "name is preserved when spec textarea changes", %{conn: conn} do
+      # Reproduce the browser bug: set name, then change spec
+      # and verify name input still renders with its value
+      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+
+      # Simulate browser's phx-change that sends the whole form
+      # First, set the name
+      html =
+        view
+        |> form("#pi-config-entry-form")
+        |> render_change(%{"pi_config_entry" => %{"name" => "verify-delete-me"}})
+      assert html =~ "value=\"verify-delete-me\""
+
+      # Now change spec textarea (browser sends ALL form fields including name)
+      spec_json = ~s|{"name": "value"}|
+      html =
+        view
+        |> form("#pi-config-entry-form")
+        |> render_change(%{"pi_config_entry" => %{"name" => "verify-delete-me", "spec" => spec_json}})
+
+      # CRITICAL: name input must still render with its value after spec change
+      assert html =~ "value=\"verify-delete-me\""
+    end
+
+    test "full form submission works with validate round-trip", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+
+      # Simulate browser sending full form on each keystroke
+      html =
+        view
+        |> form("#pi-config-entry-form")
+        |> render_change(%{"pi_config_entry" => %{"name" => "test-name"}})
+      assert html =~ "value=\"test-name\""
+
+      html =
+        view
+        |> form("#pi-config-entry-form")
+        |> render_change(%{"pi_config_entry" => %{"name" => "test-name", "kind" => "provider"}})
+      assert html =~ "value=\"test-name\""
+
+      # Finally: set spec (with name still included)
+      spec_json = ~s|{"baseUrl": "http://localhost:11434"}|
+      html =
+        view
+        |> form("#pi-config-entry-form")
+        |> render_change(%{"pi_config_entry" => %{"name" => "test-name", "kind" => "provider", "spec" => spec_json}})
+
+      # Verify name is still there after spec change
+      assert html =~ "value=\"test-name\""
+    end
+
+    test "end-to-end: create entry with validate round-trip", %{conn: conn} do
+      # This test verifies the fix for the bug where the name field was
+      # wiped on validate round-trips when typing in the spec textarea
+      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+
+      # Simulate typing "verify-delete-me" in the name field
+      html =
+        view
+        |> form("#pi-config-entry-form")
+        |> render_change(%{"pi_config_entry" => %{"name" => "verify-delete-me"}})
+      assert html =~ "value=\"verify-delete-me\""
+
+      # Simulate typing in the spec textarea - browser sends ALL form fields
+      # including the name field we just typed
+      spec_json = ~s|{"baseUrl": "http://localhost:11434"}|
+      html =
+        view
+        |> form("#pi-config-entry-form")
+        |> render_change(%{"pi_config_entry" => %{"name" => "verify-delete-me", "spec" => spec_json, "kind" => "provider"}})
+
+      # Verify name is preserved after validate round-trip
+      assert html =~ "value=\"verify-delete-me\""
+
+      # Now submit the form
+      html =
+        view
+        |> form("#pi-config-entry-form")
+        |> render_submit()
+
+      # Verify entry was created
+      entry = PiConfig.get_entry_by_kind_and_name("provider", "verify-delete-me")
+      assert entry
+      assert entry.spec["baseUrl"] == "http://localhost:11434"
+    end
+  end
 end

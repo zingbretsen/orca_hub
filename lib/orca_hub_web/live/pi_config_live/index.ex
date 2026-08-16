@@ -75,9 +75,14 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
     spec_text = Map.get(params, "spec", socket.assigns.spec_text || "")
     # Get kind from params (it may have been changed by the user)
     kind = Map.get(params, "kind", socket.assigns.current_kind)
+    # Get name from params, falling back to assign to preserve user input on spec change
+    name = Map.get(params, "name", socket.assigns.entry_form.params["name"] || "")
 
     # Normalize params for changeset (parse spec_text for provider/setting)
     params = normalize_spec_for_kind_with_text(params, spec_text, kind)
+    # Ensure name is included in params to prevent it from being lost on validate
+    params = Map.put_new(params, "name", name)
+
     changeset = PiConfig.change_entry(entry, params)
 
     # Extract any spec error for display
@@ -100,9 +105,13 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
     spec_text = Map.get(params, "spec", socket.assigns.spec_text || "")
     # Get kind from params (it may have been changed by the user)
     kind = Map.get(params, "kind", socket.assigns.current_kind)
+    # Get name from params, falling back to assign to preserve user input on spec change
+    name = Map.get(params, "name", socket.assigns.entry_form.params["name"] || "")
 
     # Normalize params for save (parse spec_text for provider/setting)
     params = normalize_spec_for_kind_with_text(params, spec_text, kind)
+    # Ensure name is included in params to prevent it from being lost
+    params = Map.put_new(params, "name", name)
 
     result =
       case socket.assigns.editing_entry do
