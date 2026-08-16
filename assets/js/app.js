@@ -1471,19 +1471,22 @@ window.addEventListener("phx:page-loading-start", (_info) => topbar.show(300));
 window.addEventListener("phx:page-loading-stop", (_info) => topbar.hide());
 
 // Reconnect on tab visibility (mobile app switch / screen on) or bfcache restore
-// The built-in Phoenix Socket `visibilitychange` handler has a bug: it only
-// reconnects when `!closeWasClean`, but `disconnect()` always sets `closeWasClean = true`.
-// This custom handler uses the real socket state and LiveView API.
-// See deps/phoenix/assets/js/phoenix/socket.js lines 150-173 and
-// deps/phoenix_live_view/assets/js/phoenix_live_view/live_socket.js lines 61-70.
-
-// visibilitychange: When the tab becomes visible again, check if the socket is
-// truly connected. Mobile browsers often suspend/freezes tabs, killing the
-// WebSocket without emitting a `close` event. On resume, the socket may believe
-// it's still open when it's actually dead. Force a reconnect if needed.
-// Guarded to be a no-op when already healthily connected.
 //
-// Also track page visibility state for the reconnect watchdog below.
+// The built-in Phoenix Socket pagehide handler (socket.js:146-151) calls
+// disconnect() on tab background, which sets closeWasClean = true (socket.js:263)
+// and records awaitingConnectionOnPageShow = connectClock.
+//
+// If pageshow does NOT fire on resume (e.g. tab killed by OS), the socket is left
+// cleanly disconnected (closeWasClean = true), so the built-in visibilitychange
+// handler's !closeWasClean guard skips reconnect (socket.js:167-173).
+//
+// Mobile tabs often get suspended/killed without pageshow firing. We add explicit
+// visibilitychange and pageshow handlers to force reconnect on tab foreground.
+// See deps/phoenix/assets/js/phoenix/socket.js lines 146-173.
+
+// Track page visibility state for the reconnect watchdog below.
+let isPageHidden = document.visibilityState === "hidden";
+
 document.addEventListener("visibilitychange", () => {
   isPageHidden = document.visibilityState === "hidden";
   if (document.visibilityState === "visible" && !liveSocket.isConnected()) {
@@ -1511,9 +1514,6 @@ window.addEventListener("pageshow", (event) => {
     liveSocket.disconnect(() => liveSocket.connect());
   }
 });
-
-// Track page visibility state (initialized after visibilitychange fires first time)
-let isPageHidden = false;
 
 // Close focus-based daisyUI dropdowns after a server patch. A `.dropdown`
 // without `dropdown-open` stays open purely because something inside it holds
@@ -1545,35 +1545,60 @@ liveSocket.connect();
 // >> liveSocket.disableLatencySim()
 window.liveSocket = liveSocket;
 
-// Reconnect watchdog: detect when reconnect attempts have been failing for too long
-// and trigger a full page reload as a last-resort self-heal. This handles cases where
-// the socket reconnect loop keeps trying but hits a permanent barrier (e.g. auth
-// session expiry behind forward-auth, network changes requiring new DHCP, etc).
+// Reconnect watchdog (secondary insurance):
+// The visibilitychange + pageshow handlers should recover in the common case.
+// This watchdog catches edge cases where those fire but reconnect fails (e.g.
+// temporary network blip on resume, or race where tab becomes visible before
+// the socket fully reconnects). If reconnect has been failing for >60 seconds,
+// trigger a self-heal reload.
 //
-// The Phoenix socket's reconnectTimer uses exponential backoff (10ms, 50ms, 100ms...)
-// and will keep trying indefinitely. Without a circuit breaker, the user is stuck
-// at the "Attempting to reconnect" banner until they manually refresh.
+// Bounded to avoid reload-loop: max 2 self-heal reloads per page path, tracked
+// in sessionStorage. Reset on successful reconnect (onOpen).
 //
-// We track the last successful reconnect and if it's been > 60 seconds, we reload.
-// This is long enough to cover the reconnect timer's full backoff cycle, but short
-// enough that the user doesn't wait forever for a recovery that won't happen.
+// Note: This is strictly secondary. The primary recovery path is the
+// visibilitychange handler above, which fires IMMEDIATELY on tab foreground.
+// The watchdog's 60s timeout is a fallback, not the primary recovery mechanism.
+const RELOAD_COUNTER_KEY = "phx:reconnect_failures:" + window.location.pathname;
+let reloadCount = 0;
+try {
+  const stored = sessionStorage.getItem(RELOAD_COUNTER_KEY);
+  if (stored) reloadCount = parseInt(stored, 10) || 0;
+} catch (_e) {
+  // sessionStorage may be unavailable in some contexts (e.g. private browsing)
+}
+
 let lastReconnectAt = Date.now();
 liveSocket.getSocket().onOpen(() => {
   lastReconnectAt = Date.now();
+  // Reset reload counter on successful reconnect
+  try {
+    sessionStorage.removeItem(RELOAD_COUNTER_KEY);
+  } catch (_e) {}
 });
 
 // Check every 10 seconds if we've been disconnected too long
 setInterval(() => {
-  if (
-    !isPageHidden &&
-    !liveSocket.isConnected() &&
-    Date.now() - lastReconnectAt > 60 * 1000
-  ) {
-    // Log for debugging, then reload
-    console.warn(
-      "LiveView reconnect has been failing for >60s. Reloading to recover.",
-    );
-    window.location.reload();
+  if (!isPageHidden && !liveSocket.isConnected()) {
+    if (Date.now() - lastReconnectAt > 60 * 1000) {
+      reloadCount += 1;
+      if (reloadCount <= 2) {
+        try {
+          sessionStorage.setItem(RELOAD_COUNTER_KEY, reloadCount.toString());
+        } catch (_e) {}
+        console.warn(
+          "LiveView reconnect has been failing for >60s. Self-heal reload #" +
+            reloadCount +
+            ".",
+        );
+        window.location.reload();
+      } else {
+        console.warn(
+          "LiveView reconnect has been failing for >60s. Max self-heal reloads (" +
+            reloadCount +
+            ") reached. Leaving user on existing reconnect banner.",
+        );
+      }
+    }
   }
 }, 10 * 1000);
 
