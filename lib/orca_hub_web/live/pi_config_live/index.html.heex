@@ -1,7 +1,7 @@
 <.header>
   Pi Config
   <:actions>
-    <.link patch={~p"/pi-config/new"}>
+    <.link patch={~p"/settings/pi-config/new"}>
       <.button>New Entry</.button>
     </.link>
   </:actions>
@@ -112,7 +112,7 @@
     <.input field={@entry_form[:enabled]} type="checkbox" label="Enabled" />
 
     <div class="flex justify-end gap-2">
-      <.link patch={~p"/pi-config"} class="btn btn-sm">Cancel</.link>
+      <.link patch={~p"/settings/pi-config"} class="btn btn-sm">Cancel</.link>
       <.button type="submit" class="btn-sm">
         {if @editing_entry, do: "Update", else: "Create"}
       </.button>
@@ -179,7 +179,11 @@
               class="size-4"
             />
           </button>
-          <.link patch={~p"/pi-config/#{entry.id}/edit"} class="btn btn-xs btn-ghost" title="Edit">
+          <.link
+            patch={~p"/settings/pi-config/#{entry.id}/edit"}
+            class="btn btn-xs btn-ghost"
+            title="Edit"
+          >
             <.icon name="hero-pencil-micro" class="size-4" />
           </.link>
           <button

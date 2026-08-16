@@ -63,7 +63,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
           spec: %{"body" => "{\"name\": \"test\"}"}
         })
 
-      {:ok, _view, html} = live(conn, ~p"/pi-config")
+      {:ok, _view, html} = live(conn, ~p"/settings/pi-config")
 
       assert html =~ "Pi Config"
       assert html =~ "ollama"
@@ -96,7 +96,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
           enabled: false
         })
 
-      {:ok, _view, html} = live(conn, ~p"/pi-config")
+      {:ok, _view, html} = live(conn, ~p"/settings/pi-config")
 
       assert html =~ "enabled"
       assert html =~ "disabled"
@@ -105,7 +105,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
 
   describe "create entry" do
     test "creates a provider entry via form", %{conn: conn} do
-      {:ok, view, html} = live(conn, ~p"/pi-config/new")
+      {:ok, view, html} = live(conn, ~p"/settings/pi-config/new")
 
       # Verify form renders with correct param namespace
       assert html =~ ~s{name="pi_config_entry[name]"}
@@ -131,7 +131,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
     end
 
     test "shows error for invalid JSON spec", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config/new")
 
       # Submit form with invalid JSON spec
       html =
@@ -154,7 +154,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
     end
 
     test "shows error for missing name", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config/new")
 
       # Submit form with empty name
       html =
@@ -175,7 +175,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
     end
 
     test "creates extension entry via form", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config/new")
 
       # Submit form for extension type
       html =
@@ -198,7 +198,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
     end
 
     test "creates setting entry via form", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config/new")
 
       # Submit form for setting type
       html =
@@ -220,7 +220,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
     end
 
     test "creates enabled entry via form", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config/new")
 
       # Submit form with enabled checkbox checked
       html =
@@ -250,7 +250,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
           spec: %{"baseUrl" => "http://localhost:11434"}
         })
 
-      {:ok, view, html} = live(conn, ~p"/pi-config/#{entry.id}/edit")
+      {:ok, view, html} = live(conn, ~p"/settings/pi-config/#{entry.id}/edit")
 
       # Verify form renders with existing data
       assert html =~ "Edit Pi Config Entry"
@@ -283,7 +283,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
           enabled: false
         })
 
-      {:ok, view, html} = live(conn, ~p"/pi-config")
+      {:ok, view, html} = live(conn, ~p"/settings/pi-config")
 
       # Verify initial state
       assert html =~ "disabled"
@@ -309,7 +309,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
           spec: %{"baseUrl" => "http://localhost:11434"}
         })
 
-      {:ok, view, html} = live(conn, ~p"/pi-config")
+      {:ok, view, html} = live(conn, ~p"/settings/pi-config")
 
       # Verify entry exists
       assert html =~ "delete-provider"
@@ -345,7 +345,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
 
   describe "live refresh" do
     test "subscribes to pi_config topic", %{conn: conn} do
-      {:ok, _view, html} = live(conn, ~p"/pi-config")
+      {:ok, _view, html} = live(conn, ~p"/settings/pi-config")
 
       # Verify subscription by creating an entry and re-loading
       {:ok, _} =
@@ -355,7 +355,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
           spec: %{"baseUrl" => "http://localhost:11434"}
         })
 
-      {:ok, _view, html} = live(conn, ~p"/pi-config")
+      {:ok, _view, html} = live(conn, ~p"/settings/pi-config")
       assert html =~ "test-broadcast"
     end
   end
@@ -364,7 +364,7 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
     test "name is preserved when spec textarea changes", %{conn: conn} do
       # Reproduce the browser bug: set name, then change spec
       # and verify name input still renders with its value
-      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config/new")
 
       # Simulate browser's phx-change that sends the whole form
       # First, set the name
@@ -372,41 +372,50 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
         view
         |> form("#pi-config-entry-form")
         |> render_change(%{"pi_config_entry" => %{"name" => "verify-delete-me"}})
+
       assert html =~ "value=\"verify-delete-me\""
 
       # Now change spec textarea (browser sends ALL form fields including name)
       spec_json = ~s|{"name": "value"}|
+
       html =
         view
         |> form("#pi-config-entry-form")
-        |> render_change(%{"pi_config_entry" => %{"name" => "verify-delete-me", "spec" => spec_json}})
+        |> render_change(%{
+          "pi_config_entry" => %{"name" => "verify-delete-me", "spec" => spec_json}
+        })
 
       # CRITICAL: name input must still render with its value after spec change
       assert html =~ "value=\"verify-delete-me\""
     end
 
     test "full form submission works with validate round-trip", %{conn: conn} do
-      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config/new")
 
       # Simulate browser sending full form on each keystroke
       html =
         view
         |> form("#pi-config-entry-form")
         |> render_change(%{"pi_config_entry" => %{"name" => "test-name"}})
+
       assert html =~ "value=\"test-name\""
 
       html =
         view
         |> form("#pi-config-entry-form")
         |> render_change(%{"pi_config_entry" => %{"name" => "test-name", "kind" => "provider"}})
+
       assert html =~ "value=\"test-name\""
 
       # Finally: set spec (with name still included)
       spec_json = ~s|{"baseUrl": "http://localhost:11434"}|
+
       html =
         view
         |> form("#pi-config-entry-form")
-        |> render_change(%{"pi_config_entry" => %{"name" => "test-name", "kind" => "provider", "spec" => spec_json}})
+        |> render_change(%{
+          "pi_config_entry" => %{"name" => "test-name", "kind" => "provider", "spec" => spec_json}
+        })
 
       # Verify name is still there after spec change
       assert html =~ "value=\"test-name\""
@@ -415,22 +424,30 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
     test "end-to-end: create entry with validate round-trip", %{conn: conn} do
       # This test verifies the fix for the bug where the name field was
       # wiped on validate round-trips when typing in the spec textarea
-      {:ok, view, _html} = live(conn, ~p"/pi-config/new")
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config/new")
 
       # Simulate typing "verify-delete-me" in the name field
       html =
         view
         |> form("#pi-config-entry-form")
         |> render_change(%{"pi_config_entry" => %{"name" => "verify-delete-me"}})
+
       assert html =~ "value=\"verify-delete-me\""
 
       # Simulate typing in the spec textarea - browser sends ALL form fields
       # including the name field we just typed
       spec_json = ~s|{"baseUrl": "http://localhost:11434"}|
+
       html =
         view
         |> form("#pi-config-entry-form")
-        |> render_change(%{"pi_config_entry" => %{"name" => "verify-delete-me", "spec" => spec_json, "kind" => "provider"}})
+        |> render_change(%{
+          "pi_config_entry" => %{
+            "name" => "verify-delete-me",
+            "spec" => spec_json,
+            "kind" => "provider"
+          }
+        })
 
       # Verify name is preserved after validate round-trip
       assert html =~ "value=\"verify-delete-me\""

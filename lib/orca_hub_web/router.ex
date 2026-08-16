@@ -46,10 +46,6 @@ defmodule OrcaHubWeb.Router do
       live "/skills/new", SkillLive.Index, :new
       live "/skills/:id/edit", SkillLive.Index, :edit
 
-      live "/pi-config", PiConfigLive.Index, :index
-      live "/pi-config/new", PiConfigLive.Index, :new
-      live "/pi-config/:id/edit", PiConfigLive.Index, :edit
-
       live "/issues", IssueLive.Index, :index
       live "/issues/:id", IssueLive.Show, :show
 
@@ -75,6 +71,10 @@ defmodule OrcaHubWeb.Router do
       live "/settings/upstream/:id/edit", SettingsLive.Index, :edit
       live "/settings/email-inboxes/new", SettingsLive.Index, :new_inbox
       live "/settings/email-inboxes/:id/edit", SettingsLive.Index, :edit_inbox
+
+      live "/settings/pi-config", PiConfigLive.Index, :index
+      live "/settings/pi-config/new", PiConfigLive.Index, :new
+      live "/settings/pi-config/:id/edit", PiConfigLive.Index, :edit
     end
   end
 

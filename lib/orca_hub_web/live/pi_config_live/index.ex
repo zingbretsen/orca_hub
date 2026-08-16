@@ -131,7 +131,7 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
            spec_error: nil
          )
          |> put_flash(:info, "Pi config entry saved")
-         |> push_patch(to: ~p"/pi-config")}
+         |> push_patch(to: ~p"/settings/pi-config")}
 
       {:error, changeset} ->
         # Extract spec error for display
@@ -157,7 +157,8 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
     {:noreply,
      socket
      |> assign(entries: HubRPC.list_pi_config_entries())
-     |> put_flash(:info, "Pi config entry deleted")}
+     |> put_flash(:info, "Pi config entry deleted")
+     |> push_patch(to: ~p"/settings/pi-config")}
   end
 
   def handle_event("toggle", %{"id" => id}, socket) do
@@ -171,7 +172,7 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
     {:noreply,
      socket
      |> assign(show_form: false, editing_entry: nil, spec_text: "", spec_error: nil)
-     |> push_patch(to: ~p"/pi-config")}
+     |> push_patch(to: ~p"/settings/pi-config")}
   end
 
   def handle_event("kind_select", %{"kind" => kind}, socket) do

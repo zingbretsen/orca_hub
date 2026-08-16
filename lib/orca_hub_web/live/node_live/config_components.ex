@@ -98,7 +98,7 @@ defmodule OrcaHubWeb.NodeLive.ConfigComponents do
       <p :if={managed?(@entry, @managed_pi_config)} class="text-xs text-info mt-1">
         :if @entry.backend == :pi
         Hub-managed — synced from the global
-        <.link navigate={~p"/pi-config"} class="link">Pi Config</.link>
+        <.link navigate={~p"/settings/pi-config"} class="link">Pi Config</.link>
         page; edit it there instead, direct changes here would be overwritten on next sync.
         :else
         Hub-managed — synced from the global <.link navigate={~p"/skills"} class="link">Skills</.link>
