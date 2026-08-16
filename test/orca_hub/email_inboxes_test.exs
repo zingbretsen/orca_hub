@@ -15,6 +15,15 @@ defmodule OrcaHub.EmailInboxesTest do
     )
   end
 
+  setup do
+    # Clean up all email inboxes to avoid flaky tests from pre-existing data
+    for inbox <- EmailInboxes.list_email_inboxes() do
+      EmailInboxes.delete_email_inbox(inbox)
+    end
+
+    :ok
+  end
+
   describe "create_email_inbox/1" do
     test "applies the schema defaults" do
       assert {:ok, inbox} = EmailInboxes.create_email_inbox(valid_attrs())

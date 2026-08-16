@@ -14,6 +14,15 @@ defmodule OrcaHub.SkillsTest do
     :ok
   end
 
+  setup do
+    # Clean up all skills to avoid flaky tests from pre-existing data
+    for entry <- Skills.list_skills() do
+      Skills.delete_skill(entry)
+    end
+
+    :ok
+  end
+
   describe "create_skill/1" do
     test "creates a skill with defaults" do
       assert {:ok, %Skill{} = skill} =

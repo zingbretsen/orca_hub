@@ -15,6 +15,15 @@ defmodule OrcaHub.PiConfigTest do
     :ok
   end
 
+  setup do
+    # Clean up all pi config entries to avoid flaky tests from pre-existing data
+    for entry <- PiConfig.list_entries() do
+      PiConfig.delete_entry(entry)
+    end
+
+    :ok
+  end
+
   defp provider_attrs(overrides \\ %{}) do
     Map.merge(
       %{

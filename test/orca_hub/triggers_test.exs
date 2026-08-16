@@ -4,6 +4,11 @@ defmodule OrcaHub.TriggersTest do
   alias OrcaHub.{EmailInboxes, Projects, Triggers, Triggers.Trigger}
 
   setup do
+    # Clean up all triggers to avoid flaky tests from pre-existing data
+    for trigger <- Triggers.list_triggers() do
+      Triggers.delete_trigger(trigger)
+    end
+
     {:ok, project} = Projects.create_project(%{name: "Test Project", directory: "/tmp/test"})
     %{project: project}
   end
