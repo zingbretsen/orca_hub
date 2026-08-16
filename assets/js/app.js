@@ -1568,8 +1568,10 @@ try {
 }
 
 let lastReconnectAt = Date.now();
+let capWarned = false; // Track if we've warned about hitting the max reload cap
 liveSocket.getSocket().onOpen(() => {
   lastReconnectAt = Date.now();
+  capWarned = false; // Reset cap warning flag on reconnect
   // Reset reload counter on successful reconnect
   try {
     sessionStorage.removeItem(RELOAD_COUNTER_KEY);
@@ -1591,7 +1593,8 @@ setInterval(() => {
             ".",
         );
         window.location.reload();
-      } else {
+      } else if (!capWarned) {
+        capWarned = true;
         console.warn(
           "LiveView reconnect has been failing for >60s. Max self-heal reloads (" +
             reloadCount +
