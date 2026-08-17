@@ -254,6 +254,7 @@
             <button
               phx-click="set_model"
               phx-value-model=""
+              data-close-dropdown-parent
               class={[@session.model == nil && "active"]}
             >
               Default
@@ -265,6 +266,7 @@
             <button
               phx-click="set_model"
               phx-value-model={model_id}
+              data-close-dropdown-parent
               class={[@session.model == model_id && "active"]}
             >
               {label}

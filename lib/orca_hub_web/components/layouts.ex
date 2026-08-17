@@ -81,11 +81,6 @@ defmodule OrcaHubWeb.Layouts do
       </nav>
 
       <div class="hidden md:flex items-center gap-2 ml-auto">
-        <.node_filter_dropdown
-          :if={assigns[:node_filter_visible]}
-          nodes={assigns[:node_filter_nodes] || []}
-          filter={assigns[:node_filter] || :all}
-        />
         <.theme_toggle />
       </div>
 
@@ -113,20 +108,18 @@ defmodule OrcaHubWeb.Layouts do
           <li :for={link <- @settings_menu_links}>
             <a href={link.href}>{link.label}</a>
           </li>
-          <li :if={assigns[:node_filter_visible]} class="menu-title text-xs uppercase opacity-60 mt-2">
-            Nodes
-          </li>
-          <li :if={assigns[:node_filter_visible]}>
-            <.node_filter_items
-              nodes={assigns[:node_filter_nodes] || []}
-              filter={assigns[:node_filter] || :all}
-            />
-          </li>
+
           <li class="menu-title text-xs uppercase opacity-60 mt-2">Theme</li>
           <li><.theme_toggle /></li>
         </ul>
       </div>
     </header>
+
+    <.node_filter_chips
+      :if={assigns[:node_filter_visible]}
+      nodes={assigns[:node_filter_nodes] || []}
+      filter={assigns[:node_filter] || :all}
+    />
 
     <main class="px-4 py-6 sm:px-6 sm:py-10 lg:px-8">
       <div class="mx-auto max-w-5xl space-y-4">
@@ -213,73 +206,22 @@ defmodule OrcaHubWeb.Layouts do
     """
   end
 
-  defp node_filter_dropdown(assigns) do
+  defp node_filter_chips(assigns) do
     ~H"""
-    <div id="node-filter" phx-hook="NodeFilter" class="dropdown dropdown-end">
-      <div
-        tabindex="0"
-        role="button"
-        class={"btn btn-sm gap-1 #{if @filter == :all, do: "btn-ghost", else: "btn-soft btn-primary"}"}
-      >
-        <.icon name="hero-server-stack-micro" class="size-4" />
-        <span class="text-xs">
-          <%= if @filter == :all do %>
-            All nodes
-          <% else %>
-            {MapSet.size(@filter)}/{length(@nodes)} nodes
-          <% end %>
-        </span>
-        <.icon name="hero-chevron-down-micro" class="size-3" />
-      </div>
-      <ul tabindex="0" class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-56">
-        <li>
-          <button phx-click="node_filter_select_all" class="flex items-center gap-2">
-            <span class={"size-4 flex items-center justify-center #{if @filter == :all, do: "text-primary", else: "opacity-0"}"}>
-              <.icon name="hero-check-micro" class="size-4" />
-            </span>
-            All nodes
-          </button>
-        </li>
-        <li class="menu-title text-xs uppercase opacity-60">Nodes</li>
-        <li :for={node <- @nodes}>
-          <button
-            phx-click="toggle_node_filter"
-            phx-value-node={node.name}
-            data-solo-node={node.name}
-            class="flex items-center gap-2"
-          >
-            <span class={"size-4 flex items-center justify-center #{if OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name), do: "text-primary", else: "opacity-0"}"}>
-              <.icon name="hero-check-micro" class="size-4" />
-            </span>
-            {node.name}
-          </button>
-        </li>
-      </ul>
-    </div>
-    """
-  end
-
-  defp node_filter_items(assigns) do
-    ~H"""
-    <div id="node-filter-mobile" phx-hook="NodeFilter" class="flex flex-col gap-1">
+    <div id="node-filter" phx-hook="NodeFilter" class="flex flex-wrap gap-1 px-2 py-1">
       <button
         phx-click="node_filter_select_all"
-        class={"btn btn-xs gap-1 #{if @filter == :all, do: "btn-active", else: "btn-ghost"}"}
+        class="btn btn-xs btn-ghost"
       >
-        <.icon :if={@filter == :all} name="hero-check-micro" class="size-3" /> All nodes
+        All nodes
       </button>
       <button
         :for={node <- @nodes}
         phx-click="toggle_node_filter"
         phx-value-node={node.name}
         data-solo-node={node.name}
-        class={"btn btn-xs gap-1 #{if OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name), do: "btn-active", else: "btn-ghost"}"}
+        class={"btn btn-xs #{if OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name), do: "btn-active btn-primary", else: "btn-ghost"}"}
       >
-        <.icon
-          :if={OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name)}
-          name="hero-check-micro"
-          class="size-3"
-        />
         {node.name}
       </button>
     </div>

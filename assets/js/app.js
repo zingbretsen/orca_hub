@@ -1371,19 +1371,23 @@ topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})
 window.addEventListener("phx:page-loading-start", _info => topbar.show(300))
 window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 
-// Close focus-based daisyUI dropdowns after a server patch. A `.dropdown`
-// without `dropdown-open` stays open purely because something inside it holds
-// focus, and clicking a menu button (e.g. the header backend/model picker's
-// phx-click="set_model") leaves focus in the `.dropdown-content` — a LiveView
-// patch doesn't drop it, so the menu lingers open after selection. Every
-// dropdown in the app is an action menu, so blurring globally is correct.
-// Text inputs are excluded so a dropdown-hosted form (the "Custom model"
-// field) can't lose focus mid-typing on an unrelated patch.
+// Targeted dropdown close: clicking a button with data-close-dropdown-parent
+// flags its parent dropdown to close after the next LiveView patch.
+// This works reliably on mobile where taps don't always move focus into the button.
+window.addEventListener("click", (e) => {
+  const button = e.target.closest("[data-close-dropdown-parent]")
+  if (button) {
+    const dropdown = button.closest(".dropdown")
+    if (dropdown) window.__closeDropdown = dropdown
+  }
+})
+
+// On LiveView patch, close any flagged dropdown by blurring its trigger element.
 window.addEventListener("phx:update", () => {
-  const el = document.activeElement
-  if (el && el.closest && el.closest(".dropdown-content") &&
-      !(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) {
-    el.blur()
+  if (window.__closeDropdown) {
+    const trigger = window.__closeDropdown.querySelector("div[tabindex=\"0\"], button[tabindex=\"0\"]")
+    if (trigger) trigger.blur()
+    delete window.__closeDropdown
   }
 })
 
