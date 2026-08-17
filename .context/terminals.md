@@ -108,7 +108,7 @@ stateDiagram-v2
 
     note right of running
         TerminalRunner GenServer active.
-        Port open to `script -qc /bin/bash /dev/null`.
+        Port open to `script -qc <shell> /dev/null`.
         Output streamed via PubSub.
         Scrollback buffer maintained (64KB).
     end note
@@ -116,17 +116,23 @@ stateDiagram-v2
 
 ## PTY Implementation
 
-The PTY is managed via `script -qc /bin/bash /dev/null` spawned as an
-Erlang Port — the same pattern used by `SessionRunner` for Claude CLI.
+The PTY is managed via `script -qc <shell> /dev/null` spawned as an
+Erlang Port — the same pattern used by `SessionRunner` for the agent CLIs.
 `script` allocates a PTY so the shell behaves as an interactive terminal
 (colored output, line editing, etc.). The typescript file is `/dev/null`
 so only PTY output flows through the port.
+
+The shell comes from `terminal.shell` (default `/bin/bash`), and the arg
+order is OS-dependent: `["-qc", shell, "/dev/null"]` on Linux versus
+`["-q", "/dev/null", shell]` on macOS. `TERM`/`COLUMNS`/`LINES` are seeded
+into the port env, which is itself subject to the owning node's env
+scrubbing policy (`OrcaHub.NodePolicy`) exactly like a session's.
 
 ## Multi-Client Pairing
 
 Multiple browser tabs can join the same `terminal:<id>` Channel topic.
 Each receives the same output stream. Input from any client goes to the
-same PTY. This enables user-agent pairing: a human and a Claude session
+same PTY. This enables user-agent pairing: a human and an agent session
 can both view and type in the same terminal.
 
 ## Cluster Integration

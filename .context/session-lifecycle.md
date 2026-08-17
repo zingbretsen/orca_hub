@@ -49,14 +49,26 @@ stateDiagram-v2
 
 ## Notes
 
-- **`waiting`**: set when a turn completes with an unanswered
-  `AskUserQuestion` pending — the GenStatem stays in `idle` (clean exit) or
-  `running` (still-hung turn), but the persisted/broadcast `status` shows
-  `"waiting"` until a queued answer resumes it.
+- **`waiting`**: set when a turn completes with an unanswered interactive
+  question pending — Claude's built-in `AskUserQuestion`, or pi's `question`
+  tool, both gated by the same `ask_user_question` capability. The GenStatem
+  stays in `idle` (clean exit) or `running` (still-hung turn), but the
+  persisted/broadcast `status` shows `"waiting"` until a queued answer
+  resumes it.
 - **`downgrade`**: the runtime kill switch (`Streaming.disable!/1`) forcing a
   warm streaming session back to the one-shot engine — `:graceful` finishes
   the in-flight turn first, `:interrupt` cuts it short immediately.
-- **`evict_warm`**: `Streaming.WarmPool` reclaiming a warm port under
-  per-node capacity pressure (`ORCA_MAX_WARM_SESSIONS`, default 6) by
-  tearing down the least-recently-used idle/error session; a `running`
-  session always refuses eviction.
+- **`evict_warm`**: reclaiming a warm port without ending the session. Two
+  callers: `Streaming.WarmPool` under per-node capacity pressure
+  (`ORCA_MAX_WARM_SESSIONS`, default 6), which tears down the LRU idle/error
+  session; and `PiConfigSync`, which evicts idle *pi* ports after writing new
+  pi config so the next turn re-reads it (WarmPool rows carry the session's
+  backend precisely so this can be filtered). A `running` session always
+  refuses eviction in both cases.
+- **A forked pi child never enters `running` on its own schedule.** Its first
+  prompt is held by `OrcaHub.ForkGate` until the previous sibling's first
+  turn has fully completed; the session row and UI exist from the moment of
+  the spawn, sitting in `ready` until the gate releases it. See
+  `.context/message-flow.md`.
+- Entering `idle` also nudges `OrcaHub.MemoryGit.Server` to snapshot this
+  node's on-disk agent memory — a side effect of the transition, not a state.

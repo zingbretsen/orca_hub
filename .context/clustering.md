@@ -144,20 +144,27 @@ sequenceDiagram
 | **SessionResumer** | Yes | Yes | Resumes sessions orphaned in `status: "running"` on boot |
 | **SessionHeartbeat** | Yes | No | Hub-only scheduled heartbeat messages into sessions |
 | **Streaming.WarmPool** | Yes | Yes | Per-node warm-port admission control (streaming engine) |
+| **ForkGate** | Yes | Yes | Serializes forked pi children's first turns; a fork child runs on its parent's node |
 | **TerminalSupervisor** | Yes | Yes | Both nodes run terminal PTYs |
 | **TerminalRegistry** | Yes | Yes | Local registry per node |
+| **JobSupervisor** + **JobRegistry** | Yes | Yes | Watchers for detached jobs; jobs run on whichever node launched them |
+| **JobResumer** | Yes | Yes | Re-attaches watchers to this node's non-terminal jobs on boot |
 | **SessionViewersRegistry** | Yes | Yes | Tracks live viewers per session, local (`:duplicate` keys) |
 | **LoginSupervisor** | Yes | Yes | Both nodes can drive backend login flows |
 | **BackendInstallerSupervisor** + Registry | Yes | Yes | Both nodes install/upgrade backend CLIs locally |
 | **Backend.Cache** | Yes | Yes | Local cache of backend capability/model lookups |
 | **MCPSupervisor** | Yes | Yes | Per-session MCP servers |
 | **MCP.CodeExec.Generator** / **BindingStore** | Yes | Yes | Code-exec tool surface generated + bound locally |
+| **SkillSync** / **PiConfigSync** | Yes | Yes | Hub DB is source of truth; every node materializes its own on-disk copy |
+| **MemoryGit.Server** | Yes | Yes | Per-node agent-memory git snapshot/push passes |
 | **MCP.UpstreamClient** | Yes | No | Upstream MCP connections hub-only |
 | **Quantum Scheduler** | Yes | No | Cron triggers fire on hub only |
 | **TriggerLoader** | Yes | No | Syncs triggers into scheduler on boot |
+| **EmailInboxSupervisor** + Registry + **EmailInboxLoader** | Yes | No | IMAP polling is hub-only: credentials + UID watermark are hub state |
 | **ClusterNodeTracker** | Yes | No | Tracks node connect/disconnect into the `nodes` table |
+| **NodeDialer** | Yes | No | Dials `nodes` rows flagged `dial: true`; agents never dial out |
 | **PubSub** | Yes | Yes | Auto-distributes via `:pg` |
-| **Task.Supervisor** | Yes | Yes | Async work (title gen, archival) |
+| **Task.Supervisor** | Yes | Yes | Async work (archival, background fan-out) |
 | **libcluster** | Yes | Yes | Both participate in discovery |
 | **AgentPresence** | Cleanup on boot | Write only | Hub cleans stale `.agents/` files |
 | **Discord.Bot** | env-gated | env-gated | Gated by `DISCORD_BOT`/token, not by hub/agent mode |
@@ -175,7 +182,22 @@ All entities are routed to their owning node through two fields:
 - **Sessions/Terminals**: `runner_node` field (string) on the record itself. Resolved by `Cluster.runner_node_for/1`.
 - **Projects/Issues/Triggers**: `node` field on the associated project. Resolved by `Cluster.project_node_for/1`. Triggers inherit routing from their project (`trigger → project → project.node`).
 
-If the stored node is not in the current cluster, routing falls back to the local node.
+**An assigned node is never silently swapped for a reachable one.**
+`runner_node_for/1` returns the node a session was assigned to even when that
+node is currently unreachable — it never re-assigns a session elsewhere just
+because its own node is offline (which would run the work against the wrong
+filesystem). A caller about to act must check `Cluster.node_available?/1`, or
+go through `Cluster.rpc/5`, which already refuses an unavailable node
+(`{:error, :node_unassigned}` for an unset one) and surfaces that as a
+"node unavailable" state rather than a silent relocation.
+
+The local-node fallback applies only where "not started anywhere yet" is a
+legitimate state: a nil/empty `runner_node` on a NON-session entity (e.g. a
+terminal) resolves to the local node, and `project_node_for/1` falls back to
+local when a project has no `node` set (the single-node/dev default). A
+session with a nil/empty `runner_node` is treated as *unassigned* (`nil`)
+instead — every session-creation path stamps the field, so a blank one is
+long-archived legacy data, not a live session to adopt.
 
 ### What Agents Cannot Do
 
@@ -183,8 +205,10 @@ Agent nodes are intentionally limited:
 
 - **No direct DB access** — all reads/writes go through HubRPC to the hub
 - **No trigger scheduling** — cron jobs only fire on the hub (but execution routes to the correct agent)
+- **No mailbox polling** — the `EmailInbox*` children are hub-only, so inbound email is ingested on the hub and the resulting trigger execution routes out to the owning agent
 - **No upstream MCP connections** — `MCP.UpstreamClient` is hub-only
-- **No web UI** — the Endpoint runs but only serves the MCP HTTP endpoint for Claude CLI
+- **No dialing out** — `NodeDialer` is hub-only; an agent waits to be dialed
+- **No web UI** — the Endpoint runs but is gated to `/mcp`, `/healthz`, and `/api/version`
 - **No agent presence cleanup** — hub handles stale `.agents/` file cleanup on boot
 
 ## Per-Node Policy

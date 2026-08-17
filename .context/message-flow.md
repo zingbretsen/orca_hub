@@ -94,7 +94,7 @@ sequenceDiagram
     Runner->>Runner: resolve_engine(session) == :streaming
 
     alt Port cold (no warm process yet)
-        Runner->>WarmPool: request_slot(session_id)
+        Runner->>WarmPool: request_slot(session_id, pid, backend)
         WarmPool-->>Runner: admitted (evicts LRU idle/error victim if at cap)
         Runner->>Backend: spawn_spec(:streaming, ctx)
         Runner->>CLI: open_port(spawn_spec)
@@ -125,26 +125,56 @@ sequenceDiagram
     alt idle_teardown fires (or evict_warm from WarmPool)
         Runner->>CLI: Port.close
         Runner->>WarmPool: release(session_id)
-        Note over Runner: Session stays idle/error but goes cold;<br>next message re-opens with --resume / native resume id
+        Note over Runner: Session stays idle/error but goes cold —<br/>next message re-opens with --resume / native resume id
     end
 ```
 
 A turn arriving while the state machine is `:running` either steers the live
 turn in place (`encode_steer_turn/2`, currently only `pi`) or sends a
 `control_request` interrupt over the same port (not a process-level SIGINT —
-the port survives) and queues the new prompt. See `.context/session-lifecycle.md`
-for the `downgrade`/`evict_warm` state transitions this engine adds on top of
-the four core GenStatem states.
+the port survives) and queues the new prompt. Which of those a caller gets is
+selectable per send: `send_message_to_session` takes a delivery mode —
+`:queue` (the default, and what `TriggerExecutor` uses so an overlapping fire
+can't cancel in-flight work), `:interrupt`, or auto-steer. See
+`.context/session-lifecycle.md` for the `downgrade`/`evict_warm` state
+transitions this engine adds on top of the four core GenStatem states.
+
+## Fork Spawns (pi)
+
+A spawn carrying `fork_from_parent` (v1: pi only) does NOT send its first
+prompt down the normal path. The child row is created immediately — ids,
+links, and UI exist right away — and its first prompt is handed to
+`OrcaHub.ForkGate`, which owns delivery. One FIFO per PARENT session releases
+child N+1's first prompt only after child N's first `result` event lands;
+"prefill finished" is not sufficient, the granularity is a full turn. After
+its first turn a child has its own slot-resident state and is dropped from the
+gate entirely.
+
+This is a correctness mechanism, not an optimization: N concurrent
+same-prefix first turns get 1 warm cache hit and N−1 FULL cold prefills, so an
+ungated fork is strictly worse than a plain spawn — it pays full prefill for
+possibly-useless inherited tokens and craters co-tenants on a shared endpoint.
+`Session.forked_from_session_id` (distinct from `parent_session_id`, which
+every child spawn sets) is the unambiguous fork discriminant. See
+`pi_fork_spec.md` §3/§6/§6.1.
 
 ## MCP Tool Call Flow
 
 Every session runs its own `MCP.Server`. When `session.code_exec` is true
-(the default), `tools/list` collapses to a small meta-tool surface —
-`run_elixir`, `search_tools`, and a handful of first-party "passthrough"
-tools (`send_message_to_session`, `get_session_tail`, `report_progress`,
-the feature-request tools) — instead of the full flattened tool list. Other
-tools are only reachable as generated `Tools.<name>/1` Elixir functions
-called from inside a `run_elixir` snippet.
+(the default), `tools/list` collapses to exactly ONE tool — `run_elixir` —
+instead of the full flattened tool list. Every other tool is reachable only
+as a generated `Tools.<name>/1` Elixir function called from inside a
+`run_elixir` snippet, and discoverable there via `Tools.search/1`,
+`Tools.list/0`, and `Tools.schema/1`.
+
+The surface used to be wider: a `search_tools` meta-tool and a handful of
+promoted "passthrough" tools (`send_message_to_session`, `get_session_tail`,
+`report_progress`, the feature-request tools) sat alongside `run_elixir`.
+Both were removed once their jobs were fully covered from inside the
+sandbox — production traffic showed the extra tool definitions earning very
+little of the context they cost. Old sessions may still have persisted
+history mentioning them; that history keeps rendering, but a new connection
+will not be offered them.
 
 ```mermaid
 sequenceDiagram
@@ -163,7 +193,7 @@ sequenceDiagram
     MCPPlug->>Server: route request
 
     alt session.code_exec == true (default)
-        Server->>MetaTools: tools/list -> [run_elixir, search_tools, passthroughs]
+        Server->>MetaTools: tools/list -> [run_elixir]
         CLI->>MCPPlug: tools/call "run_elixir" (Elixir snippet)
         MCPPlug->>Server: route
         Server->>MetaTools: call("run_elixir", args)
