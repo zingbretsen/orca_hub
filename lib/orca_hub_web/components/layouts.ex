@@ -37,7 +37,6 @@ defmodule OrcaHubWeb.Layouts do
   defp settings_menu_links(assigns) do
     [
       %{href: ~p"/settings", label: "Settings"},
-      %{href: ~p"/settings/pi-config", label: "Pi Config"},
       %{href: ~p"/usage", label: "Usage", visible: usage_nav_visible?(assigns)}
     ]
     |> Enum.filter(&Map.get(&1, :visible, true))

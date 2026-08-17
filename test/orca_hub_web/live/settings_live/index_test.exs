@@ -222,4 +222,26 @@ defmodule OrcaHubWeb.SettingsLive.IndexTest do
       refute html =~ "Enter a password"
     end
   end
+
+  describe "Pi Config placement" do
+    # 45cc135 moved "Pi Config" out of the top-level nav into the Settings
+    # dropdown, but that dropdown is FLATTENED into the mobile hamburger list
+    # (see `settings_menu_links/1` in OrcaHubWeb.Layouts), so on a phone it was
+    # still just another nav entry. It's now out of the nav entirely and
+    # reachable only from the Settings page.
+    test "is absent from the nav on a page that doesn't otherwise mention it", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/projects")
+
+      refute html =~ "Pi Config"
+      refute html =~ "/settings/pi-config"
+    end
+
+    test "is still linked from the Settings page", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/settings")
+
+      assert html =~ "Pi Config"
+      assert html =~ "/settings/pi-config"
+      assert html =~ "Configure Pi"
+    end
+  end
 end
