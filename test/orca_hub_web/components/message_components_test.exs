@@ -754,5 +754,51 @@ defmodule OrcaHubWeb.MessageComponentsTest do
       thinking_summary_count = length(String.split(html, "Thinking")) - 1
       assert thinking_summary_count == 1, "Expected 1 'Thinking' summary label for pure thinking message"
     end
+
+    test "mixed thinking+text+tool_use messages render all content exactly once" do
+      # This is pi's common case: one assistant message with thinking + text + tool_use
+      # blocks all together in a single content array
+      mixed_msg = %{
+        "type" => "assistant",
+        "id" => "mixed-1",
+        "message" => %{
+          "content" => [
+            %{"type" => "thinking", "thinking" => "Thinking about tool use"},
+            %{"type" => "text", "text" => "Here is the result"},
+            %{"type" => "tool_use", "id" => "t1", "name" => "Bash", "input" => %{"command" => "echo hi"}}
+          ]
+        }
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{messages: [mixed_msg], session_node: nil})
+
+      # The message has a feed item (for the text/tool_use card)
+      assert String.contains?(html, ~s(id="feed-mixed-1"))
+
+      # The thinking content renders (as part of a thinking group)
+      assert html =~ "Thinking about tool use"
+
+      # The text content renders (as part of the assistant message card)
+      assert html =~ "Here is the result"
+
+      # The tool_use content renders (as part of the assistant message card)
+      assert html =~ "Bash"
+      assert html =~ "echo hi"
+
+      # Key regression test: with the fix, mixed messages render their full content
+      # (thinking in group, text/tool_use in card) WITHOUT duplication. Each block
+      # type renders exactly once.
+
+      # Count thinking group summaries (the 'Thinking' label in the summary element)
+      # - should be exactly 1 for this single mixed message
+      thinking_group_count = length(String.split(html, "id=\"thinking-group-mixed-1\"")) - 1
+      assert thinking_group_count == 1, "Expected 1 thinking group for mixed message, got #{thinking_group_count}\nHTML: #{html}"
+
+      # Verify the thinking group renders the thinking content
+      assert html =~ "thinking-group-mixed-1"
+      assert html =~ "</summary>"
+      assert html =~ "Thinking about tool use"
+    end
   end
 end
