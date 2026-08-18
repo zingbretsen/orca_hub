@@ -350,7 +350,7 @@
       <button
         :if={@todos != []}
         phx-click="toggle_todos"
-        class={["btn btn-ghost btn-sm btn-circle indicator", @show_todos && "text-primary"]}
+        class={["hidden sm:flex btn btn-ghost btn-sm btn-circle indicator", @show_todos && "text-primary"]}
         title="Tasks"
       >
         <.icon name="hero-clipboard-document-check" class="size-5" />
@@ -361,7 +361,7 @@
       <button
         :if={@commits != []}
         phx-click="toggle_commits"
-        class={["btn btn-ghost btn-sm btn-circle indicator", @show_commits && "text-primary"]}
+        class={["hidden sm:flex btn btn-ghost btn-sm btn-circle indicator", @show_commits && "text-primary"]}
         title="Commits"
       >
         <.icon name="hero-code-bracket" class="size-5" />
@@ -370,7 +370,7 @@
       <button
         :if={@session_artifacts != []}
         phx-click="toggle_artifacts"
-        class={["btn btn-ghost btn-sm btn-circle indicator", @show_artifacts && "text-primary"]}
+        class={["hidden sm:flex btn btn-ghost btn-sm btn-circle indicator", @show_artifacts && "text-primary"]}
         title="Artifacts"
       >
         <.icon name="hero-sparkles" class="size-5" />
@@ -381,7 +381,7 @@
       <button
         phx-click="toggle_file_browser"
         class={[
-          "btn btn-ghost btn-sm btn-circle",
+          "hidden sm:flex btn btn-ghost btn-sm btn-circle",
           (@open_files != [] || @show_file_browser) && "text-primary"
         ]}
         title="Browse files"
@@ -390,7 +390,7 @@
       </button>
       <button
         phx-click="open_terminal"
-        class={["btn btn-ghost btn-sm btn-circle", @show_terminal && "text-primary"]}
+        class={["hidden sm:flex btn btn-ghost btn-sm btn-circle", @show_terminal && "text-primary"]}
         title="Open terminal"
       >
         <.icon name="hero-command-line" class="size-5" />
@@ -398,7 +398,7 @@
       <button
         :if={@session.claude_session_id}
         phx-click="resume_in_terminal"
-        class="btn btn-ghost btn-sm btn-circle"
+        class="hidden sm:flex btn btn-ghost btn-sm btn-circle"
         title="Resume Claude in terminal"
       >
         <.icon name="hero-play" class="size-5" />
@@ -406,7 +406,7 @@
       <button
         phx-click="toggle_heartbeat_modal"
         class={[
-          "btn btn-ghost btn-sm btn-circle indicator",
+          "hidden sm:flex btn btn-ghost btn-sm btn-circle indicator",
           @show_heartbeat_modal && "text-primary"
         ]}
         title="Heartbeat"
@@ -417,35 +417,16 @@
       <button
         :if={@capabilities.mcp}
         phx-click="toggle_mcp_modal"
-        class={["btn btn-ghost btn-sm btn-circle", @show_mcp_modal && "text-primary"]}
+        class={["hidden sm:flex btn btn-ghost btn-sm btn-circle", @show_mcp_modal && "text-primary"]}
         title="MCP servers"
       >
         <.icon name="hero-server-stack" class="size-5" />
       </button>
       <button
-        :if={@session.claude_session_id}
-        id="copy-terminal-cmd"
-        phx-hook="CopyToClipboard"
-        data-copy-text={"cd #{@session.directory} && claude --resume #{@session.claude_session_id}"}
-        class="btn btn-ghost btn-sm btn-circle"
-        title="Copy CLI resume command"
-      >
-        <.icon name="hero-clipboard" class="size-5" />
-      </button>
-      <button
-        id="copy-session-id"
-        phx-hook="CopyToClipboard"
-        data-copy-text={@session.id}
-        class="btn btn-ghost btn-sm btn-circle"
-        title="Copy session ID"
-      >
-        <.icon name="hero-identification" class="size-5" />
-      </button>
-      <button
         :if={@status in [:running, :waiting, :compacting] && !@session.archived_at}
         phx-click="stop_session"
         data-confirm="Stop this session? The Claude process will be terminated."
-        class="btn btn-ghost btn-sm btn-circle text-error"
+        class="hidden sm:flex btn btn-ghost btn-sm btn-circle text-error"
         title="Stop session"
       >
         <.icon name="hero-stop-circle" class="size-5" />
@@ -453,7 +434,7 @@
       <button
         :if={@session.archived_at}
         phx-click="unarchive"
-        class="btn btn-ghost btn-sm btn-circle"
+        class="hidden sm:flex btn btn-ghost btn-sm btn-circle"
         title="Unarchive session"
       >
         <.icon name="hero-archive-box-arrow-down" class="size-5" />
@@ -461,11 +442,228 @@
       <button
         :if={!@session.archived_at}
         phx-click="archive"
-        class="btn btn-ghost btn-sm btn-circle"
+        class="hidden sm:flex btn btn-ghost btn-sm btn-circle"
         title="Archive session"
       >
         <.icon name="hero-archive-box" class="size-5" />
       </button>
+      <%!-- Mobile modal for additional actions (desktop unchanged) --%>
+      <dialog
+        id="session-mobile-actions"
+        class="modal"
+        open={@show_mobile_actions}
+        phx-window-keydown="close_mobile_actions"
+        phx-key="Escape"
+      >
+        <div class="modal-box">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-lg font-semibold">More actions</h3>
+            <button phx-click="close_mobile_actions" class="btn btn-ghost btn-sm btn-circle">
+              <.icon name="hero-x-mark-micro" class="size-4" />
+            </button>
+          </div>
+          <div class="space-y-2">
+            <%!-- Context window meter (pi only) --%>
+            <%= if @capabilities.session_stats && @context_percent do %>
+              <div class="dropdown dropdown-end">
+                <button
+                  tabindex="0"
+                  role="button"
+                  class="flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300"
+                  title={"Context window: #{@context_percent}% used"}
+                >
+                  <span class="font-medium">Context window: {@context_percent}% used</span>
+                  <.icon name="hero-chevron-down" class="size-4" />
+                </button>
+                <ul
+                  tabindex="0"
+                  class="dropdown-content menu bg-base-300 rounded-box z-10 p-2 shadow-lg w-full"
+                >
+                  <li class="menu-title text-xs uppercase opacity-60">Context window</li>
+                  <li class="px-3 py-1 text-xs opacity-70">{@context_percent}% used</li>
+                  <li>
+                    <button phx-click="compact_session">
+                      <.icon name="hero-archive-box-arrow-down" class="size-4" /> Compact now
+                    </button>
+                  </li>
+                </ul>
+              </div>
+            <% end %>
+            <%!-- Other controls as full-width buttons --%>
+            <%= if @capabilities.mcp do %>
+              <button
+                phx-click="toggle_orchestrator"
+                class={[
+                  "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300",
+                  @session.orchestrator && "text-primary"
+                ]}
+              >
+                <span class="font-medium">Orchestrator mode</span>
+                <.icon name="hero-users" class="size-5" />
+              </button>
+            <% end %>
+            <%= if @capabilities.plan_mode_toggle do %>
+              <button
+                phx-click="toggle_plan_mode"
+                class={[
+                  "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300",
+                  @plan_mode == :planning && "text-warning"
+                ]}
+              >
+                <span class="font-medium">
+                  {if @plan_mode == :planning, do: "Exit plan mode", else: "Enter plan mode"}
+                </span>
+                <.icon name="hero-map" class="size-5" />
+              </button>
+            <% end %>
+            <%= if @todos != [] do %>
+              <button
+                phx-click="toggle_todos"
+                class={[
+                  "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300",
+                  @show_todos && "text-primary"
+                ]}
+              >
+                <span class="font-medium">Tasks</span>
+                <span class="badge badge-xs badge-primary">
+                  {Enum.count(@todos, &(&1["status"] == "completed"))}/{length(@todos)}
+                </span>
+              </button>
+            <% end %>
+            <%= if @commits != [] do %>
+              <button
+                phx-click="toggle_commits"
+                class={[
+                  "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300",
+                  @show_commits && "text-primary"
+                ]}
+              >
+                <span class="font-medium">Commits</span>
+                <span class="badge badge-xs badge-primary">{length(@commits)}</span>
+              </button>
+            <% end %>
+            <%= if @session_artifacts != [] do %>
+              <button
+                phx-click="toggle_artifacts"
+                class={[
+                  "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300",
+                  @show_artifacts && "text-primary"
+                ]}
+              >
+                <span class="font-medium">Artifacts</span>
+                <span class="badge badge-xs badge-primary">{length(@session_artifacts)}</span>
+              </button>
+            <% end %>
+            <button
+              phx-click="toggle_file_browser"
+              class={[
+                "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300",
+                (@open_files != [] || @show_file_browser) && "text-primary"
+              ]}
+            >
+              <span class="font-medium">Browse files</span>
+              <.icon name="hero-document-text" class="size-5" />
+            </button>
+            <button
+              phx-click="open_terminal"
+              class={[
+                "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300",
+                @show_terminal && "text-primary"
+              ]}
+            >
+              <span class="font-medium">Open terminal</span>
+              <.icon name="hero-command-line" class="size-5" />
+            </button>
+            <%= if @session.claude_session_id do %>
+              <button
+                phx-click="resume_in_terminal"
+                class="flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300"
+              >
+                <span class="font-medium">Resume in terminal</span>
+                <.icon name="hero-play" class="size-5" />
+              </button>
+            <% end %>
+            <button
+              phx-click="toggle_heartbeat_modal"
+              class={[
+                "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300",
+                @show_heartbeat_modal && "text-primary"
+              ]}
+            >
+              <span class="font-medium">Heartbeat</span>
+              <span :if={@heartbeat_info} class="badge badge-xs badge-success"></span>
+            </button>
+            <%= if @capabilities.mcp do %>
+              <button
+                phx-click="toggle_mcp_modal"
+                class={[
+                  "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300",
+                  @show_mcp_modal && "text-primary"
+                ]}
+              >
+                <span class="font-medium">MCP servers</span>
+                <.icon name="hero-server-stack" class="size-5" />
+              </button>
+            <% end %>
+            <%= if @session.claude_session_id do %>
+              <button
+                id="copy-terminal-cmd"
+                phx-hook="CopyToClipboard"
+                data-copy-text={"cd #{@session.directory} && claude --resume #{@session.claude_session_id}"}
+                class="flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300"
+              >
+                <span class="font-medium">Copy CLI resume command</span>
+                <.icon name="hero-clipboard" class="size-5" />
+              </button>
+            <% end %>
+            <button
+              id="copy-session-id"
+              phx-hook="CopyToClipboard"
+              data-copy-text={@session.id}
+              class="flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300"
+            >
+              <span class="font-medium">Copy session ID</span>
+              <.icon name="hero-identification" class="size-5" />
+            </button>
+            <%= if @status in [:running, :waiting, :compacting] and !@session.archived_at do %>
+              <button
+                phx-click="stop_session"
+                data-confirm="Stop this session? The Claude process will be terminated."
+                class="flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-error/10 text-error hover:bg-error/20"
+              >
+                <span class="font-medium">Stop session</span>
+                <.icon name="hero-stop-circle" class="size-5" />
+              </button>
+            <% end %>
+            <%= if @session.archived_at do %>
+              <button
+                phx-click="unarchive"
+                class="flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300"
+              >
+                <span class="font-medium">Unarchive session</span>
+                <.icon name="hero-archive-box-arrow-down" class="size-5" />
+              </button>
+            <% end %>
+            <%= if !@session.archived_at do %>
+              <button
+                phx-click="archive"
+                class="flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300"
+              >
+                <span class="font-medium">Archive session</span>
+                <.icon name="hero-archive-box" class="size-5" />
+              </button>
+            <% end %>
+          </div>
+          <div class="modal-action">
+            <form method="dialog">
+              <button class="btn" phx-click="close_mobile_actions">Close</button>
+            </form>
+          </div>
+        </div>
+        <form method="dialog" class="modal-backdrop">
+          <button>close</button>
+        </form>
+      </dialog>
     </:actions>
   </.header>
 

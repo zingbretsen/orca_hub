@@ -160,6 +160,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:all_upstream_servers, HubRPC.list_upstream_servers())
      |> assign(:show_mcp_server_picker, false)
      |> assign(:show_heartbeat_modal, false)
+     |> assign(:show_mobile_actions, false)
      |> assign(:heartbeat_info, HubRPC.get_heartbeat(id))
      |> assign_ask_user_question(runner_status.status, id)
      # pi's extension-UI reply loop (spec §12.3): reconstructed purely from
@@ -1378,6 +1379,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
     session = socket.assigns.session
     {:ok, session} = Cluster.unarchive_session(socket.assigns.session_node, session)
     {:noreply, assign(socket, :session, session)}
+  end
+
+  def handle_event("open_mobile_actions", _params, socket) do
+    {:noreply, assign(socket, :show_mobile_actions, true)}
+  end
+
+  def handle_event("close_mobile_actions", _params, socket) do
+    {:noreply, assign(socket, :show_mobile_actions, false)}
   end
 
   def handle_event("approve_plan", _params, socket) do
