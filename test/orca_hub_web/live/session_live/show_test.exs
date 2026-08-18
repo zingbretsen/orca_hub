@@ -1738,4 +1738,16 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       })
     end
   end
+
+  describe "mobile 'More actions' opener button" do
+    test "opener button exists on the page", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Verify the opener button exists (mobile-only, sm:hidden means hidden on desktop)
+      assert has_element?(view, ~s|button[phx-click="open_mobile_actions"]|)
+    end
+  end
 end

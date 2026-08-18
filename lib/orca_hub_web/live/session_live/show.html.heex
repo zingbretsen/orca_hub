@@ -286,6 +286,14 @@
           </li>
         </ul>
       </div>
+      <%!-- Mobile "More actions" opener (desktop uses direct header controls) --%>
+      <button
+        phx-click="open_mobile_actions"
+        class="sm:hidden btn btn-ghost btn-sm btn-circle"
+        title="More actions"
+      >
+        <.icon name="hero-ellipsis-horizontal" class="size-5" />
+      </button>
       <%!-- spec §12.8 — header context-window meter (pi only, gated on
            @capabilities.session_stats). Hidden until the first
            pi_session_stats event arrives (@context_percent nil). Mirrors the
