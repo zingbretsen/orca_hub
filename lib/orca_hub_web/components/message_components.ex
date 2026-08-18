@@ -232,11 +232,28 @@ defmodule OrcaHubWeb.MessageComponents do
         if thinking_message?(first) do
           blocks = Enum.flat_map(chunk, &extract_thinking_blocks/1)
           group_id = first["uuid"] || first["id"] || "0"
-          # For thinking chunks, only render the thinking group (which includes all
-          # thinking content from the chunk). DO NOT also add individual {:msg, msg}
-          # entries because that would render each thinking message twice - once as
-          # part of the group and once as its own card.
-          [{:thinking_group, group_id, blocks}]
+          # For thinking chunks, we render a thinking group for the thinking content.
+          # We also render individual {:msg, msg} entries for:
+          # - Mixed messages (thinking + text/tool_use): text/tool_use renders in the card
+          # - Pure thinking messages: only the group renders (the card shows nothing)
+          #
+          # The key fix: for pure thinking messages (only thinking blocks), the
+          # individual card shows nothing (assistant_message filters for text only).
+          # Since the group already shows the thinking content, we skip the empty card
+          # to avoid duplication. For mixed messages, both the group (thinking) and
+          # card (text/tool_use) render useful content, so we keep the card.
+          #
+          # We detect pure thinking messages by checking if all content blocks are
+          # thinking blocks. This distinguishes them from mixed messages.
+          has_non_thinking_block? = Enum.any?(chunk, &has_non_thinking_content?/1)
+          thinking_group = {:thinking_group, group_id, blocks}
+          if has_non_thinking_block? do
+            # Mixed messages: keep both the group (thinking) and cards (text/tool_use)
+            [thinking_group | Enum.map(chunk, &{:msg, &1})]
+          else
+            # Pure thinking messages: only the group (cards would be empty)
+            [thinking_group]
+          end
         else
           Enum.map(chunk, &{:msg, &1})
         end
@@ -254,6 +271,15 @@ defmodule OrcaHubWeb.MessageComponents do
   end
 
   defp thinking_message?(_), do: false
+
+  # True for assistant messages that have thinking blocks mixed with other content
+  # (text, tool_use, tool_result, etc.)
+  defp has_non_thinking_content?(%{"type" => "assistant"} = msg) do
+    msg
+    |> get_in(["message", "content"])
+    |> List.wrap()
+    |> Enum.any?(&(is_map(&1) && &1["type"] != "thinking"))
+  end
 
   defp extract_thinking_blocks(msg) do
     msg
