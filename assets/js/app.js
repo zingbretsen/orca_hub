@@ -1373,6 +1373,7 @@ window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 
 // Targeted dropdown close: clicking a button with data-close-dropdown-parent
 // flags its parent dropdown to close after the next LiveView patch.
+// Use capture phase to fire before LiveView's phx-click handler stops propagation.
 // This works reliably on mobile where taps don't always move focus into the button.
 window.addEventListener("click", (e) => {
   const button = e.target.closest("[data-close-dropdown-parent]")
@@ -1380,7 +1381,7 @@ window.addEventListener("click", (e) => {
     const dropdown = button.closest(".dropdown")
     if (dropdown) window.__closeDropdown = dropdown
   }
-})
+}, true)
 
 // On LiveView patch, close any flagged dropdown by blurring its trigger element.
 window.addEventListener("phx:update", () => {
