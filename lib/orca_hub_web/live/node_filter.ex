@@ -21,6 +21,7 @@ defmodule OrcaHubWeb.NodeFilter do
       |> assign(:node_filter, :all)
       |> assign(:node_filter_nodes, cluster_nodes)
       |> assign(:node_filter_visible, clustered)
+      |> assign(:node_modal_open, false)
       |> attach_hook(:node_filter_events, :handle_event, &handle_event/3)
       |> attach_hook(:node_filter_info, :handle_info, &handle_info/2)
 
@@ -130,6 +131,14 @@ defmodule OrcaHubWeb.NodeFilter do
 
     send(self(), :node_filter_changed)
     {:halt, socket}
+  end
+
+  defp handle_event("open_node_modal", _params, socket) do
+    {:halt, assign(socket, :node_modal_open, true)}
+  end
+
+  defp handle_event("close_node_modal", _params, socket) do
+    {:halt, assign(socket, :node_modal_open, false)}
   end
 
   defp handle_event(_event, _params, socket), do: {:cont, socket}
