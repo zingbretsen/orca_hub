@@ -180,7 +180,18 @@ defmodule OrcaHub.JobWatcher do
         {:noreply, begin_kill(job, state, "timed_out")}
 
       not pid_alive?(job.pid) ->
-        finalize_crashed(job, state)
+        # Re-check: the sentinel write (atomic `mv`) always happens-before
+        # the wrapper process exiting, so if the process is gone because it
+        # finished normally between the check above and here, the sentinel
+        # is now guaranteed to be there. Only truly crash (no sentinel ever
+        # written) finalizes as failed — this closes a real race observed
+        # under heavy host load (ORCAHUB3-40), where a fast job could exit
+        # in the gap between the two checks and get misreported as crashed.
+        if File.exists?(Paths.relevant_sentinel_path(job)) do
+          handle_exit(job, state)
+        else
+          finalize_crashed(job, state)
+        end
 
       true ->
         sample_progress(job)
