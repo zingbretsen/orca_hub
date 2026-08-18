@@ -1493,7 +1493,9 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       decoded = Jason.decode!(text)
 
       assert String.length(decoded["last_assistant_text"]) < 3000
-      assert decoded["last_assistant_text"] =~ "…[truncated]"
+
+      assert decoded["last_assistant_text"] =~
+               "…[truncated — pass full_last_message: true to get_session_tail for the complete message]"
     end
 
     test "full_last_message: true returns the last assistant message untruncated", %{
@@ -1551,7 +1553,9 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       decoded = Jason.decode!(text)
 
       assert String.valid?(decoded["last_assistant_text"])
-      assert decoded["last_assistant_text"] =~ "…[truncated]"
+
+      assert decoded["last_assistant_text"] =~
+               "…[truncated — pass full_last_message: true to get_session_tail for the complete message]"
     end
 
     test "tool call arg truncation is UTF-8-safe when a multibyte character straddles the byte boundary",

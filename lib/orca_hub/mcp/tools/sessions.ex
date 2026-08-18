@@ -1322,7 +1322,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   defp cap_tail_text(nil), do: nil
 
   defp cap_tail_text(text) when byte_size(text) > @max_tail_text_bytes do
-    safe_truncate(text, @max_tail_text_bytes) <> "…[truncated]"
+    safe_truncate(text, @max_tail_text_bytes) <>
+      "…[truncated — pass full_last_message: true to get_session_tail for the complete message]"
   end
 
   defp cap_tail_text(text), do: text
