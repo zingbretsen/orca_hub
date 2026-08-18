@@ -800,5 +800,57 @@ defmodule OrcaHubWeb.MessageComponentsTest do
       assert html =~ "</summary>"
       assert html =~ "Thinking about tool use"
     end
+
+    test "consecutive mixed thinking+text messages render all content" do
+      # This tests that consecutive mixed messages (thinking+text) all render their content.
+      # The fix ensures:
+      # 1. Each message gets a unique feed ID (feed-mixed-1, feed-mixed-2)
+      # 2. Consecutive thinking messages are chunked into ONE thinking group (thinking-group-mixed-1)
+      # 3. The thinking group shows all thinking blocks (both parts)
+      # 4. The individual cards show all text content (both parts)
+      mixed_msg_1 = %{
+        "type" => "assistant",
+        "id" => "mixed-1",
+        "message" => %{
+          "content" => [
+            %{"type" => "thinking", "thinking" => "Thinking part 1"},
+            %{"type" => "text", "text" => "Text part 1"}
+          ]
+        }
+      }
+
+      mixed_msg_2 = %{
+        "type" => "assistant",
+        "id" => "mixed-2",
+        "message" => %{
+          "content" => [
+            %{"type" => "thinking", "thinking" => "Thinking part 2"},
+            %{"type" => "text", "text" => "Text part 2"}
+          ]
+        }
+      }
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [mixed_msg_1, mixed_msg_2],
+          session_node: nil
+        })
+
+      # Both messages have their own feed items
+      assert String.contains?(html, ~s(id="feed-mixed-1"))
+      assert String.contains?(html, ~s(id="feed-mixed-2"))
+
+      # Consecutive thinking messages are chunked into ONE group
+      assert String.contains?(html, ~s(id="thinking-group-mixed-1"))
+
+      # The thinking group should show 2 thoughts (from both messages)
+      assert html =~ "2 thoughts"
+
+      # All content renders - thinking in group, text in cards
+      assert html =~ "Thinking part 1"
+      assert html =~ "Thinking part 2"
+      assert html =~ "Text part 1"
+      assert html =~ "Text part 2"
+    end
   end
 end
