@@ -1375,20 +1375,41 @@ window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 // flags its parent dropdown to close after the next LiveView patch.
 // Use capture phase to fire before LiveView's phx-click handler stops propagation.
 // This works reliably on mobile where taps don't always move focus into the button.
+
+// Close routine: blur focused menu button AND trigger element
+function closeDropdown(dropdown) {
+  const ae = document.activeElement
+  if (ae && dropdown.contains(ae)) ae.blur()
+  const trigger = dropdown.querySelector("[tabindex=\"0\"]")
+  if (trigger) trigger.blur()
+}
+
 window.addEventListener("click", (e) => {
   const button = e.target.closest("[data-close-dropdown-parent]")
   if (button) {
     const dropdown = button.closest(".dropdown")
-    if (dropdown) window.__closeDropdown = dropdown
+    if (dropdown) {
+      window.__closeDropdown = dropdown
+      // Fallback timer for same-value clicks with no LV patch
+      window.__closeDropdownTimer = setTimeout(() => {
+        if (window.__closeDropdown) {
+          closeDropdown(window.__closeDropdown)
+          delete window.__closeDropdown
+        }
+      }, 800)
+    }
   }
 }, true)
 
-// On LiveView patch, close any flagged dropdown by blurring its trigger element.
+// On LiveView patch, close any flagged dropdown by blurring focused button and trigger.
 window.addEventListener("phx:update", () => {
   if (window.__closeDropdown) {
-    const trigger = window.__closeDropdown.querySelector("div[tabindex=\"0\"], button[tabindex=\"0\"]")
-    if (trigger) trigger.blur()
+    closeDropdown(window.__closeDropdown)
     delete window.__closeDropdown
+    if (window.__closeDropdownTimer) {
+      clearTimeout(window.__closeDropdownTimer)
+      delete window.__closeDropdownTimer
+    }
   }
 })
 
