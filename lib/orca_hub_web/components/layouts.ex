@@ -115,10 +115,11 @@ defmodule OrcaHubWeb.Layouts do
       </div>
     </header>
 
-    <.node_filter_chips
+    <.node_filter_opener
       :if={assigns[:node_filter_visible]}
-      nodes={assigns[:node_filter_nodes] || []}
       filter={assigns[:node_filter] || :all}
+      nodes={assigns[:node_filter_nodes] || []}
+      node_modal_open={assigns[:node_modal_open] || false}
     />
 
     <main class="px-4 py-6 sm:px-6 sm:py-10 lg:px-8">
@@ -206,25 +207,76 @@ defmodule OrcaHubWeb.Layouts do
     """
   end
 
-  defp node_filter_chips(assigns) do
+  def node_filter_opener(assigns) do
     ~H"""
-    <div id="node-filter" phx-hook="NodeFilter" class="flex flex-wrap gap-1 px-2 py-1">
-      <button
-        phx-click="node_filter_select_all"
-        class="btn btn-xs btn-ghost"
-      >
-        All nodes
-      </button>
-      <button
-        :for={node <- @nodes}
-        phx-click="toggle_node_filter"
-        phx-value-node={node.name}
-        data-solo-node={node.name}
-        class={"btn btn-xs #{if OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name), do: "btn-active btn-primary", else: "btn-ghost"}"}
-      >
-        {node.name}
-      </button>
-    </div>
+    <button
+      phx-click="open_node_modal"
+      class="btn btn-ghost btn-sm"
+      title="Filter by node"
+    >
+      <.icon name="hero-server-stack" class="size-4" />
+      <span class="text-xs ml-1">
+        {if @filter == :all do
+          "All"
+        else
+          "#{OrcaHubWeb.NodeFilter.selected_node_names(@filter) |> length()}/#{length(@nodes)}"
+        end}
+      </span>
+    </button>
+
+    <dialog
+      id="node-filter-modal"
+      phx-hook="NodeFilter"
+      class="modal"
+      open={@node_modal_open}
+      phx-window-keydown="close_node_modal"
+      phx-key="Escape"
+    >
+      <div class="modal-box">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-lg font-semibold">Filter by node</h3>
+          <button phx-click="close_node_modal" class="btn btn-ghost btn-sm btn-circle">
+            <.icon name="hero-x-mark-micro" class="size-4" />
+          </button>
+        </div>
+
+        <div class="space-y-2">
+          <button
+            phx-click="node_filter_select_all"
+            class={"flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors #{if @filter == :all, do: "bg-primary/10 text-primary border border-primary/20", else: "hover:bg-base-200"}"}
+          >
+            <span class="font-medium">All nodes</span>
+            <.icon :if={@filter == :all} name="hero-check-circle" class="size-5 text-primary" />
+          </button>
+
+          <div class="border-t border-base-300 pt-2">
+            <button
+              :for={node <- @nodes}
+              phx-click="toggle_node_filter"
+              phx-value-node={node.name}
+              data-solo-node={node.name}
+              class={"flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors #{if OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name), do: "bg-base-200", else: "hover:bg-base-200"}"}
+            >
+              <span>{node.name}</span>
+              <.icon
+                :if={OrcaHubWeb.NodeFilter.node_selected?(@filter, node.name)}
+                name="hero-check-circle"
+                class="size-5 text-primary"
+              />
+            </button>
+          </div>
+        </div>
+
+        <div class="modal-action">
+          <form method="dialog">
+            <button class="btn" phx-click="close_node_modal">Close</button>
+          </form>
+        </div>
+      </div>
+      <form method="dialog" class="modal-backdrop">
+        <button>close</button>
+      </form>
+    </dialog>
     """
   end
 
