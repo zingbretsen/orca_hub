@@ -232,7 +232,11 @@ defmodule OrcaHubWeb.MessageComponents do
         if thinking_message?(first) do
           blocks = Enum.flat_map(chunk, &extract_thinking_blocks/1)
           group_id = first["uuid"] || first["id"] || "0"
-          [{:thinking_group, group_id, blocks} | Enum.map(chunk, &{:msg, &1})]
+          # For thinking chunks, only render the thinking group (which includes all
+          # thinking content from the chunk). DO NOT also add individual {:msg, msg}
+          # entries because that would render each thinking message twice - once as
+          # part of the group and once as its own card.
+          [{:thinking_group, group_id, blocks}]
         else
           Enum.map(chunk, &{:msg, &1})
         end
