@@ -1749,5 +1749,212 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       # Verify the opener button exists (mobile-only, sm:hidden means hidden on desktop)
       assert has_element?(view, ~s|button[phx-click="open_mobile_actions"]|)
     end
+
+    test "closes when toggle_mcp_modal is clicked", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open the mobile actions modal
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      # Click a control that opens another modal
+      render_click(view, "toggle_mcp_modal")
+
+      # The modal should now be closed
+      refute has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
+
+    test "closes when toggle_heartbeat_modal is clicked", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open the mobile actions modal
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      # Click a control that opens another modal
+      render_click(view, "toggle_heartbeat_modal")
+
+      # The modal should now be closed
+      refute has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
+
+    test "closes when toggle_file_browser is clicked", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open the mobile actions modal
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      # Click a control that opens a panel
+      render_click(view, "toggle_file_browser")
+
+      # The modal should now be closed
+      refute has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
+
+    test "closes when toggle_todos is clicked", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open the mobile actions modal
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      # Click a control that opens a panel
+      render_click(view, "toggle_todos")
+
+      # The modal should now be closed
+      refute has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
+
+    test "closes when toggle_commits is clicked", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open the mobile actions modal
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      # Click a control that opens a panel
+      render_click(view, "toggle_commits")
+
+      # The modal should now be closed
+      refute has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
+
+    test "closes when toggle_artifacts is clicked", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open the mobile actions modal
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      # Click a control that opens a panel
+      render_click(view, "toggle_artifacts")
+
+      # The modal should now be closed
+      refute has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
+
+    test "closes when compact_session is clicked", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open the mobile actions modal
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      # Click a one-shot action
+      render_click(view, "compact_session")
+
+      # The modal should now be closed
+      refute has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
+
+    test "closes when stop_session is clicked", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open the mobile actions modal
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      # Click a one-shot action
+      render_click(view, "stop_session")
+
+      # The modal should now be closed
+      refute has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
+
+    test "closes when archive is clicked", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open the mobile actions modal
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      # Click a one-shot action - archive navigates to /sessions with undo param
+      # The modal closes in the handler before navigation happens
+      # Since render_click returns {:error, redirect} on navigation, we need to verify
+      # the redirect happens (which implies the handler completed and closed the modal)
+      {:error, {:live_redirect, %{to: path}}} = render_click(view, "archive")
+
+      # Verify the redirect went to /sessions with undo param
+      assert path =~ "/sessions?undo="
+    end
+
+    test "closes when unarchive is clicked", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open the mobile actions modal
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      # Click a one-shot action
+      render_click(view, "unarchive")
+
+      # The modal should now be closed
+      refute has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
+
+    test "stays open when toggle_orchestrator is clicked (boolean switch)", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open the mobile actions modal
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      # Click a pure boolean switch
+      render_click(view, "toggle_orchestrator")
+
+      # The modal should stay open
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
+
+    test "stays open when toggle_plan_mode is clicked (boolean switch)", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open the mobile actions modal
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      # Click a pure boolean switch
+      render_click(view, "toggle_plan_mode")
+
+      # The modal should stay open
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
   end
 end

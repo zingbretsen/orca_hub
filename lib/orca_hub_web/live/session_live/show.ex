@@ -940,14 +940,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def handle_event("compact_session", _params, socket) do
     case Cluster.compact_session(socket.assigns.session_node, socket.assigns.session.id) do
       :ok ->
-        {:noreply, put_flash(socket, :info, "Compaction requested")}
+        {:noreply, socket |> put_flash(:info, "Compaction requested") |> assign(:show_mobile_actions, false)}
 
       {:error, reason} ->
         message =
           Cluster.node_unavailable_message(reason) ||
             "Can't compact right now — the session must be idle to compact."
 
-        {:noreply, put_flash(socket, :error, message)}
+        {:noreply, socket |> put_flash(:error, message) |> assign(:show_mobile_actions, false)}
     end
   end
 
@@ -990,15 +990,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("toggle_todos", _params, socket) do
-    {:noreply, assign(socket, :show_todos, !socket.assigns.show_todos)}
+    {:noreply, socket |> assign(:show_todos, !socket.assigns.show_todos) |> assign(:show_mobile_actions, false)}
   end
 
   def handle_event("toggle_commits", _params, socket) do
-    {:noreply, assign(socket, :show_commits, !socket.assigns.show_commits)}
+    {:noreply, socket |> assign(:show_commits, !socket.assigns.show_commits) |> assign(:show_mobile_actions, false)}
   end
 
   def handle_event("toggle_artifacts", _params, socket) do
-    {:noreply, assign(socket, :show_artifacts, !socket.assigns.show_artifacts)}
+    {:noreply, socket |> assign(:show_artifacts, !socket.assigns.show_artifacts) |> assign(:show_mobile_actions, false)}
   end
 
   def handle_event("open_session_artifact", %{"id" => artifact_id}, socket) do
@@ -1206,7 +1206,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("stop_session", _params, socket) do
     Cluster.stop_session(socket.assigns.session_node, socket.assigns.session.id)
-    {:noreply, socket}
+    {:noreply, assign(socket, show_mobile_actions: false)}
   end
 
   # AskUserQuestion wizard events
@@ -1299,7 +1299,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("toggle_mcp_modal", _params, socket) do
     {:noreply,
-     assign(socket, show_mcp_modal: !socket.assigns.show_mcp_modal, show_mcp_server_picker: false)}
+     socket
+     |> assign(show_mcp_modal: !socket.assigns.show_mcp_modal, show_mcp_server_picker: false)
+     |> assign(:show_mobile_actions, false)}
   end
 
   def handle_event("toggle_mcp_server_picker", _params, socket) do
@@ -1332,7 +1334,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # Heartbeat events
 
   def handle_event("toggle_heartbeat_modal", _params, socket) do
-    {:noreply, assign(socket, show_heartbeat_modal: !socket.assigns.show_heartbeat_modal)}
+    {:noreply, socket |> assign(show_heartbeat_modal: !socket.assigns.show_heartbeat_modal) |> assign(:show_mobile_actions, false)}
   end
 
   def handle_event(
@@ -1372,13 +1374,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
     session = socket.assigns.session
     Cluster.stop_session(socket.assigns.session_node, session.id)
     {:ok, _} = Cluster.archive_session(socket.assigns.session_node, session)
-    {:noreply, push_navigate(socket, to: ~p"/sessions?undo=#{session.id}")}
+    {:noreply, socket |> push_navigate(to: ~p"/sessions?undo=#{session.id}") |> assign(:show_mobile_actions, false)}
   end
 
   def handle_event("unarchive", _params, socket) do
     session = socket.assigns.session
     {:ok, session} = Cluster.unarchive_session(socket.assigns.session_node, session)
-    {:noreply, assign(socket, :session, session)}
+    {:noreply, socket |> assign(:session, session) |> assign(:show_mobile_actions, false)}
   end
 
   def handle_event("open_mobile_actions", _params, socket) do
@@ -1587,17 +1589,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("open_terminal", _params, socket) do
     if socket.assigns.show_terminal do
-      {:noreply, assign(socket, show_terminal: false)}
+      {:noreply, assign(socket, show_terminal: false, show_mobile_actions: false)}
     else
       session = socket.assigns.session
       session_node = socket.assigns.session_node
 
       if socket.assigns.open_terminals != [] do
         # Panel was just hidden, show it again
-        {:noreply, assign(socket, show_terminal: true)}
+        {:noreply, assign(socket, show_terminal: true, show_mobile_actions: false)}
       else
         # Find or create a terminal
-        {:noreply, open_or_create_terminal(socket, session, session_node)}
+        {:noreply, open_or_create_terminal(socket, session, session_node, false)}
       end
     end
   end
@@ -1668,16 +1670,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
     session = socket.assigns.session
 
     if session.claude_session_id do
-      {:noreply, resume_session_in_terminal(socket, session)}
+      {:noreply, resume_session_in_terminal(socket, session, false)}
     else
-      {:noreply, put_flash(socket, :error, "No Claude session to resume")}
+      {:noreply, socket |> put_flash(:error, "No Claude session to resume") |> assign(:show_mobile_actions, false)}
     end
   end
 
   # -- File panel events --
 
   def handle_event("toggle_file_browser", _params, socket) do
-    {:noreply, assign(socket, :show_file_browser, !socket.assigns.show_file_browser)}
+    {:noreply, socket |> assign(:show_file_browser, !socket.assigns.show_file_browser) |> assign(:show_mobile_actions, false)}
   end
 
   def handle_event("switch_tab", %{"path" => path}, socket) do
@@ -1927,7 +1929,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end)
   end
 
-  defp resume_session_in_terminal(socket, session) do
+  defp resume_session_in_terminal(socket, session, close_modal) do
     session_node = socket.assigns.session_node
     cmd = "claude --resume #{session.claude_session_id}\n"
 
@@ -1951,9 +1953,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
         |> assign(:show_terminal, true)
         |> assign(:open_terminals, socket.assigns.open_terminals ++ [terminal])
         |> assign(:active_terminal_id, terminal.id)
+        |> assign(:show_mobile_actions, if(close_modal, do: false, else: socket.assigns.show_mobile_actions))
 
       {:error, _} ->
-        put_flash(socket, :error, "Failed to create terminal")
+        socket
+        |> put_flash(:error, "Failed to create terminal")
+        |> assign(:show_mobile_actions, if(close_modal, do: false, else: socket.assigns.show_mobile_actions))
     end
   end
 
@@ -1966,7 +1971,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     }
   end
 
-  defp open_or_create_terminal(socket, session, session_node) do
+  defp open_or_create_terminal(socket, session, session_node, close_modal) do
     tagged = Cluster.list_terminals_for_project(session.project_id)
 
     candidates =
@@ -2000,10 +2005,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
             |> assign(:show_terminal, true)
             |> assign(:open_terminals, [terminal])
             |> assign(:active_terminal_id, terminal.id)
+            |> assign(:show_mobile_actions, if(close_modal, do: false, else: socket.assigns.show_mobile_actions))
 
           {:error, reason} ->
             message = Cluster.node_unavailable_message(reason) || "Failed to create terminal"
-            put_flash(socket, :error, message)
+            socket
+            |> put_flash(:error, message)
+            |> assign(:show_mobile_actions, if(close_modal, do: false, else: socket.assigns.show_mobile_actions))
         end
 
       {n, terminal} ->
@@ -2015,6 +2023,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
             |> assign(:show_terminal, true)
             |> assign(:open_terminals, [terminal])
             |> assign(:active_terminal_id, terminal.id)
+            |> assign(:show_mobile_actions, if(close_modal, do: false, else: socket.assigns.show_mobile_actions))
 
           Cluster.node_available?(runner_node) ->
             Cluster.start_terminal(runner_node, terminal.id)
@@ -2024,13 +2033,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
             |> assign(:show_terminal, true)
             |> assign(:open_terminals, [terminal])
             |> assign(:active_terminal_id, terminal.id)
+            |> assign(:show_mobile_actions, if(close_modal, do: false, else: socket.assigns.show_mobile_actions))
 
           true ->
-            put_flash(
-              socket,
+            socket
+            |> put_flash(
               :error,
               Cluster.node_unavailable_message({:node_unavailable, runner_node})
             )
+            |> assign(:show_mobile_actions, if(close_modal, do: false, else: socket.assigns.show_mobile_actions))
         end
     end
   end
