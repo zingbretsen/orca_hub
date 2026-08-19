@@ -433,9 +433,6 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     end
   end
 
-  defp maybe_put_last_assistant_text(map, nil), do: map
-  defp maybe_put_last_assistant_text(map, text), do: Map.put(map, :last_assistant_text, text)
-
   def call("search_sessions", args, state) do
     limit = args["limit"] || 20
 
@@ -1346,6 +1343,9 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   end
 
   defp cap_tail_text(text), do: text
+
+  defp maybe_put_last_assistant_text(map, nil), do: map
+  defp maybe_put_last_assistant_text(map, text), do: Map.put(map, :last_assistant_text, text)
 
   @run_elixir_tool_names ~w(run_elixir mcp__orca__run_elixir)
   @max_tail_extracted_tools 10
