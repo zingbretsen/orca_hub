@@ -1817,6 +1817,92 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert String.length(reloaded.title) == 80
       refute reloaded.title =~ "\n"
     end
+
+    test "a note well over 255 bytes persists and is truncated", %{dir: dir} do
+      {:ok, session} = Sessions.create_session(%{directory: dir})
+
+      # 300 ASCII characters = 300 bytes, well over the 250-byte cap
+      long_note = String.duplicate("a", 300)
+
+      SessionsTool.call(
+        "report_progress",
+        %{"phase" => "planning", "note" => long_note},
+        %{orca_session_id: session.id}
+      )
+
+      reloaded = Sessions.get_session!(session.id)
+      assert byte_size(reloaded.progress_note) <= 255
+      assert byte_size(reloaded.progress_note) < 300
+      assert reloaded.progress_note =~ "a"
+    end
+
+    test "a note with multibyte characters stays under the byte limit", %{dir: dir} do
+      {:ok, session} = Sessions.create_session(%{directory: dir})
+
+      # 300 arrows = 900 bytes (each → is 3 bytes in UTF-8)
+      multibyte_note = String.duplicate("→", 300)
+
+      SessionsTool.call(
+        "report_progress",
+        %{"phase" => "planning", "note" => multibyte_note},
+        %{orca_session_id: session.id}
+      )
+
+      reloaded = Sessions.get_session!(session.id)
+      assert byte_size(reloaded.progress_note) <= 255
+      # Should be truncated, not crash with Postgrex.Error
+      refute is_nil(reloaded.progress_note)
+    end
+
+    test "a short note is stored unchanged without ellipsis", %{dir: dir} do
+      {:ok, session} = Sessions.create_session(%{directory: dir})
+
+      short_note = "short note"
+
+      SessionsTool.call(
+        "report_progress",
+        %{"phase" => "planning", "note" => short_note},
+        %{orca_session_id: session.id}
+      )
+
+      reloaded = Sessions.get_session!(session.id)
+      assert reloaded.progress_note == short_note
+    end
+
+    test "a phase over 255 bytes is truncated", %{dir: dir} do
+      {:ok, session} = Sessions.create_session(%{directory: dir})
+
+      # 300 characters, well over the 250-byte cap
+      long_phase = String.duplicate("x", 300)
+
+      SessionsTool.call(
+        "report_progress",
+        %{"phase" => long_phase},
+        %{orca_session_id: session.id}
+      )
+
+      reloaded = Sessions.get_session!(session.id)
+      assert byte_size(reloaded.progress_phase) <= 255
+      assert byte_size(reloaded.progress_phase) < 300
+    end
+
+    test "a phase with multibyte characters stays under the byte limit", %{dir: dir} do
+      {:ok, session} = Sessions.create_session(%{directory: dir})
+
+      # 300 arrows = 900 bytes (each → is 3 bytes in UTF-8)
+      multibyte_phase = String.duplicate("→", 300)
+
+      SessionsTool.call(
+        "report_progress",
+        %{"phase" => multibyte_phase},
+        %{orca_session_id: session.id}
+      )
+
+      reloaded = Sessions.get_session!(session.id)
+      assert byte_size(reloaded.progress_phase) <= 255
+      # Should be truncated, not crash
+      refute is_nil(reloaded.progress_phase)
+    end
   end
 
   describe "search_sessions — session_id and parent_session_id filters" do

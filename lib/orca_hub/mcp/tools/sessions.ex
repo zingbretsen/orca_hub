@@ -549,6 +549,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   end
 
   @max_title_length 80
+  @max_note_length 250
+  @max_phase_length 250
 
   defp do_report_progress(session_id, phase, note, title) do
     if is_binary_non_empty(phase) or is_binary_non_empty(title) do
@@ -563,6 +565,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   defp do_report_progress!(session_id, phase, note, title) do
     session = HubRPC.get_session!(session_id)
     new_title = if is_binary_non_empty(title), do: normalize_title(title)
+    phase = normalize_phase(phase)
+    note = normalize_note(note)
 
     attrs =
       %{}
@@ -600,7 +604,28 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     title
     |> String.trim()
     |> String.replace(~r/\s*\n+\s*/, " ")
-    |> String.slice(0, @max_title_length)
+    |> safe_truncate(@max_title_length)
+  end
+
+  # Trims whitespace and truncates to byte budget, keeping complete UTF-8
+  # characters. Used for progress_note, which is free-form text — no newline
+  # collapsing.
+  defp normalize_note(nil), do: ""
+
+  defp normalize_note(note) do
+    note
+    |> String.trim()
+    |> safe_truncate(@max_note_length)
+  end
+
+  # Trims whitespace and truncates to byte budget. Used for progress_phase,
+  # which should be a short label but may contain multibyte characters.
+  defp normalize_phase(nil), do: ""
+
+  defp normalize_phase(phase) do
+    phase
+    |> String.trim()
+    |> safe_truncate(@max_phase_length)
   end
 
   defp report_progress_result_text(phase, note, new_title, current_title) do
@@ -1380,9 +1405,13 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   # prod crash: "invalid byte 0xE2 in <<35, 35, 32, 82, ...>>". Trim back to
   # the last complete character after the byte-budget cut.
   defp safe_truncate(bin, max_bytes) do
-    bin
-    |> binary_part(0, max_bytes)
-    |> trim_incomplete_utf8()
+    if byte_size(bin) <= max_bytes do
+      bin
+    else
+      bin
+      |> binary_part(0, max_bytes)
+      |> trim_incomplete_utf8()
+    end
   end
 
   defp trim_incomplete_utf8(<<>>), do: <<>>
