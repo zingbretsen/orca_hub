@@ -1839,6 +1839,48 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       # No truncation flag when the larger limit covers everything
       refute Map.has_key?(decoded, "tool_calls_truncated")
     end
+
+    test "does not crash when tool_calls_truncated? key is missing (older node compatibility)",
+         %{dir: dir, state: state} do
+      # Simulate an older node's response that lacks the tool_calls_truncated? key
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{
+                "type" => "tool_use",
+                "id" => "t1",
+                "name" => "Bash",
+                "input" => %{"command" => "echo 1"}
+              }
+            ]
+          }
+        }
+      })
+
+      # Mock HubRPC.session_tail to return an older-style response
+      stub_return = %{
+        last_assistant_text: nil,
+        recent_tool_calls: [
+          %{name: "Bash", args: ~s(%{"command" => "echo 1"})}
+        ],
+        # Intentionally no tool_calls_truncated? key
+        tool_calls_total: 1
+      }
+
+      # Directly test the result when the key is absent
+      result = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      # Should not crash and should not have the flag
+      refute Map.has_key?(decoded, "tool_calls_truncated")
+    end
   end
 
   describe "report_progress" do

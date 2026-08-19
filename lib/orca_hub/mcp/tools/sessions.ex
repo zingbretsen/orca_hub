@@ -412,7 +412,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             end
 
           # Store whether truncation occurred before we transform the list
-          truncated? = tail.tool_calls_truncated
+          truncated? = Map.get(tail, :tool_calls_truncated?, false)
           total = Map.get(tail, :tool_calls_total, length(tail.recent_tool_calls))
 
           result =

@@ -1167,7 +1167,7 @@ defmodule OrcaHub.Sessions do
     result = %{
       last_assistant_text: last_assistant_text(session_id),
       recent_tool_calls: tool_calls,
-      tool_calls_truncated: truncated?
+      tool_calls_truncated?: truncated?
     }
 
     if truncated? do
