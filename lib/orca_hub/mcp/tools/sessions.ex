@@ -278,8 +278,16 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "type" => "boolean",
               "description" =>
                 "If true, return the complete last assistant text message instead of " <>
-                  "truncating it to ~2KB. Use when you need the worker's full report " <>
+                  "truncating it to ~800 bytes. Use when you need the worker's full report " <>
                   "verbatim. Default: false"
+            },
+            "include_last_message" => %{
+              "type" => "boolean",
+              "description" =>
+                "If false, omit the last assistant text entirely from the result. Use for " <>
+                  "repeated/polling peeks where only liveness/status matters, not the " <>
+                  "worker's prose. When true (default), the text is included and truncated " <>
+                  "to ~800 bytes unless full_last_message is also true. Default: true"
             }
           },
           "required" => ["session_id"]
@@ -379,6 +387,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     target_id = args["session_id"]
     limit = args["tool_call_limit"] || 10
     full_last_message = args["full_last_message"] == true
+    include_last_message = args["include_last_message"] != false
 
     case Cluster.find_session(target_id) do
       {node, session} ->
@@ -389,25 +398,30 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             Map.get(HubRPC.activity_metadata([session.id]), session.id, empty_activity())
 
           last_assistant_text =
-            if full_last_message do
-              tail.last_assistant_text
+            if include_last_message do
+              if full_last_message do
+                tail.last_assistant_text
+              else
+                cap_tail_text(tail.last_assistant_text)
+              end
             else
-              cap_tail_text(tail.last_assistant_text)
+              nil
             end
 
-          result = %{
-            id: session.id,
-            title: session.title,
-            status: session.status,
-            updated_at: session.updated_at,
-            progress_phase: session.progress_phase,
-            progress_note: session.progress_note,
-            progress_updated_at: session.progress_updated_at,
-            last_assistant_text: last_assistant_text,
-            recent_tool_calls: Enum.map(tail.recent_tool_calls, &format_tool_call/1),
-            activity: activity,
-            last_commit: fetch_last_commit(node, session.directory)
-          }
+          result =
+            %{
+              id: session.id,
+              title: session.title,
+              status: session.status,
+              updated_at: session.updated_at,
+              progress_phase: session.progress_phase,
+              progress_note: session.progress_note,
+              progress_updated_at: session.progress_updated_at,
+              recent_tool_calls: Enum.map(tail.recent_tool_calls, &format_tool_call/1),
+              activity: activity,
+              last_commit: fetch_last_commit(node, session.directory)
+            }
+            |> maybe_put_last_assistant_text(last_assistant_text)
 
           text(Jason.encode!(result))
         else
@@ -418,6 +432,9 @@ defmodule OrcaHub.MCP.Tools.Sessions do
         error("Session #{target_id} not found on any node.")
     end
   end
+
+  defp maybe_put_last_assistant_text(map, nil), do: map
+  defp maybe_put_last_assistant_text(map, text), do: Map.put(map, :last_assistant_text, text)
 
   def call("search_sessions", args, state) do
     limit = args["limit"] || 20
@@ -1316,14 +1333,16 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   # ── get_session_tail helpers ──────────────────────────────────────────
   # Keep the payload slim — this is a cheap progress peek, not a transcript.
 
-  @max_tail_text_bytes 2000
   @max_tool_arg_bytes 200
+
+  @max_tail_text_bytes 800
 
   defp cap_tail_text(nil), do: nil
 
   defp cap_tail_text(text) when byte_size(text) > @max_tail_text_bytes do
     safe_truncate(text, @max_tail_text_bytes) <>
-      "…[truncated — pass full_last_message: true to get_session_tail for the complete message]"
+      "…[truncated — pass full_last_message: true for the complete message, or " <>
+      "include_last_message: false to omit it entirely when polling]"
   end
 
   defp cap_tail_text(text), do: text

@@ -1492,10 +1492,75 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert %{"isError" => false, "content" => [%{"text" => text}]} = result
       decoded = Jason.decode!(text)
 
-      assert String.length(decoded["last_assistant_text"]) < 3000
+      assert String.length(decoded["last_assistant_text"]) < 1200
 
       assert decoded["last_assistant_text"] =~
-               "…[truncated — pass full_last_message: true to get_session_tail for the complete message]"
+               "…[truncated — pass full_last_message: true for the complete message, or " <>
+                 "include_last_message: false to omit it entirely when polling]"
+    end
+
+    test "include_last_message: false omits the last_assistant_text key", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [%{"type" => "text", "text" => "this should be omitted"}]
+          }
+        }
+      })
+
+      result =
+        SessionsTool.call(
+          "get_session_tail",
+          %{"session_id" => target.id, "include_last_message" => false},
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      refute Map.has_key?(decoded, "last_assistant_text")
+    end
+
+    test "include_last_message: false wins when both params are set", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+      long_text = String.duplicate("a", 3000)
+
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [%{"type" => "text", "text" => long_text}]
+          }
+        }
+      })
+
+      result =
+        SessionsTool.call(
+          "get_session_tail",
+          %{
+            "session_id" => target.id,
+            "full_last_message" => true,
+            "include_last_message" => false
+          },
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      # include_last_message: false wins
+      refute Map.has_key?(decoded, "last_assistant_text")
     end
 
     test "full_last_message: true returns the last assistant message untruncated", %{
@@ -1533,10 +1598,10 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
 
       # Em dash is 3 bytes in UTF-8 (0xE2 0x80 0x94). Positioned so the fixed
-      # 2000-byte truncation cut lands after only 2 of its 3 bytes (1998 'a'
-      # bytes + 2 em-dash bytes = 2000) — this used to yield an invalid
+      # 800-byte truncation cut lands after only 2 of its 3 bytes (798 'a'
+      # bytes + 2 em-dash bytes = 800) — this used to yield an invalid
       # binary that crashed downstream (prod: "invalid byte 0xE2 in ...").
-      long_text = String.duplicate("a", 1998) <> "—" <> String.duplicate("a", 100)
+      long_text = String.duplicate("a", 798) <> "—" <> String.duplicate("a", 100)
 
       Sessions.create_message(%{
         session_id: target.id,
@@ -1555,7 +1620,32 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert String.valid?(decoded["last_assistant_text"])
 
       assert decoded["last_assistant_text"] =~
-               "…[truncated — pass full_last_message: true to get_session_tail for the complete message]"
+               "…[truncated — pass full_last_message: true for the complete message, or " <>
+                 "include_last_message: false to omit it entirely when polling]"
+    end
+
+    test "truncation marker mentions both parameters", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+      long_text = String.duplicate("x", 1000)
+
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [%{"type" => "text", "text" => long_text}]
+          }
+        }
+      })
+
+      result =
+        SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert decoded["last_assistant_text"] =~ "full_last_message"
+      assert decoded["last_assistant_text"] =~ "include_last_message"
     end
 
     test "tool call arg truncation is UTF-8-safe when a multibyte character straddles the byte boundary",
