@@ -36,6 +36,20 @@ Confirms the prior audit's "18x undercount" finding generalizes — for several 
 it's far worse. **All numbers in this report use the combined (direct + embedded)
 count** unless stated otherwise.
 
+**Correction (post-publication, coordinated with the sibling param-census session,
+`393beb9d…`):** my original `Tools.<name>(...)` regex/balancer missed one more layer of
+indirection — `Tools.try_call("name", %{...})`, which dispatches to `name` without a
+literal `Tools.name(` substring to match. A supplementary check over the same 30-day
+window found 348 `try_call` dispatches across 269 `run_elixir` blocks:
+`send_message_to_session` 153, `archive_session` 76, `cancel_heartbeat` 28,
+`search_sessions` 24, `get_session_tail` 23, `start_session` 8, plus single digits for
+several other tools. This undercounts `send_message_to_session`/`archive_session`
+totals in the tables above by roughly 7–10%, and `search_sessions`/`get_session_tail`
+by roughly 1–12% — not enough to change any ranking or headline number below.
+Re-ran the "What I did not find" `search_sessions`→N`×get_session_tail` check
+specifically including `try_call`-wrapped `search_sessions` calls: still **zero**
+matching turns, so that negative finding stands unchanged.
+
 Extraction was done with a string-literal-aware paren/brace balancer (not a JSON
 parser, since embedded args are Elixir map literals) over 6,927 `run_elixir` calls in
 the window:
