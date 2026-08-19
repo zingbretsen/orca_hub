@@ -127,7 +127,11 @@ defmodule OrcaHub.MCP.Tools.Jobs do
             "log — a pure DB read, costs nothing and interrupts nothing regardless of " <>
             "which node the job is actually running on. progress_updated_at_age_seconds " <>
             "is surfaced so YOU can judge whether that's healthy for the metric this job " <>
-            "declared — OrcaHub itself never decides a job is \"stalled\".",
+            "declared — OrcaHub itself never decides a job is \"stalled\".\n\n" <>
+            "If the job is still running or verifying, consider using wait_for_job instead " <>
+            "of polling — it blocks up to max_wait_seconds (default 120) and returns " <>
+            "as soon as the job reaches a terminal status. Use start_job's wake_when_done " <>
+            "parameter if you prefer async notification upon completion.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -356,9 +360,17 @@ defmodule OrcaHub.MCP.Tools.Jobs do
         updated_at_age_seconds: age_seconds(job.progress_updated_at)
       },
       log_tail: tail(OrcaHub.Jobs.Paths.log_path(job.id)),
-      verify_log_tail: job.verify_command && tail(OrcaHub.Jobs.Paths.verify_log_path(job.id))
+      verify_log_tail: job.verify_command && tail(OrcaHub.Jobs.Paths.verify_log_path(job.id)),
+      hint: check_job_hint(job.status)
     }
   end
+
+  defp check_job_hint(status) when status in ~w(running verifying) do
+    "Non-terminal status — use wait_for_job to block until completion (max_wait_seconds " <>
+      "default 120) instead of polling."
+  end
+
+  defp check_job_hint(_status), do: nil
 
   defp age_seconds(nil), do: nil
   defp age_seconds(%DateTime{} = ts), do: DateTime.diff(DateTime.utc_now(), ts)

@@ -164,6 +164,108 @@ defmodule OrcaHub.MCP.Tools.JobsTest do
       assert view["exit_code"] == 0
       assert view["log_tail"] =~ "check-job-output"
       assert is_nil(view["progress"]["updated_at_age_seconds"])
+      assert is_nil(view["hint"])
+    end
+
+    test "non-terminal results (running) include a hint naming wait_for_job", %{state: state} do
+      body =
+        JobsTool.call("start_job", %{"command" => "sleep 5"}, state)
+        |> decode()
+
+      on_exit(fn ->
+        cleanup(body["job_id"])
+        JobsTool.call("cancel_job", %{"job_id" => body["job_id"]}, state)
+      end)
+
+      result = JobsTool.call("check_job", %{"job_id" => body["job_id"]}, state)
+      assert %{"isError" => false} = result
+      view = decode(result)
+
+      assert view["status"] == "running"
+      assert is_binary(view["hint"])
+      assert view["hint"] =~ "wait_for_job"
+      assert view["hint"] =~ "max_wait_seconds"
+      assert view["hint"] =~ "default 120"
+      assert view["hint"] =~ "Non-terminal"
+      assert is_nil(view["progress"]["updated_at_age_seconds"])
+    end
+
+    test "non-terminal results (verifying) include a hint naming wait_for_job", %{state: state} do
+      body =
+        JobsTool.call(
+          "start_job",
+          %{
+            "command" => "echo ok; exit 0",
+            "verify_command" => "sleep 2; echo verified; exit 0"
+          },
+          state
+        )
+        |> decode()
+
+      on_exit(fn ->
+        cleanup(body["job_id"])
+        Process.sleep(200)
+        job = HubRPC.get_job(body["job_id"])
+
+        if job.status in ~w(running verifying) do
+          JobsTool.call("cancel_job", %{"job_id" => body["job_id"]}, state)
+        end
+      end)
+
+      result =
+        Enum.reduce_while(1..10, nil, fn _, _ ->
+          result = JobsTool.call("check_job", %{"job_id" => body["job_id"]}, state)
+          view = decode(result)
+
+          if view["status"] == "verifying" do
+            {:halt, result}
+          else
+            Process.sleep(100)
+            {:cont, nil}
+          end
+        end)
+
+      assert %{"isError" => false} = result
+      view = decode(result)
+
+      assert view["status"] == "verifying"
+      assert is_binary(view["hint"])
+      assert view["hint"] =~ "wait_for_job"
+      assert view["hint"] =~ "max_wait_seconds"
+      assert view["hint"] =~ "default 120"
+      assert view["hint"] =~ "Non-terminal"
+    end
+
+    test "terminal results (succeeded) do not include a hint", %{state: state} do
+      body =
+        JobsTool.call("start_job", %{"command" => "echo ok; exit 0"}, state)
+        |> decode()
+
+      on_exit(fn -> cleanup(body["job_id"]) end)
+      wait_for_status(body["job_id"], ~w(succeeded failed))
+
+      result = JobsTool.call("check_job", %{"job_id" => body["job_id"]}, state)
+      assert %{"isError" => false} = result
+      view = decode(result)
+
+      assert view["status"] == "succeeded"
+      assert is_nil(view["hint"])
+    end
+
+    test "terminal results (failed) do not include a hint", %{state: state} do
+      body =
+        JobsTool.call("start_job", %{"command" => "exit 1"}, state)
+        |> decode()
+
+      on_exit(fn -> cleanup(body["job_id"]) end)
+      wait_for_status(body["job_id"], ~w(succeeded failed))
+
+      result = JobsTool.call("check_job", %{"job_id" => body["job_id"]}, state)
+      assert %{"isError" => false} = result
+      view = decode(result)
+
+      assert view["status"] == "failed"
+      assert is_nil(view["hint"])
     end
 
     test "errors for an unknown job_id", %{state: state} do
