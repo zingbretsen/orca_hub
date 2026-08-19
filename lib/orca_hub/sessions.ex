@@ -1160,11 +1160,20 @@ defmodule OrcaHub.Sessions do
   """
   def session_tail(session_id, opts \\ []) do
     limit = Keyword.get(opts, :tool_call_limit, 10)
+    %{list: tool_calls, was_truncated: was_truncated} = recent_tool_calls(session_id, limit)
 
-    %{
+    result = %{
       last_assistant_text: last_assistant_text(session_id),
-      recent_tool_calls: recent_tool_calls(session_id, limit)
+      recent_tool_calls: tool_calls,
+      tool_calls_truncated: was_truncated
     }
+
+    if was_truncated do
+      %{total: total} = recent_tool_calls(session_id, limit)
+      Map.put(result, :tool_calls_total, total)
+    else
+      result
+    end
   end
 
   defp recent_tool_calls(session_id, limit) do
@@ -1176,7 +1185,13 @@ defmodule OrcaHub.Sessions do
     |> Repo.all()
     |> Enum.reverse()
     |> Enum.flat_map(&tool_use_blocks/1)
-    |> Enum.take(-limit)
+    |> case do
+      all ->
+        total = length(all)
+        capped = Enum.take(all, -limit)
+        was_truncated = total > limit
+        %{list: capped, was_truncated: was_truncated, total: total}
+    end
   end
 
   defp tool_use_blocks(%Message{data: data}) do

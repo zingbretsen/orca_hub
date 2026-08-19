@@ -272,7 +272,10 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             },
             "tool_call_limit" => %{
               "type" => "integer",
-              "description" => "Maximum number of recent tool calls to include. Default: 10"
+              "description" =>
+                "Maximum number of recent tool calls to include. Default: 10. When the " <>
+                  "tool call list is truncated (more calls exist than this limit), the result " <>
+                  "includes a `tool_calls_truncated` string explaining how many were shown vs. total."
             },
             "full_last_message" => %{
               "type" => "boolean",
@@ -408,6 +411,10 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               nil
             end
 
+          # Store whether truncation occurred before we transform the list
+          was_truncated = tail.tool_calls_truncated
+          total = Map.get(tail, :tool_calls_total, length(tail.recent_tool_calls))
+
           result =
             %{
               id: session.id,
@@ -422,6 +429,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               last_commit: fetch_last_commit(node, session.directory)
             }
             |> maybe_put_last_assistant_text(last_assistant_text)
+            |> Map.put(:tool_calls_total, total)
+            |> maybe_put_tool_calls_truncated(was_truncated, limit)
 
           text(Jason.encode!(result))
         else
@@ -1375,6 +1384,17 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
   defp maybe_put_last_assistant_text(map, nil), do: map
   defp maybe_put_last_assistant_text(map, text), do: Map.put(map, :last_assistant_text, text)
+
+  defp maybe_put_tool_calls_truncated(map, true, limit) do
+    total = Map.get(map, :tool_calls_total, limit)
+
+    truncated_msg =
+      "showing last #{limit} of #{total} — pass tool_call_limit to get_session_tail for more"
+
+    Map.put(map, :tool_calls_truncated, truncated_msg)
+  end
+
+  defp maybe_put_tool_calls_truncated(map, _false_or_nil, _limit), do: map
 
   @run_elixir_tool_names ~w(run_elixir mcp__orca__run_elixir)
   @max_tail_extracted_tools 10

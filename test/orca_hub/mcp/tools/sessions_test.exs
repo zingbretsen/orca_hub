@@ -1688,6 +1688,157 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
         assert String.valid?(args), "offset #{offset} produced invalid UTF-8: #{inspect(args)}"
       end
     end
+
+    test "reports truncation when more tool calls exist than the default limit", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      # Create 12 tool calls to exceed the default limit of 10
+      for i <- 1..12 do
+        Sessions.create_message(%{
+          session_id: target.id,
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "t#{i}",
+                  "name" => "Bash",
+                  "input" => %{"command" => "echo #{i}"}
+                }
+              ]
+            }
+          }
+        })
+      end
+
+      result = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      # Only 10 should be returned (the last 10)
+      assert length(decoded["recent_tool_calls"]) == 10
+
+      # The truncation flag should be present with the right info
+      assert decoded["tool_calls_truncated"] =~ "showing last 10 of 12"
+      assert decoded["tool_calls_truncated"] =~ "tool_call_limit"
+      assert String.length(decoded["tool_calls_truncated"]) < 200
+    end
+
+    test "does not report truncation when at the limit", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      # Create exactly 10 tool calls (the default limit)
+      for i <- 1..10 do
+        Sessions.create_message(%{
+          session_id: target.id,
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "t#{i}",
+                  "name" => "Bash",
+                  "input" => %{"command" => "echo #{i}"}
+                }
+              ]
+            }
+          }
+        })
+      end
+
+      result = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert length(decoded["recent_tool_calls"]) == 10
+      # No truncation flag when exactly at the limit
+      refute Map.has_key?(decoded, "tool_calls_truncated")
+    end
+
+    test "does not report truncation when fewer than the limit", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      # Create only 5 tool calls (fewer than the default limit of 10)
+      for i <- 1..5 do
+        Sessions.create_message(%{
+          session_id: target.id,
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "t#{i}",
+                  "name" => "Bash",
+                  "input" => %{"command" => "echo #{i}"}
+                }
+              ]
+            }
+          }
+        })
+      end
+
+      result = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert length(decoded["recent_tool_calls"]) == 5
+      # No truncation flag when below the limit
+      refute Map.has_key?(decoded, "tool_calls_truncated")
+    end
+
+    test "larger tool_call_limit covers all calls without truncation", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      # Create 15 tool calls
+      for i <- 1..15 do
+        Sessions.create_message(%{
+          session_id: target.id,
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "t#{i}",
+                  "name" => "Bash",
+                  "input" => %{"command" => "echo #{i}"}
+                }
+              ]
+            }
+          }
+        })
+      end
+
+      # Request a larger limit that covers all 15
+      result =
+        SessionsTool.call(
+          "get_session_tail",
+          %{"session_id" => target.id, "tool_call_limit" => 20},
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert length(decoded["recent_tool_calls"]) == 15
+      # No truncation flag when the larger limit covers everything
+      refute Map.has_key?(decoded, "tool_calls_truncated")
+    end
   end
 
   describe "report_progress" do
