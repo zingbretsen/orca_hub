@@ -549,6 +549,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   end
 
   @max_title_length 80
+  @max_title_byte_limit 250
   @max_note_length 250
   @max_phase_length 250
 
@@ -599,18 +600,20 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   end
 
   # Collapses to a single line and caps length — this is a UI label (session
-  # list, tab title), not free-form text.
+  # list, tab title), not free-form text. First cap at 80 characters (UI
+  # intent), then byte-truncate to guard against varchar(255) overflow.
   defp normalize_title(title) do
     title
     |> String.trim()
     |> String.replace(~r/\s*\n+\s*/, " ")
-    |> safe_truncate(@max_title_length)
+    |> String.slice(0, @max_title_length)
+    |> safe_truncate(@max_title_byte_limit)
   end
 
   # Trims whitespace and truncates to byte budget, keeping complete UTF-8
   # characters. Used for progress_note, which is free-form text — no newline
-  # collapsing.
-  defp normalize_note(nil), do: ""
+  # collapsing. Passes nil through as nil.
+  defp normalize_note(nil), do: nil
 
   defp normalize_note(note) do
     note
@@ -620,7 +623,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
   # Trims whitespace and truncates to byte budget. Used for progress_phase,
   # which should be a short label but may contain multibyte characters.
-  defp normalize_phase(nil), do: ""
+  # Passes nil through as nil.
+  defp normalize_phase(nil), do: nil
 
   defp normalize_phase(phase) do
     phase

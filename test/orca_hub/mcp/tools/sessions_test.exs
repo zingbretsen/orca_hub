@@ -1869,6 +1869,41 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert reloaded.progress_note == short_note
     end
 
+    test "report_progress with phase but no note leaves progress_note as nil", %{dir: dir} do
+      {:ok, session} = Sessions.create_session(%{directory: dir})
+
+      SessionsTool.call(
+        "report_progress",
+        %{"phase" => "planning"},
+        %{orca_session_id: session.id}
+      )
+
+      reloaded = Sessions.get_session!(session.id)
+      assert reloaded.progress_note == nil
+      assert reloaded.progress_phase == "planning"
+    end
+
+    test "a title with 80 multibyte characters survives (80 chars, not bytes)", %{dir: dir} do
+      {:ok, session} = Sessions.create_session(%{directory: dir})
+
+      # 80 arrows = 240 bytes but 80 visible characters
+      multibyte_title = String.duplicate("→", 80)
+
+      SessionsTool.call(
+        "report_progress",
+        %{"title" => multibyte_title},
+        %{orca_session_id: session.id}
+      )
+
+      reloaded = Sessions.get_session!(session.id)
+      # Should be 80 characters (not truncated to ~26)
+      assert String.length(reloaded.title) == 80
+      # And byte size should be 240 (80 * 3 for arrow)
+      assert byte_size(reloaded.title) == 240
+      # Should still be under 255 bytes
+      assert byte_size(reloaded.title) <= 255
+    end
+
     test "a phase over 255 bytes is truncated", %{dir: dir} do
       {:ok, session} = Sessions.create_session(%{directory: dir})
 
