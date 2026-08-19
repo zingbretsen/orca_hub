@@ -1160,16 +1160,17 @@ defmodule OrcaHub.Sessions do
   """
   def session_tail(session_id, opts \\ []) do
     limit = Keyword.get(opts, :tool_call_limit, 10)
-    %{list: tool_calls, was_truncated: was_truncated} = recent_tool_calls(session_id, limit)
+
+    %{list: tool_calls, truncated?: truncated?, total: total} =
+      recent_tool_calls(session_id, limit)
 
     result = %{
       last_assistant_text: last_assistant_text(session_id),
       recent_tool_calls: tool_calls,
-      tool_calls_truncated: was_truncated
+      tool_calls_truncated: truncated?
     }
 
-    if was_truncated do
-      %{total: total} = recent_tool_calls(session_id, limit)
+    if truncated? do
       Map.put(result, :tool_calls_total, total)
     else
       result
@@ -1189,8 +1190,8 @@ defmodule OrcaHub.Sessions do
       all ->
         total = length(all)
         capped = Enum.take(all, -limit)
-        was_truncated = total > limit
-        %{list: capped, was_truncated: was_truncated, total: total}
+        truncated? = total > limit
+        %{list: capped, truncated?: truncated?, total: total}
     end
   end
 
@@ -1201,9 +1202,6 @@ defmodule OrcaHub.Sessions do
     |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use"))
     |> Enum.map(&%{name: &1["name"], input: &1["input"]})
   end
-
-  # Bucket windows (minutes) for activity_metadata/1.
-  @activity_buckets [5, 15, 30]
 
   @doc """
   Bucketed activity metadata (message + tool-call counts over the last
@@ -1216,6 +1214,9 @@ defmodule OrcaHub.Sessions do
   with no messages at all (zero counts, `last_activity_at: nil`) — callers
   never need to handle a missing key.
   """
+  # Bucket windows (minutes) for activity_metadata/1.
+  @activity_buckets [5, 15, 30]
+
   def activity_metadata(session_ids)
   def activity_metadata([]), do: %{}
 
