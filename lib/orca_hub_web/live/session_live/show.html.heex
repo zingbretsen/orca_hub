@@ -1,7 +1,7 @@
 <div
   id="drop-target"
   phx-hook="DropTarget"
-  class="relative flex flex-col h-[calc(100vh-6rem)] sm:h-[calc(100vh-8rem)]"
+  class="relative flex flex-col h-full min-h-0"
   style={
     if @open_files != [] || @show_file_browser || @show_terminal,
       do: "margin-left: calc(-50vw + 50%); width: 100vw; padding-left: 2rem; padding-right: 2rem;"

@@ -72,6 +72,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     {:ok,
      socket
+     # Read by OrcaHubWeb.Layouts.app/1: this page's root is `h-full` and
+     # scrolls internally (message feed, file panes), so the shell's content
+     # wrapper needs a definite height instead of growing past the viewport.
+     |> assign(:full_height, true)
      |> assign(:session, session)
      # Resolved once from session.backend (never nil/raises — legacy rows
      # default to Claude's capabilities, spec §7). Templates branch on these

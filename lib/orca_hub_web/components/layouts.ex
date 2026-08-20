@@ -67,66 +67,86 @@ defmodule OrcaHubWeb.Layouts do
       |> assign(:settings_menu_links, settings_menu_links(assigns))
 
     ~H"""
-    <header class="flex items-center gap-2 px-4 py-2 sm:px-6 lg:px-8">
-      <a href="/" class="flex items-center gap-2 font-semibold">
-        <img src={~p"/images/logo.png"} alt="OrcaHub" class="h-8 w-auto" /> OrcaHub
-      </a>
-
-      <nav class="hidden md:flex items-center gap-1 ml-4 mr-auto">
-        <a :for={link <- @nav_links} href={link.href} class="btn btn-ghost btn-sm">
-          {link.label}
-          <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-desktop" />
+    <%!-- The shell is exactly one viewport tall and `main` is the only scroll
+         container, so a page that wants to fill the window (SessionLive.Show)
+         can just say `h-full` instead of guessing the chrome height with a
+         `calc(100vh - Xrem)` that silently rots every time the header changes. --%>
+    <div class="flex flex-col h-dvh">
+      <header class="flex items-center gap-2 px-4 py-2 sm:px-6 lg:px-8 shrink-0">
+        <a href="/" class="flex items-center gap-2 font-semibold">
+          <img src={~p"/images/logo.png"} alt="OrcaHub" class="h-8 w-auto" /> OrcaHub
         </a>
-        <.settings_nav_dropdown links={@settings_menu_links} />
-      </nav>
 
-      <div class="hidden md:flex items-center gap-2 ml-auto">
-        <.theme_toggle />
-      </div>
+        <nav class="hidden md:flex items-center gap-1 ml-4 mr-auto">
+          <a :for={link <- @nav_links} href={link.href} class="btn btn-ghost btn-sm">
+            {link.label}
+            <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-desktop" />
+          </a>
+          <.settings_nav_dropdown links={@settings_menu_links} />
+        </nav>
 
-      <button
-        class="btn btn-ghost btn-sm btn-circle md:hidden ml-auto"
-        phx-click={JS.dispatch("command-palette:toggle", to: "body", bubbles: true)}
-      >
-        <.icon name="hero-magnifying-glass" class="size-5" />
-      </button>
+        <div class="flex items-center gap-1 sm:gap-2 ml-auto">
+          <.node_filter_opener
+            :if={assigns[:node_filter_visible]}
+            filter={assigns[:node_filter] || :all}
+            nodes={assigns[:node_filter_nodes] || []}
+          />
 
-      <div class="dropdown dropdown-end md:hidden">
-        <div tabindex="0" role="button" class="btn btn-ghost btn-sm btn-circle">
-          <.icon name="hero-bars-3-micro" class="size-5" />
+          <div class="hidden md:flex">
+            <.theme_toggle />
+          </div>
+
+          <button
+            class="btn btn-ghost btn-sm btn-circle md:hidden"
+            phx-click={JS.dispatch("command-palette:toggle", to: "body", bubbles: true)}
+          >
+            <.icon name="hero-magnifying-glass" class="size-5" />
+          </button>
+
+          <div class="dropdown dropdown-end md:hidden">
+            <div tabindex="0" role="button" class="btn btn-ghost btn-sm btn-circle">
+              <.icon name="hero-bars-3-micro" class="size-5" />
+            </div>
+            <ul
+              tabindex="0"
+              class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-52"
+            >
+              <li :for={link <- @nav_links}>
+                <a href={link.href}>
+                  {link.label}
+                  <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-mobile" />
+                </a>
+              </li>
+              <li :for={link <- @settings_menu_links}>
+                <a href={link.href}>{link.label}</a>
+              </li>
+
+              <li class="menu-title text-xs uppercase opacity-60 mt-2">Theme</li>
+              <li><.theme_toggle /></li>
+            </ul>
+          </div>
         </div>
-        <ul
-          tabindex="0"
-          class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-52"
-        >
-          <li :for={link <- @nav_links}>
-            <a href={link.href}>
-              {link.label}
-              <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-mobile" />
-            </a>
-          </li>
-          <li :for={link <- @settings_menu_links}>
-            <a href={link.href}>{link.label}</a>
-          </li>
+      </header>
 
-          <li class="menu-title text-xs uppercase opacity-60 mt-2">Theme</li>
-          <li><.theme_toggle /></li>
-        </ul>
-      </div>
-    </header>
+      <main class="flex-1 min-h-0 overflow-y-auto px-4 py-6 sm:px-6 sm:py-10 lg:px-8">
+        <%!-- `full_height` is an optional assign a LiveView sets when its own
+             root wants to fill the shell exactly (h-full). It's opt-in because
+             a definite height also caps `position: sticky` ranges for pages
+             that are taller than the viewport (e.g. /queue's sticky footer). --%>
+        <div class={["mx-auto max-w-5xl space-y-4", assigns[:full_height] && "h-full"]}>
+          {@inner_content}
+        </div>
+      </main>
+    </div>
 
-    <.node_filter_opener
+    <%!-- Rendered outside the shell: a daisyUI `.modal` is position:fixed, and
+         keeping it out of the flex column means it can never take flow height. --%>
+    <.node_filter_modal
       :if={assigns[:node_filter_visible]}
       filter={assigns[:node_filter] || :all}
       nodes={assigns[:node_filter_nodes] || []}
       node_modal_open={assigns[:node_modal_open] || false}
     />
-
-    <main class="px-4 py-6 sm:px-6 sm:py-10 lg:px-8">
-      <div class="mx-auto max-w-5xl space-y-4">
-        {@inner_content}
-      </div>
-    </main>
 
     <.flash_group flash={@flash} />
 
@@ -223,7 +243,11 @@ defmodule OrcaHubWeb.Layouts do
         end}
       </span>
     </button>
+    """
+  end
 
+  def node_filter_modal(assigns) do
+    ~H"""
     <dialog
       id="node-filter-modal"
       phx-hook="NodeFilter"
