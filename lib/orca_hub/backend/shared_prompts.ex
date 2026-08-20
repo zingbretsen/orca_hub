@@ -287,7 +287,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
     """
     ## Orchestration Practices (tl;dr)
 
-    - Rely on lifecycle notifications plus #{tail_ref} / activity metadata for progress; heartbeats are a coarse fallback — re-call #{heartbeat_ref} at each stage change to keep its delivered message current (it updates in place, it doesn't stack).
+    - Rely on lifecycle notifications plus #{tail_ref} / activity metadata for progress; heartbeats are a coarse fallback — re-call #{heartbeat_ref} at each stage change to keep its delivered message current (it updates in place, it doesn't stack). **The heartbeat message IS the notification: after scheduling a watching heartbeat, END YOUR TURN and let it wake you** — don't hand-poll with #{tail_ref} while waiting, and don't try to pace a wait loop with `Process.sleep` (denied inside `run_elixir`, and `run_elixir` itself is capped at 30s wall-clock anyway, far short of the minutes you'd want to wait).
     - #{message_ref} to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with #{tail_ref} first.
     - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. Workers verify with targeted tests only; the full suite runs once as a pre-deploy gate. No worktrees.
     - Do not Read or Glob a different project's directory; delegate with #{start_session_ref} using that project's `directory` instead.
@@ -416,6 +416,17 @@ defmodule OrcaHub.Backend.SharedPrompts do
     couple minutes, not just at phase boundaries — leaving \
     `progress_phase`/`progress_note` nil through a long stretch forces \
     whoever's watching to guess your state from tool-call histograms alone.
+    - Edit source with the Edit tool's exact-match strings, not `sed -i` or \
+    heredoc splicing — those half-apply on real source and send you into an \
+    edit-inspect-revert loop.
+    - **Never run destructive git commands** (`checkout`/`restore`/`reset`/\
+    `stash`/`clean`) on any path, for any reason — you share ONE checkout and \
+    ONE git index with sibling sessions, and those verbs destroy THEIR \
+    uncommitted work with no recovery. To undo your own edit, make a forward \
+    edit instead.
+    - Scope `mix format` to the files you touched (`mix format <your \
+    paths>`), never a bare `mix format` — a tree-wide run reformats files you \
+    never touched and can block another session's pre-deploy gate.
     """
     |> String.trim()
   end
@@ -445,6 +456,17 @@ defmodule OrcaHub.Backend.SharedPrompts do
     couple minutes, not just at phase boundaries — leaving \
     `progress_phase`/`progress_note` nil through a long stretch forces \
     whoever's watching to guess your state from tool-call histograms alone.
+    - Edit source with the Edit tool's exact-match strings, not `sed -i` or \
+    heredoc splicing — those half-apply on real source and send you into an \
+    edit-inspect-revert loop.
+    - **Never run destructive git commands** (`checkout`/`restore`/`reset`/\
+    `stash`/`clean`) on any path, for any reason — you share ONE checkout and \
+    ONE git index with sibling sessions, and those verbs destroy THEIR \
+    uncommitted work with no recovery. To undo your own edit, make a forward \
+    edit instead.
+    - Scope `mix format` to the files you touched (`mix format <your \
+    paths>`), never a bare `mix format` — a tree-wide run reformats files you \
+    never touched and can block another session's pre-deploy gate.
     - You can spawn child sessions of your own via #{start_session_ref} — the \
     child is automatically linked as your child and will send you a \
     "[Session lifecycle]" message when it goes idle or errors, just like an \

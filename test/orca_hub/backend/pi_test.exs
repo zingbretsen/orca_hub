@@ -1613,6 +1613,22 @@ defmodule OrcaHub.Backend.PiTest do
       assert prompt =~ "report_progress` PERIODICALLY"
     end
 
+    test "a worker session's prompt warns off destructive git commands, bare mix format, and sed -i" do
+      prompt = Backend.system_prompt(ctx())
+
+      assert prompt =~ "Never run destructive git commands"
+      assert prompt =~ "Scope `mix format` to the files you touched"
+      assert prompt =~ "not `sed -i`"
+    end
+
+    test "an orchestrator's prompt tells the caller to end its turn after scheduling a watching heartbeat" do
+      prompt = Backend.system_prompt(ctx(%{orchestrator: true}))
+
+      assert prompt =~ "The heartbeat message IS the notification"
+      assert prompt =~ "END YOUR TURN"
+      assert prompt =~ "Process.sleep` (denied inside `run_elixir`"
+    end
+
     # lib/orca_hub/mcp/server.ex:130 collapses the MCP surface to run_elixir
     # ONLY regardless of the orchestrator flag, so orchestrator + code_exec
     # together must rewrite the orchestrator guidance to Tools.*(...) inside
