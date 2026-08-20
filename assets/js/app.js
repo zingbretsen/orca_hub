@@ -1240,6 +1240,38 @@ let Hooks = {
       this.pushEvent("artifact_send", { artifact_id: this.el.dataset.artifactId, payload })
     }
   },
+
+  ArtifactFullscreen: {
+    mounted() {
+      const btn = this.el.querySelector("[data-artifact-fullscreen-btn]")
+      if (!btn) return
+
+      this._onClick = () => {
+        if (document.fullscreenElement === this.el) {
+          document.exitFullscreen()
+        } else {
+          this.el.requestFullscreen().catch(() => {
+            this.el.classList.add("artifact-fullscreen-fallback")
+          })
+        }
+      }
+
+      this._onKeydown = (e) => {
+        if (e.key === "Escape" && this.el.classList.contains("artifact-fullscreen-fallback")) {
+          this.el.classList.remove("artifact-fullscreen-fallback")
+        }
+      }
+
+      btn.addEventListener("click", this._onClick)
+      document.addEventListener("keydown", this._onKeydown)
+    },
+
+    destroyed() {
+      const btn = this.el.querySelector("[data-artifact-fullscreen-btn]")
+      if (btn) btn.removeEventListener("click", this._onClick)
+      document.removeEventListener("keydown", this._onKeydown)
+    }
+  },
   FileTree: {
     _getVisibleItems() {
       return Array.from(this.el.querySelectorAll("li > button[phx-click='select_file'], li > details > summary"))

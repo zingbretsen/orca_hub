@@ -2552,21 +2552,34 @@ defmodule OrcaHubWeb.SessionLive.Show do
           <.link
             navigate={~p"/artifacts/#{@tab.artifact_id}"}
             class="btn btn-xs btn-ghost gap-1"
-            title="Open fullscreen"
+            title="Open in artifact viewer"
           >
-            <.icon name="hero-arrows-pointing-out-micro" class="size-3" /> Fullscreen
+            <.icon name="hero-arrow-top-right-on-square-micro" class="size-3" /> Open page
           </.link>
         </div>
       </div>
-      <iframe
-        id={"artifact-iframe-#{@variant}-#{@tab.artifact_id}"}
-        src={~p"/artifacts/#{@tab.artifact_id}/raw?v=#{@tab.artifact.version}"}
-        sandbox="allow-scripts"
-        title={@tab.artifact.name}
-        phx-hook="ArtifactData"
-        data-artifact-id={@tab.artifact_id}
-        class="flex-1 w-full min-h-0 bg-white rounded border border-base-300"
-      />
+      <div
+        id={"artifact-fs-wrapper-#{@variant}-#{@tab.artifact_id}"}
+        phx-hook="ArtifactFullscreen"
+        class="relative"
+      >
+        <button
+          data-artifact-fullscreen-btn
+          class="btn btn-xs btn-ghost gap-1 absolute top-2 right-2 z-10"
+          title="Toggle fullscreen"
+        >
+          <.icon name="hero-arrows-pointing-out-micro" class="size-3" />
+        </button>
+        <iframe
+          id={"artifact-iframe-#{@variant}-#{@tab.artifact_id}"}
+          src={~p"/artifacts/#{@tab.artifact_id}/raw?v=#{@tab.artifact.version}"}
+          sandbox="allow-scripts"
+          title={@tab.artifact.name}
+          phx-hook="ArtifactData"
+          data-artifact-id={@tab.artifact_id}
+          class="flex-1 w-full min-h-0 bg-white rounded border border-base-300"
+        />
+      </div>
     </div>
     """
   end
