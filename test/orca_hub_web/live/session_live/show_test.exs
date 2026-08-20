@@ -765,8 +765,12 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       refute has_element?(view, "#session-node-#{root.id}.outline-primary")
     end
 
-    test "shows a node's model, badge-styled like backend/runner_node; omits the chip when nil",
-         %{conn: conn, claude_session: root, child: child, archived_grandchild: leaf} do
+    test "shows a node's model on its secondary metadata line; omits it when nil", %{
+      conn: conn,
+      claude_session: root,
+      child: child,
+      archived_grandchild: leaf
+    } do
       {:ok, child} = Sessions.update_session(child, %{model: "claude-opus-4-8"})
       assert is_nil(root.model)
       assert is_nil(leaf.model)
@@ -775,7 +779,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       assert has_element?(
                view,
-               "#session-node-#{child.id} span.badge",
+               "#session-node-#{child.id} div",
                "claude-opus-4-8"
              )
 
@@ -784,7 +788,25 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       # (root/child), whose subtree structurally nests every descendant's
       # markup and would trivially "contain" this text regardless of whether
       # the assertion logic were correct.
-      refute has_element?(view, "#session-node-#{leaf.id} span.badge", "claude-opus-4-8")
+      refute has_element?(view, "#session-node-#{leaf.id} div", "claude-opus-4-8")
+    end
+
+    test "shows backend, runner node, and archived status on the secondary metadata line", %{
+      conn: conn,
+      archived_grandchild: leaf
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{leaf.id}?view=tree")
+
+      # `leaf` has no children of its own — see the self-contained-subtree
+      # note above — so its metadata line is safe to select uniquely.
+      meta_line =
+        view
+        |> element("#session-node-#{leaf.id} div.text-base-content\\/50")
+        |> render()
+
+      assert meta_line =~ "claude"
+      assert meta_line =~ OrcaHub.Cluster.node_name(leaf.runner_node)
+      assert meta_line =~ "archived"
     end
 
     test "a lone session with no parent and no children renders as a single node, no crash", %{
@@ -951,9 +973,83 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       {:ok, view, html} = live(conn, ~p"/sessions/#{root.id}?view=tree")
 
+      # Collapsed per-node summary line renders counts up front...
+      assert has_element?(view, "#session-node-#{root.id} summary", "2 sent")
+      assert has_element?(view, "#session-node-#{sibling.id} summary", "2 received")
+
+      # ...and the full chip list — inside a closed <details>, so still
+      # present in the rendered HTML even though not visually expanded — has
+      # the count-folded chip and is reachable without a page interaction.
       assert html =~ "×2"
       assert has_element?(view, "#session-node-#{root.id} button", sibling.title)
       assert has_element?(view, "#session-node-#{sibling.id} button", root.title)
+    end
+
+    test "renders a distinct kind tag for a handoff edge but not a plain message edge", %{
+      conn: conn,
+      claude_session: root
+    } do
+      dir = Path.join(System.tmp_dir!(), "tree_edges_kind_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, sibling} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node()),
+          parent_session_id: root.id,
+          title: "Handoff Target"
+        })
+
+      on_exit(fn ->
+        if SessionSupervisor.session_alive?(sibling.id),
+          do: SessionSupervisor.stop_session(sibling.id)
+      end)
+
+      {:ok, _} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: root.id,
+          recipient_session_id: sibling.id,
+          kind: "handoff"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{root.id}?view=tree")
+
+      assert has_element?(view, "#session-node-#{root.id} button", "handoff")
+      assert has_element?(view, "#session-node-#{sibling.id} button", "handoff")
+    end
+
+    test "a plain message edge renders no kind tag", %{conn: conn, claude_session: root} do
+      dir =
+        Path.join(System.tmp_dir!(), "tree_edges_no_kind_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, sibling} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: Atom.to_string(node()),
+          parent_session_id: root.id,
+          title: "Message Target"
+        })
+
+      on_exit(fn ->
+        if SessionSupervisor.session_alive?(sibling.id),
+          do: SessionSupervisor.stop_session(sibling.id)
+      end)
+
+      {:ok, _} =
+        Sessions.create_session_interaction(%{
+          sender_session_id: root.id,
+          recipient_session_id: sibling.id
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{root.id}?view=tree")
+
+      refute has_element?(view, "#session-node-#{root.id} button", "message")
     end
   end
 
