@@ -330,7 +330,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     ## Orchestration Practices (tl;dr)
 
-    - Rely on lifecycle notifications plus `Tools.get_session_tail(...)` / activity metadata for progress; heartbeats are a coarse fallback — re-call `Tools.schedule_heartbeat(...)` at each stage change to keep its delivered message current (it updates in place, it doesn't stack). **The heartbeat message IS the notification: after scheduling a watching heartbeat, END YOUR TURN and let it wake you** — don't hand-poll with `Tools.get_session_tail(...)` while waiting, and don't try to pace a wait loop with `Process.sleep` (denied inside `run_elixir`, and `run_elixir` itself is capped at 30s wall-clock anyway, far short of the minutes you'd want to wait).
+    - Rely on lifecycle notifications plus `Tools.get_session_tail(...)` / activity metadata for progress; heartbeats are a coarse fallback — re-call `Tools.schedule_heartbeat(...)` at each stage change to keep its delivered message current (it updates in place, it doesn't stack); a stale message describes a world that no longer exists (a finished worker, a moved SHA) and is worse than no heartbeat at all, so cancel it outright once the only thing left is a human decision rather than let it keep re-firing "still waiting on the user" noise. **The heartbeat message IS the notification: after scheduling a watching heartbeat, END YOUR TURN and let it wake you** — don't hand-poll with `Tools.get_session_tail(...)` while waiting, and don't try to pace a wait loop with `Process.sleep` (denied inside `run_elixir`, and `run_elixir` itself is capped at 30s wall-clock anyway, far short of the minutes you'd want to wait).
     - `Tools.send_message_to_session(...)` to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with `Tools.get_session_tail(...)` first.
     - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. Workers verify with targeted tests only; the full suite runs once as a pre-deploy gate. No worktrees.
     - Do not Read or Glob a different project's directory; delegate with `Tools.start_session(...)` using that project's `directory` instead.
@@ -388,7 +388,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     ## Orchestration Practices (tl;dr)
 
-    - Rely on lifecycle notifications plus `mcp__orca__get_session_tail` / activity metadata for progress; heartbeats are a coarse fallback — re-call `mcp__orca__schedule_heartbeat` at each stage change to keep its delivered message current (it updates in place, it doesn't stack). **The heartbeat message IS the notification: after scheduling a watching heartbeat, END YOUR TURN and let it wake you** — don't hand-poll with `mcp__orca__get_session_tail` while waiting, and don't try to pace a wait loop with `Process.sleep` (denied inside `run_elixir`, and `run_elixir` itself is capped at 30s wall-clock anyway, far short of the minutes you'd want to wait).
+    - Rely on lifecycle notifications plus `mcp__orca__get_session_tail` / activity metadata for progress; heartbeats are a coarse fallback — re-call `mcp__orca__schedule_heartbeat` at each stage change to keep its delivered message current (it updates in place, it doesn't stack); a stale message describes a world that no longer exists (a finished worker, a moved SHA) and is worse than no heartbeat at all, so cancel it outright once the only thing left is a human decision rather than let it keep re-firing "still waiting on the user" noise. **The heartbeat message IS the notification: after scheduling a watching heartbeat, END YOUR TURN and let it wake you** — don't hand-poll with `mcp__orca__get_session_tail` while waiting, and don't try to pace a wait loop with `Process.sleep` (denied inside `run_elixir`, and `run_elixir` itself is capped at 30s wall-clock anyway, far short of the minutes you'd want to wait).
     - `mcp__orca__send_message_to_session` to a running session is a graceful interrupt-and-queue, not a lost message — feel free to ping a quiet worker, but peek non-interruptively with `mcp__orca__get_session_tail` first.
     - Parallel workers on disjoint files are encouraged: tell siblings each other's session IDs and file ownership so they can negotiate shared files directly. Workers verify with targeted tests only; the full suite runs once as a pre-deploy gate. No worktrees.
     - Do not Read or Glob a different project's directory; delegate with `mcp__orca__start_session` using that project's `directory` instead.
@@ -1042,6 +1042,13 @@ defmodule OrcaHub.Backend.ClaudeTest do
       assert prompt =~ "The heartbeat message IS the notification"
       assert prompt =~ "END YOUR TURN"
       assert prompt =~ "Process.sleep` (denied inside `run_elixir`"
+    end
+
+    test "orchestrator prompt warns that a stale heartbeat message is worse than none and to cancel when blocked on a human" do
+      prompt = Backend.system_prompt(ctx(%{orchestrator: true}))
+
+      assert prompt =~ "a stale message describes a world that no longer exists"
+      assert prompt =~ "cancel it outright once the only thing left is a human decision"
     end
   end
 

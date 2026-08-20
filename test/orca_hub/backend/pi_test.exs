@@ -1629,6 +1629,13 @@ defmodule OrcaHub.Backend.PiTest do
       assert prompt =~ "Process.sleep` (denied inside `run_elixir`"
     end
 
+    test "an orchestrator's prompt warns that a stale heartbeat message is worse than none and to cancel when blocked on a human" do
+      prompt = Backend.system_prompt(ctx(%{orchestrator: true}))
+
+      assert prompt =~ "a stale message describes a world that no longer exists"
+      assert prompt =~ "cancel it outright once the only thing left is a human decision"
+    end
+
     # lib/orca_hub/mcp/server.ex:130 collapses the MCP surface to run_elixir
     # ONLY regardless of the orchestrator flag, so orchestrator + code_exec
     # together must rewrite the orchestrator guidance to Tools.*(...) inside
