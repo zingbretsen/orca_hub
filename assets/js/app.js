@@ -1250,6 +1250,10 @@ let Hooks = {
         if (document.fullscreenElement === this.el) {
           document.exitFullscreen()
         } else {
+          if (!this.el.requestFullscreen) {
+            this.el.classList.add("artifact-fullscreen-fallback")
+            return
+          }
           this.el.requestFullscreen().catch(() => {
             this.el.classList.add("artifact-fullscreen-fallback")
           })

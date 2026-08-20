@@ -2561,7 +2561,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
       <div
         id={"artifact-fs-wrapper-#{@variant}-#{@tab.artifact_id}"}
         phx-hook="ArtifactFullscreen"
-        class="relative"
+        class="relative flex-1 min-h-0 w-full artifact-fs-wrapper"
       >
         <button
           data-artifact-fullscreen-btn
@@ -2577,7 +2577,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
           title={@tab.artifact.name}
           phx-hook="ArtifactData"
           data-artifact-id={@tab.artifact_id}
-          class="flex-1 w-full min-h-0 bg-white rounded border border-base-300"
+          class="w-full h-full bg-white rounded border border-base-300"
         />
       </div>
     </div>
