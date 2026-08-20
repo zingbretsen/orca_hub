@@ -614,7 +614,10 @@ defmodule OrcaHubWeb.MessageComponentsTest do
       ]
 
       html =
-        render_component(&MessageComponents.message_feed/1, %{messages: messages, session_node: nil})
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: messages,
+          session_node: nil
+        })
 
       # The fix ensures thinking messages render only as part of the thinking group,
       # not as individual message cards. With the bug, each thinking message would
@@ -660,7 +663,10 @@ defmodule OrcaHubWeb.MessageComponentsTest do
       ]
 
       html =
-        render_component(&MessageComponents.message_feed/1, %{messages: messages, session_node: nil})
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: messages,
+          session_node: nil
+        })
 
       # Even though thinking messages are interleaved, build_feed_items chunks them
       # correctly by type. Each thinking message gets its own group (since they're not consecutive).
@@ -703,7 +709,10 @@ defmodule OrcaHubWeb.MessageComponentsTest do
       }
 
       html =
-        render_component(&MessageComponents.message_feed/1, %{messages: [mixed_msg], session_node: nil})
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [mixed_msg],
+          session_node: nil
+        })
 
       # The message has a feed item (for the text/tool_use card)
       assert String.contains?(html, ~s(id="feed-mixed-1"))
@@ -737,7 +746,10 @@ defmodule OrcaHubWeb.MessageComponentsTest do
       }
 
       html =
-        render_component(&MessageComponents.message_feed/1, %{messages: [pure_thinking], session_node: nil})
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [pure_thinking],
+          session_node: nil
+        })
 
       # The message has a feed item for the thinking group
       assert String.contains?(html, ~s(id="feed-pure-thinking"))
@@ -752,7 +764,9 @@ defmodule OrcaHubWeb.MessageComponentsTest do
 
       # Count thinking groups - should be 1
       thinking_summary_count = length(String.split(html, "Thinking")) - 1
-      assert thinking_summary_count == 1, "Expected 1 'Thinking' summary label for pure thinking message"
+
+      assert thinking_summary_count == 1,
+             "Expected 1 'Thinking' summary label for pure thinking message"
     end
 
     test "mixed thinking+text+tool_use messages render all content exactly once" do
@@ -765,13 +779,21 @@ defmodule OrcaHubWeb.MessageComponentsTest do
           "content" => [
             %{"type" => "thinking", "thinking" => "Thinking about tool use"},
             %{"type" => "text", "text" => "Here is the result"},
-            %{"type" => "tool_use", "id" => "t1", "name" => "Bash", "input" => %{"command" => "echo hi"}}
+            %{
+              "type" => "tool_use",
+              "id" => "t1",
+              "name" => "Bash",
+              "input" => %{"command" => "echo hi"}
+            }
           ]
         }
       }
 
       html =
-        render_component(&MessageComponents.message_feed/1, %{messages: [mixed_msg], session_node: nil})
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [mixed_msg],
+          session_node: nil
+        })
 
       # The message has a feed item (for the text/tool_use card)
       assert String.contains?(html, ~s(id="feed-mixed-1"))
@@ -793,7 +815,9 @@ defmodule OrcaHubWeb.MessageComponentsTest do
       # Count thinking group summaries (the 'Thinking' label in the summary element)
       # - should be exactly 1 for this single mixed message
       thinking_group_count = length(String.split(html, "id=\"thinking-group-mixed-1\"")) - 1
-      assert thinking_group_count == 1, "Expected 1 thinking group for mixed message, got #{thinking_group_count}\nHTML: #{html}"
+
+      assert thinking_group_count == 1,
+             "Expected 1 thinking group for mixed message, got #{thinking_group_count}\nHTML: #{html}"
 
       # Verify the thinking group renders the thinking content
       assert html =~ "thinking-group-mixed-1"

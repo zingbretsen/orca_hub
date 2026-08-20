@@ -169,7 +169,9 @@ defmodule OrcaHub.Streaming.WarmPoolTest do
 
       # Verify backend filtering works
       pi_rows = Enum.filter(rows, fn {_sid, _pid, _ts, _status, backend} -> backend == :pi end)
-      claude_rows = Enum.filter(rows, fn {_sid, _pid, _ts, _status, backend} -> backend == :claude end)
+
+      claude_rows =
+        Enum.filter(rows, fn {_sid, _pid, _ts, _status, backend} -> backend == :claude end)
 
       assert length(pi_rows) == 1
       assert length(claude_rows) == 1

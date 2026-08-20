@@ -358,7 +358,10 @@
       <button
         :if={@todos != []}
         phx-click="toggle_todos"
-        class={["hidden sm:flex btn btn-ghost btn-sm btn-circle indicator", @show_todos && "text-primary"]}
+        class={[
+          "hidden sm:flex btn btn-ghost btn-sm btn-circle indicator",
+          @show_todos && "text-primary"
+        ]}
         title="Tasks"
       >
         <.icon name="hero-clipboard-document-check" class="size-5" />
@@ -369,7 +372,10 @@
       <button
         :if={@commits != []}
         phx-click="toggle_commits"
-        class={["hidden sm:flex btn btn-ghost btn-sm btn-circle indicator", @show_commits && "text-primary"]}
+        class={[
+          "hidden sm:flex btn btn-ghost btn-sm btn-circle indicator",
+          @show_commits && "text-primary"
+        ]}
         title="Commits"
       >
         <.icon name="hero-code-bracket" class="size-5" />
@@ -378,7 +384,10 @@
       <button
         :if={@session_artifacts != []}
         phx-click="toggle_artifacts"
-        class={["hidden sm:flex btn btn-ghost btn-sm btn-circle indicator", @show_artifacts && "text-primary"]}
+        class={[
+          "hidden sm:flex btn btn-ghost btn-sm btn-circle indicator",
+          @show_artifacts && "text-primary"
+        ]}
         title="Artifacts"
       >
         <.icon name="hero-sparkles" class="size-5" />
@@ -398,7 +407,10 @@
       </button>
       <button
         phx-click="open_terminal"
-        class={["hidden sm:flex btn btn-ghost btn-sm btn-circle", @show_terminal && "text-primary"]}
+        class={[
+          "hidden sm:flex btn btn-ghost btn-sm btn-circle",
+          @show_terminal && "text-primary"
+        ]}
         title="Open terminal"
       >
         <.icon name="hero-command-line" class="size-5" />
@@ -425,7 +437,10 @@
       <button
         :if={@capabilities.mcp}
         phx-click="toggle_mcp_modal"
-        class={["hidden sm:flex btn btn-ghost btn-sm btn-circle", @show_mcp_modal && "text-primary"]}
+        class={[
+          "hidden sm:flex btn btn-ghost btn-sm btn-circle",
+          @show_mcp_modal && "text-primary"
+        ]}
         title="MCP servers"
       >
         <.icon name="hero-server-stack" class="size-5" />

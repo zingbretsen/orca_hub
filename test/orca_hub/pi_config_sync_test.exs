@@ -455,26 +455,32 @@ defmodule OrcaHub.PiConfigSyncTest do
     setup do
       # Clear the WarmPool table
       :ets.delete_all_objects(@table)
+
       on_exit(fn ->
         :ets.delete_all_objects(@table)
         Streaming.set_warm_cap(nil)
       end)
+
       :ok
     end
 
     # A stand-in "runner" that tracks evict_warm calls
     defmodule EvictTracker do
       use GenServer
+
       def start_link do
         GenServer.start_link(__MODULE__, %{})
       end
+
       @impl true
       def init(state), do: {:ok, state}
       @impl true
       def handle_call(:evict_warm, _from, %{count: count} = state),
         do: {:reply, :ok, %{state | count: count + 1}}
+
       def handle_call(:evict_warm, _from, state),
         do: {:reply, :ok, %{state | count: 1}}
+
       def evicts(pid), do: GenServer.call(pid, :evicts)
     end
 
@@ -500,12 +506,16 @@ defmodule OrcaHub.PiConfigSyncTest do
       assert length(rows) == 3
 
       # Filter to just pi sessions
-      pi_sessions = Enum.filter(rows, fn {_sid, _pid, _ts, _status, backend} -> backend == :pi end)
+      pi_sessions =
+        Enum.filter(rows, fn {_sid, _pid, _ts, _status, backend} -> backend == :pi end)
+
       assert length(pi_sessions) == 1
       {"pi1", ^pi1, _, _, :pi} = Enum.at(pi_sessions, 0)
 
       # Filter to just claude sessions  
-      claude_sessions = Enum.filter(rows, fn {_sid, _pid, _ts, _status, backend} -> backend == :claude end)
+      claude_sessions =
+        Enum.filter(rows, fn {_sid, _pid, _ts, _status, backend} -> backend == :claude end)
+
       assert length(claude_sessions) == 1
     end
   end

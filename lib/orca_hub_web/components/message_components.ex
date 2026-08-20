@@ -247,6 +247,7 @@ defmodule OrcaHubWeb.MessageComponents do
           # thinking blocks. This distinguishes them from mixed messages.
           has_non_thinking_block? = Enum.any?(chunk, &has_non_thinking_content?/1)
           thinking_group = {:thinking_group, group_id, blocks}
+
           if has_non_thinking_block? do
             # Mixed messages: keep both the group (thinking) and cards (text/tool_use)
             [thinking_group | Enum.map(chunk, &{:msg, &1})]
