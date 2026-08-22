@@ -3297,7 +3297,7 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert %{"isError" => false, "content" => [%{"text" => text}]} = result
       decoded = Jason.decode!(text)
 
-      refute Map.has_key?(decoded, :pending_question)
+      refute Map.has_key?(decoded, "pending_question")
     end
   end
 
@@ -3348,7 +3348,7 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
 
       assert %{"isError" => false, "content" => [%{"text" => text}]} = result
       decoded = Jason.decode!(text)
-      refute Map.has_key?(decoded, :queued_messages)
+      refute Map.has_key?(decoded, "queued_messages")
     end
 
     test "includes queued_messages when messages are queued", %{dir: dir, state: state} do
