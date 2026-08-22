@@ -106,6 +106,9 @@ defmodule OrcaHubWeb.Router do
     post "/runs", ApiRunController, :create
     get "/runs/:id", ApiRunController, :show
     post "/runs/:id/tool_result", ApiRunController, :tool_result
+
+    get "/sessions", SessionApiController, :index
+    get "/sessions/:id", SessionApiController, :show
   end
 
   # Inbound A2A (Agent2Agent) v0.3.0 server surface (docs/a2a.md). Hub-only —

@@ -380,3 +380,62 @@ curl -s -X POST https://orca.example/api/v1/runs/run-1/tool_result \
 curl -s https://orca.example/api/v1/runs/run-1 -H "Authorization: Bearer $ORCA_API_TOKEN"
 # {"run_id":"run-1","session_id":"sess-1","status":"completed","result_text":"It's sunny and 72°F in Boston."}
 ```
+
+## GET /api/v1/sessions
+
+Read-only session listing, behind the same bearer-token auth as the rest of
+this API. First consumer is a Wear OS watch companion app — the response is
+a deliberately COMPACT projection (not the full session record with every
+association) so a battery/bandwidth-constrained client can poll it cheaply.
+
+Defaults to non-archived sessions. Supports two optional query-string
+filters:
+
+| param | notes |
+|---|---|
+| `status` | exact match, e.g. `?status=running` |
+| `project_id` | exact match against the session's project |
+
+### Response
+
+```json
+{
+  "sessions": [
+    {
+      "id": "…",
+      "status": "running | idle | waiting | error | compacting | …",
+      "title": "…",
+      "progress_phase": "…",
+      "progress_note": "…",
+      "last_activity_at": "2026-08-21T18:04:12Z",
+      "directory": "/home/zach/orca_hub",
+      "project_id": "…",
+      "project_name": "…"
+    }
+  ]
+}
+```
+
+`progress_phase`/`progress_note`/`project_id`/`project_name` are `null` when
+unset/no project. `last_activity_at` is the session's `updated_at`, as an
+ISO 8601 UTC timestamp.
+
+### Example
+
+```bash
+curl -s "https://orca.example/api/v1/sessions?status=running" \
+  -H "Authorization: Bearer $ORCA_API_TOKEN"
+# {"sessions":[{"id":"…","status":"running","title":"…","progress_phase":"implementing","progress_note":"…","last_activity_at":"2026-08-21T18:04:12Z","directory":"/tmp","project_id":"…","project_name":"…"}]}
+```
+
+## GET /api/v1/sessions/:id
+
+The same compact projection as above, for a single session.
+
+```bash
+curl -s https://orca.example/api/v1/sessions/<id> -H "Authorization: Bearer $ORCA_API_TOKEN"
+# {"id":"…","status":"idle","title":"…","progress_phase":null,"progress_note":null,"last_activity_at":"2026-08-21T18:04:12Z","directory":"/tmp","project_id":null,"project_name":null}
+```
+
+`404 {"error": "session not found"}` for both a nonexistent id and a
+malformed one (never a raw `Ecto.Query.CastError`).
