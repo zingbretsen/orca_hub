@@ -3147,4 +3147,161 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       refute Map.has_key?(decoded, "fork_budget_warning")
     end
   end
+
+  # ── answer_session_question / pending_question tests ─────────────────
+  describe "option matching helpers" do
+    test "exact match returns the option" do
+      assert SessionsTool.match_option("Red", ["Red", "Blue"]) == {:ok, "Red"}
+    end
+
+    test "case-insensitive prefix match works" do
+      assert SessionsTool.match_option("r", ["Red", "Blue"]) == {:ok, "Red"}
+      assert SessionsTool.match_option("bl", ["Red", "Blue"]) == {:ok, "Blue"}
+    end
+
+    test "ambiguous prefix returns error" do
+      result = SessionsTool.match_option("b", ["Blue", "Brown"])
+      assert elem(result, 0) == :error
+      assert elem(result, 1) =~ "ambiguous"
+    end
+
+    test "1-based index match works" do
+      assert SessionsTool.match_option("1", ["Red", "Blue"]) == {:ok, "Red"}
+      assert SessionsTool.match_option("2", ["Red", "Blue"]) == {:ok, "Blue"}
+    end
+
+    test "out-of-range index returns error" do
+      result = SessionsTool.match_option("3", ["Red", "Blue"])
+      assert elem(result, 0) == :error
+      assert elem(result, 1) =~ "out of range"
+    end
+
+    test "confirm yes/no mapping" do
+      assert SessionsTool.build_answer_payload("confirm", "yes", nil) == %{"confirmed" => true}
+      assert SessionsTool.build_answer_payload("confirm", "Yes", nil) == %{"confirmed" => true}
+      assert SessionsTool.build_answer_payload("confirm", "no", nil) == %{"confirmed" => false}
+      assert SessionsTool.build_answer_payload("confirm", "No", nil) == %{"confirmed" => false}
+    end
+
+    test "confirm invalid input raises" do
+      assert_raise ArgumentError, ~r/confirm method expects/, fn ->
+        SessionsTool.build_answer_payload("confirm", "maybe", nil)
+      end
+    end
+
+    test "free-text input passes through" do
+      assert SessionsTool.build_answer_payload("input", "hello world", nil) ==
+               %{"value" => "hello world"}
+    end
+
+    test "select with options uses option matching" do
+      assert SessionsTool.build_answer_payload("select", "Red", ["Red", "Blue"]) ==
+               %{"value" => "Red"}
+
+      assert SessionsTool.build_answer_payload("select", "1", ["Red", "Blue"]) ==
+               %{"value" => "Red"}
+
+      assert SessionsTool.build_answer_payload("select", "bl", ["Red", "Blue"]) ==
+               %{"value" => "Blue"}
+    end
+  end
+
+  describe "get_session_tail pending_question" do
+    test "returns pending_question when a pi_ui_request is pending", %{
+      dir: dir,
+      state: state
+    } do
+      # Create a pi-backed session
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "pi",
+          status: "running"
+        })
+
+      # Create a pending pi_ui_request event (no response yet)
+      request_id = "req-123"
+
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "pi_ui_request",
+          "id" => request_id,
+          "method" => "select",
+          "title" => "Pick a color",
+          "message" => "Which color do you prefer?",
+          "options" => ["Red", "Green", "Blue"]
+        }
+      })
+
+      result = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert Map.has_key?(decoded, "pending_question")
+      assert decoded["pending_question"]["id"] == request_id
+      assert decoded["pending_question"]["method"] == "select"
+      assert decoded["pending_question"]["title"] == "Pick a color"
+      assert decoded["pending_question"]["message"] == "Which color do you prefer?"
+      assert decoded["pending_question"]["options"] == ["Red", "Green", "Blue"]
+    end
+
+    test "does not include pending_question when no request is pending", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "pi",
+          status: "running"
+        })
+
+      result = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      refute Map.has_key?(decoded, :pending_question)
+    end
+  end
+
+  describe "answer_session_question" do
+    # NOTE: Full integration testing of answer_session_question is covered by
+    # pi_stub_integration_test.exs' "extension-UI reply loop" test. This test
+    # just verifies the tool's error handling when the runner is not running.
+
+    test "errors when no pending question exists", %{dir: dir, state: state} do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "pi",
+          status: "running"
+        })
+
+      result =
+        SessionsTool.call(
+          "answer_session_question",
+          %{"session_id" => target.id, "answer" => "something"},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "No pending question"
+      assert text =~ target.id
+    end
+
+    test "errors when session not found", %{state: state} do
+      result =
+        SessionsTool.call(
+          "answer_session_question",
+          %{"session_id" => Ecto.UUID.generate(), "answer" => "x"},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "not found"
+    end
+  end
 end

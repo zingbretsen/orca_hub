@@ -261,7 +261,9 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "input), self-reported progress (phase/note from report_progress, if any), " <>
             "activity metadata (message/tool-call counts over the last 5/15/30 minutes, " <>
             "last_activity_at), last_commit (git HEAD of its directory, if it's a repo), " <>
-            "and churn (a server-side heuristic block with churn_suspected flag). " <>
+            "churn (a server-side heuristic block with churn_suspected flag), and if a " <>
+            "pi session has a pending question/confirm/input dialog, a `pending_question` " <>
+            "object (id, method, title, message, options—options may be null). " <>
             "Use this to tell \"making progress\" from \"stuck\" before deciding whether to " <>
             "interrupt a worker.",
         "inputSchema" => %{
@@ -295,6 +297,30 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             }
           },
           "required" => ["session_id"]
+        }
+      },
+      %{
+        "name" => "answer_session_question",
+        "description" =>
+          "Answer a pending pi question/confirm/input dialog. For an options question, pass the " <>
+            "option text (exact or case-insensitive unique-prefix match) or a 1-based index as a " <>
+            "string; for method \"confirm\", pass \"yes\" or \"no\"; for free-text input, pass the " <>
+            "text itself. Errors with a friendly message if there is no pending question for the " <>
+            "session.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "session_id" => %{
+              "type" => "string",
+              "description" => "The OrcaHub session ID"
+            },
+            "answer" => %{
+              "type" => "string",
+              "description" =>
+                "The answer value (exact option text, 1-based index, \"yes\"/\"no\", or free text)"
+            }
+          },
+          "required" => ["session_id", "answer"]
         }
       }
     ]
@@ -363,6 +389,63 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     end
   end
 
+  def call("answer_session_question", args, _state) do
+    session_id = args["session_id"]
+    answer = args["answer"]
+
+    case Cluster.find_session(session_id) do
+      {node, _session} ->
+        if NodePolicy.cross_node_allowed?(node) do
+          pending_request = HubRPC.pending_pi_ui_request(session_id)
+
+          if is_nil(pending_request) do
+            error(
+              "No pending question for session #{session_id}. " <>
+                "Call get_session_tail to check for pending questions."
+            )
+          else
+            request_id = pending_request["id"]
+            method = pending_request["method"]
+            options = pending_request["options"]
+
+            payload =
+              build_answer_payload(method, answer, options)
+
+            case Cluster.answer_ui_request(node, session_id, request_id, payload) do
+              :ok ->
+                text(
+                  "Answered question #{request_id} for session #{session_id} " <>
+                    "(method: #{method})"
+                )
+
+              {:error, :not_running} ->
+                error(
+                  "Session #{session_id} has no runner (might have just started or crashed). " <>
+                    "Try again if the session is still active."
+                )
+
+              {:error, :not_pending} ->
+                error(
+                  "Session #{session_id} has no pending question #{request_id}. " <>
+                    "It may have been answered already or cleared."
+                )
+
+              {:error, reason} ->
+                error(
+                  "Failed to answer question #{request_id} for session #{session_id}: " <>
+                    "#{inspect(reason)}"
+                )
+            end
+          end
+        else
+          error(NodePolicy.denial_message(node))
+        end
+
+      nil ->
+        error("Session #{session_id} not found on any node.")
+    end
+  end
+
   def call("archive_session", args, _state) do
     target_id = args["session_id"]
 
@@ -421,6 +504,22 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
           churn = OrcaHub.Sessions.Churn.assess(activity, session, last_commit_info)
 
+          # Include pending pi UI request if present
+          pending_request = HubRPC.pending_pi_ui_request(target_id)
+
+          pending_question =
+            if pending_request do
+              %{
+                "id" => pending_request["id"],
+                "method" => pending_request["method"],
+                "title" => pending_request["title"],
+                "message" => pending_request["message"],
+                "options" => pending_request["options"]
+              }
+            else
+              nil
+            end
+
           result =
             %{
               id: session.id,
@@ -437,6 +536,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             }
             |> maybe_put_last_assistant_text(last_assistant_text)
             |> maybe_put_tool_calls_truncated(truncated?, limit, total)
+            |> maybe_put_pending_question(pending_question)
 
           text(Jason.encode!(result))
         else
@@ -1400,6 +1500,9 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
   defp maybe_put_tool_calls_truncated(map, _false_or_nil, _limit, _total), do: map
 
+  defp maybe_put_pending_question(map, nil), do: map
+  defp maybe_put_pending_question(map, pending), do: Map.put(map, :pending_question, pending)
+
   @run_elixir_tool_names ~w(run_elixir mcp__orca__run_elixir)
   @max_tail_extracted_tools 10
 
@@ -1673,6 +1776,122 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     case Cluster.rpc(node, OrcaHub.Sessions, :git_head_info, [directory]) do
       %{} = info -> info
       _ -> nil
+    end
+  end
+
+  # ── answer_session_question helpers ───────────────────────────────────
+  # Mirrors SessionLive.Show's `piui_payload/2` behavior and extends with
+  # option-matching for select dialogs.
+
+  @doc false
+  def build_answer_payload("confirm", answer, _options) do
+    # pi's confirm dialog: "true" or "false" as the wire value for confirmed
+    case String.downcase(answer) do
+      "yes" ->
+        %{"confirmed" => true}
+
+      "no" ->
+        %{"confirmed" => false}
+
+      _ ->
+        raise(
+          ArgumentError,
+          "confirm method expects 'yes' or 'no' as answer, got: #{inspect(answer)}"
+        )
+    end
+  end
+
+  def build_answer_payload("select", answer, options) when is_list(options) do
+    # For select: exact match OR case-insensitive unique-prefix OR 1-based index
+    case match_option(answer, options) do
+      {:ok, selected} ->
+        %{"value" => selected}
+
+      {:error, msg} ->
+        raise(ArgumentError, "option matching error: #{msg}")
+    end
+  end
+
+  @doc false
+  def build_answer_payload("select", _answer, _options) do
+    raise(ArgumentError, "select method requires options array")
+  end
+
+  @doc false
+  def build_answer_payload("input", answer, _options) do
+    # For free-text input: pass the answer verbatim
+    %{"value" => answer}
+  end
+
+  @doc false
+  def build_answer_payload(method, _answer, _options) do
+    raise(ArgumentError, "unknown method #{inspect(method)} for answer_session_question")
+  end
+
+  @doc false
+  # Option matching logic: exact match, case-insensitive prefix (unique), or 1-based index
+  def match_option(answer, options) when is_list(options) do
+    # Try exact match first (case-sensitive), then prefix match (unique), then index
+    case exact_match(answer, options) do
+      {:ok, selected} ->
+        {:ok, selected}
+
+      :no_exact ->
+        case prefix_match(answer, options) do
+          {:ok, selected} ->
+            {:ok, selected}
+
+          :no_prefix ->
+            index_match(answer, options)
+
+          {:error, msg} ->
+            {:error, msg}
+        end
+    end
+  end
+
+  @doc false
+  def match_option(_answer, _options), do: {:error, "no options provided"}
+
+  @doc false
+  # Exact match (case-sensitive)
+  def exact_match(answer, options) do
+    if answer in options do
+      {:ok, answer}
+    else
+      :no_exact
+    end
+  end
+
+  @doc false
+  # Case-insensitive prefix match with ambiguity detection
+  def prefix_match(answer, options) do
+    prefix = String.downcase(answer)
+    matches = Enum.filter(options, &String.starts_with?(String.downcase(&1), prefix))
+
+    case matches do
+      [] ->
+        :no_prefix
+
+      [match] ->
+        {:ok, match}
+
+      multiple ->
+        {:error,
+         "ambiguous prefix #{inspect(answer)} matches #{length(multiple)} options: " <>
+           "#{Enum.join(multiple, ", ")}"}
+    end
+  end
+
+  @doc false
+  # 1-based index match
+  def index_match(answer, options) do
+    case Integer.parse(answer) do
+      {index, ""} when index >= 1 and index <= length(options) ->
+        {:ok, Enum.at(options, index - 1)}
+
+      _ ->
+        {:error, "index out of range"}
     end
   end
 end
