@@ -29,7 +29,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 
 ## Common issues
 
-- Database timestamps are `NaiveDateTime` — convert to `DateTime` (with `"Etc/UTC"`) before passing to `DateTime.diff/3` or other `DateTime` functions
+- Timestamp field types vary per column (`:naive_datetime` vs `:utc_datetime` — check the schema, don't assume); convert `NaiveDateTime` with `DateTime.from_naive!(x, "Etc/UTC")` before `DateTime` arithmetic, and pattern-match both when a field's provenance is mixed
 - Never sort/compare `%NaiveDateTime{}`/`%DateTime{}` structs with a bare `Enum.sort_by/2`, `Enum.sort/1`, `Enum.min_by/2`, `Enum.max_by/2`, `<`/`<=`/`>`/`>=`, etc. — Erlang's default term ordering compares struct fields ALPHABETICALLY (`microsecond` sorts before `minute`/`month`/`second`/`year`), not chronologically, so it silently scrambles any two timestamps sharing an `hour`. Always pass an explicit comparator: `Enum.sort_by(list, & &1.updated_at, {:desc, NaiveDateTime})` / `{:asc, DateTime}`, or `NaiveDateTime.compare/2` in a custom sorter fn. This caused the 2026-08-08 windowed-feed out-of-order/dropped-reply incident (`Sessions.list_messages_window/2`) — search for this bug class with `grep -rnE "Enum\.(sort_by|sort|min_by|max_by|min|max)\(" lib/` and inspect every hit touching a timestamp field.
 
 ## Key patterns

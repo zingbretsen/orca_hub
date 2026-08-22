@@ -321,6 +321,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     3. **Heartbeats are a coarse fallback, not your primary signal.** Automatic `[Session lifecycle]` messages fire the moment a worker finishes, so you shouldn't need to poll. Still set one wide-interval `Tools.schedule_heartbeat(...)` safety net (e.g. every 10-15 minutes) in case a notification is ever missed or a worker hangs mid-turn (never goes idle/error). Pass `watch_children: true` (or `watch_session_ids`) — watch lists put per-worker status/activity digests directly in the wake-up message, often enough to skip a `search_sessions` call:
        > "Check on worker sessions. Use `Tools.search_sessions(...)` inside `run_elixir` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
+    4. **Subscribe to worker alerts at session start with `Tools.set_worker_alerts(...)` and `watch_children: true`.** Rising-edge `[Worker alert]` messages (churn/stall, with per-file/per-test detail) replace tight heartbeat polling; use heartbeats as a wide fallback only.
+    5. **When a worker stalls on a pending dialog, use `Tools.get_session_tail(...)` to inspect `pending_question`, then answer with `Tools.answer_session_question(...)`.** Never wait out the dialog timeout.
 
     4. **Check in proactively** — If a worker session seems stuck (no lifecycle notification and no heartbeat signal within a reasonable time), use `Tools.get_session_tail(...)` inside `run_elixir` to peek at its progress without interrupting it, or message it directly.
 
@@ -379,6 +381,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     3. **Heartbeats are a coarse fallback, not your primary signal.** Automatic `[Session lifecycle]` messages fire the moment a worker finishes, so you shouldn't need to poll. Still set one wide-interval `mcp__orca__schedule_heartbeat` safety net (e.g. every 10-15 minutes) in case a notification is ever missed or a worker hangs mid-turn (never goes idle/error). Pass `watch_children: true` (or `watch_session_ids`) — watch lists put per-worker status/activity digests directly in the wake-up message, often enough to skip a `search_sessions` call:
        > "Check on worker sessions. Use `mcp__orca__search_sessions` to see their status. If any are idle/error, review their work. If all work is complete, cancel the heartbeat."
+    4. **Subscribe to worker alerts at session start with `mcp__orca__set_worker_alerts` and `watch_children: true`.** Rising-edge `[Worker alert]` messages (churn/stall, with per-file/per-test detail) replace tight heartbeat polling; use heartbeats as a wide fallback only.
+    5. **When a worker stalls on a pending dialog, use `mcp__orca__get_session_tail` to inspect `pending_question`, then answer with `mcp__orca__answer_session_question`.** Never wait out the dialog timeout.
 
     4. **Check in proactively** — If a worker session seems stuck (no lifecycle notification and no heartbeat signal within a reasonable time), use `mcp__orca__get_session_tail` to peek at its progress without interrupting it, or message it directly.
 
@@ -943,6 +947,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
       assert prompt =~ "Tools.schedule_heartbeat"
       assert prompt =~ "Tools.archive_session"
       assert prompt =~ "Tools.cancel_heartbeat"
+      assert prompt =~ "Tools.set_worker_alerts"
+      assert prompt =~ "Tools.answer_session_question"
       refute prompt =~ "mcp__orca__"
     end
 

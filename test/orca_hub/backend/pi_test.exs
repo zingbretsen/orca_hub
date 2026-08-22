@@ -1522,6 +1522,8 @@ defmodule OrcaHub.Backend.PiTest do
       assert prompt =~ "# Orchestrator Session"
       assert prompt =~ "mcp__orca__start_session"
       assert prompt =~ "[Session lifecycle]"
+      assert prompt =~ "mcp__orca__set_worker_alerts"
+      assert prompt =~ "mcp__orca__answer_session_question"
     end
 
     test "code_exec: true injects SharedPrompts.code_exec_prompt/1's run_elixir guidance" do
