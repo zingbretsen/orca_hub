@@ -21,7 +21,7 @@ defmodule OrcaHub.Sessions.Churn do
 
   ## Parameters
     - `activity`: an `activity_metadata/1` entry (map with tool call counts)
-    - `session`: a `Session` struct with `progress_updated_at` (NaiveDateTime or nil)
+    - `session`: a `Session` struct with `progress_updated_at` (DateTime or NaiveDateTime)
     - `commit_info`: a `git_head_info/1` map or nil (may lack `committed_at` on older nodes)
     - `now`: the current UTC DateTime (defaults to `DateTime.utc_now()`)
   """
@@ -49,12 +49,10 @@ defmodule OrcaHub.Sessions.Churn do
         nil
       end
 
-    progress_updated_at =
-      Map.get(session, :progress_updated_at) || Map.get(session, :progress_updated_at)
+    progress_dt = to_datetime(Map.get(session, :progress_updated_at))
 
     minutes_since_progress_update =
-      if progress_updated_at do
-        progress_dt = DateTime.from_naive!(progress_updated_at, "Etc/UTC")
+      if progress_dt do
         DateTime.diff(now, progress_dt, :minute)
       else
         nil
@@ -90,4 +88,11 @@ defmodule OrcaHub.Sessions.Churn do
       churn_suspected: churn_suspected
     }
   end
+
+  # Normalize progress_updated_at to DateTime for diff computation.
+  # Session.progress_updated_at is %DateTime{}; older commits or other contexts
+  # may provide %NaiveDateTime{}. The assess function must handle both.
+  defp to_datetime(%DateTime{} = dt), do: dt
+  defp to_datetime(%NaiveDateTime{} = dt), do: DateTime.from_naive!(dt, "Etc/UTC")
+  defp to_datetime(nil), do: nil
 end

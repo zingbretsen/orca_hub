@@ -40,7 +40,7 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
            |> Enum.map(&format_line(&1, activity_by_id, commit_by_id))
            |> Enum.join("\n"))
 
-      snapshot = Map.new(sessions, &{&1.id, snapshot_entry(&1, activity_by_id)})
+      snapshot = Map.new(sessions, &{&1.id, snapshot_entry(&1, activity_by_id, commit_by_id)})
 
       {digest, snapshot}
     end
@@ -156,9 +156,10 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
 
   defp format_error(_), do: ""
 
-  defp snapshot_entry(session, activity_by_id) do
+  defp snapshot_entry(session, activity_by_id, commit_by_id) do
     activity = Map.get(activity_by_id, session.id, %{})
-    churn = OrcaHub.Sessions.Churn.assess(activity, session, nil)
+    commit = Map.get(commit_by_id, session.id)
+    churn = OrcaHub.Sessions.Churn.assess(activity, session, commit)
 
     {session.status, session.progress_phase, session.progress_note,
      Map.get(activity, :last_activity_at), Map.get(churn, :churn_suspected)}

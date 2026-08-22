@@ -228,5 +228,27 @@ defmodule OrcaHub.Sessions.ChurnTest do
       # 1 - 7/30 = 0.7666... -> 0.77
       assert result.repetition_ratio_15m == 0.77
     end
+
+    test "handles %DateTime{} progress_updated_at correctly (real Session field type)" do
+      activity = %{
+        tool_calls_15m: 30,
+        tool_calls_30m: 50,
+        distinct_tools_15m: 10,
+        distinct_tools_30m: 20
+      }
+
+      # Session.progress_updated_at is %DateTime{} (not NaiveDateTime)
+      progress_dt = DateTime.utc_now() |> DateTime.add(-20, :minute)
+      session = %{progress_updated_at: progress_dt}
+
+      commit_info = %{
+        committed_at: DateTime.utc_now() |> DateTime.add(-60, :minute)
+      }
+
+      result = Churn.assess(activity, session, commit_info)
+
+      assert result.minutes_since_progress_update == 20
+      assert result.churn_suspected == true
+    end
   end
 end
