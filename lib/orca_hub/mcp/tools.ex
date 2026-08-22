@@ -46,7 +46,8 @@ defmodule OrcaHub.MCP.Tools do
     Projects,
     Result,
     Sessions,
-    Triggers
+    Triggers,
+    WorkerAlerts
   }
 
   @categories [
@@ -55,6 +56,7 @@ defmodule OrcaHub.MCP.Tools do
     Projects,
     Files,
     Heartbeat,
+    WorkerAlerts,
     ForkQueue,
     Discord,
     Issues,
@@ -71,8 +73,10 @@ defmodule OrcaHub.MCP.Tools do
   # session now, not just orchestrators: a regular session can spawn a child
   # (start_session), peek at its progress without interrupting it
   # (get_session_tail), and clean it up when done (archive_session) — but not
-  # the full session-management surface. search_sessions and the heartbeat
-  # tools (schedule_heartbeat, cancel_heartbeat) stay orchestrator-only.
+  # the full session-management surface. search_sessions, the heartbeat
+  # tools (schedule_heartbeat, cancel_heartbeat), and the worker-alert tools
+  # (set_worker_alerts, cancel_worker_alerts, get_worker_alerts) stay
+  # orchestrator-only.
   # git_probe/stat_paths/disk_free (ORCAHUB3-28) get the same regular-session
   # visibility as get_session_tail — they're the same "peek at a child
   # without interrupting it" category, just node-routed and file/git-shaped

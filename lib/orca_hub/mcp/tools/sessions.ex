@@ -294,6 +294,14 @@ defmodule OrcaHub.MCP.Tools.Sessions do
                   "repeated/polling peeks where only liveness/status matters, not the " <>
                   "worker's prose. When true (default), the text is included and truncated " <>
                   "to ~800 bytes unless full_last_message is also true. Default: true"
+            },
+            "include_churn_detail" => %{
+              "type" => "boolean",
+              "description" =>
+                "If true, include a `churn_detail` block: top edited files, top repeated " <>
+                  "tool-call signatures, and any recent mix-test failure summaries found in " <>
+                  "the last 30 minutes of activity — the same granular detail a worker alert " <>
+                  "attaches. Default: false (keep the normal tail slim)."
             }
           },
           "required" => ["session_id"]
@@ -475,6 +483,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     limit = args["tool_call_limit"] || 10
     full_last_message = args["full_last_message"] == true
     include_last_message = args["include_last_message"] != false
+    include_churn_detail = args["include_churn_detail"] == true
 
     case Cluster.find_session(target_id) do
       {node, session} ->
@@ -537,6 +546,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             |> maybe_put_last_assistant_text(last_assistant_text)
             |> maybe_put_tool_calls_truncated(truncated?, limit, total)
             |> maybe_put_pending_question(pending_question)
+            |> maybe_put_churn_detail(include_churn_detail, target_id)
 
           text(Jason.encode!(result))
         else
@@ -1502,6 +1512,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
   defp maybe_put_pending_question(map, nil), do: map
   defp maybe_put_pending_question(map, pending), do: Map.put(map, :pending_question, pending)
+
+  defp maybe_put_churn_detail(map, false, _session_id), do: map
+
+  defp maybe_put_churn_detail(map, true, session_id),
+    do: Map.put(map, :churn_detail, HubRPC.churn_detail(session_id))
 
   @run_elixir_tool_names ~w(run_elixir mcp__orca__run_elixir)
   @max_tail_extracted_tools 10

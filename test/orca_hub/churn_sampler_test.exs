@@ -154,4 +154,38 @@ defmodule OrcaHub.ChurnSamplerTest do
       assert is_list(samples)
     end
   end
+
+  describe "evaluate_and_deliver_alerts/1 (ORCAHUB3-44 Phase 2)" do
+    alias OrcaHub.AlertSubscriptions
+
+    test "returns {:ok, [], edge_state} unchanged when there are no enabled subscriptions" do
+      assert ChurnSampler.evaluate_and_deliver_alerts(%{seed: true}) ==
+               {:ok, [], %{seed: true}}
+    end
+
+    test "evaluates a real subscription, delivers best-effort, and threads edge_state through" do
+      session = plain_session("alert-wiring-test", %{status: "running"})
+      # A nonexistent orchestrator target: Cluster.find_session returns nil,
+      # so delivery fails cleanly with {:error, :not_found} without ever
+      # touching a live runner - exercising deliver_alert/1's failure path
+      # without spawning a real session process.
+      orchestrator_id = Ecto.UUID.generate()
+
+      {:ok, _subscription} =
+        AlertSubscriptions.upsert(orchestrator_id, %{
+          watch_children: false,
+          session_ids: [session.id],
+          conditions: %{"stall" => true}
+        })
+
+      assert {:ok, [alert], new_edge_state} = ChurnSampler.evaluate_and_deliver_alerts(%{})
+      assert alert.session_id == session.id
+      assert alert.condition == "stall"
+      assert map_size(new_edge_state) == 1
+
+      # Same tick again immediately: rising edge already fired, cooldown not
+      # elapsed - no repeat alert, edge_state carries forward unchanged.
+      assert {:ok, [], ^new_edge_state} = ChurnSampler.evaluate_and_deliver_alerts(new_edge_state)
+    end
+  end
 end

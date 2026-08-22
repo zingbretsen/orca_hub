@@ -1342,6 +1342,40 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       refute SessionSupervisor.session_alive?(target.id)
     end
 
+    test "omits churn_detail by default, includes it when include_churn_detail is true",
+         %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{"type" => "tool_use", "name" => "Edit", "input" => %{"file_path" => "lib/x.ex"}}
+            ]
+          }
+        }
+      })
+
+      default_result = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+      %{"content" => [%{"text" => default_text}]} = default_result
+      refute Map.has_key?(Jason.decode!(default_text), "churn_detail")
+
+      with_detail_result =
+        SessionsTool.call(
+          "get_session_tail",
+          %{"session_id" => target.id, "include_churn_detail" => true},
+          state
+        )
+
+      %{"content" => [%{"text" => detail_text}]} = with_detail_result
+      decoded = Jason.decode!(detail_text)
+
+      assert %{"top_edited_files" => [%{"path" => "lib/x.ex", "count" => 1}]} =
+               decoded["churn_detail"]
+    end
+
     test "surfaces self-reported progress from report_progress", %{dir: dir, state: state} do
       {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
 

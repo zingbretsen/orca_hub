@@ -32,12 +32,35 @@ defmodule OrcaHub.ChurnSampler do
   `run_sweep/1` wraps the whole sweep in `rescue`/log so a single bad
   session can never crash the GenServer — a failed sweep just logs and
   produces no samples, rather than taking down the timer loop.
+
+  ## Worker alerts (ORCAHUB3-44 Phase 2)
+
+  Right after each sampling pass (both the timer-driven `handle_info(:tick,
+  _)` and the manual `sweep/0` call), `evaluate_and_deliver_alerts/3` runs
+  as a bolted-on second step — it does NOT change `run_sweep/1`'s own
+  signature or return value, so every existing sampling test/caller is
+  unaffected. It reads every enabled `OrcaHub.AlertSubscriptions` row,
+  evaluates conditions against each one's freshly-resolved watched set via
+  `OrcaHub.ChurnSampler.AlertEvaluator.evaluate/3` (a delivery-free, directly
+  testable module), delivers any resulting alerts through
+  `OrcaHub.SessionHeartbeat.deliver_or_queue/2` (the same `:queue` delivery
+  path `send_message_to_session` uses), and persists the returned
+  rising-edge/cooldown tracking map in this GenServer's own process state
+  (`:alert_edge_state`) for the next tick.
+
+  That edge-tracking state is deliberately NOT persisted to disk (only the
+  subscription CONFIG is, in the `alert_subscriptions` table) — a deploy or
+  crash restart resets it to empty, so at most one already-true condition
+  can re-alert immediately after a restart instead of waiting out its
+  cooldown. Acceptable per the issue: false negatives (a missed alert)
+  would be a real gap, but one extra advisory alert after a restart is not.
   """
 
   use GenServer
   require Logger
 
-  alias OrcaHub.{Cluster, Sessions, Sessions.Churn}
+  alias OrcaHub.{Cluster, SessionHeartbeat, Sessions, Sessions.Churn}
+  alias OrcaHub.ChurnSampler.AlertEvaluator
 
   @interval_seconds 120
   @prune_days 14
@@ -84,6 +107,37 @@ defmodule OrcaHub.ChurnSampler do
       {:ok, []}
   end
 
+  @doc """
+  Evaluates every enabled `OrcaHub.AlertSubscriptions` row (via
+  `AlertEvaluator.evaluate/3`) and delivers any resulting alerts through
+  `OrcaHub.SessionHeartbeat.deliver_or_queue/2`. Returns `{:ok, alerts,
+  new_edge_state}` — `alerts` is the same list `AlertEvaluator.evaluate/3`
+  returns (for callers/tests that want to inspect what fired), and
+  `new_edge_state` is what the caller should keep and pass back in on the
+  next call.
+
+  A plain function (not a GenServer call) for the same reason `run_sweep/1`
+  is: tests drive it directly against fabricated subscriptions/edge_state,
+  and the real periodic loop (`handle_info(:tick, _)`/`handle_call(:sweep,
+  _)`) threads its own process-state `:alert_edge_state` through it. Never
+  raises — a bad subscription or delivery failure is logged and yields
+  `{:ok, [], edge_state}` (edge_state unchanged) rather than crashing the
+  singleton GenServer and taking every other subscription's alerting down
+  with it.
+  """
+  def evaluate_and_deliver_alerts(edge_state \\ %{}) do
+    {alerts, new_edge_state} = AlertEvaluator.evaluate(nil, DateTime.utc_now(), edge_state)
+    Enum.each(alerts, &deliver_alert/1)
+    {:ok, alerts, new_edge_state}
+  rescue
+    e ->
+      Logger.error(
+        "Churn sampler: alert evaluation failed - #{Exception.format(:error, e, __STACKTRACE__)}"
+      )
+
+      {:ok, [], edge_state}
+  end
+
   # -------------------------------------------------------------------
   # Callbacks
   # -------------------------------------------------------------------
@@ -91,20 +145,22 @@ defmodule OrcaHub.ChurnSampler do
   @impl true
   def init(_opts) do
     schedule_tick()
-    {:ok, %{}}
+    {:ok, %{alert_edge_state: %{}}}
   end
 
   @impl true
   def handle_call(:sweep, _from, state) do
     {:ok, samples} = run_sweep()
-    {:reply, {:ok, samples}, state}
+    {:ok, _alerts, new_edge_state} = evaluate_and_deliver_alerts(state.alert_edge_state)
+    {:reply, {:ok, samples}, %{state | alert_edge_state: new_edge_state}}
   end
 
   @impl true
   def handle_info(:tick, state) do
     run_sweep()
+    {:ok, _alerts, new_edge_state} = evaluate_and_deliver_alerts(state.alert_edge_state)
     schedule_tick()
-    {:noreply, state}
+    {:noreply, %{state | alert_edge_state: new_edge_state}}
   end
 
   @impl true
@@ -180,6 +236,28 @@ defmodule OrcaHub.ChurnSampler do
       %{} = info -> info
       _ -> nil
     end
+  end
+
+  # Best-effort: a delivery failure to one orchestrator must never stop the
+  # rest of this tick's alerts from going out, and must never crash this
+  # singleton GenServer.
+  defp deliver_alert(%{orchestrator_session_id: session_id, message: message} = alert) do
+    case SessionHeartbeat.deliver_or_queue(session_id, message) do
+      {:error, reason} ->
+        Logger.warning(
+          "Churn sampler: alert delivery to session #{session_id} failed " <>
+            "(condition: #{alert.condition}): #{inspect(reason)}"
+        )
+
+      _ok_or_queued ->
+        :ok
+    end
+  rescue
+    e ->
+      Logger.warning(
+        "Churn sampler: alert delivery to session #{session_id} raised - " <>
+          Exception.format(:error, e, __STACKTRACE__)
+      )
   end
 
   defp emit_sample_telemetry(sample) do

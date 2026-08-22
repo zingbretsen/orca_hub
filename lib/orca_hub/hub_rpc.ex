@@ -118,6 +118,9 @@ defmodule OrcaHub.HubRPC do
   def activity_metadata(session_ids),
     do: call(OrcaHub.Sessions, :activity_metadata, [session_ids])
 
+  def churn_detail(session_id, opts \\ []),
+    do: call(OrcaHub.Sessions.ChurnDetail, :fetch, [session_id, opts])
+
   def create_session_interaction(attrs),
     do: call(OrcaHub.Sessions, :create_session_interaction, [attrs])
 
@@ -395,6 +398,20 @@ defmodule OrcaHub.HubRPC do
   # ORCAHUB3-29: backs Cluster.send_message/4's :queue delivery mode.
   def deliver_or_queue_message(session_id, message),
     do: call(OrcaHub.SessionHeartbeat, :deliver_or_queue, [session_id, message])
+
+  # -------------------------------------------------------------------
+  # Alert Subscriptions (ORCAHUB3-44 Phase 2 — condition-based worker
+  # alerts; see OrcaHub.AlertSubscriptions, OrcaHub.ChurnSampler.AlertEvaluator)
+  # -------------------------------------------------------------------
+
+  def get_alert_subscription(orchestrator_session_id),
+    do: call(OrcaHub.AlertSubscriptions, :get_by_orchestrator, [orchestrator_session_id])
+
+  def upsert_alert_subscription(orchestrator_session_id, attrs),
+    do: call(OrcaHub.AlertSubscriptions, :upsert, [orchestrator_session_id, attrs])
+
+  def cancel_alert_subscription(orchestrator_session_id),
+    do: call(OrcaHub.AlertSubscriptions, :cancel, [orchestrator_session_id])
 
   # -------------------------------------------------------------------
   # API Runs (Agent Runs API, docs/api.md)
