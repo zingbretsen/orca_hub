@@ -1428,4 +1428,76 @@ defmodule OrcaHub.Sessions do
       }
     end)
   end
+
+  # -------------------------------------------------------------------
+  # Churn sample persistence (ORCAHUB3-44)
+  # -------------------------------------------------------------------
+
+  alias OrcaHub.Sessions.ChurnSample
+
+  @doc """
+  Bulk-insert churn samples.
+
+  Accepts a list of sample maps with the same keys as the ChurnSample schema.
+  Uses `insert_all` for efficient batch insertion. `inserted_at`/`updated_at`
+  use `timestamps(type: :naive_datetime_usec)`, so `NaiveDateTime.utc_now()`
+  (microsecond precision) is dumped as-is. `sampled_at` is `:utc_datetime`
+  (second precision) — callers must pass an already-truncated
+  `DateTime.utc_now() |> DateTime.truncate(:second)`, since `insert_all`
+  dumps values straight through the schema's field types with no casting.
+  """
+  def insert_churn_samples([]), do: {0, nil}
+
+  def insert_churn_samples(samples) when is_list(samples) do
+    now = NaiveDateTime.utc_now()
+
+    samples_with_timestamps =
+      Enum.map(samples, fn attrs ->
+        Map.put(attrs, :inserted_at, now)
+        |> Map.put(:updated_at, now)
+      end)
+
+    Repo.insert_all(ChurnSample, samples_with_timestamps)
+  end
+
+  @doc """
+  Prune churn samples older than `older_than_days` (default 14).
+
+  Used by the churn sampler to keep the table size bounded.
+  """
+  def prune_churn_samples(older_than_days \\ 14) do
+    cutoff =
+      DateTime.utc_now()
+      |> DateTime.add(-older_than_days, :day)
+      |> DateTime.truncate(:second)
+
+    from(c in ChurnSample, where: c.sampled_at < ^cutoff)
+    |> Repo.delete_all()
+  end
+
+  @doc """
+  List churn samples for a specific session, newest first.
+
+  Used for querying historical churn data for a session.
+  """
+  def list_churn_samples(session_id) when is_binary(session_id) do
+    from(c in ChurnSample,
+      where: c.session_id == ^session_id,
+      order_by: [desc: c.sampled_at]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  List all running (non-archived) sessions.
+
+  Used by the churn sampler to determine which sessions to assess.
+  """
+  def list_running_sessions do
+    from(s in Session,
+      where: is_nil(s.archived_at),
+      where: s.status == "running"
+    )
+    |> Repo.all()
+  end
 end

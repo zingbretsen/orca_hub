@@ -66,6 +66,8 @@ defmodule OrcaHub.Application do
       OrcaHub.Backend.Cache,
       {Task.Supervisor, name: OrcaHub.TaskSupervisor},
       OrcaHub.SessionHeartbeat,
+      # Periodic churn sampling for ORCAHUB3-44 — hub-only, emits telemetry for Grafana.
+      OrcaHub.ChurnSampler,
       # Warm-process admission control — must start before SessionSupervisor so
       # streaming runners can request_slot at port-open.
       OrcaHub.Streaming.WarmPool,
