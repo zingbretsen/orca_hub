@@ -1466,7 +1466,7 @@ window.liveSocket = liveSocket
 // reschedule, permanently stopping retries. Additionally, the built-in Phoenix
 // visibilitychange handler and our explicit one would race on resume.
 //
-// Solution: unconditional unconditional disconnect+connect on visibility visible.
+// Solution: unconditional disconnect+connect on visibility visible.
 // This clears zombie-OPEN connections, resets Phoenix's reconnectTimer state,
 // and avoids race with the built-in handler. The reconnectTimer wedge is bypassed
 // because we don't rely on Phoenix's retry — we force a fresh connect attempt.
@@ -1475,12 +1475,14 @@ window.liveSocket = liveSocket
 // Track page visibility state for the reconnect watchdog below.
 let isPageHidden = document.visibilityState === "hidden"
 let hiddenAt = null
+let disconnectedSince = null
 
 document.addEventListener("visibilitychange", () => {
   isPageHidden = document.visibilityState === "hidden"
   if (document.visibilityState === "visible") {
     const hiddenMs = hiddenAt ? Date.now() - hiddenAt : 0
     hiddenAt = null
+    disconnectedSince = null
     // Unconditional reconnect if disconnected or if hidden for >10s (mobile suspend).
     // disconnect+connect is safe when already dead and clears zombie-OPEN states,
     // wedged reconnectTimer, and stale closeWasClean in one move.
@@ -1524,7 +1526,6 @@ try {
   // sessionStorage may be unavailable in some contexts (e.g. private browsing)
 }
 
-let disconnectedSince = null
 let capWarned = false // Track if we've warned about hitting the max reload cap
 liveSocket.getSocket().onOpen(() => {
   disconnectedSince = null
