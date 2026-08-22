@@ -3391,5 +3391,95 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       decoded2 = Jason.decode!(text)
       assert decoded2["queued_messages"]["count"] == 2
     end
+
+    test "includes queued_messages with two messages and correct escalates_at delta", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} =
+        Sessions.create_session(%{directory: dir, status: "running"})
+
+      # Queue first message
+      OrcaHub.HubRPC.deliver_or_queue_message(target.id, "queued message 1")
+
+      result = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      queued = decoded["queued_messages"]
+      assert queued["count"] == 1
+
+      # Queue a second message
+      OrcaHub.HubRPC.deliver_or_queue_message(target.id, "queued message 2")
+
+      result2 = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result2
+      decoded2 = Jason.decode!(text)
+
+      queued2 = decoded2["queued_messages"]
+      assert queued2["count"] == 2
+
+      # Verify escalates_at is exactly 15 minutes (900 seconds) after queued_at
+      {:ok, queued_at, _} = DateTime.from_iso8601(queued2["queued_at"])
+      {:ok, escalates_at, _} = DateTime.from_iso8601(queued2["escalates_at"])
+      delta = DateTime.diff(escalates_at, queued_at, :second)
+      assert delta == 900
+    end
+
+    test "queued_at stays fixed when appending to batch (escalation anchor)", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} =
+        Sessions.create_session(%{directory: dir, status: "running"})
+
+      # Queue first message and capture queued_at
+      OrcaHub.HubRPC.deliver_or_queue_message(target.id, "queued message 1")
+
+      result1 = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result1
+      decoded1 = Jason.decode!(text)
+      queued_at = decoded1["queued_messages"]["queued_at"]
+
+      # Queue a second message
+      OrcaHub.HubRPC.deliver_or_queue_message(target.id, "queued message 2")
+
+      result2 = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result2
+      decoded2 = Jason.decode!(text)
+
+      # queued_at should be unchanged - it anchors the escalation timer
+      assert decoded2["queued_messages"]["queued_at"] == queued_at
+      assert decoded2["queued_messages"]["count"] == 2
+    end
+
+    test "queued_messages returns nil after batch is flushed (turn ends)", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} =
+        Sessions.create_session(%{directory: dir, status: "running"})
+
+      # Queue a message
+      OrcaHub.HubRPC.deliver_or_queue_message(target.id, "queued message")
+
+      # Verify state is non-nil
+      result1 = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result1
+      decoded1 = Jason.decode!(text)
+      assert Map.has_key?(decoded1, "queued_messages")
+
+      # Simulate turn end by broadcasting idle status
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {target.id, {:status, :idle}})
+
+      # Wait for the flush to happen
+      :timer.sleep(50)
+
+      # After flush, queued_messages should be absent
+      result2 = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result2
+      decoded2 = Jason.decode!(text)
+      refute Map.has_key?(decoded2, "queued_messages")
+    end
   end
 end
