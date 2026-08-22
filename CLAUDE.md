@@ -206,7 +206,7 @@ paths for this project's deps:
 
 | Dep | Changelog |
 |---|---|
-| phoenix | `github.com/phoenixframework/phoenix` /CHANGELOG.md |
+| phoenix | **use the `v1.8` branch, not `main`** — `github.com/phoenixframework/phoenix/blob/v1.8/CHANGELOG.md`. `main`'s CHANGELOG covers only the next minor and just points at the release branch, so 1.8.x patch entries are invisible there. |
 | phoenix_live_view | `phoenix-live-view.hexdocs.pm/<version>/changelog.html` (hexdocs 301-redirects to this host) |
 | phoenix_live_dashboard / phoenix_live_reload / tailwind / esbuild | `github.com/phoenixframework/<dep>` /CHANGELOG.md |
 | ecto, ecto_sql | `github.com/elixir-ecto/<dep>` /CHANGELOG.md (ecto is `master`, not `main`) |
@@ -284,13 +284,17 @@ WebSocket path, open a raw `:gen_tcp` connection to `/live/websocket?vsn=2.0.0`
 with the `Upgrade: websocket` / `Sec-WebSocket-Key` headers and assert
 `101 Switching Protocols`.
 
-**Deferred as of 2026-08-14: phoenix_live_view 1.1 -> 1.2.** Everything else is
-current. 1.2 needs `mix.exs` `~> 1.1.0` -> `~> 1.2` and carries real breaking
-changes: the `Phoenix.Component` global-attribute list was realigned to MDN and
-the removed attributes are NOT enumerated in the changelog (fix per-site with
+**Still deferred, re-checked 2026-08-21: phoenix_live_view 1.1 -> 1.2**
+(1.1.33 vs 1.2.10 as of this check; raised with the user on 2026-08-14 and
+not yet decided). Everything else is current. 1.2 needs `mix.exs`
+`~> 1.1.0` -> `~> 1.2` and carries real breaking changes: the
+`Phoenix.Component` global-attribute list was realigned to MDN and the removed
+attributes are NOT enumerated in the changelog (fix per-site with
 `attr :rest, :global, include: ~w(...)`); `:colocated_js` config is deprecated in
 favour of `:colocated_assets` (we consume colocated hooks via
 `phoenix-colocated/orca_hub` in `assets/js/app.js`); and `:test_warnings` now
 warns by default for `phx-change` forms without an `id` (~49 such sites here).
 Staying on the latest 1.1.x is a supported position — don't take 1.2 as part of a
-routine patch sweep.
+routine patch sweep. It wants its own change: bump, audit every `:global` site,
+then verify the main pages in a browser, since the risky failure mode (a silently
+dropped global attribute) is invisible to the test suite.
