@@ -260,7 +260,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "full), a compact list of its most recent tool calls (name + truncated " <>
             "input), self-reported progress (phase/note from report_progress, if any), " <>
             "activity metadata (message/tool-call counts over the last 5/15/30 minutes, " <>
-            "last_activity_at), and last_commit (git HEAD of its directory, if it's a repo). " <>
+            "last_activity_at), last_commit (git HEAD of its directory, if it's a repo), " <>
+            "and churn (a server-side heuristic block with churn_suspected flag). " <>
             "Use this to tell \"making progress\" from \"stuck\" before deciding whether to " <>
             "interrupt a worker.",
         "inputSchema" => %{
@@ -415,6 +416,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           truncated? = Map.get(tail, :tool_calls_truncated?, false)
           total = Map.get(tail, :tool_calls_total, length(tail.recent_tool_calls))
 
+          # Fetch last_commit once for both activity metadata and last_commit field
+          last_commit_info = fetch_last_commit(node, session.directory)
+
+          churn = OrcaHub.Sessions.Churn.assess(activity, session, last_commit_info)
+
           result =
             %{
               id: session.id,
@@ -426,7 +432,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               progress_updated_at: session.progress_updated_at,
               recent_tool_calls: Enum.map(tail.recent_tool_calls, &format_tool_call/1),
               activity: activity,
-              last_commit: fetch_last_commit(node, session.directory)
+              last_commit: last_commit_info,
+              churn: churn
             }
             |> maybe_put_last_assistant_text(last_assistant_text)
             |> maybe_put_tool_calls_truncated(truncated?, limit, total)
@@ -1641,6 +1648,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       tool_calls_5m: 0,
       tool_calls_15m: 0,
       tool_calls_30m: 0,
+      distinct_tools_15m: 0,
+      distinct_tools_30m: 0,
       last_activity_at: nil
     }
   end

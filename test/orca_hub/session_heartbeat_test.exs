@@ -369,4 +369,136 @@ defmodule OrcaHub.SessionHeartbeatTest do
       assert SessionHeartbeat.lifecycle_snapshot_changed?(id_b, snapshot) == true
     end
   end
+
+  describe "churn detection in digest" do
+    test "a churn-suspected session renders the CHURN? segment" do
+      dir = Path.join(System.tmp_dir!(), "churn-test-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          status: "running",
+          progress_updated_at: NaiveDateTime.utc_now() |> NaiveDateTime.add(-20, :minute)
+        })
+
+      # Create messages to simulate churn: many repeated tool calls
+      Enum.each(1..30, fn _i ->
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "name" => "Bash",
+                  "input" => %{"command" => String.duplicate("a", 100)}
+                }
+              ]
+            }
+          }
+        })
+      end)
+
+      # The digest message should contain CHURN? segment
+      digest =
+        SessionHeartbeat.build_fire(
+          "caller",
+          base_entry(%{watch_session_ids: [session.id], only_if_changed: false})
+        )
+
+      assert digest.message =~ "CHURN?"
+      assert digest.message =~ "30 calls/15m"
+    end
+
+    test "a normal session's digest line remains unchanged (no CHURN? segment)" do
+      dir = Path.join(System.tmp_dir!(), "normal-test-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          status: "running",
+          progress_updated_at: NaiveDateTime.utc_now() |> NaiveDateTime.add(-5, :minute)
+        })
+
+      Sessions.create_message(%{
+        session_id: session.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{"type" => "tool_use", "name" => "Bash", "input" => %{}},
+              %{"type" => "tool_use", "name" => "Edit", "input" => %{}}
+            ]
+          }
+        }
+      })
+
+      digest =
+        SessionHeartbeat.build_fire(
+          "caller",
+          base_entry(%{watch_session_ids: [session.id], only_if_changed: false})
+        )
+
+      # Normal session should NOT have CHURN? segment
+      refute digest.message =~ "CHURN?"
+    end
+
+    test "churn_suspected in snapshot_entry triggers heartbeat when flag flips" do
+      dir = Path.join(System.tmp_dir!(), "snapshot-test-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      File.mkdir_p!(Path.join(dir, ".git"))
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      System.cmd("git", ["config", "user.email", "test@example.com"], cd: dir)
+      System.cmd("git", ["config", "user.name", "Test"], cd: dir)
+      File.write!(Path.join(dir, "test.txt"), "initial")
+      System.cmd("git", ["add", "."], cd: dir)
+      System.cmd("git", ["commit", "-m", "initial"], cd: dir)
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          status: "running"
+        })
+
+      # First fire - no churn
+      entry = base_entry(%{watch_session_ids: [session.id], only_if_changed: true})
+      first = SessionHeartbeat.build_fire("caller", entry)
+
+      # Simulate session entering churn state by updating messages
+      Enum.each(1..30, fn _i ->
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "name" => "Bash",
+                  "input" => %{"command" => String.duplicate("a", 100)}
+                }
+              ]
+            }
+          }
+        })
+      end)
+
+      # Update session to have stale progress
+      Sessions.update_session(session, %{
+        progress_updated_at: NaiveDateTime.utc_now() |> NaiveDateTime.add(-20, :minute)
+      })
+
+      # Second fire should detect churn and deliver (flag changed)
+      second = SessionHeartbeat.build_fire("caller", %{entry | last_snapshot: first.snapshot})
+
+      assert second.deliver? == true
+      assert second.message =~ "CHURN?"
+    end
+  end
 end

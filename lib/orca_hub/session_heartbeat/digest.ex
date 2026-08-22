@@ -101,11 +101,14 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
 
     name = session.title || "session #{String.slice(session.id, 0, 8)}"
 
+    churn = OrcaHub.Sessions.Churn.assess(activity, session, commit)
+
     [
       "- #{name} [#{session.status}]",
       format_phase(session),
       format_activity(activity),
       format_commit(commit),
+      format_churn(churn),
       format_error(session)
     ]
     |> Enum.reject(&(&1 == ""))
@@ -126,6 +129,27 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
   defp format_commit(nil), do: ""
   defp format_commit(%{short_sha: sha, subject: subject}), do: "commit #{sha} \"#{subject}\""
 
+  defp format_churn(%{churn_suspected: false}), do: ""
+
+  defp format_churn(churn) do
+    calls = Map.get(churn, :tool_calls_15m, 0)
+    ratio = Map.get(churn, :repetition_ratio_15m, 0)
+    commit_age = Map.get(churn, :minutes_since_last_commit)
+    progress_age = Map.get(churn, :minutes_since_progress_update)
+
+    base = "CHURN? #{calls} calls/15m, #{round(ratio * 100)}% repeats"
+
+    extra =
+      [
+        commit_age && "no commit #{commit_age}m",
+        progress_age && "progress stale #{progress_age}m"
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(", ")
+
+    if extra != "", do: base <> " " <> extra, else: base
+  end
+
   defp format_error(%{status: "error", error_detail: detail})
        when is_binary(detail) and detail != "",
        do: String.slice(detail, 0, @error_detail_limit)
@@ -134,8 +158,9 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
 
   defp snapshot_entry(session, activity_by_id) do
     activity = Map.get(activity_by_id, session.id, %{})
+    churn = OrcaHub.Sessions.Churn.assess(activity, session, nil)
 
     {session.status, session.progress_phase, session.progress_note,
-     Map.get(activity, :last_activity_at)}
+     Map.get(activity, :last_activity_at), Map.get(churn, :churn_suspected)}
   end
 end

@@ -1881,6 +1881,28 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       # Should not crash and should not have the flag
       refute Map.has_key?(decoded, "tool_calls_truncated")
     end
+
+    test "includes the churn map in the result", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      SessionsTool.call(
+        "report_progress",
+        %{"phase" => "implementing", "note" => "testing"},
+        %{orca_session_id: target.id}
+      )
+
+      result = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      # Churn map should be present with all keys
+      assert Map.has_key?(decoded, "churn")
+      assert is_map(decoded["churn"])
+      assert decoded["churn"]["tool_calls_15m"] >= 0
+      assert decoded["churn"]["distinct_tools_15m"] >= 0
+      assert is_boolean(decoded["churn"]["churn_suspected"])
+    end
   end
 
   describe "report_progress" do

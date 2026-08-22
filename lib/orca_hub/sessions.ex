@@ -1253,7 +1253,23 @@ defmodule OrcaHub.Sessions do
           session_id: m.session_id,
           tool_calls_5m: fragment("count(?) FILTER (WHERE ? >= ?)", block, m.inserted_at, ^t5),
           tool_calls_15m: fragment("count(?) FILTER (WHERE ? >= ?)", block, m.inserted_at, ^t15),
-          tool_calls_30m: fragment("count(?) FILTER (WHERE ? >= ?)", block, m.inserted_at, ^t30)
+          tool_calls_30m: fragment("count(?) FILTER (WHERE ? >= ?)", block, m.inserted_at, ^t30),
+          distinct_tools_15m:
+            fragment(
+              "count(DISTINCT (? ->> 'name' || ':' || left((? -> 'input')::text, 120))) FILTER (WHERE ? >= ?)",
+              block,
+              block,
+              m.inserted_at,
+              ^t15
+            ),
+          distinct_tools_30m:
+            fragment(
+              "count(DISTINCT (? ->> 'name' || ':' || left((? -> 'input')::text, 120))) FILTER (WHERE ? >= ?)",
+              block,
+              block,
+              m.inserted_at,
+              ^t30
+            )
         }
       )
       |> Repo.all()
@@ -1273,26 +1289,37 @@ defmodule OrcaHub.Sessions do
          tool_calls_5m: tools[:tool_calls_5m] || 0,
          tool_calls_15m: tools[:tool_calls_15m] || 0,
          tool_calls_30m: tools[:tool_calls_30m] || 0,
+         distinct_tools_15m: tools[:distinct_tools_15m] || 0,
+         distinct_tools_30m: tools[:distinct_tools_30m] || 0,
          last_activity_at: msgs[:last_activity_at]
        }}
     end)
   end
 
   @doc """
-  The current git HEAD of `directory` (sha, short_sha, subject) — a cheap "did
+  The current git HEAD of `directory` (sha, short_sha, committed_at, subject) — a cheap "did
   it actually commit" signal for a session's working directory. Returns `nil`
   silently for a non-repo, a missing directory, or any git failure; never
   raises.
   """
   def git_head_info(directory) do
-    case System.cmd("git", ["log", "-1", "--format=%H%n%h%n%s"],
+    case System.cmd("git", ["log", "-1", "--format=%H%n%h%n%cI%n%s"],
            cd: directory,
            stderr_to_stdout: true
          ) do
       {output, 0} ->
-        case String.split(String.trim(output), "\n", parts: 3) do
-          [sha, short_sha, subject] -> %{sha: sha, short_sha: short_sha, subject: subject}
-          _ -> nil
+        case String.split(String.trim(output), "\n", parts: 4) do
+          [sha, short_sha, committed_at, subject] ->
+            committed_at =
+              case DateTime.from_iso8601(committed_at) do
+                {:ok, dt, _} -> dt
+                _ -> nil
+              end
+
+            %{sha: sha, short_sha: short_sha, committed_at: committed_at, subject: subject}
+
+          _ ->
+            nil
         end
 
       _ ->

@@ -510,6 +510,8 @@ defmodule OrcaHub.SessionsTest do
                  tool_calls_5m: 0,
                  tool_calls_15m: 0,
                  tool_calls_30m: 0,
+                 distinct_tools_15m: 0,
+                 distinct_tools_30m: 0,
                  last_activity_at: nil
                }
              }
@@ -517,6 +519,60 @@ defmodule OrcaHub.SessionsTest do
 
     test "returns an empty map for an empty id list" do
       assert Sessions.activity_metadata([]) == %{}
+    end
+
+    test "counts repeated identical calls once in distinct_tools_15m", %{project: project} do
+      session = create_session(project)
+
+      # Same tool with same input (truncated to 120 chars) should count as 1 distinct
+      # Use short inputs so JSON representation is identical when truncated to 120 chars
+      insert_message(
+        session,
+        %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{"type" => "tool_use", "name" => "Bash", "input" => %{"command" => "ls -la"}}
+            ]
+          }
+        },
+        1
+      )
+
+      # Same tool with identical input - should match the first for distinct count
+      insert_message(
+        session,
+        %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{"type" => "tool_use", "name" => "Bash", "input" => %{"command" => "ls -la"}}
+            ]
+          }
+        },
+        5
+      )
+
+      # Same tool, different input (first 120 chars differ) should count as 2 distinct
+      insert_message(
+        session,
+        %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{"type" => "tool_use", "name" => "Bash", "input" => %{"command" => "pwd"}}
+            ]
+          }
+        },
+        10
+      )
+
+      result = Sessions.activity_metadata([session.id])[session.id]
+
+      # tool_calls_15m: 3 calls within 15m
+      assert result.tool_calls_15m == 3
+      # distinct_tools_15m: 2 distinct ("ls -la" vs "pwd" differ in first 120 chars)
+      assert result.distinct_tools_15m == 2
     end
 
     test "buckets messages and tool calls by age, and computes last_activity_at",
@@ -541,6 +597,11 @@ defmodule OrcaHub.SessionsTest do
       # 30m bucket: 1m + 10m + 20m messages
       assert result.messages_30m == 3
       assert result.tool_calls_30m == 4
+
+      # distinct_tools_15m: 3 distinct (Bash, Read, Edit) within 15m
+      assert result.distinct_tools_15m == 3
+      # distinct_tools_30m: 4 distinct (Bash, Read, Edit, Write) within 30m
+      assert result.distinct_tools_30m == 4
 
       assert result.last_activity_at != nil
     end
