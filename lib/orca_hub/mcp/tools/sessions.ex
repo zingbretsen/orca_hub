@@ -265,7 +265,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "pi session has a pending question/confirm/input dialog, a `pending_question` " <>
             "object (id, method, title, message, options—options may be null). " <>
             "Use this to tell \"making progress\" from \"stuck\" before deciding whether to " <>
-            "interrupt a worker.",
+            "interrupt a worker. " <>
+            "If a queued message delivery is pending, a `queued_messages` key is included " <>
+            "(count, queued_at, queued_status, escalates_at) — this means the message you " <>
+            "sent has NOT been delivered yet, so it should be waited out rather than " <>
+            "re-sent.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -365,9 +369,22 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             {:queued, queued_status} ->
               maybe_record_interaction(sender_id, session.id, "message")
 
+              # Fetch queued state for richer error message (ORCAHUB3-43)
+              queued_state = HubRPC.queued_message_state(target_id)
+
+              # Fall back to generic message if accessor returns nil (older hub / race)
+              queued_info =
+                if queued_state do
+                  "Queue depth: #{queued_state.count} message(s), escalation ETA: " <>
+                    "#{queued_state.escalates_at}. "
+                else
+                  ""
+                end
+
               text(
-                "Message queued for session #{target_id} (currently \"#{queued_status}\") — " <>
-                  "it will be delivered once the session's current turn ends, or " <>
+                "Message queued for session #{target_id} (currently \"#{queued_status}\"). " <>
+                  queued_info <>
+                  "It will be delivered once the session's current turn ends, or " <>
                   "automatically escalated to an interrupt if that takes too long."
               )
 
@@ -529,6 +546,9 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               nil
             end
 
+          # Fetch queued message state for delivery observability (ORCAHUB3-43)
+          queued_state = HubRPC.queued_message_state(target_id)
+
           result =
             %{
               id: session.id,
@@ -547,6 +567,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             |> maybe_put_tool_calls_truncated(truncated?, limit, total)
             |> maybe_put_pending_question(pending_question)
             |> maybe_put_churn_detail(include_churn_detail, target_id)
+            |> maybe_put_queued_messages(queued_state)
 
           text(Jason.encode!(result))
         else
@@ -1517,6 +1538,21 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
   defp maybe_put_churn_detail(map, true, session_id),
     do: Map.put(map, :churn_detail, HubRPC.churn_detail(session_id))
+
+  defp maybe_put_queued_messages(map, nil), do: map
+
+  defp maybe_put_queued_messages(map, state) do
+    Map.put(
+      map,
+      :queued_messages,
+      %{
+        count: state.count,
+        queued_at: state.queued_at,
+        queued_status: state.queued_status,
+        escalates_at: state.escalates_at
+      }
+    )
+  end
 
   @run_elixir_tool_names ~w(run_elixir mcp__orca__run_elixir)
   @max_tail_extracted_tools 10

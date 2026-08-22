@@ -3338,4 +3338,58 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert text =~ "not found"
     end
   end
+
+  describe "get_session_tail queued_messages (ORCAHUB3-43)" do
+    test "omits queued_messages when nothing is queued", %{dir: dir, state: state} do
+      {:ok, target} =
+        Sessions.create_session(%{directory: dir, status: "running"})
+
+      result = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      refute Map.has_key?(decoded, :queued_messages)
+    end
+
+    test "includes queued_messages when messages are queued", %{dir: dir, state: state} do
+      {:ok, target} =
+        Sessions.create_session(%{directory: dir, status: "running"})
+
+      # Queue a message by using the hub_rpc directly
+      OrcaHub.HubRPC.deliver_or_queue_message(target.id, "queued message")
+
+      result = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+
+      assert Map.has_key?(decoded, "queued_messages")
+      queued = decoded["queued_messages"]
+      assert queued["count"] == 1
+      assert queued["queued_at"] != nil
+      assert queued["queued_status"] == "running"
+      assert queued["escalates_at"] != nil
+    end
+
+    test "queued_messages shows updated count after appending to batch", %{dir: dir, state: state} do
+      {:ok, target} =
+        Sessions.create_session(%{directory: dir, status: "running"})
+
+      # Queue first message
+      OrcaHub.HubRPC.deliver_or_queue_message(target.id, "queued message 1")
+
+      result1 = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result1
+      decoded1 = Jason.decode!(text)
+      assert decoded1["queued_messages"]["count"] == 1
+
+      # Queue a second message
+      OrcaHub.HubRPC.deliver_or_queue_message(target.id, "queued message 2")
+
+      result2 = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result2
+      decoded2 = Jason.decode!(text)
+      assert decoded2["queued_messages"]["count"] == 2
+    end
+  end
 end

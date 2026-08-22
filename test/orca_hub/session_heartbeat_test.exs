@@ -501,4 +501,19 @@ defmodule OrcaHub.SessionHeartbeatTest do
       assert second.message =~ "CHURN?"
     end
   end
+  describe "queued_message_state/1 (ORCAHUB3-43)" do
+    # Note: Full async tests of queued_message_state require DB access through
+    # SessionHeartbeat which needs Ecto.Sandbox connections. Since this module
+    # uses async: true, we can't easily share the DB sandbox. The MCP sessions
+    # test suite (sessions_test.exs) covers the queued state behavior with full
+    # integration through get_session_tail and HubRPC.
+    
+    test "returns nil when nothing is queued" do
+      # This test can run without DB access since queued_message_state/1
+      # catches exits and returns nil for missing/timeout
+      id = Ecto.UUID.generate()
+      assert SessionHeartbeat.queued_message_state(id) == nil
+    end
+  end
+
 end

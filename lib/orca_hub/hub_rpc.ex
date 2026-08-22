@@ -399,6 +399,16 @@ defmodule OrcaHub.HubRPC do
   def deliver_or_queue_message(session_id, message),
     do: call(OrcaHub.SessionHeartbeat, :deliver_or_queue, [session_id, message])
 
+  # ORCAHUB3-43: public read-only accessor for queued message state.
+  # Tolerates {:error, {:rpc_undef, _}} from older hubs that lack this function.
+  def queued_message_state(session_id) do
+    case call(OrcaHub.SessionHeartbeat, :queued_message_state, [session_id]) do
+      {:error, {:rpc_undef, _}} -> nil
+      {:error, _} -> nil
+      result -> result
+    end
+  end
+
   # -------------------------------------------------------------------
   # Alert Subscriptions (ORCAHUB3-44 Phase 2 — condition-based worker
   # alerts; see OrcaHub.AlertSubscriptions, OrcaHub.ChurnSampler.AlertEvaluator)

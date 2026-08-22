@@ -176,6 +176,30 @@ defmodule OrcaHub.SessionHeartbeat do
     GenServer.call(__MODULE__, {:peek_message_queue, session_id})
   end
 
+  @doc false
+  # Public read-only accessor for queued message state. Returns nil if no
+  # queued batch exists. This is a pure read - it does not deliver, flush,
+  # cancel, or re-arm anything.
+  def handle_call({:queued_message_state, session_id}, _from, state) do
+    case Map.get(state.message_queue, session_id) do
+      nil ->
+        {:reply, nil, state}
+
+      entry ->
+        escalates_at =
+          entry.queued_at
+          |> DateTime.add(div(@queue_escalate_ms, 1000), :second)
+
+        {:reply,
+         %{
+           count: length(entry.messages),
+           queued_at: entry.queued_at,
+           queued_status: entry.queued_status,
+           escalates_at: escalates_at
+         }, state}
+    end
+  end
+
   @doc """
   Cancel a session's heartbeat.
   """
@@ -188,6 +212,31 @@ defmodule OrcaHub.SessionHeartbeat do
   """
   def get(session_id) do
     GenServer.call(__MODULE__, {:get, session_id})
+  end
+
+  @doc """
+  Returns the state of any queued messages for a session, for delivery-state
+  observability by orchestrators using `send_message_to_session` with
+  `delivery: "queue"`.
+
+  Returns `nil` when the session has no pending queued batch.
+
+  Otherwise returns a map:
+    - `:count` - number of messages in the batch
+    - `:queued_at` - DateTime when the first message in the batch was queued ( escalation anchor)
+    - `:queued_status` - the session status captured at enqueue time
+    - `:escalates_at` - DateTime when the batch will escalate to `:interrupt` delivery
+
+  This is a pure read - it does not deliver, flush, cancel, or re-arm anything.
+  The accessor is wrapped in a try/catch to return nil if the GenServer is not
+  running or times out, allowing callers to treat `nil` as "no pending batch / unknown".
+  """
+  def queued_message_state(session_id) do
+    try do
+      GenServer.call(__MODULE__, {:queued_message_state, session_id})
+    catch
+      :exit, _ -> nil
+    end
   end
 
   @doc """
