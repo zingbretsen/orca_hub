@@ -1459,36 +1459,36 @@ liveSocket.connect()
 window.liveSocket = liveSocket
 // Reconnect on tab visibility (mobile app switch / screen on) or bfcache restore
 //
-// The built-in Phoenix Socket pagehide handler (socket.js:146-151) calls
-// disconnect() on tab background, which sets closeWasClean = true (socket.js:263)
-// and records awaitingConnectionOnPageShow = connectClock.
+// Mobile Chrome (and other browsers) suspend tabs or kill WebSockets when the
+// screen is off or the app is backgrounded, but readyState often stays OPEN
+// (zombie socket). Phoenix's reconnectTimer has a subtle bug: when it detects
+// a disconnect while pageHidden is true, it calls teardown() but does NOT
+// reschedule, permanently stopping retries. Additionally, the built-in Phoenix
+// visibilitychange handler and our explicit one would race on resume.
 //
-// If pageshow does NOT fire on resume (e.g. tab killed by OS), the socket is left
-// cleanly disconnected (closeWasClean = true), so the built-in visibilitychange
-// handler's !closeWasClean guard skips reconnect (socket.js:167-173).
-//
-// Mobile tabs often get suspended/killed without pageshow firing. We add explicit
-// visibilitychange and pageshow handlers to force reconnect on tab foreground.
-// See deps/phoenix/assets/js/phoenix/socket.js lines 146-173.
+// Solution: unconditional unconditional disconnect+connect on visibility visible.
+// This clears zombie-OPEN connections, resets Phoenix's reconnectTimer state,
+// and avoids race with the built-in handler. The reconnectTimer wedge is bypassed
+// because we don't rely on Phoenix's retry — we force a fresh connect attempt.
+// See deps/phoenix/assets/js/phoenix/socket.js lines 146-173 and ~196.
 
 // Track page visibility state for the reconnect watchdog below.
 let isPageHidden = document.visibilityState === "hidden"
+let hiddenAt = null
 
 document.addEventListener("visibilitychange", () => {
   isPageHidden = document.visibilityState === "hidden"
-  if (document.visibilityState === "visible" && !liveSocket.isConnected()) {
-    // If socket believes it's connected but isn't (zombie state), tear down first.
-    // Otherwise connect directly. isConnected() returns true only if the underlying
-    // transport readyState is "open", so if this returns false, we know the socket
-    // is truly disconnected and can connect directly.
-    if (
-      liveSocket.socket.conn &&
-      liveSocket.socket.conn.readyState !== WebSocket.OPEN
-    ) {
+  if (document.visibilityState === "visible") {
+    const hiddenMs = hiddenAt ? Date.now() - hiddenAt : 0
+    hiddenAt = null
+    // Unconditional reconnect if disconnected or if hidden for >10s (mobile suspend).
+    // disconnect+connect is safe when already dead and clears zombie-OPEN states,
+    // wedged reconnectTimer, and stale closeWasClean in one move.
+    if (!liveSocket.isConnected() || hiddenMs > 10000) {
       liveSocket.disconnect(() => liveSocket.connect())
-    } else {
-      liveSocket.connect()
     }
+  } else {
+    hiddenAt = Date.now()
   }
 })
 
@@ -1512,9 +1512,9 @@ window.addEventListener("pageshow", (event) => {
 // Bounded to avoid reload-loop: max 2 self-heal reloads per page path, tracked
 // in sessionStorage. Reset on successful reconnect (onOpen).
 //
-// Note: This is strictly secondary. The primary recovery path is the
-// visibilitychange handler above, which fires IMMEDIATELY on tab foreground.
-// The watchdog's 60s timeout is a fallback, not the primary recovery mechanism.
+// Key change: Time the CURRENT disconnected episode, not time-since-last-open.
+// This avoids the bug where lastReconnectAt was set to hours-ago on resume,
+// making >60s instantly true and burning self-heal reloads prematurely.
 const RELOAD_COUNTER_KEY = "phx:reconnect_failures:" + window.location.pathname
 let reloadCount = 0
 try {
@@ -1524,10 +1524,10 @@ try {
   // sessionStorage may be unavailable in some contexts (e.g. private browsing)
 }
 
-let lastReconnectAt = Date.now()
+let disconnectedSince = null
 let capWarned = false // Track if we've warned about hitting the max reload cap
 liveSocket.getSocket().onOpen(() => {
-  lastReconnectAt = Date.now()
+  disconnectedSince = null
   capWarned = false // Reset cap warning flag on reconnect
   // Reset reload counter on successful reconnect
   try {
@@ -1538,7 +1538,15 @@ liveSocket.getSocket().onOpen(() => {
 // Check every 10 seconds if we've been disconnected too long
 setInterval(() => {
   if (!isPageHidden && !liveSocket.isConnected()) {
-    if (Date.now() - lastReconnectAt > 60 * 1000) {
+    if (disconnectedSince == null) {
+      disconnectedSince = Date.now()
+      return // First detection: just start the timer
+    }
+    if (Date.now() - disconnectedSince > 60 * 1000) {
+      // Never burn self-heal reloads while the device has no network
+      if (navigator.onLine === false) {
+        return
+      }
       reloadCount += 1
       if (reloadCount <= 2) {
         try {
