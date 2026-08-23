@@ -29,7 +29,7 @@ docker-compose.yml
 # Claude local settings
 .claude/
 .agents/
-.plan.md
+plan.md
 .worktree_cache/
 
 # Test artifacts
