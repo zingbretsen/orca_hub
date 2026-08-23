@@ -31,11 +31,14 @@ defmodule OrcaHubWeb.NodeFilterTest do
     end
   end
 
-  describe "on_mount assigns" do
-    test "node_filter_visible is set based on clustered nodes" do
-      # node_filter_visible is true only when there are multiple nodes
-      # This tests that the assign is properly set
-      assert true == true
-    end
-  end
+  # NOTE: node_filter_visible (set in NodeFilter.on_mount/4 based on
+  # length(Cluster.node_info()) > 1) is NOT covered by tests.
+  #
+  # Reason: Cluster.node_info() depends on Node.list() which returns
+  # actual connected distributed Erlang nodes. Testing this would require
+  # starting real distributed nodes (Node.start/Node.connect), which
+  # requires async: false and causes cross-test race conditions. The
+  # existing cluster_distributed_test.exs was split out for exactly this
+  # reason - see that file's moduledoc. The on_mount hook's other assigns
+  # (node_filter, node_filter_nodes, node_modal_open) are tested above.
 end
