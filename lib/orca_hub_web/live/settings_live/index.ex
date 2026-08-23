@@ -570,23 +570,14 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   # `api_token[scopes][]` of value "" (same idiom as SkillLive's `backends`)
   # so an all-unchecked submit still sends the key at all; strip that
   # placeholder back out before it reaches the changeset. Blank optional
-  # text inputs (session pin, expiry) are nil'd rather than cast as "" — an
-  # empty string is not a valid session_id/utc_datetime.
-  defp normalize_token_params(params) do
-    params
-    |> strip_blank_scope_placeholder()
-    |> Map.new(fn
-      {"session_id", v} -> {"session_id", blank_to_nil(v)}
-      {"expires_at", v} -> {"expires_at", blank_to_nil(v)}
-      pair -> pair
-    end)
-  end
-
-  defp strip_blank_scope_placeholder(%{"scopes" => list} = params) when is_list(list) do
+  # text inputs (session pin, expiry) need no special-casing here —
+  # `Ecto.Changeset.cast/4`'s default `empty_values: [""]` already nils a
+  # blank "session_id"/"expires_at" before type-casting runs.
+  defp normalize_token_params(%{"scopes" => list} = params) when is_list(list) do
     Map.put(params, "scopes", Enum.reject(list, &(&1 == "")))
   end
 
-  defp strip_blank_scope_placeholder(params), do: params
+  defp normalize_token_params(params), do: params
 
   # The `.input` checkbox component always submits a real "true"/"false"
   # value (a hidden hedge input pairs with the checkbox — see
