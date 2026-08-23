@@ -28,8 +28,10 @@ defmodule OrcaHub.MCP.UpstreamClient do
   @refresh_interval :timer.minutes(5)
   @rpc_timeout 10_000
   @scoped_sweep_interval :timer.minutes(5)
-  @scoped_idle_ttl :timer.minutes(30)
-  @max_scoped_per_server 20
+  # Peak memory ≈ 780 MB + N × 131 MB; with 4Gi limit, 8 scoped sessions ≈ 1.8 GB.
+  # Idle TTL of 15 minutes balances resource reuse against test latency.
+  @scoped_idle_ttl :timer.minutes(15)
+  @max_scoped_per_server 8
 
   # ETS cache of derived, read-only data (the prefixed tool list and the set of
   # upstream prefixes). Reads go straight to ETS so the hot MCP paths
@@ -378,13 +380,14 @@ defmodule OrcaHub.MCP.UpstreamClient do
              }}
 
           {:error, reason} ->
-            # Session presumed dead (e.g. 404 on an expired session) — no
-            # DELETE, just re-initialize.
+            # Session presumed dead (e.g. 404 on an expired session). Best-effort
+            # DELETE first to free the browser context before re-initializing.
             Logger.info(
               "Upstream session for #{server.name} failed health check " <>
                 "(#{inspect(reason)}); re-initializing"
             )
 
+            terminate_session(conn)
             connect_upstream(server)
         end
     end
@@ -679,13 +682,14 @@ defmodule OrcaHub.MCP.UpstreamClient do
             {result, touch_scoped(scoped, key)}
 
           {:error, reason} ->
-            # Scoped session presumed expired (e.g. 404) — no DELETE, just
-            # re-initialize once and retry the call.
+            # Scoped session presumed expired (e.g. 404). Best-effort DELETE first
+            # to free the browser context before re-initializing and retrying.
             Logger.info(
               "Scoped upstream session for #{conn.name}/#{orca_session_id} failed " <>
                 "(#{inspect(reason)}); re-initializing"
             )
 
+            terminate_session(entry)
             create_scoped_and_call(conn, Map.delete(scoped, key), key, tool_name, arguments)
         end
 

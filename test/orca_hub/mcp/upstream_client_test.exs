@@ -141,7 +141,7 @@ defmodule OrcaHub.MCP.UpstreamClientTest do
     refute_received {:req, "DELETE", _, _, _}
   end
 
-  test "re-initializes when the health check fails, without DELETEing the dead session" do
+  test "re-initializes when the health check fails, DELETEing the old session first" do
     srv = server()
     existing = connect!(srv, session_id: "sess-old")
 
@@ -149,9 +149,10 @@ defmodule OrcaHub.MCP.UpstreamClientTest do
     conns = UpstreamClient.reconcile_connections([srv], existing)
 
     assert conns[srv.id].session_id == "sess-new"
+    # DELETE must come before initialize, in that order
     assert_received {:req, "POST", _, "tools/list", "sess-old"}
+    assert_received {:req, "DELETE", "upstream-a.test", _, "sess-old"}
     assert_received {:req, "POST", _, "initialize", nil}
-    refute_received {:req, "DELETE", _, _, _}
   end
 
   test "re-initializes and DELETEs the old session when config changes" do
@@ -278,11 +279,11 @@ defmodule OrcaHub.MCP.UpstreamClientTest do
 
       assert result_text(result) == "ok:fresh-1"
       assert scoped[{srv.id, "orca-1"}].session_id == "fresh-1"
-      # Failed call on the dead session, then one initialize + retried call.
+      # DELETE must come before the subsequent initialize, in that order
       assert_received {:req, "POST", _, "tools/call", "scoped-1"}
+      assert_received {:req, "DELETE", "upstream-a.test", _, "scoped-1"}
       assert_received {:req, "POST", _, "initialize", nil}
       assert_received {:req, "POST", _, "tools/call", "fresh-1"}
-      refute_received {:req, "DELETE", _, _, _}
     end
 
     test "TTL sweep DELETEs idle scoped sessions and keeps active ones" do
@@ -304,8 +305,9 @@ defmodule OrcaHub.MCP.UpstreamClientTest do
     test "evicts the least-recently-used scoped session at the per-server cap" do
       {srv, conns} = scoped_setup()
 
+      # Cap is now 8; fill with 8 sessions, then orca-1 will become LRU.
       scoped =
-        Enum.reduce(1..20, %{}, fn i, scoped ->
+        Enum.reduce(1..8, %{}, fn i, scoped ->
           {_r, scoped} =
             UpstreamClient.dispatch_call(conns, scoped, "play__navigate", %{},
               orca_session_id: "orca-#{i}"
@@ -322,13 +324,13 @@ defmodule OrcaHub.MCP.UpstreamClientTest do
 
       flush_requests()
 
-      {r21, scoped} =
+      {r9, scoped} =
         UpstreamClient.dispatch_call(conns, scoped, "play__navigate", %{},
-          orca_session_id: "orca-21"
+          orca_session_id: "orca-9"
         )
 
-      assert result_text(r21) == "ok:scoped-21"
-      assert map_size(scoped) == 20
+      assert result_text(r9) == "ok:scoped-9"
+      assert map_size(scoped) == 8
       refute Map.has_key?(scoped, {srv.id, "orca-2"})
       assert Map.has_key?(scoped, {srv.id, "orca-1"})
       assert_received {:req, "DELETE", "upstream-a.test", _, "scoped-2"}
