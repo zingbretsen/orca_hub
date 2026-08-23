@@ -1,6 +1,7 @@
 defmodule OrcaHubWeb.SettingsLive.Index do
   use OrcaHubWeb, :live_view
 
+  alias OrcaHub.ApiTokens.ApiToken
   alias OrcaHub.Cluster
   alias OrcaHub.Cluster.CodeSync
   alias OrcaHub.EmailInboxes.EmailInbox
@@ -35,12 +36,20 @@ defmodule OrcaHubWeb.SettingsLive.Index do
        email_inboxes: HubRPC.list_email_inboxes(),
        show_inbox_form: false,
        editing_inbox: nil,
-       inbox_form: to_form(HubRPC.change_email_inbox(%EmailInbox{}))
+       inbox_form: to_form(HubRPC.change_email_inbox(%EmailInbox{})),
+       api_tokens: HubRPC.list_api_tokens(),
+       show_token_form: false,
+       token_form: to_form(HubRPC.change_api_token(%ApiToken{}, %{"scopes" => []})),
+       revealed_secret: nil
      )}
   end
 
   @impl true
   def handle_params(params, _url, socket) do
+    # Any patch navigation (saving/cancelling an unrelated form on this same
+    # page) counts as "any further action" per the API-token secret-reveal
+    # contract — clear it here rather than at each individual call site.
+    socket = assign(socket, revealed_secret: nil)
     {:noreply, apply_action(socket, socket.assigns.live_action, params)}
   end
 
@@ -396,6 +405,72 @@ defmodule OrcaHubWeb.SettingsLive.Index do
     {:noreply, socket}
   end
 
+  # ── API Tokens (scoped, revocable — see OrcaHub.ApiTokens) ──────────────
+  #
+  # `revealed_secret` is the ONLY place the plaintext secret ever touches
+  # this LiveView's state, and only from the moment `create_api_token`
+  # returns it until an explicit dismiss — or ANY other patch navigation on
+  # this page, which clears it in `handle_params` above. It must never be
+  # put into flash, a URL/query param, a log, an HTML attribute, or a
+  # `phx-value-*` — see `OrcaHub.ApiTokens` moduledoc. There is deliberately
+  # no function anywhere that can retrieve a secret after creation.
+
+  def handle_event("toggle_token_form", _params, socket) do
+    socket =
+      if socket.assigns.show_token_form do
+        assign(socket, show_token_form: false)
+      else
+        assign(socket,
+          show_token_form: true,
+          token_form: to_form(HubRPC.change_api_token(%ApiToken{}, %{"scopes" => []}))
+        )
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("validate_token", %{"api_token" => params}, socket) do
+    changeset = HubRPC.change_api_token(%ApiToken{}, normalize_token_params(params))
+    {:noreply, assign(socket, token_form: to_form(changeset, action: :validate))}
+  end
+
+  def handle_event("save_token", %{"api_token" => params}, socket) do
+    case HubRPC.create_api_token(normalize_token_params(params)) do
+      {:ok, %{token: token, secret: secret}} ->
+        {:noreply,
+         assign(socket,
+           api_tokens: HubRPC.list_api_tokens(),
+           show_token_form: false,
+           token_form: to_form(HubRPC.change_api_token(%ApiToken{}, %{"scopes" => []})),
+           revealed_secret: %{name: token.name, secret: secret}
+         )}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, token_form: to_form(changeset, action: :validate))}
+    end
+  end
+
+  def handle_event("cancel_token_form", _params, socket) do
+    {:noreply,
+     assign(socket,
+       show_token_form: false,
+       token_form: to_form(HubRPC.change_api_token(%ApiToken{}, %{"scopes" => []}))
+     )}
+  end
+
+  def handle_event("revoke_token", %{"id" => id}, socket) do
+    {:ok, _} = HubRPC.revoke_api_token(id)
+
+    {:noreply,
+     socket
+     |> assign(api_tokens: HubRPC.list_api_tokens())
+     |> put_flash(:info, "Token revoked")}
+  end
+
+  def handle_event("dismiss_secret", _params, socket) do
+    {:noreply, assign(socket, revealed_secret: nil)}
+  end
+
   @impl true
   def handle_info(:do_push_all, socket) do
     result = CodeSync.push_all()
@@ -441,6 +516,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
        secret_keys: HubRPC.list_secret_keys()
      )}
   end
+
+  def token_scopes, do: ApiToken.scopes()
 
   # Maps each connected node's atom to its `nodes`-table row (or nil if it
   # has none yet), so the Connected Nodes list can link through to
@@ -488,6 +565,28 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   defp blank_to_nil(nil), do: nil
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(value), do: value
+
+  # The scopes checkbox group pairs each checkbox with a leading hidden
+  # `api_token[scopes][]` of value "" (same idiom as SkillLive's `backends`)
+  # so an all-unchecked submit still sends the key at all; strip that
+  # placeholder back out before it reaches the changeset. Blank optional
+  # text inputs (session pin, expiry) are nil'd rather than cast as "" — an
+  # empty string is not a valid session_id/utc_datetime.
+  defp normalize_token_params(params) do
+    params
+    |> strip_blank_scope_placeholder()
+    |> Map.new(fn
+      {"session_id", v} -> {"session_id", blank_to_nil(v)}
+      {"expires_at", v} -> {"expires_at", blank_to_nil(v)}
+      pair -> pair
+    end)
+  end
+
+  defp strip_blank_scope_placeholder(%{"scopes" => list} = params) when is_list(list) do
+    Map.put(params, "scopes", Enum.reject(list, &(&1 == "")))
+  end
+
+  defp strip_blank_scope_placeholder(params), do: params
 
   # The `.input` checkbox component always submits a real "true"/"false"
   # value (a hidden hedge input pairs with the checkbox — see

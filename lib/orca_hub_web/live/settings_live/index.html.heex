@@ -486,6 +486,176 @@
 
 <div class="mt-10">
   <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">API Tokens</h3>
+    <button phx-click="toggle_token_form" class="btn btn-sm">
+      {if @show_token_form, do: "Cancel", else: "Add Token"}
+    </button>
+  </div>
+
+  <p class="text-sm text-base-content/60 mb-4">
+    Scoped, revocable tokens for <code class="bg-base-300 px-1 rounded">/api/v1/runs</code>, <code class="bg-base-300 px-1 rounded">/a2a</code>, and other authenticated endpoints — the
+    fine-grained alternative to the single global <code class="bg-base-300 px-1 rounded">ORCA_API_TOKEN</code>.
+    Only a hash of the secret is ever stored; the plaintext is shown <strong>once</strong>,
+    immediately after creation, and cannot be recovered afterward.
+  </p>
+
+  <div :if={@revealed_secret} class="alert alert-warning mb-6 flex-col items-start gap-2">
+    <div class="font-semibold">
+      Token "{@revealed_secret.name}" created — copy this secret now
+    </div>
+    <div class="text-sm">
+      This is the only time the secret will ever be shown. It is not stored anywhere in
+      recoverable form — if you lose it, revoke this token and create a new one.
+    </div>
+    <div class="flex items-center gap-2 w-full">
+      <code
+        id="revealed-token-secret"
+        class="bg-base-100 px-2 py-1.5 rounded text-xs font-mono flex-1 overflow-x-auto whitespace-nowrap"
+      >
+        {@revealed_secret.secret}
+      </code>
+      <button
+        type="button"
+        class="btn btn-xs"
+        onclick="navigator.clipboard.writeText(document.getElementById('revealed-token-secret').textContent)"
+      >
+        <.icon name="hero-clipboard-document-micro" class="size-4" /> Copy
+      </button>
+      <button type="button" phx-click="dismiss_secret" class="btn btn-xs btn-ghost">
+        Dismiss
+      </button>
+    </div>
+  </div>
+
+  <div :if={@show_token_form} class="card bg-base-200 p-4 mb-6">
+    <h4 class="font-semibold mb-3">Add API Token</h4>
+    <.form for={@token_form} phx-submit="save_token" phx-change="validate_token" class="space-y-3">
+      <.input
+        field={@token_form[:name]}
+        type="text"
+        label="Name"
+        placeholder="ci-runner"
+        phx-debounce="blur"
+      />
+
+      <div>
+        <label class="label"><span class="label-text">Scopes</span></label>
+        <input type="hidden" name="api_token[scopes][]" value="" />
+        <div class="flex flex-wrap gap-4">
+          <label
+            :for={scope <- token_scopes()}
+            class="flex items-center gap-2 text-sm cursor-pointer"
+          >
+            <input
+              type="checkbox"
+              name="api_token[scopes][]"
+              value={scope}
+              checked={scope in (@token_form[:scopes].value || [])}
+              class="checkbox checkbox-sm"
+            />
+            <code class="text-xs">{scope}</code>
+          </label>
+        </div>
+        <div
+          :for={msg <- Enum.map(@token_form[:scopes].errors, &translate_error/1)}
+          class="mt-1.5 flex gap-2 items-center text-sm text-error"
+        >
+          <.icon name="hero-exclamation-circle" class="size-4" /> {msg}
+        </div>
+      </div>
+
+      <.input
+        field={@token_form[:session_id]}
+        type="text"
+        label="Pin to session (optional)"
+        placeholder="Session UUID — leave blank for an unpinned token"
+        phx-debounce="blur"
+      />
+      <p class="text-xs text-base-content/50 -mt-2">
+        A session-pinned token can only act on that one session, and cannot hold the
+        <code class="bg-base-300 px-1 rounded">tts</code>
+        or <code class="bg-base-300 px-1 rounded">a2a</code>
+        scope (neither takes a session_id).
+      </p>
+
+      <.input
+        field={@token_form[:expires_at]}
+        type="datetime-local"
+        label="Expires (optional)"
+      />
+
+      <div class="flex justify-end gap-2 mt-4">
+        <button type="button" phx-click="cancel_token_form" class="btn btn-sm">Cancel</button>
+        <.button type="submit" class="btn-sm">Create</.button>
+      </div>
+    </.form>
+  </div>
+
+  <div
+    :if={@api_tokens == [] && !@show_token_form}
+    class="text-sm text-base-content/50 p-8 text-center bg-base-200 rounded-lg"
+  >
+    No API tokens configured.
+  </div>
+
+  <div
+    :if={@api_tokens != []}
+    class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden"
+  >
+    <div
+      :for={token <- @api_tokens}
+      class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50"
+    >
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class={["font-medium", token.revoked_at && "line-through text-base-content/40"]}>
+            {token.name}
+          </span>
+          <code class="text-xs text-base-content/50">{token.token_prefix}…</code>
+          <span :if={token.revoked_at} class="badge badge-xs badge-error">revoked</span>
+          <span
+            :if={
+              !token.revoked_at && token.expires_at &&
+                DateTime.compare(DateTime.utc_now(), token.expires_at) == :gt
+            }
+            class="badge badge-xs badge-warning"
+          >
+            expired
+          </span>
+          <span :for={scope <- token.scopes} class="badge badge-xs badge-neutral font-mono">
+            {scope}
+          </span>
+        </div>
+        <div class="text-base-content/50 text-xs mt-0.5">
+          <span :if={token.session_id}>
+            Pinned to session
+            <.link navigate={~p"/sessions/#{token.session_id}"} class="link font-mono">
+              {String.slice(token.session_id, 0, 8)}
+            </.link>
+          </span>
+          <span :if={!token.session_id}>Unpinned</span>
+          · Created {token.inserted_at} · Last used {token.last_used_at || "never"} · Expires {token.expires_at ||
+            "never"}
+        </div>
+      </div>
+      <div class="flex items-center gap-1">
+        <button
+          :if={!token.revoked_at}
+          phx-click="revoke_token"
+          phx-value-id={token.id}
+          data-confirm={"Revoke token \"#{token.name}\"? Anything using it will stop working immediately."}
+          class="btn btn-xs btn-ghost text-error"
+          title="Revoke"
+        >
+          <.icon name="hero-no-symbol-micro" class="size-4" />
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mt-10">
+  <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">Cluster Code Sync</h3>
     <div class="flex gap-2">
       <button phx-click="check_drift" class="btn btn-sm btn-ghost" title="Check for code drift">

@@ -574,4 +574,15 @@ defmodule OrcaHub.HubRPC do
 
   def detach_session(session_id, opts \\ []),
     do: call(OrcaHub.Sessions, :detach_session, [session_id, opts])
+
+  # -------------------------------------------------------------------
+  # API Tokens (scoped, revocable — see OrcaHub.ApiTokens)
+  # -------------------------------------------------------------------
+
+  def list_api_tokens, do: call(OrcaHub.ApiTokens, :list_tokens, [])
+  def create_api_token(attrs), do: call(OrcaHub.ApiTokens, :create_token, [attrs])
+  def revoke_api_token(id), do: call(OrcaHub.ApiTokens, :revoke_token, [id])
+
+  def change_api_token(token, attrs \\ %{}),
+    do: call(OrcaHub.ApiTokens, :change_token, [token, attrs])
 end
