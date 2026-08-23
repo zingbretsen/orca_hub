@@ -1047,6 +1047,13 @@ defmodule OrcaHub.SessionRunner do
 
   defp maybe_notify_parent(%{notify_parent: false}, _status, _turn_started_at), do: :ok
 
+  # Never notify an archived child - suppression while archived, not a detach.
+  # Unarchiving (send_message_to_session does this automatically) restores
+  # notifications with no further action needed.
+  defp maybe_notify_parent(%{archived_at: archived_at}, _status, _turn_started_at)
+       when not is_nil(archived_at),
+       do: :ok
+
   defp maybe_notify_parent(session, status, turn_started_at) when status in [:idle, :error] do
     Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
       deliver_parent_notification(session, status, turn_started_at)
@@ -1163,7 +1170,13 @@ defmodule OrcaHub.SessionRunner do
   # Task.Supervisor scheduling. `turn_started_at` defaults to nil so existing
   # 2-arity callers (e.g. the deleted-parent test) are unaffected.
   @doc false
-  def deliver_parent_notification(session, status, turn_started_at \\ nil) do
+  def deliver_parent_notification(session, status, turn_started_at \\ nil)
+
+  def deliver_parent_notification(%{archived_at: archived_at}, _status, _turn_started_at)
+      when not is_nil(archived_at),
+      do: :ok
+
+  def deliver_parent_notification(session, status, turn_started_at) do
     if status == :idle and redundant_idle_notification?(session, turn_started_at) do
       Logger.info(
         "[lifecycle notify] suppressed idle notification for child #{session.id} -> parent " <>

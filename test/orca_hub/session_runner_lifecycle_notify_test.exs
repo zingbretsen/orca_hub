@@ -606,4 +606,83 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
         poll_count_grows(session_id, before_count, deadline)
     end
   end
+
+  # ── ORCAHUB3-49 fix: suppress lifecycle notifications when archived ─────
+
+  describe "deliver_parent_notification/3 — archived child suppression" do
+    setup %{dir: dir} do
+      {:ok, parent} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "the parent",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(parent.id) end)
+      {:ok, parent: parent}
+    end
+
+    test "an archived child does not fire a lifecycle notification", %{
+      parent: parent,
+      dir: dir
+    } do
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "child-title",
+          parent_session_id: parent.id,
+          notify_parent: true,
+          status: "running"
+        })
+
+      # Archive the child
+      {:ok, _} = Sessions.archive_session(child)
+
+      # Simulate the child turning idle while archived
+      # (In real use this would happen via SessionRunner.running/3)
+      # Use deliver_parent_notification/2 (test seam) directly
+      archived_child = Sessions.get_session!(child.id)
+      assert not is_nil(archived_child.archived_at)
+
+      # This should not fire any notification
+      assert SessionRunner.deliver_parent_notification(archived_child, :idle) == :ok
+
+      # No "[Session lifecycle]" message should appear on the parent
+      messages = Sessions.list_messages(parent.id)
+      refute Enum.any?(messages, &((message_text(&1) || "") =~ "is now idle"))
+    end
+
+    test "unarchiving restores notification capability (via send_message_to_session)", %{
+      parent: parent,
+      dir: dir
+    } do
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: dir,
+          title: "child-title",
+          parent_session_id: parent.id,
+          notify_parent: true,
+          status: "running"
+        })
+
+      # Archive then unarchive
+      {:ok, archived_child} = Sessions.archive_session(child)
+      {:ok, _} = Sessions.unarchive_session(archived_child)
+
+      unarchived_child = Sessions.get_session!(child.id)
+      assert is_nil(unarchived_child.archived_at)
+
+      # Now a turn completion should notify (test via deliver_parent_notification)
+      assert SessionRunner.deliver_parent_notification(unarchived_child, :idle) == :ok
+
+      # Should get the notification
+      message =
+        wait_for_message(
+          parent.id,
+          ~r/^\[Session lifecycle\] Child session #{child.id} \("child-title"\) is now idle\.$/
+        )
+
+      refute is_nil(message), "expected a [Session lifecycle] idle message on the parent"
+    end
+  end
 end
