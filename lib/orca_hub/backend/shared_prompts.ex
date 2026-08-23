@@ -423,11 +423,15 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - Edit source with the Edit tool's exact-match strings, not `sed -i` or \
     heredoc splicing — those half-apply on real source and send you into an \
     edit-inspect-revert loop.
-    - **Never run destructive git commands** (`checkout`/`restore`/`reset`/\
-    `stash`/`clean`) on any path, for any reason — you share ONE checkout and \
-    ONE git index with sibling sessions, and those verbs destroy THEIR \
-    uncommitted work with no recovery. To undo your own edit, make a forward \
-    edit instead.
+    - **Git is allow-listed**: `git commit -o <explicit paths>` and read-only \
+    inspection (`log`/`status`/`diff`/`show`/`reflog`). Everything else is \
+    forbidden on any path, for any reason — `reset`/`checkout`/`switch`/\
+    `restore`/`stash`/`clean`/`commit --amend`/`rebase`/`merge`/`cherry-pick`/\
+    `add -A`/`add .`. You share ONE checkout and ONE index with live sibling \
+    sessions: rewriting history destroys THEIR commits, and `reset --hard` \
+    destroys their uncommitted work with no recovery. To undo your own edit, \
+    make a forward edit; if you think the repo needs repair, REPORT it rather \
+    than attempting it.
     - Scope `mix format` to the files you touched (`mix format <your \
     paths>`), never a bare `mix format` — a tree-wide run reformats files you \
     never touched and can block another session's pre-deploy gate.
@@ -463,11 +467,15 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - Edit source with the Edit tool's exact-match strings, not `sed -i` or \
     heredoc splicing — those half-apply on real source and send you into an \
     edit-inspect-revert loop.
-    - **Never run destructive git commands** (`checkout`/`restore`/`reset`/\
-    `stash`/`clean`) on any path, for any reason — you share ONE checkout and \
-    ONE git index with sibling sessions, and those verbs destroy THEIR \
-    uncommitted work with no recovery. To undo your own edit, make a forward \
-    edit instead.
+    - **Git is allow-listed**: `git commit -o <explicit paths>` and read-only \
+    inspection (`log`/`status`/`diff`/`show`/`reflog`). Everything else is \
+    forbidden on any path, for any reason — `reset`/`checkout`/`switch`/\
+    `restore`/`stash`/`clean`/`commit --amend`/`rebase`/`merge`/`cherry-pick`/\
+    `add -A`/`add .`. You share ONE checkout and ONE index with live sibling \
+    sessions: rewriting history destroys THEIR commits, and `reset --hard` \
+    destroys their uncommitted work with no recovery. To undo your own edit, \
+    make a forward edit; if you think the repo needs repair, REPORT it rather \
+    than attempting it.
     - Scope `mix format` to the files you touched (`mix format <your \
     paths>`), never a bare `mix format` — a tree-wide run reformats files you \
     never touched and can block another session's pre-deploy gate.

@@ -1618,9 +1618,13 @@ defmodule OrcaHub.Backend.PiTest do
     test "a worker session's prompt warns off destructive git commands, bare mix format, and sed -i" do
       prompt = Backend.system_prompt(ctx())
 
-      assert prompt =~ "Never run destructive git commands"
+      assert prompt =~ "Git is allow-listed"
+      assert prompt =~ "git commit -o <explicit paths>"
+      assert prompt =~ "commit --amend"
+      assert prompt =~ "add -A"
       assert prompt =~ "Scope `mix format` to the files you touched"
       assert prompt =~ "not `sed -i`"
+      assert prompt =~ "REPORT it rather than attempting it"
     end
 
     test "an orchestrator's prompt tells the caller to end its turn after scheduling a watching heartbeat" do
