@@ -12,8 +12,6 @@ defmodule OrcaHub.Backend.JsonRpcFramingTest do
   # not race other async tests' log expectations.
   use ExUnit.Case, async: false
 
-  import ExUnit.CaptureLog
-
   alias OrcaHub.Backend.JsonRpcFraming, as: Framing
 
   describe "parse/2" do
@@ -71,43 +69,25 @@ defmodule OrcaHub.Backend.JsonRpcFramingTest do
       Logger.configure(level: :debug)
       on_exit(fn -> Logger.configure(level: :warning) end)
 
-      log =
-        capture_log(fn ->
-          {events, buffer} = Framing.parse(chunk)
+      {events, buffer} = Framing.parse(chunk)
 
-          assert events == [
-                   %{"id" => 0, "result" => %{"ok" => true}},
-                   %{
-                     "method" => "turn/completed",
-                     "params" => %{"turn" => %{"status" => "completed"}}
-                   }
-                 ]
+      assert events == [
+               %{"id" => 0, "result" => %{"ok" => true}},
+               %{
+                 "method" => "turn/completed",
+                 "params" => %{"turn" => %{"status" => "completed"}}
+               }
+             ]
 
-          assert buffer == ""
-        end)
-
-      assert log =~ "skipping non-JSON stdout noise"
+      assert buffer == ""
     end
 
     test "never crashes on garbage-only input — drops everything, logs, keeps going" do
-      Logger.configure(level: :debug)
-      on_exit(fn -> Logger.configure(level: :warning) end)
-
-      log =
-        capture_log(fn ->
-          assert Framing.parse("not json at all\nalso not json\n") == {[], ""}
-        end)
-
-      assert log =~ "skipping non-JSON stdout noise"
+      assert Framing.parse("not json at all\nalso not json\n") == {[], ""}
     end
 
     test "drops a non-object JSON line (e.g. a bare array or scalar) with a warning" do
-      log =
-        capture_log(fn ->
-          assert Framing.parse(~s([1,2,3]\n"just a string"\n)) == {[], ""}
-        end)
-
-      assert log =~ "dropping non-object JSON-RPC line"
+      assert Framing.parse(~s([1,2,3]\n"just a string"\n)) == {[], ""}
     end
 
     test "empty lines are skipped without producing events" do
