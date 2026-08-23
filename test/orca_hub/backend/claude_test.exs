@@ -351,6 +351,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `Tools.list_issues(...)` (kind: "feature_request", directory: "/home/zach/orca_hub") first — if it's already tracked, add what you found with `Tools.append_issue_note(...)` instead of filing a duplicate with `Tools.create_issue(...)` (kind: "feature_request", directory: "/home/zach/orca_hub", ...). Once a fix has shipped AND been verified, close it with `Tools.close_issue(...)` (outcome: "resolved", resolution: ...) — call close_issue with just `id` first to read back the harvested evidence and synthesize `resolution` from that, not from memory.
     - Scheduled heartbeats do NOT survive a restart of your own host (e.g. a deploy) — re-call `Tools.schedule_heartbeat(...)` as your first action after waking from one.
     - Pre-deploy gate pattern: run the full suite once at the pipeline tip via a dedicated worker with an explicit allow-list of known flakes; treat any NEW failure as fix-at-root, never expand the allow-list.
+    - Handing a session off to a human is a normal end state, not an error — use `Tools.detach_session(...)` to make it a root session (removes it from your `watch_children`/callbacks), or `Tools.attach_session(...)` to re-home it to a different orchestrator.
 
     ## Example Flow
 
@@ -411,6 +412,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `mcp__orca__list_issues` (kind: "feature_request", directory: "/home/zach/orca_hub") first — if it's already tracked, add what you found with `mcp__orca__append_issue_note` instead of filing a duplicate with `mcp__orca__create_issue` (kind: "feature_request", directory: "/home/zach/orca_hub", ...). Once a fix has shipped AND been verified, close it with `mcp__orca__close_issue` (outcome: "resolved", resolution: ...) — call close_issue with just `id` first to read back the harvested evidence and synthesize `resolution` from that, not from memory.
     - Scheduled heartbeats do NOT survive a restart of your own host (e.g. a deploy) — re-call `mcp__orca__schedule_heartbeat` as your first action after waking from one.
     - Pre-deploy gate pattern: run the full suite once at the pipeline tip via a dedicated worker with an explicit allow-list of known flakes; treat any NEW failure as fix-at-root, never expand the allow-list.
+    - Handing a session off to a human is a normal end state, not an error — use `mcp__orca__detach_session` to make it a root session (removes it from your `watch_children`/callbacks), or `mcp__orca__attach_session` to re-home it to a different orchestrator.
 
     ## Example Flow
 
