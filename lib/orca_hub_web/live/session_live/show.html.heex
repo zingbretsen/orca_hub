@@ -185,6 +185,19 @@
       </.link>
       <span :if={@session.project} class="text-base-content/40 ml-1">{@session.directory}</span>
       <span :if={!@session.project}>{@session.directory}</span>
+      <%!-- Orchestrator parentage (ORCAHUB3-50) — a session with no parent is
+           a normal, meaningful state, so it's stated plainly rather than
+           just omitting this span. --%>
+      <span class="text-base-content/40 ml-1">
+        · Parent:
+        <%= if @parent_session do %>
+          <.link navigate={~p"/sessions/#{@parent_session.id}"} class="hover:underline">
+            {@parent_session.title || @parent_session.directory}
+          </.link>
+        <% else %>
+          none
+        <% end %>
+      </span>
     </:subtitle>
     <:actions>
       <%!-- Mobile session navigation --%>
@@ -445,6 +458,25 @@
       >
         <.icon name="hero-server-stack" class="size-5" />
       </button>
+      <%!-- Orchestrator parentage actions (ORCAHUB3-50) --%>
+      <button
+        :if={@parent_session}
+        phx-click="detach_from_orchestrator"
+        data-confirm="Detach from orchestrator? Its completion callbacks (e.g. notify_parent) will stop."
+        class="hidden sm:flex btn btn-ghost btn-sm btn-circle"
+        title="Detach from orchestrator"
+      >
+        <.icon name="hero-link-slash" class="size-5" />
+      </button>
+      <button
+        phx-click="open_attach_modal"
+        class="hidden sm:flex btn btn-ghost btn-sm btn-circle"
+        title={
+          if @parent_session, do: "Re-attach to a different orchestrator", else: "Attach to..."
+        }
+      >
+        <.icon name="hero-link" class="size-5" />
+      </button>
       <button
         :if={@status in [:running, :waiting, :compacting] && !@session.archived_at}
         phx-click="stop_session"
@@ -647,6 +679,26 @@
             >
               <span class="font-medium">Copy session ID</span>
               <.icon name="hero-identification" class="size-5" />
+            </button>
+            <%!-- Orchestrator parentage actions (ORCAHUB3-50) --%>
+            <%= if @parent_session do %>
+              <button
+                phx-click="detach_from_orchestrator"
+                data-confirm="Detach from orchestrator? Its completion callbacks (e.g. notify_parent) will stop."
+                class="flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300"
+              >
+                <span class="font-medium">Detach from orchestrator</span>
+                <.icon name="hero-link-slash" class="size-5" />
+              </button>
+            <% end %>
+            <button
+              phx-click="open_attach_modal"
+              class="flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300"
+            >
+              <span class="font-medium">
+                {if @parent_session, do: "Re-attach to...", else: "Attach to..."}
+              </span>
+              <.icon name="hero-link" class="size-5" />
             </button>
             <%= if @status in [:running, :waiting, :compacting] and !@session.archived_at do %>
               <button
@@ -948,6 +1000,64 @@
           <div class="flex justify-end mt-3">
             <button phx-click="toggle_mcp_server_picker" class="btn btn-sm">Cancel</button>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <%!-- Attach-to-orchestrator picker modal (ORCAHUB3-50) --%>
+  <div
+    :if={@show_attach_modal}
+    class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
+  >
+    <div class="card bg-base-100 shadow-xl w-full max-w-lg p-4 sm:p-6 rounded-b-none sm:rounded-b-2xl max-h-[80vh] overflow-y-auto flex flex-col">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold">Attach to orchestrator</h2>
+        <button phx-click="close_attach_modal" class="btn btn-ghost btn-sm btn-circle">
+          <.icon name="hero-x-mark" class="size-5" />
+        </button>
+      </div>
+
+      <p class="text-sm text-base-content/60 mb-3">
+        Choose the session that will become this session's orchestrator/parent.
+        <%= if @parent_session do %>
+          Currently attached to <span class="font-medium">{@parent_session.title || @parent_session.directory}</span>.
+        <% end %>
+      </p>
+
+      <form phx-change="filter_attach_candidates" class="mb-3">
+        <input
+          type="text"
+          name="query"
+          value={@attach_query}
+          placeholder="Search by title or session id..."
+          class="input input-bordered input-sm w-full"
+          autofocus
+          phx-debounce="150"
+        />
+      </form>
+
+      <div class="flex-1 overflow-y-auto min-h-0">
+        <div
+          :if={filter_attach_candidates(@attach_candidates, @attach_query) == []}
+          class="text-sm text-base-content/50 text-center py-4"
+        >
+          No matching sessions.
+        </div>
+        <div class="space-y-1">
+          <button
+            :for={s <- filter_attach_candidates(@attach_candidates, @attach_query)}
+            phx-click="attach_to_parent"
+            phx-value-parent_id={s.id}
+            class="flex items-center justify-between w-full text-sm bg-base-200 hover:bg-base-300 rounded px-3 py-2 text-left transition-colors"
+          >
+            <div class="min-w-0 flex-1">
+              <div class="font-medium truncate">{s.title || s.directory}</div>
+              <div class="text-base-content/50 text-xs font-mono">
+                {String.slice(s.id, 0, 8)} · {s.status}
+              </div>
+            </div>
+          </button>
         </div>
       </div>
     </div>

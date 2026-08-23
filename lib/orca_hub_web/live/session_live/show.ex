@@ -64,6 +64,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     {prev_session_id, next_session_id} = HubRPC.get_adjacent_session_ids(session)
 
+    # Current orchestrator, if any (ORCAHUB3-50) — a session with no parent
+    # is a normal, meaningful state, not something to render as absence.
+    parent_session = session.parent_session_id && HubRPC.get_session(session.parent_session_id)
+
     # Display the original node name even if disconnected/unassigned
     session_node_name =
       if session.runner_node, do: Cluster.node_name(session.runner_node), else: "unassigned"
@@ -117,6 +121,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
      )
      |> assign(:prev_session_id, prev_session_id)
      |> assign(:next_session_id, next_session_id)
+     |> assign(:parent_session, parent_session)
+     |> assign(:show_attach_modal, false)
+     |> assign(:attach_candidates, [])
+     |> assign(:attach_query, "")
      |> assign(:tts_autoplay, false)
      |> assign(:open_files, [])
      |> assign(:active_file_tab, nil)
@@ -780,6 +788,40 @@ defmodule OrcaHubWeb.SessionLive.Show do
   defp context_meter_color(pct) when pct >= 60, do: "progress-warning"
   defp context_meter_color(_pct), do: "progress-primary"
 
+  # -- Parentage helpers (ORCAHUB3-50) --
+
+  defp parent_label(nil, id), do: "session #{String.slice(id, 0, 8)}"
+  defp parent_label(%{title: title}, _id) when is_binary(title) and title != "", do: title
+  defp parent_label(%{directory: directory}, _id), do: directory
+
+  defp attach_error_message(:cycle),
+    do: "that would create a cycle (the target is a descendant of this session)"
+
+  defp attach_error_message(:self_parent), do: "a session can't be its own parent"
+  defp attach_error_message(:session_not_found), do: "this session no longer exists"
+  defp attach_error_message(:parent_not_found), do: "the target session no longer exists"
+
+  defp attach_error_message(%Ecto.Changeset{} = changeset) do
+    changeset.errors
+    |> Enum.map(fn {field, {msg, _opts}} -> "#{field} #{msg}" end)
+    |> Enum.join(", ")
+  end
+
+  defp attach_error_message(other), do: inspect(other)
+
+  defp filter_attach_candidates(candidates, query) do
+    q = query |> to_string() |> String.trim() |> String.downcase()
+
+    if q == "" do
+      candidates
+    else
+      Enum.filter(candidates, fn s ->
+        String.contains?(String.downcase(s.title || s.directory || ""), q) or
+          String.contains?(String.downcase(s.id), q)
+      end)
+    end
+  end
+
   @impl true
   def handle_event("send_message", %{"prompt" => prompt}, socket) do
     Logger.info("send_message: prompt=#{inspect(String.trim(prompt))}")
@@ -1221,6 +1263,93 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def handle_event("stop_session", _params, socket) do
     Cluster.stop_session(socket.assigns.session_node, socket.assigns.session.id)
     {:noreply, assign(socket, show_mobile_actions: false)}
+  end
+
+  # -- Parentage (ORCAHUB3-50) --
+  #
+  # Optimistically applies the result here rather than waiting on the
+  # {:parentage_changed, ...} broadcast (handled below in handle_info/2) —
+  # that broadcast still fires and is what keeps OTHER viewers of this same
+  # session live-updated.
+
+  def handle_event("detach_from_orchestrator", _params, socket) do
+    case HubRPC.detach_session(socket.assigns.session.id) do
+      {:ok, %{session: updated_session, previous_parent_id: nil}} ->
+        # Idempotent success — there was no parent to detach from.
+        {:noreply,
+         socket
+         |> assign(:session, updated_session)
+         |> assign(:parent_session, nil)
+         |> assign(:show_mobile_actions, false)}
+
+      {:ok, %{session: updated_session, previous_parent_id: previous_parent_id}} ->
+        previous_parent = HubRPC.get_session(previous_parent_id)
+
+        {:noreply,
+         socket
+         |> assign(:session, updated_session)
+         |> assign(:parent_session, nil)
+         |> assign(:show_mobile_actions, false)
+         |> put_flash(:info, "Detached from #{parent_label(previous_parent, previous_parent_id)}")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:show_mobile_actions, false)
+         |> put_flash(:error, "Failed to detach: #{attach_error_message(reason)}")}
+    end
+  end
+
+  def handle_event("open_attach_modal", _params, socket) do
+    session = socket.assigns.session
+
+    candidates =
+      HubRPC.list_sessions(:all)
+      |> Enum.reject(&(&1.id == session.id))
+
+    {:noreply,
+     socket
+     |> assign(:show_attach_modal, true)
+     |> assign(:attach_candidates, candidates)
+     |> assign(:attach_query, "")
+     |> assign(:show_mobile_actions, false)}
+  end
+
+  def handle_event("close_attach_modal", _params, socket) do
+    {:noreply, assign(socket, :show_attach_modal, false)}
+  end
+
+  def handle_event("filter_attach_candidates", %{"query" => query}, socket) do
+    {:noreply, assign(socket, :attach_query, query)}
+  end
+
+  def handle_event("attach_to_parent", %{"parent_id" => parent_id}, socket) do
+    session = socket.assigns.session
+
+    case HubRPC.attach_session(session.id, parent_id) do
+      {:ok, %{session: updated_session, previous_parent_id: previous_parent_id}} ->
+        new_parent = HubRPC.get_session(parent_id)
+
+        flash =
+          if previous_parent_id && previous_parent_id != parent_id do
+            previous_parent = HubRPC.get_session(previous_parent_id)
+
+            "Re-parented from #{parent_label(previous_parent, previous_parent_id)} to " <>
+              parent_label(new_parent, parent_id)
+          else
+            "Attached to #{parent_label(new_parent, parent_id)}"
+          end
+
+        {:noreply,
+         socket
+         |> assign(:session, updated_session)
+         |> assign(:parent_session, new_parent)
+         |> assign(:show_attach_modal, false)
+         |> put_flash(:info, flash)}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to attach: #{attach_error_message(reason)}")}
+    end
   end
 
   # AskUserQuestion wizard events
@@ -2255,6 +2384,34 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end)
 
     {:noreply, socket}
+  end
+
+  # Sessions.attach_session/3 and detach_session/2 (ORCAHUB3-50) broadcast on
+  # both the global "sessions" topic and every affected session's own
+  # "session:#{id}" topic — shaped `{child_session_id, {:parentage_changed,
+  # payload}}`. Refresh the parent display only when THIS session is the
+  # child whose parentage moved (a broadcast can also land here because this
+  # session was the old/new parent of some OTHER child re-parenting, which
+  # doesn't change what this page shows as ITS parent).
+  @impl true
+  def handle_info({_child_id, {:parentage_changed, payload}}, socket) do
+    socket =
+      if payload.session_id == socket.assigns.session.id do
+        new_parent_id = payload.new_parent_id
+        parent_session = new_parent_id && HubRPC.get_session(new_parent_id)
+
+        socket
+        |> assign(:session, %{socket.assigns.session | parent_session_id: new_parent_id})
+        |> assign(:parent_session, parent_session)
+      else
+        socket
+      end
+
+    if socket.assigns.view == :tree do
+      {:noreply, load_tree_data(socket)}
+    else
+      {:noreply, socket}
+    end
   end
 
   # Aggregate "sessions" topic (see Sessions.archive_session/1,
