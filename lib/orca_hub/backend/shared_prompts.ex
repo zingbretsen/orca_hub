@@ -288,6 +288,12 @@ defmodule OrcaHub.Backend.SharedPrompts do
     close_issue_ref =
       if code_exec, do: "`Tools.close_issue(...)`", else: "`mcp__orca__close_issue`"
 
+    detach_session_ref =
+      if code_exec, do: "`Tools.detach_session(...)`", else: "`mcp__orca__detach_session`"
+
+    attach_session_ref =
+      if code_exec, do: "`Tools.attach_session(...)`", else: "`mcp__orca__attach_session`"
+
     """
     ## Orchestration Practices (tl;dr)
 
@@ -302,6 +308,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with #{list_issues_ref} (kind: "feature_request", directory: "#{@orca_hub_directory}") first — if it's already tracked, add what you found with #{append_issue_note_ref} instead of filing a duplicate with #{create_issue_ref} (kind: "feature_request", directory: "#{@orca_hub_directory}", ...). Once a fix has shipped AND been verified, close it with #{close_issue_ref} (outcome: "resolved", resolution: ...) — call close_issue with just `id` first to read back the harvested evidence and synthesize `resolution` from that, not from memory.
     - Scheduled heartbeats do NOT survive a restart of your own host (e.g. a deploy) — re-call #{heartbeat_ref} as your first action after waking from one.
     - Pre-deploy gate pattern: run the full suite once at the pipeline tip via a dedicated worker with an explicit allow-list of known flakes; treat any NEW failure as fix-at-root, never expand the allow-list.
+    - Handing a session off to a human is a normal end state, not an error — use #{detach_session_ref} to make it a root session (removes it from your `watch_children`/callbacks), or #{attach_session_ref} to re-home it to a different orchestrator.
     """
     |> String.trim()
   end

@@ -334,6 +334,63 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           },
           "required" => ["session_id", "answer"]
         }
+      },
+      %{
+        "name" => "detach_session",
+        "description" =>
+          "Detach a session from its orchestrator parent, making it a root session — " <>
+            "removes it from the parent's watch_children resolution (schedule_heartbeat) " <>
+            "and from the \"[Session lifecycle]\" completion callback the parent would " <>
+            "otherwise get when this session finishes. Defaults session_id to YOUR OWN " <>
+            "session, so a worker can disown itself — handing a session off to a human " <>
+            "(or leaving it to run standalone) is a normal end state, not an error. " <>
+            "Detaching a session with no parent is a safe idempotent no-op.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "session_id" => %{
+              "type" => "string",
+              "description" =>
+                "The OrcaHub session ID to detach. Defaults to the CALLING session's own id."
+            }
+          },
+          "required" => []
+        }
+      },
+      %{
+        "name" => "attach_session",
+        "description" =>
+          "Attach (or re-parent) a session to an orchestrator, setting/replacing its " <>
+            "parent_session_id — an allowed implicit re-parent even if it already has " <>
+            "one. parent_session_id defaults to the CALLER's own session (adopt); pass " <>
+            "an explicit parent_session_id to re-home the target under a THIRD party " <>
+            "instead. The new parent picks this up automatically the next time it calls " <>
+            "schedule_heartbeat(watch_children: true) — children are resolved fresh at " <>
+            "each fire, no separate wiring needed. There is deliberately no retroactive " <>
+            "notification: if the child is already idle/errored at attach time, no " <>
+            "completion callback is coming — the result's child_status is your only " <>
+            "signal of that.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "session_id" => %{
+              "type" => "string",
+              "description" => "The OrcaHub session ID to attach/re-parent."
+            },
+            "parent_session_id" => %{
+              "type" => "string",
+              "description" =>
+                "The OrcaHub session ID of the new parent. Defaults to the CALLING session's own id (adopt)."
+            },
+            "notify" => %{
+              "type" => "boolean",
+              "description" =>
+                "Whether the parent should get a \"[Session lifecycle]\" completion " <>
+                  "callback when this session next goes idle or errors. Default: true."
+            }
+          },
+          "required" => ["session_id"]
+        }
       }
     ]
   end
@@ -492,6 +549,79 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
       nil ->
         error("Session #{target_id} not found on any node.")
+    end
+  end
+
+  def call("detach_session", args, state) do
+    target_id = args["session_id"] || state.orca_session_id
+
+    if is_nil(target_id) do
+      error(
+        "No session_id given and no OrcaHub session linked to this MCP connection to default to."
+      )
+    else
+      case Cluster.find_session(target_id) do
+        {node, _session} ->
+          if NodePolicy.cross_node_allowed?(node) do
+            case HubRPC.detach_session(target_id) do
+              {:ok, %{previous_parent_id: previous_parent_id}} ->
+                text(Jason.encode!(detach_result_payload(target_id, previous_parent_id)))
+
+              {:error, reason} ->
+                error(parentage_error_message(reason, target_id, nil))
+            end
+          else
+            error(NodePolicy.denial_message(node))
+          end
+
+        nil ->
+          error("Session #{target_id} not found on any node.")
+      end
+    end
+  end
+
+  def call("attach_session", args, state) do
+    target_id = args["session_id"]
+    parent_id = args["parent_session_id"] || state.orca_session_id
+    notify = args["notify"] != false
+
+    cond do
+      is_nil(target_id) or target_id == "" ->
+        error("attach_session requires session_id.")
+
+      is_nil(parent_id) ->
+        error(
+          "No parent_session_id given and no OrcaHub session linked to this MCP connection to default to."
+        )
+
+      true ->
+        case Cluster.find_session(target_id) do
+          {node, _session} ->
+            if NodePolicy.cross_node_allowed?(node) do
+              case HubRPC.attach_session(target_id, parent_id, notify: notify) do
+                {:ok, %{session: updated, previous_parent_id: previous_parent_id}} ->
+                  text(
+                    Jason.encode!(
+                      attach_result_payload(
+                        target_id,
+                        parent_id,
+                        previous_parent_id,
+                        notify,
+                        updated.status
+                      )
+                    )
+                  )
+
+                {:error, reason} ->
+                  error(parentage_error_message(reason, target_id, parent_id))
+              end
+            else
+              error(NodePolicy.denial_message(node))
+            end
+
+          nil ->
+            error("Session #{target_id} not found on any node.")
+        end
     end
   end
 
@@ -664,6 +794,69 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   # invalid input should fail toward the cheap mistake.
   defp parse_delivery("interrupt"), do: :interrupt
   defp parse_delivery(_), do: :queue
+
+  # ── attach_session / detach_session result payloads ───────────────────
+  # Agents reliably ignore schema prose, so the state that matters lives in
+  # the RESULT, not just the tool description. Detach must let a caller tell
+  # "I detached it" from "it wasn't attached"; attach must let a caller tell
+  # "the completion callback is coming" from "the child was already
+  # idle/errored, so no callback will ever fire for this attach" — there is
+  # no retroactive notification.
+  defp detach_result_payload(target_id, previous_parent_id) do
+    %{
+      session_id: target_id,
+      previous_parent_id: previous_parent_id,
+      detached: not is_nil(previous_parent_id),
+      message:
+        if previous_parent_id do
+          "Detached session #{target_id} from parent #{previous_parent_id}."
+        else
+          "Session #{target_id} had no parent — nothing to detach (idempotent no-op)."
+        end
+    }
+  end
+
+  defp attach_result_payload(target_id, parent_id, previous_parent_id, notify, child_status) do
+    base = %{
+      session_id: target_id,
+      previous_parent_id: previous_parent_id,
+      new_parent_id: parent_id,
+      notify_parent: notify,
+      child_status: child_status
+    }
+
+    if notify and child_status in ["idle", "error"] do
+      Map.put(
+        base,
+        :note,
+        "Session #{target_id} is already #{child_status} — there is no retroactive " <>
+          "notification, so no completion callback is coming for the turn that already " <>
+          "ended. This child_status is your only signal."
+      )
+    else
+      base
+    end
+  end
+
+  defp parentage_error_message(:session_not_found, target_id, _parent_id),
+    do: "Session #{target_id} not found."
+
+  defp parentage_error_message(:parent_not_found, _target_id, parent_id),
+    do: "Parent session #{parent_id} not found."
+
+  defp parentage_error_message(:self_parent, target_id, _parent_id),
+    do: "Cannot attach session #{target_id} to itself as its own parent."
+
+  defp parentage_error_message(:cycle, target_id, parent_id) do
+    "Cannot attach session #{target_id} to #{parent_id} — that would create a parentage " <>
+      "cycle (#{target_id} is already an ancestor of #{parent_id})."
+  end
+
+  defp parentage_error_message(%Ecto.Changeset{} = changeset, _target_id, _parent_id),
+    do: "Failed to update session parentage: #{inspect(changeset.errors)}"
+
+  defp parentage_error_message(other, _target_id, _parent_id),
+    do: "Failed to update session parentage: #{inspect(other)}"
 
   defp maybe_record_interaction(nil, _recipient_id, _kind), do: :ok
 

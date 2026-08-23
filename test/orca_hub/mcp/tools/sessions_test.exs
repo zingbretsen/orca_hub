@@ -3482,4 +3482,188 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       refute Map.has_key?(decoded2, "queued_messages")
     end
   end
+
+  describe "attach_session / detach_session (ORCAHUB3-50)" do
+    test "attach with default parent_session_id adopts the caller", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "idle"})
+
+      result = SessionsTool.call("attach_session", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      assert decoded["session_id"] == target.id
+      assert decoded["previous_parent_id"] == nil
+      assert decoded["new_parent_id"] == state.orca_session_id
+      assert decoded["notify_parent"] == true
+      assert decoded["child_status"] == "idle"
+
+      assert Sessions.get_session!(target.id).parent_session_id == state.orca_session_id
+    end
+
+    test "attach with an explicit parent_session_id re-homes to a third party", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, third_party} = Sessions.create_session(%{directory: dir, orchestrator: true})
+      {:ok, target} = Sessions.create_session(%{directory: dir})
+
+      result =
+        SessionsTool.call(
+          "attach_session",
+          %{"session_id" => target.id, "parent_session_id" => third_party.id},
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      assert decoded["new_parent_id"] == third_party.id
+      assert decoded["previous_parent_id"] == nil
+      assert Sessions.get_session!(target.id).parent_session_id == third_party.id
+    end
+
+    test "re-parenting an already-attached session reports the previous parent", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, third_party} = Sessions.create_session(%{directory: dir, orchestrator: true})
+      {:ok, target} = Sessions.create_session(%{directory: dir})
+
+      %{"isError" => false} =
+        SessionsTool.call("attach_session", %{"session_id" => target.id}, state)
+
+      result =
+        SessionsTool.call(
+          "attach_session",
+          %{"session_id" => target.id, "parent_session_id" => third_party.id},
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      assert decoded["previous_parent_id"] == state.orca_session_id
+      assert decoded["new_parent_id"] == third_party.id
+    end
+
+    test "notify: false is passed through as notify_parent: false", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir})
+
+      result =
+        SessionsTool.call(
+          "attach_session",
+          %{"session_id" => target.id, "notify" => false},
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      assert decoded["notify_parent"] == false
+      refute Sessions.get_session!(target.id).notify_parent
+    end
+
+    test "detach removes the parent and reports it", %{dir: dir, state: state} do
+      {:ok, target} =
+        Sessions.create_session(%{directory: dir, parent_session_id: state.orca_session_id})
+
+      result = SessionsTool.call("detach_session", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      assert decoded["previous_parent_id"] == state.orca_session_id
+      assert decoded["detached"] == true
+      assert Sessions.get_session!(target.id).parent_session_id == nil
+    end
+
+    test "detach with no session_id defaults to the caller's own session", %{state: state} do
+      result = SessionsTool.call("detach_session", %{}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      assert decoded["session_id"] == state.orca_session_id
+    end
+
+    test "detaching an already-parentless session is an idempotent no-op", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} = Sessions.create_session(%{directory: dir})
+
+      result = SessionsTool.call("detach_session", %{"session_id" => target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      assert decoded["previous_parent_id"] == nil
+      assert decoded["detached"] == false
+      assert decoded["message"] =~ "idempotent no-op"
+    end
+
+    test "self-parent errors with a friendly message", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir})
+
+      result =
+        SessionsTool.call(
+          "attach_session",
+          %{"session_id" => target.id, "parent_session_id" => target.id},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "itself"
+    end
+
+    test "a cycle errors with a friendly ancestor message", %{dir: dir, state: state} do
+      {:ok, grandparent} = Sessions.create_session(%{directory: dir, orchestrator: true})
+      {:ok, child} = Sessions.create_session(%{directory: dir, parent_session_id: grandparent.id})
+
+      result =
+        SessionsTool.call(
+          "attach_session",
+          %{"session_id" => grandparent.id, "parent_session_id" => child.id},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "cycle"
+      assert text =~ "already an ancestor"
+    end
+
+    test "attach result surfaces the child's current status (running, no retroactive-notice note)",
+         %{dir: dir, state: state} do
+      {:ok, running_target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      result = SessionsTool.call("attach_session", %{"session_id" => running_target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      assert decoded["child_status"] == "running"
+      refute Map.has_key?(decoded, "note")
+    end
+
+    test "attach result warns when the child is already idle — no callback is coming", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, idle_target} = Sessions.create_session(%{directory: dir, status: "idle"})
+
+      result = SessionsTool.call("attach_session", %{"session_id" => idle_target.id}, state)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      decoded = Jason.decode!(text)
+      assert decoded["child_status"] == "idle"
+      assert decoded["note"] =~ "no completion callback"
+    end
+
+    test "attach/detach error with a friendly message when the target session is not found", %{
+      state: state
+    } do
+      missing_id = Ecto.UUID.generate()
+
+      detach_result = SessionsTool.call("detach_session", %{"session_id" => missing_id}, state)
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = detach_result
+      assert text =~ "not found"
+
+      attach_result = SessionsTool.call("attach_session", %{"session_id" => missing_id}, state)
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = attach_result
+      assert text =~ "not found"
+    end
+  end
 end
