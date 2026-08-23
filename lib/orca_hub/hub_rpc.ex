@@ -564,4 +564,14 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.Jobs, :list_nonterminal_jobs_for_node, [node_name])
 
   def list_jobs(opts \\ %{}), do: call(OrcaHub.Jobs, :list_jobs, [opts])
+
+  # -------------------------------------------------------------------
+  # Session Parentage (ORCAHUB3-50)
+  # -------------------------------------------------------------------
+
+  def attach_session(session_id, parent_id, opts \\ []),
+    do: call(OrcaHub.Sessions, :attach_session, [session_id, parent_id, opts])
+
+  def detach_session(session_id, opts \\ []),
+    do: call(OrcaHub.Sessions, :detach_session, [session_id, opts])
 end

@@ -30,6 +30,7 @@ defmodule OrcaHub.Sessions do
   """
 
   import Ecto.Query
+  require Logger
 
   alias OrcaHub.{
     AgentPresence,
@@ -781,13 +782,14 @@ defmodule OrcaHub.Sessions do
 
   @doc """
   Lists session_interactions edges, newest first. `opts` supports
-  :sender_session_id, :recipient_session_id, and :since (only edges with
-  inserted_at >= since) — all optional, combinable.
+  :sender_session_id, :recipient_session_id, :kind, and :since (only edges
+  with inserted_at >= since) — all optional, combinable.
   """
   def list_session_interactions(opts \\ []) do
     from(i in SessionInteraction, order_by: [desc: i.inserted_at])
     |> filter_interactions_by_sender(opts[:sender_session_id])
     |> filter_interactions_by_recipient(opts[:recipient_session_id])
+    |> filter_interactions_by_kind(opts[:kind])
     |> filter_interactions_by_since(opts[:since])
     |> Repo.all()
   end
@@ -936,6 +938,9 @@ defmodule OrcaHub.Sessions do
 
   defp filter_interactions_by_recipient(q, recipient_id),
     do: from(i in q, where: i.recipient_session_id == ^recipient_id)
+
+  defp filter_interactions_by_kind(q, nil), do: q
+  defp filter_interactions_by_kind(q, kind), do: from(i in q, where: i.kind == ^kind)
 
   defp filter_interactions_by_since(q, nil), do: q
   defp filter_interactions_by_since(q, since), do: from(i in q, where: i.inserted_at >= ^since)
@@ -1499,5 +1504,214 @@ defmodule OrcaHub.Sessions do
       where: s.status == "running"
     )
     |> Repo.all()
+  end
+
+  @doc """
+  Attaches a session to a parent session.
+
+  Sets `parent_session_id` to `parent_id` and (unless `opts[:notify] == false`)
+  sets `notify_parent: true`. Works whether or not the session already has a parent
+  (implicit re-parent).
+
+  Returns:
+    - `{:ok, %{session: %Session{}, previous_parent_id: binary() | nil}}`
+    - `{:error, :session_not_found | :parent_not_found | :self_parent | :cycle | Ecto.Changeset.t()}`
+
+  Guards:
+    - `parent_id == session_id` -> `{:error, :self_parent}`
+    - If `session_id` is an ANCESTOR of `parent_id` -> `{:error, :cycle}`
+    - Nonexistent ids -> `:session_not_found` / `:parent_not_found`
+  """
+  @spec attach_session(binary(), binary(), keyword()) ::
+          {:ok, %{session: %Session{}, previous_parent_id: binary() | nil}}
+          | {:error,
+             :session_not_found | :parent_not_found | :self_parent | :cycle | Ecto.Changeset.t()}
+  def attach_session(session_id, parent_id, opts \\ [])
+      when is_binary(session_id) and is_binary(parent_id) do
+    result =
+      cond do
+        session_id == parent_id ->
+          {:error, :self_parent}
+
+        true ->
+          session = Repo.get(Session, session_id)
+
+          if is_nil(session) do
+            {:error, :session_not_found}
+          else
+            parent = Repo.get(Session, parent_id)
+
+            if is_nil(parent) do
+              {:error, :parent_not_found}
+            else
+              if ancestor_in_chain?(session_id, parent_id, 0) do
+                {:error, :cycle}
+              else
+                previous_parent_id = session.parent_session_id
+
+                notify_parent? = Keyword.get(opts, :notify, true)
+
+                result =
+                  session
+                  |> Session.changeset(%{
+                    parent_session_id: parent_id,
+                    notify_parent: notify_parent?
+                  })
+                  |> Repo.update()
+
+                case result do
+                  {:ok, updated_session} ->
+                    if previous_parent_id && previous_parent_id != parent_id do
+                      record_session_interaction(session_id, previous_parent_id, "detach")
+                    end
+
+                    record_session_interaction(session_id, parent_id, "attach")
+
+                    broadcast_parentage_change(
+                      session_id,
+                      previous_parent_id,
+                      parent_id,
+                      updated_session.archived_at
+                    )
+
+                    {:ok, %{session: updated_session, previous_parent_id: previous_parent_id}}
+
+                  {:error, changeset} ->
+                    {:error, changeset}
+                end
+              end
+            end
+          end
+      end
+
+    result
+  end
+
+  @doc """
+  Detaches a session from its parent.
+
+  Sets `parent_session_id: nil`. Leaves `notify_parent` alone — it is meaningless
+  without a parent. Detaching an already-parentless session is an IDEMPOTENT SUCCESS
+  returning `previous_parent_id: nil`, NOT an error.
+
+  Returns:
+    - `{:ok, %{session: %Session{}, previous_parent_id: binary() | nil}}`
+    - `{:error, :session_not_found | Ecto.Changeset.t()}`
+  """
+  @spec detach_session(binary(), keyword()) ::
+          {:ok, %{session: %Session{}, previous_parent_id: binary() | nil}}
+          | {:error, :session_not_found | Ecto.Changeset.t()}
+  def detach_session(session_id, _opts \\ []) when is_binary(session_id) do
+    session = Repo.get(Session, session_id)
+
+    if is_nil(session) do
+      {:error, :session_not_found}
+    else
+      previous_parent_id = session.parent_session_id
+
+      # Detaching an already-parentless session is an idempotent success
+      if is_nil(previous_parent_id) do
+        {:ok, %{session: session, previous_parent_id: nil}}
+      else
+        # Perform the update
+        result =
+          session
+          |> Session.changeset(%{
+            parent_session_id: nil
+          })
+          |> Repo.update()
+
+        case result do
+          {:ok, updated_session} ->
+            # Record detach edge only if there was a previous parent
+            record_session_interaction(session_id, previous_parent_id, "detach")
+
+            # Broadcast parentage change
+            broadcast_parentage_change(
+              session_id,
+              previous_parent_id,
+              nil,
+              updated_session.archived_at
+            )
+
+            {:ok, %{session: updated_session, previous_parent_id: previous_parent_id}}
+
+          {:error, changeset} ->
+            {:error, changeset}
+        end
+      end
+    end
+  end
+
+  # Helper: checks if session_id is an ancestor of any session in the chain
+  # starting from parent_id, walking up via parent_session_id.
+  # Depth cap of 64 to prevent infinite loops on corrupt data.
+  defp ancestor_in_chain?(_session_id, _parent_id, _depth) when _depth >= 64 do
+    # Depth cap reached - assume no cycle to avoid hanging
+    false
+  end
+
+  defp ancestor_in_chain?(session_id, parent_id, depth) do
+    case Repo.get(Session, parent_id) do
+      nil ->
+        false
+
+      parent ->
+        if parent.id == session_id do
+          true
+        else
+          case parent.parent_session_id do
+            nil ->
+              false
+
+            next_id ->
+              ancestor_in_chain?(session_id, next_id, depth + 1)
+          end
+        end
+    end
+  end
+
+  # Helper: best-effort session interaction recording
+  defp record_session_interaction(sender_id, recipient_id, kind) do
+    attrs = %{sender_session_id: sender_id, recipient_session_id: recipient_id, kind: kind}
+
+    case SessionInteraction.changeset(%SessionInteraction{}, attrs) |> Repo.insert() do
+      {:error, %Ecto.Changeset{} = changeset} ->
+        Logger.warning("Failed to record session interaction: #{inspect(changeset.errors)}")
+
+      _ ->
+        :ok
+    end
+  end
+
+  # Helper: broadcast parentage change event
+  defp broadcast_parentage_change(session_id, previous_parent_id, new_parent_id, archived_at) do
+    payload = %{
+      session_id: session_id,
+      previous_parent_id: previous_parent_id,
+      new_parent_id: new_parent_id,
+      archived_at: archived_at
+    }
+
+    # Broadcast on global "sessions" topic
+    Phoenix.PubSub.broadcast(
+      OrcaHub.PubSub,
+      "sessions",
+      {session_id, {:parentage_changed, payload}}
+    )
+
+    # Broadcast on per-session topics for child, old parent, new parent
+    ids =
+      [session_id, previous_parent_id, new_parent_id]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    Enum.each(ids, fn id ->
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{id}",
+        {session_id, {:parentage_changed, payload}}
+      )
+    end)
   end
 end

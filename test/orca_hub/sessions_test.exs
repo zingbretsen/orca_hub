@@ -1653,4 +1653,171 @@ defmodule OrcaHub.SessionsTest do
       assert Sessions.count_active_fork_children(parent.id) == 0
     end
   end
+
+  describe "attach_session/3" do
+    test "attaches a session to a parent and sets notify_parent to true by default", %{
+      project: project
+    } do
+      child = create_session(project, %{title: "child"})
+      parent = create_session(project, %{title: "parent", orchestrator: true})
+
+      {:ok, %{session: updated_child, previous_parent_id: prev_parent}} =
+        Sessions.attach_session(child.id, parent.id)
+
+      assert prev_parent == nil
+      assert updated_child.parent_session_id == parent.id
+      assert updated_child.notify_parent == true
+
+      # Verify the attach edge was recorded
+      interactions =
+        Sessions.list_session_interactions(%{
+          sender_session_id: child.id,
+          recipient_session_id: parent.id,
+          kind: "attach"
+        })
+
+      assert length(interactions) == 1
+    end
+
+    test "attaches a session with notify: false to suppress notification", %{
+      project: project
+    } do
+      child = create_session(project, %{title: "child"})
+      parent = create_session(project, %{title: "parent", orchestrator: true})
+
+      {:ok, %{session: updated_child}} =
+        Sessions.attach_session(child.id, parent.id, notify: false)
+
+      assert updated_child.parent_session_id == parent.id
+      assert updated_child.notify_parent == false
+    end
+
+    test "returns {:error, :session_not_found} when session does not exist" do
+      fake_id = Ecto.UUID.generate()
+      parent = Ecto.UUID.generate()
+
+      assert {:error, :session_not_found} = Sessions.attach_session(fake_id, parent)
+    end
+
+    test "returns {:error, :parent_not_found} when parent does not exist", %{
+      project: project
+    } do
+      child = create_session(project)
+      fake_parent_id = Ecto.UUID.generate()
+
+      assert {:error, :parent_not_found} = Sessions.attach_session(child.id, fake_parent_id)
+    end
+
+    test "returns {:error, :self_parent} when session_id equals parent_id", %{
+      project: project
+    } do
+      child = create_session(project)
+
+      assert {:error, :self_parent} = Sessions.attach_session(child.id, child.id)
+    end
+
+    test "returns {:error, :cycle} when attaching a parent as a child", %{
+      project: project
+    } do
+      parent = create_session(project, %{title: "parent"})
+      child = create_session(project, %{title: "child", parent_session_id: parent.id})
+
+      # Now try to make parent a child of child (cycle)
+      assert {:error, :cycle} = Sessions.attach_session(parent.id, child.id)
+    end
+
+    test "returns {:error, :cycle} when session is an ancestor of parent", %{
+      project: project
+    } do
+      grandparent = create_session(project, %{title: "grandparent"})
+      parent = create_session(project, %{title: "parent", parent_session_id: grandparent.id})
+      child = create_session(project, %{title: "child", parent_session_id: parent.id})
+
+      # grandparent is an ancestor of child - can't attach grandparent under child
+      assert {:error, :cycle} = Sessions.attach_session(grandparent.id, child.id)
+    end
+
+    test "implicit re-parent records both detach and attach edges", %{
+      project: project
+    } do
+      child = create_session(project, %{title: "child"})
+      old_parent = create_session(project, %{title: "old_parent"})
+      new_parent = create_session(project, %{title: "new_parent"})
+
+      # First attach to old_parent
+      {:ok, %{previous_parent_id: prev1}} = Sessions.attach_session(child.id, old_parent.id)
+      assert prev1 == nil
+
+      # Re-parent to new_parent
+      {:ok, %{session: updated_child, previous_parent_id: prev2}} =
+        Sessions.attach_session(child.id, new_parent.id)
+
+      assert prev2 == old_parent.id
+      assert updated_child.parent_session_id == new_parent.id
+
+      # Verify both edges
+      detach_edges =
+        Sessions.list_session_interactions(%{
+          sender_session_id: child.id,
+          recipient_session_id: old_parent.id,
+          kind: "detach"
+        })
+
+      attach_edges =
+        Sessions.list_session_interactions(%{
+          sender_session_id: child.id,
+          recipient_session_id: new_parent.id,
+          kind: "attach"
+        })
+
+      assert length(detach_edges) == 1
+      assert length(attach_edges) == 1
+    end
+  end
+
+  describe "detach_session/2" do
+    test "detaches a session from its parent", %{project: project} do
+      child = create_session(project, %{title: "child"})
+      parent = create_session(project, %{title: "parent", orchestrator: true})
+
+      # First attach
+      {:ok, _} = Sessions.attach_session(child.id, parent.id)
+
+      {:ok, %{session: updated_child, previous_parent_id: prev_parent}} =
+        Sessions.detach_session(child.id)
+
+      assert prev_parent == parent.id
+      assert is_nil(updated_child.parent_session_id)
+      # notify_parent should remain unchanged (not cleared)
+      assert updated_child.notify_parent == true
+
+      # Verify the detach edge was recorded
+      interactions =
+        Sessions.list_session_interactions(%{
+          sender_session_id: child.id,
+          recipient_session_id: parent.id,
+          kind: "detach"
+        })
+
+      assert length(interactions) == 1
+    end
+
+    test "detaching an already-parentless session is an idempotent success", %{
+      project: project
+    } do
+      child = create_session(project, %{title: "orphan"})
+
+      {:ok, %{session: updated_child, previous_parent_id: prev_parent}} =
+        Sessions.detach_session(child.id)
+
+      assert prev_parent == nil
+      assert is_nil(updated_child.parent_session_id)
+    end
+
+    test "returns {:error, :session_not_found} when session does not exist" do
+      fake_id = Ecto.UUID.generate()
+
+      assert {:error, :session_not_found} = Sessions.detach_session(fake_id)
+    end
+  end
 end

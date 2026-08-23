@@ -178,4 +178,35 @@ defmodule OrcaHub.SessionHeartbeat.DigestTest do
       assert Digest.changed?(old, new)
     end
   end
+
+  describe "watch_children" do
+    test "a session attached AFTER a heartbeat was scheduled shows up in a watch_children: true digest" do
+      caller = fixture_session(%{title: "orchestrator"})
+
+      # Schedule a heartbeat with watch_children: true
+      # (In real use this would be via schedule_heartbeat/4)
+      # We'll test that the digest resolves children at call time,
+      # not at schedule time.
+
+      # Create child1 and verify it appears in the digest
+      child1 = fixture_session(%{title: "child1", parent_session_id: caller.id})
+      {digest1, snapshot1} = Digest.build(caller.id, [], true)
+
+      assert digest1 =~ "child1"
+      assert Map.has_key?(snapshot1, child1.id)
+
+      # Now attach child2 AFTER the first digest
+      child2 = fixture_session(%{title: "child2", parent_session_id: caller.id})
+      {:ok, _} = Sessions.attach_session(child2.id, caller.id)
+
+      # The digest should now include both children (resolved fresh)
+      {digest2, snapshot2} = Digest.build(caller.id, [], true)
+
+      assert digest2 =~ "child1"
+      assert digest2 =~ "child2"
+      assert Map.has_key?(snapshot2, child1.id)
+      assert Map.has_key?(snapshot2, child2.id)
+      assert map_size(snapshot2) == 2
+    end
+  end
 end
