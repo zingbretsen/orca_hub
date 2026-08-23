@@ -508,6 +508,34 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
                "attachment; filename=\"artifact-#{artifact.id}.html\""
              ]
     end
+
+    # ORCAHUB3-24: empty artifact data pre-seeds a truthy window.ORCA_DATA = {}
+    @tag :repro
+    test "ORCAHUB3-24: an artifact with no data does not pre-seed a truthy window.ORCA_DATA", %{
+      conn: conn,
+      project: project
+    } do
+      # Create an HTML artifact with nil data (empty map would also work)
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "empty-data-artifact",
+          kind: "html",
+          content: "<html><head></head><body><p>Test</p></body></html>"
+        })
+
+      conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
+
+      assert conn.status == 200
+      assert get_resp_content_type(conn) == "text/html"
+
+      # The defect is window.ORCA_DATA = {}
+      # A fix could either:
+      #   (i)  omit the assignment entirely (no window.ORCA_DATA = at all)
+      #   (ii) assign a falsy value (null instead of {})
+      # So assert the BAD pattern is NOT present:
+      refute conn.resp_body =~ ~r/window\.ORCA_DATA\s*=\s*{}/
+    end
   end
 
   defp get_resp_content_type(conn) do
