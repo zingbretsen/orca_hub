@@ -44,15 +44,28 @@ defmodule OrcaHubWeb.Plugs.ApiAuth do
   defp authorize(conn, token) do
     case ApiTokens.authorize(token, conn) do
       :ok ->
-        # Best-effort: a `last_used_at` write failure (DB blip, concurrent
-        # update) must never turn a valid, correctly-scoped request into a 500.
-        _ = ApiTokens.touch_last_used(token)
-
+        touch_last_used_best_effort(token)
         assign(conn, :api_token, %{id: token.id, name: token.name, scopes: token.scopes})
 
       {:error, :forbidden} ->
         halt_json(conn, 403, "forbidden")
     end
+  end
+
+  # A `last_used_at` write is best-effort — it must never turn an already
+  # -authenticated, correctly-scoped request into a 500. Covers both an
+  # {:error, changeset} return AND a raise: the pinned session's on_delete:
+  # :delete_all means the token row itself can vanish between authenticate/1
+  # reading it and this update landing (a real, if narrow, race), which
+  # surfaces as Ecto.StaleEntryError, not an error tuple. We proceed either
+  # way — the token was valid when checked, and a vanished row shouldn't
+  # produce a confusing 500 for a request that's otherwise legitimate.
+  @doc false
+  def touch_last_used_best_effort(token) do
+    ApiTokens.touch_last_used(token)
+    :ok
+  rescue
+    _ -> :ok
   end
 
   # Falls back to the legacy static-token check even without a header, since

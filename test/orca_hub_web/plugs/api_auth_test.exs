@@ -35,11 +35,17 @@ defmodule OrcaHubWeb.Plugs.ApiAuthTest do
 
   describe "legacy global token (byte-identical preservation)" do
     test "503 when no legacy token is configured and no scoped tokens match", %{conn: conn} do
+      # Explicit, not ambient — ORCA_API_TOKEN may be set in the shared local
+      # .env, which config/runtime.exs bakes into this key at boot regardless
+      # of the `-u` flags in the canonical test invocation.
+      Application.delete_env(:orca_hub, :api_token)
+
       conn = conn |> legacy_authed() |> get(~p"/api/v1/sessions")
       assert json_response(conn, 503)["error"] == "API disabled"
     end
 
     test "503 when unset, even with unrelated scoped tokens in the table", %{conn: conn} do
+      Application.delete_env(:orca_hub, :api_token)
       {:ok, _} = ApiTokens.create_token(%{name: "watch", scopes: ["sessions:read"]})
 
       conn = conn |> legacy_authed() |> get(~p"/api/v1/sessions")
@@ -122,6 +128,8 @@ defmodule OrcaHubWeb.Plugs.ApiAuthTest do
 
     test "revoked token 503s when the legacy token is ALSO unset (matches today's no-header-match behavior)",
          %{conn: conn} do
+      Application.delete_env(:orca_hub, :api_token)
+
       {:ok, %{token: token, secret: secret}} =
         ApiTokens.create_token(%{name: "watch", scopes: ["sessions:read"]})
 
@@ -286,6 +294,26 @@ defmodule OrcaHubWeb.Plugs.ApiAuthTest do
 
       conn2 = conn |> scoped_authed(secret) |> get(~p"/api/v1/sessions")
       assert json_response(conn2, 403)["error"] == "forbidden"
+    end
+  end
+
+  describe "touch_last_used_best_effort/1" do
+    test "does not raise when the token row vanished out from under it (e.g. pinned session deleted mid-request)" do
+      session = session_fixture()
+
+      {:ok, %{token: token}} =
+        ApiTokens.create_token(%{
+          name: "watch",
+          scopes: ["runs:create"],
+          session_id: session.id
+        })
+
+      # Simulates the on_delete: :delete_all race: this in-memory struct was
+      # already read (as if by authenticate/1) before its backing row went
+      # away.
+      {:ok, _} = OrcaHub.Repo.delete(token)
+
+      assert :ok = OrcaHubWeb.Plugs.ApiAuth.touch_last_used_best_effort(token)
     end
   end
 end
