@@ -72,8 +72,12 @@ defmodule OrcaHub.MCP.Tools.NotifyTest do
         Req.Test.json(conn, %{"id" => 1})
       end)
 
-      assert %{"isError" => false} =
-               Notify.call("send_notification", %{"message" => "hello"}, %{})
+      result = Notify.call("send_notification", %{"message" => "hello"}, %{})
+
+      assert %{"isError" => false, "content" => [%{"type" => "text", "text" => text}]} =
+               result
+
+      assert text =~ "Notification sent: %{\"id\" => 1}"
     end
 
     test "passes through title and priority" do
@@ -86,12 +90,17 @@ defmodule OrcaHub.MCP.Tools.NotifyTest do
         Req.Test.json(conn, %{"id" => 2})
       end)
 
-      assert %{"isError" => false} =
-               Notify.call(
-                 "send_notification",
-                 %{"message" => "urgent thing", "title" => "Alert", "priority" => 9},
-                 %{}
-               )
+      result =
+        Notify.call(
+          "send_notification",
+          %{"message" => "urgent thing", "title" => "Alert", "priority" => 9},
+          %{}
+        )
+
+      assert %{"isError" => false, "content" => [%{"type" => "text", "text" => text}]} =
+               result
+
+      assert text =~ "Notification sent: %{\"id\" => 2}"
     end
 
     test "markdown adds client::display extras" do
@@ -106,12 +115,17 @@ defmodule OrcaHub.MCP.Tools.NotifyTest do
         Req.Test.json(conn, %{"id" => 3})
       end)
 
-      assert %{"isError" => false} =
-               Notify.call(
-                 "send_notification",
-                 %{"message" => "**hi**", "markdown" => true},
-                 %{}
-               )
+      result =
+        Notify.call(
+          "send_notification",
+          %{"message" => "**hi**", "markdown" => true},
+          %{}
+        )
+
+      assert %{"isError" => false, "content" => [%{"type" => "text", "text" => text}]} =
+               result
+
+      assert text =~ "Notification sent: %{\"id\" => 3}"
     end
 
     test "click_url adds client::notification extras" do
@@ -126,12 +140,17 @@ defmodule OrcaHub.MCP.Tools.NotifyTest do
         Req.Test.json(conn, %{"id" => 4})
       end)
 
-      assert %{"isError" => false} =
-               Notify.call(
-                 "send_notification",
-                 %{"message" => "click me", "click_url" => "https://orca.example.com"},
-                 %{}
-               )
+      result =
+        Notify.call(
+          "send_notification",
+          %{"message" => "click me", "click_url" => "https://orca.example.com"},
+          %{}
+        )
+
+      assert %{"isError" => false, "content" => [%{"type" => "text", "text" => text}]} =
+               result
+
+      assert text =~ "Notification sent: %{\"id\" => 4}"
     end
 
     test "surfaces a non-200 response as an error" do
