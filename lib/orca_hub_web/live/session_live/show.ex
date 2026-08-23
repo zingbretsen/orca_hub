@@ -1274,20 +1274,20 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("detach_from_orchestrator", _params, socket) do
     case HubRPC.detach_session(socket.assigns.session.id) do
-      {:ok, %{session: updated_session, previous_parent_id: nil}} ->
+      {:ok, %{previous_parent_id: nil}} ->
         # Idempotent success — there was no parent to detach from.
         {:noreply,
          socket
-         |> assign(:session, updated_session)
+         |> assign(:session, %{socket.assigns.session | parent_session_id: nil})
          |> assign(:parent_session, nil)
          |> assign(:show_mobile_actions, false)}
 
-      {:ok, %{session: updated_session, previous_parent_id: previous_parent_id}} ->
+      {:ok, %{previous_parent_id: previous_parent_id}} ->
         previous_parent = HubRPC.get_session(previous_parent_id)
 
         {:noreply,
          socket
-         |> assign(:session, updated_session)
+         |> assign(:session, %{socket.assigns.session | parent_session_id: nil})
          |> assign(:parent_session, nil)
          |> assign(:show_mobile_actions, false)
          |> put_flash(:info, "Detached from #{parent_label(previous_parent, previous_parent_id)}")}
@@ -1327,7 +1327,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     session = socket.assigns.session
 
     case HubRPC.attach_session(session.id, parent_id) do
-      {:ok, %{session: updated_session, previous_parent_id: previous_parent_id}} ->
+      {:ok, %{previous_parent_id: previous_parent_id}} ->
         new_parent = HubRPC.get_session(parent_id)
 
         flash =
@@ -1342,7 +1342,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
         {:noreply,
          socket
-         |> assign(:session, updated_session)
+         |> assign(:session, %{socket.assigns.session | parent_session_id: parent_id})
          |> assign(:parent_session, new_parent)
          |> assign(:show_attach_modal, false)
          |> put_flash(:info, flash)}

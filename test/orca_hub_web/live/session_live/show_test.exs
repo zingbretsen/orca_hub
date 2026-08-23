@@ -2053,4 +2053,214 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert has_element?(view, ~s|#session-mobile-actions[open]|)
     end
   end
+
+  describe "orchestrator parentage (ORCAHUB3-50)" do
+    test "no parent is stated plainly, not just omitted", %{conn: conn, claude_session: session} do
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert html =~ "Parent:"
+      assert html =~ "none"
+    end
+
+    test "shows the parent's title, linking to its session page", %{
+      conn: conn,
+      claude_session: session,
+      codex_session: parent
+    } do
+      {:ok, parent} = Sessions.update_session(parent, %{title: "Orchestrator Prime"})
+      {:ok, session} = Sessions.update_session(session, %{parent_session_id: parent.id})
+
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert html =~ "Orchestrator Prime"
+      assert html =~ ~s(href="/sessions/#{parent.id}")
+    end
+
+    test "detach button appears (desktop + mobile) only when a parent is set", %{
+      conn: conn,
+      claude_session: session,
+      codex_session: parent
+    } do
+      {:ok, _no_parent_view, html} = live(conn, ~p"/sessions/#{session.id}")
+      refute html =~ ~s(phx-click="detach_from_orchestrator")
+
+      {:ok, session} = Sessions.update_session(session, %{parent_session_id: parent.id})
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Desktop button
+      assert has_element?(view, ~s|button[phx-click="detach_from_orchestrator"][data-confirm]|)
+      # Mobile "More actions" surface duplicates the same action
+      render_click(view, "open_mobile_actions")
+
+      assert has_element?(
+               view,
+               ~s|#session-mobile-actions button[phx-click="detach_from_orchestrator"]|
+             )
+    end
+
+    test "attach button is present (desktop + mobile) regardless of current parent", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert has_element?(view, ~s|button[phx-click="open_attach_modal"]|)
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions button[phx-click="open_attach_modal"]|)
+    end
+
+    test "detaching clears the parent and flashes which orchestrator it left", %{
+      conn: conn,
+      claude_session: session,
+      codex_session: parent
+    } do
+      {:ok, parent} = Sessions.update_session(parent, %{title: "Old Orchestrator"})
+      {:ok, session} = Sessions.update_session(session, %{parent_session_id: parent.id})
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assert has_element?(view, ~s|button[phx-click="detach_from_orchestrator"]|)
+
+      html = render_click(view, "detach_from_orchestrator")
+
+      refute html =~ ~s(phx-click="detach_from_orchestrator")
+      assert html =~ "Detached from Old Orchestrator"
+      assert html =~ "Parent:"
+      assert html =~ "none"
+    end
+
+    test "detaching an already-parentless session is an idempotent success", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      html = render_click(view, "detach_from_orchestrator")
+
+      assert html =~ "Parent:"
+      assert html =~ "none"
+    end
+
+    test "attaching to a candidate sets the parent and flashes success", %{
+      conn: conn,
+      claude_session: session,
+      codex_session: candidate
+    } do
+      {:ok, candidate} = Sessions.update_session(candidate, %{title: "New Orchestrator"})
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      render_click(view, "open_attach_modal")
+      assert has_element?(view, "form[phx-change=\"filter_attach_candidates\"]")
+      assert has_element?(view, ~s|button[phx-click="attach_to_parent"]|)
+
+      html = render_click(view, "attach_to_parent", %{"parent_id" => candidate.id})
+
+      assert html =~ "Attached to New Orchestrator"
+      assert html =~ ~s(href="/sessions/#{candidate.id}")
+    end
+
+    test "re-parenting an already-parented session is allowed and says which parent it moved from",
+         %{
+           conn: conn,
+           claude_session: session,
+           codex_session: old_parent,
+           pi_session: new_parent
+         } do
+      {:ok, old_parent} = Sessions.update_session(old_parent, %{title: "Old Boss"})
+      {:ok, new_parent} = Sessions.update_session(new_parent, %{title: "New Boss"})
+      {:ok, session} = Sessions.update_session(session, %{parent_session_id: old_parent.id})
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      html = render_click(view, "attach_to_parent", %{"parent_id" => new_parent.id})
+
+      assert html =~ "Re-parented from Old Boss to New Boss"
+      assert html =~ ~s(href="/sessions/#{new_parent.id}")
+    end
+
+    test "attaching over a would-be cycle shows a readable flash instead of crashing", %{
+      conn: conn,
+      claude_session: ancestor,
+      codex_session: descendant
+    } do
+      {:ok, descendant} =
+        Sessions.update_session(descendant, %{parent_session_id: ancestor.id})
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{ancestor.id}")
+
+      # ancestor attaching to its own descendant would create a cycle
+      html = render_click(view, "attach_to_parent", %{"parent_id" => descendant.id})
+
+      assert html =~ "Failed to attach"
+      assert html =~ "cycle"
+      # The view survived — still rendering, not crashed
+      assert has_element?(view, ~s|button[phx-click="open_attach_modal"]|)
+    end
+
+    test "attaching a session to itself shows a readable flash instead of crashing", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      html = render_click(view, "attach_to_parent", %{"parent_id" => session.id})
+
+      assert html =~ "Failed to attach"
+      assert has_element?(view, ~s|button[phx-click="open_attach_modal"]|)
+    end
+
+    test "attach candidate list excludes the session itself", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      render_click(view, "open_attach_modal")
+      html = render(view)
+
+      refute html =~ ~s(phx-value-parent_id="#{session.id}")
+    end
+
+    test "filtering the attach candidate list narrows results", %{
+      conn: conn,
+      claude_session: session,
+      codex_session: candidate
+    } do
+      {:ok, _candidate} = Sessions.update_session(candidate, %{title: "Findable Orchestrator"})
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      render_click(view, "open_attach_modal")
+
+      html =
+        view
+        |> form("form[phx-change=\"filter_attach_candidates\"]", %{"query" => "nonexistent-xyz"})
+        |> render_change()
+
+      refute html =~ "Findable Orchestrator"
+
+      html =
+        view
+        |> form("form[phx-change=\"filter_attach_candidates\"]", %{"query" => "Findable"})
+        |> render_change()
+
+      assert html =~ "Findable Orchestrator"
+    end
+
+    test "parentage_changed broadcast on the child's own topic refreshes the display live", %{
+      conn: conn,
+      claude_session: session,
+      codex_session: parent
+    } do
+      {:ok, parent} = Sessions.update_session(parent, %{title: "Live Orchestrator"})
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Simulate the broadcast Sessions.attach_session/3 sends, independent of
+      # this LiveView's own optimistic update — proves the subscription path.
+      {:ok, _} = Sessions.attach_session(session.id, parent.id)
+
+      html = render(view)
+      assert html =~ "Live Orchestrator"
+    end
+  end
 end
