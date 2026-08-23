@@ -44,7 +44,9 @@ defmodule OrcaHubWeb.Plugs.ApiAuth do
   defp authorize(conn, token) do
     case ApiTokens.authorize(token, conn) do
       :ok ->
-        {:ok, _token} = ApiTokens.touch_last_used(token)
+        # Best-effort: a `last_used_at` write failure (DB blip, concurrent
+        # update) must never turn a valid, correctly-scoped request into a 500.
+        _ = ApiTokens.touch_last_used(token)
 
         assign(conn, :api_token, %{id: token.id, name: token.name, scopes: token.scopes})
 
