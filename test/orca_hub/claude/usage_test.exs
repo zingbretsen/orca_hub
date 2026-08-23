@@ -24,18 +24,25 @@ defmodule OrcaHub.Claude.UsageTest do
   end
 
   describe "resolve_token" do
-    test "fetch/0 returns error when no credentials available" do
-      original = System.get_env("CLAUDE_CODE_OAUTH_TOKEN")
-      System.delete_env("CLAUDE_CODE_OAUTH_TOKEN")
-
-      result = Usage.fetch()
-
-      case result do
-        {:error, _} -> :ok
-        {:ok, _} -> :ok
-      end
-
-      if original, do: System.put_env("CLAUDE_CODE_OAUTH_TOKEN", original)
-    end
+    # NOTE: The no-credentials error path cannot be tested deterministically on
+    # a developer machine. When CLAUDE_CODE_OAUTH_TOKEN is absent,
+    # resolve_token/0 falls back to token_from_file_or_keychain/0, which reads
+    # from ~/.claude/.credentials.json (or macOS Keychain via `security`). Most
+    # dev machines have this file present, so the test outcome is machine-state
+    # dependent — tightening this to assert {:error, _} would create a flaky
+    # test, which is strictly worse than the current vacuous assertion.
+    #
+    # Seam required for deterministic testing: `token_from_file_or_keychain/0`
+    # would need to accept an injectable credentials path parameter (or
+    # `read_credentials_file/0` would need to read a configurable Application
+    # env key instead of using the hardcoded `@credentials_path` module
+    # attribute), allowing tests to point to a temp file that's guaranteed to
+    # be absent.
+    #
+    # Deterministic tests for error paths would require:
+    # - An injectable credentials path (no hardcoding, no hardcoded
+    #   ~/.claude/.credentials.json read)
+    # - Or mocking System.cmd for `security` (no Mox/:meck in this suite)
+    # - Or a lib/ refactor for injection (not done per hard rules)
   end
 end
