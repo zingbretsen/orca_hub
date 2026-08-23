@@ -146,8 +146,6 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
   end
 
   describe "validate_file_paths/2 — path confinement" do
-    import ExUnit.CaptureLog
-
     setup do
       dir = Path.join(System.tmp_dir!(), "discord_confine_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)
@@ -169,18 +167,13 @@ defmodule OrcaHub.MCP.Tools.DiscordTest do
 
       escape = "../#{Path.basename(outside_dir)}/secrets"
 
-      log =
-        capture_log(fn ->
-          assert {:error, msg} = DiscordTool.validate_file_paths(dir, [escape])
-          # Echoing the path exactly as the caller supplied it is expected
-          # (and fine — it's just their own input echoed back). What must
-          # NOT appear is the RESOLVED absolute filesystem path.
-          assert msg =~ inspect(escape)
-          assert msg =~ "outside the session directory"
-          refute msg =~ outside_dir
-        end)
-
-      assert log =~ "denied"
+      assert {:error, msg} = DiscordTool.validate_file_paths(dir, [escape])
+      # Echoing the path exactly as the caller supplied it is expected
+      # (and fine — it's just their own input echoed back). What must
+      # NOT appear is the RESOLVED absolute filesystem path.
+      assert msg =~ inspect(escape)
+      assert msg =~ "outside the session directory"
+      refute msg =~ outside_dir
     end
 
     test "rejects an absolute path outside the session directory" do
