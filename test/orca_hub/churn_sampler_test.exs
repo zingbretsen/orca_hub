@@ -150,8 +150,23 @@ defmodule OrcaHub.ChurnSamplerTest do
 
   describe "sweep/0 (routed through the Application-managed GenServer)" do
     test "responds without crashing and returns a sample list" do
+      # Create a test session to ensure we have at least one real sample to assert on.
+      # We don't assert on length because the shared dev DB may have other sessions.
+      session = git_session("sweep-test", %{progress_updated_at: DateTime.utc_now()})
+
       assert {:ok, samples} = ChurnSampler.sweep()
       assert is_list(samples)
+
+      # Find our test session's entry and assert on its structure.
+      # This proves the GenServer returns actual sample structs, not garbage.
+      our_sample = Enum.find(samples, &(&1.session_id == session.id))
+      assert our_sample
+      assert our_sample.session_id == session.id
+      assert our_sample.session_status == "running"
+      assert is_integer(our_sample.tool_calls_15m)
+      assert is_integer(our_sample.distinct_tools_15m)
+      assert is_boolean(our_sample.churn_suspected)
+      assert %DateTime{} = our_sample.sampled_at
     end
   end
 
