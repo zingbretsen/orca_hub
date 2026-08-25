@@ -122,19 +122,11 @@ defmodule OrcaHubWeb.TriggerLive.Index do
 
     case result do
       {:ok, _} ->
-        tagged_triggers = Cluster.list_triggers()
-        node_map = Cluster.build_node_map(tagged_triggers)
-        triggers = Enum.map(tagged_triggers, fn {_n, t} -> t end)
+        {:noreply, socket} = reload_for_node_filter(socket)
 
         {:noreply,
          socket
-         |> assign(
-           triggers: triggers,
-           node_map: node_map,
-           node_names: Cluster.node_names(node_map),
-           show_trigger_form: false,
-           editing_trigger: nil
-         )
+         |> assign(show_trigger_form: false, editing_trigger: nil)
          |> push_patch(to: ~p"/triggers")}
 
       {:error, changeset} ->
@@ -146,32 +138,14 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     trigger = HubRPC.get_trigger!(id)
     {:ok, _} = HubRPC.delete_trigger(trigger)
 
-    tagged_triggers = Cluster.list_triggers()
-    node_map = Cluster.build_node_map(tagged_triggers)
-    triggers = Enum.map(tagged_triggers, fn {_n, t} -> t end)
-
-    {:noreply,
-     assign(socket,
-       triggers: triggers,
-       node_map: node_map,
-       node_names: Cluster.node_names(node_map)
-     )}
+    reload_for_node_filter(socket)
   end
 
   def handle_event("toggle_trigger", %{"id" => id}, socket) do
     trigger = HubRPC.get_trigger!(id)
     {:ok, _} = HubRPC.update_trigger(trigger, %{enabled: !trigger.enabled})
 
-    tagged_triggers = Cluster.list_triggers()
-    node_map = Cluster.build_node_map(tagged_triggers)
-    triggers = Enum.map(tagged_triggers, fn {_n, t} -> t end)
-
-    {:noreply,
-     assign(socket,
-       triggers: triggers,
-       node_map: node_map,
-       node_names: Cluster.node_names(node_map)
-     )}
+    reload_for_node_filter(socket)
   end
 
   def handle_event("fire_trigger", %{"id" => id}, socket) do
