@@ -15,14 +15,18 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     triggers = Enum.map(tagged_triggers, fn {_node, trigger} -> trigger end)
     clustered = Node.list() != []
 
+    {pinned, rest} = Enum.split_with(triggers, & &1.pinned_at)
+
     {:ok,
      socket
      |> assign(
        projects: projects,
        triggers: triggers,
+       pinned_triggers: Enum.sort_by(pinned, & &1.pinned_at, {:desc, DateTime}),
        node_map: node_map,
        node_names: Cluster.node_names(node_map),
        clustered: clustered,
+       grouped_triggers: group_by_project(rest),
        show_trigger_form: false,
        editing_trigger: nil,
        trigger_type: "scheduled",
@@ -193,12 +197,16 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(node_filter)
     projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
 
+    {pinned, rest} = Enum.split_with(triggers, & &1.pinned_at)
+
     {:noreply,
      assign(socket,
        triggers: triggers,
+       pinned_triggers: Enum.sort_by(pinned, & &1.pinned_at, {:desc, DateTime}),
        node_map: node_map,
        node_names: Cluster.node_names(node_map),
-       projects: projects
+       projects: projects,
+       grouped_triggers: group_by_project(rest)
      )}
   end
 
@@ -244,9 +252,44 @@ defmodule OrcaHubWeb.TriggerLive.Index do
 
   defp detect_schedule_mode(_), do: "daily"
 
+  # Group triggers by project, ordered by most recently active project first.
+  # Triggers within each group are ordered by name for consistent display.
+  defp group_by_project(triggers) do
+    triggers
+    |> Enum.group_by(& &1.project)
+    |> Enum.sort_by(
+      fn {_project, [most_recent | _]} -> most_recent.updated_at end,
+      {:desc, NaiveDateTime}
+    )
+  end
+
   def webhook_url(trigger) do
     OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"
   end
+
+  def handle_event("pin", %{"id" => id}, socket) do
+    case find_trigger(socket, id) do
+      nil ->
+        {:noreply, socket}
+
+      trigger ->
+        {:ok, _} = HubRPC.pin_trigger(trigger)
+        {:noreply, reload_for_node_filter(socket)}
+    end
+  end
+
+  def handle_event("unpin", %{"id" => id}, socket) do
+    case find_trigger(socket, id) do
+      nil ->
+        {:noreply, socket}
+
+      trigger ->
+        {:ok, _} = HubRPC.unpin_trigger(trigger)
+        {:noreply, reload_for_node_filter(socket)}
+    end
+  end
+
+  defp find_trigger(socket, id), do: Enum.find(socket.assigns.triggers, &(&1.id == id))
 
   def hours_options do
     Enum.map(0..23, fn h ->
