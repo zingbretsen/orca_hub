@@ -32,7 +32,7 @@
   groups={@grouped_artifacts}
   pinned={@pinned_artifacts}
   row_click={fn artifact -> JS.navigate(~p"/artifacts/#{artifact.id}") end}
-  empty_message={empty_message()}
+  empty_message={empty_message(assigns)}
 >
   <:col :let={artifact} label="" class="w-8">
     <button
