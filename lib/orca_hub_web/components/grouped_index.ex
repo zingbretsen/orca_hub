@@ -38,7 +38,9 @@ defmodule OrcaHubWeb.GroupedIndex do
   table and every group table.
   """
 
-  use OrcaHubWeb, :html
+  use Phoenix.Component
+
+  import OrcaHubWeb.CoreComponents, only: [table: 1, icon: 1]
 
   attr :id, :string, required: true
   attr :groups, :list, required: true

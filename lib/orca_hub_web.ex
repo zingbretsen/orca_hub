@@ -19,7 +19,7 @@ defmodule OrcaHubWeb do
 
   def static_paths, do: ~w(assets fonts images favicon.ico robots.txt)
 
-  def router(_caller \\ nil) do
+  def router do
     quote do
       use Phoenix.Router, helpers: false
 
@@ -30,13 +30,13 @@ defmodule OrcaHubWeb do
     end
   end
 
-  def channel(_caller \\ nil) do
+  def channel do
     quote do
       use Phoenix.Channel
     end
   end
 
-  def controller(_caller \\ nil) do
+  def controller do
     quote do
       use Phoenix.Controller, formats: [:html, :json]
 
@@ -48,23 +48,23 @@ defmodule OrcaHubWeb do
     end
   end
 
-  def live_view(caller \\ nil) do
+  def live_view do
     quote do
       use Phoenix.LiveView, layout: {OrcaHubWeb.Layouts, :app}
 
-      unquote(html_helpers(caller))
+      unquote(html_helpers())
     end
   end
 
-  def live_component(caller \\ nil) do
+  def live_component do
     quote do
       use Phoenix.LiveComponent
 
-      unquote(html_helpers(caller))
+      unquote(html_helpers())
     end
   end
 
-  def html(caller \\ nil) do
+  def html do
     quote do
       use Phoenix.Component
 
@@ -73,26 +73,11 @@ defmodule OrcaHubWeb do
         only: [get_csrf_token: 0, view_module: 1, view_template: 1]
 
       # Include general helpers for rendering HTML
-      unquote(html_helpers(caller))
+      unquote(html_helpers())
     end
   end
 
-  # `caller` is the module invoking `use OrcaHubWeb, ...` (threaded through
-  # from `__using__/1`'s `__CALLER__`). It exists only so this can skip
-  # importing `OrcaHubWeb.GroupedIndex` into itself — `import` is a
-  # compile-time form, so a runtime/quoted `if` can't suppress it once it's
-  # textually present; the branch has to be chosen here, before `quote`.
-  defp html_helpers(caller) do
-    grouped_index_import =
-      if caller == OrcaHubWeb.GroupedIndex do
-        quote do
-        end
-      else
-        quote do
-          import OrcaHubWeb.GroupedIndex
-        end
-      end
-
+  defp html_helpers do
     quote do
       # Translation
       use Gettext, backend: OrcaHubWeb.Gettext
@@ -101,7 +86,7 @@ defmodule OrcaHubWeb do
       import Phoenix.HTML
       # Core UI components
       import OrcaHubWeb.CoreComponents
-      unquote(grouped_index_import)
+      import OrcaHubWeb.GroupedIndex
 
       # Common modules used in templates
       alias OrcaHubWeb.Layouts
@@ -112,7 +97,7 @@ defmodule OrcaHubWeb do
     end
   end
 
-  def verified_routes(_caller \\ nil) do
+  def verified_routes do
     quote do
       use Phoenix.VerifiedRoutes,
         endpoint: OrcaHubWeb.Endpoint,
@@ -125,6 +110,6 @@ defmodule OrcaHubWeb do
   When used, dispatch to the appropriate controller/live_view/etc.
   """
   defmacro __using__(which) when is_atom(which) do
-    apply(__MODULE__, which, [__CALLER__.module])
+    apply(__MODULE__, which, [])
   end
 end
