@@ -773,4 +773,22 @@ defmodule OrcaHub.IssuesTest do
       assert ids == [mine.id]
     end
   end
+
+  describe "pin_issue/1 and unpin_issue/1" do
+    test "pins an issue by setting pinned_at", %{project: project} do
+      {:ok, issue} = Issues.create_issue(%{title: "x", project_id: project.id})
+
+      assert {:ok, pinned} = Issues.pin_issue(issue)
+      assert %DateTime{} = pinned.pinned_at
+      assert pinned.pinned_at == DateTime.utc_now() |> DateTime.truncate(:second)
+    end
+
+    test "unpins an issue by clearing pinned_at", %{project: project} do
+      {:ok, issue} = Issues.create_issue(%{title: "x", project_id: project.id})
+      {:ok, _pinned} = Issues.pin_issue(issue)
+
+      assert {:ok, unpinned} = Issues.unpin_issue(issue)
+      assert is_nil(unpinned.pinned_at)
+    end
+  end
 end

@@ -28,6 +28,26 @@ defmodule OrcaHub.Terminals do
     end
   end
 
+  @doc """
+  Pins a terminal by stamping `pinned_at` — a nullable timestamp (not a
+  boolean) so `TerminalLive.Index`'s Pinned section can order by when each
+  terminal was pinned, the same rationale as `Session.archived_at`. Two
+  explicit functions (`pin_terminal/1`/`unpin_terminal/1`) rather than one
+  generic toggle, mirroring `archive_session/1`/`unarchive_session/1`.
+  """
+  def pin_terminal(%Terminal{} = terminal) do
+    terminal
+    |> Terminal.changeset(%{pinned_at: DateTime.utc_now() |> DateTime.truncate(:second)})
+    |> Repo.update()
+  end
+
+  @doc "Unpins a terminal — clears `pinned_at`. See `pin_terminal/1`."
+  def unpin_terminal(%Terminal{} = terminal) do
+    terminal
+    |> Terminal.changeset(%{pinned_at: nil})
+    |> Repo.update()
+  end
+
   def create_terminal(attrs) do
     %Terminal{}
     |> Terminal.changeset(attrs)

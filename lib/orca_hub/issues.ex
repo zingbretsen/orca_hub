@@ -364,6 +364,26 @@ defmodule OrcaHub.Issues do
 
   defp ensure_project_preloaded(%Issue{} = issue), do: issue
 
+  @doc """
+  Pins an issue by stamping `pinned_at` — a nullable timestamp (not a
+  boolean) so `IssueLive.Index`'s Pinned section can order by when each
+  issue was pinned, the same rationale as `Session.archived_at`. Two
+  explicit functions (`pin_issue/1`/`unpin_issue/1`) rather than one
+  generic toggle, mirroring `archive_session/1`/`unarchive_session/1`.
+  """
+  def pin_issue(%Issue{} = issue) do
+    issue
+    |> Issue.changeset(%{pinned_at: DateTime.utc_now() |> DateTime.truncate(:second)})
+    |> Repo.update()
+  end
+
+  @doc "Unpins an issue — clears `pinned_at`. See `pin_issue/1`."
+  def unpin_issue(%Issue{} = issue) do
+    issue
+    |> Issue.changeset(%{pinned_at: nil})
+    |> Repo.update()
+  end
+
   # ── update / append_note (unchanged) ────────────────────────────────
 
   def update_issue(%Issue{} = issue, attrs) do

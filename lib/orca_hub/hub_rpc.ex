@@ -187,6 +187,9 @@ defmodule OrcaHub.HubRPC do
   def close_issue(issue), do: call(OrcaHub.Issues, :close_issue, [issue])
   def reopen_issue(issue), do: call(OrcaHub.Issues, :reopen_issue, [issue])
 
+  def pin_issue(issue), do: call(OrcaHub.Issues, :pin_issue, [issue])
+  def unpin_issue(issue), do: call(OrcaHub.Issues, :unpin_issue, [issue])
+
   # -------------------------------------------------------------------
   # Artifacts (see OrcaHub.Artifacts moduledoc)
   # -------------------------------------------------------------------
@@ -328,6 +331,9 @@ defmodule OrcaHub.HubRPC do
 
   def list_terminals_for_project(project_id),
     do: call(OrcaHub.Terminals, :list_terminals_for_project, [project_id])
+
+  def pin_terminal(terminal), do: call(OrcaHub.Terminals, :pin_terminal, [terminal])
+  def unpin_terminal(terminal), do: call(OrcaHub.Terminals, :unpin_terminal, [terminal])
 
   # -------------------------------------------------------------------
   # Discord Channels (Discord channel -> project/session mappings)

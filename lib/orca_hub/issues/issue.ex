@@ -75,6 +75,7 @@ defmodule OrcaHub.Issues.Issue do
     # buried in resolution prose (§3.1.2). Settable regardless of this
     # issue's own status; NOT cleared by reopen (§3.5.1 step 2).
     field :superseded_by_issue_id, :binary_id
+    field :pinned_at, :utc_datetime
 
     belongs_to :project, OrcaHub.Projects.Project, type: :binary_id
 
@@ -103,7 +104,8 @@ defmodule OrcaHub.Issues.Issue do
       :created_by_session_id,
       :closed_by_session_id,
       :closed_at,
-      :superseded_by_issue_id
+      :superseded_by_issue_id,
+      :pinned_at
     ])
     |> validate_required([:title])
     |> validate_inclusion(:status, @statuses)

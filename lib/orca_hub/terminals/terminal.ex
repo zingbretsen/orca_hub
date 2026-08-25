@@ -17,13 +17,14 @@ defmodule OrcaHub.Terminals.Terminal do
     field :rows, :integer, default: 40
 
     belongs_to :project, OrcaHub.Projects.Project
+    field :pinned_at, :utc_datetime
 
     timestamps()
   end
 
   def changeset(terminal, attrs) do
     terminal
-    |> cast(attrs, [:name, :directory, :shell, :status, :runner_node, :cols, :rows, :project_id])
+    |> cast(attrs, [:name, :directory, :shell, :status, :runner_node, :cols, :rows, :project_id, :pinned_at])
     |> validate_required([:name, :directory])
     |> validate_inclusion(:status, ~w(stopped running dead))
   end
