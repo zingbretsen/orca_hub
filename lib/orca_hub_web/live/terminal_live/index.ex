@@ -11,24 +11,7 @@ defmodule OrcaHubWeb.TerminalLive.Index do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "terminals")
     end
 
-    node_filter = socket.assigns.node_filter
-    tagged_projects = Cluster.list_projects() |> NodeFilter.filter_tagged(node_filter)
-    projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
-    tagged_terminals = Cluster.list_terminals() |> NodeFilter.filter_tagged(node_filter)
-    node_map = Cluster.build_node_map(tagged_terminals)
-    terminals = Enum.map(tagged_terminals, fn {_node, terminal} -> terminal end)
-
-    {:ok,
-     socket
-     |> assign(
-       projects: projects,
-       terminals: terminals,
-       node_map: node_map,
-       node_names: Cluster.node_names(node_map),
-       clustered: Node.list() != [],
-       show_form: false,
-       terminal_form: to_form(Terminals.change_terminal(%Terminal{}))
-     )}
+    {:ok, reload_terminals(socket)}
   end
 
   @impl true
@@ -65,14 +48,13 @@ defmodule OrcaHubWeb.TerminalLive.Index do
 
   def handle_event("save_terminal", %{"terminal" => params}, socket) do
     params = apply_project_defaults(params)
-    # Route DB creation to the runner node so the record lands in the right DB
     runner_node = resolve_runner_node(params["runner_node"])
 
     case Cluster.create_terminal(runner_node, params) do
       {:ok, _terminal} ->
         {:noreply,
          socket
-         |> refresh_terminals()
+         |> reload_terminals()
          |> assign(show_form: false)
          |> push_patch(to: ~p"/terminals")}
 
@@ -86,7 +68,7 @@ defmodule OrcaHubWeb.TerminalLive.Index do
 
     case Cluster.start_terminal(n, id) do
       {:ok, _pid} ->
-        {:noreply, refresh_terminals(socket)}
+        {:noreply, reload_terminals(socket)}
 
       {:error, {:already_started, _}} ->
         {:noreply, socket}
@@ -99,17 +81,14 @@ defmodule OrcaHubWeb.TerminalLive.Index do
   def handle_event("stop_terminal", %{"id" => id}, socket) do
     n = Map.get(socket.assigns.node_map, id, node())
     Cluster.stop_terminal(n, id)
-    {:noreply, refresh_terminals(socket)}
+    {:noreply, reload_terminals(socket)}
   end
 
   def handle_event("delete_terminal", %{"id" => id}, socket) do
     n = Map.get(socket.assigns.node_map, id, node())
-
-    # Use already-loaded terminal from the list to avoid cross-DB lookup issues
     terminal = Enum.find(socket.assigns.terminals, &(&1.id == id))
 
     if terminal do
-      # Stop if running
       if terminal.status == "running" do
         Cluster.stop_terminal(n, id)
       end
@@ -117,7 +96,29 @@ defmodule OrcaHubWeb.TerminalLive.Index do
       Cluster.delete_terminal(n, terminal)
     end
 
-    {:noreply, refresh_terminals(socket)}
+    {:noreply, reload_terminals(socket)}
+  end
+
+  def handle_event("pin", %{"id" => id}, socket) do
+    case find_terminal(socket, id) do
+      nil ->
+        {:noreply, socket}
+
+      terminal ->
+        {:ok, _} = HubRPC.pin_terminal(terminal)
+        {:noreply, reload_terminals(socket)}
+    end
+  end
+
+  def handle_event("unpin", %{"id" => id}, socket) do
+    case find_terminal(socket, id) do
+      nil ->
+        {:noreply, socket}
+
+      terminal ->
+        {:ok, _} = HubRPC.unpin_terminal(terminal)
+        {:noreply, reload_terminals(socket)}
+    end
   end
 
   def handle_event("cancel_form", _params, socket) do
@@ -127,14 +128,13 @@ defmodule OrcaHubWeb.TerminalLive.Index do
      |> push_patch(to: ~p"/terminals")}
   end
 
-  def reload_for_node_filter(socket), do: {:noreply, refresh_terminals(socket)}
+  def reload_for_node_filter(socket), do: {:noreply, reload_terminals(socket)}
 
   @impl true
   def handle_info({_terminal_id, _payload}, socket) do
-    {:noreply, refresh_terminals(socket)}
+    {:noreply, reload_terminals(socket)}
   end
 
-  # Default directory and runner_node from the selected project if not set
   defp apply_project_defaults(%{"project_id" => project_id} = params)
        when project_id not in [nil, ""] do
     project = HubRPC.get_project!(project_id)
@@ -152,23 +152,54 @@ defmodule OrcaHubWeb.TerminalLive.Index do
   defp resolve_runner_node(rn) when rn in [nil, ""], do: node()
   defp resolve_runner_node(rn), do: String.to_existing_atom(rn)
 
-  defp group_by_project(terminals) do
-    terminals
-    |> Enum.group_by(& &1.project)
-    |> Enum.sort_by(fn {project, _} -> if project, do: project.name, else: "zzz" end)
-  end
+  defp find_terminal(socket, id), do: Enum.find(socket.assigns.terminals, &(&1.id == id))
 
-  defp refresh_terminals(socket) do
+  defp reload_terminals(socket) do
     tagged_terminals =
       Cluster.list_terminals() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
 
     node_map = Cluster.build_node_map(tagged_terminals)
     terminals = Enum.map(tagged_terminals, fn {_node, terminal} -> terminal end)
 
+    {pinned, rest} = Enum.split_with(terminals, & &1.pinned_at)
+
     assign(socket,
       terminals: terminals,
+      pinned_terminals: Enum.sort_by(pinned, & &1.pinned_at, {:desc, DateTime}),
+      grouped_terminals: build_groups(rest),
       node_map: node_map,
       node_names: Cluster.node_names(node_map)
     )
   end
+
+  defp build_groups(terminals) do
+    terminals
+    |> Enum.group_by(& &1.project)
+    |> Enum.sort_by(
+      fn {_project, [most_recent | _]} -> most_recent.updated_at end,
+      {:desc, NaiveDateTime}
+    )
+    |> Enum.map(fn
+      {nil, rows} ->
+        %{
+          key: "unassigned",
+          label: "Unassigned",
+          rows: rows,
+          icon: "hero-folder-micro"
+        }
+
+      {project, rows} ->
+        %{
+          key: "project-#{project.id}",
+          label: project.name,
+          rows: rows,
+          icon: "hero-code-bracket-micro",
+          navigate: ~p"/projects/#{project.id}"
+        }
+    end)
+  end
+
+  defp terminal_status_color("running"), do: "background-color: #22c55e"
+  defp terminal_status_color("stopped"), do: "background-color: #a3a3a3"
+  defp terminal_status_color("dead"), do: "background-color: #ef4444"
 end
