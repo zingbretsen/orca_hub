@@ -87,4 +87,24 @@ defmodule OrcaHub.Triggers do
   def change_trigger(%Trigger{} = trigger, attrs \\ %{}) do
     Trigger.changeset(trigger, attrs)
   end
+
+  @doc """
+  Pins a trigger by stamping `pinned_at` — a nullable timestamp (not a
+  boolean) so `TriggerLive.Index`'s Pinned section can order by when each
+  trigger was pinned, the same rationale as `Session.archived_at`. Two
+  explicit functions (`pin_trigger/1`/`unpin_trigger/1`) rather than one
+  generic toggle, mirroring `archive_session/1`/`unarchive_session/1`.
+  """
+  def pin_trigger(%Trigger{} = trigger) do
+    trigger
+    |> Trigger.changeset(%{pinned_at: DateTime.utc_now() |> DateTime.truncate(:second)})
+    |> Repo.update()
+  end
+
+  @doc "Unpins a trigger — clears `pinned_at`. See `pin_trigger/1`."
+  def unpin_trigger(%Trigger{} = trigger) do
+    trigger
+    |> Trigger.changeset(%{pinned_at: nil})
+    |> Repo.update()
+  end
 end

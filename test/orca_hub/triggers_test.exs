@@ -255,4 +255,22 @@ defmodule OrcaHub.TriggersTest do
       assert trigger.project.id == project.id
     end
   end
+
+  describe "pin_trigger/1 and unpin_trigger/1" do
+    test "pins a trigger by setting pinned_at", %{project: project} do
+      {:ok, trigger} = Triggers.create_trigger(valid_attrs(project))
+
+      assert {:ok, pinned} = Triggers.pin_trigger(trigger)
+      assert %DateTime{} = pinned.pinned_at
+      assert pinned.pinned_at == DateTime.utc_now() |> DateTime.truncate(:second)
+    end
+
+    test "unpins a trigger by clearing pinned_at", %{project: project} do
+      {:ok, trigger} = Triggers.create_trigger(valid_attrs(project))
+      {:ok, _pinned} = Triggers.pin_trigger(trigger)
+
+      assert {:ok, unpinned} = Triggers.unpin_trigger(trigger)
+      assert is_nil(unpinned.pinned_at)
+    end
+  end
 end

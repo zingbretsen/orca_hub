@@ -237,6 +237,9 @@ defmodule OrcaHub.HubRPC do
   def list_triggers_for_project(project_id),
     do: call(OrcaHub.Triggers, :list_triggers_for_project, [project_id])
 
+  def pin_trigger(trigger), do: call(OrcaHub.Triggers, :pin_trigger, [trigger])
+  def unpin_trigger(trigger), do: call(OrcaHub.Triggers, :unpin_trigger, [trigger])
+
   # -------------------------------------------------------------------
   # Upstream Servers
   # -------------------------------------------------------------------

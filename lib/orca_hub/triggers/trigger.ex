@@ -18,6 +18,7 @@ defmodule OrcaHub.Triggers.Trigger do
     field :enabled, :boolean, default: true
     field :last_session_id, :binary_id
     field :last_fired_at, :utc_datetime
+    field :pinned_at, :utc_datetime
 
     # type: "email" only. Addresses (or bare domains) allowed to fire this
     # trigger, matched case-insensitively against the authenticated From:
@@ -51,6 +52,7 @@ defmodule OrcaHub.Triggers.Trigger do
       :last_session_id,
       :last_fired_at,
       :email_inbox_id,
+      :pinned_at,
       :sender_allowlist,
       :to_address,
       :subject_pattern
