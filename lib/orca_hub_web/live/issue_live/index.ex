@@ -45,6 +45,30 @@ defmodule OrcaHubWeb.IssueLive.Index do
     {:noreply, socket |> assign(:status_filter, status) |> reload_issues()}
   end
 
+  def handle_event("pin", %{"id" => id}, socket) do
+    case find_issue(socket, id) do
+      nil ->
+        {:noreply, socket}
+
+      issue ->
+        {:ok, _} = HubRPC.pin_issue(issue)
+        {:noreply, reload_issues(socket)}
+    end
+  end
+
+  def handle_event("unpin", %{"id" => id}, socket) do
+    case find_issue(socket, id) do
+      nil ->
+        {:noreply, socket}
+
+      issue ->
+        {:ok, _} = HubRPC.unpin_issue(issue)
+        {:noreply, reload_issues(socket)}
+    end
+  end
+
+  defp find_issue(socket, id), do: Enum.find(socket.assigns.issues, &(&1.id == id))
+
   defp reload_issues(socket) do
     issues =
       HubRPC.list_issues(%{
@@ -53,7 +77,49 @@ defmodule OrcaHubWeb.IssueLive.Index do
         limit: 200
       })
 
-    assign(socket, :issues, issues)
+    {pinned, rest} = Enum.split_with(issues, & &1.pinned_at)
+
+    pinned_list = Enum.sort_by(pinned, & &1.pinned_at, {:desc, DateTime})
+    groups = group_by_project(rest)
+
+    assign(socket,
+      issues: issues,
+      pinned: pinned_list,
+      groups: groups
+    )
+  end
+
+  defp group_by_project(issues) do
+    {unassigned, assigned} = Enum.split_with(issues, &is_nil(&1.project))
+
+    unassigned_group =
+      if unassigned != [] do
+        [
+          %{
+            key: "unassigned",
+            label: "Unassigned",
+            rows: unassigned,
+            icon: "hero-folder-micro",
+            count: length(unassigned)
+          }
+        ]
+      else
+        []
+      end
+
+    assigned
+    |> Enum.group_by(& &1.project)
+    |> Enum.map(fn {project, rows} ->
+      %{
+        key: project.id,
+        label: project.name,
+        rows: rows,
+        icon: "hero-folder-micro",
+        count: length(rows)
+      }
+    end)
+    |> Enum.sort_by(& &1.label)
+    |> Kernel.++(unassigned_group)
   end
 
   defp kind_filters, do: @kind_filters

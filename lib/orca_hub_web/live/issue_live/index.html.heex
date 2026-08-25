@@ -25,18 +25,40 @@
   </div>
 </div>
 
-<.table
-  :if={@issues != []}
+<.grouped_index
   id="issues"
-  rows={@issues}
+  groups={@groups}
+  pinned={@pinned}
   row_click={fn issue -> JS.navigate(~p"/issues/#{issue_key(issue) || issue.id}") end}
 >
-  <:col :let={issue} label="Key">
+  <:col :let={issue} label="Pin" class="w-8">
+    <button
+      :if={is_nil(issue.pinned_at)}
+      type="button"
+      phx-click="pin"
+      phx-value-id={issue.id}
+      class="btn btn-ghost btn-xs btn-circle"
+      title="Pin"
+    >
+      <.icon name="hero-star" class="size-4 text-base-content/40" />
+    </button>
+    <button
+      :if={not is_nil(issue.pinned_at)}
+      type="button"
+      phx-click="unpin"
+      phx-value-id={issue.id}
+      class="btn btn-ghost btn-xs btn-circle"
+      title="Unpin"
+    >
+      <.icon name="hero-star-solid" class="size-4 text-warning" />
+    </button>
+  </:col>
+  <:col :let={issue} label="Key" class="w-2/5">
     <span class={["font-mono text-xs", issue.status in ["closed", "abandoned"] && "opacity-50"]}>
       {issue_key(issue) || "—"}
     </span>
   </:col>
-  <:col :let={issue} label="Title">
+  <:col :let={issue} label="Title" class="w-2/5">
     <.link
       navigate={~p"/issues/#{issue_key(issue) || issue.id}"}
       class={[
@@ -47,7 +69,7 @@
       {issue.title}
     </.link>
   </:col>
-  <:col :let={issue} label="Kind">
+  <:col :let={issue} label="Kind" class="w-1/5">
     <span class={[
       "badge badge-sm",
       issue.kind == "feature_request" && "badge-secondary",
@@ -57,7 +79,7 @@
       {issue.kind}
     </span>
   </:col>
-  <:col :let={issue} label="Status">
+  <:col :let={issue} label="Status" class="w-1/5">
     <span class={[
       "badge badge-sm",
       issue.status == "open" && "badge-info",
@@ -68,13 +90,13 @@
       {issue.status}
     </span>
   </:col>
-  <:col :let={issue} label="Filed">
+  <:col :let={issue} label="Filed" class="whitespace-nowrap text-xs text-base-content/60">
     <span class={issue.status in ["closed", "abandoned"] && "opacity-50"}>
       {Calendar.strftime(issue.inserted_at, "%Y-%m-%d %H:%M")}
     </span>
   </:col>
-</.table>
+</.grouped_index>
 
-<div :if={@issues == []} class="text-sm text-base-content/50 p-4 text-center">
+<div :if={@groups == [] && @pinned == []} class="text-sm text-base-content/50 p-4 text-center">
   No issues match this filter.
 </div>

@@ -113,4 +113,80 @@ defmodule OrcaHubWeb.IssueLive.IndexTest do
 
     assert html =~ ~p"/issues/#{issue.id}"
   end
+
+  test "pinning a row moves it into the Pinned section", %{conn: conn, project: project} do
+    {:ok, issue} = Issues.create_issue(%{title: "Pin me", project_id: project.id})
+
+    {:ok, view, html} = live(conn, ~p"/issues")
+    refute html =~ "Pinned"
+    assert html =~ issue.title
+
+    html =
+      view
+      |> element(~s|button[title="Pin"]|)
+      |> render_click()
+
+    # Issue should now be in Pinned section
+    assert html =~ "Pinned"
+    assert html =~ issue.title
+  end
+
+  test "unpinning returns the row to its project group", %{conn: conn, project: project} do
+    {:ok, issue} = Issues.create_issue(%{title: "Pin then unpin", project_id: project.id})
+    {:ok, _} = Issues.pin_issue(issue)
+
+    {:ok, view, html} = live(conn, ~p"/issues")
+    assert html =~ "Pinned"
+
+    html =
+      view
+      |> element(~s|button[title="Unpin"]|)
+      |> render_click()
+
+    # Issue should be back in its project group
+    refute html =~ "Pinned"
+    assert html =~ project.name
+    assert html =~ issue.title
+  end
+
+  test "rows are grouped under the right project heading", %{conn: conn} do
+    dir1 = Path.join(System.tmp_dir!(), "project1_#{System.unique_integer([:positive])}")
+
+    {:ok, project1} =
+      Projects.create_project(%{
+        name: "Alpha Project",
+        directory: dir1,
+        node: "n1@x",
+        key_prefix: "ALPHA"
+      })
+
+    dir2 = Path.join(System.tmp_dir!(), "project2_#{System.unique_integer([:positive])}")
+
+    {:ok, project2} =
+      Projects.create_project(%{
+        name: "Beta Project",
+        directory: dir2,
+        node: "n1@x",
+        key_prefix: "BETA"
+      })
+
+    {:ok, issue1} = Issues.create_issue(%{title: "Issue in Alpha", project_id: project1.id})
+    {:ok, issue2} = Issues.create_issue(%{title: "Issue in Beta", project_id: project2.id})
+
+    {:ok, _view, html} = live(conn, ~p"/issues")
+
+    assert html =~ "Alpha Project"
+    assert html =~ "Beta Project"
+    assert html =~ issue1.title
+    assert html =~ issue2.title
+  end
+
+  test "an issue without a project groups under Unassigned", %{conn: conn} do
+    {:ok, issue} = Issues.create_issue(%{title: "No project issue", project_id: nil})
+
+    {:ok, _view, html} = live(conn, ~p"/issues")
+
+    assert html =~ "Unassigned"
+    assert html =~ issue.title
+  end
 end
