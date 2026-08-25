@@ -36,6 +36,12 @@ defmodule OrcaHubWeb.GroupedIndex do
   `lib/orca_hub_web/live/artifact_live/index.html.heex` for the pattern
   this mirrors), so the same column definitions apply to both the pinned
   table and every group table.
+
+  ## Empty state
+
+  `empty_message` takes a plain string. For markup (links, multiple
+  paragraphs, etc.), pass an `:empty` slot instead — it takes precedence
+  over `empty_message` when both are given.
   """
 
   use Phoenix.Component
@@ -58,6 +64,10 @@ defmodule OrcaHubWeb.GroupedIndex do
 
   slot :action
   slot :group_actions
+
+  slot :empty,
+    doc:
+      "HTML markup rendered in place of empty_message when there are no groups/pinned rows; takes precedence over empty_message if both are given"
 
   def grouped_index(assigns) do
     ~H"""
@@ -135,10 +145,14 @@ defmodule OrcaHubWeb.GroupedIndex do
       </div>
 
       <div
-        :if={@groups == [] && @pinned == [] && @empty_message}
+        :if={@groups == [] && @pinned == [] && (@empty != [] || @empty_message)}
         class="text-sm text-base-content/50 p-4 text-center"
       >
-        {@empty_message}
+        <%= if @empty != [] do %>
+          {render_slot(@empty)}
+        <% else %>
+          {@empty_message}
+        <% end %>
       </div>
     </div>
     """
