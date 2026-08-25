@@ -261,6 +261,15 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       fn {_project, [most_recent | _]} -> most_recent.updated_at end,
       {:desc, NaiveDateTime}
     )
+    |> Enum.map(fn {project, rows} ->
+      %{
+        key: project.id,
+        label: project.name,
+        rows: rows,
+        icon: "hero-folder-micro",
+        count: length(rows)
+      }
+    end)
   end
 
   def webhook_url(trigger) do
@@ -274,7 +283,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
 
       trigger ->
         {:ok, _} = HubRPC.pin_trigger(trigger)
-        {:noreply, reload_for_node_filter(socket)}
+        reload_for_node_filter(socket)
     end
   end
 
@@ -285,7 +294,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
 
       trigger ->
         {:ok, _} = HubRPC.unpin_trigger(trigger)
-        {:noreply, reload_for_node_filter(socket)}
+        reload_for_node_filter(socket)
     end
   end
 

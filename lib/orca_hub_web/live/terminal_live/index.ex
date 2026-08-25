@@ -168,7 +168,8 @@ defmodule OrcaHubWeb.TerminalLive.Index do
       pinned_terminals: Enum.sort_by(pinned, & &1.pinned_at, {:desc, DateTime}),
       grouped_terminals: build_groups(rest),
       node_map: node_map,
-      node_names: Cluster.node_names(node_map)
+      node_names: Cluster.node_names(node_map),
+      clustered: Node.list() != []
     )
   end
 

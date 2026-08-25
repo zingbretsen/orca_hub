@@ -271,19 +271,26 @@ defmodule OrcaHubWeb.ArtifactLive.IndexTest do
     name = "pin-icon-test-#{unique()}"
     {:ok, artifact} = Artifacts.save_artifact(%{project_id: project.id, name: name, content: "x"})
 
-    {:ok, view, html} = live(conn, ~p"/artifacts")
-    # Unpinned artifact should use hero-star (empty star)
-    assert html =~ ~s(name="hero-star")
-    refute html =~ "hero-star-solid"
+    {:ok, view, _html} = live(conn, ~p"/artifacts")
+
+    # `.icon` renders `<span class={[name, class]} />`, no `name=` attribute
+    # — assert on the CSS class, scoped to this artifact's own pin button so
+    # unrelated pinned rows in the shared dev DB can't match instead.
+    pin_button = element(view, "button[phx-click=pin][phx-value-id=\"#{artifact.id}\"]")
+    assert render(pin_button) =~ "hero-star"
+    refute render(pin_button) =~ "hero-star-solid"
 
     # Pin the artifact
     html =
       view
-      |> element("button[phx-click=pin][phx-value-id="#{artifact.id}"]")
+      |> element("button[phx-click=pin][phx-value-id=\"#{artifact.id}\"]")
       |> render_click()
 
+    assert is_binary(html)
+
     # Now it should use hero-star-solid (filled star)
-    assert html =~ ~s(name="hero-star-solid")
+    unpin_button = element(view, "button[phx-click=unpin][phx-value-id=\"#{artifact.id}\"]")
+    assert render(unpin_button) =~ "hero-star-solid"
   end
 
   test "unpinned artifacts appear under their project heading", %{
@@ -318,7 +325,7 @@ defmodule OrcaHubWeb.ArtifactLive.IndexTest do
     # Pin the artifact
     html =
       view
-      |> element("button[phx-click=pin][phx-value-id="#{artifact.id}"]")
+      |> element("button[phx-click=pin][phx-value-id=\"#{artifact.id}\"]")
       |> render_click()
 
     # After pin: artifact moves to Pinned section
@@ -343,7 +350,7 @@ defmodule OrcaHubWeb.ArtifactLive.IndexTest do
     # Unpin the artifact
     html =
       view
-      |> element("button[phx-click=unpin][phx-value-id="#{artifact.id}"]")
+      |> element("button[phx-click=unpin][phx-value-id=\"#{artifact.id}\"]")
       |> render_click()
 
     # After unpin: artifact returns to project group

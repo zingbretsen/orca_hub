@@ -92,53 +92,94 @@ defmodule OrcaHubWeb.TriggerLive.IndexTest do
   describe "pinning" do
     test "pinning a trigger moves it into the Pinned section", %{conn: conn} do
       suffix = System.unique_integer([:positive])
-      {:ok, project} = Projects.create_project(%{name: "pin-test-#{suffix}", directory: "/tmp/pin-test-#{suffix}"})
-      {:ok, trigger} = Triggers.create_trigger(%{name: "Pin Test", prompt: "test", type: "webhook", project_id: project.id})
 
-      {:ok, view, _html} = live(conn, ~p"/triggers")
+      {:ok, project} =
+        Projects.create_project(%{
+          name: "pin-test-#{suffix}",
+          directory: "/tmp/pin-test-#{suffix}"
+        })
+
+      {:ok, trigger} =
+        Triggers.create_trigger(%{
+          name: "Pin Test",
+          prompt: "test",
+          type: "webhook",
+          project_id: project.id
+        })
+
+      {:ok, view, html} = live(conn, ~p"/triggers")
 
       # Initially the trigger should appear under its project group
-      assert view =~ "Pin Test"
-      assert view =~ "#{project.name}"
+      assert html =~ "Pin Test"
+      assert html =~ "#{project.name}"
 
       # Pin the trigger
-      {:ok, view, _} = render_click(view, "pin", %{"id" => trigger.id})
+      html = render_click(view, "pin", %{"id" => trigger.id})
 
       # Now it should appear in the Pinned section
-      assert view =~ "Pinned"
-      assert view =~ ~r{hero-star-solid.*text-warning}
-      assert view =~ "Pin Test"
+      assert html =~ "Pinned"
+      assert html =~ ~r{hero-star-solid.*text-warning}
+      assert html =~ "Pin Test"
     end
 
     test "unpinning returns a trigger to its project group", %{conn: conn} do
       suffix = System.unique_integer([:positive])
-      {:ok, project} = Projects.create_project(%{name: "unpin-test-#{suffix}", directory: "/tmp/unpin-test-#{suffix}"})
-      {:ok, trigger} = Triggers.create_trigger(%{name: "Unpin Test", prompt: "test", type: "webhook", project_id: project.id})
+
+      {:ok, project} =
+        Projects.create_project(%{
+          name: "unpin-test-#{suffix}",
+          directory: "/tmp/unpin-test-#{suffix}"
+        })
+
+      {:ok, trigger} =
+        Triggers.create_trigger(%{
+          name: "Unpin Test",
+          prompt: "test",
+          type: "webhook",
+          project_id: project.id
+        })
 
       # Pin first
       {:ok, view, _html} = live(conn, ~p"/triggers")
-      {:ok, view, _} = render_click(view, "pin", %{"id" => trigger.id})
-      assert view =~ "Pinned"
+      html = render_click(view, "pin", %{"id" => trigger.id})
+      assert html =~ "Pinned"
 
       # Unpin
-      {:ok, view, _} = render_click(view, "unpin", %{"id" => trigger.id})
+      html = render_click(view, "unpin", %{"id" => trigger.id})
 
       # Should no longer be in Pinned section
-      refute view =~ "Pinned"
+      refute html =~ "Pinned"
       # Should appear under its project group
-      assert view =~ "#{project.name}"
-      assert view =~ "Unpin Test"
+      assert html =~ "#{project.name}"
+      assert html =~ "Unpin Test"
     end
   end
 
   describe "grouping" do
     test "triggers render under the right project heading", %{conn: conn} do
       suffix = System.unique_integer([:positive])
-      {:ok, project_a} = Projects.create_project(%{name: "group-a-#{suffix}", directory: "/tmp/group-a-#{suffix}"})
-      {:ok, project_b} = Projects.create_project(%{name: "group-b-#{suffix}", directory: "/tmp/group-b-#{suffix}"})
 
-      {:ok, _trigger_a} = Triggers.create_trigger(%{name: "Trigger A", prompt: "test", type: "webhook", project_id: project_a.id})
-      {:ok, _trigger_b} = Triggers.create_trigger(%{name: "Trigger B", prompt: "test", type: "webhook", project_id: project_b.id})
+      {:ok, project_a} =
+        Projects.create_project(%{name: "group-a-#{suffix}", directory: "/tmp/group-a-#{suffix}"})
+
+      {:ok, project_b} =
+        Projects.create_project(%{name: "group-b-#{suffix}", directory: "/tmp/group-b-#{suffix}"})
+
+      {:ok, _trigger_a} =
+        Triggers.create_trigger(%{
+          name: "Trigger A",
+          prompt: "test",
+          type: "webhook",
+          project_id: project_a.id
+        })
+
+      {:ok, _trigger_b} =
+        Triggers.create_trigger(%{
+          name: "Trigger B",
+          prompt: "test",
+          type: "webhook",
+          project_id: project_b.id
+        })
 
       {:ok, _view, html} = live(conn, ~p"/triggers")
 

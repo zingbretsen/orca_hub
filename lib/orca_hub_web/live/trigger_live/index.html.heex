@@ -244,10 +244,15 @@
 </div>
 
 <div :if={@triggers != []} class="mt-6">
-  <.grouped_index id="triggers" groups={@grouped_triggers} pinned={@pinned_triggers} row_click={fn trigger -> JS.navigate(~p"/triggers/#{trigger.id}") end}>
+  <.grouped_index
+    id="triggers"
+    groups={@grouped_triggers}
+    pinned={@pinned_triggers}
+    row_click={fn trigger -> JS.navigate(~p"/triggers/#{trigger.id}") end}
+  >
     <:col :let={trigger} label="" class="w-8">
       <button
-        :if={trigger.pinned_at}
+        :if={not is_nil(trigger.pinned_at)}
         type="button"
         phx-click="unpin"
         phx-value-id={trigger.id}
@@ -257,7 +262,7 @@
         <.icon name="hero-star-solid" class="size-4 text-warning" />
       </button>
       <button
-        :if={not trigger.pinned_at}
+        :if={is_nil(trigger.pinned_at)}
         type="button"
         phx-click="pin"
         phx-value-id={trigger.id}
@@ -297,13 +302,23 @@
       </div>
     </:col>
     <:col :let={trigger} label="Source" class="w-1/5">
-      <span :if={trigger.type == "scheduled"} class="font-mono text-xs truncate">{trigger.cron_expression}</span>
-      <span :if={trigger.type == "webhook"} class="font-mono text-xs truncate max-w-full">{webhook_url(trigger)}</span>
+      <span :if={trigger.type == "scheduled"} class="font-mono text-xs truncate">
+        {trigger.cron_expression}
+      </span>
+      <span :if={trigger.type == "webhook"} class="font-mono text-xs truncate max-w-full">
+        {webhook_url(trigger)}
+      </span>
       <span :if={trigger.type == "email"} class="text-xs truncate">
-        {if trigger.email_inbox, do: trigger.email_inbox.name, else: "no inbox"} · {length(trigger.sender_allowlist)} allowed sender(s)
+        {if trigger.email_inbox, do: trigger.email_inbox.name, else: "no inbox"} · {length(
+          trigger.sender_allowlist
+        )} allowed sender(s)
       </span>
     </:col>
-    <:col :let={trigger} label="Last fired" class="w-1/6 whitespace-nowrap text-xs text-base-content/60">
+    <:col
+      :let={trigger}
+      label="Last fired"
+      class="w-1/6 whitespace-nowrap text-xs text-base-content/60"
+    >
       <span :if={trigger.last_fired_at}>
         {Calendar.strftime(trigger.last_fired_at, "%Y-%m-%d %H:%M UTC")}
       </span>
