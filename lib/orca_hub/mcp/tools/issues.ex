@@ -612,15 +612,23 @@ defmodule OrcaHub.MCP.Tools.Issues do
   end
 
   defp created_issue_result(issue) do
+    key = HubRPC.render_issue_key(issue)
+
     %{
       id: issue.id,
-      key: HubRPC.render_issue_key(issue),
+      key: key,
       title: issue.title,
       kind: issue.kind,
       status: issue.status,
       url: issue_url(issue.id),
       created: true,
-      deduped: false
+      deduped: false,
+      next_step:
+        "Filed #{key}. If this is a defect, add a test that FAILS today reproducing it and " <>
+          "record where it lives on the issue — prose repros rot and are unverifiable, while a " <>
+          "red test is executable proof the defect is real and becomes the regression test for " <>
+          "free once fixed. See this project's instructions (CLAUDE.md / AGENTS.md) for how to " <>
+          "mark repro tests so they don't turn the default test run red."
     }
   end
 

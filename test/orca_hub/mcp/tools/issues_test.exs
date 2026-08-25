@@ -155,6 +155,44 @@ defmodule OrcaHub.MCP.Tools.IssuesTest do
              |> Enum.count(&(&1.title =~ "flaky trigger test")) == 1
     end
 
+    test "the result nudges the caller to add a failing repro test, keyed to the issue", %{
+      state: state
+    } do
+      result =
+        IssuesTool.call(
+          "create_issue",
+          %{"title" => "fix the other bug", "description" => "d"},
+          state
+        )
+
+      decoded = decode!(result)
+      assert decoded["next_step"] =~ decoded["key"]
+      assert decoded["next_step"] =~ "test"
+      assert decoded["next_step"] =~ "FAILS"
+    end
+
+    test "a deduped result does not carry next_step", %{state: state} do
+      first =
+        IssuesTool.call(
+          "create_issue",
+          %{"title" => "dedup me for next_step", "description" => "d"},
+          state
+        )
+
+      assert Map.has_key?(decode!(first), "next_step")
+
+      second =
+        IssuesTool.call(
+          "create_issue",
+          %{"title" => "dedup me for next_step again", "description" => "d2"},
+          state
+        )
+
+      decoded = decode!(second)
+      assert decoded["deduped"] == true
+      refute Map.has_key?(decoded, "next_step")
+    end
+
     test "premise and plan are persisted", %{state: state} do
       result =
         IssuesTool.call(
