@@ -50,25 +50,27 @@
   No terminals yet.
 </div>
 
-<div :if={@pinned_terminals != []} class="mt-6">
-  <h3 class="text-sm font-semibold text-base-content/70 flex items-center gap-2 mb-2">
-    <.icon name="hero-star-solid" class="size-4 text-warning" /> Pinned
-  </h3>
+<div :if={@terminals != []} class="mt-6">
   <.grouped_index
     id="terminals"
-    groups={[]}
+    groups={@grouped_terminals}
     pinned={@pinned_terminals}
     row_click={fn terminal -> JS.navigate(~p"/terminals/#{terminal.id}") end}
   >
     <:col :let={terminal} label="" class="w-8">
       <button
         type="button"
-        phx-click="unpin"
+        phx-click={if terminal.pinned_at, do: "unpin", else: "pin"}
         phx-value-id={terminal.id}
         class="btn btn-ghost btn-xs btn-circle"
-        title="Unpin"
+        title={if terminal.pinned_at, do: "Unpin", else: "Pin"}
       >
-        <.icon name="hero-star-solid" class="size-4 text-warning" />
+        <.icon
+          name={if terminal.pinned_at, do: "hero-star-solid", else: "hero-star"}
+          class={
+            if terminal.pinned_at, do: "size-4 text-warning", else: "size-4 text-base-content/40"
+          }
+        />
       </button>
     </:col>
     <:col :let={terminal} label="Name" class="w-1/4">
@@ -125,80 +127,4 @@
       </button>
     </:action>
   </.grouped_index>
-</div>
-
-<div :if={@grouped_terminals != []} class="mt-6">
-  <div :for={group <- @grouped_terminals} class="mb-6">
-    <.grouped_index
-      id={group.key}
-      groups={[group]}
-      pinned={[]}
-      row_click={fn terminal -> JS.navigate(~p"/terminals/#{terminal.id}") end}
-    >
-      <:col :let={terminal} label="" class="w-8">
-        <button
-          type="button"
-          phx-click="pin"
-          phx-value-id={terminal.id}
-          class="btn btn-ghost btn-xs btn-circle"
-          title="Pin"
-        >
-          <.icon name="hero-star" class="size-4 text-base-content/40" />
-        </button>
-      </:col>
-      <:col :let={terminal} label="Name" class="w-1/4">
-        <span class="font-medium">{terminal.name}</span>
-        <span class="badge badge-xs ml-1">
-          {terminal.status}
-        </span>
-        <span
-          :if={@clustered && Map.get(@node_map, terminal.id)}
-          class="badge badge-xs badge-outline ml-1 opacity-60"
-        >
-          {Map.get(@node_names, Map.get(@node_map, terminal.id))}
-        </span>
-      </:col>
-      <:col :let={terminal} label="Directory" class="hidden md:table-cell font-mono truncate">
-        {terminal.directory}
-      </:col>
-      <:col :let={terminal} label="Status" class="w-1/5">
-        <span class="badge badge-sm">
-          <span
-            class="inline-block w-2 h-2 rounded-full mr-1.5"
-            style={terminal_status_color(terminal.status)}
-          />
-          {terminal.status}
-        </span>
-      </:col>
-      <:action :let={terminal}>
-        <button
-          :if={terminal.status != "running"}
-          phx-click="start_terminal"
-          phx-value-id={terminal.id}
-          class="btn btn-ghost btn-xs"
-          title="Start"
-        >
-          <.icon name="hero-play-micro" class="size-4" />
-        </button>
-        <button
-          :if={terminal.status == "running"}
-          phx-click="stop_terminal"
-          phx-value-id={terminal.id}
-          class="btn btn-ghost btn-xs"
-          title="Stop"
-        >
-          <.icon name="hero-stop-micro" class="size-4" />
-        </button>
-        <button
-          phx-click="delete_terminal"
-          phx-value-id={terminal.id}
-          data-confirm="Delete this terminal?"
-          class="btn btn-ghost btn-xs text-error"
-          title="Delete"
-        >
-          <.icon name="hero-trash-micro" class="size-4" />
-        </button>
-      </:action>
-    </.grouped_index>
-  </div>
 </div>

@@ -17,7 +17,7 @@ defmodule OrcaHubWeb.TerminalLive.IndexTest do
 
   import Phoenix.LiveViewTest
 
-  alias OrcaHub.Terminals
+  alias OrcaHub.{Projects, Terminals}
 
   test "resolves Cluster.node_name/1 once per distinct runner_node, not once per terminal",
        %{conn: conn} do
@@ -75,6 +75,103 @@ defmodule OrcaHubWeb.TerminalLive.IndexTest do
           else: count_node_name_calls_for(target_nodes, count)
     after
       200 -> count
+    end
+  end
+
+  describe "pinning" do
+    test "pinning a terminal moves it into the Pinned section", %{conn: conn} do
+      suffix = System.unique_integer([:positive])
+
+      {:ok, terminal} =
+        Terminals.create_terminal(%{
+          name: "Pin Test #{suffix}",
+          directory: "/tmp/pin-term-#{suffix}"
+        })
+
+      {:ok, view, html} = live(conn, ~p"/terminals")
+
+      # Initially the terminal should just appear on the page (no project)
+      assert html =~ terminal.name
+      refute html =~ "Pinned"
+
+      # Pin the terminal
+      html = render_click(view, "pin", %{"id" => terminal.id})
+
+      # Now it should appear in the Pinned section
+      assert html =~ "Pinned"
+      assert html =~ ~r{hero-star-solid.*text-warning}
+      assert html =~ terminal.name
+    end
+
+    test "unpinning returns a terminal to its project group", %{conn: conn} do
+      suffix = System.unique_integer([:positive])
+
+      {:ok, project} =
+        Projects.create_project(%{
+          name: "unpin-term-#{suffix}",
+          directory: "/tmp/unpin-term-proj-#{suffix}"
+        })
+
+      {:ok, terminal} =
+        Terminals.create_terminal(%{
+          name: "Unpin Test #{suffix}",
+          directory: "/tmp/unpin-term-#{suffix}",
+          project_id: project.id
+        })
+
+      # Pin first
+      {:ok, view, _html} = live(conn, ~p"/terminals")
+      html = render_click(view, "pin", %{"id" => terminal.id})
+      assert html =~ "Pinned"
+
+      # Unpin
+      html = render_click(view, "unpin", %{"id" => terminal.id})
+
+      # Should no longer be in Pinned section
+      refute html =~ "Pinned"
+      # Should appear under its project group
+      assert html =~ project.name
+      assert html =~ terminal.name
+    end
+  end
+
+  describe "grouping" do
+    test "terminals render under the right project heading", %{conn: conn} do
+      suffix = System.unique_integer([:positive])
+
+      {:ok, project_a} =
+        Projects.create_project(%{
+          name: "term-group-a-#{suffix}",
+          directory: "/tmp/term-group-a-#{suffix}"
+        })
+
+      {:ok, project_b} =
+        Projects.create_project(%{
+          name: "term-group-b-#{suffix}",
+          directory: "/tmp/term-group-b-#{suffix}"
+        })
+
+      {:ok, _terminal_a} =
+        Terminals.create_terminal(%{
+          name: "Terminal A #{suffix}",
+          directory: "/tmp/term-a-#{suffix}",
+          project_id: project_a.id
+        })
+
+      {:ok, _terminal_b} =
+        Terminals.create_terminal(%{
+          name: "Terminal B #{suffix}",
+          directory: "/tmp/term-b-#{suffix}",
+          project_id: project_b.id
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/terminals")
+
+      # Both project names should be present
+      assert html =~ project_a.name
+      assert html =~ project_b.name
+      assert html =~ "Terminal A #{suffix}"
+      assert html =~ "Terminal B #{suffix}"
     end
   end
 end
