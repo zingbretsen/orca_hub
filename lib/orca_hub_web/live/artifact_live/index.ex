@@ -96,7 +96,7 @@ defmodule OrcaHubWeb.ArtifactLive.Index do
   defp find_artifact(socket, id), do: Enum.find(socket.assigns.artifacts, &(&1.id == id))
 
   defp empty_message do
-    ~H"""
+    Phoenix.HTML.raw("""
     <p class="mb-2">No artifacts yet.</p>
     <p class="text-xs max-w-md mx-auto">
       Artifacts are rich HTML/SVG/markdown documents an agent session saves with the
@@ -104,7 +104,7 @@ defmodule OrcaHubWeb.ArtifactLive.Index do
       MCP tool — dashboards, checklists, reports — that outlive the session that made them.
       Ask an agent to save one, or open a project page to see artifacts already created there.
     </p>
-    """
+    """)
   end
 
   defp reload_artifacts(socket) do
