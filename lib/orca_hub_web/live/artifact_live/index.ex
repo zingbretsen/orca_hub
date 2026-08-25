@@ -95,6 +95,18 @@ defmodule OrcaHubWeb.ArtifactLive.Index do
 
   defp find_artifact(socket, id), do: Enum.find(socket.assigns.artifacts, &(&1.id == id))
 
+  defp empty_message do
+    ~H"""
+    <p class="mb-2">No artifacts yet.</p>
+    <p class="text-xs max-w-md mx-auto">
+      Artifacts are rich HTML/SVG/markdown documents an agent session saves with the
+      <code class="font-mono">save_artifact</code>
+      MCP tool — dashboards, checklists, reports — that outlive the session that made them.
+      Ask an agent to save one, or open a project page to see artifacts already created there.
+    </p>
+    """
+  end
+
   defp reload_artifacts(socket) do
     opts = %{name: socket.assigns.name_filter, project_id: socket.assigns.project_filter}
     artifacts = HubRPC.list_all_artifacts(opts)
@@ -120,5 +132,15 @@ defmodule OrcaHubWeb.ArtifactLive.Index do
       fn {_project, [most_recent | _]} -> most_recent.updated_at end,
       {:desc, NaiveDateTime}
     )
+    |> Enum.map(fn {project, rows} ->
+      %{
+        key: "project-#{project.id}",
+        label: project.name,
+        rows: rows,
+        count: length(rows),
+        icon: "hero-code-bracket-micro",
+        navigate: ~p"/projects/#{project.id}"
+      }
+    end)
   end
 end

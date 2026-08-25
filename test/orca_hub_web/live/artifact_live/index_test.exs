@@ -263,4 +263,92 @@ defmodule OrcaHubWeb.ArtifactLive.IndexTest do
 
     assert render(view) =~ "Pinned"
   end
+
+  test "pinned artifacts use hero-star-solid icon while unpinned use hero-star", %{
+    conn: conn,
+    project: project
+  } do
+    name = "pin-icon-test-#{unique()}"
+    {:ok, artifact} = Artifacts.save_artifact(%{project_id: project.id, name: name, content: "x"})
+
+    {:ok, view, html} = live(conn, ~p"/artifacts")
+    # Unpinned artifact should use hero-star (empty star)
+    assert html =~ ~s(name="hero-star")
+    refute html =~ "hero-star-solid"
+
+    # Pin the artifact
+    html =
+      view
+      |> element("button[phx-click=pin][phx-value-id="#{artifact.id}"]")
+      |> render_click()
+
+    # Now it should use hero-star-solid (filled star)
+    assert html =~ ~s(name="hero-star-solid")
+  end
+
+  test "unpinned artifacts appear under their project heading", %{
+    conn: conn,
+    project: project
+  } do
+    name = "unpinned-under-project-#{unique()}"
+    {:ok, artifact} = Artifacts.save_artifact(%{project_id: project.id, name: name, content: "x"})
+
+    {:ok, _view, html} = live(conn, ~p"/artifacts")
+
+    # Artifact should appear under its project's group
+    assert html =~ project.name
+    assert html =~ name
+    # No Pinned section should exist
+    refute html =~ "Pinned"
+  end
+
+  test "pinned artifact moves from project group to Pinned section after pin", %{
+    conn: conn,
+    project: project
+  } do
+    name = "pin-moves-to-pinned-#{unique()}"
+    {:ok, artifact} = Artifacts.save_artifact(%{project_id: project.id, name: name, content: "x"})
+
+    {:ok, view, html} = live(conn, ~p"/artifacts")
+    # Before pin: artifact is under its project
+    assert html =~ project.name
+    assert html =~ name
+    refute html =~ "Pinned"
+
+    # Pin the artifact
+    html =
+      view
+      |> element("button[phx-click=pin][phx-value-id="#{artifact.id}"]")
+      |> render_click()
+
+    # After pin: artifact moves to Pinned section
+    assert html =~ "Pinned"
+    assert html =~ name
+    # Should not appear under project group anymore
+    assert html =~ ~s(id="artifacts-pinned")
+  end
+
+  test "unpinned artifact moves from Pinned section back to project group", %{
+    conn: conn,
+    project: project
+  } do
+    name = "unpin-moves-back-#{unique()}"
+    {:ok, artifact} = Artifacts.save_artifact(%{project_id: project.id, name: name, content: "x"})
+    {:ok, artifact} = Artifacts.pin_artifact(artifact)
+
+    {:ok, view, html} = live(conn, ~p"/artifacts")
+    assert html =~ "Pinned"
+    assert html =~ name
+
+    # Unpin the artifact
+    html =
+      view
+      |> element("button[phx-click=unpin][phx-value-id="#{artifact.id}"]")
+      |> render_click()
+
+    # After unpin: artifact returns to project group
+    assert html =~ project.name
+    assert html =~ name
+    refute html =~ "Pinned"
+  end
 end
