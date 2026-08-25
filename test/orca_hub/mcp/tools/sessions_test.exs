@@ -930,6 +930,40 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
   end
 
   describe "send_message_to_session — session_interactions edge" do
+    # Every test below asserts `isError: false` from a REAL SessionRunner
+    # delivery (via with_fake_claude_on_path), then makes claims about the
+    # session_interactions edge — a concern that is entirely decoupled from
+    # delivery success in the implementation: `maybe_record_interaction/3`
+    # (lib/orca_hub/mcp/tools/sessions.ex) is only ever invoked from the
+    # already-successful `:ok`/`:queued` branches of `Cluster.send_message`,
+    # and always returns `:ok` regardless of insert outcome. So a genuine,
+    # load-induced `:delivery_failed` (observed under a loaded full-suite
+    # run — warm-pool over-cap, dying Postgrex connections, see
+    # ORCAHUB3-41) is an UNSTATED PRECONDITION of these tests, not the thing
+    # under test — and when it fails, it surfaces as `isError: true`, which
+    # looks exactly like a graceful-degradation regression. This helper
+    # makes that precondition explicit: it flunks with a message that names
+    # delivery (not edge-recording) as the cause, so a real contention flake
+    # can never masquerade as a production defect again.
+    defp assert_delivery_succeeded!(result) do
+      case result do
+        %{"isError" => false} ->
+          :ok
+
+        %{"isError" => true} = failure ->
+          flunk("""
+          Precondition failed: this test requires a real SessionRunner delivery to succeed \
+          (maybe_record_interaction/3 is only reachable from the already-successful branches \
+          of Cluster.send_message, so it can never influence isError). Got a genuine delivery \
+          failure instead, unrelated to what's under test: #{inspect(failure)}.
+
+          This is the known load-sensitive precondition tracked in ORCAHUB3-41 — likely \
+          warm-pool contention or a dying sandbox connection under a loaded full-suite run, \
+          not a graceful-degradation regression. Rerun in isolation to confirm.
+          """)
+      end
+    end
+
     test "records an edge (sender -> resolved recipient) on successful delivery", %{
       state: state,
       dir: dir
@@ -952,7 +986,7 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
           )
         end)
 
-      assert %{"isError" => false} = result
+      assert_delivery_succeeded!(result)
 
       assert [interaction] = Sessions.list_session_interactions(recipient_session_id: target.id)
       assert interaction.sender_session_id == state.orca_session_id
@@ -979,7 +1013,7 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
           )
         end)
 
-      assert %{"isError" => false} = result
+      assert_delivery_succeeded!(result)
       assert Sessions.list_session_interactions(recipient_session_id: target.id) == []
     end
 
@@ -995,6 +1029,8 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
 
       # A sender id that isn't a real session violates the FK on insert —
       # the tool call must still report success since delivery itself worked.
+      # (See assert_delivery_succeeded!/1 above for why "delivery itself
+      # worked" is an explicit precondition here, not an assumption.)
       bogus_sender = Ecto.UUID.generate()
 
       result =
@@ -1010,7 +1046,7 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
           )
         end)
 
-      assert %{"isError" => false} = result
+      assert_delivery_succeeded!(result)
       assert Sessions.list_session_interactions(recipient_session_id: target.id) == []
     end
   end
