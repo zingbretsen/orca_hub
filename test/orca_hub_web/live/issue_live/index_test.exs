@@ -123,7 +123,7 @@ defmodule OrcaHubWeb.IssueLive.IndexTest do
 
     html =
       view
-      |> element(~s|button[title="Pin"]|)
+      |> element(~s|button[phx-value-id="#{issue.id}"][title="Pin"]|)
       |> render_click()
 
     # Issue should now be in Pinned section
@@ -140,7 +140,7 @@ defmodule OrcaHubWeb.IssueLive.IndexTest do
 
     html =
       view
-      |> element(~s|button[title="Unpin"]|)
+      |> element(~s|button[phx-value-id="#{issue.id}"][title="Unpin"]|)
       |> render_click()
 
     # Issue should be back in its project group
