@@ -53,12 +53,12 @@
       <.icon name="hero-star-solid" class="size-4 text-warning" />
     </button>
   </:col>
-  <:col :let={issue} label="Key" class="w-2/5">
+  <:col :let={issue} label="Key" class="w-1/6">
     <span class={["font-mono text-xs", issue.status in ["closed", "abandoned"] && "opacity-50"]}>
       {issue_key(issue) || "—"}
     </span>
   </:col>
-  <:col :let={issue} label="Title" class="w-2/5">
+  <:col :let={issue} label="Title" class="w-1/3">
     <.link
       navigate={~p"/issues/#{issue_key(issue) || issue.id}"}
       class={[
@@ -69,7 +69,7 @@
       {issue.title}
     </.link>
   </:col>
-  <:col :let={issue} label="Kind" class="w-1/5">
+  <:col :let={issue} label="Kind" class="w-1/6">
     <span class={[
       "badge badge-sm",
       issue.kind == "feature_request" && "badge-secondary",
@@ -79,7 +79,7 @@
       {issue.kind}
     </span>
   </:col>
-  <:col :let={issue} label="Status" class="w-1/5">
+  <:col :let={issue} label="Status" class="w-1/6">
     <span class={[
       "badge badge-sm",
       issue.status == "open" && "badge-info",
@@ -90,7 +90,7 @@
       {issue.status}
     </span>
   </:col>
-  <:col :let={issue} label="Filed" class="whitespace-nowrap text-xs text-base-content/60">
+  <:col :let={issue} label="Filed" class="w-1/6 whitespace-nowrap text-xs text-base-content/60">
     <span class={issue.status in ["closed", "abandoned"] && "opacity-50"}>
       {Calendar.strftime(issue.inserted_at, "%Y-%m-%d %H:%M")}
     </span>
