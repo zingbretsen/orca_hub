@@ -53,7 +53,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
   defp expected_maybe_put(opts, _key, nil), do: opts
   defp expected_maybe_put(opts, key, val), do: Keyword.put(opts, key, val)
 
-  defp expected_tools(true), do: "Read,Glob,Grep,WebFetch,WebSearch,Write,Edit"
+  defp expected_tools(true), do: "Read,Glob,Grep,WebFetch,WebSearch,Write,Edit,Skill"
   defp expected_tools(_), do: nil
 
   # Transcribed from SessionRunner.build_system_prompt/1 + its private
@@ -605,7 +605,17 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
       assert spec.args == expected_args
       assert "--tools" in spec.args
-      assert "Read,Glob,Grep,WebFetch,WebSearch,Write,Edit" in spec.args
+      assert "Read,Glob,Grep,WebFetch,WebSearch,Write,Edit,Skill" in spec.args
+    end
+
+    test "orchestrator --tools includes Skill" do
+      ctx = ctx(%{orchestrator: true})
+      spec = Backend.spawn_spec(:streaming, ctx)
+
+      assert "--tools" in spec.args
+      # spec.args is a list; find the --tools value (next element after "--tools")
+      tools_value = Enum.at(spec.args, Enum.find_index(spec.args, &(&1 == "--tools")) + 1)
+      assert String.contains?(tools_value, "Skill")
     end
 
     test "code_exec: true adds the code-exec system-prompt section" do

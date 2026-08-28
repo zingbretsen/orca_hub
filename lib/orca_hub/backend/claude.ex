@@ -436,11 +436,11 @@ defmodule OrcaHub.Backend.Claude do
 
   # Orchestrator sessions get a restricted toolset: read-only file access plus
   # web, plus Write/Edit so they can persist their file-based memory under
-  # `.claude`. Writes are NOT path-enforced (skip-permissions stays on); the
-  # system prompt instructs orchestrators to confine their direct writes to
-  # `.claude` and to delegate all other implementation work to worker
-  # sessions.
-  @orchestrator_tools "Read,Glob,Grep,WebFetch,WebSearch,Write,Edit"
+  # `.claude`, plus Skill so they can load skills from ~/.claude/skills/.
+  # Writes are NOT path-enforced (skip-permissions stays on); the system
+  # prompt instructs orchestrators to confine their direct writes to `.claude`
+  # and to delegate all other implementation work to worker sessions.
+  @orchestrator_tools "Read,Glob,Grep,WebFetch,WebSearch,Write,Edit,Skill"
   defp orchestrator_tools(true), do: @orchestrator_tools
   defp orchestrator_tools(_), do: nil
 
