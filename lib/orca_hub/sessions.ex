@@ -1646,7 +1646,7 @@ defmodule OrcaHub.Sessions do
   # Helper: checks if session_id is an ancestor of any session in the chain
   # starting from parent_id, walking up via parent_session_id.
   # Depth cap of 64 to prevent infinite loops on corrupt data.
-  defp ancestor_in_chain?(_session_id, _parent_id, _depth) when _depth >= 64 do
+  defp ancestor_in_chain?(_session_id, _parent_id, depth) when depth >= 64 do
     # Depth cap reached - assume no cycle to avoid hanging
     false
   end

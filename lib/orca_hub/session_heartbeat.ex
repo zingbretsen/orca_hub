@@ -176,30 +176,6 @@ defmodule OrcaHub.SessionHeartbeat do
     GenServer.call(__MODULE__, {:peek_message_queue, session_id})
   end
 
-  @doc false
-  # Public read-only accessor for queued message state. Returns nil if no
-  # queued batch exists. This is a pure read - it does not deliver, flush,
-  # cancel, or re-arm anything.
-  def handle_call({:queued_message_state, session_id}, _from, state) do
-    case Map.get(state.message_queue, session_id) do
-      nil ->
-        {:reply, nil, state}
-
-      entry ->
-        escalates_at =
-          entry.queued_at
-          |> DateTime.add(div(@queue_escalate_ms, 1000), :second)
-
-        {:reply,
-         %{
-           count: length(entry.messages),
-           queued_at: entry.queued_at,
-           queued_status: entry.queued_status,
-           escalates_at: escalates_at
-         }, state}
-    end
-  end
-
   @doc """
   Cancel a session's heartbeat.
   """
@@ -418,6 +394,30 @@ defmodule OrcaHub.SessionHeartbeat do
     lifecycle_snapshots = Map.put(state.lifecycle_snapshots, session_id, snapshot)
 
     {:reply, changed?, %{state | lifecycle_snapshots: lifecycle_snapshots}}
+  end
+
+  @impl true
+  # Public read-only accessor for queued message state. Returns nil if no
+  # queued batch exists. This is a pure read - it does not deliver, flush,
+  # cancel, or re-arm anything.
+  def handle_call({:queued_message_state, session_id}, _from, state) do
+    case Map.get(state.message_queue, session_id) do
+      nil ->
+        {:reply, nil, state}
+
+      entry ->
+        escalates_at =
+          entry.queued_at
+          |> DateTime.add(div(@queue_escalate_ms, 1000), :second)
+
+        {:reply,
+         %{
+           count: length(entry.messages),
+           queued_at: entry.queued_at,
+           queued_status: entry.queued_status,
+           escalates_at: escalates_at
+         }, state}
+    end
   end
 
   @impl true

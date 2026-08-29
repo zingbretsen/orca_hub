@@ -163,6 +163,28 @@ defmodule OrcaHubWeb.TriggerLive.Index do
      |> push_patch(to: ~p"/triggers")}
   end
 
+  def handle_event("pin", %{"id" => id}, socket) do
+    case find_trigger(socket, id) do
+      nil ->
+        {:noreply, socket}
+
+      trigger ->
+        {:ok, _} = HubRPC.pin_trigger(trigger)
+        reload_for_node_filter(socket)
+    end
+  end
+
+  def handle_event("unpin", %{"id" => id}, socket) do
+    case find_trigger(socket, id) do
+      nil ->
+        {:noreply, socket}
+
+      trigger ->
+        {:ok, _} = HubRPC.unpin_trigger(trigger)
+        reload_for_node_filter(socket)
+    end
+  end
+
   def reload_for_node_filter(socket) do
     node_filter = socket.assigns.node_filter
     tagged_triggers = Cluster.list_triggers() |> NodeFilter.filter_tagged(node_filter)
@@ -248,28 +270,6 @@ defmodule OrcaHubWeb.TriggerLive.Index do
 
   def webhook_url(trigger) do
     OrcaHubWeb.Endpoint.url() <> "/api/webhooks/#{trigger.webhook_secret}"
-  end
-
-  def handle_event("pin", %{"id" => id}, socket) do
-    case find_trigger(socket, id) do
-      nil ->
-        {:noreply, socket}
-
-      trigger ->
-        {:ok, _} = HubRPC.pin_trigger(trigger)
-        reload_for_node_filter(socket)
-    end
-  end
-
-  def handle_event("unpin", %{"id" => id}, socket) do
-    case find_trigger(socket, id) do
-      nil ->
-        {:noreply, socket}
-
-      trigger ->
-        {:ok, _} = HubRPC.unpin_trigger(trigger)
-        reload_for_node_filter(socket)
-    end
   end
 
   defp find_trigger(socket, id), do: Enum.find(socket.assigns.triggers, &(&1.id == id))
