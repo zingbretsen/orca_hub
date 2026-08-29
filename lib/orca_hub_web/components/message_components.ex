@@ -886,7 +886,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :cmd, truncate(input["command"] || "", 80))
 
     ~H"""
-    <code class="text-xs">{@cmd}</code>
+    <code class="text-xs min-w-0 max-w-full">{@cmd}</code>
     """
   end
 
@@ -894,7 +894,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :path, input["file_path"] || "")
 
     ~H"""
-    <code class="text-xs">{@path}</code>
+    <code class="text-xs min-w-0 max-w-full">{@path}</code>
     """
   end
 
@@ -902,7 +902,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :path, input["file_path"] || "")
 
     ~H"""
-    <code class="text-xs">{@path}</code>
+    <code class="text-xs min-w-0 max-w-full">{@path}</code>
     """
   end
 
@@ -910,7 +910,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :pattern, input["pattern"] || "")
 
     ~H"""
-    <code class="text-xs">{@pattern}</code>
+    <code class="text-xs min-w-0 max-w-full">{@pattern}</code>
     """
   end
 
@@ -921,8 +921,8 @@ defmodule OrcaHubWeb.MessageComponents do
       |> assign(:path, input["path"])
 
     ~H"""
-    <code class="text-xs">{@pattern}</code>
-    <span :if={@path} class="text-xs">in {@path}</span>
+    <code class="text-xs min-w-0 max-w-full">{@pattern}</code>
+    <span :if={@path} class="text-xs min-w-0 max-w-full">in {@path}</span>
     """
   end
 
@@ -930,7 +930,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :url, truncate(input["url"] || "", 60))
 
     ~H"""
-    <span class="text-xs">{@url}</span>
+    <span class="text-xs min-w-0 max-w-full">{@url}</span>
     """
   end
 
@@ -938,7 +938,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :query, input["query"] || "")
 
     ~H"""
-    <span class="text-xs">{@query}</span>
+    <span class="text-xs min-w-0 max-w-full">{@query}</span>
     """
   end
 
@@ -954,7 +954,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :summary, summary)
 
     ~H"""
-    <span class="text-xs">{@summary}</span>
+    <span class="text-xs min-w-0 max-w-full">{@summary}</span>
     """
   end
 
@@ -979,7 +979,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :preview, preview)
 
     ~H"""
-    <code class="text-xs">{@preview}</code>
+    <code class="text-xs min-w-0 max-w-full">{@preview}</code>
     """
   end
 
@@ -988,7 +988,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :query, input["query"] || "")
 
     ~H"""
-    <code class="text-xs">{@query}</code>
+    <code class="text-xs min-w-0 max-w-full">{@query}</code>
     """
   end
 
@@ -999,7 +999,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :tool, input["name"] || "")
 
     ~H"""
-    <code class="text-xs">{@tool}</code>
+    <code class="text-xs min-w-0 max-w-full">{@tool}</code>
     """
   end
 
