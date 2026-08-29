@@ -216,9 +216,17 @@ paths for this project's deps:
 | req | `github.com/wojtekmach/req` /CHANGELOG.md |
 | swoosh | `github.com/swoosh/swoosh` /CHANGELOG.md |
 | ex_json_schema | **no changelog** — diff tags instead: `gh api repos/jonasschmidt/ex_json_schema/compare/v<old>...v<new> --jq '.commits[].commit.message'` |
+| dns_cluster | `github.com/phoenixframework/dns_cluster` /CHANGELOG.md, but **it lags** — the file stopped at 0.2.0 while 0.3.0 was published. Use the tag diff. |
+| telemetry_metrics, phoenix_pubsub | `github.com/beam-telemetry/telemetry_metrics`, `github.com/phoenixframework/phoenix_pubsub` /CHANGELOG.md |
 
 That `gh api .../compare/v<old>...v<new>` trick is the general fallback for any
-dep with no changelog and no GitHub Releases.
+dep with no changelog and no GitHub Releases. Reach for it whenever a changelog
+lookup comes back EMPTY rather than concluding "no notable changes" — an absent
+entry usually means the changelog lags the release, not that the release was
+trivial. Two confirmed cases: `req` (main's CHANGELOG was on 0.8.0-rc and had no
+0.7.4 entry, which turned out to be three `put_params` fixes) and `dns_cluster`
+(no 0.3.0 entry at all). The same trap in a different shape is `phoenix`, whose
+`main` changelog silently omits every 1.8.x patch — see the table above.
 
 **Gotchas learned the hard way (2026-08-14 run):**
 
@@ -262,6 +270,17 @@ the lock is fine and the culprit is the Dockerfile's `--mount=type=cache`
 in `mix.lock` (it's the previous deploy's pin, carried over). Fix that on the
 buildx node, not in the lockfile.
 
+**A dep's version jump is not the same as YOUR exposure — check whether it's
+even live.** `dns_cluster` 0.2 -> 0.3 looked like a 0.x breaking-position bump,
+but `DNS_CLUSTER_QUERY` is set NOWHERE (not the k3s manifest, not the systemd
+unit, not `.env`), so `Application.get_env(:orca_hub, :dns_cluster_query) ||
+:ignore` makes DNSCluster `:ignore` on all six instances — compiled in, never
+started. Clustering is really libcluster (`CLUSTER_NODES`/`CLUSTER_DNS_QUERY`)
+plus `NodeDialer`. The flip side: when a dep is inert in dev AND prod, neither
+the suite nor the boot smoke covers it, so verify the changed path directly —
+here, starting a `DNSCluster` by hand with a live query and a short `:interval`
+and confirming it survives several poll ticks.
+
 **Verifying the app actually boots.** The test suite uses `ConnTest`/
 `LiveViewTest`, which bypass the HTTP adapter entirely — so it does NOT cover
 bandit / thousand_island / websock_adapter / plug. After upgrading any of those,
@@ -286,9 +305,10 @@ WebSocket path, open a raw `:gen_tcp` connection to `/live/websocket?vsn=2.0.0`
 with the `Upgrade: websocket` / `Sec-WebSocket-Key` headers and assert
 `101 Switching Protocols`.
 
-**Still deferred, re-checked 2026-08-21: phoenix_live_view 1.1 -> 1.2**
-(1.1.33 vs 1.2.10 as of this check; raised with the user on 2026-08-14 and
-not yet decided). Everything else is current. 1.2 needs `mix.exs`
+**Still deferred, re-checked 2026-08-28: phoenix_live_view 1.1 -> 1.2**
+(1.1.33 vs 1.2.11 as of this check; raised with the user on 2026-08-14 and
+2026-08-21, still not decided — do not keep re-deriving the analysis below,
+just re-raise it). Everything else is current. 1.2 needs `mix.exs`
 `~> 1.1.0` -> `~> 1.2` and carries real breaking changes: the
 `Phoenix.Component` global-attribute list was realigned to MDN and the removed
 attributes are NOT enumerated in the changelog (fix per-site with
