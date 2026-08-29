@@ -335,7 +335,7 @@ defmodule OrcaHubWeb.MessageComponents do
       <div class="chat-header text-xs opacity-50 mb-1">
         You <.timestamp value={@msg["timestamp"]} />
       </div>
-      <div class="chat-bubble chat-bubble-primary">
+      <div class="chat-bubble chat-bubble-primary min-w-0 max-w-full">
         <div :for={{type, path} <- @attachments} class="mb-2">
           <img
             :if={type == :image}
@@ -350,7 +350,7 @@ defmodule OrcaHubWeb.MessageComponents do
             {Path.basename(path)}
           </div>
         </div>
-        <div :if={@text != ""} class="prose prose-sm prose-invert max-w-none">
+        <div :if={@text != ""} class="prose prose-sm prose-invert max-w-none break-words">
           {Markdown.render(@text)}
         </div>
       </div>
@@ -397,7 +397,7 @@ defmodule OrcaHubWeb.MessageComponents do
       </div>
       <div
         id={"tts-text-#{@msg_id}"}
-        class="chat-bubble prose prose-sm prose-invert max-w-none"
+        class="chat-bubble prose prose-sm prose-invert max-w-none min-w-0 max-w-full break-words"
         data-tts-text
       >
         {@html}
@@ -1019,7 +1019,7 @@ defmodule OrcaHubWeb.MessageComponents do
 
     ~H"""
     <div class="bg-base-300 rounded p-2 font-mono text-xs overflow-x-auto">
-      <pre class="whitespace-pre-wrap">{@command}</pre>
+      <pre class="whitespace-pre-wrap overflow-x-auto max-w-full">{@command}</pre>
     </div>
     """
   end
@@ -1090,10 +1090,10 @@ defmodule OrcaHubWeb.MessageComponents do
         {@path}
       </button>
       <div :if={@old != ""} class="bg-error/10 text-error rounded p-2 font-mono overflow-x-auto">
-        <pre class="whitespace-pre-wrap">- {@old}</pre>
+        <pre class="whitespace-pre-wrap overflow-x-auto max-w-full">- {@old}</pre>
       </div>
       <div :if={@new != ""} class="bg-success/10 text-success rounded p-2 font-mono overflow-x-auto">
-        <pre class="whitespace-pre-wrap">+ {@new}</pre>
+        <pre class="whitespace-pre-wrap overflow-x-auto max-w-full">+ {@new}</pre>
       </div>
     </div>
     """
@@ -1124,7 +1124,7 @@ defmodule OrcaHubWeb.MessageComponents do
 
     ~H"""
     <div class="bg-base-300 rounded p-2 font-mono text-xs overflow-x-auto">
-      <pre class="whitespace-pre-wrap"><code>{@code}</code></pre>
+      <pre class="whitespace-pre-wrap overflow-x-auto max-w-full"><code>{@code}</code></pre>
     </div>
     """
   end

@@ -201,6 +201,7 @@
      never widen the feed; `<pre>`/`<table>` additionally scroll on their
      own axis instead of clipping. */
 #message-feed {
+  max-width: 100%;
   overflow-x: hidden;
 }
 #message-feed * {
