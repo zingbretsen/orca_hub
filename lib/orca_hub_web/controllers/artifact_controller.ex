@@ -156,7 +156,7 @@ defmodule OrcaHubWeb.ArtifactController do
           code { font-family: ui-monospace, monospace; }
         </style>
       </head>
-      <body>#{content |> Markdown.render() |> Phoenix.HTML.safe_to_string()}</body>
+      <body>#{content |> Markdown.render(copy_code: false) |> Phoenix.HTML.safe_to_string()}</body>
     </html>
     """
   end

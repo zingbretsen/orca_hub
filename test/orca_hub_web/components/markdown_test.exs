@@ -1,6 +1,8 @@
 defmodule OrcaHubWeb.MarkdownTest do
   use ExUnit.Case, async: true
 
+  import Phoenix.HTML, only: [safe_to_string: 1]
+
   alias OrcaHubWeb.Markdown
 
   describe "split_frontmatter/1" do
@@ -100,6 +102,60 @@ defmodule OrcaHubWeb.MarkdownTest do
       # Frontmatter bytes are untouched by the body edit.
       {rebuilt_frontmatter, _rebuilt_body} = Markdown.split_frontmatter(rebuilt)
       assert rebuilt_frontmatter == frontmatter
+    end
+  end
+
+  describe "render/2 copy-code buttons" do
+    test "wraps fenced code blocks in a copy-code wrapper with a copy button" do
+      html = Markdown.render("```elixir\nIO.puts(:hi)\n```") |> safe_to_string()
+
+      assert html =~ ~s(class="code-copy-wrapper relative")
+      assert html =~ ~s(data-copy-code="true")
+      assert html =~ ~s(data-copy-icon="true")
+      assert html =~ "hero-clipboard-document-micro"
+      # The <pre> must be a SIBLING of the button inside the non-scrolling
+      # wrapper, never a descendant of it, or the button scrolls away.
+      assert html =~ ~r|<div class="code-copy-wrapper relative">\s*<pre>|
+    end
+
+    test "copy_code: false omits the button (JS-less artifact HTML export)" do
+      html = Markdown.render("```\nx\n```", copy_code: false) |> safe_to_string()
+
+      assert html =~ "<pre>"
+      refute html =~ "code-copy-wrapper"
+      refute html =~ "data-copy-code"
+    end
+
+    test "inline code is left alone" do
+      html = Markdown.render("some `inline` code") |> safe_to_string()
+
+      refute html =~ "code-copy-wrapper"
+      assert html =~ "<code"
+    end
+
+    test "links still open in a new tab" do
+      html = Markdown.render("[x](http://example.com)") |> safe_to_string()
+
+      assert html =~ ~s(target="_blank")
+      assert html =~ ~s(rel="noopener noreferrer")
+    end
+
+    test "prose containing an Elixir tuple renders instead of raising" do
+      # Earmark reads `{:ok, nodes}` as an illegal IAL and emits a WARNING,
+      # which flips the parse status to :error. `Earmark.as_ast!/2` raises on
+      # that; the `as_html!/2` this module used to call did not. Rendering must
+      # keep the never-raise contract — one such message used to 500 the whole
+      # session page.
+      md = """
+      Checking the result
+
+      returns {:ok, nodes} and {:error_event, ok,} plus {"fail_fast", ok,}
+      """
+
+      html = Markdown.render(md) |> safe_to_string()
+
+      assert html =~ "Checking the result"
+      assert html =~ "nodes"
     end
   end
 end

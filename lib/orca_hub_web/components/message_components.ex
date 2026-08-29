@@ -620,9 +620,38 @@ defmodule OrcaHubWeb.MessageComponents do
           />
         </summary>
         <div class="mt-1 ml-2 pl-3 border-l-2 border-success/20">
-          <pre class="text-xs opacity-60 whitespace-pre-wrap overflow-x-auto max-h-64 overflow-y-auto">{linkify_session_ids(@content)}</pre>
+          <.copy_code_wrapper>
+            <pre class="text-xs opacity-60 whitespace-pre-wrap overflow-x-auto max-h-64 overflow-y-auto">{linkify_session_ids(@content)}</pre>
+          </.copy_code_wrapper>
         </div>
       </details>
+    </div>
+    """
+  end
+
+  # Non-scrolling wrapper for a code block's `<pre>` (and any outer
+  # overflow-x-auto div around it) plus a copy button anchored OUTSIDE that
+  # scroll region, per ORCAHUB3-58 — an absolutely-positioned button placed
+  # inside the scrolling element would scroll away with the content, so it
+  # must be a sibling of whatever actually scrolls, not a descendant of it.
+  # `assets/js/app.js`'s ScrollToBottom hook reads the sibling `pre`'s
+  # `textContent` on click, so this only ever needs a `code-copy-wrapper`
+  # marker class + a `data-copy-code` button, no per-element hook/id.
+  slot :inner_block, required: true
+
+  defp copy_code_wrapper(assigns) do
+    ~H"""
+    <div class="code-copy-wrapper relative">
+      {render_slot(@inner_block)}
+      <button
+        type="button"
+        class="copy-code-btn btn btn-ghost btn-xs btn-circle absolute top-1 right-1 opacity-70 hover:opacity-100 focus:opacity-100"
+        data-copy-code
+        title="Copy"
+        aria-label="Copy code"
+      >
+        <span class="hero-clipboard-document-micro size-3.5" data-copy-icon></span>
+      </button>
     </div>
     """
   end
@@ -814,7 +843,9 @@ defmodule OrcaHubWeb.MessageComponents do
         <.icon name="hero-exclamation-triangle-micro" class="size-3" />
         CLI error (exit code {@exit_code})
       </div>
-      <pre class="text-xs text-error/80 whitespace-pre-wrap overflow-x-auto max-h-64 overflow-y-auto">{@message}</pre>
+      <.copy_code_wrapper>
+        <pre class="text-xs text-error/80 whitespace-pre-wrap overflow-x-auto max-h-64 overflow-y-auto">{@message}</pre>
+      </.copy_code_wrapper>
     </div>
     """
   end
@@ -886,7 +917,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :cmd, truncate(input["command"] || "", 80))
 
     ~H"""
-    <code class="text-xs min-w-0 max-w-full">{@cmd}</code>
+    <code class="text-xs">{@cmd}</code>
     """
   end
 
@@ -894,7 +925,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :path, input["file_path"] || "")
 
     ~H"""
-    <code class="text-xs min-w-0 max-w-full">{@path}</code>
+    <code class="text-xs">{@path}</code>
     """
   end
 
@@ -902,7 +933,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :path, input["file_path"] || "")
 
     ~H"""
-    <code class="text-xs min-w-0 max-w-full">{@path}</code>
+    <code class="text-xs">{@path}</code>
     """
   end
 
@@ -910,7 +941,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :pattern, input["pattern"] || "")
 
     ~H"""
-    <code class="text-xs min-w-0 max-w-full">{@pattern}</code>
+    <code class="text-xs">{@pattern}</code>
     """
   end
 
@@ -921,8 +952,8 @@ defmodule OrcaHubWeb.MessageComponents do
       |> assign(:path, input["path"])
 
     ~H"""
-    <code class="text-xs min-w-0 max-w-full">{@pattern}</code>
-    <span :if={@path} class="text-xs min-w-0 max-w-full">in {@path}</span>
+    <code class="text-xs">{@pattern}</code>
+    <span :if={@path} class="text-xs">in {@path}</span>
     """
   end
 
@@ -930,7 +961,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :url, truncate(input["url"] || "", 60))
 
     ~H"""
-    <span class="text-xs min-w-0 max-w-full">{@url}</span>
+    <span class="text-xs">{@url}</span>
     """
   end
 
@@ -938,7 +969,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :query, input["query"] || "")
 
     ~H"""
-    <span class="text-xs min-w-0 max-w-full">{@query}</span>
+    <span class="text-xs">{@query}</span>
     """
   end
 
@@ -954,7 +985,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :summary, summary)
 
     ~H"""
-    <span class="text-xs min-w-0 max-w-full">{@summary}</span>
+    <span class="text-xs">{@summary}</span>
     """
   end
 
@@ -979,7 +1010,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :preview, preview)
 
     ~H"""
-    <code class="text-xs min-w-0 max-w-full">{@preview}</code>
+    <code class="text-xs">{@preview}</code>
     """
   end
 
@@ -988,7 +1019,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :query, input["query"] || "")
 
     ~H"""
-    <code class="text-xs min-w-0 max-w-full">{@query}</code>
+    <code class="text-xs">{@query}</code>
     """
   end
 
@@ -999,7 +1030,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :tool, input["name"] || "")
 
     ~H"""
-    <code class="text-xs min-w-0 max-w-full">{@tool}</code>
+    <code class="text-xs">{@tool}</code>
     """
   end
 
@@ -1018,9 +1049,11 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :command, input["command"] || "")
 
     ~H"""
-    <div class="bg-base-300 rounded p-2 font-mono text-xs overflow-x-auto">
-      <pre class="whitespace-pre-wrap overflow-x-auto max-w-full">{@command}</pre>
-    </div>
+    <.copy_code_wrapper>
+      <div class="bg-base-300 rounded p-2 font-mono text-xs overflow-x-auto">
+        <pre class="whitespace-pre-wrap overflow-x-auto max-w-full">{@command}</pre>
+      </div>
+    </.copy_code_wrapper>
     """
   end
 
@@ -1089,12 +1122,16 @@ defmodule OrcaHubWeb.MessageComponents do
       >
         {@path}
       </button>
-      <div :if={@old != ""} class="bg-error/10 text-error rounded p-2 font-mono overflow-x-auto">
-        <pre class="whitespace-pre-wrap overflow-x-auto max-w-full">- {@old}</pre>
-      </div>
-      <div :if={@new != ""} class="bg-success/10 text-success rounded p-2 font-mono overflow-x-auto">
-        <pre class="whitespace-pre-wrap overflow-x-auto max-w-full">+ {@new}</pre>
-      </div>
+      <.copy_code_wrapper :if={@old != ""}>
+        <div class="bg-error/10 text-error rounded p-2 font-mono overflow-x-auto">
+          <pre class="whitespace-pre-wrap overflow-x-auto max-w-full">- {@old}</pre>
+        </div>
+      </.copy_code_wrapper>
+      <.copy_code_wrapper :if={@new != ""}>
+        <div class="bg-success/10 text-success rounded p-2 font-mono overflow-x-auto">
+          <pre class="whitespace-pre-wrap overflow-x-auto max-w-full">+ {@new}</pre>
+        </div>
+      </.copy_code_wrapper>
     </div>
     """
   end
@@ -1123,9 +1160,11 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns = assign(assigns, :code, input["code"] || "")
 
     ~H"""
-    <div class="bg-base-300 rounded p-2 font-mono text-xs overflow-x-auto">
-      <pre class="whitespace-pre-wrap overflow-x-auto max-w-full"><code>{@code}</code></pre>
-    </div>
+    <.copy_code_wrapper>
+      <div class="bg-base-300 rounded p-2 font-mono text-xs overflow-x-auto">
+        <pre class="whitespace-pre-wrap overflow-x-auto max-w-full"><code>{@code}</code></pre>
+      </div>
+    </.copy_code_wrapper>
     """
   end
 

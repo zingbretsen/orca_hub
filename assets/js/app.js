@@ -57,6 +57,39 @@ function legacyCopy(text) {
   })
 }
 
+// Swaps a `.copy-code-btn`'s icon/title to a checkmark for ~1.8s, matching
+// the CopyToClipboard hook's flash-then-revert pattern. Clears any pending
+// revert first so rapid re-clicks don't fight over the timeout.
+function flashCopied(btn) {
+  const icon = btn.querySelector("[data-copy-icon]")
+  clearTimeout(btn._copyRevertTimeout)
+  btn.classList.add("text-success")
+  btn.title = "Copied!"
+  btn.setAttribute("aria-label", "Copied")
+  if (icon) icon.className = "hero-clipboard-document-check-micro size-3.5"
+  btn._copyRevertTimeout = setTimeout(() => {
+    btn.classList.remove("text-success")
+    btn.title = "Copy"
+    btn.setAttribute("aria-label", "Copy code")
+    if (icon) icon.className = "hero-clipboard-document-micro size-3.5"
+  }, 1800)
+}
+
+// Delegated at the document so it covers every copy button on the page, not
+// just the session feed's: `message_components.ex`'s `copy_code_wrapper/1`
+// and `OrcaHubWeb.Markdown`'s AST pass emit the same
+// `.code-copy-wrapper > pre` + `[data-copy-code]` shape, and Markdown.render
+// is also used on the queue page, the block editor, node config docs and the
+// pending-UI-request dialog — a listener scoped to #message-feed would leave
+// the buttons there inert. ORCAHUB3-58.
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-copy-code]")
+  if (!btn) return
+  const pre = btn.closest(".code-copy-wrapper")?.querySelector("pre")
+  if (!pre) return
+  copyTextToClipboard(pre.textContent).then(() => flashCopied(btn)).catch(() => {})
+})
+
 // Read-aloud (TTS) playback engine — shared between ScrollToBottom (session
 // page, mounted on #message-feed) and TTSFeed (queue page, mounted on the
 // card list). Exactly ONE instance of this state exists per page (TTS
