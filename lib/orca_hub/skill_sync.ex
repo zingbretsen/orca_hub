@@ -173,51 +173,28 @@ defmodule OrcaHub.SkillSync do
     manifest_path |> read_manifest() |> Map.keys() |> MapSet.new()
   end
 
-  defp sync_backend(backend, _skills, opts) do
+  defp sync_backend(backend, skills, opts) do
     backend_str = Atom.to_string(backend)
     skills_root = Path.join(NodeConfig.home_root(backend, opts), "skills")
     manifest_path = Path.join(skills_root, @manifest_filename)
     manifest_existed? = File.regular?(manifest_path)
     managed = read_manifest(manifest_path)
 
-    raw_skills =
-      Keyword.get_lazy(opts, :skills, fn -> HubRPC.list_enabled_skills() end)
-
-    # When the hub returns empty skills (all filtered to empty), preserve existing
-    # managed skills instead of wiping them. This protects against transient DB
-    # issues. BUT: if skills exist but none target this backend (un-targeting),
-    # we should still delete the skill for this backend. We handle this by checking
-    # if raw_skills is empty (DB empty) vs non-empty but targeted is empty for this
-    # backend.
-    skills_empty? = raw_skills == []
-    targeted = Enum.filter(raw_skills, &(&1.enabled and backend_str in &1.backends))
+    targeted = Enum.filter(skills, &(&1.enabled and backend_str in &1.backends))
     targeted_names = MapSet.new(targeted, & &1.name)
 
-    # Only preserve when DB is truly empty, not when skills exist but don't target
-    # this backend (un-targeting). For un-targeting, targeted will be empty but
-    # raw_skills is not.
-    preserve_existing? = skills_empty? and manifest_existed?
-
     after_writes =
-      if preserve_existing? do
-        managed
-      else
-        Enum.reduce(targeted, managed, fn skill, acc ->
-          write_skill(skills_root, skill, managed, acc, backend_str)
-        end)
-      end
+      Enum.reduce(targeted, managed, fn skill, acc ->
+        write_skill(skills_root, skill, managed, acc, backend_str)
+      end)
 
     final =
-      if preserve_existing? do
-        managed
-      else
-        after_writes
-        |> Enum.reject(fn {name, _hash} -> name in targeted_names end)
-        |> Enum.reduce(after_writes, fn {name, _hash}, acc ->
-          File.rm_rf!(Path.join(skills_root, name))
-          Map.delete(acc, name)
-        end)
-      end
+      after_writes
+      |> Enum.reject(fn {name, _hash} -> name in targeted_names end)
+      |> Enum.reduce(after_writes, fn {name, _hash}, acc ->
+        File.rm_rf!(Path.join(skills_root, name))
+        Map.delete(acc, name)
+      end)
 
     if final != %{} or manifest_existed? do
       write_manifest(manifest_path, final)
