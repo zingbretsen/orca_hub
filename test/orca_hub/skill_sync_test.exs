@@ -237,4 +237,19 @@ defmodule OrcaHub.SkillSyncTest do
       refute Map.has_key?(manifest["skills"], ".system")
     end
   end
+
+  describe "dev-env GenServer gating (ORCAHUB3-57)" do
+    # Same hazard as ORCAHUB3-59's PiConfigSync gate: a `mix phx.server` run
+    # from this checkout reads the DEV database but writes the developer's REAL
+    # ~/.claude/skills, ~/.codex/skills and ~/.pi/agent/skills, deleting every
+    # skill the production agent materialized from the prod DB.
+    @tag :repro
+    test "config/dev.exs disables the SkillSync GenServer" do
+      dev_config = File.read!("config/dev.exs")
+
+      assert dev_config =~ ~r/config\s+:orca_hub,\s+:skill_sync_enabled,\s+false/,
+             "config/dev.exs must set :skill_sync_enabled to false — a dev server " <>
+               "otherwise syncs the dev DB's skills onto the real backend skill dirs"
+    end
+  end
 end

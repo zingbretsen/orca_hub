@@ -519,4 +519,21 @@ defmodule OrcaHub.PiConfigSyncTest do
       assert length(claude_sessions) == 1
     end
   end
+
+  describe "dev-env GenServer gating (ORCAHUB3-59)" do
+    # A `mix phx.server` run from this checkout resolves `config/dev.exs`, whose
+    # Repo points at the DEV database, while `NodeConfig.home_root/2` still
+    # resolves to the developer's REAL home. `config/test.exs` disables this
+    # GenServer for exactly that reason; `config/dev.exs` must too, or a dev
+    # server materializes the dev DB's (empty) pi config over the live
+    # `~/.pi/agent` that the production agent manages.
+    @tag :repro
+    test "config/dev.exs disables the PiConfigSync GenServer" do
+      dev_config = File.read!("config/dev.exs")
+
+      assert dev_config =~ ~r/config\s+:orca_hub,\s+:pi_config_sync_enabled,\s+false/,
+             "config/dev.exs must set :pi_config_sync_enabled to false — a dev server " <>
+               "otherwise syncs the dev DB's pi config onto the real ~/.pi/agent"
+    end
+  end
 end
