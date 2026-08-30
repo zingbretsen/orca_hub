@@ -199,13 +199,28 @@
      and must NOT get this — it already scrolls, not wraps.
    - `<pre>`, `<table>`, and images get a hard `max-width: 100%` so they
      never widen the feed; `<pre>`/`<table>` additionally scroll on their
-     own axis instead of clipping. */
+     own axis instead of clipping.
+   - daisyUI's `.chat-start`/`.chat-end` size the bubble's grid track with
+     `1fr`, which is `minmax(auto, 1fr)` — an *auto* minimum that floors the
+     track at the item's min-content contribution. Gecko honours that floor
+     (a code block's min-content blew the track out to 611px inside a 326px
+     container), so `.chat-bubble`'s `max-width: 100%` resolved against an
+     already-oversized grid area and constrained nothing; Blink happens to
+     clamp the same track to the item's `min-width: 0` and looks fine. This
+     was ORCAHUB3-45's Firefox-only residual: fix it at the track with
+     `minmax(0, 1fr)` rather than relying on per-item min-width. */
 #message-feed {
   max-width: 100%;
   overflow-x: hidden;
 }
 #message-feed * {
   min-width: 0;
+}
+#message-feed .chat-start {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+#message-feed .chat-end {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 #message-feed .chat-bubble {
   max-width: 100%;
