@@ -527,7 +527,6 @@ defmodule OrcaHub.PiConfigSyncTest do
     # GenServer for exactly that reason; `config/dev.exs` must too, or a dev
     # server materializes the dev DB's (empty) pi config over the live
     # `~/.pi/agent` that the production agent manages.
-    @tag :repro
     test "config/dev.exs disables the PiConfigSync GenServer" do
       dev_config = File.read!("config/dev.exs")
 

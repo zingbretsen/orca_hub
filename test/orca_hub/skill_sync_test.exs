@@ -243,7 +243,6 @@ defmodule OrcaHub.SkillSyncTest do
     # from this checkout reads the DEV database but writes the developer's REAL
     # ~/.claude/skills, ~/.codex/skills and ~/.pi/agent/skills, deleting every
     # skill the production agent materialized from the prod DB.
-    @tag :repro
     test "config/dev.exs disables the SkillSync GenServer" do
       dev_config = File.read!("config/dev.exs")
 

@@ -109,3 +109,22 @@ config :phoenix_live_view,
 
 # Disable swoosh api client as it is only required for production adapters.
 config :swoosh, :api_client, false
+
+# OrcaHub.SkillSync and OrcaHub.PiConfigSync materialize the hub DB onto a
+# node's REAL home dir (~/.claude, ~/.codex, ~/.pi/agent) — NodeConfig.base_home/1
+# falls through to System.user_home!(), which a dev server does not override.
+# But a dev server's Repo points at the DEV database, which is not the
+# authoritative source for either surface. Left enabled, `mix phx.server` reads
+# the dev DB's (typically empty) skills/pi_config_entries and correctly deletes
+# everything the on-disk ownership manifests claim — clobbering the config the
+# production agent on this same host materialized from the PROD database, until
+# its next periodic pass restores it. That alternation was ORCAHUB3-59 (pi
+# providers wiped, every pi spawn failing "Model not found") and ORCAHUB3-57
+# (claude skills deleted after a periodic pass).
+#
+# Same hazard, same reasoning, and the same two flags as config/test.exs — see
+# that file's comments. Tests and dev alike drive the pure pass directly via
+# OrcaHub.SkillSync.sync/1 / OrcaHub.PiConfigSync.sync/1 with an injected
+# :home_dir, which stays available with the GenServer loop off.
+config :orca_hub, :skill_sync_enabled, false
+config :orca_hub, :pi_config_sync_enabled, false
