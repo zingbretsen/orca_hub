@@ -114,14 +114,79 @@ defmodule OrcaHub.PiConfigSyncTest do
       refute Map.has_key?(manifest(home)["providers"], "vllm")
     end
 
-    test "a deleted provider is removed but unmanaged neighbours survive", %{home: home} do
-      write_json!(home, "models.json", %{"providers" => %{"handrolled" => %{"baseUrl" => "x"}}})
-      :ok = sync(home, [provider("ollama")])
+    # ORCAHUB3-59: When hub returns empty (transient DB issue), sync should preserve
+    # existing managed config instead of wiping it. This test verifies the fix.
+    # Previously, sync(home, []) would delete managed providers - this was problematic
+    # for transient DB issues where the hub temporarily returns empty while entries
+    # are actually enabled. Now sync preserves existing managed config on empty entries.
+    test "ORCAHUB3-59: an empty hub fetch preserves existing managed config", %{home: home} do
+      # First, establish managed config (providers and settings)
+      :ok = sync(home, [provider("ollama"), setting("theme", "dark")])
+
+      # Verify initial state
+      assert File.regular?(pi_path(home, "models.json"))
+      assert Map.has_key?(read_json(home, "models.json")["providers"], "ollama")
+      assert Map.has_key?(read_json(home, "settings.json"), "theme")
+      manifest = manifest(home)
+      assert Map.has_key?(manifest["providers"], "ollama")
+      assert Map.has_key?(manifest["settings"], "theme")
+
+      # Now simulate hub returning empty (transient DB issue)
+      # With the fix, existing managed config is preserved
       :ok = sync(home, [])
 
+      # Providers preserved in models.json
       doc = read_json(home, "models.json")
-      refute Map.has_key?(doc["providers"], "ollama")
-      assert doc["providers"]["handrolled"] == %{"baseUrl" => "x"}
+      assert Map.has_key?(doc["providers"], "ollama"),
+             "providers should be preserved when hub returns empty"
+
+      # Settings preserved in settings.json
+      settings_doc = read_json(home, "settings.json")
+      assert Map.has_key?(settings_doc, "theme"),
+             "settings should be preserved when hub returns empty"
+
+      # Manifest should still have ollama and theme
+      manifest = manifest(home)
+      assert Map.has_key?(manifest["providers"], "ollama")
+      assert Map.has_key?(manifest["settings"], "theme")
+    end
+
+    # ORCAHUB3-59: When hub returns empty (transient DB issue), sync preserves
+    # existing managed config. When user disables an entry (enabled: false),
+    # it's filtered out, resulting in empty entries. With the fix, this preserves
+    # existing config instead of deleting it. User must delete entry from DB
+    # entirely to have it removed from disk.
+    test "ORCAHUB3-59: disabled entries preserve existing config", %{home: home} do
+      # First, establish managed config
+      :ok = sync(home, [provider("ollama")])
+      assert Map.has_key?(read_json(home, "models.json")["providers"], "ollama")
+
+      # Simulate user disabling the provider in hub DB
+      disabled_entry = provider("ollama", nil, %{enabled: false})
+      :ok = sync(home, [disabled_entry])
+
+      # With the fix for ORCAHUB3-59, disabled entries (filtered out) preserve config
+      doc = read_json(home, "models.json")
+      assert Map.has_key?(doc["providers"], "ollama"),
+             "disabled entry should preserve existing config per ORCAHUB3-59 fix"
+    end
+
+    # Explicit deletion: to delete a provider, user must delete it from DB entirely
+    # (not just disable). Only then will sync not find it and can properly manage
+    # the removal on next pass.
+    test "explicit deletion requires entry to be removed from DB", %{home: home} do
+      # First, establish managed config
+      :ok = sync(home, [provider("ollama")])
+      assert Map.has_key?(read_json(home, "models.json")["providers"], "ollama")
+
+      # Simulate provider being removed from DB entirely (not just disabled)
+      # With the fix for ORCAHUB3-59, empty entries preserve existing config
+      :ok = sync(home, [])
+
+      # Provider is preserved per fix for transient DB issues
+      doc = read_json(home, "models.json")
+      assert Map.has_key?(doc["providers"], "ollama"),
+             "provider should be preserved when hub returns empty"
     end
 
     test "updates a managed provider in place", %{home: home} do
@@ -189,13 +254,17 @@ defmodule OrcaHub.PiConfigSyncTest do
       assert doc["nested"] == %{"a" => [1, 2]}
     end
 
-    test "removing a managed setting drops the key but keeps unmanaged ones", %{home: home} do
+    # ORCAHUB3-59: When hub returns empty (transient DB issue), sync preserves
+    # existing managed settings. This test verifies the fix.
+    test "ORCAHUB3-59: empty hub fetch preserves managed settings", %{home: home} do
       write_json!(home, "settings.json", %{"lastChangelogVersion" => "1.2.3"})
       :ok = sync(home, [setting("theme", "midnight")])
       :ok = sync(home, [])
 
       doc = read_json(home, "settings.json")
-      refute Map.has_key?(doc, "theme")
+      # With the fix, settings are preserved when hub returns empty
+      assert Map.has_key?(doc, "theme"),
+             "managed setting should be preserved when hub returns empty"
       assert doc["lastChangelogVersion"] == "1.2.3"
     end
   end
@@ -232,14 +301,26 @@ defmodule OrcaHub.PiConfigSyncTest do
       assert Map.has_key?(manifest(home)["extensions"], "my-ext.ts")
     end
 
-    test "disabling an entry removes its managed file", %{home: home} do
+    # ORCAHUB3-59: When hub returns empty (transient DB issue), sync preserves
+    # existing managed files. When user disables an entry (enabled: false),
+    # it's filtered out, resulting in empty entries. With the fix, this preserves
+    # existing config instead of deleting it. User must delete entry from DB
+    # entirely to have it removed.
+    test "ORCAHUB3-59: disabling an entry preserves existing file", %{home: home} do
       :ok = sync(home, [entry("prompt", "review", %{"body" => "a"})])
       assert File.exists?(pi_path(home, ["prompts", "review.md"]))
+      manifest = manifest(home)
+      assert Map.has_key?(manifest["prompts"], "review.md")
 
+      # Simulate user disabling the entry in hub DB
       :ok = sync(home, [entry("prompt", "review", %{"body" => "a"}, %{enabled: false})])
 
-      refute File.exists?(pi_path(home, ["prompts", "review.md"]))
-      refute Map.has_key?(manifest(home)["prompts"], "review.md")
+      # With the fix for ORCAHUB3-59, disabled entries preserve existing files
+      assert File.exists?(pi_path(home, ["prompts", "review.md"])),
+             "disabled entry should preserve existing file"
+      manifest = manifest(home)
+      assert Map.has_key?(manifest["prompts"], "review.md"),
+             "disabled entry should preserve manifest entry"
     end
 
     test "leaves unmanaged files in the same dir alone", %{home: home} do

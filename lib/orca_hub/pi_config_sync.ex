@@ -220,16 +220,38 @@ defmodule OrcaHub.PiConfigSync do
       manifest_existed? = File.regular?(manifest_path)
       manifest = read_manifest(manifest_path)
 
-      {providers, models_changed?} =
-        sync_providers(root, Map.get(entries, "provider", []), manifest["providers"])
+      # When the hub returns empty entries (all groups empty), preserve existing
+      # managed config instead of wiping it. This protects against transient DB
+      # issues where the hub temporarily returns empty while entries are actually
+      # enabled. If entries exist but are all disabled, the sync will still
+      # preserve existing config (conservative approach for availability).
+      entries_empty? = Enum.all?(Map.values(entries), & &1 == [])
+      preserve_existing? = entries_empty? and manifest_existed?
 
-      settings = sync_settings(root, Map.get(entries, "setting", []), manifest["settings"])
+      # If we would write empty but should preserve, use existing manifest data
+      {providers, models_changed?} =
+        if preserve_existing? do
+          {manifest["providers"], false}
+        else
+          sync_providers(root, Map.get(entries, "provider", []), manifest["providers"])
+        end
+
+      settings =
+        if preserve_existing? do
+          manifest["settings"]
+        else
+          sync_settings(root, Map.get(entries, "setting", []), manifest["settings"])
+        end
 
       dirs =
-        Map.new(@dir_surfaces, fn {kind, dirname} ->
-          section = sync_dir(root, dirname, kind, Map.get(entries, kind, []), manifest[dirname])
-          {dirname, section}
-        end)
+        if preserve_existing? do
+          Map.drop(manifest, ["providers", "settings"])
+        else
+          Map.new(@dir_surfaces, fn {kind, dirname} ->
+            section = sync_dir(root, dirname, kind, Map.get(entries, kind, []), manifest[dirname])
+            {dirname, section}
+          end)
+        end
 
       new_manifest =
         Map.merge(%{"providers" => providers, "settings" => settings}, dirs)
