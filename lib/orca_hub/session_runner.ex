@@ -932,6 +932,9 @@ defmodule OrcaHub.SessionRunner do
           MemoryGit.Server.snapshot_session_async(session)
         end
 
+        # ORCAHUB3-60: clear any pending pi dialogs before going cold.
+        data = clear_pi_dialogs_on_exit(data)
+
         next_state = if code == 0, do: :idle, else: :error
         {:next_state, next_state, %{data | port: nil}}
     end
@@ -1837,6 +1840,25 @@ defmodule OrcaHub.SessionRunner do
 
   # Graceful teardown (idle timeout) sets port: nil BEFORE any exit arrives, so an
   # exit_status we still hold the port for is always an unexpected crash.
+
+  # Clear any pending pi dialogs when the port exits (crash or idle timeout).
+  # Scans for unanswered pi_ui_request events and persists stale resolutions.
+  defp clear_pi_dialogs_on_exit(%{backend: backend, session_id: session_id} = data)
+       when backend.backend == "pi" do
+    all_messages = db_call(data, :list_messages, [session_id])
+    open_dialogs = scan_for_open_pi_dialogs(all_messages)
+    Enum.each(open_dialogs, fn %{"id" => id} ->
+      stale_resolution = %{
+        "type" => "pi_ui_response",
+        "id" => id,
+        "resolution" => "stale"
+      }
+      db_call(data, :create_message, [%{session_id: session_id, data: stale_resolution}])
+    end)
+  end
+
+  defp clear_pi_dialogs_on_exit(_data), do: :ok
+
   defp handle_streaming_exit(code, state, data) do
     Logger.warning(
       "[streaming] claude process exited unexpectedly (code #{code}) for session " <>
@@ -1845,6 +1867,10 @@ defmodule OrcaHub.SessionRunner do
 
     # The warm process is gone — free its slot (idempotent).
     Streaming.WarmPool.release(data.session_id)
+
+    # ORCAHUB3-60: clear any pending pi dialogs before going cold.
+    # Scan for unanswered pi_ui_request events and persist stale resolutions.
+    clear_pi_dialogs_on_exit(data)
 
     data = %{
       data
