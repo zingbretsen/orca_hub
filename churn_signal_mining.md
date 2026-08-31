@@ -189,13 +189,27 @@ Pooled = all 295 positive events / 92 controls. Stratified splits claude
 
 | Rank | Signal | Pooled P / R | claude P / R | pi/codex P / R | Confidence & caveats |
 |---|---|---|---|---|---|
-| 1 | **`question`/`AskUserQuestion` call in window** (30m) | 1.00 / 0.10 | 1.00 / 0.011 | 1.00 / 0.17 | **HIGH.** Zero false positives across all 92 controls — a pending dialog genuinely never occurs in a clean-completion session in this corpus. Tested against labels *excluding* pure-Rule-2 events to avoid tautology (a session is only counted positive here if it ALSO independently satisfies Rule 1/3/4). Low recall is inherent — it only catches sessions that stall specifically this way. See full ORCAHUB3-60 section below. |
+| 1 | **`question`/`AskUserQuestion` call in window** (30m) | 1.00 / 0.10 | 1.00 / 0.011 | 1.00 / 0.17 | **HIGH — and this P=1.00 is NOT circular.** Positives here are asked to satisfy Rule 1/3/4 *independently of* the question call itself: Rule 2 (the rule this signal would trivially reproduce) is explicitly excluded from the label set before scoring this row, so a session only counts as a true positive if it required intervention for some OTHER reason (an orchestrator message with real follow-on work, an unblocking dialog answer that Rule 2 itself doesn't count here, or supersession) AND happened to also call the blocking-question tool. Zero false positives across all 92 controls — a pending dialog genuinely never occurs in a clean-completion session in this corpus. Low recall is inherent — it only catches sessions that stall specifically this way. See full ORCAHUB3-60 section below. |
 | 2 | **Failed `Edit`/`Write`/`MultiEdit` → `Bash` cat/head/tail/sed/awk fragment-read-and-redirect on the same file within 5 calls** (30m) | 0.92 / 0.08 | 1.00 / 0.012 | 0.91 / 0.17 | **HIGH precision, LOW but non-circular recall.** This is the issue's headline pattern. Whole-session scan (not window-limited) found 20 genuine instances; **19/20 (95%) occurred while the real 30-minute volumetric flag was FALSE at that exact moment** — this is the strongest direct confirmation of the issue's core claim, measured at the actual instant of the dangerous action rather than at intervention time (see "instant-of-action" check below). Adds coverage the existing heuristic does not have: of the 23 window-level true positives, only 2 also had the volumetric flag on. Nearly exclusive to pi/qwen (2 TPs total in 170 claude events vs 21 in 125 pi/codex events) but recall stays meaningful (17%) *within* the pi/codex stratum alone — not just an artifact of pi having more raw positives. 2 false positives, both pi controls that exhibited the pattern once and then recovered and committed successfully — see caveat below about false positives with no bad outcome. **UPDATE: a live incident (`3cd4a43c`, see addendum below) confirmed this narrow signal is blind to `sed -i` and programmatic (`mix run -e` + `File.write!`) rewrites of a tracked file — no redirect operator, so it never matches. The addendum's widened A∨B∨C family should be treated as the recommended replacement for this row, not this narrow version alone.** |
 | 3 | **Repeated `Edit`/`Write`/`MultiEdit` failures on the same file, no successful edit on that file in between (≥2, 30m)** | 0.89 / 0.08 | 1.00 / 0.006 | 0.88 / 0.18 | **HIGH precision, overlapping-but-not-redundant with #2.** Session-level overlap with signal #2: 6/8 sig-2 sessions also fire this; 7 additional sessions fire this WITHOUT the fragment-read pattern (still worth alerting on — "the model can't land an edit" is dangerous on its own even absent a cat/head escape hatch). Essentially pi-only in this corpus (1 claude TP out of 170). |
 | 4 | **ANY Bash cat/head/tail/sed/awk-to-redirect on a tracked source path, without requiring a prior failed edit** (30m, the issue's "generalize beyond cat/head" ask) | 0.72 / 0.16 | 0.58 / 0.11 | 0.88 / 0.22 | **MEDIUM.** Higher recall than the strict failed-edit-gated version (#2) but noticeably lower precision, driven almost entirely by claude false positives (14 FP in claude vs 4 in pi/codex) — claude sessions legitimately `cat`/`head` tracked files into `/tmp` scratch outputs more often than pi does. Recommend keeping the failed-edit gate (#2) as the auto-alert trigger and this looser version as a lower-severity/log-only signal. |
 | 5 | **10+ (15m window) / 15+ (30m window) consecutive `Read`/`Bash`/`Grep`/`Glob` calls with zero `Edit`/`Write`/`MultiEdit` interleaved** ("investigation that stopped converging") | 0.79 / 0.48 | 0.73 / 0.40 | 0.86 / 0.59 | **MEDIUM-LOW confidence — substantially confounded with elapsed time (Caveat 3).** Of 139 30m-window true positives, 88 (63%) also satisfy the crude "elapsed > 10 minutes since session start" test, which by itself gets P=0.71/R=0.51 pooled — nearly the same operating point. 51 TPs (37%) fire this signal despite elapsed ≤ 10 min, so it is not PURELY a time proxy, but a meaningful share of its apparent power is "the session has been running a while," which is not itself evidence of distress. Recommend NOT shipping this alone; if used, report elapsed time alongside it so an orchestrator can discount the "just a long session" case. |
 | 6 | **Oversized commit** (`git commit --stat` lines-changed above the control-population's own p75 = 578) | 0.72 / 0.37 | — | — | **LOW-MEDIUM, exploratory, no stratification (only 235 sessions in this sample ever committed at all — see note).** Positive-population commit sizes ARE larger at every percentile than control commits (p50 281 vs 194, p90 2314 vs 1341), directionally confirming the app.js-reformat anecdote, but the distributions overlap heavily and a session must have already committed for this to apply at all — useless as an early-warning signal, only a post-hoc "was this commit suspicious" check. Not recommended as a live alert condition. |
 | — | **Existing volumetric heuristic** (`tool_calls_15m≥25 AND repetition_ratio_15m≥0.5`, both 15m and 30m) | 1.00 / 0.01 (30m) | 0 fires at all | 0.01 fires | Included for direct comparison, not a candidate. **Recall is essentially zero against this labelled set** — 1 fire out of 295 at 15m, 3 at 30m. This matches ground truth exactly: `churn_samples.churn_suspected` has fired **zero times ever** in 1480 real samples across 187 sessions since 2026-08-22 (see ORCAHUB3-44 section). The issue's premise — that the volumetric gate is structurally blind to distress that doesn't also look like "spinning fast in circles" — is not just true for the one observed anecdote, it is true almost everywhere in this corpus. |
+
+**On row 1's P=1.00 specifically**, since a perfect score is the number most
+likely to draw a "that's circular" reaction on first read: it is not
+measuring "did this session call the question tool" against a label of "did
+this session call the question tool" (which would be a tautology and would
+trivially hit P=R=1.00). It is measuring that same signal against a label
+that has had the question-tool-only positives *removed*, so what P=1.00
+actually says is: **every session in this sample that both (a) required
+intervention for a reason independent of the question tool, and (b) also
+called the question tool, had zero look-alikes among the 92 clean-completion
+controls.** That is a real, checkable claim, and the zero-false-positive part
+of it (a pending dialog never once appears in 92 controls) is doing the real
+work — see the full derivation in "Rule 2: `answer_session_question` was
+never actually called" above.
 
 ### The "instant of action" check (why signal #2's numbers differ from a naive window read)
 
@@ -472,14 +486,56 @@ this breakdown is pi-only).** 63 `pi_ui_request` events total:
 - **22 (35%) hit the ~10-minute self-timeout exactly** (gap to the next event
   measured at 10.00–10.02 minutes, next event type `user`) — confirms the
   orchestrator's stated ~10-minute self-timeout mechanism precisely.
-- **13 (21%) resolved via some other, faster path** (gaps 0.0–7.9 min, next
-  event `user`) not captured by a matching `pi_ui_response` row — most likely
-  an orchestrator replying with a plain `send_message_to_session` text answer
-  rather than going through the structured response channel.
-- **0 sessions were ever abandoned while blocked** (no case where a
-  `pi_ui_request` had no further events at all) — every stall eventually
-  resolved one way or another, so this specific failure mode ("stuck forever,
-  nobody ever comes back") did not occur in this corpus, though 22/63 (35%)
+- **13 (21%) resolved via some other, faster path not captured by a matching
+  `pi_ui_response` row — individually read, exhaustively, all 13 (not
+  sampled).** This was originally reported as an inference from timing alone;
+  it is now a determination, not a guess:
+  - **10/13 — a plain-text `send_message_to_session` from an orchestrator
+    that demonstrably unblocked the dialog.** This is a **genuine mechanism
+    finding, not a heuristic artifact**: in every one of these 10 cases, the
+    very next message is `"[Message from session <orchestrator>]"` plain text
+    (not a structured `pi_ui_response`), and the session's next assistant turn
+    visibly acts on that text — replying `ACK` to an orchestrator instruction
+    that said "reply with exactly the word ACK," proceeding to implement after
+    "never use `question`; make reasonable calls," halting after "STOP ALL git
+    operations immediately," proceeding after "PROCEED with the deploy... I
+    investigated the 2 failures myself," etc. **Plain text genuinely does
+    unblock a pi dialog in this codebase, even though no formal
+    `pi_ui_response` is ever recorded for it** — the dialog is left formally
+    "unanswered" in the structured sense while the session moves on anyway.
+    This matters beyond this document: it means a session's `"waiting"` status
+    can be cleared by ANY inbound message, not only one routed through the
+    intended answer channel, which the ORCAHUB3-60/44 designs should account
+    for rather than assuming the structured channel is the only way out.
+  - **2/13 — a structured response the join missed, and now explained**: both
+    are sub-events of session `32536398`, which received THREE `pi_ui_request`
+    events within 9 milliseconds of each other (a batch of simultaneous
+    dialogs), but only ONE `pi_ui_response` ever arrived (~2 minutes later,
+    content: "Merge (recommended)..."). The exact-`id` join correctly finds no
+    match for the other two request ids in the batch, yet the session resumed
+    normal productive work immediately after that single response with no
+    further stall — indicating the single answer resolved the whole batched
+    turn, not just the one id it structurally matched. The join isn't wrong
+    about what it measured (no per-id match exists), but "resolved via
+    pi_ui_response" undercounts by 2 because of this one-answer-clears-a-batch
+    behavior.
+  - **1/13 — something else, and also now determinate, not indeterminate**:
+    session `c69defcd`'s next event is a `[System]` message — *"This node
+    restarted while your turn was in progress (likely a deploy)"* — the
+    session resumed because of an infrastructure restart forcibly re-entering
+    it, not because anyone answered anything.
+  - **0/13 — the worker self-resolving/abandoning with no external input.**
+  - **A 14th, still-live `pi_ui_request` appeared while re-running this check**
+    (session `433664c5`, first observed ~5 minutes old at classification time,
+    no further events yet) — excluded from the 13 above since it postdates
+    the original count and its outcome isn't settled yet; noted here rather
+    than silently folded in or dropped.
+- **0 of the original 63 sessions were ever abandoned while blocked forever**
+  (no case where a `pi_ui_request` had no further events at all within the
+  corpus as it stood at analysis time) — every stall eventually resolved one
+  way or another (now precisely: `pi_ui_response`, a plain-text message, a
+  batched-dialog resolution, an infra restart, or the 10-minute timeout), so
+  "stuck forever, nobody ever comes back" did not occur, though 22/63 (35%)
   did burn the full 10 minutes before self-resolving.
 
 **4. Where in the session.** Measured as tool-call index ÷ total tool calls in
@@ -501,7 +557,12 @@ argument is now backed by data, not intuition. The "it's basically free
 because it clusters at low-stakes wrap-up moments" part is only half true:
 median position is mid-session, and 35% of pi's blocking questions eat the
 full ~10-minute timeout before self-resolving, which is real elapsed-time
-cost on a live session even though the code-correctness cost is zero.
+cost on a live session even though the code-correctness cost is zero. One
+more thing worth carrying into the design: 10 of the 13 individually-read
+"other" resolutions above show plain text unblocking a `waiting` pi session
+with no formal answer ever recorded — an orchestrator does not need to use
+whatever the "correct" answer channel is for this to work in practice, a
+simple nudge is already sufficient.
 
 ## What I could not determine, and why
 
@@ -525,11 +586,11 @@ cost on a live session even though the code-correctness cost is zero.
   this hub. Any future re-run of this analysis once more work routes through
   `Issue`/`issue_id` should revisit it — the current single data point is not
   enough to say anything about it as a signal source.
-- **The 13 "fast-but-not-via-`pi_ui_response`" question resolutions** (ORCAHUB3-60
-  section) are inferred from timing + next-event-type only; I did not
-  individually read all 13 messages to confirm they are genuinely answers
-  rather than some other coincidental event, though a handful of spot-checked
-  samples were consistent with plain text replies.
+- ~~The 13 "fast-but-not-via-`pi_ui_response`" question resolutions were
+  inferred from timing only~~ — **resolved.** All 13 were individually read
+  (not sampled); see the updated ORCAHUB3-60 section 3 above for the full
+  per-case classification (10 plain-text unblocks, 2 batched-dialog joins,
+  1 infra-restart resumption, 0 indeterminate).
 - **The "Agent→Read/Bash" bigram lead** is unverified beyond the frequency
   count — see "New signal candidates" above.
 - **Commit-but-later-reverted as a systematic label source** — only checked
