@@ -411,7 +411,8 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       subscription =
         subscribe(orchestrator_id, %{
           session_ids: [session.id],
-          conditions: %{"pending_question" => true}
+          conditions: %{"pending_question" => true},
+          cooldown_seconds: 600
         })
 
       {[_alert], edge_state} = AlertEvaluator.evaluate([subscription])
@@ -452,11 +453,12 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       assert edge_entry.state == false
     end
 
-    test "rising edge: A -> A -> B transition for pending_question" do
+    # Claude sessions use a constant discriminator (:claude_waiting) - same ID always
+    test "claude waiting session alerts once and respects cooldown" do
       orchestrator_id = Ecto.UUID.generate()
 
       session =
-        plain_session("question-transition-test", %{
+        plain_session("claude-pending-test", %{
           backend: "claude",
           status: "waiting"
         })
@@ -464,22 +466,116 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       subscription =
         subscribe(orchestrator_id, %{
           session_ids: [session.id],
-          conditions: %{"pending_question" => true}
+          conditions: %{"pending_question" => true},
+          cooldown_seconds: 600
         })
 
-      {[alert_a], edge_state_a} = AlertEvaluator.evaluate([subscription])
-      assert alert_a.condition == "pending_question"
+      now = DateTime.utc_now()
 
-      # Session still waiting - same discriminator (:claude_waiting) - no re-alert
-      {[], ^edge_state_a} = AlertEvaluator.evaluate([subscription], DateTime.add(DateTime.utc_now(), 300, :second), edge_state_a)
+      # First evaluation: rising edge fires
+      {[alert], edge_state} = AlertEvaluator.evaluate([subscription], now, %{})
+      assert alert.condition == "pending_question"
 
-      # Change status to running (simulating question answered) then back to waiting
-      {:ok, updated} = Sessions.update_session(session, %{status: "running"})
-      {:ok, _updated2} = Sessions.update_session(updated, %{status: "waiting"})
+      # Same discriminator (:claude_waiting), within cooldown (300s < 600s) - no re-alert
+      assert {[], edge_state} =
+               AlertEvaluator.evaluate(
+                 [subscription],
+                 DateTime.add(now, 300, :second),
+                 edge_state
+               )
 
-      # Should alert immediately because the pending_question? now detects status "waiting"
-      # but discriminator stays :claude_waiting so no re-alert unless cooldown elapsed
-      # This test is just to verify the A->A->B transition works for pi sessions
+      # Cooldown elapsed (660s > 600s) - re-alerts
+      assert {[alert], _edge_state} =
+               AlertEvaluator.evaluate(
+                 [subscription],
+                 DateTime.add(now, 660, :second),
+                 edge_state
+               )
+
+      assert alert.condition == "pending_question"
+    end
+
+    # Pi sessions use real question IDs as discriminators - changed ID fires immediately
+    test "pi session A->A->B transition: same question inside cooldown does not re-alert, changed question does" do
+      orchestrator_id = Ecto.UUID.generate()
+
+      session =
+        plain_session("pi-question-transition-test", %{
+          backend: "pi"
+        })
+
+      # Insert pending question "A"
+      Sessions.create_message(%{
+        session_id: session.id,
+        data: %{
+          "type" => "pi_ui_request",
+          "id" => "req-A",
+          "method" => "input",
+          "title" => "Question A",
+          "message" => "Please enter A",
+          "options" => []
+        }
+      })
+
+      subscription =
+        subscribe(orchestrator_id, %{
+          session_ids: [session.id],
+          conditions: %{"pending_question" => true},
+          cooldown_seconds: 600
+        })
+
+      # Step 1: First question "A" pending - rising edge fires, discriminator is "A"
+      now = DateTime.utc_now()
+      {[alert_a1], edge_state_a} = AlertEvaluator.evaluate([subscription], now, %{})
+      assert alert_a1.condition == "pending_question"
+
+      # Verify edge_state has the discriminator key with value "A"
+      # Key is {subscription.id, session.id, "pending_question"}
+      edge_key = {subscription.id, session.id, "pending_question"}
+      assert Map.has_key?(edge_state_a, edge_key)
+      edge_entry_a = Map.get(edge_state_a, edge_key)
+      assert edge_entry_a.discriminator == "req-A"
+
+      # Step 2: Same question "A" still pending, within cooldown - no re-alert
+      assert {[], edge_state_a} =
+               AlertEvaluator.evaluate(
+                 [subscription],
+                 DateTime.add(now, 300, :second),
+                 edge_state_a
+               )
+
+      # Step 3: Question changes to "B", still within cooldown - MUST fire (new rising edge)
+      # First, remove question A by adding a response, then add question B
+      Sessions.create_message(%{
+        session_id: session.id,
+        data: %{
+          "type" => "pi_ui_response",
+          "id" => "req-A",
+          "value" => "answered-A"
+        }
+      })
+
+      Sessions.create_message(%{
+        session_id: session.id,
+        data: %{
+          "type" => "pi_ui_request",
+          "id" => "req-B",
+          "method" => "select",
+          "title" => "Question B",
+          "message" => "Please select B",
+          "options" => ["option1", "option2"]
+        }
+      })
+
+      # New question "B" should fire immediately (different discriminator), ignoring cooldown
+      {[alert_b], edge_state_b} =
+        AlertEvaluator.evaluate([subscription], DateTime.add(now, 600, :second), edge_state_a)
+
+      assert alert_b.condition == "pending_question"
+      # Verify the discriminator changed to "B"
+      edge_key_b = {subscription.id, session.id, "pending_question"}
+      edge_entry_b = Map.get(edge_state_b, edge_key_b)
+      assert edge_entry_b.discriminator == "req-B"
     end
   end
 end
