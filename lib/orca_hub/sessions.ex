@@ -624,15 +624,16 @@ defmodule OrcaHub.Sessions do
     # For non-pi sessions, return nil immediately - they use AskUserQuestion tool
     case get_session(session_id) do
       nil -> nil
-      %Sessions{backend: "claude"} -> nil
-      %Sessions{backend: "codex"} -> nil
-      %Sessions{backend: "pi"} ->
+      %Session{backend: "claude"} -> nil
+      %Session{backend: "codex"} -> nil
+      %Session{backend: "pi"} ->
         # Extract the pi dialog fields from pending_pi_ui_request result
         case pending_pi_ui_request(session_id) do
           %{"id" => id, "method" => method, "title" => title, "message" => message, "options" => options} ->
             %{id: id, method: method, title: title, message: message, options: options}
           _ -> nil
         end
+      _ -> nil
     end
   end
 

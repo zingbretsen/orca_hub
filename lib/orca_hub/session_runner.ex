@@ -737,7 +737,16 @@ defmodule OrcaHub.SessionRunner do
         {:keep_state, new_data, [{:reply, from, :ok}]}
 
       :noop ->
-        {:keep_state_and_data, [{:reply, from, {:error, :not_pending}}]}
+        # ORCAHUB3-60: the requested dialog is no longer pending.
+        # Persist a resolution event so pending_pi_ui_request/1 correctly falls.
+        # Use resolution: "stale" since the dialog ID is no longer valid.
+        stale_resolution = %{
+          "type" => "pi_ui_response",
+          "id" => request_id,
+          "resolution" => "stale"
+        }
+        new_data = handle_stream_event(stale_resolution, data)
+        {:keep_state, new_data, [{:reply, from, {:error, :not_pending}}]}
     end
   end
 
