@@ -481,62 +481,73 @@ multiple times.
 mechanism that actually blocks a turn — Claude's `AskUserQuestion` tool_result
 is recorded synchronously and does not carry real wait-time information, so
 this breakdown is pi-only).** 63 `pi_ui_request` events total:
-- **28 (44%) resolved via a matching `pi_ui_response`** — median 0.8 minutes,
-  p90 6.6 minutes, max 7.85 minutes. These are real, timely answers.
+
+> **Correction, made after this row was double-checked against the ACTUAL
+> resolving event (see Addendum 3 below) rather than "next message of any
+> type."** An earlier pass through this document classified 10 of the 13
+> "other, faster path" cases below as plain text demonstrably unblocking a
+> pi dialog. That classification was wrong, and the corrected version
+> replaces it here directly rather than leaving the wrong claim standing
+> above a correction filed only at the bottom of the document. **Plain text
+> does NOT unblock a blocked pi dialog early. Every one of those 13 cases
+> resolves at the same fixed ~10-minute timeout as the "22 timed out" bucket
+> below — the plain text just happens to arrive earlier and sits queued,
+> unread, until the timeout independently clears the block.** Only a
+> STRUCTURED response (whatever produces a `pi_ui_response` record) clears
+> the block early — see the verified numbers below and Addendum 3 for the
+> full worked example and evidence.
+
+- **28 (44%) resolved via a matching `pi_ui_response`, and this part of the
+  original claim is verified, not just inferred**: re-ran the same join fresh
+  (which — since time has passed while writing this document — naturally
+  also picked up a few sessions that fired new `pi_ui_request`/`pi_ui_response`
+  pairs afterward, for 32 pairs total in the re-check) against the
+  tool_result actually paired to the underlying `question`/`AskUserQuestion`
+  tool_use (not just the `pi_ui_response` record's own timestamp). Of the 31
+  where that underlying tool_use could be located, **30/31 land within 0
+  seconds** of the `pi_ui_response`; the 1 exception is the same `32536398`
+  batch anomaly discussed below (its `pi_ui_response` answers a co-issued
+  sibling dialog, not the specific tool_use the join tracked, so that one
+  legitimately still waits out the full 10 minutes). Median 0.8 minutes, p90
+  6.6 minutes, max 7.85 minutes end-to-end (question asked → structured
+  answer) for the original 28. This is a real, fast, working
+  mechanism.
 - **22 (35%) hit the ~10-minute self-timeout exactly** (gap to the next event
-  measured at 10.00–10.02 minutes, next event type `user`) — confirms the
-  orchestrator's stated ~10-minute self-timeout mechanism precisely.
-- **13 (21%) resolved via some other, faster path not captured by a matching
-  `pi_ui_response` row — individually read, exhaustively, all 13 (not
-  sampled).** This was originally reported as an inference from timing alone;
-  it is now a determination, not a guess:
-  - **10/13 — a plain-text `send_message_to_session` from an orchestrator
-    that demonstrably unblocked the dialog.** This is a **genuine mechanism
-    finding, not a heuristic artifact**: in every one of these 10 cases, the
-    very next message is `"[Message from session <orchestrator>]"` plain text
-    (not a structured `pi_ui_response`), and the session's next assistant turn
-    visibly acts on that text — replying `ACK` to an orchestrator instruction
-    that said "reply with exactly the word ACK," proceeding to implement after
-    "never use `question`; make reasonable calls," halting after "STOP ALL git
-    operations immediately," proceeding after "PROCEED with the deploy... I
-    investigated the 2 failures myself," etc. **Plain text genuinely does
-    unblock a pi dialog in this codebase, even though no formal
-    `pi_ui_response` is ever recorded for it** — the dialog is left formally
-    "unanswered" in the structured sense while the session moves on anyway.
-    This matters beyond this document: it means a session's `"waiting"` status
-    can be cleared by ANY inbound message, not only one routed through the
-    intended answer channel, which the ORCAHUB3-60/44 designs should account
-    for rather than assuming the structured channel is the only way out.
-  - **2/13 — a structured response the join missed, and now explained**: both
-    are sub-events of session `32536398`, which received THREE `pi_ui_request`
-    events within 9 milliseconds of each other (a batch of simultaneous
-    dialogs), but only ONE `pi_ui_response` ever arrived (~2 minutes later,
-    content: "Merge (recommended)..."). The exact-`id` join correctly finds no
-    match for the other two request ids in the batch, yet the session resumed
-    normal productive work immediately after that single response with no
-    further stall — indicating the single answer resolved the whole batched
-    turn, not just the one id it structurally matched. The join isn't wrong
-    about what it measured (no per-id match exists), but "resolved via
-    pi_ui_response" undercounts by 2 because of this one-answer-clears-a-batch
-    behavior.
-  - **1/13 — something else, and also now determinate, not indeterminate**:
-    session `c69defcd`'s next event is a `[System]` message — *"This node
-    restarted while your turn was in progress (likely a deploy)"* — the
-    session resumed because of an infrastructure restart forcibly re-entering
-    it, not because anyone answered anything.
+  measured at 10.00–10.02 minutes) — confirms the orchestrator's stated
+  ~10-minute self-timeout mechanism precisely.
+- **13 (21%), individually read and now re-verified against the true
+  resolving event, all reduce to the same ~10-minute timeout — NONE are a
+  genuine early unblock via plain text:**
+  - **11/13 (the 1 checkable underlying `question`/`AskUserQuestion`
+    tool_use per session) resolve at exactly 10.00–10.02 minutes after the
+    question was raised** — identical to the "22 timed out" bucket. A
+    plain-text message arrived earlier in every one of these (gaps ranged
+    0.02–7.9 minutes), and the session's next assistant turn does visibly act
+    on that text once it resumes (e.g. replying exactly `ACK` to an
+    instruction that said "reply with exactly the word ACK") — but the
+    RESUMPTION itself happens at the fixed 10-minute mark regardless, not at
+    the moment the plain text arrived. See Addendum 3 for the full
+    event-by-event evidence on one case.
+  - **1/13 (`c69defcd`) never got a tool_result at all** — a `[System]` node
+    restart ("This node restarted while your turn was in progress, likely a
+    deploy") landed ~3 minutes in and the underlying tool_use was orphaned
+    before its own 10-minute timer could complete; not resolved by anything,
+    plain text included.
+  - **1/13 (both `32536398` sub-events collapse to this one case) has a
+    `pi_ui_response` for a co-issued dialog land ~2 minutes in, but the
+    underlying tool_use this document's join actually tracks still doesn't
+    get its own `tool_result` until the full 10.0-minute mark** — a batch of
+    3 near-simultaneous dialogs, answering one does not clear the others.
   - **0/13 — the worker self-resolving/abandoning with no external input.**
-  - **A 14th, still-live `pi_ui_request` appeared while re-running this check**
-    (session `433664c5`, first observed ~5 minutes old at classification time,
-    no further events yet) — excluded from the 13 above since it postdates
-    the original count and its outcome isn't settled yet; noted here rather
-    than silently folded in or dropped.
-- **0 of the original 63 sessions were ever abandoned while blocked forever**
-  (no case where a `pi_ui_request` had no further events at all within the
-  corpus as it stood at analysis time) — every stall eventually resolved one
-  way or another (now precisely: `pi_ui_response`, a plain-text message, a
-  batched-dialog resolution, an infra restart, or the 10-minute timeout), so
-  "stuck forever, nobody ever comes back" did not occur, though 22/63 (35%)
-  did burn the full 10 minutes before self-resolving.
+  - A 14th, still-live `pi_ui_request` appeared while re-running this check
+    (session `433664c5`) — its outcome was captured above once it resolved
+    (via a real `pi_ui_response`, folded into the 32-verified count).
+- **0 of the 63 sessions were ever abandoned while blocked forever with zero
+  further events** — every stall eventually got SOME kind of resolution
+  (a real answer, a batch-adjacent answer, an infra restart orphaning the
+  call, or the 10-minute timeout) — but **"resolved" and "resolved because of
+  something someone sent it" are not the same claim, and only the structured
+  channel is the latter.**
 
 **4. Where in the session.** Measured as tool-call index ÷ total tool calls in
 the session (0 = very start, 1 = very end) — chosen over
@@ -557,12 +568,17 @@ argument is now backed by data, not intuition. The "it's basically free
 because it clusters at low-stakes wrap-up moments" part is only half true:
 median position is mid-session, and 35% of pi's blocking questions eat the
 full ~10-minute timeout before self-resolving, which is real elapsed-time
-cost on a live session even though the code-correctness cost is zero. One
-more thing worth carrying into the design: 10 of the 13 individually-read
-"other" resolutions above show plain text unblocking a `waiting` pi session
-with no formal answer ever recorded — an orchestrator does not need to use
-whatever the "correct" answer channel is for this to work in practice, a
-simple nudge is already sufficient.
+cost on a live session even though the code-correctness cost is zero. **One
+correction worth carrying into the design more than anything else here: a
+plain-text nudge does NOT shorten that ~10-minute cost.** An earlier pass
+through this analysis claimed the opposite (10/13 cases "unblocked by plain
+text"); re-verified against the actual resolving tool_result rather than
+"next message of any type," none of those 13 are genuine early unblocks —
+see the correction in section 3 above and the full worked example in
+Addendum 3. If the goal is to shorten the stall, the orchestrator needs
+whatever mechanism actually produces a `pi_ui_response` record — which is
+NOT `Tools.answer_session_question` (zero calls to it exist anywhere in this
+corpus) — not a `send_message_to_session` nudge.
 
 ## What I could not determine, and why
 
@@ -587,10 +603,23 @@ simple nudge is already sufficient.
   `Issue`/`issue_id` should revisit it — the current single data point is not
   enough to say anything about it as a signal source.
 - ~~The 13 "fast-but-not-via-`pi_ui_response`" question resolutions were
-  inferred from timing only~~ — **resolved.** All 13 were individually read
-  (not sampled); see the updated ORCAHUB3-60 section 3 above for the full
-  per-case classification (10 plain-text unblocks, 2 batched-dialog joins,
-  1 infra-restart resumption, 0 indeterminate).
+  inferred from timing only~~ — **resolved, twice.** First pass individually
+  read all 13 next-messages and wrongly concluded 10 were plain-text
+  unblocks. Second pass checked the actual resolving tool_result (not the
+  next message of any type) and found the opposite: 11/13 resolve at the
+  same fixed ~10-minute timeout as every other timeout case, 1/13 never
+  resolves (orphaned by a node restart), 1/13 is a batch-adjacent answer that
+  doesn't cover the tracked tool_use. 0/13 are genuine plain-text unblocks.
+  See the corrected ORCAHUB3-60 section 3 and Addendum 3 for the full
+  evidence. Session `status` during the block window could NOT be
+  determined — the schema has no status-transition history, only a current
+  value, and the sessions involved are long archived.
+- **Session `status` during a `pi_ui_request` block, historically**: could
+  not be determined for the same reason (no status-history table) — flagged
+  explicitly per the request that raised it rather than inferred from the
+  `"waiting"` status description in `.context/session-lifecycle.md`, which
+  describes the mechanism but is not itself evidence of what any specific
+  archived session's `status` column held at a past instant.
 - **The "Agent→Read/Bash" bigram lead** is unverified beyond the frequency
   count — see "New signal candidates" above.
 - **Commit-but-later-reverted as a systematic label source** — only checked
@@ -669,3 +698,95 @@ where elem->>'type' = 'tool_use' and elem->>'name' = 'Bash'
   and (s.orchestrator = false or s.orchestrator is null)
   and (elem->'input'->>'command' like '%>%')
 ```
+
+## Addendum 3: verified — plain text does NOT unblock a pi dialog (correction, with worked example)
+
+Requested follow-up to Addendum 2 / the ORCAHUB3-60 section: pick the single
+clearest example from the 13 classified cases and pull it end-to-end. Pulling
+it is what surfaced the correction above — the "clearest" example turned out
+to demonstrate the opposite of what the earlier classification claimed, and
+that is reported here plainly rather than swapped for a different case that
+would have looked more confirming.
+
+**Session `218a3d60-cef8-423a-9134-393adecbf909`** (pi/qwen), event sequence,
+all timestamps UTC:
+
+1. **`pi_ui_request`** — id `3b72456e-218d-4544-a2ab-e372fe53c058`, at
+   `2026-08-14 13:37:26.386634`. Title: *"Have you reviewed my summary? What
+   would you like me to do next?"* (`method: "input"`). The underlying blocking
+   call is the `question` tool_use, id `n09ziySM4Ueaebcy2aa3kl9owQzWaxpp`,
+   fired 11ms earlier at `13:37:26.375710`, as the final block of an assistant
+   turn that had just summarized four documents.
+
+2. **Nothing structured ever arrives.** No `pi_ui_response` with id
+   `3b72456e-...` exists anywhere in this session's message history, checked
+   exhaustively (not sampled) — the dialog is never formally answered.
+
+3. **A plain-text `send_message_to_session` turn arrives 1.05 minutes later**,
+   at `13:38:29.154777`:
+   ```
+   [Message from session dd4a982c-088e-405f-b6c7-e1b9c8349974]
+
+   Yes, reviewed — the summary is fine. Reply with exactly the word ACK and
+   nothing else, then stop and wait. Do not ask any further questions.
+   ```
+
+4. **Nothing else happens for another ~9 minutes.** At `13:47:26.479722` —
+   **10.00 minutes after step 1, not ~1 minute after step 3** — the
+   `tool_result` for the ORIGINAL `question` tool_use (id
+   `n09ziySM4Ueaebcy2aa3kl9owQzWaxpp`) finally lands:
+   ```json
+   {
+     "type": "tool_result",
+     "tool_use_id": "n09ziySM4Ueaebcy2aa3kl9owQzWaxpp",
+     "is_error": false,
+     "content": [{"type": "text", "text": "The user did not answer in time."}]
+   }
+   ```
+
+5. **One second later**, at `13:47:27.036842`, the assistant's next turn
+   fires — and its entire content is exactly:
+   ```
+   ACK
+   ```
+   — visibly complying with the instruction from step 3.
+
+**The load-bearing detail, stated plainly: the gap that governs resumption is
+10.00 minutes (step 1 → step 4), not the 1.05-minute gap between the question
+and the plain-text reply (step 1 → step 3). The plain text was sitting queued
+and unread for roughly nine of those ten minutes.** The 1-second reaction
+between steps 4 and 5 is real and instant, which is what made this look like
+"plain text unblocked it in about a minute" on a next-message-only read — but
+the actual unblocking event, the `tool_result`, arrived at the fixed timeout
+mark regardless of when the plain text showed up. The plain text determined
+*what the model said* once it resumed (`ACK`, following the exact instruction
+given); it did not determine *when* it resumed.
+
+**Contrast, to show the structured channel behaves differently**: in the
+STRUCTURED-response cases checked for Addendum 2's correction (32 pairs
+re-verified), the underlying `tool_result` lands within **0 seconds** of the
+matching `pi_ui_response` in 30/31 checkable cases — e.g. session `f102d47a`,
+question asked `13:42:04.696727`, `pi_ui_response` AND `tool_result` both at
+`13:42:35.96...`, a 31-second real answer. That mechanism genuinely
+short-circuits the timeout; a plain conversational reply does not.
+
+**Session `status` during the ~10-minute gap**: could not be determined from
+available data. `sessions.status` is a single current-value column with no
+transition history in this schema, and `218a3d60` has been archived for
+weeks. `.context/session-lifecycle.md` documents that a `"waiting"` status is
+set while an interactive question is pending, which is consistent with the
+structural evidence here (a tool_use with no result for exactly the timeout
+duration), but that is the documented MECHANISM, not direct evidence of what
+this specific session's `status` column actually held at `13:40:00`, say.
+Answering that precisely would need a status-history table that does not
+exist, or observing a live session in real time — neither was available here,
+and the answer is left as undetermined rather than inferred from the
+mechanism description.
+
+**Reproduction**: the `tool_use`/`tool_result` pairing query is the same
+shape used throughout this document (`elem->>'tool_use_id' = <id>` against
+`jsonb_array_elements(message->content)`); the specific ids and timestamps
+above came from `pull_clearest_case.exs` (full message dump for this session
+in a `2026-08-14 13:36:00`–`13:49:00` window) and `recheck_true_resolution.exs`
+/ `verify_resolved_bucket.exs` (the tool_use-to-tool_result gap check across
+all 13 + all 32, respectively) in `/tmp/churn_scripts/`.
