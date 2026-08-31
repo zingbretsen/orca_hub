@@ -601,6 +601,88 @@ defmodule OrcaHub.Sessions do
   end
 
   @doc """
+  Returns a struct representing a pending dialog for a pi session, or `nil`.
+
+  For pi sessions, returns the pending dialog data (id, method, title, message,
+  options) if there is an unanswered `pi_ui_request` in the session's history.
+  For non-pi sessions (Claude, Codex), returns `nil` since they use the
+  `AskUserQuestion` tool instead.
+
+  This is the public API for the `pending_pi_ui_request` reconstruction logic.
+  It accepts either a session struct or a session ID.
+
+  ## Examples
+
+      iex> Sessions.pending_question(session_id)
+      %{"id" => "req1", "method" => "input", "title" => "Title", "message" => "Msg", "options" => []}
+
+      iex> Sessions.pending_question(claude_session_id)
+      nil
+  """
+  def pending_question(%{id: session_id}), do: pending_question(session_id)
+  def pending_question(session_id) do
+    # For non-pi sessions, return nil immediately - they use AskUserQuestion tool
+    case get_session(session_id) do
+      nil -> nil
+      %Sessions{backend: "claude"} -> nil
+      %Sessions{backend: "codex"} -> nil
+      %Sessions{backend: "pi"} ->
+        # Extract the pi dialog fields from pending_pi_ui_request result
+        case pending_pi_ui_request(session_id) do
+          %{"id" => id, "method" => method, "title" => title, "message" => message, "options" => options} ->
+            %{id: id, method: method, title: title, message: message, options: options}
+          _ -> nil
+        end
+    end
+  end
+
+  @doc """
+  Batched version of `pending_question/1` for efficiency.
+
+  Takes a list of session IDs and returns a map of `%{session_id => pending_question_map}`
+  for sessions that have a pending dialog. Only pi sessions are checked.
+
+  This uses a single SQL query to fetch all pending dialogs instead of N queries.
+  """
+  def pending_questions_for(session_ids) when is_list(session_ids) and length(session_ids) > 0 do
+    # Fetch all pi_ui_request events for these sessions in one query
+    requests =
+      from(m in Message,
+        where: m.session_id in ^session_ids,
+        where: fragment("? ->> 'type' = ?", m.data, "pi_ui_request"),
+        order_by: [desc: m.inserted_at],
+        select: %{session_id: m.session_id, data: m.data}
+      )
+      |> Repo.all()
+      |> Enum.group_by(& &1.session_id)
+
+    # For each session, check if there's a matching pi_ui_response
+    Enum.reduce(session_ids, %{}, fn session_id, acc ->
+      case requests[session_id] do
+        [%{data: %{"id" => request_id} = data_map}] ->
+          # Check if a matching response exists
+          if event_id_exists?(session_id, "pi_ui_response", request_id) do
+            acc
+          else
+            # Return the pending dialog data
+            data = %{
+              id: request_id,
+              method: data_map["method"],
+              title: data_map["title"],
+              message: data_map["message"],
+              options: data_map["options"]
+            }
+            Map.put(acc, session_id, data)
+          end
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  def pending_questions_for(_), do: %{}
+
+  @doc """
   Whether the most recent `pi_plan_mode` broadcast in a session's history
   left plan mode enabled — mirrors `SessionLive.Show`'s
   `pi_plan_mode_from_messages/1` reconstruction.

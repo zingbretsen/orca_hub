@@ -69,6 +69,12 @@ defmodule OrcaHub.HubRPC do
   def pending_pi_ui_request(session_id),
     do: call(OrcaHub.Sessions, :pending_pi_ui_request, [session_id])
 
+  def pending_question(session_id),
+    do: call(OrcaHub.Sessions, :pending_question, [session_id])
+
+  def pending_questions_for(session_ids),
+    do: call(OrcaHub.Sessions, :pending_questions_for, [session_ids])
+
   def latest_pi_plan_mode_enabled?(session_id),
     do: call(OrcaHub.Sessions, :latest_pi_plan_mode_enabled?, [session_id])
 
@@ -85,6 +91,8 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.Sessions, :annotate_fork_marker, [session_id, annotations])
 
   def create_message(attrs), do: call(OrcaHub.Sessions, :create_message, [attrs])
+  def delete_event_by_type_and_id(session_id, type, id),
+    do: call(OrcaHub.Sessions, :delete_event_by_type_and_id, [session_id, type, id])
   def count_idle_sessions, do: call(OrcaHub.Sessions, :count_idle_sessions, [])
 
   def list_idle_sessions_with_last_assistant_message,
