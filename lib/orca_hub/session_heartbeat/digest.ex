@@ -9,7 +9,7 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
   watched sessions drop out silently rather than erroring.
   """
 
-  alias OrcaHub.{Cluster, HubRPC}
+  alias OrcaHub.{Cluster, HubRPC, Sessions}
 
   @error_detail_limit 160
 
@@ -102,6 +102,7 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
     name = session.title || "session #{String.slice(session.id, 0, 8)}"
 
     churn = OrcaHub.Sessions.Churn.assess(activity, session, commit)
+    pending_q = pending_question_marker(session)
 
     [
       "- #{name} [#{session.status}]",
@@ -109,6 +110,7 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
       format_activity(activity),
       format_commit(commit),
       format_churn(churn),
+      pending_q,
       format_error(session)
     ]
     |> Enum.reject(&(&1 == ""))
@@ -150,6 +152,19 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
     if extra != "", do: base <> " " <> extra, else: base
   end
 
+  defp pending_question_marker(%{backend: "pi", id: session_id}) do
+    case Sessions.pending_question(session_id) do
+      nil -> ""
+      %{id: id} -> "[Pending PI dialog: #{id}]"
+    end
+  end
+
+  defp pending_question_marker(%{backend: "claude", status: "waiting"}) do
+    "[Claude waiting for answer]"
+  end
+
+  defp pending_question_marker(_session), do: ""
+
   defp format_error(%{status: "error", error_detail: detail})
        when is_binary(detail) and detail != "",
        do: String.slice(detail, 0, @error_detail_limit)
@@ -160,8 +175,9 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
     activity = Map.get(activity_by_id, session.id, %{})
     commit = Map.get(commit_by_id, session.id)
     churn = OrcaHub.Sessions.Churn.assess(activity, session, commit)
+    pending_q = pending_question_marker(session)
 
     {session.status, session.progress_phase, session.progress_note,
-     Map.get(activity, :last_activity_at), Map.get(churn, :churn_suspected)}
+     Map.get(activity, :last_activity_at), Map.get(churn, :churn_suspected), pending_q != ""}
   end
 end

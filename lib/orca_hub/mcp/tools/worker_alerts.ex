@@ -12,7 +12,12 @@ defmodule OrcaHub.MCP.Tools.WorkerAlerts do
 
   alias OrcaHub.HubRPC
 
-  @default_conditions %{"churn" => true, "stall" => true}
+  @default_conditions %{"churn" => true, "stall" => true, "pending_question" => true}
+
+  @doc """
+  Returns the default conditions map.
+  """
+  def default_conditions, do: @default_conditions
   @default_cooldown_seconds 900
 
   def list do
@@ -50,14 +55,16 @@ defmodule OrcaHub.MCP.Tools.WorkerAlerts do
               "description" =>
                 "Which conditions to alert on. Boolean keys \"churn\" and \"stall\" opt in/out; " <>
                   "integer-minutes keys \"progress_stale\" and \"no_commit_for\" are opt-in (only " <>
-                  "evaluated when present). \"churn\" = the server-side rumination heuristic " <>
+                  "evaluated when present). \"pending_question\": true enables detection of a " <>
+                  "worker blocked on a dialog (pi: pending pi question/confirm/input dialog; claude: " <>
+                  "status=\"waiting\"). \"churn\" = the server-side rumination heuristic " <>
                   "(high tool-call rate + high repetition + no fresh commit/progress). \"stall\" = " <>
                   "status running with zero messages AND zero tool calls in the last 15 minutes " <>
                   "(a hung turn — lifecycle notifications can't catch this since they only fire on " <>
                   "idle/error). \"progress_stale\": N = report_progress hasn't updated in N minutes " <>
                   "(only once the session has reported progress at least once). \"no_commit_for\": " <>
                   "N = running, still calling tools, but no commit in N minutes. Default when " <>
-                  "omitted: {\"churn\": true, \"stall\": true}.",
+                  "omitted: {\"churn\": true, \"stall\": true, \"pending_question\": true}.",
               "properties" => %{
                 "churn" => %{"type" => "boolean"},
                 "stall" => %{"type" => "boolean"},

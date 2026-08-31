@@ -1,0 +1,15 @@
+#!/bin/sh
+# Canonical test invocation for OrcaHub.
+# The .env's ORCA_MODE/PORT break tests; CLUSTER_* leaks into distributed state.
+# This script scrubs them and passes DB_* from .env, so callers don't have to
+# remember the full env scrub invocation.
+
+set -eu
+
+cd -P -- "$(dirname -- "$0")/.."
+
+if [ -f .env ]; then
+    export $(grep -E "^DB_" .env | xargs) || true
+fi
+
+exec env -u PHX_SERVER -u ORCA_MODE -u PORT -u CLUSTER_NODES -u CLUSTER_DNS_QUERY mix test "$@"

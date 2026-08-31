@@ -394,7 +394,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       assert map_size(edge_state) == 1
 
       # Get the edge entry and verify it has no discriminator key
-      {{_, _, _} = key, edge_entry} = Enum.at(Map.to_list(edge_state), 0)
+      {{_, _, _}, edge_entry} = Enum.at(Map.to_list(edge_state), 0)
       refute Map.has_key?(edge_entry, :discriminator)
       assert edge_entry == %{state: true, last_alerted_at: edge_entry.last_alerted_at}
     end
@@ -420,7 +420,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       assert map_size(edge_state) == 1
 
       # Get the edge entry and verify it has the discriminator key
-      {{_, _, _} = key, edge_entry} = Enum.at(Map.to_list(edge_state), 0)
+      {{_, _, _}, edge_entry} = Enum.at(Map.to_list(edge_state), 0)
       assert Map.has_key?(edge_entry, :discriminator)
       assert edge_entry.discriminator == :claude_waiting
     end

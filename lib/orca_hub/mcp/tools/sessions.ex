@@ -658,7 +658,10 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           # Fetch last_commit once for both activity metadata and last_commit field
           last_commit_info = fetch_last_commit(node, session.directory)
 
-          churn = OrcaHub.Sessions.Churn.assess(activity, session, last_commit_info)
+          # Also fetch FileSurgery evidence for churn block
+          file_surgery = OrcaHub.Sessions.FileSurgery.fetch(target_id, window_minutes: 10)
+
+          churn = OrcaHub.Sessions.Churn.assess(activity, session, last_commit_info, nil, file_surgery)
 
           # Include pending pi UI request if present
           pending_request = HubRPC.pending_pi_ui_request(target_id)

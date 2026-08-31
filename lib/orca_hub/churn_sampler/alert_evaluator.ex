@@ -46,7 +46,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   """
 
   alias OrcaHub.{AlertSubscriptions, Cluster, Sessions}
-  alias OrcaHub.Sessions.{Churn, ChurnDetail}
+  alias OrcaHub.Sessions.{Churn, ChurnDetail, FileSurgery}
 
   @doc """
   Evaluates every enabled alert subscription and returns `{alerts,
@@ -81,15 +81,17 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
       activity_map = Sessions.activity_metadata(session_ids)
       commit_map = fetch_commit_info_for(sessions)
       pending_questions = fetch_pending_questions_for(session_ids)
+      file_surgery_evidence = fetch_file_surgery_evidence_for(session_ids)
 
       Enum.reduce(sessions, {[], edge_state}, fn session, {alerts_acc, edge_acc} ->
         activity = Map.get(activity_map, session.id, %{})
         commit_info = Map.get(commit_map, session.id)
         pending_question_evidence = Map.get(pending_questions, session.id, nil)
+        file_surgery = Map.get(file_surgery_evidence, session.id, nil)
 
-        churn = Churn.assess(activity, session, commit_info, now, pending_question_evidence)
+        churn = Churn.assess(activity, session, commit_info, now, file_surgery)
 
-        conditions = evaluate_conditions(subscription.conditions || %{}, session, activity, churn, pending_question_evidence)
+        conditions = evaluate_conditions(subscription.conditions || %{}, session, activity, churn, %{pending_question: pending_question_evidence, file_surgery: file_surgery})
 
         {new_alerts, edge_acc} =
           Enum.reduce(conditions, {[], edge_acc}, fn {condition, value}, {alerts2, edge2} ->
@@ -160,6 +162,12 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     end
   end
 
+  defp fetch_file_surgery_evidence_for(session_ids) do
+    # Batch-fetch FileSurgery evidence for all watched sessions in ONE query
+    # Returns %{session_id => evidence_or_nil}, every id is guaranteed a key
+    FileSurgery.fetch_many(session_ids, window_minutes: 10)
+  end
+
   defp valid_uuid?(id) when is_binary(id) do
     case Ecto.UUID.cast(id) do
       {:ok, _} -> true
@@ -184,10 +192,13 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   # all — "progress_stale"/"no_commit_for"/"pending_question" are opt-in
   # (need an integer threshold for progress_stale/no_commit_for, boolean for
   # pending_question), "churn"/"stall" are boolean opt-in/opt-out.
-  # The `pending_question_evidence` argument is the pre-fetched evidence map
-  # for this session (pi: %{id:, method:, title:, message:, options:} or nil;
-  # claude: checked via status == "waiting" in process).
-  defp evaluate_conditions(conditions, session, activity, churn, pending_question_evidence) do
+  # The `evidence` argument is a map with:
+  #   - :pending_question -> pi: %{id:, method:, title:, message:, options:} or nil;
+  #     claude: checked via status == "waiting" in process
+  #   - :file_surgery -> FileSurgery.detect/1 evidence or nil
+  defp evaluate_conditions(conditions, session, activity, churn, evidence) do
+    pending_question_evidence = Map.get(evidence, :pending_question, nil)
+
     conditions
     |> Enum.flat_map(fn
       {"churn", true} ->
@@ -232,10 +243,9 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   end
 
   # For pi sessions: evidence is %{id:, method:, title:, message:, options:} or nil
-  # For claude sessions: evidence is nil or %{waiting: true}; checked via status in process
-  # We check claude status in the session map directly, pi status from evidence
+  # For claude sessions: checked via status == "waiting" in process
+  # We check claude status in the session map directly, pi evidence from Sessions.pending_question/1
   defp pending_question?(%{backend: "pi"}, evidence) do
-    # Evidence is pre-fetched from Sessions.pending_questions_for/1
     not is_nil(evidence)
   end
 
@@ -326,6 +336,17 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     calls = churn.tool_calls_15m || 0
     ratio = churn.repetition_ratio_15m || 0.0
 
+    # Lead with file_surgery evidence when present
+    file_surgery_part =
+      case churn.file_surgery do
+        nil ->
+          nil
+
+        %{path: path, command: cmd, kind: kind, paired_with_failed_edit: paired?} ->
+          confidence = if paired?, do: "paired with failed edit (high confidence)", else: "unpaired (lower confidence)"
+          "worker rebuilding #{path} from shell fragments: #{cmd} (#{kind}, #{confidence})"
+      end
+
     extra =
       [
         churn.minutes_since_last_commit && "no commit #{churn.minutes_since_last_commit}m",
@@ -336,7 +357,9 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
       |> Enum.join(", ")
 
     base = "#{calls} calls/15m, #{round(ratio * 100)}% repeats"
-    if extra != "", do: base <> ", " <> extra, else: base
+    base_with_extra = if extra != "", do: base <> ", " <> extra, else: base
+
+    if file_surgery_part, do: file_surgery_part <> " | " <> base_with_extra, else: base_with_extra
   end
 
   defp metric_line("stall", _session, _activity, _churn) do
