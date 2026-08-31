@@ -190,7 +190,7 @@ Pooled = all 295 positive events / 92 controls. Stratified splits claude
 | Rank | Signal | Pooled P / R | claude P / R | pi/codex P / R | Confidence & caveats |
 |---|---|---|---|---|---|
 | 1 | **`question`/`AskUserQuestion` call in window** (30m) | 1.00 / 0.10 | 1.00 / 0.011 | 1.00 / 0.17 | **HIGH.** Zero false positives across all 92 controls — a pending dialog genuinely never occurs in a clean-completion session in this corpus. Tested against labels *excluding* pure-Rule-2 events to avoid tautology (a session is only counted positive here if it ALSO independently satisfies Rule 1/3/4). Low recall is inherent — it only catches sessions that stall specifically this way. See full ORCAHUB3-60 section below. |
-| 2 | **Failed `Edit`/`Write`/`MultiEdit` → `Bash` cat/head/tail/sed/awk fragment-read-and-redirect on the same file within 5 calls** (30m) | 0.92 / 0.08 | 1.00 / 0.012 | 0.91 / 0.17 | **HIGH precision, LOW but non-circular recall.** This is the issue's headline pattern. Whole-session scan (not window-limited) found 20 genuine instances; **19/20 (95%) occurred while the real 30-minute volumetric flag was FALSE at that exact moment** — this is the strongest direct confirmation of the issue's core claim, measured at the actual instant of the dangerous action rather than at intervention time (see "instant-of-action" check below). Adds coverage the existing heuristic does not have: of the 23 window-level true positives, only 2 also had the volumetric flag on. Nearly exclusive to pi/qwen (2 TPs total in 170 claude events vs 21 in 125 pi/codex events) but recall stays meaningful (17%) *within* the pi/codex stratum alone — not just an artifact of pi having more raw positives. 2 false positives, both pi controls that exhibited the pattern once and then recovered and committed successfully — see caveat below about false positives with no bad outcome. |
+| 2 | **Failed `Edit`/`Write`/`MultiEdit` → `Bash` cat/head/tail/sed/awk fragment-read-and-redirect on the same file within 5 calls** (30m) | 0.92 / 0.08 | 1.00 / 0.012 | 0.91 / 0.17 | **HIGH precision, LOW but non-circular recall.** This is the issue's headline pattern. Whole-session scan (not window-limited) found 20 genuine instances; **19/20 (95%) occurred while the real 30-minute volumetric flag was FALSE at that exact moment** — this is the strongest direct confirmation of the issue's core claim, measured at the actual instant of the dangerous action rather than at intervention time (see "instant-of-action" check below). Adds coverage the existing heuristic does not have: of the 23 window-level true positives, only 2 also had the volumetric flag on. Nearly exclusive to pi/qwen (2 TPs total in 170 claude events vs 21 in 125 pi/codex events) but recall stays meaningful (17%) *within* the pi/codex stratum alone — not just an artifact of pi having more raw positives. 2 false positives, both pi controls that exhibited the pattern once and then recovered and committed successfully — see caveat below about false positives with no bad outcome. **UPDATE: a live incident (`3cd4a43c`, see addendum below) confirmed this narrow signal is blind to `sed -i` and programmatic (`mix run -e` + `File.write!`) rewrites of a tracked file — no redirect operator, so it never matches. The addendum's widened A∨B∨C family should be treated as the recommended replacement for this row, not this narrow version alone.** |
 | 3 | **Repeated `Edit`/`Write`/`MultiEdit` failures on the same file, no successful edit on that file in between (≥2, 30m)** | 0.89 / 0.08 | 1.00 / 0.006 | 0.88 / 0.18 | **HIGH precision, overlapping-but-not-redundant with #2.** Session-level overlap with signal #2: 6/8 sig-2 sessions also fire this; 7 additional sessions fire this WITHOUT the fragment-read pattern (still worth alerting on — "the model can't land an edit" is dangerous on its own even absent a cat/head escape hatch). Essentially pi-only in this corpus (1 claude TP out of 170). |
 | 4 | **ANY Bash cat/head/tail/sed/awk-to-redirect on a tracked source path, without requiring a prior failed edit** (30m, the issue's "generalize beyond cat/head" ask) | 0.72 / 0.16 | 0.58 / 0.11 | 0.88 / 0.22 | **MEDIUM.** Higher recall than the strict failed-edit-gated version (#2) but noticeably lower precision, driven almost entirely by claude false positives (14 FP in claude vs 4 in pi/codex) — claude sessions legitimately `cat`/`head` tracked files into `/tmp` scratch outputs more often than pi does. Recommend keeping the failed-edit gate (#2) as the auto-alert trigger and this looser version as a lower-severity/log-only signal. |
 | 5 | **10+ (15m window) / 15+ (30m window) consecutive `Read`/`Bash`/`Grep`/`Glob` calls with zero `Edit`/`Write`/`MultiEdit` interleaved** ("investigation that stopped converging") | 0.79 / 0.48 | 0.73 / 0.40 | 0.86 / 0.59 | **MEDIUM-LOW confidence — substantially confounded with elapsed time (Caveat 3).** Of 139 30m-window true positives, 88 (63%) also satisfy the crude "elapsed > 10 minutes since session start" test, which by itself gets P=0.71/R=0.51 pooled — nearly the same operating point. 51 TPs (37%) fire this signal despite elapsed ≤ 10 min, so it is not PURELY a time proxy, but a meaningful share of its apparent power is "the session has been running a while," which is not itself evidence of distress. Recommend NOT shipping this alone; if used, report elapsed time alongside it so an orchestrator can discount the "just a long session" case. |
@@ -225,6 +225,10 @@ logic).
 
 ### Killed / demoted
 
+- **The literal "`git restore`/`git checkout --`/`git stash`/`git reset` by a
+  worker" candidate, as specified** — killed in the form it was proposed; see
+  the addendum below for the full result and what a narrower, unmeasured
+  replacement would need to check.
 - **"10-minutes-elapsed" as a standalone timing heuristic** — not explicitly
   in the candidate list, but tested directly as the sharpest form of Caveat 3
   ("beware learning the orchestrator's habits"). At `elapsed > 10 min`, pooled
@@ -265,6 +269,119 @@ logic).
   and specific FAILURE outcomes, not in generic sequencing, which is
   consistent with why the volumetric/repetition-only heuristic (which is
   sequence-blind) misses it.
+
+## Addendum: widened file-mutation matcher family, confirmed by a live ground-truth incident
+
+Added after the original analysis, prompted by a fresh incident the
+orchestrator watching ORCAHUB3-61(a) personally observed and reported:
+session `3cd4a43c` (pi/qwen, spawned to implement ORCAHUB3-61(a) itself) hit
+Rules 1, 2, AND 4 (three mid-task messages, one answered blocking dialog, and
+supersession by `08e4a630` on the same `issue_id` — it never committed) and
+its distress sequence on the TRACKED file `lib/orca_hub/sessions/churn.ex`
+used `cat`, `cp ... .bak`, **two `sed -i` in-place edits**, a `cat | grep`
+recon, `sed -n` line inspection, a `cat > /tmp/...` scratch dump (legitimately
+excluded — new file, not a tracked-source target), a **`mix run -e` body that
+called `File.read!`/`File.write!` directly on the tracked path**, and finally
+a restore from its own `.bak`. **This session was already independently
+present in this document's corpus** (added automatically via Rule 1 + Rule 2
+before this addendum; `3cd4a43c` was one of the "kept ALL pi/codex" sampled
+sessions) — the orchestrator's report is corroborating ground truth for a
+label my pipeline already assigned, not a new discovery of the session
+itself. What's new here: a third event was added at its `archived_at`
+(supersession point, previously excluded because that issue chain was still
+in-progress at analysis time) and, more importantly, the ORIGINAL narrow
+signal (#2 in the ranked table, "signal D" below) was checked against its
+full history and **correctly predicted to fire on nothing** — confirming by
+direct test what the orchestrator argued from reading the transcript: `sed
+-i` has no `>`/`>>` redirect, and the `mix run -e` rewrite has no redirect
+either, so the issue's literal proposed matcher is structurally blind to
+both.
+
+**Four matcher families were implemented and measured against the full 30-minute-window sample (296 positive events / 92 controls, i.e. the same corpus as the main table above plus this one added event), with the necessary exclusions (`mix format`, `prettier --write`, `eslint --fix`, `git show`/`cat-file`/`diff`/`archive`, and `cp`/`mv` INTO a `.bak`/`.orig`/`.old` target) applied to all of them:**
+
+- **A** — write TO a tracked path from the shell: `>`/`>>` redirect, `tee
+  <path>`, or `cp`/`mv` whose *destination* is a tracked path.
+- **B** — in-place mutation of a tracked path: `sed -i` / `perl -i`/`perl -pi`.
+- **C** — programmatic rewrite: a `mix run`/`elixir`/`ruby`/`python`/`node`
+  runner invocation whose body contains both a write call
+  (`File.write!`/`open(...,"w")`/`fs.writeFileSync`/etc.) and a tracked path.
+- **D** — the original narrow signal (failed Edit/Write/MultiEdit → a
+  `cat`/`head`/`tail`/`sed -n`/`awk` slice piped/redirected to the same path,
+  the exact pattern ranked #2 in the table above).
+
+| Signal | Pooled P / R | claude P / R | pi/codex P / R |
+|---|---|---|---|
+| A (shell write-to-tracked) | 0.83 / 0.10 | 0.72 / 0.08 | 0.94 / 0.14 |
+| B (in-place mutation) | 0.73 / 0.06 | 0.50 / 0.02 | 0.80 / 0.13 |
+| C (programmatic rewrite) | 1.00 / 0.02 | 0 fires | 1.00 / 0.06 |
+| D (narrow, original) | 0.92 / 0.08 | 1.00 / 0.01 | 0.91 / 0.17 |
+| **A∨B∨C (widened, no D)** | **0.78 / 0.14** | 0.70 / 0.09 | 0.86 / 0.19 |
+| **A∨B∨C∨D (widened + narrow)** | **0.81 / 0.16** | 0.70 / 0.09 | **0.89 / 0.25** |
+
+**The hypothesis is confirmed: the widened family (A∨B∨C) nearly doubles
+pooled recall over D alone (0.135 vs 0.068 → using the un-rounded values) at
+a real but modest precision cost (0.78 vs 0.92 — an 11-point drop, not a
+collapse), and adding D on top of A∨B∨C costs nothing (D's true positives are
+almost entirely a subset already caught by A) while still adding a little
+recall in the pi/codex stratum specifically (0.19 → 0.25).** Within claude,
+D alone is nearly inert (2 true positives total) while A∨B∨C finds real
+signal (16 true positives) — **claude sessions exhibit the "write to tracked
+path from the shell" pattern more than the narrow cat/head-fragment
+sub-pattern specifically**, so a claude-only implementation of D alone would
+be close to useless; A is the load-bearing family there.
+
+Individually: **C has the highest standalone precision of any signal in this
+whole document (1.00, zero false positives across 92 controls) but the
+lowest recall (0.02–0.06)** — rare but, when it happens, essentially never a
+false alarm; worth keeping as its own severity tier ("the model is
+programmatically rewriting a tracked file, this is unambiguous") rather than
+folding into the same bucket as A/B. **B is the weakest of the three in
+claude specifically** (P=0.50, 3 TP/3 FP) — `sed -i`/`perl -i` appear in
+claude sessions for reasons other than distress often enough that it should
+probably not fire alone there without corroboration from A or D.
+
+### Candidate: destructive git commands run by a worker (`git restore` / `git checkout --` / `git stash` / `git reset`)
+
+Measured as requested, but **the result does not confirm the "near-zero
+false-positive, alert-worthy regardless" framing as specified** — a literal
+match on those four command families found the pattern **more often in
+controls (7/92 = 7.6% of sampled control sessions) than in positives (7/176 =
+4.0% of sampled positive sessions)**, essentially the opposite of a
+distress-correlated signal.
+
+Reading the actual matched commands explains why: the literal spec is too
+coarse to distinguish genuinely destructive usage from completely idiomatic,
+safe git hygiene. Sampled hits include `git stash && ... && git stash pop`
+(shelve-then-restore round trips — safe by construction), `git reset --soft
+HEAD~1 && git commit --amend` (a normal amend workflow), and `git checkout
+--ours <paths>` (legitimate merge-conflict resolution) sitting alongside the
+genuinely concerning cases: a bare `git reset --hard HEAD` with no
+corresponding stash, and — the strongest single piece of evidence in this
+whole check — session `cf49e6b3` (a Rule-1 positive) ran **seven separate
+`git restore` invocations in one session**, discarding and re-discarding its
+own working-tree changes repeatedly, which reads as genuine thrashing
+regardless of any correlation number.
+
+**Recommendation: do not implement the literal four-command match as
+specified — it will alert on ordinary git hygiene as often as it alerts on
+real danger.** If this is worth pursuing, the shape that survived scrutiny
+here is narrower: (a) `git reset --hard` specifically (not `--soft`/`--mixed`,
+not bare `reset <path>` to unstage), (b) a bare `git restore`/`git checkout
+--` NOT immediately preceded by a `git stash` in the same session (i.e. an
+unprotected discard, not a shelve-and-recover), and (c) **repetition** —
+multiple destructive-git calls in one session's window, which is what made
+`cf49e6b3` stand out and what a single-occurrence boolean match completely
+misses. None of these three refinements were implemented or measured here —
+this is a "kill the naive version, here is what a better version would need
+to check" result, not a validated replacement signal, and it is reported that
+way deliberately rather than quietly shipping the refined version without
+having measured it. Separately, and independent of any churn correlation:
+the shared-checkout risk this candidate was originally motivated by (a worker
+running a destructive git command that can also blow away a SIBLING session's
+uncommitted work in the same working tree) is a structural hazard that exists
+regardless of whether it predicts THIS session's own outcome — that argument
+for alerting on it does not depend on the correlation numbers above one way
+or the other.
 
 ## The three required caveats, addressed directly
 
@@ -472,6 +589,10 @@ the queries below if that directory is gone):
   `resp.inserted_at >= req.inserted_at`) for the ORCAHUB3-60 timing
   breakdown.
 - **`bigrams.exs`** — tool-name bigram frequency/lift over 30-minute windows.
+- **`widen_and_reanalyze.exs`** (addendum) — adds `3cd4a43c`'s `archived_at`
+  supersession event, implements matcher families A/B/C (regexes given
+  verbatim in the addendum text above) alongside the original D, and the
+  destructive-git-command check.
 
 The Bash-command dump (`tmp_bash_corpus.txt`, see final report):
 
