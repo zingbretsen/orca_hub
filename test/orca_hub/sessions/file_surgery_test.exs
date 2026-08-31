@@ -27,7 +27,7 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
 
   defp bash(cmd), do: tool_use("t-bash", "Bash", %{"command" => cmd})
 
-  describe "detect/1 — positives" do
+  describe "detect/1 — positives (family :slice_and_redirect)" do
     test "the real ORCAHUB3-61 incident command" do
       messages = [
         assistant_message([
@@ -44,7 +44,8 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
       assert evidence.command ==
                "cat /home/zach/orca_hub/lib/orca_hub/pi_config_sync.ex | head -215 > /tmp/pi_config_part1.ex"
 
-      assert evidence.kind == :standalone
+      assert evidence.kind == :slice_and_redirect
+      assert evidence.paired_with_failed_edit == false
     end
 
     test "head -n with a target line count" do
@@ -86,7 +87,7 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
       assert FileSurgery.detect(messages).path == "lib/b.ex"
     end
 
-    test "kind: :paired_with_failed_edit when a failed Edit on the same path precedes it" do
+    test "paired_with_failed_edit: true when a failed Edit on the same path precedes it" do
       messages = [
         assistant_message([tool_use("t-edit", "Edit", %{"file_path" => "lib/foo.ex"})]),
         user_message([
@@ -101,10 +102,11 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
       evidence = FileSurgery.detect(messages)
 
       assert evidence.path == "lib/foo.ex"
-      assert evidence.kind == :paired_with_failed_edit
+      assert evidence.kind == :slice_and_redirect
+      assert evidence.paired_with_failed_edit == true
     end
 
-    test "kind: :standalone when the preceding Edit on the same path succeeded" do
+    test "paired_with_failed_edit: false when the preceding Edit on the same path succeeded" do
       messages = [
         assistant_message([tool_use("t-edit", "Edit", %{"file_path" => "lib/foo.ex"})]),
         user_message([tool_result("t-edit", is_error: false, text: "ok")]),
@@ -114,10 +116,10 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
       evidence = FileSurgery.detect(messages)
 
       assert evidence.path == "lib/foo.ex"
-      assert evidence.kind == :standalone
+      assert evidence.paired_with_failed_edit == false
     end
 
-    test "kind: :standalone when the failed edit was on a DIFFERENT path" do
+    test "paired_with_failed_edit: false when the failed edit was on a DIFFERENT path" do
       messages = [
         assistant_message([tool_use("t-edit", "Edit", %{"file_path" => "lib/other.ex"})]),
         user_message([tool_result("t-edit", is_error: true, text: "no match")]),
@@ -127,10 +129,10 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
       evidence = FileSurgery.detect(messages)
 
       assert evidence.path == "lib/foo.ex"
-      assert evidence.kind == :standalone
+      assert evidence.paired_with_failed_edit == false
     end
 
-    test "kind: :standalone when the failed edit is outside the lookback window" do
+    test "paired_with_failed_edit: false when the failed edit is outside the lookback window" do
       old_failed_edit = [
         tool_use("t-edit", "Edit", %{"file_path" => "lib/foo.ex"})
       ]
@@ -151,7 +153,7 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
       evidence = FileSurgery.detect(messages)
 
       assert evidence.path == "lib/foo.ex"
-      assert evidence.kind == :standalone
+      assert evidence.paired_with_failed_edit == false
     end
   end
 

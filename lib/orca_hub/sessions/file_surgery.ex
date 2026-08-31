@@ -10,6 +10,13 @@ defmodule OrcaHub.Sessions.FileSurgery do
   repetition ratio of 0.07-0.27 — every volumetric gate stayed false while
   the worker did the single most dangerous thing it did all session.
 
+  `detect/1`'s evidence map splits WHICH pattern fired (`kind`, a family
+  atom) from HOW MUCH to trust it (`paired_with_failed_edit`, a boolean
+  confidence modifier) — see the two fields' individual docs below.
+  Currently the only implemented family is `:slice_and_redirect` (this
+  issue's original case); `:write_to_tracked`/`:in_place_edit`/
+  `:programmatic_write` land in a follow-up commit.
+
   Computed from the messages table's assistant `tool_use` blocks (mirrors
   `OrcaHub.Sessions.ChurnDetail`'s extraction shape exactly — see its
   moduledoc). `detect/1` is pure and never raises.
@@ -89,26 +96,23 @@ defmodule OrcaHub.Sessions.FileSurgery do
 
       %{path: "lib/orca_hub/pi_config_sync.ex",
         command: "<full Bash command string>",
-        kind: :paired_with_failed_edit | :standalone}
+        kind: :slice_and_redirect,
+        paired_with_failed_edit: boolean}
 
   or `nil` if no file-surgery pattern is found. Never raises.
 
-  ## Matcher
+  `kind` names WHICH match family fired. `:slice_and_redirect` is the
+  original ORCAHUB3-61 case: real output redirection (`>`/`>>`, a bare
+  `2>&1`/`2>` alone does not count) whose INPUT is a text-slicing read
+  (`cat`/`head`/`tail`/`sed -n`/`awk`) of a path that passes the
+  tracked-source heuristic (source-file extension, not under a
+  build/scratch/log directory). `git show`/`cat-file`/`diff`/`archive` are
+  checked and excluded before any of the above — that is the SANCTIONED
+  recovery procedure.
 
-  Fires on a `Bash` tool_use command that has ALL of:
-    a. a real output redirection `>` or `>>` (a bare `2>&1` / `2>` alone
-       does not count);
-    b. the redirected input is a text-slicing read (`cat`, `head`,
-       `tail`, `sed -n`, `awk`) of a path;
-    c. that path passes the tracked-source heuristic (source-file
-       extension, not under a build/scratch/log directory).
-
-  `git show`/`cat-file`/`diff`/`archive` are checked and excluded before
-  any of the above — that is the SANCTIONED recovery procedure.
-
-  `kind` is `:paired_with_failed_edit` when a failed Edit/Write/MultiEdit
-  on the same path appears in the preceding #{@pairing_lookback} tool
-  calls, else `:standalone`.
+  `paired_with_failed_edit` is a confidence modifier, orthogonal to
+  `kind`: `true` when a failed Edit/Write/MultiEdit on the SAME path
+  appears in the preceding #{@pairing_lookback} tool calls, else `false`.
   """
   def detect(messages) when is_list(messages) do
     safely(fn ->
@@ -127,11 +131,13 @@ defmodule OrcaHub.Sessions.FileSurgery do
               nil ->
                 most_recent
 
-              path ->
+              {path, kind} ->
                 %{
                   path: path,
                   command: cmd,
-                  kind: classify_kind(tool_use_events, idx, path, result_errors)
+                  kind: kind,
+                  paired_with_failed_edit:
+                    paired_with_failed_edit?(tool_use_events, idx, path, result_errors)
                 }
             end
         end
@@ -172,8 +178,11 @@ defmodule OrcaHub.Sessions.FileSurgery do
 
           left ->
             case extract_slicing_path(left) do
-              nil -> nil
-              path -> if tracked_source_path?(path), do: path, else: nil
+              nil ->
+                nil
+
+              path ->
+                if tracked_source_path?(path), do: {path, :slice_and_redirect}, else: nil
             end
         end
     end
@@ -274,21 +283,18 @@ defmodule OrcaHub.Sessions.FileSurgery do
   defp tracked_source_path?(_), do: false
 
   # -------------------------------------------------------------------
-  # Pairing (kind)
+  # Pairing (confidence modifier, orthogonal to which family fired)
   # -------------------------------------------------------------------
 
-  defp classify_kind(tool_use_events, idx, path, result_errors) do
+  defp paired_with_failed_edit?(tool_use_events, idx, path, result_errors) do
     window_start = max(0, idx - @pairing_lookback)
     window = Enum.slice(tool_use_events, window_start, idx - window_start)
 
-    paired? =
-      Enum.any?(window, fn block ->
-        block["name"] in @edit_tool_names and
-          get_in(block, ["input", "file_path"]) == path and
-          Map.get(result_errors, block["id"], false)
-      end)
-
-    if paired?, do: :paired_with_failed_edit, else: :standalone
+    Enum.any?(window, fn block ->
+      block["name"] in @edit_tool_names and
+        get_in(block, ["input", "file_path"]) == path and
+        Map.get(result_errors, block["id"], false)
+    end)
   end
 
   # tool_use_id -> is_error, from tool_result blocks across the whole
