@@ -69,6 +69,9 @@ defmodule OrcaHub.HubRPC do
   def pending_pi_ui_request(session_id),
     do: call(OrcaHub.Sessions, :pending_pi_ui_request, [session_id])
 
+  def all_pending_pi_dialog_ids(session_id),
+    do: call(OrcaHub.Sessions, :all_pending_pi_dialog_ids, [session_id])
+
   def pending_question(session_id),
     do: call(OrcaHub.Sessions, :pending_question, [session_id])
 

@@ -1849,8 +1849,8 @@ defmodule OrcaHub.SessionRunner do
   defp clear_pi_dialogs_on_exit(%{backend: backend, session_id: session_id} = data)
        when backend.backend == "pi" do
     # Find all pi_ui_request events that don't have a corresponding pi_ui_response
-    # with the same id using Sessions.all_pending_pi_dialog_ids/1 directly.
-    open_dialogs = OrcaHub.Sessions.all_pending_pi_dialog_ids(session_id)
+    # with the same id using Sessions.all_pending_pi_dialog_ids/1 via db_call.
+    open_dialogs = db_call(data, :all_pending_pi_dialog_ids, [session_id])
     Enum.each(open_dialogs, fn %{"id" => id} ->
       stale_resolution = %{
         "type" => "pi_ui_response",

@@ -791,7 +791,7 @@ defmodule OrcaHub.Backend.Pi do
     # and persist resolution events for each.
     resolution_events =
       if ctx.session_id do
-        pending_ids = OrcaHub.Sessions.all_pending_pi_dialog_ids(ctx.session_id)
+        pending_ids = db_call(ctx, :all_pending_pi_dialog_ids, [ctx.session_id])
         existing_ids = MapSet.new(Enum.map(resolution_events, & &1["id"]))
 
         Enum.reduce(pending_ids, resolution_events, fn %{"id" => id}, acc ->
