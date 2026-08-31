@@ -858,10 +858,10 @@ defmodule OrcaHub.Sessions do
     answered_ids =
       from(m in Message,
         where: m.session_id == ^session_id,
-        where: fragment("? ->> 'type'", m.data) == "pi_ui_response"
+        where: fragment("? ->> 'type'", m.data) == "pi_ui_response",
+        select: fragment("? ->> 'id'", m.data)
       )
       |> Repo.all()
-      |> Enum.map(& &1)
       |> MapSet.new()
 
     Enum.filter(requests, fn id -> not MapSet.member?(answered_ids, id) end)

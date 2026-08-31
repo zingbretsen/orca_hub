@@ -1938,4 +1938,37 @@ defmodule OrcaHub.SessionsTest do
       assert Sessions.pending_pi_ui_request(session.id) == nil
     end
   end
+
+  describe "all_pending_pi_dialog_ids/1" do
+    test "returns only unanswered pi_ui_requests, not answered ones", %{project: project} do
+      session = create_session(project, %{backend: "pi"})
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      # Three requests - one answered, two unanswered
+      answered_request = %{"type" => "pi_ui_request", "id" => "answered-id", "method" => "select"}
+      unanswered1 = %{"type" => "pi_ui_request", "id" => "unanswered-1", "method" => "select"}
+      unanswered2 = %{"type" => "pi_ui_request", "id" => "unanswered-2", "method" => "input"}
+
+      response = %{"type" => "pi_ui_response", "id" => "answered-id", "resolution" => "turn_end"}
+
+      derived_insert_at(session, answered_request, base)
+      derived_insert_at(session, unanswered1, NaiveDateTime.add(base, 1, :second))
+      derived_insert_at(session, response, NaiveDateTime.add(base, 2, :second))
+      derived_insert_at(session, unanswered2, NaiveDateTime.add(base, 3, :second))
+
+      pending = Sessions.all_pending_pi_dialog_ids(session.id)
+
+      # Should return exactly the two unanswered ones
+      assert length(pending) == 2
+      assert Enum.any?(pending, &(&1["id"] == "unanswered-1"))
+      assert Enum.any?(pending, &(&1["id"] == "unanswered-2"))
+      # Must NOT include the answered one
+      refute Enum.any?(pending, &(&1["id"] == "answered-id"))
+    end
+
+    test "empty session returns empty list", %{project: project} do
+      session = create_session(project, %{backend: "pi"})
+      assert Sessions.all_pending_pi_dialog_ids(session.id) == []
+    end
+  end
 end
