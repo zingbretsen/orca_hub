@@ -276,6 +276,22 @@ defmodule OrcaHub.SessionRunner do
       end
   end
 
+  # Scan all messages for pi_ui_request events that don't have a corresponding
+  # pi_ui_response with the same id. Returns a list of the unanswered dialog
+  # request objects. This is used during init to detect orphaned dialogs after
+  # a runner restart (node restart/deploy tears the port down).
+  defp scan_for_open_pi_dialogs(messages) when is_list(messages) do
+    answered_ids =
+      messages
+      |> Enum.filter(fn %{"type" => type} -> type == "pi_ui_response" end)
+      |> Enum.map(fn %{"id" => id} -> id end)
+      |> MapSet.new()
+
+    messages
+    |> Enum.filter(fn %{"type" => type} -> type == "pi_ui_request" end)
+    |> Enum.filter(fn %{"id" => id} -> not MapSet.member?(answered_ids, id) end)
+  end
+
   @impl true
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
@@ -303,6 +319,24 @@ defmodule OrcaHub.SessionRunner do
     saved_messages = load_init_messages(init_data, session_id)
 
     initial_state = if saved_messages == [], do: :ready, else: :idle
+
+    # ORCAHUB3-60: init sweep for orphaned pi dialogs
+    # A node restart/deploy tears the port down, orphaning any open pi dialog.
+    # Scan for unanswered pi_ui_request events and clear them with stale resolution.
+    if session.backend == "pi" do
+      all_messages = db_call(init_data, :list_messages, [session_id])
+      open_dialogs = scan_for_open_pi_dialogs(all_messages)
+      Enum.each(open_dialogs, fn %{"id" => id} ->
+        stale_resolution = %{
+          "type" => "pi_ui_response",
+          "id" => id,
+          "resolution" => "stale"
+        }
+        db_call(init_data, :create_message, [
+          %{session_id: session_id, data: stale_resolution}
+        ])
+      end)
+    end
 
     # If the session was persisted as "waiting" (an unanswered AskUserQuestion),
     # rebuild the pending questions from history so the UI can render them after
