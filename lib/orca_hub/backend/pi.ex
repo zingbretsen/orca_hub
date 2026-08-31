@@ -723,8 +723,36 @@ defmodule OrcaHub.Backend.Pi do
     # any stale pending_ui_request now so a later encode_ui_response/3 call
     # for that (already-moot) id correctly no-ops instead of writing a reply
     # pi has already stopped listening for.
-    bs = Map.delete(ctx.backend_state, :pending_ui_request)
-    {[tool_result_event(id, content, is_error)], %{ctx | backend_state: bs}}
+    #
+    # ORCAHUB3-60: persist a resolution event if the dialog was pending.
+    # A dialog that times out produces no pi_ui_response, so we must persist
+    # one with resolution: "timeout" so pending_pi_ui_request/1 correctly falls.
+    case ctx.backend_state[:pending_ui_request] do
+      nil ->
+        # No pending dialog - just clear backend_state and continue
+        bs = Map.delete(ctx.backend_state, :pending_ui_request)
+        {[tool_result_event(id, content, is_error)], %{ctx | backend_state: bs}}
+
+      %{"id" => dialog_id} ->
+        # We have a pending dialog. Check if this tool_execution_end corresponds
+        # to the dialog request (id == dialog_id) - pi sends tool_execution_end
+        # for the dialog tool when it times out.
+        if id == dialog_id do
+          # The pending dialog timed out - persist a resolution event
+          resolution_event = %{
+            "type" => "pi_ui_response",
+            "id" => dialog_id,
+            "resolution" => "timeout"
+          }
+          bs = Map.delete(ctx.backend_state, :pending_ui_request)
+          {[resolution_event, tool_result_event(id, content, is_error)],
+           %{ctx | backend_state: bs}}
+        else
+          # Different pending dialog - just clear backend_state and continue
+          bs = Map.delete(ctx.backend_state, :pending_ui_request)
+          {[tool_result_event(id, content, is_error)], %{ctx | backend_state: bs}}
+        end
+    end
   end
 
   def normalize(%{"type" => "agent_end", "messages" => messages}, ctx) when is_list(messages) do
