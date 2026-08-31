@@ -1896,4 +1896,90 @@ defmodule OrcaHub.Backend.PiTest do
       end
     end
   end
+
+  describe "normalize/2 — agent_end clears all pending dialogs" do
+    test "multiple open dialogs are all resolved at turn end" do
+      # Create a session and pre-populate it with multiple pending pi_ui_request events
+      dir = "/tmp/pi_multi_dialog_test_#{System.unique_integer([:positive])}"
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      _ =
+        OrcaHub.Projects.create_project(%{
+          name: "pi-multi-dialog-test-#{System.unique_integer([:positive])}",
+          directory: dir,
+          node: "n1@x"
+        })
+
+      {:ok, session} =
+        OrcaHub.Sessions.create_session(%{
+          directory: dir,
+          backend: "pi"
+        })
+
+      session_id = session.id
+
+      # Manually insert multiple pi_ui_request events into the DB
+      # to simulate multiple dialogs opened during this turn
+      request1 = %{
+        "type" => "pi_ui_request",
+        "id" => "dialog-1",
+        "method" => "select",
+        "title" => "First choice?"
+      }
+
+      request2 = %{
+        "type" => "pi_ui_request",
+        "id" => "dialog-2",
+        "method" => "select",
+        "title" => "Second choice?"
+      }
+
+      request3 = %{
+        "type" => "pi_ui_request",
+        "id" => "dialog-3",
+        "method" => "select",
+        "title" => "Third choice?"
+      }
+
+      # Insert the dialog requests
+      OrcaHub.Sessions.create_message(%{session_id: session_id, data: request1})
+      OrcaHub.Sessions.create_message(%{session_id: session_id, data: request2})
+      OrcaHub.Sessions.create_message(%{session_id: session_id, data: request3})
+
+      # Verify all three are pending before the agent_end
+      pending_before = OrcaHub.Sessions.all_pending_pi_dialog_ids(session_id)
+      assert length(pending_before) == 3
+
+      # Now run normalize/2 with agent_end - this should persist resolution events
+      # for ALL pending dialogs
+      messages = [
+        %{
+          "role" => "assistant",
+          "content" => [%{"type" => "text", "text" => "done"}],
+          "stopReason" => "stop"
+        }
+      ]
+
+      c = ctx(%{session_id: session_id, directory: dir, backend: OrcaHub.Backend.Pi})
+
+      {events, _out} =
+        Backend.normalize(%{"type" => "agent_end", "messages" => messages}, c)
+
+      # Verify that ALL three dialogs have resolution events returned by normalize/2
+      resolution_events = Enum.filter(events, &(&1["type"] == "pi_ui_response"))
+      assert length(resolution_events) == 3
+
+      resolution_ids = Enum.map(resolution_events, & &1["id"])
+      assert "dialog-1" in resolution_ids
+      assert "dialog-2" in resolution_ids
+      assert "dialog-3" in resolution_ids
+
+      # Verify all resolution events have resolution: "turn_end"
+      assert Enum.all?(resolution_events, &(&1["resolution"] == "turn_end"))
+
+      # Also verify that the result event is still present
+      assert Enum.any?(events, &(&1["type"] == "result"))
+    end
+  end
 end

@@ -733,7 +733,7 @@ defmodule OrcaHub.Backend.Pi do
         bs = Map.delete(ctx.backend_state, :pending_ui_request)
         {[tool_result_event(id, content, is_error)], %{ctx | backend_state: bs}}
 
-      %{"id" => dialog_id} ->
+      %{id: dialog_id} ->
         # We have a pending dialog. Check if this tool_execution_end corresponds
         # to the dialog request (id == dialog_id) - pi sends tool_execution_end
         # for the dialog tool when it times out.
@@ -767,18 +767,42 @@ defmodule OrcaHub.Backend.Pi do
     # A turn end resolves any still-open dialog that hasn't been answered
     # by structured pi_ui_response. We must close EVERY open dialog, not just
     # an id-matched one (production data: 3 near-simultaneous dialogs where
-    # answering one didn't clear the others). We do this BEFORE clearing
-    # backend_state so we can read all pending_ui_request entries.
+    # answering one didn't clear the others).
     #
-    # pending_ui_request is a single map %{id: id, method: method}, not a list.
-    # Use atom keys to match the storage format.
+    # We use the same mechanism as SessionRunner.init/1's init sweep:
+    # scan all messages for pi_ui_request events without corresponding
+    # pi_ui_response events. data.messages is seeded at init from the bounded
+    # tail and appended live, so dialogs opened during this turn are present.
     resolution_events =
       case ctx.backend_state[:pending_ui_request] do
         %{id: id} ->
+          # First, persist the resolution for the most recent dialog (the one
+          # tracked in backend_state) so encode_ui_response/3 can match it
+          # if called during this same turn.
           [%{"type" => "pi_ui_response", "id" => id, "resolution" => "turn_end"}]
 
         nil ->
           []
+      end
+
+    # Also scan for any other dialogs that might be open but not tracked in
+    # backend_state (e.g., a second dialog opened before the first was answered).
+    # Use Sessions.all_pending_pi_dialog_ids/1 to find all unanswered dialogs
+    # and persist resolution events for each.
+    resolution_events =
+      if ctx.session_id do
+        pending_ids = OrcaHub.Sessions.all_pending_pi_dialog_ids(ctx.session_id)
+        existing_ids = MapSet.new(Enum.map(resolution_events, & &1["id"]))
+
+        Enum.reduce(pending_ids, resolution_events, fn %{"id" => id}, acc ->
+          if MapSet.member?(existing_ids, id) do
+            acc
+          else
+            [%{"type" => "pi_ui_response", "id" => id, "resolution" => "turn_end"} | acc]
+          end
+        end)
+      else
+        resolution_events
       end
 
     bs =
