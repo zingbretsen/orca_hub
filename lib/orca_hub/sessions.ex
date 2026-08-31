@@ -660,7 +660,7 @@ defmodule OrcaHub.Sessions do
     # For each session, check if there's a matching pi_ui_response
     Enum.reduce(session_ids, %{}, fn session_id, acc ->
       case requests[session_id] do
-        [%{data: %{"id" => request_id} = data_map}] ->
+        [%{data: %{"id" => request_id} = data_map} | _] ->
           # Check if a matching response exists
           if event_id_exists?(session_id, "pi_ui_response", request_id) do
             acc
