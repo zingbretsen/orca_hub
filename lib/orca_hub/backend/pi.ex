@@ -762,12 +762,27 @@ defmodule OrcaHub.Backend.Pi do
     # stats. normalize/2 has no direct iodata slot for this — queue it onto
     # backend_state.pending_writes (spec §3.2), flushed by the SAME
     # route_frame/2 pass that called us, right after this event is handled.
+    #
+    # ORCAHUB3-60: Clear ALL pending dialogs by persisting resolution events.
+    # A turn end resolves any still-open dialog that hasn't been answered
+    # by structured pi_ui_response. We must close EVERY open dialog, not just
+    # an id-matched one (production data: 3 near-simultaneous dialogs where
+    # answering one didn't clear the others). We do this BEFORE clearing
+    # backend_state so we can read all pending_ui_request entries.
+    resolution_events =
+      ctx.backend_state[:pending_ui_request]
+      |> List.wrap()
+      |> Enum.map(fn %{"id" => id} ->
+        %{"type" => "pi_ui_response", "id" => id, "resolution" => "turn_end"}
+      end)
+
     bs =
       ctx.backend_state
       |> Map.delete(:agent_start_ms)
+      |> Map.delete(:pending_ui_request)
       |> Map.put(:pending_writes, [get_session_stats_command()])
 
-    {[event], %{ctx | backend_state: bs}}
+    {[event | resolution_events], %{ctx | backend_state: bs}}
   end
 
   # spec §12.6 — pending steer/follow-up queue changed. Synthesized as a

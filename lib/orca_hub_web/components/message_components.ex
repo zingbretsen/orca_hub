@@ -737,6 +737,14 @@ defmodule OrcaHubWeb.MessageComponents do
   defp format_pi_ui_answer(%{"cancelled" => true}), do: "(cancelled)"
   defp format_pi_ui_answer(%{"value" => v}) when is_binary(v), do: v
   defp format_pi_ui_answer(%{"confirmed" => c}), do: to_string(c)
+  defp format_pi_ui_answer(%{"resolution" => r}) do
+    case r do
+      "timeout" -> "(timed out unanswered)"
+      "stale" -> "(no longer pending)"
+      "turn_end" -> "(dialog closed on turn end)"
+      _ -> "(#{r})"
+    end
+  end
   defp format_pi_ui_answer(_), do: "(no answer)"
 
   attr :msg, :map, required: true
