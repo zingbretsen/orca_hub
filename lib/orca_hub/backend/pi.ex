@@ -769,12 +769,17 @@ defmodule OrcaHub.Backend.Pi do
     # an id-matched one (production data: 3 near-simultaneous dialogs where
     # answering one didn't clear the others). We do this BEFORE clearing
     # backend_state so we can read all pending_ui_request entries.
+    #
+    # pending_ui_request is a single map %{id: id, method: method}, not a list.
+    # Use atom keys to match the storage format.
     resolution_events =
-      ctx.backend_state[:pending_ui_request]
-      |> List.wrap()
-      |> Enum.map(fn %{"id" => id} ->
-        %{"type" => "pi_ui_response", "id" => id, "resolution" => "turn_end"}
-      end)
+      case ctx.backend_state[:pending_ui_request] do
+        %{id: id} ->
+          [%{"type" => "pi_ui_response", "id" => id, "resolution" => "turn_end"}]
+
+        nil ->
+          []
+      end
 
     bs =
       ctx.backend_state
