@@ -208,5 +208,31 @@ defmodule OrcaHub.SessionHeartbeat.DigestTest do
       assert Map.has_key?(snapshot2, child2.id)
       assert map_size(snapshot2) == 2
     end
+
+    test "a session with file-surgery evidence renders in digest even when churn_suspected would be false" do
+      watched = fixture_session(%{title: "file-surgery worker", status: "running"})
+
+      # Insert a message that will trigger file_surgery detection
+      # The pattern matches a Bash tool_use with name="Bash" and input.command
+      # Format mirrors the test helpers in file_surgery_test.exs
+      {:ok, _message} =
+        Sessions.create_message(%{
+          session_id: watched.id,
+          data: %{"type" => "assistant", "message" => %{"content" => [%{"type" => "tool_use", "name" => "Bash", "input" => %{"command" => "sed -i 's/foo/bar/' lib/orca_hub/test.ex"}}]}}
+        })
+
+      {digest, snapshot} = Digest.build("caller-id", [watched.id], false)
+
+      # The digest should contain the FILE SURGERY marker
+      assert digest =~ "FILE SURGERY?"
+      assert digest =~ "lib/orca_hub/test.ex"
+      assert digest =~ "in_place_edit"
+
+      # The snapshot's churn_suspected should be true due to file_surgery
+      {_status, _phase, _note, _last_activity_at, churn_suspected, _pending_q} =
+        snapshot[watched.id]
+
+      assert churn_suspected == true
+    end
   end
 end

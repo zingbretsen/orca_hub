@@ -33,14 +33,16 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
     else
       activity_by_id = HubRPC.activity_metadata(Enum.map(sessions, & &1.id))
       commit_by_id = fetch_last_commits(sessions)
+      file_surgery_by_id =
+        OrcaHub.Sessions.FileSurgery.fetch_many(Enum.map(sessions, & &1.id), [])
 
       digest =
         "\n\n[Watch] #{length(sessions)} session(s):\n" <>
           (sessions
-           |> Enum.map(&format_line(&1, activity_by_id, commit_by_id))
+           |> Enum.map(&format_line(&1, activity_by_id, commit_by_id, file_surgery_by_id))
            |> Enum.join("\n"))
 
-      snapshot = Map.new(sessions, &{&1.id, snapshot_entry(&1, activity_by_id, commit_by_id)})
+      snapshot = Map.new(sessions, &{&1.id, snapshot_entry(&1, activity_by_id, commit_by_id, file_surgery_by_id)})
 
       {digest, snapshot}
     end
@@ -95,13 +97,14 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
     end
   end
 
-  defp format_line(session, activity_by_id, commit_by_id) do
+  defp format_line(session, activity_by_id, commit_by_id, file_surgery_by_id) do
     activity = Map.get(activity_by_id, session.id, %{})
     commit = Map.get(commit_by_id, session.id)
+    file_surgery = Map.get(file_surgery_by_id, session.id)
 
     name = session.title || "session #{String.slice(session.id, 0, 8)}"
 
-    churn = OrcaHub.Sessions.Churn.assess(activity, session, commit)
+    churn = OrcaHub.Sessions.Churn.assess(activity, session, commit, DateTime.utc_now(), file_surgery)
     pending_q = pending_question_marker(session)
 
     [
@@ -130,6 +133,10 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
 
   defp format_commit(nil), do: ""
   defp format_commit(%{short_sha: sha, subject: subject}), do: "commit #{sha} \"#{subject}\""
+
+  defp format_churn(%{file_surgery: %{path: path, kind: kind}}) do
+    "FILE SURGERY? #{path} (#{Atom.to_string(kind)})"
+  end
 
   defp format_churn(%{churn_suspected: false}), do: ""
 
@@ -171,10 +178,11 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
 
   defp format_error(_), do: ""
 
-  defp snapshot_entry(session, activity_by_id, commit_by_id) do
+  defp snapshot_entry(session, activity_by_id, commit_by_id, file_surgery_by_id) do
     activity = Map.get(activity_by_id, session.id, %{})
     commit = Map.get(commit_by_id, session.id)
-    churn = OrcaHub.Sessions.Churn.assess(activity, session, commit)
+    file_surgery = Map.get(file_surgery_by_id, session.id)
+    churn = OrcaHub.Sessions.Churn.assess(activity, session, commit, DateTime.utc_now(), file_surgery)
     pending_q = pending_question_marker(session)
 
     {session.status, session.progress_phase, session.progress_note,
