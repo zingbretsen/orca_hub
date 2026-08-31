@@ -98,7 +98,12 @@ earliest.
 
 The issue's literal spec ("an `answer_session_question` call against that
 child") produced **zero hits** — `Tools.answer_session_question` exists in the
-tool surface but has never been invoked in this corpus's history. Substituted
+tool surface but has never been invoked in this corpus's history. (This is a
+corpus-window artifact, not evidence the tool doesn't work: it shipped
+2026-08-22 under ORCAHUB3-33, commit `73cbefc`, so a Feb–Aug corpus only had
+~9 days in which a call could have landed at all — see the corrected bottom
+line in the ORCAHUB3-60 section for why it is, in fact, the load-bearing
+mechanism.) Substituted
 the structurally-equivalent, directly observable proxy: **the child itself
 calling `question` (pi) or `AskUserQuestion` (Claude)** — this is exactly the
 event that puts a session into `"waiting"` status per
@@ -576,9 +581,23 @@ text"); re-verified against the actual resolving tool_result rather than
 "next message of any type," none of those 13 are genuine early unblocks —
 see the correction in section 3 above and the full worked example in
 Addendum 3. If the goal is to shorten the stall, the orchestrator needs
-whatever mechanism actually produces a `pi_ui_response` record — which is
-NOT `Tools.answer_session_question` (zero calls to it exist anywhere in this
-corpus) — not a `send_message_to_session` nudge.
+whatever mechanism actually produces a `pi_ui_response` record — and
+**`Tools.answer_session_question` is exactly that mechanism, not a separate
+one.** Its zero-call count in this corpus is a corpus-window artifact, not
+evidence of inertness: the tool shipped 2026-08-22 (ORCAHUB3-33, commit
+`73cbefc`), so a Feb–Aug corpus has only ~9 days in which any call could have
+occurred at all, and none happened to land in that window. Reading
+`SessionRunner`'s `{:answer_ui_request, ...}` handler (`session_runner.ex`,
+the `running` clause) directly rather than inferring from call counts: the
+only branch that returns `:ok` (the tool's success path) does so by writing
+the answer to the port AND persisting a `%{"type" => "pi_ui_response", "id"
+=> request_id, "answer" => payload}` event — i.e. a successful call
+necessarily produces the same `pi_ui_response` record whose 0-second
+resolution gap this document measured directly (30/31 verified). **The
+correct bottom line: a plain-text `send_message_to_session` nudge will NOT
+shorten a pi stall, but `answer_session_question` WILL — they are different
+mechanisms, and only the first one was tested (and killed) by the data in
+this corpus.**
 
 ## What I could not determine, and why
 
