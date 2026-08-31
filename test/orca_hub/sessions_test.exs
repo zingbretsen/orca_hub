@@ -1820,4 +1820,122 @@ defmodule OrcaHub.SessionsTest do
       assert {:error, :session_not_found} = Sessions.detach_session(fake_id)
     end
   end
+
+  # ORCAHUB3-60: dialog resolution event persistence
+  describe "pending_pi_ui_request/1 - stale resolution events" do
+    test "a pi_ui_response with resolution: \"stale\" clears the request", %{
+      project: project
+    } do
+      session = create_session(project, %{backend: "pi"})
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      request = %{
+        "type" => "pi_ui_request",
+        "id" => "req1",
+        "method" => "input",
+        "title" => "Test",
+        "message" => "Question?"
+      }
+
+      stale_response = %{
+        "type" => "pi_ui_response",
+        "id" => "req1",
+        "resolution" => "stale"
+      }
+
+      derived_insert_at(session, request, base)
+      derived_insert_at(session, stale_response, NaiveDateTime.add(base, 1, :second))
+
+      # The stale resolution should clear the pending request
+      assert Sessions.pending_pi_ui_request(session.id) == nil
+    end
+
+    test "multiple stale resolutions for different requests all clear them", %{
+      project: project
+    } do
+      session = create_session(project, %{backend: "pi"})
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      request1 = %{
+        "type" => "pi_ui_request",
+        "id" => "req1",
+        "method" => "select",
+        "title" => "First",
+        "message" => "Q1?",
+        "options" => ["A", "B"]
+      }
+
+      request2 = %{
+        "type" => "pi_ui_request",
+        "id" => "req2",
+        "method" => "input",
+        "title" => "Second",
+        "message" => "Q2?"
+      }
+
+      response1 = %{
+        "type" => "pi_ui_response",
+        "id" => "req1",
+        "resolution" => "stale"
+      }
+
+      response2 = %{
+        "type" => "pi_ui_response",
+        "id" => "req2",
+        "resolution" => "stale"
+      }
+
+      derived_insert_at(session, request1, base)
+      derived_insert_at(session, request2, NaiveDateTime.add(base, 1, :second))
+      derived_insert_at(session, response1, NaiveDateTime.add(base, 2, :second))
+      derived_insert_at(session, response2, NaiveDateTime.add(base, 3, :second))
+
+      assert Sessions.pending_pi_ui_request(session.id) == nil
+    end
+
+    test "resolution events with different resolution values work", %{
+      project: project
+    } do
+      session = create_session(project, %{backend: "pi"})
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      # Test timeout resolution
+      request1 = %{
+        "type" => "pi_ui_request",
+        "id" => "req1",
+        "method" => "input",
+        "title" => "Timeout",
+        "message" => "Q?"
+      }
+
+      response1 = %{
+        "type" => "pi_ui_response",
+        "id" => "req1",
+        "resolution" => "timeout"
+      }
+
+      # Test turn_end resolution
+      request2 = %{
+        "type" => "pi_ui_request",
+        "id" => "req2",
+        "method" => "select",
+        "title" => "Turn End",
+        "message" => "Q?",
+        "options" => ["X", "Y"]
+      }
+
+      response2 = %{
+        "type" => "pi_ui_response",
+        "id" => "req2",
+        "resolution" => "turn_end"
+      }
+
+      derived_insert_at(session, request1, base)
+      derived_insert_at(session, response1, NaiveDateTime.add(base, 1, :second))
+      derived_insert_at(session, request2, NaiveDateTime.add(base, 2, :second))
+      derived_insert_at(session, response2, NaiveDateTime.add(base, 3, :second))
+
+      assert Sessions.pending_pi_ui_request(session.id) == nil
+    end
+  end
 end

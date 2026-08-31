@@ -116,4 +116,117 @@ defmodule OrcaHub.SessionRunnerInitTest do
     assert %{tool_use_id: "tu-1"} = data.pending_questions
     assert data.pending_questions == AskUserQuestion.pending_questions(data.messages)
   end
+
+  # ORCAHUB3-60: init sweep clears orphaned pi dialogs after runner restart
+  describe "init sweep for pi dialogs" do
+    test "clears orphaned pi_ui_request events that have no matching pi_ui_response", %{
+      session: session
+    } do
+      # Change session to pi backend
+      {:ok, session} = Sessions.update_session(session, %{backend: "pi"})
+
+      # Add pi_ui_request events that would be orphaned after a runner restart
+      request1 = %{
+        "type" => "pi_ui_request",
+        "id" => "orphan-1",
+        "method" => "input",
+        "title" => "Orphaned 1",
+        "message" => "Question 1?"
+      }
+
+      request2 = %{
+        "type" => "pi_ui_request",
+        "id" => "orphan-2",
+        "method" => "select",
+        "title" => "Orphaned 2",
+        "message" => "Question 2?",
+        "options" => ["A", "B"]
+      }
+
+      # Insert them at different times
+      base = ~N[2026-01-01 00:00:00.000000]
+      feed_insert_at(session, request1, base)
+      feed_insert_at(session, request2, NaiveDateTime.add(base, 1, :second))
+
+      # Verify they are pending before init
+      assert Sessions.pending_pi_ui_request(session.id)["id"] == "orphan-2"
+
+      # Run init - this should persist stale resolutions for both orphaned dialogs
+      {:ok, :idle, _data} = SessionRunner.init(session_id: session.id, session_data: session)
+
+      # After init sweep, both requests should be cleared
+      assert Sessions.pending_pi_ui_request(session.id) == nil
+
+      # Verify the stale resolution events were persisted
+      assert Sessions.create_message(%{
+               session_id: session.id,
+               data: %{
+                 "type" => "pi_ui_response",
+                 "id" => "orphan-1",
+                 "resolution" => "stale"
+               }
+             })
+
+      assert Sessions.create_message(%{
+               session_id: session.id,
+               data: %{
+                 "type" => "pi_ui_response",
+                 "id" => "orphan-2",
+                 "resolution" => "stale"
+               }
+             })
+    end
+
+    test "does not persist stale resolution for answered dialogs", %{session: session} do
+      # Change session to pi backend
+      {:ok, session} = Sessions.update_session(session, %{backend: "pi"})
+
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      # Add an answered dialog
+      request = %{
+        "type" => "pi_ui_request",
+        "id" => "answered",
+        "method" => "input",
+        "title" => "Answered",
+        "message" => "Q?"
+      }
+
+      response = %{
+        "type" => "pi_ui_response",
+        "id" => "answered",
+        "value" => "yes"
+      }
+
+      feed_insert_at(session, request, base)
+      feed_insert_at(session, response, NaiveDateTime.add(base, 1, :second))
+
+      # Add an orphaned dialog
+      orphan = %{
+        "type" => "pi_ui_request",
+        "id" => "orphan",
+        "method" => "input",
+        "title" => "Orphan",
+        "message" => "Q?"
+      }
+
+      feed_insert_at(session, orphan, NaiveDateTime.add(base, 2, :second))
+
+      # Run init - should only clear the orphan, not touch the answered one
+      {:ok, :idle, _data} = SessionRunner.init(session_id: session.id, session_data: session)
+
+      # The answered dialog should remain answered
+      assert Sessions.pending_pi_ui_request(session.id) == nil
+
+      # Verify the orphan was cleared
+      assert Sessions.create_message(%{
+               session_id: session.id,
+               data: %{
+                 "type" => "pi_ui_response",
+                 "id" => "orphan",
+                 "resolution" => "stale"
+               }
+             })
+    end
+  end
 end

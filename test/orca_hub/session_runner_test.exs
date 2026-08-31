@@ -4,7 +4,21 @@ defmodule OrcaHub.SessionRunnerTest do
   # checked-out sandbox connection like any other DB-touching test.
   use OrcaHub.DataCase, async: true
 
-  alias OrcaHub.SessionRunner
+  alias OrcaHub.{HubRPC, Projects, Sessions, SessionRunner}
+
+  setup do
+    {:ok, project} = Projects.create_project(%{name: "Test", directory: "/tmp/test-sessions-#{System.unique_integer([:positive])}"})
+    %{project: project}
+  end
+
+  defp create_session(project, overrides) do
+    attrs =
+      %{project_id: project.id, directory: "/tmp/test-sessions-#{System.unique_integer([:positive])}"}
+      |> Map.merge(overrides)
+
+    {:ok, session} = Sessions.create_session(attrs)
+    session
+  end
 
   describe "build_system_prompt/1 — AskUserQuestion guidance" do
     test "is present for non-orchestrator sessions" do
@@ -99,6 +113,8 @@ defmodule OrcaHub.SessionRunnerTest do
     setup do
       Code.ensure_loaded!(OrcaHub.Backend.Pi)
       Code.ensure_loaded!(OrcaHub.Backend.Claude)
+      Code.ensure_loaded!(OrcaHub.HubRPC)
+      Code.ensure_loaded!(OrcaHub.Sessions)
       :ok
     end
 
@@ -202,6 +218,138 @@ defmodule OrcaHub.SessionRunnerTest do
 
       assert {:keep_state_and_data, [{:reply, ^from, {:error, :not_running}}]} =
                SessionRunner.error({:call, from}, :compact_session, plan_data(%{}))
+    end
+  end
+
+  # ORCAHUB3-60: stale resolution events for answer_ui_request in non-running states
+  describe "answer_ui_request — stale resolution persistence" do
+    # Helper to check if a message was persisted
+    defp has_stale_resolution?(session_id, request_id) do
+      from(
+        m in Sessions.Message,
+        where:
+          m.session_id == ^session_id and
+            fragment("? ->> 'type'", m.data) == "pi_ui_response" and
+            fragment("? ->> 'id'", m.data) == ^request_id and
+            fragment("? ->> 'resolution'", m.data) == "stale"
+      )
+      |> Repo.exists?()
+    end
+
+    defp session_data(overrides) do
+      # db_node must be set for db_call to work in handle_stream_event
+      db_node = node()
+      Map.merge(
+        %{
+          session_id: Ecto.UUID.generate(),
+          directory: "/nonexistent-dir-#{System.unique_integer([:positive])}",
+          backend: OrcaHub.Backend.Pi,
+          backend_state: %{},
+          claude_session_id: "native-abc",
+          model: "opus",
+          port: nil,
+          engine: :streaming,
+          db_node: db_node,
+          messages: [],
+          project_id: Ecto.UUID.generate()
+        },
+        overrides
+      )
+    end
+
+    test "ready clause persists stale resolution when dialog not in runner state", %{project: project} do
+      session = create_session(project, %{backend: "pi"})
+
+      # Persist a pi_ui_request
+      {:ok, _} = Sessions.create_message(%{
+        session_id: session.id,
+        data: %{
+          "type" => "pi_ui_request",
+          "id" => "test-1",
+          "method" => "input",
+          "title" => "Test",
+          "message" => "Question?"
+        }
+      })
+
+      data = session_data(%{session_id: session.id})
+
+      from = {self(), make_ref()}
+      {:keep_state, _new_data, [{:reply, ^from, {:error, :not_running}}]} =
+        SessionRunner.ready({:call, from}, {:answer_ui_request, "test-1", %{}}, data)
+
+      # Verify a stale resolution event was persisted
+      assert has_stale_resolution?(session.id, "test-1")
+    end
+
+    test "idle clause persists stale resolution when no warm port", %{project: project} do
+      session = create_session(project, %{backend: "pi"})
+
+      {:ok, _} = Sessions.create_message(%{
+        session_id: session.id,
+        data: %{
+          "type" => "pi_ui_request",
+          "id" => "test-2",
+          "method" => "select",
+          "title" => "Test",
+          "message" => "Question?",
+          "options" => ["A", "B"]
+        }
+      })
+
+      data = session_data(%{session_id: session.id, port: nil})
+
+      from = {self(), make_ref()}
+      {:keep_state, _new_data, [{:reply, ^from, {:error, :not_running}}]} =
+        SessionRunner.idle({:call, from}, {:answer_ui_request, "test-2", %{}}, data)
+
+      assert has_stale_resolution?(session.id, "test-2")
+    end
+
+    test "error clause persists stale resolution for errored session", %{project: project} do
+      session = create_session(project, %{backend: "pi"})
+
+      {:ok, _} = Sessions.create_message(%{
+        session_id: session.id,
+        data: %{
+          "type" => "pi_ui_request",
+          "id" => "test-3",
+          "method" => "input",
+          "title" => "Test",
+          "message" => "Question?"
+        }
+      })
+
+      data = session_data(%{session_id: session.id})
+
+      from = {self(), make_ref()}
+      {:keep_state, _new_data, [{:reply, ^from, {:error, :not_running}}]} =
+        SessionRunner.error({:call, from}, {:answer_ui_request, "test-3", %{}}, data)
+
+      assert has_stale_resolution?(session.id, "test-3")
+    end
+
+    test "nil-port running clause persists stale resolution", %{project: project} do
+      session = create_session(project, %{backend: "pi"})
+
+      {:ok, _} = Sessions.create_message(%{
+        session_id: session.id,
+        data: %{
+          "type" => "pi_ui_request",
+          "id" => "test-4",
+          "method" => "input",
+          "title" => "Test",
+          "message" => "Question?"
+        }
+      })
+
+      data = session_data(%{session_id: session.id, port: nil})
+
+      from = {self(), make_ref()}
+      {:keep_state, _new_data, [{:reply, ^from, {:error, :not_running}}]} =
+        SessionRunner.running({:call, from}, {:answer_ui_request, "test-4", %{}}, data)
+
+      assert has_stale_resolution?(session.id, "test-4")
     end
   end
 end
