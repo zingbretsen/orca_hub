@@ -10,12 +10,44 @@ defmodule OrcaHub.Sessions.FileSurgery do
   repetition ratio of 0.07-0.27 — every volumetric gate stayed false while
   the worker did the single most dangerous thing it did all session.
 
+  A same-day second incident (the qwen worker that produced this module's
+  own broken first draft) used `sed -i` and a `File.write!` script with NO
+  redirection at all — a redirection-only matcher misses that entirely.
+  `detect/1` checks four families, tried highest-precision first:
+
+    a. `:write_to_tracked`   — shell WRITES to a tracked path: `... >
+       lib/foo.ex`, `... >> lib/foo.ex`, `tee lib/foo.ex`, `cp x
+       lib/foo.ex`, `mv x lib/foo.ex`.
+    b. `:in_place_edit`      — in-place mutation: `sed -i`, `perl -pi`/`-i`.
+    c. `:programmatic_write` — a command containing both a tracked path and
+       a write primitive (`File.write!`, `open(..., "w")`, ...).
+    d. `:slice_and_redirect` — the original ORCAHUB3-61 case: redirection
+       whose INPUT is a text-slicing read (`cat`/`head`/`tail`/`sed -n`/
+       `awk`) of a tracked path.
+
+  Direction matters for family (a): `cp lib/foo.ex lib/foo.ex.bak` is a
+  benign backup (destination isn't a tracked-source extension) and must
+  NOT fire, but `cp lib/foo.ex.bak lib/foo.ex` writes into the tracked
+  file and MUST — restoring from a backup is still an uninspected write.
+
+  Family ordering and severity are MEASURED, not guessed — see
+  `churn_signal_mining.md` (296 labelled intervention events / 92 clean
+  controls from `orca_hub_prod`): `:programmatic_write` P=1.00 R=0.02,
+  `:slice_and_redirect` P=0.92 R=0.08, `:write_to_tracked` P=0.83 R=0.10,
+  `:in_place_edit` P=0.73 R=0.06; combined A∨B∨C∨D is P=0.81 R=0.16 (vs
+  D alone P=0.92 R=0.08) — roughly 2x the recall for an ~11-point
+  precision cost, the right trade for an ADVISORY alert an orchestrator
+  judges. Within claude sessions specifically, family D is nearly INERT
+  (2 true positives) while A∨B∨C finds 16 — family A is load-bearing for
+  that backend, not the cat/head sub-pattern this issue was written
+  around. `paired_with_failed_edit` is the independent, and stronger,
+  confidence signal (P=0.92 paired vs P=0.72 unpaired for the same
+  fragment-read pattern) — a paired `:in_place_edit` is more trustworthy
+  than an unpaired one of any family.
+
   `detect/1`'s evidence map splits WHICH pattern fired (`kind`, a family
   atom) from HOW MUCH to trust it (`paired_with_failed_edit`, a boolean
   confidence modifier) — see the two fields' individual docs below.
-  Currently the only implemented family is `:slice_and_redirect` (this
-  issue's original case); `:write_to_tracked`/`:in_place_edit`/
-  `:programmatic_write` land in a follow-up commit.
 
   Computed from the messages table's assistant `tool_use` blocks (mirrors
   `OrcaHub.Sessions.ChurnDetail`'s extraction shape exactly — see its
@@ -37,6 +69,9 @@ defmodule OrcaHub.Sessions.FileSurgery do
   @excluded_substrings ~w(/tmp/ /var/ _build/ deps/ node_modules/ priv/static/ .git/ log/ logs/ .elixir_ls/ cover/)
 
   @sanctioned_git_regex ~r/\bgit\s+(show|cat-file|diff|archive)\b/
+  @benign_formatter_regex ~r/\bmix\s+format\b|\bprettier\b.*--write|\beslint\b.*--fix/
+  @in_place_regex ~r/\bsed\s+(-\S*i\S*|--in-place\S*)|\bperl\s+-\S*i\S*/
+  @write_primitive_regex ~r/File\.write!?\(|open\([^)]*["']w["']/
 
   @doc """
   Fetches `session_id`'s messages from the last `window_minutes` (default
@@ -96,19 +131,17 @@ defmodule OrcaHub.Sessions.FileSurgery do
 
       %{path: "lib/orca_hub/pi_config_sync.ex",
         command: "<full Bash command string>",
-        kind: :slice_and_redirect,
+        kind: :write_to_tracked | :in_place_edit | :programmatic_write | :slice_and_redirect,
         paired_with_failed_edit: boolean}
 
-  or `nil` if no file-surgery pattern is found. Never raises.
+  or `nil` if no file-surgery pattern is found. Never raises. `kind` names
+  WHICH match family fired — see the moduledoc for the four families,
+  their precedence order, and their measured precision/recall.
 
-  `kind` names WHICH match family fired. `:slice_and_redirect` is the
-  original ORCAHUB3-61 case: real output redirection (`>`/`>>`, a bare
-  `2>&1`/`2>` alone does not count) whose INPUT is a text-slicing read
-  (`cat`/`head`/`tail`/`sed -n`/`awk`) of a path that passes the
-  tracked-source heuristic (source-file extension, not under a
-  build/scratch/log directory). `git show`/`cat-file`/`diff`/`archive` are
-  checked and excluded before any of the above — that is the SANCTIONED
-  recovery procedure.
+  `git show`/`cat-file`/`diff`/`archive` (even when the output target is a
+  tracked path — that's the SANCTIONED recovery procedure) and formatter
+  commands (`mix format`, `prettier --write`, `eslint --fix`) are excluded
+  before any family is checked.
 
   `paired_with_failed_edit` is a confidence modifier, orthogonal to
   `kind`: `true` when a failed Edit/Write/MultiEdit on the SAME path
@@ -168,23 +201,101 @@ defmodule OrcaHub.Sessions.FileSurgery do
       Regex.match?(@sanctioned_git_regex, cmd) ->
         nil
 
-      not real_output_redirect?(cmd) ->
+      Regex.match?(@benign_formatter_regex, cmd) ->
         nil
 
+      path = match_family_a(cmd) ->
+        {path, :write_to_tracked}
+
+      path = match_family_b(cmd) ->
+        {path, :in_place_edit}
+
+      path = match_family_c(cmd) ->
+        {path, :programmatic_write}
+
+      path = match_family_d(cmd) ->
+        {path, :slice_and_redirect}
+
       true ->
-        case split_at_real_redirect(cmd) do
-          nil ->
-            nil
+        nil
+    end
+  end
 
-          left ->
-            case extract_slicing_path(left) do
-              nil ->
-                nil
+  # (a) WRITE TO a tracked path from the shell: real redirection whose
+  # OUTPUT target is tracked, or cp/mv/tee writing into one. Direction
+  # matters — only the destination is checked, so `cp x.ex x.ex.bak` (dest
+  # not a tracked-source extension) is benign but `cp x.ex.bak x.ex` fires.
+  defp match_family_a(cmd) do
+    redirect_target = real_output_redirect?(cmd) && extract_redirect_target(cmd)
 
-              path ->
-                if tracked_source_path?(path), do: {path, :slice_and_redirect}, else: nil
-            end
+    cond do
+      is_binary(redirect_target) and tracked_source_path?(redirect_target) -> redirect_target
+      true -> match_cp_mv_tee_target(cmd)
+    end
+  end
+
+  # `cp`/`mv` must be the whole command; `tee` is checked per pipeline
+  # stage too, since its usual form is `cmd | tee file`.
+  defp match_cp_mv_tee_target(cmd) do
+    cmd
+    |> String.split("|")
+    |> Enum.map(&String.trim/1)
+    |> Enum.find_value(&match_cp_mv_tee_stage/1)
+  end
+
+  defp match_cp_mv_tee_stage(stage) do
+    case String.split(stage) do
+      [tool | rest] when tool in ["cp", "mv"] ->
+        case Enum.reject(rest, &String.starts_with?(&1, "-")) do
+          [_src, dst] -> if tracked_source_path?(dst), do: dst
+          _ -> nil
         end
+
+      ["tee" | rest] ->
+        case Enum.reject(rest, &String.starts_with?(&1, "-")) do
+          [dst] -> if tracked_source_path?(dst), do: dst
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  # (b) IN-PLACE mutation: `sed -i`, `perl -pi`/`-i`. The target path is
+  # always the last whitespace token, even when the script body itself
+  # contains unescaped spaces (they're never the LAST token).
+  defp match_family_b(cmd) do
+    if Regex.match?(@in_place_regex, cmd) do
+      path = cmd |> String.split() |> List.last()
+      if is_binary(path) and tracked_source_path?(path), do: path
+    end
+  end
+
+  # (c) PROGRAMMATIC rewrite: a command containing both a tracked path and
+  # a write primitive (`File.write!`, `open(..., "w")`, ...).
+  defp match_family_c(cmd) do
+    if Regex.match?(@write_primitive_regex, cmd) do
+      cmd
+      |> String.split(~r/[\s"'(),]+/, trim: true)
+      |> Enum.find(&tracked_source_path?/1)
+    end
+  end
+
+  # (d) SLICE-AND-REDIRECT — the original ORCAHUB3-61 case: redirection
+  # whose INPUT is a text-slicing read of a tracked path.
+  defp match_family_d(cmd) do
+    if real_output_redirect?(cmd) do
+      case split_at_real_redirect(cmd) do
+        nil ->
+          nil
+
+        left ->
+          case extract_slicing_path(left) do
+            nil -> nil
+            path -> if tracked_source_path?(path), do: path
+          end
+      end
     end
   end
 
@@ -201,6 +312,16 @@ defmodule OrcaHub.Sessions.FileSurgery do
   defp split_at_real_redirect(cmd) do
     case String.split(strip_error_redirects(cmd), ~r/>{1,2}/, parts: 2) do
       [left, _right] -> String.trim(left)
+      _ -> nil
+    end
+  end
+
+  # First whitespace-delimited token right after the real redirect
+  # operator — stops before a trailing heredoc marker (`<<'EOF'`) since
+  # `<` is excluded from the token itself.
+  defp extract_redirect_target(cmd) do
+    case Regex.run(~r/>{1,2}\s*([^\s<>]+)/, strip_error_redirects(cmd)) do
+      [_, target] -> target
       _ -> nil
     end
   end

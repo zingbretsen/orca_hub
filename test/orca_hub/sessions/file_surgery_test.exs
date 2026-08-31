@@ -27,6 +27,176 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
 
   defp bash(cmd), do: tool_use("t-bash", "Bash", %{"command" => cmd})
 
+  describe "detect/1 — family :write_to_tracked" do
+    test "shell redirection whose OUTPUT is a tracked path" do
+      messages = [assistant_message([bash("echo 'junk' > lib/foo.ex")])]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.kind == :write_to_tracked
+    end
+
+    test "cp INTO a tracked path fires" do
+      messages = [assistant_message([bash("cp /tmp/scratch.ex lib/foo.ex")])]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.kind == :write_to_tracked
+    end
+
+    test "mv INTO a tracked path fires" do
+      messages = [assistant_message([bash("mv /tmp/new_foo.ex lib/foo.ex")])]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.kind == :write_to_tracked
+    end
+
+    test "tee INTO a tracked path fires (piped form)" do
+      messages = [assistant_message([bash("echo 'junk' | tee lib/foo.ex")])]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.kind == :write_to_tracked
+    end
+
+    test "direction matters: cp FROM a tracked file to a .bak is benign, does not fire" do
+      messages = [assistant_message([bash("cp lib/foo.ex lib/foo.ex.bak")])]
+
+      assert FileSurgery.detect(messages) == nil
+    end
+
+    test "direction matters: cp FROM a .bak INTO the tracked file fires" do
+      messages = [assistant_message([bash("cp lib/foo.ex.bak lib/foo.ex")])]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.kind == :write_to_tracked
+    end
+  end
+
+  describe "detect/1 — family :in_place_edit" do
+    test "sed -i fires and names the tracked path" do
+      messages = [assistant_message([bash("sed -i 's/foo/bar/' lib/foo.ex")])]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.kind == :in_place_edit
+    end
+
+    test "perl -pi fires and names the tracked path" do
+      messages = [assistant_message([bash("perl -pi -e 's/foo/bar/' lib/foo.ex")])]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.kind == :in_place_edit
+    end
+  end
+
+  describe "detect/1 — family :programmatic_write" do
+    test "a mix run -e script containing File.write! on a tracked path fires" do
+      messages = [
+        assistant_message([
+          bash("mix run --no-start -e 'File.write!(\"lib/foo.ex\", new_code)'")
+        ])
+      ]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.kind == :programmatic_write
+    end
+
+    test "a python open(..., \"w\") on a tracked path fires" do
+      messages = [
+        assistant_message([bash("python3 -c \"open('lib/foo.ex', 'w').write(x)\"")])
+      ]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.kind == :programmatic_write
+    end
+  end
+
+  describe "detect/1 — ORCAHUB3-61 regression fixture: the real qwen sed-i/File.write! incident" do
+    test "the 3cd4a43c session's actual command sequence fires via a non-redirect family" do
+      # Replayed in order from the live incident: worker read the file,
+      # backed it up, ran two in-place sed edits, explored some more,
+      # wrote a NEW scratch file (benign), rewrote it programmatically via
+      # File.write!, then restored from its own backup (still a shell
+      # write INTO the tracked file — direction matters, so this fires
+      # too). Family D (slice-and-redirect) does NOT fire on this
+      # sequence at all — neither sed -i nor the mix run -e rewrite use a
+      # redirect operator, which is the whole point of the widening.
+      messages = [
+        assistant_message([bash("cat lib/orca_hub/sessions/churn.ex")]),
+        assistant_message([
+          bash("cp lib/orca_hub/sessions/churn.ex lib/orca_hub/sessions/churn.ex.bak")
+        ]),
+        assistant_message([
+          bash(
+            "sed -i 's/def assess(activity, session, commit_info, now \\\\ DateTime.utc_now())/def assess(activity, session, commit_info, now \\\\ DateTime.utc_now(), file_surgery \\\\ nil)/' lib/orca_hub/sessions/churn.ex"
+          )
+        ]),
+        assistant_message([
+          bash(
+            "sed -i 's/def assess(activity, session, commit_info, now) do/def assess(activity, session, commit_info, now, file_surgery) do/' lib/orca_hub/sessions/churn.ex"
+          )
+        ]),
+        assistant_message([
+          bash("cat lib/orca_hub/sessions/churn.ex | grep -n \"churn_suspected\"")
+        ]),
+        assistant_message([bash("sed -n '77,86p' lib/orca_hub/sessions/churn.ex")]),
+        assistant_message([bash("cat > /tmp/churn_patch.ex << 'EOF'\n# scratch\nEOF")]),
+        assistant_message([
+          bash(
+            "mix run --no-start -e 'code = File.read!(\"lib/orca_hub/sessions/churn.ex\")\nFile.write!(\"lib/orca_hub/sessions/churn.ex\", new_code)\nIO.puts(\"Updated churn.ex\")\n'"
+          )
+        ]),
+        assistant_message([
+          bash("cp lib/orca_hub/sessions/churn.ex.bak lib/orca_hub/sessions/churn.ex")
+        ])
+      ]
+
+      evidence = FileSurgery.detect(messages)
+
+      # The MOST RECENT match is the final restore cp — still a shell
+      # write into the tracked file, so it correctly fires too.
+      assert evidence.path == "lib/orca_hub/sessions/churn.ex"
+      assert evidence.kind == :write_to_tracked
+      assert evidence.kind != :slice_and_redirect
+
+      assert evidence.command ==
+               "cp lib/orca_hub/sessions/churn.ex.bak lib/orca_hub/sessions/churn.ex"
+    end
+  end
+
+  describe "detect/1 — widened exclusions" do
+    test "mix format" do
+      messages = [assistant_message([bash("mix format lib/foo.ex")])]
+      assert FileSurgery.detect(messages) == nil
+    end
+
+    test "mix format --check-formatted" do
+      messages = [assistant_message([bash("mix format --check-formatted")])]
+      assert FileSurgery.detect(messages) == nil
+    end
+
+    test "prettier --write" do
+      messages = [assistant_message([bash("prettier --write assets/js/app.js")])]
+      assert FileSurgery.detect(messages) == nil
+    end
+
+    test "eslint --fix" do
+      messages = [assistant_message([bash("eslint --fix assets/js/app.js")])]
+      assert FileSurgery.detect(messages) == nil
+    end
+
+    test "git show with a TRACKED output target is still the sanctioned procedure" do
+      messages = [assistant_message([bash("git show HEAD:lib/foo.ex > lib/foo.ex")])]
+      assert FileSurgery.detect(messages) == nil
+    end
+  end
+
   describe "detect/1 — positives (family :slice_and_redirect)" do
     test "the real ORCAHUB3-61 incident command" do
       messages = [
