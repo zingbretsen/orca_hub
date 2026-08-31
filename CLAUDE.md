@@ -9,10 +9,11 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 
 ## Testing
 
-- Canonical invocation (the `.env`'s `ORCA_MODE`/`PORT` break tests; `CLUSTER_*` leak into distributed state):
-  ```
-  export $(grep -E "^DB_" .env | xargs) && env -u PHX_SERVER -u ORCA_MODE -u PORT -u CLUSTER_NODES -u CLUSTER_DNS_QUERY mix test
-  ```
+- **Use `bin/test`** — a wrapper that scrubs `.env`'s `ORCA_MODE`/`PORT` (which break tests) and `CLUSTER_*` (which leak into distributed state), passes `DB_*` from `.env`, and forwards all arguments to `mix test`.
+  - The long form is what the script does, for reference:
+    ```
+    export $(grep -E "^DB_" .env | xargs) && env -u PHX_SERVER -u ORCA_MODE -u PORT -u CLUSTER_NODES -u CLUSTER_DNS_QUERY mix test
+    ```
 - Distributed tests are excluded by default — run them separately: `mix test --only distributed`
 - Repro tests are excluded by default too. A defect issue ships with a test that FAILS in the current unfixed state — executable proof the defect is real, and a free regression test once fixed. Tag it `@tag :repro`, start the test name with the issue key (e.g. `test "ORCAHUB3-24: an artifact with no data does not pre-seed a truthy window.ORCA_DATA"`), and put it in the file where it will permanently live — not a quarantine dir. Run them on demand with `mix test --only repro`; they are EXPECTED to be red, that is the point, so never add one to the flake list.
 - **The fixing commit removes the `@tag :repro` line in the same commit as the fix**, silently converting the repro into a normal regression test. A `:repro` tag left on a fixed defect means the test stops running.
