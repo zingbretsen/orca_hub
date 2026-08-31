@@ -35,6 +35,7 @@ graph TB
     App --> BackendCache["OrcaHub.Backend.Cache"]
     App --> TaskSupervisor["Task.Supervisor"]
     App --> SessionHeartbeat["OrcaHub.SessionHeartbeat\n(hub only)"]
+    App --> ChurnSampler["OrcaHub.ChurnSampler\n(hub only)"]
     App --> WarmPool["OrcaHub.Streaming.WarmPool"]
     App --> SessionSupervisor["OrcaHub.SessionSupervisor\n(DynamicSupervisor)"]
     App --> SessionResumer["OrcaHub.SessionResumer"]
@@ -82,9 +83,9 @@ graph TB
 ## Agent Mode (ORCA_MODE=agent)
 
 Agent nodes omit `Telemetry`, `Repo`, `MCP.UpstreamClient`, `Scheduler`,
-`TriggerLoader`, `SessionHeartbeat`, `ClusterNodeTracker`, `NodeDialer`, and
-the `EmailInbox*` children. All database operations are proxied to the hub
-node via `HubRPC`. Everything else — including `Streaming.WarmPool`,
+`TriggerLoader`, `SessionHeartbeat`, `ChurnSampler`, `ClusterNodeTracker`,
+`NodeDialer`, and the `EmailInbox*` children. All database operations are
+proxied to the hub node via `HubRPC`. Everything else — including `Streaming.WarmPool`,
 `ForkGate`, `TerminalSupervisor`, `JobSupervisor`/`JobResumer`,
 `LoginSupervisor`, `SkillSync`/`PiConfigSync`/`MemoryGit.Server`, and the
 `BackendInstaller*`/`MCP.CodeExec.*` children — runs on agent nodes too,
@@ -151,6 +152,16 @@ graph TB
   `status: "running"` after a node restart or deploy.
 - **`OrcaHub.SessionHeartbeat`** (hub only): manages periodic heartbeat
   messages sessions schedule via MCP tools.
+- **`OrcaHub.ChurnSampler`** (hub only): every 120s it samples each
+  non-archived `running` session's churn metrics (`OrcaHub.Sessions.Churn`)
+  into the `churn_samples` table and emits a `[:orca_hub, :churn, :sample]`
+  telemetry event for Grafana. Bolted onto the tail of the same sweep,
+  `ChurnSampler.AlertEvaluator` evaluates every enabled `alert_subscriptions`
+  row and delivers rising-edge worker alerts to the subscribing orchestrator
+  — see `.context/data-model.md`. Hub-only for the same reason as the
+  heartbeat: two nodes sweeping would double-sample and double-alert. Each
+  sweep is wrapped in `rescue`/log, so one bad session can't kill the timer
+  loop.
 - **`OrcaHub.ForkGate`**: serializes forked pi children's FIRST turns, one
   FIFO per parent session — child N+1's first prompt goes out only after
   child N's first `result` event lands. A correctness mechanism, not an

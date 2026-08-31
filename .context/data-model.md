@@ -18,6 +18,10 @@ erDiagram
     Session ||--o| DiscordChannel : "bound to"
     Session }o--o{ UpstreamServer : "via SessionUpstreamServer"
 
+    Session ||--o{ ChurnSample : "sampled every 120s while running"
+    Session ||--o| AlertSubscription : "watches, as orchestrator"
+    Session ||--o{ ApiToken : "optionally pinned to"
+
     Issue }o--o{ Session : "attempts (session.issue_id, real FK)"
     Trigger }o--o| Session : "last_session (plain FK, no assoc)"
     Trigger ||--o{ Session : "spawned (session.trigger_id)"
@@ -91,6 +95,7 @@ erDiagram
         binary_id closed_by_session_id
         utc_datetime closed_at "distinct from updated_at"
         binary_id superseded_by_issue_id "not cleared by reopen"
+        utc_datetime pinned_at
         binary_id project_id FK
     }
 
@@ -110,6 +115,7 @@ erDiagram
         binary_id email_inbox_id FK
         binary_id last_session_id "plain field, not association"
         utc_datetime last_fired_at
+        utc_datetime pinned_at
         binary_id project_id FK
     }
 
@@ -137,6 +143,7 @@ erDiagram
         string runner_node
         integer cols
         integer rows
+        utc_datetime pinned_at
         binary_id project_id FK
     }
 
@@ -230,6 +237,44 @@ erDiagram
         binary_id recipient_session_id FK
     }
 
+    ChurnSample {
+        binary_id id PK
+        binary_id session_id "plain field, no assoc"
+        utc_datetime sampled_at
+        string session_status
+        integer tool_calls_15m
+        integer tool_calls_30m
+        integer distinct_tools_15m
+        integer distinct_tools_30m
+        float repetition_ratio_15m
+        float repetition_ratio_30m
+        integer minutes_since_progress_update
+        integer minutes_since_last_commit
+        boolean churn_suspected
+    }
+
+    AlertSubscription {
+        binary_id id PK
+        binary_id orchestrator_session_id "plain field; UNIQUE — one row per orchestrator"
+        boolean watch_children "resolve the orchestrator's children fresh each tick"
+        array session_ids "extra explicitly-watched sessions"
+        map conditions "churn|stall => true; progress_stale|no_commit_for => minutes"
+        integer cooldown_seconds "default 900; re-alert delay while still true"
+        boolean enabled
+    }
+
+    ApiToken {
+        binary_id id PK
+        string name
+        binary token_hash "raw SHA-256; plaintext never persisted"
+        string token_prefix "display-only identifying prefix"
+        array scopes "runs:create|runs:read|runs:tool_result|sessions:read|tts|a2a"
+        utc_datetime expires_at
+        utc_datetime last_used_at
+        utc_datetime revoked_at
+        binary_id session_id FK "optional pin; forbids the tts/a2a scopes"
+    }
+
     UpstreamServer {
         binary_id id PK
         string name
@@ -302,6 +347,9 @@ erDiagram
 - **`Job` is deliberately association-free**: `session_id` is a plain field, and `runner_node`/`directory` pin it to the node that launched it. The row is a durable record of a DETACHED OS process that outlives the session, the runner, and OrcaHub itself — see `OrcaHub.Jobs`. `progress_kind` and friends are declared (and re-declarable mid-flight) BY the job; OrcaHub never infers a progress metric and never adjudicates "stalled", it only surfaces `progress_updated_at` age.
 - **`SessionInteraction`** captures direct session→session messaging edges (e.g. via `send_message_to_session`), distinct from `Session.parent_session_id`, which captures spawn/parent-child lineage instead — except an orchestrator-spawns-orchestrator handoff (`start_session` with `orchestrator: true`), which links the new session as the caller's SIBLING (not a child) and instead records a `kind: "handoff"` `SessionInteraction` so that spawn edge isn't lost.
 - **`env_allowlist`** on both `Project` and `ClusterNode` are unioned (deduped), not one overriding the other — see `.context/clustering.md`.
+- **`pinned_at` is the same sort-to-top affordance on four entities** — `Artifact`, `Issue`, `Terminal`, `Trigger` — surfaced by the shared `OrcaHubWeb.GroupedIndex` component their index pages all render through. It is presentation state only; nothing in the runtime reads it.
 - **`ApiRun` and `A2ATask` carry a deliberately parallel column set** (`client_tools`, `result_schema`, `max_validation_attempts`, `validation_attempts`, `pending_tool_call`, `result`) — two transports over one mechanism, mediated by `OrcaHub.MCP.ToolCallHolder` (`ApiRunHolder` / `A2ATaskHolder`). The difference is scope: an `ApiRun`'s tools are declared per run, while an `A2ATask` inherits them copy-forward from the first task in its conversation (one session == one A2A `contextId`).
+- **`ChurnSample` and `AlertSubscription` are the two halves of worker-churn observability**, and both use plain `session_id`/`orchestrator_session_id` fields rather than FKs. `OrcaHub.ChurnSampler` (hub-only) samples every non-archived `running` session every 120s into `churn_samples` — a time series read by Grafana via the `[:orca_hub, :churn, :sample]` telemetry event, never by the agent-facing tools. The same sweep prunes samples older than 14 days, so the table is bounded rather than append-forever. `alert_subscriptions` is the opt-in watch an orchestrator configures with `set_worker_alerts`: ONE row per orchestrator (unique index, upserted in place like a heartbeat), DB-persisted deliberately so the watch survives a deploy. `OrcaHub.ChurnSampler.AlertEvaluator` runs right after each sampling pass and evaluates the watched set FRESH — `session_ids` plus, when `watch_children`, the orchestrator's current non-archived children — and alerts on a rising edge only, re-alerting no sooner than `cooldown_seconds`. See `OrcaHub.Sessions.Churn` for the heuristic itself.
+- **`ApiToken` stores only a SHA-256 `token_hash`** — no column and no code path holds the plaintext secret, which is shown once at creation and never again. A token carries explicit `scopes` and may optionally be PINNED to one session via `session_id`; a pinned token is rejected at changeset time if it asks for a scope that takes no session (`tts`, `a2a`). `OrcaHubWeb.Plugs.ApiAuth` tries a scoped token first and falls back, byte-identically, to the legacy global `ORCA_API_TOKEN`, which remains full-access.
 - **A `Trigger` points at sessions two different ways**: `last_session_id` is only ever the MOST RECENT session (used for `reuse_session`), whereas `Session.trigger_id` is the full history of every session that trigger has spawned — which is what the trigger show page lists.
 - Issue tool surface: `OrcaHub.MCP.Tools.Issues` (`lib/orca_hub/mcp/tools/issues.ex`); full design in `issues_spec.md`.

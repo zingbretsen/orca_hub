@@ -15,18 +15,20 @@ graph TB
         QueueLive["QueueLive"]
         UsageLive["UsageLive"]
         DashboardLive["DashboardLive"]
-        SettingsLive["SettingsLive.Index<br>(upstream + email inboxes)"]
+        SettingsLive["SettingsLive.Index<br>(upstream + email inboxes<br>+ scoped API tokens)"]
         PiConfigLive["PiConfigLive.Index<br>(/settings/pi-config)"]
         SkillLive["SkillLive.Index"]
         ArtifactLive["ArtifactLive.Index / Show"]
         NodeLive["NodeLive.Index / Show"]
         TerminalLive["TerminalLive.Index / Show"]
-        CommandPalette["CommandPaletteLive"]
+        CommandPalette["CommandPaletteLive<br>(live_component in the layout,<br>not a route)"]
         MCPPlug["MCP.Plug (/mcp)"]
+        ApiAuth["Plugs.ApiAuth<br>(scoped token, else ORCA_API_TOKEN)"]
         WebhookCtrl["WebhookController"]
         TTSCtrl["TTSController"]
         ArtifactCtrl["ArtifactController<br>(/artifacts/:id/raw|download)"]
         ApiRunCtrl["ApiRunController<br>(/api/v1/runs)"]
+        SessionApiCtrl["SessionApiController<br>(GET /api/v1/sessions(/:id))"]
         A2ACtrl["A2AController<br>(/a2a, inbound JSON-RPC)"]
     end
 
@@ -49,10 +51,14 @@ graph TB
         UpstreamServers["UpstreamServers Context"]
         Secrets["Secrets<br>(UpstreamSecret)"]
         ApiRuns["ApiRuns Context"]
+        ApiTokens["ApiTokens Context<br>(scoped, revocable, hashed)"]
         A2ATasks["A2ATasks Context"]
         EmailInboxes["EmailInboxes Context"]
         AgentPresence["AgentPresence"]
         SessionHeartbeat["SessionHeartbeat<br>(hub only)"]
+        ChurnSampler["ChurnSampler + AlertEvaluator<br>(hub only, 120s sweep)"]
+        AlertSubs["AlertSubscriptions Context"]
+        Churn["Sessions.Churn<br>(+ ChurnDetail / FileSurgery)"]
         SessionResumer["SessionResumer"]
         ForkGate["ForkGate<br>(pi fork first-turn FIFO)"]
     end
@@ -140,7 +146,10 @@ graph TB
     Router --> SessionShow & SessionIndex & ProjectIndex & ProjectShow & IssueIndex & IssueShow
     Router --> TriggerLive & QueueLive & UsageLive & DashboardLive & SettingsLive & NodeLive & TerminalLive & CommandPalette
     Router --> PiConfigLive & SkillLive & ArtifactLive
-    Router --> MCPPlug & WebhookCtrl & TTSCtrl & ArtifactCtrl & ApiRunCtrl & A2ACtrl
+    Router --> MCPPlug & WebhookCtrl & ArtifactCtrl
+    Router -->|":api_authed pipeline"| ApiAuth
+    ApiAuth --> TTSCtrl & ApiRunCtrl & SessionApiCtrl & A2ACtrl
+    ApiAuth -->|"scoped token: hash lookup,<br>scope + session-pin check"| ApiTokens
 
     SessionShow -->|send_message| SessionRunner
     SessionRunner -->|broadcast| PubSub
@@ -194,6 +203,7 @@ graph TB
 
     ApiRunCtrl --> ApiRuns
     ApiRuns --> SessionSupervisor
+    SessionApiCtrl -->|"read-only projection"| Sessions
     A2ACtrl --> A2ATasks
     A2ATasks --> SessionSupervisor
 
@@ -224,6 +234,11 @@ graph TB
     DiscordBridge --> SessionSupervisor
 
     SessionHeartbeat -.->|schedules| SessionRunner
+    ChurnSampler -->|"assess each running session"| Churn
+    ChurnSampler -->|"persist samples + emit telemetry"| Sessions
+    ChurnSampler -->|"reads watches"| AlertSubs
+    ChurnSampler -.->|"rising-edge alerts, via<br>SessionHeartbeat.deliver_or_queue"| SessionHeartbeat
+    MCPTools -->|"set_worker_alerts surface"| AlertSubs
     SessionResumer -.->|"resumes orphaned 'running'"| SessionSupervisor
     ClusterNodeTracker -.->|tracks node up/down| ClusterNodes
     NodeDialer -.->|dials rows flagged dial| ClusterNodes
@@ -280,6 +295,22 @@ graph TB
   `failed`/`timed_out`/`awaiting_tool_result`, with optional JSON-schema
   validation + retry, and AG-UI-style caller-defined ("client"/frontend)
   tools posted back via `POST /api/v1/runs/:id/tool_result`.
+- **Read-only sessions API** (`lib/orca_hub_web/controllers/session_api_controller.ex`,
+  `GET /api/v1/sessions(/:id)`): a compact projection of
+  `Sessions.list_sessions/1` / `HubRPC.get_session/1` for
+  bandwidth-constrained external clients (first consumer: a Wear OS watch
+  companion). Deliberately thin — it never reimplements the query, only
+  narrows the fields.
+- **API auth** (`lib/orca_hub_web/plugs/api_auth.ex`, `lib/orca_hub/api_tokens.ex`):
+  everything behind the `:api_authed` pipeline — `/api/tts`, `/api/v1/*`,
+  `/a2a` — takes a bearer token. Two kinds are accepted, in order: a scoped,
+  revocable `ApiToken` (SHA-256 hashed at rest, checked against the route's
+  required scope and, if the token is session-pinned, that one session), then
+  the legacy global `ORCA_API_TOKEN`, preserved byte-identically as a
+  full-access fallback. 503 when the API is disabled, 401 on a bad token, and
+  a deliberately distinct 403 on a scope/pin violation that never echoes what
+  it denied. Tokens are managed from `/settings`; the plaintext is shown once
+  at creation and never persisted.
 - **A2A server** (`lib/orca_hub/a2a.ex`, `a2a_tasks.ex`,
   `a2a_controller.ex`, `/a2a`): the inbound Agent2Agent JSON-RPC surface —
   OrcaHub projects are advertised as A2A agents (`/a2a/agents`, per-agent
@@ -311,6 +342,21 @@ graph TB
 - **SessionHeartbeat** (hub only) / **SessionResumer**: heartbeat delivers
   scheduled reminder messages into a session; resumer recovers sessions
   stuck in `status: "running"` after a node restart or deploy.
+- **Churn sampling + worker alerts** (`lib/orca_hub/churn_sampler.ex`,
+  `churn_sampler/alert_evaluator.ex`, `sessions/churn.ex`, hub only): one
+  120s sweep does two things. First it samples every non-archived `running`
+  session's churn metrics into `churn_samples` and emits
+  `[:orca_hub, :churn, :sample]` for Grafana. Then `AlertEvaluator` — a
+  delivery-free, directly testable module — evaluates each enabled
+  `alert_subscriptions` row (set by an orchestrator via `set_worker_alerts`)
+  against a FRESHLY resolved watched set, and hands any rising-edge alerts to
+  `SessionHeartbeat.deliver_or_queue/2`. Rising edge + `cooldown_seconds`
+  means a still-true condition doesn't re-alert every tick. Note the failure
+  mode called out in `ChurnSampler`'s moduledoc: the outer `rescue` returns
+  edge state UNCHANGED, so a PERSISTENT failure inside `evaluate/3` silently
+  ends alerting forever rather than degrading it — and "no alerts" is this
+  system's normal baseline, so nothing looks wrong. Every contributor to
+  `evaluate/3` must fail closed to a neutral value locally.
 - **ClusterNodeTracker** / **NodeDialer** (both hub only): the tracker records
   Erlang node connect/disconnect events into the `nodes` table backing
   `NodeLive`; the dialer actively connects to rows flagged `dial: true`.

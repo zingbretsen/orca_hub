@@ -54,17 +54,29 @@ stateDiagram-v2
   tool, both gated by the same `ask_user_question` capability. The GenStatem
   stays in `idle` (clean exit) or `running` (still-hung turn), but the
   persisted/broadcast `status` shows `"waiting"` until a queued answer
-  resumes it.
+  resumes it. The answer can come from the UI's dialog modal or, for pi's
+  question/confirm/input dialogs, from another session via the
+  `answer_session_question` MCP tool — so an orchestrator can unblock a
+  worker without a human. A pending dialog is derived from the message
+  feed, not stored in a column; the runner clears every still-pending
+  dialog at turn end, on port exit, and on an init sweep after a runner
+  restart, so an orphaned dialog can't strand a session in `waiting`.
 - **`downgrade`**: the runtime kill switch (`Streaming.disable!/1`) forcing a
   warm streaming session back to the one-shot engine — `:graceful` finishes
   the in-flight turn first, `:interrupt` cuts it short immediately.
-- **`evict_warm`**: reclaiming a warm port without ending the session. Two
-  callers: `Streaming.WarmPool` under per-node capacity pressure
-  (`ORCA_MAX_WARM_SESSIONS`, default 6), which tears down the LRU idle/error
-  session; and `PiConfigSync`, which evicts idle *pi* ports after writing new
-  pi config so the next turn re-reads it (WarmPool rows carry the session's
-  backend precisely so this can be filtered). A `running` session always
-  refuses eviction in both cases.
+- **`evict_warm`**: reclaiming a warm port without ending the session. Three
+  callers: `Streaming.WarmPool` under per-node capacity pressure (the cap is
+  `Streaming.warm_cap/0` — env `ORCA_MAX_WARM_SESSIONS`, default 6, with a
+  runtime `Streaming.set_warm_cap/1` override), which tears down the LRU
+  idle/error session; `PiConfigSync`, which evicts idle *pi* ports after
+  writing new pi config so the next turn re-reads it (WarmPool rows carry the
+  session's backend precisely so this can be filtered); and the runner
+  itself, when a per-session `/mcp` flag (`orchestrator`/`code_exec`)
+  changes. A `running` session always refuses an eviction requested from
+  outside — the flag-change case instead defers its own eviction to the
+  `running`→`idle`/`error` transition (`pending_rebake`), since those flags
+  are baked into the `/mcp` URL only at port-open and only a cold re-open can
+  pick up the new value.
 - **A forked pi child never enters `running` on its own schedule.** Its first
   prompt is held by `OrcaHub.ForkGate` until the previous sibling's first
   turn has fully completed; the session row and UI exist from the moment of

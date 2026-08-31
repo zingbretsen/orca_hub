@@ -143,6 +143,7 @@ sequenceDiagram
 | **SessionRegistry** | Yes | Yes | Local registry per node |
 | **SessionResumer** | Yes | Yes | Resumes sessions orphaned in `status: "running"` on boot |
 | **SessionHeartbeat** | Yes | No | Hub-only scheduled heartbeat messages into sessions |
+| **ChurnSampler** (+ `AlertEvaluator`) | Yes | No | 120s churn sampling + worker-alert delivery; two nodes sweeping would double-sample and double-alert |
 | **Streaming.WarmPool** | Yes | Yes | Per-node warm-port admission control (streaming engine) |
 | **ForkGate** | Yes | Yes | Serializes forked pi children's first turns; a fork child runs on its parent's node |
 | **TerminalSupervisor** | Yes | Yes | Both nodes run terminal PTYs |
@@ -172,7 +173,7 @@ sequenceDiagram
 ### Key Modules
 
 - **`OrcaHub.Mode`**: Returns `:hub` or `:agent` based on `ORCA_MODE` env var (default: `:hub`). `hub_node/0` returns self on hub, discovers hub via `:erpc` on agent.
-- **`OrcaHub.HubRPC`**: Transparent proxy — calls locally on hub, forwards via `:erpc.call/5` on agent. Wraps all context modules (Sessions, Projects, Issues, Triggers, Terminals).
+- **`OrcaHub.HubRPC`**: Transparent proxy — calls locally on hub, forwards via `:erpc.call/5` on agent. Wraps every context that touches the DB (Sessions, Projects, Issues, Triggers, Terminals, Jobs, Artifacts, Skills, ApiTokens, AlertSubscriptions, …) — roughly 200 delegating functions.
 - **`OrcaHub.Cluster`**: Routing layer used by LiveViews and other callers. Queries go through HubRPC (single DB), actions route to the correct runner node via `rpc/5`.
 
 ### Node Routing

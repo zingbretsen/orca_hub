@@ -75,7 +75,8 @@ sequenceDiagram
 A warm port is opened once and kept alive across turns; each new message is
 written to the same stdin rather than spawning a fresh process.
 `Streaming.WarmPool` gates how many warm ports a node may hold at once
-(`ORCA_MAX_WARM_SESSIONS`, default 6) and evicts the least-recently-used
+(`Streaming.warm_cap/0` — env `ORCA_MAX_WARM_SESSIONS`, default 6, runtime-
+overridable via `Streaming.set_warm_cap/1`) and evicts the least-recently-used
 idle/error session (never a `:running` one) when a new session needs a slot.
 
 ```mermaid
@@ -165,7 +166,13 @@ Every session runs its own `MCP.Server`. When `session.code_exec` is true
 instead of the full flattened tool list. Every other tool is reachable only
 as a generated `Tools.<name>/1` Elixir function called from inside a
 `run_elixir` snippet, and discoverable there via `Tools.search/1`,
-`Tools.list/0`, and `Tools.schema/1`.
+`Tools.list/0`, and `Tools.schema/1`. The `code_exec` column is carried into
+the `/mcp` URL at port-open, exactly like `orchestrator` — so flipping it
+mid-session evicts the warm port so the next turn re-bakes the URL (see
+`.context/session-lifecycle.md`). `ORCA_DISABLE_CODE_EXEC` is the node-wide
+kill switch, mirroring the streaming engine's `ORCA_DISABLE_STREAMING`: it
+force-disables code-exec regardless of any per-session setting, and
+`tools/list`/`tools/call` fall back to the full flattened surface.
 
 The surface used to be wider: a `search_tools` meta-tool and a handful of
 promoted "passthrough" tools (`send_message_to_session`, `get_session_tail`,
