@@ -1589,10 +1589,16 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert html =~ "77.4%"
     end
 
+    # ORCAHUB3-60: after the init sweep, pending pi dialogs with no live runner are cleared
+    # (they are genuinely dead - pi's process and 10-minute timer died). Tests using pending
+    # dialogs must ensure the runner is already alive to avoid the sweep clearing them.
     test "pending_ui_request (pi extension-UI dialog) survives outside the window", %{
       conn: conn,
       pi_session: session
     } do
+      # Start the runner first so the init sweep doesn't clear the pending dialog
+      {:ok, _runner} = SessionSupervisor.start_session(session.id)
+
       base = ~N[2026-01-01 00:00:00.000000]
       window_size = OrcaHubWeb.SessionLive.Show.window_size()
 
@@ -1618,10 +1624,14 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     # `phx-value-value` — verified here against the actual rendered HTML,
     # since a render_click/render_submit simulation bypasses the browser JS
     # entirely and would not catch this class of bug.
+    # ORCAHUB3-60: pending dialogs with no live runner are cleared by the init sweep.
+    # Start runner first to avoid the sweep clearing the dialog so the buttons render.
     test "option-select buttons use a native value attribute, not phx-value-value", %{
       conn: conn,
       pi_session: session
     } do
+      {:ok, _runner} = SessionSupervisor.start_session(session.id)
+
       base = ~N[2026-01-01 00:00:00.000000]
       window_size = OrcaHubWeb.SessionLive.Show.window_size()
 
@@ -1643,8 +1653,12 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert html =~ ~s(value="Beta — second")
     end
 
+    # ORCAHUB3-60: pending dialogs with no live runner are cleared by the init sweep.
+    # Start runner first to avoid the sweep clearing the dialog so the buttons render.
     test "the force-command guard's Confirm button uses a native value attribute, not phx-value-value",
          %{conn: conn, pi_session: session} do
+      {:ok, _runner} = SessionSupervisor.start_session(session.id)
+
       base = ~N[2026-01-01 00:00:00.000000]
       window_size = OrcaHubWeb.SessionLive.Show.window_size()
 
