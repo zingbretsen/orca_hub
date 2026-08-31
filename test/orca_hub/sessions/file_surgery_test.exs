@@ -487,6 +487,10 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
 
       assert FileSurgery.fetch(session.id, window_minutes: 30) == nil
     end
+
+    test "never raises on an invalid session_id, returns nil" do
+      assert FileSurgery.fetch("not-a-uuid") == nil
+    end
   end
 
   describe "fetch_many/2" do
@@ -498,6 +502,48 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
       assert Map.keys(result) |> Enum.sort() == Enum.sort(session_ids)
       assert result[Enum.at(session_ids, 0)] == nil
       assert result[Enum.at(session_ids, 1)] == nil
+    end
+
+    test "never raises when some ids are invalid; every id is still a key" do
+      session_ids = ["not-a-uuid", Ecto.UUID.generate()]
+
+      result = FileSurgery.fetch_many(session_ids)
+
+      assert Map.keys(result) |> Enum.sort() == Enum.sort(session_ids)
+      assert result["not-a-uuid"] == nil
+    end
+
+    test "one bad id does not suppress a good session's evidence" do
+      dir =
+        Path.join(System.tmp_dir!(), "file-surgery-badid-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, session} = Sessions.create_session(%{directory: dir})
+
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "t1",
+                  "name" => "Bash",
+                  "input" => %{"command" => "cat lib/foo.ex > /tmp/a"}
+                }
+              ]
+            }
+          }
+        })
+
+      result = FileSurgery.fetch_many(["not-a-uuid", session.id])
+
+      assert result["not-a-uuid"] == nil
+      assert result[session.id].path == "lib/foo.ex"
     end
 
     test "batches real evidence per session in one query" do

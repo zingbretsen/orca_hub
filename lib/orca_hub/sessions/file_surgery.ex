@@ -56,6 +56,8 @@ defmodule OrcaHub.Sessions.FileSurgery do
 
   import Ecto.Query
 
+  require Logger
+
   alias OrcaHub.Repo
   alias OrcaHub.Sessions.Message
 
@@ -76,6 +78,9 @@ defmodule OrcaHub.Sessions.FileSurgery do
   @doc """
   Fetches `session_id`'s messages from the last `window_minutes` (default
   #{@default_window_minutes}) and runs `detect/1` over them.
+
+  Never raises — an invalid `session_id` or a DB failure is logged and
+  returns `nil`, matching `detect/1`'s own non-raising guarantee.
   """
   def fetch(session_id, opts \\ []) do
     window_minutes = Keyword.get(opts, :window_minutes, @default_window_minutes)
@@ -89,6 +94,13 @@ defmodule OrcaHub.Sessions.FileSurgery do
       |> Repo.all()
 
     detect(messages)
+  rescue
+    e ->
+      Logger.warning(
+        "FileSurgery.fetch/2 failed for session #{inspect(session_id)}: #{Exception.message(e)}"
+      )
+
+      nil
   end
 
   @doc """
@@ -99,15 +111,36 @@ defmodule OrcaHub.Sessions.FileSurgery do
 
   Returns `%{session_id => evidence_or_nil}`. Every id in `session_ids` is
   guaranteed to be a key of the result — a session with no messages (or no
-  match) in the window maps to `nil`, it is never simply absent.
+  match) in the window maps to `nil`, it is never simply absent, and that
+  guarantee holds on the FAILURE PATH too (see below): a caller reasonably
+  reads a missing key as "not computed yet" and a `nil` value as "no
+  evidence", so returning `%{}` under failure would silently change that
+  meaning rather than obviously breaking.
+
+  An invalid `session_id` (fails to parse as a UUID) is filtered out
+  BEFORE the batch query rather than left to raise inside it — since this
+  one query covers the whole watched set at once, a single bad id must
+  never poison every OTHER session's result. `detect/1` is already
+  per-session safe (`safely/1` wraps it, run once per group), so the
+  query is the only all-or-nothing step in this function; a genuine DB
+  failure past the filter is still caught by the outer rescue as a
+  backstop, mapping every requested id to `nil`.
   """
   def fetch_many(session_ids, opts \\ []) when is_list(session_ids) do
     window_minutes = Keyword.get(opts, :window_minutes, @sweep_window_minutes)
     cutoff = NaiveDateTime.utc_now() |> NaiveDateTime.add(-window_minutes * 60, :second)
 
+    {valid_ids, invalid_ids} = Enum.split_with(session_ids, &valid_uuid?/1)
+
+    if invalid_ids != [] do
+      Logger.warning(
+        "FileSurgery.fetch_many/2 dropped invalid session ids: #{inspect(invalid_ids)}"
+      )
+    end
+
     messages =
       from(m in Message,
-        where: m.session_id in ^session_ids and m.inserted_at >= ^cutoff,
+        where: m.session_id in ^valid_ids and m.inserted_at >= ^cutoff,
         order_by: [asc: m.inserted_at]
       )
       |> Repo.all()
@@ -120,7 +153,23 @@ defmodule OrcaHub.Sessions.FileSurgery do
     session_ids
     |> Map.new(&{&1, nil})
     |> Map.merge(evidence_by_session)
+  rescue
+    e ->
+      Logger.warning(
+        "FileSurgery.fetch_many/2 failed for #{length(session_ids)} session(s): #{Exception.message(e)}"
+      )
+
+      Map.new(session_ids, &{&1, nil})
   end
+
+  defp valid_uuid?(id) when is_binary(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, _} -> true
+      :error -> false
+    end
+  end
+
+  defp valid_uuid?(_), do: false
 
   @doc """
   Pure detection over an already-fetched, oldest-first list of message

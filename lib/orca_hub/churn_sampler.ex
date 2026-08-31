@@ -124,6 +124,26 @@ defmodule OrcaHub.ChurnSampler do
   `{:ok, [], edge_state}` (edge_state unchanged) rather than crashing the
   singleton GenServer and taking every other subscription's alerting down
   with it.
+
+  That `rescue` returning edge_state UNCHANGED cuts two ways. For a
+  TRANSIENT failure it's protective: a condition that went true during a
+  failed tick isn't recorded as true, so its rising edge survives and
+  fires on the next successful tick — no missed edges. For a PERSISTENT
+  failure it is the opposite: every tick fails, edge state never
+  advances, and NOTHING EVER FIRES AGAIN, indefinitely, with a log line
+  as the only trace.
+
+  That outage is undetectable by observation, because "no alerts" is this
+  system's historical baseline (`churn_samples.churn_suspected` has been
+  true 0 times in 1480 samples, and only 3 `[Worker alert]` messages have
+  ever been delivered — see `churn_signal_mining.md`). There is no
+  anomaly for an operator to notice.
+
+  Therefore EVERY contributor to `AlertEvaluator.evaluate/3` must fail
+  closed to a neutral value LOCALLY. Do not rely on this outer rescue —
+  it does not degrade alerting, it silently ends it. `deliver_alert/1`
+  already has its own rescue, so single-delivery failures are contained;
+  the gap is specifically inside `evaluate/3` and whatever it calls.
   """
   def evaluate_and_deliver_alerts(edge_state \\ %{}) do
     {alerts, new_edge_state} = AlertEvaluator.evaluate(nil, DateTime.utc_now(), edge_state)
