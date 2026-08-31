@@ -258,11 +258,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   defp pending_question(%{backend: "claude"}, _evidence), do: {nil, false}
   defp pending_question(_session, _evidence), do: {nil, false}
 
-  # Returns just the boolean for conditions that don't need discriminator
-  defp pending_question?(session, evidence) do
-    {_, is_pending} = pending_question(session, evidence)
-    is_pending
-  end
+
 
   # -------------------------------------------------------------------
   # Rising-edge + cooldown (item 5)
