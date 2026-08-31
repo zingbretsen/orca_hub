@@ -42,7 +42,6 @@ defmodule OrcaHub.Sessions.Churn do
   def assess(activity, session, commit_info, now \\ DateTime.utc_now(), file_surgery \\ nil)
 
   def assess(activity, session, commit_info, now, file_surgery) do
-    IO.inspect({:assess, now, file_surgery, session.progress_updated_at}, label: "DEBUG Churn.assess")
     tool_calls_15m = Map.get(activity, :tool_calls_15m, 0)
     tool_calls_30m = Map.get(activity, :tool_calls_30m, 0)
     distinct_tools_15m = Map.get(activity, :distinct_tools_15m, 0)
