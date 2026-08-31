@@ -1859,9 +1859,10 @@ defmodule OrcaHub.SessionRunner do
       }
       db_call(data, :create_message, [%{session_id: session_id, data: stale_resolution}])
     end)
+    data
   end
 
-  defp clear_pi_dialogs_on_exit(_data), do: :ok
+  defp clear_pi_dialogs_on_exit(data), do: data
 
   defp handle_streaming_exit(code, state, data) do
     Logger.warning(
