@@ -444,7 +444,12 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
 
       assert {[], edge_state} = AlertEvaluator.evaluate([subscription])
       assert map_size(edge_state) == 1
-      assert edge_state[{orchestrator_id, session.id, "churn"}].state == false
+      # Get the key from the map entry (subscription.id is the auto-generated primary key)
+      {{sub_id, sess_id, cond}, edge_entry} = Enum.at(Map.to_list(edge_state), 0)
+      assert sub_id == subscription.id
+      assert sess_id == session.id
+      assert cond == "churn"
+      assert edge_entry.state == false
     end
 
     test "rising edge: A -> A -> B transition for pending_question" do

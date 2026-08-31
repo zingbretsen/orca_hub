@@ -270,7 +270,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
 
   # For pending_question, value is boolean, discriminator is question ID (or nil for other conditions)
   defp apply_edge(subscription, session, condition, value, activity, churn, now, edge_state, discriminator) do
-    key = {subscription.orchestrator_session_id, session.id, condition}
+    key = {subscription.id, session.id, condition}
     prior = Map.get(edge_state, key, %{state: false, last_alerted_at: nil})
 
     # Handle both plain boolean (churn/stall/etc) and tuple (pending_question) value
@@ -278,8 +278,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     cond do
       value == false or value == {nil, false} ->
         # Condition is false - clear state, removing discriminator key if present
-        new_state = Map.put(edge_state, key, Map.put(prior, :state, false))
-        {nil, new_state}
+        {nil, Map.put(edge_state, key, Map.put(prior, :state, false))}
 
       not prior.state ->
         # First time seeing this condition - fire alert
