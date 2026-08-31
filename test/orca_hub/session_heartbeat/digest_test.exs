@@ -110,7 +110,7 @@ defmodule OrcaHub.SessionHeartbeat.DigestTest do
       assert digest =~ "implementing (writing tests)"
       assert digest =~ "1msg/0tool (5m)"
 
-      assert {"running", "implementing", "writing tests", _last_activity_at, _churn_suspected} =
+      assert {"running", "implementing", "writing tests", _last_activity_at, _churn_suspected, _pending_q} =
                snapshot[watched.id]
     end
 

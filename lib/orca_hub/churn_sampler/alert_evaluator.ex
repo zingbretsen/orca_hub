@@ -94,8 +94,8 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
         conditions = evaluate_conditions(subscription.conditions || %{}, session, activity, churn, %{pending_question: pending_question_evidence, file_surgery: file_surgery})
 
         {new_alerts, edge_acc} =
-          Enum.reduce(conditions, {[], edge_acc}, fn {condition, value}, {alerts2, edge2} ->
-            apply_edge(subscription, session, condition, value, activity, churn, now, edge2)
+          Enum.reduce(conditions, {[], edge_acc}, fn {condition, value, discriminator}, {alerts2, edge2} ->
+            apply_edge(subscription, session, condition, value, activity, churn, now, edge2, discriminator)
             |> case do
               {nil, edge3} -> {alerts2, edge3}
               {alert, edge3} -> {[alert | alerts2], edge3}
@@ -202,19 +202,21 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     conditions
     |> Enum.flat_map(fn
       {"churn", true} ->
-        [{"churn", churn.churn_suspected}]
+        [{"churn", churn.churn_suspected, nil}]
 
       {"stall", true} ->
-        [{"stall", stall?(session, activity)}]
+        [{"stall", stall?(session, activity), nil}]
 
       {"progress_stale", minutes} when is_integer(minutes) ->
-        [{"progress_stale", progress_stale?(churn, minutes)}]
+        [{"progress_stale", progress_stale?(churn, minutes), nil}]
 
       {"no_commit_for", minutes} when is_integer(minutes) ->
-        [{"no_commit_for", no_commit_for?(session, activity, churn, minutes)}]
+        [{"no_commit_for", no_commit_for?(session, activity, churn, minutes), nil}]
 
       {"pending_question", true} ->
-        [{"pending_question", pending_question?(session, pending_question_evidence)}]
+        # For pending_question: value is boolean, discriminator is the question ID
+        {question_id, is_pending} = pending_question(session, pending_question_evidence)
+        [{"pending_question", is_pending, question_id}]
 
       _ ->
         []
@@ -245,31 +247,49 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   # For pi sessions: evidence is %{id:, method:, title:, message:, options:} or nil
   # For claude sessions: checked via status == "waiting" in process
   # We check claude status in the session map directly, pi evidence from Sessions.pending_question/1
-  defp pending_question?(%{backend: "pi"}, evidence) do
-    not is_nil(evidence)
+  defp pending_question(%{backend: "pi"}, evidence) do
+    case evidence do
+      nil -> {nil, false}
+      %{id: id} -> {id, true}
+    end
   end
 
-  defp pending_question?(%{backend: "claude", status: "waiting"}, _evidence), do: true
-  defp pending_question?(%{backend: "claude"}, _evidence), do: false
-  defp pending_question?(_session, _evidence), do: false
+  defp pending_question(%{backend: "claude", status: "waiting"}, _evidence), do: {:claude_waiting, true}
+  defp pending_question(%{backend: "claude"}, _evidence), do: {nil, false}
+  defp pending_question(_session, _evidence), do: {nil, false}
+
+  # Returns just the boolean for conditions that don't need discriminator
+  defp pending_question?(session, evidence) do
+    {_, is_pending} = pending_question(session, evidence)
+    is_pending
+  end
 
   # -------------------------------------------------------------------
   # Rising-edge + cooldown (item 5)
   # -------------------------------------------------------------------
 
-  defp apply_edge(subscription, session, condition, value, activity, churn, now, edge_state) do
+  # For pending_question, value is boolean, discriminator is question ID (or nil for other conditions)
+  defp apply_edge(subscription, session, condition, value, activity, churn, now, edge_state, discriminator) do
     key = {subscription.id, session.id, condition}
     prior = Map.get(edge_state, key, %{state: false, last_alerted_at: nil})
 
+    # Handle both plain boolean (churn/stall/etc) and tuple (pending_question) value
+    # For pending_question, discriminator is the question ID; for others it's nil
     cond do
-      not value ->
-        {nil, Map.put(edge_state, key, %{prior | state: false})}
+      value == false or value == {nil, false} ->
+        # Condition is false - clear state, removing discriminator key if present
+        {nil, Map.put(edge_state, key, Map.put(prior, :state, false))}
 
       not prior.state ->
-        fire(subscription, session, condition, activity, churn, now, edge_state, key)
+        # First time seeing this condition - fire alert
+        fire(subscription, session, condition, activity, churn, now, edge_state, key, discriminator)
+
+      condition == "pending_question" and Map.get(prior, :discriminator, nil) != discriminator ->
+        # For pending_question: new question ID - fresh rising edge, ignore cooldown
+        fire(subscription, session, condition, activity, churn, now, edge_state, key, discriminator)
 
       cooldown_elapsed?(prior.last_alerted_at, subscription.cooldown_seconds, now) ->
-        fire(subscription, session, condition, activity, churn, now, edge_state, key)
+        fire(subscription, session, condition, activity, churn, now, edge_state, key, discriminator)
 
       true ->
         {nil, edge_state}
@@ -281,7 +301,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   defp cooldown_elapsed?(last_alerted_at, cooldown_seconds, now),
     do: DateTime.diff(now, last_alerted_at, :second) >= (cooldown_seconds || 900)
 
-  defp fire(subscription, session, condition, activity, churn, now, edge_state, key) do
+  defp fire(subscription, session, condition, activity, churn, now, edge_state, key, discriminator) do
     alert = %{
       orchestrator_session_id: subscription.orchestrator_session_id,
       session_id: session.id,
@@ -291,19 +311,10 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
 
     edge_entry = %{state: true, last_alerted_at: now}
 
-    # Add discriminator key ONLY for pending_question condition
+    # Only add discriminator key for pending_question condition
     edge_entry_with_discriminator =
       if condition == "pending_question" do
-        case session.backend do
-          "pi" ->
-            Map.put(edge_entry, :discriminator, :pi_dialog)
-
-          "claude" ->
-            Map.put(edge_entry, :discriminator, :claude_waiting)
-
-          _ ->
-            edge_entry
-        end
+        Map.put(edge_entry, :discriminator, discriminator)
       else
         edge_entry
       end

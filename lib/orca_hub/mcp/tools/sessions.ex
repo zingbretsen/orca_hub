@@ -661,7 +661,9 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           # Also fetch FileSurgery evidence for churn block
           file_surgery = OrcaHub.Sessions.FileSurgery.fetch(target_id, window_minutes: 10)
 
-          churn = OrcaHub.Sessions.Churn.assess(activity, session, last_commit_info, nil, file_surgery)
+          # Call with explicit now (DateTime.utc_now()) and file_surgery
+          now = DateTime.utc_now()
+          churn = OrcaHub.Sessions.Churn.assess(activity, session, last_commit_info, now, file_surgery)
 
           # Include pending pi UI request if present
           pending_request = HubRPC.pending_pi_ui_request(target_id)
