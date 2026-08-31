@@ -77,15 +77,19 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     if sessions == [] do
       {[], edge_state}
     else
-      activity_map = Sessions.activity_metadata(Enum.map(sessions, & &1.id))
+      session_ids = Enum.map(sessions, & &1.id)
+      activity_map = Sessions.activity_metadata(session_ids)
       commit_map = fetch_commit_info_for(sessions)
+      pending_questions = fetch_pending_questions_for(session_ids)
 
       Enum.reduce(sessions, {[], edge_state}, fn session, {alerts_acc, edge_acc} ->
         activity = Map.get(activity_map, session.id, %{})
         commit_info = Map.get(commit_map, session.id)
-        churn = Churn.assess(activity, session, commit_info, now)
+        pending_question_evidence = Map.get(pending_questions, session.id, nil)
 
-        conditions = evaluate_conditions(subscription.conditions || %{}, session, activity, churn)
+        churn = Churn.assess(activity, session, commit_info, now, pending_question_evidence)
+
+        conditions = evaluate_conditions(subscription.conditions || %{}, session, activity, churn, pending_question_evidence)
 
         {new_alerts, edge_acc} =
           Enum.reduce(conditions, {[], edge_acc}, fn {condition, value}, {alerts2, edge2} ->
@@ -144,6 +148,27 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     Map.new(tagged, fn {id, node, dir} -> {id, commit_by_pair[{node, dir}]} end)
   end
 
+  defp fetch_pending_questions_for(session_ids) do
+    # Batch-fetch pending questions for all pi sessions only.
+    # claude pending question check is done in-process via session.status == "waiting"
+    pi_sessions = Enum.filter(session_ids, &valid_uuid?/1)
+
+    try do
+      Sessions.pending_questions_for(pi_sessions)
+    rescue
+      _ -> %{}
+    end
+  end
+
+  defp valid_uuid?(id) when is_binary(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, _} -> true
+      :error -> false
+    end
+  end
+
+  defp valid_uuid?(_), do: false
+
   defp fetch_last_commit(node, directory) do
     case Cluster.rpc(node, Sessions, :git_head_info, [directory]) do
       %{} = info -> info
@@ -156,9 +181,13 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   # -------------------------------------------------------------------
 
   # Only a condition explicitly present in `conditions` is evaluated at
-  # all — "progress_stale"/"no_commit_for" are opt-in (need an integer
-  # threshold), "churn"/"stall" are boolean opt-in/opt-out.
-  defp evaluate_conditions(conditions, session, activity, churn) do
+  # all — "progress_stale"/"no_commit_for"/"pending_question" are opt-in
+  # (need an integer threshold for progress_stale/no_commit_for, boolean for
+  # pending_question), "churn"/"stall" are boolean opt-in/opt-out.
+  # The `pending_question_evidence` argument is the pre-fetched evidence map
+  # for this session (pi: %{id:, method:, title:, message:, options:} or nil;
+  # claude: checked via status == "waiting" in process).
+  defp evaluate_conditions(conditions, session, activity, churn, pending_question_evidence) do
     conditions
     |> Enum.flat_map(fn
       {"churn", true} ->
@@ -172,6 +201,9 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
 
       {"no_commit_for", minutes} when is_integer(minutes) ->
         [{"no_commit_for", no_commit_for?(session, activity, churn, minutes)}]
+
+      {"pending_question", true} ->
+        [{"pending_question", pending_question?(session, pending_question_evidence)}]
 
       _ ->
         []
@@ -198,6 +230,18 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     session.status == "running" and (activity[:tool_calls_15m] || 0) > 0 and
       (is_nil(churn.minutes_since_last_commit) or churn.minutes_since_last_commit > minutes)
   end
+
+  # For pi sessions: evidence is %{id:, method:, title:, message:, options:} or nil
+  # For claude sessions: evidence is nil or %{waiting: true}; checked via status in process
+  # We check claude status in the session map directly, pi status from evidence
+  defp pending_question?(%{backend: "pi"}, evidence) do
+    # Evidence is pre-fetched from Sessions.pending_questions_for/1
+    not is_nil(evidence)
+  end
+
+  defp pending_question?(%{backend: "claude", status: "waiting"}, _evidence), do: true
+  defp pending_question?(%{backend: "claude"}, _evidence), do: false
+  defp pending_question?(_session, _evidence), do: false
 
   # -------------------------------------------------------------------
   # Rising-edge + cooldown (item 5)
@@ -235,7 +279,26 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
       message: build_message(session, condition, activity, churn)
     }
 
-    {alert, Map.put(edge_state, key, %{state: true, last_alerted_at: now})}
+    edge_entry = %{state: true, last_alerted_at: now}
+
+    # Add discriminator key ONLY for pending_question condition
+    edge_entry_with_discriminator =
+      if condition == "pending_question" do
+        case session.backend do
+          "pi" ->
+            Map.put(edge_entry, :discriminator, :pi_dialog)
+
+          "claude" ->
+            Map.put(edge_entry, :discriminator, :claude_waiting)
+
+          _ ->
+            edge_entry
+        end
+      else
+        edge_entry
+      end
+
+    {alert, Map.put(edge_state, key, edge_entry_with_discriminator)}
   end
 
   # -------------------------------------------------------------------
@@ -293,6 +356,25 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     case churn.minutes_since_last_commit do
       nil -> "#{calls} tool calls/15m, no commit observed yet"
       age -> "#{calls} tool calls/15m, last commit #{age}m ago"
+    end
+  end
+
+  defp metric_line("pending_question", session, _activity, _churn) do
+    cond do
+      session.backend == "pi" ->
+        case Sessions.pending_question(session.id) do
+          nil ->
+            "no pending dialog"
+
+          %{id: id, method: method} ->
+            "pi session blocked on dialog (id: #{id}, method: #{method}) - answer with answer_session_question"
+        end
+
+      session.backend == "claude" ->
+        "claude session blocked on dialog (status: waiting) - send user message to answer"
+
+      true ->
+        "pending dialog (#{session.backend})"
     end
   end
 

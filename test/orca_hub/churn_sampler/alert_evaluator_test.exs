@@ -366,4 +366,63 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       assert AlertEvaluator.evaluate([], DateTime.utc_now(), %{seed: true}) == {[], %{seed: true}}
     end
   end
+
+  describe "edge_state shape - discriminator key constraint" do
+    # Per the issue: churn/stall/progress_stale/no_commit_for entries must be
+    # byte-identical maps (%{state:, last_alerted_at:}) with NO discriminator key.
+    # The discriminator key is ONLY present on pending_question edge entries.
+    test "churn edge entry contains no discriminator key" do
+      orchestrator_id = Ecto.UUID.generate()
+
+      session =
+        plain_session("discriminator-churn-test", %{
+          status: "running",
+          progress_updated_at: DateTime.utc_now() |> DateTime.add(-20, :minute)
+        })
+
+      Enum.each(1..30, fn _ -> tool_use_message(session.id, "Bash") end)
+
+      subscription =
+        subscribe(orchestrator_id, %{
+          session_ids: [session.id],
+          conditions: %{"churn" => true}
+        })
+
+      {[_alert], edge_state} = AlertEvaluator.evaluate([subscription])
+
+      # Verify the edge_state has exactly one key
+      assert map_size(edge_state) == 1
+
+      # Get the edge entry and verify it has no discriminator key
+      {{_, _, _} = key, edge_entry} = Enum.at(Map.to_list(edge_state), 0)
+      refute Map.has_key?(edge_entry, :discriminator)
+      assert edge_entry == %{state: true, last_alerted_at: edge_entry.last_alerted_at}
+    end
+
+    test "claude pending_question edge entry includes discriminator key" do
+      orchestrator_id = Ecto.UUID.generate()
+
+      session =
+        plain_session("discriminator-pending-test", %{
+          backend: "claude",
+          status: "waiting"
+        })
+
+      subscription =
+        subscribe(orchestrator_id, %{
+          session_ids: [session.id],
+          conditions: %{"pending_question" => true}
+        })
+
+      {[_alert], edge_state} = AlertEvaluator.evaluate([subscription])
+
+      # Verify the edge_state has exactly one key
+      assert map_size(edge_state) == 1
+
+      # Get the edge entry and verify it has the discriminator key
+      {{_, _, _} = key, edge_entry} = Enum.at(Map.to_list(edge_state), 0)
+      assert Map.has_key?(edge_entry, :discriminator)
+      assert edge_entry.discriminator == :claude_waiting
+    end
+  end
 end
