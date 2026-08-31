@@ -322,10 +322,13 @@ defmodule OrcaHub.SessionRunner do
 
     # ORCAHUB3-60: init sweep for orphaned pi dialogs
     # A node restart/deploy tears the port down, orphaning any open pi dialog.
-    # Scan for unanswered pi_ui_request events and clear them with stale resolution.
+    # Scan for unanswered pi_ui_request events in the bounded tail and clear them.
+    # Using the tail is safe: an orphaned dialog means the runner died with it open,
+    # so by definition nothing was appended after it — it is always among the most
+    # recent messages, never buried in old history. (This mirrors the existing
+    # pending_questions logic, which also uses the bounded tail.)
     if session.backend == "pi" do
-      all_messages = db_call(init_data, :list_messages, [session_id])
-      open_dialogs = scan_for_open_pi_dialogs(all_messages)
+      open_dialogs = scan_for_open_pi_dialogs(saved_messages)
       Enum.each(open_dialogs, fn %{"id" => id} ->
         stale_resolution = %{
           "type" => "pi_ui_response",
@@ -1842,11 +1845,12 @@ defmodule OrcaHub.SessionRunner do
   # exit_status we still hold the port for is always an unexpected crash.
 
   # Clear any pending pi dialogs when the port exits (crash or idle timeout).
-  # Scans for unanswered pi_ui_request events and persists stale resolutions.
+  # Uses targeted queries instead of loading all messages to avoid perf regressions.
   defp clear_pi_dialogs_on_exit(%{backend: backend, session_id: session_id} = data)
        when backend.backend == "pi" do
-    all_messages = db_call(data, :list_messages, [session_id])
-    open_dialogs = scan_for_open_pi_dialogs(all_messages)
+    # Find all pi_ui_request events that don't have a corresponding pi_ui_response
+    # with the same id using HubRPC to avoid loading all messages.
+    open_dialogs = db_call(data, :all_pending_pi_dialog_ids, [session_id])
     Enum.each(open_dialogs, fn %{"id" => id} ->
       stale_resolution = %{
         "type" => "pi_ui_response",

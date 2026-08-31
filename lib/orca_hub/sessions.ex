@@ -844,6 +844,30 @@ defmodule OrcaHub.Sessions do
     )
   end
 
+  # Find all pi_ui_request events that don't have a corresponding pi_ui_response
+  # with the same id. Returns a list of %{"id" => id} maps.
+  def all_pending_pi_dialog_ids(session_id) do
+    requests =
+      from(m in Message,
+        where: m.session_id == ^session_id,
+        where: fragment("? ->> 'type'", m.data) == "pi_ui_request",
+        select: fragment("? ->> 'id'", m.data)
+      )
+      |> Repo.all()
+
+    answered_ids =
+      from(m in Message,
+        where: m.session_id == ^session_id,
+        where: fragment("? ->> 'type'", m.data) == "pi_ui_response"
+      )
+      |> Repo.all()
+      |> Enum.map(& &1)
+      |> MapSet.new()
+
+    Enum.filter(requests, fn id -> not MapSet.member?(answered_ids, id) end)
+    |> Enum.map(&%{"id" => &1})
+  end
+
   def create_message(attrs) do
     %Message{}
     |> Message.changeset(attrs)
