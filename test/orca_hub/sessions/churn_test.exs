@@ -2,6 +2,55 @@ defmodule OrcaHub.Sessions.ChurnTest do
   use OrcaHub.DataCase, async: true
 
   alias OrcaHub.Sessions.Churn
+  alias OrcaHub.Sessions.FileSurgery
+
+  defp assistant_message(blocks) do
+    %{data: %{"type" => "assistant", "message" => %{"content" => blocks}}}
+  end
+
+  defp tool_use(name, input) do
+    %{"type" => "tool_use", "name" => name, "input" => input}
+  end
+
+  describe "assess/5 (ORCAHUB3-61 file-surgery integration)" do
+    test "ORCAHUB3-61: the observed low-volume file-surgery incident sets churn_suspected" do
+      # The real incident: 3 tool calls / 5 min, repetition ratio 0.07-0.27,
+      # no commit, no recent progress — every volumetric gate false.
+      activity = %{
+        tool_calls_15m: 3,
+        tool_calls_30m: 30,
+        distinct_tools_15m: 3,
+        distinct_tools_30m: 25
+      }
+
+      session = %{
+        progress_updated_at: NaiveDateTime.utc_now() |> NaiveDateTime.add(-60, :minute)
+      }
+
+      commit_info = nil
+      now = DateTime.utc_now()
+
+      messages = [
+        assistant_message([
+          tool_use("Bash", %{
+            "command" =>
+              "cat /home/zach/orca_hub/lib/orca_hub/pi_config_sync.ex | head -215 > /tmp/pi_config_part1.ex"
+          })
+        ])
+      ]
+
+      file_surgery = FileSurgery.detect(messages)
+      assert file_surgery.path == "/home/zach/orca_hub/lib/orca_hub/pi_config_sync.ex"
+
+      result = Churn.assess(activity, session, commit_info, now, file_surgery)
+
+      # The volumetric gates genuinely stay false — this is not a wash.
+      assert result.tool_calls_15m < 25
+      refute result.repetition_ratio_15m != nil and result.repetition_ratio_15m >= 0.5
+
+      assert result.churn_suspected == true
+    end
+  end
 
   describe "assess/4" do
     test "churn_suspected: true when all conditions are met" do
