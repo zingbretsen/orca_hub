@@ -523,8 +523,17 @@ defmodule OrcaHub.SessionRunner do
 
   # A mid-turn dialog can only be pending while :running (see
   # answer_ui_request/3's doc) — :ready structurally never has one.
-  def ready({:call, from}, {:answer_ui_request, _request_id, _payload}, _data) do
-    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  def ready({:call, from}, {:answer_ui_request, request_id, _payload}, data) do
+    # ORCAHUB3-60: the requested dialog is no longer pending (no runner state,
+    # no port, or backend is not pi). Persist a resolution event so
+    # pending_pi_ui_request/1 correctly falls. Use resolution: "stale".
+    stale_resolution = %{
+      "type" => "pi_ui_response",
+      "id" => request_id,
+      "resolution" => "stale"
+    }
+    new_data = handle_stream_event(stale_resolution, data)
+    {:keep_state, new_data, [{:reply, from, {:error, :not_running}}]}
   end
 
   def ready({:call, from}, :get_state, data) do
@@ -568,8 +577,16 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
-  def idle({:call, from}, {:answer_ui_request, _request_id, _payload}, _data) do
-    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  def idle({:call, from}, {:answer_ui_request, request_id, _payload}, data) do
+    # ORCAHUB3-60: the requested dialog is no longer pending (no warm port).
+    # Persist a resolution event so pending_pi_ui_request/1 correctly falls.
+    stale_resolution = %{
+      "type" => "pi_ui_response",
+      "id" => request_id,
+      "resolution" => "stale"
+    }
+    new_data = handle_stream_event(stale_resolution, data)
+    {:keep_state, new_data, [{:reply, from, {:error, :not_running}}]}
   end
 
   # toggle_plan_mode/1 (see its doc): only meaningful against an ALREADY-warm
@@ -784,8 +801,16 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
-  def running({:call, from}, {:answer_ui_request, _request_id, _payload}, _data) do
-    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  def running({:call, from}, {:answer_ui_request, request_id, _payload}, data) do
+    # ORCAHUB3-60: the requested dialog is no longer pending (nil port).
+    # Persist a resolution event so pending_pi_ui_request/1 correctly falls.
+    stale_resolution = %{
+      "type" => "pi_ui_response",
+      "id" => request_id,
+      "resolution" => "stale"
+    }
+    new_data = handle_stream_event(stale_resolution, data)
+    {:keep_state, new_data, [{:reply, from, {:error, :not_running}}]}
   end
 
   # Runtime kill-switch downgrade while a turn is in flight. We can't drop to
@@ -942,8 +967,16 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
   end
 
-  def error({:call, from}, {:answer_ui_request, _request_id, _payload}, _data) do
-    {:keep_state_and_data, [{:reply, from, {:error, :not_running}}]}
+  def error({:call, from}, {:answer_ui_request, request_id, _payload}, data) do
+    # ORCAHUB3-60: the requested dialog is no longer pending (errored run).
+    # Persist a resolution event so pending_pi_ui_request/1 correctly falls.
+    stale_resolution = %{
+      "type" => "pi_ui_response",
+      "id" => request_id,
+      "resolution" => "stale"
+    }
+    new_data = handle_stream_event(stale_resolution, data)
+    {:keep_state, new_data, [{:reply, from, {:error, :not_running}}]}
   end
 
   # toggle_plan_mode/1 (spec §12.8): an errored run has no reliably-live port
