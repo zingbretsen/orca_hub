@@ -442,9 +442,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
           conditions: %{"churn" => true}
         })
 
-      {[], edge_state} = AlertEvaluator.evaluate([subscription])
-
-      assert [] == []
+      assert {[], edge_state} = AlertEvaluator.evaluate([subscription])
       assert map_size(edge_state) == 1
       assert edge_state[{orchestrator_id, session.id, "churn"}].state == false
     end
