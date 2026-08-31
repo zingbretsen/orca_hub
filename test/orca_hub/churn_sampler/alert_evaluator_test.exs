@@ -568,8 +568,9 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       })
 
       # New question "B" should fire immediately (different discriminator), ignoring cooldown
+      # Use 400 seconds (inside the 600s cooldown) to prove discriminator change overrides cooldown
       {[alert_b], edge_state_b} =
-        AlertEvaluator.evaluate([subscription], DateTime.add(now, 600, :second), edge_state_a)
+        AlertEvaluator.evaluate([subscription], DateTime.add(now, 400, :second), edge_state_a)
 
       assert alert_b.condition == "pending_question"
       # Verify the discriminator changed to "B"
