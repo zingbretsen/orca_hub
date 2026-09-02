@@ -150,11 +150,62 @@ defmodule OrcaHub.ConfigFile.Yaml do
 
     {norm_value, type} =
       case raw_text do
-        nil -> normalize_leaf(value)
-        text -> {text, :string}
+        nil ->
+          # Check for tagged sequence items
+          {value, _type} = check_tagged_seq_item(value, path, scanned)
+          normalize_leaf(value)
+
+        text ->
+          {text, :string}
       end
 
     %{kind: :leaf, path: path, value: norm_value, value_type: type}
+  end
+
+  # Check if this is a tagged sequence item by looking up the parent's sequence item line indices
+  defp check_tagged_seq_item(value, path, scanned) do
+    parent_path = Enum.drop(path, -1)
+    last = List.last(path)
+
+    # Only check for integer-indexed sequence items
+    case is_integer(last) do
+      true ->
+        case Map.get(scanned.seq_items, parent_path) do
+          nil ->
+            {value, :string}
+
+          indices ->
+            # Find if this index is in the sequence
+            line_idx = Enum.at(indices, last)
+
+            case line_idx do
+              nil ->
+                {value, :string}
+
+              idx ->
+                # Check if the line at this index starts with !
+                line = Enum.at(String.split(scanned.raw_text, "\n"), idx)
+                trimmed = String.trim_leading(line)
+
+                rest =
+                  if String.starts_with?(trimmed, "- "),
+                    do: String.slice(trimmed, 2..-1//1),
+                    else: ""
+
+                {item_text, _comment} = split_yaml_comment(rest)
+                item_text = String.trim(item_text)
+
+                if String.starts_with?(item_text, "!") do
+                  {item_text, :string}
+                else
+                  {value, :string}
+                end
+            end
+        end
+
+      false ->
+        {value, :string}
+    end
   end
 
   defp ordered_keys(map, order, path) do
@@ -180,14 +231,24 @@ defmodule OrcaHub.ConfigFile.Yaml do
 
   defp scan(raw) do
     lines = String.split(raw, "\n")
+    initial = initial_scan_state()
+    initial_with_raw = %{initial | raw_text: raw}
 
     lines
     |> Enum.with_index()
-    |> Enum.reduce(initial_scan_state(), fn {line, idx}, state -> scan_line(line, idx, state) end)
+    |> Enum.reduce(initial_with_raw, fn {line, idx}, state -> scan_line(line, idx, state) end)
   end
 
   defp initial_scan_state,
-    do: %{order: %{}, kv_lines: %{}, block_lines: %{}, stack: [], tagged: %{}}
+    do: %{
+      order: %{},
+      kv_lines: %{},
+      block_lines: %{},
+      stack: [],
+      tagged: %{},
+      seq_items: %{},
+      raw_text: nil
+    }
 
   defp scan_line(raw_line, idx, state) do
     line = String.trim_trailing(raw_line)
@@ -198,7 +259,7 @@ defmodule OrcaHub.ConfigFile.Yaml do
         state
 
       String.starts_with?(trimmed, "- ") or trimmed == "-" ->
-        state
+        scan_seq_item(trimmed, idx, state)
 
       match = Regex.run(@kv_rx, line) ->
         scan_kv(match, idx, state)
@@ -247,6 +308,38 @@ defmodule OrcaHub.ConfigFile.Yaml do
     else
       %{state | kv_lines: Map.put(state.kv_lines, full_path, idx), tagged: tagged}
     end
+  end
+
+  defp scan_seq_item(trimmed, idx, state) do
+    # Find the parent path from the stack
+    stack = state.stack
+
+    parent_path =
+      case stack do
+        [{_indent, path} | _] -> path
+        [] -> []
+      end
+
+    # Extract the item text after "- " or "-"
+    item_text =
+      if String.starts_with?(trimmed, "- ") do
+        String.slice(trimmed, 2..-1//1)
+      else
+        ""
+      end
+
+    {item_text_stripped, _comment} = split_yaml_comment(item_text)
+    _item_text_stripped = String.trim(item_text_stripped)
+
+    # Track sequence item line indices so we can check for tags in to_tree
+    # Store line indices grouped by parent path
+    seq_items =
+      Map.update(state.seq_items, parent_path, [idx], fn existing -> existing ++ [idx] end)
+
+    %{
+      state
+      | seq_items: seq_items
+    }
   end
 
   defp pad_match(match, size) when length(match) >= size, do: Enum.take(match, size)
@@ -339,10 +432,18 @@ defmodule OrcaHub.ConfigFile.Yaml do
         end
 
       is_integer(last) and scalar_sequence?(tree, parent) ->
-        with {:ok, literal} <- serialize_yaml_value(value),
-             {:ok, {start_idx, end_idx}} <- block_span(scanned, raw, parent),
-             {:ok, item_lines} <- fetch_sequence_item(raw, start_idx, end_idx, last) do
-          rewrite_sequence_item_line(raw, item_lines, literal)
+        with {:ok, {start_idx, end_idx}} <- block_span(scanned, raw, parent),
+             {:ok, item_line_idx} <- fetch_sequence_item(raw, start_idx, end_idx, last) do
+          # Check if this is a tagged sequence item
+          case sequence_item_is_tagged?(raw, item_line_idx) do
+            true ->
+              {:error, :unsupported_structure}
+
+            false ->
+              with {:ok, literal} <- serialize_yaml_value(value) do
+                rewrite_sequence_item_line(raw, item_line_idx, literal)
+              end
+          end
         end
 
       true ->
@@ -550,6 +651,18 @@ defmodule OrcaHub.ConfigFile.Yaml do
     {_value, comment} = split_yaml_comment(rest)
     new_line = String.duplicate(" ", indent) <> "- " <> literal <> yaml_comment_suffix(comment)
     {:ok, lines |> List.replace_at(line_idx, new_line) |> Enum.join("\n")}
+  end
+
+  # Check if a sequence item line starts with a ! tag (after stripping leading indent
+  # and "- "). Returns true if the item text (before any trailing comment) starts with !
+  defp sequence_item_is_tagged?(raw, line_idx) do
+    lines = String.split(raw, "\n")
+    line = Enum.at(lines, line_idx)
+    trimmed = String.trim_leading(line)
+    rest = if String.starts_with?(trimmed, "- "), do: String.slice(trimmed, 2..-1//1), else: ""
+    {item_text, _comment} = split_yaml_comment(rest)
+    item_text = String.trim(item_text)
+    String.starts_with?(item_text, "!")
   end
 
   defp yaml_comment_suffix(nil), do: ""

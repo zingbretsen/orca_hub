@@ -262,14 +262,11 @@ defmodule OrcaHub.ConfigFile.YamlTest do
       assert include_leaf.value_type == :string
     end
 
-    test "a :set on a tagged leaf returns an error and leaves raw text byte-identical" do
-      original = @ha_sample
-
+    test "a :set on a tagged leaf returns an error" do
       result =
-        ConfigFile.apply_op(:yaml, original, {:set, ["homeassistant", "include"], "new_value"})
+        ConfigFile.apply_op(:yaml, @ha_sample, {:set, ["homeassistant", "include"], "new_value"})
 
       assert result == {:error, :unsupported_structure}
-      assert original == @ha_sample
     end
 
     test "an untagged sibling in the same file still edits normally" do
@@ -286,6 +283,43 @@ defmodule OrcaHub.ConfigFile.YamlTest do
       leaf = ConfigFile.get_node(tree, ["sensor"])
       # The value should be the raw text before the comment
       assert leaf.value == "!include sensors.yaml"
+    end
+
+    test "a sequence with tagged items parses correctly and shows raw text" do
+      raw_with_seq =
+        "automation:\n  - !include automations/one.yaml\n  - !include automations/two.yaml\n"
+
+      assert {:ok, tree} = ConfigFile.parse(:yaml, raw_with_seq)
+      auto = ConfigFile.get_node(tree, ["automation"])
+      assert auto.kind == :array
+
+      assert Enum.map(auto.items, & &1.value) == [
+               "!include automations/one.yaml",
+               "!include automations/two.yaml"
+             ]
+    end
+
+    test ":set on a tagged sequence item returns {:error, :unsupported_structure}" do
+      raw_with_seq = "items:\n  - !include one.yaml\n  - normal_value\n"
+      result = ConfigFile.apply_op(:yaml, raw_with_seq, {:set, ["items", 0], "new"})
+      assert result == {:error, :unsupported_structure}
+    end
+
+    test ":set on an untagged scalar sequence item still succeeds" do
+      raw_with_seq = "items:\n  - first\n  - second\n"
+      {:ok, new_raw} = ConfigFile.apply_op(:yaml, raw_with_seq, {:set, ["items", 0], "changed"})
+      {:ok, tree} = ConfigFile.parse(:yaml, new_raw)
+
+      assert Enum.map(ConfigFile.get_node(tree, ["items"]).items, & &1.value) == [
+               "changed",
+               "second"
+             ]
+    end
+
+    test "tagged sequence item with trailing comment is also refused" do
+      raw_with_seq = "items:\n  - !include foo.yaml # comment\n"
+      result = ConfigFile.apply_op(:yaml, raw_with_seq, {:set, ["items", 0], "new"})
+      assert result == {:error, :unsupported_structure}
     end
   end
 
