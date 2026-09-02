@@ -148,22 +148,24 @@ defmodule OrcaHub.ConfigFile.Yaml do
     # If this path was tagged (custom/local YAML tag), use the raw text as the value
     raw_text = Map.get(scanned.tagged, path)
 
-    {norm_value, type} =
+    value =
       case raw_text do
         nil ->
           # Check for tagged sequence items
-          {value, _type} = check_tagged_seq_item(value, path, scanned)
-          normalize_leaf(value)
+          tagged_text = tagged_seq_item_text(scanned, path)
+          tagged_text || value
 
         text ->
-          {text, :string}
+          text
       end
+
+    {norm_value, type} = normalize_leaf(value)
 
     %{kind: :leaf, path: path, value: norm_value, value_type: type}
   end
 
-  # Check if this is a tagged sequence item by looking up the parent's sequence item line indices
-  defp check_tagged_seq_item(value, path, scanned) do
+  # Extract the raw text of a sequence item if it is tagged with !, otherwise return nil
+  defp tagged_seq_item_text(scanned, path) do
     parent_path = Enum.drop(path, -1)
     last = List.last(path)
 
@@ -172,7 +174,7 @@ defmodule OrcaHub.ConfigFile.Yaml do
       true ->
         case Map.get(scanned.seq_items, parent_path) do
           nil ->
-            {value, :string}
+            nil
 
           indices ->
             # Find if this index is in the sequence
@@ -180,7 +182,7 @@ defmodule OrcaHub.ConfigFile.Yaml do
 
             case line_idx do
               nil ->
-                {value, :string}
+                nil
 
               idx ->
                 # Check if the line at this index starts with !
@@ -196,15 +198,15 @@ defmodule OrcaHub.ConfigFile.Yaml do
                 item_text = String.trim(item_text)
 
                 if String.starts_with?(item_text, "!") do
-                  {item_text, :string}
+                  item_text
                 else
-                  {value, :string}
+                  nil
                 end
             end
         end
 
       false ->
-        {value, :string}
+        nil
     end
   end
 
@@ -310,7 +312,7 @@ defmodule OrcaHub.ConfigFile.Yaml do
     end
   end
 
-  defp scan_seq_item(trimmed, idx, state) do
+  defp scan_seq_item(_trimmed, idx, state) do
     # Find the parent path from the stack
     stack = state.stack
 
@@ -319,17 +321,6 @@ defmodule OrcaHub.ConfigFile.Yaml do
         [{_indent, path} | _] -> path
         [] -> []
       end
-
-    # Extract the item text after "- " or "-"
-    item_text =
-      if String.starts_with?(trimmed, "- ") do
-        String.slice(trimmed, 2..-1//1)
-      else
-        ""
-      end
-
-    {item_text_stripped, _comment} = split_yaml_comment(item_text)
-    _item_text_stripped = String.trim(item_text_stripped)
 
     # Track sequence item line indices so we can check for tags in to_tree
     # Store line indices grouped by parent path
