@@ -36,6 +36,10 @@ defmodule OrcaHub.ConfigFile.Yaml do
     * any op touching a sequence that contains at least one mapping element
       (a "sequence of mappings") — by index, or (for `:add`) appending a
       new element to one
+    * custom/local YAML tags (e.g., Home Assistant's `!include`, `!secret`,
+      `!env_var`, Kubernetes' `!Ref`, `!GetAtt`) — these are parsed and
+      displayed with the raw tagged text, but editing them is refused because
+      the adapter cannot safely rewrite the directive
   """
 
   @behaviour OrcaHub.ConfigFile.Format
@@ -48,7 +52,7 @@ defmodule OrcaHub.ConfigFile.Yaml do
   def parse(raw) do
     with {:ok, decoded} <- decode(raw) do
       scanned = scan(raw)
-      {:ok, to_tree(decoded, scanned.order, [])}
+      {:ok, to_tree(decoded, scanned.order, [], scanned)}
     end
   end
 
@@ -56,7 +60,7 @@ defmodule OrcaHub.ConfigFile.Yaml do
   def apply_op(raw, op) do
     with {:ok, decoded} <- decode(raw) do
       scanned = scan(raw)
-      tree = to_tree(decoded, scanned.order, [])
+      tree = to_tree(decoded, scanned.order, [], scanned)
 
       case run_op(raw, scanned, tree, op) do
         {:ok, new_raw} -> verify(new_raw, op, tree)
@@ -66,7 +70,7 @@ defmodule OrcaHub.ConfigFile.Yaml do
   end
 
   defp decode(raw) do
-    case YamlElixir.read_from_string(raw) do
+    case YamlElixir.read_from_string(raw, ignore_unrecognized_tags: true) do
       {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
       {:ok, _other} -> {:error, "top-level YAML value must be a mapping"}
       {:error, error} -> {:error, Exception.message(error)}
@@ -120,22 +124,36 @@ defmodule OrcaHub.ConfigFile.Yaml do
   # Decoded structure + scanned order -> normalized tree
   # -------------------------------------------------------------------
 
-  defp to_tree(map, order, path) when is_map(map) do
+  defp to_tree(map, order, path, scanned) when is_map(map) do
     keys = ordered_keys(map, order, path)
 
     entries =
-      Enum.map(keys, fn key -> {key, to_tree(Map.fetch!(map, key), order, path ++ [key])} end)
+      Enum.map(keys, fn key ->
+        {key, to_tree(Map.fetch!(map, key), order, path ++ [key], scanned)}
+      end)
 
     %{kind: :object, path: path, entries: entries}
   end
 
-  defp to_tree(list, order, path) when is_list(list) do
-    items = list |> Enum.with_index() |> Enum.map(fn {v, i} -> to_tree(v, order, path ++ [i]) end)
+  defp to_tree(list, order, path, scanned) when is_list(list) do
+    items =
+      list
+      |> Enum.with_index()
+      |> Enum.map(fn {v, i} -> to_tree(v, order, path ++ [i], scanned) end)
+
     %{kind: :array, path: path, items: items}
   end
 
-  defp to_tree(value, _order, path) do
-    {norm_value, type} = normalize_leaf(value)
+  defp to_tree(value, _order, path, scanned) do
+    # If this path was tagged (custom/local YAML tag), use the raw text as the value
+    raw_text = Map.get(scanned.tagged, path)
+
+    {norm_value, type} =
+      case raw_text do
+        nil -> normalize_leaf(value)
+        text -> {text, :string}
+      end
+
     %{kind: :leaf, path: path, value: norm_value, value_type: type}
   end
 
@@ -168,7 +186,8 @@ defmodule OrcaHub.ConfigFile.Yaml do
     |> Enum.reduce(initial_scan_state(), fn {line, idx}, state -> scan_line(line, idx, state) end)
   end
 
-  defp initial_scan_state, do: %{order: %{}, kv_lines: %{}, block_lines: %{}, stack: []}
+  defp initial_scan_state,
+    do: %{order: %{}, kv_lines: %{}, block_lines: %{}, stack: [], tagged: %{}}
 
   defp scan_line(raw_line, idx, state) do
     line = String.trim_trailing(raw_line)
@@ -210,14 +229,23 @@ defmodule OrcaHub.ConfigFile.Yaml do
 
     state = %{state | order: order, stack: stack}
 
+    # Record if the value starts with ! (custom/local YAML tag)
+    tagged =
+      if String.starts_with?(value_text, "!") do
+        Map.put(state.tagged, full_path, value_text)
+      else
+        state.tagged
+      end
+
     if value_text == "" do
       %{
         state
         | block_lines: Map.put(state.block_lines, full_path, {idx, indent}),
-          stack: [{indent, full_path} | stack]
+          stack: [{indent, full_path} | stack],
+          tagged: tagged
       }
     else
-      %{state | kv_lines: Map.put(state.kv_lines, full_path, idx)}
+      %{state | kv_lines: Map.put(state.kv_lines, full_path, idx), tagged: tagged}
     end
   end
 
@@ -250,9 +278,18 @@ defmodule OrcaHub.ConfigFile.Yaml do
 
   defp run_op(raw, scanned, tree, {:set, path, value}) do
     case ConfigFile.get_node(tree, path) do
-      nil -> {:error, {:not_found, List.last(path)}}
-      %{kind: :leaf} -> set_leaf(raw, scanned, tree, path, value)
-      _ -> {:error, :unsupported_structure}
+      nil ->
+        {:error, {:not_found, List.last(path)}}
+
+      %{kind: :leaf} ->
+        if Map.has_key?(scanned.tagged, path) do
+          {:error, :unsupported_structure}
+        else
+          set_leaf(raw, scanned, tree, path, value)
+        end
+
+      _ ->
+        {:error, :unsupported_structure}
     end
   end
 

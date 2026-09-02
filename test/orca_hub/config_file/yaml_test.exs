@@ -224,6 +224,71 @@ defmodule OrcaHub.ConfigFile.YamlTest do
     end
   end
 
+  describe "home assistant custom tags" do
+    @ha_sample """
+    # Home Assistant configuration
+    homeassistant:
+      name: Home
+      latitude: 10.0
+      longitude: 20.0
+      elevation: 100
+      unit_system: metric
+      time_zone: UTC
+      include: !include included.yaml
+      sensors: !include_dir_merge_named sensors/
+
+    # Some regular keys
+    api_key: !secret api_key
+    debug: false
+    count: 42
+    """
+
+    test "parses a Home Assistant config with custom tags (!include, !include_dir_merge_named, !secret)" do
+      assert {:ok, tree} = ConfigFile.parse(:yaml, @ha_sample)
+      assert tree.kind == :object
+
+      assert Enum.map(tree.entries, fn {k, _} -> k end) == [
+               "homeassistant",
+               "api_key",
+               "debug",
+               "count"
+             ]
+    end
+
+    test " tagged leaf has the raw text as value (e.g. \"!include included.yaml\")" do
+      assert {:ok, tree} = ConfigFile.parse(:yaml, @ha_sample)
+      include_leaf = ConfigFile.get_node(tree, ["homeassistant", "include"])
+      assert include_leaf.value == "!include included.yaml"
+      assert include_leaf.value_type == :string
+    end
+
+    test "a :set on a tagged leaf returns an error and leaves raw text byte-identical" do
+      original = @ha_sample
+
+      result =
+        ConfigFile.apply_op(:yaml, original, {:set, ["homeassistant", "include"], "new_value"})
+
+      assert result == {:error, :unsupported_structure}
+      assert original == @ha_sample
+    end
+
+    test "an untagged sibling in the same file still edits normally" do
+      {:ok, new_raw} =
+        ConfigFile.apply_op(:yaml, @ha_sample, {:set, ["homeassistant", "name"], "New Home"})
+
+      {:ok, tree} = ConfigFile.parse(:yaml, new_raw)
+      assert ConfigFile.get_node(tree, ["homeassistant", "name"]).value == "New Home"
+    end
+
+    test "tagged value with trailing comment is still recognized as tagged" do
+      raw_with_comment = "sensor: !include sensors.yaml # this is a comment\n"
+      assert {:ok, tree} = ConfigFile.parse(:yaml, raw_with_comment)
+      leaf = ConfigFile.get_node(tree, ["sensor"])
+      # The value should be the raw text before the comment
+      assert leaf.value == "!include sensors.yaml"
+    end
+  end
+
   describe "parse-error degradation for apply_op/2" do
     test "malformed YAML never crashes, returns an error instead" do
       assert {:error, _reason} = ConfigFile.apply_op(:yaml, "a: [1, 2", {:set, ["a"], 1})
