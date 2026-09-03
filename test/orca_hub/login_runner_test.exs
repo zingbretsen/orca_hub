@@ -22,6 +22,18 @@ defmodule OrcaHub.LoginRunnerTest do
       assert String.contains?(cleaned, "Welcome")
       assert String.contains?(cleaned, "https://claude.com")
     end
+
+    test "inserts a separator for cursor-motion CSI codes so words drawn in different screen columns don't glom together" do
+      cleaned = LoginRunner.strip_ansi("\e[2GWelcome\e[9Gto\e[12GClaude")
+
+      assert cleaned == " Welcome to Claude"
+    end
+
+    test "does not insert a separator for non-motion CSI codes (color, mode toggles)" do
+      cleaned = LoginRunner.strip_ansi("\e[32mLogin\e[0m successful\e[?25h!")
+
+      assert cleaned == "Login successful!"
+    end
   end
 
   describe "scrape_url/1" do
@@ -50,6 +62,19 @@ defmodule OrcaHub.LoginRunnerTest do
     test "does not false-positive on the authorize URL (no token yet)" do
       out = LoginRunner.strip_ansi(@sample)
       assert LoginRunner.scrape_token(out) == nil
+    end
+
+    test "does not swallow a trailing ink redraw label (e.g. 'Store') glued onto the token by a cursor jump" do
+      # Reproduces the production bug: the ink TUI redraws a "Store this
+      # token securely" hint on the same line via absolute cursor-column
+      # jumps, with nothing but the (stripped) escape sequence separating it
+      # from the token itself.
+      raw =
+        "\e[2Gsk-ant-oat01-AbC123_def-456XYZ\e[45GStore\e[52Gthis\e[58Gtoken\e[65Gsecurely\r\r\n"
+
+      out = LoginRunner.strip_ansi(raw)
+
+      assert LoginRunner.scrape_token(out) == "sk-ant-oat01-AbC123_def-456XYZ"
     end
   end
 end

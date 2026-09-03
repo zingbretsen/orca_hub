@@ -255,8 +255,20 @@ defmodule OrcaHub.LoginRunner do
   """
   def strip_ansi(text) do
     text
-    # CSI sequences: ESC [ ... final-byte  (covers ?25h, 2G, 1A, >0q, m, r, c)
-    |> String.replace(~r/\x1b\[[0-9;?>=!]*[ -\/]*[@-~]/, "")
+    # CSI sequences: ESC [ ... final-byte  (covers ?25h, 2G, 1A, >0q, m, r, c).
+    # Cursor-motion finals (absolute/relative position: G/H/f/A/B/C/D/E/F/d)
+    # mean the TUI jumped to a different screen cell — collapse those to a
+    # single space instead of deleting them outright, so two words the
+    # terminal drew apart on screen don't glom into one run of characters once
+    # the only thing between them (the escape sequence) is gone. This is what
+    # let a redraw label glue directly onto a real OAuth token with no
+    # separator, corrupting the scraped token (e.g. a token scraped as ending
+    # in "...Store"). Every other CSI final (SGR color, mode toggles, erase,
+    # device queries, ...) carries no positional meaning and is still dropped
+    # silently.
+    |> String.replace(~r/\x1b\[[0-9;?>=!]*[ -\/]*[@-~]/, fn seq ->
+      if String.last(seq) in ~w(A B C D E F G H d f), do: " ", else: ""
+    end)
     # OSC sequences: ESC ] ... BEL  or  ESC ] ... ST
     |> String.replace(~r/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/, "")
     # Save/restore cursor and charset selection: ESC 7, ESC 8, ESC ( B, etc.
