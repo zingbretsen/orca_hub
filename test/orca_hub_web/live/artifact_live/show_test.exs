@@ -268,4 +268,89 @@ defmodule OrcaHubWeb.ArtifactLive.ShowTest do
       assert Artifacts.get_artifact(artifact.id).data == %{}
     end
   end
+
+  test "the Edit in session button renders on /artifacts/:id", %{conn: conn, artifact: artifact} do
+    {:ok, _view, html} = live(conn, ~p"/artifacts/#{artifact.id}")
+
+    assert html =~ "Edit in session"
+    assert html =~ ~s(phx-click="open_edit_session")
+  end
+
+  test "submitting a blank instruction does not create a session and shows an error flash", %{
+    conn: conn,
+    artifact: artifact
+  } do
+    {:ok, view, _html} = live(conn, ~p"/artifacts/#{artifact.id}")
+
+    before_count = length(Sessions.list_sessions(:all))
+
+    render_click(view, "open_edit_session")
+    html = render_submit(view, "start_edit_session", %{"instruction" => "   "})
+
+    assert html =~ "Describe what you want changed."
+    assert length(Sessions.list_sessions(:all)) == before_count
+  end
+
+  describe "start_edit_session with a real instruction" do
+    @claude_stub Path.expand("../../../support/fixtures/claude_stub_noop.sh", __DIR__)
+
+    setup do
+      Application.put_env(:orca_hub, :claude_executable, @claude_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :claude_executable) end)
+
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "artifact_edit_session_test_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      # No `node:` — falls back to the local node via `Cluster.project_node_for/1`,
+      # which `Cluster.node_available?/1` reports as available.
+      {:ok, project} =
+        Projects.create_project(%{name: "artifact-edit-session-test", directory: dir})
+
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "edit-me",
+          kind: "html",
+          content: "<p>hi</p>"
+        })
+
+      {:ok, project: project, artifact: artifact}
+    end
+
+    test "creates exactly one new session and redirects to it", %{
+      conn: conn,
+      project: project,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/artifacts/#{artifact.id}")
+
+      before_ids = :all |> Sessions.list_sessions() |> Enum.map(& &1.id) |> MapSet.new()
+
+      render_click(view, "open_edit_session")
+
+      {:error, {:live_redirect, %{to: to}}} =
+        render_submit(view, "start_edit_session", %{"instruction" => "add a total row"})
+
+      new_sessions =
+        :all
+        |> Sessions.list_sessions()
+        |> Enum.reject(&MapSet.member?(before_ids, &1.id))
+
+      assert [session] = new_sessions
+      assert session.project_id == project.id
+      assert session.directory == project.directory
+      assert to == "/sessions/#{session.id}"
+
+      on_exit(fn ->
+        if SessionSupervisor.session_alive?(session.id),
+          do: SessionSupervisor.stop_session(session.id)
+      end)
+    end
+  end
 end

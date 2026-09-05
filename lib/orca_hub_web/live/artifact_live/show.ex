@@ -8,6 +8,8 @@ defmodule OrcaHubWeb.ArtifactLive.Show do
 
   use OrcaHubWeb, :live_view
 
+  require Logger
+
   alias OrcaHub.{Cluster, HubRPC, NodePolicy}
   alias OrcaHubWeb.ArtifactSend
 
@@ -27,19 +29,59 @@ defmodule OrcaHubWeb.ArtifactLive.Show do
           Phoenix.PubSub.subscribe(OrcaHub.PubSub, "artifact:#{artifact.id}")
         end
 
+        project = HubRPC.get_project(artifact.project_id)
+
         {:ok,
          socket
          |> assign(:artifact, artifact)
-         |> assign(:project, HubRPC.get_project(artifact.project_id))
+         |> assign(:project, project)
+         |> assign(:project_node, project && Cluster.project_node_for(project))
          |> assign(:viewport, "full")
          |> assign(:page_title, artifact.name)
-         |> assign(:artifact_send_throttle, %{})}
+         |> assign(:artifact_send_throttle, %{})
+         |> assign(:show_edit_session, false)}
     end
   end
 
   @impl true
   def handle_event("set_viewport", %{"viewport" => viewport}, socket) do
     {:noreply, assign(socket, :viewport, viewport)}
+  end
+
+  def handle_event("open_edit_session", _params, socket) do
+    {:noreply, assign(socket, :show_edit_session, true)}
+  end
+
+  def handle_event("close_edit_session", _params, socket) do
+    {:noreply, assign(socket, :show_edit_session, false)}
+  end
+
+  def handle_event("start_edit_session", %{"instruction" => instruction}, socket) do
+    instruction = String.trim(instruction)
+
+    cond do
+      instruction == "" ->
+        {:noreply, put_flash(socket, :error, "Describe what you want changed.")}
+
+      is_nil(socket.assigns.project) ->
+        {:noreply,
+         socket
+         |> assign(:show_edit_session, false)
+         |> put_flash(:error, "This artifact's project no longer exists.")}
+
+      not Cluster.node_available?(socket.assigns.project_node) ->
+        message =
+          Cluster.node_unavailable_message({:node_unavailable, socket.assigns.project_node}) ||
+            "Project's node is unavailable."
+
+        {:noreply,
+         socket
+         |> assign(:show_edit_session, false)
+         |> put_flash(:error, message)}
+
+      true ->
+        start_edit_session(socket, instruction)
+    end
   end
 
   # orca.send bidirectional bridge (Artifacts Phase 3): there's no "session
@@ -114,6 +156,72 @@ defmodule OrcaHubWeb.ArtifactLive.Show do
   defp viewport_width(viewport), do: @viewports[viewport]
 
   defp raw_src(artifact), do: ~p"/artifacts/#{artifact.id}/raw?v=#{artifact.version}"
+
+  defp start_edit_session(socket, instruction) do
+    project = socket.assigns.project
+    node = socket.assigns.project_node
+    artifact = socket.assigns.artifact
+
+    params = %{
+      "project_id" => project.id,
+      "directory" => project.directory,
+      "runner_node" => Atom.to_string(node)
+    }
+
+    case HubRPC.create_session(params) do
+      {:ok, session} ->
+        case Cluster.start_session(node, session.id, session) do
+          {:ok, _} ->
+            prompt = edit_prompt(artifact, instruction)
+
+            case Cluster.send_message(node, session.id, prompt, :queue) do
+              :ok ->
+                {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
+
+              {:queued, _status} ->
+                {:noreply, push_navigate(socket, to: ~p"/sessions/#{session.id}")}
+
+              {:error, reason} ->
+                error_message =
+                  Cluster.node_unavailable_message(reason) ||
+                    "Session created but failed to send instruction: #{inspect(reason)}"
+
+                {:noreply,
+                 socket
+                 |> assign(:show_edit_session, false)
+                 |> put_flash(:error, error_message)}
+            end
+
+          {:error, reason} ->
+            Logger.error("Failed to start session runner: #{inspect(reason)}")
+
+            {:noreply,
+             socket
+             |> assign(:show_edit_session, false)
+             |> put_flash(:error, "Session created but failed to start runner")}
+        end
+
+      {:error, _changeset} ->
+        {:noreply,
+         socket
+         |> assign(:show_edit_session, false)
+         |> put_flash(:error, "Failed to create session")}
+    end
+  end
+
+  defp edit_prompt(artifact, instruction) do
+    """
+    Edit the artifact "#{artifact.name}" (artifact_id: #{artifact.id}) in this project.
+
+    Load its current content with the `get_artifact` artifact tool using that
+    artifact_id, make the change below, then save it back with `save_artifact`
+    using the SAME name ("#{artifact.name}") so it updates in place rather than
+    creating a new artifact.
+
+    Requested change:
+    #{instruction}
+    """
+  end
 
   defp deliver_to_creator_session(socket, payload) do
     artifact = socket.assigns.artifact
