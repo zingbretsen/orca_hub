@@ -128,7 +128,7 @@ defmodule OrcaHubWeb.Layouts do
         </div>
       </header>
 
-      <main class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 py-6 sm:px-6 sm:py-10 lg:px-8">
+      <main class="flex-1 min-h-0 overflow-y-auto px-4 py-6 sm:px-6 sm:py-10 lg:px-8">
         <%!-- `full_height` is an optional assign a LiveView sets when its own
              root wants to fill the shell exactly (h-full). It's opt-in because
              a definite height also caps `position: sticky` ranges for pages
