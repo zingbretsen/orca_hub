@@ -50,7 +50,7 @@
       </form>
     <% else %>
       <span
-        class="ml-2 cursor-pointer hover:underline group"
+        class="ml-2 cursor-pointer hover:underline group [overflow-wrap:anywhere]"
         phx-click="edit_title"
         title="Click to edit title"
       >
@@ -183,12 +183,14 @@
       >
         {@session.project.name}
       </.link>
-      <span :if={@session.project} class="text-base-content/40 ml-1">{@session.directory}</span>
-      <span :if={!@session.project}>{@session.directory}</span>
+      <span :if={@session.project} class="text-base-content/40 ml-1 [overflow-wrap:anywhere]">
+        {@session.directory}
+      </span>
+      <span :if={!@session.project} class="[overflow-wrap:anywhere]">{@session.directory}</span>
       <%!-- Orchestrator parentage (ORCAHUB3-50) — a session with no parent is
            a normal, meaningful state, so it's stated plainly rather than
            just omitting this span. --%>
-      <span class="text-base-content/40 ml-1">
+      <span class="text-base-content/40 ml-1 [overflow-wrap:anywhere]">
         · Parent:
         <%= if @parent_session do %>
           <.link navigate={~p"/sessions/#{@parent_session.id}"} class="hover:underline">
