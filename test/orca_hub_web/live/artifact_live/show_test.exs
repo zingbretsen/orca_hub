@@ -278,17 +278,17 @@ defmodule OrcaHubWeb.ArtifactLive.ShowTest do
 
   test "submitting a blank instruction does not create a session and shows an error flash", %{
     conn: conn,
+    project: project,
     artifact: artifact
   } do
     {:ok, view, _html} = live(conn, ~p"/artifacts/#{artifact.id}")
-
-    before_count = length(Sessions.list_sessions(:all))
 
     render_click(view, "open_edit_session")
     html = render_submit(view, "start_edit_session", %{"instruction" => "   "})
 
     assert html =~ "Describe what you want changed."
-    assert length(Sessions.list_sessions(:all)) == before_count
+
+    assert Sessions.list_sessions(:all) |> Enum.filter(&(&1.project_id == project.id)) == []
   end
 
   describe "start_edit_session with a real instruction" do
@@ -330,19 +330,20 @@ defmodule OrcaHubWeb.ArtifactLive.ShowTest do
     } do
       {:ok, view, _html} = live(conn, ~p"/artifacts/#{artifact.id}")
 
-      before_ids = :all |> Sessions.list_sessions() |> Enum.map(& &1.id) |> MapSet.new()
-
       render_click(view, "open_edit_session")
 
       {:error, {:live_redirect, %{to: to}}} =
         render_submit(view, "start_edit_session", %{"instruction" => "add a total row"})
 
-      new_sessions =
+      # `project` is freshly created per-test, so scoping to its id (rather
+      # than diffing all sessions) is exact even under sibling test/session
+      # activity on the shared dev DB.
+      project_sessions =
         :all
         |> Sessions.list_sessions()
-        |> Enum.reject(&MapSet.member?(before_ids, &1.id))
+        |> Enum.filter(&(&1.project_id == project.id))
 
-      assert [session] = new_sessions
+      assert [session] = project_sessions
       assert session.project_id == project.id
       assert session.directory == project.directory
       assert to == "/sessions/#{session.id}"
