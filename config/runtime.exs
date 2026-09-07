@@ -169,6 +169,13 @@ config :orca_hub,
        :playwright_upload_url,
        System.get_env("PLAYWRIGHT_UPLOAD_URL") || "http://127.0.0.1:30932"
 
+# Local playwright CLI used by screenshot_artifact (OrcaHub.MCP.Tools.Artifacts)
+# to render an artifact on THIS session's own node — default assumes `npx`
+# resolves and is invoked as `npx --yes playwright ...`; set to a bare
+# `playwright` (or any resolvable command) on a node with it installed
+# globally instead.
+config :orca_hub, :playwright_cmd, System.get_env("ORCA_PLAYWRIGHT_CMD") || "npx"
+
 # Libcluster topology configuration
 # Supports multiple strategies simultaneously:
 # - K8s DNS for in-cluster pod discovery (set CLUSTER_DNS_QUERY)

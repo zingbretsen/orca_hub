@@ -420,22 +420,6 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
   end
 
   describe "screenshot_artifact" do
-    test "errors with the manual recipe (including the raw URL) when playwright isn't connected",
-         %{state: state} do
-      %{"id" => id} =
-        ArtifactsTool.call("save_artifact", %{"name" => "no-upstream", "content" => "x"}, state)
-        |> decode()
-
-      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
-               ArtifactsTool.call("screenshot_artifact", %{"artifact_id" => id}, state)
-
-      assert msg =~ "isn't connected"
-      assert msg =~ "http://orca-hub.lab.svc.cluster.local:4000/artifacts/#{id}/raw?v=1"
-      assert msg =~ "browser_resize"
-      assert msg =~ "browser_navigate"
-      assert msg =~ "browser_take_screenshot"
-    end
-
     test "errors for an unknown artifact", %{state: state} do
       assert %{"isError" => true, "content" => [%{"text" => msg}]} =
                ArtifactsTool.call(
@@ -464,31 +448,32 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
       {:ok, artifact: artifact, dir: dir}
     end
 
-    defp fake_png do
-      # Smallest possible content is irrelevant — any bytes stand in for a
-      # real screenshot, since decode/save only care about the base64 wire
-      # format and the mimeType, never the image contents.
-      Base.encode64("fake png bytes")
+    test "not-available error contains the install hint and the artifact's raw URL", %{
+      artifact: artifact,
+      session: session
+    } do
+      result =
+        ArtifactsTool.render_screenshots(artifact, [375], session.id, fn -> false end)
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} = result
+      assert msg =~ "isn't available"
+      assert msg =~ "npx playwright install chromium"
+      assert msg =~ "/artifacts/#{artifact.id}/raw?v=#{artifact.version}"
     end
 
-    test "saves one screenshot per viewport under .agents/media/<session-id>/ and returns paths",
+    test "saves one real screenshot file per viewport under .agents/media/<session-id>/, " <>
+           "passing the rendered artifact's own html + a 900px height, and cleans up the " <>
+           "temp html file afterward",
          %{artifact: artifact, session: session, dir: dir} do
-      call_fn = fn
-        "playwright__browser_resize", _args, _opts ->
-          %{"content" => [%{"type" => "text", "text" => "resized"}], "isError" => false}
+      test_pid = self()
 
-        "playwright__browser_navigate", _args, _opts ->
-          %{"content" => [%{"type" => "text", "text" => "navigated"}], "isError" => false}
-
-        "playwright__browser_take_screenshot", args, _opts ->
-          refute Map.has_key?(args, "filename")
-
-          %{
-            "content" => [
-              %{"type" => "image", "data" => fake_png(), "mimeType" => "image/png"}
-            ],
-            "isError" => false
-          }
+      screenshot_fn = fn html_path, width, height, out_path ->
+        send(test_pid, {:screenshot_call, html_path, width, height, out_path})
+        assert File.exists?(html_path)
+        assert File.read!(html_path) == OrcaHub.Artifacts.Render.body(artifact)
+        assert height == 900
+        File.write!(out_path, "fake png for #{width}")
+        :ok
       end
 
       result =
@@ -497,7 +482,7 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
           [375, 768],
           session.id,
           fn -> true end,
-          call_fn
+          screenshot_fn
         )
 
       assert %{"isError" => false} = result
@@ -507,31 +492,22 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
       Enum.each(body["screenshots"], fn shot ->
         assert is_binary(shot["path"])
         refute Map.has_key?(shot, "error")
-        assert File.read!(shot["path"]) == "fake png bytes"
+        assert File.read!(shot["path"]) == "fake png for #{shot["width"]}"
         assert Path.dirname(shot["path"]) == Path.join([dir, ".agents", "media", session.id])
         assert Path.basename(shot["path"]) == "artifact-shot-me-#{shot["width"]}px.png"
       end)
+
+      assert_receive {:screenshot_call, html_path, _width, _height, _out_path}
+      refute File.exists?(html_path)
     end
 
-    test "a per-viewport upstream error doesn't abort the other viewports", %{
+    test "a per-viewport CLI failure doesn't abort the other viewports", %{
       artifact: artifact,
       session: session
     } do
-      call_fn = fn
-        "playwright__browser_resize", %{"width" => 375}, _opts ->
-          %{"content" => [%{"type" => "text", "text" => "boom"}], "isError" => true}
-
-        "playwright__browser_resize", _args, _opts ->
-          %{"content" => [], "isError" => false}
-
-        "playwright__browser_navigate", _args, _opts ->
-          %{"content" => [], "isError" => false}
-
-        "playwright__browser_take_screenshot", _args, _opts ->
-          %{
-            "content" => [%{"type" => "image", "data" => fake_png(), "mimeType" => "image/png"}],
-            "isError" => false
-          }
+      screenshot_fn = fn
+        _html_path, 375, _height, _out_path -> {:error, "boom"}
+        _html_path, _width, _height, out_path -> File.write!(out_path, "ok") && :ok
       end
 
       result =
@@ -540,34 +516,15 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
           [375, 768],
           session.id,
           fn -> true end,
-          call_fn
+          screenshot_fn
         )
 
       body = decode(result)
       by_width = Map.new(body["screenshots"], &{&1["width"], &1})
 
-      assert by_width[375]["error"] =~ "boom"
+      assert by_width[375]["error"] == "boom"
       refute Map.has_key?(by_width[375], "path")
       assert is_binary(by_width[768]["path"])
-    end
-
-    test "an image-less screenshot response is reported as a per-viewport error", %{
-      artifact: artifact,
-      session: session
-    } do
-      call_fn = fn
-        "playwright__browser_take_screenshot", _args, _opts ->
-          %{"content" => [%{"type" => "text", "text" => "no image here"}], "isError" => false}
-
-        _name, _args, _opts ->
-          %{"content" => [], "isError" => false}
-      end
-
-      result =
-        ArtifactsTool.render_screenshots(artifact, [375], session.id, fn -> true end, call_fn)
-
-      [shot] = decode(result)["screenshots"]
-      assert shot["error"] =~ "did not return an image"
     end
   end
 end

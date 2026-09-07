@@ -58,6 +58,32 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
     assert conn.status == 404
   end
 
+  # Guards the OrcaHub.Artifacts.Render extraction against drift: it must
+  # keep producing byte-identical output to what this controller serves,
+  # since OrcaHub.MCP.Tools.Artifacts's local playwright screenshot
+  # shell-out renders artifacts via Render.body/1 directly (no HTTP hop).
+  test "OrcaHub.Artifacts.Render.body/1 matches what GET /artifacts/:id/raw serves, for every kind",
+       %{conn: conn, project: project} do
+    for {kind, content} <- [
+          {"html", "<html><head></head><body><h1>Hi</h1></body></html>"},
+          {"svg", ~s(<svg xmlns="http://www.w3.org/2000/svg"><circle r="5"/></svg>)},
+          {"markdown", "# Title\n\nSome **bold** text."}
+        ] do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "render-parity-#{kind}",
+          kind: kind,
+          content: content
+        })
+
+      conn = get(conn, ~p"/artifacts/#{artifact.id}/raw")
+
+      assert conn.resp_body == OrcaHub.Artifacts.Render.body(artifact)
+      assert get_resp_content_type(conn) == OrcaHub.Artifacts.Render.content_type(kind)
+    end
+  end
+
   @orca_send_script "<script>window.orca = { " <>
                       "send: function(payload) { window.parent.postMessage({type: \"orca:send\", payload: payload}, \"*\"); }, " <>
                       "setState: function(patch) { window.parent.postMessage({type: \"orca:state\", patch: patch}, \"*\"); }, " <>
