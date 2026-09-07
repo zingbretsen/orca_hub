@@ -564,16 +564,68 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     end
   end
 
-  defp run_bounded(cmd, args) do
-    task = Task.async(fn -> System.cmd(cmd, args, stderr_to_stdout: true) end)
+  # Runs via a raw Port (not System.cmd/Task) so a timeout can actually kill
+  # the external process instead of merely abandoning the BEAM task awaiting
+  # it. Erlang already starts a :spawn_executable child as its own process
+  # group leader (pid == pgid), so a `kill -9 -<pid>` on timeout takes the
+  # whole tree with it (npx -> node -> chromium), not just the immediate
+  # child System.cmd would have reaped alone. Public + `@doc false` (not
+  # `defp`) purely so the timeout/kill path is directly testable.
+  @doc false
+  def run_bounded(cmd, args, timeout_ms \\ @screenshot_timeout_ms) do
+    case System.find_executable(cmd) do
+      nil ->
+        {:error, "command #{inspect(cmd)} not found on PATH"}
 
-    case Task.yield(task, @screenshot_timeout_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {_output, 0}} -> :ok
-      {:ok, {output, _status}} -> {:error, String.trim(output)}
-      nil -> {:error, "playwright timed out after #{@screenshot_timeout_ms}ms"}
+      path ->
+        port =
+          Port.open({:spawn_executable, path}, [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            {:args, args}
+          ])
+
+        os_pid = Port.info(port)[:os_pid]
+        deadline = System.monotonic_time(:millisecond) + timeout_ms
+        await_bounded(port, os_pid, deadline, timeout_ms, [])
     end
   rescue
     e -> {:error, "failed to run playwright: #{Exception.message(e)}"}
+  end
+
+  defp await_bounded(port, os_pid, deadline, timeout_ms, acc) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^port, {:data, data}} ->
+        await_bounded(port, os_pid, deadline, timeout_ms, [data | acc])
+
+      {^port, {:exit_status, 0}} ->
+        :ok
+
+      {^port, {:exit_status, _status}} ->
+        {:error, acc |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim()}
+    after
+      remaining ->
+        kill_process_group(os_pid)
+        close_port(port)
+        {:error, "playwright timed out after #{timeout_ms}ms"}
+    end
+  end
+
+  defp kill_process_group(nil), do: :ok
+
+  defp kill_process_group(os_pid) do
+    System.cmd("kill", ["-9", "-#{os_pid}"], stderr_to_stdout: true)
+  rescue
+    _ -> :ok
+  end
+
+  defp close_port(port) do
+    Port.close(port)
+  rescue
+    _ -> :ok
   end
 
   defp manual_recipe(artifact) do

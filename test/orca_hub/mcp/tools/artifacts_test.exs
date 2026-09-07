@@ -527,4 +527,53 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
       assert is_binary(by_width[768]["path"])
     end
   end
+
+  describe "run_bounded/3 (shell-out behind playwright_available?/run_playwright_screenshot)" do
+    test "returns :ok for a clean exit" do
+      assert ArtifactsTool.run_bounded("sh", ["-c", "exit 0"], 2_000) == :ok
+    end
+
+    test "returns the trimmed combined stdout+stderr on a non-zero exit" do
+      assert ArtifactsTool.run_bounded(
+               "sh",
+               ["-c", "echo boom 1>&2; exit 3"],
+               2_000
+             ) == {:error, "boom"}
+    end
+
+    test "on timeout, returns the timeout error and kills the whole process tree" do
+      pidfile = Path.join(System.tmp_dir!(), "run_bounded_test_#{System.unique_integer([:positive])}")
+
+      # A grandchild (nested `sh -c`) stands in for npx -> node -> chromium:
+      # if only the immediate child were killed (the old Task.shutdown
+      # behavior), this grandchild would survive and keep running.
+      assert ArtifactsTool.run_bounded(
+               "sh",
+               ["-c", "sh -c 'echo $$ > #{pidfile}; sleep 20' & wait"],
+               200
+             ) == {:error, "playwright timed out after 200ms"}
+
+      grandchild_pid = pidfile |> File.read!() |> String.trim()
+      File.rm(pidfile)
+
+      # Poll briefly rather than a single fixed sleep — kill -9 delivery is
+      # async, but should land well within a couple hundred ms.
+      assert wait_until(500, fn ->
+               match?({_, 1}, System.cmd("ps", ["-p", grandchild_pid], stderr_to_stdout: true))
+             end),
+             "expected process #{grandchild_pid} to be reaped after the timeout, but it's still alive"
+    end
+  end
+
+  defp wait_until(budget_ms, check, interval_ms \\ 25)
+  defp wait_until(budget_ms, _check, _interval_ms) when budget_ms <= 0, do: false
+
+  defp wait_until(budget_ms, check, interval_ms) do
+    if check.() do
+      true
+    else
+      Process.sleep(interval_ms)
+      wait_until(budget_ms - interval_ms, check, interval_ms)
+    end
+  end
 end
