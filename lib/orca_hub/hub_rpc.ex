@@ -234,6 +234,14 @@ defmodule OrcaHub.HubRPC do
 
   def delete_artifact(artifact), do: call(OrcaHub.Artifacts, :delete_artifact, [artifact])
 
+  def attach_artifact_asset(artifact, file, name),
+    do: call(OrcaHub.Artifacts, :attach_asset, [artifact, file, name])
+
+  def list_artifact_assets(artifact), do: call(OrcaHub.Artifacts, :list_assets, [artifact])
+
+  def get_artifact_asset(artifact_id, name),
+    do: call(OrcaHub.Artifacts, :get_asset, [artifact_id, name])
+
   # -------------------------------------------------------------------
   # Triggers
   # -------------------------------------------------------------------
@@ -644,6 +652,7 @@ defmodule OrcaHub.HubRPC do
 
   def create_file(attrs, binary), do: call(OrcaHub.Files, :create_file, [attrs, binary])
   def get_file(id), do: call(OrcaHub.Files, :get_file, [id])
+  def fetch_file_binary(file), do: call(OrcaHub.Files, :get_binary, [file])
 
   def fetch_visible_file_binary(id, context),
     do: call(OrcaHub.Files, :fetch_visible_binary, [id, context])

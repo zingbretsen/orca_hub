@@ -267,6 +267,35 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             }
           }
         }
+      },
+      %{
+        "name" => "attach_artifact_asset",
+        "description" =>
+          "Attach a file already in the cross-node file store (see put_file) to an " <>
+            "artifact as a named asset, so the artifact's own HTML can reference it with " <>
+            "a relative URL instead of embedding it inline — useful for images (a " <>
+            "chart PNG, a screenshot, a logo) too large or binary to put in `content`. " <>
+            "The file must already be visible to this session (put_file/get_file/" <>
+            "share_file), and the artifact must belong to this session's project or " <>
+            "have been created by this session. Once attached, reference it in the " <>
+            "artifact's HTML as <img src=\"assets/<name>\">.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "artifact_id" => %{"type" => "string", "description" => "The artifact's id."},
+            "file_id" => %{
+              "type" => "string",
+              "description" => "The file's id, from put_file/list_files."
+            },
+            "name" => %{
+              "type" => "string",
+              "description" =>
+                "Asset name, used in the URL as assets/<name>. Defaults to the file's " <>
+                  "stored name. Basename-sanitized to a safe URL segment."
+            }
+          },
+          "required" => ["artifact_id", "file_id"]
+        }
       }
     ]
   end
@@ -359,6 +388,22 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     case resolve_artifact(args, state) do
       {:ok, artifact} -> do_screenshot(artifact, viewports, state)
       {:error, message} -> error(message)
+    end
+  end
+
+  def call("attach_artifact_asset", args, state) do
+    artifact_id = args["artifact_id"]
+    file_id = args["file_id"]
+
+    cond do
+      not present?(artifact_id) ->
+        error("attach_artifact_asset requires a non-empty `artifact_id` string argument.")
+
+      not present?(file_id) ->
+        error("attach_artifact_asset requires a non-empty `file_id` string argument.")
+
+      true ->
+        do_attach_artifact_asset(artifact_id, file_id, args["name"], state)
     end
   end
 
@@ -723,6 +768,68 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
       "uses a different playwright command) and retry. In the meantime, drive " <>
       "whatever browser tool IS available yourself against this artifact's raw " <>
       "URL: #{raw_url(artifact)}"
+  end
+
+  # ── attach_artifact_asset ─────────────────────────────────────────────
+
+  defp do_attach_artifact_asset(artifact_id, file_id, name, state) do
+    with {:ok, session} <- resolve_session(state),
+         {:ok, artifact} <- resolve_own_artifact(artifact_id, session),
+         {:ok, file} <- resolve_visible_file(file_id, session) do
+      asset_name = if present?(name), do: name, else: file.name
+
+      case HubRPC.attach_artifact_asset(artifact, file, asset_name) do
+        {:ok, asset} ->
+          text(
+            "Attached #{file.name} to artifact #{artifact.id} as asset " <>
+              "#{inspect(asset.name)}. Reference it in this artifact's HTML as " <>
+              "<img src=\"assets/#{asset.name}\">."
+          )
+
+        {:error, changeset} ->
+          error("Failed to attach asset: #{inspect(changeset_errors(changeset))}")
+      end
+    else
+      {:error, message} -> error(message)
+    end
+  end
+
+  defp resolve_own_artifact(artifact_id, session) do
+    case HubRPC.get_artifact(artifact_id) do
+      nil ->
+        {:error, "No artifact found with id #{artifact_id}."}
+
+      artifact ->
+        if artifact.project_id == session.project_id or artifact.session_id == session.id do
+          {:ok, artifact}
+        else
+          {:error,
+           "Artifact #{artifact_id} not found or not accessible to this session " <>
+             "(must belong to this session's project or have been created by it)."}
+        end
+    end
+  end
+
+  defp resolve_visible_file(file_id, session) do
+    case HubRPC.get_file(file_id) do
+      nil ->
+        {:error, "File #{inspect(file_id)} not found."}
+
+      file ->
+        if HubRPC.file_visible?(file, session.id, session.project_id) do
+          {:ok, file}
+        else
+          {:error, "File #{inspect(file_id)} not found or not visible to this session."}
+        end
+    end
+  end
+
+  defp changeset_errors(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
+      Enum.reduce(opts, msg, fn {key, value}, acc ->
+        String.replace(acc, "%{#{key}}", to_string(value))
+      end)
+    end)
   end
 
   # ── shared resolution helpers ────────────────────────────────────────

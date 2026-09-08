@@ -31,7 +31,7 @@ defmodule OrcaHub.Artifacts do
 
   import Ecto.Query
 
-  alias OrcaHub.Artifacts.Artifact
+  alias OrcaHub.Artifacts.{Artifact, ArtifactAsset}
   alias OrcaHub.Repo
 
   @doc """
@@ -293,4 +293,73 @@ defmodule OrcaHub.Artifacts do
   end
 
   defp broadcast_artifacts_changed(error), do: error
+
+  # ── Artifact assets (ORCAHUB3-72 slice 2) ────────────────────────────
+  #
+  # Links an artifact to a file already in the cross-node file store
+  # (`OrcaHub.Files.File`) under a name unique per artifact, so the
+  # artifact's own HTML can reference it with a relative URL served at
+  # `GET /artifacts/:id/assets/:name`. Upserts by `(artifact_id, name)` —
+  # re-attaching under the same name repoints it at a new file, mirroring
+  # `save_artifact/1`'s upsert-by-name behavior.
+
+  @doc """
+  Attaches `file` to `artifact` under `name`, basename-sanitized the same
+  way `OrcaHub.Files` sanitizes a stored file's object key (only
+  `[A-Za-z0-9._-]`survives) so it's always safe as a URL path segment.
+  Re-attaching under a name already used by this artifact repoints that
+  asset at the new file rather than erroring.
+  """
+  def attach_asset(%Artifact{} = artifact, %OrcaHub.Files.File{} = file, name) do
+    sanitized = sanitize_asset_name(name)
+
+    case Repo.get_by(ArtifactAsset, artifact_id: artifact.id, name: sanitized) do
+      nil ->
+        %ArtifactAsset{}
+        |> ArtifactAsset.changeset(%{
+          artifact_id: artifact.id,
+          file_id: file.id,
+          name: sanitized
+        })
+        |> Repo.insert()
+
+      existing ->
+        existing
+        |> ArtifactAsset.changeset(%{file_id: file.id})
+        |> Repo.update()
+    end
+  end
+
+  defp sanitize_asset_name(name) do
+    name
+    |> Path.basename()
+    |> String.replace(~r/[^A-Za-z0-9._-]/, "_")
+  end
+
+  @doc "Every asset attached to `artifact`, alphabetical by name."
+  def list_assets(%Artifact{} = artifact) do
+    Repo.all(
+      from a in ArtifactAsset,
+        where: a.artifact_id == ^artifact.id,
+        order_by: [asc: a.name]
+    )
+  end
+
+  @doc """
+  Fetches one asset by `(artifact_id, name)`, preloaded with its `:file` —
+  backs `GET /artifacts/:id/assets/:name`. `nil` for an unknown pair or a
+  non-UUID `artifact_id` (mirrors `get_artifact/1`'s guard against a raw
+  `Ecto.Query.CastError` from a malformed id in the URL).
+  """
+  def get_asset(artifact_id, name) do
+    case Ecto.UUID.cast(artifact_id) do
+      {:ok, _} ->
+        ArtifactAsset
+        |> Repo.get_by(artifact_id: artifact_id, name: name)
+        |> Repo.preload(:file)
+
+      :error ->
+        nil
+    end
+  end
 end

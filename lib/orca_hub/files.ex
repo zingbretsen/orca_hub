@@ -142,6 +142,15 @@ defmodule OrcaHub.Files do
   def get_file(id), do: Repo.get(File, id)
 
   @doc """
+  Raw bytes for `file`, no visibility check — for callers that have
+  already authorized access by construction (e.g. an artifact asset,
+  public at the same `GET /artifacts/:id/*` route as the artifact's own
+  content) rather than by the caller-session/project visibility rule
+  `visible?/3` enforces.
+  """
+  def get_binary(%File{} = file), do: ObjectStore.get(file.object_key)
+
+  @doc """
   Visibility check (invariant 4): creator, same project, or explicitly
   shared with the caller's session or project.
   """
