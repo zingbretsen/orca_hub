@@ -45,6 +45,24 @@ defmodule OrcaHubWeb.ArtifactController do
     end
   end
 
+  # Serves an asset attached via the attach_artifact_asset MCP tool
+  # (ORCAHUB3-72 slice 2) — the artifact's own HTML loads it as a relative
+  # URL (e.g. <img src="assets/hero.png">), which resolves here because the
+  # artifact itself is loaded from src=/artifacts/:id/raw. No visibility
+  # check: an artifact asset is public at the same unauthenticated route as
+  # the artifact's own content (see this controller's moduledoc).
+  def asset(conn, %{"id" => id, "name" => name}) do
+    with %{file: file} <- HubRPC.get_artifact_asset(id, name),
+         {:ok, binary} <- HubRPC.fetch_file_binary(file) do
+      conn
+      |> put_resp_content_type(file.content_type || "application/octet-stream")
+      |> put_resp_header("cache-control", "private, max-age=3600")
+      |> send_resp(200, binary)
+    else
+      _ -> not_found(conn)
+    end
+  end
+
   defp not_found(conn) do
     conn
     |> put_resp_content_type("text/plain")
