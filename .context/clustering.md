@@ -212,6 +212,22 @@ Agent nodes are intentionally limited:
 - **No web UI** — the Endpoint runs but is gated to `/mcp`, `/healthz`, and `/api/version`
 - **No agent presence cleanup** — hub handles stale `.agents/` file cleanup on boot
 
+### `db_node` is a legacy-multi-hub-only mechanism (ORCAHUB3-74)
+
+`Cluster.start_session/3`'s `db_node` param (threaded into `SessionRunner`'s
+`data.db_node` and the private `db_call/3` in `session_runner.ex`,
+`backend/claude.ex`, and `backend/pi.ex`) exists so a runner started on a
+PEER HUB in legacy multi-hub mode can route its DB calls back to the hub
+that owns them. It is now only ever set when the CALLER is itself a hub
+(`OrcaHub.Mode.hub?()`) — an agent has no DB of its own, and in hub+agent
+mode `HubRPC` already erpcs every call to the hub regardless of which node
+runs it, so handing a freshly-started runner an agent node as `db_node`
+(possible when one agent starts a session on another via the hub relay in
+`Cluster.rpc/5`, since agents aren't meshed with each other) just handed it
+a node it likely couldn't reach. `SessionRunner.db_call/3` also falls back
+to `HubRPC`'s own hub routing on `{:erpc, :noconnection}` as a second line
+of defense against any other stale/unreachable `db_node`.
+
 ## Per-Node Policy
 
 Beyond routing, each Erlang node has an optional policy row in the `nodes`

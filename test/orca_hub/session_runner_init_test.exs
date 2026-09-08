@@ -80,6 +80,19 @@ defmodule OrcaHub.SessionRunnerInitTest do
     assert data.messages == []
   end
 
+  test "ORCAHUB3-74: a runner given an unreachable db_node still completes init's DB calls", %{
+    session: session
+  } do
+    assert {:ok, _state, data} =
+             SessionRunner.init(
+               session_id: session.id,
+               session_data: session,
+               db_node: :"orcahub3-74-unreachable@nohost"
+             )
+
+    assert data.db_node == :"orcahub3-74-unreachable@nohost"
+  end
+
   test "reconstructs a pending AskUserQuestion from the bounded tail when persisted 'waiting'", %{
     session: session
   } do

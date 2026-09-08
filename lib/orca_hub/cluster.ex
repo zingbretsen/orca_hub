@@ -343,7 +343,14 @@ defmodule OrcaHub.Cluster do
 
   def start_session(n, session_id, session_data \\ nil) do
     # Pass the calling node as db_node so the runner can route DB calls back
-    db_node = if n != node(), do: node(), else: nil
+    # to it — but ONLY when the caller is itself a hub (legacy multi-hub:
+    # each hub owns its own DB, so a peer hub's runner needs to route back to
+    # it). An agent has no DB of its own; in hub+agent mode HubRPC already
+    # erpcs every call to the hub regardless of which node runs it, so an
+    # agent-initiated cross-node start (routed through the hub relay in
+    # Cluster.rpc/5 when agents can't reach each other directly) must never
+    # hand the new runner an agent node it likely can't reach (ORCAHUB3-74).
+    db_node = if n != node() and OrcaHub.Mode.hub?(), do: node(), else: nil
     rpc(n, SessionSupervisor, :start_session, [session_id, session_data, db_node])
   end
 

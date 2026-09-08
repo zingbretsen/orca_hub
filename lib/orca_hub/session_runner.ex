@@ -24,8 +24,26 @@ defmodule OrcaHub.SessionRunner do
 
   # Route a HubRPC call through the node that owns the session's DB record.
   # In multi-hub mode, the runner may be on a different node than the DB.
+  #
+  # ORCAHUB3-74: a stale/unreachable db_node (e.g. an agent node passed by an
+  # older caller, or one that's dropped off the cluster since) must not kill
+  # every DB call this runner ever makes — HubRPC already knows how to reach
+  # the hub from any node, so fall back to it instead of raising. Warned once
+  # per runner process (not per call) since a bad db_node is sticky for the
+  # rest of this process's life.
   defp db_call(%{db_node: db_node}, fun, args) when not is_nil(db_node) and db_node != node() do
     :erpc.call(db_node, HubRPC, fun, args, 10_000)
+  catch
+    :error, {:erpc, :noconnection} ->
+      unless Process.get(:db_node_unreachable_warned) do
+        Process.put(:db_node_unreachable_warned, true)
+
+        Logger.warning(
+          "[SessionRunner] db_node #{inspect(db_node)} unreachable, falling back to HubRPC's own hub routing"
+        )
+      end
+
+      apply(HubRPC, fun, args)
   end
 
   defp db_call(_data, fun, args) do
