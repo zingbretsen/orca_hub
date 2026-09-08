@@ -195,7 +195,10 @@ defmodule OrcaHub.MCP.Tools.Files do
         error("No OrcaHub session linked to this MCP connection.")
 
       session_id ->
-        fun.(session_id, HubRPC.get_session(session_id))
+        case HubRPC.get_session(session_id) do
+          nil -> error("Session #{session_id} not found (may have been deleted).")
+          session -> fun.(session_id, session)
+        end
     end
   end
 

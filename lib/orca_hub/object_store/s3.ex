@@ -22,7 +22,13 @@ defmodule OrcaHub.ObjectStore.S3 do
 
   @impl true
   def get(object_key) do
-    case Req.get(request(), url: url(object_key)) do
+    # decode_body: false / raw: true: Req's default decode_body step would
+    # otherwise inspect the stored content-type/extension and transparently
+    # JSON-decode a ".json" object into a map, or gunzip/untar a
+    # ".gz"/".tar"/".zip" one — silently handing back something other than
+    # the exact bytes that were stored. Every OrcaHub.ObjectStore caller
+    # expects `get/1` to be a byte-identical round trip of `put/1`.
+    case Req.get(request(), url: url(object_key), decode_body: false, raw: true) do
       {:ok, %{status: 200, body: body}} -> {:ok, body}
       {:ok, %{status: 404}} -> {:error, :not_found}
       {:ok, %{status: status, body: body}} -> {:error, {:s3_error, status, body}}

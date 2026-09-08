@@ -46,6 +46,18 @@ defmodule OrcaHub.MCP.Tools.FilesTest do
 
   defp decode(%{"content" => [%{"text" => body}]}), do: body
 
+  describe "with_calling_session/2 — linked session no longer exists" do
+    test "put_file returns an error instead of crashing on a deleted session" do
+      missing_id = Ecto.UUID.generate()
+
+      result =
+        FilesTool.call("put_file", %{"path" => "whatever.txt"}, %{orca_session_id: missing_id})
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "not found"
+    end
+  end
+
   describe "put_file — path confinement (invariant 1)" do
     test "stores a file whose path is inside the session directory", %{dir: dir, state: state} do
       path = Path.join(dir, "hello.txt")

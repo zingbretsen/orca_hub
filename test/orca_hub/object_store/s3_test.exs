@@ -18,4 +18,32 @@ defmodule OrcaHub.ObjectStore.S3Test do
       :ok
     end
   end
+
+  @tag :s3
+  test "get/1 returns exact bytes for a .json object, not a decoded map" do
+    if System.get_env("ORCA_S3_ENDPOINT") do
+      key = "s3_test/#{System.unique_integer([:positive])}/data.json"
+      body = ~s({"a":1})
+
+      assert :ok = OrcaHub.ObjectStore.S3.put(key, body, "application/json")
+      assert {:ok, ^body} = OrcaHub.ObjectStore.S3.get(key)
+      assert :ok = OrcaHub.ObjectStore.S3.delete(key)
+    else
+      :ok
+    end
+  end
+
+  @tag :s3
+  test "get/1 returns exact bytes for a .gz object that isn't really gzip" do
+    if System.get_env("ORCA_S3_ENDPOINT") do
+      key = "s3_test/#{System.unique_integer([:positive])}/notreally.gz"
+      body = "not actually gzip data, just plain bytes"
+
+      assert :ok = OrcaHub.ObjectStore.S3.put(key, body, "application/gzip")
+      assert {:ok, ^body} = OrcaHub.ObjectStore.S3.get(key)
+      assert :ok = OrcaHub.ObjectStore.S3.delete(key)
+    else
+      :ok
+    end
+  end
 end
