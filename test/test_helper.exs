@@ -13,5 +13,11 @@
 #
 #   mix test                    # excludes :repro (this file's default)
 #   mix test --only repro       # the repro-only pass
-ExUnit.start(exclude: [:distributed, :repro])
+# Tests tagged :s3 hit a real S3-compatible endpoint (OrcaHub.ObjectStore.S3,
+# ORCAHUB3-72) and only do anything when ORCA_S3_ENDPOINT is actually set —
+# excluded by default so a dev box without MinIO configured doesn't need one:
+#
+#   mix test                    # excludes :s3 (this file's default)
+#   mix test --only s3          # the s3-only pass, needs ORCA_S3_* set
+ExUnit.start(exclude: [:distributed, :repro, :s3])
 Ecto.Adapters.SQL.Sandbox.mode(OrcaHub.Repo, :manual)

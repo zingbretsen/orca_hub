@@ -79,7 +79,7 @@ defmodule OrcaHub.Files do
     with :ok <- check_size(size),
          :ok <- check_quota(project_id, size) do
       file_id = Ecto.UUID.generate()
-      sha256 = binary |> :crypto.hash(:sha256) |> Base.encode16(case: :lower)
+      sha256 = :sha256 |> :crypto.hash(binary) |> Base.encode16(case: :lower)
       object_key = build_object_key(project_id, file_id, Map.get(attrs, :name))
 
       case ObjectStore.put(object_key, binary, Map.get(attrs, :content_type)) do
@@ -152,8 +152,7 @@ defmodule OrcaHub.Files do
         from s in FileShare,
           where:
             s.file_id == ^file.id and
-              ((not is_nil(^caller_session_id) and s.session_id == ^caller_session_id) or
-                 (not is_nil(^caller_project_id) and s.project_id == ^caller_project_id))
+              (s.session_id == ^caller_session_id or s.project_id == ^caller_project_id)
       )
   end
 
@@ -197,8 +196,8 @@ defmodule OrcaHub.Files do
         where:
           f.session_id == ^session_id or
             (not is_nil(f.project_id) and f.project_id == ^project_id) or
-            (not is_nil(^session_id) and s.session_id == ^session_id) or
-            (not is_nil(^project_id) and s.project_id == ^project_id),
+            s.session_id == ^session_id or
+            s.project_id == ^project_id,
         distinct: f.id,
         order_by: [desc: f.inserted_at]
 
