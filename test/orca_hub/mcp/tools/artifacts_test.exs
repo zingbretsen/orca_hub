@@ -23,7 +23,7 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
 
     {:ok, session} = Sessions.create_session(%{directory: dir, project_id: project.id})
 
-    {:ok, project: project, session: session, state: %{orca_session_id: session.id}}
+    {:ok, project: project, session: session, dir: dir, state: %{orca_session_id: session.id}}
   end
 
   defp decode(%{"content" => [%{"text" => body}]}), do: Jason.decode!(body)
@@ -39,7 +39,7 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
       assert "get_artifact" in names
 
       save_tool = Enum.find(tools, &(&1["name"] == "save_artifact"))
-      assert save_tool["inputSchema"]["required"] == ["name", "content"]
+      assert save_tool["inputSchema"]["required"] == ["name"]
     end
   end
 
@@ -175,6 +175,92 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
         |> decode()
 
       assert_receive {:open_artifact, ^id, "full"}
+    end
+  end
+
+  describe "save_artifact — content_path (ORCAHUB3-56)" do
+    test "reads content from a file inside the session directory and saves it", %{
+      dir: dir,
+      state: state
+    } do
+      path = Path.join(dir, "deck.html")
+      File.write!(path, "<html><body>from disk</body></html>")
+
+      assert %{"isError" => false} =
+               result =
+               ArtifactsTool.call(
+                 "save_artifact",
+                 %{"name" => "from-path", "content_path" => path},
+                 state
+               )
+
+      body = decode(result)
+      assert body["content_path"] == path
+
+      artifact = Artifacts.get_artifact(body["id"])
+      assert artifact.content == "<html><body>from disk</body></html>"
+    end
+
+    test "errors when both content and content_path are given", %{dir: dir, state: state} do
+      path = Path.join(dir, "x.html")
+      File.write!(path, "x")
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               ArtifactsTool.call(
+                 "save_artifact",
+                 %{"name" => "x", "content" => "y", "content_path" => path},
+                 state
+               )
+
+      assert msg =~ "exactly one of `content` or `content_path`"
+    end
+
+    test "refuses an absolute path outside the session directory", %{state: state} do
+      result =
+        ArtifactsTool.call(
+          "save_artifact",
+          %{"name" => "x", "content_path" => "/etc/passwd"},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} = result
+      assert msg =~ "outside this session's working directory"
+    end
+
+    test "refuses a symlink inside the session directory pointing outside it", %{
+      dir: dir,
+      state: state
+    } do
+      outside_dir =
+        Path.join(
+          Path.dirname(dir),
+          "mcp_artifacts_symlink_target_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(outside_dir)
+      real_file = Path.join(outside_dir, "real.html")
+      File.write!(real_file, "real content")
+      on_exit(fn -> File.rm_rf(outside_dir) end)
+
+      link = Path.join(dir, "escape_link.html")
+      File.ln_s!(real_file, link)
+
+      result =
+        ArtifactsTool.call("save_artifact", %{"name" => "x", "content_path" => link}, state)
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} = result
+      assert msg =~ "outside this session's working directory"
+    end
+
+    test "refuses a file over the 50MB cap", %{dir: dir, state: state} do
+      path = Path.join(dir, "big.html")
+      File.write!(path, :binary.copy(<<0>>, OrcaHub.Files.max_file_bytes() + 1))
+
+      result =
+        ArtifactsTool.call("save_artifact", %{"name" => "x", "content_path" => path}, state)
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} = result
+      assert msg =~ "exceeding"
     end
   end
 

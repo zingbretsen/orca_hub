@@ -24,7 +24,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
 
   alias OrcaHub.Artifacts.HtmlValidator
   alias OrcaHub.Artifacts.Render
-  alias OrcaHub.HubRPC
+  alias OrcaHub.{Files, HubRPC, PathConfinement}
   alias OrcaHub.MCP.CodeExec.MediaSink
 
   @kinds ~w(html svg markdown)
@@ -43,6 +43,12 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             "a chat message when you want to show a real interactive UI: a dashboard, a " <>
             "diagram, a report, a small tool. It survives after this session ends and can " <>
             "be reopened or iterated on later.\n\n" <>
+            "Provide exactly one of `content` (the content as a string) or `content_path` " <>
+            "(a path to a file already on disk, read directly on this session's own node " <>
+            "so the bytes never have to pass through your own context) — use " <>
+            "`content_path` for anything you built/tested on disk across multiple turns, " <>
+            "since re-reading a large file into context just to re-emit it as a string is " <>
+            "pure overhead.\n\n" <>
             "Content runs in a sandboxed iframe (`sandbox=\"allow-scripts\"`, no " <>
             "`allow-same-origin`) — it has NO access to cookies, auth, or the parent page " <>
             "DOM, so a full self-contained HTML document with inline <style> and <script> " <>
@@ -106,7 +112,18 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
               "type" => "string",
               "description" =>
                 "The full artifact content. For kind=html, a complete self-contained HTML " <>
-                  "document (inline CSS/JS, optional CDN <script> tags) works best."
+                  "document (inline CSS/JS, optional CDN <script> tags) works best. " <>
+                  "Provide exactly one of `content` or `content_path`."
+            },
+            "content_path" => %{
+              "type" => "string",
+              "description" =>
+                "Alternative to `content`: a path to a file already on disk (relative to, " <>
+                  "or inside, this session's working directory), read directly here on " <>
+                  "this session's own node. Use this for content built/tested on disk " <>
+                  "across turns instead of Read-ing it into your own context to re-emit " <>
+                  "as `content`. Same 50MB cap as put_file. Provide exactly one of " <>
+                  "`content` or `content_path`."
             },
             "kind" => %{
               "type" => "string",
@@ -125,7 +142,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
                   "\"full\" (fullscreen viewer)."
             }
           },
-          "required" => ["name", "content"]
+          "required" => ["name"]
         }
       },
       %{
@@ -257,6 +274,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
   def call("save_artifact", args, state) do
     name = args["name"]
     content = args["content"]
+    content_path = args["content_path"]
     kind = normalize_kind(args["kind"])
     open? = Map.get(args, "open", true)
     mode = normalize_mode(args["mode"])
@@ -265,11 +283,14 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
       not is_binary(name) or name == "" ->
         error("save_artifact requires a non-empty `name` string argument.")
 
-      not is_binary(content) or content == "" ->
-        error("save_artifact requires a non-empty `content` string argument.")
+      present?(content) == present?(content_path) ->
+        error("save_artifact requires exactly one of `content` or `content_path`.")
 
       kind not in @kinds ->
         error("save_artifact `kind` must be one of: #{Enum.join(@kinds, ", ")}.")
+
+      present?(content_path) ->
+        do_save_content_path(name, content_path, kind, open?, mode, state)
 
       true ->
         do_save(name, content, kind, open?, mode, state)
@@ -343,7 +364,71 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
 
   # ── save_artifact ─────────────────────────────────────────────────────
 
-  defp do_save(name, content, kind, open?, mode, state) do
+  defp present?(value), do: is_binary(value) and value != ""
+
+  # content_path is confined to the calling session's own directory, just
+  # like put_file's `path` (same OrcaHub.PathConfinement invariant), and
+  # read HERE on this session's own runner node before the resulting bytes
+  # go through the existing HubRPC.save_artifact/1 path unchanged.
+  defp do_save_content_path(name, path, kind, open?, mode, state) do
+    case resolve_session(state) do
+      {:ok, session} -> confine_and_read_content_path(name, path, kind, open?, mode, state, session)
+      {:error, message} -> error(message)
+    end
+  end
+
+  defp resolve_session(state) do
+    case state[:orca_session_id] do
+      nil ->
+        {:error,
+         "No OrcaHub session linked to this MCP connection. Cannot resolve `content_path`."}
+
+      session_id ->
+        case HubRPC.get_session(session_id) do
+          nil -> {:error, "Session #{session_id} not found."}
+          session -> {:ok, session}
+        end
+    end
+  end
+
+  defp confine_and_read_content_path(name, path, kind, open?, mode, state, session) do
+    case PathConfinement.confine(session.directory, path) do
+      {:ok, resolved} ->
+        read_content_path(name, path, resolved, kind, open?, mode, state)
+
+      {:error, :outside_root} ->
+        error(
+          "content_path #{inspect(path)} is outside this session's working directory " <>
+            "(after resolving `..` and symlinks)."
+        )
+    end
+  end
+
+  defp read_content_path(name, original_path, resolved, kind, open?, mode, state) do
+    case File.stat(resolved) do
+      {:ok, %File.Stat{type: :regular, size: size}} ->
+        if size > Files.max_file_bytes() do
+          error(
+            "content_path is #{size} bytes, exceeding the #{Files.max_file_bytes()}-byte " <>
+              "(50MB) per-file cap."
+          )
+        else
+          content = File.read!(resolved)
+          do_save(name, content, kind, open?, mode, state, original_path)
+        end
+
+      {:ok, _not_regular} ->
+        error("content_path #{inspect(original_path)} is not a regular file.")
+
+      {:error, reason} ->
+        error(
+          "Could not read content_path #{inspect(original_path)}: " <>
+            :file.format_error(reason)
+        )
+    end
+  end
+
+  defp do_save(name, content, kind, open?, mode, state, source \\ nil) do
     with_project(state, fn project_id ->
       attrs = %{
         project_id: project_id,
@@ -356,7 +441,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
       case HubRPC.save_artifact(attrs) do
         {:ok, artifact} ->
           if open?, do: broadcast_open(state, artifact.id, mode)
-          text(Jason.encode!(save_result(artifact, kind, content, open?)))
+          text(Jason.encode!(save_result(artifact, kind, content, open?, source)))
 
         {:error, changeset} ->
           error("Failed to save artifact: #{inspect(changeset.errors)}")
@@ -364,15 +449,16 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     end)
   end
 
-  defp save_result(artifact, "html", content, opened?) do
-    base_result(artifact, opened?)
+  defp save_result(artifact, "html", content, opened?, source) do
+    base_result(artifact, opened?, source)
     |> Map.put(:warnings, HtmlValidator.validate(content))
   end
 
-  defp save_result(artifact, _kind, _content, opened?), do: base_result(artifact, opened?)
+  defp save_result(artifact, _kind, _content, opened?, source),
+    do: base_result(artifact, opened?, source)
 
-  defp base_result(artifact, opened?) do
-    %{
+  defp base_result(artifact, opened?, source) do
+    base = %{
       id: artifact.id,
       name: artifact.name,
       kind: artifact.kind,
@@ -380,6 +466,8 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
       raw_url: raw_url(artifact),
       opened: opened?
     }
+
+    if source, do: Map.put(base, :content_path, source), else: base
   end
 
   # ── open_artifact ─────────────────────────────────────────────────────
