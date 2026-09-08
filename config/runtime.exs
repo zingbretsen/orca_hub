@@ -123,6 +123,24 @@ config :orca_hub, OrcaHubWeb.Endpoint,
 # through the hub via HubRPC, so agent/systemd nodes hold nothing.
 config :orca_hub, :gotify_url, System.get_env("GOTIFY_URL") || "https://gotify.ingbretsenhome.com"
 config :orca_hub, :gotify_token, System.get_env("GOTIFY_TOKEN")
+# Text-to-speech for POST /api/tts (OrcaHubWeb.TTSController).
+#
+# TTS_PROVIDER selects the backend: "local" (default) hits the homelab
+# ai_gateway, "elevenlabs" keeps the hosted path. Local synthesis runs at
+# roughly 1x real time — slower than ElevenLabs turbo — so the hosted
+# provider stays available as an opt-in fallback rather than being deleted.
+#
+# TTS_URL defaults to the LAN ingress rather than the in-cluster Service DNS
+# because the hub pod can reach the ingress too (verified: /healthz returns
+# 200 from `kubectl exec deploy/orca-hub`), so ONE default is correct in the
+# k3s pods, on LAN hosts, and in dev. Both of these listeners are the
+# no-auth LAN ones — the bearer-authed public listeners are deliberately not
+# used, so no TTS secret exists.
+config :orca_hub, :tts_provider, System.get_env("TTS_PROVIDER") || "local"
+config :orca_hub, :tts_url, System.get_env("TTS_URL") || "https://ai.lab.ingbretsenhome.com"
+config :orca_hub, :tts_model, System.get_env("TTS_MODEL") || "tts-chatterbox-23lang"
+config :orca_hub, :tts_language, System.get_env("TTS_LANGUAGE") || "en"
+
 config :orca_hub, :elevenlabs_api_key, System.get_env("ELEVENLABS_API_KEY")
 
 config :orca_hub,

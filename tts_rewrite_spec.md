@@ -6,7 +6,7 @@ Read-only survey + proposal. No source files changed by this document.
 
 | File | Role |
 |---|---|
-| `lib/orca_hub_web/controllers/tts_controller.ex` | `POST /api/tts` — proxies text to ElevenLabs, streams mpeg back |
+| `lib/orca_hub_web/controllers/tts_controller.ex` | `POST /api/tts` — proxies text to a TTS provider and streams the audio back. As of the ai_gateway cutover this defaults to the local homelab service (WAV out); ElevenLabs/mpeg survives behind `TTS_PROVIDER=elevenlabs` |
 | `lib/orca_hub_web/router.ex:80` | Route registration, `:api` pipeline (see §3.5) |
 | `assets/js/app.js:692-967` | `TTSPlayer` hook (per-message player: chunking, fetch, playback, cache) |
 | `assets/js/app.js:654-664` | `ScrollToBottom` hook's `tts-autoplay` handler — DOM query to find "last" player |
@@ -35,10 +35,13 @@ sentence boundaries with an 80-char minimum bucket size. Each chunk is
 fetched **on demand** via `fetch("/api/tts", {text})` (one HTTP round-trip
 per chunk, one-ahead prefetch), converted to a blob URL, played through a
 fresh `Audio()` element, and the next chunk is fetched while the current one
-plays. `TTSController.create/2` synchronously proxies to ElevenLabs
-(`eleven_turbo_v2_5`, 30s timeout) and streams the whole MP3 back — there is
-no server-side caching and no streaming (the entire clip is generated before
-any byte reaches the browser).
+plays. `TTSController.create/2` synchronously proxies to the configured
+provider and streams the whole clip back — there is no server-side caching
+and no streaming (the entire clip is generated before any byte reaches the
+browser). Post-cutover that is the local ai_gateway
+(`POST /v1/audio/speech`, `tts-chatterbox-23lang`, 120s timeout, WAV out);
+the original ElevenLabs path (`eleven_turbo_v2_5`, 30s timeout, MP3 out) is
+now opt-in via `TTS_PROVIDER=elevenlabs`.
 
 **Autoplay:** session page — `show.ex:1886` pushes a `"tts-autoplay"` client
 event whenever a turn ends (status → idle) and `:tts_autoplay` is true. The
@@ -149,13 +152,16 @@ that part is fine.
 - Shipped in a single commit (`8c329bc`, 2026-03-02) plus one same-day
   follow-up fix (`ad9b2fd`). **Zero commits touching it since** — 5+ months
   untouched while the rest of the app has had heavy iteration.
-- **Zero test coverage** — no file under `test/` mentions TTS in any form.
+- **Zero test coverage** at the time of this survey — since superseded by
+  `test/orca_hub_web/controllers/tts_controller_test.exs`.
 - **Opt-in and not persisted** — `tts_autoplay` defaults to `false` and
   resets on every page load on both surfaces; there's no evidence it's a
   "sticky" workflow default for anyone.
-- **Configured in prod**: `ELEVENLABS_API_KEY`/`ELEVENLABS_VOICE_ID` are
-  present in both the local `.env` and the k3s `orca-hub-secrets` secret, so
-  the feature is live and reachable in prod today, not dead-by-config.
+- **Configured in prod**: at the time of this survey via
+  `ELEVENLABS_API_KEY`/`ELEVENLABS_VOICE_ID` in both the local `.env` and the
+  k3s `orca-hub-secrets` secret. The default path now needs no credential at
+  all — the local ai_gateway's LAN listener is unauthenticated — so the
+  feature is live and reachable in prod either way, not dead-by-config.
 - No analytics/telemetry hooks exist anywhere in this code path, so actual
   click/usage frequency can't be determined from the codebase — this survey
   can't tell you whether anyone uses it, only that nothing in the code

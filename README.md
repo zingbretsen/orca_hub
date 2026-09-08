@@ -110,8 +110,12 @@ If you prefer to run OrcaHub outside Docker (for development or customization):
 | `DATAROBOT_API_TOKEN` | — | DataRobot API token (alternative to OpenAI for title generation) |
 | `DATAROBOT_ENDPOINT` | — | DataRobot API endpoint (required if using DataRobot) |
 | `TITLE_MODEL` | `azure/gpt-4o-mini` | LLM model for title generation (used with DataRobot LLM Gateway) |
-| `ELEVENLABS_API_KEY` | — | ElevenLabs API key for text-to-speech |
-| `ELEVENLABS_VOICE_ID` | `JBFqnCBsd6RMkjVDRZzb` | ElevenLabs voice ID for TTS |
+| `TTS_PROVIDER` | `local` | Text-to-speech backend for `POST /api/tts`: `local` (homelab ai_gateway) or `elevenlabs` |
+| `TTS_URL` | `https://ai.lab.ingbretsenhome.com` | Base URL of the local TTS service (`POST /v1/audio/speech`, returns WAV). The no-auth LAN listener — reachable from the k3s pods, LAN hosts, and dev alike, so no token is needed |
+| `TTS_MODEL` | `tts-chatterbox-23lang` | Model name sent to the local TTS service |
+| `TTS_LANGUAGE` | `en` | Language code sent to the local TTS service |
+| `ELEVENLABS_API_KEY` | — | ElevenLabs API key — only used when `TTS_PROVIDER=elevenlabs` |
+| `ELEVENLABS_VOICE_ID` | `JBFqnCBsd6RMkjVDRZzb` | ElevenLabs voice ID — only used when `TTS_PROVIDER=elevenlabs` |
 
 ## Development
 
