@@ -211,7 +211,7 @@ defmodule OrcaHubWeb.NodeLive.ShowTest do
       html = render_click(view, "ensure_global_gitignore")
 
       assert File.read!(Path.join([home, ".config", "git", "ignore"])) ==
-               ".agents/\n.orca_uploads/\n.worktrees/\n"
+               Enum.map_join(OrcaHub.GlobalGitignore.patterns(), "\n", & &1) <> "\n"
 
       assert html =~ "Managed via"
       refute html =~ "Add to global gitignore"

@@ -417,8 +417,11 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
   # go through the existing HubRPC.save_artifact/1 path unchanged.
   defp do_save_content_path(name, path, kind, open?, mode, state) do
     case resolve_session(state) do
-      {:ok, session} -> confine_and_read_content_path(name, path, kind, open?, mode, state, session)
-      {:error, message} -> error(message)
+      {:ok, session} ->
+        confine_and_read_content_path(name, path, kind, open?, mode, state, session)
+
+      {:error, message} ->
+        error(message)
     end
   end
 
