@@ -628,7 +628,8 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
     end
 
     test "on timeout, returns the timeout error and kills the whole process tree" do
-      pidfile = Path.join(System.tmp_dir!(), "run_bounded_test_#{System.unique_integer([:positive])}")
+      pidfile =
+        Path.join(System.tmp_dir!(), "run_bounded_test_#{System.unique_integer([:positive])}")
 
       # A grandchild (nested `sh -c`) stands in for npx -> node -> chromium:
       # if only the immediate child were killed (the old Task.shutdown
