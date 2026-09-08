@@ -179,6 +179,23 @@ config :orca_hub,
 config :orca_hub, :gitea_url, System.get_env("ORCA_GITEA_URL")
 config :orca_hub, :gitea_token, System.get_env("ORCA_GITEA_TOKEN")
 
+# Cross-node file store (OrcaHub.ObjectStore, hub only — object store
+# credentials never leave the hub, see OrcaHub.Files moduledoc). Adapter
+# selection is S3 iff ORCA_S3_ENDPOINT is set, else the local-disk adapter
+# (dev/test default). ORCA_FILE_STORE_DIR overrides the local adapter's
+# root; ORCA_FILE_STORE_PROJECT_QUOTA_BYTES overrides the 2GB per-project
+# default quota.
+config :orca_hub, :s3_endpoint, System.get_env("ORCA_S3_ENDPOINT")
+config :orca_hub, :s3_bucket, System.get_env("ORCA_S3_BUCKET")
+config :orca_hub, :s3_region, System.get_env("ORCA_S3_REGION") || "us-east-1"
+config :orca_hub, :s3_access_key, System.get_env("ORCA_S3_ACCESS_KEY")
+config :orca_hub, :s3_secret_key, System.get_env("ORCA_S3_SECRET_KEY")
+config :orca_hub, :file_store_dir, System.get_env("ORCA_FILE_STORE_DIR")
+
+config :orca_hub,
+       :file_store_project_quota_bytes,
+       String.to_integer(System.get_env("ORCA_FILE_STORE_PROJECT_QUOTA_BYTES") || "2147483648")
+
 # Upload sidecar running alongside playwright-mcp in its pod — lets code-exec
 # push a LOCAL (OrcaHub-node) file into that pod's own filesystem so
 # `browser_file_upload`/`browser_drop` (which read `paths` from the pod, not
