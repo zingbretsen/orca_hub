@@ -7,7 +7,7 @@ defmodule OrcaHub.GlobalGitignoreTest do
 
   alias OrcaHub.GlobalGitignore
 
-  @patterns [".agents/", ".orca_uploads/", ".worktrees/"]
+  @patterns [".agents/", ".orca_uploads/", ".orca_inbox/", ".worktrees/"]
 
   setup do
     home = Path.join(System.tmp_dir!(), "global_gitignore_#{System.unique_integer([:positive])}")
@@ -45,7 +45,7 @@ defmodule OrcaHub.GlobalGitignoreTest do
 
       refute status.configured?
       assert status.present == [".agents/"]
-      assert status.missing == [".orca_uploads/", ".worktrees/"]
+      assert status.missing == [".orca_uploads/", ".orca_inbox/", ".worktrees/"]
     end
 
     test "resolves an explicitly configured core.excludesfile, expanding ~", %{
@@ -61,7 +61,7 @@ defmodule OrcaHub.GlobalGitignoreTest do
       assert status.path == Path.join(home, ".my_global_ignore")
       # no-trailing-slash form still counts as covered
       assert status.present == [".worktrees/"]
-      assert status.missing == [".agents/", ".orca_uploads/"]
+      assert status.missing == [".agents/", ".orca_uploads/", ".orca_inbox/"]
     end
   end
 
@@ -77,7 +77,8 @@ defmodule OrcaHub.GlobalGitignoreTest do
       assert status.path == default_path(home)
       assert status.missing == []
 
-      assert File.read!(default_path(home)) == ".agents/\n.orca_uploads/\n.worktrees/\n"
+      assert File.read!(default_path(home)) ==
+               ".agents/\n.orca_uploads/\n.orca_inbox/\n.worktrees/\n"
     end
 
     test "is idempotent — a second run changes nothing", %{home: home, opts: opts} do
@@ -98,7 +99,7 @@ defmodule OrcaHub.GlobalGitignoreTest do
 
       assert GlobalGitignore.ensure(opts) == :ok
 
-      assert File.read!(path) == "*.swp\n.agents/\n.orca_uploads/\n.worktrees/\n"
+      assert File.read!(path) == "*.swp\n.agents/\n.orca_uploads/\n.orca_inbox/\n.worktrees/\n"
     end
 
     test "adds a newline before appending to a file without a trailing one", %{
@@ -111,16 +112,16 @@ defmodule OrcaHub.GlobalGitignoreTest do
 
       assert GlobalGitignore.ensure(opts) == :ok
 
-      assert File.read!(path) == "*.swp\n.agents/\n.orca_uploads/\n.worktrees/\n"
+      assert File.read!(path) == "*.swp\n.agents/\n.orca_uploads/\n.orca_inbox/\n.worktrees/\n"
     end
 
     test "no-op when everything is already covered", %{home: home, opts: opts} do
       configure_excludesfile(home, "~/.my_global_ignore")
       path = Path.join(home, ".my_global_ignore")
-      File.write!(path, ".agents/\n.orca_uploads/\n.worktrees/\n")
+      File.write!(path, ".agents/\n.orca_uploads/\n.orca_inbox/\n.worktrees/\n")
 
       assert GlobalGitignore.ensure(opts) == :ok
-      assert File.read!(path) == ".agents/\n.orca_uploads/\n.worktrees/\n"
+      assert File.read!(path) == ".agents/\n.orca_uploads/\n.orca_inbox/\n.worktrees/\n"
     end
   end
 

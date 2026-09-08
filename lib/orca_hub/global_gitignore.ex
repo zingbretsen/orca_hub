@@ -12,6 +12,9 @@ defmodule OrcaHub.GlobalGitignore do
   file once — excluding them from every repo on that node without
   touching any tracked file.
 
+  `.orca_inbox/` is where `get_file` (`OrcaHub.MCP.Tools.Files`) writes
+  files a session pulls in from the cross-node file store.
+
   Every function here is meant to be invoked via `OrcaHub.Cluster.rpc/4`
   so it executes ON THE TARGET NODE — paths and `git config` state must
   resolve there, not on the hub. For tests, the base "home" directory is
@@ -24,7 +27,7 @@ defmodule OrcaHub.GlobalGitignore do
   config.
   """
 
-  @patterns [".agents/", ".orca_uploads/", ".worktrees/"]
+  @patterns [".agents/", ".orca_uploads/", ".orca_inbox/", ".worktrees/"]
 
   @doc "The managed ignore patterns, in display order."
   def patterns, do: @patterns
