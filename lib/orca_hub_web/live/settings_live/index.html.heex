@@ -801,3 +801,152 @@
     Hub-managed entries are synced to every node's disk on the next sync cycle.
   </p>
 </div>
+
+<div class="mt-10" id="tts-settings" phx-hook="TTSSample">
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">Text to Speech</h3>
+  </div>
+
+  <p class="text-sm text-base-content/60 mb-4">
+    Backend for <code>POST /api/tts</code>, used by the message-feed player. Every field is an
+    <strong>optional override</strong>
+    — leave one blank and it inherits that field alone from its <code>TTS_*</code>
+    environment variable (shown as the placeholder). Changes apply to the <strong>next request</strong>, with no restart and no redeploy.
+  </p>
+
+  <.form
+    for={@tts_form}
+    id="tts-provider-form"
+    phx-submit="save_tts_provider"
+    phx-change="validate_tts_provider"
+    class="card bg-base-200 p-4 space-y-3"
+  >
+    <.input
+      field={@tts_form[:provider]}
+      type="select"
+      label="Provider"
+      options={
+        [{"Inherit from TTS_PROVIDER (#{@tts_env_defaults.provider})", ""}] ++
+          Enum.map(tts_providers(), &{&1, &1})
+      }
+    />
+    <div class="flex gap-2">
+      <div class="flex-1">
+        <.input
+          field={@tts_form[:url]}
+          type="text"
+          label="Service URL"
+          placeholder={@tts_env_defaults.url}
+          phx-debounce="blur"
+        />
+      </div>
+      <div class="w-32">
+        <.input
+          field={@tts_form[:language]}
+          type="text"
+          label="Language"
+          placeholder={@tts_env_defaults.language}
+          phx-debounce="blur"
+        />
+      </div>
+    </div>
+    <p class="text-xs text-base-content/50 -mt-1">
+      The URL is the service root — <code>/v1/audio/speech</code>
+      is appended. Language is ignored by the ElevenLabs provider.
+    </p>
+
+    <div class="flex justify-between items-center gap-2 mt-2">
+      <button
+        type="button"
+        phx-click="speak_tts_sample"
+        phx-disable-with="Synthesizing…"
+        class="btn btn-sm btn-ghost"
+      >
+        <.icon name="hero-speaker-wave-micro" class="size-4" /> Speak sample
+      </button>
+      <.button type="submit" class="btn-sm">Save</.button>
+    </div>
+  </.form>
+
+  <div class="mt-6">
+    <div class="flex items-center justify-between mb-2">
+      <h4 class="font-semibold">Model catalog</h4>
+      <button
+        :if={Enum.any?(@tts_models, & &1.enabled)}
+        type="button"
+        phx-click="clear_default_tts_model"
+        class="btn btn-xs btn-ghost"
+      >
+        Clear default
+      </button>
+    </div>
+
+    <p class="text-sm text-base-content/60 mb-3">
+      Models available on the TTS service. The one marked <strong>Default</strong>
+      is what synthesis uses; with none marked — or an empty catalog — it falls back to
+      <code>TTS_MODEL</code>
+      (<code>{@tts_env_defaults.model}</code>). Use <strong>Speak</strong>
+      to compare speed and quality between them.
+    </p>
+
+    <div :if={@tts_models == []} class="text-sm text-base-content/50 italic mb-3">
+      No models yet — synthesis is using <code>{@tts_env_defaults.model}</code>
+      from the environment.
+    </div>
+
+    <div :for={model <- @tts_models} class="flex items-center gap-2 py-2 border-b border-base-300">
+      <div class="flex-1 min-w-0">
+        <div class="font-mono text-sm break-all">
+          {model.name}
+          <span :if={model.enabled} class="badge badge-primary badge-sm ml-2">Default</span>
+        </div>
+        <div :if={model.spec["label"] not in [nil, ""]} class="text-xs text-base-content/60">
+          {model.spec["label"]}
+        </div>
+      </div>
+      <button
+        type="button"
+        phx-click="speak_tts_sample"
+        phx-value-model={model.name}
+        phx-disable-with="…"
+        class="btn btn-xs btn-ghost"
+      >
+        <.icon name="hero-speaker-wave-micro" class="size-3" /> Speak
+      </button>
+      <button
+        :if={!model.enabled}
+        type="button"
+        phx-click="set_default_tts_model"
+        phx-value-id={model.id}
+        class="btn btn-xs"
+      >
+        Make default
+      </button>
+      <button
+        type="button"
+        phx-click="delete_tts_model"
+        phx-value-id={model.id}
+        data-confirm={"Remove #{model.name} from the catalog?"}
+        class="btn btn-xs btn-ghost text-error"
+      >
+        Remove
+      </button>
+    </div>
+
+    <.form
+      for={@tts_model_form}
+      id="tts-model-form"
+      phx-submit="add_tts_model"
+      class="flex items-start gap-2 mt-3"
+    >
+      <div class="flex-1">
+        <.input
+          field={@tts_model_form[:name]}
+          type="text"
+          placeholder="model id, e.g. tts-chatterbox-23lang"
+        />
+      </div>
+      <.button type="submit" class="btn-sm">Add model</.button>
+    </.form>
+  </div>
+</div>

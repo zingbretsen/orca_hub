@@ -94,8 +94,10 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.Sessions, :annotate_fork_marker, [session_id, annotations])
 
   def create_message(attrs), do: call(OrcaHub.Sessions, :create_message, [attrs])
+
   def delete_event_by_type_and_id(session_id, type, id),
     do: call(OrcaHub.Sessions, :delete_event_by_type_and_id, [session_id, type, id])
+
   def count_idle_sessions, do: call(OrcaHub.Sessions, :count_idle_sessions, [])
 
   def list_idle_sessions_with_last_assistant_message,
@@ -605,4 +607,32 @@ defmodule OrcaHub.HubRPC do
 
   def change_api_token(token, attrs \\ %{}),
     do: call(OrcaHub.ApiTokens, :change_token, [token, attrs])
+
+  # -------------------------------------------------------------------
+  # TTS config (hub-managed provider + model catalog for POST /api/tts —
+  # see OrcaHub.TTSConfig)
+  # -------------------------------------------------------------------
+
+  def resolve_tts_config, do: call(OrcaHub.TTSConfig, :resolve, [])
+  def tts_env_defaults, do: call(OrcaHub.TTSConfig, :env_defaults, [])
+  def get_tts_provider_entry, do: call(OrcaHub.TTSConfig, :get_provider_entry, [])
+  def put_tts_provider(attrs), do: call(OrcaHub.TTSConfig, :put_provider, [attrs])
+  def list_tts_models, do: call(OrcaHub.TTSConfig, :list_models, [])
+  def default_tts_model, do: call(OrcaHub.TTSConfig, :default_model, [])
+  def get_tts_model!(id), do: call(OrcaHub.TTSConfig, :get_model!, [id])
+  def create_tts_model(attrs), do: call(OrcaHub.TTSConfig, :create_model, [attrs])
+  def update_tts_model(entry, attrs), do: call(OrcaHub.TTSConfig, :update_model, [entry, attrs])
+  def delete_tts_model(entry), do: call(OrcaHub.TTSConfig, :delete_model, [entry])
+  def set_default_tts_model(entry), do: call(OrcaHub.TTSConfig, :set_default_model, [entry])
+  def clear_default_tts_model, do: call(OrcaHub.TTSConfig, :clear_default_model, [])
+
+  def change_tts_model(entry, attrs \\ %{}),
+    do: call(OrcaHub.TTSConfig, :change_model, [entry, attrs])
+
+  @doc """
+  Synthesizes one sample on the HUB, where the TTS config lives — same
+  request path `POST /api/tts` takes (`OrcaHub.TTS.synthesize/2`), so the
+  Settings page's "Speak sample" button can't quietly disagree with playback.
+  """
+  def synthesize_tts(text, config), do: call(OrcaHub.TTS, :synthesize, [text, config])
 end

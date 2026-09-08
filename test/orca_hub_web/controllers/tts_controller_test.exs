@@ -217,4 +217,132 @@ defmodule OrcaHubWeb.TTSControllerTest do
       assert json_response(conn, 500)["error"] == "ElevenLabs API key not configured"
     end
   end
+
+  # The controller resolves OrcaHub.TTSConfig inside the request, with no
+  # cache behind it — these prove the DB half of that end to end, through the
+  # real route, rather than only at the context level.
+  describe "POST /api/tts with DB-backed config (OrcaHub.TTSConfig)" do
+    setup do
+      Application.put_env(:orca_hub, :api_token, @token)
+      Application.put_env(:orca_hub, :tts_provider, "local")
+      Application.put_env(:orca_hub, :tts_url, "http://env-gateway.test")
+      Application.put_env(:orca_hub, :tts_model, "env-model")
+      Application.put_env(:orca_hub, :tts_language, "en")
+
+      on_exit(fn ->
+        Application.delete_env(:orca_hub, :api_token)
+        Application.delete_env(:orca_hub, :tts_provider)
+        Application.delete_env(:orca_hub, :tts_url)
+        Application.delete_env(:orca_hub, :tts_model)
+        Application.delete_env(:orca_hub, :tts_language)
+      end)
+
+      :ok
+    end
+
+    test "a DB provider row flips the provider with no env change at all", %{
+      conn: conn,
+      test: test_name
+    } do
+      {:ok, _} =
+        OrcaHub.TTSConfig.put_provider(%{provider: "elevenlabs", url: "", language: ""})
+
+      Application.put_env(:orca_hub, :elevenlabs_api_key, "sk_test")
+      on_exit(fn -> Application.delete_env(:orca_hub, :elevenlabs_api_key) end)
+
+      stub_tts(test_name, fn c ->
+        assert c.host == "api.elevenlabs.io"
+        Plug.Conn.send_resp(c, 200, "ID3-mp3-bytes")
+      end)
+
+      conn = conn |> authed() |> post(~p"/api/tts", %{"text" => "hello"})
+
+      # TTS_PROVIDER is still "local" — only the DB row changed.
+      assert Application.get_env(:orca_hub, :tts_provider) == "local"
+      assert response(conn, 200) == "ID3-mp3-bytes"
+      assert response_content_type(conn, :mpeg) =~ "audio/mpeg"
+    end
+
+    test "a DB row that sets only the url keeps TTS_MODEL/TTS_LANGUAGE", %{
+      conn: conn,
+      test: test_name
+    } do
+      {:ok, _} =
+        OrcaHub.TTSConfig.put_provider(%{
+          provider: "",
+          url: "http://db-gateway.test",
+          language: ""
+        })
+
+      stub_tts(test_name, fn c ->
+        assert c.host == "db-gateway.test"
+
+        {:ok, raw, c} = Plug.Conn.read_body(c)
+        body = Jason.decode!(raw)
+
+        # The partially-populated row must NOT suppress env for the fields it
+        # left blank — this is the per-field fallback rule, at the HTTP edge.
+        assert body["model"] == "env-model"
+        assert body["language"] == "en"
+
+        Plug.Conn.send_resp(c, 200, "RIFF")
+      end)
+
+      conn = conn |> authed() |> post(~p"/api/tts", %{"text" => "hello"})
+      assert response(conn, 200) == "RIFF"
+    end
+
+    test "the enabled catalog model is what gets synthesized", %{conn: conn, test: test_name} do
+      {:ok, _} = OrcaHub.TTSConfig.create_model(%{name: "catalog-model"})
+
+      stub_tts(test_name, fn c ->
+        {:ok, raw, c} = Plug.Conn.read_body(c)
+        assert Jason.decode!(raw)["model"] == "catalog-model"
+        Plug.Conn.send_resp(c, 200, "RIFF")
+      end)
+
+      conn = conn |> authed() |> post(~p"/api/tts", %{"text" => "hello"})
+      assert response(conn, 200) == "RIFF"
+    end
+
+    test "an empty catalog synthesizes with TTS_MODEL", %{conn: conn, test: test_name} do
+      stub_tts(test_name, fn c ->
+        {:ok, raw, c} = Plug.Conn.read_body(c)
+        assert Jason.decode!(raw)["model"] == "env-model"
+        Plug.Conn.send_resp(c, 200, "RIFF")
+      end)
+
+      conn = conn |> authed() |> post(~p"/api/tts", %{"text" => "hello"})
+      assert response(conn, 200) == "RIFF"
+    end
+
+    # The no-cache requirement, exercised the only way a test can: two
+    # requests in one process with a DB write between them and nothing
+    # restarted. The live-service proof is in the commit message.
+    test "changing the DB between two requests changes the SECOND one", %{
+      conn: conn,
+      test: test_name
+    } do
+      stub_tts(test_name, fn c ->
+        {:ok, raw, c} = Plug.Conn.read_body(c)
+        Plug.Conn.send_resp(c, 200, Jason.decode!(raw)["model"])
+      end)
+
+      {:ok, first} = OrcaHub.TTSConfig.create_model(%{name: "model-one"})
+
+      assert response(conn |> authed() |> post(~p"/api/tts", %{"text" => "a"}), 200) ==
+               "model-one"
+
+      {:ok, second} = OrcaHub.TTSConfig.create_model(%{name: "model-two"})
+      {:ok, _} = OrcaHub.TTSConfig.set_default_model(second)
+
+      assert response(conn |> authed() |> post(~p"/api/tts", %{"text" => "b"}), 200) ==
+               "model-two"
+
+      {:ok, _} = OrcaHub.TTSConfig.set_default_model(first)
+
+      assert response(conn |> authed() |> post(~p"/api/tts", %{"text" => "c"}), 200) ==
+               "model-one"
+    end
+  end
 end

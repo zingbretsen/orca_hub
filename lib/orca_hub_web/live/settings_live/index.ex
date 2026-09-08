@@ -6,7 +6,14 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   alias OrcaHub.Cluster.CodeSync
   alias OrcaHub.EmailInboxes.EmailInbox
   alias OrcaHub.HubRPC
+  alias OrcaHub.TTSConfig
+  alias OrcaHub.TTSConfig.Entry, as: TTSEntry
   alias OrcaHub.UpstreamServers.UpstreamServer
+
+  # Long enough to actually judge a voice on, short enough that the base64
+  # data URL stays a reasonable LiveView message (a few hundred KB of WAV).
+  @tts_sample_text "The quick brown fox jumps over the lazy dog. " <>
+                     "How much wood would a woodchuck chuck?"
 
   @impl true
   def mount(_params, _session, socket) do
@@ -41,7 +48,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
        show_token_form: false,
        token_form: to_form(HubRPC.change_api_token(%ApiToken{}, %{"scopes" => []})),
        revealed_secret: nil
-     )}
+     )
+     |> assign_tts()}
   end
 
   @impl true
@@ -471,6 +479,98 @@ defmodule OrcaHubWeb.SettingsLive.Index do
     {:noreply, assign(socket, revealed_secret: nil)}
   end
 
+  # ── Text-to-speech (OrcaHub.TTSConfig) ─────────────────────────────────
+  #
+  # Every field here is an OPTIONAL override: blank means "inherit this one
+  # field from its TTS_* env var", which is why the inputs render the env
+  # value as their placeholder rather than pre-filling it. Saving takes
+  # effect on the very next POST /api/tts — the controller resolves inside
+  # the request with no cache behind it, so there is nothing to invalidate.
+
+  def handle_event("validate_tts_provider", %{"tts" => params}, socket) do
+    {:noreply, assign(socket, tts_form: to_form(params, as: :tts))}
+  end
+
+  def handle_event("save_tts_provider", %{"tts" => params}, socket) do
+    case HubRPC.put_tts_provider(params) do
+      {:ok, _entry} ->
+        {:noreply,
+         socket
+         |> assign_tts()
+         |> put_flash(:info, "TTS settings saved — in effect on the next request.")}
+
+      {:error, changeset} ->
+        {:noreply, put_flash(socket, :error, "Could not save: #{tts_errors(changeset)}")}
+    end
+  end
+
+  def handle_event("add_tts_model", %{"tts_model" => params}, socket) do
+    case HubRPC.create_tts_model(params) do
+      {:ok, _entry} ->
+        {:noreply, socket |> assign_tts() |> put_flash(:info, "Model added")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, tts_model_form: to_form(changeset, as: "tts_model"))}
+    end
+  end
+
+  def handle_event("delete_tts_model", %{"id" => id}, socket) do
+    {:ok, _} = id |> HubRPC.get_tts_model!() |> HubRPC.delete_tts_model()
+    {:noreply, socket |> assign_tts() |> put_flash(:info, "Model removed")}
+  end
+
+  def handle_event("set_default_tts_model", %{"id" => id}, socket) do
+    {:ok, _} = id |> HubRPC.get_tts_model!() |> HubRPC.set_default_tts_model()
+    {:noreply, assign_tts(socket)}
+  end
+
+  def handle_event("clear_default_tts_model", _params, socket) do
+    {:ok, _} = HubRPC.clear_default_tts_model()
+
+    {:noreply,
+     socket
+     |> assign_tts()
+     |> put_flash(:info, "Default cleared — synthesis falls back to TTS_MODEL.")}
+  end
+
+  # Same shape as "test_inbox_connection" above: reads the CURRENT
+  # (possibly-unsaved) form values, probes on the HUB, reports via flash.
+  # The difference is that the result is AUDIO — the whole reason to keep a
+  # model catalog is comparing speed and quality, and neither is judgeable
+  # from a success message, so the bytes are pushed to the browser as a data
+  # URL and played. Wall time and size go in the flash because "which model
+  # is faster" is exactly the question this button exists to answer.
+  def handle_event("speak_tts_sample", params, socket) do
+    form = socket.assigns.tts_form
+
+    config = %{
+      provider: form_value(form, :provider, socket.assigns.tts_env_defaults.provider),
+      url: form_value(form, :url, socket.assigns.tts_env_defaults.url),
+      language: form_value(form, :language, socket.assigns.tts_env_defaults.language),
+      model: sample_model(params, socket)
+    }
+
+    {micros, result} = :timer.tc(fn -> safe_synthesize(@tts_sample_text, config) end)
+    ms = div(micros, 1000)
+
+    case result do
+      {:ok, %{body: audio, content_type: content_type}} ->
+        {:noreply,
+         socket
+         |> push_event("tts-sample", %{
+           audio: "data:#{content_type};base64,#{Base.encode64(audio)}"
+         })
+         |> put_flash(
+           :info,
+           "#{config.model} via #{config.provider}: #{ms} ms, #{format_bytes(byte_size(audio))}."
+         )}
+
+      {:error, reason} ->
+        {:noreply,
+         put_flash(socket, :error, "Sample failed after #{ms} ms: #{tts_error(reason)}")}
+    end
+  end
+
   @impl true
   def handle_info(:do_push_all, socket) do
     result = CodeSync.push_all()
@@ -649,4 +749,80 @@ defmodule OrcaHubWeb.SettingsLive.Index do
     do: "Could not reach the hub node to test this connection: #{message}"
 
   defp format_connection_error(other), do: inspect(other)
+
+  # ── TTS helpers ────────────────────────────────────────────────────────
+
+  defp assign_tts(socket) do
+    entry = HubRPC.get_tts_provider_entry()
+    spec = if entry, do: entry.spec || %{}, else: %{}
+
+    assign(socket,
+      tts_env_defaults: HubRPC.tts_env_defaults(),
+      tts_form:
+        to_form(
+          %{
+            "provider" => spec["provider"] || "",
+            "url" => spec["url"] || "",
+            "language" => spec["language"] || ""
+          },
+          as: :tts
+        ),
+      tts_models: HubRPC.list_tts_models(),
+      tts_model_form: to_form(HubRPC.change_tts_model(%TTSEntry{}), as: "tts_model")
+    )
+  end
+
+  def tts_providers, do: TTSConfig.Entry.providers()
+
+  defp form_value(form, field, fallback) do
+    case Phoenix.HTML.Form.input_value(form, field) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> fallback
+          trimmed -> trimmed
+        end
+
+      _ ->
+        fallback
+    end
+  end
+
+  # A per-row "Speak" button names the model it sits next to; the form-level
+  # button has no id and falls back to whatever the saved default resolves
+  # to, so both buttons synthesize with the config the user is looking at.
+  defp sample_model(%{"model" => model}, _socket) when is_binary(model) and model != "", do: model
+
+  defp sample_model(_params, socket) do
+    case Enum.find(socket.assigns.tts_models, & &1.enabled) do
+      %TTSEntry{name: name} -> name
+      nil -> socket.assigns.tts_env_defaults.model
+    end
+  end
+
+  # Isolates the hub round-trip and the HTTP client so an unreachable hub or
+  # an unexpected client crash surfaces as a flash rather than taking the
+  # whole Settings page down with it.
+  defp safe_synthesize(text, config) do
+    HubRPC.synthesize_tts(text, config)
+  rescue
+    e -> {:error, {:crashed, Exception.message(e)}}
+  catch
+    :exit, reason -> {:error, {:crashed, inspect(reason)}}
+  end
+
+  defp tts_error({:http, _provider, status, body}), do: "HTTP #{status} — #{inspect(body)}"
+  defp tts_error({:transport, reason}), do: "could not reach the service (#{inspect(reason)})"
+  defp tts_error(:missing_elevenlabs_key), do: "ElevenLabs API key not configured"
+  defp tts_error({:crashed, message}), do: message
+  defp tts_error(other), do: inspect(other)
+
+  defp tts_errors(%Ecto.Changeset{} = changeset) do
+    changeset
+    |> Ecto.Changeset.traverse_errors(fn {msg, _opts} -> msg end)
+    |> Enum.map_join("; ", fn {field, msgs} -> "#{field} #{Enum.join(msgs, ", ")}" end)
+  end
+
+  defp format_bytes(bytes) when bytes < 1024, do: "#{bytes} B"
+  defp format_bytes(bytes) when bytes < 1024 * 1024, do: "#{Float.round(bytes / 1024, 1)} KB"
+  defp format_bytes(bytes), do: "#{Float.round(bytes / (1024 * 1024), 2)} MB"
 end

@@ -103,6 +103,12 @@ document.addEventListener("click", (e) => {
 // surfaces share one implementation (no second copy-pasted player).
 const TTS_AUTOPLAY_KEY = "orca:tts-autoplay"
 
+// Bounded retry for a rate-limited (429) synthesis request. The gateway's
+// MAX_CONCURRENCY semaphore is shared with LLM traffic, so a 429 is
+// transient contention rather than a bad request — see ttsRequestChunk.
+const TTS_MAX_ATTEMPTS = 3
+const TTS_RETRY_BASE_MS = 400
+
 const TTS_ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor"><path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z"/></svg>`
 const TTS_ICON_PAUSE = `<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor"><path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zM12.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75a.75.75 0 00-.75-.75h-1.5z"/></svg>`
 
@@ -402,16 +408,7 @@ const TTSMethods = {
     const controller = new AbortController()
     this.pendingControllers.set(index, controller)
 
-    const promise = fetch("/api/tts", {
-      method: "POST",
-      headers: this.ttsHeaders(),
-      body: JSON.stringify({ text: this.chunks[index] }),
-      signal: controller.signal
-    })
-      .then((resp) => {
-        if (!resp.ok) throw new Error(`TTS failed: ${resp.status}`)
-        return resp.blob()
-      })
+    const promise = this.ttsRequestChunk(index, controller.signal)
       .then((blob) => {
         const url = URL.createObjectURL(blob)
         this.audioCache[index] = url
@@ -424,6 +421,64 @@ const TTSMethods = {
 
     this.pendingFetches.set(index, promise)
     return promise
+  },
+
+  // One chunk's HTTP request, with a bounded retry on 429 ONLY.
+  //
+  // The gateway's MAX_CONCURRENCY is an in-process semaphore shared with LLM
+  // traffic, so a 429 here means "someone else is mid-inference", not "this
+  // request is wrong". Before this retry a single 429 made `resp.ok` false,
+  // threw, and landed in ttsPlayCurrentChunk's catch — which called
+  // ttsStop(), so ONE contended request tore down the entire playback
+  // session. Every non-429 status is still a hard failure on first response.
+  //
+  // Deliberately NOT paired with deeper prefetching: depth-1 prefetch already
+  // exists, and measured depth >= 2 produced zero speedup and more 429s
+  // against that same shared semaphore.
+  //
+  // The retry rides the SAME AbortController as the request it retries, so a
+  // ttsStop() during a backoff sleep rejects immediately rather than
+  // resurrecting a request the user already cancelled.
+  async ttsRequestChunk(index, signal) {
+    for (let attempt = 1; ; attempt++) {
+      const resp = await fetch("/api/tts", {
+        method: "POST",
+        headers: this.ttsHeaders(),
+        body: JSON.stringify({ text: this.chunks[index] }),
+        signal
+      })
+
+      if (resp.ok) return resp.blob()
+      if (resp.status !== 429 || attempt >= TTS_MAX_ATTEMPTS) {
+        throw new Error(`TTS failed: ${resp.status}`)
+      }
+
+      // Exponential backoff with full jitter — several chunks rate-limited
+      // by the same burst must not retry in lockstep and collide again.
+      const window = TTS_RETRY_BASE_MS * Math.pow(2, attempt - 1)
+      await this.ttsSleep(window / 2 + Math.random() * (window / 2), signal)
+    }
+  },
+
+  // setTimeout that clears its timer and rejects the moment `signal` aborts,
+  // so a backoff can never leak a timer past teardown. Rejects with a real
+  // AbortError specifically so it is indistinguishable from an aborted fetch
+  // to every existing caller, preserving the abort semantics exactly.
+  ttsSleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) return reject(new DOMException("Aborted", "AbortError"))
+
+      const onAbort = () => {
+        clearTimeout(timer)
+        reject(new DOMException("Aborted", "AbortError"))
+      }
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort)
+        resolve()
+      }, ms)
+
+      signal.addEventListener("abort", onAbort, { once: true })
+    })
   },
 
   async ttsPlayCurrentChunk() {
@@ -459,8 +514,25 @@ const TTSMethods = {
         this.ttsFetchAudio(this.currentIndex + 1).catch(() => {})
       }
     } catch (e) {
-      if (e.name !== "AbortError") console.error("TTS playback error:", e)
-      if (this.activeId === id) this.ttsStop()
+      // An abort IS the teardown (only ttsStop aborts these controllers) —
+      // there is nothing left to do and nothing left to stop.
+      if (e.name === "AbortError") return
+
+      console.error("TTS playback error:", e)
+
+      // One chunk failing is not a reason to end the session. This used to
+      // call ttsStop(), so a single exhausted-retry chunk silenced the whole
+      // message; skip past it and keep playing instead. Each pass advances
+      // the index by one, so a run of failures still terminates at the end.
+      if (!this.playing || this.activeId !== id || this.currentIndex !== index) return
+
+      if (index < this.chunks.length - 1) {
+        this.currentIndex = index + 1
+        this.ttsUpdateUI(id)
+        this.ttsPlayCurrentChunk()
+      } else {
+        this.ttsStop()
+      }
     }
   },
 
@@ -497,6 +569,32 @@ const TTSMethods = {
 let Hooks = {
   ...colocatedHooks,
   Terminal: TerminalHook,
+
+  // Plays the audio the Settings page's "Speak sample" button pushes down as
+  // a data URL. The bytes travel over the LiveView socket rather than being
+  // fetched by the browser because the sample has to reflect the CURRENT,
+  // possibly-unsaved form values — which only the server has.
+  TTSSample: {
+    mounted() {
+      this.handleEvent("tts-sample", ({ audio }) => {
+        this.ttsSampleStop()
+        this.sample = new Audio(audio)
+        this.sample.play().catch((e) => console.error("TTS sample playback failed:", e))
+      })
+    },
+
+    destroyed() {
+      this.ttsSampleStop()
+    },
+
+    ttsSampleStop() {
+      if (this.sample) {
+        this.sample.pause()
+        this.sample.src = ""
+        this.sample = null
+      }
+    }
+  },
   NodeFilter: {
     mounted() {
       const stored = localStorage.getItem("orca:node_filter")
