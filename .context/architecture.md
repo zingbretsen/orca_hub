@@ -327,6 +327,26 @@ graph TB
   `ArtifactController`): agent-generated HTML/SVG/markdown persisted per
   project and rendered client-side in a sandboxed iframe, with a `data` map
   for live-data updates plus raw/download endpoints.
+- **File store** (`lib/orca_hub/files.ex`, `object_store.ex` +
+  `object_store/{local,s3}.ex`, `mcp/tools/files.ex`, hub-owned): lets
+  sessions on different nodes exchange files (`put_file`/`get_file`/
+  `list_files`/`share_file`/`delete_file`) without hand-writing base64, and
+  without the `run_elixir` sandbox ever holding `File` — the MCP tool
+  module runs in the BEAM on the session's own runner node, outside the
+  sandbox, and does the local disk I/O itself before/after shipping bytes
+  through `HubRPC` to the hub-owned `OrcaHub.Files` context. Metadata
+  (`files`/`file_shares`) lives in Postgres; bytes live behind
+  `OrcaHub.ObjectStore` (a local-disk adapter for dev/test, an S3-
+  compatible adapter via `req_s3` otherwise — selected by whether
+  `ORCA_S3_ENDPOINT` is set), and object store credentials never leave the
+  hub. `put_file` confines its source path with `OrcaHub.PathConfinement`
+  (shared with `MCP.Tools.Discord`'s `send_discord_message`) before
+  reading any bytes; `get_file` takes no destination argument and always
+  writes under the caller's own `.orca_inbox/`. Visibility is creator +
+  same project + explicit share (`share_file`); deleting is narrower
+  (creator or same project only — a share never grants delete rights).
+  Presigned direct-to-object-store transfer and an artifact-asset
+  integration are later slices, not v1.
 - **Inbound email** (`lib/orca_hub/email_inbox/`, hub only): one
   `EmailInbox.Poller` per enabled inbox IMAP-polls for new mail;
   `EmailInbox.Security` authenticates the sender (`Authentication-Results`,
