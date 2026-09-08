@@ -326,7 +326,24 @@ graph TB
 - **Artifacts** (`lib/orca_hub/artifacts.ex`, `ArtifactLive`,
   `ArtifactController`): agent-generated HTML/SVG/markdown persisted per
   project and rendered client-side in a sandboxed iframe, with a `data` map
-  for live-data updates plus raw/download endpoints.
+  for live-data updates plus raw/download endpoints. `save_artifact` accepts
+  a `content_path` (a file on disk, confined to the calling session's own
+  directory via `OrcaHub.PathConfinement`, same 50MB cap as `put_file`) as
+  an alternative to `content`, read directly on the session's own runner
+  node — so a large artifact built/tested on disk across turns never has to
+  round-trip through the agent's own context just to be saved (ORCAHUB3-56).
+- **Artifact assets** (`lib/orca_hub/artifacts/artifact_asset.ex`,
+  ORCAHUB3-72 slice 2): links an artifact to a file already in the
+  cross-node file store (below) under a name unique per artifact, so the
+  artifact's own HTML can reference it with a relative URL — e.g. `<img
+  src="assets/hero.png">` — which resolves because the artifact itself is
+  loaded via `src=/artifacts/:id/raw`. `attach_artifact_asset` requires the
+  file to already be visible to the calling session (`put_file`/
+  `share_file`) and the artifact to belong to the caller's project or have
+  been created by the caller; the asset is then served publicly at
+  `GET /artifacts/:id/assets/:name` on the same unauthenticated pipeline as
+  `/raw` (no visibility re-check there — an artifact asset is public at the
+  same route as the artifact's own content).
 - **File store** (`lib/orca_hub/files.ex`, `object_store.ex` +
   `object_store/{local,s3}.ex`, `mcp/tools/files.ex`, hub-owned): lets
   sessions on different nodes exchange files (`put_file`/`get_file`/
@@ -345,8 +362,8 @@ graph TB
   writes under the caller's own `.orca_inbox/`. Visibility is creator +
   same project + explicit share (`share_file`); deleting is narrower
   (creator or same project only — a share never grants delete rights).
-  Presigned direct-to-object-store transfer and an artifact-asset
-  integration are later slices, not v1.
+  Presigned direct-to-object-store transfer is a later slice, not v1; the
+  artifact-asset integration shipped as slice 2, see above.
 - **Inbound email** (`lib/orca_hub/email_inbox/`, hub only): one
   `EmailInbox.Poller` per enabled inbox IMAP-polls for new mail;
   `EmailInbox.Security` authenticates the sender (`Authentication-Results`,
