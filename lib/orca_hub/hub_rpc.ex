@@ -635,4 +635,26 @@ defmodule OrcaHub.HubRPC do
   Settings page's "Speak sample" button can't quietly disagree with playback.
   """
   def synthesize_tts(text, config), do: call(OrcaHub.TTS, :synthesize, [text, config])
+
+  # -------------------------------------------------------------------
+  # Cross-node file store (OrcaHub.Files) — see its moduledoc for the
+  # security invariants. Object store bytes never leave the hub except
+  # through these calls.
+  # -------------------------------------------------------------------
+
+  def create_file(attrs, binary), do: call(OrcaHub.Files, :create_file, [attrs, binary])
+  def get_file(id), do: call(OrcaHub.Files, :get_file, [id])
+
+  def fetch_visible_file_binary(id, context),
+    do: call(OrcaHub.Files, :fetch_visible_binary, [id, context])
+
+  def list_visible_files(context), do: call(OrcaHub.Files, :list_visible, [context])
+  def share_file(file, attrs), do: call(OrcaHub.Files, :share_file, [file, attrs])
+  def delete_file(file), do: call(OrcaHub.Files, :delete_file, [file])
+
+  def file_visible?(file, session_id, project_id),
+    do: call(OrcaHub.Files, :visible?, [file, session_id, project_id])
+
+  def file_deletable?(file, session_id, project_id),
+    do: call(OrcaHub.Files, :deletable?, [file, session_id, project_id])
 end
