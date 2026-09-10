@@ -221,6 +221,80 @@ defmodule OrcaHub.SessionRunnerTest do
     end
   end
 
+  describe "idle_teardown — memory extraction dispatch" do
+    setup %{project: project} do
+      session = create_session(project, %{})
+      test_pid = self()
+
+      Application.put_env(:orca_hub, :memory_extraction_dispatch_fun, fn dispatched_session, opts ->
+        send(test_pid, {:memory_extraction_dispatched, dispatched_session.id, opts})
+        {:ok, :dispatched}
+      end)
+
+      on_exit(fn -> Application.delete_env(:orca_hub, :memory_extraction_dispatch_fun) end)
+
+      %{session: session}
+    end
+
+    defp streaming_teardown_data(session, overrides) do
+      Map.merge(
+        %{
+          session_id: session.id,
+          directory: session.directory,
+          backend: OrcaHub.Backend.Claude,
+          backend_state: %{},
+          engine: :streaming,
+          port: :fake_test_port,
+          buffer: "",
+          error_output: "",
+          warming_up: false,
+          turn_result: nil,
+          db_node: node()
+        },
+        overrides
+      )
+    end
+
+    test "idle's :state_timeout idle_teardown dispatches when the warm port is live", %{
+      session: session
+    } do
+      SessionRunner.idle(:state_timeout, :idle_teardown, streaming_teardown_data(session, %{}))
+
+      assert_receive {:memory_extraction_dispatched, session_id, opts}, 1000
+      assert session_id == session.id
+      assert opts[:trigger] == :idle_teardown
+    end
+
+    test "idle's :state_timeout idle_teardown does NOT dispatch on a regular idle transition (already cold)",
+         %{session: session} do
+      SessionRunner.idle(
+        :state_timeout,
+        :idle_teardown,
+        streaming_teardown_data(session, %{port: nil})
+      )
+
+      refute_receive {:memory_extraction_dispatched, _, _}, 200
+    end
+
+    test "error's :state_timeout idle_teardown dispatches when the warm port is live", %{
+      session: session
+    } do
+      SessionRunner.error(:state_timeout, :idle_teardown, streaming_teardown_data(session, %{}))
+
+      assert_receive {:memory_extraction_dispatched, session_id, opts}, 1000
+      assert session_id == session.id
+      assert opts[:trigger] == :idle_teardown
+    end
+
+    test "evict_warm does NOT dispatch — WarmPool capacity pressure isn't a natural end of work",
+         %{session: session} do
+      from = {self(), make_ref()}
+      SessionRunner.idle({:call, from}, :evict_warm, streaming_teardown_data(session, %{}))
+
+      refute_receive {:memory_extraction_dispatched, _, _}, 200
+    end
+  end
+
   # ORCAHUB3-60: stale resolution events for answer_ui_request in non-running states
   describe "answer_ui_request — stale resolution persistence" do
     # Helper to check if a message was persisted

@@ -61,19 +61,21 @@ defmodule OrcaHub.SessionRunner do
   # (idle/error's :state_timeout, :idle_teardown clause guarded on a live
   # warm port) — a session's warm port going cold via the 15-minute idle
   # timeout is the "natural end of work" trigger (see OrcaHub.MemoryExtraction
-  # moduledoc), never every plain idle/error transition. Runs off the
-  # GenStatem process so a slow memory-service call can't stall the teardown.
+  # moduledoc), never every plain idle/error transition. The session lookup
+  # happens synchronously (a single cheap local/HubRPC call, same as
+  # update_session_status/2 above) so the potentially slow/network-bound
+  # dispatch itself runs off the GenStatem process and can't stall teardown.
   defp maybe_dispatch_memory_extraction(data) do
+    session = db_call(data, :get_session!, [data.session_id])
+
+    dispatch_fun =
+      Application.get_env(
+        :orca_hub,
+        :memory_extraction_dispatch_fun,
+        &MemoryExtraction.dispatch/2
+      )
+
     Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-      session = db_call(data, :get_session!, [data.session_id])
-
-      dispatch_fun =
-        Application.get_env(
-          :orca_hub,
-          :memory_extraction_dispatch_fun,
-          &MemoryExtraction.dispatch/2
-        )
-
       dispatch_fun.(session, trigger: :idle_teardown)
     end)
 
