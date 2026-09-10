@@ -61,6 +61,14 @@ defmodule OrcaHub.Backend.PiTest do
     value |> to_string() |> Jason.decode!()
   end
 
+  # Decodes the ORCA_MEMORY env payload a spawn would hand the pi process
+  # (agent-memory centralization) — mirrors identity_payload/2 above.
+  defp memory_payload(c, engine \\ :streaming) do
+    spec = Backend.spawn_spec(engine, c)
+    {_, value} = List.keyfind(spec.env, ~c"ORCA_MEMORY", 0)
+    value |> to_string() |> Jason.decode!()
+  end
+
   # A real session owning one open issue, so SharedPrompts.open_issues_prompt/1
   # (a live DB query) actually has something to say for it.
   defp session_with_open_issue(title) do
@@ -234,24 +242,26 @@ defmodule OrcaHub.Backend.PiTest do
       assert File.exists?(expected)
     end
 
-    test "all five orca extensions load via -e, orca-identity.ts first (spec §12.3/§12.4/§12.5/§12.7, fork §5.1)" do
+    test "all six orca extensions load via -e, orca-identity.ts then orca-memory.ts first (spec §12.3/§12.4/§12.5/§12.7, fork §5.1)" do
       spec = Backend.spawn_spec(:streaming, ctx())
       e_indices = for {"-e", i} <- Enum.with_index(spec.args), do: i
-      assert length(e_indices) == 5
+      assert length(e_indices) == 6
 
       loaded = Enum.map(e_indices, &Enum.at(spec.args, &1 + 1))
 
       assert loaded == [
                Application.app_dir(:orca_hub, "priv/pi/orca-identity.ts"),
+               Application.app_dir(:orca_hub, "priv/pi/orca-memory.ts"),
                Application.app_dir(:orca_hub, "priv/pi/orca.ts"),
                Application.app_dir(:orca_hub, "priv/pi/orca-mcp.ts"),
                Application.app_dir(:orca_hub, "priv/pi/orca-plan.ts"),
                Application.app_dir(:orca_hub, "priv/pi/orca-guard.ts")
              ]
 
-      # orca-identity.ts is first but takes no part in the ordering contract
-      # the other three share — it registers no tools and no `tool_call`
-      # handler (pi_fork_spec.md §5.1).
+      # orca-identity.ts and orca-memory.ts are first but take no part in the
+      # ordering contract the other three share — neither registers tools nor
+      # a `tool_call` handler (pi_fork_spec.md §5.1; agent-memory
+      # centralization mirrors the same posture).
       # orca.ts must precede orca-plan.ts: the plan extension's read-only
       # tool list references the `question` tool orca.ts registers.
       # orca-guard.ts must load LAST (after orca-plan.ts): pi's per-extension
@@ -1703,6 +1713,27 @@ defmodule OrcaHub.Backend.PiTest do
   # that worst case into the best case — and it must live here, in the
   # pi-only prompt, because Claude's/Codex's rendered prompts are byte-pinned
   # by the golden fence.
+  describe "system_prompt/1 — memory-tools guidance (agent-memory centralization)" do
+    test "included by default, mcp__orca__ prefixed" do
+      prompt = Backend.system_prompt(ctx())
+      assert prompt =~ "mcp__orca__remember"
+      refute prompt =~ "Tools.remember"
+    end
+
+    test "swaps to Tools.* under code_exec" do
+      prompt = Backend.system_prompt(ctx(%{code_exec: true}))
+      assert prompt =~ "Tools.remember"
+      refute prompt =~ "mcp__orca__remember"
+    end
+
+    test "is a pure function of code_exec alone (fork determinism)" do
+      a = ctx(%{session_id: Ecto.UUID.generate()})
+      b = ctx(%{session_id: Ecto.UUID.generate()})
+
+      assert Backend.system_prompt(a) == Backend.system_prompt(b)
+    end
+  end
+
   describe "system_prompt/1 — fork timing guidance (§6)" do
     test "orchestrators are told to make fork spawns the last action of a turn" do
       prompt = Backend.system_prompt(ctx(%{orchestrator: true}))
@@ -1855,6 +1886,86 @@ defmodule OrcaHub.Backend.PiTest do
     end
   end
 
+  # ── ORCA_MEMORY (agent-memory centralization) ───────────────────────────
+  # Consumed by priv/pi/orca-memory.ts at session_start. `memory_context_fun`
+  # is the test-only Application env seam SharedPrompts.memory_context_block/2
+  # resolves (default: OrcaHub.MemoryClient.context_block/3, which doesn't
+  # need to exist for these tests — the default is never invoked here).
+
+  describe "pi_env/1 — ORCA_MEMORY payload" do
+    setup do
+      on_exit(fn -> Application.delete_env(:orca_hub, :memory_context_fun) end)
+      :ok
+    end
+
+    test "carries the session id and an ISO 8601 generated_at on both engines" do
+      c = ctx()
+      payload = memory_payload(c)
+
+      assert payload["session_id"] == c.session_id
+      assert {:ok, _, _} = DateTime.from_iso8601(payload["generated_at"])
+
+      one_shot_payload = memory_payload(Map.put(c, :prompt, "hi"), :one_shot)
+      assert one_shot_payload["session_id"] == c.session_id
+    end
+
+    test "block is null when the memory service has nothing to say (no stub configured)" do
+      assert memory_payload(ctx())["block"] == nil
+    end
+
+    test "block carries whatever OrcaHub.MemoryClient.context_block/3 returns" do
+      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok, "- prior fact worth recalling"}
+      end)
+
+      assert memory_payload(ctx())["block"] == "- prior fact worth recalling"
+    end
+
+    test "a stub returning {:ok, nil} (service disabled) yields a null block, no error" do
+      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok, nil}
+      end)
+
+      assert memory_payload(ctx())["block"] == nil
+    end
+
+    test "a stub that raises does not fail the spawn — block degrades to null" do
+      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
+        raise "memory service on fire"
+      end)
+
+      assert memory_payload(ctx())["block"] == nil
+    end
+
+    test "the project slug is derived from directory via OrcaHub.AgentMemory.slugify/1" do
+      test_pid = self()
+
+      Application.put_env(:orca_hub, :memory_context_fun, fn slug, _prompt, _opts ->
+        send(test_pid, {:slug, slug})
+        {:ok, nil}
+      end)
+
+      c = ctx(%{directory: "/tmp/some project!"})
+      memory_payload(c)
+
+      assert_received {:slug, slug}
+      assert slug == OrcaHub.AgentMemory.slugify(c.directory)
+    end
+
+    test "budget_tokens: 3000 is passed to the memory-context lookup" do
+      test_pid = self()
+
+      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, opts ->
+        send(test_pid, {:opts, opts})
+        {:ok, nil}
+      end)
+
+      memory_payload(ctx())
+      assert_received {:opts, opts}
+      assert Keyword.get(opts, :budget_tokens) == 3000
+    end
+  end
+
   # ── priv/pi/orca-identity.ts (pi_fork_spec.md §5.1) ────────────────────
   # The extension is TypeScript, so its idempotence rule is exercised by
   # driving it against a fake `pi` + `ctx.sessionManager` under node —
@@ -1881,6 +1992,37 @@ defmodule OrcaHub.Backend.PiTest do
 
         node ->
           {out, status} = System.cmd(node, [@harness], stderr_to_stdout: true)
+
+          assert status == 0, "harness failed to run:\n#{out}"
+
+          results =
+            out
+            |> String.split("\n", trim: true)
+            |> List.last()
+            |> Jason.decode!()
+
+          assert results["failed"] == []
+          # Guards against a harness that silently stops asserting anything.
+          assert length(results["passed"]) >= 10
+      end
+    end
+  end
+
+  # ── priv/pi/orca-memory.ts (agent-memory centralization) ───────────────
+  # Same posture as the orca-identity.ts harness test above: pins the
+  # extension's idempotence LOGIC against a faithful stand-in for pi's API,
+  # not against a live pi process.
+
+  describe "orca-memory.ts idempotence" do
+    @memory_harness Path.expand("../../support/fixtures/pi_memory_harness.mjs", __DIR__)
+
+    test "absent/stale/different-session appends, fresh-and-recent no-ops, missing APIs degrade" do
+      case System.find_executable("node") do
+        nil ->
+          IO.puts(:stderr, "[pi_test] SKIPPED orca-memory.ts harness — no `node` on PATH")
+
+        node ->
+          {out, status} = System.cmd(node, [@memory_harness], stderr_to_stdout: true)
 
           assert status == 0, "harness failed to run:\n#{out}"
 

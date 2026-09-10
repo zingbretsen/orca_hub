@@ -296,7 +296,8 @@ defmodule OrcaHub.Backend.Pi do
   defp pi_env(ctx) do
     extra = [
       {~c"ORCA_MCP_URL", String.to_charlist(OrcaHub.Backend.McpUrl.orca_url(ctx))},
-      {~c"ORCA_IDENTITY", String.to_charlist(orca_identity_json(ctx))}
+      {~c"ORCA_IDENTITY", String.to_charlist(orca_identity_json(ctx))},
+      {~c"ORCA_MEMORY", String.to_charlist(orca_memory_json(ctx))}
       | provider_api_key_env()
     ]
 
@@ -340,6 +341,7 @@ defmodule OrcaHub.Backend.Pi do
     |> maybe_add_fork_or_resume_arg(ctx)
     |> Kernel.++(["--append-system-prompt", system_prompt(ctx)])
     |> Kernel.++(["-e", orca_identity_extension_path()])
+    |> Kernel.++(["-e", orca_memory_extension_path()])
     |> Kernel.++(["-e", orca_extension_path()])
     |> Kernel.++(["-e", orca_mcp_extension_path()])
     |> Kernel.++(["-e", orca_plan_extension_path()])
@@ -373,6 +375,16 @@ defmodule OrcaHub.Backend.Pi do
   # on, and going first means identity is queued before anything else runs.
   defp orca_identity_extension_path,
     do: Application.app_dir(:orca_hub, "priv/pi/orca-identity.ts")
+
+  # priv/pi/orca-memory.ts — agent-memory centralization. Consumes ORCA_MEMORY
+  # (below) at session_start using the same idempotence posture as
+  # orca-identity.ts: appended only when the latest existing orca-memory
+  # entry is absent, older than 6 hours, or names a different session id.
+  # Loaded right after orca-identity.ts, for the same reason: it registers no
+  # tools and takes no part in the orca.ts -> orca-plan.ts -> orca-guard.ts
+  # `tool_call` ordering contract.
+  defp orca_memory_extension_path,
+    do: Application.app_dir(:orca_hub, "priv/pi/orca-memory.ts")
 
   # priv/pi/orca-mcp.ts — bridges the orca `/mcp` endpoint's tools onto
   # dynamically-`pi.registerTool`'d tools (spec §12.5). `pi -e` accepts
@@ -1284,6 +1296,7 @@ defmodule OrcaHub.Backend.Pi do
     [
       SharedPrompts.orchestrator_prompt(ctx.orchestrator, nil, code_exec),
       SharedPrompts.code_exec_prompt(code_exec),
+      SharedPrompts.memory_prompt(code_exec),
       if(ctx.orchestrator, do: fork_timing_prompt()),
       if(Map.get(ctx, :commit_trailer, true), do: commit_trailer_flag_prompt()),
       if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec))
@@ -1362,6 +1375,31 @@ defmodule OrcaHub.Backend.Pi do
           do: SharedPrompts.issue_commit_trailer_prompt(issue_key)
         ),
       "open_issues" => SharedPrompts.open_issues_prompt(ctx.session_id)
+    }
+    |> Jason.encode!()
+  end
+
+  # ── ORCA_MEMORY (agent-memory centralization) ───────────────────────────
+  # Computed at port-open time, same channel as ORCA_IDENTITY above and for
+  # the same reason: env is invisible to the KV cache, so a per-session
+  # payload costs nothing here even though it would blow the fork cache if it
+  # were in `system_prompt/1`. `priv/pi/orca-memory.ts` reads this at
+  # `session_start` and decides whether to append a new `custom_message`
+  # entry (absent / stale / different session id — see that file's header).
+  #
+  # `prompt` biases the memory-service query toward what this turn is about;
+  # best-effort only, since a streaming cold-open has no positional prompt
+  # yet — fall back to the runner's queued first prompt, then its
+  # already-recorded `first_prompt`, then nil (a pinned-only block).
+  defp orca_memory_json(ctx) do
+    prompt =
+      Map.get(ctx, :prompt) || List.first(Map.get(ctx, :pending_prompts) || []) ||
+        Map.get(ctx, :first_prompt)
+
+    %{
+      "session_id" => to_string(ctx.session_id),
+      "block" => SharedPrompts.memory_context_block(ctx.directory, prompt),
+      "generated_at" => DateTime.utc_now() |> DateTime.to_iso8601()
     }
     |> Jason.encode!()
   end
