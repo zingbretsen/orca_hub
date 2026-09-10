@@ -84,15 +84,14 @@ stateDiagram-v2
   `.context/message-flow.md`.
 - Entering `idle` also nudges `OrcaHub.MemoryGit.Server` to snapshot this
   node's on-disk agent memory — a side effect of the transition, not a state.
-- **Automatic memory extraction** (`OrcaHub.MemoryExtraction`) hooks exactly
-  two points, both a "natural end of work" rather than any idle transition:
+- **Automatic memory extraction** (`OrcaHub.MemoryExtraction`) is deliberately
+  NOT hooked into any SessionRunner state transition — `idle_teardown` and
+  `evict_warm` were both considered and rejected (neither is a genuine
+  "end of work": a warm port going cold on a 15-minute timer says nothing
+  about whether the conversation is actually done, and WarmPool pressure is
+  pure capacity management). The only trigger today is
   `OrcaHub.Sessions.archive_session/2` (default on, `extract_memories: false`
-  opts out), and the streaming `idle`/`error` `:state_timeout, :idle_teardown`
-  clauses ABOVE — specifically only the branch guarded on a still-live warm
-  `port` (i.e. the port is genuinely going cold), never the already-cold
-  fallthrough clause and never `evict_warm` (WarmPool capacity pressure,
-  `PiConfigSync`, or an `/mcp` flag-change eviction isn't a stopping point,
-  just a reclaimed slot). A one-shot session — cold in `idle` by construction,
-  since its port already exited by turn end — only ever extracts via archive.
-  Scope/threshold gating and the actual spawn are in `dispatch/2`, never
-  inline in `SessionRunner`.
+  opts out) plus an on-demand `extract_memories` MCP tool call. A future
+  scheduled sweep — not yet implemented — will call `dispatch/2`/
+  `dispatch_many/2` for every session with new content past its watermark
+  instead of a SessionRunner hook.
