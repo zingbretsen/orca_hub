@@ -101,6 +101,9 @@ defmodule OrcaHub.HubRPC do
 
   def create_message(attrs), do: call(OrcaHub.Sessions, :create_message, [attrs])
 
+  def list_memory_injected_events(session_id),
+    do: call(OrcaHub.Sessions, :list_memory_injected_events, [session_id])
+
   def delete_event_by_type_and_id(session_id, type, id),
     do: call(OrcaHub.Sessions, :delete_event_by_type_and_id, [session_id, type, id])
 
@@ -534,6 +537,9 @@ defmodule OrcaHub.HubRPC do
 
   def memory_context_block(project_slug, prompt, opts),
     do: call(OrcaHub.MemoryClient, :context_block_impl, [project_slug, prompt, opts])
+
+  def memory_context(project_slug, prompt, opts),
+    do: call(OrcaHub.MemoryClient, :context_impl, [project_slug, prompt, opts])
 
   # -------------------------------------------------------------------
   # Skills (hub-managed global skills — see OrcaHub.Skills, OrcaHub.SkillSync)

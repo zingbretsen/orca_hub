@@ -56,15 +56,30 @@ defmodule OrcaHub.MemoryClient do
   def list(params \\ %{}), do: HubRPC.memory_list(params)
 
   @doc """
-  POST /v1/memories/context. Always returns `{:ok, block_or_nil}` — never
-  `{:error, _}` — because this sits on the session-spawn path and a
-  memory-service outage must never block a spawn. `opts` may include
+  POST /v1/memories/context, returning the FULL response — `"block"` plus
+  `"memory_ids"`/`"pinned_count"`/`"recalled_count"` — or `{:ok, nil}`.
+  Same never-raise / always-`{:ok, _}` contract as `context_block/3` (which
+  is now a thin wrapper around this) — this sits on the session-spawn path
+  and a memory-service outage must never block a spawn. `opts` may include
   `:budget_tokens` (default 3000), `:include_global` (default true),
   `:include_shared` (default true).
   """
+  @spec context(String.t(), String.t() | nil, keyword()) :: {:ok, map() | nil}
+  def context(project_slug, prompt, opts \\ []),
+    do: HubRPC.memory_context(project_slug, prompt, opts)
+
+  @doc """
+  POST /v1/memories/context, returning just the block text. Always returns
+  `{:ok, block_or_nil}` — never `{:error, _}` — same reasoning as
+  `context/3`, which does the actual work here.
+  """
   @spec context_block(String.t(), String.t() | nil, keyword()) :: {:ok, String.t() | nil}
-  def context_block(project_slug, prompt, opts \\ []),
-    do: HubRPC.memory_context_block(project_slug, prompt, opts)
+  def context_block(project_slug, prompt, opts \\ []) do
+    case context(project_slug, prompt, opts) do
+      {:ok, %{"block" => block}} -> {:ok, block}
+      {:ok, _nil_or_other} -> {:ok, nil}
+    end
+  end
 
   # -------------------------------------------------------------------
   # Hub-side implementation (invoked only via HubRPC.call/3's apply/:erpc —
@@ -112,7 +127,7 @@ defmodule OrcaHub.MemoryClient do
     with_enabled(fn -> do_request(:get, "/v1/memories", params: params) end)
   end
 
-  def context_block_impl(project_slug, prompt, opts) do
+  def context_impl(project_slug, prompt, opts) do
     if enabled_impl?() do
       body =
         %{
@@ -124,12 +139,30 @@ defmodule OrcaHub.MemoryClient do
         }
 
       case do_request(:post, "/v1/memories/context", json: body) do
-        {:ok, %{"block" => block}} -> {:ok, block}
-        {:ok, _other} -> {:ok, nil}
-        {:error, reason} -> log_context_failure(reason)
+        {:ok, %{"block" => block} = resp} when is_binary(block) and block != "" ->
+          {:ok,
+           %{
+             "block" => block,
+             "memory_ids" => resp["memory_ids"] || [],
+             "pinned_count" => resp["pinned_count"],
+             "recalled_count" => resp["recalled_count"]
+           }}
+
+        {:ok, _other} ->
+          {:ok, nil}
+
+        {:error, reason} ->
+          log_context_failure(reason)
       end
     else
       {:ok, nil}
+    end
+  end
+
+  def context_block_impl(project_slug, prompt, opts) do
+    case context_impl(project_slug, prompt, opts) do
+      {:ok, %{"block" => block}} -> {:ok, block}
+      {:ok, nil} -> {:ok, nil}
     end
   end
 
