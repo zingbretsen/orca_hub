@@ -660,21 +660,11 @@ defmodule OrcaHub.MemoryExtraction do
     "#{count} #{noun} saved (#{hooks})"
   end
 
-  # Direct persistence, not a real turn: this must NOT go through
-  # send_message_to_session (which would auto-unarchive an archived source
-  # and queue a live turn) — it's the same "write a message, broadcast it"
-  # shape SessionRunner itself uses for system-level events like a turn
-  # error, just invoked from outside a runner process.
   defp persist_system_message(session_id, message) do
-    event = %{
+    OrcaHub.Sessions.persist_system_event(session_id, %{
       "type" => "system",
       "subtype" => "memory_extraction",
-      "message" => message,
-      "timestamp" => NaiveDateTime.utc_now()
-    }
-
-    HubRPC.create_message(%{session_id: session_id, data: event})
-    Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", {:event, event})
-    Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session_id, {:event, event}})
+      "message" => message
+    })
   end
 end

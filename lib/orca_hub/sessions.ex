@@ -35,6 +35,7 @@ defmodule OrcaHub.Sessions do
   alias OrcaHub.{
     AgentPresence,
     ClusterNodes,
+    HubRPC,
     Repo,
     Sessions.Message,
     Sessions.Session,
@@ -931,6 +932,45 @@ defmodule OrcaHub.Sessions do
     %Message{}
     |> Message.changeset(attrs)
     |> Repo.insert()
+  end
+
+  @doc """
+  Persists a system event into `session_id`'s feed and broadcasts it — the
+  same "write a message, broadcast it" shape `SessionRunner` itself uses
+  for system-level events (a turn error, etc), but callable from OUTSIDE a
+  runner process (`OrcaHub.MemoryExtraction`'s completion report,
+  `OrcaHub.Backend.SharedPrompts`' `memory_injected` event). Not a real
+  turn: callers must NOT reach for `send_message_to_session` instead, since
+  that would auto-unarchive an archived session and queue a live turn.
+  `event` must already carry `"type"`/`"subtype"` (and any subtype-specific
+  fields); `"timestamp"` defaults to now when absent. Routes DB persistence
+  through `HubRPC`, so this is safe to call from any node — PubSub itself
+  needs no routing, it auto-distributes via `:pg`.
+  """
+  def persist_system_event(session_id, event) do
+    event = Map.put_new_lazy(event, "timestamp", fn -> NaiveDateTime.utc_now() end)
+
+    HubRPC.create_message(%{session_id: session_id, data: event})
+    Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", {:event, event})
+    Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session_id, {:event, event}})
+    event
+  end
+
+  @doc """
+  Every `memory_injected` system event recorded for `session_id`, oldest
+  first — backs the session header's Memories panel
+  (`OrcaHubWeb.SessionLive.Show`). Scoped to one `session_id` (indexed),
+  same subtype-fragment-filter shape as `annotate_fork_marker/2` above —
+  never a full-feed scan across sessions.
+  """
+  def list_memory_injected_events(session_id) do
+    from(m in Message,
+      where: m.session_id == ^session_id,
+      where: fragment("? ->> 'subtype' = 'memory_injected'", m.data),
+      order_by: [asc: m.inserted_at],
+      select: m.data
+    )
+    |> Repo.all()
   end
 
   @doc """
