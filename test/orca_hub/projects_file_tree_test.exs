@@ -4,7 +4,7 @@ defmodule OrcaHub.ProjectsFileTreeTest do
   matching the editable-extension allow-list. That allow-list
   (`Projects.editable_file?/1`) is now purely an EDITABILITY predicate —
   whether a file can be opened in the text editor — not a visibility
-  filter for `list_dir_entries/3` (the tree) or `list_editable_files/2`
+  filter for `list_dir_entries/3` (the tree) or `list_all_files/2`
   (the search path).
   """
   use ExUnit.Case, async: true
@@ -87,11 +87,11 @@ defmodule OrcaHub.ProjectsFileTreeTest do
     end
   end
 
-  describe "list_editable_files/2 — the search/autocomplete path" do
+  describe "list_all_files/2 — the search/autocomplete path" do
     test "a non-editable file is included (positive control)", %{dir: dir, project: project} do
       File.write!(Path.join(dir, "archive.zip"), "PK\x03\x04")
 
-      assert "archive.zip" in Projects.list_editable_files(project)
+      assert "archive.zip" in Projects.list_all_files(project)
     end
 
     test "still skips @skip_dirs during the recursive walk", %{dir: dir, project: project} do
@@ -99,7 +99,7 @@ defmodule OrcaHub.ProjectsFileTreeTest do
       File.write!(Path.join([dir, "deps", "y.ex"]), "noop")
       File.write!(Path.join(dir, "lib.ex"), "noop")
 
-      assert Projects.list_editable_files(project) == ["lib.ex"]
+      assert Projects.list_all_files(project) == ["lib.ex"]
     end
   end
 end

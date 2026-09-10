@@ -194,7 +194,7 @@ defmodule OrcaHub.Projects do
   Options:
     - `show_hidden` (boolean, default false): include hidden files/directories (dotfiles)
   """
-  def list_editable_files(%Project{directory: dir}, opts \\ []) do
+  def list_all_files(%Project{directory: dir}, opts \\ []) do
     show_hidden = Keyword.get(opts, :show_hidden, false)
 
     dir
@@ -374,7 +374,7 @@ defmodule OrcaHub.Projects do
   Whether `filename` can be opened in the text editor — an EDITABILITY
   predicate only, not a visibility one. A binary file (PDF, PNG, zip, …)
   still appears in the tree/search results (see `list_dir_entries/3` and
-  `list_editable_files/2`, which now list every regular file), it just
+  `list_all_files/2`), it just
   isn't selectable for editing: raw bytes can't round-trip through a
   LiveView text diff, and invalid UTF-8 would break the render.
   """

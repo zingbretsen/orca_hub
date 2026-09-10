@@ -311,7 +311,7 @@ defmodule OrcaHubWeb.FileTreeComponent do
 
   defp eager_tree(target_node, project, show_hidden) do
     files =
-      rpc_list(target_node, Projects, :list_editable_files, [
+      rpc_list(target_node, Projects, :list_all_files, [
         project,
         [show_hidden: show_hidden]
       ])
@@ -327,7 +327,7 @@ defmodule OrcaHubWeb.FileTreeComponent do
 
   defp filtered_tree(target_node, project, _file_tree, query, show_hidden) do
     files =
-      rpc_list(target_node, Projects, :list_editable_files, [
+      rpc_list(target_node, Projects, :list_all_files, [
         project,
         [show_hidden: show_hidden]
       ])

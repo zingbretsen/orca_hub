@@ -1633,7 +1633,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     session_node = socket.assigns[:session_node] || node()
 
     files =
-      case Cluster.rpc(session_node, Projects, :list_editable_files, [project]) do
+      case Cluster.rpc(session_node, Projects, :list_all_files, [project]) do
         list when is_list(list) -> list
         # node_unassigned/node_unavailable (or any other rpc failure) — no
         # files to suggest rather than crashing on a non-list Enum.filter/2.
