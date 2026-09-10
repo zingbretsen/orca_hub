@@ -3702,4 +3702,101 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert text =~ "not found"
     end
   end
+
+  describe "archive_session — extract_memories flag" do
+    setup do
+      test_pid = self()
+
+      Application.put_env(:orca_hub, :memory_extraction_dispatch_fun, fn session, opts ->
+        send(test_pid, {:memory_extraction_dispatched, session.id, opts})
+        {:ok, :dispatched}
+      end)
+
+      on_exit(fn -> Application.delete_env(:orca_hub, :memory_extraction_dispatch_fun) end)
+
+      :ok
+    end
+
+    test "defaults to dispatching extraction", %{dir: dir} do
+      {:ok, target} = Sessions.create_session(%{directory: dir})
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result = SessionsTool.call("archive_session", %{"session_id" => target.id}, %{})
+      assert %{"isError" => false} = result
+      assert_receive {:memory_extraction_dispatched, session_id, _opts}, 500
+      assert session_id == target.id
+    end
+
+    test "extract_memories: false skips dispatch but still archives", %{dir: dir} do
+      {:ok, target} = Sessions.create_session(%{directory: dir})
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result =
+        SessionsTool.call(
+          "archive_session",
+          %{"session_id" => target.id, "extract_memories" => false},
+          %{}
+        )
+
+      assert %{"isError" => false} = result
+      refute_receive {:memory_extraction_dispatched, _, _}, 200
+      refute is_nil(Sessions.get_session!(target.id).archived_at)
+    end
+  end
+
+  describe "extract_memories tool — orchestrator-only" do
+    setup do
+      test_pid = self()
+
+      Application.put_env(:orca_hub, :memory_extraction_dispatch_fun, fn session, opts ->
+        send(test_pid, {:memory_extraction_dispatched, session.id, opts})
+        {:ok, :dispatched}
+      end)
+
+      on_exit(fn -> Application.delete_env(:orca_hub, :memory_extraction_dispatch_fun) end)
+
+      :ok
+    end
+
+    test "an orchestrator caller force-dispatches extraction", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir})
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result = SessionsTool.call("extract_memories", %{"session_id" => target.id}, state)
+      assert %{"isError" => false} = result
+
+      assert_receive {:memory_extraction_dispatched, session_id, opts}, 500
+      assert session_id == target.id
+      assert opts[:force] == true
+      assert opts[:trigger] == :manual
+    end
+
+    test "a non-orchestrator caller is rejected", %{dir: dir} do
+      {:ok, caller} = Sessions.create_session(%{directory: dir, orchestrator: false})
+      {:ok, target} = Sessions.create_session(%{directory: dir})
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result =
+        SessionsTool.call("extract_memories", %{"session_id" => target.id}, %{
+          orca_session_id: caller.id
+        })
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "orchestrator"
+      refute_receive {:memory_extraction_dispatched, _, _}, 200
+    end
+
+    test "no linked session errors instead of crashing", %{dir: dir} do
+      {:ok, target} = Sessions.create_session(%{directory: dir})
+      on_exit(fn -> stop_if_alive(target.id) end)
+
+      result =
+        SessionsTool.call("extract_memories", %{"session_id" => target.id}, %{
+          orca_session_id: nil
+        })
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "No OrcaHub session linked"
+    end
+  end
 end
