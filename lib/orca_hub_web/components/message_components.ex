@@ -307,6 +307,7 @@ defmodule OrcaHubWeb.MessageComponents do
       content_blocks
       |> Enum.filter(&(is_map(&1) && &1["type"] == "text"))
       |> Enum.map_join("\n", & &1["text"])
+      |> strip_leading_memory_block()
 
     # Extract tool_result blocks
     tool_results =
@@ -362,6 +363,27 @@ defmodule OrcaHubWeb.MessageComponents do
       <.tool_result_block result={@tool_use_result} />
     </div>
     """
+  end
+
+  # Display-only: strips a LEADING `<orca-memory>...</orca-memory>\n\n`
+  # block (Claude/Codex prepend it to the first cold-open user turn — see
+  # OrcaHub.Backend.SharedPrompts.maybe_prepend_memory/3) so the bubble shows
+  # what the human/caller actually typed. The memory_injected system event
+  # already surfaces the same block, collapsed. Never touches stored data —
+  # only the leading-block case is handled (a plain string split on the
+  # closing marker, not a regex over the whole message).
+  @memory_block_open "<orca-memory>\n"
+  @memory_block_close "\n</orca-memory>\n\n"
+
+  defp strip_leading_memory_block(text) do
+    if String.starts_with?(text, @memory_block_open) do
+      case String.split(text, @memory_block_close, parts: 2) do
+        [_block, rest] -> rest
+        _ -> text
+      end
+    else
+      text
+    end
   end
 
   attr :msg, :map, required: true
@@ -683,6 +705,57 @@ defmodule OrcaHubWeb.MessageComponents do
 
   attr :msg, :map, required: true
 
+  # Which memories were injected into this session — collapsed by default
+  # (a <details> disclosure), never the noisy "system" one-liner every other
+  # subtype gets. See memory_hooked_rows/1 for the memory_ids/hooks zip.
+  defp system_message(%{msg: %{"subtype" => "memory_injected"}} = assigns) do
+    memory_ids = List.wrap(assigns.msg["memory_ids"])
+    hooks = List.wrap(assigns.msg["hooks"])
+    count = max(length(memory_ids), length(hooks))
+    pinned = assigns.msg["pinned_count"] || 0
+    recalled = assigns.msg["recalled_count"] || 0
+
+    assigns =
+      assigns
+      |> assign(:count, count)
+      |> assign(:noun, if(count == 1, do: "memory", else: "memories"))
+      |> assign(:pinned, pinned)
+      |> assign(:recalled, recalled)
+      |> assign(:rows, memory_hooked_rows(memory_ids, hooks))
+      |> assign(:link_base, memory_service_public_url())
+      |> assign(:block, assigns.msg["block"])
+
+    ~H"""
+    <div class="text-xs opacity-40 py-1">
+      <details>
+        <summary class="flex items-center gap-1.5 italic cursor-pointer list-none">
+          <.icon name="hero-cog-6-tooth-micro" class="size-3 shrink-0" />
+          {@count} {@noun} loaded ({@pinned} pinned, {@recalled} recalled)
+        </summary>
+        <div class="not-italic mt-1 ml-4 space-y-1">
+          <div :for={{id, hook} <- @rows} class="flex items-start gap-1">
+            <span class="opacity-60">•</span>
+            <a
+              :if={@link_base && id}
+              href={"#{@link_base}/memories/#{id}"}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="link link-hover"
+            >
+              {hook}
+            </a>
+            <span :if={!(@link_base && id)}>{hook}</span>
+          </div>
+          <details :if={@block not in [nil, ""]} class="mt-1">
+            <summary class="cursor-pointer opacity-70">Show raw injected block</summary>
+            <pre class="whitespace-pre-wrap opacity-70 mt-1">{@block}</pre>
+          </details>
+        </div>
+      </details>
+    </div>
+    """
+  end
+
   defp system_message(assigns) do
     assigns =
       assigns
@@ -703,6 +776,20 @@ defmodule OrcaHubWeb.MessageComponents do
     </div>
     """
   end
+
+  # Pairs each hook with its memory_id by position — the two lists come from
+  # the SAME memory_injected event (memory_ids straight from the service,
+  # hooks either the service's own "hooks" field or parsed from the same
+  # block in the same order — see SharedPrompts.memory_hooks/1), so index
+  # correspondence holds except when one list is short/absent, in which case
+  # the id side just degrades to nil (renders as plain, unlinked text).
+  defp memory_hooked_rows(memory_ids, hooks) do
+    hooks
+    |> Enum.with_index()
+    |> Enum.map(fn {hook, i} -> {Enum.at(memory_ids, i), hook} end)
+  end
+
+  defp memory_service_public_url, do: Application.get_env(:orca_hub, :memory_service_public_url)
 
   attr :msg, :map, required: true
 

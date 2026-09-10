@@ -130,6 +130,14 @@ config :orca_hub, :gotify_token, System.get_env("GOTIFY_TOKEN")
 config :orca_hub, :memory_service_url, System.get_env("MEMORY_SERVICE_URL")
 config :orca_hub, :memory_service_token, System.get_env("MEMORY_SERVICE_TOKEN")
 
+# Public base URL for the (separately built) memory-service dashboard, used
+# only to link a memory hook shown in a session's Memories panel to
+# "<base>/memories/<id>" — that path is the agreed convention with the
+# dashboard, not something this app serves itself. nil (unset) renders the
+# hook as plain text instead of a link. Safe to share with the web UI (unlike
+# :memory_service_url/:memory_service_token, this is never used for auth).
+config :orca_hub, :memory_service_public_url, System.get_env("MEMORY_SERVICE_PUBLIC_URL")
+
 # Backend/model for OrcaHub.MemoryExtraction's spawned child sessions.
 # Defaults to a cheap Claude model; MEMORY_EXTRACTION_BACKEND/_MODEL let
 # this point at e.g. a local pi model instead — MemoryExtraction's own
