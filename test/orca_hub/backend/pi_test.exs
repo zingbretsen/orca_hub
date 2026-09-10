@@ -1887,14 +1887,27 @@ defmodule OrcaHub.Backend.PiTest do
   end
 
   # ── ORCA_MEMORY (agent-memory centralization) ───────────────────────────
-  # Consumed by priv/pi/orca-memory.ts at session_start. `memory_context_fun`
-  # is the test-only Application env seam SharedPrompts.memory_context_block/2
-  # resolves (default: OrcaHub.MemoryClient.context_block/3, which doesn't
-  # need to exist for these tests — the default is never invoked here).
+  # Consumed by priv/pi/orca-memory.ts at session_start.
+  # `Process.put(:orca_hub_memory_context_fun, ...)` is the process-local
+  # test seam SharedPrompts.memory_context/2 resolves (default:
+  # OrcaHub.MemoryClient.context/3, which doesn't need to exist for these
+  # tests — the default is never invoked here).
+  # `:orca_hub_persist_system_event_fun` is the seam
+  # SharedPrompts.record_memory_injection/2 resolves — stubbed so these
+  # tests' synthetic ctx (no real DB-backed session) never trips the
+  # messages.session_id foreign-key constraint. Both are process-local
+  # rather than Application-env-global, so they're safe under this file's
+  # async: true (see memory_context/2's moduledoc).
 
   describe "pi_env/1 — ORCA_MEMORY payload" do
     setup do
-      on_exit(fn -> Application.delete_env(:orca_hub, :memory_context_fun) end)
+      test_pid = self()
+
+      Process.put(:orca_hub_persist_system_event_fun, fn session_id, event ->
+        send(test_pid, {:persisted, session_id, event})
+        :ok
+      end)
+
       :ok
     end
 
@@ -1911,36 +1924,52 @@ defmodule OrcaHub.Backend.PiTest do
 
     test "block is null when the memory service has nothing to say (no stub configured)" do
       assert memory_payload(ctx())["block"] == nil
+      refute_received {:persisted, _, _}
     end
 
-    test "block carries whatever OrcaHub.MemoryClient.context_block/3 returns" do
-      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
-        {:ok, "- prior fact worth recalling"}
+    test "block carries whatever OrcaHub.MemoryClient.context/3 returns, and persists once" do
+      Process.put(:orca_hub_memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok,
+         %{
+           "block" => "- prior fact worth recalling",
+           "memory_ids" => ["mem-9"],
+           "pinned_count" => 0,
+           "recalled_count" => 1
+         }}
       end)
 
-      assert memory_payload(ctx())["block"] == "- prior fact worth recalling"
+      c = ctx()
+      assert memory_payload(c)["block"] == "- prior fact worth recalling"
+
+      session_id = c.session_id
+      assert_received {:persisted, ^session_id, event}
+      assert event["subtype"] == "memory_injected"
+      assert event["memory_ids"] == ["mem-9"]
+      refute_received {:persisted, _, _}
     end
 
-    test "a stub returning {:ok, nil} (service disabled) yields a null block, no error" do
-      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
+    test "a stub returning {:ok, nil} (service disabled) yields a null block, no error, no persist" do
+      Process.put(:orca_hub_memory_context_fun, fn _slug, _prompt, _opts ->
         {:ok, nil}
       end)
 
       assert memory_payload(ctx())["block"] == nil
+      refute_received {:persisted, _, _}
     end
 
     test "a stub that raises does not fail the spawn — block degrades to null" do
-      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
+      Process.put(:orca_hub_memory_context_fun, fn _slug, _prompt, _opts ->
         raise "memory service on fire"
       end)
 
       assert memory_payload(ctx())["block"] == nil
+      refute_received {:persisted, _, _}
     end
 
     test "the project slug is derived from directory via OrcaHub.AgentMemory.slugify/1" do
       test_pid = self()
 
-      Application.put_env(:orca_hub, :memory_context_fun, fn slug, _prompt, _opts ->
+      Process.put(:orca_hub_memory_context_fun, fn slug, _prompt, _opts ->
         send(test_pid, {:slug, slug})
         {:ok, nil}
       end)
@@ -1955,7 +1984,7 @@ defmodule OrcaHub.Backend.PiTest do
     test "budget_tokens: 3000 is passed to the memory-context lookup" do
       test_pid = self()
 
-      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, opts ->
+      Process.put(:orca_hub_memory_context_fun, fn _slug, _prompt, opts ->
         send(test_pid, {:opts, opts})
         {:ok, nil}
       end)

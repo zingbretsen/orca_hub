@@ -455,7 +455,7 @@ defmodule OrcaHub.Backend.Codex do
     if bs[:system_prompt_sent] do
       {prompt, bs}
     else
-      prompt = SharedPrompts.maybe_prepend_memory(prompt, ctx.directory)
+      prompt = SharedPrompts.maybe_prepend_memory(prompt, ctx.directory, ctx.session_id)
       {system_prompt(ctx) <> "\n\n" <> prompt, Map.put(bs, :system_prompt_sent, true)}
     end
   end

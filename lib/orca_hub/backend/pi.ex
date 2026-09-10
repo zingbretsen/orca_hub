@@ -1398,9 +1398,19 @@ defmodule OrcaHub.Backend.Pi do
       Map.get(ctx, :prompt) || List.first(Map.get(ctx, :pending_prompts) || []) ||
         Map.get(ctx, :first_prompt)
 
+    block =
+      case SharedPrompts.memory_context(ctx.directory, prompt) do
+        nil ->
+          nil
+
+        %{"block" => block} = memory_ctx ->
+          SharedPrompts.record_memory_injection(ctx.session_id, memory_ctx)
+          block
+      end
+
     %{
       "session_id" => to_string(ctx.session_id),
-      "block" => SharedPrompts.memory_context_block(ctx.directory, prompt),
+      "block" => block,
       "generated_at" => DateTime.utc_now() |> DateTime.to_iso8601()
     }
     |> Jason.encode!()

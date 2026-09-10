@@ -2015,4 +2015,80 @@ defmodule OrcaHub.SessionsTest do
       refute is_nil(archived.archived_at)
     end
   end
+
+  describe "persist_system_event/2" do
+    test "persists a message and broadcasts it on both topics", %{project: project} do
+      session = create_session(project)
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session.id}")
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
+
+      event = Sessions.persist_system_event(session.id, %{"type" => "system", "subtype" => "x"})
+
+      assert %{"type" => "system", "subtype" => "x"} = event
+      assert Map.has_key?(event, "timestamp")
+
+      [message] = Sessions.list_messages(session.id)
+      assert message.data["subtype"] == "x"
+
+      session_id = session.id
+      assert_receive {:event, ^event}
+      assert_receive {^session_id, {:event, ^event}}
+    end
+
+    test "defaults timestamp to now when absent", %{project: project} do
+      session = create_session(project)
+      event = Sessions.persist_system_event(session.id, %{"type" => "system", "subtype" => "y"})
+      assert %NaiveDateTime{} = event["timestamp"]
+    end
+
+    test "preserves a caller-supplied timestamp instead of overwriting it", %{project: project} do
+      session = create_session(project)
+      ts = ~N[2026-01-01 00:00:00]
+
+      event =
+        Sessions.persist_system_event(session.id, %{
+          "type" => "system",
+          "subtype" => "z",
+          "timestamp" => ts
+        })
+
+      assert event["timestamp"] == ts
+    end
+  end
+
+  describe "list_memory_injected_events/1" do
+    test "returns only memory_injected events for the given session, oldest first",
+         %{project: project} do
+      session = create_session(project)
+      other = create_session(project, %{title: "other"})
+
+      Sessions.persist_system_event(session.id, %{
+        "type" => "system",
+        "subtype" => "memory_injected",
+        "memory_ids" => ["mem-1"]
+      })
+
+      Sessions.persist_system_event(session.id, %{"type" => "system", "subtype" => "memory_extraction"})
+
+      Sessions.persist_system_event(session.id, %{
+        "type" => "system",
+        "subtype" => "memory_injected",
+        "memory_ids" => ["mem-2"]
+      })
+
+      Sessions.persist_system_event(other.id, %{
+        "type" => "system",
+        "subtype" => "memory_injected",
+        "memory_ids" => ["mem-3"]
+      })
+
+      events = Sessions.list_memory_injected_events(session.id)
+      assert Enum.map(events, & &1["memory_ids"]) == [["mem-1"], ["mem-2"]]
+    end
+
+    test "returns [] for a session with no memory_injected events", %{project: project} do
+      session = create_session(project)
+      assert Sessions.list_memory_injected_events(session.id) == []
+    end
+  end
 end

@@ -259,4 +259,48 @@ defmodule OrcaHub.MemoryClientTest do
                )
     end
   end
+
+  describe "context/3" do
+    test "returns the full response — block, memory_ids, pinned_count, recalled_count" do
+      Req.Test.stub(@stub, fn conn ->
+        assert conn.request_path == "/v1/memories/context"
+
+        Req.Test.json(conn, %{
+          "block" => "# Recalled memories\n- [fact] ...",
+          "memory_ids" => ["mem-9", "mem-10"],
+          "pinned_count" => 1,
+          "recalled_count" => 1
+        })
+      end)
+
+      assert {:ok,
+              %{
+                "block" => "# Recalled memories\n- [fact] ...",
+                "memory_ids" => ["mem-9", "mem-10"],
+                "pinned_count" => 1,
+                "recalled_count" => 1
+              }} = MemoryClient.context("-home-zach-orca-hub", "some prompt")
+    end
+
+    test "defaults memory_ids to [] when the service response omits it" do
+      Req.Test.stub(@stub, fn conn ->
+        Req.Test.json(conn, %{"block" => "- a fact", "pinned_count" => 0, "recalled_count" => 1})
+      end)
+
+      assert {:ok, %{"memory_ids" => []}} = MemoryClient.context("slug", "prompt")
+    end
+
+    test "collapses an HTTP error into {:ok, nil} rather than blocking a spawn" do
+      Req.Test.stub(@stub, fn conn ->
+        conn |> Plug.Conn.put_status(500) |> Req.Test.json(%{"error" => %{"message" => "boom"}})
+      end)
+
+      assert {:ok, nil} = MemoryClient.context("-home-zach-orca-hub", "some prompt")
+    end
+
+    test "returns {:ok, nil} when the service is disabled, no HTTP call" do
+      Application.put_env(:orca_hub, :memory_service_url, nil)
+      assert {:ok, nil} = MemoryClient.context("slug", "prompt")
+    end
+  end
 end

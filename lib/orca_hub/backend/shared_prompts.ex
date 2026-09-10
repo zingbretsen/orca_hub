@@ -24,9 +24,17 @@ defmodule OrcaHub.Backend.SharedPrompts do
   being forgotten the moment context gets summarized.
   """
 
+  require Logger
+
   alias OrcaHub.HubRPC
 
   @orca_hub_directory "/home/zach/orca_hub"
+
+  # Matches a rendered recalled-memory line — "- [kind] hook — text" (see
+  # OrcaHub.MemoryExtraction's own hook convention) — capturing just the
+  # hook. Non-greedy up to the first em dash, since the hook itself is a
+  # short title and the em dash is the service's own field separator.
+  @memory_hook_line ~r/^- \[[a-z_]+\] (.+?) — /
 
   @doc """
   Computes the raw `<orca-memory>` block content for a cold port's first user
@@ -44,14 +52,22 @@ defmodule OrcaHub.Backend.SharedPrompts do
   the task just makes `Task.yield/2` return a non-`{:ok, {:ok, _}}` shape,
   which falls through to `nil` below like any other failure.
 
-  The function to call is resolved via `:orca_hub, :memory_context_fun`
-  Application env (test-only seam — stub it to observe/control injection
-  without a running memory service), defaulting to
-  `OrcaHub.MemoryClient.context_block/3`.
+  The function to call is resolved via the CALLING process's own process
+  dictionary (`Process.get(:orca_hub_memory_context_fun)` — test-only seam;
+  stub it to observe/control injection without a running memory service),
+  defaulting to `OrcaHub.MemoryClient.context/3`. Deliberately process-local
+  rather than `Application`-env-global: `claude_test.exs`/`codex_test.exs`/
+  `pi_test.exs` all stub this concurrently (`async: true`), and a shared
+  global would let one test's stub leak into another's call — a real,
+  observed race, not a hypothetical one. Safe across the internal `Task`
+  boundary below since the read happens here, in the caller, before the
+  `Task` is spawned. Returns the FULL response map (`"block"` plus
+  `"memory_ids"`/`"pinned_count"`/`"recalled_count"`) rather than just the
+  block text, so a caller can also record a `memory_injected` event via
+  `record_memory_injection/2` — see `maybe_prepend_memory/3`.
   """
-  def memory_context_block(directory, prompt) do
-    fun =
-      Application.get_env(:orca_hub, :memory_context_fun, &OrcaHub.MemoryClient.context_block/3)
+  def memory_context(directory, prompt) do
+    fun = Process.get(:orca_hub_memory_context_fun) || (&OrcaHub.MemoryClient.context/3)
 
     slug = OrcaHub.AgentMemory.slugify(directory)
 
@@ -61,7 +77,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
       end)
 
     case Task.yield(task, 3_000) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:ok, block}} when is_binary(block) and block != "" -> block
+      {:ok, {:ok, %{"block" => block} = ctx}} when is_binary(block) and block != "" -> ctx
       _ -> nil
     end
   rescue
@@ -69,17 +85,89 @@ defmodule OrcaHub.Backend.SharedPrompts do
   end
 
   @doc """
-  Wraps `memory_context_block/2`'s result in the `<orca-memory>` tags and
-  prepends it to `prompt`, or returns `prompt` unchanged when there's nothing
-  to inject. Used by `Backend.Claude`/`Backend.Codex` on the first user turn
-  of a cold port open — `Backend.Pi` builds its own wrapping in
-  `priv/pi/orca-memory.ts` instead, since it delivers the block as a separate
-  session entry rather than modifying the turn text directly.
+  Best-effort list of memory "hooks" (short one-line titles) for a
+  `memory_injected` event — the service response's own `"hooks"` field when
+  present, else parsed from the block's own rendered `"- [kind] hook — text"`
+  lines. The one place this parsing happens, so Claude/Codex/pi never each
+  derive hooks from the block differently.
   """
-  def maybe_prepend_memory(prompt, directory) do
-    case memory_context_block(directory, prompt) do
-      nil -> prompt
-      block -> "<orca-memory>\n" <> block <> "\n</orca-memory>\n\n" <> prompt
+  def memory_hooks(%{"hooks" => hooks}) when is_list(hooks), do: hooks
+
+  def memory_hooks(%{"block" => block}) when is_binary(block) do
+    block
+    |> String.split("\n")
+    |> Enum.flat_map(fn line ->
+      case Regex.run(@memory_hook_line, line) do
+        [_, hook] -> [hook]
+        _ -> []
+      end
+    end)
+  end
+
+  def memory_hooks(_), do: []
+
+  @doc """
+  Persists a `memory_injected` system event for `session_id` from a
+  `memory_context/2` response — the one place all three backends call, so
+  the event shape can't drift between Claude/Codex's first-turn prepend and
+  pi's `ORCA_MEMORY` env build. Fire-and-forget: never raises into the
+  caller's spawn/turn-encode path (a memory-service response OrcaHub can't
+  persist must not fail a turn), logged on failure.
+
+  The actual persist call is resolved via the calling process's own process
+  dictionary (`Process.get(:orca_hub_persist_system_event_fun)` — same
+  process-local test seam as `memory_context/2`, and for the same reason:
+  stubbing it keeps backend unit tests — which use a synthetic,
+  never-inserted `session_id` and run `async: true` alongside each other —
+  from both tripping the real `messages.session_id` foreign-key constraint
+  AND racing on a shared global stub), defaulting to
+  `OrcaHub.Sessions.persist_system_event/2`.
+  """
+  def record_memory_injection(session_id, %{"block" => block} = memory_ctx) do
+    persist_fun =
+      Process.get(:orca_hub_persist_system_event_fun) ||
+        (&OrcaHub.Sessions.persist_system_event/2)
+
+    persist_fun.(session_id, %{
+      "type" => "system",
+      "subtype" => "memory_injected",
+      "memory_ids" => memory_ctx["memory_ids"] || [],
+      "hooks" => memory_hooks(memory_ctx),
+      "pinned_count" => memory_ctx["pinned_count"],
+      "recalled_count" => memory_ctx["recalled_count"],
+      "block" => block
+    })
+
+    :ok
+  rescue
+    e ->
+      Logger.warning(
+        "SharedPrompts: failed to persist memory_injected event for session " <>
+          "#{session_id}: #{Exception.message(e)}"
+      )
+
+      :ok
+  end
+
+  @doc """
+  Wraps `memory_context/2`'s block in the `<orca-memory>` tags and prepends
+  it to `prompt`, recording a `memory_injected` event for `session_id` along
+  the way — or returns `prompt` unchanged when there's nothing to inject.
+  Used by `Backend.Claude`/`Backend.Codex` on the first user turn of a cold
+  port open — `Backend.Pi` builds its own wrapping in
+  `priv/pi/orca-memory.ts` instead, since it delivers the block as a separate
+  session entry rather than modifying the turn text directly (it calls
+  `memory_context/2`/`record_memory_injection/2` directly for the same
+  reason — see `Backend.Pi`'s `orca_memory_json/1`).
+  """
+  def maybe_prepend_memory(prompt, directory, session_id) do
+    case memory_context(directory, prompt) do
+      nil ->
+        prompt
+
+      %{"block" => block} = ctx ->
+        record_memory_injection(session_id, ctx)
+        "<orca-memory>\n" <> block <> "\n</orca-memory>\n\n" <> prompt
     end
   end
 

@@ -297,13 +297,25 @@ defmodule OrcaHub.Backend.CodexTest do
 
   describe "encode_user_turn/2 — memory injection" do
     setup do
-      on_exit(fn -> Application.delete_env(:orca_hub, :memory_context_fun) end)
+      test_pid = self()
+
+      Process.put(:orca_hub_persist_system_event_fun, fn session_id, event ->
+        send(test_pid, {:persisted, session_id, event})
+        :ok
+      end)
+
       :ok
     end
 
-    test "first turn prepends the <orca-memory> block after the system prompt" do
-      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
-        {:ok, "- a prior fact"}
+    test "first turn prepends the <orca-memory> block after the system prompt and persists once" do
+      Process.put(:orca_hub_memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok,
+         %{
+           "block" => "- a prior fact",
+           "memory_ids" => ["mem-1"],
+           "pinned_count" => 1,
+           "recalled_count" => 0
+         }}
       end)
 
       {c, _tid} = thread_started_ctx()
@@ -315,11 +327,17 @@ defmodule OrcaHub.Backend.CodexTest do
       assert text =~ "<orca-memory>\n- a prior fact\n</orca-memory>\n\nhello"
       assert String.ends_with?(text, "<orca-memory>\n- a prior fact\n</orca-memory>\n\nhello")
       assert out.backend_state.system_prompt_sent == true
+
+      session_id = c.session_id
+      assert_received {:persisted, ^session_id, event}
+      assert event["subtype"] == "memory_injected"
+      refute_received {:persisted, _, _}
     end
 
-    test "a subsequent turn is not re-prefixed with memory" do
-      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
-        {:ok, "- a prior fact"}
+    test "a subsequent turn is not re-prefixed with memory and does not persist again" do
+      Process.put(:orca_hub_memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok,
+         %{"block" => "- a prior fact", "memory_ids" => [], "pinned_count" => 0, "recalled_count" => 0}}
       end)
 
       {c, _tid} =
@@ -336,6 +354,7 @@ defmodule OrcaHub.Backend.CodexTest do
       {iodata, _out} = Backend.encode_user_turn("just this", c)
       req = decode_write(iodata)
       assert req["params"]["input"] == [%{"type" => "text", "text" => "just this"}]
+      refute_received {:persisted, _, _}
     end
   end
 

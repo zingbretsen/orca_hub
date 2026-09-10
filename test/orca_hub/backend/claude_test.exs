@@ -758,13 +758,25 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
   describe "spawn_spec/2 — :one_shot memory injection" do
     setup do
-      on_exit(fn -> Application.delete_env(:orca_hub, :memory_context_fun) end)
+      test_pid = self()
+
+      Process.put(:orca_hub_persist_system_event_fun, fn session_id, event ->
+        send(test_pid, {:persisted, session_id, event})
+        :ok
+      end)
+
       :ok
     end
 
-    test "prepends the <orca-memory> block to the positional -p prompt" do
-      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
-        {:ok, "- a fact from before"}
+    test "prepends the <orca-memory> block to the positional -p prompt and persists once" do
+      Process.put(:orca_hub_memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok,
+         %{
+           "block" => "- a fact from before",
+           "memory_ids" => ["mem-1"],
+           "pinned_count" => 1,
+           "recalled_count" => 0
+         }}
       end)
 
       ctx = ctx(%{prompt: "hello world"})
@@ -774,14 +786,22 @@ defmodule OrcaHub.Backend.ClaudeTest do
       spec = Backend.spawn_spec(:one_shot, ctx)
 
       assert spec.args == script_args_for(expected_args)
+
+      session_id = ctx.session_id
+      assert_received {:persisted, ^session_id, event}
+      assert event["subtype"] == "memory_injected"
+      assert event["memory_ids"] == ["mem-1"]
+      assert event["block"] == "- a fact from before"
+      refute_received {:persisted, _, _}
     end
 
-    test "no block available: the positional prompt is unchanged" do
+    test "no block available: the positional prompt is unchanged and nothing is persisted" do
       ctx = ctx(%{prompt: "hello world"})
       {expected_args, _} = Config.build_args("hello world", expected_one_shot_opts(ctx))
       spec = Backend.spawn_spec(:one_shot, ctx)
 
       assert spec.args == script_args_for(expected_args)
+      refute_received {:persisted, _, _}
     end
   end
 
@@ -959,21 +979,40 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
   # ── encode_user_turn/2 — memory injection (agent-memory centralization) ──
   # Rides the first user turn of a cold port open, never the system prompt.
-  # `:orca_hub, :memory_context_fun` is the test-only seam
-  # SharedPrompts.memory_context_block/2 resolves.
+  # `Process.put(:orca_hub_memory_context_fun, ...)` is the process-local
+  # test seam SharedPrompts.memory_context/2 resolves;
+  # `:orca_hub_persist_system_event_fun` is the seam
+  # SharedPrompts.record_memory_injection/2 resolves (stubbed here so these
+  # tests, whose ctx carries no real DB-backed session, never trip the
+  # messages.session_id foreign-key constraint). Both are process-local
+  # rather than Application-env-global — see memory_context/2's moduledoc —
+  # so they're safe under this file's async: true.
 
   describe "encode_user_turn/2 — memory injection" do
     setup do
-      on_exit(fn -> Application.delete_env(:orca_hub, :memory_context_fun) end)
+      test_pid = self()
+
+      Process.put(:orca_hub_persist_system_event_fun, fn session_id, event ->
+        send(test_pid, {:persisted, session_id, event})
+        :ok
+      end)
+
       :ok
     end
 
-    test "prepends an <orca-memory> block on the first turn and sets memory_sent" do
-      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
-        {:ok, "- a prior fact"}
+    test "prepends an <orca-memory> block on the first turn, sets memory_sent, and persists once" do
+      Process.put(:orca_hub_memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok,
+         %{
+           "block" => "- a prior fact",
+           "memory_ids" => ["mem-1"],
+           "pinned_count" => 0,
+           "recalled_count" => 1
+         }}
       end)
 
-      ctx = %{directory: "/tmp/whatever", backend_state: %{}}
+      session_id = Ecto.UUID.generate()
+      ctx = %{directory: "/tmp/whatever", backend_state: %{}, session_id: session_id}
       {iodata, ctx_out} = Backend.encode_user_turn("do the thing", ctx)
 
       text =
@@ -986,14 +1025,24 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
       assert text == "<orca-memory>\n- a prior fact\n</orca-memory>\n\ndo the thing"
       assert ctx_out.backend_state.memory_sent == true
+
+      assert_received {:persisted, ^session_id, event}
+      assert event["subtype"] == "memory_injected"
+      assert event["recalled_count"] == 1
+      refute_received {:persisted, _, _}
     end
 
-    test "a second turn on the same warm port (memory_sent already true) is not re-prefixed" do
-      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
-        {:ok, "- a prior fact"}
+    test "a second turn on the same warm port (memory_sent already true) is not re-prefixed and does not persist again" do
+      Process.put(:orca_hub_memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok, %{"block" => "- a prior fact", "memory_ids" => [], "pinned_count" => 0, "recalled_count" => 0}}
       end)
 
-      ctx = %{directory: "/tmp/whatever", backend_state: %{memory_sent: true}}
+      ctx = %{
+        directory: "/tmp/whatever",
+        backend_state: %{memory_sent: true},
+        session_id: Ecto.UUID.generate()
+      }
+
       {iodata, _ctx_out} = Backend.encode_user_turn("second turn", ctx)
 
       text =
@@ -1005,14 +1054,20 @@ defmodule OrcaHub.Backend.ClaudeTest do
         ])
 
       assert text == "second turn"
+      refute_received {:persisted, _, _}
     end
 
-    test "no block available (nil): prompt is unchanged but memory_sent still flips" do
-      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
+    test "no block available (nil): prompt is unchanged, memory_sent still flips, nothing persisted" do
+      Process.put(:orca_hub_memory_context_fun, fn _slug, _prompt, _opts ->
         {:ok, nil}
       end)
 
-      ctx = %{directory: "/tmp/whatever", backend_state: %{}}
+      ctx = %{
+        directory: "/tmp/whatever",
+        backend_state: %{},
+        session_id: Ecto.UUID.generate()
+      }
+
       {iodata, ctx_out} = Backend.encode_user_turn("no memory yet", ctx)
 
       text =
@@ -1025,6 +1080,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
       assert text == "no memory yet"
       assert ctx_out.backend_state.memory_sent == true
+      refute_received {:persisted, _, _}
     end
   end
 

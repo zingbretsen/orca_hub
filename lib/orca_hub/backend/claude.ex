@@ -269,7 +269,9 @@ defmodule OrcaHub.Backend.Claude do
 
       true ->
         bs = Map.get(ctx, :backend_state, %{}) |> Map.put(:memory_sent, true)
-        {SharedPrompts.maybe_prepend_memory(prompt, directory), Map.put(ctx, :backend_state, bs)}
+
+        {SharedPrompts.maybe_prepend_memory(prompt, directory, ctx.session_id),
+         Map.put(ctx, :backend_state, bs)}
     end
   end
 
@@ -288,7 +290,7 @@ defmodule OrcaHub.Backend.Claude do
       prompt ->
         if memory_sent?(ctx),
           do: prompt,
-          else: SharedPrompts.maybe_prepend_memory(prompt, ctx.directory)
+          else: SharedPrompts.maybe_prepend_memory(prompt, ctx.directory, ctx.session_id)
     end
   end
 
