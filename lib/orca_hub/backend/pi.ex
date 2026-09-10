@@ -756,7 +756,9 @@ defmodule OrcaHub.Backend.Pi do
             "id" => dialog_id,
             "resolution" => "timeout"
           }
+
           bs = Map.delete(ctx.backend_state, :pending_ui_request)
+
           {[resolution_event, tool_result_event(id, content, is_error)],
            %{ctx | backend_state: bs}}
         else
