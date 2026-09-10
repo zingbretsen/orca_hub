@@ -41,7 +41,10 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.Sessions, :update_session, [session, attrs])
 
   def delete_session(session), do: call(OrcaHub.Sessions, :delete_session, [session])
-  def archive_session(session, opts \\ []), do: call(OrcaHub.Sessions, :archive_session, [session, opts])
+
+  def archive_session(session, opts \\ []),
+    do: call(OrcaHub.Sessions, :archive_session, [session, opts])
+
   def unarchive_session(session), do: call(OrcaHub.Sessions, :unarchive_session, [session])
   def defer_session(session), do: call(OrcaHub.Sessions, :defer_session, [session])
   def list_sessions(filter \\ :manual), do: call(OrcaHub.Sessions, :list_sessions, [filter])

@@ -59,9 +59,20 @@ defmodule OrcaHub.MemoryExtractionTest do
   end
 
   describe "decide/2 — threshold + watermark" do
-    defp user_row(text), do: %{"type" => "user", "message" => %{"content" => [%{"type" => "text", "text" => text}]}}
-    defp assistant_row(text), do: %{"type" => "assistant", "message" => %{"content" => [%{"type" => "text", "text" => text}]}}
-    defp tool_result_row, do: %{"type" => "user", "message" => %{"content" => [%{"type" => "tool_result", "content" => "output"}]}}
+    defp user_row(text),
+      do: %{"type" => "user", "message" => %{"content" => [%{"type" => "text", "text" => text}]}}
+
+    defp assistant_row(text),
+      do: %{
+        "type" => "assistant",
+        "message" => %{"content" => [%{"type" => "text", "text" => text}]}
+      }
+
+    defp tool_result_row,
+      do: %{
+        "type" => "user",
+        "message" => %{"content" => [%{"type" => "tool_result", "content" => "output"}]}
+      }
 
     test "no rows at all is a silent skip" do
       assert MemoryExtraction.decide([], false) == {:skip, :empty}
@@ -104,8 +115,14 @@ defmodule OrcaHub.MemoryExtractionTest do
   describe "build_entries/1 — transcript slice rendering" do
     test "renders user text and assistant text as labeled lines" do
       rows = [
-        %{"type" => "user", "message" => %{"content" => [%{"type" => "text", "text" => "do the thing"}]}},
-        %{"type" => "assistant", "message" => %{"content" => [%{"type" => "text", "text" => "done"}]}}
+        %{
+          "type" => "user",
+          "message" => %{"content" => [%{"type" => "text", "text" => "do the thing"}]}
+        },
+        %{
+          "type" => "assistant",
+          "message" => %{"content" => [%{"type" => "text", "text" => "done"}]}
+        }
       ]
 
       assert MemoryExtraction.build_entries(rows) == ["User: do the thing", "Assistant: done"]
@@ -132,7 +149,10 @@ defmodule OrcaHub.MemoryExtractionTest do
 
     test "drops thinking blocks and a tool_use-only assistant message with no text" do
       rows = [
-        %{"type" => "assistant", "message" => %{"content" => [%{"type" => "thinking", "text" => "hmm"}]}},
+        %{
+          "type" => "assistant",
+          "message" => %{"content" => [%{"type" => "thinking", "text" => "hmm"}]}
+        },
         %{
           "type" => "assistant",
           "message" => %{"content" => [%{"type" => "tool_use", "name" => "Bash", "input" => %{}}]}
@@ -144,7 +164,10 @@ defmodule OrcaHub.MemoryExtractionTest do
 
     test "drops a user row that carries only a tool_result (no text blocks)" do
       rows = [
-        %{"type" => "user", "message" => %{"content" => [%{"type" => "tool_result", "content" => "output"}]}}
+        %{
+          "type" => "user",
+          "message" => %{"content" => [%{"type" => "tool_result", "content" => "output"}]}
+        }
       ]
 
       assert MemoryExtraction.build_entries(rows) == []
@@ -161,7 +184,10 @@ defmodule OrcaHub.MemoryExtractionTest do
 
     test "caps a single message at the per-message char limit" do
       huge = String.duplicate("z", 10_000)
-      rows = [%{"type" => "user", "message" => %{"content" => [%{"type" => "text", "text" => huge}]}}]
+
+      rows = [
+        %{"type" => "user", "message" => %{"content" => [%{"type" => "text", "text" => huge}]}}
+      ]
 
       [entry] = MemoryExtraction.build_entries(rows)
       assert entry =~ "…[truncated]"
@@ -196,7 +222,13 @@ defmodule OrcaHub.MemoryExtractionTest do
   describe "build_prompt/3" do
     test "includes the source session id/directory, existing hooks, and the created_by/source directive" do
       source = %{id: "src-123", directory: "/tmp/proj", title: "root session"}
-      prompt = MemoryExtraction.build_prompt("User: hi\n\nAssistant: hello", ["existing hook one"], source)
+
+      prompt =
+        MemoryExtraction.build_prompt(
+          "User: hi\n\nAssistant: hello",
+          ["existing hook one"],
+          source
+        )
 
       assert prompt =~ "src-123"
       assert prompt =~ "/tmp/proj"

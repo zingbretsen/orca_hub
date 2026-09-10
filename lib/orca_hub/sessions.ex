@@ -330,7 +330,9 @@ defmodule OrcaHub.Sessions do
   def list_messages_since(session_id, since) do
     query =
       from m in Message,
-        where: m.session_id == ^session_id and fragment("? ->> 'type' = ANY(?)", m.data, ^~w(user assistant)),
+        where:
+          m.session_id == ^session_id and
+            fragment("? ->> 'type' = ANY(?)", m.data, ^~w(user assistant)),
         order_by: [asc: m.inserted_at, asc: m.id],
         select: m.data
 

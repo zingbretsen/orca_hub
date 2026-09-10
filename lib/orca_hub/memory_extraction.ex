@@ -132,9 +132,14 @@ defmodule OrcaHub.MemoryExtraction do
     total_chars = Enum.reduce(entries, 0, fn entry, acc -> acc + String.length(entry) end)
 
     cond do
-      entries == [] -> {:skip, :empty}
-      not force? and (user_turns < @min_user_turns or total_chars < @min_chars) -> {:skip, :below_threshold}
-      true -> {:dispatch, entries}
+      entries == [] ->
+        {:skip, :empty}
+
+      not force? and (user_turns < @min_user_turns or total_chars < @min_chars) ->
+        {:skip, :below_threshold}
+
+      true ->
+        {:dispatch, entries}
     end
   end
 

@@ -832,8 +832,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     do: "Memory extraction: forced OFF for this session (click to reset to default)"
 
   def memory_extract_title(_),
-    do:
-      "Memory extraction: default (orchestrator/root sessions only — click to force on)"
+    do: "Memory extraction: default (orchestrator/root sessions only — click to force on)"
 
   @doc false
   def memory_extract_class(%{memory_extract: true}), do: "text-primary"
