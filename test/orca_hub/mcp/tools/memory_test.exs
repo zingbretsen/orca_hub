@@ -149,6 +149,42 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
       assert msg =~ "text is required"
     end
 
+    test "created_by: \"extraction\" is accepted verbatim", %{state: state} do
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        body = Jason.decode!(raw)
+        assert body["created_by"] == "extraction"
+        Req.Test.json(conn, %{"memory" => %{"id" => "mem-9"}, "near_duplicates" => []})
+      end)
+
+      result =
+        MemoryTool.call(
+          "remember",
+          %{"text" => "a fact", "kind" => "fact", "created_by" => "extraction"},
+          state
+        )
+
+      assert %{"isError" => false} = result
+    end
+
+    test "any other created_by value falls back to \"agent\"", %{state: state} do
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        body = Jason.decode!(raw)
+        assert body["created_by"] == "agent"
+        Req.Test.json(conn, %{"memory" => %{"id" => "mem-10"}, "near_duplicates" => []})
+      end)
+
+      result =
+        MemoryTool.call(
+          "remember",
+          %{"text" => "a fact", "kind" => "fact", "created_by" => "human"},
+          state
+        )
+
+      assert %{"isError" => false} = result
+    end
+
     test "surfaces a disabled memory service clearly", %{state: state} do
       Application.put_env(:orca_hub, :memory_service_url, nil)
 
