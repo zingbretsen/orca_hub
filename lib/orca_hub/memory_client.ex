@@ -79,6 +79,22 @@ defmodule OrcaHub.MemoryClient do
     do: HubRPC.memory_context(project_slug, prompt, opts)
 
   @doc """
+  Merges two `GET /v1/memories` queries into the memories THIS session
+  created — directly (`session_id == session_id`) and via extraction
+  (`source.session_id == session_id`, filtered client-side the same way
+  `OrcaHub.MemoryExtraction.extracted_memories/1` already does — extraction's
+  own `session_id` field is the extraction CHILD session, not the session
+  under review, so the direct query alone misses these). Deduped by `id`,
+  capped at 50 with `truncated: true` when more existed. Never raises;
+  `{:error, reason}` from EITHER leg fails the whole call rather than
+  silently returning a partial list.
+  """
+  @spec list_created_by_session(String.t(), String.t()) ::
+          {:ok, %{memories: [map()], truncated: boolean()}} | {:error, term()}
+  def list_created_by_session(session_id, project_slug),
+    do: HubRPC.memory_list_created_by_session(session_id, project_slug)
+
+  @doc """
   POST /v1/memories/context, returning just the block text. Always returns
   `{:ok, block_or_nil}` — never `{:error, _}` — same reasoning as
   `context/3`, which does the actual work here.
@@ -137,6 +153,40 @@ defmodule OrcaHub.MemoryClient do
     with_enabled(fn -> do_request(:get, "/v1/memories", params: params) end)
   end
 
+  @created_by_session_per_page 100
+  @created_by_session_cap 50
+
+  def list_created_by_session_impl(session_id, project_slug) do
+    with {:ok, direct} <-
+           list_impl(%{"session_id" => session_id, "per_page" => @created_by_session_per_page}),
+         {:ok, project_memories} <-
+           list_impl(%{
+             "project_slug" => project_slug,
+             "per_page" => @created_by_session_per_page
+           }) do
+      via_extraction =
+        project_memories
+        |> extract_memories_list()
+        |> Enum.filter(fn m ->
+          m["created_by"] == "extraction" and get_in(m, ["source", "session_id"]) == session_id
+        end)
+
+      merged =
+        (extract_memories_list(direct) ++ via_extraction)
+        |> Enum.uniq_by(& &1["id"])
+
+      {:ok,
+       %{
+         memories: Enum.take(merged, @created_by_session_cap),
+         truncated: length(merged) > @created_by_session_cap
+       }}
+    end
+  end
+
+  defp extract_memories_list(%{"memories" => memories}) when is_list(memories), do: memories
+  defp extract_memories_list(memories) when is_list(memories), do: memories
+  defp extract_memories_list(_), do: []
+
   def tags_impl(params) do
     with_enabled(fn -> do_request(:get, "/v1/tags", params: params) end)
   end
@@ -158,6 +208,7 @@ defmodule OrcaHub.MemoryClient do
            %{
              "block" => block,
              "memory_ids" => resp["memory_ids"] || [],
+             "memories" => resp["memories"],
              "pinned_count" => resp["pinned_count"],
              "recalled_count" => resp["recalled_count"]
            }}

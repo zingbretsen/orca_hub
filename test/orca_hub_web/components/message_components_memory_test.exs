@@ -34,6 +34,20 @@ defmodule OrcaHubWeb.MessageComponentsMemoryTest do
     )
   end
 
+  defp memories_event(memories, overrides \\ %{}) do
+    Map.merge(
+      %{
+        "type" => "system",
+        "subtype" => "memory_injected",
+        "memory_ids" => Enum.map(memories, & &1["id"]),
+        "memories" => memories,
+        "pinned_count" => 0,
+        "recalled_count" => length(memories)
+      },
+      overrides
+    )
+  end
+
   describe "memory_injected system event" do
     test "renders a collapsed one-line summary with the total/pinned/recalled counts" do
       html =
@@ -113,6 +127,92 @@ defmodule OrcaHubWeb.MessageComponentsMemoryTest do
     end
   end
 
+  describe "memory_injected — \"memories\" array (memory-service c932074): kind + review badges" do
+    test "renders each row's kind as a badge" do
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [
+            memories_event([
+              %{"id" => "mem-1", "hook" => "first hook", "kind" => "fact"},
+              %{"id" => "mem-2", "hook" => "second hook", "kind" => "preference"}
+            ])
+          ],
+          session_node: nil
+        })
+
+      assert html =~ "fact"
+      assert html =~ "preference"
+    end
+
+    test "shows a muted pending-review badge for a pending memory" do
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [
+            memories_event([
+              %{
+                "id" => "mem-1",
+                "hook" => "unreviewed hook",
+                "kind" => "fact",
+                "review_status" => "pending"
+              }
+            ])
+          ],
+          session_node: nil
+        })
+
+      assert html =~ "pending review"
+    end
+
+    test "shows no review badge for an approved memory" do
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [
+            memories_event([
+              %{
+                "id" => "mem-1",
+                "hook" => "reviewed hook",
+                "kind" => "fact",
+                "review_status" => "approved"
+              }
+            ])
+          ],
+          session_node: nil
+        })
+
+      refute html =~ "pending review"
+    end
+
+    test "a rejected review_status shows no review badge either" do
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [
+            memories_event([
+              %{
+                "id" => "mem-1",
+                "hook" => "unreviewed content",
+                "kind" => "fact",
+                "review_status" => "rejected"
+              }
+            ])
+          ],
+          session_node: nil
+        })
+
+      refute html =~ "pending review"
+      refute html =~ "badge-ghost"
+    end
+
+    test "an older event (no \"memories\" key) still renders from \"hooks\", no kind/badge" do
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [memory_injected_event()],
+          session_node: nil
+        })
+
+      refute html =~ "pending review"
+    end
+  end
+
   describe "user bubble — leading <orca-memory> block is stripped for display" do
     test "a leading orca-memory block is hidden from the user bubble" do
       msg = %{
@@ -157,7 +257,10 @@ defmodule OrcaHubWeb.MessageComponentsMemoryTest do
         "message" => %{
           "role" => "user",
           "content" => [
-            %{"type" => "text", "text" => "please explain <orca-memory>\ntags</orca-memory>\n\nto me"}
+            %{
+              "type" => "text",
+              "text" => "please explain <orca-memory>\ntags</orca-memory>\n\nto me"
+            }
           ]
         }
       }

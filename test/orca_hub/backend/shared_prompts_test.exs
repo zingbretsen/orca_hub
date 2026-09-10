@@ -35,5 +35,72 @@ defmodule OrcaHub.Backend.SharedPromptsTest do
     test "returns [] when neither hooks nor block is present" do
       assert SharedPrompts.memory_hooks(%{}) == []
     end
+
+    test "derives hooks from the newer \"memories\" array (memory-service c932074) when \"hooks\" is absent" do
+      assert SharedPrompts.memory_hooks(%{
+               "memories" => [
+                 %{"id" => "mem-1", "hook" => "first hook", "kind" => "fact"},
+                 %{"id" => "mem-2", "hook" => "second hook", "kind" => "preference"}
+               ]
+             }) == ["first hook", "second hook"]
+    end
+
+    test "prefers the top-level \"hooks\" field over \"memories\" when both are present" do
+      assert SharedPrompts.memory_hooks(%{
+               "hooks" => ["legacy hook"],
+               "memories" => [%{"hook" => "new hook"}]
+             }) == ["legacy hook"]
+    end
+  end
+
+  describe "record_memory_injection/2" do
+    setup do
+      test_pid = self()
+
+      Process.put(:orca_hub_persist_system_event_fun, fn session_id, event ->
+        send(test_pid, {:persisted, session_id, event})
+        :ok
+      end)
+
+      :ok
+    end
+
+    test "carries the \"memories\" array through to the persisted event when present" do
+      memories = [
+        %{
+          "id" => "mem-1",
+          "hook" => "first hook",
+          "kind" => "fact",
+          "review_status" => "approved"
+        }
+      ]
+
+      SharedPrompts.record_memory_injection("sess-1", %{
+        "block" => "- [fact] first hook — detail",
+        "memory_ids" => ["mem-1"],
+        "memories" => memories,
+        "pinned_count" => 1,
+        "recalled_count" => 0
+      })
+
+      assert_received {:persisted, "sess-1", event}
+      assert event["memories"] == memories
+      # memory_ids/hooks still populated too — backward compatible with any
+      # consumer still reading the older fields.
+      assert event["memory_ids"] == ["mem-1"]
+      assert event["hooks"] == ["first hook"]
+    end
+
+    test "omits the \"memories\" key entirely when the response doesn't have one (older service)" do
+      SharedPrompts.record_memory_injection("sess-1", %{
+        "block" => "- [fact] first hook — detail",
+        "memory_ids" => ["mem-1"],
+        "pinned_count" => 1,
+        "recalled_count" => 0
+      })
+
+      assert_received {:persisted, "sess-1", event}
+      refute Map.has_key?(event, "memories")
+    end
   end
 end

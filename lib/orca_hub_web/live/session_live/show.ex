@@ -169,6 +169,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
      # — never a full-feed scan, and small enough per session to just load.
      |> assign(:show_memories, false)
      |> assign(:memory_events, HubRPC.list_memory_injected_events(id))
+     # Memories this session itself created (remember/extraction) — fetched
+     # lazily the first time the panel is OPENED (see handle_event
+     # "toggle_memories"/load_created_memories/1), never on mount: unlike
+     # @memory_events (a cheap indexed DB query), this is a live call to the
+     # external memory service. :not_loaded until then.
+     |> assign(:created_memories, :not_loaded)
      |> assign(:artifact_send_throttle, %{})
      |> assign(:show_terminal, false)
      |> assign(:open_terminals, [])
@@ -1121,10 +1127,21 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("toggle_memories", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:show_memories, !socket.assigns.show_memories)
-     |> assign(:show_mobile_actions, false)}
+    opening? = !socket.assigns.show_memories
+
+    socket =
+      socket
+      |> assign(:show_memories, opening?)
+      |> assign(:show_mobile_actions, false)
+
+    socket =
+      if opening? and socket.assigns.created_memories == :not_loaded do
+        socket |> assign(:created_memories, :loading) |> load_created_memories()
+      else
+        socket
+      end
+
+    {:noreply, socket}
   end
 
   def handle_event("open_session_artifact", %{"id" => artifact_id}, socket) do
@@ -3019,29 +3036,25 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   # -- Memories panel helpers --
 
-  # One row per DISTINCT memory_id across every memory_injected event this
+  # One row per DISTINCT memory id across every memory_injected event this
   # session has ever recorded, plus totals — backs the header's Memories
-  # panel. `memory_ids`/`hooks` are parallel per-event lists (see
-  # OrcaHub.Backend.SharedPrompts.memory_hooks/1); zipped by position, same
-  # as MessageComponents' collapsed per-event rendering. A memory recalled
-  # again on a later cold-reopen keeps its FIRST position in the list but
-  # its LATEST hook text/injected-at (a hook's rendered text can change as
-  # the underlying memory is updated/re-confirmed). There's no per-memory
-  # pinned/recalled classification available from the service (only an
-  # aggregate count per event) — deliberately not guessed at here; the
-  # panel shows only the aggregate totals.
+  # panel. Row shape comes from `MessageComponents.memory_event_rows/1`
+  # (the "memories" array when an event has one, else the legacy
+  # memory_ids/hooks zip), same normalization the collapsed per-event
+  # rendering uses. A memory recalled again on a later cold-reopen keeps its
+  # FIRST position in the list but its LATEST hook text/kind/review_status/
+  # injected_at (these can change as the underlying memory is
+  # updated/re-confirmed). There's no per-memory pinned/recalled
+  # classification available from the service (only an aggregate count per
+  # event) — deliberately not guessed at here; the panel shows only the
+  # aggregate totals.
   def memory_panel_summary(memory_events) do
     rows =
       memory_events
       |> Enum.flat_map(fn event ->
-        memory_ids = List.wrap(event["memory_ids"])
-        hooks = List.wrap(event["hooks"])
-
-        hooks
-        |> Enum.with_index()
-        |> Enum.map(fn {hook, i} ->
-          %{memory_id: Enum.at(memory_ids, i), hook: hook, injected_at: event["timestamp"]}
-        end)
+        event
+        |> MessageComponents.memory_event_rows()
+        |> Enum.map(&Map.put(&1, :injected_at, event["timestamp"]))
       end)
       |> dedupe_memory_rows()
 
@@ -3056,9 +3069,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp dedupe_memory_rows(rows) do
     Enum.reduce(rows, [], fn row, acc ->
-      key = row.memory_id || row.hook
+      key = row.id || row.hook
 
-      case Enum.find_index(acc, &((&1.memory_id || &1.hook) == key)) do
+      case Enum.find_index(acc, &((&1.id || &1.hook) == key)) do
         nil -> acc ++ [row]
         idx -> List.replace_at(acc, idx, row)
       end
@@ -3118,6 +3131,39 @@ defmodule OrcaHubWeb.SessionLive.Show do
       _ ->
         {:noreply, socket}
     end
+  end
+
+  # "Created by this session" (memory panel, section 2): fetched once, the
+  # first time the panel is opened — see handle_event("toggle_memories", ...)
+  # and load_created_memories/1. `MemoryClient.list_created_by_session/2`
+  # never raises, so the only crash path here is the Task itself dying
+  # (:exit) — both land on the same inline error line rather than the panel
+  # silently staying in :loading forever.
+  @impl true
+  def handle_async(:created_memories, {:ok, {:ok, result}}, socket) do
+    {:noreply, assign(socket, :created_memories, {:ok, result})}
+  end
+
+  def handle_async(:created_memories, {:ok, {:error, reason}}, socket) do
+    {:noreply, assign(socket, :created_memories, {:error, reason})}
+  end
+
+  def handle_async(:created_memories, {:exit, reason}, socket) do
+    {:noreply, assign(socket, :created_memories, {:error, reason})}
+  end
+
+  # Lazy fetch for the memory panel's "Created by this session" section —
+  # only triggered from handle_event("toggle_memories", ...) on the panel's
+  # first open, never on mount (unlike @memory_events, this is a live call
+  # to the external memory service via OrcaHub.MemoryClient, which is
+  # hub-routed and never raises — see handle_async(:created_memories, ...)).
+  defp load_created_memories(socket) do
+    session_id = socket.assigns.session.id
+    slug = OrcaHub.AgentMemory.slugify(socket.assigns.session.directory)
+
+    start_async(socket, :created_memories, fn ->
+      OrcaHub.MemoryClient.list_created_by_session(session_id, slug)
+    end)
   end
 
   # -- Todo helpers --

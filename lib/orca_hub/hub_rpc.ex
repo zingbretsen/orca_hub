@@ -539,6 +539,9 @@ defmodule OrcaHub.HubRPC do
   def memory_list(params), do: call(OrcaHub.MemoryClient, :list_impl, [params])
   def memory_tags(params), do: call(OrcaHub.MemoryClient, :tags_impl, [params])
 
+  def memory_list_created_by_session(session_id, project_slug),
+    do: call(OrcaHub.MemoryClient, :list_created_by_session_impl, [session_id, project_slug])
+
   def memory_context_block(project_slug, prompt, opts),
     do: call(OrcaHub.MemoryClient, :context_block_impl, [project_slug, prompt, opts])
 

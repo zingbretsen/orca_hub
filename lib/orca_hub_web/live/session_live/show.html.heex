@@ -961,25 +961,76 @@
       <li :for={row <- memory_summary.rows} class="flex items-start gap-2 text-sm">
         <.icon name="hero-book-open-micro" class="size-3 text-primary shrink-0 mt-0.5" />
         <a
-          :if={MessageComponents.memory_service_public_url() && row.memory_id}
-          href={"#{MessageComponents.memory_service_public_url()}/memories/#{row.memory_id}"}
+          :if={MessageComponents.memory_service_public_url() && row.id}
+          href={"#{MessageComponents.memory_service_public_url()}/memories/#{row.id}"}
           target="_blank"
           rel="noopener noreferrer"
           class="link link-hover truncate"
         >
           {row.hook}
         </a>
-        <span
-          :if={!(MessageComponents.memory_service_public_url() && row.memory_id)}
-          class="truncate"
-        >
+        <span :if={!(MessageComponents.memory_service_public_url() && row.id)} class="truncate">
           {row.hook}
+        </span>
+        <span :if={row.kind} class="badge badge-xs badge-outline shrink-0">{row.kind}</span>
+        <span
+          :if={row.review_status == "pending"}
+          class="badge badge-xs badge-ghost shrink-0"
+        >
+          pending review
         </span>
         <span class="text-xs text-base-content/40 shrink-0 ml-auto whitespace-nowrap">
           <MessageComponents.timestamp value={row.injected_at} />
         </span>
       </li>
     </ul>
+
+    <div class="border-t border-base-300 mt-2 pt-2">
+      <div class="text-xs text-base-content/50 mb-1">Created by this session</div>
+      <div :if={@created_memories == :loading} class="flex items-center gap-2 text-xs opacity-60">
+        <span class="loading loading-spinner loading-xs"></span> Loading…
+      </div>
+      <div :if={match?({:error, _}, @created_memories)} class="text-xs text-error">
+        Could not reach the memory service — try again later.
+      </div>
+      <%= if match?({:ok, %{memories: []}}, @created_memories) do %>
+        <div class="text-xs text-base-content/40">None yet.</div>
+      <% end %>
+      <%= if match?({:ok, %{memories: [_ | _]}}, @created_memories) do %>
+        <% {:ok, %{memories: created, truncated: truncated?}} = @created_memories %>
+        <ul class="space-y-1">
+          <li :for={m <- created} class="flex items-start gap-2 text-sm">
+            <.icon name="hero-plus-circle-micro" class="size-3 text-primary shrink-0 mt-0.5" />
+            <a
+              :if={MessageComponents.memory_service_public_url() && m["id"]}
+              href={"#{MessageComponents.memory_service_public_url()}/memories/#{m["id"]}"}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="link link-hover truncate"
+            >
+              {m["hook"] || "(untitled memory)"}
+            </a>
+            <span
+              :if={!(MessageComponents.memory_service_public_url() && m["id"])}
+              class="truncate"
+            >
+              {m["hook"] || "(untitled memory)"}
+            </span>
+            <span :if={m["kind"]} class="badge badge-xs badge-outline shrink-0">{m["kind"]}</span>
+            <span
+              :if={m["review_status"] == "pending"}
+              class="badge badge-xs badge-ghost shrink-0"
+            >
+              pending review
+            </span>
+            <span class="text-xs text-base-content/40 shrink-0 ml-auto whitespace-nowrap">
+              {m["created_by"]}
+            </span>
+          </li>
+        </ul>
+        <div :if={truncated?} class="text-xs text-base-content/40 mt-1">showing 50</div>
+      <% end %>
+    </div>
   </div>
 
   <div :if={@todos != [] && @show_todos} class="mb-2 bg-base-200 rounded-lg px-3 py-2">

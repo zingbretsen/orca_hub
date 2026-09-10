@@ -325,5 +325,129 @@ defmodule OrcaHub.MemoryClientTest do
       Application.put_env(:orca_hub, :memory_service_url, nil)
       assert {:ok, nil} = MemoryClient.context("slug", "prompt")
     end
+
+    test "passes through the \"memories\" array when the service includes it (memory-service c932074)" do
+      Req.Test.stub(@stub, fn conn ->
+        Req.Test.json(conn, %{
+          "block" => "# Recalled memories\n- [fact] ...",
+          "memory_ids" => ["mem-9", "mem-10"],
+          "memories" => [
+            %{
+              "id" => "mem-9",
+              "hook" => "first hook",
+              "kind" => "fact",
+              "pinned" => true,
+              "review_status" => "approved"
+            },
+            %{
+              "id" => "mem-10",
+              "hook" => "second hook",
+              "kind" => "preference",
+              "pinned" => false,
+              "review_status" => "pending"
+            }
+          ],
+          "pinned_count" => 1,
+          "recalled_count" => 1
+        })
+      end)
+
+      assert {:ok, %{"memories" => [%{"id" => "mem-9"}, %{"id" => "mem-10"}]}} =
+               MemoryClient.context("slug", "prompt")
+    end
+
+    test "\"memories\" is nil when the service response omits it (older service)" do
+      Req.Test.stub(@stub, fn conn ->
+        Req.Test.json(conn, %{"block" => "- a fact", "memory_ids" => ["mem-1"]})
+      end)
+
+      assert {:ok, %{"memories" => nil}} = MemoryClient.context("slug", "prompt")
+    end
+  end
+
+  describe "list_created_by_session/2" do
+    test "merges direct session_id hits with source.session_id-matched extraction hits, deduped" do
+      Req.Test.stub(@stub, fn conn ->
+        assert conn.method == "GET"
+        assert conn.request_path == "/v1/memories"
+
+        case conn.query_params do
+          %{"session_id" => "sess-1"} ->
+            Req.Test.json(conn, %{
+              "memories" => [
+                %{"id" => "mem-1", "hook" => "direct remember", "created_by" => "agent"}
+              ]
+            })
+
+          %{"project_slug" => "-home-zach-orca-hub"} ->
+            Req.Test.json(conn, %{
+              "memories" => [
+                %{
+                  "id" => "mem-2",
+                  "hook" => "extracted fact",
+                  "created_by" => "extraction",
+                  "source" => %{"session_id" => "sess-1"}
+                },
+                %{
+                  "id" => "mem-3",
+                  "hook" => "someone else's extraction",
+                  "created_by" => "extraction",
+                  "source" => %{"session_id" => "other-session"}
+                },
+                # Duplicate of the direct hit (e.g. this session's own
+                # remember also surfaced in the project-wide sweep) — must
+                # not be double-counted.
+                %{"id" => "mem-1", "hook" => "direct remember", "created_by" => "agent"}
+              ]
+            })
+        end
+      end)
+
+      assert {:ok, %{memories: memories, truncated: false}} =
+               MemoryClient.list_created_by_session("sess-1", "-home-zach-orca-hub")
+
+      assert memories |> Enum.map(& &1["id"]) |> Enum.sort() == ["mem-1", "mem-2"]
+    end
+
+    test "caps at 50 and reports truncated: true" do
+      direct = for i <- 1..30, do: %{"id" => "d-#{i}", "hook" => "hook #{i}"}
+
+      extracted =
+        for i <- 1..30 do
+          %{
+            "id" => "e-#{i}",
+            "hook" => "hook #{i}",
+            "created_by" => "extraction",
+            "source" => %{"session_id" => "sess-1"}
+          }
+        end
+
+      Req.Test.stub(@stub, fn conn ->
+        case conn.query_params do
+          %{"session_id" => "sess-1"} -> Req.Test.json(conn, %{"memories" => direct})
+          %{"project_slug" => _} -> Req.Test.json(conn, %{"memories" => extracted})
+        end
+      end)
+
+      assert {:ok, %{memories: memories, truncated: true}} =
+               MemoryClient.list_created_by_session("sess-1", "slug")
+
+      assert length(memories) == 50
+    end
+
+    test "an HTTP error from either leg fails the whole call rather than returning a partial list" do
+      Req.Test.stub(@stub, fn conn ->
+        conn |> Plug.Conn.put_status(500) |> Req.Test.json(%{"error" => "boom"})
+      end)
+
+      assert {:error, {:http_error, 500, _body}} =
+               MemoryClient.list_created_by_session("sess-1", "slug")
+    end
+
+    test "returns {:error, :disabled} when the service isn't configured, no HTTP call" do
+      Application.put_env(:orca_hub, :memory_service_url, nil)
+
+      assert {:error, :disabled} = MemoryClient.list_created_by_session("sess-1", "slug")
+    end
   end
 end

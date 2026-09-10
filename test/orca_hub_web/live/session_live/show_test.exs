@@ -428,6 +428,97 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
   end
 
+  describe "Memories panel — \"Created by this session\" section (memory-service c932074)" do
+    @created_memories_stub OrcaHubWeb.SessionLive.ShowTest.CreatedMemoriesStub
+
+    setup do
+      Application.put_env(:orca_hub, :memory_service_url, "https://memory.example.com")
+      Application.put_env(:orca_hub, :memory_service_token, "test-token")
+
+      Application.put_env(:orca_hub, :memory_service_req_options,
+        plug: {Req.Test, @created_memories_stub},
+        retry: false
+      )
+
+      on_exit(fn ->
+        Application.put_env(:orca_hub, :memory_service_url, nil)
+        Application.put_env(:orca_hub, :memory_service_token, nil)
+        Application.delete_env(:orca_hub, :memory_service_req_options)
+      end)
+
+      :ok
+    end
+
+    defp seed_injected_event(session_id) do
+      Sessions.persist_system_event(session_id, %{
+        "type" => "system",
+        "subtype" => "memory_injected",
+        "memory_ids" => ["mem-1"],
+        "hooks" => ["a hook"],
+        "pinned_count" => 0,
+        "recalled_count" => 1
+      })
+    end
+
+    test "opening the panel fetches (not on mount) and renders memories this session created", %{
+      conn: conn,
+      claude_session: session
+    } do
+      seed_injected_event(session.id)
+      session_id = session.id
+
+      Req.Test.stub(@created_memories_stub, fn conn ->
+        case conn.query_params do
+          %{"session_id" => ^session_id} ->
+            Req.Test.json(conn, %{
+              "memories" => [
+                %{
+                  "id" => "mem-created-1",
+                  "hook" => "created directly by this session",
+                  "kind" => "fact",
+                  "created_by" => "agent",
+                  "review_status" => "approved"
+                }
+              ]
+            })
+
+          %{"project_slug" => _} ->
+            Req.Test.json(conn, %{"memories" => []})
+        end
+      end)
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Not fetched on mount — no "Created by this session" content yet.
+      refute html =~ "created directly by this session"
+
+      view |> element(~s(button[title="Memories loaded into this session"])) |> render_click()
+
+      panel_html = render_async(view)
+      assert panel_html =~ "created directly by this session"
+      assert panel_html =~ "fact"
+      assert panel_html =~ "agent"
+    end
+
+    test "a memory-service error renders the inline error line instead of crashing", %{
+      conn: conn,
+      claude_session: session
+    } do
+      seed_injected_event(session.id)
+
+      Req.Test.stub(@created_memories_stub, fn conn ->
+        conn |> Plug.Conn.put_status(500) |> Req.Test.json(%{"error" => %{"message" => "boom"}})
+      end)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      view |> element(~s(button[title="Memories loaded into this session"])) |> render_click()
+
+      panel_html = render_async(view)
+      assert panel_html =~ "Could not reach the memory service"
+    end
+  end
+
   # spec §12.8 — header context-window meter + "Compact now". Both are gated
   # on @capabilities.session_stats && @context_percent (the meter's presence
   # covers the compact button too — it lives in the meter's own dropdown).

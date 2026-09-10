@@ -87,11 +87,17 @@ defmodule OrcaHub.Backend.SharedPrompts do
   @doc """
   Best-effort list of memory "hooks" (short one-line titles) for a
   `memory_injected` event — the service response's own `"hooks"` field when
-  present, else parsed from the block's own rendered `"- [kind] hook — text"`
-  lines. The one place this parsing happens, so Claude/Codex/pi never each
-  derive hooks from the block differently.
+  present, else each entry's `"hook"` field out of the newer `"memories"`
+  array (same order as `memory_ids` — memory-service c932074), else parsed
+  from the block's own rendered `"- [kind] hook — text"` lines. The one place
+  this parsing happens, so Claude/Codex/pi never each derive hooks from the
+  block differently.
   """
   def memory_hooks(%{"hooks" => hooks}) when is_list(hooks), do: hooks
+
+  def memory_hooks(%{"memories" => memories}) when is_list(memories) do
+    Enum.map(memories, & &1["hook"])
+  end
 
   def memory_hooks(%{"block" => block}) when is_binary(block) do
     block
@@ -128,7 +134,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
       Process.get(:orca_hub_persist_system_event_fun) ||
         (&OrcaHub.Sessions.persist_system_event/2)
 
-    persist_fun.(session_id, %{
+    event = %{
       "type" => "system",
       "subtype" => "memory_injected",
       "memory_ids" => memory_ctx["memory_ids"] || [],
@@ -136,7 +142,19 @@ defmodule OrcaHub.Backend.SharedPrompts do
       "pinned_count" => memory_ctx["pinned_count"],
       "recalled_count" => memory_ctx["recalled_count"],
       "block" => block
-    })
+    }
+
+    # Carried alongside memory_ids/hooks (never replacing them) so an event
+    # persisted before memory-service c932074 — which has no "memories" key
+    # at all — keeps rendering from the older fields (see
+    # MessageComponents.memory_event_rows/1).
+    event =
+      case memory_ctx["memories"] do
+        memories when is_list(memories) -> Map.put(event, "memories", memories)
+        _ -> event
+      end
+
+    persist_fun.(session_id, event)
 
     :ok
   rescue

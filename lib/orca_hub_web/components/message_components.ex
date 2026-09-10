@@ -716,11 +716,11 @@ defmodule OrcaHubWeb.MessageComponents do
 
   # Which memories were injected into this session — collapsed by default
   # (a <details> disclosure), never the noisy "system" one-liner every other
-  # subtype gets. See memory_hooked_rows/1 for the memory_ids/hooks zip.
+  # subtype gets. See memory_event_rows/1 for the memory_ids/hooks/memories
+  # normalization.
   defp system_message(%{msg: %{"subtype" => "memory_injected"}} = assigns) do
-    memory_ids = List.wrap(assigns.msg["memory_ids"])
-    hooks = List.wrap(assigns.msg["hooks"])
-    count = max(length(memory_ids), length(hooks))
+    rows = memory_event_rows(assigns.msg)
+    count = length(rows)
     pinned = assigns.msg["pinned_count"] || 0
     recalled = assigns.msg["recalled_count"] || 0
 
@@ -730,7 +730,7 @@ defmodule OrcaHubWeb.MessageComponents do
       |> assign(:noun, if(count == 1, do: "memory", else: "memories"))
       |> assign(:pinned, pinned)
       |> assign(:recalled, recalled)
-      |> assign(:rows, memory_hooked_rows(memory_ids, hooks))
+      |> assign(:rows, rows)
       |> assign(:link_base, memory_service_public_url())
       |> assign(:block, assigns.msg["block"])
 
@@ -742,18 +742,22 @@ defmodule OrcaHubWeb.MessageComponents do
           {@count} {@noun} loaded ({@pinned} pinned, {@recalled} recalled)
         </summary>
         <div class="not-italic mt-1 ml-4 space-y-1">
-          <div :for={{id, hook} <- @rows} class="flex items-start gap-1">
+          <div :for={row <- @rows} class="flex items-start gap-1">
             <span class="opacity-60">•</span>
             <a
-              :if={@link_base && id}
-              href={"#{@link_base}/memories/#{id}"}
+              :if={@link_base && row.id}
+              href={"#{@link_base}/memories/#{row.id}"}
               target="_blank"
               rel="noopener noreferrer"
               class="link link-hover"
             >
-              {hook}
+              {row.hook}
             </a>
-            <span :if={!(@link_base && id)}>{hook}</span>
+            <span :if={!(@link_base && row.id)}>{row.hook}</span>
+            <span :if={row.kind} class="badge badge-xs badge-outline">{row.kind}</span>
+            <span :if={row.review_status == "pending"} class="badge badge-xs badge-ghost">
+              pending review
+            </span>
           </div>
           <details :if={@block not in [nil, ""]} class="mt-1">
             <summary class="cursor-pointer opacity-70">Show raw injected block</summary>
@@ -786,16 +790,35 @@ defmodule OrcaHubWeb.MessageComponents do
     """
   end
 
-  # Pairs each hook with its memory_id by position — the two lists come from
-  # the SAME memory_injected event (memory_ids straight from the service,
-  # hooks either the service's own "hooks" field or parsed from the same
-  # block in the same order — see SharedPrompts.memory_hooks/1), so index
-  # correspondence holds except when one list is short/absent, in which case
-  # the id side just degrades to nil (renders as plain, unlinked text).
-  defp memory_hooked_rows(memory_ids, hooks) do
+  @doc """
+  Normalizes a `memory_injected` event into row maps
+  (`%{id:, hook:, kind:, review_status:}`) regardless of which shape
+  persisted it. Preferred source is the event's own `"memories"` array
+  (memory-service c932074 — `id`/`hook`/`kind`/`pinned`/`review_status`, in
+  the same order as `memory_ids`); an event persisted before that — no
+  `"memories"` key at all — falls back to zipping `memory_ids` with `hooks`
+  by position (the two lists come from the SAME event: memory_ids straight
+  from the service, hooks either the service's own "hooks" field or parsed
+  from the block — see `SharedPrompts.memory_hooks/1`), with `kind`/
+  `review_status` nil since the older shape never carried them. Shared by
+  this module's own collapsed-event rendering and
+  `SessionLive.Show.memory_panel_summary/1`.
+  """
+  def memory_event_rows(%{"memories" => memories}) when is_list(memories) do
+    Enum.map(memories, fn m ->
+      %{id: m["id"], hook: m["hook"], kind: m["kind"], review_status: m["review_status"]}
+    end)
+  end
+
+  def memory_event_rows(event) do
+    memory_ids = List.wrap(event["memory_ids"])
+    hooks = List.wrap(event["hooks"])
+
     hooks
     |> Enum.with_index()
-    |> Enum.map(fn {hook, i} -> {Enum.at(memory_ids, i), hook} end)
+    |> Enum.map(fn {hook, i} ->
+      %{id: Enum.at(memory_ids, i), hook: hook, kind: nil, review_status: nil}
+    end)
   end
 
   @doc "Public (SessionLive.Show's Memories panel reuses it for the same hook links)."
