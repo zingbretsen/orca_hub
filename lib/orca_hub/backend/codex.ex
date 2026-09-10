@@ -183,7 +183,18 @@ defmodule OrcaHub.Backend.Codex do
       "-c",
       "mcp_servers.orca.url=#{inspect(url)}",
       "-c",
-      ~s(mcp_servers.orca.default_tools_approval_mode="auto")
+      ~s(mcp_servers.orca.default_tools_approval_mode="auto"),
+      # OrcaHub's memory tools (remember/recall/update_memory/retire_memory,
+      # via the "orca" MCP server) are the ONLY memory system a session
+      # should use — Codex's own native memories feature (off by default,
+      # but an operator's real ~/.codex/config.toml could have it on) writes
+      # files under ~/.codex/memories that never round-trip through the
+      # centralized memory service. Force-disabled regardless of the real
+      # config this overrides (see spawn_spec/2's moduledoc note on -c
+      # layering); see SharedPrompts.memory_prompt/1 for the corresponding
+      # system-prompt guidance.
+      "-c",
+      "features.memories=false"
     ]
   end
 
@@ -436,10 +447,15 @@ defmodule OrcaHub.Backend.Codex do
     {bs, Jason.encode!(req) <> "\n"}
   end
 
+  # Memory injection (agent-memory centralization) rides the SAME first-turn
+  # flag as the leading system prompt — both fire exactly once, on the first
+  # `turn/start` of a cold port's thread, so there's no separate
+  # `memory_sent` flag to track. See SharedPrompts.maybe_prepend_memory/2.
   defp with_system_prefix(ctx, bs, prompt) do
     if bs[:system_prompt_sent] do
       {prompt, bs}
     else
+      prompt = SharedPrompts.maybe_prepend_memory(prompt, ctx.directory)
       {system_prompt(ctx) <> "\n\n" <> prompt, Map.put(bs, :system_prompt_sent, true)}
     end
   end
@@ -704,6 +720,7 @@ defmodule OrcaHub.Backend.Codex do
       "Your OrcaHub session ID is #{ctx.session_id}.",
       orchestrator_system_prompt(ctx.orchestrator, ctx.session_id, code_exec),
       SharedPrompts.code_exec_prompt(code_exec),
+      SharedPrompts.memory_prompt(code_exec),
       if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true),
         do: SharedPrompts.commit_trailer_prompt(ctx.session_id)
       ),
@@ -736,7 +753,7 @@ defmodule OrcaHub.Backend.Codex do
 
     ## Your Capabilities
 
-    You have read-only access to the codebase and web access for research. You have file write access, but you must use it **only** to maintain your own file-based memory (e.g. a project-local notes directory). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+    You have read-only access to the codebase and web access for research. You do not have file write access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
     ## How to Work
 
@@ -762,7 +779,7 @@ defmodule OrcaHub.Backend.Codex do
 
     ## Your Capabilities
 
-    You have read-only access to the codebase and web access for research. You have file write access, but you must use it **only** to maintain your own file-based memory (e.g. a project-local notes directory). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+    You have read-only access to the codebase and web access for research. You do not have file write access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
     ## How to Work
 

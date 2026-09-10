@@ -64,7 +64,9 @@ defmodule OrcaHub.Backend.CodexTest do
       "-c",
       "mcp_servers.orca.url=#{inspect(url)}",
       "-c",
-      ~s(mcp_servers.orca.default_tools_approval_mode="auto")
+      ~s(mcp_servers.orca.default_tools_approval_mode="auto"),
+      "-c",
+      "features.memories=false"
     ]
   end
 
@@ -273,6 +275,53 @@ defmodule OrcaHub.Backend.CodexTest do
     end
 
     test "a subsequent turn (system_prompt_sent already true) sends the prompt verbatim" do
+      {c, _tid} =
+        thread_started_ctx(%{
+          backend_state: %{
+            phase: :thread_started,
+            thread_id: "t1",
+            next_id: 9,
+            pending_requests: %{},
+            system_prompt_sent: true
+          }
+        })
+
+      {iodata, _out} = Backend.encode_user_turn("just this", c)
+      req = decode_write(iodata)
+      assert req["params"]["input"] == [%{"type" => "text", "text" => "just this"}]
+    end
+  end
+
+  # ── encode_user_turn/2 — memory injection (agent-memory centralization) ──
+  # Rides the SAME first-turn flag as the leading system prompt.
+
+  describe "encode_user_turn/2 — memory injection" do
+    setup do
+      on_exit(fn -> Application.delete_env(:orca_hub, :memory_context_fun) end)
+      :ok
+    end
+
+    test "first turn prepends the <orca-memory> block after the system prompt" do
+      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok, "- a prior fact"}
+      end)
+
+      {c, _tid} = thread_started_ctx()
+      {iodata, out} = Backend.encode_user_turn("hello", c)
+      req = decode_write(iodata)
+
+      [%{"type" => "text", "text" => text}] = req["params"]["input"]
+      assert text =~ "Your OrcaHub session ID is #{c.session_id}"
+      assert text =~ "<orca-memory>\n- a prior fact\n</orca-memory>\n\nhello"
+      assert String.ends_with?(text, "<orca-memory>\n- a prior fact\n</orca-memory>\n\nhello")
+      assert out.backend_state.system_prompt_sent == true
+    end
+
+    test "a subsequent turn is not re-prefixed with memory" do
+      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok, "- a prior fact"}
+      end)
+
       {c, _tid} =
         thread_started_ctx(%{
           backend_state: %{
@@ -852,6 +901,14 @@ defmodule OrcaHub.Backend.CodexTest do
       assert spec.port_opts == [cd: String.to_charlist(c.directory)]
 
       refute Enum.any?(spec.env, fn {k, _v} -> k == ~c"CODEX_HOME" end)
+
+      # OrcaHub's memory tools are the ONLY memory system a session should
+      # use — Codex's own native memories feature (off by default, but an
+      # operator's real config.toml could have it on) is force-disabled
+      # regardless.
+      memories_flag_idx = Enum.find_index(spec.args, &(&1 == "features.memories=false"))
+      assert memories_flag_idx != nil
+      assert Enum.at(spec.args, memories_flag_idx - 1) == "-c"
     end
   end
 
@@ -959,6 +1016,13 @@ defmodule OrcaHub.Backend.CodexTest do
 
       assert prompt =~ "Your OrcaHub session ID is #{c.session_id}"
       refute prompt =~ "AskUserQuestion"
+    end
+
+    test "includes the memory-tools guidance, mcp__orca__ by default and Tools.* under code_exec" do
+      refute Backend.system_prompt(ctx()) =~ "Tools.remember"
+      assert Backend.system_prompt(ctx()) =~ "mcp__orca__remember"
+      assert Backend.system_prompt(ctx(%{code_exec: true})) =~ "Tools.remember"
+      refute Backend.system_prompt(ctx(%{code_exec: true})) =~ "mcp__orca__remember"
     end
 
     test "orchestrator variant includes coordination guidance without the mcp__ prefix caveat" do
