@@ -357,6 +357,13 @@
       >
         <.icon name="hero-users" class="size-5" />
       </button>
+      <button
+        phx-click="cycle_memory_extract"
+        class={["hidden sm:flex btn btn-ghost btn-sm btn-circle", memory_extract_class(@session)]}
+        title={memory_extract_title(@session)}
+      >
+        <.icon name="hero-light-bulb" class="size-5" />
+      </button>
       <%!-- Backend-native plan-mode toggle (pi only — spec §12.4). Claude's
            plan_mode is model-initiated with no user toggle, so this is
            gated on plan_mode_toggle, not plan_mode alone. --%>
@@ -496,14 +503,32 @@
       >
         <.icon name="hero-archive-box-arrow-down" class="size-5" />
       </button>
-      <button
-        :if={!@session.archived_at}
-        phx-click="archive"
-        class="hidden sm:flex btn btn-ghost btn-sm btn-circle"
-        title="Archive session"
-      >
-        <.icon name="hero-archive-box" class="size-5" />
-      </button>
+      <div :if={!@session.archived_at} class="dropdown dropdown-end hidden sm:block">
+        <button tabindex="0" role="button" class="btn btn-ghost btn-sm btn-circle" title="Archive">
+          <.icon name="hero-archive-box" class="size-5" />
+        </button>
+        <ul
+          tabindex="0"
+          class="dropdown-content menu bg-base-300 rounded-box z-10 p-2 shadow-lg w-64"
+        >
+          <li>
+            <button phx-click="archive">
+              <.icon name="hero-archive-box" class="size-4" /> Archive
+            </button>
+          </li>
+          <li>
+            <button phx-click="archive_without_extracting">
+              <.icon name="hero-archive-box-x-mark" class="size-4" />
+              Archive without extracting memories
+            </button>
+          </li>
+          <li>
+            <button phx-click="extract_memories_now">
+              <.icon name="hero-light-bulb" class="size-4" /> Extract memories now
+            </button>
+          </li>
+        </ul>
+      </div>
       <%!-- Mobile modal for additional actions (desktop unchanged) --%>
       <dialog
         id="session-mobile-actions"
@@ -559,6 +584,16 @@
                 <.icon name="hero-users" class="size-5" />
               </button>
             <% end %>
+            <button
+              phx-click="cycle_memory_extract"
+              class={[
+                "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300",
+                memory_extract_class(@session)
+              ]}
+            >
+              <span class="font-medium">Memory extraction</span>
+              <.icon name="hero-light-bulb" class="size-5" />
+            </button>
             <%= if @capabilities.plan_mode_toggle do %>
               <button
                 phx-click="toggle_plan_mode"
@@ -729,7 +764,21 @@
                 <span class="font-medium">Archive session</span>
                 <.icon name="hero-archive-box" class="size-5" />
               </button>
+              <button
+                phx-click="archive_without_extracting"
+                class="flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300"
+              >
+                <span class="font-medium">Archive without extracting memories</span>
+                <.icon name="hero-archive-box-x-mark" class="size-5" />
+              </button>
             <% end %>
+            <button
+              phx-click="extract_memories_now"
+              class="flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300"
+            >
+              <span class="font-medium">Extract memories now</span>
+              <.icon name="hero-light-bulb" class="size-5" />
+            </button>
           </div>
           <div class="modal-action">
             <form method="dialog">

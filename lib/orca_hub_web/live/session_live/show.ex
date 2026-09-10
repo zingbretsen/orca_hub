@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   use OrcaHubWeb, :live_view
   require Logger
 
-  alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, Projects, Sessions}
+  alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, MemoryExtraction, Projects, Sessions}
   alias OrcaHubWeb.{ArtifactSend, Markdown, MessageComponents, TreeComponents}
   alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Todos}
 
@@ -809,6 +809,37 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp attach_error_message(other), do: inspect(other)
 
+  defp do_archive(socket, opts) do
+    session = socket.assigns.session
+    Cluster.stop_session(socket.assigns.session_node, session.id)
+    {:ok, _} = Cluster.archive_session(socket.assigns.session_node, session, opts)
+
+    {:noreply,
+     socket
+     |> push_navigate(to: ~p"/sessions?undo=#{session.id}")
+     |> assign(:show_mobile_actions, false)}
+  end
+
+  defp next_memory_extract(nil), do: true
+  defp next_memory_extract(true), do: false
+  defp next_memory_extract(false), do: nil
+
+  @doc false
+  def memory_extract_title(%{memory_extract: true}),
+    do: "Memory extraction: forced ON for this session (click to force off)"
+
+  def memory_extract_title(%{memory_extract: false}),
+    do: "Memory extraction: forced OFF for this session (click to reset to default)"
+
+  def memory_extract_title(_),
+    do:
+      "Memory extraction: default (orchestrator/root sessions only — click to force on)"
+
+  @doc false
+  def memory_extract_class(%{memory_extract: true}), do: "text-primary"
+  def memory_extract_class(%{memory_extract: false}), do: "text-error"
+  def memory_extract_class(_), do: nil
+
   defp filter_attach_candidates(candidates, query) do
     q = query |> to_string() |> String.trim() |> String.downcase()
 
@@ -1231,6 +1262,24 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  # Cycles the memory_extract override: nil (default rule) -> true (forced
+  # on) -> false (forced off) -> nil. Purely a DB flag read by
+  # OrcaHub.MemoryExtraction.in_scope?/1 at the next dispatch — nothing to
+  # apply to a live runner (unlike orchestrator/code_exec, it never changes
+  # the /mcp URL), so no Cluster call is needed here.
+  def handle_event("cycle_memory_extract", _params, socket) do
+    session = socket.assigns.session
+    new_value = next_memory_extract(session.memory_extract)
+
+    case Sessions.update_session(session, %{memory_extract: new_value}) do
+      {:ok, updated_session} ->
+        {:noreply, assign(socket, :session, updated_session)}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to update memory extraction setting")}
+    end
+  end
+
   def handle_event("change_node", %{"node" => new_node}, socket) do
     session = socket.assigns.session
 
@@ -1517,14 +1566,32 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_event("archive", _params, socket) do
-    session = socket.assigns.session
-    Cluster.stop_session(socket.assigns.session_node, session.id)
-    {:ok, _} = Cluster.archive_session(socket.assigns.session_node, session)
+    do_archive(socket, extract_memories: true)
+  end
 
-    {:noreply,
-     socket
-     |> push_navigate(to: ~p"/sessions?undo=#{session.id}")
-     |> assign(:show_mobile_actions, false)}
+  def handle_event("archive_without_extracting", _params, socket) do
+    do_archive(socket, extract_memories: false)
+  end
+
+  def handle_event("extract_memories_now", _params, socket) do
+    session = socket.assigns.session
+
+    flash =
+      case MemoryExtraction.dispatch(session, force: true, trigger: :manual) do
+        {:ok, :dispatched} ->
+          {:info, "Memory extraction dispatched — a summary will appear in this feed shortly."}
+
+        {:ok, :skipped} ->
+          {:info,
+           "Memory extraction skipped — no new content since the last extraction, or the " <>
+             "memory service isn't configured."}
+
+        {:error, reason} ->
+          {:error, "Failed to dispatch memory extraction: #{inspect(reason)}"}
+      end
+
+    {level, message} = flash
+    {:noreply, socket |> put_flash(level, message) |> assign(:show_mobile_actions, false)}
   end
 
   def handle_event("unarchive", _params, socket) do
