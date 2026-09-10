@@ -506,6 +506,30 @@ defmodule OrcaHub.HubRPC do
   def send_notification(payload), do: call(OrcaHub.Notify, :deliver, [payload])
 
   # -------------------------------------------------------------------
+  # Memory service (external agent-memory store, see OrcaHub.MemoryClient
+  # — hub-only creds, same shape as Notify above)
+  # -------------------------------------------------------------------
+
+  def memory_enabled?, do: call(OrcaHub.MemoryClient, :enabled_impl?, [])
+  def memory_remember(attrs), do: call(OrcaHub.MemoryClient, :remember_impl, [attrs])
+  def memory_search(params), do: call(OrcaHub.MemoryClient, :search_impl, [params])
+  def memory_get(id), do: call(OrcaHub.MemoryClient, :get_impl, [id])
+  def memory_update(id, attrs), do: call(OrcaHub.MemoryClient, :update_impl, [id, attrs])
+
+  def memory_retire(id, reason, opts),
+    do: call(OrcaHub.MemoryClient, :retire_impl, [id, reason, opts])
+
+  def memory_verify(id), do: call(OrcaHub.MemoryClient, :verify_impl, [id])
+
+  def memory_merge(source_ids, attrs),
+    do: call(OrcaHub.MemoryClient, :merge_impl, [source_ids, attrs])
+
+  def memory_list(params), do: call(OrcaHub.MemoryClient, :list_impl, [params])
+
+  def memory_context_block(project_slug, prompt, opts),
+    do: call(OrcaHub.MemoryClient, :context_block_impl, [project_slug, prompt, opts])
+
+  # -------------------------------------------------------------------
   # Skills (hub-managed global skills — see OrcaHub.Skills, OrcaHub.SkillSync)
   # -------------------------------------------------------------------
 

@@ -123,6 +123,12 @@ config :orca_hub, OrcaHubWeb.Endpoint,
 # through the hub via HubRPC, so agent/systemd nodes hold nothing.
 config :orca_hub, :gotify_url, System.get_env("GOTIFY_URL") || "https://gotify.ingbretsenhome.com"
 config :orca_hub, :gotify_token, System.get_env("GOTIFY_TOKEN")
+
+# External agent-memory service (OrcaHub.MemoryClient). ONLY the hub needs
+# these — every memory tool routes through HubRPC, so agent/systemd nodes
+# hold nothing. Disabled (MemoryClient.enabled?/0 false) unless BOTH are set.
+config :orca_hub, :memory_service_url, System.get_env("MEMORY_SERVICE_URL")
+config :orca_hub, :memory_service_token, System.get_env("MEMORY_SERVICE_TOKEN")
 # Text-to-speech for POST /api/tts (OrcaHubWeb.TTSController).
 #
 # TTS_PROVIDER selects the backend: "local" (default) hits the homelab

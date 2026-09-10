@@ -23,6 +23,12 @@ config :orca_hub, OrcaHubWeb.Endpoint,
 # In test we don't send emails
 config :orca_hub, OrcaHub.Mailer, adapter: Swoosh.Adapters.Test
 
+# Memory service is disabled by default in test, regardless of what a
+# developer's .env sets for dev — tests that need it stub it explicitly via
+# Application.put_env(:orca_hub, :memory_service_req_options, plug: {Req.Test, ...}).
+config :orca_hub, :memory_service_url, nil
+config :orca_hub, :memory_service_token, nil
+
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
 
