@@ -28,6 +28,95 @@ defmodule OrcaHub.Backend.SharedPrompts do
 
   @orca_hub_directory "/home/zach/orca_hub"
 
+  @doc """
+  Computes the raw `<orca-memory>` block content for a cold port's first user
+  turn (agent-memory centralization), or `nil` when there's nothing to
+  inject. Callers wrap it in the `<orca-memory>...</orca-memory>` tags
+  themselves — this returns unwrapped text so `Backend.Pi` can carry it as a
+  plain JSON string in `ORCA_MEMORY`.
+
+  `OrcaHub.MemoryClient.context_block/3` already never raises and never
+  blocks (it collapses a disabled/unreachable memory service to
+  `{:ok, nil}`) — the `Task` timeout here is belt-and-suspenders on top of
+  that contract (invariant D: a memory-service outage must never delay or
+  fail a spawn), and it's what keeps this safe to call even before
+  `OrcaHub.MemoryClient` exists at all: an `UndefinedFunctionError` inside
+  the task just makes `Task.yield/2` return a non-`{:ok, {:ok, _}}` shape,
+  which falls through to `nil` below like any other failure.
+
+  The function to call is resolved via `:orca_hub, :memory_context_fun`
+  Application env (test-only seam — stub it to observe/control injection
+  without a running memory service), defaulting to
+  `OrcaHub.MemoryClient.context_block/3`.
+  """
+  def memory_context_block(directory, prompt) do
+    fun =
+      Application.get_env(:orca_hub, :memory_context_fun, &OrcaHub.MemoryClient.context_block/3)
+
+    slug = OrcaHub.AgentMemory.slugify(directory)
+
+    task =
+      Task.Supervisor.async_nolink(OrcaHub.TaskSupervisor, fn ->
+        fun.(slug, prompt, budget_tokens: 3000)
+      end)
+
+    case Task.yield(task, 3_000) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {:ok, block}} when is_binary(block) and block != "" -> block
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  @doc """
+  Wraps `memory_context_block/2`'s result in the `<orca-memory>` tags and
+  prepends it to `prompt`, or returns `prompt` unchanged when there's nothing
+  to inject. Used by `Backend.Claude`/`Backend.Codex` on the first user turn
+  of a cold port open — `Backend.Pi` builds its own wrapping in
+  `priv/pi/orca-memory.ts` instead, since it delivers the block as a separate
+  session entry rather than modifying the turn text directly.
+  """
+  def maybe_prepend_memory(prompt, directory) do
+    case memory_context_block(directory, prompt) do
+      nil -> prompt
+      block -> "<orca-memory>\n" <> block <> "\n</orca-memory>\n\n" <> prompt
+    end
+  end
+
+  @doc """
+  Static, per-turn-cacheable guidance on OrcaHub's centralized memory tools —
+  deliberately NOT computed from `OrcaHub.MemoryClient` here. `system_prompt/1`
+  must stay pure text (pi's byte-determinism guarantee — see `Backend.Pi`'s
+  "FLAGS ONLY" note — depends on it); the actual recalled-memory content
+  rides the first user turn instead, wrapped in an `<orca-memory>` block (see
+  `memory_context_block/2`/`maybe_prepend_memory/2` and `Backend.Pi`'s
+  `priv/pi/orca-memory.ts`).
+  """
+  def memory_prompt(code_exec) do
+    remember_ref = if code_exec, do: "`Tools.remember(...)`", else: "`mcp__orca__remember`"
+    recall_ref = if code_exec, do: "`Tools.recall(...)`", else: "`mcp__orca__recall`"
+
+    update_ref =
+      if code_exec, do: "`Tools.update_memory(...)`", else: "`mcp__orca__update_memory`"
+
+    retire_ref =
+      if code_exec, do: "`Tools.retire_memory(...)`", else: "`mcp__orca__retire_memory`"
+
+    """
+    # Memory
+
+    OrcaHub's memory tools — #{remember_ref}, #{recall_ref}, #{update_ref}, \
+    and #{retire_ref} — are the ONLY memory system here. Do NOT write memory \
+    files under `~/.claude` or `~/.codex` — nothing reads them back. Any \
+    memories recalled for this session arrive in an `<orca-memory>` block on \
+    your first turn, not in this system prompt. Call #{remember_ref} for \
+    durable facts, preferences, procedures, or decisions worth reusing across \
+    sessions — not task progress or in-flight status. Call #{recall_ref} \
+    before starting unfamiliar work.\
+    """
+    |> String.trim()
+  end
+
   @doc "Teaches a code-exec session its collapsed tool surface, when enabled."
   def code_exec_prompt(false), do: nil
 
@@ -168,7 +257,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
 
     ## Your Capabilities
 
-    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You do not have Write/Edit access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
     ## How to Work
 
@@ -203,7 +292,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
     6. As each worker finishes, archive its session to keep the list clean
     7. When all work is complete, cancel heartbeat and summarize results
 
-    Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+    Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
     """
     |> String.trim()
   end
@@ -216,7 +305,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
 
     ## Your Capabilities
 
-    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You do not have Write/Edit access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
     ## How to Work
 
@@ -251,7 +340,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
     6. As each worker finishes, archive its session to keep the list clean
     7. When all work is complete, cancel heartbeat and summarize results
 
-    Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+    Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
     """
     |> String.trim()
   end

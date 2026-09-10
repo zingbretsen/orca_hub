@@ -49,6 +49,15 @@ defmodule OrcaHub.Backend.Claude do
   # ToolSearch/etc.).
   @disallowed_tools ["ScheduleWakeup", "SendMessage", "Task", "Workflow"]
 
+  # OrcaHub's memory tools (remember/recall/update_memory/retire_memory, via
+  # the "orca" MCP server) are the ONLY memory system a session should use —
+  # Claude Code's own built-in auto-memory feature writes files under
+  # `~/.claude` that never round-trip through the centralized memory service
+  # and would just accumulate as dead weight on every node. Disabled
+  # unconditionally for both engines; see SharedPrompts.memory_prompt/1 for
+  # the corresponding system-prompt guidance.
+  @disable_auto_memory_env [{~c"CLAUDE_CODE_DISABLE_AUTO_MEMORY", ~c"1"}]
+
   # ── Capabilities ─────────────────────────────────────────────────────
 
   @impl true
@@ -104,7 +113,11 @@ defmodule OrcaHub.Backend.Claude do
     %{
       executable: claude_path,
       args: args,
-      env: session_env(node_oauth_env() ++ client_tool_timeout_env(ctx), ctx.project_id),
+      env:
+        session_env(
+          node_oauth_env() ++ client_tool_timeout_env(ctx) ++ @disable_auto_memory_env,
+          ctx.project_id
+        ),
       port_opts: port_opts,
       framing: :ndjson
     }
@@ -122,7 +135,7 @@ defmodule OrcaHub.Backend.Claude do
       |> maybe_put(:tools, tools_for(ctx))
       |> maybe_put_mcp_config(ctx)
 
-    {args, port_opts} = Config.build_args(Map.get(ctx, :prompt), opts)
+    {args, port_opts} = Config.build_args(maybe_prompt_with_memory(ctx), opts)
 
     script_args =
       case :os.type() do
@@ -137,7 +150,11 @@ defmodule OrcaHub.Backend.Claude do
     %{
       executable: script_path,
       args: script_args,
-      env: session_env(node_oauth_env() ++ client_tool_timeout_env(ctx), ctx.project_id),
+      env:
+        session_env(
+          node_oauth_env() ++ client_tool_timeout_env(ctx) ++ @disable_auto_memory_env,
+          ctx.project_id
+        ),
       port_opts: port_opts,
       framing: :ndjson
     }
@@ -227,7 +244,52 @@ defmodule OrcaHub.Backend.Claude do
 
   @impl true
   def encode_user_turn(prompt, ctx) do
+    {prompt, ctx} = maybe_prepend_memory_turn(prompt, ctx)
     {user_turn_json(prompt), ctx}
+  end
+
+  # Memory injection rides the FIRST user turn of each cold port open (agent-
+  # memory centralization), never the system prompt — see
+  # SharedPrompts.maybe_prepend_memory/2. `backend_state[:memory_sent]` is
+  # reset to `%{}` by SessionRunner on every port teardown/crash (mirrors
+  # Backend.Codex's `system_prompt_sent` flag), so this fires exactly once
+  # per warm port's lifetime. `Map.get`/`Map.put` (not the `%{ctx | ...}`
+  # struct-update form) throughout, since some callers — e.g.
+  # SessionRunner.user_turn_json/1 — pass a bare `%{}` with no
+  # `:backend_state`/`:directory` keys at all; those degrade to a no-op here.
+  defp maybe_prepend_memory_turn(prompt, ctx) do
+    directory = Map.get(ctx, :directory)
+
+    cond do
+      memory_sent?(ctx) ->
+        {prompt, ctx}
+
+      is_nil(directory) ->
+        {prompt, ctx}
+
+      true ->
+        bs = Map.get(ctx, :backend_state, %{}) |> Map.put(:memory_sent, true)
+        {SharedPrompts.maybe_prepend_memory(prompt, directory), Map.put(ctx, :backend_state, bs)}
+    end
+  end
+
+  defp memory_sent?(ctx), do: Map.get(ctx, :backend_state, %{})[:memory_sent] == true
+
+  # One-shot's positional `-p` prompt path — a fresh port every turn (see
+  # this module's moduledoc), so `backend_state` is always freshly `%{}` here
+  # in practice (SessionRunner.teardown_port/1 resets it after every
+  # one-shot turn); the `memory_sent?/1` check is still applied for symmetry
+  # with the streaming path above.
+  defp maybe_prompt_with_memory(ctx) do
+    case Map.get(ctx, :prompt) do
+      nil ->
+        nil
+
+      prompt ->
+        if memory_sent?(ctx),
+          do: prompt,
+          else: SharedPrompts.maybe_prepend_memory(prompt, ctx.directory)
+    end
   end
 
   # NDJSON framing for a user turn over stdin.
@@ -308,6 +370,7 @@ defmodule OrcaHub.Backend.Claude do
           do: SharedPrompts.orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec)
         ),
         SharedPrompts.code_exec_prompt(code_exec),
+        if(mcp, do: SharedPrompts.memory_prompt(code_exec)),
         if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true),
           do: SharedPrompts.commit_trailer_prompt(ctx.session_id)
         ),
@@ -434,13 +497,15 @@ defmodule OrcaHub.Backend.Claude do
 
   # ── Small helpers ────────────────────────────────────────────────────
 
-  # Orchestrator sessions get a restricted toolset: read-only file access plus
-  # web, plus Write/Edit so they can persist their file-based memory under
-  # `.claude`, plus Skill so they can load skills from ~/.claude/skills/.
-  # Writes are NOT path-enforced (skip-permissions stays on); the system
-  # prompt instructs orchestrators to confine their direct writes to `.claude`
-  # and to delegate all other implementation work to worker sessions.
-  @orchestrator_tools "Read,Glob,Grep,WebFetch,WebSearch,Write,Edit,Skill"
+  # Orchestrator sessions get a restricted, read-only toolset: file access
+  # plus web, plus Skill so they can load skills from ~/.claude/skills/. No
+  # Write/Edit at all — orchestrators used to keep Write/Edit for a
+  # file-based `.claude` memory directory, but that's superseded by the
+  # centralized remember/recall/update_memory/retire_memory MCP tools (see
+  # SharedPrompts.memory_prompt/1), so there's nothing left for direct writes
+  # to do. The system prompt instructs orchestrators to delegate all
+  # implementation work to worker sessions.
+  @orchestrator_tools "Read,Glob,Grep,WebFetch,WebSearch,Skill"
   defp orchestrator_tools(true), do: @orchestrator_tools
   defp orchestrator_tools(_), do: nil
 

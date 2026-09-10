@@ -1,6 +1,10 @@
 ===== CASE orchestrator=false code_exec=false commit_trailer=false issue_key=nil =====
 Your OrcaHub session ID is 00000000-0000-4000-8000-0000000000fe.
 
+# Memory
+
+OrcaHub's memory tools — `mcp__orca__remember`, `mcp__orca__recall`, `mcp__orca__update_memory`, and `mcp__orca__retire_memory` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `mcp__orca__remember` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `mcp__orca__recall` before starting unfamiliar work.
+
 - Verify your changes with **targeted tests** for the files you touched; the full suite runs later as the orchestrator's pre-deploy gate — don't burn time running it per-task unless asked.
 - Read a file before Edit/Write even when the task prompt quotes its exact current content; the guardrail requires it regardless.
 - If your task restarts the service/host hosting your own session (deploys, systemctl restarts), send your report **before** triggering the restart — your session may die with it and post-restart delivery isn't guaranteed.
@@ -21,6 +25,10 @@ Other agent sessions may be active in this directory. Check the `.agents/` direc
 ===== CASE orchestrator=false code_exec=false commit_trailer=false issue_key=ORCA-1 =====
 Your OrcaHub session ID is 00000000-0000-4000-8000-0000000000fe.
 
+# Memory
+
+OrcaHub's memory tools — `mcp__orca__remember`, `mcp__orca__recall`, `mcp__orca__update_memory`, and `mcp__orca__retire_memory` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `mcp__orca__remember` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `mcp__orca__recall` before starting unfamiliar work.
+
 - Verify your changes with **targeted tests** for the files you touched; the full suite runs later as the orchestrator's pre-deploy gate — don't burn time running it per-task unless asked.
 - Read a file before Edit/Write even when the task prompt quotes its exact current content; the guardrail requires it regardless.
 - If your task restarts the service/host hosting your own session (deploys, systemctl restarts), send your report **before** triggering the restart — your session may die with it and post-restart delivery isn't guaranteed.
@@ -40,6 +48,10 @@ Other agent sessions may be active in this directory. Check the `.agents/` direc
 ===== END CASE =====
 ===== CASE orchestrator=false code_exec=false commit_trailer=true issue_key=nil =====
 Your OrcaHub session ID is 00000000-0000-4000-8000-0000000000fe.
+
+# Memory
+
+OrcaHub's memory tools — `mcp__orca__remember`, `mcp__orca__recall`, `mcp__orca__update_memory`, and `mcp__orca__retire_memory` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `mcp__orca__remember` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `mcp__orca__recall` before starting unfamiliar work.
 
 When making git commits, ALWAYS append this trailer to the commit message:
 
@@ -66,6 +78,10 @@ Other agent sessions may be active in this directory. Check the `.agents/` direc
 ===== END CASE =====
 ===== CASE orchestrator=false code_exec=false commit_trailer=true issue_key=ORCA-1 =====
 Your OrcaHub session ID is 00000000-0000-4000-8000-0000000000fe.
+
+# Memory
+
+OrcaHub's memory tools — `mcp__orca__remember`, `mcp__orca__recall`, `mcp__orca__update_memory`, and `mcp__orca__retire_memory` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `mcp__orca__remember` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `mcp__orca__recall` before starting unfamiliar work.
 
 When making git commits, ALWAYS append this trailer to the commit message:
 
@@ -141,6 +157,10 @@ Your MCP tool list is intentionally small: `run_elixir` is the ONLY MCP tool thi
   Pass `"reset": true` to clear your stored variables and start fresh.
 - **Call `Tools.report_progress(%{"phase" => ..., "note" => ...})` at   phase boundaries** (e.g. planning → implementing → validating →   fixing-tests) — a non-interrupting way for whoever spawned you to see   you're making progress without messaging you. Its result always shows   your session's current title — pass a `title` in the same call to   update it when what you're doing has meaningfully changed (task   pivoted, blocked, scope grew).
 
+# Memory
+
+OrcaHub's memory tools — `Tools.remember(...)`, `Tools.recall(...)`, `Tools.update_memory(...)`, and `Tools.retire_memory(...)` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `Tools.remember(...)` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `Tools.recall(...)` before starting unfamiliar work.
+
 - Verify your changes with **targeted tests** for the files you touched; the full suite runs later as the orchestrator's pre-deploy gate — don't burn time running it per-task unless asked.
 - Read a file before Edit/Write even when the task prompt quotes its exact current content; the guardrail requires it regardless.
 - If your task restarts the service/host hosting your own session (deploys, systemctl restarts), send your report **before** triggering the restart — your session may die with it and post-restart delivery isn't guaranteed.
@@ -203,6 +223,10 @@ Your MCP tool list is intentionally small: `run_elixir` is the ONLY MCP tool thi
   Pass `"reset": true` to clear your stored variables and start fresh.
 - **Call `Tools.report_progress(%{"phase" => ..., "note" => ...})` at   phase boundaries** (e.g. planning → implementing → validating →   fixing-tests) — a non-interrupting way for whoever spawned you to see   you're making progress without messaging you. Its result always shows   your session's current title — pass a `title` in the same call to   update it when what you're doing has meaningfully changed (task   pivoted, blocked, scope grew).
 
+# Memory
+
+OrcaHub's memory tools — `Tools.remember(...)`, `Tools.recall(...)`, `Tools.update_memory(...)`, and `Tools.retire_memory(...)` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `Tools.remember(...)` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `Tools.recall(...)` before starting unfamiliar work.
+
 - Verify your changes with **targeted tests** for the files you touched; the full suite runs later as the orchestrator's pre-deploy gate — don't burn time running it per-task unless asked.
 - Read a file before Edit/Write even when the task prompt quotes its exact current content; the guardrail requires it regardless.
 - If your task restarts the service/host hosting your own session (deploys, systemctl restarts), send your report **before** triggering the restart — your session may die with it and post-restart delivery isn't guaranteed.
@@ -264,6 +288,10 @@ Your MCP tool list is intentionally small: `run_elixir` is the ONLY MCP tool thi
 
   Pass `"reset": true` to clear your stored variables and start fresh.
 - **Call `Tools.report_progress(%{"phase" => ..., "note" => ...})` at   phase boundaries** (e.g. planning → implementing → validating →   fixing-tests) — a non-interrupting way for whoever spawned you to see   you're making progress without messaging you. Its result always shows   your session's current title — pass a `title` in the same call to   update it when what you're doing has meaningfully changed (task   pivoted, blocked, scope grew).
+
+# Memory
+
+OrcaHub's memory tools — `Tools.remember(...)`, `Tools.recall(...)`, `Tools.update_memory(...)`, and `Tools.retire_memory(...)` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `Tools.remember(...)` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `Tools.recall(...)` before starting unfamiliar work.
 
 When making git commits, ALWAYS append this trailer to the commit message:
 
@@ -333,6 +361,10 @@ Your MCP tool list is intentionally small: `run_elixir` is the ONLY MCP tool thi
   Pass `"reset": true` to clear your stored variables and start fresh.
 - **Call `Tools.report_progress(%{"phase" => ..., "note" => ...})` at   phase boundaries** (e.g. planning → implementing → validating →   fixing-tests) — a non-interrupting way for whoever spawned you to see   you're making progress without messaging you. Its result always shows   your session's current title — pass a `title` in the same call to   update it when what you're doing has meaningfully changed (task   pivoted, blocked, scope grew).
 
+# Memory
+
+OrcaHub's memory tools — `Tools.remember(...)`, `Tools.recall(...)`, `Tools.update_memory(...)`, and `Tools.retire_memory(...)` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `Tools.remember(...)` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `Tools.recall(...)` before starting unfamiliar work.
+
 When making git commits, ALWAYS append this trailer to the commit message:
 
 OrcaHub-Session: 00000000-0000-4000-8000-0000000000fe
@@ -371,7 +403,7 @@ You are an **orchestrator session**. Your role is to coordinate work across mult
 
 ## Your Capabilities
 
-You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You do not have Write/Edit access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
 ## How to Work
 
@@ -419,7 +451,11 @@ You have read-only access to the codebase (Read, Glob, Grep) and web access (Web
 6. As each worker finishes, archive its session to keep the list clean
 7. When all work is complete, cancel heartbeat and summarize results
 
-Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+
+# Memory
+
+OrcaHub's memory tools — `mcp__orca__remember`, `mcp__orca__recall`, `mcp__orca__update_memory`, and `mcp__orca__retire_memory` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `mcp__orca__remember` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `mcp__orca__recall` before starting unfamiliar work.
 
 Other agent sessions may be active in this directory. Use the `mcp__orca__search_sessions` MCP tool to discover sibling sessions you may want to coordinate with.
 ===== END CASE =====
@@ -432,7 +468,7 @@ You are an **orchestrator session**. Your role is to coordinate work across mult
 
 ## Your Capabilities
 
-You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You do not have Write/Edit access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
 ## How to Work
 
@@ -480,7 +516,11 @@ You have read-only access to the codebase (Read, Glob, Grep) and web access (Web
 6. As each worker finishes, archive its session to keep the list clean
 7. When all work is complete, cancel heartbeat and summarize results
 
-Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+
+# Memory
+
+OrcaHub's memory tools — `mcp__orca__remember`, `mcp__orca__recall`, `mcp__orca__update_memory`, and `mcp__orca__retire_memory` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `mcp__orca__remember` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `mcp__orca__recall` before starting unfamiliar work.
 
 Other agent sessions may be active in this directory. Use the `mcp__orca__search_sessions` MCP tool to discover sibling sessions you may want to coordinate with.
 ===== END CASE =====
@@ -493,7 +533,7 @@ You are an **orchestrator session**. Your role is to coordinate work across mult
 
 ## Your Capabilities
 
-You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You do not have Write/Edit access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
 ## How to Work
 
@@ -541,7 +581,11 @@ You have read-only access to the codebase (Read, Glob, Grep) and web access (Web
 6. As each worker finishes, archive its session to keep the list clean
 7. When all work is complete, cancel heartbeat and summarize results
 
-Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+
+# Memory
+
+OrcaHub's memory tools — `mcp__orca__remember`, `mcp__orca__recall`, `mcp__orca__update_memory`, and `mcp__orca__retire_memory` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `mcp__orca__remember` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `mcp__orca__recall` before starting unfamiliar work.
 
 Other agent sessions may be active in this directory. Use the `mcp__orca__search_sessions` MCP tool to discover sibling sessions you may want to coordinate with.
 ===== END CASE =====
@@ -554,7 +598,7 @@ You are an **orchestrator session**. Your role is to coordinate work across mult
 
 ## Your Capabilities
 
-You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You do not have Write/Edit access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
 ## How to Work
 
@@ -602,7 +646,11 @@ You have read-only access to the codebase (Read, Glob, Grep) and web access (Web
 6. As each worker finishes, archive its session to keep the list clean
 7. When all work is complete, cancel heartbeat and summarize results
 
-Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+
+# Memory
+
+OrcaHub's memory tools — `mcp__orca__remember`, `mcp__orca__recall`, `mcp__orca__update_memory`, and `mcp__orca__retire_memory` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `mcp__orca__remember` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `mcp__orca__recall` before starting unfamiliar work.
 
 Other agent sessions may be active in this directory. Use the `mcp__orca__search_sessions` MCP tool to discover sibling sessions you may want to coordinate with.
 ===== END CASE =====
@@ -615,7 +663,7 @@ You are an **orchestrator session**. Your role is to coordinate work across mult
 
 ## Your Capabilities
 
-You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You do not have Write/Edit access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
 ## How to Work
 
@@ -663,7 +711,7 @@ You have read-only access to the codebase (Read, Glob, Grep) and web access (Web
 6. As each worker finishes, archive its session to keep the list clean
 7. When all work is complete, cancel heartbeat and summarize results
 
-Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
 
 # Code Execution Mode
 
@@ -706,6 +754,10 @@ Your MCP tool list is intentionally small: `run_elixir` is the ONLY MCP tool thi
 
   Pass `"reset": true` to clear your stored variables and start fresh.
 - **Call `Tools.report_progress(%{"phase" => ..., "note" => ...})` at   phase boundaries** (e.g. planning → implementing → validating →   fixing-tests) — a non-interrupting way for whoever spawned you to see   you're making progress without messaging you. Its result always shows   your session's current title — pass a `title` in the same call to   update it when what you're doing has meaningfully changed (task   pivoted, blocked, scope grew).
+
+# Memory
+
+OrcaHub's memory tools — `Tools.remember(...)`, `Tools.recall(...)`, `Tools.update_memory(...)`, and `Tools.retire_memory(...)` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `Tools.remember(...)` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `Tools.recall(...)` before starting unfamiliar work.
 
 Other agent sessions may be active in this directory. Use `Tools.search_sessions(%{"status" => ...})` inside the `run_elixir` MCP tool to discover sibling sessions you may want to coordinate with — it is NOT a standalone MCP tool in this session.
 ===== END CASE =====
@@ -718,7 +770,7 @@ You are an **orchestrator session**. Your role is to coordinate work across mult
 
 ## Your Capabilities
 
-You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You do not have Write/Edit access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
 ## How to Work
 
@@ -766,7 +818,7 @@ You have read-only access to the codebase (Read, Glob, Grep) and web access (Web
 6. As each worker finishes, archive its session to keep the list clean
 7. When all work is complete, cancel heartbeat and summarize results
 
-Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
 
 # Code Execution Mode
 
@@ -809,6 +861,10 @@ Your MCP tool list is intentionally small: `run_elixir` is the ONLY MCP tool thi
 
   Pass `"reset": true` to clear your stored variables and start fresh.
 - **Call `Tools.report_progress(%{"phase" => ..., "note" => ...})` at   phase boundaries** (e.g. planning → implementing → validating →   fixing-tests) — a non-interrupting way for whoever spawned you to see   you're making progress without messaging you. Its result always shows   your session's current title — pass a `title` in the same call to   update it when what you're doing has meaningfully changed (task   pivoted, blocked, scope grew).
+
+# Memory
+
+OrcaHub's memory tools — `Tools.remember(...)`, `Tools.recall(...)`, `Tools.update_memory(...)`, and `Tools.retire_memory(...)` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `Tools.remember(...)` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `Tools.recall(...)` before starting unfamiliar work.
 
 Other agent sessions may be active in this directory. Use `Tools.search_sessions(%{"status" => ...})` inside the `run_elixir` MCP tool to discover sibling sessions you may want to coordinate with — it is NOT a standalone MCP tool in this session.
 ===== END CASE =====
@@ -821,7 +877,7 @@ You are an **orchestrator session**. Your role is to coordinate work across mult
 
 ## Your Capabilities
 
-You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You do not have Write/Edit access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
 ## How to Work
 
@@ -869,7 +925,7 @@ You have read-only access to the codebase (Read, Glob, Grep) and web access (Web
 6. As each worker finishes, archive its session to keep the list clean
 7. When all work is complete, cancel heartbeat and summarize results
 
-Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
 
 # Code Execution Mode
 
@@ -912,6 +968,10 @@ Your MCP tool list is intentionally small: `run_elixir` is the ONLY MCP tool thi
 
   Pass `"reset": true` to clear your stored variables and start fresh.
 - **Call `Tools.report_progress(%{"phase" => ..., "note" => ...})` at   phase boundaries** (e.g. planning → implementing → validating →   fixing-tests) — a non-interrupting way for whoever spawned you to see   you're making progress without messaging you. Its result always shows   your session's current title — pass a `title` in the same call to   update it when what you're doing has meaningfully changed (task   pivoted, blocked, scope grew).
+
+# Memory
+
+OrcaHub's memory tools — `Tools.remember(...)`, `Tools.recall(...)`, `Tools.update_memory(...)`, and `Tools.retire_memory(...)` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `Tools.remember(...)` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `Tools.recall(...)` before starting unfamiliar work.
 
 Other agent sessions may be active in this directory. Use `Tools.search_sessions(%{"status" => ...})` inside the `run_elixir` MCP tool to discover sibling sessions you may want to coordinate with — it is NOT a standalone MCP tool in this session.
 ===== END CASE =====
@@ -924,7 +984,7 @@ You are an **orchestrator session**. Your role is to coordinate work across mult
 
 ## Your Capabilities
 
-You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You do not have Write/Edit access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
 ## How to Work
 
@@ -972,7 +1032,7 @@ You have read-only access to the codebase (Read, Glob, Grep) and web access (Web
 6. As each worker finishes, archive its session to keep the list clean
 7. When all work is complete, cancel heartbeat and summarize results
 
-Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
 
 # Code Execution Mode
 
@@ -1015,6 +1075,10 @@ Your MCP tool list is intentionally small: `run_elixir` is the ONLY MCP tool thi
 
   Pass `"reset": true` to clear your stored variables and start fresh.
 - **Call `Tools.report_progress(%{"phase" => ..., "note" => ...})` at   phase boundaries** (e.g. planning → implementing → validating →   fixing-tests) — a non-interrupting way for whoever spawned you to see   you're making progress without messaging you. Its result always shows   your session's current title — pass a `title` in the same call to   update it when what you're doing has meaningfully changed (task   pivoted, blocked, scope grew).
+
+# Memory
+
+OrcaHub's memory tools — `Tools.remember(...)`, `Tools.recall(...)`, `Tools.update_memory(...)`, and `Tools.retire_memory(...)` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `Tools.remember(...)` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `Tools.recall(...)` before starting unfamiliar work.
 
 Other agent sessions may be active in this directory. Use `Tools.search_sessions(%{"status" => ...})` inside the `run_elixir` MCP tool to discover sibling sessions you may want to coordinate with — it is NOT a standalone MCP tool in this session.
 ===== END CASE =====
@@ -1042,6 +1106,10 @@ When you use the AskUserQuestion tool to ask the user something, the environment
 ===== CASE api_run =====
 Your OrcaHub session ID is 00000000-0000-4000-8000-0000000000fe.
 
+# Memory
+
+OrcaHub's memory tools — `mcp__orca__remember`, `mcp__orca__recall`, `mcp__orca__update_memory`, and `mcp__orca__retire_memory` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `mcp__orca__remember` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `mcp__orca__recall` before starting unfamiliar work.
+
 When making git commits, ALWAYS append this trailer to the commit message:
 
 OrcaHub-Session: 00000000-0000-4000-8000-0000000000fe
@@ -1067,6 +1135,10 @@ Other agent sessions may be active in this directory. Check the `.agents/` direc
 ===== END CASE =====
 ===== CASE api_run + result_schema =====
 Your OrcaHub session ID is 00000000-0000-4000-8000-0000000000fe.
+
+# Memory
+
+OrcaHub's memory tools — `mcp__orca__remember`, `mcp__orca__recall`, `mcp__orca__update_memory`, and `mcp__orca__retire_memory` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `mcp__orca__remember` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `mcp__orca__recall` before starting unfamiliar work.
 
 When making git commits, ALWAYS append this trailer to the commit message:
 
@@ -1137,6 +1209,10 @@ Your MCP tool list is intentionally small: `run_elixir` is the ONLY MCP tool thi
 
   Pass `"reset": true` to clear your stored variables and start fresh.
 - **Call `Tools.report_progress(%{"phase" => ..., "note" => ...})` at   phase boundaries** (e.g. planning → implementing → validating →   fixing-tests) — a non-interrupting way for whoever spawned you to see   you're making progress without messaging you. Its result always shows   your session's current title — pass a `title` in the same call to   update it when what you're doing has meaningfully changed (task   pivoted, blocked, scope grew).
+
+# Memory
+
+OrcaHub's memory tools — `Tools.remember(...)`, `Tools.recall(...)`, `Tools.update_memory(...)`, and `Tools.retire_memory(...)` — are the ONLY memory system here. Do NOT write memory files under `~/.claude` or `~/.codex` — nothing reads them back. Any memories recalled for this session arrive in an `<orca-memory>` block on your first turn, not in this system prompt. Call `Tools.remember(...)` for durable facts, preferences, procedures, or decisions worth reusing across sessions — not task progress or in-flight status. Call `Tools.recall(...)` before starting unfamiliar work.
 
 When making git commits, ALWAYS append this trailer to the commit message:
 

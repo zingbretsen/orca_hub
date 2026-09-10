@@ -53,7 +53,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
   defp expected_maybe_put(opts, _key, nil), do: opts
   defp expected_maybe_put(opts, key, val), do: Keyword.put(opts, key, val)
 
-  defp expected_tools(true), do: "Read,Glob,Grep,WebFetch,WebSearch,Write,Edit,Skill"
+  defp expected_tools(true), do: "Read,Glob,Grep,WebFetch,WebSearch,Skill"
   defp expected_tools(_), do: nil
 
   # Transcribed from SessionRunner.build_system_prompt/1 + its private
@@ -67,6 +67,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
         "Your OrcaHub session ID is #{ctx.session_id}.",
         expected_orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec),
         expected_code_exec_prompt(code_exec),
+        expected_memory_prompt(code_exec),
         if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true),
           do: expected_commit_trailer_prompt(ctx.session_id)
         ),
@@ -80,6 +81,33 @@ defmodule OrcaHub.Backend.ClaudeTest do
       |> Enum.reject(&is_nil/1)
 
     Enum.join(parts, "\n\n")
+  end
+
+  # Transcribed from SharedPrompts.memory_prompt/1 — independently, not by
+  # calling Backend.Claude or SharedPrompts itself.
+  defp expected_memory_prompt(code_exec) do
+    remember_ref = if code_exec, do: "`Tools.remember(...)`", else: "`mcp__orca__remember`"
+    recall_ref = if code_exec, do: "`Tools.recall(...)`", else: "`mcp__orca__recall`"
+
+    update_ref =
+      if code_exec, do: "`Tools.update_memory(...)`", else: "`mcp__orca__update_memory`"
+
+    retire_ref =
+      if code_exec, do: "`Tools.retire_memory(...)`", else: "`mcp__orca__retire_memory`"
+
+    """
+    # Memory
+
+    OrcaHub's memory tools — #{remember_ref}, #{recall_ref}, #{update_ref}, \
+    and #{retire_ref} — are the ONLY memory system here. Do NOT write memory \
+    files under `~/.claude` or `~/.codex` — nothing reads them back. Any \
+    memories recalled for this session arrive in an `<orca-memory>` block on \
+    your first turn, not in this system prompt. Call #{remember_ref} for \
+    durable facts, preferences, procedures, or decisions worth reusing across \
+    sessions — not task progress or in-flight status. Call #{recall_ref} \
+    before starting unfamiliar work.\
+    """
+    |> String.trim()
   end
 
   defp expected_ask_user_question_prompt do
@@ -315,7 +343,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     ## Your Capabilities
 
-    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You do not have Write/Edit access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
     ## How to Work
 
@@ -363,7 +391,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     6. As each worker finishes, archive its session to keep the list clean
     7. When all work is complete, cancel heartbeat and summarize results
 
-    Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+    Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
     """
     |> String.trim()
   end
@@ -376,7 +404,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     ## Your Capabilities
 
-    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You have Write/Edit access, but you must use it **only** to maintain your own file-based memory under a `.claude` directory (e.g. the project-local `./.claude/` or your home `~/.claude/projects/<slug>/memory/`). Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
+    You have read-only access to the codebase (Read, Glob, Grep) and web access (WebFetch, WebSearch) for research. You do not have Write/Edit access — no direct edits at all. Do NOT edit project source files, run shell commands, or make any other changes directly — delegate all implementation work to worker sessions.
 
     ## How to Work
 
@@ -424,7 +452,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     6. As each worker finishes, archive its session to keep the list clean
     7. When all work is complete, cancel heartbeat and summarize results
 
-    Remember: You orchestrate, you don't implement. Apart from writing to your own `.claude` memory, if you find yourself wanting to edit a file or run a command, spawn a worker session instead.
+    Remember: You orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
     """
     |> String.trim()
   end
@@ -484,8 +512,11 @@ defmodule OrcaHub.Backend.ClaudeTest do
   # the only orca tool reachable on the connection is submit_result, and a
   # submit_result instruction is appended instead.
   defp expected_system_prompt_api_run(ctx) do
+    code_exec = OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
+
     [
       "Your OrcaHub session ID is #{ctx.session_id}.",
+      expected_memory_prompt(code_exec),
       if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true),
         do: expected_commit_trailer_prompt(ctx.session_id)
       ),
@@ -526,6 +557,12 @@ defmodule OrcaHub.Backend.ClaudeTest do
     end
   end
 
+  # OrcaHub's memory tools are the ONLY memory system a session should use —
+  # Claude Code's own built-in auto-memory is force-disabled on every spawn.
+  # Independently derived here (a literal), not by referencing
+  # Backend.Claude's own @disable_auto_memory_env attribute.
+  @expected_disable_auto_memory_env [{~c"CLAUDE_CODE_DISABLE_AUTO_MEMORY", ~c"1"}]
+
   defp expected_env do
     node_token =
       node()
@@ -533,9 +570,9 @@ defmodule OrcaHub.Backend.ClaudeTest do
       |> OrcaHub.HubRPC.get_node_token()
       |> OrcaHub.NodeCredentials.token_env()
 
-    OrcaHub.Env.sanitized_env(node_token)
+    OrcaHub.Env.sanitized_env(node_token ++ @expected_disable_auto_memory_env)
   rescue
-    _ -> OrcaHub.Env.sanitized_env([])
+    _ -> OrcaHub.Env.sanitized_env(@expected_disable_auto_memory_env)
   end
 
   # ScheduleWakeup's timer lives inside the CLI process, which OrcaHub
@@ -560,6 +597,23 @@ defmodule OrcaHub.Backend.ClaudeTest do
     |> Keyword.put(:mcp_config, expected_mcp_config_json(ctx))
   end
 
+  # Wraps a one-shot `claude` invocation's args in the `script -qc`/`-q`
+  # PTY-wrapper shape spawn_spec(:one_shot, ...) itself builds — same logic
+  # transcribed at each one-shot test's call site, factored out for the
+  # memory-injection tests below.
+  defp script_args_for(expected_args) do
+    claude_path = System.find_executable("claude")
+
+    case :os.type() do
+      {:unix, :darwin} ->
+        ["-q", "/dev/null", claude_path | expected_args]
+
+      _ ->
+        cmd = Enum.map_join([claude_path | expected_args], " ", &Config.shell_escape/1)
+        ["-qc", cmd, "/dev/null"]
+    end
+  end
+
   defp expected_one_shot_opts(ctx) do
     [cwd: ctx.directory, disallowed_tools: @expected_disallowed_tools]
     |> expected_maybe_put(:session_id, ctx.claude_session_id)
@@ -567,6 +621,18 @@ defmodule OrcaHub.Backend.ClaudeTest do
     |> expected_maybe_put(:system_prompt, expected_system_prompt(ctx))
     |> expected_maybe_put(:tools, expected_tools(ctx.orchestrator))
     |> Keyword.put(:mcp_config, expected_mcp_config_json(ctx))
+  end
+
+  describe "spawn_spec/2 — CLAUDE_CODE_DISABLE_AUTO_MEMORY (agent-memory centralization)" do
+    test "streaming carries CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" do
+      spec = Backend.spawn_spec(:streaming, ctx())
+      assert {~c"CLAUDE_CODE_DISABLE_AUTO_MEMORY", ~c"1"} in spec.env
+    end
+
+    test "one_shot carries CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" do
+      spec = Backend.spawn_spec(:one_shot, ctx(%{prompt: "hi"}))
+      assert {~c"CLAUDE_CODE_DISABLE_AUTO_MEMORY", ~c"1"} in spec.env
+    end
   end
 
   # ── spawn_spec/2 — :streaming ────────────────────────────────────────
@@ -605,7 +671,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
       assert spec.args == expected_args
       assert "--tools" in spec.args
-      assert "Read,Glob,Grep,WebFetch,WebSearch,Write,Edit,Skill" in spec.args
+      assert "Read,Glob,Grep,WebFetch,WebSearch,Skill" in spec.args
     end
 
     test "orchestrator --tools includes Skill" do
@@ -687,6 +753,35 @@ defmodule OrcaHub.Backend.ClaudeTest do
       assert Enum.at(spec.args, tools_idx + 1) == ""
 
       assert "--mcp-config" in spec.args
+    end
+  end
+
+  describe "spawn_spec/2 — :one_shot memory injection" do
+    setup do
+      on_exit(fn -> Application.delete_env(:orca_hub, :memory_context_fun) end)
+      :ok
+    end
+
+    test "prepends the <orca-memory> block to the positional -p prompt" do
+      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok, "- a fact from before"}
+      end)
+
+      ctx = ctx(%{prompt: "hello world"})
+      wrapped_prompt = "<orca-memory>\n- a fact from before\n</orca-memory>\n\nhello world"
+
+      {expected_args, _} = Config.build_args(wrapped_prompt, expected_one_shot_opts(ctx))
+      spec = Backend.spawn_spec(:one_shot, ctx)
+
+      assert spec.args == script_args_for(expected_args)
+    end
+
+    test "no block available: the positional prompt is unchanged" do
+      ctx = ctx(%{prompt: "hello world"})
+      {expected_args, _} = Config.build_args("hello world", expected_one_shot_opts(ctx))
+      spec = Backend.spawn_spec(:one_shot, ctx)
+
+      assert spec.args == script_args_for(expected_args)
     end
   end
 
@@ -855,8 +950,81 @@ defmodule OrcaHub.Backend.ClaudeTest do
                }
              }
 
-      # ctx is threaded through unchanged (identity for Claude).
+      # No :directory key on this bare ctx -> memory injection is skipped
+      # entirely, so ctx passes through unchanged (identity, as before the
+      # memory feature existed).
       assert ctx_out == %{}
+    end
+  end
+
+  # ── encode_user_turn/2 — memory injection (agent-memory centralization) ──
+  # Rides the first user turn of a cold port open, never the system prompt.
+  # `:orca_hub, :memory_context_fun` is the test-only seam
+  # SharedPrompts.memory_context_block/2 resolves.
+
+  describe "encode_user_turn/2 — memory injection" do
+    setup do
+      on_exit(fn -> Application.delete_env(:orca_hub, :memory_context_fun) end)
+      :ok
+    end
+
+    test "prepends an <orca-memory> block on the first turn and sets memory_sent" do
+      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok, "- a prior fact"}
+      end)
+
+      ctx = %{directory: "/tmp/whatever", backend_state: %{}}
+      {iodata, ctx_out} = Backend.encode_user_turn("do the thing", ctx)
+
+      text =
+        get_in(Jason.decode!(IO.iodata_to_binary(iodata)), [
+          "message",
+          "content",
+          Access.at(0),
+          "text"
+        ])
+
+      assert text == "<orca-memory>\n- a prior fact\n</orca-memory>\n\ndo the thing"
+      assert ctx_out.backend_state.memory_sent == true
+    end
+
+    test "a second turn on the same warm port (memory_sent already true) is not re-prefixed" do
+      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok, "- a prior fact"}
+      end)
+
+      ctx = %{directory: "/tmp/whatever", backend_state: %{memory_sent: true}}
+      {iodata, _ctx_out} = Backend.encode_user_turn("second turn", ctx)
+
+      text =
+        get_in(Jason.decode!(IO.iodata_to_binary(iodata)), [
+          "message",
+          "content",
+          Access.at(0),
+          "text"
+        ])
+
+      assert text == "second turn"
+    end
+
+    test "no block available (nil): prompt is unchanged but memory_sent still flips" do
+      Application.put_env(:orca_hub, :memory_context_fun, fn _slug, _prompt, _opts ->
+        {:ok, nil}
+      end)
+
+      ctx = %{directory: "/tmp/whatever", backend_state: %{}}
+      {iodata, ctx_out} = Backend.encode_user_turn("no memory yet", ctx)
+
+      text =
+        get_in(Jason.decode!(IO.iodata_to_binary(iodata)), [
+          "message",
+          "content",
+          Access.at(0),
+          "text"
+        ])
+
+      assert text == "no memory yet"
+      assert ctx_out.backend_state.memory_sent == true
     end
   end
 
@@ -978,6 +1146,18 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
       assert prompt == expected_system_prompt_no_mcp(ctx)
       refute prompt =~ "submit_result"
+    end
+
+    test "memory-tools guidance is included when MCP is enabled, omitted when tools: \"\"" do
+      assert Backend.system_prompt(ctx()) =~ "mcp__orca__remember"
+      refute Backend.system_prompt(ctx(%{tools: ""})) =~ "mcp__orca__remember"
+      refute Backend.system_prompt(ctx(%{tools: ""})) =~ "# Memory"
+    end
+
+    test "memory-tools guidance swaps to Tools.* under code_exec" do
+      prompt = Backend.system_prompt(ctx(%{code_exec: true}))
+      assert prompt =~ "Tools.remember"
+      refute prompt =~ "mcp__orca__remember"
     end
 
     test "api_run?: true (Agent Runs API submit_result mode, docs/api.md): submit_result instruction, no orchestrator/sibling fragments" do
