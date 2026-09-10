@@ -339,6 +339,95 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
   end
 
+  describe "Memories panel" do
+    test "no Memories toggle when the session has never had a memory injected", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+      refute html =~ ~s(title="Memories loaded into this session")
+    end
+
+    test "toggle appears with the distinct count and expands to the hooks + totals", %{
+      conn: conn,
+      claude_session: session
+    } do
+      Sessions.persist_system_event(session.id, %{
+        "type" => "system",
+        "subtype" => "memory_injected",
+        "memory_ids" => ["mem-1", "mem-2"],
+        "hooks" => ["first hook", "second hook"],
+        "pinned_count" => 1,
+        "recalled_count" => 1
+      })
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+      assert html =~ ~s(title="Memories loaded into this session")
+
+      panel_html =
+        view |> element(~s(button[title="Memories loaded into this session"])) |> render_click()
+
+      assert panel_html =~ "first hook"
+      assert panel_html =~ "second hook"
+      assert panel_html =~ "2 distinct memories"
+      assert panel_html =~ "1 pinned, 1 recalled"
+    end
+
+    test "a later memory_injected event in the same session merges into the panel live", %{
+      conn: conn,
+      claude_session: session
+    } do
+      Sessions.persist_system_event(session.id, %{
+        "type" => "system",
+        "subtype" => "memory_injected",
+        "memory_ids" => ["mem-1"],
+        "hooks" => ["first hook"],
+        "pinned_count" => 1,
+        "recalled_count" => 0
+      })
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      Sessions.persist_system_event(session.id, %{
+        "type" => "system",
+        "subtype" => "memory_injected",
+        "memory_ids" => ["mem-2"],
+        "hooks" => ["second hook"],
+        "pinned_count" => 0,
+        "recalled_count" => 1
+      })
+
+      panel_html =
+        view |> element(~s(button[title="Memories loaded into this session"])) |> render_click()
+
+      assert panel_html =~ "first hook"
+      assert panel_html =~ "second hook"
+      assert panel_html =~ "2 distinct memories"
+    end
+
+    test "closes the mobile actions modal when toggle_memories is clicked", %{
+      conn: conn,
+      claude_session: session
+    } do
+      Sessions.persist_system_event(session.id, %{
+        "type" => "system",
+        "subtype" => "memory_injected",
+        "memory_ids" => ["mem-1"],
+        "hooks" => ["a hook"],
+        "pinned_count" => 0,
+        "recalled_count" => 1
+      })
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      render_click(view, "open_mobile_actions")
+      assert has_element?(view, ~s|#session-mobile-actions[open]|)
+
+      render_click(view, "toggle_memories")
+      refute has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
+  end
+
   # spec §12.8 — header context-window meter + "Compact now". Both are gated
   # on @capabilities.session_stats && @context_percent (the meter's presence
   # covers the compact button too — it lives in the meter's own dropdown).

@@ -789,7 +789,8 @@ defmodule OrcaHubWeb.MessageComponents do
     |> Enum.map(fn {hook, i} -> {Enum.at(memory_ids, i), hook} end)
   end
 
-  defp memory_service_public_url, do: Application.get_env(:orca_hub, :memory_service_public_url)
+  @doc "Public (SessionLive.Show's Memories panel reuses it for the same hook links)."
+  def memory_service_public_url, do: Application.get_env(:orca_hub, :memory_service_public_url)
 
   attr :msg, :map, required: true
 
@@ -824,6 +825,7 @@ defmodule OrcaHubWeb.MessageComponents do
   defp format_pi_ui_answer(%{"cancelled" => true}), do: "(cancelled)"
   defp format_pi_ui_answer(%{"value" => v}) when is_binary(v), do: v
   defp format_pi_ui_answer(%{"confirmed" => c}), do: to_string(c)
+
   defp format_pi_ui_answer(%{"resolution" => r}) do
     case r do
       "timeout" -> "(timed out unanswered)"
@@ -832,6 +834,7 @@ defmodule OrcaHubWeb.MessageComponents do
       _ -> "(#{r})"
     end
   end
+
   defp format_pi_ui_answer(_), do: "(no answer)"
 
   attr :msg, :map, required: true
@@ -1334,7 +1337,8 @@ defmodule OrcaHubWeb.MessageComponents do
 
   attr :value, :any, required: true
 
-  defp timestamp(assigns) do
+  @doc "Public (SessionLive.Show's Memories panel reuses it for injected-at times)."
+  def timestamp(assigns) do
     assigns = assign(assigns, :formatted, format_timestamp(assigns.value))
 
     ~H"""

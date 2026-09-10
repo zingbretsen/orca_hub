@@ -418,6 +418,20 @@
         </span>
       </button>
       <button
+        :if={@memory_events != []}
+        phx-click="toggle_memories"
+        class={[
+          "hidden sm:flex btn btn-ghost btn-sm btn-circle indicator",
+          @show_memories && "text-primary"
+        ]}
+        title="Memories loaded into this session"
+      >
+        <.icon name="hero-book-open" class="size-5" />
+        <span class="indicator-item badge badge-xs badge-primary">
+          {memory_panel_summary(@memory_events).distinct_count}
+        </span>
+      </button>
+      <button
         phx-click="toggle_file_browser"
         class={[
           "hidden sm:flex btn btn-ghost btn-sm btn-circle",
@@ -644,6 +658,20 @@
               >
                 <span class="font-medium">Artifacts</span>
                 <span class="badge badge-xs badge-primary">{length(@session_artifacts)}</span>
+              </button>
+            <% end %>
+            <%= if @memory_events != [] do %>
+              <button
+                phx-click="toggle_memories"
+                class={[
+                  "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300",
+                  @show_memories && "text-primary"
+                ]}
+              >
+                <span class="font-medium">Memories</span>
+                <span class="badge badge-xs badge-primary">
+                  {memory_panel_summary(@memory_events).distinct_count}
+                </span>
               </button>
             <% end %>
             <button
@@ -916,6 +944,40 @@
             v{artifact.version}
           </span>
         </button>
+      </li>
+    </ul>
+  </div>
+
+  <div :if={@memory_events != [] && @show_memories} class="mb-2 bg-base-200 rounded-lg px-3 py-2">
+    <% memory_summary = memory_panel_summary(@memory_events) %>
+    <div class="text-xs text-base-content/50 mb-1">
+      {memory_summary.distinct_count} distinct {if memory_summary.distinct_count == 1,
+        do: "memory",
+        else: "memories"} across {memory_summary.event_count} injection{if memory_summary.event_count !=
+                                                                             1,
+                                                                           do: "s"} — {memory_summary.pinned_total} pinned, {memory_summary.recalled_total} recalled (totals)
+    </div>
+    <ul class="space-y-1">
+      <li :for={row <- memory_summary.rows} class="flex items-start gap-2 text-sm">
+        <.icon name="hero-book-open-micro" class="size-3 text-primary shrink-0 mt-0.5" />
+        <a
+          :if={MessageComponents.memory_service_public_url() && row.memory_id}
+          href={"#{MessageComponents.memory_service_public_url()}/memories/#{row.memory_id}"}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="link link-hover truncate"
+        >
+          {row.hook}
+        </a>
+        <span
+          :if={!(MessageComponents.memory_service_public_url() && row.memory_id)}
+          class="truncate"
+        >
+          {row.hook}
+        </span>
+        <span class="text-xs text-base-content/40 shrink-0 ml-auto whitespace-nowrap">
+          <MessageComponents.timestamp value={row.injected_at} />
+        </span>
       </li>
     </ul>
   </div>

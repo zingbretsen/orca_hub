@@ -163,6 +163,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:commit_detail, nil)
      |> assign(:show_artifacts, false)
      |> assign(:session_artifacts, HubRPC.list_artifacts_for_session(id))
+     # Which memories were loaded into this session (ORCAHUB — memory
+     # visibility). Indexed per-session query (Sessions.list_memory_injected_events/1),
+     # same "load full history eagerly" reasoning as @session_artifacts above
+     # — never a full-feed scan, and small enough per session to just load.
+     |> assign(:show_memories, false)
+     |> assign(:memory_events, HubRPC.list_memory_injected_events(id))
      |> assign(:artifact_send_throttle, %{})
      |> assign(:show_terminal, false)
      |> assign(:open_terminals, [])
@@ -1084,6 +1090,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply,
      socket
      |> assign(:show_artifacts, !socket.assigns.show_artifacts)
+     |> assign(:show_mobile_actions, false)}
+  end
+
+  def handle_event("toggle_memories", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_memories, !socket.assigns.show_memories)
      |> assign(:show_mobile_actions, false)}
   end
 
@@ -2366,6 +2379,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     socket = assign(socket, :messages, socket.assigns.messages ++ [event])
     socket = handle_plan_events(socket, event)
     socket = handle_todo_events(socket, event)
+    socket = handle_memory_injected_events(socket, event)
     socket = handle_pi_ui_events(socket, event)
     socket = handle_pi_plan_events(socket, event)
     socket = handle_context_stats_events(socket, event)
@@ -2976,6 +2990,58 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp format_interval(seconds), do: "#{seconds}s"
 
+  # -- Memories panel helpers --
+
+  # One row per DISTINCT memory_id across every memory_injected event this
+  # session has ever recorded, plus totals — backs the header's Memories
+  # panel. `memory_ids`/`hooks` are parallel per-event lists (see
+  # OrcaHub.Backend.SharedPrompts.memory_hooks/1); zipped by position, same
+  # as MessageComponents' collapsed per-event rendering. A memory recalled
+  # again on a later cold-reopen keeps its FIRST position in the list but
+  # its LATEST hook text/injected-at (a hook's rendered text can change as
+  # the underlying memory is updated/re-confirmed). There's no per-memory
+  # pinned/recalled classification available from the service (only an
+  # aggregate count per event) — deliberately not guessed at here; the
+  # panel shows only the aggregate totals.
+  def memory_panel_summary(memory_events) do
+    rows =
+      memory_events
+      |> Enum.flat_map(fn event ->
+        memory_ids = List.wrap(event["memory_ids"])
+        hooks = List.wrap(event["hooks"])
+
+        hooks
+        |> Enum.with_index()
+        |> Enum.map(fn {hook, i} ->
+          %{memory_id: Enum.at(memory_ids, i), hook: hook, injected_at: event["timestamp"]}
+        end)
+      end)
+      |> dedupe_memory_rows()
+
+    %{
+      rows: rows,
+      distinct_count: length(rows),
+      event_count: length(memory_events),
+      pinned_total: sum_field(memory_events, "pinned_count"),
+      recalled_total: sum_field(memory_events, "recalled_count")
+    }
+  end
+
+  defp dedupe_memory_rows(rows) do
+    Enum.reduce(rows, [], fn row, acc ->
+      key = row.memory_id || row.hook
+
+      case Enum.find_index(acc, &((&1.memory_id || &1.hook) == key)) do
+        nil -> acc ++ [row]
+        idx -> List.replace_at(acc, idx, row)
+      end
+    end)
+  end
+
+  defp sum_field(events, key) do
+    Enum.reduce(events, 0, fn event, acc -> acc + (event[key] || 0) end)
+  end
+
   # -- Commit helpers --
 
   defp format_commit_date(iso_date) do
@@ -3099,6 +3165,15 @@ defmodule OrcaHubWeb.SessionLive.Show do
       todos -> assign(socket, :todos, todos)
     end
   end
+
+  defp handle_memory_injected_events(
+         socket,
+         %{"type" => "system", "subtype" => "memory_injected"} = event
+       ) do
+    assign(socket, :memory_events, socket.assigns.memory_events ++ [event])
+  end
+
+  defp handle_memory_injected_events(socket, _event), do: socket
 
   defp plan_file_was_edited?(socket) do
     case {socket.assigns.plan_file_path, socket.assigns.plan_file_original_mtime} do

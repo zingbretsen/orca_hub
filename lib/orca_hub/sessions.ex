@@ -680,20 +680,37 @@ defmodule OrcaHub.Sessions do
       nil
   """
   def pending_question(%{id: session_id}), do: pending_question(session_id)
+
   def pending_question(session_id) do
     # For non-pi sessions, return nil immediately - they use AskUserQuestion tool
     case get_session(session_id) do
-      nil -> nil
-      %Session{backend: "claude"} -> nil
-      %Session{backend: "codex"} -> nil
+      nil ->
+        nil
+
+      %Session{backend: "claude"} ->
+        nil
+
+      %Session{backend: "codex"} ->
+        nil
+
       %Session{backend: "pi"} ->
         # Extract the pi dialog fields from pending_pi_ui_request result
         case pending_pi_ui_request(session_id) do
-          %{"id" => id, "method" => method, "title" => title, "message" => message, "options" => options} ->
+          %{
+            "id" => id,
+            "method" => method,
+            "title" => title,
+            "message" => message,
+            "options" => options
+          } ->
             %{id: id, method: method, title: title, message: message, options: options}
-          _ -> nil
+
+          _ ->
+            nil
         end
-      _ -> nil
+
+      _ ->
+        nil
     end
   end
 
@@ -733,8 +750,10 @@ defmodule OrcaHub.Sessions do
               message: data_map["message"],
               options: data_map["options"]
             }
+
             Map.put(acc, session_id, data)
           end
+
         _ ->
           acc
       end
@@ -962,15 +981,24 @@ defmodule OrcaHub.Sessions do
   (`OrcaHubWeb.SessionLive.Show`). Scoped to one `session_id` (indexed),
   same subtype-fragment-filter shape as `annotate_fork_marker/2` above —
   never a full-feed scan across sessions.
+
+  `"timestamp"` in each returned map is overwritten with the row's own
+  `inserted_at` — same fixup `SessionRunner`'s message-window loader
+  applies (`Map.put(msg.data, "timestamp", msg.inserted_at)`) — so it's
+  always a genuine `%NaiveDateTime{}` rather than the plain ISO8601 string
+  a jsonb round-trip would otherwise leave it as (the persisted `data`
+  blob's own `"timestamp"` was a `%NaiveDateTime{}` only at broadcast time,
+  before this query's `select` re-decodes it from Postgres).
   """
   def list_memory_injected_events(session_id) do
     from(m in Message,
       where: m.session_id == ^session_id,
       where: fragment("? ->> 'subtype' = 'memory_injected'", m.data),
       order_by: [asc: m.inserted_at],
-      select: m.data
+      select: {m.data, m.inserted_at}
     )
     |> Repo.all()
+    |> Enum.map(fn {data, inserted_at} -> Map.put(data, "timestamp", inserted_at) end)
   end
 
   @doc """
