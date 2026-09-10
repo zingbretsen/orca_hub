@@ -43,6 +43,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - Index tables use `row_click` with `JS.navigate` to make rows clickable to the show page (no separate View/Edit action links). See projects and issues index pages for examples.
 - Sessions are grouped by directory in the index view, sorted by most recently updated
 - Session titles are agent-managed, not LLM-generated: orchestrators pass `title` to `start_session`, workers self-title via `report_progress`'s `title` arg (persists across turns, unlike `phase`/`note`). If neither ever sets one, `SessionRunner` falls back to a dumb truncation of the first prompt's first line at turn end.
+- Archiving a session (`archive_session`, default `extract_memories: true`) auto-dispatches `OrcaHub.MemoryExtraction` for orchestrators and root/human-driven sessions (child workers are skipped by default — override per-session with `memory_extract`, or force it on demand with the orchestrator-only `extract_memories` tool). A cheap background session reviews new transcript since the last extraction and calls `remember`/`update_memory`, then posts a summary into the source session's feed. Pass `extract_memories: false` to archive without triggering it.
 
 ## Deployment
 
