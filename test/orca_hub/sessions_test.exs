@@ -1971,4 +1971,48 @@ defmodule OrcaHub.SessionsTest do
       assert Sessions.all_pending_pi_dialog_ids(session.id) == []
     end
   end
+
+  describe "archive_session/2 — memory extraction dispatch" do
+    setup do
+      test_pid = self()
+
+      Application.put_env(:orca_hub, :memory_extraction_dispatch_fun, fn session, opts ->
+        send(test_pid, {:memory_extraction_dispatched, session.id, opts})
+        {:ok, :dispatched}
+      end)
+
+      on_exit(fn -> Application.delete_env(:orca_hub, :memory_extraction_dispatch_fun) end)
+
+      :ok
+    end
+
+    test "dispatches by default (extract_memories: true is implicit)", %{project: project} do
+      session = create_session(project)
+      {:ok, _} = Sessions.archive_session(session)
+
+      assert_receive {:memory_extraction_dispatched, session_id, opts}, 500
+      assert session_id == session.id
+      assert opts[:trigger] == :archive
+    end
+
+    test "dispatches when extract_memories: true is passed explicitly", %{project: project} do
+      session = create_session(project)
+      {:ok, _} = Sessions.archive_session(session, extract_memories: true)
+
+      assert_receive {:memory_extraction_dispatched, _session_id, _opts}, 500
+    end
+
+    test "does NOT dispatch when extract_memories: false", %{project: project} do
+      session = create_session(project)
+      {:ok, _} = Sessions.archive_session(session, extract_memories: false)
+
+      refute_receive {:memory_extraction_dispatched, _, _}, 200
+    end
+
+    test "still archives the session even when extraction is skipped", %{project: project} do
+      session = create_session(project)
+      {:ok, archived} = Sessions.archive_session(session, extract_memories: false)
+      refute is_nil(archived.archived_at)
+    end
+  end
 end
