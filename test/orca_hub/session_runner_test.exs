@@ -221,7 +221,13 @@ defmodule OrcaHub.SessionRunnerTest do
     end
   end
 
-  describe "idle_teardown — memory extraction dispatch" do
+  # SessionRunner deliberately does NOT hook memory extraction into
+  # idle_teardown/evict_warm — a cold-port timeout was considered and
+  # dropped (a future scheduled sweep will call OrcaHub.MemoryExtraction.
+  # dispatch/2 / dispatch_many/2 for eligible sessions instead, see that
+  # module's moduledoc). These are regression guards against silently
+  # reintroducing that wiring.
+  describe "idle_teardown / evict_warm — no memory extraction dispatch" do
     setup %{project: project} do
       session = create_session(project, %{})
       test_pid = self()
@@ -255,18 +261,12 @@ defmodule OrcaHub.SessionRunnerTest do
       )
     end
 
-    test "idle's :state_timeout idle_teardown dispatches when the warm port is live", %{
+    test "idle's :state_timeout idle_teardown does not dispatch, warm port or not", %{
       session: session
     } do
       SessionRunner.idle(:state_timeout, :idle_teardown, streaming_teardown_data(session, %{}))
+      refute_receive {:memory_extraction_dispatched, _, _}, 200
 
-      assert_receive {:memory_extraction_dispatched, session_id, opts}, 1000
-      assert session_id == session.id
-      assert opts[:trigger] == :idle_teardown
-    end
-
-    test "idle's :state_timeout idle_teardown does NOT dispatch on a regular idle transition (already cold)",
-         %{session: session} do
       SessionRunner.idle(
         :state_timeout,
         :idle_teardown,
@@ -276,14 +276,11 @@ defmodule OrcaHub.SessionRunnerTest do
       refute_receive {:memory_extraction_dispatched, _, _}, 200
     end
 
-    test "error's :state_timeout idle_teardown dispatches when the warm port is live", %{
+    test "error's :state_timeout idle_teardown does not dispatch, warm port or not", %{
       session: session
     } do
       SessionRunner.error(:state_timeout, :idle_teardown, streaming_teardown_data(session, %{}))
-
-      assert_receive {:memory_extraction_dispatched, session_id, opts}, 1000
-      assert session_id == session.id
-      assert opts[:trigger] == :idle_teardown
+      refute_receive {:memory_extraction_dispatched, _, _}, 200
     end
 
     test "evict_warm does NOT dispatch — WarmPool capacity pressure isn't a natural end of work",

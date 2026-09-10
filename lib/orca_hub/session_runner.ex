@@ -15,7 +15,6 @@ defmodule OrcaHub.SessionRunner do
     Backend,
     Cluster,
     HubRPC,
-    MemoryExtraction,
     MemoryGit,
     SessionHeartbeat,
     Streaming
@@ -55,31 +54,6 @@ defmodule OrcaHub.SessionRunner do
   defp update_session_status(data, attrs) do
     session = db_call(data, :get_session!, [data.session_id])
     db_call(data, :update_session, [session, attrs])
-  end
-
-  # Fire-and-forget: called ONLY from the streaming idle_teardown handlers
-  # (idle/error's :state_timeout, :idle_teardown clause guarded on a live
-  # warm port) — a session's warm port going cold via the 15-minute idle
-  # timeout is the "natural end of work" trigger (see OrcaHub.MemoryExtraction
-  # moduledoc), never every plain idle/error transition. The session lookup
-  # happens synchronously (a single cheap local/HubRPC call, same as
-  # update_session_status/2 above) so the potentially slow/network-bound
-  # dispatch itself runs off the GenStatem process and can't stall teardown.
-  defp maybe_dispatch_memory_extraction(data) do
-    session = db_call(data, :get_session!, [data.session_id])
-
-    dispatch_fun =
-      Application.get_env(
-        :orca_hub,
-        :memory_extraction_dispatch_fun,
-        &MemoryExtraction.dispatch/2
-      )
-
-    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-      dispatch_fun.(session, trigger: :idle_teardown)
-    end)
-
-    :ok
   end
 
   # Agent Runs API (docs/api.md) AND inbound A2A v2 declarations (docs/a2a.md
@@ -699,8 +673,6 @@ defmodule OrcaHub.SessionRunner do
       "[streaming] idle timeout — tearing down warm process for session #{data.session_id}"
     )
 
-    maybe_dispatch_memory_extraction(data)
-
     {:keep_state, teardown_port(data)}
   end
 
@@ -1056,8 +1028,6 @@ defmodule OrcaHub.SessionRunner do
     Logger.info(
       "[streaming] idle timeout — tearing down warm process for session #{data.session_id}"
     )
-
-    maybe_dispatch_memory_extraction(data)
 
     {:keep_state, teardown_port(data)}
   end
