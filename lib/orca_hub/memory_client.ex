@@ -56,6 +56,16 @@ defmodule OrcaHub.MemoryClient do
   def list(params \\ %{}), do: HubRPC.memory_list(params)
 
   @doc """
+  GET /v1/tags. `params` typically carries `"project_slug"`. Returns
+  `{:ok, [%{"tag" => ..., "count" => ...}]}` on success. The memory service
+  may not implement this endpoint yet — any error (404 included) comes back
+  as an ordinary `{:error, reason}` like every other function here, never
+  raises; callers that want a tag list to be optional (`OrcaHub.MemoryExtraction`)
+  degrade that to omitting it rather than failing.
+  """
+  def tags(params \\ %{}), do: HubRPC.memory_tags(params)
+
+  @doc """
   POST /v1/memories/context, returning the FULL response — `"block"` plus
   `"memory_ids"`/`"pinned_count"`/`"recalled_count"` — or `{:ok, nil}`.
   Same never-raise / always-`{:ok, _}` contract as `context_block/3` (which
@@ -125,6 +135,10 @@ defmodule OrcaHub.MemoryClient do
 
   def list_impl(params) do
     with_enabled(fn -> do_request(:get, "/v1/memories", params: params) end)
+  end
+
+  def tags_impl(params) do
+    with_enabled(fn -> do_request(:get, "/v1/tags", params: params) end)
   end
 
   def context_impl(project_slug, prompt, opts) do

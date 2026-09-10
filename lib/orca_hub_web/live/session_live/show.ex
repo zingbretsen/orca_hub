@@ -235,7 +235,34 @@ defmodule OrcaHubWeb.SessionLive.Show do
         socket
       end
 
+    socket = maybe_load_deep_linked_message(socket, params["message"])
+
     {:noreply, socket}
+  end
+
+  # `?message=<uuid>` deep link — a memory's `source.url`
+  # (OrcaHub.MemoryExtraction's `[msg:<uuid>]` markers, same id as a
+  # rendered feed item's `row_id` — see MessageComponents.tts_message_id/1).
+  # Swaps the default newest window (already loaded by mount/2) for the
+  # window containing that message, and asks the feed's ScrollToBottom hook
+  # to scroll its anchor into view once it renders. Silently ignored — the
+  # default window stands — when the id doesn't parse or isn't in this
+  # session (Sessions.list_messages_window_containing/2 returns `nil`
+  # either way, never raises).
+  defp maybe_load_deep_linked_message(socket, nil), do: socket
+
+  defp maybe_load_deep_linked_message(socket, message_id) do
+    case HubRPC.list_messages_window_containing(socket.assigns.session.id, message_id) do
+      nil ->
+        socket
+
+      window ->
+        socket
+        |> assign(:messages, window.messages)
+        |> assign(:messages_cursor, window.cursor)
+        |> assign(:has_more_messages, window.has_more)
+        |> push_event("scroll-to-feed-anchor", %{id: message_id})
+    end
   end
 
   # ORCAHUB3-29: shared success/error handling for :queue-delivered

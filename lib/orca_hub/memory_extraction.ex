@@ -39,12 +39,26 @@ defmodule OrcaHub.MemoryExtraction do
 
   `session.memory_extracted_at` is a watermark — only `"user"`/`"assistant"`
   messages inserted after it are considered, and only their genuine human/
-  assistant TEXT (see "Transcript content" below). Below 2 user turns or 600
-  chars of new text, dispatch is a silent no-op (one debug log line, no
-  spawn) — unless `force: true`, which still uses the watermark but ignores
-  the size threshold. The watermark is set the moment extraction is
-  DISPATCHED, not when the child finishes, so two triggers landing within
-  minutes of each other can't double-extract the same window.
+  assistant TEXT (see "Transcript content" below) — the `[msg:<id>]` marker
+  each rendered line is prefixed with (see "Message provenance") is NOT
+  counted toward this. Below 2 user turns or 600 chars of new text, dispatch
+  is a silent no-op (one debug log line, no spawn) — unless `force: true`,
+  which still uses the watermark but ignores the size threshold. The
+  watermark is set the moment extraction is DISPATCHED, not when the child
+  finishes, so two triggers landing within minutes of each other can't
+  double-extract the same window.
+
+  ## Message provenance
+
+  Every rendered transcript line is prefixed with `[msg:<id>]`, `id` being
+  that message's own row id (the same value `OrcaHub.Sessions.row_to_event/1`
+  stamps into its rendered feed item as `"row_id"`). The extraction child is
+  instructed (`build_prompt/4`) to cite the id of whichever line best
+  evidences a memory in that memory's `source.url` —
+  `/sessions/<source id>#feed-<id>` — so a human reading the memory later can
+  jump straight to the message it came from
+  (`OrcaHubWeb.SessionLive.Show`'s `?message=` deep link resolves the same
+  id back to its feed window and scrolls to it).
 
   ## Transcript content
 
@@ -201,16 +215,21 @@ defmodule OrcaHub.MemoryExtraction do
     end
   end
 
-  # Pure decision over raw message `data` rows — a test seam independent of
-  # the DB/HubRPC. Returns `{:skip, :empty | :below_threshold} | {:dispatch, entries}`.
+  # Pure decision over `%{id:, data:}` message rows (see
+  # Sessions.list_messages_since/2) — a test seam independent of the
+  # DB/HubRPC. Returns `{:skip, :empty | :below_threshold} | {:dispatch, entries}`.
   @doc false
   def decide(rows, force?) do
     entries = build_entries(rows)
 
     user_turns =
-      Enum.count(rows, fn row -> row["type"] == "user" and extract_text(row) != "" end)
+      Enum.count(rows, fn row -> row.data["type"] == "user" and extract_text(row.data) != "" end)
 
-    total_chars = Enum.reduce(entries, 0, fn entry, acc -> acc + String.length(entry) end)
+    # The `[msg:<id>] ` marker (see render_entry/2) is provenance, not
+    # conversation content — it must never count toward the threshold, or a
+    # session could cross it purely because its messages have long ids.
+    total_chars =
+      Enum.reduce(entries, 0, fn entry, acc -> acc + entry_content_length(entry) end)
 
     cond do
       entries == [] ->
@@ -228,34 +247,54 @@ defmodule OrcaHub.MemoryExtraction do
   # Transcript (pure — test seam)
   # -------------------------------------------------------------------
 
-  # Renders raw "user"/"assistant" message `data` rows (oldest first) into
-  # "User: ..."/"Assistant: ..." lines — text blocks ONLY, no tool_use/
+  # Renders `%{id:, data:}` "user"/"assistant" message rows (see
+  # Sessions.list_messages_since/2, oldest first) into "[msg:<id>] User:
+  # ..."/"[msg:<id>] Assistant: ..." lines — text blocks ONLY, no tool_use/
   # tool_result/thinking content and no "[tool: ...]" markers (see
-  # moduledoc's "Transcript content"). A "user" row with no text blocks (a
+  # moduledoc's "Transcript content"). The `[msg:<id>]` prefix is
+  # `data["uuid"] || data["id"] || row_id` — the SAME fallback chain
+  # `MessageComponents.tts_message_id/1` addresses that message's rendered
+  # feed item by (`row_id`, the message row's own primary key, is what
+  # `row_to_event/1` stamps in as a last-resort identifier) — so
+  # `build_prompt/4` can tell the extraction child to cite it in a memory's
+  # `source.url` and `SessionLive.Show`'s `?message=` deep link resolves to
+  # the exact same DOM node either way. A "user" row with no text blocks (a
   # pure tool-result echo) or whose text is a hub-injected notification
   # (automated_prefix?/1) is dropped rather than rendered.
   @doc false
   def build_entries(rows) do
     rows
-    |> Enum.map(&render_entry/1)
+    |> Enum.map(fn row -> render_entry(row.id, row.data) end)
     |> Enum.reject(&is_nil/1)
   end
 
-  defp render_entry(%{"type" => "user"} = data) do
+  defp render_entry(row_id, %{"type" => "user"} = data) do
     case extract_text(data) do
       "" -> nil
-      text -> if automated_prefix?(text), do: nil, else: "User: " <> text
+      text -> if automated_prefix?(text), do: nil, else: marker(row_id, data) <> "User: " <> text
     end
   end
 
-  defp render_entry(%{"type" => "assistant"} = data) do
+  defp render_entry(row_id, %{"type" => "assistant"} = data) do
     case extract_text(data) do
       "" -> nil
-      text -> "Assistant: " <> text
+      text -> marker(row_id, data) <> "Assistant: " <> text
     end
   end
 
-  defp render_entry(_), do: nil
+  defp render_entry(_row_id, _data), do: nil
+
+  defp marker(row_id, data), do: "[msg:#{data["uuid"] || data["id"] || row_id}] "
+
+  # The prefix stripped from `strip_marker/1` — anchored to the string
+  # start, so a single non-global replace is enough (see entry_content_length/1).
+  @marker_regex ~r/^\[msg:[^\]]*\] /
+
+  # An entry's char length MINUS its leading `[msg:<id>] ` marker — what
+  # decide/2 actually measures against @min_chars (see its comment).
+  defp entry_content_length(entry), do: entry |> strip_marker() |> String.length()
+
+  defp strip_marker(entry), do: Regex.replace(@marker_regex, entry, "", global: false)
 
   defp extract_text(data) do
     data
@@ -307,9 +346,10 @@ defmodule OrcaHub.MemoryExtraction do
   end
 
   # Builds the full markdown file content: header (id/title/directory/time,
-  # existing hooks) + chunked "## Part N of M" transcript sections.
+  # existing hooks, existing tags) + chunked "## Part N of M" transcript
+  # sections.
   @doc false
-  def build_transcript_file(entries, existing_hooks, source_session) do
+  def build_transcript_file(entries, existing_hooks, existing_tags, source_session) do
     chunks = chunk_entries(entries, @chunk_chars)
     total = length(chunks)
 
@@ -320,10 +360,10 @@ defmodule OrcaHub.MemoryExtraction do
         "## Part #{idx} of #{total}\n\n" <> Enum.join(chunk, "\n\n")
       end)
 
-    transcript_header(existing_hooks, source_session) <> "\n\n" <> parts
+    transcript_header(existing_hooks, existing_tags, source_session) <> "\n\n" <> parts
   end
 
-  defp transcript_header(existing_hooks, source_session) do
+  defp transcript_header(existing_hooks, existing_tags, source_session) do
     hooks_block =
       case existing_hooks do
         [] -> "(none yet for this project)"
@@ -341,8 +381,21 @@ defmodule OrcaHub.MemoryExtraction do
     ## Existing memory hooks for this project
 
     #{hooks_block}
+    #{tags_section(existing_tags)}
     """
     |> String.trim()
+  end
+
+  # Omitted entirely (never an empty heading) when the memory service has no
+  # tags yet, or doesn't implement the /v1/tags endpoint at all — see
+  # MemoryClient.tags/1 and existing_tags/1's error handling below.
+  defp tags_section([]), do: ""
+
+  defp tags_section(tags) do
+    lines = Enum.map_join(tags, "\n", fn t -> "- #{t["tag"]} (#{t["count"]})" end)
+
+    "\n## Existing tags for this project (reuse where they fit; add new ones " <>
+      "sparingly, lowercase kebab-case)\n\n#{lines}\n"
   end
 
   # RPC entry points (Cluster.rpc/5 needs a real exported function on the
@@ -393,8 +446,9 @@ defmodule OrcaHub.MemoryExtraction do
 
     slug = AgentMemory.slugify(session.directory)
     hooks = existing_hooks(slug)
+    tags = existing_tags(slug)
     file_path = transcript_file_path(session)
-    file_content = build_transcript_file(entries, hooks, session)
+    file_content = build_transcript_file(entries, hooks, tags, session)
 
     case Cluster.rpc(runner_node, __MODULE__, :write_transcript_file!, [file_path, file_content]) do
       :ok ->
@@ -403,7 +457,7 @@ defmodule OrcaHub.MemoryExtraction do
           runner_node: runner_node,
           trigger: trigger,
           file_path: file_path,
-          prompt: build_prompt(file_path, hooks, session),
+          prompt: build_prompt(file_path, hooks, tags, session),
           backend: Application.get_env(:orca_hub, :memory_extraction_backend, @fallback_backend),
           model: Application.get_env(:orca_hub, :memory_extraction_model, @fallback_model),
           retried?: false
@@ -480,12 +534,29 @@ defmodule OrcaHub.MemoryExtraction do
   defp memory_hook(%{"text" => text}) when is_binary(text), do: truncate(text, 80)
   defp memory_hook(_), do: "(untitled memory)"
 
+  # `MemoryClient.tags/1` never raises, and any error (the service may not
+  # implement /v1/tags yet — see its @doc) degrades to an empty list here,
+  # which tags_section/1 renders as "omit the section entirely" rather than
+  # failing dispatch.
+  defp existing_tags(slug) do
+    case MemoryClient.tags(%{"project_slug" => slug}) do
+      {:ok, tags} when is_list(tags) -> Enum.filter(tags, &is_map/1)
+      _ -> []
+    end
+  end
+
   @doc false
-  def build_prompt(file_path, existing_hooks, source_session) do
+  def build_prompt(file_path, existing_hooks, existing_tags, source_session) do
     hooks_block =
       case existing_hooks do
         [] -> "(none yet for this project)"
         hooks -> Enum.map_join(hooks, "\n", &"- #{&1}")
+      end
+
+    tags_block =
+      case existing_tags do
+        [] -> "(none yet for this project, or the memory service doesn't report tags)"
+        tags -> Enum.map_join(tags, "\n", &"- #{&1["tag"]} (#{&1["count"]})")
       end
 
     """
@@ -497,14 +568,20 @@ defmodule OrcaHub.MemoryExtraction do
     remembering across FUTURE sessions in this project.
 
     The transcript is written to `#{file_path}`, split into `## Part N of M` \
-    sections. Read the whole file with your Read tool (use offset/limit for \
-    later parts if it's long) BEFORE deciding anything — keep a running \
-    candidate list as you go, but don't call remember/update_memory until \
-    you've seen every part.
+    sections, every line prefixed with `[msg:<uuid>]` identifying the OrcaHub \
+    message it was drawn from. Read the whole file with your Read tool (use \
+    offset/limit for later parts if it's long) BEFORE deciding anything — keep a \
+    running candidate list as you go, but don't call remember/update_memory \
+    until you've seen every part.
 
     ## Existing memory hooks for this project
 
     #{hooks_block}
+
+    ## Existing tags for this project (reuse where they fit; add new ones \
+    sparingly, lowercase kebab-case)
+
+    #{tags_block}
 
     ## What to save
 
@@ -515,9 +592,13 @@ defmodule OrcaHub.MemoryExtraction do
     when you're confident it's genuinely the same fact) and LIBERAL about \
     capturing genuinely new durable facts. If something is already covered by \
     an existing hook above, call `Tools.update_memory(...)` on it to enrich or \
-    re-confirm instead of creating a duplicate. Every `Tools.remember(...)` \
-    call you make MUST include `"created_by" => "extraction"` and `"source" \
-    => %{"session_id" => "#{source_session.id}"}`.
+    re-confirm instead of creating a duplicate. Give every memory 1-3 `tags`, \
+    lowercase kebab-case, preferring an existing tag above over inventing a \
+    near-duplicate. Every `Tools.remember(...)` call you make MUST include \
+    `"created_by" => "extraction"` and `"source" => %{"session_id" => \
+    "#{source_session.id}", "url" => "/sessions/#{source_session.id}#feed-<uuid>"}` \
+    — `<uuid>` is the `[msg:<uuid>]` marker of whichever transcript line best \
+    evidences the memory (the FIRST one, if it spans several).
 
     Weigh LATER messages over earlier ones: if the human pushed back on or \
     corrected something the assistant said, the CORRECTION is the memory (as a \

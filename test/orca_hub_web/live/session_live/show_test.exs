@@ -1294,6 +1294,43 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
                "msg1"
     end
 
+    test "?message=<uuid> loads the window containing an old message beyond the default window",
+         %{conn: conn, claude_session: session} do
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+      messages = feed_seed(session, window_size + 5)
+      old_message = Enum.at(messages, 0)
+
+      # Confirm it's genuinely NOT in the default (newest) window first.
+      {:ok, default_view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      default_texts =
+        Enum.map(
+          :sys.get_state(default_view.pid).socket.assigns.messages,
+          &(&1["message"]["content"] |> hd() |> Map.get("text"))
+        )
+
+      refute "msg1" in default_texts
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}?message=#{old_message.id}")
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert Enum.any?(assigns.messages, &(&1["row_id"] == old_message.id))
+      assert html =~ "msg1"
+      assert html =~ "feed-#{old_message.id}"
+    end
+
+    test "?message=<uuid> for an id not in this session falls back to the default newest window",
+         %{conn: conn, claude_session: session} do
+      window_size = OrcaHubWeb.SessionLive.Show.window_size()
+      feed_seed(session, window_size + 5)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}?message=#{Ecto.UUID.generate()}")
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert length(assigns.messages) == window_size
+      assert assigns.has_more_messages
+    end
+
     test "a live {:event, ...} broadcast still appends to the loaded window normally", %{
       conn: conn,
       claude_session: session

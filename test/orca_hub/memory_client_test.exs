@@ -207,6 +207,29 @@ defmodule OrcaHub.MemoryClientTest do
     end
   end
 
+  describe "tags/1" do
+    test "GETs /v1/tags with query params" do
+      Req.Test.stub(@stub, fn conn ->
+        assert conn.method == "GET"
+        assert conn.request_path == "/v1/tags"
+        assert conn.query_params["project_slug"] == "-home-zach-orca-hub"
+
+        Req.Test.json(conn, [%{"tag" => "trunk-based-dev", "count" => 4}])
+      end)
+
+      assert {:ok, [%{"tag" => "trunk-based-dev", "count" => 4}]} =
+               MemoryClient.tags(%{"project_slug" => "-home-zach-orca-hub"})
+    end
+
+    test "a 404 (the service may not implement this endpoint yet) comes back as an ordinary error" do
+      Req.Test.stub(@stub, fn conn ->
+        conn |> Plug.Conn.put_status(404) |> Req.Test.json(%{"error" => "not found"})
+      end)
+
+      assert {:error, {:http_error, 404, _body}} = MemoryClient.tags(%{"project_slug" => "x"})
+    end
+  end
+
   describe "context_block/3" do
     test "returns the rendered block on success" do
       Req.Test.stub(@stub, fn conn ->

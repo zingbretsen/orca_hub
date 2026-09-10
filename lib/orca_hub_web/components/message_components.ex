@@ -190,14 +190,22 @@ defmodule OrcaHubWeb.MessageComponents do
   # Stable per-item DOM id — the anchor app.js's ScrollToBottom hook uses to
   # tell a prepend (older messages loaded above, see SessionLive.Show's
   # windowed feed) apart from a plain bottom append, by re-locating the same
-  # element after a patch and comparing its viewport offset. Doesn't need to
+  # element after a patch and comparing its viewport offset. Also the target
+  # of SessionLive.Show's `?message=` deep link (see
+  # OrcaHub.MemoryExtraction — its `[msg:<id>]` transcript markers use this
+  # SAME fallback chain, `Sessions.decide/2`'s marker `id`). Doesn't need to
   # be globally unique, just stable across re-renders of the SAME item —
-  # uuid/id when the message carries one (assistant/user messages do),
-  # falling back to a content hash otherwise. Deliberately opaque (not
-  # `"#{type}-#{timestamp}"`): several tests assert a message's raw `"type"`
-  # string never leaks into rendered output outside its own dedicated
-  # component (e.g. "falls back to raw JSON" checks) — a human-readable
-  # fallback here would be a false positive for those.
+  # uuid/id when the message carries one (assistant/user messages do,
+  # unchanged since before `row_id` existed — several other tests pin this
+  # exact priority, e.g. TTS autoplay addressing), then `row_id` (the
+  # message row's own DB id, stamped in by `Sessions.row_to_event/1`) for a
+  # message with neither, falling back to a content hash only when the
+  # message never went through the DB at all (never true for anything
+  # SessionLive.Show renders, but defensive for direct component tests).
+  # Deliberately opaque (not `"#{type}-#{timestamp}"`): several tests assert
+  # a message's raw `"type"` string never leaks into rendered output outside
+  # its own dedicated component (e.g. "falls back to raw JSON" checks) — a
+  # human-readable fallback here would be a false positive for those.
   defp feed_item_anchor_id({:thinking_group, id, _blocks}), do: "feed-#{id}"
 
   defp feed_item_anchor_id({:msg, msg}) do
@@ -212,7 +220,8 @@ defmodule OrcaHubWeb.MessageComponents do
   # from the same message map. Same fallback order as feed_item_anchor_id/1
   # above, deliberately kept in sync with it.
   @doc false
-  def tts_message_id(msg), do: msg["uuid"] || msg["id"] || "h#{:erlang.phash2(msg)}"
+  def tts_message_id(msg),
+    do: msg["uuid"] || msg["id"] || msg["row_id"] || "h#{:erlang.phash2(msg)}"
 
   # Plain assistant text (all "text" content blocks joined), used both to
   # render the message and — from SessionLive.Show — to decide whether a

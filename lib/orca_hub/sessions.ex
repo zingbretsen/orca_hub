@@ -321,12 +321,20 @@ defmodule OrcaHub.Sessions do
   end
 
   @doc """
-  Raw `data` maps of a session's `"user"`/`"assistant"` messages, oldest
-  first — `since` (a `%DateTime{}`/`%NaiveDateTime{}` or `nil`) restricts to
-  messages inserted strictly after it; `nil` returns the session's full
-  user/assistant history. Feeds `OrcaHub.MemoryExtraction`'s transcript
-  slice builder — deliberately excludes every other message type (system,
-  result, cli_error, pi_ui_*, …), none of which carry extraction-worthy text.
+  `%{id:, data:}` rows of a session's `"user"`/`"assistant"` messages,
+  oldest first — `since` (a `%DateTime{}`/`%NaiveDateTime{}` or `nil`)
+  restricts to messages inserted strictly after it; `nil` returns the
+  session's full user/assistant history. Feeds
+  `OrcaHub.MemoryExtraction`'s transcript slice builder — deliberately
+  excludes every other message type (system, result, cli_error, pi_ui_*,
+  …), none of which carry extraction-worthy text. `id` (the message row's
+  own primary key) is what `MemoryExtraction` falls back to — behind
+  `data["uuid"]`/`data["id"]`, when present — as the id it stamps into each
+  rendered transcript line as `[msg:<id>]`, the SAME fallback chain
+  `MessageComponents.tts_message_id/1` addresses that message's rendered
+  feed item by, so a memory's `source.url` and
+  `OrcaHubWeb.SessionLive.Show`'s `?message=` deep link
+  (`list_messages_window_containing/2`) agree on one identifier.
   """
   def list_messages_since(session_id, since) do
     query =
@@ -335,7 +343,7 @@ defmodule OrcaHub.Sessions do
           m.session_id == ^session_id and
             fragment("? ->> 'type' = ANY(?)", m.data, ^~w(user assistant)),
         order_by: [asc: m.inserted_at, asc: m.id],
-        select: m.data
+        select: %{id: m.id, data: m.data}
 
     query
     |> maybe_since(since)
@@ -507,8 +515,10 @@ defmodule OrcaHub.Sessions do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp row_to_event(%Message{data: data, inserted_at: inserted_at}) do
-    Map.put(data, "timestamp", inserted_at)
+  defp row_to_event(%Message{id: id, data: data, inserted_at: inserted_at}) do
+    data
+    |> Map.put("timestamp", inserted_at)
+    |> Map.put("row_id", id)
   end
 
   @doc """
@@ -542,6 +552,70 @@ defmodule OrcaHub.Sessions do
       nil -> nil
       message -> row_to_event(message)
     end
+  end
+
+  @doc """
+  The windowed feed page (same shape as `list_messages_window/2`)
+  containing `message_id` — the SAME identifier
+  `MessageComponents.tts_message_id/1` addresses a rendered feed item by
+  (`data["uuid"]`/`data["id"]` when the message carries one, else its own
+  row id, exposed as `"row_id"` by `row_to_event/1`) and the same one
+  `OrcaHub.MemoryExtraction` stamps into its `[msg:<id>]` transcript
+  markers. Used by `OrcaHubWeb.SessionLive.Show`'s `?message=` deep link (a
+  memory's `source.url`) to load the page containing an arbitrarily old
+  message instead of just the newest one.
+
+  Sized so the matched message lands as the OLDEST top-level entry of the
+  returned page — if it's itself a subagent descendant (has a
+  `parent_tool_use_id`), climbs to its top-level ancestor first (the same
+  chain `fetch_tool_use_message/2` above exists to walk), since the window
+  is keyset-paginated over top-level messages only.
+
+  `nil` when no message in THIS session matches `message_id` under any of
+  those three identifiers — never raises, the caller falls back to the
+  default newest window.
+  """
+  def list_messages_window_containing(session_id, message_id) do
+    case locate_message(session_id, message_id) do
+      nil ->
+        nil
+
+      row ->
+        top = climb_to_top_level(session_id, row_to_event(row))
+        limit = count_top_level_at_or_after(session_id, top["timestamp"])
+        list_messages_window(session_id, limit: max(limit, 1))
+    end
+  end
+
+  defp locate_message(session_id, message_id) do
+    from(m in Message,
+      where: m.session_id == ^session_id,
+      where:
+        fragment("? ->> 'uuid' = ?", m.data, ^message_id) or
+          fragment("? ->> 'id' = ?", m.data, ^message_id) or
+          fragment("?::text = ?", m.id, ^message_id),
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  defp climb_to_top_level(session_id, %{"parent_tool_use_id" => id} = event)
+       when is_binary(id) do
+    case fetch_tool_use_message(session_id, id) do
+      nil -> event
+      parent -> climb_to_top_level(session_id, parent)
+    end
+  end
+
+  defp climb_to_top_level(_session_id, event), do: event
+
+  defp count_top_level_at_or_after(session_id, %NaiveDateTime{} = at) do
+    from(m in Message,
+      where: m.session_id == ^session_id,
+      where: ^top_level_condition(),
+      where: m.inserted_at >= ^at
+    )
+    |> Repo.aggregate(:count)
   end
 
   # -------------------------------------------------------------------

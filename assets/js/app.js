@@ -1195,6 +1195,19 @@ let Hooks = {
         this.maybeLoadOlder()
       })
 
+      // SessionLive.Show's `?message=` deep link (a memory's source.url) —
+      // pushed once the deep-linked window has rendered, so the target
+      // anchor (see MessageComponents.feed_item_anchor_id/1) already exists.
+      this.handleEvent("scroll-to-feed-anchor", ({ id }) => {
+        requestAnimationFrame(() => {
+          const target = document.getElementById(`feed-${id}`)
+          if (target) {
+            this.following = false
+            target.scrollIntoView({ behavior: "smooth", block: "center" })
+          }
+        })
+      })
+
       this.ttsMountShared()
     },
     destroyed() {

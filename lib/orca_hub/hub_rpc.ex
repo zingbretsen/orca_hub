@@ -60,6 +60,9 @@ defmodule OrcaHub.HubRPC do
   def list_messages_window(session_id, opts),
     do: call(OrcaHub.Sessions, :list_messages_window, [session_id, opts])
 
+  def list_messages_window_containing(session_id, message_id),
+    do: call(OrcaHub.Sessions, :list_messages_window_containing, [session_id, message_id])
+
   def fetch_tool_use_message(session_id, tool_use_id),
     do: call(OrcaHub.Sessions, :fetch_tool_use_message, [session_id, tool_use_id])
 
@@ -534,6 +537,7 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.MemoryClient, :merge_impl, [source_ids, attrs])
 
   def memory_list(params), do: call(OrcaHub.MemoryClient, :list_impl, [params])
+  def memory_tags(params), do: call(OrcaHub.MemoryClient, :tags_impl, [params])
 
   def memory_context_block(project_slug, prompt, opts),
     do: call(OrcaHub.MemoryClient, :context_block_impl, [project_slug, prompt, opts])
