@@ -129,6 +129,20 @@ config :orca_hub, :gotify_token, System.get_env("GOTIFY_TOKEN")
 # hold nothing. Disabled (MemoryClient.enabled?/0 false) unless BOTH are set.
 config :orca_hub, :memory_service_url, System.get_env("MEMORY_SERVICE_URL")
 config :orca_hub, :memory_service_token, System.get_env("MEMORY_SERVICE_TOKEN")
+
+# Backend/model for OrcaHub.MemoryExtraction's spawned child sessions.
+# Defaults to a cheap Claude model; MEMORY_EXTRACTION_BACKEND/_MODEL let
+# this point at e.g. a local pi model instead — MemoryExtraction's own
+# fallback (see its moduledoc) re-dispatches once with these defaults if
+# the configured backend errors on its very first turn.
+config :orca_hub,
+       :memory_extraction_backend,
+       System.get_env("MEMORY_EXTRACTION_BACKEND") || "claude"
+
+config :orca_hub,
+       :memory_extraction_model,
+       System.get_env("MEMORY_EXTRACTION_MODEL") || "claude-haiku-4-5-20251001"
+
 # Text-to-speech for POST /api/tts (OrcaHubWeb.TTSController).
 #
 # TTS_PROVIDER selects the backend: "local" (default) hits the homelab

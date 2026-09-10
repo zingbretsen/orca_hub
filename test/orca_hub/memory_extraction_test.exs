@@ -1,8 +1,8 @@
 defmodule OrcaHub.MemoryExtractionTest do
   @moduledoc """
   Pure-function coverage for `OrcaHub.MemoryExtraction`'s scope rule,
-  threshold/watermark decision, and transcript slice building — none of
-  these touch the DB or the memory service, so this is a plain `ExUnit.Case`.
+  threshold/watermark decision, and transcript building — none of these
+  touch the DB or the memory service, so this is a plain `ExUnit.Case`.
   """
   use ExUnit.Case, async: true
 
@@ -59,20 +59,23 @@ defmodule OrcaHub.MemoryExtractionTest do
   end
 
   describe "decide/2 — threshold + watermark" do
-    defp user_row(text),
-      do: %{"type" => "user", "message" => %{"content" => [%{"type" => "text", "text" => text}]}}
+    defp user_row(text) do
+      %{"type" => "user", "message" => %{"content" => [%{"type" => "text", "text" => text}]}}
+    end
 
-    defp assistant_row(text),
-      do: %{
+    defp assistant_row(text) do
+      %{
         "type" => "assistant",
         "message" => %{"content" => [%{"type" => "text", "text" => text}]}
       }
+    end
 
-    defp tool_result_row,
-      do: %{
+    defp tool_result_row do
+      %{
         "type" => "user",
         "message" => %{"content" => [%{"type" => "tool_result", "content" => "output"}]}
       }
+    end
 
     test "no rows at all is a silent skip" do
       assert MemoryExtraction.decide([], false) == {:skip, :empty}
@@ -110,10 +113,25 @@ defmodule OrcaHub.MemoryExtractionTest do
       assert MemoryExtraction.decide([], true) == {:skip, :empty}
       assert MemoryExtraction.decide([tool_result_row()], true) == {:skip, :empty}
     end
+
+    test "an assistant message with only tool_use (no text) contributes zero chars" do
+      # 2 user turns totaling 500 chars — below the 600 threshold on its own;
+      # the tool_use-only assistant message must NOT push it over (no markers).
+      rows = [
+        user_row(String.duplicate("a", 250)),
+        %{
+          "type" => "assistant",
+          "message" => %{"content" => [%{"type" => "tool_use", "name" => "Bash", "input" => %{}}]}
+        },
+        user_row(String.duplicate("c", 250))
+      ]
+
+      assert MemoryExtraction.decide(rows, false) == {:skip, :below_threshold}
+    end
   end
 
-  describe "build_entries/1 — transcript slice rendering" do
-    test "renders user text and assistant text as labeled lines" do
+  describe "build_entries/1 — transcript rendering" do
+    test "renders user text and assistant text as labeled lines, with no tool markers" do
       rows = [
         %{
           "type" => "user",
@@ -121,30 +139,16 @@ defmodule OrcaHub.MemoryExtractionTest do
         },
         %{
           "type" => "assistant",
-          "message" => %{"content" => [%{"type" => "text", "text" => "done"}]}
-        }
-      ]
-
-      assert MemoryExtraction.build_entries(rows) == ["User: do the thing", "Assistant: done"]
-    end
-
-    test "reduces assistant tool_use blocks to [tool: Name] markers" do
-      rows = [
-        %{
-          "type" => "assistant",
           "message" => %{
             "content" => [
-              %{"type" => "text", "text" => "let me check"},
-              %{"type" => "tool_use", "name" => "Bash", "input" => %{"command" => "ls"}},
-              %{"type" => "tool_use", "name" => "Read", "input" => %{"file_path" => "x"}}
+              %{"type" => "text", "text" => "on it"},
+              %{"type" => "tool_use", "name" => "Bash", "input" => %{"command" => "ls"}}
             ]
           }
         }
       ]
 
-      assert MemoryExtraction.build_entries(rows) == [
-               "Assistant: let me check [tool: Bash] [tool: Read]"
-             ]
+      assert MemoryExtraction.build_entries(rows) == ["User: do the thing", "Assistant: on it"]
     end
 
     test "drops thinking blocks and a tool_use-only assistant message with no text" do
@@ -159,7 +163,7 @@ defmodule OrcaHub.MemoryExtractionTest do
         }
       ]
 
-      assert MemoryExtraction.build_entries(rows) == ["Assistant: [tool: Bash]"]
+      assert MemoryExtraction.build_entries(rows) == []
     end
 
     test "drops a user row that carries only a tool_result (no text blocks)" do
@@ -182,66 +186,103 @@ defmodule OrcaHub.MemoryExtractionTest do
       assert MemoryExtraction.build_entries(rows) == []
     end
 
-    test "caps a single message at the per-message char limit" do
-      huge = String.duplicate("z", 10_000)
+    for prefix <- [
+          "[Session lifecycle] Child session abc is now idle.",
+          "[Worker alert] churn on Foo (abc): ...",
+          "[Message from session abc]\n\nhello",
+          "[Message from another session]\n\nhello",
+          "[Message delivery note]\n\nThis message was sent...",
+          "[Message delivery note - escalated]\n\nThis message was queued...",
+          "[Heartbeat]\n\nCheck on worker sessions.",
+          "[System] This node restarted..."
+        ] do
+      test "drops a hub-injected user message: #{inspect(prefix)}" do
+        rows = [user_row(unquote(prefix))]
+        assert MemoryExtraction.build_entries(rows) == []
+      end
+    end
 
-      rows = [
-        %{"type" => "user", "message" => %{"content" => [%{"type" => "text", "text" => huge}]}}
-      ]
+    test "keeps an [Artifact ...interaction] user message — that's genuine human input" do
+      text = ~s([Artifact "dashboard" interaction] {"action":"click"})
+      rows = [user_row(text)]
+      assert MemoryExtraction.build_entries(rows) == ["User: #{text}"]
+    end
 
-      [entry] = MemoryExtraction.build_entries(rows)
-      assert entry =~ "…[truncated]"
-      # "User: " (6) + 4_000 capped chars + the truncation suffix.
-      assert String.length(entry) < String.length(huge)
+    test "a leading/trailing-whitespace hub prefix is still caught" do
+      rows = [user_row("  [Heartbeat]\n\nCheck on worker sessions.")]
+      assert MemoryExtraction.build_entries(rows) == []
     end
   end
 
-  describe "cap_total/2 — total slice budget" do
-    test "returns everything when under budget" do
+  describe "chunk_entries/2" do
+    test "empty entries produces an empty list of chunks" do
+      assert MemoryExtraction.chunk_entries([], 100) == []
+    end
+
+    test "groups entries under the chunk budget together" do
       entries = ["a", "b", "c"]
-      assert MemoryExtraction.cap_total(entries, 100) == entries
+      assert MemoryExtraction.chunk_entries(entries, 100) == [["a", "b", "c"]]
     end
 
-    test "drops from the OLDEST end first, keeping the most recent entries" do
-      entries = ["oldest", "middle", "newest"]
-      # "middle" + "newest" == 12 chars, fits; adding "oldest" (6 more) doesn't.
-      assert MemoryExtraction.cap_total(entries, 12) == ["middle", "newest"]
+    test "starts a new chunk once the budget would be exceeded, in order" do
+      entries = ["12345", "12345", "12345"]
+      # Each chunk holds at most 2 entries (10 chars) before a 3rd would exceed 12.
+      assert MemoryExtraction.chunk_entries(entries, 12) == [
+               ["12345", "12345"],
+               ["12345"]
+             ]
     end
 
-    test "always keeps at least the single newest entry, even over budget" do
-      entries = ["a", String.duplicate("z", 50)]
-      assert MemoryExtraction.cap_total(entries, 10) == [String.duplicate("z", 50)]
+    test "a single entry bigger than the budget is still its own chunk" do
+      huge = String.duplicate("z", 50)
+      assert MemoryExtraction.chunk_entries(["a", huge, "b"], 10) == [["a"], [huge], ["b"]]
+    end
+  end
+
+  describe "build_transcript_file/3" do
+    test "includes the header, hooks, and every chunk with Part N of M headings" do
+      source = %{id: "src-1", directory: "/tmp/proj", title: "root session"}
+      entries = ["User: hi", "Assistant: hello"]
+
+      file = MemoryExtraction.build_transcript_file(entries, ["existing hook"], source)
+
+      assert file =~ "Session: src-1"
+      assert file =~ "Title: root session"
+      assert file =~ "Directory: /tmp/proj"
+      assert file =~ "existing hook"
+      assert file =~ "## Part 1 of 1"
+      assert file =~ "User: hi"
+      assert file =~ "Assistant: hello"
     end
 
-    test "preserves chronological (oldest-first) order in the surviving slice" do
-      entries = ["1", "2", "3", "4"]
-      assert MemoryExtraction.cap_total(entries, 3) == ["2", "3", "4"]
+    test "placeholders when there are no existing hooks" do
+      source = %{id: "src-2", directory: "/tmp/p", title: nil}
+      file = MemoryExtraction.build_transcript_file(["User: hi"], [], source)
+      assert file =~ "(none yet for this project)"
+      assert file =~ "Title: (untitled)"
     end
   end
 
   describe "build_prompt/3" do
-    test "includes the source session id/directory, existing hooks, and the created_by/source directive" do
+    test "references the transcript file path, the source session, and the created_by/source directive" do
       source = %{id: "src-123", directory: "/tmp/proj", title: "root session"}
-
-      prompt =
-        MemoryExtraction.build_prompt(
-          "User: hi\n\nAssistant: hello",
-          ["existing hook one"],
-          source
-        )
+      path = "/tmp/proj/.agents/memory-extraction/src-123.md"
+      prompt = MemoryExtraction.build_prompt(path, ["existing hook one"], source)
 
       assert prompt =~ "src-123"
-      assert prompt =~ "/tmp/proj"
+      assert prompt =~ path
       assert prompt =~ "existing hook one"
       assert prompt =~ "\"created_by\" => \"extraction\""
       assert prompt =~ "\"session_id\" => \"src-123\""
-      assert prompt =~ "User: hi\n\nAssistant: hello"
     end
 
-    test "renders a placeholder when there are no existing hooks" do
+    test "instructs weighing later/corrected messages over earlier ones" do
       source = %{id: "src-1", directory: "/tmp/p", title: nil}
-      prompt = MemoryExtraction.build_prompt("transcript", [], source)
-      assert prompt =~ "(none yet for this project)"
+      prompt = MemoryExtraction.build_prompt("/tmp/p/x.md", [], source)
+
+      assert prompt =~ "Weigh LATER messages over earlier ones"
+      assert prompt =~ "CORRECTION is the memory"
+      assert prompt =~ "explicitly stated this"
     end
   end
 end
