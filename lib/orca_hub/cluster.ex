@@ -335,7 +335,7 @@ defmodule OrcaHub.Cluster do
 
   def get_session!(_n, session_id), do: HubRPC.get_session!(session_id)
   def list_messages(_n, session_id), do: HubRPC.list_messages(session_id)
-  def archive_session(_n, session), do: HubRPC.archive_session(session)
+  def archive_session(_n, session, opts \\ []), do: HubRPC.archive_session(session, opts)
   def unarchive_session(_n, session), do: HubRPC.unarchive_session(session)
   def update_session(_n, session, attrs), do: HubRPC.update_session(session, attrs)
   def delete_session(_n, session), do: HubRPC.delete_session(session)

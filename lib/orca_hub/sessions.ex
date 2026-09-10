@@ -93,7 +93,19 @@ defmodule OrcaHub.Sessions do
     )
   end
 
-  def archive_session(%Session{} = session) do
+  @doc """
+  Archives `session`. `opts[:extract_memories]` (default `true`) dispatches
+  `OrcaHub.MemoryExtraction` for the session BEFORE the archive write lands —
+  a fire-and-forget spawn (see `OrcaHub.MemoryExtraction.dispatch/2`'s own
+  scope/threshold gating and failure isolation), never a reason to delay or
+  fail the archive itself. Pass `extract_memories: false` for an explicit
+  "archive without extracting" action.
+  """
+  def archive_session(%Session{} = session, opts \\ []) do
+    if Keyword.get(opts, :extract_memories, true) do
+      dispatch_memory_extraction_async(session, trigger: :archive)
+    end
+
     result =
       session
       |> Session.changeset(%{archived_at: DateTime.utc_now() |> DateTime.truncate(:second)})
@@ -105,6 +117,21 @@ defmodule OrcaHub.Sessions do
     end
 
     result
+  end
+
+  # Test seam (mirrors OrcaHub.Backend.SharedPrompts.memory_context_block/2's
+  # `:memory_context_fun` pattern): stub via `:orca_hub,
+  # :memory_extraction_dispatch_fun` to observe/control dispatch without a
+  # running memory service or a real child spawn.
+  defp dispatch_memory_extraction_async(session, opts) do
+    dispatch_fun =
+      Application.get_env(
+        :orca_hub,
+        :memory_extraction_dispatch_fun,
+        &OrcaHub.MemoryExtraction.dispatch/2
+      )
+
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn -> dispatch_fun.(session, opts) end)
   end
 
   def unarchive_session(%Session{} = session) do
@@ -290,6 +317,36 @@ defmodule OrcaHub.Sessions do
     Repo.all(
       from m in Message, where: m.session_id == ^session_id, order_by: [asc: m.inserted_at]
     )
+  end
+
+  @doc """
+  Raw `data` maps of a session's `"user"`/`"assistant"` messages, oldest
+  first — `since` (a `%DateTime{}`/`%NaiveDateTime{}` or `nil`) restricts to
+  messages inserted strictly after it; `nil` returns the session's full
+  user/assistant history. Feeds `OrcaHub.MemoryExtraction`'s transcript
+  slice builder — deliberately excludes every other message type (system,
+  result, cli_error, pi_ui_*, …), none of which carry extraction-worthy text.
+  """
+  def list_messages_since(session_id, since) do
+    query =
+      from m in Message,
+        where: m.session_id == ^session_id and fragment("? ->> 'type' = ANY(?)", m.data, ^~w(user assistant)),
+        order_by: [asc: m.inserted_at, asc: m.id],
+        select: m.data
+
+    query
+    |> maybe_since(since)
+    |> Repo.all()
+  end
+
+  defp maybe_since(query, nil), do: query
+
+  defp maybe_since(query, %DateTime{} = since) do
+    maybe_since(query, DateTime.to_naive(since))
+  end
+
+  defp maybe_since(query, %NaiveDateTime{} = since) do
+    from m in query, where: m.inserted_at > ^since
   end
 
   # `task_*` system events (subagent progress broadcasts) are matched by
