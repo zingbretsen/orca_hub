@@ -10,7 +10,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   alias OrcaHub.MCP.Tools.NodeArg
   alias OrcaHub.ForkGate
   alias OrcaHub.ForkGate.ServingProfile
-  alias OrcaHub.{Cluster, HubRPC, NodePolicy, Probes}
+  alias OrcaHub.{Cluster, HubRPC, MemoryExtraction, NodePolicy, Probes}
 
   # Time bound for AUTO-derived idempotency keys only (see
   # auto_idempotency_key/3) — belt-and-braces against a pathological hash
@@ -193,6 +193,15 @@ defmodule OrcaHub.MCP.Tools.Sessions do
                   "byte-identical copy of your full conversation context (cheap on a " <>
                   "prompt-cached provider) instead of a blank context. The child is a " <>
                   "normal child session in every other respect. Default: false."
+            },
+            "memory_extract" => %{
+              "type" => "boolean",
+              "description" =>
+                "Override the default automatic-memory-extraction scope rule for the new " <>
+                  "session (orchestrators and root sessions are extracted from by default; " <>
+                  "regular child workers are not). true forces extraction on for this " <>
+                  "session even if it's a non-orchestrator child; false forces it off even " <>
+                  "if it's an orchestrator or root session. Omit to inherit the default rule."
             }
           },
           "required" => ["prompt"]
@@ -238,13 +247,41 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "archive_session",
         "description" =>
-          "Archive a session. Orchestrators should call this after a child session has finished its task to keep the queue and UI clean. Archived sessions are automatically unarchived when you send them a message via `send_message_to_session`, so it's safe to archive a session and resume the conversation later.",
+          "Archive a session. Orchestrators should call this after a child session has finished its task to keep the queue and UI clean. Archived sessions are automatically unarchived when you send them a message via `send_message_to_session`, so it's safe to archive a session and resume the conversation later. By default this also dispatches automatic memory extraction (see extract_memories) for in-scope sessions (orchestrators and root/human-driven sessions) — a cheap background session reviews new transcript since the last extraction and saves anything durable worth remembering, then posts a summary into this session's feed.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
             "session_id" => %{
               "type" => "string",
               "description" => "The OrcaHub session ID of the session to archive"
+            },
+            "extract_memories" => %{
+              "type" => "boolean",
+              "description" =>
+                "Whether to dispatch automatic memory extraction as part of archiving " <>
+                  "(default true). Pass false to archive without extracting — e.g. a " <>
+                  "throwaway/experimental session with nothing worth remembering."
+            }
+          },
+          "required" => ["session_id"]
+        }
+      },
+      %{
+        "name" => "extract_memories",
+        "description" =>
+          "Orchestrator-only: manually dispatch memory extraction for a session RIGHT NOW, " <>
+            "regardless of the default scope rule (orchestrator/root sessions only) or the " <>
+            "usual size threshold — use this to force extraction on a child worker session " <>
+            "you specifically want remembered from. A background session reviews new " <>
+            "transcript since the last extraction (or the session's full history, if never " <>
+            "extracted before) and saves anything durable worth remembering, then posts a " <>
+            "summary into the target session's feed when done.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "session_id" => %{
+              "type" => "string",
+              "description" => "The OrcaHub session ID to extract memories from"
             }
           },
           "required" => ["session_id"]
@@ -530,11 +567,12 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
   def call("archive_session", args, _state) do
     target_id = args["session_id"]
+    extract_memories = args["extract_memories"] != false
 
     case Cluster.find_session(target_id) do
       {node, session} ->
         if NodePolicy.cross_node_allowed?(node) do
-          case Cluster.archive_session(node, session) do
+          case Cluster.archive_session(node, session, extract_memories: extract_memories) do
             {:ok, _} ->
               text(
                 "Session #{target_id} archived. Send it a message to resume — it will be automatically unarchived."
@@ -549,6 +587,20 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
       nil ->
         error("Session #{target_id} not found on any node.")
+    end
+  end
+
+  def call("extract_memories", args, state) do
+    case state.orca_session_id do
+      nil ->
+        error("No OrcaHub session linked to this MCP connection.")
+
+      caller_id ->
+        case HubRPC.get_session(caller_id) do
+          %{orchestrator: true} -> do_extract_memories(args["session_id"])
+          nil -> error("Calling session #{caller_id} not found.")
+          _ -> error("extract_memories requires the calling session to be an orchestrator.")
+        end
     end
   end
 
@@ -892,6 +944,42 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       :ok
   end
 
+  defp do_extract_memories(target_id) do
+    case Cluster.find_session(target_id) do
+      {node, session} ->
+        if NodePolicy.cross_node_allowed?(node) do
+          dispatch_fun =
+            Application.get_env(
+              :orca_hub,
+              :memory_extraction_dispatch_fun,
+              &MemoryExtraction.dispatch/2
+            )
+
+          case dispatch_fun.(session, force: true, trigger: :manual) do
+            {:ok, :dispatched} ->
+              text("Memory extraction dispatched for session #{target_id}.")
+
+            {:ok, :skipped} ->
+              text(
+                "Memory extraction skipped for session #{target_id} — no new user/assistant " <>
+                  "content since the last extraction (or the memory service is disabled)."
+              )
+
+            {:error, reason} ->
+              error(
+                "Failed to dispatch memory extraction for session #{target_id}: " <>
+                  "#{inspect(reason)}"
+              )
+          end
+        else
+          error(NodePolicy.denial_message(node))
+        end
+
+      nil ->
+        error("Session #{target_id} not found on any node.")
+    end
+  end
+
   @max_title_length 80
   @max_title_byte_limit 250
   @max_note_length 250
@@ -1192,6 +1280,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
                   |> maybe_put_field(:issue_id, issue_id)
                   |> maybe_put_field(:code_exec, forked_from && caller.code_exec)
                   |> maybe_put_field(:forked_from_session_id, forked_from)
+                  |> maybe_put_field(:memory_extract, args["memory_extract"])
                   |> maybe_link_parent(caller, caller_session_id, args["notify_on_completion"])
 
                 case HubRPC.create_session(session_attrs) do

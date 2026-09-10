@@ -79,6 +79,14 @@ defmodule OrcaHub.MCP.Tools.Memory do
             "valid_until" => %{
               "type" => "string",
               "description" => "Optional ISO8601 expiry."
+            },
+            "created_by" => %{
+              "type" => "string",
+              "enum" => ["extraction"],
+              "description" =>
+                "Internal use only — reserved for OrcaHub's own automatic memory-extraction " <>
+                  "sessions. Every other caller's memories are attributed \"agent\" " <>
+                  "automatically; omit this."
             }
           },
           "required" => ["text", "kind"]
@@ -298,7 +306,7 @@ defmodule OrcaHub.MCP.Tools.Memory do
           "session_id" => session_id,
           "backend" => session.backend,
           "node" => session.runner_node || to_string(Node.self()),
-          "created_by" => "agent"
+          "created_by" => resolve_created_by(args["created_by"])
         }
         |> maybe_put_field("hook", blank_to_nil(args["hook"]))
         |> maybe_put_field("tags", args["tags"])
@@ -332,6 +340,13 @@ defmodule OrcaHub.MCP.Tools.Memory do
       {:error, reason} -> error(reason)
     end
   end
+
+  # Only "extraction" (OrcaHub.MemoryExtraction's own spawned sessions) may
+  # override the default "agent" attribution — any other value (including
+  # garbage) is ignored rather than rejected, since this is an obscure
+  # internal knob no normal caller should be constructing by hand.
+  defp resolve_created_by("extraction"), do: "extraction"
+  defp resolve_created_by(_), do: "agent"
 
   defp resolve_project(%{project_id: project_id}) when is_binary(project_id) do
     case HubRPC.get_project(project_id) do
