@@ -228,3 +228,16 @@ identical upstream-vs-first-party decision `MCP.Server` makes directly when
 code-exec is off. `MCP.CodeExec.BindingStore` persists Elixir variable
 bindings across `run_elixir` calls within a session, so a session can build
 up state across multiple tool calls like a REPL.
+
+## Memory injection visibility
+
+Every `<orca-memory>` block injected into a cold port (Claude/Codex's first
+user turn via `SharedPrompts.maybe_prepend_memory/3`, or pi's `ORCA_MEMORY`
+env at port-open via `Backend.Pi`'s `orca_memory_json/1`) also persists a
+`memory_injected` system event — `Sessions.persist_system_event/2`, carrying
+`memory_ids`/hooks/pinned+recalled counts/the raw block — so a human can see
+which memories a session actually loaded. `MessageComponents` renders it
+collapsed in the feed and strips the leading block back out of the user
+bubble's display text (never the stored data); `SessionLive.Show`'s header
+"Memories" toggle aggregates every such event for the session via
+`Sessions.list_memory_injected_events/1`.
