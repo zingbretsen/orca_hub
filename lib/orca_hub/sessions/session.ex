@@ -88,6 +88,14 @@ defmodule OrcaHub.Sessions.Session do
     field :email_message_id, :string
     field :email_in_reply_to, :string
 
+    # Per-session override of the default automatic-memory-extraction scope
+    # rule (orchestrator or root session — see OrcaHub.MemoryExtraction).
+    # nil = inherit the default rule, true = force on, false = never.
+    field :memory_extract, :boolean
+    # Watermark: only messages inserted after this are considered on the
+    # next extraction. Set when extraction is DISPATCHED, not completed.
+    field :memory_extracted_at, :utc_datetime
+
     has_many :messages, OrcaHub.Sessions.Message
     belongs_to :project, OrcaHub.Projects.Project
 
@@ -123,7 +131,9 @@ defmodule OrcaHub.Sessions.Session do
       :forked_from_session_id,
       :email_message_id,
       :email_in_reply_to,
-      :trigger_id
+      :trigger_id,
+      :memory_extract,
+      :memory_extracted_at
     ])
     # Cast separately with empty_values: [] — cast/4's default empty_values
     # ([""]) would otherwise silently turn an explicit `tools: ""` (the "no
