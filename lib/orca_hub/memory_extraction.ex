@@ -399,16 +399,16 @@ defmodule OrcaHub.MemoryExtraction do
       )
   end
 
+  # `message` here is shown as-is after the "Memory extraction" label the
+  # system_message component derives from `subtype` (message_components.ex) —
+  # it must NOT repeat that prefix itself.
   defp post_visibility_message(source, child_id, :error) do
-    persist_system_message(
-      source.id,
-      "Memory extraction failed — see session #{child_id} for details."
-    )
+    persist_system_message(source.id, "failed — see session #{child_id} for details.")
   end
 
   defp post_visibility_message(source, _child_id, :idle) do
     memories = extracted_memories(source)
-    persist_system_message(source.id, "Memory extraction: #{extraction_summary(memories)}")
+    persist_system_message(source.id, extraction_summary(memories))
   end
 
   defp extracted_memories(source) do

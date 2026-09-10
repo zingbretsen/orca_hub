@@ -825,6 +825,11 @@ defmodule OrcaHubWeb.MessageComponents do
     linkify_session_ids(message)
   end
 
+  # OrcaHub.MemoryExtraction's completion report — "message" already reads
+  # as a full sentence ("3 memories saved (...)" / "no new memories" /
+  # a failure note), so the label stays a short, stable prefix.
+  defp system_message_label(%{"subtype" => "memory_extraction"}), do: "Memory extraction"
+
   defp system_message_label(%{"subtype" => subtype}), do: subtype
 
   defp reason_suffix(reason) when is_binary(reason), do: " (#{reason})"
