@@ -40,6 +40,7 @@ defmodule OrcaHub.MCP.Tools do
     Heartbeat,
     Issues,
     Jobs,
+    Memory,
     Notify,
     PhxAgents,
     Probes,
@@ -60,6 +61,7 @@ defmodule OrcaHub.MCP.Tools do
     ForkQueue,
     Discord,
     Issues,
+    Memory,
     Artifacts,
     Databases,
     PhxAgents,
@@ -87,6 +89,10 @@ defmodule OrcaHub.MCP.Tools do
   # fork_queue rides with start_session for the same reason: any pi session
   # may fork (pi_fork_spec.md §3), so any pi session can end up holding a
   # paused fan-out it needs to resume or abort.
+  # The memory tools (remember/recall/update_memory/retire_memory/
+  # verify_memory/merge_memories/list_memories) are visible to every
+  # session, not just orchestrators — durable memory is worth capturing
+  # from any worker, not just the ones coordinating others.
   @regular_session_tools ~w(send_message_to_session open_file report_progress start_session
                              fork_queue
                              get_session_tail archive_session create_issue list_issues
@@ -99,7 +105,9 @@ defmodule OrcaHub.MCP.Tools do
                              send_notification start_job check_job list_jobs cancel_job
                              wait_for_job update_job_progress_metric
                              git_probe stat_paths disk_free
-                             put_file get_file list_files share_file delete_file)
+                             put_file get_file list_files share_file delete_file
+                             remember recall update_memory retire_memory verify_memory
+                             merge_memories list_memories)
 
   @doc "Return every MCP tool definition map across every category."
   def list do
