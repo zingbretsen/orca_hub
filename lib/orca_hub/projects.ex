@@ -186,7 +186,9 @@ defmodule OrcaHub.Projects do
   @editable_basenames ~w(Dockerfile Makefile Justfile Procfile Gemfile Rakefile)
 
   @doc """
-  Recursively lists editable text files in the project directory.
+  Recursively lists ALL regular files in the project directory (not just
+  editable ones — see `editable_file?/1` for that predicate, used by
+  callers to decide whether a given entry can be opened for editing).
   Returns sorted list of relative paths.
 
   Options:
@@ -196,7 +198,7 @@ defmodule OrcaHub.Projects do
     show_hidden = Keyword.get(opts, :show_hidden, false)
 
     dir
-    |> find_editable_files("", show_hidden)
+    |> find_all_files("", show_hidden)
     |> Enum.sort()
   end
 
@@ -237,7 +239,7 @@ defmodule OrcaHub.Projects do
 
               [%{name: entry, path: rel_child, type: :dir, children: children}]
 
-            editable_file?(entry, show_hidden) ->
+            File.regular?(full_child) ->
               [%{name: entry, path: rel_child, type: :file}]
 
             true ->
@@ -344,23 +346,21 @@ defmodule OrcaHub.Projects do
     end)
   end
 
-  defp find_editable_files(base_dir, rel_dir, show_hidden) do
+  defp find_all_files(base_dir, rel_dir, show_hidden) do
     full_dir = Path.join(base_dir, rel_dir)
 
     case File.ls(full_dir) do
       {:ok, entries} ->
         entries
-        |> then(fn entries ->
-          if show_hidden, do: entries, else: Enum.reject(entries, &String.starts_with?(&1, "."))
-        end)
+        |> filter_dotfiles(show_hidden)
         |> Enum.reject(&(&1 in @skip_dirs))
         |> Enum.flat_map(fn entry ->
           rel_path = if(rel_dir == "", do: entry, else: Path.join(rel_dir, entry))
           full_path = Path.join(base_dir, rel_path)
 
           cond do
-            File.dir?(full_path) -> find_editable_files(base_dir, rel_path, show_hidden)
-            editable_file?(entry, show_hidden) -> [rel_path]
+            File.dir?(full_path) -> find_all_files(base_dir, rel_path, show_hidden)
+            File.regular?(full_path) -> [rel_path]
             true -> []
           end
         end)
@@ -370,11 +370,19 @@ defmodule OrcaHub.Projects do
     end
   end
 
-  defp editable_file?(filename, show_hidden) do
-    ext = Path.extname(filename) |> String.downcase()
+  @doc """
+  Whether `filename` can be opened in the text editor — an EDITABILITY
+  predicate only, not a visibility one. A binary file (PDF, PNG, zip, …)
+  still appears in the tree/search results (see `list_dir_entries/3` and
+  `list_editable_files/2`, which now list every regular file), it just
+  isn't selectable for editing: raw bytes can't round-trip through a
+  LiveView text diff, and invalid UTF-8 would break the render.
+  """
+  def editable_file?(filename) do
+    ext = filename |> Path.extname() |> String.downcase()
 
     ext in @editable_extensions or filename in @editable_basenames or
-      (show_hidden and String.starts_with?(filename, ".") and ext == "")
+      (String.starts_with?(filename, ".") and ext == "")
   end
 
   @doc """
