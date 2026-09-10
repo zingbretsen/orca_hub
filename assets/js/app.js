@@ -1409,7 +1409,7 @@ let Hooks = {
   },
   FileTree: {
     _getVisibleItems() {
-      return Array.from(this.el.querySelectorAll("li > button[phx-click='select_file'], li > details > summary"))
+      return Array.from(this.el.querySelectorAll("li > div > button[phx-click='select_file'], li > div > a[data-file-tree-primary], li > details > summary"))
     },
     _focusItem(item) {
       if (!item) return

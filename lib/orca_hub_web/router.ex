@@ -76,6 +76,17 @@ defmodule OrcaHubWeb.Router do
       live "/settings/pi-config/new", PiConfigLive.Index, :new
       live "/settings/pi-config/:id/edit", PiConfigLive.Index, :edit
     end
+
+    # File-tree downloads (ORCAHUB3-76). Deliberately two routes, not one
+    # shared `/projects/:id/...` route: the session file panel is passed a
+    # SYNTHETIC, unpersisted %Project{} (no id — see
+    # FileTreeComponent/session_live/show.html.heex), so it can't be routed
+    # through the project id. On the :browser pipeline (not the
+    # unauthenticated `:artifact_raw` one) so Authelia keeps covering it —
+    # this reads arbitrary files out of a project/session working
+    # directory, unlike a published artifact.
+    get "/projects/:id/files/download", FileDownloadController, :project
+    get "/sessions/:id/files/download", FileDownloadController, :session
   end
 
   scope "/artifacts", OrcaHubWeb do

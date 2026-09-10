@@ -1532,6 +1532,7 @@
               target_node={@session_node}
               project={%OrcaHub.Projects.Project{directory: @session.directory}}
               selected_path={@active_file_tab}
+              download_base={~p"/sessions/#{@session.id}/files/download"}
             />
           </div>
 
@@ -1752,6 +1753,7 @@
                 target_node={@session_node}
                 project={%OrcaHub.Projects.Project{directory: @session.directory}}
                 selected_path={@active_file_tab}
+                download_base={~p"/sessions/#{@session.id}/files/download"}
               />
             </div>
 

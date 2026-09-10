@@ -40,7 +40,8 @@ defmodule OrcaHubWeb.FileTreeComponent do
           :tree_id,
           :on_select,
           :show_hidden_toggle,
-          :search_input_id
+          :search_input_id,
+          :download_base
         ])
       )
       |> assign_new(:show_hidden_toggle, fn -> true end)
@@ -189,6 +190,7 @@ defmodule OrcaHubWeb.FileTreeComponent do
             node={node}
             selected_path={@selected_path}
             target={@myself}
+            download_base={@download_base}
           />
         </ul>
       </div>
@@ -199,18 +201,40 @@ defmodule OrcaHubWeb.FileTreeComponent do
   attr :node, :map, required: true
   attr :selected_path, :string, default: nil
   attr :target, :any, required: true
+  attr :download_base, :string, required: true
 
   defp file_tree_node(%{node: %{type: :file}} = assigns) do
+    assigns = assign(assigns, :editable, Projects.editable_file?(assigns.node.name))
+
     ~H"""
     <li>
-      <button
-        phx-click="select_file"
-        phx-value-path={@node.path}
-        phx-target={@target}
-        class={[@selected_path == @node.path && "active"]}
-      >
-        <span class="font-mono text-xs truncate">{@node.name}</span>
-      </button>
+      <div class="flex items-center gap-0.5 group/file-row">
+        <button
+          :if={@editable}
+          phx-click="select_file"
+          phx-value-path={@node.path}
+          phx-target={@target}
+          class={["flex-1 min-w-0 text-left", @selected_path == @node.path && "active"]}
+        >
+          <span class="font-mono text-xs truncate">{@node.name}</span>
+        </button>
+        <span
+          :if={!@editable}
+          class="flex-1 min-w-0 font-mono text-xs truncate px-2 py-1 text-base-content/60"
+          title="Not editable — download only"
+        >
+          {@node.name}
+        </span>
+        <a
+          href={download_href(@download_base, @node.path)}
+          download
+          data-file-tree-primary={!@editable}
+          class="btn btn-ghost btn-xs shrink-0 opacity-0 group-hover/file-row:opacity-100 focus:opacity-100"
+          title="Download"
+        >
+          <.icon name="hero-arrow-down-tray-micro" class="size-3" />
+        </a>
+      </div>
     </li>
     """
   end
@@ -238,12 +262,15 @@ defmodule OrcaHubWeb.FileTreeComponent do
             node={child}
             selected_path={@selected_path}
             target={@target}
+            download_base={@download_base}
           />
         </ul>
       </details>
     </li>
     """
   end
+
+  defp download_href(base, path), do: "#{base}?#{URI.encode_query(%{"path" => path})}"
 
   defp load_root_tree(target_node, project, opts) do
     show_hidden = Keyword.get(opts, :show_hidden, false)
