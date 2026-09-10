@@ -1,10 +1,12 @@
 defmodule OrcaHub.MemoryGit.ServerTest do
   @moduledoc """
   `OrcaHub.MemoryGit.Server` — the singleton that serializes a node's
-  snapshot+sync pass. `run_pass/2` is exercised directly (bypassing the
-  GenServer and the `enabled?/0` test gate) against a tmp-dir home; the
-  `enabled?/0` gate itself is covered by asserting `snapshot_session_async/1`
-  is a no-op under `config/test.exs`.
+  snapshot pass (the mechanical `OrcaHub.MemorySync` cross-backend mirror
+  step it used to run afterward was removed once agent memory centralized
+  into the external memory-service). `run_pass/2` is exercised directly
+  (bypassing the GenServer and the `enabled?/0` test gate) against a
+  tmp-dir home; the `enabled?/0` gate itself is covered by asserting
+  `snapshot_session_async/1` is a no-op under `config/test.exs`.
   """
   use ExUnit.Case, async: true
 
@@ -46,7 +48,7 @@ defmodule OrcaHub.MemoryGit.ServerTest do
   end
 
   describe "run_pass/2" do
-    test "ensures both repos, snapshots agent-written memories, then mirrors via sync", %{
+    test "ensures both repos and snapshots agent-written memories", %{
       home: home
     } do
       claude_dir = MemoryGit.claude_projects_dir(home_dir: home)
@@ -67,28 +69,18 @@ defmodule OrcaHub.MemoryGit.ServerTest do
       # session-labeled commit.
       claude_log = git_log(claude_dir)
       assert Enum.any?(claude_log, &(&1 =~ "snapshot: session abc123"))
-
-      # Codex repo: got the mirror, committed under a separate "sync:" commit.
-      mirror_path = Path.join(codex_dir, "claude--proj1--foo.md")
-      assert File.exists?(mirror_path)
-
-      codex_log = git_log(codex_dir)
-      assert Enum.any?(codex_log, &(&1 =~ "sync: mechanical cross-backend mirror"))
     end
 
     test "a second pass with nothing new produces no additional commits", %{home: home} do
       claude_dir = MemoryGit.claude_projects_dir(home_dir: home)
-      codex_dir = MemoryGit.codex_memories_dir(home_dir: home)
       File.mkdir_p!(Path.join([claude_dir, "proj1", "memory"]))
       File.write!(Path.join([claude_dir, "proj1", "memory", "foo.md"]), "Foo body.")
 
       Server.run_pass("session abc123", home_dir: home)
       claude_log_1 = git_log(claude_dir)
-      codex_log_1 = git_log(codex_dir)
 
       Server.run_pass("session abc123", home_dir: home)
       assert git_log(claude_dir) == claude_log_1
-      assert git_log(codex_dir) == codex_log_1
     end
   end
 end

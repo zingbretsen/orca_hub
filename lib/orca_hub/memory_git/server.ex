@@ -1,13 +1,19 @@
 defmodule OrcaHub.MemoryGit.Server do
   @moduledoc """
-  Per-node singleton GenServer that serializes every `OrcaHub.MemoryGit` /
-  `OrcaHub.MemorySync` operation.
+  Per-node singleton GenServer that serializes every `OrcaHub.MemoryGit`
+  operation.
 
   Many sessions on one node can go idle around the same time; concurrent
   git operations against the same working tree aren't safe (index/HEAD
   races), so every request funnels through this one process's mailbox —
   cheap to do since `MemoryGit.snapshot/3` is commit-if-dirty (a redundant
   run just costs one `git status`).
+
+  The mechanical `OrcaHub.MemorySync` cross-backend mirror pass this used
+  to run after every snapshot was removed when agent memory centralized
+  into the external memory-service (`OrcaHub.MemoryClient`) — see
+  `Mix.Tasks.Orca.MemorySyncCleanup` for the one-time per-node cleanup of
+  its leftover mirror files. `MemoryGit` snapshots stay on as a backup.
 
   `snapshot_session_async/1` is the entry point `OrcaHub.SessionRunner`
   calls on every clean idle transition. It is fire-and-forget by design: the
@@ -23,7 +29,7 @@ defmodule OrcaHub.MemoryGit.Server do
   use GenServer
   require Logger
 
-  alias OrcaHub.{MemoryGit, MemorySync}
+  alias OrcaHub.MemoryGit
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -96,12 +102,6 @@ defmodule OrcaHub.MemoryGit.Server do
 
     MemoryGit.snapshot(claude_dir, "snapshot: #{label}", opts)
     MemoryGit.snapshot(codex_dir, "snapshot: #{label}", opts)
-
-    %{codex_changed: codex_changed?} = MemorySync.sync(opts)
-
-    if codex_changed? do
-      MemoryGit.snapshot(codex_dir, "sync: mechanical cross-backend mirror", opts)
-    end
 
     :ok
   end
