@@ -372,7 +372,18 @@ graph TB
   trigger. See `.context/triggers.md`.
 - **SkillSync / PiConfigSync / MemoryGit** (every node): hub-DB-to-local-disk
   materializers and per-node agent-memory git snapshotting — see
-  `.context/supervision-tree.md`.
+  `.context/supervision-tree.md`. `MemoryGit.Server` no longer runs the
+  mechanical Claude<->Codex `MemorySync` mirror pass after each snapshot
+  (removed — `mix orca.memory_sync_cleanup` deletes a node's leftover
+  mirror files); snapshots themselves stay on as a backup.
+- **Memory service** (`lib/orca_hub/memory_client.ex`, hub-only): HTTP
+  client for the external agent-memory service, reached from any node via
+  new `HubRPC.memory_*` wrappers (same pattern as `OrcaHub.Notify`/
+  `OrcaHub.Files`). Backs the `remember`/`recall`/`update_memory`/
+  `retire_memory`/`verify_memory`/`merge_memories`/`list_memories` MCP
+  tools (`OrcaHub.MCP.Tools.Memory`), visible to every session.
+  `context_block/3` sits on the session-spawn path and always resolves to
+  `{:ok, block_or_nil}` — a memory-service outage never blocks a spawn.
 - **ForkGate** (`lib/orca_hub/fork_gate.ex`): serializes forked pi children's
   first turns so concurrent same-prefix spawns don't each cold-prefill
   (`pi_fork_spec.md` §6).
