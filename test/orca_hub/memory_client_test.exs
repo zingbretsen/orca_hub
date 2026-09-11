@@ -349,6 +349,48 @@ defmodule OrcaHub.MemoryClientTest do
     end
   end
 
+  describe "retry policy" do
+    test "a 500 on a mutating (POST) call is returned once, never auto-retried" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      Req.Test.stub(@stub, fn conn ->
+        Agent.update(counter, &(&1 + 1))
+        conn |> Plug.Conn.put_status(500) |> Req.Test.json(%{"error" => "boom"})
+      end)
+
+      assert {:error, {:http_error, 500, _body}} =
+               MemoryClient.remember(%{"text" => "x", "kind" => "fact"})
+
+      assert Agent.get(counter, & &1) == 1
+    end
+
+    test "a 500 on a PATCH call is returned once, never auto-retried" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      Req.Test.stub(@stub, fn conn ->
+        Agent.update(counter, &(&1 + 1))
+        conn |> Plug.Conn.put_status(500) |> Req.Test.json(%{"error" => "boom"})
+      end)
+
+      assert {:error, {:http_error, 500, _body}} =
+               MemoryClient.update("mem-1", %{"importance" => 4})
+
+      assert Agent.get(counter, & &1) == 1
+    end
+
+    test "a 500 on an ordinary GET call is capped at one retry, not Req's default 3" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      Req.Test.stub(@stub, fn conn ->
+        Agent.update(counter, &(&1 + 1))
+        conn |> Plug.Conn.put_status(500) |> Req.Test.json(%{"error" => "boom"})
+      end)
+
+      assert {:error, {:http_error, 500, _body}} = MemoryClient.list(%{})
+      assert Agent.get(counter, & &1) == 2
+    end
+  end
+
   describe "context_block/3" do
     test "returns the rendered block on success" do
       Req.Test.stub(@stub, fn conn ->

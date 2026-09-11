@@ -346,9 +346,11 @@ defmodule OrcaHub.MemoryClient do
 
     # Merged, not `++`-spliced, so a per-call `receive_timeout`/`retry` override
     # in `opts` replaces the default instead of sitting after it as a duplicate
-    # keyword key. Precedence is defaults < per-call opts < app config.
+    # keyword key. Precedence is defaults < method-based retry default <
+    # per-call opts < app config.
     req_opts =
       [headers: headers, receive_timeout: @timeout]
+      |> Keyword.merge(default_retry_opts(method))
       |> Keyword.merge(opts)
       |> Keyword.merge(req_options())
 
@@ -365,6 +367,17 @@ defmodule OrcaHub.MemoryClient do
   rescue
     e -> {:error, {:exception, Exception.message(e)}}
   end
+
+  # A retried mutating call (POST/PATCH/DELETE) can create a duplicate
+  # memory/merge or double-bump a context call's recall counters — so those
+  # never auto-retry. A GET is safe to retry but still gets capped at one
+  # retry rather than Req's default 3, since repeating a slow read against
+  # this service is itself part of what amplified the 2026-09-11 OOMKill
+  # (see duplicates_impl's own stricter override below).
+  defp default_retry_opts(method) when method in [:get, :head],
+    do: [retry: :transient, max_retries: 1]
+
+  defp default_retry_opts(_method), do: [retry: false]
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, val), do: Map.put(map, key, val)
