@@ -13,13 +13,19 @@ defmodule OrcaHub.HubRPC do
 
   @doc """
   Call a function on the hub node. If this IS the hub, just calls locally.
+
+  `opts[:timeout]` overrides the default #{@timeout}ms erpc budget for this
+  ONE call — for a known-slow endpoint (e.g. `memory_duplicates/1`) rather
+  than raising the global timeout for every call. Ignored on the hub itself,
+  since a local `apply/3` has no erpc round trip to bound.
   """
-  def call(mod, fun, args) do
+  def call(mod, fun, args, opts \\ []) do
     if Mode.hub?() do
       apply(mod, fun, args)
     else
       hub = Mode.hub_node()
-      :erpc.call(hub, mod, fun, args, @timeout)
+      timeout = Keyword.get(opts, :timeout, @timeout)
+      :erpc.call(hub, mod, fun, args, timeout)
     end
   end
 
@@ -540,7 +546,16 @@ defmodule OrcaHub.HubRPC do
   def memory_merge(source_ids, attrs),
     do: call(OrcaHub.MemoryClient, :merge_impl, [source_ids, attrs])
 
-  def memory_duplicates(params), do: call(OrcaHub.MemoryClient, :duplicates_impl, [params])
+  # /v1/memories/duplicates does a full pairwise-cosine scan server-side and
+  # can legitimately take well over the default @timeout against a large
+  # store (see K3S3-1) — give this ONE call its own generous erpc budget
+  # rather than raising the global timeout for every hub call. Kept a bit
+  # above MemoryClient's own @duplicates_timeout Req receive_timeout so the
+  # HTTP call's own timeout error has a chance to come back over erpc first.
+  @duplicates_erpc_timeout 125_000
+
+  def memory_duplicates(params),
+    do: call(OrcaHub.MemoryClient, :duplicates_impl, [params], timeout: @duplicates_erpc_timeout)
 
   def memory_list(params), do: call(OrcaHub.MemoryClient, :list_impl, [params])
   def memory_tags(params), do: call(OrcaHub.MemoryClient, :tags_impl, [params])

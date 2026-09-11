@@ -146,15 +146,21 @@ defmodule OrcaHub.MemoryReview do
   # Prompts (pure — no DB/HTTP access, testable in isolation)
   # -------------------------------------------------------------------
 
+  @consolidate_default_candidate_cap 60
+
   @doc """
   The nightly consolidation pass's prompt. `opts[:cap]` bounds the total
   number of merge_memories/flag_memory/verify_memories calls in one run
   (default #{@consolidate_default_cap}); `opts[:app]` names the app whose
-  memories are in scope (default `"orcahub"`).
+  memories are in scope (default `"orcahub"`); `opts[:candidate_cap]` bounds
+  how many memories the fallback candidate-discovery path (see below) pulls
+  in and recalls against, distinct from `opts[:cap]`'s action budget (default
+  #{@consolidate_default_candidate_cap}).
   """
   def consolidate_prompt(opts \\ %{}) do
     cap = Map.get(opts, :cap, @consolidate_default_cap)
     app = Map.get(opts, :app, "orcahub")
+    candidate_cap = Map.get(opts, :candidate_cap, @consolidate_default_candidate_cap)
 
     """
     # Nightly Memory Consolidation Pass (automated)
@@ -167,12 +173,19 @@ defmodule OrcaHub.MemoryReview do
     asking. You must end this turn when you are done (archive_on_complete relies \
     on your turn actually ending) — do not leave work outstanding.
 
+    Note the current wall-clock time before you do anything else (e.g. run \
+    `date -u` once) — you'll report the start/end/duration of this run in the \
+    artifact so runs can be compared over time.
+
     ## The only writes you may make
 
     - `Tools.merge_memories(...)` with `"created_by" => "consolidation"`, to \
       combine two memories that are genuinely the same claim. Sources become \
       superseded with lineage; the merged memory itself re-enters the review \
-      queue as pending (that's what created_by: "consolidation" does).
+      queue as pending (that's what created_by: "consolidation" does). When \
+      the two memories come from different projects, pass `"project_slug"` of \
+      the MORE SPECIFIC source project — the merged memory should live where \
+      its sources live, not wherever this session happens to be running.
     - `Tools.flag_memory(...)`, to flag one existing memory back into the human \
       review queue with a reason. Never retires, never rewrites its text.
     - `Tools.verify_memories(...)`, to batch-confirm memories you independently \
@@ -193,24 +206,36 @@ defmodule OrcaHub.MemoryReview do
     if there is nothing left worth doing.
 
     Build your candidate pool FIRST by calling `Tools.find_duplicate_memories(%{ \
-    "all_projects" => true, "threshold" => 0.85})` — this is the memory service's \
-    own similarity scoring and is strictly preferred over guessing with recall. \
-    It returns `{"groups": [{"memories": [...], "max_score": <0-1>}]}`; treat \
-    each returned group as a merge candidate and run it straight through the \
-    Decision rules below. ONLY IF that call errors (e.g. this service build \
-    doesn't have the endpoint yet — a 404/422), fall back to: call \
-    `Tools.list_memories(%{"all_projects" => true, "sort" => "updated_at"})`, \
-    take memories updated in the last 7 days, and for each one call \
+    "all_projects" => true, "threshold" => 0.85, "limit" => 50})` — this is the \
+    memory service's own similarity scoring and is strictly preferred over \
+    guessing with recall. Call it EXACTLY ONCE — never retry it, even on a \
+    transient-looking failure; a repeated call against a large store is itself \
+    expensive and has previously taken the memory service down. It returns \
+    `{"groups": [{"memories": [...], "max_score": <0-1>}]}`; treat each returned \
+    group as a merge candidate and run it straight through the Decision rules \
+    below. ONLY IF that call errors — ANY error, including a timeout, not just a \
+    404/422 for a service build that lacks the endpoint — fall back instead to: \
+    page through `Tools.list_memories(%{"all_projects" => true, "sort" => \
+    "updated_at", "per_page" => 100})` (its result carries `page`/`per_page`/ \
+    `total` verbatim plus a "more pages" hint — advance `page` while `total > \
+    page * per_page`), collecting memories updated in the last 7 days, \
+    most-recently-updated first, until either the pages run out or you've \
+    collected #{candidate_cap} such memories, whichever comes first. Then call \
     `Tools.recall(%{"query" => <candidate's hook or text>, "include_other_projects" \
-    => true, "limit" => 5})` to find its nearest neighbours. Either way, you are \
-    not expected to review every memory that exists, only this window.
+    => true, "limit" => 5})` ONCE per candidate you collected this way — NEVER \
+    more than #{candidate_cap} recall calls total in this fallback, regardless of \
+    how many memories exist in the window. Either way, you are not expected to \
+    review every memory that exists, only this window.
 
     ## Decision rules
 
     1. Merge ONLY when two memories state the SAME claim — same subject, no \
-       conflicting detail. When you merge: keep the MORE SPECIFIC of the two \
-       texts (don't average them into something vaguer), take the UNION of their \
-       `tags` and `source` references, and pass `"created_by" => "consolidation"`.
+       conflicting detail — AND both are `"status": "active"`. Skip a pair where \
+       either side is retired or superseded; only mention it in "skipped but \
+       suspicious" if it's otherwise a clear duplicate. When you merge: keep the \
+       MORE SPECIFIC of the two texts (don't average them into something \
+       vaguer), take the UNION of their `tags` and `source` references, and pass \
+       `"created_by" => "consolidation"`.
     2. When two memories CONTRADICT each other, do NOT merge them — flag BOTH \
        with `flag_memory`, each note naming the OTHER memory's id and describing \
        the conflict in one sentence.
@@ -218,7 +243,11 @@ defmodule OrcaHub.MemoryReview do
        standing rule Zach himself explicitly stated (a preference/decision/fact \
        he actually asserted — not something the assistant merely inferred or \
        asserted on its own) should be flagged with a note proposing a lower \
-       value and why.
+       value and why. "Explicitly stated by Zach" INCLUDES the content of \
+       CLAUDE.md/AGENTS.md/project instructions and any preference he stated \
+       directly in a conversation. It does NOT include a rule the assistant \
+       generalized from an incident Zach merely observed happen — flag those \
+       too, even if the underlying observation is real.
     4. Never touch a PINNED memory except to flag it — never merge a pinned \
        memory into anything, not even as a source.
     5. When genuinely unsure whether two memories are the same claim, do NOT \
@@ -236,6 +265,8 @@ defmodule OrcaHub.MemoryReview do
     2. **Flags** — for each: the memory id, and the note you attached.
     3. **Skipped but suspicious** — pairs you considered but chose not to act \
        on, and why.
+    4. **Timing** — this run's start time, end time, and duration, so runs can \
+       be compared over time.
 
     Then end your final message with a 3-line summary: how many candidates you \
     reviewed, how many merges/flags/verifies you made, and whether the action \
@@ -289,10 +320,14 @@ defmodule OrcaHub.MemoryReview do
 
     Call `Tools.list_memories(%{"status" => "active", "sort" => \
     "last_verified_at", "per_page" => #{cap}})` — oldest/never-verified first. \
-    (If the service doesn't support sorting by last_verified_at yet, it falls \
-    back to updated_at ordering; if the returned list doesn't actually look \
-    sorted or filtered by verification age, sort it yourself client-side using \
-    each memory's own `last_verified_at`, treating a missing/null value as the \
+    Its result carries `page`/`per_page`/`total` verbatim plus a "more pages" \
+    hint when `total` exceeds what one page returned — you do NOT need to fetch \
+    further pages here, since `per_page` above is already set to the cap, so \
+    page 1 alone is your full working set; ignore the hint if you see one. (If \
+    the service doesn't support sorting by last_verified_at yet, it falls back \
+    to updated_at ordering; if the returned list doesn't actually look sorted or \
+    filtered by verification age, sort it yourself client-side using each \
+    memory's own `last_verified_at`, treating a missing/null value as the \
     oldest.) Then drop any memory where `created_by == "extraction"` AND \
     `review_status == "pending"` — those are still awaiting their first human \
     review and aren't this pass's job. Cap the working set at #{cap} memories.

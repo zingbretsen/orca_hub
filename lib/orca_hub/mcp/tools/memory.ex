@@ -201,7 +201,10 @@ defmodule OrcaHub.MCP.Tools.Memory do
         "description" =>
           "Combine several related or duplicate memories into one, superseding the " <>
             "originals. Use when recall/remember's near_duplicates surface overlapping " <>
-            "memories that should really be a single one.",
+            "memories that should really be a single one. Scoped to a project exactly " <>
+            "like remember (resolved from the calling session by default) — pass " <>
+            "project_slug when the merged memory should live in a different project " <>
+            "than this session's own (e.g. the more specific of two sources' projects).",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -216,6 +219,13 @@ defmodule OrcaHub.MCP.Tools.Memory do
             "tags" => %{"type" => "array", "items" => %{"type" => "string"}},
             "importance" => %{"type" => "integer"},
             "visibility" => %{"type" => "string", "enum" => @visibilities},
+            "project_slug" => %{
+              "type" => "string",
+              "description" =>
+                "Override the project the merged memory is scoped to — defaults to the " <>
+                  "calling session's own project. Use this when the sources being merged " <>
+                  "live in a different (more specific) project than this session's."
+            },
             "created_by" => %{
               "type" => "string",
               "enum" => ["consolidation"],
@@ -395,22 +405,29 @@ defmodule OrcaHub.MCP.Tools.Memory do
     end
   end
 
-  def call("merge_memories", args, _state) do
-    with {:ok, source_ids} <- require_list(args, "source_ids"),
-         {:ok, text} <- require_field(args, "text"),
-         {:ok, kind} <- require_field(args, "kind") do
-      attrs =
-        %{"text" => text, "kind" => kind}
-        |> maybe_put_field("hook", blank_to_nil(args["hook"]))
-        |> maybe_put_field("tags", args["tags"])
-        |> maybe_put_field("importance", args["importance"])
-        |> maybe_put_field("visibility", blank_to_nil(args["visibility"]))
-        |> maybe_put_field("created_by", resolve_merge_created_by(args["created_by"]))
+  def call("merge_memories", args, state) do
+    with_calling_session(state, fn _session_id, session ->
+      with {:ok, source_ids} <- require_list(args, "source_ids"),
+           {:ok, text} <- require_field(args, "text"),
+           {:ok, kind} <- require_field(args, "kind") do
+        attrs =
+          %{
+            "text" => text,
+            "kind" => kind,
+            "app" => "orcahub",
+            "project" => resolve_merge_project(session, blank_to_nil(args["project_slug"]))
+          }
+          |> maybe_put_field("hook", blank_to_nil(args["hook"]))
+          |> maybe_put_field("tags", args["tags"])
+          |> maybe_put_field("importance", args["importance"])
+          |> maybe_put_field("visibility", blank_to_nil(args["visibility"]))
+          |> maybe_put_field("created_by", resolve_merge_created_by(args["created_by"]))
 
-      handle_result(MemoryClient.merge(source_ids, attrs))
-    else
-      {:error, reason} -> error(reason)
-    end
+        handle_result(MemoryClient.merge(source_ids, attrs))
+      else
+        {:error, reason} -> error(reason)
+      end
+    end)
   end
 
   def call("flag_memory", args, _state) do
@@ -429,7 +446,24 @@ defmodule OrcaHub.MCP.Tools.Memory do
         |> maybe_put_field("threshold", args["threshold"])
         |> maybe_put_field("limit", args["limit"])
 
-      handle_result(MemoryClient.duplicates(params))
+      started_at = System.monotonic_time(:millisecond)
+      result = MemoryClient.duplicates(params)
+      elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+      case result do
+        {:ok, body} when is_map(body) ->
+          text(Jason.encode!(Map.put(body, "elapsed_ms", elapsed_ms)))
+
+        {:error, reason} ->
+          if timeout_error?(reason) do
+            error(duplicates_timeout_message(elapsed_ms))
+          else
+            handle_result({:error, reason})
+          end
+
+        other ->
+          handle_result(other)
+      end
     end)
   end
 
@@ -449,7 +483,10 @@ defmodule OrcaHub.MCP.Tools.Memory do
         |> maybe_put_field("page", args["page"])
         |> maybe_put_field("per_page", args["per_page"])
 
-      handle_result(MemoryClient.list(params))
+      case MemoryClient.list(params) do
+        {:ok, body} when is_map(body) -> text(Jason.encode!(with_pagination_hint(body)))
+        other -> handle_result(other)
+      end
     end)
   end
 
@@ -545,6 +582,25 @@ defmodule OrcaHub.MCP.Tools.Memory do
     %{"name" => name || "unknown", "slug" => slug(directory || "unknown")}
   end
 
+  # merge_memories' project_slug override: the merged memory should live
+  # where its sources live, which may not be the calling session's own
+  # project (e.g. the nightly consolidation pass merging two memories from
+  # different projects) — falls back to the session's own project when no
+  # override is given, exactly like every other memory-scoped tool here.
+  defp resolve_merge_project(session, nil), do: resolve_project(session)
+
+  defp resolve_merge_project(_session, slug) do
+    case find_project_by_slug(slug) do
+      nil -> %{"name" => slug, "slug" => slug}
+      project -> %{"id" => project.id, "name" => project.name, "slug" => slug}
+    end
+  end
+
+  defp find_project_by_slug(target_slug) do
+    HubRPC.list_projects()
+    |> Enum.find(fn project -> slug(project.directory) == target_slug end)
+  end
+
   defp slug(nil), do: "unknown"
   defp slug(directory), do: String.replace(directory, ~r/[^a-zA-Z0-9]/, "-")
 
@@ -620,6 +676,34 @@ defmodule OrcaHub.MCP.Tools.Memory do
         end
     end
   end
+
+  # Recognizes the several shapes a slow/unresponsive memory-service call can
+  # come back as — the hub-side Req `receive_timeout`, the cross-node erpc
+  # budget, or a lower-level transport timeout — without needing to match
+  # every wrapper exactly (`{:erpc, :timeout}`, `{:request_failed, %Req.
+  # TransportError{reason: :timeout}}`, etc.).
+  defp timeout_error?(reason), do: inspect(reason) =~ "timeout"
+
+  defp duplicates_timeout_message(elapsed_ms) do
+    "find_duplicate_memories timed out after #{elapsed_ms}ms — the memory service's " <>
+      "similarity scan is too slow against this store right now. Do not retry; fall back " <>
+      "to list_memories + recall for this pass instead."
+  end
+
+  # list_memories: surface the service's own pagination fields (verbatim)
+  # plus a hint an agent will actually notice past the schema docs — see
+  # OrcaHub.MemoryReview for the pagination-aware fallback that reads this.
+  defp with_pagination_hint(body) do
+    maybe_put_field(body, "hint", pagination_hint(body["page"], body["per_page"], body["total"]))
+  end
+
+  defp pagination_hint(page, per_page, total)
+       when is_integer(page) and is_integer(per_page) and is_integer(total) and
+              total > page * per_page do
+    "more pages: pass page: #{page + 1}"
+  end
+
+  defp pagination_hint(_page, _per_page, _total), do: nil
 
   defp handle_result({:ok, result}), do: text(Jason.encode!(result))
   defp handle_result({:error, :disabled}), do: error(disabled_message())

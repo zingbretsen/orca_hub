@@ -224,8 +224,19 @@ defmodule OrcaHub.MemoryClient do
     with_enabled(fn -> do_request(:post, "/v1/memories/merge", json: body) end)
   end
 
+  # /v1/memories/duplicates does a full pairwise-cosine scan server-side
+  # (see K3S3-1) and can legitimately run well past the default @timeout
+  # against a large store — this is the ONE call that gets a bigger budget,
+  # rather than raising @timeout for every request this client makes.
+  @duplicates_timeout 120_000
+
   def duplicates_impl(params) do
-    with_enabled(fn -> do_request(:get, "/v1/memories/duplicates", params: params) end)
+    with_enabled(fn ->
+      do_request(:get, "/v1/memories/duplicates",
+        params: params,
+        receive_timeout: @duplicates_timeout
+      )
+    end)
   end
 
   def list_impl(params) do
@@ -327,8 +338,13 @@ defmodule OrcaHub.MemoryClient do
     url = base_url() <> path
     headers = [{"authorization", "Bearer #{token()}"}]
 
+    # Merged, not `++`-spliced, so a per-call `receive_timeout`/`retry` override
+    # in `opts` replaces the default instead of sitting after it as a duplicate
+    # keyword key. Precedence is defaults < per-call opts < app config.
     req_opts =
-      [headers: headers, receive_timeout: @timeout] ++ opts ++ req_options()
+      [headers: headers, receive_timeout: @timeout]
+      |> Keyword.merge(opts)
+      |> Keyword.merge(req_options())
 
     case Req.request([method: method, url: url] ++ req_opts) do
       {:ok, %{status: status, body: body}} when status in 200..299 ->

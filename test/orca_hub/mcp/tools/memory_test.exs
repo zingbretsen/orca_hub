@@ -340,7 +340,12 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
   end
 
   describe "merge_memories" do
-    test "POSTs source_ids with the merged attrs" do
+    test "POSTs source_ids with the merged attrs, scoped to the session's project", %{
+      state: state,
+      project: project
+    } do
+      expected_slug = String.replace(project.directory, ~r/[^a-zA-Z0-9]/, "-")
+
       Req.Test.stub(@stub, fn conn ->
         assert conn.request_path == "/v1/memories/merge"
         {:ok, raw, conn} = Plug.Conn.read_body(conn)
@@ -349,6 +354,10 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
         assert body["source_ids"] == ["a", "b"]
         assert body["text"] == "combined fact"
         assert body["kind"] == "fact"
+        assert body["app"] == "orcahub"
+        assert body["project"]["id"] == project.id
+        assert body["project"]["name"] == project.name
+        assert body["project"]["slug"] == expected_slug
         refute Map.has_key?(body, "created_by")
 
         Req.Test.json(conn, %{"memory" => %{"id" => "mem-8"}, "supersedes" => ["a", "b"]})
@@ -358,24 +367,35 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
         MemoryTool.call(
           "merge_memories",
           %{"source_ids" => ["a", "b"], "text" => "combined fact", "kind" => "fact"},
-          %{}
+          state
         )
 
       assert %{"isError" => false} = result
     end
 
-    test "rejects an empty source_ids" do
+    test "an unlinked session returns an error instead of a 422 from the memory service" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               MemoryTool.call(
+                 "merge_memories",
+                 %{"source_ids" => ["a", "b"], "text" => "x", "kind" => "fact"},
+                 %{orca_session_id: Ecto.UUID.generate()}
+               )
+
+      assert msg =~ "not found"
+    end
+
+    test "rejects an empty source_ids", %{state: state} do
       assert %{"isError" => true, "content" => [%{"text" => msg}]} =
                MemoryTool.call(
                  "merge_memories",
                  %{"source_ids" => [], "text" => "x", "kind" => "fact"},
-                 %{}
+                 state
                )
 
       assert msg =~ "source_ids"
     end
 
-    test "created_by: \"consolidation\" is accepted verbatim" do
+    test "created_by: \"consolidation\" is accepted verbatim", %{state: state} do
       Req.Test.stub(@stub, fn conn ->
         {:ok, raw, conn} = Plug.Conn.read_body(conn)
         assert Jason.decode!(raw)["created_by"] == "consolidation"
@@ -391,13 +411,13 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
             "kind" => "fact",
             "created_by" => "consolidation"
           },
-          %{}
+          state
         )
 
       assert %{"isError" => false} = result
     end
 
-    test "any other created_by value is dropped" do
+    test "any other created_by value is dropped", %{state: state} do
       Req.Test.stub(@stub, fn conn ->
         {:ok, raw, conn} = Plug.Conn.read_body(conn)
         refute Map.has_key?(Jason.decode!(raw), "created_by")
@@ -413,7 +433,70 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
             "kind" => "fact",
             "created_by" => "agent"
           },
-          %{}
+          state
+        )
+
+      assert %{"isError" => false} = result
+    end
+
+    test "an explicit project_slug overrides the session's own project, matching a registered project by slug",
+         %{state: state, project: project} do
+      {:ok, other_project} =
+        Projects.create_project(%{
+          name: "other-project",
+          directory: "/tmp/mcp_memory_test_other_#{System.unique_integer([:positive])}",
+          node: Atom.to_string(node())
+        })
+
+      other_slug = String.replace(other_project.directory, ~r/[^a-zA-Z0-9]/, "-")
+      refute other_slug == String.replace(project.directory, ~r/[^a-zA-Z0-9]/, "-")
+
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        body = Jason.decode!(raw)
+        assert body["project"]["id"] == other_project.id
+        assert body["project"]["name"] == other_project.name
+        assert body["project"]["slug"] == other_slug
+        Req.Test.json(conn, %{"memory" => %{"id" => "mem-8d"}})
+      end)
+
+      result =
+        MemoryTool.call(
+          "merge_memories",
+          %{
+            "source_ids" => ["a", "b"],
+            "text" => "combined fact",
+            "kind" => "fact",
+            "project_slug" => other_slug
+          },
+          state
+        )
+
+      assert %{"isError" => false} = result
+    end
+
+    test "an explicit project_slug with no matching registered project still sends name/slug", %{
+      state: state
+    } do
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        body = Jason.decode!(raw)
+        refute Map.has_key?(body["project"], "id")
+        assert body["project"]["name"] == "unregistered-slug"
+        assert body["project"]["slug"] == "unregistered-slug"
+        Req.Test.json(conn, %{"memory" => %{"id" => "mem-8e"}})
+      end)
+
+      result =
+        MemoryTool.call(
+          "merge_memories",
+          %{
+            "source_ids" => ["a", "b"],
+            "text" => "combined fact",
+            "kind" => "fact",
+            "project_slug" => "unregistered-slug"
+          },
+          state
         )
 
       assert %{"isError" => false} = result
@@ -506,7 +589,8 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
         )
 
       assert %{"isError" => false} = result
-      assert %{"groups" => [%{"max_score" => 0.92}]} = decode(result)
+      assert %{"groups" => [%{"max_score" => 0.92}], "elapsed_ms" => elapsed_ms} = decode(result)
+      assert is_integer(elapsed_ms)
     end
 
     test "surfaces a 404 as an ordinary tool error (endpoint not on this service build)", %{
@@ -520,6 +604,19 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
                MemoryTool.call("find_duplicate_memories", %{}, state)
 
       assert msg =~ "404"
+    end
+
+    test "a timeout gets a clear error naming the fallback instead of a raw {:erpc, :timeout}", %{
+      state: state
+    } do
+      Req.Test.stub(@stub, fn conn -> Req.Test.transport_error(conn, :timeout) end)
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               MemoryTool.call("find_duplicate_memories", %{}, state)
+
+      assert msg =~ "timed out"
+      assert msg =~ "list_memories + recall"
+      refute msg =~ "erpc"
     end
   end
 
@@ -596,6 +693,28 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
         )
 
       assert %{"isError" => false} = result
+    end
+
+    test "surfaces page/per_page/total verbatim with no hint when everything fit on one page", %{
+      state: state
+    } do
+      Req.Test.stub(@stub, fn conn ->
+        Req.Test.json(conn, %{"memories" => [], "page" => 1, "per_page" => 50, "total" => 3})
+      end)
+
+      result = MemoryTool.call("list_memories", %{}, state)
+      body = decode(result)
+      assert %{"page" => 1, "per_page" => 50, "total" => 3} = body
+      refute Map.has_key?(body, "hint")
+    end
+
+    test "appends a 'more pages' hint when total exceeds page * per_page", %{state: state} do
+      Req.Test.stub(@stub, fn conn ->
+        Req.Test.json(conn, %{"memories" => [], "page" => 1, "per_page" => 50, "total" => 306})
+      end)
+
+      result = MemoryTool.call("list_memories", %{}, state)
+      assert %{"hint" => "more pages: pass page: 2"} = decode(result)
     end
   end
 end
