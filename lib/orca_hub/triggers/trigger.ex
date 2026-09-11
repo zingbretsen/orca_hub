@@ -16,6 +16,12 @@ defmodule OrcaHub.Triggers.Trigger do
     field :reuse_session, :boolean, default: false
     field :archive_on_complete, :boolean, default: false
     field :enabled, :boolean, default: true
+    # Nullable override of the default session scope rule for automatic
+    # memory extraction (OrcaHub.MemoryExtraction.in_scope?/1), applied to
+    # every session this trigger spawns — nil inherits the normal rule,
+    # true/false forces it. See sessions.memory_extract for the per-session
+    # equivalent this mirrors.
+    field :memory_extract, :boolean
     field :last_session_id, :binary_id
     field :last_fired_at, :utc_datetime
     field :pinned_at, :utc_datetime
@@ -48,6 +54,7 @@ defmodule OrcaHub.Triggers.Trigger do
       :reuse_session,
       :archive_on_complete,
       :enabled,
+      :memory_extract,
       :project_id,
       :last_session_id,
       :last_fired_at,

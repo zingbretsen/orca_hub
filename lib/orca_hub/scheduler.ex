@@ -8,7 +8,9 @@ defmodule OrcaHub.Scheduler do
   alias OrcaHub.{TriggerExecutor, Triggers}
 
   def sync_triggers do
-    jobs() |> Enum.each(fn job -> delete_job(job.name) end)
+    # jobs/0 returns {name, %Quantum.Job{}} pairs (Quantum.JobBroadcaster's
+    # internal job map, listed), not bare job structs.
+    jobs() |> Enum.each(fn {name, _job} -> delete_job(name) end)
 
     Triggers.list_enabled_triggers()
     |> Enum.filter(& &1.cron_expression)

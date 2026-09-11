@@ -71,6 +71,13 @@ defmodule OrcaHub.MCP.Tools.Triggers do
             "archive_on_complete" => %{
               "type" => "boolean",
               "description" => "If true, archive the session once it completes. Default: false"
+            },
+            "memory_extract" => %{
+              "type" => "boolean",
+              "description" =>
+                "Override automatic memory extraction for every session this trigger " <>
+                  "spawns: true forces it on, false forces it off. Omit to apply the " <>
+                  "normal default rule (orchestrator or root sessions only)."
             }
           },
           "required" => ["name", "prompt"]
@@ -114,6 +121,13 @@ defmodule OrcaHub.MCP.Tools.Triggers do
             "archive_on_complete" => %{
               "type" => "boolean",
               "description" => "If true, archive the session once it completes. Default: false"
+            },
+            "memory_extract" => %{
+              "type" => "boolean",
+              "description" =>
+                "Override automatic memory extraction for every session this trigger " <>
+                  "spawns: true forces it on, false forces it off. Omit to apply the " <>
+                  "normal default rule (orchestrator or root sessions only)."
             }
           },
           "required" => ["name", "prompt"]
@@ -125,14 +139,16 @@ defmodule OrcaHub.MCP.Tools.Triggers do
   def call("create_scheduled_trigger", args, _state) do
     with {:ok, project_id} <- resolve_project_id(args),
          :ok <- check_project_node_allowed(project_id) do
-      attrs = %{
-        name: args["name"],
-        prompt: args["prompt"],
-        cron_expression: build_cron(args),
-        project_id: project_id,
-        reuse_session: args["reuse_session"] || false,
-        archive_on_complete: args["archive_on_complete"] || false
-      }
+      attrs =
+        %{
+          name: args["name"],
+          prompt: args["prompt"],
+          cron_expression: build_cron(args),
+          project_id: project_id,
+          reuse_session: args["reuse_session"] || false,
+          archive_on_complete: args["archive_on_complete"] || false
+        }
+        |> maybe_put_memory_extract(args)
 
       case HubRPC.create_trigger(attrs) do
         {:ok, trigger} ->
@@ -153,14 +169,16 @@ defmodule OrcaHub.MCP.Tools.Triggers do
   def call("create_webhook_trigger", args, _state) do
     with {:ok, project_id} <- resolve_project_id(args),
          :ok <- check_project_node_allowed(project_id) do
-      attrs = %{
-        name: args["name"],
-        prompt: args["prompt"],
-        type: "webhook",
-        project_id: project_id,
-        reuse_session: args["reuse_session"] || false,
-        archive_on_complete: args["archive_on_complete"] || false
-      }
+      attrs =
+        %{
+          name: args["name"],
+          prompt: args["prompt"],
+          type: "webhook",
+          project_id: project_id,
+          reuse_session: args["reuse_session"] || false,
+          archive_on_complete: args["archive_on_complete"] || false
+        }
+        |> maybe_put_memory_extract(args)
 
       case HubRPC.create_trigger(attrs) do
         {:ok, trigger} ->
@@ -231,6 +249,15 @@ defmodule OrcaHub.MCP.Tools.Triggers do
   end
 
   defp check_project_node_allowed(_project_id), do: :ok
+
+  # `nil`/absent is left out entirely so the trigger's own default (inherit
+  # the normal session scope rule) applies — see Trigger.memory_extract.
+  defp maybe_put_memory_extract(attrs, %{"memory_extract" => override})
+       when is_boolean(override) do
+    Map.put(attrs, :memory_extract, override)
+  end
+
+  defp maybe_put_memory_extract(attrs, _args), do: attrs
 
   # ── create_scheduled_trigger helpers ──────────────────────────────────
 

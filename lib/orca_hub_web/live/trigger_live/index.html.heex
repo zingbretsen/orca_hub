@@ -222,6 +222,16 @@
         label="Hide from queue when done"
       />
     </div>
+    <.input
+      field={@trigger_form[:memory_extract]}
+      type="select"
+      label="Memory extraction for spawned sessions"
+      options={[
+        {"Default (root/orchestrator sessions only)", ""},
+        {"Always extract memories", "true"},
+        {"Never extract memories", "false"}
+      ]}
+    />
     <p :if={@trigger_type == "email"} class="text-xs text-base-content/60 -mt-2">
       With <strong>Reuse previous session</strong>
       on, forwarded mail accumulates into one long-running session per trigger; with it off,

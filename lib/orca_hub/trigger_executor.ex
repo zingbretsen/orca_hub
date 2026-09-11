@@ -208,11 +208,11 @@ defmodule OrcaHub.TriggerExecutor do
 
   defp resolve_session(trigger), do: create_new_session(trigger)
 
-  defp create_new_session(%{id: trigger_id, project: project, name: name}) do
+  defp create_new_session(%{id: trigger_id, project: project, name: name} = trigger) do
     runner_node = Cluster.project_node_for(project)
 
-    {:ok, session} =
-      HubRPC.create_session(%{
+    attrs =
+      %{
         directory: project.directory,
         project_id: project.id,
         title: "Trigger: #{name}",
@@ -220,10 +220,23 @@ defmodule OrcaHub.TriggerExecutor do
         triggered: true,
         trigger_id: trigger_id,
         runner_node: Atom.to_string(runner_node)
-      })
+      }
+      |> maybe_put_memory_extract(trigger)
+
+    {:ok, session} = HubRPC.create_session(attrs)
 
     session.id
   end
+
+  # `nil` (the common case — no per-trigger override) is left out entirely
+  # so Sessions.create_session/1's own default applies, same as any other
+  # unset session attr.
+  defp maybe_put_memory_extract(attrs, %{memory_extract: override})
+       when is_boolean(override) do
+    Map.put(attrs, :memory_extract, override)
+  end
+
+  defp maybe_put_memory_extract(attrs, _trigger), do: attrs
 
   defp runner_node_for(%{project: project}) when not is_nil(project) do
     Cluster.project_node_for(project)
