@@ -111,3 +111,12 @@ Sender authentication itself (`Authentication-Results`, optionally pinned to
 the inbox's `trusted_authserv_id`) happens in `OrcaHub.EmailInbox.Security`
 before a trigger is ever matched. `subject_pattern` is a case-insensitive
 SUBSTRING match, not a regex.
+
+`Trigger.memory_extract` (nullable boolean, mirrors `Session.memory_extract`)
+overrides automatic memory extraction for every session a trigger spawns —
+`TriggerExecutor` stamps it onto each new session it creates. `OrcaHub.
+MemoryReview` uses this to set it `false` on its own two scheduled triggers
+(`memory-consolidate-nightly`, `memory-verify-weekly`, upserted idempotently
+by `TriggerLoader` on hub boot) — an automated review pass must never itself
+be memory-extracted. See that module's moduledoc for the pass rules
+(propose, never retire/rewrite).
