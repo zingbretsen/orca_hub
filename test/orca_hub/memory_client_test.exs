@@ -278,6 +278,18 @@ defmodule OrcaHub.MemoryClientTest do
 
       assert {:error, {:http_error, 404, _body}} = MemoryClient.duplicates(%{})
     end
+
+    test "never retries a 5xx — this endpoint's own scan is too expensive to risk amplifying" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      Req.Test.stub(@stub, fn conn ->
+        Agent.update(counter, &(&1 + 1))
+        conn |> Plug.Conn.put_status(500) |> Req.Test.json(%{"error" => "boom"})
+      end)
+
+      assert {:error, {:http_error, 500, _body}} = MemoryClient.duplicates(%{})
+      assert Agent.get(counter, & &1) == 1
+    end
   end
 
   describe "merge/2" do

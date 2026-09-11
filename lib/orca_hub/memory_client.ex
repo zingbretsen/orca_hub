@@ -234,7 +234,13 @@ defmodule OrcaHub.MemoryClient do
     with_enabled(fn ->
       do_request(:get, "/v1/memories/duplicates",
         params: params,
-        receive_timeout: @duplicates_timeout
+        receive_timeout: @duplicates_timeout,
+        # Req's default :safe_transient policy retries a GET on 5xx/429 too,
+        # not just a timeout — exactly the window (an OOM restart, a
+        # rollout) where another ~19-29s scan does the most damage. This
+        # endpoint is meant to be called at most once per pass; let a
+        # failure surface immediately instead of amplifying it.
+        retry: false
       )
     end)
   end
