@@ -10,8 +10,13 @@ defmodule OrcaHub.MCP.Tools.Memory do
   (never task progress — that's `report_progress`/issue notes); `recall`
   before starting unfamiliar work, to check whether a relevant memory
   already exists. `update_memory`/`retire_memory`/`verify_memory`/
-  `merge_memories`/`list_memories` round out maintenance: correcting,
-  soft-deleting, re-confirming, deduping, and browsing.
+  `verify_memories`/`merge_memories`/`flag_memory`/`list_memories` round out
+  maintenance: correcting, soft-deleting, re-confirming (one at a time or in
+  a batch), deduping, re-queuing for human review, and browsing.
+  `flag_memory` and `merge_memories`' `created_by: "consolidation"` back the
+  nightly/weekly memory review passes (`OrcaHub.MemoryReview`) — those
+  passes may never retire or rewrite an existing memory's text, only merge,
+  flag, or batch-verify.
 
   Every write scopes the memory to `app: "orcahub"` and this session's
   project (`id`/`name`/`slug`, `slug` derived from the project's directory)
@@ -82,11 +87,12 @@ defmodule OrcaHub.MCP.Tools.Memory do
             },
             "created_by" => %{
               "type" => "string",
-              "enum" => ["extraction"],
+              "enum" => ["extraction", "consolidation"],
               "description" =>
                 "Internal use only — reserved for OrcaHub's own automatic memory-extraction " <>
-                  "sessions. Every other caller's memories are attributed \"agent\" " <>
-                  "automatically; omit this."
+                  "sessions (\"extraction\") and the nightly memory-consolidation pass " <>
+                  "(\"consolidation\", for a synthesis memory it writes). Every other " <>
+                  "caller's memories are attributed \"agent\" automatically; omit this."
             }
           },
           "required" => ["text", "kind"]
@@ -163,11 +169,30 @@ defmodule OrcaHub.MCP.Tools.Memory do
         "name" => "verify_memory",
         "description" =>
           "Mark a memory as freshly re-confirmed (bumps last_verified_at) without " <>
-            "changing its content. Use after checking that an old memory is still accurate.",
+            "changing its content. Use after checking that an old memory is still accurate. " <>
+            "See verify_memories to confirm several at once.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{"id" => %{"type" => "string", "description" => "The memory's id."}},
           "required" => ["id"]
+        }
+      },
+      %{
+        "name" => "verify_memories",
+        "description" =>
+          "Batch version of verify_memory: mark several memories as freshly re-confirmed " <>
+            "(bumps each one's last_verified_at) in one call, without changing their " <>
+            "content. Use after checking that a batch of old memories are all still accurate.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "ids" => %{
+              "type" => "array",
+              "items" => %{"type" => "string"},
+              "description" => "The memories' ids."
+            }
+          },
+          "required" => ["ids"]
         }
       },
       %{
@@ -189,17 +214,45 @@ defmodule OrcaHub.MCP.Tools.Memory do
             "hook" => %{"type" => "string"},
             "tags" => %{"type" => "array", "items" => %{"type" => "string"}},
             "importance" => %{"type" => "integer"},
-            "visibility" => %{"type" => "string", "enum" => @visibilities}
+            "visibility" => %{"type" => "string", "enum" => @visibilities},
+            "created_by" => %{
+              "type" => "string",
+              "enum" => ["consolidation"],
+              "description" =>
+                "Internal use only — reserved for OrcaHub's nightly memory-consolidation " <>
+                  "pass, which is the only caller allowed to merge memories on its own " <>
+                  "authority. Omit for a normal agent-initiated merge."
+            }
           },
           "required" => ["source_ids", "text", "kind"]
         }
       },
       %{
+        "name" => "flag_memory",
+        "description" =>
+          "Flag a memory back into the human review queue with a reason, WITHOUT " <>
+            "retiring it or changing its text — e.g. it contradicts another memory, its " <>
+            "importance looks inflated, or it just needs a second look. Tries to set the " <>
+            "memory's review_status to \"pending\" with your reason as review_note; if the " <>
+            "memory service doesn't support that field yet, falls back to adding a " <>
+            "\"needs-review\" tag instead. The response's `mechanism` field says which " <>
+            "path was actually used.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "id" => %{"type" => "string", "description" => "The memory's id."},
+            "reason" => %{"type" => "string", "description" => "Why it's being flagged."}
+          },
+          "required" => ["id", "reason"]
+        }
+      },
+      %{
         "name" => "list_memories",
         "description" =>
-          "List/browse this project's memories with filters — for maintenance/auditing " <>
-            "what's remembered. Use recall instead for normal \"do we know anything about " <>
-            "X\" search.",
+          "List/browse memories with filters — for maintenance/auditing what's remembered. " <>
+            "Defaults to this session's own project; pass all_projects or an explicit " <>
+            "project_slug to broaden that. Use recall instead for normal \"do we know " <>
+            "anything about X\" search.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -207,7 +260,46 @@ defmodule OrcaHub.MCP.Tools.Memory do
             "status" => %{"type" => "string", "enum" => ~w(active superseded retired)},
             "pinned" => %{"type" => "boolean"},
             "tag" => %{"type" => "string"},
-            "sort" => %{"type" => "string", "enum" => ~w(updated_at times_recalled)},
+            "all_projects" => %{
+              "type" => "boolean",
+              "description" =>
+                "List across every project of this app instead of just this session's own " <>
+                  "project (omits project_slug entirely so the service returns everything). " <>
+                  "Ignored if project_slug is also given. Default false."
+            },
+            "project_slug" => %{
+              "type" => "string",
+              "description" =>
+                "Explicit project slug to list, overriding both this session's own project " <>
+                  "and all_projects."
+            },
+            "created_by" => %{
+              "type" => "string",
+              "description" =>
+                "Filter by who created the memory, e.g. \"agent\", \"extraction\", " <>
+                  "\"consolidation\"."
+            },
+            "review_status" => %{
+              "type" => "string",
+              "description" => "Filter by review status, e.g. \"pending\"."
+            },
+            "last_verified_before" => %{
+              "type" => "string",
+              "description" =>
+                "ISO8601 — only memories last verified before this time (or never " <>
+                  "verified). Pair with sort: \"last_verified_at\" to walk the stalest " <>
+                  "memories first. May not be supported by every memory-service version — " <>
+                  "if the returned list doesn't look correctly filtered/sorted, sort/filter " <>
+                  "it yourself client-side using each memory's own last_verified_at."
+            },
+            "updated_before" => %{
+              "type" => "string",
+              "description" => "ISO8601 — only memories updated before this time."
+            },
+            "sort" => %{
+              "type" => "string",
+              "enum" => ~w(updated_at times_recalled last_verified_at)
+            },
             "page" => %{"type" => "integer"},
             "per_page" => %{"type" => "integer"}
           }
@@ -257,6 +349,14 @@ defmodule OrcaHub.MCP.Tools.Memory do
     end
   end
 
+  def call("verify_memories", args, _state) do
+    with {:ok, ids} <- require_list(args, "ids") do
+      handle_result(MemoryClient.verify_batch(ids))
+    else
+      {:error, reason} -> error(reason)
+    end
+  end
+
   def call("merge_memories", args, _state) do
     with {:ok, source_ids} <- require_list(args, "source_ids"),
          {:ok, text} <- require_field(args, "text"),
@@ -267,8 +367,18 @@ defmodule OrcaHub.MCP.Tools.Memory do
         |> maybe_put_field("tags", args["tags"])
         |> maybe_put_field("importance", args["importance"])
         |> maybe_put_field("visibility", blank_to_nil(args["visibility"]))
+        |> maybe_put_field("created_by", resolve_merge_created_by(args["created_by"]))
 
       handle_result(MemoryClient.merge(source_ids, attrs))
+    else
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  def call("flag_memory", args, _state) do
+    with {:ok, id} <- require_field(args, "id"),
+         {:ok, reason} <- require_field(args, "reason") do
+      handle_result(MemoryClient.flag(id, reason))
     else
       {:error, reason} -> error(reason)
     end
@@ -277,17 +387,41 @@ defmodule OrcaHub.MCP.Tools.Memory do
   def call("list_memories", args, state) do
     with_calling_session(state, fn _session_id, session ->
       params =
-        %{"project_slug" => project_slug(session)}
+        project_scope_params(session, args)
         |> maybe_put_field("kind", blank_to_nil(args["kind"]))
         |> maybe_put_field("status", blank_to_nil(args["status"]))
         |> maybe_put_field("pinned", args["pinned"])
         |> maybe_put_field("tag", blank_to_nil(args["tag"]))
+        |> maybe_put_field("created_by", blank_to_nil(args["created_by"]))
+        |> maybe_put_field("review_status", blank_to_nil(args["review_status"]))
+        |> maybe_put_field("last_verified_before", blank_to_nil(args["last_verified_before"]))
+        |> maybe_put_field("updated_before", blank_to_nil(args["updated_before"]))
         |> maybe_put_field("sort", blank_to_nil(args["sort"]))
         |> maybe_put_field("page", args["page"])
         |> maybe_put_field("per_page", args["per_page"])
 
       handle_result(MemoryClient.list(params))
     end)
+  end
+
+  # Only "consolidation" (OrcaHub.MemoryReview's own spawned sessions) may
+  # set created_by on a merge — every other caller omits it (nil, which
+  # maybe_put_field drops), same reasoning as resolve_created_by/1 above.
+  defp resolve_merge_created_by("consolidation"), do: "consolidation"
+  defp resolve_merge_created_by(_), do: nil
+
+  # project_slug (explicit) wins over all_projects, which wins over the
+  # session's own project — see list_memories' inputSchema description.
+  defp project_scope_params(session, args) do
+    case blank_to_nil(args["project_slug"]) do
+      nil ->
+        if args["all_projects"] == true,
+          do: %{},
+          else: %{"project_slug" => project_slug(session)}
+
+      slug ->
+        %{"project_slug" => slug}
+    end
   end
 
   # -------------------------------------------------------------------
@@ -341,11 +475,13 @@ defmodule OrcaHub.MCP.Tools.Memory do
     end
   end
 
-  # Only "extraction" (OrcaHub.MemoryExtraction's own spawned sessions) may
+  # Only "extraction" (OrcaHub.MemoryExtraction's own spawned sessions) or
+  # "consolidation" (OrcaHub.MemoryReview's own spawned sessions) may
   # override the default "agent" attribution — any other value (including
   # garbage) is ignored rather than rejected, since this is an obscure
   # internal knob no normal caller should be constructing by hand.
   defp resolve_created_by("extraction"), do: "extraction"
+  defp resolve_created_by("consolidation"), do: "consolidation"
   defp resolve_created_by(_), do: "agent"
 
   defp resolve_project(%{project_id: project_id}) when is_binary(project_id) do

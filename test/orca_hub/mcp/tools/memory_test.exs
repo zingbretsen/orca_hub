@@ -55,7 +55,9 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
                "update_memory",
                "retire_memory",
                "verify_memory",
+               "verify_memories",
                "merge_memories",
+               "flag_memory",
                "list_memories"
              ]
     end
@@ -161,6 +163,24 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
         MemoryTool.call(
           "remember",
           %{"text" => "a fact", "kind" => "fact", "created_by" => "extraction"},
+          state
+        )
+
+      assert %{"isError" => false} = result
+    end
+
+    test "created_by: \"consolidation\" is accepted verbatim", %{state: state} do
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        body = Jason.decode!(raw)
+        assert body["created_by"] == "consolidation"
+        Req.Test.json(conn, %{"memory" => %{"id" => "mem-11"}, "near_duplicates" => []})
+      end)
+
+      result =
+        MemoryTool.call(
+          "remember",
+          %{"text" => "synthesis fact", "kind" => "fact", "created_by" => "consolidation"},
           state
         )
 
@@ -296,6 +316,28 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
     end
   end
 
+  describe "verify_memories" do
+    test "POSTs /v1/memories/verify with the ids" do
+      Req.Test.stub(@stub, fn conn ->
+        assert conn.request_path == "/v1/memories/verify"
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        assert Jason.decode!(raw) == %{"ids" => ["mem-7a", "mem-7b"]}
+
+        Req.Test.json(conn, %{"verified" => ["mem-7a", "mem-7b"]})
+      end)
+
+      assert %{"isError" => false} =
+               MemoryTool.call("verify_memories", %{"ids" => ["mem-7a", "mem-7b"]}, %{})
+    end
+
+    test "rejects an empty ids" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               MemoryTool.call("verify_memories", %{"ids" => []}, %{})
+
+      assert msg =~ "ids"
+    end
+  end
+
   describe "merge_memories" do
     test "POSTs source_ids with the merged attrs" do
       Req.Test.stub(@stub, fn conn ->
@@ -306,6 +348,7 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
         assert body["source_ids"] == ["a", "b"]
         assert body["text"] == "combined fact"
         assert body["kind"] == "fact"
+        refute Map.has_key?(body, "created_by")
 
         Req.Test.json(conn, %{"memory" => %{"id" => "mem-8"}, "supersedes" => ["a", "b"]})
       end)
@@ -330,6 +373,84 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
 
       assert msg =~ "source_ids"
     end
+
+    test "created_by: \"consolidation\" is accepted verbatim" do
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        assert Jason.decode!(raw)["created_by"] == "consolidation"
+        Req.Test.json(conn, %{"memory" => %{"id" => "mem-8b"}})
+      end)
+
+      result =
+        MemoryTool.call(
+          "merge_memories",
+          %{
+            "source_ids" => ["a", "b"],
+            "text" => "combined fact",
+            "kind" => "fact",
+            "created_by" => "consolidation"
+          },
+          %{}
+        )
+
+      assert %{"isError" => false} = result
+    end
+
+    test "any other created_by value is dropped" do
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        refute Map.has_key?(Jason.decode!(raw), "created_by")
+        Req.Test.json(conn, %{"memory" => %{"id" => "mem-8c"}})
+      end)
+
+      result =
+        MemoryTool.call(
+          "merge_memories",
+          %{
+            "source_ids" => ["a", "b"],
+            "text" => "combined fact",
+            "kind" => "fact",
+            "created_by" => "agent"
+          },
+          %{}
+        )
+
+      assert %{"isError" => false} = result
+    end
+  end
+
+  describe "flag_memory" do
+    test "requests review_status and reports the mechanism used" do
+      Req.Test.stub(@stub, fn conn ->
+        assert conn.method == "PATCH"
+        assert conn.request_path == "/v1/memories/mem-flag-1"
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+
+        assert Jason.decode!(raw) == %{
+                 "review_status" => "pending",
+                 "review_note" => "contradicts mem-2"
+               }
+
+        Req.Test.json(conn, %{"memory" => %{"id" => "mem-flag-1"}})
+      end)
+
+      result =
+        MemoryTool.call(
+          "flag_memory",
+          %{"id" => "mem-flag-1", "reason" => "contradicts mem-2"},
+          %{}
+        )
+
+      assert %{"isError" => false} = result
+      assert %{"mechanism" => "review_status"} = decode(result)
+    end
+
+    test "rejects a missing reason" do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               MemoryTool.call("flag_memory", %{"id" => "mem-flag-1"}, %{})
+
+      assert msg =~ "reason"
+    end
   end
 
   describe "list_memories" do
@@ -349,6 +470,62 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
       result = MemoryTool.call("list_memories", %{"kind" => "decision"}, state)
       assert %{"isError" => false} = result
       assert %{"memories" => []} = decode(result)
+    end
+
+    test "all_projects: true omits project_slug entirely", %{state: state} do
+      Req.Test.stub(@stub, fn conn ->
+        refute Map.has_key?(conn.query_params, "project_slug")
+        Req.Test.json(conn, %{"memories" => []})
+      end)
+
+      result = MemoryTool.call("list_memories", %{"all_projects" => true}, state)
+      assert %{"isError" => false} = result
+    end
+
+    test "an explicit project_slug overrides both the session's project and all_projects", %{
+      state: state
+    } do
+      Req.Test.stub(@stub, fn conn ->
+        assert conn.query_params["project_slug"] == "some-other-project"
+        Req.Test.json(conn, %{"memories" => []})
+      end)
+
+      result =
+        MemoryTool.call(
+          "list_memories",
+          %{"project_slug" => "some-other-project", "all_projects" => true},
+          state
+        )
+
+      assert %{"isError" => false} = result
+    end
+
+    test "passes through created_by/review_status/last_verified_before/updated_before/sort", %{
+      state: state
+    } do
+      Req.Test.stub(@stub, fn conn ->
+        assert conn.query_params["created_by"] == "extraction"
+        assert conn.query_params["review_status"] == "pending"
+        assert conn.query_params["last_verified_before"] == "2026-01-01T00:00:00Z"
+        assert conn.query_params["updated_before"] == "2026-02-01T00:00:00Z"
+        assert conn.query_params["sort"] == "last_verified_at"
+        Req.Test.json(conn, %{"memories" => []})
+      end)
+
+      result =
+        MemoryTool.call(
+          "list_memories",
+          %{
+            "created_by" => "extraction",
+            "review_status" => "pending",
+            "last_verified_before" => "2026-01-01T00:00:00Z",
+            "updated_before" => "2026-02-01T00:00:00Z",
+            "sort" => "last_verified_at"
+          },
+          state
+        )
+
+      assert %{"isError" => false} = result
     end
   end
 end

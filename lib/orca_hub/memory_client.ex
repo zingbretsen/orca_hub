@@ -49,6 +49,20 @@ defmodule OrcaHub.MemoryClient do
   @doc "POST /v1/memories/:id/verify."
   def verify(id), do: HubRPC.memory_verify(id)
 
+  @doc "POST /v1/memories/verify (batch). `ids` is a non-empty list of memory ids."
+  def verify_batch(ids), do: HubRPC.memory_verify_batch(ids)
+
+  @doc """
+  Re-queues a memory for human review without touching its text. Tries
+  `PATCH /v1/memories/:id` with `review_status: "pending"` + `review_note:
+  reason` first; if the service doesn't support that yet (HTTP 422), falls
+  back to reading the memory's current `tags` and PATCHing them with
+  `"needs-review"` appended, logging once. Either way the returned map
+  carries `"mechanism"` — `"review_status"` or `"tags_fallback"` — saying
+  which path was taken.
+  """
+  def flag(id, reason), do: HubRPC.memory_flag(id, reason)
+
   @doc "POST /v1/memories/merge. `attrs` carries `text`/`kind`/etc. for the merged memory."
   def merge(source_ids, attrs), do: HubRPC.memory_merge(source_ids, attrs)
 
@@ -143,6 +157,49 @@ defmodule OrcaHub.MemoryClient do
   def verify_impl(id) do
     with_enabled(fn -> do_request(:post, "/v1/memories/#{id}/verify", json: %{}) end)
   end
+
+  def verify_batch_impl(ids) do
+    with_enabled(fn -> do_request(:post, "/v1/memories/verify", json: %{"ids" => ids}) end)
+  end
+
+  def flag_impl(id, reason) do
+    with_enabled(fn ->
+      case do_request(:patch, "/v1/memories/#{id}",
+             json: %{"review_status" => "pending", "review_note" => reason}
+           ) do
+        {:ok, body} ->
+          {:ok, tag_mechanism(body, "review_status")}
+
+        {:error, {:http_error, 422, _body}} ->
+          flag_via_tags(id, reason)
+
+        {:error, _reason} = error ->
+          error
+      end
+    end)
+  end
+
+  defp flag_via_tags(id, reason) do
+    Logger.warning(
+      "MemoryClient.flag: service rejected review_status/review_note (422) for memory " <>
+        "#{id}, falling back to a \"needs-review\" tag. Reason: #{reason}"
+    )
+
+    with {:ok, memory} <- do_request(:get, "/v1/memories/#{id}") do
+      tags = ((get_field(memory, "tags") || []) ++ ["needs-review"]) |> Enum.uniq()
+
+      case do_request(:patch, "/v1/memories/#{id}", json: %{"tags" => tags}) do
+        {:ok, body} -> {:ok, tag_mechanism(body, "tags_fallback")}
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
+  defp tag_mechanism(body, mechanism) when is_map(body), do: Map.put(body, "mechanism", mechanism)
+  defp tag_mechanism(body, mechanism), do: %{"result" => body, "mechanism" => mechanism}
+
+  defp get_field(map, key) when is_map(map), do: map[key]
+  defp get_field(_map, _key), do: nil
 
   def merge_impl(source_ids, attrs) do
     body = Map.put(attrs, "source_ids", source_ids)

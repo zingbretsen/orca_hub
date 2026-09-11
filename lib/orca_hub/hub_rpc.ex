@@ -533,6 +533,10 @@ defmodule OrcaHub.HubRPC do
 
   def memory_verify(id), do: call(OrcaHub.MemoryClient, :verify_impl, [id])
 
+  def memory_verify_batch(ids), do: call(OrcaHub.MemoryClient, :verify_batch_impl, [ids])
+
+  def memory_flag(id, reason), do: call(OrcaHub.MemoryClient, :flag_impl, [id, reason])
+
   def memory_merge(source_ids, attrs),
     do: call(OrcaHub.MemoryClient, :merge_impl, [source_ids, attrs])
 

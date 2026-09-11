@@ -173,6 +173,70 @@ defmodule OrcaHub.MemoryClientTest do
     end
   end
 
+  describe "verify_batch/1" do
+    test "POSTs /v1/memories/verify with the ids" do
+      Req.Test.stub(@stub, fn conn ->
+        assert conn.request_path == "/v1/memories/verify"
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        assert Jason.decode!(raw) == %{"ids" => ["mem-1", "mem-2"]}
+
+        Req.Test.json(conn, %{"verified" => ["mem-1", "mem-2"]})
+      end)
+
+      assert {:ok, %{"verified" => ["mem-1", "mem-2"]}} =
+               MemoryClient.verify_batch(["mem-1", "mem-2"])
+    end
+  end
+
+  describe "flag/2" do
+    test "PATCHes review_status/review_note and reports mechanism: review_status" do
+      Req.Test.stub(@stub, fn conn ->
+        assert conn.method == "PATCH"
+        assert conn.request_path == "/v1/memories/mem-1"
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+
+        assert Jason.decode!(raw) == %{
+                 "review_status" => "pending",
+                 "review_note" => "contradicts mem-2"
+               }
+
+        Req.Test.json(conn, %{"memory" => %{"id" => "mem-1", "review_status" => "pending"}})
+      end)
+
+      assert {:ok, %{"memory" => %{"id" => "mem-1"}, "mechanism" => "review_status"}} =
+               MemoryClient.flag("mem-1", "contradicts mem-2")
+    end
+
+    test "falls back to a needs-review tag on a 422, preserving existing tags" do
+      Req.Test.stub(@stub, fn
+        %{method: "PATCH", request_path: "/v1/memories/mem-1"} = conn ->
+          case Plug.Conn.read_body(conn) do
+            {:ok, raw, conn} ->
+              body = Jason.decode!(raw)
+
+              cond do
+                Map.has_key?(body, "review_status") ->
+                  conn |> Plug.Conn.put_status(422) |> Req.Test.json(%{"error" => "unsupported"})
+
+                Map.has_key?(body, "tags") ->
+                  assert body["tags"] == ["existing", "needs-review"]
+                  Req.Test.json(conn, %{"memory" => %{"id" => "mem-1", "tags" => body["tags"]}})
+              end
+          end
+
+        %{method: "GET", request_path: "/v1/memories/mem-1"} = conn ->
+          Req.Test.json(conn, %{"id" => "mem-1", "tags" => ["existing"]})
+      end)
+
+      assert {:ok,
+              %{
+                "memory" => %{"tags" => ["existing", "needs-review"]},
+                "mechanism" => "tags_fallback"
+              }} =
+               MemoryClient.flag("mem-1", "importance looks inflated")
+    end
+  end
+
   describe "merge/2" do
     test "POSTs source_ids merged with the given attrs" do
       Req.Test.stub(@stub, fn conn ->
