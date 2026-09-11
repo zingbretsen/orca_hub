@@ -235,6 +235,49 @@ defmodule OrcaHub.MemoryClientTest do
               }} =
                MemoryClient.flag("mem-1", "importance looks inflated")
     end
+
+    test "truncates review_note to 500 chars before sending" do
+      long_reason = String.duplicate("x", 600)
+
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        body = Jason.decode!(raw)
+        assert String.length(body["review_note"]) == 500
+        assert body["review_note"] == String.duplicate("x", 500)
+        Req.Test.json(conn, %{"memory" => %{"id" => "mem-1"}})
+      end)
+
+      assert {:ok, _} = MemoryClient.flag("mem-1", long_reason)
+    end
+  end
+
+  describe "duplicates/1" do
+    test "GETs /v1/memories/duplicates with query params" do
+      Req.Test.stub(@stub, fn conn ->
+        assert conn.method == "GET"
+        assert conn.request_path == "/v1/memories/duplicates"
+        assert conn.query_params["project_slug"] == "-home-zach-orca-hub"
+        assert conn.query_params["threshold"] == "0.85"
+
+        Req.Test.json(conn, %{
+          "groups" => [%{"memories" => [%{"id" => "a"}, %{"id" => "b"}], "max_score" => 0.9}]
+        })
+      end)
+
+      assert {:ok, %{"groups" => [%{"max_score" => 0.9}]}} =
+               MemoryClient.duplicates(%{
+                 "project_slug" => "-home-zach-orca-hub",
+                 "threshold" => 0.85
+               })
+    end
+
+    test "a 404 (the service may not implement this endpoint yet) comes back as an ordinary error" do
+      Req.Test.stub(@stub, fn conn ->
+        conn |> Plug.Conn.put_status(404) |> Req.Test.json(%{"error" => "not found"})
+      end)
+
+      assert {:error, {:http_error, 404, _body}} = MemoryClient.duplicates(%{})
+    end
   end
 
   describe "merge/2" do

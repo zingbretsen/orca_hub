@@ -540,6 +540,8 @@ defmodule OrcaHub.HubRPC do
   def memory_merge(source_ids, attrs),
     do: call(OrcaHub.MemoryClient, :merge_impl, [source_ids, attrs])
 
+  def memory_duplicates(params), do: call(OrcaHub.MemoryClient, :duplicates_impl, [params])
+
   def memory_list(params), do: call(OrcaHub.MemoryClient, :list_impl, [params])
   def memory_tags(params), do: call(OrcaHub.MemoryClient, :tags_impl, [params])
 

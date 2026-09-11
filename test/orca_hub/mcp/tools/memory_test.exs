@@ -58,6 +58,7 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
                "verify_memories",
                "merge_memories",
                "flag_memory",
+               "find_duplicate_memories",
                "list_memories"
              ]
     end
@@ -450,6 +451,75 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
                MemoryTool.call("flag_memory", %{"id" => "mem-flag-1"}, %{})
 
       assert msg =~ "reason"
+    end
+
+    test "truncates a reason over 500 chars before sending it as review_note" do
+      long_reason = String.duplicate("x", 600)
+
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        body = Jason.decode!(raw)
+        assert String.length(body["review_note"]) == 500
+        Req.Test.json(conn, %{"memory" => %{"id" => "mem-flag-2"}})
+      end)
+
+      result =
+        MemoryTool.call("flag_memory", %{"id" => "mem-flag-2", "reason" => long_reason}, %{})
+
+      assert %{"isError" => false} = result
+    end
+  end
+
+  describe "find_duplicate_memories" do
+    test "scopes to the session's project slug by default", %{state: state, project: project} do
+      Req.Test.stub(@stub, fn conn ->
+        assert conn.method == "GET"
+        assert conn.request_path == "/v1/memories/duplicates"
+
+        assert conn.query_params["project_slug"] ==
+                 String.replace(project.directory, ~r/[^a-zA-Z0-9]/, "-")
+
+        Req.Test.json(conn, %{"groups" => []})
+      end)
+
+      result = MemoryTool.call("find_duplicate_memories", %{}, state)
+      assert %{"isError" => false} = result
+      assert %{"groups" => []} = decode(result)
+    end
+
+    test "passes through all_projects/threshold/limit", %{state: state} do
+      Req.Test.stub(@stub, fn conn ->
+        refute Map.has_key?(conn.query_params, "project_slug")
+        assert conn.query_params["threshold"] == "0.9"
+        assert conn.query_params["limit"] == "5"
+
+        Req.Test.json(conn, %{
+          "groups" => [%{"memories" => [%{"id" => "a"}, %{"id" => "b"}], "max_score" => 0.92}]
+        })
+      end)
+
+      result =
+        MemoryTool.call(
+          "find_duplicate_memories",
+          %{"all_projects" => true, "threshold" => 0.9, "limit" => 5},
+          state
+        )
+
+      assert %{"isError" => false} = result
+      assert %{"groups" => [%{"max_score" => 0.92}]} = decode(result)
+    end
+
+    test "surfaces a 404 as an ordinary tool error (endpoint not on this service build)", %{
+      state: state
+    } do
+      Req.Test.stub(@stub, fn conn ->
+        conn |> Plug.Conn.put_status(404) |> Req.Test.json(%{"error" => "not found"})
+      end)
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               MemoryTool.call("find_duplicate_memories", %{}, state)
+
+      assert msg =~ "404"
     end
   end
 

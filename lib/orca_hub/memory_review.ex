@@ -192,14 +192,18 @@ defmodule OrcaHub.MemoryReview do
     artifact — do not silently keep going past it, and do not pad out to the cap \
     if there is nothing left worth doing.
 
-    Build your candidate pool by calling `Tools.list_memories(%{"all_projects" => \
-    true, "sort" => "updated_at"})` and taking memories updated in the last 7 \
-    days, plus each candidate's nearest neighbours: for every candidate, call \
+    Build your candidate pool FIRST by calling `Tools.find_duplicate_memories(%{ \
+    "all_projects" => true, "threshold" => 0.85})` — this is the memory service's \
+    own similarity scoring and is strictly preferred over guessing with recall. \
+    It returns `{"groups": [{"memories": [...], "max_score": <0-1>}]}`; treat \
+    each returned group as a merge candidate and run it straight through the \
+    Decision rules below. ONLY IF that call errors (e.g. this service build \
+    doesn't have the endpoint yet — a 404/422), fall back to: call \
+    `Tools.list_memories(%{"all_projects" => true, "sort" => "updated_at"})`, \
+    take memories updated in the last 7 days, and for each one call \
     `Tools.recall(%{"query" => <candidate's hook or text>, "include_other_projects" \
-    => true, "limit" => 5})`. If the memory service exposes a dedicated \
-    duplicates endpoint, prefer it — check with `Tools.search("duplicate")` \
-    first. You are not expected to review every memory that exists, only this \
-    window.
+    => true, "limit" => 5})` to find its nearest neighbours. Either way, you are \
+    not expected to review every memory that exists, only this window.
 
     ## Decision rules
 

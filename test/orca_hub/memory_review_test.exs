@@ -32,6 +32,13 @@ defmodule OrcaHub.MemoryReviewTest do
       assert prompt =~ "must end this turn when you are done"
     end
 
+    test "uses find_duplicate_memories first, falling back to recall only on error" do
+      prompt = MemoryReview.consolidate_prompt()
+      assert prompt =~ "Build your candidate pool FIRST by calling `Tools.find_duplicate_memories"
+      assert prompt =~ "ONLY IF that call errors"
+      assert prompt =~ "Tools.recall"
+    end
+
     test "names the pinned-memory and contradiction rules explicitly" do
       prompt = MemoryReview.consolidate_prompt()
       assert prompt =~ "Never touch a PINNED memory except to flag it"

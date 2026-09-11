@@ -10,13 +10,14 @@ defmodule OrcaHub.MCP.Tools.Memory do
   (never task progress — that's `report_progress`/issue notes); `recall`
   before starting unfamiliar work, to check whether a relevant memory
   already exists. `update_memory`/`retire_memory`/`verify_memory`/
-  `verify_memories`/`merge_memories`/`flag_memory`/`list_memories` round out
-  maintenance: correcting, soft-deleting, re-confirming (one at a time or in
-  a batch), deduping, re-queuing for human review, and browsing.
-  `flag_memory` and `merge_memories`' `created_by: "consolidation"` back the
-  nightly/weekly memory review passes (`OrcaHub.MemoryReview`) — those
-  passes may never retire or rewrite an existing memory's text, only merge,
-  flag, or batch-verify.
+  `verify_memories`/`merge_memories`/`flag_memory`/`find_duplicate_memories`/
+  `list_memories` round out maintenance: correcting, soft-deleting,
+  re-confirming (one at a time or in a batch), deduping (scored by the
+  service itself, via `find_duplicate_memories`), re-queuing for human
+  review, and browsing. `flag_memory` and `merge_memories`'
+  `created_by: "consolidation"` back the nightly/weekly memory review passes
+  (`OrcaHub.MemoryReview`) — those passes may never retire or rewrite an
+  existing memory's text, only merge, flag, or batch-verify.
 
   Every write scopes the memory to `app: "orcahub"` and this session's
   project (`id`/`name`/`slug`, `slug` derived from the project's directory)
@@ -241,9 +242,46 @@ defmodule OrcaHub.MCP.Tools.Memory do
           "type" => "object",
           "properties" => %{
             "id" => %{"type" => "string", "description" => "The memory's id."},
-            "reason" => %{"type" => "string", "description" => "Why it's being flagged."}
+            "reason" => %{
+              "type" => "string",
+              "description" => "Why it's being flagged. Max 500 chars — longer text is truncated."
+            }
           },
           "required" => ["id", "reason"]
+        }
+      },
+      %{
+        "name" => "find_duplicate_memories",
+        "description" =>
+          "Find groups of likely-duplicate memories using the memory service's own " <>
+            "similarity scoring — prefer this over guessing with recall when hunting for " <>
+            "merge candidates (e.g. the nightly consolidation pass). Returns `{\"groups\": " <>
+            "[{\"memories\": [...], \"max_score\": <0-1>}]}`; each group is a candidate to " <>
+            "run through merge_memories' decision rules. Defaults to this session's own " <>
+            "project; pass all_projects or an explicit project_slug to broaden that. Not " <>
+            "every memory-service deployment has this endpoint yet — a 404/422 here just " <>
+            "means falling back to per-candidate recall instead.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "all_projects" => %{
+              "type" => "boolean",
+              "description" =>
+                "Search across every project of this app instead of just this session's " <>
+                  "own project. Ignored if project_slug is also given. Default false."
+            },
+            "project_slug" => %{
+              "type" => "string",
+              "description" =>
+                "Explicit project slug to search, overriding both this session's own " <>
+                  "project and all_projects."
+            },
+            "threshold" => %{
+              "type" => "number",
+              "description" => "Similarity threshold, 0-1. Default 0.85."
+            },
+            "limit" => %{"type" => "integer", "description" => "Max groups to return."}
+          }
         }
       },
       %{
@@ -382,6 +420,17 @@ defmodule OrcaHub.MCP.Tools.Memory do
     else
       {:error, reason} -> error(reason)
     end
+  end
+
+  def call("find_duplicate_memories", args, state) do
+    with_calling_session(state, fn _session_id, session ->
+      params =
+        project_scope_params(session, args)
+        |> maybe_put_field("threshold", args["threshold"])
+        |> maybe_put_field("limit", args["limit"])
+
+      handle_result(MemoryClient.duplicates(params))
+    end)
   end
 
   def call("list_memories", args, state) do

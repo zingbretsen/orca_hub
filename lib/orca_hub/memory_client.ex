@@ -66,6 +66,16 @@ defmodule OrcaHub.MemoryClient do
   @doc "POST /v1/memories/merge. `attrs` carries `text`/`kind`/etc. for the merged memory."
   def merge(source_ids, attrs), do: HubRPC.memory_merge(source_ids, attrs)
 
+  @doc """
+  GET /v1/memories/duplicates — the service's own similarity-scored
+  duplicate grouping, `params` typically carrying `project_slug`/
+  `threshold`/`limit`. Returns `{:ok, %{"groups" => [%{"memories" => [...],
+  "max_score" => float}]}}` on success; an ordinary `{:error, reason}` like
+  every other function here (including a 404, if a given service build
+  doesn't have this endpoint yet) — never raises.
+  """
+  def duplicates(params \\ %{}), do: HubRPC.memory_duplicates(params)
+
   @doc "GET /v1/memories (listing/maintenance query)."
   def list(params \\ %{}), do: HubRPC.memory_list(params)
 
@@ -162,10 +172,18 @@ defmodule OrcaHub.MemoryClient do
     with_enabled(fn -> do_request(:post, "/v1/memories/verify", json: %{"ids" => ids}) end)
   end
 
+  # The service caps review_note at 500 chars and rejects a longer one —
+  # truncate here so a verbose flag reason never itself triggers the
+  # tags_fallback path below for a reason unrelated to service support.
+  @review_note_max_chars 500
+
   def flag_impl(id, reason) do
     with_enabled(fn ->
       case do_request(:patch, "/v1/memories/#{id}",
-             json: %{"review_status" => "pending", "review_note" => reason}
+             json: %{
+               "review_status" => "pending",
+               "review_note" => String.slice(reason, 0, @review_note_max_chars)
+             }
            ) do
         {:ok, body} ->
           {:ok, tag_mechanism(body, "review_status")}
@@ -204,6 +222,10 @@ defmodule OrcaHub.MemoryClient do
   def merge_impl(source_ids, attrs) do
     body = Map.put(attrs, "source_ids", source_ids)
     with_enabled(fn -> do_request(:post, "/v1/memories/merge", json: body) end)
+  end
+
+  def duplicates_impl(params) do
+    with_enabled(fn -> do_request(:get, "/v1/memories/duplicates", params: params) end)
   end
 
   def list_impl(params) do
