@@ -13,7 +13,17 @@ config :orca_hub,
   ecto_repos: [OrcaHub.Repo],
   generators: [timestamp_type: :utc_datetime]
 
-config :orca_hub, OrcaHub.Scheduler, jobs: []
+# ORCAHUB3-80: Quantum's own library default (`{Random, :cluster}`) picks a
+# node uniformly at random from `[node() | Node.list()]` — every
+# libcluster-connected agent node (mini, gb10, both k3s agent pods, the local
+# systemd agent), NONE of which run this scheduler's TaskSupervisor (Quantum
+# only ever starts in `hub_children/1`). When it picks anything but the hub,
+# `NodeSelectorBroadcaster.check_node/3` filters that node out and logs a
+# `[error] Node ... is not running. Job ... could not be executed.` with an
+# EMPTY resulting node list — the job silently never runs anywhere, with no
+# "Firing trigger" line and no crash. `Local` always resolves to `node()`
+# itself, which is correct since this scheduler is single-node by design.
+config :orca_hub, OrcaHub.Scheduler, jobs: [], run_strategy: Quantum.RunStrategy.Local
 
 # Discord worker is OFF by default; runtime.exs flips it on for the dedicated
 # Discord agent (DISCORD_BOT=true + DISCORD_BOT_TOKEN).

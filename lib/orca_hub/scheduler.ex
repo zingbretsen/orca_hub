@@ -5,6 +5,8 @@ defmodule OrcaHub.Scheduler do
 
   use Quantum, otp_app: :orca_hub
 
+  require Logger
+
   alias OrcaHub.{TriggerExecutor, Triggers}
 
   def sync_triggers do
@@ -14,7 +16,23 @@ defmodule OrcaHub.Scheduler do
 
     Triggers.list_enabled_triggers()
     |> Enum.filter(& &1.cron_expression)
-    |> Enum.each(&schedule_trigger/1)
+    |> Enum.each(fn trigger ->
+      try do
+        schedule_trigger(trigger)
+      rescue
+        e ->
+          Logger.error(
+            "sync_triggers: failed to schedule trigger #{trigger.id} (#{trigger.name}): " <>
+              Exception.format(:error, e, __STACKTRACE__)
+          )
+      end
+    end)
+
+    registered =
+      jobs()
+      |> Enum.map(fn {name, job} -> "#{name}@#{inspect(job.schedule)} (#{job.state})" end)
+
+    Logger.info("sync_triggers: registered #{length(registered)} job(s): #{inspect(registered)}")
   end
 
   def schedule_trigger(trigger) do

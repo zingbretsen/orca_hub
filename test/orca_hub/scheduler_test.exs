@@ -34,4 +34,25 @@ defmodule OrcaHub.SchedulerTest do
     names = Scheduler.jobs() |> Enum.map(fn {name, _job} -> name end)
     assert :"trigger_#{trigger.id}" in names
   end
+
+  test "ORCAHUB3-80: a scheduled trigger's job runs locally, not via a random cluster node",
+       %{project: project} do
+    {:ok, trigger} =
+      Triggers.create_trigger(%{
+        name: "run-strategy-regression",
+        prompt: "check something",
+        cron_expression: "0 3 * * *",
+        project_id: project.id
+      })
+
+    job = Scheduler.jobs() |> Map.new() |> Map.fetch!(:"trigger_#{trigger.id}")
+
+    # Quantum's own library default (`{Random, :cluster}`) picks a node
+    # uniformly at random from every libcluster-connected node — including
+    # agent nodes that never run this scheduler's TaskSupervisor — so most
+    # picks silently drop the job (NodeSelectorBroadcaster filters the node
+    # out and logs an error, with no fallback). This scheduler only ever
+    # runs on the hub, so it must always resolve to the local node.
+    assert %Quantum.RunStrategy.Local{} = job.run_strategy
+  end
 end
