@@ -7,13 +7,21 @@ defmodule OrcaHub.SessionRunnerTest do
   alias OrcaHub.{HubRPC, Projects, Sessions, SessionRunner}
 
   setup do
-    {:ok, project} = Projects.create_project(%{name: "Test", directory: "/tmp/test-sessions-#{System.unique_integer([:positive])}"})
+    {:ok, project} =
+      Projects.create_project(%{
+        name: "Test",
+        directory: "/tmp/test-sessions-#{System.unique_integer([:positive])}"
+      })
+
     %{project: project}
   end
 
   defp create_session(project, overrides) do
     attrs =
-      %{project_id: project.id, directory: "/tmp/test-sessions-#{System.unique_integer([:positive])}"}
+      %{
+        project_id: project.id,
+        directory: "/tmp/test-sessions-#{System.unique_integer([:positive])}"
+      }
       |> Map.merge(overrides)
 
     {:ok, session} = Sessions.create_session(attrs)
@@ -232,7 +240,15 @@ defmodule OrcaHub.SessionRunnerTest do
       session = create_session(project, %{})
       test_pid = self()
 
-      Application.put_env(:orca_hub, :memory_extraction_dispatch_fun, fn dispatched_session, opts ->
+      # NOTE: :memory_extraction_dispatch_fun is GLOBAL application env, but this
+      # case is `async: true` — so while this hook is installed, ANY concurrently
+      # running test that archives a session also invokes it and sends a message
+      # here. Every assertion below must therefore pin the session id (`^session_id`)
+      # rather than matching `_`; a wildcard refute_receive trips on a foreign
+      # session's dispatch and fails at random (seen 2026-09-11 with a stray
+      # `trigger: :archive` dispatch from another test).
+      Application.put_env(:orca_hub, :memory_extraction_dispatch_fun, fn dispatched_session,
+                                                                         opts ->
         send(test_pid, {:memory_extraction_dispatched, dispatched_session.id, opts})
         {:ok, :dispatched}
       end)
@@ -264,8 +280,9 @@ defmodule OrcaHub.SessionRunnerTest do
     test "idle's :state_timeout idle_teardown does not dispatch, warm port or not", %{
       session: session
     } do
+      session_id = session.id
       SessionRunner.idle(:state_timeout, :idle_teardown, streaming_teardown_data(session, %{}))
-      refute_receive {:memory_extraction_dispatched, _, _}, 200
+      refute_receive {:memory_extraction_dispatched, ^session_id, _}, 200
 
       SessionRunner.idle(
         :state_timeout,
@@ -273,22 +290,24 @@ defmodule OrcaHub.SessionRunnerTest do
         streaming_teardown_data(session, %{port: nil})
       )
 
-      refute_receive {:memory_extraction_dispatched, _, _}, 200
+      refute_receive {:memory_extraction_dispatched, ^session_id, _}, 200
     end
 
     test "error's :state_timeout idle_teardown does not dispatch, warm port or not", %{
       session: session
     } do
+      session_id = session.id
       SessionRunner.error(:state_timeout, :idle_teardown, streaming_teardown_data(session, %{}))
-      refute_receive {:memory_extraction_dispatched, _, _}, 200
+      refute_receive {:memory_extraction_dispatched, ^session_id, _}, 200
     end
 
     test "evict_warm does NOT dispatch — WarmPool capacity pressure isn't a natural end of work",
          %{session: session} do
+      session_id = session.id
       from = {self(), make_ref()}
       SessionRunner.idle({:call, from}, :evict_warm, streaming_teardown_data(session, %{}))
 
-      refute_receive {:memory_extraction_dispatched, _, _}, 200
+      refute_receive {:memory_extraction_dispatched, ^session_id, _}, 200
     end
   end
 
@@ -310,6 +329,7 @@ defmodule OrcaHub.SessionRunnerTest do
     defp session_data(overrides) do
       # db_node must be set for db_call to work in handle_stream_event
       db_node = node()
+
       Map.merge(
         %{
           session_id: Ecto.UUID.generate(),
@@ -328,24 +348,28 @@ defmodule OrcaHub.SessionRunnerTest do
       )
     end
 
-    test "ready clause persists stale resolution when dialog not in runner state", %{project: project} do
+    test "ready clause persists stale resolution when dialog not in runner state", %{
+      project: project
+    } do
       session = create_session(project, %{backend: "pi"})
 
       # Persist a pi_ui_request
-      {:ok, _} = Sessions.create_message(%{
-        session_id: session.id,
-        data: %{
-          "type" => "pi_ui_request",
-          "id" => "test-1",
-          "method" => "input",
-          "title" => "Test",
-          "message" => "Question?"
-        }
-      })
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "pi_ui_request",
+            "id" => "test-1",
+            "method" => "input",
+            "title" => "Test",
+            "message" => "Question?"
+          }
+        })
 
       data = session_data(%{session_id: session.id})
 
       from = {self(), make_ref()}
+
       {:keep_state, _new_data, [{:reply, ^from, {:error, :not_running}}]} =
         SessionRunner.ready({:call, from}, {:answer_ui_request, "test-1", %{}}, data)
 
@@ -356,21 +380,23 @@ defmodule OrcaHub.SessionRunnerTest do
     test "idle clause persists stale resolution when no warm port", %{project: project} do
       session = create_session(project, %{backend: "pi"})
 
-      {:ok, _} = Sessions.create_message(%{
-        session_id: session.id,
-        data: %{
-          "type" => "pi_ui_request",
-          "id" => "test-2",
-          "method" => "select",
-          "title" => "Test",
-          "message" => "Question?",
-          "options" => ["A", "B"]
-        }
-      })
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "pi_ui_request",
+            "id" => "test-2",
+            "method" => "select",
+            "title" => "Test",
+            "message" => "Question?",
+            "options" => ["A", "B"]
+          }
+        })
 
       data = session_data(%{session_id: session.id, port: nil})
 
       from = {self(), make_ref()}
+
       {:keep_state, _new_data, [{:reply, ^from, {:error, :not_running}}]} =
         SessionRunner.idle({:call, from}, {:answer_ui_request, "test-2", %{}}, data)
 
@@ -380,20 +406,22 @@ defmodule OrcaHub.SessionRunnerTest do
     test "error clause persists stale resolution for errored session", %{project: project} do
       session = create_session(project, %{backend: "pi"})
 
-      {:ok, _} = Sessions.create_message(%{
-        session_id: session.id,
-        data: %{
-          "type" => "pi_ui_request",
-          "id" => "test-3",
-          "method" => "input",
-          "title" => "Test",
-          "message" => "Question?"
-        }
-      })
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "pi_ui_request",
+            "id" => "test-3",
+            "method" => "input",
+            "title" => "Test",
+            "message" => "Question?"
+          }
+        })
 
       data = session_data(%{session_id: session.id})
 
       from = {self(), make_ref()}
+
       {:keep_state, _new_data, [{:reply, ^from, {:error, :not_running}}]} =
         SessionRunner.error({:call, from}, {:answer_ui_request, "test-3", %{}}, data)
 
@@ -403,20 +431,22 @@ defmodule OrcaHub.SessionRunnerTest do
     test "nil-port running clause persists stale resolution", %{project: project} do
       session = create_session(project, %{backend: "pi"})
 
-      {:ok, _} = Sessions.create_message(%{
-        session_id: session.id,
-        data: %{
-          "type" => "pi_ui_request",
-          "id" => "test-4",
-          "method" => "input",
-          "title" => "Test",
-          "message" => "Question?"
-        }
-      })
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "pi_ui_request",
+            "id" => "test-4",
+            "method" => "input",
+            "title" => "Test",
+            "message" => "Question?"
+          }
+        })
 
       data = session_data(%{session_id: session.id, port: nil})
 
       from = {self(), make_ref()}
+
       {:keep_state, _new_data, [{:reply, ^from, {:error, :not_running}}]} =
         SessionRunner.running({:call, from}, {:answer_ui_request, "test-4", %{}}, data)
 
