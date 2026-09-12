@@ -199,16 +199,33 @@ deploy script can restart them non-interactively over ssh too.
 
 ### Routine dependency upgrades
 
-`mix hex.outdated` is the entry point. Its **"Update not possible"** status does
-NOT mean incompatible — it means the version is outside the requirement in
-`mix.exs`, so it needs a requirement bump to even be considered. Run
-`mix hex.outdated <dep>` to see the requirement AND which packages constrain it;
-that table is how you find the real blocker in a chain.
+There are TWO entry points, and running only the first is how CVEs get missed:
 
-**Where the changelogs live.** Nearly every Elixir dep keeps a `CHANGELOG.md` at
+1. **`mix hex.outdated`** — version drift, DIRECT deps only. Its **"Update not
+   possible"** status does NOT mean incompatible — it means the version is
+   outside the requirement in `mix.exs`, so it needs a requirement bump to even
+   be considered. Run `mix hex.outdated <dep>` to see the requirement AND which
+   packages constrain it; that table is how you find the real blocker in a chain.
+2. **`mix hex.audit`** — retired packages and security advisories, across the
+   WHOLE tree including transitive deps. **Run this every time.**
+
+`hex.outdated` says nothing about vulnerabilities and never lists a transitive
+dep, so a stale transitive pin can sit on a known CVE forever while the report
+reads "all up to date" — which is exactly what happened on 2026-09-11: the
+outdated report was clean apart from three trivial patches, while `hex.audit`
+showed two HIGH advisories (mint 1.9.3 memory/CPU-exhaustion DoS, cowlib 2.17.1
+HPACK/QPACK DoS). Neither is a direct dep; both were fixed just by
+`mix deps.update mint cowlib gun`, since nothing had ever forced them forward.
+`mix deps.get` prints the same warnings as a side effect, so a "Found packages
+with security advisories" line in ordinary output is never noise — stop and read
+it.
+
+**Where the changelogs live.** Check `mix hex.info <dep>` FIRST — it often prints
+a `Changelog:` link already pinned to the release tag (dotenvy does), which beats
+guessing a raw path. Otherwise nearly every Elixir dep keeps a `CHANGELOG.md` at
 its repo root, and `raw.githubusercontent.com/<org>/<repo>/<main|master>/CHANGELOG.md`
-is the fastest way to read it. Repo URL comes from `mix hex.info <dep>`. Confirmed
-paths for this project's deps:
+is the fastest way to read it. Repo URL also comes from `mix hex.info <dep>`.
+Confirmed paths for this project's deps:
 
 | Dep | Changelog |
 |---|---|
@@ -222,6 +239,9 @@ paths for this project's deps:
 | ex_json_schema | **no changelog** — diff tags instead: `gh api repos/jonasschmidt/ex_json_schema/compare/v<old>...v<new> --jq '.commits[].commit.message'` |
 | dns_cluster | `github.com/phoenixframework/dns_cluster` /CHANGELOG.md, but **it lags** — the file stopped at 0.2.0 while 0.3.0 was published. Use the tag diff. |
 | telemetry_metrics, phoenix_pubsub | `github.com/beam-telemetry/telemetry_metrics`, `github.com/phoenixframework/phoenix_pubsub` /CHANGELOG.md |
+| mint | `github.com/elixir-mint/mint` /CHANGELOG.md |
+| dotenvy | `mix hex.info dotenvy` prints a tag-pinned `Changelog:` link |
+| dialyxir | GitHub **Releases**, not a changelog file — and its 1.x tags have NO `v` prefix (`1.4.8`, not `v1.4.8`), so `compare/v1.4.7...v1.4.8` 404s |
 
 That `gh api .../compare/v<old>...v<new>` trick is the general fallback for any
 dep with no changelog and no GitHub Releases. Reach for it whenever a changelog
@@ -309,10 +329,40 @@ WebSocket path, open a raw `:gen_tcp` connection to `/live/websocket?vsn=2.0.0`
 with the `Upgrade: websocket` / `Sec-WebSocket-Key` headers and assert
 `101 Switching Protocols`.
 
-**Still deferred, re-checked 2026-08-28: phoenix_live_view 1.1 -> 1.2**
-(1.1.33 vs 1.2.11 as of this check; raised with the user on 2026-08-14 and
-2026-08-21, still not decided — do not keep re-deriving the analysis below,
-just re-raise it). Everything else is current. 1.2 needs `mix.exs`
+**OPEN SECURITY ITEM — earmark is retired and unfixable (found 2026-09-11).**
+`mix hex.audit` flags `earmark` 1.4.49 as RETIRED ("no longer maintained,
+migrate to MDEx") and VULNERABLE — EEF-CVE-2026-48591, stored XSS via
+unescaped HTML attribute values in `Earmark.Transform`. There is no fixed
+version and there never will be; upgrading cannot resolve it.
+
+Verified exploitable against our real render path
+(`OrcaHubWeb.Markdown.render/2`, which ends in `Earmark.transform/1` +
+`Phoenix.HTML.raw/1`): the markdown `[click](https://example.com "x" onerror=
+"alert(1)")` renders as `<a ... title="x" onerror="alert(1)">`.
+
+**The bigger finding sitting underneath it:** earmark also passes RAW HTML
+through by default, so `<script>alert(1)</script>` in any rendered markdown
+reaches the page verbatim. That is independent of the CVE and strictly worse
+than it. There is no HTML sanitizer anywhere in the tree. The message feed
+(`message_components.ex`, `session_live/show.html.heex`) renders assistant
+text and tool results this way into the MAIN document — not the sandboxed
+artifact iframe — so any content we display is script-injection capable:
+LLM output, WebFetch results, Discord messages, and inbound email bodies.
+Authelia does not help; the attacker is the content, the victim is the
+authenticated viewer. (The artifact export path in `artifacts/render.ex`
+also uses this renderer, but lands inside the `sandbox="allow-scripts"`
+iframe, which is a deliberate, already-accepted boundary.)
+
+Raised with the user 2026-09-11, with a Gotify notification. NOT fixed
+unilaterally: both plausible remedies — swapping earmark for MDEx, or
+escaping/sanitizing before `raw/1` — change what agent output is allowed to
+render, which is a product decision, not a dependency bump. Do not silently
+"upgrade past" this item on a future run; there is nothing to upgrade to.
+
+**Still deferred, re-checked 2026-09-11: phoenix_live_view 1.1 -> 1.2**
+(1.1.33 vs 1.2.11, unchanged for three weeks; raised with the user
+2026-08-14, 2026-08-21 and 2026-08-28, still not decided — do not keep
+re-deriving the analysis below, just re-raise it). Everything else is current. 1.2 needs `mix.exs`
 `~> 1.1.0` -> `~> 1.2` and carries real breaking changes: the
 `Phoenix.Component` global-attribute list was realigned to MDN and the removed
 attributes are NOT enumerated in the changelog (fix per-site with
