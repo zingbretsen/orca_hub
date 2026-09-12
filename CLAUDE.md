@@ -353,11 +353,22 @@ authenticated viewer. (The artifact export path in `artifacts/render.ex`
 also uses this renderer, but lands inside the `sandbox="allow-scripts"`
 iframe, which is a deliberate, already-accepted boundary.)
 
-Raised with the user 2026-09-11, with a Gotify notification. NOT fixed
-unilaterally: both plausible remedies — swapping earmark for MDEx, or
-escaping/sanitizing before `raw/1` — change what agent output is allowed to
-render, which is a product decision, not a dependency bump. Do not silently
-"upgrade past" this item on a future run; there is nothing to upgrade to.
+**Do not treat "migrate to MDEx" as an obvious win.** Hex's own retirement
+notice recommends it, but `mix hex.audit` rates mdex 0.11.6 WORSE than the
+thing it replaces: six advisories including a HIGH (EEF-CVE-2026-53426,
+atom-table exhaustion DoS via JSON `parse_document`), plus unbounded native
+memory leak, uncontrolled recursion crashing the BEAM on deeply nested
+markdown, and its own XSS via an unescaped code-fence attribute. We know
+this because a stale mdex lock entry was sitting in mix.lock unused and
+showed up in the audit (removed in 3ae1a40). If MDEx is chosen anyway, pin
+a version whose advisories have been checked, and note it brings a Rust NIF
+(rustler_precompiled) into a currently pure-Elixir build.
+
+Raised with the user 2026-09-11. NOT fixed unilaterally: every remedy —
+swapping the engine, or escaping/sanitizing before `raw/1` — changes what
+agent output is allowed to render, which is a product decision rather than a
+dependency bump. Do not silently "upgrade past" this item on a future run;
+there is nothing to upgrade to.
 
 **Still deferred, re-checked 2026-09-11: phoenix_live_view 1.1 -> 1.2**
 (1.1.33 vs 1.2.11, unchanged for three weeks; raised with the user
