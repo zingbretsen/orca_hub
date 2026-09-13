@@ -6,6 +6,7 @@ defmodule OrcaHub.TriggerExecutor do
 
   require Logger
   alias OrcaHub.{Cluster, HubRPC}
+  alias OrcaHub.Triggers.SetupScript
 
   def execute(trigger_id) do
     trigger = HubRPC.get_trigger!(trigger_id)
@@ -38,9 +39,14 @@ defmodule OrcaHub.TriggerExecutor do
           Cluster.start_session(runner_node, session_id, session)
         end
 
+        # Runs on EVERY firing (reused session included) and never aborts it —
+        # see OrcaHub.Triggers.SetupScript. nil when the trigger has no script.
+        setup = SetupScript.run(trigger, session_id, runner_node)
+        prompt = SetupScript.prepend(setup, build_prompt(trigger))
+
         # :queue (ORCAHUB3-29): an overlapping cron fire (reuse_session) must not
         # cancel a still-running prior firing's in-progress work.
-        Cluster.send_message(runner_node, session_id, build_prompt(trigger), :queue)
+        Cluster.send_message(runner_node, session_id, prompt, :queue)
 
         if trigger.archive_on_complete do
           subscribe_for_completion(session_id)
@@ -100,7 +106,14 @@ defmodule OrcaHub.TriggerExecutor do
           Cluster.start_session(runner_node, session_id, session)
         end
 
-        prompt = build_prompt(trigger, payload)
+        # Same hook as execute/1. The setup block is PREPENDED, so on the
+        # email path it lands ahead of — never inside — build_prompt/2's
+        # <untrusted_email> region: operator-authored setup output and an
+        # untrusted third-party body must not share a trust region. The
+        # script itself never sees any part of `payload` (SetupScript's
+        # moduledoc: "payload data deliberately never reaches the script").
+        setup = SetupScript.run(trigger, session_id, runner_node)
+        prompt = SetupScript.prepend(setup, build_prompt(trigger, payload))
         # :queue (ORCAHUB3-29): same reasoning as execute/1 — an overlapping webhook
         # fire must not cancel in-progress work from a prior firing.
         Cluster.send_message(runner_node, session_id, prompt, :queue)
@@ -208,24 +221,34 @@ defmodule OrcaHub.TriggerExecutor do
 
   defp resolve_session(trigger), do: create_new_session(trigger)
 
-  defp create_new_session(%{id: trigger_id, project: project, name: name} = trigger) do
-    runner_node = Cluster.project_node_for(project)
-
-    attrs =
-      %{
-        directory: project.directory,
-        project_id: project.id,
-        title: "Trigger: #{name}",
-        status: "ready",
-        triggered: true,
-        trigger_id: trigger_id,
-        runner_node: Atom.to_string(runner_node)
-      }
-      |> maybe_put_memory_extract(trigger)
-
-    {:ok, session} = HubRPC.create_session(attrs)
+  defp create_new_session(trigger) do
+    {:ok, session} = HubRPC.create_session(session_attrs(trigger))
 
     session.id
+  end
+
+  @doc """
+  The attrs `create_new_session/1` builds for a session spawned by `trigger`.
+
+  Public (but undocumented in the UI sense) so the per-trigger stamping rules
+  — which fields are copied onto the session, and which are OMITTED when nil
+  so the session's own default applies — are directly assertable without
+  standing up a real runner.
+  """
+  def session_attrs(%{id: trigger_id, project: project, name: name} = trigger) do
+    runner_node = Cluster.project_node_for(project)
+
+    %{
+      directory: project.directory,
+      project_id: project.id,
+      title: "Trigger: #{name}",
+      status: "ready",
+      triggered: true,
+      trigger_id: trigger_id,
+      runner_node: Atom.to_string(runner_node)
+    }
+    |> maybe_put_memory_extract(trigger)
+    |> maybe_put_tool_policy(trigger)
   end
 
   # `nil` (the common case — no per-trigger override) is left out entirely
@@ -237,6 +260,25 @@ defmodule OrcaHub.TriggerExecutor do
   end
 
   defp maybe_put_memory_extract(attrs, _trigger), do: attrs
+
+  # Stamp the trigger's MCP tool allow/deny lists onto the session it spawns
+  # (OrcaHub.ToolPolicy enforces them from the session row). Same nil rule as
+  # maybe_put_memory_extract/2 above: a nil list is OMITTED entirely rather
+  # than written as an explicit nil, so the session's own default applies.
+  # `[]` IS written through — under ToolPolicy's semantics it means the same
+  # thing as nil ("no restriction"), so passing it along is harmless and
+  # keeps the session row a faithful copy of the trigger's configuration.
+  #
+  # Only a session this trigger CREATES gets stamped; a reuse_session trigger
+  # keeps its earlier session's lists (see the schema docs).
+  defp maybe_put_tool_policy(attrs, trigger) do
+    attrs
+    |> maybe_put(:tool_allowlist, Map.get(trigger, :tool_allowlist))
+    |> maybe_put(:tool_denylist, Map.get(trigger, :tool_denylist))
+  end
+
+  defp maybe_put(attrs, _key, nil), do: attrs
+  defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)
 
   defp runner_node_for(%{project: project}) when not is_nil(project) do
     Cluster.project_node_for(project)

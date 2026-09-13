@@ -256,6 +256,116 @@ defmodule OrcaHub.TriggersTest do
     end
   end
 
+  # The per-trigger MCP tool policy (stamped onto every session the trigger
+  # spawns) and the pre-run setup script. Both mirror an existing per-session
+  # field, so the changeset's job here is just to cast them faithfully — the
+  # semantics live in OrcaHub.ToolPolicy / OrcaHub.Triggers.SetupScript.
+  describe "tool_allowlist / tool_denylist" do
+    test "both default to nil (no restriction)", %{project: project} do
+      assert {:ok, trigger} = Triggers.create_trigger(valid_attrs(project))
+      assert trigger.tool_allowlist == nil
+      assert trigger.tool_denylist == nil
+    end
+
+    test "casts both lists", %{project: project} do
+      attrs =
+        valid_attrs(project, %{
+          tool_allowlist: ["recall", "remember", "github__*"],
+          tool_denylist: ["retire_memory"]
+        })
+
+      assert {:ok, trigger} = Triggers.create_trigger(attrs)
+      assert trigger.tool_allowlist == ["recall", "remember", "github__*"]
+      assert trigger.tool_denylist == ["retire_memory"]
+    end
+
+    # The motivating case: "You may NEVER call `retire_memory`" in a prompt
+    # becomes an enforced denylist entry.
+    test "an explicit deny-all is spelled tool_denylist: [\"*\"]", %{project: project} do
+      assert {:ok, trigger} =
+               Triggers.create_trigger(valid_attrs(project, %{tool_denylist: ["*"]}))
+
+      assert trigger.tool_denylist == ["*"]
+    end
+
+    test "an empty list is accepted and distinct from nil", %{project: project} do
+      assert {:ok, trigger} =
+               Triggers.create_trigger(valid_attrs(project, %{tool_allowlist: []}))
+
+      assert trigger.tool_allowlist == []
+    end
+
+    test "non-string entries are rejected", %{project: project} do
+      assert {:error, changeset} =
+               Triggers.create_trigger(valid_attrs(project, %{tool_denylist: [%{"a" => 1}]}))
+
+      assert %{tool_denylist: [_ | _]} = errors_on(changeset)
+    end
+
+    test "the lists are updatable", %{project: project} do
+      {:ok, trigger} = Triggers.create_trigger(valid_attrs(project))
+
+      assert {:ok, updated} =
+               Triggers.update_trigger(trigger, %{tool_denylist: ["retire_memory"]})
+
+      assert updated.tool_denylist == ["retire_memory"]
+      assert {:ok, cleared} = Triggers.update_trigger(updated, %{tool_denylist: nil})
+      assert cleared.tool_denylist == nil
+    end
+  end
+
+  describe "setup_script / setup_timeout_seconds" do
+    test "defaults: no script, 120s timeout", %{project: project} do
+      assert {:ok, trigger} = Triggers.create_trigger(valid_attrs(project))
+      assert trigger.setup_script == nil
+      assert trigger.setup_timeout_seconds == 120
+    end
+
+    test "casts a script and a custom timeout", %{project: project} do
+      attrs = valid_attrs(project, %{setup_script: "date -u", setup_timeout_seconds: 30})
+
+      assert {:ok, trigger} = Triggers.create_trigger(attrs)
+      assert trigger.setup_script == "date -u"
+      assert trigger.setup_timeout_seconds == 30
+    end
+
+    test "a multi-line script survives casting verbatim", %{project: project} do
+      script = "set -e\ngit fetch --all\ngit log -1 --oneline\n"
+
+      assert {:ok, trigger} =
+               Triggers.create_trigger(valid_attrs(project, %{setup_script: script}))
+
+      assert trigger.setup_script == script
+    end
+
+    test "a non-positive or absurd timeout is rejected", %{project: project} do
+      assert {:error, changeset} =
+               Triggers.create_trigger(valid_attrs(project, %{setup_timeout_seconds: 0}))
+
+      assert %{setup_timeout_seconds: [_ | _]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Triggers.create_trigger(valid_attrs(project, %{setup_timeout_seconds: -5}))
+
+      assert %{setup_timeout_seconds: [_ | _]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Triggers.create_trigger(valid_attrs(project, %{setup_timeout_seconds: 100_000}))
+
+      assert %{setup_timeout_seconds: [_ | _]} = errors_on(changeset)
+    end
+
+    # nil is allowed (a legacy row, or a form that cleared the field);
+    # SetupScript.timeout_seconds/1 falls back to 120 for it.
+    test "a nil timeout is allowed and falls back at run time", %{project: project} do
+      assert {:ok, trigger} =
+               Triggers.create_trigger(valid_attrs(project, %{setup_timeout_seconds: nil}))
+
+      assert trigger.setup_timeout_seconds == nil
+      assert OrcaHub.Triggers.SetupScript.timeout_seconds(trigger) == 120
+    end
+  end
+
   describe "pin_trigger/1 and unpin_trigger/1" do
     test "pins a trigger by setting pinned_at", %{project: project} do
       {:ok, trigger} = Triggers.create_trigger(valid_attrs(project))

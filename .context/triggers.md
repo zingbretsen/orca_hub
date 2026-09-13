@@ -120,3 +120,47 @@ MemoryReview` uses this to set it `false` on its own two scheduled triggers
 by `TriggerLoader` on hub boot) — an automated review pass must never itself
 be memory-extracted. See that module's moduledoc for the pass rules
 (propose, never retire/rewrite).
+
+## Per-trigger tool restrictions
+
+`Trigger.tool_allowlist` / `tool_denylist` mirror the `sessions` columns of
+the same names exactly, and `TriggerExecutor.session_attrs/1` stamps them
+onto every session the trigger CREATES — so the enforced policy is resolved
+from the session row by `OrcaHub.ToolPolicy` like any other. Semantics are
+the session ones verbatim: nil OR `[]` mean "no restriction" on either side
+(explicit deny-all is `tool_denylist: ["*"]`), deny wins over allow, entries
+are exact raw MCP tool names or anchored `*`-globs. This replaces the "you
+may NEVER call `retire_memory`" English paragraphs operators write into
+trigger prompts, which a model is free to ignore.
+
+Same limitation as `memory_extract`: only a session the trigger CREATES is
+stamped, so editing the lists does not retroactively re-scope a session a
+`reuse_session: true` trigger is still reusing.
+
+## Pre-run setup script
+
+`Trigger.setup_script` (+ `setup_timeout_seconds`, default 120) is an
+operator-authored shell script `OrcaHub.Triggers.SetupScript` runs on the
+session's runner node, in the session's directory, on EVERY firing —
+including a `reuse_session` firing — before the prompt is delivered. It is a
+"gather current state before this run" hook (`date -u`, `git log -1`), not
+one-time provisioning.
+
+Both `TriggerExecutor` entry points route it through `Cluster.rpc/5`
+uniformly (a same-node call is just a local `apply/3`), which is what makes
+it correct for `execute/1` — running on the HUB — as well as
+`execute_payload/2`, whose whole body already runs on the runner node. The
+result (combined stdout+stderr capped at 16KB keeping the TAIL, exit code,
+duration) is PREPENDED to the built prompt in a `<setup_script>` block —
+outside the email path's `<untrusted_email>` region, since setup output is
+operator-authored and an email body is not — and persisted to the session
+feed as a `system`/`setup_script` event.
+
+Two properties are load-bearing: no part of a webhook body or inbound email
+ever reaches the script, its args, or its env (the script text is written to
+a temp file and executed as a file, never interpolated into `sh -c`); and a
+timeout signals the script's whole PROCESS GROUP (`setsid` + a pidfile,
+`OrcaHub.Jobs.Launcher`'s approach without the detached Jobs machinery), so a
+script that backgrounds children cannot leave orphans. A non-zero exit or a
+timeout never aborts the firing — it is logged at `:warning` and surfaced
+prominently in the prompt block instead.

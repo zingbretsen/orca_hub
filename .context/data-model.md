@@ -109,6 +109,10 @@ erDiagram
         boolean reuse_session
         boolean archive_on_complete
         boolean enabled
+        array tool_allowlist "stamped onto each session it CREATES; nil/[] = no restriction"
+        array tool_denylist "stamped onto each session it CREATES; deny-all is [\"*\"]"
+        string setup_script "shell script run on the runner node before every firing"
+        integer setup_timeout_seconds "default 120; timeout kills the whole process group"
         array sender_allowlist "email only; must be non-empty"
         string to_address "email only; optional recipient routing"
         string subject_pattern "email only; case-insensitive substring, not a regex"

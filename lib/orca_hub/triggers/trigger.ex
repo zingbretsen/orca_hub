@@ -22,6 +22,33 @@ defmodule OrcaHub.Triggers.Trigger do
     # true/false forces it. See sessions.memory_extract for the per-session
     # equivalent this mirrors.
     field :memory_extract, :boolean
+    # Per-trigger MCP tool restrictions, stamped onto every session this
+    # trigger spawns (OrcaHub.TriggerExecutor.create_new_session/1) — the
+    # declarative, ENFORCED replacement for a "you may NEVER call X" English
+    # paragraph in the prompt, which a model is free to ignore. Identical
+    # shape and semantics to sessions.tool_allowlist/tool_denylist, since
+    # that is exactly where they end up: nil OR [] mean "no restriction" on
+    # EITHER side (an explicit deny-all is `tool_denylist: ["*"]`), deny wins
+    # over allow, and entries are exact raw MCP tool names or anchored
+    # `*`-globs, case-sensitive. See OrcaHub.ToolPolicy.
+    #
+    # LIMITATION (same as memory_extract): these are stamped only on a
+    # session this trigger CREATES. A `reuse_session: true` trigger keeps
+    # messaging the session it made earlier, so editing these lists does NOT
+    # retroactively re-scope an already-running reused session — the change
+    # takes effect on the next session the trigger creates.
+    field :tool_allowlist, {:array, :string}
+    field :tool_denylist, {:array, :string}
+    # An operator-authored shell script run on the session's runner node, in
+    # the session's directory, before the prompt is delivered — on EVERY
+    # firing, including a reuse_session firing (it is a "gather current state
+    # before this run" hook, not one-time provisioning). Its combined
+    # output/exit code/duration are prepended to the prompt in a
+    # <setup_script> block. nil/blank means no script. A non-zero exit or a
+    # timeout does NOT abort the firing. Never receives any webhook/email
+    # payload data — see OrcaHub.Triggers.SetupScript.
+    field :setup_script, :string
+    field :setup_timeout_seconds, :integer, default: 120
     field :last_session_id, :binary_id
     field :last_fired_at, :utc_datetime
     field :pinned_at, :utc_datetime
@@ -55,6 +82,10 @@ defmodule OrcaHub.Triggers.Trigger do
       :archive_on_complete,
       :enabled,
       :memory_extract,
+      :tool_allowlist,
+      :tool_denylist,
+      :setup_script,
+      :setup_timeout_seconds,
       :project_id,
       :last_session_id,
       :last_fired_at,
@@ -66,11 +97,29 @@ defmodule OrcaHub.Triggers.Trigger do
     ])
     |> validate_required([:name, :prompt, :project_id, :type])
     |> validate_inclusion(:type, ["scheduled", "webhook", "email"])
+    |> validate_setup_timeout()
     |> maybe_generate_webhook_secret()
     |> validate_by_type()
     |> foreign_key_constraint(:project_id)
     |> foreign_key_constraint(:email_inbox_id)
     |> unique_constraint(:webhook_secret)
+  end
+
+  # The setup script blocks the firing while it runs, so an unbounded (or
+  # absurd) timeout would wedge the trigger rather than bound it. nil is
+  # allowed and means "use the default" — see
+  # OrcaHub.Triggers.SetupScript.timeout_seconds/1.
+  defp validate_setup_timeout(changeset) do
+    case get_field(changeset, :setup_timeout_seconds) do
+      nil ->
+        changeset
+
+      _ ->
+        validate_number(changeset, :setup_timeout_seconds,
+          greater_than: 0,
+          less_than_or_equal_to: 3600
+        )
+    end
   end
 
   defp maybe_generate_webhook_secret(changeset) do
