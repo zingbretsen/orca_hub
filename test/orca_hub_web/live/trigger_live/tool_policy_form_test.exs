@@ -227,6 +227,31 @@ defmodule OrcaHubWeb.TriggerLive.ToolPolicyFormTest do
       assert created_trigger("tool policy trigger #{suffix}") == nil
     end
 
+    test "a BLANK timeout is accepted and falls back to the 120s default", %{
+      project: project,
+      suffix: suffix
+    } do
+      {:ok, view, _html} = live(build_conn(), ~p"/triggers/new")
+
+      view
+      |> open_advanced()
+      |> form("form",
+        trigger:
+          base_params(project, suffix, %{
+            "setup_script" => "date -u",
+            "setup_timeout_seconds" => ""
+          })
+      )
+      |> render_submit()
+
+      trigger = created_trigger("tool policy trigger #{suffix}")
+
+      # nil is a legitimate "use the default" value, not a validation error —
+      # SetupScript.timeout_seconds/1 resolves it at run time.
+      assert trigger.setup_timeout_seconds in [nil, 120]
+      assert OrcaHub.Triggers.SetupScript.timeout_seconds(trigger) == 120
+    end
+
     test "zero is rejected too", %{project: project, suffix: suffix} do
       {:ok, view, _html} = live(build_conn(), ~p"/triggers/new")
 

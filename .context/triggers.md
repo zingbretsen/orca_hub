@@ -137,6 +137,27 @@ Same limitation as `memory_extract`: only a session the trigger CREATES is
 stamped, so editing the lists does not retroactively re-scope a session a
 `reuse_session: true` trigger is still reusing.
 
+## Where the operator sees all four fields
+
+Both lists plus `setup_script`/`setup_timeout_seconds` are edited in one
+collapsible section of the trigger form (`TriggerLive.Index`), which submits
+the lists as free text — one entry per line, parsed by
+`OrcaHubWeb.EnvAllowlistInput.parse/1`, with an empty field persisted as
+`nil`. Because the section's inputs are absent from the DOM while collapsed,
+a save from a collapsed form leaves all four columns untouched rather than
+clearing them. `TriggerLive.Show` renders whichever of them are set.
+
+On the session side the resolved policy is READ-ONLY: `SessionLive.Show`
+gates a header toggle + panel on `ToolPolicy.restricted?/1`, so an
+unrestricted session (nil/`[]` on both lists) shows nothing at all. The
+`system`/`setup_script` feed event renders collapsed in
+`MessageComponents`, expanding to the script and its output — as escaped
+plain text in a `<pre>`, never through `OrcaHubWeb.Markdown.render/2`, since
+the output is arbitrary command output in the MAIN document rather than the
+sandboxed artifact iframe. Every one of these surfaces states that the
+restriction covers MCP tools ONLY, not the agent CLI's built-in
+Bash/Read/Write/WebFetch — the likeliest operator misreading.
+
 ## Pre-run setup script
 
 `Trigger.setup_script` (+ `setup_timeout_seconds`, default 120) is an

@@ -812,6 +812,13 @@ defmodule OrcaHubWeb.MessageComponents do
             <div class="opacity-70">Script</div>
             <pre class="whitespace-pre-wrap font-mono opacity-70 overflow-x-auto max-h-48 overflow-y-auto">{@script}</pre>
           </div>
+          <%!-- `output` is ALREADY capped at 16KB by the persister, and when
+          it truncated it already carries its own leading
+          `[... truncated N bytes ...]` line — never truncate it again here.
+          This out-of-band marker is deliberately kept anyway: it puts the
+          fact in a labelled position instead of only inside the code block,
+          and it survives a future change to how the output text itself is
+          rendered. The doubled byte count is the (cheap) cost of that. --%>
           <div :if={@truncated > 0} class="opacity-70">
             output truncated — {@truncated} bytes dropped (tail kept)
           </div>
