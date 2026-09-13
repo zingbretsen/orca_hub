@@ -194,6 +194,32 @@ defmodule OrcaHub.MCP.Tools.Sessions do
                   "prompt-cached provider) instead of a blank context. The child is a " <>
                   "normal child session in every other respect. Default: false."
             },
+            "tool_allowlist" => %{
+              "type" => "array",
+              "items" => %{"type" => "string"},
+              "description" =>
+                "Restrict which MCP tools the new session may see and call: if non-empty, " <>
+                  "ONLY tools matching an entry are available to it. Entries are RAW MCP " <>
+                  "tool names (e.g. \"send_message_to_session\", \"github__get_issue\") and " <>
+                  "may contain `*` as a wildcard matching any run of characters, including " <>
+                  "the `__` upstream separator (e.g. \"github__*\" for one upstream server, " <>
+                  "\"*\" for everything). Only `*` is supported (no ?, no character " <>
+                  "classes); matching is case-sensitive. Omit (or pass []) for no allowlist " <>
+                  "restriction — an empty list never means \"deny everything\". This is " <>
+                  "ENFORCED in the MCP server, not advice in the prompt: a restricted tool " <>
+                  "is hidden from the worker's tool list and refused if called anyway. It " <>
+                  "covers MCP tools only, not the agent CLI's built-in tools (Bash, Read, " <>
+                  "Write, ...)."
+            },
+            "tool_denylist" => %{
+              "type" => "array",
+              "items" => %{"type" => "string"},
+              "description" =>
+                "MCP tools the new session may NOT call, same raw-name + `*` glob syntax " <>
+                  "as tool_allowlist. DENY WINS: a tool matching both lists is refused. " <>
+                  "[\"*\"] is the explicit \"no MCP tools at all\" spelling. Omit (or pass " <>
+                  "[]) to deny nothing."
+            },
             "memory_extract" => %{
               "type" => "boolean",
               "description" =>
@@ -715,7 +741,9 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
           # Call with explicit now (DateTime.utc_now()) and file_surgery
           now = DateTime.utc_now()
-          churn = OrcaHub.Sessions.Churn.assess(activity, session, last_commit_info, now, file_surgery)
+
+          churn =
+            OrcaHub.Sessions.Churn.assess(activity, session, last_commit_info, now, file_surgery)
 
           # Include pending pi UI request if present
           pending_request = HubRPC.pending_pi_ui_request(target_id)
@@ -1131,6 +1159,21 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     end
   end
 
+  # Normalize a tool_allowlist/tool_denylist arg into the column's value.
+  # Anything that isn't a list of non-empty strings — a missing arg, [], a
+  # string handed in by mistake — becomes nil, which `maybe_put_field/3` then
+  # skips entirely, leaving the column unset. nil and [] mean the same thing
+  # to `OrcaHub.ToolPolicy` (no restriction on that side), so collapsing them
+  # here loses nothing and keeps rows tidy.
+  defp tool_list_arg(list) when is_list(list) do
+    case Enum.filter(list, &(is_binary(&1) and &1 != "")) do
+      [] -> nil
+      entries -> Enum.uniq(entries)
+    end
+  end
+
+  defp tool_list_arg(_), do: nil
+
   # ── pi session forking (pi_fork_spec.md §3) ───────────────────────────
   # Validation + inheritance-forcing lives entirely in this block so it
   # stays a single, easily-lifted unit: everything downstream of
@@ -1281,6 +1324,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
                   |> maybe_put_field(:code_exec, forked_from && caller.code_exec)
                   |> maybe_put_field(:forked_from_session_id, forked_from)
                   |> maybe_put_field(:memory_extract, args["memory_extract"])
+                  |> maybe_put_field(:tool_allowlist, tool_list_arg(args["tool_allowlist"]))
+                  |> maybe_put_field(:tool_denylist, tool_list_arg(args["tool_denylist"]))
                   |> maybe_link_parent(caller, caller_session_id, args["notify_on_completion"])
 
                 case HubRPC.create_session(session_attrs) do

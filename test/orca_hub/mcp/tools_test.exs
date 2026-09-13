@@ -2,6 +2,7 @@ defmodule OrcaHub.MCP.ToolsTest do
   use OrcaHub.DataCase, async: false
 
   alias OrcaHub.MCP.Tools
+  alias OrcaHub.ToolPolicy
   alias OrcaHub.{DiscordChannels, Projects, Sessions}
 
   # async: false — the Discord-visibility tests flip the process-wide
@@ -171,6 +172,121 @@ defmodule OrcaHub.MCP.ToolsTest do
         _ ->
           :ok
       end
+    end
+  end
+
+  describe "list/1 under a per-session tool policy" do
+    defp policy_state(role, allow, deny) do
+      %{orchestrator: role, tool_policy: ToolPolicy.new(allow, deny)}
+    end
+
+    test "an orchestrator connection's full set is narrowed by an allowlist" do
+      names =
+        policy_state(true, ["report_progress", "search_*"], nil)
+        |> Tools.list()
+        |> Enum.map(& &1["name"])
+
+      assert "report_progress" in names
+      assert "search_sessions" in names
+      refute "start_session" in names
+      refute "schedule_heartbeat" in names
+    end
+
+    test "a denylist removes tools from a regular connection's set" do
+      names =
+        policy_state(false, nil, ["start_session", "*_issue"])
+        |> Tools.list()
+        |> Enum.map(& &1["name"])
+
+      assert "send_message_to_session" in names
+      assert "report_progress" in names
+      refute "start_session" in names
+      refute "create_issue" in names
+      refute "close_issue" in names
+      # ...but the glob is anchored: list_issues is not *_issue
+      assert "list_issues" in names
+    end
+
+    test "deny wins over allow" do
+      names =
+        policy_state(true, ["start_session", "report_progress"], ["start_session"])
+        |> Tools.list()
+        |> Enum.map(& &1["name"])
+
+      assert names == ["report_progress"]
+    end
+
+    test "a deny-all policy leaves no first-party tools at all" do
+      assert Tools.list(policy_state(true, nil, ["*"])) == []
+      assert Tools.list(policy_state(false, nil, ["*"])) == []
+    end
+
+    test "a policy can only narrow, never widen: an orchestrator-only tool stays hidden from a regular connection that allowlists it" do
+      names =
+        policy_state(false, ["schedule_heartbeat", "report_progress"], nil)
+        |> Tools.list()
+        |> Enum.map(& &1["name"])
+
+      assert names == ["report_progress"]
+    end
+
+    test "an empty allowlist/denylist is no restriction at all" do
+      with_empty = Tools.list(policy_state(true, [], [])) |> Enum.map(& &1["name"])
+      without = Tools.list(%{orchestrator: true}) |> Enum.map(& &1["name"])
+
+      assert with_empty == without
+      assert "start_session" in with_empty
+    end
+
+    test "a state carrying no policy is unrestricted (old connections, tests)" do
+      assert Tools.list(%{orchestrator: true}) ==
+               Tools.list(%{orchestrator: true, tool_policy: nil})
+    end
+  end
+
+  describe "call/3 under a per-session tool policy" do
+    test "a denied tool is refused before dispatch, naming the tool" do
+      state = %{
+        orchestrator: true,
+        orca_session_id: nil,
+        tool_policy: ToolPolicy.new(nil, ["start_session"])
+      }
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               Tools.call("start_session", %{}, state)
+
+      assert text =~ "start_session"
+      assert text =~ "restricted for this session"
+    end
+
+    test "a tool outside the allowlist is refused" do
+      state = %{orchestrator: true, tool_policy: ToolPolicy.new(["report_progress"], nil)}
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               Tools.call("search_sessions", %{}, state)
+
+      assert text =~ "restricted for this session"
+    end
+
+    test "an allowed tool still reaches its own body (not refused by policy)" do
+      state = %{orchestrator: true, tool_policy: ToolPolicy.new(nil, ["start_session"])}
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               Tools.call("not_a_real_tool", %{}, state)
+
+      assert text =~ "Unknown tool"
+      refute text =~ "restricted for this session"
+    end
+
+    test "an unknown tool name that a deny glob happens to match is reported as restricted, not unknown" do
+      # Deny is checked first, deliberately: the policy is the operator's
+      # statement about names, and it shouldn't leak which of them exist.
+      state = %{orchestrator: true, tool_policy: ToolPolicy.new(nil, ["*"])}
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               Tools.call("not_a_real_tool", %{}, state)
+
+      assert text =~ "restricted for this session"
     end
   end
 end

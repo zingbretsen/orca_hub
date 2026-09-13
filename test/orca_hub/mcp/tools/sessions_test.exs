@@ -3799,4 +3799,78 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert text =~ "No OrcaHub session linked"
     end
   end
+
+  describe "start_session — tool policy args (tool_allowlist/tool_denylist)" do
+    test "the tool definition documents both args, the glob syntax, and deny-wins" do
+      %{"inputSchema" => %{"properties" => props}} =
+        Enum.find(SessionsTool.list(), &(&1["name"] == "start_session"))
+
+      assert %{"type" => "array", "items" => %{"type" => "string"}} = props["tool_allowlist"]
+      assert %{"type" => "array", "items" => %{"type" => "string"}} = props["tool_denylist"]
+
+      assert props["tool_allowlist"]["description"] =~ "`*`"
+      assert props["tool_allowlist"]["description"] =~ "never means"
+      assert props["tool_denylist"]["description"] =~ "DENY WINS"
+    end
+
+    test "both lists are persisted onto the new session", %{state: state} do
+      Application.put_env(:orca_hub, :pi_executable, @pi_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :pi_executable) end)
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{
+            "prompt" => "hi",
+            "backend" => "pi",
+            "notify_on_completion" => false,
+            "tool_allowlist" => ["report_progress", "github__*"],
+            "tool_denylist" => ["github__delete_*"]
+          },
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      session = Sessions.get_session!(session_id)
+      assert session.tool_allowlist == ["report_progress", "github__*"]
+      assert session.tool_denylist == ["github__delete_*"]
+
+      # ...and the resolved policy is what the MCP server would enforce.
+      policy = OrcaHub.ToolPolicy.resolve(session_id)
+      assert OrcaHub.ToolPolicy.allowed?(policy, "report_progress")
+      assert OrcaHub.ToolPolicy.allowed?(policy, "github__get_issue")
+      refute OrcaHub.ToolPolicy.allowed?(policy, "github__delete_repo")
+      refute OrcaHub.ToolPolicy.allowed?(policy, "start_session")
+    end
+
+    test "omitted/empty lists leave both columns nil (an unrestricted session)", %{state: state} do
+      Application.put_env(:orca_hub, :pi_executable, @pi_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :pi_executable) end)
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{
+            "prompt" => "hi",
+            "backend" => "pi",
+            "notify_on_completion" => false,
+            "tool_allowlist" => [],
+            "tool_denylist" => ["", nil]
+          },
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      session = Sessions.get_session!(session_id)
+      assert session.tool_allowlist == nil
+      assert session.tool_denylist == nil
+      refute OrcaHub.ToolPolicy.restricted?(OrcaHub.ToolPolicy.resolve(session_id))
+    end
+  end
 end

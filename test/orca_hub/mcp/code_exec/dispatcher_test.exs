@@ -3,6 +3,7 @@ defmodule OrcaHub.MCP.CodeExec.DispatcherTest do
 
   alias OrcaHub.MCP.CodeExec
   alias OrcaHub.MCP.CodeExec.{Dispatcher, MediaSink}
+  alias OrcaHub.ToolPolicy
 
   setup do
     session_id = "dispatcher-media-#{System.unique_integer([:positive])}"
@@ -313,5 +314,71 @@ defmodule OrcaHub.MCP.CodeExec.DispatcherTest do
   defp path_from_note(note) do
     [path] = Regex.run(~r{saved to (\S+) —}, note, capture: :all_but_first)
     path
+  end
+
+  describe "dispatch/3 under a per-session tool policy" do
+    defp state_with(policy, session_id), do: %{orca_session_id: session_id, tool_policy: policy}
+
+    test "a denied UPSTREAM tool is refused without ever reaching UpstreamClient", %{
+      session_id: session_id
+    } do
+      state = state_with(ToolPolicy.new(nil, ["github__*"]), session_id)
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               Dispatcher.dispatch("github__get_issue", %{"repo" => "o/r"}, state)
+
+      assert text =~ "github__get_issue"
+      assert text =~ "restricted for this session"
+    end
+
+    test "the refusal short-circuits BEFORE any per-tool upstream arg handling", %{
+      session_id: session_id
+    } do
+      # do_dispatch/3 unconditionally (re)sets the requested-filename stash on
+      # every call; an untouched stash proves the policy gate returned before
+      # the upstream/first-party branch was ever taken.
+      MediaSink.put_requested_filename({:text, "sentinel.txt"})
+      state = state_with(ToolPolicy.new(nil, ["*"]), session_id)
+
+      assert %{"isError" => true} =
+               Dispatcher.dispatch(
+                 "playwright__browser_snapshot",
+                 %{"filename" => "snap.txt"},
+                 state
+               )
+
+      assert MediaSink.peek_requested_filename() == {:text, "sentinel.txt"}
+      MediaSink.put_requested_filename(nil)
+    end
+
+    test "a denied FIRST-PARTY tool is refused too (defense in depth with Tools.call/3)", %{
+      session_id: session_id
+    } do
+      state = state_with(ToolPolicy.new(["report_progress"], nil), session_id)
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               Dispatcher.dispatch("search_sessions", %{}, state)
+
+      assert text =~ "restricted for this session"
+    end
+
+    test "an allowed name passes the gate and is dispatched normally", %{session_id: session_id} do
+      state = state_with(ToolPolicy.new(nil, ["github__*"]), session_id)
+
+      # Not upstream (no configured prefixes in test), so it lands in
+      # Tools.call/3 — the point is it got PAST the policy gate.
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               Dispatcher.dispatch("not_a_real_tool", %{}, state)
+
+      assert text =~ "Unknown tool"
+      refute text =~ "restricted for this session"
+    end
+
+    test "a state with no policy dispatches unrestricted", %{session_id: session_id} do
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               Dispatcher.dispatch("not_a_real_tool", %{}, %{orca_session_id: session_id})
+
+      assert text =~ "Unknown tool"
+    end
   end
 end

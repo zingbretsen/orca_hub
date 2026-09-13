@@ -5,6 +5,7 @@ defmodule OrcaHub.MCP.CodeExecTest do
 
   alias OrcaHub.MCP.CodeExec
   alias OrcaHub.MCP.CodeExec.{BindingStore, MetaTools, Sandbox, ToolGen}
+  alias OrcaHub.ToolPolicy
 
   # A stub dispatcher returning canned MCP envelopes, baked into the generated
   # `Tools.*` functions so we can exercise auto-unwrap / raise without a live
@@ -207,6 +208,69 @@ defmodule OrcaHub.MCP.CodeExecTest do
 
     test "search/1 returns [] when zero query tokens match" do
       assert {:ok, %{value: []}} = Sandbox.eval(~s|Tools.search("zzznotarealword")|)
+    end
+  end
+
+  describe "generated Tools.list/0, search/1 and schema/1 honor the session's tool policy" do
+    setup do
+      ToolGen.generate(root: Tools, dispatcher: StubDispatcher, tools: @stub_tools)
+      :ok
+    end
+
+    defp eval_with_policy(code, allow, deny) do
+      Sandbox.eval(code, state: %{tool_policy: ToolPolicy.new(allow, deny)})
+    end
+
+    test "list/0 hides denied tools" do
+      assert {:ok, %{value: names}} =
+               eval_with_policy(~S/Tools.list() |> Enum.map(& &1["name"])/, nil, [
+                 "boom",
+                 "github__*"
+               ])
+
+      assert "ok_json" in names
+      assert "ok_text" in names
+      refute "boom" in names
+      refute "github__get_issue" in names
+      refute "github__weird name!not-valid" in names
+    end
+
+    test "list/0 shows only allowlisted tools" do
+      assert {:ok, %{value: names}} =
+               eval_with_policy(~S/Tools.list() |> Enum.map(& &1["name"])/, ["ok_*"], nil)
+
+      assert Enum.sort(names) == ["ok_json", "ok_text"]
+    end
+
+    test "search/1 never surfaces a denied tool" do
+      assert {:ok, %{value: []}} =
+               eval_with_policy(~s|Tools.search("get issue")|, nil, ["github__*"])
+
+      # ...and still finds it when the policy allows it
+      assert {:ok, %{value: [%{"name" => "github__get_issue"}]}} =
+               eval_with_policy(~s|Tools.search("get issue")|, nil, ["boom"])
+    end
+
+    test "schema/1 returns nil for a denied tool" do
+      assert {:ok, %{value: nil}} =
+               eval_with_policy(~s|Tools.schema("github__get_issue")|, nil, ["github__*"])
+
+      assert {:ok, %{value: %{"type" => "object"}}} =
+               eval_with_policy(~s|Tools.schema("github__get_issue")|, nil, ["boom"])
+    end
+
+    test "a deny-all policy leaves an empty surface" do
+      assert {:ok, %{value: []}} = eval_with_policy("Tools.list()", nil, ["*"])
+      assert {:ok, %{value: []}} = eval_with_policy(~s|Tools.search("issue")|, nil, ["*"])
+      assert {:ok, %{value: nil}} = eval_with_policy(~s|Tools.schema("ok_json")|, nil, ["*"])
+    end
+
+    test "an unrestricted (or absent) policy sees everything, as before" do
+      assert {:ok, %{value: with_empty}} = eval_with_policy("Tools.list()", [], [])
+      assert {:ok, %{value: without}} = Sandbox.eval("Tools.list()")
+
+      assert with_empty == without
+      assert length(without) == length(@stub_tools)
     end
   end
 

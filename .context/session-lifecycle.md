@@ -71,12 +71,16 @@ stateDiagram-v2
   idle/error session; `PiConfigSync`, which evicts idle *pi* ports after
   writing new pi config so the next turn re-reads it (WarmPool rows carry the
   session's backend precisely so this can be filtered); and the runner
-  itself, when a per-session `/mcp` flag (`orchestrator`/`code_exec`)
-  changes. A `running` session always refuses an eviction requested from
-  outside — the flag-change case instead defers its own eviction to the
-  `running`→`idle`/`error` transition (`pending_rebake`), since those flags
-  are baked into the `/mcp` URL only at port-open and only a cold re-open can
-  pick up the new value.
+  itself, when a per-session `/mcp` flag (`orchestrator`/`code_exec`) or the
+  session's MCP tool policy (`tool_allowlist`/`tool_denylist`, see
+  `OrcaHub.ToolPolicy`) changes. A `running` session always refuses an
+  eviction requested from outside — the flag-change case instead defers its
+  own eviction to the `running`→`idle`/`error` transition (`pending_rebake`),
+  since those flags are baked into the `/mcp` URL only at port-open and only a
+  cold re-open can pick up the new value. The tool policy isn't in the URL —
+  `OrcaHub.MCP.Server` resolves it lazily from the session row — but it is
+  cached for the life of the MCP CONNECTION, so it needs the same cold
+  re-open, and rides the same path (`SessionRunner.update_tool_policy/3`).
 - **A forked pi child never enters `running` on its own schedule.** Its first
   prompt is held by `OrcaHub.ForkGate` until the previous sibling's first
   turn has fully completed; the session row and UI exist from the moment of

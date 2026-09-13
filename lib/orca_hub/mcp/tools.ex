@@ -25,11 +25,25 @@ defmodule OrcaHub.MCP.Tools do
   non-Discord node's `tools/list` stays free of hub work. `initialize` itself
   never does a hub lookup.
 
-  `call/3` does **not** gate by role: any known tool may be called. Only
-  genuinely-unknown tool names are rejected.
+  Layered on top of the role filter is the connection's per-session tool
+  policy (`OrcaHub.ToolPolicy`, the `sessions.tool_allowlist` /
+  `tool_denylist` columns): `list/1` drops every tool the policy refuses,
+  AFTER the role filter and the conditional Discord tools. The policy is
+  resolved lazily once per MCP connection and cached on `state`
+  (`:tool_policy`) by `OrcaHub.MCP.Server` — `list/1` never resolves it
+  itself, so a state without one is simply unrestricted. Note `list/1` only
+  covers FIRST-PARTY tools; upstream tools are filtered by the same policy in
+  `MCP.Server`'s `tools/list` clause.
+
+  `call/3` does **not** gate by role: any known tool may be called by any
+  connection. It DOES gate on the tool policy — a policy-denied name is
+  refused with an error result rather than dispatched. Genuinely-unknown tool
+  names are still rejected outright.
   """
 
   require Logger
+
+  alias OrcaHub.ToolPolicy
 
   alias OrcaHub.MCP.Tools.{
     Artifacts,
@@ -119,6 +133,11 @@ defmodule OrcaHub.MCP.Tools do
   Orchestrator connections see every tool; regular connections see only the
   tools in `@regular_session_tools`. The role is read from `state`, not a
   hub lookup.
+
+  The connection's tool policy (`state[:tool_policy]`, resolved and cached by
+  `MCP.Server`) is applied LAST, on top of whatever the role filter and the
+  conditional Discord tools produced — a policy can only ever narrow the
+  visible set, never widen it.
   """
   def list(state) do
     tools =
@@ -130,27 +149,48 @@ defmodule OrcaHub.MCP.Tools do
         |> maybe_add_discord_tool(state)
       end
 
+    policy = ToolPolicy.from_state(state)
+    restricted = ToolPolicy.filter(tools, policy)
+
     Logger.info(
       "[MCP] Tools.list: role=#{if orchestrator?(state), do: "orchestrator (full set)", else: "regular (filtered)"} " <>
-        "tool_count=#{length(tools)}"
+        "tool_count=#{length(restricted)}" <>
+        if(ToolPolicy.restricted?(policy),
+          do: " tool_policy=restricted (#{length(tools) - length(restricted)} dropped)",
+          else: ""
+        )
     )
 
-    tools
+    restricted
   end
 
   @doc """
   Dispatch a tool call by name to its owning category module. Unknown tool
   names return an error result. Known tools are dispatched regardless of the
-  connection role.
+  connection ROLE — but a tool refused by the connection's tool policy
+  (`OrcaHub.ToolPolicy`, read off `state[:tool_policy]`) is refused here
+  rather than dispatched, so hiding a tool from `list/1` isn't the only thing
+  standing between a restricted session and calling it anyway.
+
+  This covers first-party tools on both entry paths (direct `tools/call` and
+  `CodeExec.Dispatcher`). UPSTREAM tools never reach here, which is why
+  `CodeExec.Dispatcher.dispatch/3` carries its own check as well.
   """
   def call(name, args, state) do
-    case category_for(name) do
-      nil ->
-        Logger.warning("[MCP] Tools.call: unknown tool name=#{inspect(name)}")
-        Result.error("Unknown tool: #{name}")
+    policy = ToolPolicy.from_state(state)
 
-      module ->
-        module.call(name, args, state)
+    if is_binary(name) and not ToolPolicy.allowed?(policy, name) do
+      Logger.warning("[MCP] Tools.call: refused by tool policy name=#{inspect(name)}")
+      Result.error(ToolPolicy.denial_message(name))
+    else
+      case category_for(name) do
+        nil ->
+          Logger.warning("[MCP] Tools.call: unknown tool name=#{inspect(name)}")
+          Result.error("Unknown tool: #{name}")
+
+        module ->
+          module.call(name, args, state)
+      end
     end
   end
 

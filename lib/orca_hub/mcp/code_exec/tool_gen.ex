@@ -41,6 +41,18 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
   MCP state from the process dictionary (`OrcaHub.MCP.CodeExec.get_state/0`),
   which the sandbox installs in the eval Task before running.
 
+  ## Per-session tool policy
+
+  `Tools.list/0`, `Tools.search/1` and `Tools.schema/1` are filtered by the
+  caller's `OrcaHub.ToolPolicy` (`sessions.tool_allowlist`/`tool_denylist`), so
+  a restricted session doesn't SEE tools it isn't allowed to call and then get
+  errors when it tries. That filtering necessarily happens at CALL time
+  against `CodeExec.get_state/0` — the baked-in `index` is global and shared
+  by every session, and baking per-session state into the module is forbidden
+  for the atom-table reason above. The per-tool generated functions themselves
+  are deliberately left unfiltered: they're gated at dispatch time by
+  `Dispatcher.dispatch/3`, which is where an actual call is refused.
+
   The `:dispatcher` option is a test seam: it is baked into the `dispatch/3`
   call so tests can inject canned tool results without a live upstream. The
   unwrap/raise semantics (`Dispatcher.invoke!/3`, `try/3`) are always the real
@@ -49,7 +61,9 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
 
   require Logger
 
+  alias OrcaHub.MCP.CodeExec
   alias OrcaHub.MCP.CodeExec.{Dispatcher, ToolSearch}
+  alias OrcaHub.ToolPolicy
 
   @default_root Tools
 
@@ -244,9 +258,9 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
       quote do
         @doc ~s(All tools as %{"name" => ..., "description" => ...} maps.)
         def list do
-          Enum.map(unquote(Macro.escape(index)), fn t ->
-            %{"name" => t.name, "description" => t.description}
-          end)
+          unquote(Macro.escape(index))
+          |> visible_tools()
+          |> Enum.map(fn t -> %{"name" => t.name, "description" => t.description} end)
         end
       end,
       quote do
@@ -258,6 +272,7 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
         """
         def search(query) when is_binary(query) do
           unquote(Macro.escape(index))
+          |> visible_tools()
           |> unquote(ToolSearch).search(query)
           |> Enum.map(fn t ->
             %{"name" => t.name, "description" => t.description, "args" => t.args}
@@ -267,10 +282,25 @@ defmodule OrcaHub.MCP.CodeExec.ToolGen do
       quote do
         @doc "Fetch a tool's JSON input schema by raw MCP name."
         def schema(name) when is_binary(name) do
-          case Enum.find(unquote(Macro.escape(index)), &(&1.name == name)) do
+          case Enum.find(visible_tools(unquote(Macro.escape(index))), &(&1.name == name)) do
             nil -> nil
             t -> t.schema
           end
+        end
+      end,
+      quote do
+        # The baked-in index is GLOBAL (one `Tools` module shared by every
+        # session), so the caller's per-session tool policy can only be
+        # applied here, at call time, against the MCP state the sandbox
+        # installed in this process — never baked into the module. A denied
+        # tool is invisible to list/0 and search/1, and schema/1 returns nil
+        # for it.
+        @doc false
+        def visible_tools(index) do
+          unquote(ToolPolicy).filter(
+            index,
+            unquote(ToolPolicy).from_state(unquote(CodeExec).get_state())
+          )
         end
       end,
       quote do

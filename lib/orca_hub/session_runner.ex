@@ -189,6 +189,22 @@ defmodule OrcaHub.SessionRunner do
     GenStatem.cast(via(session_id), {:update_code_exec, code_exec})
   end
 
+  @doc """
+  Apply a change to this session's MCP tool policy columns
+  (`tool_allowlist`/`tool_denylist`, see `OrcaHub.ToolPolicy`).
+
+  The policy is resolved once per MCP CONNECTION and cached there, so — exactly
+  like the `orchestrator`/`code_exec` flags baked into the `/mcp` URL — a
+  change only takes effect on a cold port re-open. This cast rides the same
+  path: an actual change evicts the warm port now when no turn is in flight,
+  or marks a `pending_rebake` consumed at the running->idle/error transition.
+  The caller is expected to have persisted the columns already; this only
+  drives the re-bake.
+  """
+  def update_tool_policy(session_id, tool_allowlist, tool_denylist) do
+    GenStatem.cast(via(session_id), {:update_tool_policy, tool_allowlist, tool_denylist})
+  end
+
   # Answers a backend-native mid-turn UI dialog (pi's extension-UI reply
   # loop — "pi backend groundwork" slice). MUST be allowed mid-turn: the
   # dialog blocks the CURRENT turn on the CLI side, so it can only ever be
@@ -347,12 +363,14 @@ defmodule OrcaHub.SessionRunner do
     # pending_questions logic, which also uses the bounded tail.)
     if session.backend == "pi" do
       open_dialogs = scan_for_open_pi_dialogs(saved_messages)
+
       Enum.each(open_dialogs, fn %{"id" => id} ->
         stale_resolution = %{
           "type" => "pi_ui_response",
           "id" => id,
           "resolution" => "stale"
         }
+
         db_call(init_data, :create_message, [
           %{session_id: session_id, data: stale_resolution}
         ])
@@ -395,6 +413,13 @@ defmodule OrcaHub.SessionRunner do
       model: session.model,
       orchestrator: session.orchestrator || false,
       code_exec: session.code_exec || false,
+      # MCP tool allow/deny policy columns (OrcaHub.ToolPolicy). The runner
+      # never enforces them — MCP.Server resolves the policy from the DB per
+      # connection — it only tracks them so a mid-session change can force the
+      # cold re-open that a fresh MCP connection (and so a freshly resolved
+      # policy) requires. Same mechanism as orchestrator/code_exec.
+      tool_allowlist: Map.get(session, :tool_allowlist),
+      tool_denylist: Map.get(session, :tool_denylist),
       tools: Map.get(session, :tools),
       # Agent Runs API (docs/api.md): whether this session backs a run with a
       # `result_schema` and/or `client_tools` — resolved once here (DB work
@@ -455,9 +480,11 @@ defmodule OrcaHub.SessionRunner do
       # set when a runtime kill-switch downgrade is requested mid-turn; consumed
       # when the current turn's result arrives (see finalize_downgrade/1)
       downgrade_pending: false,
-      # set when a per-session /mcp flag (orchestrator/code_exec) changes mid-turn;
-      # consumed at the running→idle/error transition to evict the now-stale warm
-      # port so the NEXT turn cold-reopens with the re-baked /mcp URL
+      # set when a per-session /mcp flag (orchestrator/code_exec) or the MCP tool
+      # policy (tool_allowlist/tool_denylist) changes mid-turn; consumed at the
+      # running→idle/error transition to evict the now-stale warm port so the
+      # NEXT turn cold-reopens with the re-baked /mcp URL and a freshly resolved
+      # tool policy
       pending_rebake: false,
       req_counter: 0,
       turn_result: nil,
@@ -553,6 +580,7 @@ defmodule OrcaHub.SessionRunner do
       "id" => request_id,
       "resolution" => "stale"
     }
+
     new_data = handle_stream_event(stale_resolution, data)
     {:keep_state, new_data, [{:reply, from, {:error, :not_running}}]}
   end
@@ -580,6 +608,9 @@ defmodule OrcaHub.SessionRunner do
   def ready(:cast, {:update_code_exec, code_exec}, data),
     do: apply_flag_change_no_turn(data, :code_exec, code_exec)
 
+  def ready(:cast, {:update_tool_policy, allow, deny}, data),
+    do: apply_flag_changes_no_turn(data, tool_allowlist: allow, tool_denylist: deny)
+
   def ready(:cast, _msg, _data), do: :keep_state_and_data
   def ready(:info, _msg, _data), do: :keep_state_and_data
 
@@ -606,6 +637,7 @@ defmodule OrcaHub.SessionRunner do
       "id" => request_id,
       "resolution" => "stale"
     }
+
     new_data = handle_stream_event(stale_resolution, data)
     {:keep_state, new_data, [{:reply, from, {:error, :not_running}}]}
   end
@@ -704,6 +736,9 @@ defmodule OrcaHub.SessionRunner do
 
   def idle(:cast, {:update_code_exec, code_exec}, data),
     do: apply_flag_change_no_turn(data, :code_exec, code_exec)
+
+  def idle(:cast, {:update_tool_policy, allow, deny}, data),
+    do: apply_flag_changes_no_turn(data, tool_allowlist: allow, tool_denylist: deny)
 
   def idle(:cast, _msg, _data), do: :keep_state_and_data
   def idle(:info, _msg, _data), do: :keep_state_and_data
@@ -817,6 +852,7 @@ defmodule OrcaHub.SessionRunner do
           "id" => request_id,
           "resolution" => "stale"
         }
+
         new_data = handle_stream_event(stale_resolution, data)
         {:keep_state, new_data, [{:reply, from, {:error, :not_pending}}]}
     end
@@ -830,6 +866,7 @@ defmodule OrcaHub.SessionRunner do
       "id" => request_id,
       "resolution" => "stale"
     }
+
     new_data = handle_stream_event(stale_resolution, data)
     {:keep_state, new_data, [{:reply, from, {:error, :not_running}}]}
   end
@@ -969,6 +1006,9 @@ defmodule OrcaHub.SessionRunner do
   def running(:cast, {:update_code_exec, code_exec}, data),
     do: apply_flag_change_running(data, :code_exec, code_exec)
 
+  def running(:cast, {:update_tool_policy, allow, deny}, data),
+    do: apply_flag_changes_running(data, tool_allowlist: allow, tool_denylist: deny)
+
   def running(:cast, _msg, _data), do: :keep_state_and_data
   def running(:info, _msg, _data), do: :keep_state_and_data
 
@@ -999,6 +1039,7 @@ defmodule OrcaHub.SessionRunner do
       "id" => request_id,
       "resolution" => "stale"
     }
+
     new_data = handle_stream_event(stale_resolution, data)
     {:keep_state, new_data, [{:reply, from, {:error, :not_running}}]}
   end
@@ -1055,6 +1096,9 @@ defmodule OrcaHub.SessionRunner do
 
   def error(:cast, {:update_code_exec, code_exec}, data),
     do: apply_flag_change_no_turn(data, :code_exec, code_exec)
+
+  def error(:cast, {:update_tool_policy, allow, deny}, data),
+    do: apply_flag_changes_no_turn(data, tool_allowlist: allow, tool_denylist: deny)
 
   def error({:call, from}, {:update_backend, backend}, data),
     do: switch_backend_no_turn(from, data, backend)
@@ -1530,9 +1574,18 @@ defmodule OrcaHub.SessionRunner do
   # port-open, so when the value actually CHANGES we evict the warm port now to
   # force a cold re-open (and URL re-bake) on the next turn. A no-op (same value)
   # must NOT tear the port down. Cold runners (port: nil) just store the value.
-  defp apply_flag_change_no_turn(data, key, value) do
-    changed? = Map.get(data, key) != value
-    new_data = Map.put(data, key, value)
+  defp apply_flag_change_no_turn(data, key, value),
+    do: apply_flag_changes_no_turn(data, [{key, value}])
+
+  # Same, for a change that spans SEVERAL keys at once (the tool-policy
+  # columns, which are one logical setting split across two columns): they
+  # must be evaluated together so a single eviction covers both, and so
+  # changing only one of the two still re-bakes. The tool policy isn't in the
+  # /mcp URL — MCP.Server resolves it per connection — but it's cached for the
+  # life of that connection, so a cold re-open is exactly what it needs too.
+  defp apply_flag_changes_no_turn(data, kvs) do
+    changed? = Enum.any?(kvs, fn {key, value} -> Map.get(data, key) != value end)
+    new_data = Enum.reduce(kvs, data, fn {key, value}, acc -> Map.put(acc, key, value) end)
 
     if changed? and not is_nil(data.port) do
       {td, actions} = evict_warm_now(new_data)
@@ -1547,13 +1600,18 @@ defmodule OrcaHub.SessionRunner do
   # mark a pending rebake; the warm port is evicted at the running→idle/error
   # transition (see consume_pending_rebake/1), so the SUBSEQUENT turn re-bakes the
   # URL. An already-set marker is preserved across a no-op change.
-  defp apply_flag_change_running(data, key, value) do
-    changed? = Map.get(data, key) != value
-    new_data = Map.put(data, key, value)
+  defp apply_flag_change_running(data, key, value),
+    do: apply_flag_changes_running(data, [{key, value}])
+
+  # Multi-key sibling of apply_flag_change_running/3 — see
+  # apply_flag_changes_no_turn/2 for why the tool-policy columns need one.
+  defp apply_flag_changes_running(data, kvs) do
+    changed? = Enum.any?(kvs, fn {key, value} -> Map.get(data, key) != value end)
+    new_data = Enum.reduce(kvs, data, fn {key, value}, acc -> Map.put(acc, key, value) end)
     {:keep_state, %{new_data | pending_rebake: new_data.pending_rebake or changed?}}
   end
 
-  # At the running→idle/error transition, honor a /mcp flag rebake requested
+  # At the running→idle/error transition, honor a /mcp flag (or tool-policy) rebake requested
   # mid-turn: evict the now-stale warm port so the next turn cold-reopens with the
   # new URL. Returns {data, actions}; with no pending rebake, arms the normal idle
   # timer instead. Public (@doc false) as a test seam.
@@ -1869,14 +1927,17 @@ defmodule OrcaHub.SessionRunner do
     # Find all pi_ui_request events that don't have a corresponding pi_ui_response
     # with the same id using Sessions.all_pending_pi_dialog_ids/1 via db_call.
     open_dialogs = db_call(data, :all_pending_pi_dialog_ids, [session_id])
+
     Enum.each(open_dialogs, fn %{"id" => id} ->
       stale_resolution = %{
         "type" => "pi_ui_response",
         "id" => id,
         "resolution" => "stale"
       }
+
       db_call(data, :create_message, [%{session_id: session_id, data: stale_resolution}])
     end)
+
     data
   end
 

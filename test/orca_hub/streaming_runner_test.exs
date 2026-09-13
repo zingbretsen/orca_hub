@@ -258,6 +258,8 @@ defmodule OrcaHub.StreamingRunnerTest do
           port: nil,
           code_exec: false,
           orchestrator: false,
+          tool_allowlist: nil,
+          tool_denylist: nil,
           pending_rebake: false,
           engine: :streaming,
           buffer: "",
@@ -346,6 +348,75 @@ defmodule OrcaHub.StreamingRunnerTest do
 
       assert {:keep_state, new_data} =
                SessionRunner.running(:cast, {:update_code_exec, true}, data)
+
+      assert new_data.pending_rebake == false
+      Port.close(port)
+    end
+
+    test "(a) a tool-policy change while idle with a warm port evicts it too" do
+      port = open_port()
+      data = flag_data(port: port)
+
+      assert {:keep_state, new_data, actions} =
+               SessionRunner.idle(:cast, {:update_tool_policy, ["report_progress"], ["*"]}, data)
+
+      assert new_data.port == nil
+      assert new_data.tool_allowlist == ["report_progress"]
+      assert new_data.tool_denylist == ["*"]
+      assert {:state_timeout, :infinity, :idle_teardown} in actions
+      assert Port.info(port) == nil
+    end
+
+    test "(a) changing only ONE of the two tool-policy columns still evicts" do
+      port = open_port()
+      data = flag_data(port: port, tool_allowlist: ["report_progress"], tool_denylist: nil)
+
+      assert {:keep_state, new_data, _actions} =
+               SessionRunner.idle(
+                 :cast,
+                 {:update_tool_policy, ["report_progress"], ["start_session"]},
+                 data
+               )
+
+      assert new_data.port == nil
+      assert new_data.tool_denylist == ["start_session"]
+      assert Port.info(port) == nil
+    end
+
+    test "(b) a no-op tool-policy cast does NOT evict the warm port" do
+      port = open_port()
+      data = flag_data(port: port, tool_allowlist: ["a"], tool_denylist: ["b"])
+
+      assert {:keep_state, new_data} =
+               SessionRunner.idle(:cast, {:update_tool_policy, ["a"], ["b"]}, data)
+
+      assert new_data.port == port
+      assert Port.info(port) != nil
+
+      Port.close(port)
+    end
+
+    test "(c) a tool-policy change while running defers to a pending rebake" do
+      port = open_port()
+      data = flag_data(port: port, pending_rebake: false)
+
+      assert {:keep_state, new_data} =
+               SessionRunner.running(:cast, {:update_tool_policy, nil, ["*"]}, data)
+
+      assert new_data.port == port
+      assert new_data.tool_denylist == ["*"]
+      assert new_data.pending_rebake == true
+      assert Port.info(port) != nil
+
+      Port.close(port)
+    end
+
+    test "(c) a no-op tool-policy cast while running does not set the rebake marker" do
+      port = open_port()
+      data = flag_data(port: port, tool_denylist: ["*"], pending_rebake: false)
+
+      assert {:keep_state, new_data} =
+               SessionRunner.running(:cast, {:update_tool_policy, nil, ["*"]}, data)
 
       assert new_data.pending_rebake == false
       Port.close(port)

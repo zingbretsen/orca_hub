@@ -8,6 +8,7 @@ defmodule OrcaHub.MCP.Server do
 
   alias OrcaHub.MCP.Tools
   alias OrcaHub.MCP.ToolCallHolder
+  alias OrcaHub.ToolPolicy
 
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
@@ -93,6 +94,15 @@ defmodule OrcaHub.MCP.Server do
        code_exec: code_exec,
        api_run: api_run,
        tool_holder: nil,
+       # Per-session MCP tool allow/deny policy (OrcaHub.ToolPolicy). Like
+       # `tool_holder`, it needs a hub lookup, so `initialize` does NOT
+       # resolve it — it's fetched lazily on first tools/list (and,
+       # defensively, tools/call) and cached here for the life of the
+       # connection. A mid-session change to the columns therefore only
+       # takes effect on a fresh MCP connection, i.e. a cold port re-open,
+       # which SessionRunner forces via the same pending_rebake/evict_warm
+       # path it uses for the orchestrator/code_exec flags.
+       tool_policy: nil,
        initialized: false,
        # Client (frontend) tool call currently holding a `tools/call` JSON-RPC
        # response open (docs/api.md) — see the "Client tool call parking"
@@ -268,6 +278,12 @@ defmodule OrcaHub.MCP.Server do
   # reachable only as `Tools.*` functions inside run_elixir. When the flag is
   # OFF this clause never matches and tools/list behaves exactly as before.
   defp dispatch(%{"method" => "tools/list", "id" => id}, %{code_exec: true} = state) do
+    # The surface itself is just run_elixir (never policy-restricted — it's
+    # not an OrcaHub.MCP.Tools entry at all), but resolve + cache the tool
+    # policy here anyway: this state map is what gets threaded into the
+    # sandbox, where the generated Tools.list/search/schema helpers and
+    # `CodeExec.Dispatcher` read it back out.
+    state = ensure_tool_policy(state)
     all_tools = OrcaHub.MCP.CodeExec.MetaTools.list()
 
     log_tools_list_size("code_exec", state, all_tools)
@@ -282,7 +298,15 @@ defmodule OrcaHub.MCP.Server do
   end
 
   defp dispatch(%{"method" => "tools/list", "id" => id}, state) do
-    upstream_tools = OrcaHub.MCP.UpstreamClient.list_tools()
+    state = ensure_tool_policy(state)
+    policy = ToolPolicy.from_state(state)
+
+    # Tools.list/1 applies the policy to first-party tools itself; upstream
+    # tools never pass through it, so they're filtered by the same policy
+    # here — otherwise a denied `github__*` would stay fully visible.
+    upstream_tools =
+      OrcaHub.MCP.UpstreamClient.list_tools() |> ToolPolicy.filter(policy)
+
     orca_tools = Tools.list(state)
     all_tools = (orca_tools ++ upstream_tools) |> Enum.sort_by(& &1["name"])
 
@@ -368,6 +392,9 @@ defmodule OrcaHub.MCP.Server do
     # connection/turn-scoped (resets across CLI re-handshakes), so it's only
     # ever used ALONGSIDE the call's own arguments, never alone.
     state = Map.put(state, :mcp_request_id, id)
+    # Defensive: a client that went straight to tools/call without ever
+    # calling tools/list would otherwise carry no policy at all.
+    state = ensure_tool_policy(state)
 
     Logger.info(
       "[MCP] tools/call: name=#{inspect(tool_name)} orchestrator=#{state.orchestrator} " <>
@@ -466,6 +493,43 @@ defmodule OrcaHub.MCP.Server do
   # kind, so `ToolCallHolder.find_by_session_id/1` trying each registered
   # module in turn is enough to find it without threading an extra "which
   # holder kind" flag through the MCP connection/URL.
+
+  # Lazily resolve + cache this connection's tool policy. `ToolPolicy.resolve/1`
+  # already fails open on a hub blip, but it's wrapped again here in the same
+  # shape as the other lazy hub lookups on this GenServer: whatever goes wrong,
+  # this must degrade to an unrestricted connection rather than crash the MCP
+  # session (which would surface as "Invalid or missing session" 400s on every
+  # subsequent request).
+  defp ensure_tool_policy(%{tool_policy: %ToolPolicy{}} = state), do: state
+
+  defp ensure_tool_policy(state) do
+    policy = ToolPolicy.resolve(state[:orca_session_id])
+
+    if ToolPolicy.restricted?(policy) do
+      Logger.info(
+        "[MCP] tool policy resolved: orca_session_id=#{inspect(state[:orca_session_id])} " <>
+          "allow=#{inspect(policy.allow)} deny=#{inspect(policy.deny)}"
+      )
+    end
+
+    Map.put(state, :tool_policy, policy)
+  rescue
+    e ->
+      Logger.error(
+        "[MCP] tool policy resolution raised — failing open (unrestricted): " <>
+          Exception.format(:error, e, __STACKTRACE__)
+      )
+
+      Map.put(state, :tool_policy, ToolPolicy.unrestricted())
+  catch
+    kind, reason ->
+      Logger.error(
+        "[MCP] tool policy resolution #{kind} — failing open (unrestricted): " <>
+          Exception.format(kind, reason, __STACKTRACE__)
+      )
+
+      Map.put(state, :tool_policy, ToolPolicy.unrestricted())
+  end
 
   defp ensure_tool_holder(%{tool_holder: holder} = state) when not is_nil(holder), do: state
 

@@ -532,4 +532,99 @@ defmodule OrcaHub.MCP.ServerTest do
       assert reloaded.result == %{"answer" => 42}
     end
   end
+
+  describe "tools/list + tools/call — per-session tool policy (OrcaHub.ToolPolicy)" do
+    # NOTE: `code_exec`/`orchestrator` are properties of the CONNECTION (query
+    # params baked into the /mcp URL by SessionRunner), not read back off the
+    # session row here — so they're passed to start_session/1 separately from
+    # the row attrs.
+    defp start_policy_connection(attrs, opts \\ []) do
+      {:ok, session} =
+        Sessions.create_session(
+          Map.merge(
+            %{directory: "/tmp/mcp-server-test-#{System.unique_integer([:positive])}"},
+            attrs
+          )
+        )
+
+      {:ok, mcp_session_id} =
+        Server.start_session(
+          Keyword.merge([orca_session_id: session.id, orchestrator: true], opts)
+        )
+
+      on_exit(fn -> Server.stop_session(mcp_session_id) end)
+
+      %{session: session, mcp_session_id: mcp_session_id}
+    end
+
+    test "the policy is resolved lazily at tools/list and narrows the surface" do
+      %{mcp_session_id: mcp_session_id} =
+        start_policy_connection(%{
+          code_exec: false,
+          tool_denylist: ["start_session", "search_*"]
+        })
+
+      names =
+        tools_list(mcp_session_id)["result"]["tools"]
+        |> Enum.map(& &1["name"])
+
+      assert "report_progress" in names
+      refute "start_session" in names
+      refute "search_sessions" in names
+    end
+
+    test "a session with no policy columns sees the full surface" do
+      %{mcp_session_id: mcp_session_id} = start_policy_connection(%{code_exec: false})
+
+      names = tools_list(mcp_session_id)["result"]["tools"] |> Enum.map(& &1["name"])
+
+      assert "start_session" in names
+      assert "search_sessions" in names
+    end
+
+    test "tools/call is gated even when the client never called tools/list" do
+      %{mcp_session_id: mcp_session_id} =
+        start_policy_connection(%{code_exec: false, tool_denylist: ["search_sessions"]})
+
+      response = call_tool(mcp_session_id, "search_sessions", %{})
+
+      assert %{"isError" => true} = response["result"]
+      assert result_text(response) =~ "restricted for this session"
+    end
+
+    test "an allowed tool on a restricted connection is NOT refused by policy" do
+      %{mcp_session_id: mcp_session_id} =
+        start_policy_connection(%{code_exec: false, tool_denylist: ["search_sessions"]})
+
+      response = call_tool(mcp_session_id, "not_a_real_tool", %{})
+
+      assert result_text(response) =~ "Unknown tool"
+      refute result_text(response) =~ "restricted for this session"
+    end
+
+    test "a code-exec connection still exposes only run_elixir, and the policy rides its state" do
+      %{session: session} =
+        ctx = start_policy_connection(%{code_exec: true, tool_denylist: ["*"]}, code_exec: true)
+
+      names = tools_list(ctx.mcp_session_id)["result"]["tools"] |> Enum.map(& &1["name"])
+      assert names == ["run_elixir"]
+
+      # The policy the sandbox would see for this session denies everything.
+      policy = OrcaHub.ToolPolicy.resolve(session.id)
+      assert OrcaHub.ToolPolicy.restricted?(policy)
+      refute OrcaHub.ToolPolicy.allowed?(policy, "report_progress")
+    end
+
+    test "FAIL OPEN: a connection whose session row is gone is unrestricted, not empty" do
+      {:ok, mcp_session_id} =
+        Server.start_session(orca_session_id: Ecto.UUID.generate(), orchestrator: true)
+
+      on_exit(fn -> Server.stop_session(mcp_session_id) end)
+
+      names = tools_list(mcp_session_id)["result"]["tools"] |> Enum.map(& &1["name"])
+
+      assert "start_session" in names
+      assert "search_sessions" in names
+    end
+  end
 end

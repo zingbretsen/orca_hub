@@ -13,6 +13,15 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
     * otherwise → `OrcaHub.MCP.Tools.call/3`
 
   and returns the raw MCP result map (`%{"content" => [...], "isError" => bool}`).
+
+  Before either branch, the caller's per-session tool policy
+  (`OrcaHub.ToolPolicy`, read off the threaded MCP `state`) is consulted and a
+  refused name short-circuits to an error envelope. This gate covers BOTH
+  kinds deliberately: first-party calls are also gated inside
+  `OrcaHub.MCP.Tools.call/3` (defense in depth across the two entry paths),
+  but UPSTREAM calls go straight to `UpstreamClient.call_tool/3` and would
+  otherwise bypass enforcement entirely.
+
   `dispatch/3` is the swappable seam: `ToolGen` bakes the dispatcher module into
   the generated functions, so tests can inject a stub returning canned envelopes
   without a live upstream.
@@ -52,6 +61,9 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
   alias OrcaHub.MCP.CodeExec
   alias OrcaHub.MCP.CodeExec.MediaSink
   alias OrcaHub.MCP.CodeExec.PlaywrightUpload
+  alias OrcaHub.ToolPolicy
+
+  require Logger
 
   # NOTE: `Tools` is intentionally NOT aliased to `OrcaHub.MCP.Tools` here — in
   # this module `Tools.Error` must resolve to the top-level exception module
@@ -94,6 +106,17 @@ defmodule OrcaHub.MCP.CodeExec.Dispatcher do
   instead of ever calling `UpstreamClient.call_tool/3`.
   """
   def dispatch(name, args, state) when is_binary(name) and is_map(args) do
+    policy = ToolPolicy.from_state(state)
+
+    if ToolPolicy.allowed?(policy, name) do
+      do_dispatch(name, args, state)
+    else
+      Logger.warning("[code_exec] dispatch refused by tool policy name=#{inspect(name)}")
+      OrcaHub.MCP.Tools.Result.error(ToolPolicy.denial_message(name))
+    end
+  end
+
+  defp do_dispatch(name, args, state) do
     if UpstreamClient.upstream_tool?(name) do
       {args, mode} = extract_requested_filename(name, args)
       MediaSink.put_requested_filename(mode)
