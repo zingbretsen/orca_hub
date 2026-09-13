@@ -88,6 +88,16 @@ defmodule OrcaHub.Sessions.Session do
     field :email_message_id, :string
     field :email_in_reply_to, :string
 
+    # Per-session MCP tool restrictions, enforced in the MCP server — see
+    # OrcaHub.ToolPolicy. Entries match the RAW MCP tool name
+    # (`send_message_to_session`, `github__get_issue`) exactly, or as a glob
+    # when they contain `*`. Deny wins over allow. nil OR [] means "no
+    # restriction" for BOTH columns (an explicit deny-all is ["*"] on the
+    # denylist) — `[]` must never mean "deny everything", since form casting
+    # turns an untouched multi-select into [].
+    field :tool_allowlist, {:array, :string}
+    field :tool_denylist, {:array, :string}
+
     # Per-session override of the default automatic-memory-extraction scope
     # rule (orchestrator or root session — see OrcaHub.MemoryExtraction).
     # nil = inherit the default rule, true = force on, false = never.
@@ -133,7 +143,9 @@ defmodule OrcaHub.Sessions.Session do
       :email_in_reply_to,
       :trigger_id,
       :memory_extract,
-      :memory_extracted_at
+      :memory_extracted_at,
+      :tool_allowlist,
+      :tool_denylist
     ])
     # Cast separately with empty_values: [] — cast/4's default empty_values
     # ([""]) would otherwise silently turn an explicit `tools: ""` (the "no
