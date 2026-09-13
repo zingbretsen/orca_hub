@@ -84,6 +84,33 @@
         do: Calendar.strftime(@trigger.last_fired_at, "%Y-%m-%d %H:%M UTC"),
         else: "never"}
     </:item>
+    <:item :if={tool_policy_set?(@trigger)} title="MCP tool restrictions">
+      <div class="space-y-1 text-sm">
+        <div :if={@trigger.tool_allowlist not in [nil, []]}>
+          <span class="badge badge-xs badge-warning mr-1">allow only</span>
+          <span class="font-mono">{Enum.join(@trigger.tool_allowlist, ", ")}</span>
+        </div>
+        <div :if={@trigger.tool_denylist not in [nil, []]}>
+          <span class="badge badge-xs badge-error mr-1">deny</span>
+          <span class="font-mono">{Enum.join(@trigger.tool_denylist, ", ")}</span>
+        </div>
+        <p class="text-xs text-base-content/60">
+          Applied to each session this trigger creates. Deny wins over allow.
+          <strong>MCP tools only</strong>
+          — the agent CLI's built-in tools (Bash, Read, Write, WebFetch, …) are not restricted.
+        </p>
+      </div>
+    </:item>
+    <:item :if={setup_script_set?(@trigger)} title="Setup script">
+      <div class="space-y-1">
+        <pre class="whitespace-pre-wrap font-mono text-xs bg-base-300 rounded p-2 overflow-x-auto">{@trigger.setup_script}</pre>
+        <p class="text-xs text-base-content/60">
+          Timeout {OrcaHub.Triggers.SetupScript.timeout_seconds(@trigger)}s. Runs on the
+          session's runner node, in the session's directory, before every firing — including a
+          reused session.
+        </p>
+      </div>
+    </:item>
     <:item title="Prompt">
       <pre class="whitespace-pre-wrap font-sans text-sm">{@trigger.prompt}</pre>
     </:item>

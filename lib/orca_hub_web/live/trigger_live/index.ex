@@ -31,6 +31,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
        editing_trigger: nil,
        trigger_type: "scheduled",
        schedule_mode: "daily",
+       show_advanced: false,
        trigger_form: to_form(Triggers.change_trigger(%Trigger{})),
        email_inboxes: HubRPC.list_email_inboxes()
      )}
@@ -61,6 +62,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       editing_trigger: nil,
       trigger_type: "scheduled",
       schedule_mode: "daily",
+      show_advanced: false,
       trigger_form: to_form(changeset)
     )
   end
@@ -76,9 +78,24 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       editing_trigger: trigger,
       trigger_type: trigger.type,
       schedule_mode: detect_schedule_mode(trigger.cron_expression),
+      # Auto-open the advanced section for a trigger that already uses any of
+      # it — otherwise a configured restriction/script is invisible while
+      # editing, and a save that omits those inputs looks like it dropped them.
+      show_advanced: advanced_configured?(trigger),
       trigger_form: to_form(changeset)
     )
   end
+
+  @doc """
+  Whether a trigger already uses any of the advanced (tool policy / setup
+  script) fields — i.e. whether that form section should start expanded.
+  """
+  def advanced_configured?(%Trigger{} = trigger) do
+    trigger.tool_allowlist not in [nil, []] or trigger.tool_denylist not in [nil, []] or
+      (is_binary(trigger.setup_script) and String.trim(trigger.setup_script) != "")
+  end
+
+  def advanced_configured?(_), do: false
 
   @impl true
   def handle_event("set_trigger_type", %{"type" => type}, socket) do
@@ -89,6 +106,10 @@ defmodule OrcaHubWeb.TriggerLive.Index do
     {:noreply, assign(socket, schedule_mode: mode)}
   end
 
+  def handle_event("toggle_advanced", _params, socket) do
+    {:noreply, assign(socket, show_advanced: !socket.assigns.show_advanced)}
+  end
+
   def handle_event("validate_trigger", %{"trigger" => params}, socket) do
     trigger = socket.assigns.editing_trigger || %Trigger{}
 
@@ -96,9 +117,14 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       params
       |> Map.put("type", socket.assigns.trigger_type)
       |> parse_sender_allowlist_param()
+      |> parse_tool_list_params()
 
     changeset = Triggers.change_trigger(trigger, params)
-    {:noreply, assign(socket, trigger_form: to_form(changeset, action: :validate))}
+
+    {:noreply,
+     socket
+     |> assign(trigger_form: to_form(changeset, action: :validate))
+     |> reveal_advanced_on_error(changeset)}
   end
 
   def handle_event("save_trigger", %{"trigger" => params}, socket) do
@@ -106,6 +132,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       params
       |> Map.put("type", socket.assigns.trigger_type)
       |> parse_sender_allowlist_param()
+      |> parse_tool_list_params()
 
     params =
       if socket.assigns.trigger_type == "scheduled" do
@@ -130,7 +157,10 @@ defmodule OrcaHubWeb.TriggerLive.Index do
          |> push_patch(to: ~p"/triggers")}
 
       {:error, changeset} ->
-        {:noreply, assign(socket, trigger_form: to_form(changeset))}
+        {:noreply,
+         socket
+         |> assign(trigger_form: to_form(changeset))
+         |> reveal_advanced_on_error(changeset)}
     end
   end
 
@@ -206,6 +236,19 @@ defmodule OrcaHubWeb.TriggerLive.Index do
      )}
   end
 
+  # An error on a field inside the collapsed advanced section would otherwise
+  # be invisible — expand it so the message is on screen. Only ever expands:
+  # a section the operator opened by hand never snaps shut under them.
+  defp reveal_advanced_on_error(socket, changeset) do
+    if Enum.any?(changeset.errors, fn {field, _} ->
+         field in [:tool_allowlist, :tool_denylist, :setup_script, :setup_timeout_seconds]
+       end) do
+      assign(socket, show_advanced: true)
+    else
+      socket
+    end
+  end
+
   defp maybe_build_cron(params, "hourly") do
     minute = params["schedule_minute"] || "0"
     Map.put(params, "cron_expression", "#{minute} * * * *")
@@ -236,6 +279,36 @@ defmodule OrcaHubWeb.TriggerLive.Index do
   end
 
   defp parse_sender_allowlist_param(params), do: params
+
+  # tool_allowlist/tool_denylist are submitted as free text (one raw MCP tool
+  # name or `*`-glob per line reads best, but commas/spaces work the same way
+  # — see OrcaHubWeb.EnvAllowlistInput.parse/1, shared with the sender
+  # allow-list above). A BLANK field parses to [] and is stored as nil, which
+  # OrcaHub.ToolPolicy reads as "no restriction" — the same thing [] means, so
+  # an untouched or emptied field can never silently restrict a session. An
+  # explicit deny-all is still spelled `*` in the deny field.
+  defp parse_tool_list_params(params) do
+    Enum.reduce(["tool_allowlist", "tool_denylist"], params, fn key, acc ->
+      case Map.fetch(acc, key) do
+        {:ok, text} when is_binary(text) ->
+          case OrcaHubWeb.EnvAllowlistInput.parse(text) do
+            [] -> Map.put(acc, key, nil)
+            entries -> Map.put(acc, key, entries)
+          end
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  @doc """
+  Renders a tool allow/deny list back into its textarea's text form, one
+  entry per line. `nil`/`[]` (no restriction) render as an empty field.
+  """
+  def tool_list_text(entries) when is_list(entries), do: Enum.join(entries, "\n")
+  def tool_list_text(text) when is_binary(text), do: text
+  def tool_list_text(_), do: ""
 
   defp detect_schedule_mode(cron) when is_binary(cron) do
     case String.split(cron) do

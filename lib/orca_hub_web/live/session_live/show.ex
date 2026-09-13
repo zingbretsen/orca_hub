@@ -168,6 +168,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
      # same "load full history eagerly" reasoning as @session_artifacts above
      # — never a full-feed scan, and small enough per session to just load.
      |> assign(:show_memories, false)
+     # MCP tool allow/deny policy for this session, read-only. Resolved from
+     # the session row itself (never a hub round trip), and the header chrome
+     # is hidden entirely unless the policy actually restricts something —
+     # the overwhelmingly common case must stay uncluttered.
+     |> assign(:show_tool_policy, false)
      |> assign(:memory_events, HubRPC.list_memory_injected_events(id))
      # Memories this session itself created (remember/extraction) — fetched
      # lazily the first time the panel is OPENED (see handle_event
@@ -1123,6 +1128,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply,
      socket
      |> assign(:show_artifacts, !socket.assigns.show_artifacts)
+     |> assign(:show_mobile_actions, false)}
+  end
+
+  def handle_event("toggle_tool_policy", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_tool_policy, !socket.assigns.show_tool_policy)
      |> assign(:show_mobile_actions, false)}
   end
 
@@ -3035,6 +3047,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
   defp format_interval(seconds), do: "#{seconds}s"
 
   # -- Memories panel helpers --
+
+  @doc """
+  The session's resolved MCP tool policy (`OrcaHub.ToolPolicy`), for the
+  read-only header chrome. `restricted?/1` on the result is what gates every
+  bit of that chrome: `nil` and `[]` both mean "no restriction", so an
+  ordinary session shows nothing at all.
+  """
+  def session_tool_policy(session), do: OrcaHub.ToolPolicy.from_session(session)
+
+  def tool_policy_restricted?(session),
+    do: session |> session_tool_policy() |> OrcaHub.ToolPolicy.restricted?()
 
   # One row per DISTINCT memory id across every memory_injected event this
   # session has ever recorded, plus totals — backs the header's Memories

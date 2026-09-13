@@ -237,6 +237,112 @@
       on, forwarded mail accumulates into one long-running session per trigger; with it off,
       every accepted email gets its own new session.
     </p>
+
+    <div class="border border-base-300 rounded-lg">
+      <button
+        type="button"
+        phx-click="toggle_advanced"
+        id="trigger-advanced-toggle"
+        class="flex items-center gap-2 w-full text-left px-3 py-2 text-sm font-medium"
+      >
+        <.icon
+          name={
+            if @show_advanced, do: "hero-chevron-down-micro", else: "hero-chevron-right-micro"
+          }
+          class="size-4"
+        /> MCP tool restrictions &amp; setup script
+        <span class="text-xs font-normal text-base-content/50">(optional)</span>
+      </button>
+      <div :if={@show_advanced} id="trigger-advanced-fields" class="px-3 pb-3 space-y-3">
+        <div>
+          <.input
+            field={@trigger_form[:tool_allowlist]}
+            type="textarea"
+            label="Tool allow-list"
+            value={tool_list_text(@trigger_form[:tool_allowlist].value)}
+            rows="3"
+            class="w-full textarea font-mono text-xs"
+            placeholder="report_progress\nsend_message_to_session\ngithub__*"
+          />
+          <p class="text-xs text-base-content/60 -mt-1">
+            Leave <strong>blank for no restriction</strong>
+            (the normal case). If non-empty, ONLY the tools listed here can be called.
+          </p>
+        </div>
+
+        <div>
+          <.input
+            field={@trigger_form[:tool_denylist]}
+            type="textarea"
+            label="Tool deny-list"
+            value={tool_list_text(@trigger_form[:tool_denylist].value)}
+            rows="3"
+            class="w-full textarea font-mono text-xs"
+            placeholder="retire_memory\nstart_session"
+          />
+          <p class="text-xs text-base-content/60 -mt-1">
+            Leave <strong>blank for no restriction</strong>. Anything listed here is refused even
+            if the allow-list permits it — <strong>deny wins</strong>. To deny every MCP tool,
+            put <code class="font-mono">*</code> here.
+          </p>
+        </div>
+
+        <div class="text-xs text-base-content/60 bg-base-200 rounded p-2 space-y-1">
+          <p>
+            One entry per line (commas and spaces work too). Entries are
+            <strong>exact raw MCP tool names</strong>
+            or anchored globs using <code class="font-mono">*</code>
+            only — <code class="font-mono">*</code>
+            spans the <code class="font-mono">__</code>
+            upstream prefix, so <code class="font-mono">github__*</code>
+            covers one upstream server. Matching is case-sensitive; no other wildcards.
+          </p>
+          <p>
+            <strong>This restricts MCP tools only.</strong>
+            It does <strong>not</strong>
+            restrict the agent CLI's own built-in tools — Bash, Read, Write, Edit, WebFetch and
+            friends stay fully available, so this is an operator guardrail, not a sandbox.
+          </p>
+          <p>
+            Stamped onto each session this trigger <strong>creates</strong>. With
+            <strong>Reuse previous session</strong>
+            on, an already-running reused session keeps the lists it was created with.
+          </p>
+        </div>
+
+        <div>
+          <.input
+            field={@trigger_form[:setup_script]}
+            type="textarea"
+            label="Setup script"
+            rows="5"
+            class="w-full textarea font-mono text-xs"
+            placeholder="date -u\ngit -C . log -1 --oneline"
+          />
+          <p class="text-xs text-base-content/60 -mt-1">
+            Runs on the session's runner node, in the session's directory, before
+            <strong>every firing</strong>
+            — including a reused session. Its combined stdout+stderr is prepended to the prompt.
+            A non-zero exit or a timeout is reported to the agent but never cancels the firing.
+            Webhook/email payload data is never passed to the script.
+          </p>
+        </div>
+
+        <.input
+          field={@trigger_form[:setup_timeout_seconds]}
+          type="number"
+          label="Setup script timeout (seconds, 1–3600)"
+          min="1"
+          max="3600"
+          step="1"
+          placeholder="120"
+        />
+        <p class="text-xs text-base-content/60 -mt-2">
+          Defaults to 120. The script and its whole process group are killed at the timeout.
+        </p>
+      </div>
+    </div>
+
     <div class="flex justify-end gap-2">
       <.link patch={~p"/triggers"} class="btn btn-sm">Cancel</.link>
       <.button type="submit" class="btn-sm">

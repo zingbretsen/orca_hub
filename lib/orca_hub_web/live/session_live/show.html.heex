@@ -418,6 +418,18 @@
         </span>
       </button>
       <button
+        :if={tool_policy_restricted?(@session)}
+        id="tool-policy-toggle"
+        phx-click="toggle_tool_policy"
+        class={[
+          "hidden sm:flex btn btn-ghost btn-sm btn-circle",
+          @show_tool_policy && "text-primary"
+        ]}
+        title="MCP tool restrictions are in effect for this session"
+      >
+        <.icon name="hero-lock-closed" class="size-5 text-warning" />
+      </button>
+      <button
         :if={@memory_events != []}
         phx-click="toggle_memories"
         class={[
@@ -658,6 +670,18 @@
               >
                 <span class="font-medium">Artifacts</span>
                 <span class="badge badge-xs badge-primary">{length(@session_artifacts)}</span>
+              </button>
+            <% end %>
+            <%= if tool_policy_restricted?(@session) do %>
+              <button
+                phx-click="toggle_tool_policy"
+                class={[
+                  "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors bg-base-200 hover:bg-base-300",
+                  @show_tool_policy && "text-primary"
+                ]}
+              >
+                <span class="font-medium">Tool restrictions</span>
+                <.icon name="hero-lock-closed" class="size-5 text-warning" />
               </button>
             <% end %>
             <%= if @memory_events != [] do %>
@@ -946,6 +970,33 @@
         </button>
       </li>
     </ul>
+  </div>
+
+  <div
+    :if={tool_policy_restricted?(@session) && @show_tool_policy}
+    id="tool-policy-panel"
+    class="mb-2 bg-base-200 rounded-lg px-3 py-2"
+  >
+    <% tool_policy = session_tool_policy(@session) %>
+    <div class="text-xs text-base-content/50 mb-1">
+      MCP tool restrictions in effect for this session (read-only — set when the session was
+      created).
+    </div>
+    <ul class="space-y-1">
+      <li :if={tool_policy.allow != []} class="flex items-start gap-2 text-sm">
+        <span class="badge badge-xs badge-warning shrink-0 mt-0.5">allow only</span>
+        <span class="font-mono break-all">{Enum.join(tool_policy.allow, ", ")}</span>
+      </li>
+      <li :if={tool_policy.deny != []} class="flex items-start gap-2 text-sm">
+        <span class="badge badge-xs badge-error shrink-0 mt-0.5">deny</span>
+        <span class="font-mono break-all">{Enum.join(tool_policy.deny, ", ")}</span>
+      </li>
+    </ul>
+    <p class="text-xs text-base-content/50 mt-1">
+      Deny wins over allow. <strong>MCP tools only</strong>
+      — the agent CLI's own built-in tools (Bash, Read, Write, WebFetch, …) are not restricted
+      by this.
+    </p>
   </div>
 
   <div :if={@memory_events != [] && @show_memories} class="mb-2 bg-base-200 rounded-lg px-3 py-2">

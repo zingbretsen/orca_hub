@@ -769,6 +769,66 @@ defmodule OrcaHubWeb.MessageComponents do
     """
   end
 
+  # A trigger's pre-run setup script (OrcaHub.Triggers.SetupScript) — collapsed
+  # by default like memory_injected above, since a successful run is noise. A
+  # FAILED run is styled as an error so it's obvious while still collapsed;
+  # "failed" is precomputed by the persister (timeout OR error OR non-zero
+  # exit), never re-derived here.
+  #
+  # SECURITY: `output` is arbitrary command output from an untrusted-by-
+  # construction source, rendered into the MAIN document. It goes into a
+  # `<pre>` as plain interpolated text so HEEx escapes it — never through
+  # OrcaHubWeb.Markdown.render/2 or Phoenix.HTML.raw/1, which would pass raw
+  # HTML/script through (see the earmark item in CLAUDE.md). Same treatment
+  # the tool-result blocks get.
+  defp system_message(%{msg: %{"subtype" => "setup_script"}} = assigns) do
+    assigns =
+      assigns
+      |> assign(:failed, assigns.msg["failed"] == true)
+      |> assign(:trigger_name, assigns.msg["trigger_name"])
+      |> assign(:script, assigns.msg["script"])
+      |> assign(:output, assigns.msg["output"])
+      |> assign(:status, setup_script_status(assigns.msg))
+      |> assign(:duration, format_duration(assigns.msg["duration_ms"]))
+      |> assign(:truncated, assigns.msg["truncated_bytes"] || 0)
+      |> assign(:error, assigns.msg["error"])
+
+    ~H"""
+    <div class={["text-xs py-1", if(@failed, do: "text-error", else: "opacity-40")]}>
+      <details>
+        <summary class="flex items-center gap-1.5 italic cursor-pointer list-none">
+          <.icon
+            name={if @failed, do: "hero-exclamation-triangle-micro", else: "hero-cog-6-tooth-micro"}
+            class="size-3 shrink-0"
+          />
+          <span :if={@failed} class="not-italic font-medium">Setup script failed</span>
+          <span :if={!@failed}>Setup script ran</span>
+          <span :if={@trigger_name}>({@trigger_name})</span>
+          <span>· {@status} · {@duration}</span>
+        </summary>
+        <div class="not-italic mt-1 ml-4 space-y-1">
+          <div :if={@error} class="font-medium">{@error}</div>
+          <div :if={@script not in [nil, ""]}>
+            <div class="opacity-70">Script</div>
+            <pre class="whitespace-pre-wrap font-mono opacity-70 overflow-x-auto max-h-48 overflow-y-auto">{@script}</pre>
+          </div>
+          <div :if={@truncated > 0} class="opacity-70">
+            output truncated — {@truncated} bytes dropped (tail kept)
+          </div>
+          <div>
+            <div class="opacity-70">Output</div>
+            <pre
+              :if={@output not in [nil, ""]}
+              class="whitespace-pre-wrap font-mono opacity-70 overflow-x-auto max-h-64 overflow-y-auto"
+            >{@output}</pre>
+            <div :if={@output in [nil, ""]} class="opacity-50 italic">(no output)</div>
+          </div>
+        </div>
+      </details>
+    </div>
+    """
+  end
+
   defp system_message(assigns) do
     assigns =
       assigns
@@ -789,6 +849,14 @@ defmodule OrcaHubWeb.MessageComponents do
     </div>
     """
   end
+
+  # Mirrors OrcaHub.Triggers.SetupScript's own status line, from the persisted
+  # event's fields alone.
+  defp setup_script_status(%{"timed_out" => true}), do: "timed out"
+  defp setup_script_status(%{"error" => error}) when is_binary(error), do: "could not run"
+  defp setup_script_status(%{"exit_code" => 0}), do: "exit 0"
+  defp setup_script_status(%{"exit_code" => code}) when is_integer(code), do: "exit #{code}"
+  defp setup_script_status(_), do: "no exit code"
 
   @doc """
   Normalizes a `memory_injected` event into row maps

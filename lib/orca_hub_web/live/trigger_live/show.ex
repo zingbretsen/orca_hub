@@ -62,6 +62,13 @@ defmodule OrcaHubWeb.TriggerLive.Show do
 
   def webhook_url(trigger), do: OrcaHubWeb.TriggerLive.Index.webhook_url(trigger)
 
+  @doc "Whether this trigger restricts anything — nil/[] on both lists means it doesn't."
+  def tool_policy_set?(trigger),
+    do: trigger.tool_allowlist not in [nil, []] or trigger.tool_denylist not in [nil, []]
+
+  @doc "Whether this trigger has a non-blank setup script."
+  def setup_script_set?(trigger), do: OrcaHub.Triggers.SetupScript.configured?(trigger)
+
   def rotate_disabled_reason(%{reuse_session: false}), do: "Only reused sessions can be rotated."
 
   def rotate_disabled_reason(%{last_session_id: nil}),
