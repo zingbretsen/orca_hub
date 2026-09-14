@@ -63,6 +63,42 @@ defmodule OrcaHub.Issues.Search do
     * `:created_by_session_id` — only issues filed by that session.
     * `:limit` — default #{10}.
 
+  ## What fusion actually buys, measured (112 real prod issues, 2026-09-14)
+
+  Recorded because the answer is not the obvious one, and because the next
+  person to touch `fuse/3` should know what the legs really look like rather
+  than assuming two comparable retrievers.
+
+  The two legs are good at DISJOINT things, and each is near-useless at the
+  other's job:
+
+    * Natural-language paraphrase (8 queries worded to share no distinctive
+      terms with their target): semantic put the right issue at #1 six
+      times, cosine 0.59-0.76. The lexical leg returned **zero rows for all
+      eight** — `websearch_to_tsquery` ANDs bare terms, so a sentence
+      matches nothing.
+    * Rare exact identifiers (10 queries: `OOMKill`, `NodeArg.resolve`,
+      `gemma-4-26B-A4B`, …): lexical put the right issue at #1 ten times out
+      of ten, while semantic MISSED TWO ENTIRELY (not in its top 10) and
+      ranked three others below lexical (#2, #2, #7).
+
+  So "hybrid beats either leg alone" holds across the query MIX, not on any
+  single query: hybrid was #1 on 9/10 exact-term queries that would have
+  been 2 outright misses under semantic-only, and #1 on the paraphrases that
+  lexical could not answer at all. It routes to whichever leg the caller's
+  phrasing suits without the caller having to know which regime they're in.
+
+  What fusion did NOT do is improve on the better leg. Across 28 queries RRF
+  never ranked a target ABOVE the best single leg, and in 4 it cost one or
+  two ranks (#1 -> #2 twice, #1 -> #3 once). The mechanism is not a bug:
+  an issue found by BOTH legs scores ~0.0325 and legitimately outranks a
+  semantic-only #1 at ~0.0164, so one topical keyword coincidence can
+  displace a strong vector match. RRF assumes two comparably-recalled
+  rankings and these are not that. It is kept anyway — the ranks lost are
+  small and stay on page one, while the misses it prevents are total — but
+  if this is ever revisited, weighting the legs is the knob, and it should
+  be re-measured, not reasoned about.
+
   ## Why best-chunk-per-issue, and the oversample it costs
 
   An issue is chunked into many rows, so a naive vector query returns the
@@ -93,13 +129,30 @@ defmodule OrcaHub.Issues.Search do
   # keeps the two systems' relative scores comparable to a reader.
   @rrf_k 60
 
-  # Default cosine-similarity floor for `similar_issues/2`. Calibrated on
-  # the real 111-issue corpus (see the module's tests): genuine paraphrases
-  # of the same issue land around 0.62-0.78 with qwen3-embedding-0.6b, while
-  # merely same-topic-different-problem pairs sit below ~0.55. Set
-  # deliberately on the conservative side — a missed dedup costs a duplicate
-  # issue, a false one silently swallows a real report.
-  @similar_threshold 0.62
+  # Default cosine-similarity floor for `similar_issues/2`, CALIBRATED
+  # against the real 112-issue prod corpus rather than guessed — the first
+  # guess here was 0.62, which measurement showed would have been a disaster.
+  #
+  # Method: embed every issue's title, find its nearest OTHER issue, and look
+  # at the distribution. With qwen3-embedding-0.6b these issues are all
+  # written in the same register about the same system, so they sit close
+  # together in general: the MEDIAN issue's nearest neighbour scores 0.72,
+  # p90 is 0.81. Nearness is therefore weak evidence of duplication.
+  #
+  #   the one genuine duplicate pair in the corpus     0.974
+  #     ("get_session_tail truncates last_assistant_text" filed twice)
+  #   related-but-distinct pairs                       0.80 - 0.83
+  #     (churn detector false-POSITIVE vs false-NEGATIVE; file-tree inline
+  #      previews vs per-file download — same area, different asks)
+  #   median issue's nearest neighbour                 0.72
+  #
+  # Share of the corpus a threshold would flag as "already filed":
+  # 0.62 -> 88%, 0.70 -> 62%, 0.80 -> 12%, 0.85 -> 1.8%. Only the true
+  # duplicate pair clears 0.85, so that is the floor: at this altitude a hit
+  # is real evidence, and the asymmetry demands it — a missed dedup costs one
+  # duplicate issue someone can merge later, while a FALSE dedup silently
+  # swallows a real report and returns an unrelated issue in its place.
+  @similar_threshold 0.85
 
   @type result :: %{
           issue: Issue.t() | struct(),
@@ -458,10 +511,24 @@ defmodule OrcaHub.Issues.Search do
     semantic_by_id = Map.new(semantic, &{&1.issue.id, &1})
     lexical_by_id = Map.new(lexical, &{&1.issue.id, &1})
 
+    semantic_ranks = rank_index(semantic)
+    lexical_ranks = rank_index(lexical)
+
     scores
-    # Ties broken by ascending id, matching MemoryService.RRF, so a result
-    # set is deterministic rather than dependent on map ordering.
-    |> Enum.sort_by(fn {id, score} -> {-score, id} end)
+    # RRF ties are COMMON and not a corner case: a semantic-only hit and a
+    # lexical-only hit that are each rank 1 in their own leg score exactly
+    # 1/61. MemoryService.RRF breaks that by ascending id, which here is a
+    # random UUID — and measured on the real corpus that arbitrarily demoted
+    # two correct #1 answers to #2 behind an irrelevant keyword hit. So the
+    # tiebreak is: better semantic rank first, then better lexical rank, then
+    # id for determinism. Preferring the semantic leg on a tie is the
+    # measured-better default for natural-language queries, and it barely
+    # bites elsewhere: when a rare exact term matches lexically it is almost
+    # always IN the issue's text too, so that issue is a both-leg hit with a
+    # strictly higher score and never reaches this comparison.
+    |> Enum.sort_by(fn {id, score} ->
+      {-score, Map.get(semantic_ranks, id, :infinity), Map.get(lexical_ranks, id, :infinity), id}
+    end)
     |> Enum.take(limit)
     |> Enum.map(fn {id, score} ->
       base = Map.fetch!(by_id, id)
@@ -482,6 +549,16 @@ defmodule OrcaHub.Issues.Search do
         lexical_score: lexical_hit && lexical_hit.lexical_score
       }
     end)
+  end
+
+  # issue_id => 1-based rank within one leg. Absent means "this leg didn't
+  # find it", which the tiebreak reads as `:infinity` — and Erlang's term
+  # order puts every integer before every atom, so that comparison works
+  # without a sentinel number.
+  defp rank_index(results) do
+    results
+    |> Enum.with_index(1)
+    |> Map.new(fn {result, rank} -> {result.issue.id, rank} end)
   end
 
   defp accumulate_rrf(acc, results) do

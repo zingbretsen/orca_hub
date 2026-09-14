@@ -586,12 +586,26 @@ defmodule OrcaHub.Issues.SearchTest do
     end
 
     test "drops everything below the threshold rather than returning a least-bad match" do
-      # 0.5 of the way to another axis is a cosine similarity of ~0.707 —
-      # above the default floor, below an explicitly raised one.
-      stub_embedding(blend(0, 400, 0.5))
+      # 0.2 of the way toward another axis is a cosine similarity of ~0.970:
+      # a near-restatement, which clears the default floor.
+      stub_embedding(blend(0, 400, 0.2))
+      assert {:ok, [_near_identical]} = Search.similar_issues("fds leak on teardown")
 
-      assert {:ok, [_above_default]} = Search.similar_issues("vaguely about ports")
-      assert {:ok, []} = Search.similar_issues("vaguely about ports", threshold: 0.9)
+      # Halfway is ~0.707 — measured on the real corpus, that's ordinary
+      # same-project nearness (the MEDIAN issue's nearest neighbour scores
+      # 0.72), not duplication. It must not be reported as a duplicate.
+      stub_embedding(blend(0, 400, 0.5))
+      assert {:ok, []} = Search.similar_issues("vaguely about ports")
+
+      # ...but it's still reachable if a caller deliberately lowers the bar.
+      assert {:ok, [_]} = Search.similar_issues("vaguely about ports", threshold: 0.6)
+    end
+
+    test "the default floor is high on purpose — a false dedup swallows a real report" do
+      # Regression guard on the calibration in Search's @similar_threshold:
+      # the first value here was 0.62, which measurement showed would flag
+      # 88% of the real corpus as already-filed.
+      assert Search.similar_threshold() >= 0.85
     end
 
     test "includes in_progress issues, which a plain search's default would miss", %{
