@@ -27,6 +27,7 @@ graph TB
         WebhookCtrl["WebhookController"]
         TTSCtrl["TTSController"]
         ArtifactCtrl["ArtifactController<br>(/artifacts/:id/raw|download)"]
+        FileDownloadCtrl["FileDownloadController<br>(chunked, node-routed)"]
         ApiRunCtrl["ApiRunController<br>(/api/v1/runs)"]
         SessionApiCtrl["SessionApiController<br>(GET /api/v1/sessions(/:id))"]
         A2ACtrl["A2AController<br>(/a2a, inbound JSON-RPC)"]
@@ -61,6 +62,15 @@ graph TB
         Churn["Sessions.Churn<br>(+ ChurnDetail / FileSurgery)"]
         SessionResumer["SessionResumer"]
         ForkGate["ForkGate<br>(pi fork first-turn FIFO)"]
+        ToolPolicy["ToolPolicy<br>(per-session MCP allow/deny)"]
+        TTSConfig["TTSConfig<br>(provider/model, env fallback)"]
+    end
+
+    subgraph MemSub["Agent Memory"]
+        MemoryClient["MemoryClient<br>(hub-only HTTP)"]
+        MemoryExtraction["MemoryExtraction<br>(+ finalize_self)"]
+        MemoryExtractionSweep["MemoryExtractionSweep<br>(hub only, boot backstop)"]
+        MemoryReview["MemoryReview<br>(nightly + weekly triggers)"]
     end
 
     subgraph Sync["Hub-DB -> Node-Disk Sync (every node)"]
@@ -110,6 +120,9 @@ graph TB
         CodeExecGenerator["CodeExec.Generator"]
         CodeExecBindingStore["CodeExec.BindingStore"]
         CodeExecToolSearch["CodeExec.ToolSearch /<br>Analyzer"]
+        CodeExecMediaSink["CodeExec.MediaSink<br>(image/audio -> disk)"]
+        CodeExecPlaywright["CodeExec.PlaywrightUpload<br>(local paths -> pod paths)"]
+        ToolsInfra["MCP.Tools.Probes / Notify /<br>Databases / PhxAgents"]
     end
 
     subgraph Discord["Discord Bridge (opt-in, env-gated)"]
@@ -124,7 +137,8 @@ graph TB
         TerminalSupervisor["TerminalSupervisor<br>(DynamicSupervisor)"]
         JobSupervisor["JobSupervisor<br>(DynamicSupervisor)"]
         MCPSupervisor["MCPSupervisor<br>(DynamicSupervisor)"]
-        Scheduler["Quantum Scheduler<br>(hub only)"]
+        Scheduler["Quantum Scheduler<br>(hub only, RunStrategy.Local)"]
+        TriggerLoader["TriggerLoader<br>(hub only)"]
         TriggerExecutor["TriggerExecutor"]
         TaskSupervisor["Task.Supervisor"]
         ClusterNodeTracker["ClusterNodeTracker<br>(hub only)"]
@@ -140,13 +154,17 @@ graph TB
         DiscordAPI["Discord Gateway"]
         Gitea["Gitea<br>(agent-memory remotes)"]
         IMAP["IMAP mailbox"]
+        MemoryService["Agent-memory service<br>(HTTP)"]
+        Gotify["Gotify<br>(push to the human)"]
+        PgProv["pg-provisioner<br>(homelab Postgres)"]
+        PhxApp["phx-app A2A agents"]
     end
 
     Endpoint --> Router
     Router --> SessionShow & SessionIndex & ProjectIndex & ProjectShow & IssueIndex & IssueShow
     Router --> TriggerLive & QueueLive & UsageLive & DashboardLive & SettingsLive & NodeLive & TerminalLive & CommandPalette
     Router --> PiConfigLive & SkillLive & ArtifactLive
-    Router --> MCPPlug & WebhookCtrl & ArtifactCtrl
+    Router --> MCPPlug & WebhookCtrl & ArtifactCtrl & FileDownloadCtrl
     Router -->|":api_authed pipeline"| ApiAuth
     ApiAuth --> TTSCtrl & ApiRunCtrl & SessionApiCtrl & A2ACtrl
     ApiAuth -->|"scoped token: hash lookup,<br>scope + session-pin check"| ApiTokens
@@ -190,7 +208,14 @@ graph TB
     CodeExecSandbox --> CodeExecBindingStore
     CodeExecSandbox --> MCPTools & UpstreamClient
     CodeExecGenerator -->|"Tools.search/1 ranking"| CodeExecToolSearch
+    CodeExecSandbox -->|"media blocks -> session dir"| CodeExecMediaSink
+    CodeExecSandbox -.->|"playwright paths arg"| CodeExecPlaywright
     MCPServer --> UpstreamClient
+    MCPServer -->|"resolved lazily, cached<br>per MCP connection"| ToolPolicy
+    ToolPolicy -->|"reads allow/denylist"| Sessions
+    MCPTools --> ToolsInfra
+    ToolsInfra -->|"node-routed read-only probes"| Cluster
+    ToolsInfra -.-> Gotify & PgProv & PhxApp
     MCPTools -->|persist via| HubRPC
     UpstreamClient --> UpstreamServers & Secrets
     UpstreamClient --> ExtMCPServers
@@ -243,8 +268,21 @@ graph TB
     ClusterNodeTracker -.->|tracks node up/down| ClusterNodes
     NodeDialer -.->|dials rows flagged dial| ClusterNodes
 
+    Sessions -.->|"archive_session/2"| MemoryExtraction
+    MCPTools -->|"extract_memories tool"| MemoryExtraction
+    MemoryExtraction -->|"Cluster.start_session on the<br>source session's own node"| SessionSupervisor
+    SessionRunner -.->|"extraction child's turn end"| MemoryExtraction
+    MemoryExtractionSweep -.->|"boot backstop for orphans"| MemoryExtraction
+    TriggerLoader -.->|"hub boot, before sync_triggers"| MemoryReview
+    MemoryReview -->|"upserts 2 scheduled triggers"| Triggers
+    MCPTools -->|"remember/recall/..."| MemoryClient
+    MemoryClient --> MemoryService
+    BackendBehaviour -->|"memory block at cold port open<br>(SharedPrompts / pi ORCA_MEMORY)"| MemoryClient
+
     UsageLive --> Usage
     ArtifactLive & ArtifactCtrl --> Artifacts
+    TTSCtrl --> TTSConfig
+    TTSConfig --> Repo
     TTSCtrl -.-> ElevenLabs
 ```
 
@@ -383,7 +421,67 @@ graph TB
   `retire_memory`/`verify_memory`/`merge_memories`/`list_memories` MCP
   tools (`OrcaHub.MCP.Tools.Memory`), visible to every session.
   `context_block/3` sits on the session-spawn path and always resolves to
-  `{:ok, block_or_nil}` — a memory-service outage never blocks a spawn.
+  `{:ok, block_or_nil}` — a memory-service outage never blocks a spawn. The
+  injection seam itself is per-backend: `maybe_prepend_memory/3` in
+  `Backend.SharedPrompts` for Claude/Codex's first turn, and `Backend.Pi`'s
+  `orca_memory_json/1` (the `ORCA_MEMORY` env) at pi's port-open.
+- **Memory extraction** (`lib/orca_hub/memory_extraction.ex`,
+  `memory_extraction_sweep.ex`): on a session's natural end of work —
+  `Sessions.archive_session/2` (default on) or the orchestrator-only
+  `extract_memories` tool (always forced) — a cheap child session
+  (`sessions.kind: "memory_extraction"`, hidden from the index and
+  `search_sessions` by default) reads the new human+assistant transcript
+  since `memory_extracted_at` and calls the memory tools itself. The
+  intelligence is in the child, not in this module, whose job is scope
+  gating (`orchestrator` or root session, overridable per-session with
+  `memory_extract`), transcript building, the spawn, and reporting back.
+  The child's own turn end is a real `SessionRunner` hook
+  (`finalize_self/2`); nothing else in the lifecycle triggers extraction —
+  see `.context/session-lifecycle.md` for why `idle_teardown`/`evict_warm`
+  were rejected. `MemoryExtractionSweep` is the hub-only boot backstop.
+- **Memory review** (`lib/orca_hub/memory_review.ex`): two hub-scheduled
+  triggers upserted idempotently by `TriggerLoader` on boot —
+  `memory-consolidate-nightly` and `memory-verify-weekly`. Both PROPOSE
+  only (`merge_memories`/`flag_memory`/`verify_memories`), never
+  `retire_memory` and never a text rewrite; both set `memory_extract:
+  false` so a review pass never memory-extracts itself.
+- **ToolPolicy** (`lib/orca_hub/tool_policy.ex`): per-session MCP tool
+  allow/deny, resolved from the `sessions.tool_allowlist`/`tool_denylist`
+  columns and ENFORCED in `MCP.Server` on every entry path — the
+  declarative replacement for "you may never call X" prose in a prompt.
+  `nil` **or** `[]` means no restriction on either side (an untouched form
+  multi-select casts to `[]`, so that reading would silently strip every
+  tool); explicit deny-all is `["*"]`; deny wins over allow; entries are
+  exact raw MCP tool names or `*`-globs. It covers MCP tools ONLY — not the
+  agent CLI's own Bash/Read/Write/WebFetch. `MCP.Server` resolves it lazily
+  and caches it for the life of the MCP CONNECTION, which is why changing
+  it evicts the warm port (see `.context/session-lifecycle.md`).
+- **Infrastructure tool surfaces** (`lib/orca_hub/mcp/tools/`): four tool
+  modules that reach outside OrcaHub. `Probes` (`git_probe`, `stat_paths`,
+  `disk_free`) exists for NODE ROUTING — a session's own Read/Glob/Bash
+  only ever see its own node, so these route a fixed, typed, read-only
+  operation via `Cluster.rpc/5` to an explicit target node and return
+  structured data, never a shell string. `Notify` pushes a Gotify message
+  to the human through `HubRPC` so only the hub holds the creds, whereas
+  `Databases` (pg-provisioner, create-only — the API has no delete
+  endpoint) and `PhxAgents` (phx-app's A2A agents) call their external API
+  straight from the session's own runner node using env-var config that
+  must therefore be set on EVERY node, not just the hub.
+- **`CodeExec.MediaSink` / `CodeExec.PlaywrightUpload`**: two rewrites on
+  the tool-result and tool-arg edges of the sandbox. `MediaSink` renders an
+  MCP `content` block list into the plain text a `run_elixir` snippet
+  actually sees, writing image/audio bytes to
+  `<session_directory>/.agents/media/<session_id>/` (somewhere the model's
+  `Read` tool can reach — the app's own `$TMPDIR` is `PrivateTmp`/pod-local)
+  rather than inlining base64. `PlaywrightUpload` rewrites LOCAL file paths
+  in playwright-mcp's `paths` arg into pod-side paths via an upload sidecar,
+  since playwright reads that arg from its OWN pod's filesystem.
+- **TTS config** (`lib/orca_hub/tts_config.ex`): the ElevenLabs/local
+  provider, its URL/language, and the model catalog are DB-backed
+  (`tts_config_entries`, managed in `/settings`) and resolved per request by
+  `TTSController`. Any blank or absent `spec` key falls back to that one
+  field's env var, and `enabled: false` on the provider row reverts every
+  field to env without deleting it.
 - **ForkGate** (`lib/orca_hub/fork_gate.ex`): serializes forked pi children's
   first turns so concurrent same-prefix spawns don't each cold-prefill
   (`pi_fork_spec.md` §6).

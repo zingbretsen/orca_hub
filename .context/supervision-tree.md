@@ -39,6 +39,7 @@ graph TB
     App --> WarmPool["OrcaHub.Streaming.WarmPool"]
     App --> SessionSupervisor["OrcaHub.SessionSupervisor\n(DynamicSupervisor)"]
     App --> SessionResumer["OrcaHub.SessionResumer"]
+    App --> MemoryExtractionSweep["OrcaHub.MemoryExtractionSweep\n(hub only)"]
     App --> ForkGate["OrcaHub.ForkGate"]
     App --> TerminalSupervisor["OrcaHub.TerminalSupervisor\n(DynamicSupervisor)"]
     App --> JobSupervisor["OrcaHub.JobSupervisor\n(DynamicSupervisor)"]
@@ -83,8 +84,8 @@ graph TB
 ## Agent Mode (ORCA_MODE=agent)
 
 Agent nodes omit `Telemetry`, `Repo`, `MCP.UpstreamClient`, `Scheduler`,
-`TriggerLoader`, `SessionHeartbeat`, `ChurnSampler`, `ClusterNodeTracker`,
-`NodeDialer`, and the `EmailInbox*` children. All database operations are
+`TriggerLoader`, `SessionHeartbeat`, `ChurnSampler`, `MemoryExtractionSweep`,
+`ClusterNodeTracker`, `NodeDialer`, and the `EmailInbox*` children. All database operations are
 proxied to the hub node via `HubRPC`. Everything else — including `Streaming.WarmPool`,
 `ForkGate`, `TerminalSupervisor`, `JobSupervisor`/`JobResumer`,
 `LoginSupervisor`, `SkillSync`/`PiConfigSync`/`MemoryGit.Server`, and the
@@ -152,6 +153,17 @@ graph TB
   `status: "running"` after a node restart or deploy.
 - **`OrcaHub.SessionHeartbeat`** (hub only): manages periodic heartbeat
   messages sessions schedule via MCP tools.
+- **`OrcaHub.MemoryExtractionSweep`** (hub only): a single DELAYED ONE-SHOT
+  check at boot, not a repeating timer — the backstop for
+  `kind: "memory_extraction"` children orphaned by a restart landing between
+  a child's turn ending and `SessionRunner`'s self-archive hook
+  (`MemoryExtraction.finalize_self/2`) running. Hub-only where
+  `SessionResumer` is per-node, because archiving an extraction child is a
+  pure DB write no matter which node it ran on, so one sweep covers the whole
+  cluster. Each stale child is archived with `extract_memories: false` (an
+  extraction child must never itself trigger extraction) and its transcript
+  file best-effort deleted via `Cluster.rpc/5` on its own `runner_node` — a
+  failure there never blocks the archive.
 - **`OrcaHub.ChurnSampler`** (hub only): every 120s it samples each
   non-archived `running` session's churn metrics (`OrcaHub.Sessions.Churn`)
   into the `churn_samples` table and emits a `[:orca_hub, :churn, :sample]`

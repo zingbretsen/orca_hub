@@ -7,6 +7,7 @@ erDiagram
     Project ||--o{ Trigger : has
     Project ||--o{ Terminal : has
     Project ||--o{ Artifact : has
+    Project ||--o{ File : has
     Project ||--o{ DiscordChannel : maps
     Project }o--o{ UpstreamServer : "via ProjectUpstreamServer"
 
@@ -21,6 +22,10 @@ erDiagram
     Session ||--o{ ChurnSample : "sampled every 120s while running"
     Session ||--o| AlertSubscription : "watches, as orchestrator"
     Session ||--o{ ApiToken : "optionally pinned to"
+
+    File ||--o{ FileShare : "explicitly shared with"
+    File ||--o{ ArtifactAsset : "referenced as"
+    Artifact ||--o{ ArtifactAsset : "serves at /assets/:name"
 
     Issue }o--o{ Session : "attempts (session.issue_id, real FK)"
     Trigger }o--o| Session : "last_session (plain FK, no assoc)"
@@ -70,6 +75,10 @@ erDiagram
         binary_id trigger_id "trigger that created this session"
         string email_message_id "threading headers of the email that fired it"
         string email_in_reply_to "recorded, not yet read back"
+        array tool_allowlist "MCP tools only; nil/[] = no restriction"
+        array tool_denylist "MCP tools only; deny-all is the single glob *; deny wins"
+        boolean memory_extract "nil = default scope rule, true = force, false = never"
+        utc_datetime memory_extracted_at "watermark, set at DISPATCH not completion"
     }
 
     Message {
@@ -110,8 +119,9 @@ erDiagram
         boolean reuse_session
         boolean archive_on_complete
         boolean enabled
+        boolean memory_extract "stamped onto each session it CREATES; overrides the default scope rule"
         array tool_allowlist "stamped onto each session it CREATES; nil/[] = no restriction"
-        array tool_denylist "stamped onto each session it CREATES; deny-all is [\"*\"]"
+        array tool_denylist "stamped onto each session it CREATES; deny-all is the single glob *"
         string setup_script "shell script run on the runner node before every firing"
         integer setup_timeout_seconds "default 120; timeout kills the whole process group"
         array sender_allowlist "email only; must be non-empty"
@@ -223,6 +233,32 @@ erDiagram
         utc_datetime pinned_at
         binary_id session_id "creating session; plain field, no assoc"
         binary_id project_id FK
+    }
+
+    File {
+        binary_id id PK
+        string name
+        string content_type
+        integer size_bytes
+        string sha256
+        string object_key "key into OrcaHub.ObjectStore; bytes never in Postgres"
+        binary_id session_id "creating session; plain field, no assoc"
+        binary_id project_id FK
+    }
+
+    FileShare {
+        binary_id id PK
+        binary_id file_id FK
+        binary_id project_id "grant to a whole project; plain field"
+        binary_id session_id "grant to one session; plain field"
+        binary_id shared_by_session_id
+    }
+
+    ArtifactAsset {
+        binary_id id PK
+        string name "unique per artifact; the /assets/:name segment"
+        binary_id artifact_id FK
+        binary_id file_id FK
     }
 
     DiscordChannel {
@@ -343,12 +379,21 @@ erDiagram
         map spec "deep-stringified payload; shape depends on kind"
         boolean enabled
     }
+
+    TTSConfigEntry {
+        binary_id id PK
+        string kind "tts_provider|tts_model"
+        string name "literally active for the one provider row; the model id otherwise"
+        map spec "provider: provider/url/language, blank key = fall back to env"
+        boolean enabled "provider: whole row off; model: the default-selection flag"
+    }
 ```
 
 ## Notes
 
 - **Issue is a durable work item again, not just the feature-request backlog.** The original feature was removed in `3ebb3fe` and minimally reintroduced to back an agent-filed feature-request tool; it has since been rebuilt to the full model in `issues_spec.md` (`a3c3fa6`, `934ff26`, `62c1d93`), with `/issues` UI routes restored. The old `[agent-fr] ` title-prefix hack is gone — a platform-friction report is now just `kind: "feature_request"` alongside `kind: "task"`. Per-project short keys (`Project.key_prefix` + `Issue.key_number`, e.g. `ORCA-142`) are minted by an atomic counter increment on the project. `commits`/`attempts` are FROZEN snapshots written only at close (`Issues.derive_commits/1` / `derive_attempt_summary/1`) and cleared on reopen — while an issue is open both are `[]` and the live projections are used instead. `Session.issue_id` is live again (a real FK, `on_delete: :nilify_all`), linking a session as an ATTEMPT at one issue; an issue accumulates many attempts over its lifetime.
-- **`ClusterNode` (`nodes` table), `NodeCredential`, `UpstreamSecret`, `Skill`, and `PiConfigEntry` are not linked by Ecto foreign keys** to the entities above — the first three are matched by name string (`ClusterNode.name` against `Session.runner_node` / `Project.node`; `NodeCredential.node_name` against `ClusterNode.name`), and `Skill`/`PiConfigEntry` are global hub-managed config fanned out to every node's disk by `SkillSync`/`PiConfigSync` (see `.context/supervision-tree.md`). They're drawn standalone in the diagram for that reason.
+- **`ClusterNode` (`nodes` table), `NodeCredential`, `UpstreamSecret`, `Skill`, `PiConfigEntry`, and `TTSConfigEntry` are not linked by Ecto foreign keys** to the entities above — the first three are matched by name string (`ClusterNode.name` against `Session.runner_node` / `Project.node`; `NodeCredential.node_name` against `ClusterNode.name`), and `Skill`/`PiConfigEntry` are global hub-managed config fanned out to every node's disk by `SkillSync`/`PiConfigSync` (see `.context/supervision-tree.md`). They're drawn standalone in the diagram for that reason. `TTSConfigEntry` borrows `PiConfigEntry`'s exact `kind`/`name`/`spec`/`enabled` shape but is never materialized to disk — `OrcaHub.TTSConfig.resolve/0` reads it at request time in `TTSController`, and any blank/absent `spec` key falls back to that one field's env var, so a partially-filled row is legitimate.
+- **`File` / `FileShare` / `ArtifactAsset` are the cross-node file store** (`OrcaHub.Files`, see `.context/architecture.md`). Metadata lives in Postgres; the bytes live behind `OrcaHub.ObjectStore` under `object_key` and never enter the DB. Visibility is creator + same project + an explicit `FileShare`; deleting is narrower (creator or same project only — a share never grants delete rights). One `FileShare` grants to EXACTLY ONE of a session or a project, and both columns are plain fields rather than FKs so a later session/project deletion never needs to touch the table. `ArtifactAsset` is the opposite — both sides are real FKs that cascade, since the row is meaningless once either side is gone.
 - **`Job` is deliberately association-free**: `session_id` is a plain field, and `runner_node`/`directory` pin it to the node that launched it. The row is a durable record of a DETACHED OS process that outlives the session, the runner, and OrcaHub itself — see `OrcaHub.Jobs`. `progress_kind` and friends are declared (and re-declarable mid-flight) BY the job; OrcaHub never infers a progress metric and never adjudicates "stalled", it only surfaces `progress_updated_at` age.
 - **`SessionInteraction`** captures direct session→session messaging edges (e.g. via `send_message_to_session`), distinct from `Session.parent_session_id`, which captures spawn/parent-child lineage instead — except an orchestrator-spawns-orchestrator handoff (`start_session` with `orchestrator: true`), which links the new session as the caller's SIBLING (not a child) and instead records a `kind: "handoff"` `SessionInteraction` so that spawn edge isn't lost.
 - **`env_allowlist`** on both `Project` and `ClusterNode` are unioned (deduped), not one overriding the other — see `.context/clustering.md`.

@@ -64,7 +64,12 @@ Triggers are fully compatible with remote agent nodes. Node routing is
 derived from the trigger's associated project (`trigger → project → project.node`).
 
 - **Scheduling** is hub-only: `Quantum Scheduler` and `TriggerLoader` only
-  run on the hub node (see `Application.hub_children/1`).
+  run on the hub node (see `Application.hub_children/1`). Because of that,
+  the scheduler is pinned to `run_strategy: Quantum.RunStrategy.Local` in
+  `config/config.exs` — Quantum's default `{Random, :cluster}` routes each
+  firing to a random connected node, and any agent node it picks has no
+  Scheduler at all, so the job is silently dropped (ORCAHUB3-80; see
+  `.context/clustering.md`). Never remove that line to "spread the load".
 - **Mailbox polling** is hub-only too, for the same reason — the `EmailInbox*`
   children run only on the hub, so an email trigger is ingested there and its
   execution routes out to the owning agent like any other.

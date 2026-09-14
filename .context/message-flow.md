@@ -9,7 +9,8 @@ in this precedence order:
    forces `:one_shot`, overriding everything else.
 2. **Per-session `streaming` column** — `true` → `:streaming`, `false` →
    `:one_shot`.
-3. **`ORCA_DISABLE_STREAMING` env var** (`Streaming.streaming_disabled?/0`) →
+3. **Per-node env default** — the `:orca_hub, :disable_streaming` app env,
+   set from `ORCA_DISABLE_STREAMING` at boot in `config/runtime.exs` →
    `:one_shot` when the column is unset (`nil`).
 4. Otherwise → **`:streaming`** (the default).
 

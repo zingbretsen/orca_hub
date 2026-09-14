@@ -144,6 +144,7 @@ sequenceDiagram
 | **SessionResumer** | Yes | Yes | Resumes sessions orphaned in `status: "running"` on boot |
 | **SessionHeartbeat** | Yes | No | Hub-only scheduled heartbeat messages into sessions |
 | **ChurnSampler** (+ `AlertEvaluator`) | Yes | No | 120s churn sampling + worker-alert delivery; two nodes sweeping would double-sample and double-alert |
+| **MemoryExtractionSweep** | Yes | No | Boot-time one-shot archive of orphaned `kind: "memory_extraction"` children; pure DB writes, so one sweep covers the cluster |
 | **Streaming.WarmPool** | Yes | Yes | Per-node warm-port admission control (streaming engine) |
 | **ForkGate** | Yes | Yes | Serializes forked pi children's first turns; a fork child runs on its parent's node |
 | **TerminalSupervisor** | Yes | Yes | Both nodes run terminal PTYs |
@@ -159,7 +160,7 @@ sequenceDiagram
 | **SkillSync** / **PiConfigSync** | Yes | Yes | Hub DB is source of truth; every node materializes its own on-disk copy |
 | **MemoryGit.Server** | Yes | Yes | Per-node agent-memory git snapshot/push passes |
 | **MCP.UpstreamClient** | Yes | No | Upstream MCP connections hub-only |
-| **Quantum Scheduler** | Yes | No | Cron triggers fire on hub only |
+| **Quantum Scheduler** | Yes | No | Cron triggers fire on hub only — and must be pinned `run_strategy: Quantum.RunStrategy.Local`, see below |
 | **TriggerLoader** | Yes | No | Syncs triggers into scheduler on boot |
 | **EmailInboxSupervisor** + Registry + **EmailInboxLoader** | Yes | No | IMAP polling is hub-only: credentials + UID watermark are hub state |
 | **ClusterNodeTracker** | Yes | No | Tracks node connect/disconnect into the `nodes` table |
@@ -169,6 +170,25 @@ sequenceDiagram
 | **libcluster** | Yes | Yes | Both participate in discovery |
 | **AgentPresence** | Cleanup on boot | Write only | Hub cleans stale `.agents/` files |
 | **Discord.Bot** | env-gated | env-gated | Gated by `DISCORD_BOT`/token, not by hub/agent mode |
+
+### Quantum's run strategy must stay `Local` (ORCAHUB3-80)
+
+`config/config.exs` pins `config :orca_hub, OrcaHub.Scheduler, run_strategy:
+Quantum.RunStrategy.Local`, and that line is load-bearing in a cluster.
+Quantum's own library default is `{Random, :cluster}`, which picks the node to
+run a job on uniformly at random from `[node() | Node.list()]` — i.e. from
+every libcluster-connected AGENT node, none of which start this app's
+`Scheduler`/`TaskSupervisor` at all, since Quantum is hub-only. When Random
+picked anything but the hub, Quantum's `NodeSelectorBroadcaster` filtered that
+node out (logging only a bare `[error] Node ... is not running`) and the job's
+execution-node list came out empty: the trigger silently never fired — no
+"Firing trigger" line, no crash. Confirmed live before the fix, with the
+nightly memory-consolidate trigger routed to the Discord agent and dropped.
+
+`Scheduler.sync_triggers/0` is also failure-isolated per trigger (one
+unparseable cron no longer drops the rest of the job set) and logs the
+registered job set after every sync, so "did this trigger actually get
+scheduled?" is answerable from the log rather than by inference.
 
 ### Key Modules
 
