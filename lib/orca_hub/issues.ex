@@ -30,6 +30,15 @@ defmodule OrcaHub.Issues do
   and `reopen_issue/2` (different arity, so both old and new call sites
   compile side by side) — see their docs.
 
+  ## pgvector index maintenance
+
+  Every successful write here kicks off a fire-and-forget reindex of that
+  issue via `OrcaHub.Issues.Indexer.reindex_async/1` (see `after_write/1`
+  for where the hook sits and why it sits there). It is a no-op costing one
+  `Application.get_env` when the embedding endpoint is unconfigured, it
+  never blocks or fails a write, and `OrcaHub.Issues.IndexSweep` reconciles
+  whatever it misses.
+
   ## Node routing for git-touching derivation (issues_spec.md §4.2/§4.3 addendum)
 
   `derive_commits/1` (closed-time freeze and the `derive_trailer_commits/1`/
@@ -49,7 +58,8 @@ defmodule OrcaHub.Issues do
   """
 
   import Ecto.Query
-  alias OrcaHub.{Cluster, Issues.Issue, Projects.Project, Repo, Sessions, Sessions.Session}
+  alias OrcaHub.{Cluster, Issues.Indexer, Issues.Issue, Projects.Project, Repo, Sessions}
+  alias OrcaHub.Sessions.Session
 
   # ── create ────────────────────────────────────────────────────────────
 
@@ -70,6 +80,7 @@ defmodule OrcaHub.Issues do
       nil -> %Issue{} |> Issue.changeset(attrs) |> Repo.insert()
       project_id -> create_issue_with_key(project_id, attrs)
     end
+    |> after_write()
   end
 
   defp fetch_project_id(attrs), do: attrs[:project_id] || attrs["project_id"]
@@ -390,7 +401,36 @@ defmodule OrcaHub.Issues do
     issue
     |> Issue.changeset(attrs)
     |> Repo.update()
+    |> after_write()
   end
+
+  # ── pgvector index maintenance (OrcaHub.Issues.Indexer) ──────────────
+
+  # Every write path in this module funnels through `create_issue/1` or
+  # `update_issue/2` — `append_note/2`, `close_issue/1,2`, `reopen_issue/1,2`,
+  # `update_issue/3`, `pin_issue/1`/`unpin_issue/1` all end in one of those
+  # two — so hooking exactly here covers all of them and, more importantly,
+  # cannot be missed by a future write path that reuses them.
+  #
+  # A compound operation therefore fires more than once (reopen = archive
+  # note + clear, so two), which is deliberate rather than an oversight: a
+  # second pass over unchanged text embeds nothing (it is a chunk + one
+  # indexed SELECT + hash compare), whereas trying to fire exactly once per
+  # logical operation would mean threading a "suppress" flag through the
+  # multi-step paths for no real saving.
+  #
+  # Everything expensive is behind `Indexer.reindex_async/1`, which is a
+  # no-op returning `:ok` whenever `OrcaHub.Embeddings` is unconfigured —
+  # the case on any node without `EMBEDDING_URL` and in the entire test
+  # suite, where it must not spawn a Task that would outlive the sandbox.
+  # Failures are logged inside the Task and never reach the caller: the
+  # issue write has already committed and its result is returned untouched.
+  defp after_write({:ok, %Issue{} = issue} = result) do
+    Indexer.reindex_async(issue)
+    result
+  end
+
+  defp after_write(result), do: result
 
   @doc """
   The `update_issue` MCP tool's full write path (issues_spec.md §6.4) — a
