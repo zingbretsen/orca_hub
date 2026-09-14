@@ -1,8 +1,9 @@
-# Voice Mode — Design Spec (DRAFT, v0.3)
+# Voice Mode — Design Spec (DRAFT, v0.4)
 
-Status: DRAFT — SPIKE 1 (browser capture) + SPIKE 2 (GB10 ASR) folded in;
-SPIKE 2b (wake-word) + SPIKE 3 (keyword spotter) pending; AEC acoustic test
-pending Zach. Author: orchestrator handoff, 2026-09-14.
+Status: DRAFT, spike phase complete — SPIKEs 1, 2, 2b, 3 folded in. Two
+human-in-the-loop checks remain before phase 1 code: the acoustic AEC test and
+the real-voice wake-word check (`spikes/voice/ACOUSTIC_TEST.md`).
+Author: orchestrator handoff, 2026-09-14.
 Owner: finalize this document before writing production code.
 
 Real-time voice interaction with an OrcaHub session: open mic -> VAD-gated
@@ -60,6 +61,15 @@ The OUTPUT half is roughly 70% built. Do not rebuild it.
   OUTSIDE `priv/static` and `package.json` — nothing in the app imports it and
   no dependency was added. Production code should PORT FROM IT rather than
   re-derive it; every measurement in sections 3.2, 4 and 9 came from there.
+- `spikes/voice/kws/` — the SPIKE 3 harness, and the REFERENCE IMPLEMENTATION
+  of section 5.2's keyword spotter: `kws.js`'s `OwwEngine` is ~120 lines
+  wiring openWakeWord's three ONNX stages to the onnxruntime-web SPIKE 1
+  already vendors (no new dependency), and it reuses SPIKE 1's `vendor/ort`
+  and `capture-worklet.js` READ-ONLY over HTTP. `tools/serve.sh` on :8791.
+  Same deliberate exclusion from `priv/static` and `package.json`.
+- `spikes/voice/ACOUSTIC_TEST.md` — the two human-in-the-loop measurements the
+  spec is blocked on (sections 4.1, 5.1, 5.2, 10), consolidated into one
+  ~10-minute procedure with explicit PASS/FAIL thresholds.
 
 There is NO microphone, VAD, ASR, or audio-capture code in the APPLICATION
 tree (grep for whisper/transcri/getUserMedia/AudioWorklet/MediaRecorder
@@ -259,7 +269,8 @@ Ship in this order; each rung is independently useful:
 RUNG 1 IS NOT SKIPPABLE ON SPIKE 1's EVIDENCE (section 4) — v1 mutes the mic
 during playback and stands on its own merits. Whether rung 3 is reachable at
 all is decided by ONE human measurement, not by any number in this document.
-The procedure is in `spikes/voice/README.md`:
+**The procedure is `spikes/voice/ACOUSTIC_TEST.md` part A** (consolidated
+there from SPIKE 1's README, together with section 5.1's real-voice check):
 
     cd ~/orca_hub/spikes/voice && ./serve.sh      # -> http://localhost:8777/
 
@@ -278,6 +289,13 @@ Independently of the dB figure: any non-zero `triggers (playback)` with AEC ON
 means our own voice false-triggers the VAD, which breaks the product on its
 own.
 
+THE SAME NUMBER ALSO DECIDES SECTION 5.2. SPIKE 3 measured its keyword spotter
+over continuous background speech at **16/16 at +10 dB SNR, 7/16 at 0 dB,
+2/16 at -6 dB** — and the two spikes agree on where the cliff is: >15 dB
+suppression is roughly where detection stays at 16/16, <6 dB is roughly where
+it falls to 7/16 or worse. So this one measurement gates BOTH the open channel
+and spoken STOP/PAUSE during playback.
+
 ## 5. Command classification — two separate paths
 
 The key design insight: SEND is a transcript-domain decision; STOP/PAUSE is a
@@ -286,8 +304,9 @@ systems feel sluggish.
 
 ### 5.1 SEND (spoken while dictating, mic path healthy)
 
-Cheap layer first — this is the v0.1 design, and SPIKE 2 has since shown it
-is not sufficient as written (see the DECISION below):
+Cheap layer first — this is the v0.1 design; SPIKE 2 showed the EXACT-MATCH
+form of it is unusable, and SPIKE 2b showed the rest of it survives once the
+match is phonetic (see the DECISION below):
 
 - TWO-WORD WAKE PREFIX: "orca send", "orca cancel". Bare "send" is a common
   English word; "orca send" is not. This alone kills most false positives.
@@ -299,10 +318,16 @@ is not sufficient as written (see the DECISION below):
   cancels. Removes the entire "it sent too early" pain class. Default ON for
   SEND only; configurable.
 
-DECISION — PENDING SPIKE 2b / SPIKE 3. The design above is UNSAFE AS WRITTEN.
-The two-word prefix at terminal position ASSUMED the ASR renders "orca send"
-reliably. SPIKE 2 measured that it does not, deterministically over 10 reps
-each:
+DECISION (SPIKE 2b, measured) — **OPTION (b): KEEP SEND ON THE TRANSCRIPT
+PATH, with a PHONETIC TAIL-MATCHER instead of an exact string match.** The
+vocabulary stays `orca send` / `orca cancel` / `orca stop` / `orca pause`.
+Specification in section 5.1.1.
+
+**THIS REVERSES THE INTERIM RECOMMENDATION** made after SPIKE 2 and before
+SPIKE 2b, which was to move SEND onto the keyword-spotter path (option (a)).
+That recommendation was right about the transcripts and wrong about the
+consequence. SPIKE 2 measured that the ASR does not render "orca send"
+reliably, deterministically over 10 reps each:
 
 | spoken | returned |
 |---|---|
@@ -316,29 +341,149 @@ Observed surface forms: `Orca` · `Orca,` · `Orcasend` · `orcus` ·
 context, and an ISOLATED ONE-WORD COMMAND is exactly how a send is spoken —
 so the worst measured case is the primary case.
 
-Two remedies are being measured in parallel; the choice is data-driven, not
-editorial:
+SPIKE 2b confirmed that at scale and then beat it. Over **190 command
+observations**, EXACT STRING MATCH TP = **0.0% on all four commands** —
+"orca send" never once came back as itself. The surface forms it did come back
+as, isolated: `or Cascend,` `Orcasend.` `Orc Ascend.` `or consent.` /
+`Orca Paws.` `or Kapaz.` `work a pause.` / `Orca stopped.` `Orcastop.` /
+`or cut cancel.` `or it could cancel.` — and note `or Kapaz` and `orca pause`
+reduce to the SAME phonetic key `arkps`, which is the whole idea.
 
-- (b) KEEP SEND ON THE TRANSCRIPT PATH, with an EMPIRICALLY CHOSEN vocabulary
-  plus a phonetic / edit-distance matcher over the last 1-3 normalized tokens
-  instead of an exact string match. SPIKE 2b is sweeping ~18 candidate
-  phrases x 3 placements x >=5 voice variants against the real endpoint, plus
-  false-positive rates against ordinary dictation.
-- (a) MOVE SEND ONTO THE KEYWORD-SPOTTER PATH alongside STOP/PAUSE (section
-  5.2), collapsing to one rule: ALL control goes through the in-browser
-  spotter, and the transcript is dictation only. SPIKE 3 is measuring
-  Porcupine vs openWakeWord in the browser.
+Argmax over the vocabulary of `max(Ratcliff-Obershelp ratio, the same ratio on
+a phonetic key)`, computed on the LAST 1-3 tokens WITH SPACES REMOVED,
+thresholded at **0.85**:
 
-CRITERION: (b) wins if SPIKE 2b finds a vocabulary with >= 95% true-positive
-across variants and ~0% false positives on ordinary speech, confirmed on
-Zach's real voice via the 5-recording procedure 2b will publish. Otherwise
-(a).
+| phrase | exact | phon. key exact | ratio >= .85 | phon. ratio >= .85 | max of both |
+|---|---|---|---|---|---|
+| orca send | **0.0%** | 33.3% | 25.0% | **100.0%** | **100.0%** |
+| orca cancel | **0.0%** | 82.6% | 78.3% | **95.7%** | **95.7%** |
+| orca stop | **0.0%** | 83.3% | 79.2% | **95.8%** | **95.8%** |
+| orca pause | **0.0%** | 95.8% | 37.5% | **95.8%** | **95.8%** |
+| FP on 154 negatives | 0.0% | 0.0% | 0.0% | 0.0% | **0.0%** |
 
-Under (a) the spotter fires BEFORE the final segment's transcript arrives, so
-SEND must WAIT for the in-flight ASR call to return and strip the command
-tokens from it — that requirement does not disappear, it moves.
+Overall: **96.8% TP (184/190), 0 wrong-intent, 0.0% FP (0/154)** — which MEETS
+the v0.2 criterion (>= 95% TP, ~0% FP). The phonetic key does nearly all the
+work; character ratio alone is 25-79%.
 
-Whichever path wins, the ARMING WINDOW stays.
+Threshold sweep (190 positives / 154 negatives):
+
+| threshold | TP | wrong intent | FP |
+|---|---|---|---|
+| 0.80 | 97.9% | **2** | **2.6%** |
+| **0.85** | **96.8%** | **0** | **0.0%** |
+| 0.90 | 93.7% | 0 | 0.0% |
+
+0.85 is the knee and the first threshold at which wrong-intent vanishes.
+
+KEEP THE `orca` PREFIX. The tempting alternative is worse: `submit`,
+`send message`, `stop now`, `hold on`, `never mind` transcribe **100%
+literally at every placement** — and false-positive at **2.6-7.8%**, because
+ordinary dictation ends in them ("I filled in the form and then I clicked
+submit."). Those FPs are CORRECT TRANSCRIPTS; no matcher can undo them. The
+wake-word prefix is what buys FP = 0.
+
+WHY THIS BEATS OPTION (a), which was the interim recommendation:
+
+- **Cost.** The matcher's marginal cost is ~zero — the transcript already
+  exists and the comparison is string work. The spotter costs **25-37% of one
+  core continuously** plus **3.0 MB gzip** on the wire (section 5.2). Same
+  accuracy, vastly different cost.
+- **The reason for wanting a spotter does not apply to SEND.** The spotter
+  exists because the transcript path is DEGRADED DURING PLAYBACK (section
+  5.2). SEND is spoken while dictating, with the mic open and the transcript
+  path healthy. It never needed the spotter's one advantage.
+- **No `orca send` spotter model exists** (SPIKE 3 §5): ~half a day of
+  training per phrase, repeated for cancel/stop/pause. That is phase 1's whole
+  budget spent on the cheaper half of the problem.
+- **A spotter discards the terminal-position rule**, which does most of
+  §5.1's work. It fires on phonetics with no notion of sentence position —
+  SPIKE 3 measured it firing on "Orchestration". For STOP that is an
+  annoyance; for SEND it means a half-formed draft goes to the model
+  mid-sentence.
+- **SEND must wait for the transcript anyway**, to strip the command tokens
+  from the draft. The spotter's latency win is UI feedback only, not an actual
+  send-sooner win.
+
+SCALE AND CAVEAT: 26 phrases x 4 placements x 5-9 renderings = 688 clips,
+**1690 ASR observations**; transcripts on this lane are FULLY DETERMINISTIC
+(zero clips returned more than one distinct transcript), so reps measure
+nothing and the budget went to renderings. But **it is ONE synthetic
+Chatterbox voice** — no accent variation, no room, no breath, no mic AGC.
+96.8%/0.0% is an UPPER BOUND on a real larynx, and `or Kapaz` / `or Cascend`
+may be artifacts of this voice. **REAL-VOICE VALIDATION IS THE OPEN GAP** —
+`spikes/voice/ACOUSTIC_TEST.md` part B, and it is a phase 1 exit criterion
+(section 10).
+
+The ARMING WINDOW stays. The phase-5 LLM adjudicator stays. **Option (a)
+remains the documented fallback** if the real-voice check fails: train
+`orca send` on openWakeWord (SPIKE 3 §5) and run it ALONGSIDE the transcript
+matcher — fire on either, or on both within a window — not instead of it.
+SPIKE 3 §8 has the sequencing if it ever comes to that.
+
+### 5.1.1 Matcher specification for `OrcaHub.Voice.Intent`
+
+The NORMATIVE REFERENCE is SPIKE 2b's `spike-asr/intent_ref.py`
+(`/home/zach/transcription`, commit `4675905`), which runs standalone against
+the committed transcripts. Reproduced verbatim:
+
+```python
+VOCAB = {"send": "orca send", "cancel": "orca cancel",
+         "stop": "orca stop", "pause": "orca pause"}
+THRESHOLD = 0.85
+_PUNCT = re.compile(r"[^a-z0-9 ]+")
+_FOLD = {"c":"k","q":"k","g":"k","x":"ks","z":"s","d":"t","b":"p","v":"f","j":"s","y":"i","w":""}
+_DIGRAPH = (("ph","f"),("ck","k"),("sh","s"),("ch","k"),("th","t"),("qu","k"))
+
+def phonetic(s):
+    s = re.sub(r"[^a-z]", "", s.lower())
+    for a, b in _DIGRAPH: s = s.replace(a, b)
+    out = []
+    for i, ch in enumerate(s):
+        k = _FOLD.get(ch, ch)
+        if k in "aeiou": k = "a" if i == 0 else ""   # keep only a leading vowel
+        if k and (not out or out[-1] != k): out.append(k)   # collapse doubles
+    return "".join(out)
+
+def score(text, phrase):
+    toks = _PUNCT.sub(" ", text.lower()).split()
+    target = phrase.replace(" ", "")     # Whisper glues and splits words freely,
+    target_p = phonetic(target)          # so compare with spaces removed
+    best = 0.0
+    for k in (1, 2, 3):
+        if k > len(toks): break
+        cand = "".join(toks[-k:])
+        best = max(best,
+                   difflib.SequenceMatcher(None, cand, target).ratio(),
+                   difflib.SequenceMatcher(None, phonetic(cand), target_p).ratio())
+    return best
+
+def intent(text, vocab=VOCAB, threshold=THRESHOLD):
+    best, best_s = None, 0.0
+    for name, phrase in vocab.items():
+        s = score(text, phrase)
+        if s > best_s: best, best_s = name, s
+    return (best, best_s) if best_s >= threshold else (None, best_s)
+```
+
+Five rules the port must not get wrong:
+
+1. **Compare with SPACES REMOVED**, on both the candidate tail and the target.
+   Whisper glues and splits words freely (`Orcasend.`, `Orc Ascend.`); a
+   token-aligned comparison throws away the only stable signal.
+2. **ARGMAX THEN THRESHOLD, never first-match.** Score every vocabulary entry,
+   take the best, and only then apply 0.85. First-match is what produces the
+   wrong-intent errors the 0.80 sweep row shows.
+3. **`String.jaro_distance/2` IS NOT A DROP-IN.** Measured on this corpus its
+   best zero-FP operating point is **0.90 at 92.6% TP**, against 0.85 at 96.8%
+   for Ratcliff-Obershelp (`python3 intent_ref.py jaro` reproduces it). Either
+   port `difflib.SequenceMatcher.ratio` semantics (Ratcliff-Obershelp) to
+   Elixir, or keep the matcher client-side in JS. Do not silently substitute
+   Jaro because it is in the standard library.
+4. **0.85 IS TUNED ON THIS CORPUS.** Expose it as a config knob (an
+   `ASRConfig`-style entry, section 8), not a module attribute.
+5. **Strip the command tokens from the segment before it joins the draft.** A
+   segment that is ENTIRELY the command contributes nothing to the draft and
+   must be dropped, not appended.
 
 Error costs are asymmetric but neither is catastrophic: a false positive sends
 early (recoverable by a follow-up message); a false negative means you repeat
@@ -354,9 +499,89 @@ pass, predictable in a way free-form JSON is not. This is phase 5, not phase 1.
 
 Must NOT go through the transcript path — that is precisely when the ASR path
 is muted or echo-degraded, and it is the one command where ~1s latency feels
-broken. Use a dedicated always-on keyword spotter in the browser: Picovoice
-Porcupine (solid web SDK, custom wake words, negligible CPU) or openWakeWord
-(Apache-2.0). Target ~100ms, no server round trip, works while ASR is gated.
+broken. Use a dedicated in-browser keyword spotter: no server round trip,
+works while ASR is gated.
+
+DECISION (SPIKE 3, measured) — **openWakeWord v0.5.1 (Apache-2.0), threshold
+0.5, run ONLY WHILE TTS IS PLAYING and GATED ON THE VAD.** Not always-on.
+
+**PORCUPINE IS LICENCE-BLOCKED, before any technical question is reached.**
+
+- Built-in keywords are **NOT keyless**. Proved three ways: empty key fails a
+  client-side base64 check; a valid-base64 bogus key with a built-in keyword
+  fails on the keyword file version; a bogus key with a `.ppn` the library
+  accepts gets all the way INTO THE WASM and dies there on the AccessKey.
+- Picovoice's FAQ, verbatim: *"there are no dedicated free or paid plans for
+  personal or non-commercial use."* The Free Trial is one-time, non-renewing,
+  enterprise-developer-only.
+- Billing is per **monthly active browser instance**.
+- The AccessKey **must ship to the browser** — `Porcupine.create()` takes it
+  client-side. (Training can be proxied server-side; runtime cannot.)
+- Separate real bug: `@picovoice/porcupine-web@4.0.1` bundles `.ppn` files
+  reporting version `3.0.0` which its own `4.0.0` library rejects, so
+  `BuiltInKeyword` is broken in 4.0.1 **even with a valid key**.
+
+**EVERY PORCUPINE PERFORMANCE NUMBER IS DELIBERATELY UNMEASURED** — detection
+rate, latency, CPU, false accepts. Never backfill one with an estimate; there
+is no measurement behind it and Picovoice's own published claims were not
+checkable here.
+
+openWakeWord, MEASURED (hand-wired to the onnxruntime-web SPIKE 1 already
+vendors, ~120 lines, NO NEW DEPENDENCY — the npm ports are all unversioned
+0.1.x single-author packages):
+
+| | measured |
+|---|---|
+| detection rate | **96/96** (3 keywords x 16 TTS renderings x isolated/after-a-carrier-sentence) at thresholds 0.3 / 0.5 / 0.7, **0 extra fires** |
+| detection latency | fires **within one 80 ms chunk of the word ending** (audio-time p50 -80 ms, p95 <= +190 ms); live frame->callback p50 11.7 ms; **< ~200 ms end to end** |
+| false accepts, noise | **0 in 15 min** at -50 / -40 / -26 dBFS; score ceiling <= 0.016 |
+| false accepts, speech | **0 on 120 ordinary sentences**; 4 on a deliberately adversarial corpus, ALL on near-misses ("A Lexus", "the lexer", "Hey, Jarvis Cocker") |
+| 2nd/3rd keyword | **+0.3 ms per frame** — melspectrogram + embedding backbone is shared, only the classifier head repeats |
+| wire size, marginal over the VAD stack | 3,685,906 raw / **3,000,976 gzip** (Porcupine 4,349,647 / **1,827,197** — Porcupine is SMALLER gzipped; ONNX barely compresses) |
+| offline | **fully**, runtime AND training |
+| CPU per 80 ms frame | 9.9 ms back-to-back · 26.1 ms realtime-paced · live p50 11.6 / p95 39.3 ms -> **25-37% of one core continuously** |
+
+THE CPU NUMBER IS WHY IT IS NOT ALWAYS-ON. A paced control (realtime pacing,
+no audio graph) shows most of the cost is the **duty-cycle regime, not the
+AudioWorklet**: working ~10 ms then idling ~70 ms never lets the core leave a
+low power state. For scale, Silero VAD is ~11% duty in the same regime, so an
+always-on spotter roughly TRIPLES voice mode's browser CPU. Mitigation, and
+it is free: **STOP/PAUSE is only meaningful during playback**, so run the
+spotter only while TTS is playing, gated on the VAD (which leads it and costs
+a third as much). The duty cycle then collapses to the fraction of playback
+time containing speech.
+
+CUSTOM `orca stop` / `orca pause` MODELS MUST BE TRAINED — none exist. The
+path is openWakeWord's synthetic-TTS training route (Apache-2.0, no key, no
+vendor; only the classifier head trains, backbone frozen), ~half a day for a
+first model plus an evaluation pass. GB10's Chatterbox can generate the
+positives, **but its post-prompt hallucination must be trimmed to the first
+voiced burst** — a render of "Alexa." came back 4.00 s long, 0.5 s of word and
+3 s of unrelated speech-like audio, on every slug. See
+`spikes/voice/kws/README.md` §5 and `make_kws_fixtures.py::first_utterance`.
+
+Two implementation traps, both load-bearing and both silent when wrong (scores
+collapse toward zero on real keywords rather than erroring):
+
+1. The **melspectrogram model wants int16-magnitude floats**, not `[-1, 1]`.
+2. The **480-sample overlap** (`160*3`) and the **`x/10 + 2` transform** are
+   both required.
+
+The spotter consumes the SAME 16 kHz stream as the VAD — one `getUserMedia`,
+one worklet. Frame sizes differ (Silero 512 = 32 ms, openWakeWord 1280 =
+80 ms) and 1280 is not a multiple of 512, so emit **256-sample frames** from
+the worklet and let each consumer accumulate. Convert to int16 once, on the
+main thread.
+
+**§5.2 IS UNVALIDATED UNTIL ZACH RUNS THE ACOUSTIC PROCEDURE.** SPIKE 3
+measured the keyword spoken OVER continuous speech at **16/16 at +10 dB SNR,
+7/16 at 0 dB, 2/16 at -6 dB** — so the spotter is not the risk, the acoustic
+path is. Whether this works during playback is set entirely by how much of our
+own TTS the browser's AEC removes, which is SPIKE 1's one unanswered question,
+and the cliff sits almost exactly at section 4.1's >15 dB / <6 dB decision
+points. The procedure is `spikes/voice/ACOUSTIC_TEST.md` (part A). Until it
+returns a number, do not build this: **half-duplex (section 4.1 rung 1) is
+phase 1 regardless.**
 
 ## 6. ASR on GB10
 
@@ -390,15 +615,31 @@ The contract, measured (SPIKE 2):
 - Clip <= 20s and upload <= 25 MiB, else 413. Server timeout 30s, surfaced as
   504.
 - `response_format` and `initial_prompt` are SILENTLY IGNORED. PROMPT BIASING
-  IS NOT AVAILABLE — do not design around it. (This is what forces the
-  section 5.1 decision.)
+  IS NOT AVAILABLE AS SHIPPED — do not design around it. (This is what forces
+  the section 5.1 matcher; see the biasing note below for what it would take
+  to change.)
 - Errors are `{"detail": "<string>"}` with no machine-readable code — switch
   on HTTP STATUS, not on the body.
 - `200` with `text: ""` is the NORMAL non-speech result, NOT an error.
-- webm/opus uploads are accepted directly and were FASTER than WAV (596ms vs
-  930ms), so the browser may post MediaRecorder output as-is, with no
-  client-side WAV encoding. SPIKE 2b is confirming whether that win is decode
-  cost or payload size.
+- ENCODING — DECISION (SPIKE 2b): **there is NO speed argument either way.
+  Send 16kHz WAV from the worklet (least client code) or MediaRecorder output,
+  implementer's choice.** v0.2's "webm/opus was FASTER than WAV (596ms vs
+  930ms)" DID NOT REPLICATE — those were TWO DIFFERENT CLIPS (1.40s vs 5.92s),
+  both from SPIKE 2's own `latency.json`. A controlled A/B on IDENTICAL audio
+  (4 encodings x 5 clips x 10 reps) found non-server overhead **flat at
+  88-126ms across a 95x payload range**, biggest within-clip spread 2.8%,
+  server `elapsed_seconds` differing by <= 3ms. Accuracy: **53/56 correct
+  intents on WAV vs 52/56 on opus** — opus perturbs 25-46% of transcripts
+  ("Orca cancel…" -> "or to cancel…") but the section 5.1.1 matcher absorbs it.
+  webm/opus uploads are still accepted directly, so posting MediaRecorder
+  output as-is remains valid; it is just not faster.
+- `initial_prompt` BIASING ON THE SYNC LANE IS STILL UNMEASURED. It is
+  silently ignored today (above), and testing it needs a ~5-line change to
+  `api.py` in the `transcription` repo. Worth doing: SPIKE 3 recommends it
+  independently, it would likely target "or Cassand." directly, and it might
+  make section 5.1.1's phonetic key unnecessary. **Keep the matcher
+  regardless** — biasing changes the transcript distribution, it does not make
+  exact matching safe.
 - ASR (`:8000`) and Chatterbox TTS (`tts-service:8110`, 24kHz) are SEPARATE
   containers, sharing only the GPU arbiter at `:8090`.
 
@@ -458,18 +699,25 @@ requests give p50 1450/1466/1522ms, p95 topping out at 2912ms, 0 errors. One
 voice session never contends with itself, but a second voice session — or any
 sibling transcription job — roughly doubles the tail.
 
+ASR AND TTS CONTEND FOR THE GB10 GPU (SPIKE 2b). Isolated commands measure
+**541ms p50 with TTS idle vs 842ms p50 while TTS is synthesising — ~1.55x**.
+Voice mode speaks and listens on the same box, so this is the normal case, not
+an edge case.
+
 Budget for a typical 1.5-5s utterance:
 
 | Stage | Measured / target |
 |---|---|
 | VAD endpointing | 500-700ms **(dominates — main tuning knob)** |
 | transport (LAN) | ~20ms |
-| ASR (sync lane, warm) | 570-800ms |
-| intent (string match) | ~0ms |
-| **total** | **~1.1-1.5s end-of-speech -> sent** |
+| ASR (sync lane, warm, TTS idle) | 570-800ms |
+| ASR (sync lane, warm, **TTS synthesising**) | **~850ms** |
+| intent (section 5.1.1 matcher) | ~0ms |
+| **total** | **~1.1-1.5s quiet, ~1.4-1.8s while speaking and listening** |
 
 That is the honest number. v0.1's "< 1s" was not achievable against this
-endpoint and must not be held as a target.
+endpoint and must not be held as a target. Budget the ~850ms figure whenever
+playback and capture overlap; section 7 has the mitigation.
 
 COLD-START CLIFF: if the model has been evicted, the FIRST call costs up to
 35s (12.5s measured restore; 35s is the arbiter's own restore budget). The
@@ -488,6 +736,13 @@ during a turn, add a sentence accumulator on the assistant text deltas from the
 `session:<id>` PubSub topic, feeding the EXISTING chunk queue. The queue,
 prefetch, and transport controls already work — this is a new producer, not a
 new player.
+
+PAUSE THE TTS PREFETCH PIPELINE WHILE THE MIC IS HOT. ASR and TTS share the
+GB10 GPU, and SPIKE 2b measured ASR going from 541ms to 842ms p50 (~1.55x)
+while TTS is synthesising (section 6.1). The existing prefetch is abortable
+(`ttsFetchAudio` / `ttsRequestChunk`), so this is a scheduling change, not new
+machinery: do not speculatively synthesise chunks the user is not about to
+hear while a segment is in flight to ASR.
 
 The real product problem is WHAT NOT TO SPEAK. The feed is mostly tool calls,
 diffs, and file lists. `ttsCleanText` handles the lexical layer but not "do not
@@ -591,15 +846,25 @@ tests"), never the payload.
    VAD is `@ricky0123/vad-web` with section 3.2's EXPLICIT settings
    (`model: 'v5'`, thresholds 0.5/0.35, `redemptionMs: 600`,
    `preSpeechPadMs: 500`, `minSpeechMs: 250`) — never its defaults. SEND via
-   whichever path section 5.1's DECISION resolves to, plus the arming window.
-   **This is a usable product and most of the value.**
-   PHASE 1 EXIT CRITERION: Zach's acoustic AEC A/B (section 4.1) plus a
-   3 x "orca send" WAV dump from the `spikes/voice/` harness on REAL
-   microphone hardware, confirming pre-roll onsets at ~420-510ms rather than
-   ~0.
+   section 5.1's phonetic tail-matcher (section 5.1.1) at threshold 0.85, plus
+   the arming window. **This is a usable product and most of the value.**
+
+   PHASE 1 EXIT CRITERIA — both from `spikes/voice/ACOUSTIC_TEST.md`:
+   1. **Part A (AEC) recorded.** The `AEC suppression` number, the
+      `triggers (playback)` counts, and a 3 x "orca send" WAV dump on REAL
+      microphone hardware confirming pre-roll onsets at ~420-510ms rather
+      than ~0.
+   2. **Part B (real-voice wake word) >= 95% TP and 0 FP at threshold 0.85**
+      (>= 19/20 correct, 0 wrong intent). If it fails, fall back to section
+      5.1 option (a) — train `orca send` on openWakeWord and run it alongside
+      the matcher.
 2. Streaming TTS off assistant deltas + speakable-content policy.
-3. Porcupine wake-word path for stop/pause during playback.
+3. openWakeWord path for stop/pause during playback: trained `orca stop` /
+   `orca pause` classifier heads, **playback-only, VAD-gated** (section 5.2).
+   Blocked on phase 1's exit criterion 1.
 4. Browser AEC + text-domain echo rejection -> duck-on-detect -> open channel.
+   GO/NO-GO IS ACOUSTIC_TEST.md PART A's `AEC suppression` NUMBER: >15 dB go,
+   6-15 dB duck-on-detect only, <6 dB do not build.
 5. LLM intent adjudicator, only if phase 1 heuristics prove insufficient.
 
 ## 11. Open questions for the finalizing orchestrator
@@ -609,23 +874,104 @@ tests"), never the payload.
   3-10s utterances?~~ **ANSWERED — see section 6.** No OpenAI-compatible
   route; the sync lane of the existing `transcription` container,
   `large-v3-turbo`, 772ms p50 at 3.9-5.0s.
-- Which SEND path — section 5.1 (a) keyword spotter vs (b) transcript
-  vocabulary + phonetic matcher? Pending SPIKE 2b and SPIKE 3.
-- WAV vs webm/opus for the browser upload? Pending SPIKE 2b.
+- ~~Which SEND path — section 5.1 (a) keyword spotter vs (b) transcript
+  vocabulary + phonetic matcher?~~ **ANSWERED — see section 5.1.** (b), the
+  transcript matcher: 96.8% TP / 0 wrong-intent / 0.0% FP at threshold 0.85
+  over 190 positives and 154 negatives, at ~zero marginal cost. This REVERSES
+  the interim post-SPIKE-2 recommendation of (a). (a) stays as the documented
+  fallback if the real-voice check below fails.
+- ~~WAV vs webm/opus for the browser upload?~~ **ANSWERED — see section 6.**
+  No measurable difference: non-server overhead is flat 88-126ms across a 95x
+  payload range, and SPIKE 2's contrary result was two different clips.
+  Implementer's choice.
 - ~~Is `@ricky0123/vad-web` acceptable as a dependency, or should Silero be
   wired to onnxruntime-web directly? What is the bundle-size cost?~~
   **ANSWERED — see section 3.2.** vad-web 0.0.31 with every default
   overridden; bundle cost is 0.3% over direct Silero (5,560,445 vs 5,543,660 B
   gzip), both dominated by ort's wasm, so the choice is maintenance, not size.
-- Porcupine requires a Picovoice access key (free tier). Acceptable, or is
-  openWakeWord the right call despite being Python-first?
+- ~~Porcupine requires a Picovoice access key (free tier). Acceptable, or is
+  openWakeWord the right call despite being Python-first?~~ **ANSWERED — see
+  section 5.2.** openWakeWord. There IS no free tier: Picovoice's FAQ says
+  there are no free or paid personal/non-commercial plans, billing is per
+  monthly active browser instance, and the key must ship to the browser —
+  Porcupine is licence-blocked before any technical question, and every
+  Porcupine performance number is therefore unmeasured.
+
+STILL OPEN — all three are human-in-the-loop or a small upstream change:
+
 - Does browser AEC actually suppress our TTS adequately on Zach's real
-  hardware, or is half-duplex the permanent answer? STILL OPEN, and SPIKE 1
-  CANNOT ANSWER IT — a fake capture device has no acoustic loop. The
-  10-minute human procedure and the >~15 dB / <~6 dB decision rule are now in
-  section 4.1.
+  hardware, or is half-duplex the permanent answer? **STILL OPEN**, and
+  neither SPIKE 1 nor SPIKE 3 can answer it — a fake capture device has no
+  acoustic loop. It gates section 4.1 rung 3 AND section 5.2.
+  `spikes/voice/ACOUSTIC_TEST.md` part A, ~5 minutes.
+- Does the section 5.1.1 matcher survive a real larynx? **STILL OPEN** —
+  SPIKE 2b's corpus is one synthetic Chatterbox voice, so 96.8%/0.0% is an
+  upper bound and the specific surface forms (`or Kapaz`, `or Cascend`) may be
+  artifacts of it. `spikes/voice/ACOUSTIC_TEST.md` part B, ~4 minutes; it is a
+  phase 1 exit criterion.
+- Does `initial_prompt` biasing help on the sync lane? **STILL OPEN and
+  UNMEASURED** — it is ignored as shipped and needs a ~5-line `api.py` change
+  in the `transcription` repo. Recommended independently by SPIKE 3; it might
+  make the phonetic key unnecessary, but keep the matcher either way
+  (section 6).
 
 ## 12. Changelog
+
+**v0.3 -> v0.4** — SPIKE 2b (wake-word robustness on the GB10 sync lane,
+commit `4675905` in `/home/zach/transcription`, report `spike-asr/WAKEWORD.md`)
+and SPIKE 3 (in-browser keyword spotting, commits `e5012a6` + `796b4b3`,
+report `spikes/voice/kws/README.md`) folded in. The spike phase is complete;
+what remains is two human measurements.
+
+- Header: v0.4; status now records that SPIKEs 1, 2, 2b and 3 are all folded
+  in, and names the two remaining human-in-the-loop checks.
+- §4.1: the human AEC procedure re-pointed at the consolidated
+  `spikes/voice/ACOUSTIC_TEST.md` part A, and the same number recorded as the
+  gate on §5.2 as well as on rung 3 — SPIKE 3's 16/16 @ +10 dB, 7/16 @ 0 dB,
+  2/16 @ -6 dB SNR results line up with the >15 dB / <6 dB decision points.
+- §5.1: RESOLVED to option (b), the transcript phonetic tail-matcher —
+  **REVERSING the interim post-SPIKE-2 recommendation of (a)**. Exact match is
+  0.0% TP on all four commands over 190 observations; argmax of
+  `max(Ratcliff-Obershelp, phonetic-key ratio)` over the last 1-3 space-stripped
+  tokens at 0.85 gives 96.8% TP / 0 wrong-intent / 0.0% FP on 154 negatives.
+  Per-phrase table, threshold sweep (0.80 / 0.85 / 0.90), the case for keeping
+  the `orca` prefix (unprefixed phrases transcribe perfectly and FP at
+  2.6-7.8%), the cost comparison against the spotter, and the one-synthetic-voice
+  caveat all recorded.
+- §5.1.1: NEW — the normative matcher reference (SPIKE 2b's `intent_ref.py`,
+  verbatim) plus five rules for the port: spaces removed, argmax-then-threshold,
+  `String.jaro_distance/2` is NOT a drop-in (0.90 @ 92.6% TP at best), 0.85 is
+  a config knob, and strip command tokens from the draft.
+- §5.2: RESOLVED to openWakeWord v0.5.1 at threshold 0.5, **playback-only and
+  VAD-gated**. Porcupine recorded as licence-blocked before any technical
+  question (no keyless built-ins — proved into the wasm, no personal/
+  non-commercial plan, per-browser-instance billing, key ships to the client,
+  plus a 3.0.0/4.0.0 `.ppn` version bug), with an explicit instruction never to
+  backfill its unmeasured performance cells. openWakeWord's measured numbers,
+  the 25-37%-of-a-core duty-cycle finding that forces playback-only, the
+  training requirement for `orca stop` / `orca pause`, and the two
+  implementation traps (int16-magnitude floats; the 480-sample overlap and
+  `x/10 + 2`) recorded. Marked UNVALIDATED until ACOUSTIC_TEST.md part A runs.
+- §6: v0.2's "opus faster than WAV (596 vs 930ms)" WITHDRAWN — it was two
+  different clips (1.40s vs 5.92s). Controlled A/B shows flat 88-126ms
+  non-server overhead across a 95x payload range and 53/56 vs 52/56 correct
+  intents, so encoding is the implementer's choice. `initial_prompt` biasing
+  recorded as still unmeasured and what it would take to measure.
+- §6.1: ASR/TTS GPU contention added — 541ms p50 idle vs 842ms p50 while TTS
+  synthesises (~1.55x); the budget now carries a ~850ms speaking-and-listening
+  line and a ~1.4-1.8s total for that case.
+- §7: pause the TTS prefetch pipeline while the mic is hot, for the same
+  reason.
+- §10: phase 1 exit criteria restated as ACOUSTIC_TEST.md parts A and B, with
+  part B's >= 95% TP / 0 FP bar and the fallback to §5.1 option (a); phase 3
+  is now openWakeWord, playback-only, VAD-gated; phase 4's go/no-go is part
+  A's number.
+- §11: SEND path, WAV-vs-opus and Porcupine-vs-openWakeWord marked ANSWERED;
+  the remaining open questions narrowed to AEC on real hardware, the
+  real-voice wake-word check, and `initial_prompt` biasing.
+- NEW `spikes/voice/ACOUSTIC_TEST.md` — SPIKE 1's harness procedure and SPIKE
+  2b's `--human` real-voice check merged into one ~10-minute numbered
+  procedure with explicit PASS/FAIL thresholds and a paste-back template.
 
 **v0.2 -> v0.3** — SPIKE 1 (browser capture path, commit `2f774cd`,
 `spikes/voice/`) folded in. Everything below is measured on Chromium
