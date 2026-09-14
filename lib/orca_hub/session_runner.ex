@@ -1146,25 +1146,39 @@ defmodule OrcaHub.SessionRunner do
   # ── Private ──────────────────────────────────────────────────────────
 
   # Returns `{data, error_detail}` — `error_detail` is the truncated error
-  # text (for the session's `error_detail` column), or `nil` if there was
-  # nothing to report.
+  # text for the session's `error_detail` column.
+  #
+  # ORCAHUB3-83: for a non-zero exit this is now ALWAYS a non-nil string.
+  # It used to be nil whenever the CLI died without writing a single byte,
+  # which left the user a red `error` badge and literally nothing else to
+  # go on. We still know the exit code, the backend and the engine in that
+  # case, so we synthesize a line saying exactly that — and emit the same
+  # `cli_error` feed card we emit when there IS output, so the reason is
+  # visible in the feed too, not just in the column.
   defp handle_cli_error(code, data) when code != 0 do
     error_text = String.trim(data.error_output <> data.buffer)
 
-    if error_text != "" do
-      error_event =
-        stamp(%{
-          "type" => "cli_error",
-          "exit_code" => code,
-          "message" => error_text
-        })
+    message =
+      if error_text != "" do
+        error_text
+      else
+        synthesized_error_detail(
+          "The agent CLI exited without writing anything to stdout or stderr",
+          [path: "port exit", exit_code: code],
+          data
+        )
+      end
 
-      persist_message(data, error_event)
-      broadcast(data.session_id, {:event, error_event})
-      {%{data | messages: data.messages ++ [error_event]}, truncate_error_detail(error_text)}
-    else
-      {data, nil}
-    end
+    error_event =
+      stamp(%{
+        "type" => "cli_error",
+        "exit_code" => code,
+        "message" => message
+      })
+
+    persist_message(data, error_event)
+    broadcast(data.session_id, {:event, error_event})
+    {%{data | messages: data.messages ++ [error_event]}, truncate_error_detail(message)}
   end
 
   defp handle_cli_error(_code, data), do: {data, nil}
@@ -1418,6 +1432,114 @@ defmodule OrcaHub.SessionRunner do
 
       true ->
         text
+    end
+  end
+
+  # A backend is free to put a non-string in a `result`/`message` field; a
+  # structured payload is still worth showing rather than crashing on (this
+  # clause used to be a FunctionClauseError waiting to happen).
+  defp truncate_error_detail(other), do: truncate_error_detail(inspect(other))
+
+  # ORCAHUB3-83 — the `error_detail` for a streaming turn that ended with
+  # `is_error`. An event whose `result`/`message` is absent used to persist a
+  # nil detail; it now falls back to the event's own subtype plus whatever we
+  # had buffered. Public (`@doc false`) purely so it can be unit-tested
+  # without driving a live streaming port — same posture as
+  # `streaming_turn_decision/1` above.
+  @doc false
+  def result_event_error_detail(result_ev, data) do
+    error_detail_with_fallback(
+      result_ev["result"] || result_ev["message"] || result_errors_text(result_ev["errors"]),
+      "The agent reported a failed turn with no error message",
+      [path: "streaming result event", subtype: result_ev["subtype"]],
+      data
+    )
+  end
+
+  # Claude's `result` events carry an `errors` LIST rather than a `result`
+  # string on some failures — notably `subtype: "error_during_execution"` with
+  # `["No conversation found with session ID: …"]`, the exact payload behind
+  # ORCAHUB3-83's originating incident.
+  defp result_errors_text(errors) when is_list(errors) do
+    errors
+    |> Enum.map_join("\n", fn
+      text when is_binary(text) -> text
+      other -> inspect(other)
+    end)
+    |> String.trim()
+    |> case do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  defp result_errors_text(_), do: nil
+
+  # ORCAHUB3-83 — the fallback behind every `status: "error"` write.
+  #
+  # The real CLI text is ALWAYS preferred; this only fires when the CLI gave
+  # us nothing usable, and its whole job is to make sure the user never sees
+  # an errored session with an empty `error_detail`. It reports what the
+  # runner itself knows for certain: which code path decided this was an
+  # error, the exit code or result subtype that path saw, the backend and
+  # engine in play, and a tail of whatever output we did buffer.
+  defp error_detail_with_fallback(text, summary, facts, data) do
+    truncate_error_detail(text) ||
+      truncate_error_detail(synthesized_error_detail(summary, facts, data))
+  end
+
+  @max_error_tail_chars 400
+
+  defp synthesized_error_detail(summary, facts, data) do
+    context =
+      facts
+      |> Keyword.merge(backend: backend_label(data), engine: Map.get(data, :engine))
+      |> Enum.reject(fn {_k, value} -> value in [nil, ""] end)
+      |> Enum.map_join(", ", fn {key, value} ->
+        "#{String.replace(Atom.to_string(key), "_", " ")}: #{value}"
+      end)
+
+    base = if context == "", do: summary, else: "#{summary} (#{context})."
+
+    case recent_output_tail(data) do
+      nil -> base <> " No CLI output was captured."
+      tail -> base <> " Last CLI output seen:\n" <> tail
+    end
+  end
+
+  defp recent_output_tail(data) do
+    text =
+      String.trim(
+        to_string(Map.get(data, :error_output, "")) <> to_string(Map.get(data, :buffer, ""))
+      )
+
+    cond do
+      text == "" ->
+        nil
+
+      String.length(text) > @max_error_tail_chars ->
+        "…" <> String.slice(text, -@max_error_tail_chars, @max_error_tail_chars)
+
+      true ->
+        text
+    end
+  end
+
+  # Backend.name/1 has no catch-all clause, and this runs on a failure path —
+  # it must never itself raise.
+  defp backend_label(data) do
+    case Map.get(data, :backend) do
+      nil ->
+        nil
+
+      module when is_atom(module) ->
+        case Atom.to_string(module) do
+          "Elixir." <> rest -> rest |> String.split(".") |> List.last() |> String.downcase()
+          other -> other
+        end
+
+      other ->
+        inspect(other)
     end
   end
 
@@ -1768,6 +1890,58 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state, data}
   end
 
+  # ORCAHUB3-83 — the warm-up turn itself FAILED. This is the exact shape of
+  # the incident that opened the issue: a `--resume` against a transcript the
+  # Claude CLI had already garbage-collected (default `cleanupPeriodDays: 30`)
+  # fails instantly on the hidden warm-up turn, writing the explanation
+  # ("No conversation found with session ID: …") to stderr and then a
+  # `result` event with `is_error: true`.
+  #
+  # That used to collapse to :warmup_done like any other warm-up result,
+  # which did two damaging things: it flushed the user's queued real prompt
+  # into an already-dying process, and `flush_pending_to_stdin/2` cleared
+  # `error_output` — throwing away the one line that explained the failure —
+  # so the port exit that followed a moment later persisted
+  # `status: "error"` with a NULL `error_detail`.
+  #
+  # Treat it as the turn error it is: no flush, no wipe, error detail built
+  # from the result event (whose `errors` list carries the CLI's reason) plus
+  # the stderr we still hold, and the port torn down so the next message
+  # cold-starts rather than reusing a doomed process.
+  defp handle_streaming_progress(%{turn_result: {:warmup_error, result_ev}} = data) do
+    # pending_prompts is non-empty by construction during warm-up (the real
+    # prompt is queued behind it), which streaming_turn_decision/1 would read
+    # as "flush the queue" — so finalize the error directly. The queued prompt
+    # is dropped rather than replayed: it is already persisted in the feed as
+    # the user's message, and re-sending it into a fresh process would be a
+    # side-effect-bearing retry nobody asked for.
+    #
+    # A kill-switch downgrade requested during this same warm-up is likewise
+    # dropped rather than run: finalize_downgrade/1 would re-route that same
+    # queued prompt through the one-shot engine, where the failure that just
+    # killed the warm-up (a dead --resume target) would kill it again.
+    # resolve_engine/1 re-decides from scratch on the NEXT send_message, so
+    # nothing is lost by clearing the flag here.
+    data =
+      data
+      |> Map.merge(%{warming_up: false, turn_result: nil, pending_prompts: []})
+      |> Map.put(:downgrade_pending, false)
+
+    # Every event of a warm-up turn is suppressed from the feed, so without
+    # this card the user sees their own message and then nothing at all.
+    error_event =
+      stamp(%{
+        "type" => "cli_error",
+        "exit_code" => nil,
+        "message" => result_event_error_detail(result_ev, data)
+      })
+
+    persist_message(data, error_event)
+    broadcast(data.session_id, {:event, error_event})
+
+    finalize_streaming_error(result_ev, %{data | messages: data.messages ++ [error_event]})
+  end
+
   defp handle_streaming_progress(%{turn_result: {:complete, _ev}, downgrade_pending: true} = data) do
     # The turn we were waiting on (graceful kill-switch downgrade) finished.
     finalize_downgrade(%{data | turn_result: nil})
@@ -1858,33 +2032,39 @@ defmodule OrcaHub.SessionRunner do
         finalize_streaming_idle(data, false)
 
       :error ->
-        session = db_call(data, :get_session!, [data.session_id])
-        error_detail = truncate_error_detail(result_ev["result"] || result_ev["message"])
-        db_call(data, :update_session, [session, %{status: "error", error_detail: error_detail}])
-        broadcast(data.session_id, {:status, :error})
-        AgentPresence.update_status(data.directory, data.session_id, "error")
-
-        maybe_notify_parent(
-          %{session | status: "error", error_detail: error_detail},
-          :error,
-          Map.get(data, :turn_started_at)
-        )
-
-        maybe_self_archive_memory_extraction(
-          %{session | status: "error", error_detail: error_detail},
-          :error
-        )
-
-        # A turn-level error must not leave a stale warm process behind — it may be
-        # wedged (e.g. spawned before login credentials existed, so every retry on
-        # the same process fails identically). Tear it down now instead of leaving
-        # it warm for up to 15 min: the next send_message always cold-starts.
-        next_data = teardown_port(%{data | interrupting: false, pending_rebake: false})
-        {:next_state, :error, next_data}
+        finalize_streaming_error(result_ev, data)
 
       :success ->
         finalize_streaming_idle(data, true)
     end
+  end
+
+  defp finalize_streaming_error(result_ev, data) do
+    session = db_call(data, :get_session!, [data.session_id])
+
+    error_detail = result_event_error_detail(result_ev, data)
+
+    db_call(data, :update_session, [session, %{status: "error", error_detail: error_detail}])
+    broadcast(data.session_id, {:status, :error})
+    AgentPresence.update_status(data.directory, data.session_id, "error")
+
+    maybe_notify_parent(
+      %{session | status: "error", error_detail: error_detail},
+      :error,
+      Map.get(data, :turn_started_at)
+    )
+
+    maybe_self_archive_memory_extraction(
+      %{session | status: "error", error_detail: error_detail},
+      :error
+    )
+
+    # A turn-level error must not leave a stale warm process behind — it may be
+    # wedged (e.g. spawned before login credentials existed, so every retry on
+    # the same process fails identically). Tear it down now instead of leaving
+    # it warm for up to 15 min: the next send_message always cold-starts.
+    next_data = teardown_port(%{data | interrupting: false, pending_rebake: false})
+    {:next_state, :error, next_data}
   end
 
   # Pure model of the kill-switch downgrade decision (mirrors the {:downgrade,_}
@@ -2008,6 +2188,18 @@ defmodule OrcaHub.SessionRunner do
       # Crash mid-turn: surface the failure; do NOT auto-resend (avoids duplicate
       # side effects). The next message re-opens cold with --resume.
       {data, error_detail} = handle_cli_error(code, data)
+
+      # handle_cli_error/2 only speaks for a NON-ZERO exit; a warm port that
+      # vanishes with code 0 mid-turn is still an error here, and ORCAHUB3-83
+      # says it has to explain itself too.
+      error_detail =
+        error_detail_with_fallback(
+          error_detail,
+          "The agent process exited mid-turn",
+          [path: "streaming port exit", exit_code: code],
+          data
+        )
+
       session = db_call(data, :get_session!, [data.session_id])
       db_call(data, :update_session, [session, %{status: "error", error_detail: error_detail}])
       broadcast(data.session_id, {:status, :error})
@@ -2346,6 +2538,10 @@ defmodule OrcaHub.SessionRunner do
       end
 
     case event do
+      # ORCAHUB3-83 — see handle_streaming_progress/1's {:warmup_error, _}
+      # clause. A warm-up `result` carrying is_error is a real failure, not a
+      # completed warm-up.
+      %{"type" => "result", "is_error" => true} -> %{data | turn_result: {:warmup_error, event}}
       %{"type" => "result"} -> %{data | turn_result: :warmup_done}
       _ -> data
     end

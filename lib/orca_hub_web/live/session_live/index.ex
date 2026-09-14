@@ -850,4 +850,31 @@ defmodule OrcaHubWeb.SessionLive.Index do
       end
     end)
   end
+
+  # ORCAHUB3-83: an errored row should signal that a REASON exists rather
+  # than just showing a red "error" badge. The full, copyable detail lives on
+  # the session show page; here it's the first line of it as a tooltip, with
+  # the badge rendering a marker icon so the affordance is actually visible.
+  # Returns nil (no icon, no tooltip) when there's nothing to say.
+  @error_hint_chars 160
+
+  def error_hint(%{status: "error", error_detail: detail}) when is_binary(detail) do
+    detail
+    |> String.trim()
+    |> String.split("\n", parts: 2)
+    |> hd()
+    |> String.trim()
+    |> case do
+      "" ->
+        nil
+
+      line when byte_size(line) > @error_hint_chars ->
+        String.slice(line, 0, @error_hint_chars) <> "…"
+
+      line ->
+        line
+    end
+  end
+
+  def error_hint(_session), do: nil
 end

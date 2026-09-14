@@ -852,6 +852,30 @@
     </:actions>
   </.header>
 
+  <%!-- ORCAHUB3-83: the reason an errored session failed, in the page itself
+  rather than only as a hover tooltip on the status badge. `error_detail` is
+  arbitrary CLI/stderr output, so it is interpolated into a <pre> as plain
+  text and HEEx escapes it — NEVER through OrcaHubWeb.Markdown.render/2 or
+  Phoenix.HTML.raw/1 (see the earmark item in CLAUDE.md). Same treatment the
+  system/setup_script feed event gets. --%>
+  <div
+    :if={@status == :error}
+    id="session-error-detail"
+    class="alert alert-error text-sm mb-2 items-start"
+  >
+    <.icon name="hero-exclamation-triangle" class="size-5 shrink-0 mt-0.5" />
+    <div class="min-w-0 flex-1">
+      <div class="font-medium">This session ended in error</div>
+      <pre
+        :if={@session.error_detail not in [nil, ""]}
+        class="mt-1 text-xs font-mono whitespace-pre-wrap [overflow-wrap:anywhere] overflow-x-auto max-h-48 overflow-y-auto select-text"
+      >{@session.error_detail}</pre>
+      <div :if={@session.error_detail in [nil, ""]} class="mt-1 text-xs opacity-70">
+        No detail was recorded — check the message feed below for the last CLI output.
+      </div>
+    </div>
+  </div>
+
   <div class="join mb-2">
     <.link
       patch={~p"/sessions/#{@session.id}?view=conversation"}

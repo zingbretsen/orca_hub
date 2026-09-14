@@ -44,8 +44,7 @@
       class="toggle toggle-sm"
       checked={@show_background}
       phx-click="toggle_show_background"
-    />
-    Show background sessions
+    /> Show background sessions
   </label>
 </div>
 
@@ -142,16 +141,25 @@
     </:col>
     <:col :let={session} label="Status" class="w-1/5">
       <div class="flex flex-wrap gap-1">
-        <span class={[
-          "badge",
-          session.status == "running" && "badge-warning",
-          session.status == "compacting" && "badge-warning",
-          session.status == "waiting" && "badge-info",
-          session.status == "idle" && "badge-success",
-          session.status == "ready" && "badge-ghost",
-          session.status == "error" && "badge-error"
-        ]}>
+        <span
+          class={[
+            "badge",
+            session.status == "running" && "badge-warning",
+            session.status == "compacting" && "badge-warning",
+            session.status == "waiting" && "badge-info",
+            session.status == "idle" && "badge-success",
+            session.status == "ready" && "badge-ghost",
+            session.status == "error" && "badge-error",
+            error_hint(session) && "cursor-help"
+          ]}
+          title={error_hint(session)}
+        >
           {session.status}
+          <.icon
+            :if={error_hint(session)}
+            name="hero-information-circle-micro"
+            class="size-3 ml-0.5"
+          />
         </span>
         <span :if={session.orchestrator} class="badge badge-secondary badge-sm">
           orchestrator
@@ -244,16 +252,25 @@
       </:col>
       <:col :let={session} label="Status" class="w-1/5">
         <div class="flex flex-wrap gap-1">
-          <span class={[
-            "badge",
-            session.status == "running" && "badge-warning",
-            session.status == "compacting" && "badge-warning",
-            session.status == "waiting" && "badge-info",
-            session.status == "idle" && "badge-success",
-            session.status == "ready" && "badge-ghost",
-            session.status == "error" && "badge-error"
-          ]}>
+          <span
+            class={[
+              "badge",
+              session.status == "running" && "badge-warning",
+              session.status == "compacting" && "badge-warning",
+              session.status == "waiting" && "badge-info",
+              session.status == "idle" && "badge-success",
+              session.status == "ready" && "badge-ghost",
+              session.status == "error" && "badge-error",
+              error_hint(session) && "cursor-help"
+            ]}
+            title={error_hint(session)}
+          >
             {session.status}
+            <.icon
+              :if={error_hint(session)}
+              name="hero-information-circle-micro"
+              class="size-3 ml-0.5"
+            />
           </span>
           <span :if={session.orchestrator} class="badge badge-secondary badge-sm">
             orchestrator

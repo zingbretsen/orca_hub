@@ -376,9 +376,26 @@ defmodule OrcaHubWeb.SessionLive.Show do
          %{status: _} = status <- Cluster.get_status(session_node, id) do
       status
     else
-      _ -> %{status: session.status || "error"}
+      _ -> %{status: status_atom(session.status)}
     end
   end
+
+  # Everything downstream of :status treats it as an ATOM — that's what a live
+  # runner reports and what every {:status, _} broadcast carries, and the
+  # template compares against atoms (`@status == :error`, `== :waiting`, …).
+  # The dead-runner fallback above used to hand the template the raw STRING
+  # from the DB column, so an errored session with no live runner rendered
+  # with no error badge colour, no tooltip, and (ORCAHUB3-83) no error banner
+  # — the one case where the user most needs to be told what happened.
+  # An unrecognised value keeps the old `|| "error"` default's posture.
+  defp status_atom(nil), do: :error
+  defp status_atom(status) when is_atom(status), do: status
+  defp status_atom("ready"), do: :ready
+  defp status_atom("idle"), do: :idle
+  defp status_atom("running"), do: :running
+  defp status_atom("waiting"), do: :waiting
+  defp status_atom("compacting"), do: :compacting
+  defp status_atom(_), do: :error
 
   # First page of the message feed — see @window_size and
   # Sessions.list_messages_window/2.
@@ -2475,6 +2492,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
     # status broadcast), not by rescanning @messages on every status change.
     socket = socket |> assign(:status, status) |> sync_question_modal()
 
+    # ORCAHUB3-83: the error banner reads @session.error_detail, which the
+    # runner writes to the DB just before broadcasting this status — reload
+    # the row so a session that errors while we're watching shows the reason
+    # immediately, instead of whatever detail was on the row at mount.
+    socket = if status == :error, do: refresh_error_detail(socket), else: socket
+
     socket =
       if status == :idle do
         socket = load_session_commits(socket)
@@ -2582,6 +2605,19 @@ defmodule OrcaHubWeb.SessionLive.Show do
     if session = socket.assigns[:session] do
       session_node = socket.assigns[:session_node] || node()
       schedule_abandoned_cleanup(session.id, session_node)
+    end
+  end
+
+  # Only the one field is copied across: @session carries UI state stitched in
+  # elsewhere (title edits, node moves), and wholesale-replacing it on a
+  # status broadcast would clobber that.
+  defp refresh_error_detail(socket) do
+    case HubRPC.get_session(socket.assigns.session.id) do
+      %{error_detail: detail} ->
+        assign(socket, :session, %{socket.assigns.session | error_detail: detail})
+
+      _ ->
+        socket
     end
   end
 
