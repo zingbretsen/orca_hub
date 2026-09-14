@@ -338,6 +338,27 @@ defmodule OrcaHub.IssuesTest do
   end
 
   describe "find_similar_open_issue/3 (dedup, issues_spec.md §7)" do
+    # This suite runs with EMBEDDING_URL unset, so every test in this block
+    # already exercises the LEXICAL fallback — which is exactly the point of
+    # the assertion below: wiring the semantic pass in front of it must not
+    # change unindexed behaviour at all. The semantic pass's own positive case
+    # (a hit with zero word overlap) is covered against stubbed vectors in
+    # OrcaHub.Issues.SearchTest, and its failure/fallback paths in
+    # OrcaHub.IssuesDedupSemanticTest, which can set the global embedding env
+    # because it is async: false.
+    test "with embeddings unavailable, dedup is exactly the lexical heuristic",
+         %{project: project} do
+      refute OrcaHub.Embeddings.enabled?()
+
+      {:ok, existing} = Issues.create_issue(%{title: "Fix the login bug", project_id: project.id})
+
+      assert %Issue{id: id} =
+               Issues.find_similar_open_issue(project.id, "task", "fix the login bug urgently")
+
+      assert id == existing.id
+      assert Issues.find_similar_open_issue(project.id, "task", "totally unrelated text") == nil
+    end
+
     test "matches via case-insensitive substring, scoped to the same kind", %{project: project} do
       {:ok, existing} =
         Issues.create_issue(%{title: "Fix the login bug", project_id: project.id, kind: "task"})

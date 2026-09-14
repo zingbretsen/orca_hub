@@ -58,8 +58,10 @@ defmodule OrcaHub.Issues do
   """
 
   import Ecto.Query
-  alias OrcaHub.{Cluster, Issues.Indexer, Issues.Issue, Projects.Project, Repo, Sessions}
-  alias OrcaHub.Sessions.Session
+  require Logger
+
+  alias OrcaHub.{Cluster, Issues.Indexer, Issues.Issue, Issues.Search, Projects.Project, Repo}
+  alias OrcaHub.{Sessions, Sessions.Session}
 
   # ── create ────────────────────────────────────────────────────────────
 
@@ -667,12 +669,52 @@ defmodule OrcaHub.Issues do
   # ── dedup (§7) ────────────────────────────────────────────────────────
 
   @doc """
-  Finds an open issue in `project_id` with the same `kind` whose title is
-  similar to `title` — case-insensitive substring or >= 60% word overlap,
-  the same heuristic `OrcaHub.MCP.Tools.FeatureRequests` used, generalized
-  from title-prefix scoping to the real `kind` column (§7).
+  Finds a non-terminal issue in `project_id` with the same `kind` that is
+  likely the SAME REPORT as `title`. Two passes, in order:
+
+    1. Semantic (`OrcaHub.Issues.Search.similar_issues/2`) — catches the same
+       problem described in completely different words, which the lexical
+       heuristic below structurally cannot. Only a match at or above Search's
+       calibrated cosine floor counts (`Search.similar_threshold/0`, 0.85;
+       measured against the real corpus, where the median issue's NEAREST
+       neighbour scores 0.72 — nearness alone is weak evidence of
+       duplication).
+    2. Lexical (§7, unchanged) — case-insensitive substring or >= 60% word
+       overlap, the original heuristic.
+
+  The lexical pass runs whenever the semantic one produces no hit, for ANY
+  reason: embeddings unconfigured (the whole test suite), the endpoint down,
+  the issue not indexed yet, or genuinely nothing similar enough. Dedup sits
+  on the `create_issue` WRITE path, so it must never be able to fail a write
+  — the worst outcome permitted here is "didn't spot the duplicate".
+
+  Return contract is unchanged (`%Issue{}` or `nil`); a semantic hit simply
+  arrives with `:project` already preloaded.
   """
   def find_similar_open_issue(project_id, kind, title) do
+    semantic_similar_open_issue(project_id, kind, title) ||
+      lexical_similar_open_issue(project_id, kind, title)
+  end
+
+  defp semantic_similar_open_issue(project_id, kind, title) do
+    case Search.similar_issues(title, project_id: project_id, kind: kind, limit: 1) do
+      {:ok, [%{issue: %Issue{} = issue} | _]} -> issue
+      _ -> nil
+    end
+  rescue
+    e ->
+      Logger.warning(
+        "Issue dedup: semantic pass failed, using lexical - " <> Exception.message(e)
+      )
+
+      nil
+  catch
+    :exit, reason ->
+      Logger.warning("Issue dedup: semantic pass exited, using lexical - " <> inspect(reason))
+      nil
+  end
+
+  defp lexical_similar_open_issue(project_id, kind, title) do
     project_id
     |> list_open_issues_for_project()
     |> Enum.filter(&(&1.kind == kind))
