@@ -1,0 +1,89 @@
+{
+  "fa_hey_jarvis_neg_speech": {
+    "durationMs": 550570,
+    "hits": [
+      {
+        "threshold": 0.3,
+        "atMs": 83680,
+        "score": 0.9195,
+        "utterance": "Hey, Jarvis Cocker was the singer in Pulp.",
+        "slug": "nearmiss"
+      },
+      {
+        "threshold": 0.5,
+        "atMs": 83680,
+        "score": 0.9195,
+        "utterance": "Hey, Jarvis Cocker was the singer in Pulp.",
+        "slug": "nearmiss"
+      },
+      {
+        "threshold": 0.7,
+        "atMs": 83680,
+        "score": 0.9195,
+        "utterance": "Hey, Jarvis Cocker was the singer in Pulp.",
+        "slug": "nearmiss"
+      }
+    ]
+  },
+  "fa_alexa_neg_speech": {
+    "durationMs": 550570,
+    "hits": [
+      {
+        "threshold": 0.3,
+        "atMs": 185600,
+        "score": 0.4148,
+        "utterance": "A Lexus is not really my kind of car.",
+        "slug": "nearmiss"
+      },
+      {
+        "threshold": 0.3,
+        "atMs": 286320,
+        "score": 0.9245,
+        "utterance": "The lexer produces a token stream for the parser.",
+        "slug": "nearmiss"
+      },
+      {
+        "threshold": 0.3,
+        "atMs": 337840,
+        "score": 0.5093,
+        "utterance": "Orchestration of the containers is handled by Flux.",
+        "slug": "nearmiss"
+      },
+      {
+        "threshold": 0.5,
+        "atMs": 185680,
+        "score": 0.9973,
+        "utterance": "A Lexus is not really my kind of car.",
+        "slug": "nearmiss"
+      },
+      {
+        "threshold": 0.5,
+        "atMs": 286320,
+        "score": 0.9245,
+        "utterance": "The lexer produces a token stream for the parser.",
+        "slug": "nearmiss"
+      },
+      {
+        "threshold": 0.5,
+        "atMs": 337840,
+        "score": 0.5093,
+        "utterance": "Orchestration of the containers is handled by Flux.",
+        "slug": "nearmiss"
+      },
+      {
+        "threshold": 0.7,
+        "atMs": 185680,
+        "score": 0.9973,
+        "utterance": "A Lexus is not really my kind of car.",
+        "slug": "nearmiss"
+      },
+      {
+        "threshold": 0.7,
+        "atMs": 286320,
+        "score": 0.9245,
+        "utterance": "The lexer produces a token stream for the parser.",
+        "slug": "nearmiss"
+      }
+    ]
+  }
+}

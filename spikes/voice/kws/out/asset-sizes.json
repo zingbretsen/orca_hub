@@ -1,0 +1,116 @@
+{
+  "groups": {
+    "shared_with_spike1_vad": [
+      {
+        "name": "ort.wasm.min.js",
+        "raw": 50196,
+        "gzip": 16097
+      },
+      {
+        "name": "ort-wasm-simd-threaded.wasm",
+        "raw": 13961845,
+        "gzip": 3570014
+      },
+      {
+        "name": "ort-wasm-simd-threaded.mjs",
+        "raw": 24218,
+        "gzip": 9047
+      },
+      {
+        "name": "silero_vad_v5.onnx",
+        "raw": 2327524,
+        "gzip": 1943547
+      }
+    ],
+    "openwakeword": [
+      {
+        "name": "melspectrogram.onnx",
+        "raw": 1087958,
+        "gzip": 598360
+      },
+      {
+        "name": "embedding_model.onnx",
+        "raw": 1326578,
+        "gzip": 1223315
+      },
+      {
+        "name": "hey_jarvis_v0.1.onnx",
+        "raw": 1271370,
+        "gzip": 1179301
+      }
+    ],
+    "openwakeword_extra_classifiers": [
+      {
+        "name": "alexa_v0.1.onnx",
+        "raw": 854246,
+        "gzip": 791067
+      },
+      {
+        "name": "hey_mycroft_v0.1.onnx",
+        "raw": 857691,
+        "gzip": 789023
+      }
+    ],
+    "porcupine": [
+      {
+        "name": "porcupine-web.iife.min.js",
+        "raw": 3360435,
+        "gzip": 884756
+      },
+      {
+        "name": "porcupine_params.pv",
+        "raw": 984948,
+        "gzip": 938154
+      },
+      {
+        "name": "computer_wasm.ppn",
+        "raw": 4264,
+        "gzip": 4287
+      }
+    ],
+    "harness_glue": [
+      {
+        "name": "kws.js (this spike's engine code)",
+        "raw": 24611,
+        "gzip": 8313
+      }
+    ]
+  },
+  "totals": {
+    "shared_with_spike1_vad": {
+      "raw": 16363783,
+      "gzip": 5538705
+    },
+    "openwakeword": {
+      "raw": 3685906,
+      "gzip": 3000976
+    },
+    "openwakeword_extra_classifiers": {
+      "raw": 1711937,
+      "gzip": 1580090
+    },
+    "porcupine": {
+      "raw": 4349647,
+      "gzip": 1827197
+    },
+    "harness_glue": {
+      "raw": 24611,
+      "gzip": 8313
+    }
+  },
+  "verdict": {
+    "oww_marginal_over_vad_stack": {
+      "raw": 3685906,
+      "gzip": 3000976
+    },
+    "porcupine_marginal_over_vad_stack": {
+      "raw": 4349647,
+      "gzip": 1827197
+    },
+    "oww_standalone_total": {
+      "raw": 20049689,
+      "gzip": 8539681
+    },
+    "note": "Porcupine ships its own wasm runtime INLINED as base64 inside porcupine-web.iife.min.js, so it shares nothing with onnxruntime-web; openWakeWord reuses the ort runtime the VAD already needs."
+  }
+}
