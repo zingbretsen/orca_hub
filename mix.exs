@@ -68,6 +68,9 @@ defmodule OrcaHub.MixProject do
        depth: 1},
       {:swoosh, "~> 1.16"},
       {:req, "~> 0.5"},
+      # pgvector support for Ecto/Postgrex — provides the `vector` type
+      # extension wired into OrcaHub.PostgrexTypes and the Repo config.
+      {:pgvector, "~> 0.3"},
       {:req_s3, "~> 0.2.5"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},

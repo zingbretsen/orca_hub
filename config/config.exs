@@ -13,6 +13,11 @@ config :orca_hub,
   ecto_repos: [OrcaHub.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+# pgvector's `vector` type needs a custom Postgrex types module (see
+# lib/orca_hub/postgrex_types.ex). Configured here rather than per-env so
+# dev/test/prod all round-trip `issue_chunks.embedding` identically.
+config :orca_hub, OrcaHub.Repo, types: OrcaHub.PostgrexTypes
+
 # ORCAHUB3-80: Quantum's own library default (`{Random, :cluster}`) picks a
 # node uniformly at random from `[node() | Node.list()]` — every
 # libcluster-connected agent node (mini, gb10, both k3s agent pods, the local
