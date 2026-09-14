@@ -500,6 +500,21 @@ graph TB
   state in tests) returns lexical-only, and a full-text failure returns
   vector-only, with `:degraded` in the metadata for a caller that wants to
   say "keyword results only". Only both legs failing is an error.
+  `hybrid_search_meta/2` is the same search returning that metadata
+  (`%{semantic:, lexical:, degraded:}`) alongside the results, and is what
+  `HubRPC.search_issues/2` calls. One wrinkle worth knowing: because
+  `websearch_to_tsquery` ANDs bare terms, a SENTENCE-length query matches
+  nothing lexically — fine while vectors are up, since a sentence is what
+  the vector leg is for, but it would otherwise mean "embeddings down ⇒
+  literally no results". So when the semantic leg has FAILED and strict
+  keyword matching found nothing, the lexical leg retries with terms ORed
+  (`meta.lexical == :relaxed`, surfaced by the MCP tool as noisy leads).
+  Relaxation never runs while the vector leg is healthy (OR results are
+  noisy enough to dilute a good fusion) and is skipped for quoted phrases
+  and `-exclusions`, where rewriting `a & !b` to `a | !b` would invert the
+  caller's intent. Results are best-chunk-per-ISSUE, reached by
+  oversampling `limit * 8` rather than `DISTINCT ON`, which cannot apply a
+  LIMIT before deduping and so gives up the HNSW index.
   The legs are good at DISJOINT things, measured on the real corpus rather
   than assumed: on paraphrase queries semantic was #1 six times out of eight
   while lexical returned ZERO rows for all eight (`websearch_to_tsquery`
@@ -511,6 +526,11 @@ graph TB
   NEAREST neighbour scores 0.72, so nearness alone is weak evidence of
   duplication (that floor flags 1.8% of the corpus; a 0.62 guess would have
   flagged 88% and made `create_issue` refuse almost everything).
+  The `search_issues` MCP tool is visible to regular workers, not just
+  orchestrators, and unlike `list_issues` it defaults to EVERY project
+  rather than the caller's own — it exists to find prior art. It returns
+  compact rows (key, title, status, kind, project, url, score, `matched_by`,
+  `matched_field`, a snippet capped at 320 chars), never whole issue bodies.
 - **Memory extraction** (`lib/orca_hub/memory_extraction.ex`,
   `memory_extraction_sweep.ex`): on a session's natural end of work —
   `Sessions.archive_session/2` (default on) or the orchestrator-only
