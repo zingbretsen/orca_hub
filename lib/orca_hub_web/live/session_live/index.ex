@@ -29,7 +29,8 @@ defmodule OrcaHubWeb.SessionLive.Index do
     filter = :manual
 
     heartbeat_session_ids = get_heartbeat_session_ids()
-    tagged_sessions = Cluster.list_sessions(filter)
+    show_background = false
+    tagged_sessions = Cluster.list_sessions(filter, include_background: show_background)
     filtered_sessions = NodeFilter.filter_tagged(tagged_sessions, socket.assigns.node_filter)
     filtered_sessions = filter_by_heartbeat(filtered_sessions, filter, heartbeat_session_ids)
     filtered_projects = NodeFilter.filter_tagged(projects, socket.assigns.node_filter)
@@ -57,7 +58,8 @@ defmodule OrcaHubWeb.SessionLive.Index do
        undo_archive_timer: nil,
        heartbeat_session_ids: heartbeat_session_ids,
        selected_sessions: MapSet.new(),
-       worktree_fetch_pending: MapSet.new()
+       worktree_fetch_pending: MapSet.new(),
+       show_background: show_background
      )
      |> kick_worktree_fetches(worktree_fetches_needed)}
   end
@@ -173,7 +175,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
     heartbeat_session_ids = get_heartbeat_session_ids()
 
     tagged_sessions =
-      Cluster.list_sessions(filter)
+      Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
       |> NodeFilter.filter_tagged(socket.assigns.node_filter)
       |> filter_by_heartbeat(filter, heartbeat_session_ids)
 
@@ -195,6 +197,24 @@ defmodule OrcaHubWeb.SessionLive.Index do
      |> kick_worktree_fetches(worktree_fetches_needed)}
   end
 
+  # Hydrates :show_background from the client's localStorage on connect —
+  # see the SessionKindFilter hook (app.js) and its persisted round-trip
+  # below. A disconnected initial mount always renders with it off; this
+  # fires once the socket connects and reloads with the real preference.
+  def handle_event("show_background_init", %{"enabled" => enabled}, socket) do
+    {:noreply, socket |> assign(show_background: enabled) |> reload_session_data()}
+  end
+
+  def handle_event("toggle_show_background", _params, socket) do
+    enabled = !socket.assigns.show_background
+
+    {:noreply,
+     socket
+     |> assign(show_background: enabled)
+     |> reload_session_data()
+     |> push_event("show_background_persisted", %{enabled: enabled})}
+  end
+
   def handle_event("stop_session", %{"id" => id}, socket) do
     node = Map.get(socket.assigns.node_map, id, node())
     Cluster.stop_session(node, id)
@@ -207,7 +227,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
     Cluster.stop_session(node, id)
     {:ok, _} = Cluster.archive_session(node, session)
     filter = socket.assigns.session_filter
-    tagged_sessions = Cluster.list_sessions(filter)
+    tagged_sessions = Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
     node_map = Cluster.build_node_map(tagged_sessions)
     clustered = socket.assigns.clustered
 
@@ -232,7 +252,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
       session = Cluster.get_session!(node, session_id)
       Cluster.unarchive_session(node, session)
       filter = socket.assigns.session_filter
-      tagged_sessions = Cluster.list_sessions(filter)
+      tagged_sessions = Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
       node_map = Cluster.build_node_map(tagged_sessions)
       clustered = socket.assigns.clustered
 
@@ -381,7 +401,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
     end
 
     filter = socket.assigns.session_filter
-    tagged_sessions = Cluster.list_sessions(filter)
+    tagged_sessions = Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
     node_map = Cluster.build_node_map(tagged_sessions)
     clustered = socket.assigns.clustered
 
@@ -485,7 +505,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
     projects = Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
 
     tagged_sessions =
-      Cluster.list_sessions(filter)
+      Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
       |> NodeFilter.filter_tagged(socket.assigns.node_filter)
       |> filter_by_heartbeat(filter, heartbeat_session_ids)
 

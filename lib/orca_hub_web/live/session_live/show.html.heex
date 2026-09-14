@@ -164,6 +164,13 @@
       orchestrator
     </span>
     <span
+      :if={@session.kind == "memory_extraction"}
+      class="badge badge-ghost badge-outline ml-1"
+      title="Background memory-extraction session — self-archives when it finishes"
+    >
+      memory
+    </span>
+    <span
       :if={@capabilities.plan_mode && @plan_mode == :planning}
       class="badge badge-warning badge-outline ml-1"
     >

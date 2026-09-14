@@ -100,8 +100,31 @@ defmodule OrcaHub.MemoryExtraction do
   (the "model isn't loaded"/HTTP 400 signature of a misconfigured or
   unavailable local endpoint), the archived failed attempt is retried
   EXACTLY ONCE using the hardcoded Claude/Haiku default, logged loudly. A
-  session that already used the default, or that made at least one tool
-  call before erroring, is never retried.
+  session already using the default backend/model pair is never retried
+  again — since a retry always respawns with that exact pair, comparing the
+  failed child's own `backend`/`model` columns against the fallback IS the
+  "already retried" check, with no separate flag needed.
+
+  ## Designation + self-archiving (`kind`)
+
+  Every extraction child is created with `kind: "memory_extraction"` (see
+  `OrcaHub.Sessions.Session`) — hidden from the sessions index and
+  `search_sessions` by default, distinct from an ordinary `"session"`. It is
+  otherwise a completely normal session in every other respect (its own
+  `SessionRunner`, warm/cold ports, etc).
+
+  Completion (posting the visibility message back to the source, deleting
+  the transcript file, archiving itself, and the retry-once above) used to
+  be driven by an in-memory `Task` subscribed to the child's PubSub topic —
+  which died on every hub restart, permanently orphaning any extraction
+  session whose completion hadn't yet been observed (the unarchived "Memory
+  extraction: …" sessions that motivated this rewrite). It is now driven by
+  `finalize_self/2`, called directly from `OrcaHub.SessionRunner` itself
+  whenever a `kind == "memory_extraction"` session's turn ends (idle or
+  error) — no separate process to lose. `finalize_self/2` is idempotent (a
+  session that's already archived is a no-op) and never raises.
+  `OrcaHub.MemoryExtractionSweep` is the boot-time backstop for whatever
+  restart window still slips through (a child mid-turn when the hub dies).
   """
 
   require Logger
@@ -114,7 +137,6 @@ defmodule OrcaHub.MemoryExtraction do
   @min_chars 600
   @chunk_chars 12_000
   @hooks_per_page 100
-  @completion_timeout :timer.minutes(30)
 
   # Plain-text prefixes the hub itself injects into what otherwise looks
   # like an ordinary "user" turn — see moduledoc's "Transcript content".
@@ -459,8 +481,7 @@ defmodule OrcaHub.MemoryExtraction do
           file_path: file_path,
           prompt: build_prompt(file_path, hooks, tags, session),
           backend: Application.get_env(:orca_hub, :memory_extraction_backend, @fallback_backend),
-          model: Application.get_env(:orca_hub, :memory_extraction_model, @fallback_model),
-          retried?: false
+          model: Application.get_env(:orca_hub, :memory_extraction_model, @fallback_model)
         }
 
         spawn_child(ctx)
@@ -491,6 +512,9 @@ defmodule OrcaHub.MemoryExtraction do
       # never itself trigger extraction (also true independently: it's a
       # non-orchestrator child, so in_scope?/1 would already say no).
       memory_extract: false,
+      # Hidden from the sessions index/search_sessions by default, and
+      # self-archives via SessionRunner's turn-end hook — see moduledoc.
+      kind: "memory_extraction",
       status: "ready"
     }
 
@@ -499,7 +523,6 @@ defmodule OrcaHub.MemoryExtraction do
         case Cluster.start_session(ctx.runner_node, child.id, child) do
           {:ok, _} ->
             Cluster.send_message(ctx.runner_node, child.id, ctx.prompt, :queue)
-            watch_and_report(child.id, ctx)
             {:ok, :dispatched}
 
           {:error, reason} ->
@@ -615,68 +638,58 @@ defmodule OrcaHub.MemoryExtraction do
   end
 
   # -------------------------------------------------------------------
-  # Completion watcher, model fallback, and visibility (mirrors
-  # OrcaHub.TriggerExecutor's subscribe_for_completion/wait_for_completion)
+  # Self-archiving hook, model fallback, and visibility (see moduledoc's
+  # "Designation + self-archiving" — called directly from
+  # OrcaHub.SessionRunner at turn end, not an in-memory watcher).
   # -------------------------------------------------------------------
 
-  defp watch_and_report(child_id, ctx) do
-    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{child_id}")
-      await_completion(child_id, ctx)
-    end)
-  end
+  @doc """
+  Called by `OrcaHub.SessionRunner` whenever a `kind == "memory_extraction"`
+  session (`child`, its just-updated row) transitions to `:idle` or
+  `:error` at turn end. Idempotent — a `child` that's already archived is a
+  no-op, so a retry respawn (which archives the failed attempt itself) or
+  this hook racing `OrcaHub.MemoryExtractionSweep`'s boot sweep can't
+  double-post or double-archive. Never raises.
+  """
+  def finalize_self(child, status)
 
-  defp await_completion(child_id, ctx) do
-    receive do
-      {:status, status} when status in [:idle, :error] ->
-        finalize(child_id, status, ctx)
+  def finalize_self(%{archived_at: at}, _status) when not is_nil(at), do: :ok
 
-      _ ->
-        await_completion(child_id, ctx)
-    after
-      @completion_timeout ->
-        Logger.warning(
-          "MemoryExtraction: extraction session #{child_id} (source #{ctx.source.id}, " <>
-            "trigger #{ctx.trigger}) timed out waiting for completion"
-        )
-    end
-  end
-
-  defp finalize(child_id, :error, ctx) do
-    if retryable_failure?(child_id, ctx) do
-      Logger.warning(
-        "MemoryExtraction: extraction session #{child_id} for source #{ctx.source.id} " <>
-          "failed on its first turn using #{ctx.backend}/#{ctx.model} with no tool calls — " <>
-          "retrying once with the default #{@fallback_backend}/#{@fallback_model}"
-      )
-
-      archive_child(child_id)
-      spawn_child(%{ctx | backend: @fallback_backend, model: @fallback_model, retried?: true})
+  def finalize_self(child, :error) do
+    if retryable_failure?(child) do
+      retry_with_fallback(child)
     else
-      report_and_cleanup(child_id, :error, ctx)
+      report_and_archive(child, :error)
     end
   rescue
     e ->
       Logger.warning(
-        "MemoryExtraction: failed to finalize extraction session #{child_id} (source " <>
-          "#{ctx.source.id}): #{Exception.message(e)}"
+        "MemoryExtraction: finalize_self(:error) failed for extraction session " <>
+          "#{child.id}: #{Exception.message(e)}"
       )
+
+      :ok
   end
 
-  defp finalize(child_id, :idle, ctx) do
-    report_and_cleanup(child_id, :idle, ctx)
+  def finalize_self(child, :idle) do
+    report_and_archive(child, :idle)
   rescue
     e ->
       Logger.warning(
-        "MemoryExtraction: failed to finalize extraction session #{child_id} (source " <>
-          "#{ctx.source.id}): #{Exception.message(e)}"
+        "MemoryExtraction: finalize_self(:idle) failed for extraction session " <>
+          "#{child.id}: #{Exception.message(e)}"
       )
+
+      :ok
   end
 
-  defp retryable_failure?(_child_id, %{retried?: true}), do: false
+  def finalize_self(_child, _status), do: :ok
 
-  defp retryable_failure?(child_id, %{backend: backend, model: model}) do
-    {backend, model} != {@fallback_backend, @fallback_model} and no_tool_calls?(child_id)
+  # A retry always respawns with the fallback backend/model pair (see
+  # moduledoc) — no separate "already retried" flag needed, comparing
+  # against the fallback pair directly IS that check.
+  defp retryable_failure?(%{backend: backend, model: model} = child) do
+    {backend, model} != {@fallback_backend, @fallback_model} and no_tool_calls?(child.id)
   end
 
   defp no_tool_calls?(child_id) do
@@ -688,31 +701,87 @@ defmodule OrcaHub.MemoryExtraction do
     _ -> false
   end
 
-  defp report_and_cleanup(child_id, status, ctx) do
-    source = HubRPC.get_session(ctx.source.id)
-    if source, do: post_visibility_message(source, child_id, status)
+  defp retry_with_fallback(child) do
+    source_id = child.parent_session_id
+    source = source_id && HubRPC.get_session(source_id)
+    runner_node = Cluster.runner_node_for(child)
+    file_path = transcript_file_path(%{directory: child.directory, id: source_id})
 
-    archive_child(child_id)
-    Cluster.rpc(ctx.runner_node, __MODULE__, :delete_transcript_file, [ctx.file_path])
+    archive_only(child)
+
+    cond do
+      is_nil(source) ->
+        Logger.warning(
+          "MemoryExtraction: source #{inspect(source_id)} gone, skipping retry for " <>
+            "extraction session #{child.id}"
+        )
+
+      is_nil(runner_node) or not Cluster.node_available?(runner_node) ->
+        Logger.warning(
+          "MemoryExtraction: node unavailable, skipping retry for extraction session " <>
+            "#{child.id} (source #{source_id})"
+        )
+
+      true ->
+        Logger.warning(
+          "MemoryExtraction: extraction session #{child.id} for source #{source_id} failed " <>
+            "on its first turn using #{child.backend}/#{child.model} with no tool calls — " <>
+            "retrying once with the default #{@fallback_backend}/#{@fallback_model}"
+        )
+
+        slug = AgentMemory.slugify(source.directory)
+        hooks = existing_hooks(slug)
+        tags = existing_tags(slug)
+
+        spawn_child(%{
+          source: source,
+          runner_node: runner_node,
+          file_path: file_path,
+          prompt: build_prompt(file_path, hooks, tags, source),
+          backend: @fallback_backend,
+          model: @fallback_model
+        })
+    end
   end
 
-  defp archive_child(child_id) do
-    case HubRPC.get_session(child_id) do
+  defp report_and_archive(child, status) do
+    source_id = child.parent_session_id
+    if source_id, do: post_visibility_message(source_id, child.id, status)
+
+    file_path = transcript_file_path(%{directory: child.directory, id: source_id})
+
+    case Cluster.runner_node_for(child) do
       nil -> :ok
-      child -> HubRPC.archive_session(child, extract_memories: false)
+      runner_node -> Cluster.rpc(runner_node, __MODULE__, :delete_transcript_file, [file_path])
+    end
+
+    archive_only(child)
+  end
+
+  defp archive_only(child) do
+    case HubRPC.get_session(child.id) do
+      nil -> :ok
+      %{archived_at: at} when not is_nil(at) -> :ok
+      fresh -> HubRPC.archive_session(fresh, extract_memories: false)
     end
   end
 
   # `message` here is shown as-is after the "Memory extraction" label the
   # system_message component derives from `subtype` (message_components.ex) —
   # it must NOT repeat that prefix itself.
-  defp post_visibility_message(source, child_id, :error) do
-    persist_system_message(source.id, "failed — see session #{child_id} for details.")
+  defp post_visibility_message(source_id, child_id, :error) do
+    persist_system_message(source_id, "failed — see session #{child_id} for details.")
   end
 
-  defp post_visibility_message(source, _child_id, :idle) do
-    memories = extracted_memories(source)
-    persist_system_message(source.id, extraction_summary(memories))
+  defp post_visibility_message(source_id, _child_id, :idle) do
+    case HubRPC.get_session(source_id) do
+      nil ->
+        :ok
+
+      source ->
+        memories = extracted_memories(source)
+        persist_system_message(source_id, extraction_summary(memories))
+    end
   end
 
   defp extracted_memories(source) do

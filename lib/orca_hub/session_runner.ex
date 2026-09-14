@@ -15,6 +15,7 @@ defmodule OrcaHub.SessionRunner do
     Backend,
     Cluster,
     HubRPC,
+    MemoryExtraction,
     MemoryGit,
     SessionHeartbeat,
     Streaming
@@ -978,6 +979,11 @@ defmodule OrcaHub.SessionRunner do
           Map.get(data, :turn_started_at)
         )
 
+        maybe_self_archive_memory_extraction(
+          %{session | status: db_status, error_detail: session_error_detail},
+          notify_status(db_status)
+        )
+
         if code == 0 && (session.title == nil || session.title == "") do
           Logger.info(
             "Attempting title generation for session #{data.session_id}, first_prompt: #{inspect(data.first_prompt)}"
@@ -1205,6 +1211,21 @@ defmodule OrcaHub.SessionRunner do
 
     :ok
   end
+
+  # Self-archiving hook for `kind == "memory_extraction"` sessions (see
+  # OrcaHub.MemoryExtraction moduledoc's "Designation + self-archiving") —
+  # fire-and-forget, exactly like maybe_notify_parent/3 above, so it can
+  # never delay or fail the turn-end transition it's called alongside.
+  defp maybe_self_archive_memory_extraction(%{kind: "memory_extraction"} = session, status)
+       when status in [:idle, :error] do
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      MemoryExtraction.finalize_self(session, status)
+    end)
+
+    :ok
+  end
+
+  defp maybe_self_archive_memory_extraction(_session, _status), do: :ok
 
   # A redundant-idle window: how far back to look for a child->parent
   # session_interactions edge when `turn_started_at` is unavailable (e.g. a
@@ -1777,6 +1798,8 @@ defmodule OrcaHub.SessionRunner do
           Map.get(data, :turn_started_at)
         )
 
+        maybe_self_archive_memory_extraction(%{session | status: "idle", error_detail: nil}, :idle)
+
         MemoryGit.Server.snapshot_session_async(session)
         {:next_state, :idle, data}
 
@@ -1844,6 +1867,11 @@ defmodule OrcaHub.SessionRunner do
           Map.get(data, :turn_started_at)
         )
 
+        maybe_self_archive_memory_extraction(
+          %{session | status: "error", error_detail: error_detail},
+          :error
+        )
+
         # A turn-level error must not leave a stale warm process behind — it may be
         # wedged (e.g. spawned before login credentials existed, so every retry on
         # the same process fails identically). Tear it down now instead of leaving
@@ -1901,6 +1929,11 @@ defmodule OrcaHub.SessionRunner do
       %{session | status: db_status, error_detail: nil},
       notify_status(db_status),
       Map.get(data, :turn_started_at)
+    )
+
+    maybe_self_archive_memory_extraction(
+      %{session | status: db_status, error_detail: nil},
+      notify_status(db_status)
     )
 
     if generate_title? and (session.title == nil or session.title == "") do
@@ -1981,6 +2014,11 @@ defmodule OrcaHub.SessionRunner do
         %{session | status: "error", error_detail: error_detail},
         :error,
         Map.get(data, :turn_started_at)
+      )
+
+      maybe_self_archive_memory_extraction(
+        %{session | status: "error", error_detail: error_detail},
+        :error
       )
 
       {:next_state, :error, data}

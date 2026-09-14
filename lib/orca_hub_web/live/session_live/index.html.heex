@@ -33,6 +33,20 @@
       <.icon name="hero-archive-box" class="size-4" /> Archive Selected
     </button>
   </div>
+  <label
+    :if={MapSet.size(@selected_sessions) == 0}
+    id="session-kind-filter"
+    phx-hook="SessionKindFilter"
+    class="flex items-center gap-2 text-sm ml-auto cursor-pointer"
+  >
+    <input
+      type="checkbox"
+      class="toggle toggle-sm"
+      checked={@show_background}
+      phx-click="toggle_show_background"
+    />
+    Show background sessions
+  </label>
 </div>
 
 <div :if={@grouped_sessions == []} class="text-sm text-base-content/50 p-4 text-center">
@@ -142,6 +156,9 @@
         <span :if={session.orchestrator} class="badge badge-secondary badge-sm">
           orchestrator
         </span>
+        <span :if={session.kind == "memory_extraction"} class="badge badge-ghost badge-sm">
+          memory
+        </span>
         <span
           :if={MapSet.member?(@heartbeat_session_ids, session.id)}
           class="badge badge-accent badge-sm animate-pulse"
@@ -240,6 +257,9 @@
           </span>
           <span :if={session.orchestrator} class="badge badge-secondary badge-sm">
             orchestrator
+          </span>
+          <span :if={session.kind == "memory_extraction"} class="badge badge-ghost badge-sm">
+            memory
           </span>
           <span
             :if={MapSet.member?(@heartbeat_session_ids, session.id)}

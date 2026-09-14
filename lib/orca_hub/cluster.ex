@@ -276,8 +276,8 @@ defmodule OrcaHub.Cluster do
   List sessions. Uses HubRPC (single DB query) and tags each session
   with its runner_node (or the hub node as fallback).
   """
-  def list_sessions(filter \\ %{}) do
-    sessions = HubRPC.list_sessions(filter)
+  def list_sessions(filter \\ %{}, opts \\ []) do
+    sessions = HubRPC.list_sessions(filter, opts)
 
     Enum.map(sessions, fn s ->
       {runner_node_for(s), s}

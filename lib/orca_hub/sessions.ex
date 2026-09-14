@@ -42,7 +42,17 @@ defmodule OrcaHub.Sessions do
     Sessions.SessionInteraction
   }
 
-  def list_sessions(filter \\ :manual) do
+  @doc """
+  `opts[:include_background]` (default `false`) controls whether
+  `kind != "session"` rows (currently just `"memory_extraction"` — see
+  `OrcaHub.MemoryExtraction`) are included. These are background/
+  bookkeeping sessions, hidden from the sessions index and search_sessions
+  by default so they don't clutter the "active sessions" view — the
+  session itself self-archives shortly after finishing anyway (see
+  `OrcaHub.SessionRunner`'s self-archive hook), so this mostly matters for
+  the brief in-flight window.
+  """
+  def list_sessions(filter \\ :manual, opts \\ []) do
     query =
       from s in Session,
         left_join: p in assoc(s, :project),
@@ -61,6 +71,13 @@ defmodule OrcaHub.Sessions do
         :heartbeat -> query
       end
 
+    query =
+      if Keyword.get(opts, :include_background, false) do
+        query
+      else
+        from s in query, where: s.kind == "session"
+      end
+
     Repo.all(query)
   end
 
@@ -76,6 +93,29 @@ defmodule OrcaHub.Sessions do
         where: is_nil(s.archived_at),
         where: s.runner_node == ^node_name,
         where: s.status == "running"
+    )
+  end
+
+  @doc """
+  Unarchived `kind == "memory_extraction"` sessions, idle/error/ready, whose
+  `updated_at` is older than `older_than_minutes` — candidates for
+  `OrcaHub.MemoryExtractionSweep`'s boot-time cleanup of extraction
+  children orphaned by a hub restart landing before
+  `OrcaHub.SessionRunner`'s self-archive hook ran (see that module's
+  moduledoc). Cluster-wide (not scoped to one node, unlike
+  `list_running_sessions_for_node/1`) since archiving is a pure DB write —
+  the transcript-file cleanup that goes with it is the only part that
+  needs a specific node, and the caller resolves that per-row.
+  """
+  def list_orphaned_memory_extraction_sessions(older_than_minutes) do
+    cutoff = DateTime.utc_now() |> DateTime.add(-older_than_minutes, :minute) |> DateTime.to_naive()
+
+    Repo.all(
+      from s in Session,
+        where: is_nil(s.archived_at),
+        where: s.kind == "memory_extraction",
+        where: s.status in ["idle", "error", "ready"],
+        where: s.updated_at < ^cutoff
     )
   end
 
@@ -1306,7 +1346,13 @@ defmodule OrcaHub.Sessions do
     |> filter_by_status(opts[:status])
     |> filter_by_session_id(opts[:session_id])
     |> filter_by_parent_session_id(opts[:parent_session_id])
+    |> filter_by_background(opts[:include_background])
   end
+
+  # Excludes kind != "session" rows unless the caller opts in — see
+  # list_sessions/2's :include_background doc.
+  defp filter_by_background(q, true), do: q
+  defp filter_by_background(q, _), do: from(s in q, where: s.kind == "session")
 
   defp filter_by_archive(q, opts) do
     cond do
@@ -1359,7 +1405,7 @@ defmodule OrcaHub.Sessions do
   def count_idle_sessions do
     Repo.one(
       from s in Session,
-        where: is_nil(s.archived_at) and s.status == "idle",
+        where: is_nil(s.archived_at) and s.status == "idle" and s.kind == "session",
         select: count(s.id)
     )
   end

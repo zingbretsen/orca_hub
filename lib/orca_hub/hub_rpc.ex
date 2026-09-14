@@ -53,10 +53,14 @@ defmodule OrcaHub.HubRPC do
 
   def unarchive_session(session), do: call(OrcaHub.Sessions, :unarchive_session, [session])
   def defer_session(session), do: call(OrcaHub.Sessions, :defer_session, [session])
-  def list_sessions(filter \\ :manual), do: call(OrcaHub.Sessions, :list_sessions, [filter])
+  def list_sessions(filter \\ :manual, opts \\ []),
+    do: call(OrcaHub.Sessions, :list_sessions, [filter, opts])
 
   def list_running_sessions_for_node(node_name),
     do: call(OrcaHub.Sessions, :list_running_sessions_for_node, [node_name])
+
+  def list_orphaned_memory_extraction_sessions(older_than_minutes),
+    do: call(OrcaHub.Sessions, :list_orphaned_memory_extraction_sessions, [older_than_minutes])
 
   def list_messages(session_id), do: call(OrcaHub.Sessions, :list_messages, [session_id])
 

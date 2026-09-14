@@ -118,6 +118,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "description" =>
                 "If true, return ONLY archived sessions. Useful for browsing past session history. Default: false"
             },
+            "include_background" => %{
+              "type" => "boolean",
+              "description" =>
+                "If true, include background/bookkeeping sessions (currently just memory-extraction children) that are hidden by default. You almost never want this — they self-archive shortly after finishing anyway. Default: false"
+            },
             "limit" => %{
               "type" => "integer",
               "description" => "Maximum number of sessions to return. Default: 20"
@@ -804,6 +809,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       parent_session_id: args["parent_session_id"],
       include_archived: args["include_archived"] || false,
       archived_only: args["archived_only"] || false,
+      include_background: args["include_background"] || false,
       limit: limit
     }
 

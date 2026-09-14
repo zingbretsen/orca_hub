@@ -18,6 +18,12 @@ defmodule OrcaHub.Sessions.Session do
     # §4). "codex" is a valid data-layer value ahead of its Phase 2 adapter;
     # the UI only offers backends from `OrcaHub.Backend.available/0`.
     field :backend, :string, default: "claude"
+    # Designation: "session" (default) or "memory_extraction" (a background
+    # child spawned by OrcaHub.MemoryExtraction). Distinct from `triggered`
+    # (cron/webhook/email origin) — this is the session's ROLE, hidden from
+    # the sessions index/search_sessions by default (see OrcaHub.Sessions'
+    # list_sessions/2 and its own self-archiving hook in SessionRunner).
+    field :kind, :string, default: "session"
     field :archived_at, :utc_datetime
     field :triggered, :boolean, default: false
     field :priority, :integer, default: 0
@@ -121,6 +127,7 @@ defmodule OrcaHub.Sessions.Session do
       :status,
       :model,
       :backend,
+      :kind,
       :project_id,
       :archived_at,
       :triggered,
@@ -155,5 +162,6 @@ defmodule OrcaHub.Sessions.Session do
     |> validate_required([:directory])
     |> validate_inclusion(:status, ~w(ready idle running waiting error compacting))
     |> validate_inclusion(:backend, ~w(claude codex pi))
+    |> validate_inclusion(:kind, ~w(session memory_extraction))
   end
 end

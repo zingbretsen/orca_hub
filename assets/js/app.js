@@ -595,6 +595,24 @@ let Hooks = {
       }
     }
   },
+  // Persists the sessions index's "Show background sessions" toggle
+  // (:show_background is a plain socket assign otherwise reset on every
+  // mount) — same init/persisted round-trip as the NodeFilter/TTS-autoplay
+  // hooks above.
+  SessionKindFilter: {
+    mounted() {
+      const stored = localStorage.getItem("orca:show-background-sessions") === "1"
+      this.pushEvent("show_background_init", { enabled: stored })
+
+      this.handleEvent("show_background_persisted", ({ enabled }) => {
+        if (enabled) {
+          localStorage.setItem("orca:show-background-sessions", "1")
+        } else {
+          localStorage.removeItem("orca:show-background-sessions")
+        }
+      })
+    }
+  },
   NodeFilter: {
     mounted() {
       const stored = localStorage.getItem("orca:node_filter")
