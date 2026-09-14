@@ -41,6 +41,8 @@ graph TB
         Sessions["Sessions Context"]
         Projects["Projects Context"]
         Issues["Issues Context<br>(durable work items)"]
+        IssueChunker["Issues.Chunker<br>(pure text chunking)"]
+        Embeddings["Embeddings<br>(hub-only HTTP)"]
         Triggers["Triggers Context"]
         Terminals["Terminals Context"]
         Jobs["Jobs Context<br>+ Launcher / Progress"]
@@ -277,6 +279,8 @@ graph TB
     MemoryReview -->|"upserts 2 scheduled triggers"| Triggers
     MCPTools -->|"remember/recall/..."| MemoryClient
     MemoryClient --> MemoryService
+    Embeddings -->|"HubRPC.embeddings_*"| EmbeddingService["Local embedding endpoint<br>(OpenAI-compatible /v1/embeddings)"]
+    IssueChunker -.->|"chunks sized to the endpoint's n_ctx"| Embeddings
     BackendBehaviour -->|"memory block at cold port open<br>(SharedPrompts / pi ORCA_MEMORY)"| MemoryClient
 
     UsageLive --> Usage
@@ -425,6 +429,18 @@ graph TB
   injection seam itself is per-backend: `maybe_prepend_memory/3` in
   `Backend.SharedPrompts` for Claude/Codex's first turn, and `Backend.Pi`'s
   `orca_memory_json/1` (the `ORCA_MEMORY` env) at pi's port-open.
+- **Issue indexing foundation** (`lib/orca_hub/embeddings.ex`,
+  `lib/orca_hub/issues/chunker.ex`, `lib/orca_hub/issues/issue_chunk.ex`):
+  the pgvector substrate for semantic issue search. `Embeddings` is a
+  hub-only HTTP client for a local OpenAI-compatible `/v1/embeddings`
+  (qwen3-embedding-0.6b, 1024 dims), structured exactly like
+  `MemoryClient` — thin wrappers over `HubRPC.embeddings_*` so only the hub
+  needs `EMBEDDING_URL`, `{:error, :disabled}` when unset, never raises.
+  `Chunker` is pure and splits an issue's prose into `issue_chunks`-shaped
+  slices sized well under the endpoint's 8192-token `n_ctx` (an over-length
+  input is a hard HTTP 400, not a truncation). The indexer/write hooks and
+  the search + MCP tool layers on top of these are separate, later slices —
+  nothing yet writes `issue_chunks` or `issues.indexed_at`.
 - **Memory extraction** (`lib/orca_hub/memory_extraction.ex`,
   `memory_extraction_sweep.ex`): on a session's natural end of work —
   `Sessions.archive_session/2` (default on) or the orchestrator-only
