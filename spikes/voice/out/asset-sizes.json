@@ -1,0 +1,69 @@
+{
+  "brotli_available": false,
+  "options": {
+    "@ricky0123/vad-web 0.0.31 (+ onnxruntime-web 1.29.0)": {
+      "files": {
+        "vendor/ort/ort.wasm.min.js": {
+          "raw": 50196,
+          "gzip": 16097
+        },
+        "vendor/ort/ort-wasm-simd-threaded.mjs": {
+          "raw": 24218,
+          "gzip": 9047
+        },
+        "vendor/ort/ort-wasm-simd-threaded.wasm": {
+          "raw": 13961845,
+          "gzip": 3570014
+        },
+        "vendor/vad/vad-bundle.min.js": {
+          "raw": 69345,
+          "gzip": 20679
+        },
+        "vendor/vad/vad.worklet.bundle.min.js": {
+          "raw": 2480,
+          "gzip": 1061
+        },
+        "vendor/vad/silero_vad_v5.onnx": {
+          "raw": 2327524,
+          "gzip": 1943547
+        }
+      },
+      "total": {
+        "raw": 16435608,
+        "gzip": 5560445
+      }
+    },
+    "direct Silero on onnxruntime-web 1.29.0": {
+      "files": {
+        "vendor/ort/ort.wasm.min.js": {
+          "raw": 50196,
+          "gzip": 16097
+        },
+        "vendor/ort/ort-wasm-simd-threaded.mjs": {
+          "raw": 24218,
+          "gzip": 9047
+        },
+        "vendor/ort/ort-wasm-simd-threaded.wasm": {
+          "raw": 13961845,
+          "gzip": 3570014
+        },
+        "vendor/vad/silero_vad_v5.onnx": {
+          "raw": 2327524,
+          "gzip": 1943547
+        },
+        "silero-direct.js": {
+          "raw": 5436,
+          "gzip": 1940
+        },
+        "capture-worklet.js": {
+          "raw": 8278,
+          "gzip": 3015
+        }
+      },
+      "total": {
+        "raw": 16377497,
+        "gzip": 5543660
+      }
+    }
+  }
+}

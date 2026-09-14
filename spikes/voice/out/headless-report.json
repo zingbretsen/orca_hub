@@ -1,0 +1,5143 @@
+{
+  "generatedAt": "2026-09-14T14:14:45.743Z",
+  "base": "http://localhost:8777",
+  "runs": {
+    "direct_clean_red600": {
+      "run": {
+        "tag": "direct_clean_red600",
+        "engine": "direct",
+        "durMs": 30003.1,
+        "durSec": 30,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 1052,
+        "workletWallMs": 30003,
+        "workletMeanPerBlockMs": 0.10175,
+        "workletBlocks": 10339,
+        "workletProcessCalls": 10339,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 488640,
+        "workletBlocksExpected": 10337,
+        "workletDutyCyclePct": 3.506,
+        "frames16k": 960,
+        "vadInferMs": {
+          "n": 960,
+          "p50": 3.5,
+          "p95": 4.2,
+          "p99": 5.5,
+          "max": 72.6,
+          "mean": 2.974
+        },
+        "vadRealtimeFactor": 0.1094,
+        "queueBacklog": {
+          "n": 960,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 1496,
+          "p50": 0,
+          "p95": 0.2,
+          "p99": 2.1,
+          "max": 85.4,
+          "mean": 0.0536
+        },
+        "speechStarts": 7,
+        "speechEnds": 7,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 7,
+          "p50": 608,
+          "p95": 640,
+          "p99": 640,
+          "max": 640,
+          "mean": 612.5714
+        },
+        "triggersPerMinute": 14,
+        "falseTriggersPerMinute": null,
+        "probStats": {
+          "n": 960,
+          "p50": 0,
+          "p95": 0.9958,
+          "p99": 0.9992,
+          "max": 0.9997,
+          "mean": 0.1386
+        },
+        "meanFrameRms": 0.013404,
+        "meanFrameDbfs": -37.46,
+        "segments": [
+          {
+            "idx": 1,
+            "engine": "direct",
+            "file": "direct_clean_red600-direct-001.wav",
+            "tag": "direct_clean_red600",
+            "totalMs": 1780,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 500,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 1280,
+            "eosLatencyMs": 608,
+            "peakDbfs": -17.16,
+            "bytes": 57004,
+            "uploaded": "out/direct_clean_red600-direct-001.wav"
+          },
+          {
+            "idx": 2,
+            "engine": "direct",
+            "file": "direct_clean_red600-direct-002.wav",
+            "tag": "direct_clean_red600",
+            "totalMs": 1748,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 490,
+            "onsetMinusPrerollMs": -10,
+            "segmentDurMs": 1248,
+            "eosLatencyMs": 608,
+            "peakDbfs": -24.52,
+            "bytes": 55980,
+            "uploaded": "out/direct_clean_red600-direct-002.wav"
+          },
+          {
+            "idx": 3,
+            "engine": "direct",
+            "file": "direct_clean_red600-direct-003.wav",
+            "tag": "direct_clean_red600",
+            "totalMs": 1748,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 480,
+            "onsetMinusPrerollMs": -20,
+            "segmentDurMs": 1248,
+            "eosLatencyMs": 608,
+            "peakDbfs": -24.52,
+            "bytes": 55980,
+            "uploaded": "out/direct_clean_red600-direct-003.wav"
+          },
+          {
+            "idx": 4,
+            "engine": "direct",
+            "file": "direct_clean_red600-direct-004.wav",
+            "tag": "direct_clean_red600",
+            "totalMs": 1748,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 500,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 1248,
+            "eosLatencyMs": 608,
+            "peakDbfs": -24.52,
+            "bytes": 55980,
+            "uploaded": "out/direct_clean_red600-direct-004.wav"
+          },
+          {
+            "idx": 5,
+            "engine": "direct",
+            "file": "direct_clean_red600-direct-005.wav",
+            "tag": "direct_clean_red600",
+            "totalMs": 1684,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 420,
+            "onsetMinusPrerollMs": -80,
+            "segmentDurMs": 1184,
+            "eosLatencyMs": 608,
+            "peakDbfs": -24.36,
+            "bytes": 53932,
+            "uploaded": "out/direct_clean_red600-direct-005.wav"
+          },
+          {
+            "idx": 6,
+            "engine": "direct",
+            "file": "direct_clean_red600-direct-006.wav",
+            "tag": "direct_clean_red600",
+            "totalMs": 1748,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 480,
+            "onsetMinusPrerollMs": -20,
+            "segmentDurMs": 1248,
+            "eosLatencyMs": 608,
+            "peakDbfs": -24.52,
+            "bytes": 55980,
+            "uploaded": "out/direct_clean_red600-direct-006.wav"
+          }
+        ],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "resamplerBench": {
+        "at48k": {
+          "inRate": 48000,
+          "taps": 63,
+          "blocks": 60,
+          "batchPerSample": 200,
+          "samplesOut": 512000,
+          "perBlockMs": {
+            "n": 45,
+            "p50": 0.0155,
+            "p95": 0.016,
+            "p99": 0.0165,
+            "max": 0.0165,
+            "mean": 0.0154
+          },
+          "blockPeriodMs": 2.6667,
+          "dutyCyclePct": 0.581,
+          "method": "main thread, performance.now() over 200-block batches, identical FIR+decimation kernel"
+        },
+        "atCtxRate": {
+          "inRate": 44100,
+          "taps": 63,
+          "blocks": 60,
+          "batchPerSample": 200,
+          "samplesOut": 557278,
+          "perBlockMs": {
+            "n": 45,
+            "p50": 0.017,
+            "p95": 0.018,
+            "p99": 0.018,
+            "max": 0.018,
+            "mean": 0.0172
+          },
+          "blockPeriodMs": 2.9025,
+          "dutyCyclePct": 0.586,
+          "method": "main thread, performance.now() over 200-block batches, identical FIR+decimation kernel"
+        }
+      },
+      "assets": {
+        "vendor/ort/ort.wasm.min.js": {
+          "bytes": 50196,
+          "encoding": "identity"
+        },
+        "vendor/ort/ort-wasm-simd-threaded.wasm": {
+          "bytes": 13961845,
+          "encoding": "identity"
+        },
+        "vendor/vad/vad-bundle.min.js": {
+          "bytes": 69345,
+          "encoding": "identity"
+        },
+        "vendor/vad/vad.worklet.bundle.min.js": {
+          "bytes": 2480,
+          "encoding": "identity"
+        },
+        "vendor/vad/silero_vad_v5.onnx": {
+          "bytes": 2327524,
+          "encoding": "identity"
+        },
+        "_transferred": [
+          {
+            "name": "vendor/ort/ort.wasm.min.js",
+            "transferSize": 50496,
+            "encodedBodySize": 50196,
+            "decodedBodySize": 50196,
+            "durationMs": 14.7
+          },
+          {
+            "name": "vendor/vad/vad-bundle.min.js",
+            "transferSize": 69645,
+            "encodedBodySize": 69345,
+            "decodedBodySize": 69345,
+            "durationMs": 15.9
+          },
+          {
+            "name": "vendor/vad/silero_vad_v5.onnx",
+            "transferSize": 2327824,
+            "encodedBodySize": 2327524,
+            "decodedBodySize": 2327524,
+            "durationMs": 10.7
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.mjs",
+            "transferSize": 24518,
+            "encodedBodySize": 24218,
+            "decodedBodySize": 24218,
+            "durationMs": 2.5
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.wasm",
+            "transferSize": 13962145,
+            "encodedBodySize": 13961845,
+            "decodedBodySize": 13961845,
+            "durationMs": 45.1
+          },
+          {
+            "name": "vendor/ort/ort.wasm.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 3.8
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.wasm",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2.1
+          },
+          {
+            "name": "vendor/vad/vad-bundle.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2.2
+          },
+          {
+            "name": "vendor/vad/vad.worklet.bundle.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2.4
+          }
+        ]
+      },
+      "results": {
+        "gum": {
+          "requested": {
+            "echoCancellation": true,
+            "noiseSuppression": true,
+            "autoGainControl": true,
+            "channelCount": 1
+          },
+          "supportedConstraints": {
+            "aspectRatio": true,
+            "autoGainControl": true,
+            "brightness": true,
+            "channelCount": true,
+            "colorTemperature": true,
+            "contrast": true,
+            "deviceId": true,
+            "displaySurface": true,
+            "echoCancellation": true,
+            "exposureCompensation": true,
+            "exposureMode": true,
+            "exposureTime": true,
+            "facingMode": true,
+            "focusDistance": true,
+            "focusMode": true,
+            "frameRate": true,
+            "groupId": true,
+            "height": true,
+            "iso": true,
+            "latency": true,
+            "noiseSuppression": true,
+            "pan": true,
+            "pointsOfInterest": true,
+            "resizeMode": true,
+            "restrictOwnAudio": true,
+            "sampleRate": true,
+            "sampleSize": true,
+            "saturation": true,
+            "sharpness": true,
+            "suppressLocalAudioPlayback": true,
+            "tilt": true,
+            "torch": true,
+            "voiceIsolation": true,
+            "whiteBalanceMode": true,
+            "width": true,
+            "zoom": true
+          },
+          "settings": {
+            "autoGainControl": true,
+            "channelCount": 1,
+            "deviceId": "default",
+            "echoCancellation": true,
+            "groupId": "a3e3579b515cc9446da6f720891e09f2765834dc303740e549708d4cf14bbe30",
+            "latency": 0.01,
+            "noiseSuppression": true,
+            "sampleRate": 48000,
+            "sampleSize": 16,
+            "voiceIsolation": false
+          },
+          "capabilities": {
+            "autoGainControl": [
+              true,
+              false
+            ],
+            "channelCount": {
+              "max": 2,
+              "min": 1
+            },
+            "deviceId": "default",
+            "echoCancellation": [
+              true,
+              false,
+              "remote-only"
+            ],
+            "groupId": "a3e3579b515cc9446da6f720891e09f2765834dc303740e549708d4cf14bbe30",
+            "latency": {
+              "max": 0.01,
+              "min": 0.01
+            },
+            "noiseSuppression": [
+              true,
+              false
+            ],
+            "sampleRate": {
+              "max": 48000,
+              "min": 44100
+            },
+            "sampleSize": {
+              "max": 16,
+              "min": 16
+            },
+            "voiceIsolation": [
+              true,
+              false
+            ]
+          },
+          "appliedConstraints": {
+            "autoGainControl": true,
+            "channelCount": 1,
+            "echoCancellation": true,
+            "noiseSuppression": true
+          },
+          "trackLabel": "Fake Default Audio Input",
+          "trackReadyState": "live",
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true,
+          "channelCount": 1,
+          "negotiatedSampleRate": 48000
+        },
+        "audioContext": {
+          "negotiatedSampleRate": 44100,
+          "baseLatency": 0.01,
+          "outputLatency": 0.03,
+          "renderQuantum": 128,
+          "quantumMs": 2.9025,
+          "resampleRatio": 2.75625
+        },
+        "worklet": {
+          "type": "ready",
+          "inRate": 44100,
+          "hasPerformance": false,
+          "ratio": 2.75625,
+          "taps": 63,
+          "frameSamples": 512,
+          "ringLen": 32000
+        },
+        "engines": {
+          "direct": {
+            "ortEnv": {
+              "numThreads": 1,
+              "crossOriginIsolated": false
+            },
+            "loadMs": 519.3,
+            "modelFetchMs": 19.9,
+            "sessionInitMs": 498.6,
+            "modelBytes": 2327524,
+            "options": {
+              "positiveSpeechThreshold": 0.5,
+              "negativeSpeechThreshold": 0.35,
+              "redemptionMs": 600,
+              "preSpeechPadMs": 500,
+              "minSpeechMs": 250
+            },
+            "redemptionFrames": 19,
+            "minSpeechFrames": 8,
+            "runs": [
+              {
+                "tag": "direct_clean_red600",
+                "engine": "direct",
+                "durMs": 30003.1,
+                "durSec": 30,
+                "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+                "workletHasPerformanceApi": false,
+                "workletCpuMs": 1052,
+                "workletWallMs": 30003,
+                "workletMeanPerBlockMs": 0.10175,
+                "workletBlocks": 10339,
+                "workletProcessCalls": 10339,
+                "workletEmptyInputBlocks": 0,
+                "workletSamplesOut16k": 488640,
+                "workletBlocksExpected": 10337,
+                "workletDutyCyclePct": 3.506,
+                "frames16k": 960,
+                "vadInferMs": {
+                  "n": 960,
+                  "p50": 3.5,
+                  "p95": 4.2,
+                  "p99": 5.5,
+                  "max": 72.6,
+                  "mean": 2.974
+                },
+                "vadRealtimeFactor": 0.1094,
+                "queueBacklog": {
+                  "n": 960,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0,
+                  "mean": 0
+                },
+                "mainThreadTimerLatenessMs": {
+                  "n": 1496,
+                  "p50": 0,
+                  "p95": 0.2,
+                  "p99": 2.1,
+                  "max": 85.4,
+                  "mean": 0.0536
+                },
+                "speechStarts": 7,
+                "speechEnds": 7,
+                "misfires": 0,
+                "eosLatencyMs": {
+                  "n": 7,
+                  "p50": 608,
+                  "p95": 640,
+                  "p99": 640,
+                  "max": 640,
+                  "mean": 612.5714
+                },
+                "triggersPerMinute": 14,
+                "falseTriggersPerMinute": null,
+                "probStats": {
+                  "n": 960,
+                  "p50": 0,
+                  "p95": 0.9958,
+                  "p99": 0.9992,
+                  "max": 0.9997,
+                  "mean": 0.1386
+                },
+                "meanFrameRms": 0.013404,
+                "meanFrameDbfs": -37.46,
+                "segments": [
+                  {
+                    "idx": 1,
+                    "engine": "direct",
+                    "file": "direct_clean_red600-direct-001.wav",
+                    "tag": "direct_clean_red600",
+                    "totalMs": 1780,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 500,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 1280,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -17.16,
+                    "bytes": 57004,
+                    "uploaded": "out/direct_clean_red600-direct-001.wav"
+                  },
+                  {
+                    "idx": 2,
+                    "engine": "direct",
+                    "file": "direct_clean_red600-direct-002.wav",
+                    "tag": "direct_clean_red600",
+                    "totalMs": 1748,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 490,
+                    "onsetMinusPrerollMs": -10,
+                    "segmentDurMs": 1248,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -24.52,
+                    "bytes": 55980,
+                    "uploaded": "out/direct_clean_red600-direct-002.wav"
+                  },
+                  {
+                    "idx": 3,
+                    "engine": "direct",
+                    "file": "direct_clean_red600-direct-003.wav",
+                    "tag": "direct_clean_red600",
+                    "totalMs": 1748,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 480,
+                    "onsetMinusPrerollMs": -20,
+                    "segmentDurMs": 1248,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -24.52,
+                    "bytes": 55980,
+                    "uploaded": "out/direct_clean_red600-direct-003.wav"
+                  },
+                  {
+                    "idx": 4,
+                    "engine": "direct",
+                    "file": "direct_clean_red600-direct-004.wav",
+                    "tag": "direct_clean_red600",
+                    "totalMs": 1748,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 500,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 1248,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -24.52,
+                    "bytes": 55980,
+                    "uploaded": "out/direct_clean_red600-direct-004.wav"
+                  },
+                  {
+                    "idx": 5,
+                    "engine": "direct",
+                    "file": "direct_clean_red600-direct-005.wav",
+                    "tag": "direct_clean_red600",
+                    "totalMs": 1684,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 420,
+                    "onsetMinusPrerollMs": -80,
+                    "segmentDurMs": 1184,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -24.36,
+                    "bytes": 53932,
+                    "uploaded": "out/direct_clean_red600-direct-005.wav"
+                  },
+                  {
+                    "idx": 6,
+                    "engine": "direct",
+                    "file": "direct_clean_red600-direct-006.wav",
+                    "tag": "direct_clean_red600",
+                    "totalMs": 1748,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 480,
+                    "onsetMinusPrerollMs": -20,
+                    "segmentDurMs": 1248,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -24.52,
+                    "bytes": 55980,
+                    "uploaded": "out/direct_clean_red600-direct-006.wav"
+                  }
+                ],
+                "gum": {
+                  "echoCancellationApplied": true,
+                  "noiseSuppressionApplied": true,
+                  "autoGainControlApplied": true
+                }
+              }
+            ]
+          }
+        }
+      },
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [
+        "pageerror: Cannot read properties of null (reading 'keepBlobs')"
+      ],
+      "_fixture": {
+        "name": "fix_onset_orca_send",
+        "path": "fix_onset_orca_send.wav",
+        "bytes": 447404,
+        "loop_period_ms": 4660,
+        "speech_onset_ms": 1500,
+        "speech_offset_ms": 2160,
+        "speech_dur_ms": 660,
+        "speech_dbfs": -20,
+        "purpose": "pre-roll onset position, EOS latency, VAD inference"
+      }
+    },
+    "direct_clean_red400": {
+      "run": {
+        "tag": "direct_clean_red400",
+        "engine": "direct",
+        "durMs": 30002.1,
+        "durSec": 30,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 1230,
+        "workletWallMs": 30000,
+        "workletMeanPerBlockMs": 0.11896,
+        "workletBlocks": 10340,
+        "workletProcessCalls": 10340,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 488826,
+        "workletBlocksExpected": 10337,
+        "workletDutyCyclePct": 4.1,
+        "frames16k": 960,
+        "vadInferMs": {
+          "n": 960,
+          "p50": 3.5,
+          "p95": 4.2,
+          "p99": 5.1,
+          "max": 68.8,
+          "mean": 3.0272
+        },
+        "vadRealtimeFactor": 0.1094,
+        "queueBacklog": {
+          "n": 960,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 1496,
+          "p50": 0,
+          "p95": 0.2,
+          "p99": 1.7,
+          "max": 81.3,
+          "mean": 0.0537
+        },
+        "speechStarts": 7,
+        "speechEnds": 7,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 7,
+          "p50": 416,
+          "p95": 416,
+          "p99": 416,
+          "max": 416,
+          "mean": 416
+        },
+        "triggersPerMinute": 14,
+        "falseTriggersPerMinute": null,
+        "probStats": {
+          "n": 960,
+          "p50": 0,
+          "p95": 0.9966,
+          "p99": 0.999,
+          "max": 0.9995,
+          "mean": 0.1386
+        },
+        "meanFrameRms": 0.013435,
+        "meanFrameDbfs": -37.44,
+        "segments": [
+          {
+            "idx": 1,
+            "engine": "direct",
+            "file": "direct_clean_red400-direct-001.wav",
+            "tag": "direct_clean_red400",
+            "totalMs": 1588,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 500,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 1088,
+            "eosLatencyMs": 416,
+            "peakDbfs": -16.67,
+            "bytes": 50860,
+            "uploaded": "out/direct_clean_red400-direct-001.wav"
+          },
+          {
+            "idx": 2,
+            "engine": "direct",
+            "file": "direct_clean_red400-direct-002.wav",
+            "tag": "direct_clean_red400",
+            "totalMs": 1556,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 490,
+            "onsetMinusPrerollMs": -10,
+            "segmentDurMs": 1056,
+            "eosLatencyMs": 416,
+            "peakDbfs": -24.01,
+            "bytes": 49836,
+            "uploaded": "out/direct_clean_red400-direct-002.wav"
+          },
+          {
+            "idx": 3,
+            "engine": "direct",
+            "file": "direct_clean_red400-direct-003.wav",
+            "tag": "direct_clean_red400",
+            "totalMs": 1556,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 480,
+            "onsetMinusPrerollMs": -20,
+            "segmentDurMs": 1056,
+            "eosLatencyMs": 416,
+            "peakDbfs": -24.01,
+            "bytes": 49836,
+            "uploaded": "out/direct_clean_red400-direct-003.wav"
+          },
+          {
+            "idx": 4,
+            "engine": "direct",
+            "file": "direct_clean_red400-direct-004.wav",
+            "tag": "direct_clean_red400",
+            "totalMs": 1556,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 500,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 1056,
+            "eosLatencyMs": 416,
+            "peakDbfs": -24.01,
+            "bytes": 49836,
+            "uploaded": "out/direct_clean_red400-direct-004.wav"
+          },
+          {
+            "idx": 5,
+            "engine": "direct",
+            "file": "direct_clean_red400-direct-005.wav",
+            "tag": "direct_clean_red400",
+            "totalMs": 1556,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 490,
+            "onsetMinusPrerollMs": -10,
+            "segmentDurMs": 1056,
+            "eosLatencyMs": 416,
+            "peakDbfs": -24.01,
+            "bytes": 49836,
+            "uploaded": "out/direct_clean_red400-direct-005.wav"
+          },
+          {
+            "idx": 6,
+            "engine": "direct",
+            "file": "direct_clean_red400-direct-006.wav",
+            "tag": "direct_clean_red400",
+            "totalMs": 1556,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 480,
+            "onsetMinusPrerollMs": -20,
+            "segmentDurMs": 1056,
+            "eosLatencyMs": 416,
+            "peakDbfs": -24.01,
+            "bytes": 49836,
+            "uploaded": "out/direct_clean_red400-direct-006.wav"
+          },
+          {
+            "idx": 7,
+            "engine": "direct",
+            "file": "direct_clean_red400-direct-007.wav",
+            "tag": "direct_clean_red400",
+            "totalMs": 1588,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 500,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 1088,
+            "eosLatencyMs": 416,
+            "peakDbfs": -24.1,
+            "bytes": 50860,
+            "uploaded": "out/direct_clean_red400-direct-007.wav"
+          }
+        ],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "resamplerBench": {
+        "at48k": {
+          "inRate": 48000,
+          "taps": 63,
+          "blocks": 60,
+          "batchPerSample": 200,
+          "samplesOut": 512000,
+          "perBlockMs": {
+            "n": 45,
+            "p50": 0.0155,
+            "p95": 0.0165,
+            "p99": 0.0185,
+            "max": 0.0185,
+            "mean": 0.0156
+          },
+          "blockPeriodMs": 2.6667,
+          "dutyCyclePct": 0.581,
+          "method": "main thread, performance.now() over 200-block batches, identical FIR+decimation kernel"
+        },
+        "atCtxRate": {
+          "inRate": 44100,
+          "taps": 63,
+          "blocks": 60,
+          "batchPerSample": 200,
+          "samplesOut": 557278,
+          "perBlockMs": {
+            "n": 45,
+            "p50": 0.017,
+            "p95": 0.0175,
+            "p99": 0.018,
+            "max": 0.018,
+            "mean": 0.017
+          },
+          "blockPeriodMs": 2.9025,
+          "dutyCyclePct": 0.586,
+          "method": "main thread, performance.now() over 200-block batches, identical FIR+decimation kernel"
+        }
+      },
+      "assets": {
+        "vendor/ort/ort.wasm.min.js": {
+          "bytes": 50196,
+          "encoding": "identity"
+        },
+        "vendor/ort/ort-wasm-simd-threaded.wasm": {
+          "bytes": 13961845,
+          "encoding": "identity"
+        },
+        "vendor/vad/vad-bundle.min.js": {
+          "bytes": 69345,
+          "encoding": "identity"
+        },
+        "vendor/vad/vad.worklet.bundle.min.js": {
+          "bytes": 2480,
+          "encoding": "identity"
+        },
+        "vendor/vad/silero_vad_v5.onnx": {
+          "bytes": 2327524,
+          "encoding": "identity"
+        },
+        "_transferred": [
+          {
+            "name": "vendor/ort/ort.wasm.min.js",
+            "transferSize": 50496,
+            "encodedBodySize": 50196,
+            "decodedBodySize": 50196,
+            "durationMs": 14
+          },
+          {
+            "name": "vendor/vad/vad-bundle.min.js",
+            "transferSize": 69645,
+            "encodedBodySize": 69345,
+            "decodedBodySize": 69345,
+            "durationMs": 17
+          },
+          {
+            "name": "vendor/vad/silero_vad_v5.onnx",
+            "transferSize": 2327824,
+            "encodedBodySize": 2327524,
+            "decodedBodySize": 2327524,
+            "durationMs": 8
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.mjs",
+            "transferSize": 24518,
+            "encodedBodySize": 24218,
+            "decodedBodySize": 24218,
+            "durationMs": 2.7
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.wasm",
+            "transferSize": 13962145,
+            "encodedBodySize": 13961845,
+            "decodedBodySize": 13961845,
+            "durationMs": 46.8
+          },
+          {
+            "name": "vendor/ort/ort.wasm.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2.1
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.wasm",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 1.8
+          },
+          {
+            "name": "vendor/vad/vad-bundle.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2.1
+          },
+          {
+            "name": "vendor/vad/vad.worklet.bundle.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2
+          }
+        ]
+      },
+      "results": {
+        "gum": {
+          "requested": {
+            "echoCancellation": true,
+            "noiseSuppression": true,
+            "autoGainControl": true,
+            "channelCount": 1
+          },
+          "supportedConstraints": {
+            "aspectRatio": true,
+            "autoGainControl": true,
+            "brightness": true,
+            "channelCount": true,
+            "colorTemperature": true,
+            "contrast": true,
+            "deviceId": true,
+            "displaySurface": true,
+            "echoCancellation": true,
+            "exposureCompensation": true,
+            "exposureMode": true,
+            "exposureTime": true,
+            "facingMode": true,
+            "focusDistance": true,
+            "focusMode": true,
+            "frameRate": true,
+            "groupId": true,
+            "height": true,
+            "iso": true,
+            "latency": true,
+            "noiseSuppression": true,
+            "pan": true,
+            "pointsOfInterest": true,
+            "resizeMode": true,
+            "restrictOwnAudio": true,
+            "sampleRate": true,
+            "sampleSize": true,
+            "saturation": true,
+            "sharpness": true,
+            "suppressLocalAudioPlayback": true,
+            "tilt": true,
+            "torch": true,
+            "voiceIsolation": true,
+            "whiteBalanceMode": true,
+            "width": true,
+            "zoom": true
+          },
+          "settings": {
+            "autoGainControl": true,
+            "channelCount": 1,
+            "deviceId": "default",
+            "echoCancellation": true,
+            "groupId": "d7683ab8816e35e0d45324a8f56502944e1549866da7f0f74bbcd1b4a49577bf",
+            "latency": 0.01,
+            "noiseSuppression": true,
+            "sampleRate": 48000,
+            "sampleSize": 16,
+            "voiceIsolation": false
+          },
+          "capabilities": {
+            "autoGainControl": [
+              true,
+              false
+            ],
+            "channelCount": {
+              "max": 2,
+              "min": 1
+            },
+            "deviceId": "default",
+            "echoCancellation": [
+              true,
+              false,
+              "remote-only"
+            ],
+            "groupId": "d7683ab8816e35e0d45324a8f56502944e1549866da7f0f74bbcd1b4a49577bf",
+            "latency": {
+              "max": 0.01,
+              "min": 0.01
+            },
+            "noiseSuppression": [
+              true,
+              false
+            ],
+            "sampleRate": {
+              "max": 48000,
+              "min": 44100
+            },
+            "sampleSize": {
+              "max": 16,
+              "min": 16
+            },
+            "voiceIsolation": [
+              true,
+              false
+            ]
+          },
+          "appliedConstraints": {
+            "autoGainControl": true,
+            "channelCount": 1,
+            "echoCancellation": true,
+            "noiseSuppression": true
+          },
+          "trackLabel": "Fake Default Audio Input",
+          "trackReadyState": "live",
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true,
+          "channelCount": 1,
+          "negotiatedSampleRate": 48000
+        },
+        "audioContext": {
+          "negotiatedSampleRate": 44100,
+          "baseLatency": 0.01,
+          "outputLatency": 0.03,
+          "renderQuantum": 128,
+          "quantumMs": 2.9025,
+          "resampleRatio": 2.75625
+        },
+        "worklet": {
+          "type": "ready",
+          "inRate": 44100,
+          "hasPerformance": false,
+          "ratio": 2.75625,
+          "taps": 63,
+          "frameSamples": 512,
+          "ringLen": 32000
+        },
+        "engines": {
+          "direct": {
+            "ortEnv": {
+              "numThreads": 1,
+              "crossOriginIsolated": false
+            },
+            "loadMs": 532.7,
+            "modelFetchMs": 19.6,
+            "sessionInitMs": 512.3,
+            "modelBytes": 2327524,
+            "options": {
+              "positiveSpeechThreshold": 0.5,
+              "negativeSpeechThreshold": 0.35,
+              "redemptionMs": 400,
+              "preSpeechPadMs": 500,
+              "minSpeechMs": 250
+            },
+            "redemptionFrames": 13,
+            "minSpeechFrames": 8,
+            "runs": [
+              {
+                "tag": "direct_clean_red400",
+                "engine": "direct",
+                "durMs": 30002.1,
+                "durSec": 30,
+                "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+                "workletHasPerformanceApi": false,
+                "workletCpuMs": 1230,
+                "workletWallMs": 30000,
+                "workletMeanPerBlockMs": 0.11896,
+                "workletBlocks": 10340,
+                "workletProcessCalls": 10340,
+                "workletEmptyInputBlocks": 0,
+                "workletSamplesOut16k": 488826,
+                "workletBlocksExpected": 10337,
+                "workletDutyCyclePct": 4.1,
+                "frames16k": 960,
+                "vadInferMs": {
+                  "n": 960,
+                  "p50": 3.5,
+                  "p95": 4.2,
+                  "p99": 5.1,
+                  "max": 68.8,
+                  "mean": 3.0272
+                },
+                "vadRealtimeFactor": 0.1094,
+                "queueBacklog": {
+                  "n": 960,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0,
+                  "mean": 0
+                },
+                "mainThreadTimerLatenessMs": {
+                  "n": 1496,
+                  "p50": 0,
+                  "p95": 0.2,
+                  "p99": 1.7,
+                  "max": 81.3,
+                  "mean": 0.0537
+                },
+                "speechStarts": 7,
+                "speechEnds": 7,
+                "misfires": 0,
+                "eosLatencyMs": {
+                  "n": 7,
+                  "p50": 416,
+                  "p95": 416,
+                  "p99": 416,
+                  "max": 416,
+                  "mean": 416
+                },
+                "triggersPerMinute": 14,
+                "falseTriggersPerMinute": null,
+                "probStats": {
+                  "n": 960,
+                  "p50": 0,
+                  "p95": 0.9966,
+                  "p99": 0.999,
+                  "max": 0.9995,
+                  "mean": 0.1386
+                },
+                "meanFrameRms": 0.013435,
+                "meanFrameDbfs": -37.44,
+                "segments": [
+                  {
+                    "idx": 1,
+                    "engine": "direct",
+                    "file": "direct_clean_red400-direct-001.wav",
+                    "tag": "direct_clean_red400",
+                    "totalMs": 1588,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 500,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 1088,
+                    "eosLatencyMs": 416,
+                    "peakDbfs": -16.67,
+                    "bytes": 50860,
+                    "uploaded": "out/direct_clean_red400-direct-001.wav"
+                  },
+                  {
+                    "idx": 2,
+                    "engine": "direct",
+                    "file": "direct_clean_red400-direct-002.wav",
+                    "tag": "direct_clean_red400",
+                    "totalMs": 1556,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 490,
+                    "onsetMinusPrerollMs": -10,
+                    "segmentDurMs": 1056,
+                    "eosLatencyMs": 416,
+                    "peakDbfs": -24.01,
+                    "bytes": 49836,
+                    "uploaded": "out/direct_clean_red400-direct-002.wav"
+                  },
+                  {
+                    "idx": 3,
+                    "engine": "direct",
+                    "file": "direct_clean_red400-direct-003.wav",
+                    "tag": "direct_clean_red400",
+                    "totalMs": 1556,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 480,
+                    "onsetMinusPrerollMs": -20,
+                    "segmentDurMs": 1056,
+                    "eosLatencyMs": 416,
+                    "peakDbfs": -24.01,
+                    "bytes": 49836,
+                    "uploaded": "out/direct_clean_red400-direct-003.wav"
+                  },
+                  {
+                    "idx": 4,
+                    "engine": "direct",
+                    "file": "direct_clean_red400-direct-004.wav",
+                    "tag": "direct_clean_red400",
+                    "totalMs": 1556,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 500,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 1056,
+                    "eosLatencyMs": 416,
+                    "peakDbfs": -24.01,
+                    "bytes": 49836,
+                    "uploaded": "out/direct_clean_red400-direct-004.wav"
+                  },
+                  {
+                    "idx": 5,
+                    "engine": "direct",
+                    "file": "direct_clean_red400-direct-005.wav",
+                    "tag": "direct_clean_red400",
+                    "totalMs": 1556,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 490,
+                    "onsetMinusPrerollMs": -10,
+                    "segmentDurMs": 1056,
+                    "eosLatencyMs": 416,
+                    "peakDbfs": -24.01,
+                    "bytes": 49836,
+                    "uploaded": "out/direct_clean_red400-direct-005.wav"
+                  },
+                  {
+                    "idx": 6,
+                    "engine": "direct",
+                    "file": "direct_clean_red400-direct-006.wav",
+                    "tag": "direct_clean_red400",
+                    "totalMs": 1556,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 480,
+                    "onsetMinusPrerollMs": -20,
+                    "segmentDurMs": 1056,
+                    "eosLatencyMs": 416,
+                    "peakDbfs": -24.01,
+                    "bytes": 49836,
+                    "uploaded": "out/direct_clean_red400-direct-006.wav"
+                  },
+                  {
+                    "idx": 7,
+                    "engine": "direct",
+                    "file": "direct_clean_red400-direct-007.wav",
+                    "tag": "direct_clean_red400",
+                    "totalMs": 1588,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 500,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 1088,
+                    "eosLatencyMs": 416,
+                    "peakDbfs": -24.1,
+                    "bytes": 50860,
+                    "uploaded": "out/direct_clean_red400-direct-007.wav"
+                  }
+                ],
+                "gum": {
+                  "echoCancellationApplied": true,
+                  "noiseSuppressionApplied": true,
+                  "autoGainControlApplied": true
+                }
+              }
+            ]
+          }
+        }
+      },
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_onset_orca_send",
+        "path": "fix_onset_orca_send.wav",
+        "bytes": 447404,
+        "loop_period_ms": 4660,
+        "speech_onset_ms": 1500,
+        "speech_offset_ms": 2160,
+        "speech_dur_ms": 660,
+        "speech_dbfs": -20,
+        "purpose": "pre-roll onset position, EOS latency, VAD inference"
+      }
+    },
+    "direct_clean_red1400": {
+      "run": {
+        "tag": "direct_clean_red1400",
+        "engine": "direct",
+        "durMs": 30002.1,
+        "durSec": 30,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 1150,
+        "workletWallMs": 30002,
+        "workletMeanPerBlockMs": 0.11123,
+        "workletBlocks": 10339,
+        "workletProcessCalls": 10339,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 488640,
+        "workletBlocksExpected": 10337,
+        "workletDutyCyclePct": 3.833,
+        "frames16k": 960,
+        "vadInferMs": {
+          "n": 960,
+          "p50": 3.5,
+          "p95": 4.1,
+          "p99": 5.5,
+          "max": 67.4,
+          "mean": 3.0995
+        },
+        "vadRealtimeFactor": 0.1094,
+        "queueBacklog": {
+          "n": 960,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 1497,
+          "p50": 0,
+          "p95": 0.2,
+          "p99": 2.2,
+          "max": 75.1,
+          "mean": 0.0403
+        },
+        "speechStarts": 7,
+        "speechEnds": 6,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 6,
+          "p50": 1408,
+          "p95": 1408,
+          "p99": 1408,
+          "max": 1408,
+          "mean": 1408
+        },
+        "triggersPerMinute": 14,
+        "falseTriggersPerMinute": null,
+        "probStats": {
+          "n": 960,
+          "p50": 0,
+          "p95": 0.9968,
+          "p99": 0.999,
+          "max": 0.9995,
+          "mean": 0.1389
+        },
+        "meanFrameRms": 0.01341,
+        "meanFrameDbfs": -37.45,
+        "segments": [
+          {
+            "idx": 1,
+            "engine": "direct",
+            "file": "direct_clean_red1400-direct-001.wav",
+            "tag": "direct_clean_red1400",
+            "totalMs": 2080,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 0,
+            "onsetMs": 0,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 2080,
+            "eosLatencyMs": 1408,
+            "peakDbfs": -17.84,
+            "bytes": 66604,
+            "uploaded": "out/direct_clean_red1400-direct-001.wav"
+          },
+          {
+            "idx": 2,
+            "engine": "direct",
+            "file": "direct_clean_red1400-direct-002.wav",
+            "tag": "direct_clean_red1400",
+            "totalMs": 2080,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 0,
+            "onsetMs": 0,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 2080,
+            "eosLatencyMs": 1408,
+            "peakDbfs": -25.27,
+            "bytes": 66604,
+            "uploaded": "out/direct_clean_red1400-direct-002.wav"
+          },
+          {
+            "idx": 3,
+            "engine": "direct",
+            "file": "direct_clean_red1400-direct-003.wav",
+            "tag": "direct_clean_red1400",
+            "totalMs": 2048,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 0,
+            "onsetMs": 0,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 2048,
+            "eosLatencyMs": 1408,
+            "peakDbfs": -25.24,
+            "bytes": 65580,
+            "uploaded": "out/direct_clean_red1400-direct-003.wav"
+          },
+          {
+            "idx": 4,
+            "engine": "direct",
+            "file": "direct_clean_red1400-direct-004.wav",
+            "tag": "direct_clean_red1400",
+            "totalMs": 2048,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 0,
+            "onsetMs": 0,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 2048,
+            "eosLatencyMs": 1408,
+            "peakDbfs": -25.43,
+            "bytes": 65580,
+            "uploaded": "out/direct_clean_red1400-direct-004.wav"
+          },
+          {
+            "idx": 5,
+            "engine": "direct",
+            "file": "direct_clean_red1400-direct-005.wav",
+            "tag": "direct_clean_red1400",
+            "totalMs": 2048,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 0,
+            "onsetMs": 0,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 2048,
+            "eosLatencyMs": 1408,
+            "peakDbfs": -25.21,
+            "bytes": 65580,
+            "uploaded": "out/direct_clean_red1400-direct-005.wav"
+          },
+          {
+            "idx": 6,
+            "engine": "direct",
+            "file": "direct_clean_red1400-direct-006.wav",
+            "tag": "direct_clean_red1400",
+            "totalMs": 1984,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 0,
+            "onsetMs": 0,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 1984,
+            "eosLatencyMs": 1408,
+            "peakDbfs": -28.66,
+            "bytes": 63532,
+            "uploaded": "out/direct_clean_red1400-direct-006.wav"
+          }
+        ],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "resamplerBench": {
+        "at48k": {
+          "inRate": 48000,
+          "taps": 63,
+          "blocks": 60,
+          "batchPerSample": 200,
+          "samplesOut": 512000,
+          "perBlockMs": {
+            "n": 45,
+            "p50": 0.0155,
+            "p95": 0.016,
+            "p99": 0.016,
+            "max": 0.016,
+            "mean": 0.0153
+          },
+          "blockPeriodMs": 2.6667,
+          "dutyCyclePct": 0.581,
+          "method": "main thread, performance.now() over 200-block batches, identical FIR+decimation kernel"
+        },
+        "atCtxRate": {
+          "inRate": 44100,
+          "taps": 63,
+          "blocks": 60,
+          "batchPerSample": 200,
+          "samplesOut": 557278,
+          "perBlockMs": {
+            "n": 45,
+            "p50": 0.017,
+            "p95": 0.018,
+            "p99": 0.018,
+            "max": 0.018,
+            "mean": 0.0172
+          },
+          "blockPeriodMs": 2.9025,
+          "dutyCyclePct": 0.586,
+          "method": "main thread, performance.now() over 200-block batches, identical FIR+decimation kernel"
+        }
+      },
+      "assets": {
+        "vendor/ort/ort.wasm.min.js": {
+          "bytes": 50196,
+          "encoding": "identity"
+        },
+        "vendor/ort/ort-wasm-simd-threaded.wasm": {
+          "bytes": 13961845,
+          "encoding": "identity"
+        },
+        "vendor/vad/vad-bundle.min.js": {
+          "bytes": 69345,
+          "encoding": "identity"
+        },
+        "vendor/vad/vad.worklet.bundle.min.js": {
+          "bytes": 2480,
+          "encoding": "identity"
+        },
+        "vendor/vad/silero_vad_v5.onnx": {
+          "bytes": 2327524,
+          "encoding": "identity"
+        },
+        "_transferred": [
+          {
+            "name": "vendor/ort/ort.wasm.min.js",
+            "transferSize": 50496,
+            "encodedBodySize": 50196,
+            "decodedBodySize": 50196,
+            "durationMs": 16.9
+          },
+          {
+            "name": "vendor/vad/vad-bundle.min.js",
+            "transferSize": 69645,
+            "encodedBodySize": 69345,
+            "decodedBodySize": 69345,
+            "durationMs": 15.1
+          },
+          {
+            "name": "vendor/vad/silero_vad_v5.onnx",
+            "transferSize": 2327824,
+            "encodedBodySize": 2327524,
+            "decodedBodySize": 2327524,
+            "durationMs": 8.2
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.mjs",
+            "transferSize": 24518,
+            "encodedBodySize": 24218,
+            "decodedBodySize": 24218,
+            "durationMs": 2.3
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.wasm",
+            "transferSize": 13962145,
+            "encodedBodySize": 13961845,
+            "decodedBodySize": 13961845,
+            "durationMs": 42.6
+          },
+          {
+            "name": "vendor/ort/ort.wasm.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.wasm",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 1.9
+          },
+          {
+            "name": "vendor/vad/vad-bundle.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 1.9
+          },
+          {
+            "name": "vendor/vad/vad.worklet.bundle.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2.1
+          }
+        ]
+      },
+      "results": {
+        "gum": {
+          "requested": {
+            "echoCancellation": true,
+            "noiseSuppression": true,
+            "autoGainControl": true,
+            "channelCount": 1
+          },
+          "supportedConstraints": {
+            "aspectRatio": true,
+            "autoGainControl": true,
+            "brightness": true,
+            "channelCount": true,
+            "colorTemperature": true,
+            "contrast": true,
+            "deviceId": true,
+            "displaySurface": true,
+            "echoCancellation": true,
+            "exposureCompensation": true,
+            "exposureMode": true,
+            "exposureTime": true,
+            "facingMode": true,
+            "focusDistance": true,
+            "focusMode": true,
+            "frameRate": true,
+            "groupId": true,
+            "height": true,
+            "iso": true,
+            "latency": true,
+            "noiseSuppression": true,
+            "pan": true,
+            "pointsOfInterest": true,
+            "resizeMode": true,
+            "restrictOwnAudio": true,
+            "sampleRate": true,
+            "sampleSize": true,
+            "saturation": true,
+            "sharpness": true,
+            "suppressLocalAudioPlayback": true,
+            "tilt": true,
+            "torch": true,
+            "voiceIsolation": true,
+            "whiteBalanceMode": true,
+            "width": true,
+            "zoom": true
+          },
+          "settings": {
+            "autoGainControl": true,
+            "channelCount": 1,
+            "deviceId": "default",
+            "echoCancellation": true,
+            "groupId": "e11dbfd845a55d2f712888450fcc21e07956bee72efc79a11dd0be8367c396c2",
+            "latency": 0.01,
+            "noiseSuppression": true,
+            "sampleRate": 48000,
+            "sampleSize": 16,
+            "voiceIsolation": false
+          },
+          "capabilities": {
+            "autoGainControl": [
+              true,
+              false
+            ],
+            "channelCount": {
+              "max": 2,
+              "min": 1
+            },
+            "deviceId": "default",
+            "echoCancellation": [
+              true,
+              false,
+              "remote-only"
+            ],
+            "groupId": "e11dbfd845a55d2f712888450fcc21e07956bee72efc79a11dd0be8367c396c2",
+            "latency": {
+              "max": 0.01,
+              "min": 0.01
+            },
+            "noiseSuppression": [
+              true,
+              false
+            ],
+            "sampleRate": {
+              "max": 48000,
+              "min": 44100
+            },
+            "sampleSize": {
+              "max": 16,
+              "min": 16
+            },
+            "voiceIsolation": [
+              true,
+              false
+            ]
+          },
+          "appliedConstraints": {
+            "autoGainControl": true,
+            "channelCount": 1,
+            "echoCancellation": true,
+            "noiseSuppression": true
+          },
+          "trackLabel": "Fake Default Audio Input",
+          "trackReadyState": "live",
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true,
+          "channelCount": 1,
+          "negotiatedSampleRate": 48000
+        },
+        "audioContext": {
+          "negotiatedSampleRate": 44100,
+          "baseLatency": 0.01,
+          "outputLatency": 0.03,
+          "renderQuantum": 128,
+          "quantumMs": 2.9025,
+          "resampleRatio": 2.75625
+        },
+        "worklet": {
+          "type": "ready",
+          "inRate": 44100,
+          "hasPerformance": false,
+          "ratio": 2.75625,
+          "taps": 63,
+          "frameSamples": 512,
+          "ringLen": 32000
+        },
+        "engines": {
+          "direct": {
+            "ortEnv": {
+              "numThreads": 1,
+              "crossOriginIsolated": false
+            },
+            "loadMs": 514.3,
+            "modelFetchMs": 18.7,
+            "sessionInitMs": 494.9,
+            "modelBytes": 2327524,
+            "options": {
+              "positiveSpeechThreshold": 0.5,
+              "negativeSpeechThreshold": 0.35,
+              "redemptionMs": 1400,
+              "preSpeechPadMs": 500,
+              "minSpeechMs": 250
+            },
+            "redemptionFrames": 44,
+            "minSpeechFrames": 8,
+            "runs": [
+              {
+                "tag": "direct_clean_red1400",
+                "engine": "direct",
+                "durMs": 30002.1,
+                "durSec": 30,
+                "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+                "workletHasPerformanceApi": false,
+                "workletCpuMs": 1150,
+                "workletWallMs": 30002,
+                "workletMeanPerBlockMs": 0.11123,
+                "workletBlocks": 10339,
+                "workletProcessCalls": 10339,
+                "workletEmptyInputBlocks": 0,
+                "workletSamplesOut16k": 488640,
+                "workletBlocksExpected": 10337,
+                "workletDutyCyclePct": 3.833,
+                "frames16k": 960,
+                "vadInferMs": {
+                  "n": 960,
+                  "p50": 3.5,
+                  "p95": 4.1,
+                  "p99": 5.5,
+                  "max": 67.4,
+                  "mean": 3.0995
+                },
+                "vadRealtimeFactor": 0.1094,
+                "queueBacklog": {
+                  "n": 960,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0,
+                  "mean": 0
+                },
+                "mainThreadTimerLatenessMs": {
+                  "n": 1497,
+                  "p50": 0,
+                  "p95": 0.2,
+                  "p99": 2.2,
+                  "max": 75.1,
+                  "mean": 0.0403
+                },
+                "speechStarts": 7,
+                "speechEnds": 6,
+                "misfires": 0,
+                "eosLatencyMs": {
+                  "n": 6,
+                  "p50": 1408,
+                  "p95": 1408,
+                  "p99": 1408,
+                  "max": 1408,
+                  "mean": 1408
+                },
+                "triggersPerMinute": 14,
+                "falseTriggersPerMinute": null,
+                "probStats": {
+                  "n": 960,
+                  "p50": 0,
+                  "p95": 0.9968,
+                  "p99": 0.999,
+                  "max": 0.9995,
+                  "mean": 0.1389
+                },
+                "meanFrameRms": 0.01341,
+                "meanFrameDbfs": -37.45,
+                "segments": [
+                  {
+                    "idx": 1,
+                    "engine": "direct",
+                    "file": "direct_clean_red1400-direct-001.wav",
+                    "tag": "direct_clean_red1400",
+                    "totalMs": 2080,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 0,
+                    "onsetMs": 0,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 2080,
+                    "eosLatencyMs": 1408,
+                    "peakDbfs": -17.84,
+                    "bytes": 66604,
+                    "uploaded": "out/direct_clean_red1400-direct-001.wav"
+                  },
+                  {
+                    "idx": 2,
+                    "engine": "direct",
+                    "file": "direct_clean_red1400-direct-002.wav",
+                    "tag": "direct_clean_red1400",
+                    "totalMs": 2080,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 0,
+                    "onsetMs": 0,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 2080,
+                    "eosLatencyMs": 1408,
+                    "peakDbfs": -25.27,
+                    "bytes": 66604,
+                    "uploaded": "out/direct_clean_red1400-direct-002.wav"
+                  },
+                  {
+                    "idx": 3,
+                    "engine": "direct",
+                    "file": "direct_clean_red1400-direct-003.wav",
+                    "tag": "direct_clean_red1400",
+                    "totalMs": 2048,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 0,
+                    "onsetMs": 0,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 2048,
+                    "eosLatencyMs": 1408,
+                    "peakDbfs": -25.24,
+                    "bytes": 65580,
+                    "uploaded": "out/direct_clean_red1400-direct-003.wav"
+                  },
+                  {
+                    "idx": 4,
+                    "engine": "direct",
+                    "file": "direct_clean_red1400-direct-004.wav",
+                    "tag": "direct_clean_red1400",
+                    "totalMs": 2048,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 0,
+                    "onsetMs": 0,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 2048,
+                    "eosLatencyMs": 1408,
+                    "peakDbfs": -25.43,
+                    "bytes": 65580,
+                    "uploaded": "out/direct_clean_red1400-direct-004.wav"
+                  },
+                  {
+                    "idx": 5,
+                    "engine": "direct",
+                    "file": "direct_clean_red1400-direct-005.wav",
+                    "tag": "direct_clean_red1400",
+                    "totalMs": 2048,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 0,
+                    "onsetMs": 0,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 2048,
+                    "eosLatencyMs": 1408,
+                    "peakDbfs": -25.21,
+                    "bytes": 65580,
+                    "uploaded": "out/direct_clean_red1400-direct-005.wav"
+                  },
+                  {
+                    "idx": 6,
+                    "engine": "direct",
+                    "file": "direct_clean_red1400-direct-006.wav",
+                    "tag": "direct_clean_red1400",
+                    "totalMs": 1984,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 0,
+                    "onsetMs": 0,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 1984,
+                    "eosLatencyMs": 1408,
+                    "peakDbfs": -28.66,
+                    "bytes": 63532,
+                    "uploaded": "out/direct_clean_red1400-direct-006.wav"
+                  }
+                ],
+                "gum": {
+                  "echoCancellationApplied": true,
+                  "noiseSuppressionApplied": true,
+                  "autoGainControlApplied": true
+                }
+              }
+            ]
+          }
+        }
+      },
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_onset_orca_send",
+        "path": "fix_onset_orca_send.wav",
+        "bytes": 447404,
+        "loop_period_ms": 4660,
+        "speech_onset_ms": 1500,
+        "speech_offset_ms": 2160,
+        "speech_dur_ms": 660,
+        "speech_dbfs": -20,
+        "purpose": "pre-roll onset position, EOS latency, VAD inference"
+      }
+    },
+    "direct_sentence_red600": {
+      "run": {
+        "tag": "direct_sentence_red600",
+        "engine": "direct",
+        "durMs": 30002,
+        "durSec": 30,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 175,
+        "workletWallMs": 29999,
+        "workletMeanPerBlockMs": 0.01693,
+        "workletBlocks": 10336,
+        "workletProcessCalls": 10336,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 488640,
+        "workletBlocksExpected": 10337,
+        "workletDutyCyclePct": 0.583,
+        "frames16k": 960,
+        "vadInferMs": {
+          "n": 960,
+          "p50": 3.4,
+          "p95": 4.2,
+          "p99": 5.4,
+          "max": 74.3,
+          "mean": 3.0531
+        },
+        "vadRealtimeFactor": 0.1062,
+        "queueBacklog": {
+          "n": 960,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 1496,
+          "p50": 0,
+          "p95": 4,
+          "p99": 5.1,
+          "max": 84.9,
+          "mean": 0.0536
+        },
+        "speechStarts": 5,
+        "speechEnds": 5,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 5,
+          "p50": 608,
+          "p95": 640,
+          "p99": 640,
+          "max": 640,
+          "mean": 614.4
+        },
+        "triggersPerMinute": 10,
+        "falseTriggersPerMinute": null,
+        "probStats": {
+          "n": 960,
+          "p50": 0,
+          "p95": 0.9998,
+          "p99": 0.9999,
+          "max": 1,
+          "mean": 0.3238
+        },
+        "meanFrameRms": 0.034506,
+        "meanFrameDbfs": -29.24,
+        "segments": [
+          {
+            "idx": 1,
+            "engine": "direct",
+            "file": "direct_sentence_red600-direct-001.wav",
+            "tag": "direct_sentence_red600",
+            "totalMs": 2688,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 0,
+            "onsetMs": 0,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 2688,
+            "eosLatencyMs": 608,
+            "peakDbfs": -13.86,
+            "bytes": 86060,
+            "uploaded": "out/direct_sentence_red600-direct-001.wav"
+          },
+          {
+            "idx": 2,
+            "engine": "direct",
+            "file": "direct_sentence_red600-direct-002.wav",
+            "tag": "direct_sentence_red600",
+            "totalMs": 2688,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 0,
+            "onsetMs": 10,
+            "onsetMinusPrerollMs": 10,
+            "segmentDurMs": 2688,
+            "eosLatencyMs": 608,
+            "peakDbfs": -21.24,
+            "bytes": 86060,
+            "uploaded": "out/direct_sentence_red600-direct-002.wav"
+          },
+          {
+            "idx": 3,
+            "engine": "direct",
+            "file": "direct_sentence_red600-direct-003.wav",
+            "tag": "direct_sentence_red600",
+            "totalMs": 2656,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 0,
+            "onsetMs": 0,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 2656,
+            "eosLatencyMs": 608,
+            "peakDbfs": -21.22,
+            "bytes": 85036,
+            "uploaded": "out/direct_sentence_red600-direct-003.wav"
+          },
+          {
+            "idx": 4,
+            "engine": "direct",
+            "file": "direct_sentence_red600-direct-004.wav",
+            "tag": "direct_sentence_red600",
+            "totalMs": 2656,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 0,
+            "onsetMs": 0,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 2656,
+            "eosLatencyMs": 640,
+            "peakDbfs": -21.19,
+            "bytes": 85036,
+            "uploaded": "out/direct_sentence_red600-direct-004.wav"
+          },
+          {
+            "idx": 5,
+            "engine": "direct",
+            "file": "direct_sentence_red600-direct-005.wav",
+            "tag": "direct_sentence_red600",
+            "totalMs": 2688,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 0,
+            "onsetMs": 0,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 2688,
+            "eosLatencyMs": 608,
+            "peakDbfs": -21.24,
+            "bytes": 86060,
+            "uploaded": "out/direct_sentence_red600-direct-005.wav"
+          }
+        ],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "resamplerBench": {
+        "at48k": {
+          "inRate": 48000,
+          "taps": 63,
+          "blocks": 60,
+          "batchPerSample": 200,
+          "samplesOut": 512000,
+          "perBlockMs": {
+            "n": 45,
+            "p50": 0.0155,
+            "p95": 0.016,
+            "p99": 0.016,
+            "max": 0.016,
+            "mean": 0.0153
+          },
+          "blockPeriodMs": 2.6667,
+          "dutyCyclePct": 0.581,
+          "method": "main thread, performance.now() over 200-block batches, identical FIR+decimation kernel"
+        },
+        "atCtxRate": {
+          "inRate": 44100,
+          "taps": 63,
+          "blocks": 60,
+          "batchPerSample": 200,
+          "samplesOut": 557278,
+          "perBlockMs": {
+            "n": 45,
+            "p50": 0.017,
+            "p95": 0.018,
+            "p99": 0.018,
+            "max": 0.018,
+            "mean": 0.0172
+          },
+          "blockPeriodMs": 2.9025,
+          "dutyCyclePct": 0.586,
+          "method": "main thread, performance.now() over 200-block batches, identical FIR+decimation kernel"
+        }
+      },
+      "assets": {
+        "vendor/ort/ort.wasm.min.js": {
+          "bytes": 50196,
+          "encoding": "identity"
+        },
+        "vendor/ort/ort-wasm-simd-threaded.wasm": {
+          "bytes": 13961845,
+          "encoding": "identity"
+        },
+        "vendor/vad/vad-bundle.min.js": {
+          "bytes": 69345,
+          "encoding": "identity"
+        },
+        "vendor/vad/vad.worklet.bundle.min.js": {
+          "bytes": 2480,
+          "encoding": "identity"
+        },
+        "vendor/vad/silero_vad_v5.onnx": {
+          "bytes": 2327524,
+          "encoding": "identity"
+        },
+        "_transferred": [
+          {
+            "name": "vendor/ort/ort.wasm.min.js",
+            "transferSize": 50496,
+            "encodedBodySize": 50196,
+            "decodedBodySize": 50196,
+            "durationMs": 9.8
+          },
+          {
+            "name": "vendor/vad/vad-bundle.min.js",
+            "transferSize": 69645,
+            "encodedBodySize": 69345,
+            "decodedBodySize": 69345,
+            "durationMs": 12.9
+          },
+          {
+            "name": "vendor/vad/silero_vad_v5.onnx",
+            "transferSize": 2327824,
+            "encodedBodySize": 2327524,
+            "decodedBodySize": 2327524,
+            "durationMs": 9.6
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.mjs",
+            "transferSize": 24518,
+            "encodedBodySize": 24218,
+            "decodedBodySize": 24218,
+            "durationMs": 2.7
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.wasm",
+            "transferSize": 13962145,
+            "encodedBodySize": 13961845,
+            "decodedBodySize": 13961845,
+            "durationMs": 48.7
+          },
+          {
+            "name": "vendor/ort/ort.wasm.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2.4
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.wasm",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2
+          },
+          {
+            "name": "vendor/vad/vad-bundle.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2
+          },
+          {
+            "name": "vendor/vad/vad.worklet.bundle.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2
+          }
+        ]
+      },
+      "results": {
+        "gum": {
+          "requested": {
+            "echoCancellation": true,
+            "noiseSuppression": true,
+            "autoGainControl": true,
+            "channelCount": 1
+          },
+          "supportedConstraints": {
+            "aspectRatio": true,
+            "autoGainControl": true,
+            "brightness": true,
+            "channelCount": true,
+            "colorTemperature": true,
+            "contrast": true,
+            "deviceId": true,
+            "displaySurface": true,
+            "echoCancellation": true,
+            "exposureCompensation": true,
+            "exposureMode": true,
+            "exposureTime": true,
+            "facingMode": true,
+            "focusDistance": true,
+            "focusMode": true,
+            "frameRate": true,
+            "groupId": true,
+            "height": true,
+            "iso": true,
+            "latency": true,
+            "noiseSuppression": true,
+            "pan": true,
+            "pointsOfInterest": true,
+            "resizeMode": true,
+            "restrictOwnAudio": true,
+            "sampleRate": true,
+            "sampleSize": true,
+            "saturation": true,
+            "sharpness": true,
+            "suppressLocalAudioPlayback": true,
+            "tilt": true,
+            "torch": true,
+            "voiceIsolation": true,
+            "whiteBalanceMode": true,
+            "width": true,
+            "zoom": true
+          },
+          "settings": {
+            "autoGainControl": true,
+            "channelCount": 1,
+            "deviceId": "default",
+            "echoCancellation": true,
+            "groupId": "cfbe97d0b347928fedb10cd44e46bac66c4d7e01315d539f7bc27e447a9f358a",
+            "latency": 0.01,
+            "noiseSuppression": true,
+            "sampleRate": 48000,
+            "sampleSize": 16,
+            "voiceIsolation": false
+          },
+          "capabilities": {
+            "autoGainControl": [
+              true,
+              false
+            ],
+            "channelCount": {
+              "max": 2,
+              "min": 1
+            },
+            "deviceId": "default",
+            "echoCancellation": [
+              true,
+              false,
+              "remote-only"
+            ],
+            "groupId": "cfbe97d0b347928fedb10cd44e46bac66c4d7e01315d539f7bc27e447a9f358a",
+            "latency": {
+              "max": 0.01,
+              "min": 0.01
+            },
+            "noiseSuppression": [
+              true,
+              false
+            ],
+            "sampleRate": {
+              "max": 48000,
+              "min": 44100
+            },
+            "sampleSize": {
+              "max": 16,
+              "min": 16
+            },
+            "voiceIsolation": [
+              true,
+              false
+            ]
+          },
+          "appliedConstraints": {
+            "autoGainControl": true,
+            "channelCount": 1,
+            "echoCancellation": true,
+            "noiseSuppression": true
+          },
+          "trackLabel": "Fake Default Audio Input",
+          "trackReadyState": "live",
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true,
+          "channelCount": 1,
+          "negotiatedSampleRate": 48000
+        },
+        "audioContext": {
+          "negotiatedSampleRate": 44100,
+          "baseLatency": 0.01,
+          "outputLatency": 0.03,
+          "renderQuantum": 128,
+          "quantumMs": 2.9025,
+          "resampleRatio": 2.75625
+        },
+        "worklet": {
+          "type": "ready",
+          "inRate": 44100,
+          "hasPerformance": false,
+          "ratio": 2.75625,
+          "taps": 63,
+          "frameSamples": 512,
+          "ringLen": 32000
+        },
+        "engines": {
+          "direct": {
+            "ortEnv": {
+              "numThreads": 1,
+              "crossOriginIsolated": false
+            },
+            "loadMs": 521.7,
+            "modelFetchMs": 20.3,
+            "sessionInitMs": 500.8,
+            "modelBytes": 2327524,
+            "options": {
+              "positiveSpeechThreshold": 0.5,
+              "negativeSpeechThreshold": 0.35,
+              "redemptionMs": 600,
+              "preSpeechPadMs": 500,
+              "minSpeechMs": 250
+            },
+            "redemptionFrames": 19,
+            "minSpeechFrames": 8,
+            "runs": [
+              {
+                "tag": "direct_sentence_red600",
+                "engine": "direct",
+                "durMs": 30002,
+                "durSec": 30,
+                "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+                "workletHasPerformanceApi": false,
+                "workletCpuMs": 175,
+                "workletWallMs": 29999,
+                "workletMeanPerBlockMs": 0.01693,
+                "workletBlocks": 10336,
+                "workletProcessCalls": 10336,
+                "workletEmptyInputBlocks": 0,
+                "workletSamplesOut16k": 488640,
+                "workletBlocksExpected": 10337,
+                "workletDutyCyclePct": 0.583,
+                "frames16k": 960,
+                "vadInferMs": {
+                  "n": 960,
+                  "p50": 3.4,
+                  "p95": 4.2,
+                  "p99": 5.4,
+                  "max": 74.3,
+                  "mean": 3.0531
+                },
+                "vadRealtimeFactor": 0.1062,
+                "queueBacklog": {
+                  "n": 960,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0,
+                  "mean": 0
+                },
+                "mainThreadTimerLatenessMs": {
+                  "n": 1496,
+                  "p50": 0,
+                  "p95": 4,
+                  "p99": 5.1,
+                  "max": 84.9,
+                  "mean": 0.0536
+                },
+                "speechStarts": 5,
+                "speechEnds": 5,
+                "misfires": 0,
+                "eosLatencyMs": {
+                  "n": 5,
+                  "p50": 608,
+                  "p95": 640,
+                  "p99": 640,
+                  "max": 640,
+                  "mean": 614.4
+                },
+                "triggersPerMinute": 10,
+                "falseTriggersPerMinute": null,
+                "probStats": {
+                  "n": 960,
+                  "p50": 0,
+                  "p95": 0.9998,
+                  "p99": 0.9999,
+                  "max": 1,
+                  "mean": 0.3238
+                },
+                "meanFrameRms": 0.034506,
+                "meanFrameDbfs": -29.24,
+                "segments": [
+                  {
+                    "idx": 1,
+                    "engine": "direct",
+                    "file": "direct_sentence_red600-direct-001.wav",
+                    "tag": "direct_sentence_red600",
+                    "totalMs": 2688,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 0,
+                    "onsetMs": 0,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 2688,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -13.86,
+                    "bytes": 86060,
+                    "uploaded": "out/direct_sentence_red600-direct-001.wav"
+                  },
+                  {
+                    "idx": 2,
+                    "engine": "direct",
+                    "file": "direct_sentence_red600-direct-002.wav",
+                    "tag": "direct_sentence_red600",
+                    "totalMs": 2688,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 0,
+                    "onsetMs": 10,
+                    "onsetMinusPrerollMs": 10,
+                    "segmentDurMs": 2688,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -21.24,
+                    "bytes": 86060,
+                    "uploaded": "out/direct_sentence_red600-direct-002.wav"
+                  },
+                  {
+                    "idx": 3,
+                    "engine": "direct",
+                    "file": "direct_sentence_red600-direct-003.wav",
+                    "tag": "direct_sentence_red600",
+                    "totalMs": 2656,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 0,
+                    "onsetMs": 0,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 2656,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -21.22,
+                    "bytes": 85036,
+                    "uploaded": "out/direct_sentence_red600-direct-003.wav"
+                  },
+                  {
+                    "idx": 4,
+                    "engine": "direct",
+                    "file": "direct_sentence_red600-direct-004.wav",
+                    "tag": "direct_sentence_red600",
+                    "totalMs": 2656,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 0,
+                    "onsetMs": 0,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 2656,
+                    "eosLatencyMs": 640,
+                    "peakDbfs": -21.19,
+                    "bytes": 85036,
+                    "uploaded": "out/direct_sentence_red600-direct-004.wav"
+                  },
+                  {
+                    "idx": 5,
+                    "engine": "direct",
+                    "file": "direct_sentence_red600-direct-005.wav",
+                    "tag": "direct_sentence_red600",
+                    "totalMs": 2688,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 0,
+                    "onsetMs": 0,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 2688,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -21.24,
+                    "bytes": 86060,
+                    "uploaded": "out/direct_sentence_red600-direct-005.wav"
+                  }
+                ],
+                "gum": {
+                  "echoCancellationApplied": true,
+                  "noiseSuppressionApplied": true,
+                  "autoGainControlApplied": true
+                }
+              }
+            ]
+          }
+        }
+      },
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_onset_sentence",
+        "path": "fix_onset_sentence.wav",
+        "bytes": 587564,
+        "loop_period_ms": 6120,
+        "speech_onset_ms": 1500,
+        "speech_offset_ms": 3620,
+        "speech_dur_ms": 2120,
+        "speech_dbfs": -20,
+        "purpose": "pre-roll onset position, EOS latency, VAD inference"
+      }
+    },
+    "direct_snr10_red600": {
+      "run": {
+        "tag": "direct_snr10_red600",
+        "engine": "direct",
+        "durMs": 30002.8,
+        "durSec": 30,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 513,
+        "workletWallMs": 30003,
+        "workletMeanPerBlockMs": 0.04961,
+        "workletBlocks": 10340,
+        "workletProcessCalls": 10340,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 489151,
+        "workletBlocksExpected": 10337,
+        "workletDutyCyclePct": 1.71,
+        "frames16k": 961,
+        "vadInferMs": {
+          "n": 961,
+          "p50": 3.3,
+          "p95": 3.9,
+          "p99": 5,
+          "max": 85.5,
+          "mean": 2.7172
+        },
+        "vadRealtimeFactor": 0.1031,
+        "queueBacklog": {
+          "n": 961,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 1496,
+          "p50": 0,
+          "p95": 1.2,
+          "p99": 3.6,
+          "max": 98.7,
+          "mean": 0.0536
+        },
+        "speechStarts": 7,
+        "speechEnds": 7,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 7,
+          "p50": 608,
+          "p95": 640,
+          "p99": 640,
+          "max": 640,
+          "mean": 617.1429
+        },
+        "triggersPerMinute": 14,
+        "falseTriggersPerMinute": null,
+        "probStats": {
+          "n": 961,
+          "p50": 0.0001,
+          "p95": 0.9894,
+          "p99": 0.997,
+          "max": 0.9987,
+          "mean": 0.1409
+        },
+        "meanFrameRms": 0.022666,
+        "meanFrameDbfs": -32.89,
+        "segments": [
+          {
+            "idx": 1,
+            "engine": "direct",
+            "file": "direct_snr10_red600-direct-001.wav",
+            "tag": "direct_snr10_red600",
+            "totalMs": 1780,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 480,
+            "onsetMinusPrerollMs": -20,
+            "segmentDurMs": 1280,
+            "eosLatencyMs": 640,
+            "peakDbfs": -17.62,
+            "bytes": 57004,
+            "uploaded": "out/direct_snr10_red600-direct-001.wav"
+          },
+          {
+            "idx": 2,
+            "engine": "direct",
+            "file": "direct_snr10_red600-direct-002.wav",
+            "tag": "direct_snr10_red600",
+            "totalMs": 1780,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 500,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 1280,
+            "eosLatencyMs": 640,
+            "peakDbfs": -18.05,
+            "bytes": 57004,
+            "uploaded": "out/direct_snr10_red600-direct-002.wav"
+          },
+          {
+            "idx": 3,
+            "engine": "direct",
+            "file": "direct_snr10_red600-direct-003.wav",
+            "tag": "direct_snr10_red600",
+            "totalMs": 1748,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 490,
+            "onsetMinusPrerollMs": -10,
+            "segmentDurMs": 1248,
+            "eosLatencyMs": 608,
+            "peakDbfs": -21.08,
+            "bytes": 55980,
+            "uploaded": "out/direct_snr10_red600-direct-003.wav"
+          },
+          {
+            "idx": 4,
+            "engine": "direct",
+            "file": "direct_snr10_red600-direct-004.wav",
+            "tag": "direct_snr10_red600",
+            "totalMs": 1748,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 480,
+            "onsetMinusPrerollMs": -20,
+            "segmentDurMs": 1248,
+            "eosLatencyMs": 608,
+            "peakDbfs": -21.35,
+            "bytes": 55980,
+            "uploaded": "out/direct_snr10_red600-direct-004.wav"
+          },
+          {
+            "idx": 5,
+            "engine": "direct",
+            "file": "direct_snr10_red600-direct-005.wav",
+            "tag": "direct_snr10_red600",
+            "totalMs": 1780,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 500,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 1280,
+            "eosLatencyMs": 608,
+            "peakDbfs": -21.58,
+            "bytes": 57004,
+            "uploaded": "out/direct_snr10_red600-direct-005.wav"
+          },
+          {
+            "idx": 6,
+            "engine": "direct",
+            "file": "direct_snr10_red600-direct-006.wav",
+            "tag": "direct_snr10_red600",
+            "totalMs": 1748,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 490,
+            "onsetMinusPrerollMs": -10,
+            "segmentDurMs": 1248,
+            "eosLatencyMs": 608,
+            "peakDbfs": -21.57,
+            "bytes": 55980,
+            "uploaded": "out/direct_snr10_red600-direct-006.wav"
+          },
+          {
+            "idx": 7,
+            "engine": "direct",
+            "file": "direct_snr10_red600-direct-007.wav",
+            "tag": "direct_snr10_red600",
+            "totalMs": 1716,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 480,
+            "onsetMinusPrerollMs": -20,
+            "segmentDurMs": 1216,
+            "eosLatencyMs": 608,
+            "peakDbfs": -21.48,
+            "bytes": 54956,
+            "uploaded": "out/direct_snr10_red600-direct-007.wav"
+          }
+        ],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "resamplerBench": {
+        "at48k": {
+          "inRate": 48000,
+          "taps": 63,
+          "blocks": 60,
+          "batchPerSample": 200,
+          "samplesOut": 512000,
+          "perBlockMs": {
+            "n": 45,
+            "p50": 0.0155,
+            "p95": 0.016,
+            "p99": 0.016,
+            "max": 0.016,
+            "mean": 0.0153
+          },
+          "blockPeriodMs": 2.6667,
+          "dutyCyclePct": 0.581,
+          "method": "main thread, performance.now() over 200-block batches, identical FIR+decimation kernel"
+        },
+        "atCtxRate": {
+          "inRate": 44100,
+          "taps": 63,
+          "blocks": 60,
+          "batchPerSample": 200,
+          "samplesOut": 557278,
+          "perBlockMs": {
+            "n": 45,
+            "p50": 0.017,
+            "p95": 0.0205,
+            "p99": 0.025,
+            "max": 0.025,
+            "mean": 0.0176
+          },
+          "blockPeriodMs": 2.9025,
+          "dutyCyclePct": 0.586,
+          "method": "main thread, performance.now() over 200-block batches, identical FIR+decimation kernel"
+        }
+      },
+      "assets": {
+        "vendor/ort/ort.wasm.min.js": {
+          "bytes": 50196,
+          "encoding": "identity"
+        },
+        "vendor/ort/ort-wasm-simd-threaded.wasm": {
+          "bytes": 13961845,
+          "encoding": "identity"
+        },
+        "vendor/vad/vad-bundle.min.js": {
+          "bytes": 69345,
+          "encoding": "identity"
+        },
+        "vendor/vad/vad.worklet.bundle.min.js": {
+          "bytes": 2480,
+          "encoding": "identity"
+        },
+        "vendor/vad/silero_vad_v5.onnx": {
+          "bytes": 2327524,
+          "encoding": "identity"
+        },
+        "_transferred": [
+          {
+            "name": "vendor/ort/ort.wasm.min.js",
+            "transferSize": 50496,
+            "encodedBodySize": 50196,
+            "decodedBodySize": 50196,
+            "durationMs": 13.8
+          },
+          {
+            "name": "vendor/vad/vad-bundle.min.js",
+            "transferSize": 69645,
+            "encodedBodySize": 69345,
+            "decodedBodySize": 69345,
+            "durationMs": 13.7
+          },
+          {
+            "name": "vendor/vad/silero_vad_v5.onnx",
+            "transferSize": 2327824,
+            "encodedBodySize": 2327524,
+            "decodedBodySize": 2327524,
+            "durationMs": 9.8
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.mjs",
+            "transferSize": 24518,
+            "encodedBodySize": 24218,
+            "decodedBodySize": 24218,
+            "durationMs": 2.5
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.wasm",
+            "transferSize": 13962145,
+            "encodedBodySize": 13961845,
+            "decodedBodySize": 13961845,
+            "durationMs": 45.4
+          },
+          {
+            "name": "vendor/ort/ort.wasm.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 5.7
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.wasm",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 5.6
+          },
+          {
+            "name": "vendor/vad/vad-bundle.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 4.8
+          },
+          {
+            "name": "vendor/vad/vad.worklet.bundle.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 6.9
+          }
+        ]
+      },
+      "results": {
+        "gum": {
+          "requested": {
+            "echoCancellation": true,
+            "noiseSuppression": true,
+            "autoGainControl": true,
+            "channelCount": 1
+          },
+          "supportedConstraints": {
+            "aspectRatio": true,
+            "autoGainControl": true,
+            "brightness": true,
+            "channelCount": true,
+            "colorTemperature": true,
+            "contrast": true,
+            "deviceId": true,
+            "displaySurface": true,
+            "echoCancellation": true,
+            "exposureCompensation": true,
+            "exposureMode": true,
+            "exposureTime": true,
+            "facingMode": true,
+            "focusDistance": true,
+            "focusMode": true,
+            "frameRate": true,
+            "groupId": true,
+            "height": true,
+            "iso": true,
+            "latency": true,
+            "noiseSuppression": true,
+            "pan": true,
+            "pointsOfInterest": true,
+            "resizeMode": true,
+            "restrictOwnAudio": true,
+            "sampleRate": true,
+            "sampleSize": true,
+            "saturation": true,
+            "sharpness": true,
+            "suppressLocalAudioPlayback": true,
+            "tilt": true,
+            "torch": true,
+            "voiceIsolation": true,
+            "whiteBalanceMode": true,
+            "width": true,
+            "zoom": true
+          },
+          "settings": {
+            "autoGainControl": true,
+            "channelCount": 1,
+            "deviceId": "default",
+            "echoCancellation": true,
+            "groupId": "860e4f7ccb6cd0d42e344d04dd5ce48a44fc49d435760377aaa7005f51b501f6",
+            "latency": 0.01,
+            "noiseSuppression": true,
+            "sampleRate": 48000,
+            "sampleSize": 16,
+            "voiceIsolation": false
+          },
+          "capabilities": {
+            "autoGainControl": [
+              true,
+              false
+            ],
+            "channelCount": {
+              "max": 2,
+              "min": 1
+            },
+            "deviceId": "default",
+            "echoCancellation": [
+              true,
+              false,
+              "remote-only"
+            ],
+            "groupId": "860e4f7ccb6cd0d42e344d04dd5ce48a44fc49d435760377aaa7005f51b501f6",
+            "latency": {
+              "max": 0.01,
+              "min": 0.01
+            },
+            "noiseSuppression": [
+              true,
+              false
+            ],
+            "sampleRate": {
+              "max": 48000,
+              "min": 44100
+            },
+            "sampleSize": {
+              "max": 16,
+              "min": 16
+            },
+            "voiceIsolation": [
+              true,
+              false
+            ]
+          },
+          "appliedConstraints": {
+            "autoGainControl": true,
+            "channelCount": 1,
+            "echoCancellation": true,
+            "noiseSuppression": true
+          },
+          "trackLabel": "Fake Default Audio Input",
+          "trackReadyState": "live",
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true,
+          "channelCount": 1,
+          "negotiatedSampleRate": 48000
+        },
+        "audioContext": {
+          "negotiatedSampleRate": 44100,
+          "baseLatency": 0.01,
+          "outputLatency": 0.03,
+          "renderQuantum": 128,
+          "quantumMs": 2.9025,
+          "resampleRatio": 2.75625
+        },
+        "worklet": {
+          "type": "ready",
+          "inRate": 44100,
+          "hasPerformance": false,
+          "ratio": 2.75625,
+          "taps": 63,
+          "frameSamples": 512,
+          "ringLen": 32000
+        },
+        "engines": {
+          "direct": {
+            "ortEnv": {
+              "numThreads": 1,
+              "crossOriginIsolated": false
+            },
+            "loadMs": 543.7,
+            "modelFetchMs": 19.5,
+            "sessionInitMs": 523.2,
+            "modelBytes": 2327524,
+            "options": {
+              "positiveSpeechThreshold": 0.5,
+              "negativeSpeechThreshold": 0.35,
+              "redemptionMs": 600,
+              "preSpeechPadMs": 500,
+              "minSpeechMs": 250
+            },
+            "redemptionFrames": 19,
+            "minSpeechFrames": 8,
+            "runs": [
+              {
+                "tag": "direct_snr10_red600",
+                "engine": "direct",
+                "durMs": 30002.8,
+                "durSec": 30,
+                "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+                "workletHasPerformanceApi": false,
+                "workletCpuMs": 513,
+                "workletWallMs": 30003,
+                "workletMeanPerBlockMs": 0.04961,
+                "workletBlocks": 10340,
+                "workletProcessCalls": 10340,
+                "workletEmptyInputBlocks": 0,
+                "workletSamplesOut16k": 489151,
+                "workletBlocksExpected": 10337,
+                "workletDutyCyclePct": 1.71,
+                "frames16k": 961,
+                "vadInferMs": {
+                  "n": 961,
+                  "p50": 3.3,
+                  "p95": 3.9,
+                  "p99": 5,
+                  "max": 85.5,
+                  "mean": 2.7172
+                },
+                "vadRealtimeFactor": 0.1031,
+                "queueBacklog": {
+                  "n": 961,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0,
+                  "mean": 0
+                },
+                "mainThreadTimerLatenessMs": {
+                  "n": 1496,
+                  "p50": 0,
+                  "p95": 1.2,
+                  "p99": 3.6,
+                  "max": 98.7,
+                  "mean": 0.0536
+                },
+                "speechStarts": 7,
+                "speechEnds": 7,
+                "misfires": 0,
+                "eosLatencyMs": {
+                  "n": 7,
+                  "p50": 608,
+                  "p95": 640,
+                  "p99": 640,
+                  "max": 640,
+                  "mean": 617.1429
+                },
+                "triggersPerMinute": 14,
+                "falseTriggersPerMinute": null,
+                "probStats": {
+                  "n": 961,
+                  "p50": 0.0001,
+                  "p95": 0.9894,
+                  "p99": 0.997,
+                  "max": 0.9987,
+                  "mean": 0.1409
+                },
+                "meanFrameRms": 0.022666,
+                "meanFrameDbfs": -32.89,
+                "segments": [
+                  {
+                    "idx": 1,
+                    "engine": "direct",
+                    "file": "direct_snr10_red600-direct-001.wav",
+                    "tag": "direct_snr10_red600",
+                    "totalMs": 1780,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 480,
+                    "onsetMinusPrerollMs": -20,
+                    "segmentDurMs": 1280,
+                    "eosLatencyMs": 640,
+                    "peakDbfs": -17.62,
+                    "bytes": 57004,
+                    "uploaded": "out/direct_snr10_red600-direct-001.wav"
+                  },
+                  {
+                    "idx": 2,
+                    "engine": "direct",
+                    "file": "direct_snr10_red600-direct-002.wav",
+                    "tag": "direct_snr10_red600",
+                    "totalMs": 1780,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 500,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 1280,
+                    "eosLatencyMs": 640,
+                    "peakDbfs": -18.05,
+                    "bytes": 57004,
+                    "uploaded": "out/direct_snr10_red600-direct-002.wav"
+                  },
+                  {
+                    "idx": 3,
+                    "engine": "direct",
+                    "file": "direct_snr10_red600-direct-003.wav",
+                    "tag": "direct_snr10_red600",
+                    "totalMs": 1748,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 490,
+                    "onsetMinusPrerollMs": -10,
+                    "segmentDurMs": 1248,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -21.08,
+                    "bytes": 55980,
+                    "uploaded": "out/direct_snr10_red600-direct-003.wav"
+                  },
+                  {
+                    "idx": 4,
+                    "engine": "direct",
+                    "file": "direct_snr10_red600-direct-004.wav",
+                    "tag": "direct_snr10_red600",
+                    "totalMs": 1748,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 480,
+                    "onsetMinusPrerollMs": -20,
+                    "segmentDurMs": 1248,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -21.35,
+                    "bytes": 55980,
+                    "uploaded": "out/direct_snr10_red600-direct-004.wav"
+                  },
+                  {
+                    "idx": 5,
+                    "engine": "direct",
+                    "file": "direct_snr10_red600-direct-005.wav",
+                    "tag": "direct_snr10_red600",
+                    "totalMs": 1780,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 500,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 1280,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -21.58,
+                    "bytes": 57004,
+                    "uploaded": "out/direct_snr10_red600-direct-005.wav"
+                  },
+                  {
+                    "idx": 6,
+                    "engine": "direct",
+                    "file": "direct_snr10_red600-direct-006.wav",
+                    "tag": "direct_snr10_red600",
+                    "totalMs": 1748,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 490,
+                    "onsetMinusPrerollMs": -10,
+                    "segmentDurMs": 1248,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -21.57,
+                    "bytes": 55980,
+                    "uploaded": "out/direct_snr10_red600-direct-006.wav"
+                  },
+                  {
+                    "idx": 7,
+                    "engine": "direct",
+                    "file": "direct_snr10_red600-direct-007.wav",
+                    "tag": "direct_snr10_red600",
+                    "totalMs": 1716,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 480,
+                    "onsetMinusPrerollMs": -20,
+                    "segmentDurMs": 1216,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -21.48,
+                    "bytes": 54956,
+                    "uploaded": "out/direct_snr10_red600-direct-007.wav"
+                  }
+                ],
+                "gum": {
+                  "echoCancellationApplied": true,
+                  "noiseSuppressionApplied": true,
+                  "autoGainControlApplied": true
+                }
+              }
+            ]
+          }
+        }
+      },
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_speech_snr10",
+        "path": "fix_speech_snr10.wav",
+        "bytes": 447404,
+        "loop_period_ms": 4660,
+        "speech_onset_ms": 1500,
+        "snr_db": 10,
+        "purpose": "VAD robustness / onset accuracy under noise"
+      }
+    },
+    "direct_snr05_red600": {
+      "run": {
+        "tag": "direct_snr05_red600",
+        "engine": "direct",
+        "durMs": 30001.3,
+        "durSec": 30,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 426,
+        "workletWallMs": 29993,
+        "workletMeanPerBlockMs": 0.0412,
+        "workletBlocks": 10339,
+        "workletProcessCalls": 10339,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 489941,
+        "workletBlocksExpected": 10336,
+        "workletDutyCyclePct": 1.42,
+        "frames16k": 961,
+        "vadInferMs": {
+          "n": 961,
+          "p50": 3.5,
+          "p95": 4.1,
+          "p99": 5.3,
+          "max": 128.9,
+          "mean": 3.023
+        },
+        "vadRealtimeFactor": 0.1094,
+        "queueBacklog": {
+          "n": 961,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 1493,
+          "p50": 0,
+          "p95": 0.2,
+          "p99": 1.6,
+          "max": 156.1,
+          "mean": 0.0939
+        },
+        "speechStarts": 7,
+        "speechEnds": 7,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 7,
+          "p50": 640,
+          "p95": 640,
+          "p99": 640,
+          "max": 640,
+          "mean": 630.8571
+        },
+        "triggersPerMinute": 14,
+        "falseTriggersPerMinute": null,
+        "probStats": {
+          "n": 961,
+          "p50": 0.0004,
+          "p95": 0.9837,
+          "p99": 0.9951,
+          "max": 0.9975,
+          "mean": 0.1444
+        },
+        "meanFrameRms": 0.019908,
+        "meanFrameDbfs": -34.02,
+        "segments": [
+          {
+            "idx": 1,
+            "engine": "direct",
+            "file": "direct_snr05_red600-direct-001.wav",
+            "tag": "direct_snr05_red600",
+            "totalMs": 1812,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 510,
+            "onsetMinusPrerollMs": 10,
+            "segmentDurMs": 1312,
+            "eosLatencyMs": 640,
+            "peakDbfs": -19.3,
+            "bytes": 58028,
+            "uploaded": "out/direct_snr05_red600-direct-001.wav"
+          },
+          {
+            "idx": 2,
+            "engine": "direct",
+            "file": "direct_snr05_red600-direct-002.wav",
+            "tag": "direct_snr05_red600",
+            "totalMs": 1780,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 40,
+            "onsetMinusPrerollMs": -460,
+            "segmentDurMs": 1280,
+            "eosLatencyMs": 640,
+            "peakDbfs": -19.19,
+            "bytes": 57004,
+            "uploaded": "out/direct_snr05_red600-direct-002.wav"
+          },
+          {
+            "idx": 3,
+            "engine": "direct",
+            "file": "direct_snr05_red600-direct-003.wav",
+            "tag": "direct_snr05_red600",
+            "totalMs": 1748,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 480,
+            "onsetMinusPrerollMs": -20,
+            "segmentDurMs": 1248,
+            "eosLatencyMs": 608,
+            "peakDbfs": -22.14,
+            "bytes": 55980,
+            "uploaded": "out/direct_snr05_red600-direct-003.wav"
+          },
+          {
+            "idx": 4,
+            "engine": "direct",
+            "file": "direct_snr05_red600-direct-004.wav",
+            "tag": "direct_snr05_red600",
+            "totalMs": 1812,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 500,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 1312,
+            "eosLatencyMs": 640,
+            "peakDbfs": -25.97,
+            "bytes": 58028,
+            "uploaded": "out/direct_snr05_red600-direct-004.wav"
+          },
+          {
+            "idx": 5,
+            "engine": "direct",
+            "file": "direct_snr05_red600-direct-005.wav",
+            "tag": "direct_snr05_red600",
+            "totalMs": 1780,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 490,
+            "onsetMinusPrerollMs": -10,
+            "segmentDurMs": 1280,
+            "eosLatencyMs": 608,
+            "peakDbfs": -25.91,
+            "bytes": 57004,
+            "uploaded": "out/direct_snr05_red600-direct-005.wav"
+          },
+          {
+            "idx": 6,
+            "engine": "direct",
+            "file": "direct_snr05_red600-direct-006.wav",
+            "tag": "direct_snr05_red600",
+            "totalMs": 1780,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 490,
+            "onsetMinusPrerollMs": -10,
+            "segmentDurMs": 1280,
+            "eosLatencyMs": 640,
+            "peakDbfs": -25.79,
+            "bytes": 57004,
+            "uploaded": "out/direct_snr05_red600-direct-006.wav"
+          },
+          {
+            "idx": 7,
+            "engine": "direct",
+            "file": "direct_snr05_red600-direct-007.wav",
+            "tag": "direct_snr05_red600",
+            "totalMs": 1748,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 480,
+            "onsetMinusPrerollMs": -20,
+            "segmentDurMs": 1248,
+            "eosLatencyMs": 640,
+            "peakDbfs": -25.71,
+            "bytes": 55980,
+            "uploaded": "out/direct_snr05_red600-direct-007.wav"
+          }
+        ],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "resamplerBench": {
+        "at48k": {
+          "inRate": 48000,
+          "taps": 63,
+          "blocks": 60,
+          "batchPerSample": 200,
+          "samplesOut": 512000,
+          "perBlockMs": {
+            "n": 45,
+            "p50": 0.0155,
+            "p95": 0.016,
+            "p99": 0.016,
+            "max": 0.016,
+            "mean": 0.0152
+          },
+          "blockPeriodMs": 2.6667,
+          "dutyCyclePct": 0.581,
+          "method": "main thread, performance.now() over 200-block batches, identical FIR+decimation kernel"
+        },
+        "atCtxRate": {
+          "inRate": 44100,
+          "taps": 63,
+          "blocks": 60,
+          "batchPerSample": 200,
+          "samplesOut": 557278,
+          "perBlockMs": {
+            "n": 45,
+            "p50": 0.017,
+            "p95": 0.0175,
+            "p99": 0.018,
+            "max": 0.018,
+            "mean": 0.017
+          },
+          "blockPeriodMs": 2.9025,
+          "dutyCyclePct": 0.586,
+          "method": "main thread, performance.now() over 200-block batches, identical FIR+decimation kernel"
+        }
+      },
+      "assets": {
+        "vendor/ort/ort.wasm.min.js": {
+          "bytes": 50196,
+          "encoding": "identity"
+        },
+        "vendor/ort/ort-wasm-simd-threaded.wasm": {
+          "bytes": 13961845,
+          "encoding": "identity"
+        },
+        "vendor/vad/vad-bundle.min.js": {
+          "bytes": 69345,
+          "encoding": "identity"
+        },
+        "vendor/vad/vad.worklet.bundle.min.js": {
+          "bytes": 2480,
+          "encoding": "identity"
+        },
+        "vendor/vad/silero_vad_v5.onnx": {
+          "bytes": 2327524,
+          "encoding": "identity"
+        },
+        "_transferred": [
+          {
+            "name": "vendor/ort/ort.wasm.min.js",
+            "transferSize": 50496,
+            "encodedBodySize": 50196,
+            "decodedBodySize": 50196,
+            "durationMs": 16
+          },
+          {
+            "name": "vendor/vad/vad-bundle.min.js",
+            "transferSize": 69645,
+            "encodedBodySize": 69345,
+            "decodedBodySize": 69345,
+            "durationMs": 16.3
+          },
+          {
+            "name": "vendor/vad/silero_vad_v5.onnx",
+            "transferSize": 2327824,
+            "encodedBodySize": 2327524,
+            "decodedBodySize": 2327524,
+            "durationMs": 11.7
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.mjs",
+            "transferSize": 24518,
+            "encodedBodySize": 24218,
+            "decodedBodySize": 24218,
+            "durationMs": 2.6
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.wasm",
+            "transferSize": 13962145,
+            "encodedBodySize": 13961845,
+            "decodedBodySize": 13961845,
+            "durationMs": 49.4
+          },
+          {
+            "name": "vendor/ort/ort.wasm.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2.8
+          },
+          {
+            "name": "vendor/ort/ort-wasm-simd-threaded.wasm",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2
+          },
+          {
+            "name": "vendor/vad/vad-bundle.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 2
+          },
+          {
+            "name": "vendor/vad/vad.worklet.bundle.min.js",
+            "transferSize": 300,
+            "encodedBodySize": 0,
+            "decodedBodySize": 0,
+            "durationMs": 1.8
+          }
+        ]
+      },
+      "results": {
+        "gum": {
+          "requested": {
+            "echoCancellation": true,
+            "noiseSuppression": true,
+            "autoGainControl": true,
+            "channelCount": 1
+          },
+          "supportedConstraints": {
+            "aspectRatio": true,
+            "autoGainControl": true,
+            "brightness": true,
+            "channelCount": true,
+            "colorTemperature": true,
+            "contrast": true,
+            "deviceId": true,
+            "displaySurface": true,
+            "echoCancellation": true,
+            "exposureCompensation": true,
+            "exposureMode": true,
+            "exposureTime": true,
+            "facingMode": true,
+            "focusDistance": true,
+            "focusMode": true,
+            "frameRate": true,
+            "groupId": true,
+            "height": true,
+            "iso": true,
+            "latency": true,
+            "noiseSuppression": true,
+            "pan": true,
+            "pointsOfInterest": true,
+            "resizeMode": true,
+            "restrictOwnAudio": true,
+            "sampleRate": true,
+            "sampleSize": true,
+            "saturation": true,
+            "sharpness": true,
+            "suppressLocalAudioPlayback": true,
+            "tilt": true,
+            "torch": true,
+            "voiceIsolation": true,
+            "whiteBalanceMode": true,
+            "width": true,
+            "zoom": true
+          },
+          "settings": {
+            "autoGainControl": true,
+            "channelCount": 1,
+            "deviceId": "default",
+            "echoCancellation": true,
+            "groupId": "9768008103c8c03e505eecb3ec1212af92e9ed6898e3e6e705b954ea2a1f93a2",
+            "latency": 0.01,
+            "noiseSuppression": true,
+            "sampleRate": 48000,
+            "sampleSize": 16,
+            "voiceIsolation": false
+          },
+          "capabilities": {
+            "autoGainControl": [
+              true,
+              false
+            ],
+            "channelCount": {
+              "max": 2,
+              "min": 1
+            },
+            "deviceId": "default",
+            "echoCancellation": [
+              true,
+              false,
+              "remote-only"
+            ],
+            "groupId": "9768008103c8c03e505eecb3ec1212af92e9ed6898e3e6e705b954ea2a1f93a2",
+            "latency": {
+              "max": 0.01,
+              "min": 0.01
+            },
+            "noiseSuppression": [
+              true,
+              false
+            ],
+            "sampleRate": {
+              "max": 48000,
+              "min": 44100
+            },
+            "sampleSize": {
+              "max": 16,
+              "min": 16
+            },
+            "voiceIsolation": [
+              true,
+              false
+            ]
+          },
+          "appliedConstraints": {
+            "autoGainControl": true,
+            "channelCount": 1,
+            "echoCancellation": true,
+            "noiseSuppression": true
+          },
+          "trackLabel": "Fake Default Audio Input",
+          "trackReadyState": "live",
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true,
+          "channelCount": 1,
+          "negotiatedSampleRate": 48000
+        },
+        "audioContext": {
+          "negotiatedSampleRate": 44100,
+          "baseLatency": 0.01,
+          "outputLatency": 0.03,
+          "renderQuantum": 128,
+          "quantumMs": 2.9025,
+          "resampleRatio": 2.75625
+        },
+        "worklet": {
+          "type": "ready",
+          "inRate": 44100,
+          "hasPerformance": false,
+          "ratio": 2.75625,
+          "taps": 63,
+          "frameSamples": 512,
+          "ringLen": 32000
+        },
+        "engines": {
+          "direct": {
+            "ortEnv": {
+              "numThreads": 1,
+              "crossOriginIsolated": false
+            },
+            "loadMs": 597.2,
+            "modelFetchMs": 25.1,
+            "sessionInitMs": 570.5,
+            "modelBytes": 2327524,
+            "options": {
+              "positiveSpeechThreshold": 0.5,
+              "negativeSpeechThreshold": 0.35,
+              "redemptionMs": 600,
+              "preSpeechPadMs": 500,
+              "minSpeechMs": 250
+            },
+            "redemptionFrames": 19,
+            "minSpeechFrames": 8,
+            "runs": [
+              {
+                "tag": "direct_snr05_red600",
+                "engine": "direct",
+                "durMs": 30001.3,
+                "durSec": 30,
+                "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+                "workletHasPerformanceApi": false,
+                "workletCpuMs": 426,
+                "workletWallMs": 29993,
+                "workletMeanPerBlockMs": 0.0412,
+                "workletBlocks": 10339,
+                "workletProcessCalls": 10339,
+                "workletEmptyInputBlocks": 0,
+                "workletSamplesOut16k": 489941,
+                "workletBlocksExpected": 10336,
+                "workletDutyCyclePct": 1.42,
+                "frames16k": 961,
+                "vadInferMs": {
+                  "n": 961,
+                  "p50": 3.5,
+                  "p95": 4.1,
+                  "p99": 5.3,
+                  "max": 128.9,
+                  "mean": 3.023
+                },
+                "vadRealtimeFactor": 0.1094,
+                "queueBacklog": {
+                  "n": 961,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0,
+                  "mean": 0
+                },
+                "mainThreadTimerLatenessMs": {
+                  "n": 1493,
+                  "p50": 0,
+                  "p95": 0.2,
+                  "p99": 1.6,
+                  "max": 156.1,
+                  "mean": 0.0939
+                },
+                "speechStarts": 7,
+                "speechEnds": 7,
+                "misfires": 0,
+                "eosLatencyMs": {
+                  "n": 7,
+                  "p50": 640,
+                  "p95": 640,
+                  "p99": 640,
+                  "max": 640,
+                  "mean": 630.8571
+                },
+                "triggersPerMinute": 14,
+                "falseTriggersPerMinute": null,
+                "probStats": {
+                  "n": 961,
+                  "p50": 0.0004,
+                  "p95": 0.9837,
+                  "p99": 0.9951,
+                  "max": 0.9975,
+                  "mean": 0.1444
+                },
+                "meanFrameRms": 0.019908,
+                "meanFrameDbfs": -34.02,
+                "segments": [
+                  {
+                    "idx": 1,
+                    "engine": "direct",
+                    "file": "direct_snr05_red600-direct-001.wav",
+                    "tag": "direct_snr05_red600",
+                    "totalMs": 1812,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 510,
+                    "onsetMinusPrerollMs": 10,
+                    "segmentDurMs": 1312,
+                    "eosLatencyMs": 640,
+                    "peakDbfs": -19.3,
+                    "bytes": 58028,
+                    "uploaded": "out/direct_snr05_red600-direct-001.wav"
+                  },
+                  {
+                    "idx": 2,
+                    "engine": "direct",
+                    "file": "direct_snr05_red600-direct-002.wav",
+                    "tag": "direct_snr05_red600",
+                    "totalMs": 1780,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 40,
+                    "onsetMinusPrerollMs": -460,
+                    "segmentDurMs": 1280,
+                    "eosLatencyMs": 640,
+                    "peakDbfs": -19.19,
+                    "bytes": 57004,
+                    "uploaded": "out/direct_snr05_red600-direct-002.wav"
+                  },
+                  {
+                    "idx": 3,
+                    "engine": "direct",
+                    "file": "direct_snr05_red600-direct-003.wav",
+                    "tag": "direct_snr05_red600",
+                    "totalMs": 1748,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 480,
+                    "onsetMinusPrerollMs": -20,
+                    "segmentDurMs": 1248,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -22.14,
+                    "bytes": 55980,
+                    "uploaded": "out/direct_snr05_red600-direct-003.wav"
+                  },
+                  {
+                    "idx": 4,
+                    "engine": "direct",
+                    "file": "direct_snr05_red600-direct-004.wav",
+                    "tag": "direct_snr05_red600",
+                    "totalMs": 1812,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 500,
+                    "onsetMinusPrerollMs": 0,
+                    "segmentDurMs": 1312,
+                    "eosLatencyMs": 640,
+                    "peakDbfs": -25.97,
+                    "bytes": 58028,
+                    "uploaded": "out/direct_snr05_red600-direct-004.wav"
+                  },
+                  {
+                    "idx": 5,
+                    "engine": "direct",
+                    "file": "direct_snr05_red600-direct-005.wav",
+                    "tag": "direct_snr05_red600",
+                    "totalMs": 1780,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 490,
+                    "onsetMinusPrerollMs": -10,
+                    "segmentDurMs": 1280,
+                    "eosLatencyMs": 608,
+                    "peakDbfs": -25.91,
+                    "bytes": 57004,
+                    "uploaded": "out/direct_snr05_red600-direct-005.wav"
+                  },
+                  {
+                    "idx": 6,
+                    "engine": "direct",
+                    "file": "direct_snr05_red600-direct-006.wav",
+                    "tag": "direct_snr05_red600",
+                    "totalMs": 1780,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 490,
+                    "onsetMinusPrerollMs": -10,
+                    "segmentDurMs": 1280,
+                    "eosLatencyMs": 640,
+                    "peakDbfs": -25.79,
+                    "bytes": 57004,
+                    "uploaded": "out/direct_snr05_red600-direct-006.wav"
+                  },
+                  {
+                    "idx": 7,
+                    "engine": "direct",
+                    "file": "direct_snr05_red600-direct-007.wav",
+                    "tag": "direct_snr05_red600",
+                    "totalMs": 1748,
+                    "prerollMsRequested": 500,
+                    "prerollMsActual": 500,
+                    "onsetMs": 480,
+                    "onsetMinusPrerollMs": -20,
+                    "segmentDurMs": 1248,
+                    "eosLatencyMs": 640,
+                    "peakDbfs": -25.71,
+                    "bytes": 55980,
+                    "uploaded": "out/direct_snr05_red600-direct-007.wav"
+                  }
+                ],
+                "gum": {
+                  "echoCancellationApplied": true,
+                  "noiseSuppressionApplied": true,
+                  "autoGainControlApplied": true
+                }
+              }
+            ]
+          }
+        }
+      },
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_speech_snr05",
+        "path": "fix_speech_snr05.wav",
+        "bytes": 447404,
+        "loop_period_ms": 4660,
+        "speech_onset_ms": 1500,
+        "snr_db": 5,
+        "purpose": "VAD robustness / onset accuracy under noise"
+      }
+    },
+    "noise_quiet": {
+      "run": {
+        "tag": "noise_quiet",
+        "engine": "direct",
+        "durMs": 60001.6,
+        "durSec": 60,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 945,
+        "workletWallMs": 59999,
+        "workletMeanPerBlockMs": 0.04571,
+        "workletBlocks": 20676,
+        "workletProcessCalls": 20676,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 969154,
+        "workletBlocksExpected": 20672,
+        "workletDutyCyclePct": 1.575,
+        "frames16k": 1899,
+        "vadInferMs": {
+          "n": 1899,
+          "p50": 3.4,
+          "p95": 4,
+          "p99": 4.8,
+          "max": 68.5,
+          "mean": 2.8258
+        },
+        "vadRealtimeFactor": 0.1062,
+        "queueBacklog": {
+          "n": 1899,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 2996,
+          "p50": 0,
+          "p95": 2.2,
+          "p99": 2.9,
+          "max": 85.2,
+          "mean": 0.0268
+        },
+        "speechStarts": 0,
+        "speechEnds": 0,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 0
+        },
+        "triggersPerMinute": 0,
+        "falseTriggersPerMinute": 0,
+        "probStats": {
+          "n": 1899,
+          "p50": 0.0014,
+          "p95": 0.0037,
+          "p99": 0.0063,
+          "max": 0.0156,
+          "mean": 0.0017
+        },
+        "meanFrameRms": 0.001406,
+        "meanFrameDbfs": -57.04,
+        "segments": [],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_noise_pink_quiet",
+        "path": "fix_noise_pink_quiet.wav",
+        "bytes": 2880044,
+        "loop_period_ms": 30000,
+        "speech_onset_ms": null,
+        "noise_dbfs": -50,
+        "purpose": "false-trigger rate per minute (any fire is false)"
+      }
+    },
+    "noise_room": {
+      "run": {
+        "tag": "noise_room",
+        "engine": "direct",
+        "durMs": 60002.4,
+        "durSec": 60,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 1630,
+        "workletWallMs": 60002,
+        "workletMeanPerBlockMs": 0.07884,
+        "workletBlocks": 20675,
+        "workletProcessCalls": 20675,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 968643,
+        "workletBlocksExpected": 20673,
+        "workletDutyCyclePct": 2.717,
+        "frames16k": 1897,
+        "vadInferMs": {
+          "n": 1897,
+          "p50": 3.3,
+          "p95": 4.1,
+          "p99": 5,
+          "max": 74.4,
+          "mean": 2.8739
+        },
+        "vadRealtimeFactor": 0.1031,
+        "queueBacklog": {
+          "n": 1897,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 2996,
+          "p50": 0,
+          "p95": 2.6,
+          "p99": 3.3,
+          "max": 85.4,
+          "mean": 0.0268
+        },
+        "speechStarts": 0,
+        "speechEnds": 0,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 0
+        },
+        "triggersPerMinute": 0,
+        "falseTriggersPerMinute": 0,
+        "probStats": {
+          "n": 1897,
+          "p50": 0.0007,
+          "p95": 0.0032,
+          "p99": 0.0082,
+          "max": 0.0506,
+          "mean": 0.0011
+        },
+        "meanFrameRms": 0.003926,
+        "meanFrameDbfs": -48.12,
+        "segments": [],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_noise_pink_room",
+        "path": "fix_noise_pink_room.wav",
+        "bytes": 2880044,
+        "loop_period_ms": 30000,
+        "speech_onset_ms": null,
+        "noise_dbfs": -40,
+        "purpose": "false-trigger rate per minute (any fire is false)"
+      }
+    },
+    "noise_loud": {
+      "run": {
+        "tag": "noise_loud",
+        "engine": "direct",
+        "durMs": 60011.8,
+        "durSec": 60.01,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 873,
+        "workletWallMs": 60012,
+        "workletMeanPerBlockMs": 0.04227,
+        "workletBlocks": 20654,
+        "workletProcessCalls": 20654,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 968318,
+        "workletBlocksExpected": 20676,
+        "workletDutyCyclePct": 1.455,
+        "frames16k": 1897,
+        "vadInferMs": {
+          "n": 1897,
+          "p50": 1.4,
+          "p95": 4,
+          "p99": 5.8,
+          "max": 75.4,
+          "mean": 2.1299
+        },
+        "vadRealtimeFactor": 0.0437,
+        "queueBacklog": {
+          "n": 1897,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 2996,
+          "p50": 0,
+          "p95": 2.2,
+          "p99": 3.9,
+          "max": 89.4,
+          "mean": 0.0268
+        },
+        "speechStarts": 0,
+        "speechEnds": 0,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 0
+        },
+        "triggersPerMinute": 0,
+        "falseTriggersPerMinute": 0,
+        "probStats": {
+          "n": 1897,
+          "p50": 0.0004,
+          "p95": 0.0103,
+          "p99": 0.0298,
+          "max": 0.0944,
+          "mean": 0.0021
+        },
+        "meanFrameRms": 0.007981,
+        "meanFrameDbfs": -41.96,
+        "segments": [],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_noise_pink_loud",
+        "path": "fix_noise_pink_loud.wav",
+        "bytes": 2880044,
+        "loop_period_ms": 30000,
+        "speech_onset_ms": null,
+        "noise_dbfs": -26,
+        "purpose": "false-trigger rate per minute (any fire is false)"
+      }
+    },
+    "noise_room_pos030": {
+      "run": {
+        "tag": "noise_room_pos030",
+        "engine": "direct",
+        "durMs": 60004.5,
+        "durSec": 60,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 1632,
+        "workletWallMs": 60007,
+        "workletMeanPerBlockMs": 0.07905,
+        "workletBlocks": 20644,
+        "workletProcessCalls": 20644,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 971522,
+        "workletBlocksExpected": 20673,
+        "workletDutyCyclePct": 2.72,
+        "frames16k": 1902,
+        "vadInferMs": {
+          "n": 1902,
+          "p50": 2,
+          "p95": 4,
+          "p99": 6.3,
+          "max": 93.8,
+          "mean": 2.5043
+        },
+        "vadRealtimeFactor": 0.0625,
+        "queueBacklog": {
+          "n": 1902,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 2991,
+          "p50": 0,
+          "p95": 2.1,
+          "p99": 5.5,
+          "max": 161.2,
+          "mean": 0.0604
+        },
+        "speechStarts": 0,
+        "speechEnds": 0,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 0
+        },
+        "triggersPerMinute": 0,
+        "falseTriggersPerMinute": 0,
+        "probStats": {
+          "n": 1902,
+          "p50": 0.0007,
+          "p95": 0.0031,
+          "p99": 0.0067,
+          "max": 0.0459,
+          "mean": 0.0011
+        },
+        "meanFrameRms": 0.003926,
+        "meanFrameDbfs": -48.12,
+        "segments": [],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_noise_pink_room",
+        "path": "fix_noise_pink_room.wav",
+        "bytes": 2880044,
+        "loop_period_ms": 30000,
+        "speech_onset_ms": null,
+        "noise_dbfs": -40,
+        "purpose": "false-trigger rate per minute (any fire is false)"
+      }
+    },
+    "noise_loud_pos030": {
+      "run": {
+        "tag": "noise_loud_pos030",
+        "engine": "direct",
+        "durMs": 60003.9,
+        "durSec": 60,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 724,
+        "workletWallMs": 60003,
+        "workletMeanPerBlockMs": 0.03503,
+        "workletBlocks": 20669,
+        "workletProcessCalls": 20669,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 980021,
+        "workletBlocksExpected": 20673,
+        "workletDutyCyclePct": 1.207,
+        "frames16k": 1916,
+        "vadInferMs": {
+          "n": 1916,
+          "p50": 1.5,
+          "p95": 4.1,
+          "p99": 6.2,
+          "max": 106.9,
+          "mean": 2.2862
+        },
+        "vadRealtimeFactor": 0.0469,
+        "queueBacklog": {
+          "n": 1916,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 2991,
+          "p50": 0,
+          "p95": 1.8,
+          "p99": 4.1,
+          "max": 195,
+          "mean": 0.0602
+        },
+        "speechStarts": 0,
+        "speechEnds": 0,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 0
+        },
+        "triggersPerMinute": 0,
+        "falseTriggersPerMinute": 0,
+        "probStats": {
+          "n": 1916,
+          "p50": 0.0004,
+          "p95": 0.0097,
+          "p99": 0.0352,
+          "max": 0.1437,
+          "mean": 0.0021
+        },
+        "meanFrameRms": 0.007884,
+        "meanFrameDbfs": -42.07,
+        "segments": [],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_noise_pink_loud",
+        "path": "fix_noise_pink_loud.wav",
+        "bytes": 2880044,
+        "loop_period_ms": 30000,
+        "speech_onset_ms": null,
+        "noise_dbfs": -26,
+        "purpose": "false-trigger rate per minute (any fire is false)"
+      }
+    },
+    "vadweb_defaults": {
+      "run": {
+        "tag": "vadweb_defaults",
+        "engine": "vadweb",
+        "durMs": 30002.9,
+        "durSec": 30,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 771,
+        "workletWallMs": 30002,
+        "workletMeanPerBlockMs": 0.07456,
+        "workletBlocks": 10340,
+        "workletProcessCalls": 10340,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 493470,
+        "workletBlocksExpected": 10337,
+        "workletDutyCyclePct": 2.57,
+        "frames16k": 946,
+        "vadInferMs": {
+          "n": 0
+        },
+        "vadRealtimeFactor": null,
+        "queueBacklog": {
+          "n": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 1496,
+          "p50": 0,
+          "p95": 3.2,
+          "p99": 4.6,
+          "max": 90,
+          "mean": 0.0552
+        },
+        "speechStarts": 7,
+        "speechEnds": 6,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 6,
+          "p50": 1376,
+          "p95": 1408,
+          "p99": 1408,
+          "max": 1408,
+          "mean": 1381.3333
+        },
+        "triggersPerMinute": 14,
+        "falseTriggersPerMinute": null,
+        "probStats": {
+          "n": 945,
+          "p50": 0,
+          "p95": 0.9953,
+          "p99": 0.9989,
+          "max": 0.9996,
+          "mean": 0.1368
+        },
+        "meanFrameRms": 0.013616,
+        "meanFrameDbfs": -37.32,
+        "segments": [
+          {
+            "idx": 1,
+            "engine": "vadweb",
+            "file": "vadweb_defaults-vadweb-001.wav",
+            "tag": "vadweb_defaults",
+            "totalMs": 2752,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 800,
+            "onsetMs": 710,
+            "onsetMinusPrerollMs": -90,
+            "segmentDurMs": 2752,
+            "eosLatencyMs": 1376,
+            "peakDbfs": -19.07,
+            "bytes": 88108,
+            "uploaded": "out/vadweb_defaults-vadweb-001.wav"
+          },
+          {
+            "idx": 2,
+            "engine": "vadweb",
+            "file": "vadweb_defaults-vadweb-002.wav",
+            "tag": "vadweb_defaults",
+            "totalMs": 2848,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 800,
+            "onsetMs": 790,
+            "onsetMinusPrerollMs": -10,
+            "segmentDurMs": 2848,
+            "eosLatencyMs": 1408,
+            "peakDbfs": -26.66,
+            "bytes": 91180,
+            "uploaded": "out/vadweb_defaults-vadweb-002.wav"
+          },
+          {
+            "idx": 3,
+            "engine": "vadweb",
+            "file": "vadweb_defaults-vadweb-003.wav",
+            "tag": "vadweb_defaults",
+            "totalMs": 2816,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 800,
+            "onsetMs": 780,
+            "onsetMinusPrerollMs": -20,
+            "segmentDurMs": 2816,
+            "eosLatencyMs": 1376,
+            "peakDbfs": -26.61,
+            "bytes": 90156,
+            "uploaded": "out/vadweb_defaults-vadweb-003.wav"
+          },
+          {
+            "idx": 4,
+            "engine": "vadweb",
+            "file": "vadweb_defaults-vadweb-004.wav",
+            "tag": "vadweb_defaults",
+            "totalMs": 2816,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 800,
+            "onsetMs": 800,
+            "onsetMinusPrerollMs": 0,
+            "segmentDurMs": 2816,
+            "eosLatencyMs": 1376,
+            "peakDbfs": -26.6,
+            "bytes": 90156,
+            "uploaded": "out/vadweb_defaults-vadweb-004.wav"
+          },
+          {
+            "idx": 5,
+            "engine": "vadweb",
+            "file": "vadweb_defaults-vadweb-005.wav",
+            "tag": "vadweb_defaults",
+            "totalMs": 2816,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 800,
+            "onsetMs": 790,
+            "onsetMinusPrerollMs": -10,
+            "segmentDurMs": 2816,
+            "eosLatencyMs": 1376,
+            "peakDbfs": -26.61,
+            "bytes": 90156,
+            "uploaded": "out/vadweb_defaults-vadweb-005.wav"
+          },
+          {
+            "idx": 6,
+            "engine": "vadweb",
+            "file": "vadweb_defaults-vadweb-006.wav",
+            "tag": "vadweb_defaults",
+            "totalMs": 2816,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 800,
+            "onsetMs": 790,
+            "onsetMinusPrerollMs": -10,
+            "segmentDurMs": 2816,
+            "eosLatencyMs": 1376,
+            "peakDbfs": -26.61,
+            "bytes": 90156,
+            "uploaded": "out/vadweb_defaults-vadweb-006.wav"
+          }
+        ],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "assets": null,
+      "engines": {
+        "vadweb": {
+          "initMs": 809.2,
+          "usedLibraryDefaults": true,
+          "effectiveOptions": {
+            "positiveSpeechThreshold": 0.3,
+            "negativeSpeechThreshold": 0.25,
+            "redemptionMs": 1400,
+            "preSpeechPadMs": 800,
+            "minSpeechMs": 400,
+            "model": "v5",
+            "frameSamples": 512
+          },
+          "runs": [
+            {
+              "tag": "vadweb_defaults",
+              "engine": "vadweb",
+              "durMs": 30002.9,
+              "durSec": 30,
+              "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+              "workletHasPerformanceApi": false,
+              "workletCpuMs": 771,
+              "workletWallMs": 30002,
+              "workletMeanPerBlockMs": 0.07456,
+              "workletBlocks": 10340,
+              "workletProcessCalls": 10340,
+              "workletEmptyInputBlocks": 0,
+              "workletSamplesOut16k": 493470,
+              "workletBlocksExpected": 10337,
+              "workletDutyCyclePct": 2.57,
+              "frames16k": 946,
+              "vadInferMs": {
+                "n": 0
+              },
+              "vadRealtimeFactor": null,
+              "queueBacklog": {
+                "n": 0
+              },
+              "mainThreadTimerLatenessMs": {
+                "n": 1496,
+                "p50": 0,
+                "p95": 3.2,
+                "p99": 4.6,
+                "max": 90,
+                "mean": 0.0552
+              },
+              "speechStarts": 7,
+              "speechEnds": 6,
+              "misfires": 0,
+              "eosLatencyMs": {
+                "n": 6,
+                "p50": 1376,
+                "p95": 1408,
+                "p99": 1408,
+                "max": 1408,
+                "mean": 1381.3333
+              },
+              "triggersPerMinute": 14,
+              "falseTriggersPerMinute": null,
+              "probStats": {
+                "n": 945,
+                "p50": 0,
+                "p95": 0.9953,
+                "p99": 0.9989,
+                "max": 0.9996,
+                "mean": 0.1368
+              },
+              "meanFrameRms": 0.013616,
+              "meanFrameDbfs": -37.32,
+              "segments": [
+                {
+                  "idx": 1,
+                  "engine": "vadweb",
+                  "file": "vadweb_defaults-vadweb-001.wav",
+                  "tag": "vadweb_defaults",
+                  "totalMs": 2752,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 800,
+                  "onsetMs": 710,
+                  "onsetMinusPrerollMs": -90,
+                  "segmentDurMs": 2752,
+                  "eosLatencyMs": 1376,
+                  "peakDbfs": -19.07,
+                  "bytes": 88108,
+                  "uploaded": "out/vadweb_defaults-vadweb-001.wav"
+                },
+                {
+                  "idx": 2,
+                  "engine": "vadweb",
+                  "file": "vadweb_defaults-vadweb-002.wav",
+                  "tag": "vadweb_defaults",
+                  "totalMs": 2848,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 800,
+                  "onsetMs": 790,
+                  "onsetMinusPrerollMs": -10,
+                  "segmentDurMs": 2848,
+                  "eosLatencyMs": 1408,
+                  "peakDbfs": -26.66,
+                  "bytes": 91180,
+                  "uploaded": "out/vadweb_defaults-vadweb-002.wav"
+                },
+                {
+                  "idx": 3,
+                  "engine": "vadweb",
+                  "file": "vadweb_defaults-vadweb-003.wav",
+                  "tag": "vadweb_defaults",
+                  "totalMs": 2816,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 800,
+                  "onsetMs": 780,
+                  "onsetMinusPrerollMs": -20,
+                  "segmentDurMs": 2816,
+                  "eosLatencyMs": 1376,
+                  "peakDbfs": -26.61,
+                  "bytes": 90156,
+                  "uploaded": "out/vadweb_defaults-vadweb-003.wav"
+                },
+                {
+                  "idx": 4,
+                  "engine": "vadweb",
+                  "file": "vadweb_defaults-vadweb-004.wav",
+                  "tag": "vadweb_defaults",
+                  "totalMs": 2816,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 800,
+                  "onsetMs": 800,
+                  "onsetMinusPrerollMs": 0,
+                  "segmentDurMs": 2816,
+                  "eosLatencyMs": 1376,
+                  "peakDbfs": -26.6,
+                  "bytes": 90156,
+                  "uploaded": "out/vadweb_defaults-vadweb-004.wav"
+                },
+                {
+                  "idx": 5,
+                  "engine": "vadweb",
+                  "file": "vadweb_defaults-vadweb-005.wav",
+                  "tag": "vadweb_defaults",
+                  "totalMs": 2816,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 800,
+                  "onsetMs": 790,
+                  "onsetMinusPrerollMs": -10,
+                  "segmentDurMs": 2816,
+                  "eosLatencyMs": 1376,
+                  "peakDbfs": -26.61,
+                  "bytes": 90156,
+                  "uploaded": "out/vadweb_defaults-vadweb-005.wav"
+                },
+                {
+                  "idx": 6,
+                  "engine": "vadweb",
+                  "file": "vadweb_defaults-vadweb-006.wav",
+                  "tag": "vadweb_defaults",
+                  "totalMs": 2816,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 800,
+                  "onsetMs": 790,
+                  "onsetMinusPrerollMs": -10,
+                  "segmentDurMs": 2816,
+                  "eosLatencyMs": 1376,
+                  "peakDbfs": -26.61,
+                  "bytes": 90156,
+                  "uploaded": "out/vadweb_defaults-vadweb-006.wav"
+                }
+              ],
+              "gum": {
+                "echoCancellationApplied": true,
+                "noiseSuppressionApplied": true,
+                "autoGainControlApplied": true
+              }
+            }
+          ]
+        }
+      },
+      "transferred": [
+        {
+          "name": "ort/ort.wasm.min.js",
+          "transferSize": 50496,
+          "encodedBodySize": 50196,
+          "decodedBodySize": 50196
+        },
+        {
+          "name": "vad/vad-bundle.min.js",
+          "transferSize": 69645,
+          "encodedBodySize": 69345,
+          "decodedBodySize": 69345
+        },
+        {
+          "name": "vad/silero_vad_v5.onnx",
+          "transferSize": 2327824,
+          "encodedBodySize": 2327524,
+          "decodedBodySize": 2327524
+        },
+        {
+          "name": "ort/ort-wasm-simd-threaded.mjs",
+          "transferSize": 24518,
+          "encodedBodySize": 24218,
+          "decodedBodySize": 24218
+        },
+        {
+          "name": "ort/ort-wasm-simd-threaded.wasm",
+          "transferSize": 13962145,
+          "encodedBodySize": 13961845,
+          "decodedBodySize": 13961845
+        }
+      ],
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_onset_orca_send",
+        "path": "fix_onset_orca_send.wav",
+        "bytes": 447404,
+        "loop_period_ms": 4660,
+        "speech_onset_ms": 1500,
+        "speech_offset_ms": 2160,
+        "speech_dur_ms": 660,
+        "speech_dbfs": -20,
+        "purpose": "pre-roll onset position, EOS latency, VAD inference"
+      }
+    },
+    "vadweb_tuned": {
+      "run": {
+        "tag": "vadweb_tuned",
+        "engine": "vadweb",
+        "durMs": 30002.4,
+        "durSec": 30,
+        "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+        "workletHasPerformanceApi": false,
+        "workletCpuMs": 465,
+        "workletWallMs": 30004,
+        "workletMeanPerBlockMs": 0.04499,
+        "workletBlocks": 10336,
+        "workletProcessCalls": 10336,
+        "workletEmptyInputBlocks": 0,
+        "workletSamplesOut16k": 488965,
+        "workletBlocksExpected": 10337,
+        "workletDutyCyclePct": 1.55,
+        "frames16k": 945,
+        "vadInferMs": {
+          "n": 0
+        },
+        "vadRealtimeFactor": null,
+        "queueBacklog": {
+          "n": 0
+        },
+        "mainThreadTimerLatenessMs": {
+          "n": 1496,
+          "p50": 0,
+          "p95": 1.9,
+          "p99": 5,
+          "max": 65.6,
+          "mean": 0.0536
+        },
+        "speechStarts": 7,
+        "speechEnds": 7,
+        "misfires": 0,
+        "eosLatencyMs": {
+          "n": 7,
+          "p50": 576,
+          "p95": 576,
+          "p99": 576,
+          "max": 576,
+          "mean": 576
+        },
+        "triggersPerMinute": 14,
+        "falseTriggersPerMinute": null,
+        "probStats": {
+          "n": 944,
+          "p50": 0,
+          "p95": 0.9943,
+          "p99": 0.9988,
+          "max": 0.9994,
+          "mean": 0.1379
+        },
+        "meanFrameRms": 0.013622,
+        "meanFrameDbfs": -37.32,
+        "segments": [
+          {
+            "idx": 1,
+            "engine": "vadweb",
+            "file": "vadweb_tuned-vadweb-001.wav",
+            "tag": "vadweb_tuned",
+            "totalMs": 1696,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 470,
+            "onsetMinusPrerollMs": -30,
+            "segmentDurMs": 1696,
+            "eosLatencyMs": 576,
+            "peakDbfs": -16.97,
+            "bytes": 54316,
+            "uploaded": "out/vadweb_tuned-vadweb-001.wav"
+          },
+          {
+            "idx": 2,
+            "engine": "vadweb",
+            "file": "vadweb_tuned-vadweb-002.wav",
+            "tag": "vadweb_tuned",
+            "totalMs": 1632,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 410,
+            "onsetMinusPrerollMs": -90,
+            "segmentDurMs": 1632,
+            "eosLatencyMs": 576,
+            "peakDbfs": -24.24,
+            "bytes": 52268,
+            "uploaded": "out/vadweb_tuned-vadweb-002.wav"
+          },
+          {
+            "idx": 3,
+            "engine": "vadweb",
+            "file": "vadweb_tuned-vadweb-003.wav",
+            "tag": "vadweb_tuned",
+            "totalMs": 1696,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 460,
+            "onsetMinusPrerollMs": -40,
+            "segmentDurMs": 1696,
+            "eosLatencyMs": 576,
+            "peakDbfs": -24.41,
+            "bytes": 54316,
+            "uploaded": "out/vadweb_tuned-vadweb-003.wav"
+          },
+          {
+            "idx": 4,
+            "engine": "vadweb",
+            "file": "vadweb_tuned-vadweb-004.wav",
+            "tag": "vadweb_tuned",
+            "totalMs": 1696,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 480,
+            "onsetMinusPrerollMs": -20,
+            "segmentDurMs": 1696,
+            "eosLatencyMs": 576,
+            "peakDbfs": -24.41,
+            "bytes": 54316,
+            "uploaded": "out/vadweb_tuned-vadweb-004.wav"
+          },
+          {
+            "idx": 5,
+            "engine": "vadweb",
+            "file": "vadweb_tuned-vadweb-005.wav",
+            "tag": "vadweb_tuned",
+            "totalMs": 1632,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 400,
+            "onsetMinusPrerollMs": -100,
+            "segmentDurMs": 1632,
+            "eosLatencyMs": 576,
+            "peakDbfs": -24.24,
+            "bytes": 52268,
+            "uploaded": "out/vadweb_tuned-vadweb-005.wav"
+          },
+          {
+            "idx": 6,
+            "engine": "vadweb",
+            "file": "vadweb_tuned-vadweb-006.wav",
+            "tag": "vadweb_tuned",
+            "totalMs": 1696,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 480,
+            "onsetMinusPrerollMs": -20,
+            "segmentDurMs": 1696,
+            "eosLatencyMs": 576,
+            "peakDbfs": -24.41,
+            "bytes": 54316,
+            "uploaded": "out/vadweb_tuned-vadweb-006.wav"
+          },
+          {
+            "idx": 7,
+            "engine": "vadweb",
+            "file": "vadweb_tuned-vadweb-007.wav",
+            "tag": "vadweb_tuned",
+            "totalMs": 1632,
+            "prerollMsRequested": 500,
+            "prerollMsActual": 500,
+            "onsetMs": 400,
+            "onsetMinusPrerollMs": -100,
+            "segmentDurMs": 1632,
+            "eosLatencyMs": 576,
+            "peakDbfs": -24.24,
+            "bytes": 52268,
+            "uploaded": "out/vadweb_tuned-vadweb-007.wav"
+          }
+        ],
+        "gum": {
+          "echoCancellationApplied": true,
+          "noiseSuppressionApplied": true,
+          "autoGainControlApplied": true
+        }
+      },
+      "assets": null,
+      "engines": {
+        "vadweb": {
+          "initMs": 533,
+          "usedLibraryDefaults": false,
+          "effectiveOptions": {
+            "positiveSpeechThreshold": 0.5,
+            "negativeSpeechThreshold": 0.35,
+            "redemptionMs": 600,
+            "preSpeechPadMs": 500,
+            "minSpeechMs": 250,
+            "model": "v5",
+            "frameSamples": 512
+          },
+          "runs": [
+            {
+              "tag": "vadweb_tuned",
+              "engine": "vadweb",
+              "durMs": 30002.4,
+              "durSec": 30,
+              "workletTimingMethod": "sum of Date.now() ms-boundary crossings inside process() (performance is ABSENT in AudioWorkletGlobalScope)",
+              "workletHasPerformanceApi": false,
+              "workletCpuMs": 465,
+              "workletWallMs": 30004,
+              "workletMeanPerBlockMs": 0.04499,
+              "workletBlocks": 10336,
+              "workletProcessCalls": 10336,
+              "workletEmptyInputBlocks": 0,
+              "workletSamplesOut16k": 488965,
+              "workletBlocksExpected": 10337,
+              "workletDutyCyclePct": 1.55,
+              "frames16k": 945,
+              "vadInferMs": {
+                "n": 0
+              },
+              "vadRealtimeFactor": null,
+              "queueBacklog": {
+                "n": 0
+              },
+              "mainThreadTimerLatenessMs": {
+                "n": 1496,
+                "p50": 0,
+                "p95": 1.9,
+                "p99": 5,
+                "max": 65.6,
+                "mean": 0.0536
+              },
+              "speechStarts": 7,
+              "speechEnds": 7,
+              "misfires": 0,
+              "eosLatencyMs": {
+                "n": 7,
+                "p50": 576,
+                "p95": 576,
+                "p99": 576,
+                "max": 576,
+                "mean": 576
+              },
+              "triggersPerMinute": 14,
+              "falseTriggersPerMinute": null,
+              "probStats": {
+                "n": 944,
+                "p50": 0,
+                "p95": 0.9943,
+                "p99": 0.9988,
+                "max": 0.9994,
+                "mean": 0.1379
+              },
+              "meanFrameRms": 0.013622,
+              "meanFrameDbfs": -37.32,
+              "segments": [
+                {
+                  "idx": 1,
+                  "engine": "vadweb",
+                  "file": "vadweb_tuned-vadweb-001.wav",
+                  "tag": "vadweb_tuned",
+                  "totalMs": 1696,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 500,
+                  "onsetMs": 470,
+                  "onsetMinusPrerollMs": -30,
+                  "segmentDurMs": 1696,
+                  "eosLatencyMs": 576,
+                  "peakDbfs": -16.97,
+                  "bytes": 54316,
+                  "uploaded": "out/vadweb_tuned-vadweb-001.wav"
+                },
+                {
+                  "idx": 2,
+                  "engine": "vadweb",
+                  "file": "vadweb_tuned-vadweb-002.wav",
+                  "tag": "vadweb_tuned",
+                  "totalMs": 1632,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 500,
+                  "onsetMs": 410,
+                  "onsetMinusPrerollMs": -90,
+                  "segmentDurMs": 1632,
+                  "eosLatencyMs": 576,
+                  "peakDbfs": -24.24,
+                  "bytes": 52268,
+                  "uploaded": "out/vadweb_tuned-vadweb-002.wav"
+                },
+                {
+                  "idx": 3,
+                  "engine": "vadweb",
+                  "file": "vadweb_tuned-vadweb-003.wav",
+                  "tag": "vadweb_tuned",
+                  "totalMs": 1696,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 500,
+                  "onsetMs": 460,
+                  "onsetMinusPrerollMs": -40,
+                  "segmentDurMs": 1696,
+                  "eosLatencyMs": 576,
+                  "peakDbfs": -24.41,
+                  "bytes": 54316,
+                  "uploaded": "out/vadweb_tuned-vadweb-003.wav"
+                },
+                {
+                  "idx": 4,
+                  "engine": "vadweb",
+                  "file": "vadweb_tuned-vadweb-004.wav",
+                  "tag": "vadweb_tuned",
+                  "totalMs": 1696,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 500,
+                  "onsetMs": 480,
+                  "onsetMinusPrerollMs": -20,
+                  "segmentDurMs": 1696,
+                  "eosLatencyMs": 576,
+                  "peakDbfs": -24.41,
+                  "bytes": 54316,
+                  "uploaded": "out/vadweb_tuned-vadweb-004.wav"
+                },
+                {
+                  "idx": 5,
+                  "engine": "vadweb",
+                  "file": "vadweb_tuned-vadweb-005.wav",
+                  "tag": "vadweb_tuned",
+                  "totalMs": 1632,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 500,
+                  "onsetMs": 400,
+                  "onsetMinusPrerollMs": -100,
+                  "segmentDurMs": 1632,
+                  "eosLatencyMs": 576,
+                  "peakDbfs": -24.24,
+                  "bytes": 52268,
+                  "uploaded": "out/vadweb_tuned-vadweb-005.wav"
+                },
+                {
+                  "idx": 6,
+                  "engine": "vadweb",
+                  "file": "vadweb_tuned-vadweb-006.wav",
+                  "tag": "vadweb_tuned",
+                  "totalMs": 1696,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 500,
+                  "onsetMs": 480,
+                  "onsetMinusPrerollMs": -20,
+                  "segmentDurMs": 1696,
+                  "eosLatencyMs": 576,
+                  "peakDbfs": -24.41,
+                  "bytes": 54316,
+                  "uploaded": "out/vadweb_tuned-vadweb-006.wav"
+                },
+                {
+                  "idx": 7,
+                  "engine": "vadweb",
+                  "file": "vadweb_tuned-vadweb-007.wav",
+                  "tag": "vadweb_tuned",
+                  "totalMs": 1632,
+                  "prerollMsRequested": 500,
+                  "prerollMsActual": 500,
+                  "onsetMs": 400,
+                  "onsetMinusPrerollMs": -100,
+                  "segmentDurMs": 1632,
+                  "eosLatencyMs": 576,
+                  "peakDbfs": -24.24,
+                  "bytes": 52268,
+                  "uploaded": "out/vadweb_tuned-vadweb-007.wav"
+                }
+              ],
+              "gum": {
+                "echoCancellationApplied": true,
+                "noiseSuppressionApplied": true,
+                "autoGainControlApplied": true
+              }
+            }
+          ]
+        }
+      },
+      "transferred": [
+        {
+          "name": "ort/ort.wasm.min.js",
+          "transferSize": 50496,
+          "encodedBodySize": 50196,
+          "decodedBodySize": 50196
+        },
+        {
+          "name": "vad/vad-bundle.min.js",
+          "transferSize": 69645,
+          "encodedBodySize": 69345,
+          "decodedBodySize": 69345
+        },
+        {
+          "name": "vad/silero_vad_v5.onnx",
+          "transferSize": 2327824,
+          "encodedBodySize": 2327524,
+          "decodedBodySize": 2327524
+        },
+        {
+          "name": "ort/ort-wasm-simd-threaded.mjs",
+          "transferSize": 24518,
+          "encodedBodySize": 24218,
+          "decodedBodySize": 24218
+        },
+        {
+          "name": "ort/ort-wasm-simd-threaded.wasm",
+          "transferSize": 13962145,
+          "encodedBodySize": 13961845,
+          "decodedBodySize": 13961845
+        }
+      ],
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_onset_orca_send",
+        "path": "fix_onset_orca_send.wav",
+        "bytes": 447404,
+        "loop_period_ms": 4660,
+        "speech_onset_ms": 1500,
+        "speech_offset_ms": 2160,
+        "speech_dur_ms": 660,
+        "speech_dbfs": -20,
+        "purpose": "pre-roll onset position, EOS latency, VAD inference"
+      }
+    },
+    "aec_mechanical": {
+      "aec": {
+        "on": {
+          "label": "aec-on",
+          "echoCancellationRequested": true,
+          "echoCancellationApplied": true,
+          "silenceDbfs": -57.22,
+          "playbackDbfs": -57.18,
+          "residualDeltaDb": 0.04,
+          "silenceTriggers": 0,
+          "playbackTriggers": 0,
+          "silenceTriggersPerMin": 0,
+          "playbackTriggersPerMin": 0,
+          "silenceSec": 4.01,
+          "playbackSec": 8.08
+        },
+        "off": {
+          "label": "aec-off",
+          "echoCancellationRequested": false,
+          "echoCancellationApplied": false,
+          "silenceDbfs": -50.5,
+          "playbackDbfs": -50.87,
+          "residualDeltaDb": -0.37,
+          "silenceTriggers": 0,
+          "playbackTriggers": 0,
+          "silenceTriggersPerMin": 0,
+          "playbackTriggersPerMin": 0,
+          "silenceSec": 4,
+          "playbackSec": 8.02
+        },
+        "suppressionDb": -0.41,
+        "triggerReduction": 0,
+        "caveat": "Meaningful ONLY with real speakers + real mic in the room. A fake capture device or headphones makes these numbers say nothing about AEC."
+      },
+      "caveat": "FAKE capture device: the speaker->room->mic path does not exist. These numbers say nothing about acoustic echo cancellation.",
+      "_chromium": "153.0.8010.12",
+      "_consoleErrors": [],
+      "_fixture": {
+        "name": "fix_noise_pink_quiet",
+        "path": "fix_noise_pink_quiet.wav",
+        "bytes": 2880044,
+        "loop_period_ms": 30000,
+        "speech_onset_ms": null,
+        "noise_dbfs": -50,
+        "purpose": "false-trigger rate per minute (any fire is false)"
+      }
+    }
+  },
+  "fixtures": {
+    "fix_onset_orca_send": {
+      "path": "fix_onset_orca_send.wav",
+      "bytes": 447404,
+      "loop_period_ms": 4660,
+      "speech_onset_ms": 1500,
+      "speech_offset_ms": 2160,
+      "speech_dur_ms": 660,
+      "speech_dbfs": -20,
+      "purpose": "pre-roll onset position, EOS latency, VAD inference"
+    },
+    "fix_onset_sentence": {
+      "path": "fix_onset_sentence.wav",
+      "bytes": 587564,
+      "loop_period_ms": 6120,
+      "speech_onset_ms": 1500,
+      "speech_offset_ms": 3620,
+      "speech_dur_ms": 2120,
+      "speech_dbfs": -20,
+      "purpose": "pre-roll onset position, EOS latency, VAD inference"
+    },
+    "fix_noise_pink_quiet": {
+      "path": "fix_noise_pink_quiet.wav",
+      "bytes": 2880044,
+      "loop_period_ms": 30000,
+      "speech_onset_ms": null,
+      "noise_dbfs": -50,
+      "purpose": "false-trigger rate per minute (any fire is false)"
+    },
+    "fix_noise_pink_room": {
+      "path": "fix_noise_pink_room.wav",
+      "bytes": 2880044,
+      "loop_period_ms": 30000,
+      "speech_onset_ms": null,
+      "noise_dbfs": -40,
+      "purpose": "false-trigger rate per minute (any fire is false)"
+    },
+    "fix_noise_pink_loud": {
+      "path": "fix_noise_pink_loud.wav",
+      "bytes": 2880044,
+      "loop_period_ms": 30000,
+      "speech_onset_ms": null,
+      "noise_dbfs": -26,
+      "purpose": "false-trigger rate per minute (any fire is false)"
+    },
+    "fix_speech_snr10": {
+      "path": "fix_speech_snr10.wav",
+      "bytes": 447404,
+      "loop_period_ms": 4660,
+      "speech_onset_ms": 1500,
+      "snr_db": 10,
+      "purpose": "VAD robustness / onset accuracy under noise"
+    },
+    "fix_speech_snr05": {
+      "path": "fix_speech_snr05.wav",
+      "bytes": 447404,
+      "loop_period_ms": 4660,
+      "speech_onset_ms": 1500,
+      "snr_db": 5,
+      "purpose": "VAD robustness / onset accuracy under noise"
+    }
+  }
+}

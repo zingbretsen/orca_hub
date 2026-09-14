@@ -1,0 +1,65 @@
+{
+  "sample_rate": 48000,
+  "fixtures": {
+    "fix_onset_orca_send": {
+      "path": "fix_onset_orca_send.wav",
+      "bytes": 447404,
+      "loop_period_ms": 4660.0,
+      "speech_onset_ms": 1500,
+      "speech_offset_ms": 2160.0,
+      "speech_dur_ms": 660.0,
+      "speech_dbfs": -20.0,
+      "purpose": "pre-roll onset position, EOS latency, VAD inference"
+    },
+    "fix_onset_sentence": {
+      "path": "fix_onset_sentence.wav",
+      "bytes": 587564,
+      "loop_period_ms": 6120.0,
+      "speech_onset_ms": 1500,
+      "speech_offset_ms": 3620.0,
+      "speech_dur_ms": 2120.0,
+      "speech_dbfs": -20.0,
+      "purpose": "pre-roll onset position, EOS latency, VAD inference"
+    },
+    "fix_noise_pink_quiet": {
+      "path": "fix_noise_pink_quiet.wav",
+      "bytes": 2880044,
+      "loop_period_ms": 30000.0,
+      "speech_onset_ms": null,
+      "noise_dbfs": -50.0,
+      "purpose": "false-trigger rate per minute (any fire is false)"
+    },
+    "fix_noise_pink_room": {
+      "path": "fix_noise_pink_room.wav",
+      "bytes": 2880044,
+      "loop_period_ms": 30000.0,
+      "speech_onset_ms": null,
+      "noise_dbfs": -40.0,
+      "purpose": "false-trigger rate per minute (any fire is false)"
+    },
+    "fix_noise_pink_loud": {
+      "path": "fix_noise_pink_loud.wav",
+      "bytes": 2880044,
+      "loop_period_ms": 30000.0,
+      "speech_onset_ms": null,
+      "noise_dbfs": -26.0,
+      "purpose": "false-trigger rate per minute (any fire is false)"
+    },
+    "fix_speech_snr10": {
+      "path": "fix_speech_snr10.wav",
+      "bytes": 447404,
+      "loop_period_ms": 4660.0,
+      "speech_onset_ms": 1500,
+      "snr_db": 10.0,
+      "purpose": "VAD robustness / onset accuracy under noise"
+    },
+    "fix_speech_snr05": {
+      "path": "fix_speech_snr05.wav",
+      "bytes": 447404,
+      "loop_period_ms": 4660.0,
+      "speech_onset_ms": 1500,
+      "snr_db": 5.0,
+      "purpose": "VAD robustness / onset accuracy under noise"
+    }
+  }
+}

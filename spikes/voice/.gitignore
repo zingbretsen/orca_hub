@@ -1,0 +1,18 @@
+# Vendored VAD runtime: ~19 MB of wasm/onnx. Kept out of git so it never bloats
+# a clone or this app's Docker build context. Re-fetch with tools/fetch_vendor.sh
+# (versions are pinned there).
+vendor/
+
+# Generated test audio. Speech clips come from the homelab TTS endpoint and the
+# fixtures are built from them; regenerate with tools/make_fixtures.py.
+# assets/fixtures.json IS tracked — it records the exact onset timestamps the
+# committed measurements were taken against.
+assets/*.wav
+!assets/fixtures.json
+
+# Run output. The three report JSONs are force-added as the spike's evidence.
+out/*
+!out/.gitkeep
+!out/headless-report.json
+!out/wav-verification.json
+!out/asset-sizes.json
