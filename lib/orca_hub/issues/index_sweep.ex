@@ -190,7 +190,7 @@ defmodule OrcaHub.Issues.IndexSweep do
         acc = %{acc | failed: acc.failed + 1}
         Logger.warning("Issue index sweep: issue #{id} failed - #{inspect(reason)}")
 
-        if endpoint_failure?(reason) do
+        if Indexer.endpoint_failure?(reason) do
           Logger.warning(
             "Issue index sweep: aborting this tick — #{inspect(reason)} is an endpoint-level " <>
               "failure, so the remaining issues would fail the same way"
@@ -202,19 +202,6 @@ defmodule OrcaHub.Issues.IndexSweep do
         end
     end
   end
-
-  # Distinguishes "this issue is bad" from "the embedder is bad". Only the
-  # latter aborts the tick — a hard 400 on one over-length chunk must not
-  # stop the other 19 issues from being indexed.
-  defp endpoint_failure?(:disabled), do: true
-  defp endpoint_failure?({:request_failed, _}), do: true
-  defp endpoint_failure?({:exception, _}), do: true
-  defp endpoint_failure?({:exit, _}), do: true
-  defp endpoint_failure?({:dimension_mismatch, _, _}), do: true
-  defp endpoint_failure?({:count_mismatch, _, _}), do: true
-  defp endpoint_failure?({:http_error, status, _}) when status >= 500, do: true
-  defp endpoint_failure?({:http_error, status, _}) when status in [408, 429], do: true
-  defp endpoint_failure?(_), do: false
 
   defp empty_summary do
     %{candidates: 0, indexed: 0, embedded: 0, deleted: 0, failed: 0, aborted: nil}

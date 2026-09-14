@@ -238,6 +238,57 @@ defmodule OrcaHub.Issues.Indexer do
   @spec stale_count() :: non_neg_integer()
   def stale_count, do: Repo.aggregate(stale_query(), :count, :id)
 
+  @doc """
+  Classifies a `reindex_issue/1` error as belonging to the ENDPOINT rather
+  than to the one issue. Both bulk callers (`OrcaHub.Issues.IndexSweep` and
+  `OrcaHub.Issues.Backfill`) use this to stop early instead of grinding
+  every remaining issue through a server that just refused the connection —
+  they would all fail identically, and hammering a single shared GPU box is
+  the retry amplification worth avoiding.
+
+  A hard `400` is deliberately NOT endpoint-level: it means the server
+  rejected that specific input (e.g. a chunk over its context limit), so
+  the next issue may well succeed.
+  """
+  @spec endpoint_failure?(term()) :: boolean()
+  def endpoint_failure?(:disabled), do: true
+  def endpoint_failure?({:request_failed, _}), do: true
+  def endpoint_failure?({:exception, _}), do: true
+  def endpoint_failure?({:exit, _}), do: true
+  def endpoint_failure?({:dimension_mismatch, _, _}), do: true
+  def endpoint_failure?({:count_mismatch, _, _}), do: true
+  def endpoint_failure?({:http_error, status, _}) when status >= 500, do: true
+  def endpoint_failure?({:http_error, status, _}) when status in [408, 429], do: true
+  def endpoint_failure?(_), do: false
+
+  @doc """
+  Ids of issues to reindex in a full pass, ordered by id and starting after
+  `after_id` — keyset pagination for `OrcaHub.Issues.Backfill`.
+
+  `stale_only: true` restricts to the same candidate set as
+  `stale_issue_ids/1`. Ordering by id (rather than by staleness) is what
+  makes a backfill terminate: an issue that fails is still behind the
+  cursor, so it cannot be handed back forever.
+  """
+  @spec page_issue_ids(String.t() | nil, pos_integer(), keyword()) :: [String.t()]
+  def page_issue_ids(after_id, limit, opts \\ []) when is_integer(limit) and limit > 0 do
+    base = if opts[:stale_only], do: stale_query(), else: from(i in Issue)
+
+    base
+    |> then(fn q -> if after_id, do: where(q, [i], i.id > ^after_id), else: q end)
+    |> order_by([i], asc: i.id)
+    |> limit(^limit)
+    |> select([i], i.id)
+    |> Repo.all()
+  end
+
+  @doc "How many issues a backfill would visit — every issue, or only the stale ones."
+  @spec countable(keyword()) :: non_neg_integer()
+  def countable(opts \\ []) do
+    query = if opts[:stale_only], do: stale_query(), else: from(i in Issue)
+    Repo.aggregate(query, :count, :id)
+  end
+
   # `>=`, not `>`, and that is load-bearing. Ecto's `timestamps()` store
   # `updated_at` truncated to the SECOND, so a write that lands in the same
   # second as an index pass produces `updated_at == indexed_at` — under `>`
