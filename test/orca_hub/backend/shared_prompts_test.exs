@@ -182,15 +182,30 @@ defmodule OrcaHub.Backend.SharedPromptsTest do
       context_dir: context_dir
     } do
       cap = SharedPrompts.context_manifest_max_bytes()
-      # Multi-byte content so the cut has to land on a UTF-8 boundary.
-      content = String.duplicate("é", cap)
-      assert byte_size(content) == cap * 2
+      # A 3-BYTE character on purpose: the cap (16_384) is even, so a 2-byte
+      # char like "é" would always cut on a code-point boundary and the
+      # back-off in safe_binary_prefix/2 would never run. 16_384 is not
+      # divisible by 3, so the raw cut lands mid-sequence and the prefix
+      # must be walked back one byte to 16_383 to be valid UTF-8.
+      content = String.duplicate("€", cap)
+      assert byte_size(content) == cap * 3
+      refute String.valid?(binary_part(content, 0, cap))
       File.write!(Path.join(context_dir, "manifest.md"), content)
 
       prompt = SharedPrompts.context_manifest_prompt(dir)
 
       assert String.valid?(prompt)
-      assert prompt =~ "truncated at #{cap} bytes (was #{cap * 2})"
+      assert prompt =~ "truncated at #{cap} bytes (was #{cap * 3})"
+      # The kept body is exactly the walked-back 16_383 bytes: 5_461 whole
+      # "€"s, i.e. the back-off dropped the dangling lead byte.
+      body =
+        prompt
+        |> String.replace_prefix("# Project Context\n\n", "")
+        |> String.split("\n\n[.context/")
+        |> hd()
+
+      assert byte_size(body) == cap - 1
+      assert body == String.duplicate("€", div(cap, 3))
       # Header + capped body + a short marker; nowhere near the full file.
       assert byte_size(prompt) < cap + 256
     end
