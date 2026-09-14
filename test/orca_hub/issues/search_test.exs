@@ -365,7 +365,10 @@ defmodule OrcaHub.Issues.SearchTest do
     } do
       stub_embedding(axis(0))
 
-      assert {:ok, results} = Search.semantic_search("fds are leaking somewhere")
+      # min_score: 0.0 because these one-hot fixtures are EXACTLY orthogonal
+      # (similarity 0.0), which the default relevance floor would filter out —
+      # here we're asserting the ORDER, so everything has to stay in.
+      assert {:ok, results} = Search.semantic_search("fds are leaking somewhere", min_score: 0.0)
       assert [first | rest] = results
       assert first.issue.id == warm_port.id
       assert_in_delta first.score, 1.0, 0.0001
@@ -432,6 +435,31 @@ defmodule OrcaHub.Issues.SearchTest do
     test "honours limit" do
       stub_embedding(axis(0))
       assert {:ok, [_only_one]} = Search.semantic_search("fds leaking", limit: 1)
+    end
+
+    test "drops results below the relevance floor — a vector search always returns SOMETHING" do
+      # axis(400) matches nothing in the fixture corpus (similarity 0.0), the
+      # in-test stand-in for an off-topic question. Without a floor a vector
+      # search happily returns its nearest rows anyway, which reads to an
+      # agent as "here are three relevant issues".
+      stub_embedding(axis(400))
+
+      assert {:ok, []} = Search.semantic_search("something this tracker knows nothing about")
+
+      # ...and the floor is a knob, not a wall.
+      assert {:ok, [_ | _]} =
+               Search.semantic_search("something this tracker knows nothing about",
+                 min_score: 0.0
+               )
+    end
+
+    test "the floor does not cut into genuine hits" do
+      # 0.6 of the way to another axis is ~0.555 — measured, real hits on the
+      # production corpus bottom out around 0.589, so a match this weak must
+      # still survive the 0.5 floor.
+      stub_embedding(blend(0, 400, 0.6))
+
+      assert {:ok, [_ | _]} = Search.semantic_search("a weak but genuine match")
     end
 
     test "surfaces an embedding failure rather than silently returning nothing" do

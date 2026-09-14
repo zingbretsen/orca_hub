@@ -62,6 +62,8 @@ defmodule OrcaHub.Issues.Search do
     * `:project_id` — scope to one project (omit for all projects).
     * `:created_by_session_id` — only issues filed by that session.
     * `:limit` — default #{10}.
+    * `:min_score` — semantic relevance floor, default #{0.5}. Pass `0.0` to
+      see the nearest vectors however far away they are.
 
   ## What fusion actually buys, measured (112 real prod issues, 2026-09-14)
 
@@ -128,6 +130,24 @@ defmodule OrcaHub.Issues.Search do
   # paper and what /home/zach/memory-service's own fusion uses — matching it
   # keeps the two systems' relative scores comparable to a reader.
   @rrf_k 60
+
+  # Relevance floor for the SEMANTIC leg (override per call with
+  # `:min_score`). A vector search always returns the nearest N rows however
+  # far away they are, so without this an off-topic question gets back ten
+  # confident-looking issues — actively misleading to an agent deciding
+  # whether something has already been filed.
+  #
+  # Measured on the real corpus: deliberately off-topic queries ("recipe for
+  # sourdough bread", "what is the capital of Portugal", "the mitochondria is
+  # the powerhouse of the cell", "qqqq wwww eeee rrrr") peak at 0.38-0.45,
+  # while the weakest genuine hit measured was 0.589 (the one-word query
+  # "OOMKill"). 0.50 sits in that gap with margin on both sides.
+  #
+  # It is not a clean separator and is not meant to be: a nonsense TOKEN
+  # ("zzzznotawordanywhere") still scores 0.599, because the model reads an
+  # unknown identifier as a generic technical term and this corpus is all
+  # technical terms. This floor removes off-topic PROSE, not junk tokens.
+  @min_semantic_score 0.5
 
   # Default cosine-similarity floor for `similar_issues/2`, CALIBRATED
   # against the real 112-issue prod corpus rather than guessed — the first
@@ -206,6 +226,7 @@ defmodule OrcaHub.Issues.Search do
   @spec semantic_by_vector([float()], keyword()) :: [result()]
   def semantic_by_vector(vector, opts \\ []) when is_list(vector) do
     limit = limit(opts)
+    min_score = Keyword.get(opts, :min_score, @min_semantic_score)
     candidates = max(limit * @oversample, @min_candidates)
 
     IssueChunk
@@ -222,6 +243,7 @@ defmodule OrcaHub.Issues.Search do
     })
     |> Repo.all()
     |> best_per_issue()
+    |> Enum.filter(&(1.0 - &1.distance >= min_score))
     |> Enum.sort_by(& &1.distance)
     |> Enum.take(limit)
     |> preload_issues()
