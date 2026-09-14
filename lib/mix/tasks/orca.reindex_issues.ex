@@ -35,23 +35,34 @@ defmodule Mix.Tasks.Orca.ReindexIssues do
 
   @impl Mix.Task
   def run(args) do
+    opts = parse_args(args)
+
+    Mix.Task.run("app.start")
+
+    case Backfill.run(Keyword.put(opts, :progress, &print_progress/1)) do
+      {:error, :disabled} -> Mix.raise(disabled_message())
+      {:ok, summary} when is_map(summary) -> report(summary, opts)
+    end
+  end
+
+  @doc """
+  Parses the flags, raising on an unknown one. Public (and called BEFORE
+  `app.start`) so a typo'd flag fails immediately, and so the CLI layer is
+  testable without booting — or recompiling — the app.
+  """
+  def parse_args(args) do
     {opts, _rest, invalid} = OptionParser.parse(args, strict: @switches)
 
     unless invalid == [] do
       Mix.raise("Unknown or malformed option(s): #{inspect(invalid)}")
     end
 
-    Mix.Task.run("app.start")
+    opts
+  end
 
-    case Backfill.run(Keyword.put(opts, :progress, &print_progress/1)) do
-      {:error, :disabled} ->
-        Mix.raise(
-          "No embedding endpoint configured (EMBEDDING_URL is unset), so there is nothing to index."
-        )
-
-      {:ok, summary} when is_map(summary) ->
-        report(summary, opts)
-    end
+  @doc false
+  def disabled_message do
+    "No embedding endpoint configured (EMBEDDING_URL is unset), so there is nothing to index."
   end
 
   defp print_progress(acc) do
@@ -61,7 +72,8 @@ defmodule Mix.Tasks.Orca.ReindexIssues do
     )
   end
 
-  defp report(summary, opts) do
+  @doc false
+  def report(summary, opts) do
     IO.puts("")
 
     if opts[:dry_run] do

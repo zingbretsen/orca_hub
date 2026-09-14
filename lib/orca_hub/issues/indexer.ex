@@ -170,12 +170,25 @@ defmodule OrcaHub.Issues.Indexer do
         :ok
 
       :async ->
-        Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-          log_outcome(reindex_issue(issue), issue)
-        end)
-
+        spawn_reindex(issue)
         :ok
     end
+  end
+
+  # Even the spawn is wrapped: `Task.Supervisor.start_child/2` EXITS with
+  # :noproc if OrcaHub.TaskSupervisor isn't running, and this runs inline on
+  # the caller's process — i.e. inside an interactive issue write. The
+  # supervisor is always up in a booted app, but a `mix run --no-start`
+  # script, a release `eval`, or a supervisor restart racing a write are all
+  # real, and none of them is a good reason to fail someone's issue update.
+  defp spawn_reindex(issue) do
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      log_outcome(reindex_issue(issue), issue)
+    end)
+  rescue
+    e -> Logger.warning("Issue indexer: could not spawn reindex - #{Exception.message(e)}")
+  catch
+    :exit, reason -> Logger.warning("Issue indexer: could not spawn reindex - #{inspect(reason)}")
   end
 
   @doc """
