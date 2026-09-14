@@ -470,6 +470,18 @@ defmodule OrcaHub.Issues.SearchTest do
   end
 
   describe "hybrid_search/2 degradation" do
+    # A query Postgres itself refuses (:character_not_in_repertoire — a NUL
+    # byte can't live in a text column), i.e. a genuine lexical-leg failure
+    # that isn't simulated. Realistic enough: an agent pasting garbled or
+    # binary content as its query.
+    #
+    # The first version of these two tests used a >1MB query instead, which
+    # also fails (:program_limit_exceeded) but takes 12.5 SECONDS against the
+    # shared dev DB — long enough to starve the connection pool and lose the
+    # sandbox owner, which made both tests flake under a full-directory run
+    # while passing in isolation. This one fails in ~90ms.
+    @unindexable "descriptor\0leak"
+
     test "with embeddings disabled, returns lexical results instead of an error", %{
       warm_port: warm_port
     } do
@@ -495,22 +507,15 @@ defmodule OrcaHub.Issues.SearchTest do
       chunk!(warm_port, "title", "title: #{warm_port.title}", embedding: axis(0))
       stub_embedding(axis(0))
 
-      # Over a megabyte: websearch_to_tsquery hard-errors on this, which is
-      # the cheapest genuine full-text failure to provoke — and an agent
-      # pasting a huge blob as its query is not hypothetical.
-      huge = String.duplicate("descriptor ", 120_000)
-
-      assert {:error, _} = Search.lexical_search(huge)
-      assert {:ok, results} = Search.hybrid_search(huge)
+      assert {:error, _} = Search.lexical_search(@unindexable)
+      assert {:ok, results} = Search.hybrid_search(@unindexable)
       assert titles(results) == [warm_port.title]
       assert hd(results).source == :semantic
     end
 
     test "when BOTH legs fail, the error surfaces" do
-      huge = String.duplicate("descriptor ", 120_000)
-
       refute OrcaHub.Embeddings.enabled?()
-      assert {:error, _reason} = Search.hybrid_search(huge)
+      assert {:error, _reason} = Search.hybrid_search(@unindexable)
     end
 
     test "a blank query is an empty result, not an error" do
