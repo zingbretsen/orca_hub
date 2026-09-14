@@ -79,9 +79,12 @@ defmodule OrcaHub.Issues.Issue do
 
     # Reconciliation watermark for pgvector-backed issue indexing: the
     # reindex sweep looks for `updated_at > indexed_at or indexed_at is
-    # nil`. NOTHING in this repo writes it yet — the indexer that owns it
-    # is a later slice. Present in the field list so a read never surprises
-    # a caller with a missing key.
+    # nil`. Owned by `OrcaHub.Issues.Indexer`, which stamps it with
+    # `Repo.update_all` rather than through this changeset precisely so the
+    # stamp does not bump `updated_at` (which would make the issue look
+    # stale again immediately and reindex it on every sweep tick). It is
+    # castable below only so a backfill/repair can set or clear it
+    # deliberately — ordinary indexing does not go through here.
     field :indexed_at, :utc_datetime
 
     belongs_to :project, OrcaHub.Projects.Project, type: :binary_id
@@ -112,7 +115,8 @@ defmodule OrcaHub.Issues.Issue do
       :closed_by_session_id,
       :closed_at,
       :superseded_by_issue_id,
-      :pinned_at
+      :pinned_at,
+      :indexed_at
     ])
     |> validate_required([:title])
     |> validate_inclusion(:status, @statuses)
