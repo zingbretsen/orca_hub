@@ -1,0 +1,21 @@
+# Vendored spotter runtimes: ~8 MB of wasm/onnx. Kept out of git so it never
+# bloats a clone or this app's Docker build context. Re-fetch with
+# tools/fetch_vendor.sh (versions are pinned there).
+vendor/
+
+# Generated test audio: 312 TTS renderings plus the fixtures built from them,
+# ~120 MB. Regenerate with tools/tts_fetch.py then tools/make_kws_fixtures.py.
+# assets/kws_fixtures.json and assets/phrases.json ARE tracked -- they record
+# the exact keyword onset/offset timestamps and the exact sentences the
+# committed measurements were taken against.
+assets/raw/
+assets/*.wav
+!assets/kws_fixtures.json
+!assets/phrases.json
+
+# Run output. The report JSONs are force-added as this spike's evidence.
+out/*
+!out/.gitkeep
+!out/kws-report.json
+!out/asset-sizes.json
+!out/false-accepts.json

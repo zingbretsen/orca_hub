@@ -1,0 +1,3954 @@
+{
+  "sample_rate": 16000,
+  "renders_per_keyword": 16,
+  "gap_ms": 2000,
+  "lead_ms": 1500,
+  "fixtures": {
+    "det_orca_send": {
+      "path": "det_orca_send.wav",
+      "bytes": 1458924,
+      "duration_ms": 45590.0,
+      "keyword": "orca_send",
+      "carrier": false,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2210.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4210.0,
+          "offset_ms": 4950.0,
+          "dur_ms": 740.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 6950.0,
+          "offset_ms": 7720.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9720.0,
+          "offset_ms": 10370.0,
+          "dur_ms": 650.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 12370.0,
+          "offset_ms": 13280.0,
+          "dur_ms": 910.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 15280.0,
+          "offset_ms": 15930.0,
+          "dur_ms": 650.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 17930.0,
+          "offset_ms": 18640.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 20640.0,
+          "offset_ms": 21450.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 23450.0,
+          "offset_ms": 24150.0,
+          "dur_ms": 700.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 26150.0,
+          "offset_ms": 26890.0,
+          "dur_ms": 740.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 28890.0,
+          "offset_ms": 29510.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 31510.0,
+          "offset_ms": 32300.0,
+          "dur_ms": 790.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 34300.0,
+          "offset_ms": 35170.0,
+          "dur_ms": 870.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 37170.0,
+          "offset_ms": 37900.0,
+          "dur_ms": 730.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 39900.0,
+          "offset_ms": 40780.0,
+          "dur_ms": 880.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 42780.0,
+          "offset_ms": 43590.0,
+          "dur_ms": 810.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_orca_send_carrier": {
+      "path": "det_orca_send_carrier.wav",
+      "bytes": 2870764,
+      "duration_ms": 89710.0,
+      "keyword": "orca_send",
+      "carrier": true,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 3730.0,
+          "offset_ms": 4440.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 9760.0,
+          "offset_ms": 10500.0,
+          "dur_ms": 740.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 15340.0,
+          "offset_ms": 16110.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 20750.0,
+          "offset_ms": 21400.0,
+          "dur_ms": 650.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 25630.0,
+          "offset_ms": 26540.0,
+          "dur_ms": 910.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 31860.0,
+          "offset_ms": 32510.0,
+          "dur_ms": 650.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 37350.0,
+          "offset_ms": 38060.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 42700.0,
+          "offset_ms": 43510.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 47740.0,
+          "offset_ms": 48440.0,
+          "dur_ms": 700.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 53760.0,
+          "offset_ms": 54500.0,
+          "dur_ms": 740.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 59340.0,
+          "offset_ms": 59960.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 64600.0,
+          "offset_ms": 65390.0,
+          "dur_ms": 790.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 69620.0,
+          "offset_ms": 70490.0,
+          "dur_ms": 870.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 75810.0,
+          "offset_ms": 76540.0,
+          "dur_ms": 730.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 81380.0,
+          "offset_ms": 82260.0,
+          "dur_ms": 880.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 86900.0,
+          "offset_ms": 87710.0,
+          "dur_ms": 810.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_orca_cancel": {
+      "path": "det_orca_cancel.wav",
+      "bytes": 1500844,
+      "duration_ms": 46900.0,
+      "keyword": "orca_cancel",
+      "carrier": false,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2310.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4310.0,
+          "offset_ms": 5090.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 7090.0,
+          "offset_ms": 8020.0,
+          "dur_ms": 930.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 10020.0,
+          "offset_ms": 10830.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 12830.0,
+          "offset_ms": 13700.0,
+          "dur_ms": 870.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 15700.0,
+          "offset_ms": 16500.0,
+          "dur_ms": 800.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 18500.0,
+          "offset_ms": 19260.0,
+          "dur_ms": 760.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 21260.0,
+          "offset_ms": 22240.0,
+          "dur_ms": 980.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 24240.0,
+          "offset_ms": 24940.0,
+          "dur_ms": 700.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 26940.0,
+          "offset_ms": 27770.0,
+          "dur_ms": 830.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 29770.0,
+          "offset_ms": 30760.0,
+          "dur_ms": 990.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 32760.0,
+          "offset_ms": 33540.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 35540.0,
+          "offset_ms": 36360.0,
+          "dur_ms": 820.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 38360.0,
+          "offset_ms": 39300.0,
+          "dur_ms": 940.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 41300.0,
+          "offset_ms": 42100.0,
+          "dur_ms": 800.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 44100.0,
+          "offset_ms": 44900.0,
+          "dur_ms": 800.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_orca_cancel_carrier": {
+      "path": "det_orca_cancel_carrier.wav",
+      "bytes": 2912684,
+      "duration_ms": 91020.0,
+      "keyword": "orca_cancel",
+      "carrier": true,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 3730.0,
+          "offset_ms": 4540.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 9860.0,
+          "offset_ms": 10640.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 15480.0,
+          "offset_ms": 16410.0,
+          "dur_ms": 930.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 21050.0,
+          "offset_ms": 21860.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 26090.0,
+          "offset_ms": 26960.0,
+          "dur_ms": 870.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 32280.0,
+          "offset_ms": 33080.0,
+          "dur_ms": 800.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 37920.0,
+          "offset_ms": 38680.0,
+          "dur_ms": 760.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 43320.0,
+          "offset_ms": 44300.0,
+          "dur_ms": 980.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 48530.0,
+          "offset_ms": 49230.0,
+          "dur_ms": 700.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 54550.0,
+          "offset_ms": 55380.0,
+          "dur_ms": 830.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 60220.0,
+          "offset_ms": 61210.0,
+          "dur_ms": 990.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 65850.0,
+          "offset_ms": 66630.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 70860.0,
+          "offset_ms": 71680.0,
+          "dur_ms": 820.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 77000.0,
+          "offset_ms": 77940.0,
+          "dur_ms": 940.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 82780.0,
+          "offset_ms": 83580.0,
+          "dur_ms": 800.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 88220.0,
+          "offset_ms": 89020.0,
+          "dur_ms": 800.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_orca_stop": {
+      "path": "det_orca_stop.wav",
+      "bytes": 1427884,
+      "duration_ms": 44620.0,
+      "keyword": "orca_stop",
+      "carrier": false,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2340.0,
+          "dur_ms": 840.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4340.0,
+          "offset_ms": 4970.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 6970.0,
+          "offset_ms": 7710.0,
+          "dur_ms": 740.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9710.0,
+          "offset_ms": 10480.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 12480.0,
+          "offset_ms": 13070.0,
+          "dur_ms": 590.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 15070.0,
+          "offset_ms": 15650.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 17650.0,
+          "offset_ms": 18200.0,
+          "dur_ms": 550.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 20200.0,
+          "offset_ms": 20980.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 22980.0,
+          "offset_ms": 23760.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 25760.0,
+          "offset_ms": 26440.0,
+          "dur_ms": 680.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 28440.0,
+          "offset_ms": 29100.0,
+          "dur_ms": 660.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 31100.0,
+          "offset_ms": 31830.0,
+          "dur_ms": 730.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 33830.0,
+          "offset_ms": 34550.0,
+          "dur_ms": 720.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 36550.0,
+          "offset_ms": 37180.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 39180.0,
+          "offset_ms": 39950.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 41950.0,
+          "offset_ms": 42620.0,
+          "dur_ms": 670.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_orca_stop_carrier": {
+      "path": "det_orca_stop_carrier.wav",
+      "bytes": 2839724,
+      "duration_ms": 88740.0,
+      "keyword": "orca_stop",
+      "carrier": true,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 3730.0,
+          "offset_ms": 4570.0,
+          "dur_ms": 840.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 9890.0,
+          "offset_ms": 10520.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 15360.0,
+          "offset_ms": 16100.0,
+          "dur_ms": 740.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 20740.0,
+          "offset_ms": 21510.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 25740.0,
+          "offset_ms": 26330.0,
+          "dur_ms": 590.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 31650.0,
+          "offset_ms": 32230.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 37070.0,
+          "offset_ms": 37620.0,
+          "dur_ms": 550.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 42260.0,
+          "offset_ms": 43040.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 47270.0,
+          "offset_ms": 48050.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 53370.0,
+          "offset_ms": 54050.0,
+          "dur_ms": 680.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 58890.0,
+          "offset_ms": 59550.0,
+          "dur_ms": 660.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 64190.0,
+          "offset_ms": 64920.0,
+          "dur_ms": 730.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 69150.0,
+          "offset_ms": 69870.0,
+          "dur_ms": 720.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 75190.0,
+          "offset_ms": 75820.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 80660.0,
+          "offset_ms": 81430.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 86070.0,
+          "offset_ms": 86740.0,
+          "dur_ms": 670.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_orca_pause": {
+      "path": "det_orca_pause.wav",
+      "bytes": 1498924,
+      "duration_ms": 46840.0,
+      "keyword": "orca_pause",
+      "carrier": false,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2450.0,
+          "dur_ms": 950.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4450.0,
+          "offset_ms": 5330.0,
+          "dur_ms": 880.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 7330.0,
+          "offset_ms": 8190.0,
+          "dur_ms": 860.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 10190.0,
+          "offset_ms": 11010.0,
+          "dur_ms": 820.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 13010.0,
+          "offset_ms": 13900.0,
+          "dur_ms": 890.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 15900.0,
+          "offset_ms": 16780.0,
+          "dur_ms": 880.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 18780.0,
+          "offset_ms": 19540.0,
+          "dur_ms": 760.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 21540.0,
+          "offset_ms": 22250.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 24250.0,
+          "offset_ms": 25040.0,
+          "dur_ms": 790.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 27040.0,
+          "offset_ms": 27860.0,
+          "dur_ms": 820.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 29860.0,
+          "offset_ms": 30790.0,
+          "dur_ms": 930.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 32790.0,
+          "offset_ms": 33630.0,
+          "dur_ms": 840.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 35630.0,
+          "offset_ms": 36480.0,
+          "dur_ms": 850.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 38480.0,
+          "offset_ms": 39240.0,
+          "dur_ms": 760.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 41240.0,
+          "offset_ms": 42070.0,
+          "dur_ms": 830.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 44070.0,
+          "offset_ms": 44840.0,
+          "dur_ms": 770.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_orca_pause_carrier": {
+      "path": "det_orca_pause_carrier.wav",
+      "bytes": 2910764,
+      "duration_ms": 90960.0,
+      "keyword": "orca_pause",
+      "carrier": true,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 3730.0,
+          "offset_ms": 4680.0,
+          "dur_ms": 950.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 10000.0,
+          "offset_ms": 10880.0,
+          "dur_ms": 880.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 15720.0,
+          "offset_ms": 16580.0,
+          "dur_ms": 860.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 21220.0,
+          "offset_ms": 22040.0,
+          "dur_ms": 820.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 26270.0,
+          "offset_ms": 27160.0,
+          "dur_ms": 890.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 32480.0,
+          "offset_ms": 33360.0,
+          "dur_ms": 880.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 38200.0,
+          "offset_ms": 38960.0,
+          "dur_ms": 760.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 43600.0,
+          "offset_ms": 44310.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 48540.0,
+          "offset_ms": 49330.0,
+          "dur_ms": 790.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 54650.0,
+          "offset_ms": 55470.0,
+          "dur_ms": 820.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 60310.0,
+          "offset_ms": 61240.0,
+          "dur_ms": 930.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 65880.0,
+          "offset_ms": 66720.0,
+          "dur_ms": 840.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 70950.0,
+          "offset_ms": 71800.0,
+          "dur_ms": 850.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 77120.0,
+          "offset_ms": 77880.0,
+          "dur_ms": 760.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 82720.0,
+          "offset_ms": 83550.0,
+          "dur_ms": 830.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 88190.0,
+          "offset_ms": 88960.0,
+          "dur_ms": 770.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_hey_jarvis": {
+      "path": "det_hey_jarvis.wav",
+      "bytes": 1474604,
+      "duration_ms": 46080.0,
+      "keyword": "hey_jarvis",
+      "carrier": false,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2160.0,
+          "dur_ms": 660.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4160.0,
+          "offset_ms": 5040.0,
+          "dur_ms": 880.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 7040.0,
+          "offset_ms": 7720.0,
+          "dur_ms": 680.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9720.0,
+          "offset_ms": 10530.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 12530.0,
+          "offset_ms": 13310.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 15310.0,
+          "offset_ms": 16080.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 18080.0,
+          "offset_ms": 18890.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 20890.0,
+          "offset_ms": 21700.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 23700.0,
+          "offset_ms": 24510.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 26510.0,
+          "offset_ms": 27280.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 29280.0,
+          "offset_ms": 29910.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 31910.0,
+          "offset_ms": 32720.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 34720.0,
+          "offset_ms": 35450.0,
+          "dur_ms": 730.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 37450.0,
+          "offset_ms": 38220.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 40220.0,
+          "offset_ms": 41310.0,
+          "dur_ms": 1090.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 43310.0,
+          "offset_ms": 44080.0,
+          "dur_ms": 770.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_hey_jarvis_carrier": {
+      "path": "det_hey_jarvis_carrier.wav",
+      "bytes": 2886444,
+      "duration_ms": 90200.0,
+      "keyword": "hey_jarvis",
+      "carrier": true,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 3730.0,
+          "offset_ms": 4390.0,
+          "dur_ms": 660.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 9710.0,
+          "offset_ms": 10590.0,
+          "dur_ms": 880.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 15430.0,
+          "offset_ms": 16110.0,
+          "dur_ms": 680.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 20750.0,
+          "offset_ms": 21560.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 25790.0,
+          "offset_ms": 26570.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 31890.0,
+          "offset_ms": 32660.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 37500.0,
+          "offset_ms": 38310.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 42950.0,
+          "offset_ms": 43760.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 47990.0,
+          "offset_ms": 48800.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 54120.0,
+          "offset_ms": 54890.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 59730.0,
+          "offset_ms": 60360.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 65000.0,
+          "offset_ms": 65810.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 70040.0,
+          "offset_ms": 70770.0,
+          "dur_ms": 730.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 76090.0,
+          "offset_ms": 76860.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 81700.0,
+          "offset_ms": 82790.0,
+          "dur_ms": 1090.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 87430.0,
+          "offset_ms": 88200.0,
+          "dur_ms": 770.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_alexa": {
+      "path": "det_alexa.wav",
+      "bytes": 1361964,
+      "duration_ms": 42560.0,
+      "keyword": "alexa",
+      "carrier": false,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2080.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4080.0,
+          "offset_ms": 4640.0,
+          "dur_ms": 560.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 6640.0,
+          "offset_ms": 7170.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9170.0,
+          "offset_ms": 9790.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 11790.0,
+          "offset_ms": 12380.0,
+          "dur_ms": 590.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 14380.0,
+          "offset_ms": 14990.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 16990.0,
+          "offset_ms": 17520.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 19520.0,
+          "offset_ms": 20090.0,
+          "dur_ms": 570.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 22090.0,
+          "offset_ms": 22650.0,
+          "dur_ms": 560.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 24650.0,
+          "offset_ms": 25230.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 27230.0,
+          "offset_ms": 27830.0,
+          "dur_ms": 600.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 29830.0,
+          "offset_ms": 30410.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 32410.0,
+          "offset_ms": 32950.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 34950.0,
+          "offset_ms": 35500.0,
+          "dur_ms": 550.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 37500.0,
+          "offset_ms": 38030.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 40030.0,
+          "offset_ms": 40560.0,
+          "dur_ms": 530.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_alexa_carrier": {
+      "path": "det_alexa_carrier.wav",
+      "bytes": 2773804,
+      "duration_ms": 86680.0,
+      "keyword": "alexa",
+      "carrier": true,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 3730.0,
+          "offset_ms": 4310.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 9630.0,
+          "offset_ms": 10190.0,
+          "dur_ms": 560.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 15030.0,
+          "offset_ms": 15560.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 20200.0,
+          "offset_ms": 20820.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 25050.0,
+          "offset_ms": 25640.0,
+          "dur_ms": 590.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 30960.0,
+          "offset_ms": 31570.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 36410.0,
+          "offset_ms": 36940.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 41580.0,
+          "offset_ms": 42150.0,
+          "dur_ms": 570.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 46380.0,
+          "offset_ms": 46940.0,
+          "dur_ms": 560.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 52260.0,
+          "offset_ms": 52840.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 57680.0,
+          "offset_ms": 58280.0,
+          "dur_ms": 600.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 62920.0,
+          "offset_ms": 63500.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 67730.0,
+          "offset_ms": 68270.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 73590.0,
+          "offset_ms": 74140.0,
+          "dur_ms": 550.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 78980.0,
+          "offset_ms": 79510.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 84150.0,
+          "offset_ms": 84680.0,
+          "dur_ms": 530.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_hey_mycroft": {
+      "path": "det_hey_mycroft.wav",
+      "bytes": 1475564,
+      "duration_ms": 46110.0,
+      "keyword": "hey_mycroft",
+      "carrier": false,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2220.0,
+          "dur_ms": 720.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4220.0,
+          "offset_ms": 5050.0,
+          "dur_ms": 830.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 7050.0,
+          "offset_ms": 7760.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9760.0,
+          "offset_ms": 10470.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 12470.0,
+          "offset_ms": 13240.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 15240.0,
+          "offset_ms": 16080.0,
+          "dur_ms": 840.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 18080.0,
+          "offset_ms": 18890.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 20890.0,
+          "offset_ms": 21650.0,
+          "dur_ms": 760.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 23650.0,
+          "offset_ms": 24470.0,
+          "dur_ms": 820.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 26470.0,
+          "offset_ms": 27250.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 29250.0,
+          "offset_ms": 30070.0,
+          "dur_ms": 820.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 32070.0,
+          "offset_ms": 32960.0,
+          "dur_ms": 890.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 34960.0,
+          "offset_ms": 35740.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 37740.0,
+          "offset_ms": 38520.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 40520.0,
+          "offset_ms": 41300.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 43300.0,
+          "offset_ms": 44110.0,
+          "dur_ms": 810.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_hey_mycroft_carrier": {
+      "path": "det_hey_mycroft_carrier.wav",
+      "bytes": 2887404,
+      "duration_ms": 90230.0,
+      "keyword": "hey_mycroft",
+      "carrier": true,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 3730.0,
+          "offset_ms": 4450.0,
+          "dur_ms": 720.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 9770.0,
+          "offset_ms": 10600.0,
+          "dur_ms": 830.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 15440.0,
+          "offset_ms": 16150.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 20790.0,
+          "offset_ms": 21500.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 25730.0,
+          "offset_ms": 26500.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 31820.0,
+          "offset_ms": 32660.0,
+          "dur_ms": 840.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 37500.0,
+          "offset_ms": 38310.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 42950.0,
+          "offset_ms": 43710.0,
+          "dur_ms": 760.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 47940.0,
+          "offset_ms": 48760.0,
+          "dur_ms": 820.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 54080.0,
+          "offset_ms": 54860.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 59700.0,
+          "offset_ms": 60520.0,
+          "dur_ms": 820.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 65160.0,
+          "offset_ms": 66050.0,
+          "dur_ms": 890.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 70280.0,
+          "offset_ms": 71060.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 76380.0,
+          "offset_ms": 77160.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 82000.0,
+          "offset_ms": 82780.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 87420.0,
+          "offset_ms": 88230.0,
+          "dur_ms": 810.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_computer": {
+      "path": "det_computer.wav",
+      "bytes": 1359084,
+      "duration_ms": 42470.0,
+      "keyword": "computer",
+      "carrier": false,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 1980.0,
+          "dur_ms": 480.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 3980.0,
+          "offset_ms": 4570.0,
+          "dur_ms": 590.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 6570.0,
+          "offset_ms": 7100.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9100.0,
+          "offset_ms": 9640.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 11640.0,
+          "offset_ms": 12180.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 14180.0,
+          "offset_ms": 14710.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 16710.0,
+          "offset_ms": 17240.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 19240.0,
+          "offset_ms": 19870.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 21870.0,
+          "offset_ms": 22480.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 24480.0,
+          "offset_ms": 25020.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 27020.0,
+          "offset_ms": 27590.0,
+          "dur_ms": 570.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 29590.0,
+          "offset_ms": 30200.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 32200.0,
+          "offset_ms": 32730.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 34730.0,
+          "offset_ms": 35340.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 37340.0,
+          "offset_ms": 37920.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 39920.0,
+          "offset_ms": 40470.0,
+          "dur_ms": 550.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_computer_carrier": {
+      "path": "det_computer_carrier.wav",
+      "bytes": 2770924,
+      "duration_ms": 86590.0,
+      "keyword": "computer",
+      "carrier": true,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 3730.0,
+          "offset_ms": 4210.0,
+          "dur_ms": 480.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 9530.0,
+          "offset_ms": 10120.0,
+          "dur_ms": 590.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 14960.0,
+          "offset_ms": 15490.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 20130.0,
+          "offset_ms": 20670.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 24900.0,
+          "offset_ms": 25440.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 30760.0,
+          "offset_ms": 31290.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 36130.0,
+          "offset_ms": 36660.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 41300.0,
+          "offset_ms": 41930.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 46160.0,
+          "offset_ms": 46770.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 52090.0,
+          "offset_ms": 52630.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 57470.0,
+          "offset_ms": 58040.0,
+          "dur_ms": 570.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 62680.0,
+          "offset_ms": 63290.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 67520.0,
+          "offset_ms": 68050.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 73370.0,
+          "offset_ms": 73980.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 78820.0,
+          "offset_ms": 79400.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 84040.0,
+          "offset_ms": 84590.0,
+          "dur_ms": 550.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_jarvis": {
+      "path": "det_jarvis.wav",
+      "bytes": 1380204,
+      "duration_ms": 43130.0,
+      "keyword": "jarvis",
+      "carrier": false,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2070.0,
+          "dur_ms": 570.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4070.0,
+          "offset_ms": 4630.0,
+          "dur_ms": 560.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 6630.0,
+          "offset_ms": 7230.0,
+          "dur_ms": 600.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9230.0,
+          "offset_ms": 9870.0,
+          "dur_ms": 640.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 11870.0,
+          "offset_ms": 12410.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 14410.0,
+          "offset_ms": 15050.0,
+          "dur_ms": 640.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 17050.0,
+          "offset_ms": 17670.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 19670.0,
+          "offset_ms": 20400.0,
+          "dur_ms": 730.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 22400.0,
+          "offset_ms": 23010.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 25010.0,
+          "offset_ms": 25590.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 27590.0,
+          "offset_ms": 28200.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 30200.0,
+          "offset_ms": 30710.0,
+          "dur_ms": 510.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 32710.0,
+          "offset_ms": 33280.0,
+          "dur_ms": 570.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 35280.0,
+          "offset_ms": 35910.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 37910.0,
+          "offset_ms": 38510.0,
+          "dur_ms": 600.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 40510.0,
+          "offset_ms": 41130.0,
+          "dur_ms": 620.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_jarvis_carrier": {
+      "path": "det_jarvis_carrier.wav",
+      "bytes": 2792044,
+      "duration_ms": 87250.0,
+      "keyword": "jarvis",
+      "carrier": true,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 3730.0,
+          "offset_ms": 4300.0,
+          "dur_ms": 570.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 9620.0,
+          "offset_ms": 10180.0,
+          "dur_ms": 560.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 15020.0,
+          "offset_ms": 15620.0,
+          "dur_ms": 600.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 20260.0,
+          "offset_ms": 20900.0,
+          "dur_ms": 640.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 25130.0,
+          "offset_ms": 25670.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 30990.0,
+          "offset_ms": 31630.0,
+          "dur_ms": 640.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 36470.0,
+          "offset_ms": 37090.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 41730.0,
+          "offset_ms": 42460.0,
+          "dur_ms": 730.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 46690.0,
+          "offset_ms": 47300.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 52620.0,
+          "offset_ms": 53200.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 58040.0,
+          "offset_ms": 58650.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 63290.0,
+          "offset_ms": 63800.0,
+          "dur_ms": 510.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 68030.0,
+          "offset_ms": 68600.0,
+          "dur_ms": 570.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 73920.0,
+          "offset_ms": 74550.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 79390.0,
+          "offset_ms": 79990.0,
+          "dur_ms": 600.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 84630.0,
+          "offset_ms": 85250.0,
+          "dur_ms": 620.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_porcupine": {
+      "path": "det_porcupine.wav",
+      "bytes": 1470764,
+      "duration_ms": 45960.0,
+      "keyword": "porcupine",
+      "carrier": false,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2170.0,
+          "dur_ms": 670.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4170.0,
+          "offset_ms": 4880.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 6880.0,
+          "offset_ms": 7690.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9690.0,
+          "offset_ms": 10350.0,
+          "dur_ms": 660.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 12350.0,
+          "offset_ms": 12970.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 14970.0,
+          "offset_ms": 15590.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 17590.0,
+          "offset_ms": 18250.0,
+          "dur_ms": 660.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 20250.0,
+          "offset_ms": 21180.0,
+          "dur_ms": 930.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 23180.0,
+          "offset_ms": 23850.0,
+          "dur_ms": 670.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 25850.0,
+          "offset_ms": 27830.0,
+          "dur_ms": 1980.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 29830.0,
+          "offset_ms": 30540.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 32540.0,
+          "offset_ms": 33210.0,
+          "dur_ms": 670.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 35210.0,
+          "offset_ms": 35790.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 37790.0,
+          "offset_ms": 38580.0,
+          "dur_ms": 790.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 40580.0,
+          "offset_ms": 41270.0,
+          "dur_ms": 690.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 43270.0,
+          "offset_ms": 43960.0,
+          "dur_ms": 690.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "det_porcupine_carrier": {
+      "path": "det_porcupine_carrier.wav",
+      "bytes": 2882604,
+      "duration_ms": 90080.0,
+      "keyword": "porcupine",
+      "carrier": true,
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 3730.0,
+          "offset_ms": 4400.0,
+          "dur_ms": 670.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 9720.0,
+          "offset_ms": 10430.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 15270.0,
+          "offset_ms": 16080.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 20720.0,
+          "offset_ms": 21380.0,
+          "dur_ms": 660.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 25610.0,
+          "offset_ms": 26230.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 31550.0,
+          "offset_ms": 32170.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 37010.0,
+          "offset_ms": 37670.0,
+          "dur_ms": 660.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 42310.0,
+          "offset_ms": 43240.0,
+          "dur_ms": 930.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 47470.0,
+          "offset_ms": 48140.0,
+          "dur_ms": 670.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 53460.0,
+          "offset_ms": 55440.0,
+          "dur_ms": 1980.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 60280.0,
+          "offset_ms": 60990.0,
+          "dur_ms": 710.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 65630.0,
+          "offset_ms": 66300.0,
+          "dur_ms": 670.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 70530.0,
+          "offset_ms": 71110.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 76430.0,
+          "offset_ms": 77220.0,
+          "dur_ms": 790.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 82060.0,
+          "offset_ms": 82750.0,
+          "dur_ms": 690.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 87390.0,
+          "offset_ms": 88080.0,
+          "dur_ms": 690.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection rate + detection latency (latency is measured from instance offset_ms)"
+    },
+    "bg_hey_jarvis_snr10": {
+      "path": "bg_hey_jarvis_snr10.wav",
+      "bytes": 1474604,
+      "duration_ms": 46080.0,
+      "keyword": "hey_jarvis",
+      "snr_db": 10.0,
+      "background": "continuous TTS speech",
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2160.0,
+          "dur_ms": 660.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4160.0,
+          "offset_ms": 5040.0,
+          "dur_ms": 880.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 7040.0,
+          "offset_ms": 7720.0,
+          "dur_ms": 680.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9720.0,
+          "offset_ms": 10530.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 12530.0,
+          "offset_ms": 13310.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 15310.0,
+          "offset_ms": 16080.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 18080.0,
+          "offset_ms": 18890.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 20890.0,
+          "offset_ms": 21700.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 23700.0,
+          "offset_ms": 24510.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 26510.0,
+          "offset_ms": 27280.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 29280.0,
+          "offset_ms": 29910.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 31910.0,
+          "offset_ms": 32720.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 34720.0,
+          "offset_ms": 35450.0,
+          "dur_ms": 730.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 37450.0,
+          "offset_ms": 38220.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 40220.0,
+          "offset_ms": 41310.0,
+          "dur_ms": 1090.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 43310.0,
+          "offset_ms": 44080.0,
+          "dur_ms": 770.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection while the assistant is speaking (spec 5.2)"
+    },
+    "bg_hey_jarvis_snr00": {
+      "path": "bg_hey_jarvis_snr00.wav",
+      "bytes": 1474604,
+      "duration_ms": 46080.0,
+      "keyword": "hey_jarvis",
+      "snr_db": 0.0,
+      "background": "continuous TTS speech",
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2160.0,
+          "dur_ms": 660.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4160.0,
+          "offset_ms": 5040.0,
+          "dur_ms": 880.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 7040.0,
+          "offset_ms": 7720.0,
+          "dur_ms": 680.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9720.0,
+          "offset_ms": 10530.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 12530.0,
+          "offset_ms": 13310.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 15310.0,
+          "offset_ms": 16080.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 18080.0,
+          "offset_ms": 18890.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 20890.0,
+          "offset_ms": 21700.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 23700.0,
+          "offset_ms": 24510.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 26510.0,
+          "offset_ms": 27280.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 29280.0,
+          "offset_ms": 29910.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 31910.0,
+          "offset_ms": 32720.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 34720.0,
+          "offset_ms": 35450.0,
+          "dur_ms": 730.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 37450.0,
+          "offset_ms": 38220.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 40220.0,
+          "offset_ms": 41310.0,
+          "dur_ms": 1090.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 43310.0,
+          "offset_ms": 44080.0,
+          "dur_ms": 770.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection while the assistant is speaking (spec 5.2)"
+    },
+    "bg_hey_jarvis_snrm06": {
+      "path": "bg_hey_jarvis_snrm06.wav",
+      "bytes": 1474604,
+      "duration_ms": 46080.0,
+      "keyword": "hey_jarvis",
+      "snr_db": -6.0,
+      "background": "continuous TTS speech",
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2160.0,
+          "dur_ms": 660.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4160.0,
+          "offset_ms": 5040.0,
+          "dur_ms": 880.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 7040.0,
+          "offset_ms": 7720.0,
+          "dur_ms": 680.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9720.0,
+          "offset_ms": 10530.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 12530.0,
+          "offset_ms": 13310.0,
+          "dur_ms": 780.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 15310.0,
+          "offset_ms": 16080.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 18080.0,
+          "offset_ms": 18890.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 20890.0,
+          "offset_ms": 21700.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 23700.0,
+          "offset_ms": 24510.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 26510.0,
+          "offset_ms": 27280.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 29280.0,
+          "offset_ms": 29910.0,
+          "dur_ms": 630.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 31910.0,
+          "offset_ms": 32720.0,
+          "dur_ms": 810.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 34720.0,
+          "offset_ms": 35450.0,
+          "dur_ms": 730.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 37450.0,
+          "offset_ms": 38220.0,
+          "dur_ms": 770.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 40220.0,
+          "offset_ms": 41310.0,
+          "dur_ms": 1090.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 43310.0,
+          "offset_ms": 44080.0,
+          "dur_ms": 770.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection while the assistant is speaking (spec 5.2)"
+    },
+    "bg_alexa_snr10": {
+      "path": "bg_alexa_snr10.wav",
+      "bytes": 1361964,
+      "duration_ms": 42560.0,
+      "keyword": "alexa",
+      "snr_db": 10.0,
+      "background": "continuous TTS speech",
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2080.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4080.0,
+          "offset_ms": 4640.0,
+          "dur_ms": 560.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 6640.0,
+          "offset_ms": 7170.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9170.0,
+          "offset_ms": 9790.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 11790.0,
+          "offset_ms": 12380.0,
+          "dur_ms": 590.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 14380.0,
+          "offset_ms": 14990.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 16990.0,
+          "offset_ms": 17520.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 19520.0,
+          "offset_ms": 20090.0,
+          "dur_ms": 570.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 22090.0,
+          "offset_ms": 22650.0,
+          "dur_ms": 560.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 24650.0,
+          "offset_ms": 25230.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 27230.0,
+          "offset_ms": 27830.0,
+          "dur_ms": 600.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 29830.0,
+          "offset_ms": 30410.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 32410.0,
+          "offset_ms": 32950.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 34950.0,
+          "offset_ms": 35500.0,
+          "dur_ms": 550.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 37500.0,
+          "offset_ms": 38030.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 40030.0,
+          "offset_ms": 40560.0,
+          "dur_ms": 530.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection while the assistant is speaking (spec 5.2)"
+    },
+    "bg_alexa_snr00": {
+      "path": "bg_alexa_snr00.wav",
+      "bytes": 1361964,
+      "duration_ms": 42560.0,
+      "keyword": "alexa",
+      "snr_db": 0.0,
+      "background": "continuous TTS speech",
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2080.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4080.0,
+          "offset_ms": 4640.0,
+          "dur_ms": 560.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 6640.0,
+          "offset_ms": 7170.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9170.0,
+          "offset_ms": 9790.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 11790.0,
+          "offset_ms": 12380.0,
+          "dur_ms": 590.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 14380.0,
+          "offset_ms": 14990.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 16990.0,
+          "offset_ms": 17520.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 19520.0,
+          "offset_ms": 20090.0,
+          "dur_ms": 570.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 22090.0,
+          "offset_ms": 22650.0,
+          "dur_ms": 560.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 24650.0,
+          "offset_ms": 25230.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 27230.0,
+          "offset_ms": 27830.0,
+          "dur_ms": 600.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 29830.0,
+          "offset_ms": 30410.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 32410.0,
+          "offset_ms": 32950.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 34950.0,
+          "offset_ms": 35500.0,
+          "dur_ms": 550.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 37500.0,
+          "offset_ms": 38030.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 40030.0,
+          "offset_ms": 40560.0,
+          "dur_ms": 530.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection while the assistant is speaking (spec 5.2)"
+    },
+    "bg_alexa_snrm06": {
+      "path": "bg_alexa_snrm06.wav",
+      "bytes": 1361964,
+      "duration_ms": 42560.0,
+      "keyword": "alexa",
+      "snr_db": -6.0,
+      "background": "continuous TTS speech",
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2080.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4080.0,
+          "offset_ms": 4640.0,
+          "dur_ms": 560.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 6640.0,
+          "offset_ms": 7170.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9170.0,
+          "offset_ms": 9790.0,
+          "dur_ms": 620.0
+        },
+        {
+          "index": 4,
+          "onset_ms": 11790.0,
+          "offset_ms": 12380.0,
+          "dur_ms": 590.0
+        },
+        {
+          "index": 5,
+          "onset_ms": 14380.0,
+          "offset_ms": 14990.0,
+          "dur_ms": 610.0
+        },
+        {
+          "index": 6,
+          "onset_ms": 16990.0,
+          "offset_ms": 17520.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 7,
+          "onset_ms": 19520.0,
+          "offset_ms": 20090.0,
+          "dur_ms": 570.0
+        },
+        {
+          "index": 8,
+          "onset_ms": 22090.0,
+          "offset_ms": 22650.0,
+          "dur_ms": 560.0
+        },
+        {
+          "index": 9,
+          "onset_ms": 24650.0,
+          "offset_ms": 25230.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 10,
+          "onset_ms": 27230.0,
+          "offset_ms": 27830.0,
+          "dur_ms": 600.0
+        },
+        {
+          "index": 11,
+          "onset_ms": 29830.0,
+          "offset_ms": 30410.0,
+          "dur_ms": 580.0
+        },
+        {
+          "index": 12,
+          "onset_ms": 32410.0,
+          "offset_ms": 32950.0,
+          "dur_ms": 540.0
+        },
+        {
+          "index": 13,
+          "onset_ms": 34950.0,
+          "offset_ms": 35500.0,
+          "dur_ms": 550.0
+        },
+        {
+          "index": 14,
+          "onset_ms": 37500.0,
+          "offset_ms": 38030.0,
+          "dur_ms": 530.0
+        },
+        {
+          "index": 15,
+          "onset_ms": 40030.0,
+          "offset_ms": 40560.0,
+          "dur_ms": 530.0
+        }
+      ],
+      "n": 16,
+      "purpose": "detection while the assistant is speaking (spec 5.2)"
+    },
+    "neg_speech": {
+      "path": "neg_speech.wav",
+      "bytes": 17618284,
+      "duration_ms": 550570.0,
+      "speech_ms": 506170.0,
+      "n_utterances": 148,
+      "utterances": [
+        {
+          "slug": "general",
+          "index": 119,
+          "text": "The archive command keeps the shared working tree untouched.",
+          "onset_ms": 0.0,
+          "offset_ms": 3760.0
+        },
+        {
+          "slug": "general",
+          "index": 11,
+          "text": "File visibility is creator, same project, or an explicit share.",
+          "onset_ms": 4060.0,
+          "offset_ms": 7450.0
+        },
+        {
+          "slug": "general",
+          "index": 42,
+          "text": "The redemption window is the only knob that really moves it.",
+          "onset_ms": 7750.0,
+          "offset_ms": 12540.0
+        },
+        {
+          "slug": "general",
+          "index": 5,
+          "text": "A trigger inherits its node from the project it belongs to.",
+          "onset_ms": 12840.0,
+          "offset_ms": 15710.0
+        },
+        {
+          "slug": "general",
+          "index": 96,
+          "text": "Changing it evicts the warm port so the next turn re reads it.",
+          "onset_ms": 16010.0,
+          "offset_ms": 18430.0
+        },
+        {
+          "slug": "general",
+          "index": 70,
+          "text": "The evaluator must fail closed to a neutral value.",
+          "onset_ms": 18730.0,
+          "offset_ms": 22370.0
+        },
+        {
+          "slug": "general",
+          "index": 37,
+          "text": "The ratio is not an integer and hard coding three is a bug.",
+          "onset_ms": 22670.0,
+          "offset_ms": 26020.0
+        },
+        {
+          "slug": "general",
+          "index": 40,
+          "text": "Without it the leading consonant simply disappears.",
+          "onset_ms": 26320.0,
+          "offset_ms": 28500.0
+        },
+        {
+          "slug": "general",
+          "index": 23,
+          "text": "A null means not indexed yet, not no match.",
+          "onset_ms": 28800.0,
+          "offset_ms": 32590.0
+        },
+        {
+          "slug": "general",
+          "index": 28,
+          "text": "One node builds for x86 and the other builds for arm natively.",
+          "onset_ms": 32890.0,
+          "offset_ms": 36170.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 8,
+          "text": "Please cancel the meeting on Thursday.",
+          "onset_ms": 36470.0,
+          "offset_ms": 39680.0
+        },
+        {
+          "slug": "general",
+          "index": 0,
+          "text": "The supervision tree is rebuilt on every boot from the mode configuration.",
+          "onset_ms": 39980.0,
+          "offset_ms": 43170.0
+        },
+        {
+          "slug": "general",
+          "index": 47,
+          "text": "The fake capture device bypasses the acoustic loop entirely.",
+          "onset_ms": 43470.0,
+          "offset_ms": 47790.0
+        },
+        {
+          "slug": "general",
+          "index": 117,
+          "text": "It never re resolves against a populated dependency directory.",
+          "onset_ms": 48090.0,
+          "offset_ms": 51100.0
+        },
+        {
+          "slug": "general",
+          "index": 59,
+          "text": "It never echoes back what it denied.",
+          "onset_ms": 51400.0,
+          "offset_ms": 53420.0
+        },
+        {
+          "slug": "general",
+          "index": 66,
+          "text": "Churn sampling runs every two minutes on the hub.",
+          "onset_ms": 53720.0,
+          "offset_ms": 57030.0
+        },
+        {
+          "slug": "general",
+          "index": 7,
+          "text": "Quantum's default run strategy picks a random node from the cluster.",
+          "onset_ms": 57330.0,
+          "offset_ms": 61640.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 10,
+          "text": "Let's pause here and come back to it tomorrow.",
+          "onset_ms": 61940.0,
+          "offset_ms": 64860.0
+        },
+        {
+          "slug": "general",
+          "index": 115,
+          "text": "Establish the baseline before you start upgrading anything.",
+          "onset_ms": 65160.0,
+          "offset_ms": 69680.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 19,
+          "text": "Alexandra said she would look at it on Monday.",
+          "onset_ms": 69980.0,
+          "offset_ms": 73570.0
+        },
+        {
+          "slug": "general",
+          "index": 32,
+          "text": "The architecture assertion stays as a cheap safety check.",
+          "onset_ms": 73870.0,
+          "offset_ms": 77990.0
+        },
+        {
+          "slug": "general",
+          "index": 63,
+          "text": "The exit code is written with an atomic rename.",
+          "onset_ms": 78290.0,
+          "offset_ms": 80320.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 3,
+          "text": "Send the email to Bob when you get a chance.",
+          "onset_ms": 80620.0,
+          "offset_ms": 82430.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 23,
+          "text": "Hey, Jarvis Cocker was the singer in Pulp.",
+          "onset_ms": 82730.0,
+          "offset_ms": 86330.0
+        },
+        {
+          "slug": "general",
+          "index": 19,
+          "text": "An over length input is a hard four hundred, not a truncation.",
+          "onset_ms": 86630.0,
+          "offset_ms": 89760.0
+        },
+        {
+          "slug": "general",
+          "index": 6,
+          "text": "The scheduler only runs on the hub node, never on an agent.",
+          "onset_ms": 90060.0,
+          "offset_ms": 92820.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 11,
+          "text": "Organic search traffic is down again this quarter.",
+          "onset_ms": 93120.0,
+          "offset_ms": 97460.0
+        },
+        {
+          "slug": "general",
+          "index": 92,
+          "text": "Treating that as deny all would strip every tool silently.",
+          "onset_ms": 97760.0,
+          "offset_ms": 101280.0
+        },
+        {
+          "slug": "general",
+          "index": 27,
+          "text": "We build a real multi architecture manifest list on every deploy.",
+          "onset_ms": 101580.0,
+          "offset_ms": 104770.0
+        },
+        {
+          "slug": "general",
+          "index": 101,
+          "text": "An ungated fork is strictly worse than a plain spawn.",
+          "onset_ms": 105070.0,
+          "offset_ms": 108720.0
+        },
+        {
+          "slug": "general",
+          "index": 24,
+          "text": "The hierarchical index uses cosine distance.",
+          "onset_ms": 109020.0,
+          "offset_ms": 111350.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 17,
+          "text": "Jarvis is the assistant in the Iron Man films.",
+          "onset_ms": 111650.0,
+          "offset_ms": 115160.0
+        },
+        {
+          "slug": "general",
+          "index": 80,
+          "text": "Two pollers would race to fire the same trigger twice.",
+          "onset_ms": 115460.0,
+          "offset_ms": 117910.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 2,
+          "text": "Orcas send signals to each other across the whole bay.",
+          "onset_ms": 118210.0,
+          "offset_ms": 120460.0
+        },
+        {
+          "slug": "general",
+          "index": 34,
+          "text": "Routing through the secure shell daemon escapes the privilege restriction.",
+          "onset_ms": 120760.0,
+          "offset_ms": 125150.0
+        },
+        {
+          "slug": "general",
+          "index": 100,
+          "text": "Concurrent same prefix turns get one cache hit and many cold prefills.",
+          "onset_ms": 125450.0,
+          "offset_ms": 128880.0
+        },
+        {
+          "slug": "general",
+          "index": 84,
+          "text": "Setup scripts run before every firing, including a reused session.",
+          "onset_ms": 129180.0,
+          "offset_ms": 133820.0
+        },
+        {
+          "slug": "general",
+          "index": 64,
+          "text": "Progress metrics are declared by the job, never inferred.",
+          "onset_ms": 134120.0,
+          "offset_ms": 136530.0
+        },
+        {
+          "slug": "general",
+          "index": 52,
+          "text": "Sentence chunking happens before the prefetch pipeline.",
+          "onset_ms": 136830.0,
+          "offset_ms": 141940.0
+        },
+        {
+          "slug": "general",
+          "index": 1,
+          "text": "We route database calls through the hub because agents have no repository.",
+          "onset_ms": 142240.0,
+          "offset_ms": 147450.0
+        },
+        {
+          "slug": "general",
+          "index": 72,
+          "text": "No alerts is the normal baseline, so nothing would look wrong.",
+          "onset_ms": 147750.0,
+          "offset_ms": 151270.0
+        },
+        {
+          "slug": "general",
+          "index": 38,
+          "text": "Whisper will happily transcribe pitch shifted audio into plausible wrong words.",
+          "onset_ms": 151570.0,
+          "offset_ms": 156560.0
+        },
+        {
+          "slug": "general",
+          "index": 21,
+          "text": "The vector column is nullable because embedding can fail independently.",
+          "onset_ms": 156860.0,
+          "offset_ms": 159860.0
+        },
+        {
+          "slug": "general",
+          "index": 89,
+          "text": "The tool policy covers protocol tools only, not the built in file tools.",
+          "onset_ms": 160160.0,
+          "offset_ms": 164530.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 9,
+          "text": "We should stop and think about this for a second.",
+          "onset_ms": 164830.0,
+          "offset_ms": 168820.0
+        },
+        {
+          "slug": "general",
+          "index": 49,
+          "text": "Only a human with real speakers can answer that question.",
+          "onset_ms": 169120.0,
+          "offset_ms": 171800.0
+        },
+        {
+          "slug": "general",
+          "index": 8,
+          "text": "That silently dropped the nightly trigger for several weeks.",
+          "onset_ms": 172100.0,
+          "offset_ms": 174540.0
+        },
+        {
+          "slug": "general",
+          "index": 41,
+          "text": "Voice activity detection dominates the end of speech latency budget.",
+          "onset_ms": 174840.0,
+          "offset_ms": 177810.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 4,
+          "text": "I was going to send it but the network was down.",
+          "onset_ms": 178110.0,
+          "offset_ms": 180640.0
+        },
+        {
+          "slug": "general",
+          "index": 110,
+          "text": "Deployments happen out of band all the time.",
+          "onset_ms": 180940.0,
+          "offset_ms": 184840.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 20,
+          "text": "A Lexus is not really my kind of car.",
+          "onset_ms": 185140.0,
+          "offset_ms": 187650.0
+        },
+        {
+          "slug": "general",
+          "index": 113,
+          "text": "A lock file change forces a full recompile for everyone.",
+          "onset_ms": 187950.0,
+          "offset_ms": 192010.0
+        },
+        {
+          "slug": "general",
+          "index": 83,
+          "text": "Subject matching is a case insensitive substring, not a regular expression.",
+          "onset_ms": 192310.0,
+          "offset_ms": 197240.0
+        },
+        {
+          "slug": "general",
+          "index": 67,
+          "text": "Two nodes sweeping would double sample and double alert.",
+          "onset_ms": 197540.0,
+          "offset_ms": 199690.0
+        },
+        {
+          "slug": "general",
+          "index": 2,
+          "text": "Every session gets its own message control protocol server.",
+          "onset_ms": 199990.0,
+          "offset_ms": 205540.0
+        },
+        {
+          "slug": "general",
+          "index": 16,
+          "text": "Weekly verification checks concrete claims with grep and git.",
+          "onset_ms": 205840.0,
+          "offset_ms": 208960.0
+        },
+        {
+          "slug": "general",
+          "index": 14,
+          "text": "The child reads the transcript since the last watermark.",
+          "onset_ms": 209260.0,
+          "offset_ms": 214370.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 6,
+          "text": "Or can send it later if that is easier.",
+          "onset_ms": 214670.0,
+          "offset_ms": 219580.0
+        },
+        {
+          "slug": "general",
+          "index": 75,
+          "text": "Input from any client reaches the same shell.",
+          "onset_ms": 219880.0,
+          "offset_ms": 221930.0
+        },
+        {
+          "slug": "general",
+          "index": 10,
+          "text": "The object store keeps bytes out of Postgres entirely.",
+          "onset_ms": 222230.0,
+          "offset_ms": 224950.0
+        },
+        {
+          "slug": "general",
+          "index": 55,
+          "text": "Scoped tokens are hashed at rest and can be pinned to one session.",
+          "onset_ms": 225250.0,
+          "offset_ms": 228200.0
+        },
+        {
+          "slug": "general",
+          "index": 33,
+          "text": "The local restart runs last because it kills the deploy script.",
+          "onset_ms": 228500.0,
+          "offset_ms": 231140.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 18,
+          "text": "Hey there, did you get my message?",
+          "onset_ms": 231440.0,
+          "offset_ms": 235530.0
+        },
+        {
+          "slug": "general",
+          "index": 93,
+          "text": "Explicit deny all is a single glob character.",
+          "onset_ms": 235830.0,
+          "offset_ms": 238130.0
+        },
+        {
+          "slug": "general",
+          "index": 74,
+          "text": "Multiple browser tabs can join the same channel topic.",
+          "onset_ms": 238430.0,
+          "offset_ms": 241570.0
+        },
+        {
+          "slug": "general",
+          "index": 82,
+          "text": "An empty one would fire for mail from any authenticated sender.",
+          "onset_ms": 241870.0,
+          "offset_ms": 245040.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 26,
+          "text": "Electra was a Greek tragedy by Sophocles.",
+          "onset_ms": 245340.0,
+          "offset_ms": 248160.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 25,
+          "text": "Hey, my crofting neighbour has sheep on the hill.",
+          "onset_ms": 248460.0,
+          "offset_ms": 251630.0
+        },
+        {
+          "slug": "general",
+          "index": 94,
+          "text": "Deny wins over allow in every case.",
+          "onset_ms": 251930.0,
+          "offset_ms": 253870.0
+        },
+        {
+          "slug": "general",
+          "index": 18,
+          "text": "The embedding endpoint has an eight thousand token context window.",
+          "onset_ms": 254170.0,
+          "offset_ms": 258080.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 12,
+          "text": "The orchard sends us apples every October.",
+          "onset_ms": 258380.0,
+          "offset_ms": 260470.0
+        },
+        {
+          "slug": "general",
+          "index": 62,
+          "text": "A disposable watcher only observes the sentinel file.",
+          "onset_ms": 260770.0,
+          "offset_ms": 264690.0
+        },
+        {
+          "slug": "general",
+          "index": 46,
+          "text": "Echo cancellation is honoured in both directions.",
+          "onset_ms": 264990.0,
+          "offset_ms": 268820.0
+        },
+        {
+          "slug": "general",
+          "index": 17,
+          "text": "Humans still decide what gets thrown away.",
+          "onset_ms": 269120.0,
+          "offset_ms": 271020.0
+        },
+        {
+          "slug": "general",
+          "index": 78,
+          "text": "Joining the same group twice is allowed and duplicates every message.",
+          "onset_ms": 271320.0,
+          "offset_ms": 275580.0
+        },
+        {
+          "slug": "general",
+          "index": 50,
+          "text": "Half duplex remains the safe default for the first version.",
+          "onset_ms": 275880.0,
+          "offset_ms": 280010.0
+        },
+        {
+          "slug": "general",
+          "index": 112,
+          "text": "Commit by explicit path so you never sweep up a sibling's work.",
+          "onset_ms": 280310.0,
+          "offset_ms": 285500.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 27,
+          "text": "The lexer produces a token stream for the parser.",
+          "onset_ms": 285800.0,
+          "offset_ms": 287910.0
+        },
+        {
+          "slug": "general",
+          "index": 31,
+          "text": "Cross architecture cache poisoning shipped the wrong binary twice.",
+          "onset_ms": 288210.0,
+          "offset_ms": 291900.0
+        },
+        {
+          "slug": "general",
+          "index": 111,
+          "text": "Trunk based development means committing straight to the main branch.",
+          "onset_ms": 292200.0,
+          "offset_ms": 294790.0
+        },
+        {
+          "slug": "general",
+          "index": 29,
+          "text": "No emulation is involved at any point.",
+          "onset_ms": 295090.0,
+          "offset_ms": 297110.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 22,
+          "text": "Alex asked whether the build had finished.",
+          "onset_ms": 297410.0,
+          "offset_ms": 302190.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 5,
+          "text": "An orca is a kind of dolphin, not a whale.",
+          "onset_ms": 302490.0,
+          "offset_ms": 306300.0
+        },
+        {
+          "slug": "general",
+          "index": 54,
+          "text": "The bearer token reaches the browser through a live view event.",
+          "onset_ms": 306600.0,
+          "offset_ms": 308910.0
+        },
+        {
+          "slug": "general",
+          "index": 39,
+          "text": "The pre roll ring buffer prevents the first phoneme from being clipped.",
+          "onset_ms": 309210.0,
+          "offset_ms": 312890.0
+        },
+        {
+          "slug": "general",
+          "index": 4,
+          "text": "Streaming keeps a long lived port open across turns.",
+          "onset_ms": 313190.0,
+          "offset_ms": 316560.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 24,
+          "text": "My croft is a small farm in the Scottish highlands.",
+          "onset_ms": 316860.0,
+          "offset_ms": 319320.0
+        },
+        {
+          "slug": "general",
+          "index": 88,
+          "text": "A non zero exit is logged and surfaced, never fatal.",
+          "onset_ms": 319620.0,
+          "offset_ms": 324260.0
+        },
+        {
+          "slug": "general",
+          "index": 61,
+          "text": "The process is never a child of the virtual machine.",
+          "onset_ms": 324560.0,
+          "offset_ms": 327160.0
+        },
+        {
+          "slug": "general",
+          "index": 102,
+          "text": "The fork discriminant is a separate column from the parent link.",
+          "onset_ms": 327460.0,
+          "offset_ms": 331260.0
+        },
+        {
+          "slug": "general",
+          "index": 22,
+          "text": "Every search query has to filter out the null embeddings.",
+          "onset_ms": 331560.0,
+          "offset_ms": 334940.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 13,
+          "text": "Orchestration of the containers is handled by Flux.",
+          "onset_ms": 335240.0,
+          "offset_ms": 337600.0
+        },
+        {
+          "slug": "general",
+          "index": 71,
+          "text": "Otherwise a persistent failure ends alerting forever and silently.",
+          "onset_ms": 337900.0,
+          "offset_ms": 342400.0
+        },
+        {
+          "slug": "general",
+          "index": 48,
+          "text": "There is no speaker, no room, and therefore no echo to cancel.",
+          "onset_ms": 342700.0,
+          "offset_ms": 346010.0
+        },
+        {
+          "slug": "general",
+          "index": 15,
+          "text": "Nightly consolidation proposes merges but never retires anything.",
+          "onset_ms": 346310.0,
+          "offset_ms": 349520.0
+        },
+        {
+          "slug": "general",
+          "index": 104,
+          "text": "Microsecond sorts before minute, month, second, and year.",
+          "onset_ms": 349820.0,
+          "offset_ms": 353120.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 15,
+          "text": "I will cancel my subscription at the end of the month.",
+          "onset_ms": 353420.0,
+          "offset_ms": 356840.0
+        },
+        {
+          "slug": "general",
+          "index": 57,
+          "text": "The legacy global token is preserved as a full access fallback.",
+          "onset_ms": 357140.0,
+          "offset_ms": 359950.0
+        },
+        {
+          "slug": "general",
+          "index": 13,
+          "text": "Memory extraction spawns a cheap child session at archive time.",
+          "onset_ms": 360250.0,
+          "offset_ms": 363970.0
+        },
+        {
+          "slug": "general",
+          "index": 3,
+          "text": "The warm pool evicts the least recently used idle session under pressure.",
+          "onset_ms": 364270.0,
+          "offset_ms": 367240.0
+        },
+        {
+          "slug": "general",
+          "index": 79,
+          "text": "Email polling is hub only because the watermark is hub state.",
+          "onset_ms": 367540.0,
+          "offset_ms": 370290.0
+        },
+        {
+          "slug": "general",
+          "index": 91,
+          "text": "An untouched multi select casts to an empty list.",
+          "onset_ms": 370590.0,
+          "offset_ms": 373180.0
+        },
+        {
+          "slug": "general",
+          "index": 76,
+          "text": "That enables pairing between a human and an agent.",
+          "onset_ms": 373480.0,
+          "offset_ms": 375720.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 1,
+          "text": "The orchestra sent their apologies this morning.",
+          "onset_ms": 376020.0,
+          "offset_ms": 379350.0
+        },
+        {
+          "slug": "general",
+          "index": 30,
+          "text": "Each node keeps its own build cache warm across deploys.",
+          "onset_ms": 379650.0,
+          "offset_ms": 382810.0
+        },
+        {
+          "slug": "general",
+          "index": 118,
+          "text": "Prove it from a pristine tree with its own empty build directory.",
+          "onset_ms": 383110.0,
+          "offset_ms": 390480.0
+        },
+        {
+          "slug": "general",
+          "index": 114,
+          "text": "Tell the active sessions before you land one.",
+          "onset_ms": 390780.0,
+          "offset_ms": 392830.0
+        },
+        {
+          "slug": "general",
+          "index": 105,
+          "text": "Any two timestamps sharing an hour get silently scrambled.",
+          "onset_ms": 393130.0,
+          "offset_ms": 395580.0
+        },
+        {
+          "slug": "general",
+          "index": 26,
+          "text": "Migrations cannot grant themselves superuser.",
+          "onset_ms": 395880.0,
+          "offset_ms": 399550.0
+        },
+        {
+          "slug": "general",
+          "index": 69,
+          "text": "A still true condition does not re alert every tick.",
+          "onset_ms": 399850.0,
+          "offset_ms": 403090.0
+        },
+        {
+          "slug": "general",
+          "index": 43,
+          "text": "Six hundred milliseconds fits the budget with room to spare.",
+          "onset_ms": 403390.0,
+          "offset_ms": 406800.0
+        },
+        {
+          "slug": "general",
+          "index": 25,
+          "text": "Creating the extension is a manual superuser step per database.",
+          "onset_ms": 407100.0,
+          "offset_ms": 411570.0
+        },
+        {
+          "slug": "general",
+          "index": 68,
+          "text": "Alerts fire on a rising edge with a cooldown.",
+          "onset_ms": 411870.0,
+          "offset_ms": 415420.0
+        },
+        {
+          "slug": "general",
+          "index": 98,
+          "text": "The flag change defers its eviction to the next idle transition.",
+          "onset_ms": 415720.0,
+          "offset_ms": 420670.0
+        },
+        {
+          "slug": "general",
+          "index": 87,
+          "text": "A script that backgrounds children cannot leave orphans behind.",
+          "onset_ms": 420970.0,
+          "offset_ms": 423740.0
+        },
+        {
+          "slug": "general",
+          "index": 95,
+          "text": "The policy is cached for the life of the connection.",
+          "onset_ms": 424040.0,
+          "offset_ms": 428090.0
+        },
+        {
+          "slug": "general",
+          "index": 9,
+          "text": "Artifacts render inside a sandboxed iframe with scripts allowed.",
+          "onset_ms": 428390.0,
+          "offset_ms": 433220.0
+        },
+        {
+          "slug": "general",
+          "index": 73,
+          "text": "The terminal allocates a pseudo terminal through the script utility.",
+          "onset_ms": 433520.0,
+          "offset_ms": 436530.0
+        },
+        {
+          "slug": "general",
+          "index": 81,
+          "text": "The sender allow list must be non empty at the changeset level.",
+          "onset_ms": 436830.0,
+          "offset_ms": 441780.0
+        },
+        {
+          "slug": "general",
+          "index": 77,
+          "text": "The prefix differs from the channel topic to avoid double delivery.",
+          "onset_ms": 442080.0,
+          "offset_ms": 445080.0
+        },
+        {
+          "slug": "general",
+          "index": 90,
+          "text": "That is the likeliest misreading and every surface says so.",
+          "onset_ms": 445380.0,
+          "offset_ms": 449370.0
+        },
+        {
+          "slug": "general",
+          "index": 58,
+          "text": "A scope violation returns a deliberately distinct forbidden status.",
+          "onset_ms": 449670.0,
+          "offset_ms": 452920.0
+        },
+        {
+          "slug": "general",
+          "index": 56,
+          "text": "A pinned token is rejected if it asks for a scope that takes no session.",
+          "onset_ms": 453220.0,
+          "offset_ms": 456480.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 21,
+          "text": "Hey Darius, can you take a look at this?",
+          "onset_ms": 456780.0,
+          "offset_ms": 459520.0
+        },
+        {
+          "slug": "general",
+          "index": 12,
+          "text": "Deleting is narrower than reading, and a share never grants delete.",
+          "onset_ms": 459820.0,
+          "offset_ms": 462890.0
+        },
+        {
+          "slug": "general",
+          "index": 86,
+          "text": "A timeout signals the entire process group.",
+          "onset_ms": 463190.0,
+          "offset_ms": 465400.0
+        },
+        {
+          "slug": "general",
+          "index": 99,
+          "text": "Forked children serialize their first turns through a gate.",
+          "onset_ms": 465700.0,
+          "offset_ms": 468450.0
+        },
+        {
+          "slug": "general",
+          "index": 53,
+          "text": "Rate limiting is handled with exponential backoff.",
+          "onset_ms": 468750.0,
+          "offset_ms": 471540.0
+        },
+        {
+          "slug": "general",
+          "index": 44,
+          "text": "The library defaults are roughly twice the target.",
+          "onset_ms": 471840.0,
+          "offset_ms": 475190.0
+        },
+        {
+          "slug": "general",
+          "index": 60,
+          "text": "Detached jobs survive idle teardown and deploys.",
+          "onset_ms": 475490.0,
+          "offset_ms": 478460.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 16,
+          "text": "Hey, Travis called about the invoice.",
+          "onset_ms": 478760.0,
+          "offset_ms": 482870.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 14,
+          "text": "Mark it as sent and move on.",
+          "onset_ms": 483170.0,
+          "offset_ms": 485260.0
+        },
+        {
+          "slug": "general",
+          "index": 106,
+          "text": "Always pass an explicit comparator to the sort function.",
+          "onset_ms": 485560.0,
+          "offset_ms": 488190.0
+        },
+        {
+          "slug": "general",
+          "index": 51,
+          "text": "The assistant's reply is spoken back as the deltas arrive.",
+          "onset_ms": 488490.0,
+          "offset_ms": 490930.0
+        },
+        {
+          "slug": "general",
+          "index": 85,
+          "text": "No part of an inbound payload ever reaches the script or its environment.",
+          "onset_ms": 491230.0,
+          "offset_ms": 495240.0
+        },
+        {
+          "slug": "general",
+          "index": 103,
+          "text": "Timestamps compare alphabetically by field under default term ordering.",
+          "onset_ms": 495540.0,
+          "offset_ms": 499520.0
+        },
+        {
+          "slug": "general",
+          "index": 45,
+          "text": "Noise suppression does about six decibels of real work on capture.",
+          "onset_ms": 499820.0,
+          "offset_ms": 510080.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 7,
+          "text": "Arcade cabinets used to cost a quarter.",
+          "onset_ms": 510380.0,
+          "offset_ms": 512680.0
+        },
+        {
+          "slug": "general",
+          "index": 109,
+          "text": "Record the commit hash and let the reader resolve the state live.",
+          "onset_ms": 512980.0,
+          "offset_ms": 515820.0
+        },
+        {
+          "slug": "general",
+          "index": 65,
+          "text": "We surface the age of the last update and adjudicate nothing.",
+          "onset_ms": 516120.0,
+          "offset_ms": 520160.0
+        },
+        {
+          "slug": "general",
+          "index": 107,
+          "text": "That caused an out of order windowed feed last August.",
+          "onset_ms": 520460.0,
+          "offset_ms": 523810.0
+        },
+        {
+          "slug": "general",
+          "index": 36,
+          "text": "The audio worklet resamples from the context rate down to sixteen kilohertz.",
+          "onset_ms": 524110.0,
+          "offset_ms": 527860.0
+        },
+        {
+          "slug": "nearmiss",
+          "index": 0,
+          "text": "Or Cassandra thought the whole thing was a mistake.",
+          "onset_ms": 528160.0,
+          "offset_ms": 529900.0
+        },
+        {
+          "slug": "general",
+          "index": 20,
+          "text": "Chunks are sized well under that limit for safety.",
+          "onset_ms": 530200.0,
+          "offset_ms": 535030.0
+        },
+        {
+          "slug": "general",
+          "index": 116,
+          "text": "A green test run proves nothing about production resolution.",
+          "onset_ms": 535330.0,
+          "offset_ms": 539350.0
+        },
+        {
+          "slug": "general",
+          "index": 108,
+          "text": "The audit found twelve rotted deployment status claims.",
+          "onset_ms": 539650.0,
+          "offset_ms": 543250.0
+        },
+        {
+          "slug": "general",
+          "index": 97,
+          "text": "A running session always refuses an eviction requested from outside.",
+          "onset_ms": 543550.0,
+          "offset_ms": 546890.0
+        },
+        {
+          "slug": "general",
+          "index": 35,
+          "text": "A password prompt looks exactly like a broken escape hatch.",
+          "onset_ms": 547190.0,
+          "offset_ms": 550270.0
+        }
+      ],
+      "purpose": "false accepts per hour on SPEECH (no keyword present)",
+      "note": "includes deliberate near-misses; see phrases.json near_misses"
+    },
+    "neg_pink_quiet": {
+      "path": "neg_pink_quiet.wav",
+      "bytes": 9600044,
+      "duration_ms": 300000.0,
+      "noise_dbfs": -50.0,
+      "purpose": "false accepts per hour on NOISE (fresh noise, not a tiled loop)"
+    },
+    "neg_pink_room": {
+      "path": "neg_pink_room.wav",
+      "bytes": 9600044,
+      "duration_ms": 300000.0,
+      "noise_dbfs": -40.0,
+      "purpose": "false accepts per hour on NOISE (fresh noise, not a tiled loop)"
+    },
+    "neg_pink_loud": {
+      "path": "neg_pink_loud.wav",
+      "bytes": 9600044,
+      "duration_ms": 300000.0,
+      "noise_dbfs": -26.0,
+      "purpose": "false accepts per hour on NOISE (fresh noise, not a tiled loop)"
+    },
+    "live_orca_send_48k": {
+      "path": "live_orca_send_48k.wav",
+      "bytes": 1187564,
+      "sample_rate": 48000,
+      "loop_period_ms": 12370.0,
+      "keyword": "orca_send",
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2210.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4210.0,
+          "offset_ms": 4950.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 6950.0,
+          "offset_ms": 7720.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9720.0,
+          "offset_ms": 10370.0
+        }
+      ],
+      "purpose": "live realtime run through the AudioWorklet (fake device)"
+    },
+    "live_hey_jarvis_48k": {
+      "path": "live_hey_jarvis_48k.wav",
+      "bytes": 1202924,
+      "sample_rate": 48000,
+      "loop_period_ms": 12530.0,
+      "keyword": "hey_jarvis",
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2160.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4160.0,
+          "offset_ms": 5040.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 7040.0,
+          "offset_ms": 7720.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9720.0,
+          "offset_ms": 10530.0
+        }
+      ],
+      "purpose": "live realtime run through the AudioWorklet (fake device)"
+    },
+    "live_alexa_48k": {
+      "path": "live_alexa_48k.wav",
+      "bytes": 1131884,
+      "sample_rate": 48000,
+      "loop_period_ms": 11790.0,
+      "keyword": "alexa",
+      "instances": [
+        {
+          "index": 0,
+          "onset_ms": 1500.0,
+          "offset_ms": 2080.0
+        },
+        {
+          "index": 1,
+          "onset_ms": 4080.0,
+          "offset_ms": 4640.0
+        },
+        {
+          "index": 2,
+          "onset_ms": 6640.0,
+          "offset_ms": 7170.0
+        },
+        {
+          "index": 3,
+          "onset_ms": 9170.0,
+          "offset_ms": 9790.0
+        }
+      ],
+      "purpose": "live realtime run through the AudioWorklet (fake device)"
+    }
+  }
+}

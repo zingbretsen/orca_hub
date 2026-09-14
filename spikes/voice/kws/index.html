@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SPIKE 3 — keyword spotter harness (openWakeWord vs Porcupine)</title>
+<style>
+ body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 1.2rem; max-width: 1100px; }
+ h1 { font-size: 1.1rem; } .row { margin: .5rem 0; display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+ button { padding: .35rem .7rem; } select, input { padding: .3rem; font-family: inherit; }
+ pre { background: #111; color: #ddd; padding: .7rem; height: 26rem; overflow: auto; white-space: pre-wrap; }
+ .note { background: #ffe; border-left: 3px solid #cc0; padding: .5rem .7rem; }
+</style>
+</head>
+<body>
+<h1>SPIKE 3 — in-browser keyword spotting</h1>
+<p class="note">Serve this from <code>tools/serve.sh</code> (root = <code>spikes/voice/</code>, so
+<code>/vendor/ort/</code> and <code>/capture-worklet.js</code> are SPIKE 1's, read-only).
+The real measurements come from <code>tools/headless.mjs</code>; this page is for poking at it by hand.</p>
+
+<div class="row">
+  <button id="btn-env">env</button>
+  <button id="btn-init-oww">init openWakeWord</button>
+  <select id="classifier">
+    <option value="hey_jarvis_v0.1">hey_jarvis_v0.1</option>
+    <option value="alexa_v0.1">alexa_v0.1</option>
+    <option value="hey_mycroft_v0.1">hey_mycroft_v0.1</option>
+  </select>
+</div>
+<div class="row">
+  <select id="fixture"></select>
+  <button id="btn-offline">run offline</button>
+  <button id="btn-live">run live 20s (fake/real mic)</button>
+</div>
+<div class="row">
+  <input id="accesskey" size="52" placeholder="Picovoice AccessKey (none in this repo — see README)">
+  <button id="btn-pv">init Porcupine</button>
+</div>
+<pre id="log"></pre>
+
+<script src="/vendor/ort/ort.wasm.min.js"></script>
+<script src="/kws/vendor/porcupine/porcupine-web.iife.min.js"></script>
+<script type="module" src="/kws/kws.js"></script>
+</body>
+</html>
