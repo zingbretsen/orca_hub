@@ -27,6 +27,7 @@ erDiagram
     File ||--o{ ArtifactAsset : "referenced as"
     Artifact ||--o{ ArtifactAsset : "serves at /assets/:name"
 
+    Issue ||--o{ IssueChunk : "embeddable slices of its text"
     Issue }o--o{ Session : "attempts (session.issue_id, real FK)"
     Trigger }o--o| Session : "last_session (plain FK, no assoc)"
     Trigger ||--o{ Session : "spawned (session.trigger_id)"
@@ -106,7 +107,20 @@ erDiagram
         utc_datetime closed_at "distinct from updated_at"
         binary_id superseded_by_issue_id "not cleared by reopen"
         utc_datetime pinned_at
+        utc_datetime indexed_at "pgvector reindex watermark; nothing writes it yet"
         binary_id project_id FK
+    }
+
+    IssueChunk {
+        binary_id id PK
+        binary_id issue_id FK "delete_all"
+        string field "title|description|plan|premise|resolution|notes|approaches_tried"
+        integer chunk_index
+        string content "field-labelled text that was embedded"
+        string content_hash "sha256 of content; reindex skip key"
+        vector embedding "vector(1024), NULLABLE until embedded"
+        string embedding_model
+        utc_datetime embedded_at
     }
 
     Trigger {
@@ -402,4 +416,21 @@ erDiagram
 - **`ChurnSample` and `AlertSubscription` are the two halves of worker-churn observability**, and both use plain `session_id`/`orchestrator_session_id` fields rather than FKs. `OrcaHub.ChurnSampler` (hub-only) samples every non-archived `running` session every 120s into `churn_samples` — a time series read by Grafana via the `[:orca_hub, :churn, :sample]` telemetry event, never by the agent-facing tools. The same sweep prunes samples older than 14 days, so the table is bounded rather than append-forever. `alert_subscriptions` is the opt-in watch an orchestrator configures with `set_worker_alerts`: ONE row per orchestrator (unique index, upserted in place like a heartbeat), DB-persisted deliberately so the watch survives a deploy. `OrcaHub.ChurnSampler.AlertEvaluator` runs right after each sampling pass and evaluates the watched set FRESH — `session_ids` plus, when `watch_children`, the orchestrator's current non-archived children — and alerts on a rising edge only, re-alerting no sooner than `cooldown_seconds`. See `OrcaHub.Sessions.Churn` for the heuristic itself.
 - **`ApiToken` stores only a SHA-256 `token_hash`** — no column and no code path holds the plaintext secret, which is shown once at creation and never again. A token carries explicit `scopes` and may optionally be PINNED to one session via `session_id`; a pinned token is rejected at changeset time if it asks for a scope that takes no session (`tts`, `a2a`). `OrcaHubWeb.Plugs.ApiAuth` tries a scoped token first and falls back, byte-identically, to the legacy global `ORCA_API_TOKEN`, which remains full-access.
 - **A `Trigger` points at sessions two different ways**: `last_session_id` is only ever the MOST RECENT session (used for `reuse_session`), whereas `Session.trigger_id` is the full history of every session that trigger has spawned — which is what the trigger show page lists.
+- **`IssueChunk` is the pgvector index of an issue's prose** (`issue_chunks`,
+  `OrcaHub.Issues.IssueChunk`, produced by `OrcaHub.Issues.Chunker`). Identity is
+  `(issue_id, field, chunk_index)` — unique in the DB — so a reindex upserts on
+  that key and skips a chunk whose `content_hash` (sha256 of `content`) is
+  unchanged. `embedding` is `vector(1024)` (qwen3-embedding-0.6b, the dimension
+  is baked into the column type) and **NULLABLE on purpose**: chunking and
+  embedding fail independently, so a chunk may exist before or without its
+  vector when the embedding endpoint is down — every search query must filter
+  `not is_nil(embedding)`, since a NULL means "not embedded yet", not "no
+  match". An HNSW index with `vector_cosine_ops` backs the similarity scan.
+  `issues.indexed_at` is the reconciliation watermark for the reindex sweep
+  (`updated_at > indexed_at or indexed_at is null`); it is in the schema's
+  field list but deliberately not castable, and nothing writes it yet. The
+  `vector` type only round-trips because `OrcaHub.PostgrexTypes` is wired into
+  the Repo via `config :orca_hub, OrcaHub.Repo, types:` — `CREATE EXTENSION
+  vector` itself is a manual superuser step per database, not something the
+  migration can do (see `priv/repo/migrations/*_enable_pgvector.exs`).
 - Issue tool surface: `OrcaHub.MCP.Tools.Issues` (`lib/orca_hub/mcp/tools/issues.ex`); full design in `issues_spec.md`.

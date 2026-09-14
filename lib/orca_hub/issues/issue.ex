@@ -77,6 +77,13 @@ defmodule OrcaHub.Issues.Issue do
     field :superseded_by_issue_id, :binary_id
     field :pinned_at, :utc_datetime
 
+    # Reconciliation watermark for pgvector-backed issue indexing: the
+    # reindex sweep looks for `updated_at > indexed_at or indexed_at is
+    # nil`. NOTHING in this repo writes it yet — the indexer that owns it
+    # is a later slice. Present in the field list so a read never surprises
+    # a caller with a missing key.
+    field :indexed_at, :utc_datetime
+
     belongs_to :project, OrcaHub.Projects.Project, type: :binary_id
 
     timestamps()
