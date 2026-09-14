@@ -254,5 +254,43 @@ defmodule OrcaHub.IssuesIndexingHooksTest do
       wait_until(fn -> chunk_count(issue.id) > 0 end)
       wait_until(fn -> reload(issue).indexed_at != nil end)
     end
+
+    test "at the concurrency cap the reindex is DROPPED, not queued, and the write still succeeds",
+         %{project: project} do
+      enable_embedder(:async)
+
+      Req.Test.stub(@stub, fn _conn ->
+        flunk("no slot should be available to call the endpoint")
+      end)
+
+      cap = Indexer.task_supervisor_max_children()
+
+      # Occupy every slot with a parked task — the shape of `cap` embeddings
+      # already in flight against a slow endpoint.
+      parked =
+        for _ <- 1..cap do
+          {:ok, pid} =
+            Task.Supervisor.start_child(OrcaHub.Issues.IndexTaskSupervisor, fn ->
+              receive do
+                :release -> :ok
+              after
+                10_000 -> :ok
+              end
+            end)
+
+          pid
+        end
+
+      assert length(Task.Supervisor.children(OrcaHub.Issues.IndexTaskSupervisor)) == cap
+
+      # The write must succeed, and its reindex must be dropped rather than
+      # queued behind the cap — the sweep is what picks it up.
+      assert {:ok, issue} = Issues.create_issue(%{project_id: project.id, title: "At the cap"})
+      assert chunk_count(issue.id) == 0
+      assert reload(issue).indexed_at == nil
+      assert issue.id in Indexer.stale_issue_ids(500)
+
+      for pid <- parked, do: send(pid, :release)
+    end
   end
 end

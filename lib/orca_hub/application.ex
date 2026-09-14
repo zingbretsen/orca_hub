@@ -73,6 +73,11 @@ defmodule OrcaHub.Application do
       # sweeping one table would duplicate the work and race each other's
       # upserts. Bounded per tick; see OrcaHub.Issues.IndexSweep moduledoc.
       OrcaHub.Issues.IndexSweep,
+      # Bounded Task.Supervisor for the write-hook reindexes (max_children):
+      # a batch of issue writes must not become one request per write to the
+      # shared embedding box. Overflow is dropped and reconciled by the sweep
+      # above — see OrcaHub.Issues.Indexer.reindex_async/1.
+      OrcaHub.Issues.Indexer.task_supervisor_spec(),
       # Warm-process admission control — must start before SessionSupervisor so
       # streaming runners can request_slot at port-open.
       OrcaHub.Streaming.WarmPool,

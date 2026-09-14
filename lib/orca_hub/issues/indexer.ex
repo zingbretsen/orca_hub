@@ -152,9 +152,15 @@ defmodule OrcaHub.Issues.Indexer do
       and any node without `EMBEDDING_URL`), so an issue write on such a
       node costs one `Application.get_env` and nothing else.
     * `:async` (the default when enabled) — runs under
-      `OrcaHub.TaskSupervisor`, unlinked from the caller, so an embedder
-      that hangs for its full 60s timeout delays nothing an interactive
-      write is waiting on and a crash there cannot propagate.
+      `OrcaHub.Issues.IndexTaskSupervisor`, unlinked from the caller, so an
+      embedder that hangs for its full 60s timeout delays nothing an
+      interactive write is waiting on and a crash there cannot propagate.
+      That supervisor caps concurrent reindexes (`max_children`), and
+      hitting the cap DROPS this reindex rather than queueing it: 20 issue
+      writes in a loop must not become 20 simultaneous requests to a single
+      shared GPU box. Dropping is safe precisely because
+      `OrcaHub.Issues.IndexSweep` reconciles anything missed — the same
+      reason a failed embed is safe.
     * `:sync` — runs inline. For tests that want a deterministic write ->
       index sequence without chasing a Task; set
       `config :orca_hub, :issue_indexing, :sync`.
@@ -176,19 +182,49 @@ defmodule OrcaHub.Issues.Indexer do
   end
 
   # Even the spawn is wrapped: `Task.Supervisor.start_child/2` EXITS with
-  # :noproc if OrcaHub.TaskSupervisor isn't running, and this runs inline on
-  # the caller's process — i.e. inside an interactive issue write. The
-  # supervisor is always up in a booted app, but a `mix run --no-start`
-  # script, a release `eval`, or a supervisor restart racing a write are all
-  # real, and none of them is a good reason to fail someone's issue update.
+  # :noproc if the supervisor isn't running, and this runs inline on the
+  # caller's process — i.e. inside an interactive issue write. The supervisor
+  # is always up in a booted app, but a `mix run --no-start` script, a release
+  # `eval`, or a supervisor restart racing a write are all real, and none of
+  # them is a good reason to fail someone's issue update.
   defp spawn_reindex(issue) do
-    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-      log_outcome(reindex_issue(issue), issue)
-    end)
+    case Task.Supervisor.start_child(OrcaHub.Issues.IndexTaskSupervisor, fn ->
+           log_outcome(reindex_issue(issue), issue)
+         end) do
+      {:ok, _pid} ->
+        :ok
+
+      # Backpressure, not an error: the cap is doing its job. The sweep will
+      # pick this issue up, since its watermark was never stamped.
+      {:error, :max_children} ->
+        Logger.info(
+          "Issue indexer: at the concurrent-reindex cap (#{task_supervisor_max_children()}), " <>
+            "deferring issue #{Map.get(issue, :id, "?")} to the sweep"
+        )
+
+      {:error, reason} ->
+        Logger.warning("Issue indexer: could not spawn reindex - #{inspect(reason)}")
+    end
   rescue
     e -> Logger.warning("Issue indexer: could not spawn reindex - #{Exception.message(e)}")
   catch
     :exit, reason -> Logger.warning("Issue indexer: could not spawn reindex - #{inspect(reason)}")
+  end
+
+  @doc """
+  Child spec for the bounded Task.Supervisor the write hooks spawn into.
+  Registered in `OrcaHub.Application`; separate from `OrcaHub.TaskSupervisor`
+  precisely so this cap applies to indexing ONLY and can't starve, or be
+  starved by, unrelated background work.
+  """
+  def task_supervisor_spec do
+    {Task.Supervisor,
+     name: OrcaHub.Issues.IndexTaskSupervisor, max_children: task_supervisor_max_children()}
+  end
+
+  @doc "Maximum concurrent write-hook reindexes on this node."
+  def task_supervisor_max_children do
+    Application.get_env(:orca_hub, :issue_indexing_max_concurrency, 8)
   end
 
   @doc """
