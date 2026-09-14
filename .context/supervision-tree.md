@@ -36,6 +36,7 @@ graph TB
     App --> TaskSupervisor["Task.Supervisor"]
     App --> SessionHeartbeat["OrcaHub.SessionHeartbeat\n(hub only)"]
     App --> ChurnSampler["OrcaHub.ChurnSampler\n(hub only)"]
+    App --> IndexSweep["OrcaHub.Issues.IndexSweep\n(hub only)"]
     App --> WarmPool["OrcaHub.Streaming.WarmPool"]
     App --> SessionSupervisor["OrcaHub.SessionSupervisor\n(DynamicSupervisor)"]
     App --> SessionResumer["OrcaHub.SessionResumer"]
@@ -174,6 +175,18 @@ graph TB
   heartbeat: two nodes sweeping would double-sample and double-alert. Each
   sweep is wrapped in `rescue`/log, so one bad session can't kill the timer
   loop.
+- **`OrcaHub.Issues.IndexSweep`** (hub only): every 600s it reindexes at most
+  20 issues whose pgvector index is behind their content
+  (`issues.indexed_at`), stopping early at 400 embedded chunks — "20 issues"
+  is not a bound on work when one `notes` blob is ~25 chunks. Hub-only for
+  `ChurnSampler`'s reason: two nodes sweeping one table would duplicate the
+  work and race each other's upserts. Deliberately does NOT repeat the
+  failure mode `ChurnSampler`'s moduledoc warns about — no in-process state
+  gates progress, since the watermark lives in Postgres, so a wholly failed
+  tick changes nothing and the next one retries the same candidate set
+  (observable from outside via `Issues.Indexer.stale_count/0`). The bulk
+  counterpart is `OrcaHub.Issues.Backfill` (`mix orca.reindex_issues`, or
+  `bin/orca_hub rpc` in prod), not a supervised child.
 - **`OrcaHub.ForkGate`**: serializes forked pi children's FIRST turns, one
   FIFO per parent session — child N+1's first prompt goes out only after
   child N's first `result` event lands. A correctness mechanism, not an

@@ -145,6 +145,7 @@ sequenceDiagram
 | **SessionHeartbeat** | Yes | No | Hub-only scheduled heartbeat messages into sessions |
 | **ChurnSampler** (+ `AlertEvaluator`) | Yes | No | 120s churn sampling + worker-alert delivery; two nodes sweeping would double-sample and double-alert |
 | **MemoryExtractionSweep** | Yes | No | Boot-time one-shot archive of orphaned `kind: "memory_extraction"` children; pure DB writes, so one sweep covers the cluster |
+| **Issues.IndexSweep** | Yes | No | 600s pgvector issue-index reconciliation, ≤20 issues + ≤400 chunks per tick; two nodes sweeping one table would duplicate the work and race each other's upserts |
 | **Streaming.WarmPool** | Yes | Yes | Per-node warm-port admission control (streaming engine) |
 | **ForkGate** | Yes | Yes | Serializes forked pi children's first turns; a fork child runs on its parent's node |
 | **TerminalSupervisor** | Yes | Yes | Both nodes run terminal PTYs |

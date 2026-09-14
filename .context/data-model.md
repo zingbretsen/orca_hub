@@ -107,7 +107,8 @@ erDiagram
         utc_datetime closed_at "distinct from updated_at"
         binary_id superseded_by_issue_id "not cleared by reopen"
         utc_datetime pinned_at
-        utc_datetime indexed_at "pgvector reindex watermark; nothing writes it yet"
+        utc_datetime indexed_at "pgvector reindex watermark; written by Issues.Indexer via update_all"
+        tsvector search_tsv "GENERATED STORED, weighted; lexical leg of Issues.Search. Not in the Ecto schema"
         binary_id project_id FK
     }
 
@@ -423,14 +424,38 @@ erDiagram
   unchanged. `embedding` is `vector(1024)` (qwen3-embedding-0.6b, the dimension
   is baked into the column type) and **NULLABLE on purpose**: chunking and
   embedding fail independently, so a chunk may exist before or without its
-  vector when the embedding endpoint is down — every search query must filter
-  `not is_nil(embedding)`, since a NULL means "not embedded yet", not "no
-  match". An HNSW index with `vector_cosine_ops` backs the similarity scan.
-  `issues.indexed_at` is the reconciliation watermark for the reindex sweep
-  (`updated_at > indexed_at or indexed_at is null`); it is in the schema's
-  field list but deliberately not castable, and nothing writes it yet. The
+  vector — every search query must filter `not is_nil(embedding)`, since a
+  NULL means "not embedded yet", not "no match". In practice
+  `OrcaHub.Issues.Indexer`, the only writer, never CREATES such a row: it
+  embeds before writing, all-or-nothing, so an embedder outage leaves the
+  previous index untouched rather than writing vectorless rows. The column
+  stays nullable, and search stays defensive, because a manual fix or a
+  future partial-write path may still produce one. An HNSW index with
+  `vector_cosine_ops` backs the similarity scan.
+  `issues.indexed_at` is the reconciliation watermark
+  (`indexed_at is null or updated_at >= indexed_at` — `>=`, because Ecto
+  timestamps are second-precision and a write in the same second as the stamp
+  would otherwise be invisible forever). It is written ONLY by
+  `Indexer.reindex_issue/1`, and only with `Repo.update_all`: stamping it
+  through the changeset would bump `updated_at`, so the issue would look
+  stale again immediately and be reindexed on every sweep tick. It is
+  castable purely so a backfill/repair can set or clear it deliberately. The
   `vector` type only round-trips because `OrcaHub.PostgrexTypes` is wired into
   the Repo via `config :orca_hub, OrcaHub.Repo, types:` — `CREATE EXTENSION
   vector` itself is a manual superuser step per database, not something the
   migration can do (see `priv/repo/migrations/*_enable_pgvector.exs`).
+- **`issues.search_tsv` is the lexical half of issue search**, and it is a
+  `GENERATED ... STORED` tsvector column with a GIN index, not a
+  trigger-maintained one — Postgres maintains it on every insert/update with
+  no application code to forget (which required an EXPLICIT `'english'`
+  regconfig, since bare `to_tsvector/1` is only STABLE and Postgres rejects
+  it in a generated column). Fields are weighted `A` title, `B` description,
+  `C` premise/resolution, `D` notes, which `ts_rank/2` then honours. `plan`
+  and `approaches_tried` are deliberately NOT in it even though
+  `IssueChunk.indexable_fields/0` embeds them: `plan` is rewritten in place
+  as understanding develops and `approaches_tried` is a dead-end log, so
+  lexical hits there are mostly noise — the semantic leg still covers both.
+  The column is deliberately absent from the `Issue` Ecto schema; nothing
+  reads it except `OrcaHub.Issues.Search`'s own query fragments, and a
+  generated column can never be written.
 - Issue tool surface: `OrcaHub.MCP.Tools.Issues` (`lib/orca_hub/mcp/tools/issues.ex`); full design in `issues_spec.md`.

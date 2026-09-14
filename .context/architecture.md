@@ -438,9 +438,79 @@ graph TB
   needs `EMBEDDING_URL`, `{:error, :disabled}` when unset, never raises.
   `Chunker` is pure and splits an issue's prose into `issue_chunks`-shaped
   slices sized well under the endpoint's 8192-token `n_ctx` (an over-length
-  input is a hard HTTP 400, not a truncation). The indexer/write hooks and
-  the search + MCP tool layers on top of these are separate, later slices —
-  nothing yet writes `issue_chunks` or `issues.indexed_at`.
+  input is a hard HTTP 400, not a truncation).
+- **Issue indexing** (`lib/orca_hub/issues/indexer.ex`, `index_sweep.ex`,
+  `backfill.ex`, plus `after_write/1` in `lib/orca_hub/issues.ex`): the
+  writers on top of that substrate — what actually populates `issue_chunks`
+  and `issues.indexed_at`. `Indexer.reindex_issue/1` chunks an issue, embeds
+  only the chunks whose `content_hash` changed (or whose row has no vector,
+  or was embedded by a different model), upserts on
+  `(issue_id, field, chunk_index)`, DELETES keys the issue no longer
+  produces, and stamps the watermark. It never raises, and embedding happens
+  BEFORE any DB write with no transaction open — so an embedder failure
+  writes nothing at all and leaves the previous, stale-but-working index
+  intact instead of half-demolished. The deliberate consequence is that a
+  persisted chunk row always HAS a vector: the schema permits NULL, but a
+  vectorless row is invisible to search anyway, so it would buy no retrieval
+  while costing write churn on every node with no `EMBEDDING_URL`.
+  Every successful `Issues` write fires `Indexer.reindex_async/1`
+  fire-and-forget under the CAPPED `OrcaHub.Issues.IndexTaskSupervisor`
+  (`max_children`, so a loop closing 20 issues can't become 20 simultaneous
+  requests to the shared GPU box; overflow is dropped and reconciled by the
+  sweep), hooked at the
+  `create_issue/1`/`update_issue/2` funnel that every other write path
+  (`append_note/2`, `close_issue/2`, `reopen_issue/2`, `update_issue/3`,
+  pin/unpin) already goes through — so a future write path cannot silently
+  skip indexing. With no embedder configured (the entire test suite) it
+  resolves `:off` and spawns nothing at all;
+  `config :orca_hub, :issue_indexing` (`false`/`:off`/`:sync`/`:async`) is
+  the per-node override. `IndexSweep` is the hub-only reconciliation loop
+  (600s, ≤20 issues AND ≤400 chunks per tick, newest-write-first) and
+  `Backfill` is the bulk pass behind `mix orca.reindex_issues` /
+  `bin/orca_hub rpc 'OrcaHub.Issues.Backfill.run(force: true)'`. Both stop
+  early on an endpoint-level failure (`Indexer.endpoint_failure?/1`) rather
+  than marching a whole corpus through a server that just refused the
+  connection — the 2026-09-11 memory-service OOMKill was that shape, aimed
+  at a single shared GPU box. Two subtleties worth not rediscovering: the
+  watermark is stamped with `Repo.update_all`, never a changeset (a
+  changeset would bump `updated_at`, making the issue look stale again
+  immediately and reindexing it on every tick forever), and the staleness
+  test is `updated_at >= indexed_at`, not `>`, because Ecto timestamps are
+  SECOND precision — a write landing in the same second as the stamp ties,
+  and under `>` it would be invisible to the sweep forever. Unlike
+  `ChurnSampler`, no in-process state gates progress here: the watermark
+  lives in Postgres, so a wholly failed tick changes nothing and the next
+  one retries the same set.
+- **Issue search** (`lib/orca_hub/issues/search.ex`, the `search_issues` MCP
+  tool in `mcp/tools/issues.ex`, plus the dedup wiring in
+  `Issues.find_similar_open_issue/3`): the READ half. Three entry points,
+  all `{:ok, [result]} | {:error, reason}` — `semantic_search/2` (embeds the
+  query, cosine-orders `issue_chunks` via `<=>`), `lexical_search/2`
+  (Postgres full-text over the `issues.search_tsv` generated column) and
+  `hybrid_search/2` (reciprocal-rank fusion, k=60, what the MCP tool calls).
+  A result carries `issue` (with `:project` preloaded), `score`, `field`,
+  `snippet`, `source` (`:semantic`/`:lexical`/`:both`) and both leg-native
+  scores. `score` is leg-native for a single-leg search but the FUSED RRF
+  score for hybrid — RRF scores are tiny by construction (~0.016 for a
+  first-place hit) and meaningful only relative to others in the same result
+  set, never against a cosine threshold, which is why `semantic_score` /
+  `lexical_score` survive fusion.
+  Degradation is a hard requirement in BOTH directions: `hybrid_search/2`
+  never fails because one leg failed — an unavailable embedder (the normal
+  state in tests) returns lexical-only, and a full-text failure returns
+  vector-only, with `:degraded` in the metadata for a caller that wants to
+  say "keyword results only". Only both legs failing is an error.
+  The legs are good at DISJOINT things, measured on the real corpus rather
+  than assumed: on paraphrase queries semantic was #1 six times out of eight
+  while lexical returned ZERO rows for all eight (`websearch_to_tsquery`
+  ANDs bare terms, so a sentence matches nothing); on rare exact identifiers
+  lexical was #1 ten times out of ten while semantic missed two entirely.
+  Hybrid wins across the query MIX, not on any single query.
+  `similar_issues/2` is the dedup entry point — non-terminal statuses by
+  default and a 0.85 cosine floor, calibrated because the median issue's
+  NEAREST neighbour scores 0.72, so nearness alone is weak evidence of
+  duplication (that floor flags 1.8% of the corpus; a 0.62 guess would have
+  flagged 88% and made `create_issue` refuse almost everything).
 - **Memory extraction** (`lib/orca_hub/memory_extraction.ex`,
   `memory_extraction_sweep.ex`): on a session's natural end of work —
   `Sessions.archive_session/2` (default on) or the orchestrator-only
