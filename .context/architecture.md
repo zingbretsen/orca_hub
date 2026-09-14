@@ -521,11 +521,19 @@ graph TB
   ANDs bare terms, so a sentence matches nothing); on rare exact identifiers
   lexical was #1 ten times out of ten while semantic missed two entirely.
   Hybrid wins across the query MIX, not on any single query.
-  `similar_issues/2` is the dedup entry point — non-terminal statuses by
-  default and a 0.85 cosine floor, calibrated because the median issue's
-  NEAREST neighbour scores 0.72, so nearness alone is weak evidence of
-  duplication (that floor flags 1.8% of the corpus; a 0.62 guess would have
-  flagged 88% and made `create_issue` refuse almost everything).
+  `similar_issues/2` is the dedup entry point behind
+  `Issues.find_similar_open_issue/3` — non-terminal statuses by default and a
+  0.85 cosine floor, calibrated because the median issue's NEAREST neighbour
+  scores 0.72, so nearness alone is weak evidence of duplication (that floor
+  flags 1.8% of the corpus; a 0.62 guess would have flagged 88% and made
+  `create_issue` refuse almost everything). Measured on the real corpus, it
+  catches the genuine refile (0.936) but NOT a tight rephrase (0.824) or a
+  loose paraphrase (0.600), and there is no better threshold — 0.824 sits in
+  the same band as genuinely distinct pairs. So automatic dedup only catches
+  near-verbatim refiles, while RETRIEVAL ranked the right issue #1 in every
+  one of those probes including the 0.600 paraphrase: searching before filing
+  is the reliable path, and dedup is only a backstop. Full numbers in
+  `find_similar_open_issue/3`'s docstring.
   The `search_issues` MCP tool is visible to regular workers, not just
   orchestrators, and unlike `list_issues` it defaults to EVERY project
   rather than the caller's own — it exists to find prior art. It returns

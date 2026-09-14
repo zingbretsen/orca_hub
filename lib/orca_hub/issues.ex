@@ -672,15 +672,36 @@ defmodule OrcaHub.Issues do
   Finds a non-terminal issue in `project_id` with the same `kind` that is
   likely the SAME REPORT as `title`. Two passes, in order:
 
-    1. Semantic (`OrcaHub.Issues.Search.similar_issues/2`) — catches the same
-       problem described in completely different words, which the lexical
-       heuristic below structurally cannot. Only a match at or above Search's
-       calibrated cosine floor counts (`Search.similar_threshold/0`, 0.85;
-       measured against the real corpus, where the median issue's NEAREST
-       neighbour scores 0.72 — nearness alone is weak evidence of
-       duplication).
+    1. Semantic (`OrcaHub.Issues.Search.similar_issues/2`) — catches a refile
+       whose wording changed enough that the lexical heuristic below misses
+       it. Only a match at or above Search's calibrated cosine floor counts
+       (`Search.similar_threshold/0`, 0.85).
     2. Lexical (§7, unchanged) — case-insensitive substring or >= 60% word
        overlap, the original heuristic.
+
+  ## How much the semantic pass actually catches (measured, real corpus)
+
+  Deliberately NARROW, and worth stating precisely because the obvious
+  assumption ("it finds duplicates however they're worded") is wrong:
+
+      the real duplicate pair (one issue filed twice)   0.936  CAUGHT
+      a tight rephrase of that same issue              0.824  not caught
+      a loose paraphrase, zero shared words            0.600  not caught
+      same subsystem, different problem                      correctly not a dup
+
+  There is no better threshold available: that 0.824 rephrase sits inside the
+  same 0.80-0.83 band where genuinely DISTINCT issue pairs live, so any floor
+  low enough to catch it also starts swallowing real reports — and a false
+  duplicate blocks someone filing a legitimate issue, which is worse than a
+  missed one. So: **automatic dedup only reliably catches near-verbatim
+  refiles.**
+
+  The nuance that matters for agents: in every one of those probes the
+  correct issue came back RANKED #1 from semantic search, including the 0.600
+  paraphrase. Retrieval is strong far below the dedup floor; it is the
+  absolute threshold that is conservative, not the ranking. Searching
+  (`search_issues`) before filing is therefore the reliable way to avoid a
+  duplicate — this function is a backstop, not a substitute for it.
 
   The lexical pass runs whenever the semantic one produces no hit, for ANY
   reason: embeddings unconfigured (the whole test suite), the endpoint down,
