@@ -29,6 +29,13 @@ config :orca_hub, OrcaHub.Mailer, adapter: Swoosh.Adapters.Test
 config :orca_hub, :memory_service_url, nil
 config :orca_hub, :memory_service_token, nil
 
+# Same for the embedding endpoint (OrcaHub.Embeddings) — nil means disabled,
+# so the suite never reaches the network. Tests that exercise the HTTP path
+# set :embedding_url plus :embedding_req_options (plug: {Req.Test, ...}).
+config :orca_hub, :embedding_url, nil
+config :orca_hub, :embedding_model, "qwen3-embedding-0.6b"
+config :orca_hub, :embedding_dims, 1024
+
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
 

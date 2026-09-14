@@ -138,6 +138,22 @@ config :orca_hub, :memory_service_token, System.get_env("MEMORY_SERVICE_TOKEN")
 # :memory_service_url/:memory_service_token, this is never used for auth).
 config :orca_hub, :memory_service_public_url, System.get_env("MEMORY_SERVICE_PUBLIC_URL")
 
+# Local embedding endpoint for pgvector-backed issue search
+# (OrcaHub.Embeddings). ONLY the hub needs EMBEDDING_URL — every call routes
+# through HubRPC, so agent/systemd nodes hold nothing. Unset means disabled
+# (`Embeddings.enabled?/0` false, every call `{:error, :disabled}`), which
+# degrades indexing rather than failing it.
+#
+# EMBEDDING_DIMS must match the `vector(N)` column type on
+# issue_chunks.embedding — changing the model to a different width needs a
+# migration, not just a config flip.
+config :orca_hub, :embedding_url, System.get_env("EMBEDDING_URL")
+config :orca_hub, :embedding_model, System.get_env("EMBEDDING_MODEL") || "qwen3-embedding-0.6b"
+
+config :orca_hub,
+       :embedding_dims,
+       String.to_integer(System.get_env("EMBEDDING_DIMS") || "1024")
+
 # Backend/model for OrcaHub.MemoryExtraction's spawned child sessions.
 # Defaults to a cheap Claude model; MEMORY_EXTRACTION_BACKEND/_MODEL let
 # this point at e.g. a local pi model instead — MemoryExtraction's own

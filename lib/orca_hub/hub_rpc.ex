@@ -575,6 +575,28 @@ defmodule OrcaHub.HubRPC do
     do: call(OrcaHub.MemoryClient, :context_impl, [project_slug, prompt, opts])
 
   # -------------------------------------------------------------------
+  # Embedding endpoint (local OpenAI-compatible /v1/embeddings, see
+  # OrcaHub.Embeddings — hub-only config, same shape as the memory service
+  # above)
+  # -------------------------------------------------------------------
+
+  def embeddings_enabled?, do: call(OrcaHub.Embeddings, :enabled_impl?, [])
+  def embeddings_model, do: call(OrcaHub.Embeddings, :model_impl, [])
+  def embeddings_dims, do: call(OrcaHub.Embeddings, :dims_impl, [])
+
+  # A batch embedding call is GPU work on a shared box and can legitimately
+  # outrun the default @timeout — give these their own erpc budget, kept a
+  # little above OrcaHub.Embeddings' own Req receive_timeout so the HTTP
+  # timeout error has a chance to come back over erpc first.
+  @embeddings_erpc_timeout 65_000
+
+  def embeddings_embed(text),
+    do: call(OrcaHub.Embeddings, :embed_impl, [text], timeout: @embeddings_erpc_timeout)
+
+  def embeddings_embed_many(texts),
+    do: call(OrcaHub.Embeddings, :embed_many_impl, [texts], timeout: @embeddings_erpc_timeout)
+
+  # -------------------------------------------------------------------
   # Skills (hub-managed global skills — see OrcaHub.Skills, OrcaHub.SkillSync)
   # -------------------------------------------------------------------
 
