@@ -1250,10 +1250,13 @@ defmodule OrcaHub.Backend.Pi do
   # both included here now, mirroring `Backend.Claude.system_prompt/1`
   # closely (this backend still has no AskUserQuestion-fallback text or
   # sibling-session prompt — out of scope for the MCP bridge itself).
-  # Deliberately DOES NOT include `SharedPrompts.context_files_prompt/1`
-  # (unlike Claude/Codex) — inlining the whole `.context/*.{md,mmd}` doc set
-  # verbatim is by far the largest fragment and was blowing up pi sessions'
-  # context budget at startup; Claude and Codex still get it.
+  # Deliberately DOES NOT include `SharedPrompts.context_manifest_prompt/1`
+  # (unlike Claude/Codex) — back when that fragment inlined the whole
+  # `.context/*.{md,mmd}` doc set verbatim it was by far the largest fragment
+  # and was blowing up pi sessions' context budget at startup. Claude and
+  # Codex now get only the hand-maintained `.context/manifest.md` (the full
+  # set outgrew Linux's 128 KiB single-argv limit and E2BIG'd every Claude
+  # spawn); pi stays opted out entirely, since AGENTS.md is its context file.
   #
   # ── FLAGS ONLY: no per-session bytes may appear here (§5.1) ────────────
   # This string is `--append-system-prompt`'s value, i.e. byte 0 of the

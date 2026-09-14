@@ -729,7 +729,7 @@ defmodule OrcaHub.Backend.Codex do
       ),
       if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec)),
       sibling_sessions_prompt(ctx.orchestrator, code_exec),
-      SharedPrompts.context_files_prompt(ctx.directory),
+      SharedPrompts.context_manifest_prompt(ctx.directory),
       SharedPrompts.open_issues_prompt(ctx.session_id)
     ]
     |> Enum.reject(&is_nil/1)

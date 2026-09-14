@@ -1666,9 +1666,11 @@ defmodule OrcaHub.Backend.PiTest do
       refute prompt =~ "mcp__orca__"
     end
 
-    # Unlike Claude/Codex, pi omits SharedPrompts.context_files_prompt/1
-    # entirely — inlining the whole .context/*.{md,mmd} doc set verbatim was
-    # blowing up pi sessions' context budget at startup.
+    # Unlike Claude/Codex, pi omits SharedPrompts.context_manifest_prompt/1
+    # entirely — back when that fragment inlined the whole .context/*.{md,mmd}
+    # doc set verbatim it was blowing up pi sessions' context budget at
+    # startup (Claude/Codex now get only .context/manifest.md; pi gets
+    # nothing from .context/ — AGENTS.md is its context file).
     test "does not inline .context/*.md files, unlike Claude/Codex" do
       dir = Path.join(System.tmp_dir!(), "pi_backend_test_#{System.unique_integer([:positive])}")
       context_dir = Path.join(dir, ".context")

@@ -237,6 +237,66 @@ defmodule OrcaHub.Backend.CodexTest do
     end
   end
 
+  # Codex's system prompt rides the FIRST turn/start as a leading message
+  # (stdin, so no E2BIG) — but bulk-inlining the .context doc set still
+  # burned most of the context window before any work. Manifest only now.
+  describe "first-turn leading prompt — .context inlining is manifest-only" do
+    setup do
+      dir =
+        Path.join(System.tmp_dir!(), "codex_ctx_fixture_#{System.unique_integer([:positive])}")
+
+      context_dir = Path.join(dir, ".context")
+      File.mkdir_p!(context_dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      doc_marker = "full-doc-sentinel-#{System.unique_integer([:positive])}"
+      manifest_marker = "manifest-sentinel-#{System.unique_integer([:positive])}"
+
+      for name <-
+            ~w(architecture clustering data-model message-flow session-lifecycle supervision-tree terminals triggers) do
+        body = String.duplicate("#{doc_marker} lorem ipsum dolor sit amet. ", 400)
+        File.write!(Path.join(context_dir, "#{name}.md"), "# #{name}\n\n#{body}")
+      end
+
+      File.write!(Path.join(context_dir, "manifest.md"), "# Map\n\n#{manifest_marker}")
+
+      %{dir: dir, doc_marker: doc_marker, manifest_marker: manifest_marker}
+    end
+
+    test "the flushed turn/start text has the manifest and none of the docs", %{
+      dir: dir,
+      doc_marker: doc_marker,
+      manifest_marker: manifest_marker
+    } do
+      session_ctx = ctx(%{directory: dir})
+      {"", stashed} = Backend.encode_user_turn("do the thing", session_ctx)
+
+      base = %{
+        stashed
+        | backend_state:
+            Map.merge(stashed.backend_state, %{
+              phase: :ready,
+              next_id: 2,
+              pending_requests: %{1 => :thread_start},
+              pending_writes: []
+            })
+      }
+
+      {_events, out} =
+        Backend.normalize(%{"id" => 1, "result" => %{"thread" => %{"id" => "thread-ctx"}}}, base)
+
+      [turn_start_write] = out.backend_state.pending_writes
+      [%{"type" => "text", "text" => text}] = decode_write(turn_start_write)["params"]["input"]
+
+      assert text =~ "# Project Context"
+      assert text =~ manifest_marker
+      refute text =~ doc_marker
+      assert String.ends_with?(text, "do the thing")
+      # The whole first turn (system prompt + memory + prompt) stays small.
+      assert byte_size(text) < 40_000
+    end
+  end
+
   # ── encode_user_turn/2 once the thread is already started ────────────
 
   describe "encode_user_turn/2 — thread already started" do
@@ -337,7 +397,12 @@ defmodule OrcaHub.Backend.CodexTest do
     test "a subsequent turn is not re-prefixed with memory and does not persist again" do
       Process.put(:orca_hub_memory_context_fun, fn _slug, _prompt, _opts ->
         {:ok,
-         %{"block" => "- a prior fact", "memory_ids" => [], "pinned_count" => 0, "recalled_count" => 0}}
+         %{
+           "block" => "- a prior fact",
+           "memory_ids" => [],
+           "pinned_count" => 0,
+           "recalled_count" => 0
+         }}
       end)
 
       {c, _tid} =

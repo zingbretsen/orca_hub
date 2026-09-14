@@ -2535,6 +2535,10 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp open_backend_port(spec, extra_env) do
+    env = spec.env ++ extra_env
+
+    in_startup_stage(:spawn_size_check, fn -> check_spawn_spec_sizes!(spec.args, env) end)
+
     in_startup_stage(:port_open, fn ->
       Port.open(
         {:spawn_executable, spec.executable},
@@ -2543,12 +2547,116 @@ defmodule OrcaHub.SessionRunner do
           :exit_status,
           :stderr_to_stdout,
           {:args, spec.args},
-          {:env, spec.env ++ extra_env}
+          {:env, env}
         ] ++
           spec.port_opts
       )
     end)
   end
+
+  # Linux rejects any SINGLE argv or "KEY=VALUE" environment string longer
+  # than MAX_ARG_STRLEN (32 pages = 128 KiB) at execve with E2BIG, no matter
+  # how small the total is. Claude's whole system prompt is one
+  # `--append-system-prompt` value, so this is exactly how the bulk-inlined
+  # `.context/*.md` set (>120 KiB) killed every Claude spawn — and the
+  # failure surfaced as a bare `:enametoolong`/`:e2big` from Port.open with
+  # nothing pointing at which string, or why. The total cap is a conservative
+  # fraction of ARG_MAX (2 MiB here; POSIX guarantees far less) so a bloated
+  # env can't get us there either.
+  @max_spawn_string_bytes 131_072
+  @max_spawn_total_bytes 1_048_576
+
+  @doc false
+  def max_spawn_string_bytes, do: @max_spawn_string_bytes
+
+  @doc false
+  def max_spawn_total_bytes, do: @max_spawn_total_bytes
+
+  @doc """
+  Pre-`Port.open` guard: raises `ArgumentError` (wrapped as the
+  `:spawn_size_check` startup stage by the runner) with the offending argv
+  index / env key, its byte count, and the limit — instead of letting
+  `Port.open` fail with an opaque `E2BIG`. Never includes an env VALUE in the
+  message, since those can be secrets. Public for testing.
+  """
+  def check_spawn_spec_sizes!(args, env) when is_list(args) and is_list(env) do
+    arg_sizes = Enum.map(args, &spawn_string_bytes/1)
+    env_sizes = Enum.map(env, &spawn_env_bytes/1)
+    total = Enum.sum(arg_sizes) + Enum.sum(env_sizes)
+
+    oversized_arg =
+      arg_sizes
+      |> Enum.with_index()
+      |> Enum.find(fn {size, _index} -> size > @max_spawn_string_bytes end)
+
+    oversized_env =
+      env
+      |> Enum.zip(env_sizes)
+      |> Enum.find(fn {_entry, size} -> size > @max_spawn_string_bytes end)
+
+    cond do
+      oversized_arg != nil ->
+        {size, index} = oversized_arg
+
+        raise ArgumentError,
+              "argv[#{index}]#{describe_arg_position(args, index)} is #{size} bytes, over the " <>
+                "#{@max_spawn_string_bytes}-byte single-argument limit (Linux MAX_ARG_STRLEN) — " <>
+                "Port.open would fail with E2BIG. Total spawn payload: #{total} bytes " <>
+                "(#{length(args)} args, #{length(env)} env vars). " <>
+                spawn_size_hint()
+
+      oversized_env != nil ->
+        {entry, size} = oversized_env
+
+        raise ArgumentError,
+              "env var #{spawn_env_key(entry)} is #{size} bytes as KEY=VALUE, over the " <>
+                "#{@max_spawn_string_bytes}-byte single-string limit (Linux MAX_ARG_STRLEN) — " <>
+                "Port.open would fail with E2BIG. Total spawn payload: #{total} bytes. " <>
+                spawn_size_hint()
+
+      total > @max_spawn_total_bytes ->
+        raise ArgumentError,
+              "spawn argv + env total #{total} bytes, over the #{@max_spawn_total_bytes}-byte " <>
+                "total budget (ARG_MAX headroom) — Port.open would fail with E2BIG " <>
+                "(#{length(args)} args, #{length(env)} env vars). " <> spawn_size_hint()
+
+      true ->
+        :ok
+    end
+  end
+
+  defp spawn_size_hint do
+    "Shrink the startup payload: the system prompt inlines only .context/manifest.md " <>
+      "(keep it ~6 KiB; never re-inline the full .context doc set), and check for an " <>
+      "oversized memory/identity env payload."
+  end
+
+  # "--append-system-prompt" style flags precede their value; naming the flag
+  # turns "argv[13]" into something a human can act on.
+  defp describe_arg_position(args, index) when index > 0 do
+    case Enum.at(args, index - 1) do
+      "-" <> _ = flag -> " (value of #{flag})"
+      _ -> ""
+    end
+  end
+
+  defp describe_arg_position(_args, _index), do: ""
+
+  defp spawn_string_bytes(value) when is_binary(value), do: byte_size(value)
+  defp spawn_string_bytes(value) when is_list(value), do: byte_size(IO.chardata_to_string(value))
+  defp spawn_string_bytes(_), do: 0
+
+  # `{key, false}` unsets a variable — nothing is passed to execve for it.
+  defp spawn_env_bytes({_key, false}), do: 0
+
+  defp spawn_env_bytes({key, value}),
+    do: spawn_string_bytes(key) + 1 + spawn_string_bytes(value)
+
+  defp spawn_env_bytes(_), do: 0
+
+  defp spawn_env_key({key, _value}) when is_binary(key), do: key
+  defp spawn_env_key({key, _value}) when is_list(key), do: IO.chardata_to_string(key)
+  defp spawn_env_key(_), do: "?"
 
   defp in_startup_stage(stage, fun) do
     fun.()
@@ -2581,6 +2689,7 @@ defmodule OrcaHub.SessionRunner do
 
   defp startup_stage_name(:prepare_session), do: "prepare_session"
   defp startup_stage_name(:backend_spawn_spec), do: "backend spawn_spec"
+  defp startup_stage_name(:spawn_size_check), do: "spawn size check (pre-Port.open)"
   defp startup_stage_name(:port_open), do: "Port.open"
   defp startup_stage_name(:on_open), do: "on_open"
   defp startup_stage_name(_), do: "unknown"
@@ -2590,6 +2699,11 @@ defmodule OrcaHub.SessionRunner do
 
   defp startup_action(:backend_spawn_spec),
     do: "Action: check the backend, model, and MCP configuration."
+
+  defp startup_action(:spawn_size_check),
+    do:
+      "Action: the spawn payload exceeds an execve limit (E2BIG) — shrink the system prompt " <>
+        "(.context/manifest.md) or the env payload named below; see the byte counts."
 
   defp startup_action(:port_open),
     do: "Action: check the CLI executable path, permissions, and service PATH."

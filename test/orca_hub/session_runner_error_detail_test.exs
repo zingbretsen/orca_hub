@@ -81,6 +81,7 @@ defmodule OrcaHub.SessionRunnerErrorDetailTest do
     for {stage, name, action} <- [
           {:prepare_session, "prepare_session", "session directory"},
           {:backend_spawn_spec, "backend spawn_spec", "backend, model, and MCP"},
+          {:spawn_size_check, "spawn size check (pre-Port.open)", "E2BIG"},
           {:port_open, "Port.open", "CLI executable path"},
           {:on_open, "on_open", "initialization and handshake"}
         ] do
@@ -385,4 +386,101 @@ defmodule OrcaHub.SessionRunnerErrorDetailTest do
   # exercise safely — that's covered against a REAL SessionRunner in
   # `OrcaHub.Backend.CodexStubIntegrationTest`'s "a spawn failure lands as a
   # cli_error card instead of crashing the runner" test.
+
+  # The pre-Port.open E2BIG guard. Linux rejects any single argv or
+  # "KEY=VALUE" string over MAX_ARG_STRLEN (128 KiB) at execve — which is
+  # exactly how the bulk-inlined .context doc set (129,592 bytes in this
+  # repo, before the rest of the prompt) killed every Claude spawn: the whole
+  # system prompt is ONE --append-system-prompt value. The guard turns that
+  # opaque Port.open failure into a named startup stage with byte counts.
+  describe "check_spawn_spec_sizes!/2 (the pre-Port.open E2BIG guard)" do
+    test "passes a realistic spawn spec" do
+      args = ["-p", "--append-system-prompt", String.duplicate("x", 20_000)]
+
+      env = [
+        {"PATH", "/usr/bin"},
+        {"ORCA_MEMORY", String.duplicate("m", 50_000)},
+        {"UNSET", false}
+      ]
+
+      assert SessionRunner.check_spawn_spec_sizes!(args, env) == :ok
+    end
+
+    test "names the argv index, the flag it belongs to, its byte count and the limit" do
+      limit = SessionRunner.max_spawn_string_bytes()
+      assert limit == 131_072
+      big = String.duplicate("p", limit + 1)
+      args = ["-p", "--input-format", "stream-json", "--append-system-prompt", big]
+
+      error =
+        assert_raise ArgumentError, fn -> SessionRunner.check_spawn_spec_sizes!(args, []) end
+
+      assert error.message =~ "argv[4] (value of --append-system-prompt) is #{limit + 1} bytes"
+      assert error.message =~ "over the #{limit}-byte single-argument limit"
+      assert error.message =~ "E2BIG"
+      assert error.message =~ ".context/manifest.md"
+      # Never echoes the payload itself.
+      refute error.message =~ "pppppppp"
+    end
+
+    test "the one-shot positional -p prompt is attributed to -p, not just an index" do
+      limit = SessionRunner.max_spawn_string_bytes()
+      args = ["-p", String.duplicate("u", limit + 10), "--output-format", "stream-json"]
+
+      error =
+        assert_raise ArgumentError, fn -> SessionRunner.check_spawn_spec_sizes!(args, []) end
+
+      assert error.message =~ "argv[1] (value of -p) is #{limit + 10} bytes"
+    end
+
+    test "an oversized env var is reported by KEY only, never its value" do
+      limit = SessionRunner.max_spawn_string_bytes()
+      secret = String.duplicate("s", limit)
+      env = [{"PATH", "/usr/bin"}, {"ORCA_IDENTITY", secret}]
+
+      error =
+        assert_raise ArgumentError, fn -> SessionRunner.check_spawn_spec_sizes!(["-p"], env) end
+
+      # "ORCA_IDENTITY=" + value is limit + 14 bytes.
+      assert error.message =~ "env var ORCA_IDENTITY is #{limit + 14} bytes as KEY=VALUE"
+      refute error.message =~ "ssssssss"
+    end
+
+    test "many under-limit strings can still blow the total budget" do
+      per = 100_000
+      args = for _ <- 1..12, do: String.duplicate("a", per)
+
+      error =
+        assert_raise ArgumentError, fn -> SessionRunner.check_spawn_spec_sizes!(args, []) end
+
+      assert error.message =~
+               "total #{12 * per} bytes, over the #{SessionRunner.max_spawn_total_bytes()}-byte"
+    end
+
+    test "accepts charlist args/env (what older port specs pass) without crashing" do
+      assert SessionRunner.check_spawn_spec_sizes!([~c"-p", ~c"hello"], [{~c"K", ~c"v"}]) == :ok
+    end
+
+    test "renders as an actionable startup-stage failure with the byte count" do
+      limit = SessionRunner.max_spawn_string_bytes()
+      args = ["--append-system-prompt", String.duplicate("z", limit + 7)]
+
+      exception =
+        assert_raise ArgumentError, fn -> SessionRunner.check_spawn_spec_sizes!(args, []) end
+
+      detail =
+        SessionRunner.start_failure_detail(
+          %SessionRunner.StartFailure{
+            stage: :spawn_size_check,
+            exception: exception,
+            stacktrace: []
+          },
+          []
+        )
+
+      assert detail =~ "Startup stage: spawn size check (pre-Port.open)."
+      assert detail =~ "Action: the spawn payload exceeds an execve limit (E2BIG)"
+      assert detail =~ "is #{limit + 7} bytes"
+    end
+  end
 end

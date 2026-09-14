@@ -35,6 +35,12 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - Timestamp field types vary per column (`:naive_datetime` vs `:utc_datetime` — check the schema, don't assume); convert `NaiveDateTime` with `DateTime.from_naive!(x, "Etc/UTC")` before `DateTime` arithmetic, and pattern-match both when a field's provenance is mixed
 - Never sort/compare `%NaiveDateTime{}`/`%DateTime{}` structs with a bare `Enum.sort_by/2`, `Enum.sort/1`, `Enum.min_by/2`, `Enum.max_by/2`, `<`/`<=`/`>`/`>=`, etc. — Erlang's default term ordering compares struct fields ALPHABETICALLY (`microsecond` sorts before `minute`/`month`/`second`/`year`), not chronologically, so it silently scrambles any two timestamps sharing an `hour`. Always pass an explicit comparator: `Enum.sort_by(list, & &1.updated_at, {:desc, NaiveDateTime})` / `{:asc, DateTime}`, or `NaiveDateTime.compare/2` in a custom sorter fn. This caused the 2026-08-08 windowed-feed out-of-order/dropped-reply incident (`Sessions.list_messages_window/2`) — search for this bug class with `grep -rnE "Enum\.(sort_by|sort|min_by|max_by|min|max)\(" lib/` and inspect every hit touching a timestamp field.
 
+## Project context docs (`.context/`)
+
+- `.context/*.md` are detailed reference docs (architecture, data model, session lifecycle, …). They are NOT inlined into agent prompts — read the one you need on demand.
+- `.context/manifest.md` is the ONE file that IS inlined into every Claude/Codex startup prompt (`SharedPrompts.context_manifest_prompt/1`, a deterministic single-file read, no glob). It is hand-maintained: a topic map pointing at the other docs plus the key invariants, budgeted at ~6 KiB (pinned by a test in `shared_prompts_test.exs`, hard-truncated at 16 KiB). When you add a `.context/` doc, add a one-line pointer to it in the manifest; when an invariant changes, fix the manifest, don't grow it.
+- Why: the full doc set is ~130 KB, over Linux's 128 KiB single-argv limit (`MAX_ARG_STRLEN`), and Claude's whole system prompt is one `--append-system-prompt` value — bulk-inlining E2BIG'd every Claude spawn at `Port.open` and burned most of a Codex first turn. `SessionRunner.check_spawn_spec_sizes!/2` now fails loudly (stage "spawn size check", with byte counts) before `Port.open` if any argv/env string or the total crosses the limit. pi loads `AGENTS.md` itself and gets nothing from `.context/`.
+
 ## Key patterns
 
 - Messages are stored as flexible maps in a `data` column (no fixed schema for message content)

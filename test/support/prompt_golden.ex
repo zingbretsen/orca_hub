@@ -21,8 +21,8 @@ defmodule OrcaHub.PromptGolden do
   - `session_id/0` — a fixed UUID, never `Ecto.UUID.generate/0`, since the id
     is interpolated into several fragments.
   - `directory/0` — a path that does not exist, so
-    `SharedPrompts.context_files_prompt/1` returns `nil` instead of inlining
-    whatever `.context/*.md` happens to be on disk.
+    `SharedPrompts.context_manifest_prompt/1` returns `nil` instead of
+    inlining whatever `.context/manifest.md` happens to be on disk.
   - `SharedPrompts.open_issues_prompt/1` does a **live DB query**. The fixed
     session id above owns no issues, so it returns `nil` — the golden tests
     assert that precondition explicitly rather than assuming it, so a dev-DB
@@ -47,7 +47,7 @@ defmodule OrcaHub.PromptGolden do
   @doc "The one fixed session id every golden case renders with."
   def session_id, do: @session_id
 
-  @doc "A directory guaranteed not to exist (keeps `context_files_prompt/1` nil)."
+  @doc "A directory guaranteed not to exist (keeps `context_manifest_prompt/1` nil)."
   def directory, do: @directory
 
   @doc "The fixed issue key used by the `issue_key` half of the matrix."

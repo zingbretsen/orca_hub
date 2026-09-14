@@ -508,28 +508,118 @@ defmodule OrcaHub.Backend.SharedPrompts do
     |> String.trim()
   end
 
-  @doc """
-  Renders `<directory>/.context/*.{md,mmd}` as a "Project Context" block, or
-  `nil` when the directory doesn't exist / has no matching files.
-  """
-  def context_files_prompt(directory) do
-    context_dir = Path.join(directory, ".context")
+  # The ONE `.context/` file that gets inlined into a Claude/Codex startup
+  # prompt. Hand-maintained: a topic map + key invariants, NOT a copy of the
+  # detailed docs it points at. The target size for the real file is ~6 KiB
+  # (pinned by a test against this repo's own manifest); the hard cap below
+  # is what keeps a runaway edit from re-creating the E2BIG failure this
+  # replaced — anything past it is cut with a visible marker rather than
+  # shipped whole.
+  @context_manifest_file "manifest.md"
+  @context_manifest_max_bytes 16_384
+  # When the manifest is absent, the bounded fallback lists at most this
+  # many `.context/` doc names so the model knows the material exists and
+  # can `Read` it on demand.
+  @context_fallback_max_entries 24
 
-    if File.dir?(context_dir) do
-      context_dir
-      |> File.ls!()
-      |> Enum.filter(&(Path.extname(&1) in ~w(.md .mmd)))
-      |> Enum.sort()
-      |> Enum.map(fn filename ->
-        content = File.read!(Path.join(context_dir, filename))
-        "## #{Path.rootname(filename)}\n\n#{content}"
-      end)
-      |> case do
-        [] -> nil
-        parts -> "# Project Context\n\n#{Enum.join(parts, "\n\n")}"
-      end
+  @doc "Basename of the hand-maintained project-context manifest under `.context/`."
+  def context_manifest_file, do: @context_manifest_file
+
+  @doc "Hard byte cap on the inlined manifest; anything past it is truncated."
+  def context_manifest_max_bytes, do: @context_manifest_max_bytes
+
+  @doc """
+  Renders `<directory>/.context/manifest.md` as the "Project Context" block —
+  a deterministic single-file read (no glob), capped at
+  `context_manifest_max_bytes/0`.
+
+  This deliberately replaced inlining every `.context/*.{md,mmd}` verbatim:
+  that set grew past 120 KiB, which is over Linux's 128 KiB single-argument
+  limit (`MAX_ARG_STRLEN`), so every Claude spawn — whose system prompt is
+  one `--append-system-prompt` argv entry — died in `Port.open` with
+  `E2BIG`, and every Codex first turn burned most of its context window
+  before doing any work. The detailed docs stay in the repo as reference
+  material the model reads on demand; the manifest is the map to them.
+
+  Fallback when the manifest is missing but `.context/` has docs: a short,
+  bounded listing of the doc names (never their content). `nil` when there
+  is no `.context/` directory or nothing in it.
+  """
+  def context_manifest_prompt(directory) do
+    context_dir = Path.join(directory, ".context")
+    manifest_path = Path.join(context_dir, @context_manifest_file)
+
+    case File.read(manifest_path) do
+      {:ok, content} ->
+        "# Project Context\n\n" <> bounded_manifest(content, manifest_path)
+
+      {:error, _} ->
+        context_manifest_fallback(context_dir)
+    end
+  end
+
+  defp bounded_manifest(content, manifest_path) do
+    if byte_size(content) <= @context_manifest_max_bytes do
+      content
     else
-      nil
+      Logger.warning(
+        "[SharedPrompts] #{manifest_path} is #{byte_size(content)} bytes, over the " <>
+          "#{@context_manifest_max_bytes}-byte cap — truncating. Trim the manifest; " <>
+          "detailed material belongs in the other .context/*.md files."
+      )
+
+      # Cut on a UTF-8 boundary so the truncated prompt is still valid text.
+      cut = safe_binary_prefix(content, @context_manifest_max_bytes)
+
+      cut <>
+        "\n\n[.context/#{@context_manifest_file} truncated at #{@context_manifest_max_bytes} " <>
+        "bytes (was #{byte_size(content)}); read the file directly for the rest.]"
+    end
+  end
+
+  defp safe_binary_prefix(binary, max_bytes) do
+    prefix = binary_part(binary, 0, max_bytes)
+
+    if String.valid?(prefix) do
+      prefix
+    else
+      # Back off at most 3 bytes to the previous complete UTF-8 code point.
+      Enum.find_value(1..3, prefix, fn back ->
+        candidate = binary_part(binary, 0, max_bytes - back)
+        if String.valid?(candidate), do: candidate
+      end)
+    end
+  end
+
+  defp context_manifest_fallback(context_dir) do
+    docs =
+      case File.ls(context_dir) do
+        {:ok, names} ->
+          names
+          |> Enum.filter(&(Path.extname(&1) in ~w(.md .mmd)))
+          |> Enum.sort()
+
+        {:error, _} ->
+          []
+      end
+
+    case docs do
+      [] ->
+        nil
+
+      docs ->
+        shown = Enum.take(docs, @context_fallback_max_entries)
+        hidden = length(docs) - length(shown)
+
+        listing = Enum.map_join(shown, "\n", &"- .context/#{&1}")
+
+        more =
+          if hidden > 0, do: "\n- … and #{hidden} more (list the directory)", else: ""
+
+        "# Project Context\n\n" <>
+          "This project keeps reference docs under `.context/` but has no " <>
+          "`.context/#{@context_manifest_file}` yet, so nothing is inlined here. " <>
+          "Read the relevant doc on demand:\n\n" <> listing <> more
     end
   end
 
@@ -551,7 +641,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
 
   Returns `nil` when the session has no open/in_progress issues of its own
   (including when `session_id` is `nil`), same convention as
-  `context_files_prompt/1`.
+  `context_manifest_prompt/1`.
   """
   def open_issues_prompt(nil), do: nil
 

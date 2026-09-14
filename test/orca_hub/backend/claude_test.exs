@@ -23,6 +23,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
   alias OrcaHub.Backend.Claude, as: Backend
   alias OrcaHub.Claude.Config
   alias OrcaHub.PromptGolden
+  alias OrcaHub.SessionRunner
 
   # ── ctx fixture ──────────────────────────────────────────────────────
   # Mirrors the fields SessionRunner's `data` map carries (see
@@ -756,6 +757,99 @@ defmodule OrcaHub.Backend.ClaudeTest do
     end
   end
 
+  # A real-sized .context fixture: 8 docs totalling ~128 KiB, mirroring this
+  # repo's own set (129,592 bytes across 8 files at the time of writing).
+  # Inlined verbatim, that ALONE exceeded Linux's 128 KiB MAX_ARG_STRLEN for
+  # the single --append-system-prompt argv value, so Port.open E2BIG'd on
+  # every Claude spawn. Only .context/manifest.md may be inlined now.
+  describe "spawn_spec/2 — .context inlining is manifest-only (E2BIG regression)" do
+    setup do
+      dir =
+        Path.join(System.tmp_dir!(), "claude_ctx_fixture_#{System.unique_integer([:positive])}")
+
+      context_dir = Path.join(dir, ".context")
+      File.mkdir_p!(context_dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      doc_marker = "full-doc-sentinel-#{System.unique_integer([:positive])}"
+      manifest_marker = "manifest-sentinel-#{System.unique_integer([:positive])}"
+
+      docs =
+        ~w(architecture clustering data-model message-flow session-lifecycle supervision-tree terminals triggers)
+
+      for name <- docs do
+        body = String.duplicate("#{doc_marker} lorem ipsum dolor sit amet. ", 400)
+        File.write!(Path.join(context_dir, "#{name}.md"), "# #{name}\n\n#{body}")
+      end
+
+      File.write!(Path.join(context_dir, "diagram.mmd"), "graph TB\n  A[#{doc_marker}]")
+
+      total =
+        context_dir
+        |> File.ls!()
+        |> Enum.map(&File.stat!(Path.join(context_dir, &1)).size)
+        |> Enum.sum()
+
+      # Prove the fixture is actually over the single-argv limit on its own.
+      assert total > SessionRunner.max_spawn_string_bytes()
+
+      File.write!(
+        Path.join(context_dir, "manifest.md"),
+        "# Map\n\n#{manifest_marker}\n\n- .context/architecture.md — module map"
+      )
+
+      %{dir: dir, doc_marker: doc_marker, manifest_marker: manifest_marker}
+    end
+
+    test ":streaming args carry the manifest, none of the docs, and every argv entry is under the limit",
+         %{dir: dir, doc_marker: doc_marker, manifest_marker: manifest_marker} do
+      spec = Backend.spawn_spec(:streaming, ctx(%{directory: dir}))
+
+      idx = Enum.find_index(spec.args, &(&1 == "--append-system-prompt"))
+      assert idx, "no --append-system-prompt in #{inspect(spec.args)}"
+      system_prompt = Enum.at(spec.args, idx + 1)
+
+      assert system_prompt =~ "# Project Context"
+      assert system_prompt =~ manifest_marker
+      refute system_prompt =~ doc_marker
+      refute system_prompt =~ "## architecture"
+
+      for arg <- spec.args do
+        assert byte_size(arg) <= SessionRunner.max_spawn_string_bytes()
+      end
+
+      # And the runner's own guard agrees the spec is spawnable.
+      assert SessionRunner.check_spawn_spec_sizes!(spec.args, spec.env) == :ok
+    end
+
+    test ":one_shot args behave the same", %{
+      dir: dir,
+      doc_marker: doc_marker,
+      manifest_marker: manifest_marker
+    } do
+      spec = Backend.spawn_spec(:one_shot, ctx(%{directory: dir, prompt: "hello"}))
+      joined = Enum.join(spec.args, "\n")
+
+      assert joined =~ manifest_marker
+      refute joined =~ doc_marker
+      assert SessionRunner.check_spawn_spec_sizes!(spec.args, spec.env) == :ok
+    end
+
+    test "without a manifest the docs are still NOT inlined — only a bounded name listing", %{
+      dir: dir,
+      doc_marker: doc_marker
+    } do
+      File.rm!(Path.join([dir, ".context", "manifest.md"]))
+
+      prompt = Backend.system_prompt(ctx(%{directory: dir}))
+
+      refute prompt =~ doc_marker
+      assert prompt =~ "no `.context/manifest.md` yet"
+      assert prompt =~ "- .context/architecture.md"
+      assert byte_size(prompt) < 20_000
+    end
+  end
+
   describe "spawn_spec/2 — :one_shot memory injection" do
     setup do
       test_pid = self()
@@ -1034,7 +1128,13 @@ defmodule OrcaHub.Backend.ClaudeTest do
 
     test "a second turn on the same warm port (memory_sent already true) is not re-prefixed and does not persist again" do
       Process.put(:orca_hub_memory_context_fun, fn _slug, _prompt, _opts ->
-        {:ok, %{"block" => "- a prior fact", "memory_ids" => [], "pinned_count" => 0, "recalled_count" => 0}}
+        {:ok,
+         %{
+           "block" => "- a prior fact",
+           "memory_ids" => [],
+           "pinned_count" => 0,
+           "recalled_count" => 0
+         }}
       end)
 
       ctx = %{

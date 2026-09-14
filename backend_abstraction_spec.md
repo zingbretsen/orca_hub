@@ -506,8 +506,10 @@ Mapping command/file/mcp items to the existing tool-name icons means
    400s on GPT-5-Codex. → `system_prompt: :leading_message`: prepend a
    Codex-flavored system prompt (`Backend.Codex.system_prompt/1`, sharing the
    non-Claude-specific fragments with `Backend.Claude` via
-   `OrcaHub.Backend.SharedPrompts` — code-exec mode, project `.context/`
-   files, the commit trailer; the `AskUserQuestion` guidance and the
+   `OrcaHub.Backend.SharedPrompts` — code-exec mode, the project's
+   `.context/manifest.md` (only that one file — the full `.context/` doc set
+   is never inlined since it outgrew the 128 KiB argv limit), the commit
+   trailer; the `AskUserQuestion` guidance and the
    `mcp__server__tool` naming caveat are genuinely Claude-CLI-specific and
    dropped) to the first user turn per thread.
 2. **MCP** — config-file only (no inline `mcpServers` param on `thread/start`).
@@ -1026,8 +1028,8 @@ exists (one key: `:agent_start_ms`).
   → synthesized `system`/`init` event, stored in `claude_session_id` as usual.
 - **System prompt:** `--append-system-prompt` flag ⇒ `system_prompt: :flag` —
   same as Claude. `Backend.Pi.system_prompt/1` reuses `SharedPrompts`'
-  non-MCP-dependent fragments (session id line, commit trailer, `.context/`
-  files) and drops the orchestrator/code-exec/sibling-session fragments
+  non-MCP-dependent fragments (session id line, commit trailer; NOT the
+  `.context/manifest.md` block Claude/Codex get) and drops the orchestrator/code-exec/sibling-session fragments
   entirely, since `mcp: false` makes them all inapplicable.
 - **Events → normalize:** `message_end{role:"assistant",content:[…]}` (only,
   not `turn_end`/`agent_end.messages`, which embed the same content
