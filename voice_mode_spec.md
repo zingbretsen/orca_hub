@@ -1,8 +1,8 @@
-# Voice Mode — Design Spec (DRAFT, v0.2)
+# Voice Mode — Design Spec (DRAFT, v0.3)
 
-Status: DRAFT — SPIKE 2 (GB10 ASR) folded in; SPIKE 1 (browser capture), 2b
-(wake-word), 3 (keyword spotter) pending. Author: orchestrator handoff,
-2026-09-14.
+Status: DRAFT — SPIKE 1 (browser capture) + SPIKE 2 (GB10 ASR) folded in;
+SPIKE 2b (wake-word) + SPIKE 3 (keyword spotter) pending; AEC acoustic test
+pending Zach. Author: orchestrator handoff, 2026-09-14.
 Owner: finalize this document before writing production code.
 
 Real-time voice interaction with an OrcaHub session: open mic -> VAD-gated
@@ -49,17 +49,29 @@ The OUTPUT half is roughly 70% built. Do not rebuild it.
   and for the pre-existing TTS token exposure it uncovered.
 - `SessionViewersRegistry` — per-session live-viewer tracking, the natural
   place to hang a single-voice-owner claim.
+- `spikes/voice/` — the SPIKE 1 harness, and the REFERENCE IMPLEMENTATION of
+  the capture path: `index.html` / `harness.js` (getUserMedia, metrics, WAV
+  dump, AEC A/B panel), `capture-worklet.js` (windowed-sinc LPF + fractional
+  decimation to 16kHz with the pre-roll ring), `silero-direct.js` (Silero
+  driven straight on onnxruntime-web — the measured exit from vad-web),
+  `tools/headless.mjs` (playwright driver on a fake capture device),
+  `tools/fetch_vendor.sh` (re-fetches the ~19MB of gitignored wasm/onnx from
+  pinned versions, byte-reproducible), `serve.sh` on :8777. DELIBERATELY
+  OUTSIDE `priv/static` and `package.json` — nothing in the app imports it and
+  no dependency was added. Production code should PORT FROM IT rather than
+  re-derive it; every measurement in sections 3.2, 4 and 9 came from there.
 
-There is NO existing microphone, VAD, ASR, or audio-capture code anywhere in
-the tree (grep for whisper/transcri/getUserMedia/AudioWorklet/MediaRecorder
-returns only unrelated `memory_extraction` hits).
+There is NO microphone, VAD, ASR, or audio-capture code in the APPLICATION
+tree (grep for whisper/transcri/getUserMedia/AudioWorklet/MediaRecorder
+returns only unrelated `memory_extraction` hits) — only the `spikes/voice/`
+harness above, which is not wired in.
 
 ## 3. Architecture
 
 Browser does capture, VAD, and wake-word spotting. Server does ASR dispatch,
 intent adjudication, and TTS orchestration. GB10 serves ASR + TTS over HTTP.
 
-    mic -> AudioWorklet (48k -> 16k mono, ring buffer w/ pre-roll)
+    mic -> AudioWorklet (ctx rate -> 16k mono, ring buffer w/ pre-roll)
         -> Silero VAD (onnxruntime-web) -> speech segments only
         -> VoiceChannel (binary frames)
         -> OrcaHub.Voice.ASR (HTTP -> GB10)
@@ -97,23 +109,90 @@ of the endpoint, not a probabilistic one that a threshold change might
 reintroduce. Quiet speech is not dropped either (transcribes correctly at
 -50 dBFS peak).
 
-Use Silero VAD (~2MB ONNX) via onnxruntime-web; `@ricky0123/vad-web` packages
-it. Do NOT roll an energy threshold. Do NOT use the legacy WebRTC GMM VAD.
+DECISION (SPIKE 1, measured): use `@ricky0123/vad-web` 0.0.31 (ISC) on
+onnxruntime-web 1.29.0 (MIT), Silero v5 (`silero_vad_v5.onnx`, 2,327,524 B,
+512-sample frames = 32ms), OVERRIDING EVERY DEFAULT:
+
+```js
+const VAD = {
+  model: 'v5',                      // 512-sample frames = 32 ms
+  positiveSpeechThreshold: 0.5,     // library default 0.3
+  negativeSpeechThreshold: 0.35,    // library default 0.25
+  redemptionMs: 600,                // library default 1400  <- THE latency knob
+  preSpeechPadMs: 500,              // library default 800
+  minSpeechMs: 250,                 // library default 400
+};
+```
+
+Do NOT roll an energy threshold. Do NOT use the legacy WebRTC GMM VAD.
+
+WARNING — THE DEFAULTS ARE WRONG FOR THIS PRODUCT. vad-web 0.0.31 ships
+`redemptionMs: 1400`, `preSpeechPadMs: 800`, `minSpeechMs: 400` and thresholds
+0.3/0.25, which measured EOS 1376ms — 2x the section 6.1 budget, on the term
+section 6.1 already names as dominant. Adopting the library without overriding
+these silently misses this spec's own latency target. `minSpeechMs` must come
+DOWN to 250 as well: a bare "stop" can be under 400ms and would be discarded
+without a trace. The API names are `redemptionMs` / `preSpeechPadMs` /
+`minSpeechMs` — NOT the `*Frames` names v0.1/v0.2 used; the frame counts are
+derived internally (`Math.floor(ms / 32)`).
+
+Bundle size is NOT a differentiator, so choose on maintenance, not on bytes:
+5,560,445 B gzip (vad-web) vs 5,543,660 B (direct Silero), 0.3% apart, both
+dominated by ort's wasm at 13.96 MB raw / 3.57 MB gzip. SERVE THE WASM
+COMPRESSED AND CACHE IT HARD — that is the single biggest first-load lever,
+and it never changes between deploys. vad-web wins because it carries the
+model's 64-sample context carry, the frame state machine, misfire rejection
+and worklet fallback; `spikes/voice/silero-direct.js` stays in-tree as the
+MEASURED EXIT if a 0.0.x release cadence becomes a problem.
+
+Measured with exactly those settings (harness in section 2):
+
+- EOS p50 608ms / p95 640ms. EOS tracks `redemptionMs` almost exactly —
+  416 / 608 / 1408ms for 400 / 600 / 1400 — so `redemptionMs` IS the
+  end-of-speech knob, and everything else in the browser half is single-digit
+  milliseconds. 400 also fits (416ms) but shortens the mid-sentence pause the
+  user may take before the utterance is cut; expose it as a setting.
+- 0 false triggers in 5 x 60s of pink noise at -50 / -40 / -26 dBFS. The
+  speech probability on noise peaked at p95 <= 0.0096, max 0.243 — a wide
+  margin under 0.5, so this is not a marginal call.
+- 7/7 utterances detected, 0 misfires.
+- Silero inference p50 3.3-3.5ms / p95 3.9-4.2ms per 32ms frame (realtime
+  factor 0.11) on ONE single-threaded wasm thread. Therefore NO COOP/COEP and
+  NO wasm threads: there is already ~9x headroom, and cross-origin isolation
+  would force CORP/CORS onto every cross-origin asset for no measured gain.
+- Session init 499ms (direct Silero) / 533-809ms (`MicVAD.new`). INITIALIZE AT
+  ARM TIME (the start-voice-mode button), not on first speech, or the cold
+  start eats the first utterance.
 
 Ring-buffer ~500ms of PRE-ROLL. VAD fires after speech has begun; without
 pre-roll the first phoneme of every utterance is clipped and "send" becomes
-"end". This is a known, cheap, easy-to-forget bug.
+"end". This is a known, cheap, easy-to-forget bug. SPIKE 1 confirms the
+mechanism works: speech onsets land at 420-510ms inside a 500ms-pre-roll
+segment (median 480ms over 52 dumped WAVs, re-measured offline by an
+independent implementation), not at ~0.
 
 Belt-and-braces even with VAD — but NOT the v0.1 filter, which is
 unimplementable here: the sync lane returns no `no_speech_prob`,
 `avg_logprob` or `compression_ratio`, and WhisperX's batched pipeline cannot
 produce them (section 6). The two signals that DO exist:
 
-- A HARD MINIMUM SEGMENT DURATION FLOOR of ~0.8s before dispatch. Short
+- A HARD MINIMUM SEGMENT DURATION FLOOR of ~0.8s before ASR DISPATCH. Short
   fragments are the real hallucination mode on this endpoint: a 0.3s cut of
   "Orca" returned `"archives."`, a 0.2s cut returned `"R."`, while anything
-  above ~0.8s transcribed correctly. Drop sub-floor segments client-side;
-  never send them.
+  above ~0.8s transcribed correctly.
+
+  RECONCILIATION with `minSpeechMs: 250` above — the two floors live at
+  different layers and both are right. The CLIENT keeps segments down to
+  250ms, because the command path needs them (a bare "stop" is shorter than
+  400ms, and under section 5.1 path (a) the short segment may BE the
+  command). The ASR DISPATCHER never sends a sub-0.8s segment as-is; it holds
+  it and, in order of preference: (i) MERGES it with the next segment if one
+  arrives inside the arming window (section 5.1), which is the common case
+  for a command spoken right after dictation; else (ii) PADS it to ~0.8s from
+  the pre-roll and post-roll silence the ring buffer ALREADY CAPTURED —
+  `preSpeechPadMs` 500 in front plus the redemption tail behind (measured
+  trailing silence median 673ms), which is always enough. Never synthesize
+  silence that was not recorded, and never discard a short segment outright.
 - `elapsed_seconds` < ~50ms means the SERVER's VAD found nothing — non-speech
   returns in ~14ms against ~500ms for real speech. Treat such a result as
   silence.
@@ -143,6 +222,23 @@ autoGainControl: true } })`. It is applied at capture, before the track reaches
 an AudioWorklet, and uses the browser's own render stream as reference — which
 is exactly TTS played through the same page. Headphones make it moot.
 
+SPIKE 1 verified the CONSTRAINT half of that on Chrome 149 / Chromium 153 on
+Linux: `getSettings()` reports `echoCancellation: true` when requested true and
+`false` when requested false, so the flag is genuinely honoured in both
+directions rather than being a constant. `noiseSuppression` and
+`autoGainControl` apply likewise — NS does ~6.3 dB of real work on the capture
+path (pink-noise floor -56.8 dBFS with it on vs -50.5 dBFS off). Also observed:
+`channelCount` 1, track 48kHz, `voiceIsolation: false`. PIN `voiceIsolation`
+EXPLICITLY rather than inheriting it: where it exists it is a THIRD processing
+stage alongside NS and AEC, and it can distort speech.
+
+NONE OF THAT IS EVIDENCE THAT AEC SUPPRESSES OUR TTS. SPIKE 1 ran headless on
+a fake capture device, which injects a WAV straight into the capture pipeline
+— no speaker, no room, no microphone, and therefore no echo to cancel. Its
+~0 dB residual is what "there was never any echo" looks like, not what "AEC
+removed the echo" looks like. That question is answerable only by a human with
+real speakers and no headphones; see section 4.1.
+
 LAYER 2 — text-domain echo rejection. This is where the "we know what we are
 playing" insight genuinely pays off. Maintain a playback timeline of
 (text, start_ts, end_ts) for every TTS chunk. Fuzzy-match any transcript
@@ -159,6 +255,28 @@ Ship in this order; each rung is independently useful:
 2. DUCK-ON-DETECT — drop TTS to ~20% when VAD fires. Also cuts echo, and
    feels responsive.
 3. FULL DUPLEX — open channel, browser AEC + text-domain rejection.
+
+RUNG 1 IS NOT SKIPPABLE ON SPIKE 1's EVIDENCE (section 4) — v1 mutes the mic
+during playback and stands on its own merits. Whether rung 3 is reachable at
+all is decided by ONE human measurement, not by any number in this document.
+The procedure is in `spikes/voice/README.md`:
+
+    cd ~/orca_hub/spikes/voice && ./serve.sh      # -> http://localhost:8777/
+
+Open it on `localhost` (NEVER the LAN IP — section 9 trap 1), SPEAKERS ON and
+HEADPHONES OFF (headphones remove the acoustic path and make the test
+meaningless), click `run AEC A/B`, stay quiet ~25s. DECISION RULE on the
+reported `AEC suppression`:
+
+- **> ~15 dB** -> rung 3 (full duplex) is plausible. Ship rungs 1-2 first,
+  then revisit.
+- **< ~6 dB** -> HALF-DUPLEX IS THE PERMANENT ANSWER. Do not build rung 3.
+- in between -> duck-on-detect (rung 2) is the ceiling; re-measure on the
+  actual target hardware before going further.
+
+Independently of the dB figure: any non-zero `triggers (playback)` with AEC ON
+means our own voice false-triggers the VAD, which breaks the product on its
+own.
 
 ## 5. Command classification — two separate paths
 
@@ -260,6 +378,13 @@ The contract, measured (SPIKE 2):
 - It is NOT OpenAI-compatible. `/v1/audio/transcriptions` 404s everywhere on
   this box, INCLUDING `ai.lab.ingbretsenhome.com` — that hostname resolves to
   the k3s VIP and fronts an `ai-gateway` app that proxies only TTS.
+- DO NOT RE-DERIVE "GB10 HAS NO ASR" FROM THE GATEWAY. SPIKE 1 probed only
+  `ai.lab.ingbretsenhome.com` and concluded that no ASR endpoint exists
+  anywhere. That is CORRECT ABOUT THE GATEWAY — its `/v1/models` lists six
+  models and not one is ASR, while TTS `/v1/audio/speech` does work (24kHz
+  mono WAV in 0.6-1.7s) — and WRONG AS A CONCLUSION: the ASR lane is the LAN
+  sync lane above, `192.168.1.77:8000`, which SPIKE 2 measured end to end.
+  Both statements are true at once; they are different hosts.
 - `multipart/form-data` ONLY; anything else is 415. Fields: `file` plus
   `language=en`. MAX 4 FORM FIELDS — more is a 400.
 - Clip <= 20s and upload <= 25 MiB, else 413. Server timeout 30s, surfaced as
@@ -420,22 +545,58 @@ tests"), never the payload.
    `https://orca.lab.ingbretsenhome.com` OK, `http://localhost:4000` OK, but
    `http://192.168.1.x:4001` FAILS — `navigator.mediaDevices` is simply
    `undefined`, no error thrown. Instances run on LAN hosts on port 4001, so
-   this WILL be hit. Test on localhost or through the https ingress.
+   this WILL be hit. Test on localhost or through the https ingress. The
+   `spikes/voice/` harness shows a RED BANNER when loaded from a non-secure
+   origin — the cheapest possible version of this check; copy it.
 2. **Autoplay policy** requires a user gesture before audio can play. The
    "start voice mode" button satisfies it; do not auto-arm on page load.
 3. Short-fragment hallucination — sub-0.8s segments transcribe as garbage
    ("archives.", "R."); silence itself is safe (section 3.2).
 4. VAD pre-roll clipping (section 3.2).
-5. Sample-rate mismatch: mic is 48kHz, ASR wants 16kHz mono — resample in the
-   AudioWorklet, not on the server.
+5. **`AudioContext.sampleRate` is NOT the mic's sample rate.** In SPIKE 1 the
+   track negotiated 48000 Hz while the context negotiated 44100 Hz — a
+   resample ratio of **2.75625, not 3**. The worklet sees the CONTEXT's rate
+   (the `sampleRate` global); the browser has already resampled the track into
+   it. NEVER hardcode `/3` or `48000`: a wrong ratio yields ~10% pitch-shifted
+   audio, and Whisper transcribes pitch-shifted audio into plausible WRONG
+   WORDS rather than failing loudly. Resample from `ctx.sampleRate` to 16000
+   in the worklet (not on the server) with a PROPER LOW-PASS — SPIKE 1 used a
+   63-tap windowed-sinc LPF plus fractional decimation via a phase
+   accumulator, measured at 0.58% duty cycle (p50 15-17 us per 128-frame
+   block) at both 48k and 44.1k, with VAD queue backlog max 0. Tag every frame
+   posted to the main thread with an ABSOLUTE 16kHz sample index, so a late
+   pre-roll request still returns exactly the right audio.
 6. Mobile Safari AudioWorklet/getUserMedia quirks — explicitly out of scope
    for v1, but do not architect in a way that forecloses it.
+7. **`performance` does not exist in `AudioWorkletGlobalScope`.** Calling
+   `performance.now()` inside `process()` throws a `ReferenceError`; Chrome
+   then fires `onprocessorerror` ONCE and SILENTLY STOPS CALLING `process()`
+   FOREVER. No console error, no exception anywhere reachable, the
+   `AudioContext` stays `running` and `currentTime` keeps advancing — you just
+   get zero audio frames, which is indistinguishable from broken
+   `getUserMedia`. Verified on Chromium 153 AND Chrome 149; it cost SPIKE 1 a
+   debugging cycle and will cost production one too. Mitigation: always attach
+   `node.onprocessorerror`, time the worklet with the audio clock
+   (`currentTime` / `currentFrame`) only, and do ALL wall-clock timing on the
+   main thread.
+8. **A worklet node with no path to `ctx.destination` is never pulled by the
+   render graph**, so `process()` never runs — equally silently, with the same
+   zero-frames symptom as trap 7. The capture node emits no audible output but
+   must still be connected onward: a `GainNode({gain: 0})` into
+   `ctx.destination` is enough.
 
 ## 10. Phasing
 
 1. Mic -> Silero VAD -> utterance -> GB10 ASR -> draft box. Half-duplex.
-   SEND via whichever path section 5.1's DECISION resolves to, plus the arming
-   window. **This is a usable product and most of the value.**
+   VAD is `@ricky0123/vad-web` with section 3.2's EXPLICIT settings
+   (`model: 'v5'`, thresholds 0.5/0.35, `redemptionMs: 600`,
+   `preSpeechPadMs: 500`, `minSpeechMs: 250`) — never its defaults. SEND via
+   whichever path section 5.1's DECISION resolves to, plus the arming window.
+   **This is a usable product and most of the value.**
+   PHASE 1 EXIT CRITERION: Zach's acoustic AEC A/B (section 4.1) plus a
+   3 x "orca send" WAV dump from the `spikes/voice/` harness on REAL
+   microphone hardware, confirming pre-roll onsets at ~420-510ms rather than
+   ~0.
 2. Streaming TTS off assistant deltas + speakable-content policy.
 3. Porcupine wake-word path for stop/pause during playback.
 4. Browser AEC + text-domain echo rejection -> duck-on-detect -> open channel.
@@ -451,14 +612,58 @@ tests"), never the payload.
 - Which SEND path — section 5.1 (a) keyword spotter vs (b) transcript
   vocabulary + phonetic matcher? Pending SPIKE 2b and SPIKE 3.
 - WAV vs webm/opus for the browser upload? Pending SPIKE 2b.
-- Is `@ricky0123/vad-web` acceptable as a dependency, or should Silero be
-  wired to onnxruntime-web directly? What is the bundle-size cost?
+- ~~Is `@ricky0123/vad-web` acceptable as a dependency, or should Silero be
+  wired to onnxruntime-web directly? What is the bundle-size cost?~~
+  **ANSWERED — see section 3.2.** vad-web 0.0.31 with every default
+  overridden; bundle cost is 0.3% over direct Silero (5,560,445 vs 5,543,660 B
+  gzip), both dominated by ort's wasm, so the choice is maintenance, not size.
 - Porcupine requires a Picovoice access key (free tier). Acceptable, or is
   openWakeWord the right call despite being Python-first?
 - Does browser AEC actually suppress our TTS adequately on Zach's real
-  hardware, or is half-duplex the permanent answer?
+  hardware, or is half-duplex the permanent answer? STILL OPEN, and SPIKE 1
+  CANNOT ANSWER IT — a fake capture device has no acoustic loop. The
+  10-minute human procedure and the >~15 dB / <~6 dB decision rule are now in
+  section 4.1.
 
 ## 12. Changelog
+
+**v0.2 -> v0.3** — SPIKE 1 (browser capture path, commit `2f774cd`,
+`spikes/voice/`) folded in. Everything below is measured on Chromium
+153.0.8010.12 / Chrome 149.0.7827.114, not estimated.
+
+- Header: version bumped; status now records that SPIKE 1 and 2 are folded in,
+  that 2b and 3 are pending, and that the AEC acoustic test is pending Zach.
+- §2: `spikes/voice/` added as the reference implementation of the capture
+  path; the "no audio-capture code in the tree" claim narrowed to the
+  APPLICATION tree.
+- §3.2: DECISION recorded — `@ricky0123/vad-web` 0.0.31 on onnxruntime-web
+  1.29.0, Silero v5, with every default overridden (0.5/0.35,
+  `redemptionMs: 600`, `preSpeechPadMs: 500`, `minSpeechMs: 250`); the
+  defaults carry an explicit warning (EOS 1376ms, 2x budget); the `*Frames`
+  API names corrected to `*Ms`; measured EOS/false-trigger/inference/init
+  numbers added; bundle-size question settled at 0.3%.
+- §3.2: the ~0.8s ASR floor reconciled with `minSpeechMs: 250` — the client
+  keeps short segments, the DISPATCHER merges-or-pads them rather than
+  dropping them.
+- §4: `echoCancellation` / `noiseSuppression` / `autoGainControl` verified
+  honoured in both directions (NS ~6.3 dB), `voiceIsolation` pinned
+  explicitly — and an explicit statement that NONE of it is evidence about
+  AEC efficacy, because the fake capture device bypasses the acoustic loop.
+- §4.1: rung 1 (half-duplex) marked not-skippable on this evidence, and the
+  human A/B procedure plus its >~15 dB / <~6 dB decision rule recorded.
+- §6: SPIKE 1's "GB10 exposes no ASR" finding reconciled — true of the
+  `ai.lab.ingbretsenhome.com` gateway, false as a conclusion; the sync lane on
+  `192.168.1.77:8000` is the ASR path.
+- §9: trap 1 gains the harness's non-secure-origin red banner; trap 5 rewritten
+  — `AudioContext.sampleRate` is not the mic's rate (2.75625, not 3), with the
+  measured resampler design; NEW trap 7 (`performance` is absent in
+  `AudioWorkletGlobalScope`, and the silent-stop failure mode it causes) and
+  NEW trap 8 (an unconnected worklet node is never pulled). §3's pipeline
+  diagram no longer asserts a 48k mic rate for the same reason.
+- §10: phase 1 names the chosen VAD settings and gains an exit criterion
+  (Zach's acoustic A/B + a 3 x "orca send" WAV dump on real hardware).
+- §11: the vad-web/bundle-size question marked ANSWERED; the AEC question
+  re-pointed at §4.1's human procedure.
 
 **v0.1 -> v0.2** — SPIKE 2 (GB10 ASR contract, commit `887d3cc` in
 `/home/zach/transcription`) folded in. These correct the draft's own
