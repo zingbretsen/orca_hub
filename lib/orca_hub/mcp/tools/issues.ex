@@ -810,6 +810,17 @@ defmodule OrcaHub.MCP.Tools.Issues do
 
   # Say so when the meaning-based half didn't run, rather than letting an
   # agent read a keyword-only result set as "nothing like this exists".
+  defp maybe_put_search_note(payload, %{semantic: {:error, _}, lexical: :relaxed}, results) do
+    Map.put(
+      payload,
+      "note",
+      "Semantic (meaning-based) search was unavailable AND no issue contained all of your " <>
+        "terms, so these #{length(results)} result(s) come from matching ANY single term — " <>
+        "expect noise, and read them as leads rather than answers. Retry with fewer, rarer " <>
+        "words."
+    )
+  end
+
   defp maybe_put_search_note(payload, %{degraded: true, semantic: {:error, _}}, results) do
     Map.put(
       payload,

@@ -188,19 +188,51 @@ defmodule OrcaHub.Issues.Search do
   notably `{:error, :not_migrated}` when `issues.search_tsv` doesn't exist
   yet, which is a legitimate transient state on a node that hasn't run
   migrations, and one `hybrid_search/2` deliberately survives.
+
+  ## `:relax` — any-term matching as a last resort
+
+  `websearch_to_tsquery` ANDs bare terms, exactly like a web search box, so
+  a SENTENCE-length query ("a timer I set to remind myself later silently
+  did nothing") requires all nine stems to appear in one issue and reliably
+  matches nothing. That's correct behaviour — and irrelevant while the
+  semantic leg is up, since a sentence is what the vector leg is FOR.
+
+  With `relax: true`, a strict pass that returns zero rows is retried with
+  the same terms ORed. Measured against the real corpus, those results are
+  noticeably noisier (a hit on a common word like "agent" can top the
+  list), which is why `hybrid_search/2` turns this on ONLY when the
+  semantic leg failed: fusing noise in alongside good vector results makes
+  the ranking worse, but noise beats returning nothing at all when
+  keywords are the only tool left.
+
+  Relaxation is SKIPPED for a query containing a quoted phrase or a
+  `-exclusion` — rewriting `a & !b` to `a | !b` inverts what the caller
+  asked for, which is worse than an empty result.
   """
   @spec lexical_search(String.t(), keyword()) :: {:ok, [result()]} | {:error, term()}
   def lexical_search(query, opts \\ [])
 
   def lexical_search(query, opts) when is_binary(query) do
-    if blank?(query) do
-      {:ok, []}
-    else
-      run_lexical(query, opts)
+    cond do
+      blank?(query) ->
+        {:ok, []}
+
+      Keyword.get(opts, :relax, false) ->
+        case run_lexical(query, opts) do
+          {:ok, []} -> if relaxable?(query), do: run_lexical(query, opts, :any), else: {:ok, []}
+          other -> other
+        end
+
+      true ->
+        run_lexical(query, opts)
     end
   end
 
   def lexical_search(other, _opts), do: {:error, {:invalid_query, other}}
+
+  defp relaxable?(query) do
+    not String.contains?(query, "\"") and not Regex.match?(~r/(^|\s)-\S/, query)
+  end
 
   # `search_tsv` is referenced UNQUALIFIED inside the fragments below rather
   # than as `i.search_tsv`: it's a generated column that deliberately isn't in
@@ -210,71 +242,11 @@ defmodule OrcaHub.Issues.Search do
   # unambiguous. The cost is that a missing column is a runtime error rather
   # than a compile-time one — which is precisely the `:not_migrated` case
   # `postgrex_reason/1` names and `hybrid_search/2` survives.
-  defp run_lexical(query, opts) do
-    rows =
-      from(i in Issue, as: :issue)
-      |> where(
-        [issue: _i],
-        fragment("search_tsv @@ websearch_to_tsquery('english', ?)", ^query)
-      )
-      |> apply_filters(opts)
-      |> order_by(
-        [issue: i],
-        desc: fragment("ts_rank(search_tsv, websearch_to_tsquery('english', ?))", ^query),
-        desc: i.inserted_at
-      )
-      |> limit(^limit(opts))
-      |> select([issue: i], %{
-        issue: i,
-        rank: fragment("ts_rank(search_tsv, websearch_to_tsquery('english', ?))", ^query),
-        # Which field the hit landed in, in weight order. The repeated
-        # to_tsvector calls here are evaluated on the result rows only, so at
-        # this corpus size they cost nothing — and they're the difference
-        # between a snippet an agent can place and one it can't.
-        field:
-          fragment(
-            """
-            CASE
-              WHEN to_tsvector('english', coalesce(?, '')) @@ websearch_to_tsquery('english', ?) THEN 'title'
-              WHEN to_tsvector('english', coalesce(?, '')) @@ websearch_to_tsquery('english', ?) THEN 'description'
-              WHEN to_tsvector('english', coalesce(?, '')) @@ websearch_to_tsquery('english', ?) THEN 'premise'
-              WHEN to_tsvector('english', coalesce(?, '')) @@ websearch_to_tsquery('english', ?) THEN 'resolution'
-              WHEN to_tsvector('english', coalesce(?, '')) @@ websearch_to_tsquery('english', ?) THEN 'notes'
-              ELSE NULL
-            END
-            """,
-            i.title,
-            ^query,
-            i.description,
-            ^query,
-            i.premise,
-            ^query,
-            i.resolution,
-            ^query,
-            i.notes,
-            ^query
-          ),
-        snippet:
-          fragment(
-            """
-            ts_headline('english',
-              concat_ws(E'\\n', ?, ?, ?, ?, ?),
-              websearch_to_tsquery('english', ?),
-              'MaxFragments=1, MaxWords=34, MinWords=12, StartSel=**, StopSel=**')
-            """,
-            i.title,
-            i.description,
-            i.premise,
-            i.resolution,
-            i.notes,
-            ^query
-          )
-      })
-      |> Repo.all()
-      |> preload_row_issues()
-      |> Enum.map(&lexical_result/1)
-
-    {:ok, rows}
+  defp run_lexical(query, opts, mode \\ :all) do
+    case tsquery_text(query, mode) do
+      "" -> {:ok, []}
+      tsquery -> {:ok, lexical_rows(tsquery, opts)}
+    end
   rescue
     e in Postgrex.Error ->
       {:error, postgrex_reason(e)}
@@ -282,6 +254,87 @@ defmodule OrcaHub.Issues.Search do
     e ->
       Logger.warning("Issues.Search lexical leg failed: #{Exception.message(e)}")
       {:error, {:exception, Exception.message(e)}}
+  end
+
+  # The parsed tsquery is resolved in its own (trivial) round trip rather
+  # than inlined as `websearch_to_tsquery(...)` in five places, for three
+  # reasons: the `:any` rewrite below needs the parsed text anyway, a query
+  # that parses to NOTHING (only stopwords) is answered without touching the
+  # issues table at all, and the main query then has ONE shape instead of
+  # one per mode.
+  defp tsquery_text(query, mode) do
+    %{rows: [[text]]} =
+      Repo.query!("SELECT websearch_to_tsquery('english', $1)::text", [query])
+
+    text = text || ""
+
+    case mode do
+      :all -> text
+      # 'a' & 'b' -> 'a' | 'b'. Only reached via relaxable?/1, so there is no
+      # `!` or `<->` in here whose meaning the rewrite could invert.
+      :any -> String.replace(text, " & ", " | ")
+    end
+  end
+
+  defp lexical_rows(tsquery, opts) do
+    from(i in Issue, as: :issue)
+    |> where([issue: _i], fragment("search_tsv @@ ?::text::tsquery", ^tsquery))
+    |> apply_filters(opts)
+    |> order_by(
+      [issue: i],
+      desc: fragment("ts_rank(search_tsv, ?::text::tsquery)", ^tsquery),
+      desc: i.inserted_at
+    )
+    |> limit(^limit(opts))
+    |> select([issue: i], %{
+      issue: i,
+      rank: fragment("ts_rank(search_tsv, ?::text::tsquery)", ^tsquery),
+      # Which field the hit landed in, in weight order. The repeated
+      # to_tsvector calls here are evaluated on the result rows only, so at
+      # this corpus size they cost nothing — and they're the difference
+      # between a snippet an agent can place and one it can't.
+      field:
+        fragment(
+          """
+          CASE
+            WHEN to_tsvector('english', coalesce(?, '')) @@ ?::text::tsquery THEN 'title'
+            WHEN to_tsvector('english', coalesce(?, '')) @@ ?::text::tsquery THEN 'description'
+            WHEN to_tsvector('english', coalesce(?, '')) @@ ?::text::tsquery THEN 'premise'
+            WHEN to_tsvector('english', coalesce(?, '')) @@ ?::text::tsquery THEN 'resolution'
+            WHEN to_tsvector('english', coalesce(?, '')) @@ ?::text::tsquery THEN 'notes'
+            ELSE NULL
+          END
+          """,
+          i.title,
+          ^tsquery,
+          i.description,
+          ^tsquery,
+          i.premise,
+          ^tsquery,
+          i.resolution,
+          ^tsquery,
+          i.notes,
+          ^tsquery
+        ),
+      snippet:
+        fragment(
+          """
+          ts_headline('english',
+            concat_ws(E'\\n', ?, ?, ?, ?, ?),
+            ?::text::tsquery,
+            'MaxFragments=1, MaxWords=34, MinWords=12, StartSel=**, StopSel=**')
+          """,
+          i.title,
+          i.description,
+          i.premise,
+          i.resolution,
+          i.notes,
+          ^tsquery
+        )
+    })
+    |> Repo.all()
+    |> preload_row_issues()
+    |> Enum.map(&lexical_result/1)
   end
 
   # ── hybrid ──────────────────────────────────────────────────────────
@@ -330,6 +383,7 @@ defmodule OrcaHub.Issues.Search do
     else
       semantic = leg(:semantic, fn -> semantic_search(query, oversampled(opts)) end)
       lexical = leg(:lexical, fn -> lexical_search(query, oversampled(opts)) end)
+      {lexical, relaxed?} = maybe_relax(query, opts, semantic, lexical)
 
       case {semantic, lexical} do
         {{:error, _}, {:error, lexical_reason}} ->
@@ -338,7 +392,7 @@ defmodule OrcaHub.Issues.Search do
         {sem, lex} ->
           meta = %{
             semantic: leg_status(sem),
-            lexical: leg_status(lex),
+            lexical: if(relaxed?, do: :relaxed, else: leg_status(lex)),
             degraded: match?({:error, _}, sem) or match?({:error, _}, lex)
           }
 
@@ -348,6 +402,22 @@ defmodule OrcaHub.Issues.Search do
   end
 
   def hybrid_search_meta(other, _opts), do: {:error, {:invalid_query, other}}
+
+  # Any-term matching is a LAST resort, not a general widening: it only runs
+  # when the vector leg is gone AND strict keyword matching found nothing, so
+  # its measurable noise never dilutes a healthy fusion. See
+  # `lexical_search/2`'s `:relax` section.
+  defp maybe_relax(query, opts, {:error, _semantic}, {:ok, []}) do
+    case leg(:lexical, fn ->
+           lexical_search(query, opts |> oversampled() |> Keyword.put(:relax, true))
+         end) do
+      {:ok, []} -> {{:ok, []}, false}
+      {:ok, rows} -> {{:ok, rows}, true}
+      {:error, _} = error -> {error, false}
+    end
+  end
+
+  defp maybe_relax(_query, _opts, _semantic, lexical), do: {lexical, false}
 
   defp leg_status({:ok, _}), do: :ok
   defp leg_status({:error, reason}), do: {:error, reason}

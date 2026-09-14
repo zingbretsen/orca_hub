@@ -257,6 +257,86 @@ defmodule OrcaHub.Issues.SearchTest do
     end
   end
 
+  describe "lexical_search/2 relaxation" do
+    # websearch_to_tsquery ANDs bare terms, so a sentence-length query
+    # matches nothing at all — measured on the real corpus: zero lexical
+    # hits for every one of eight natural-language paraphrase queries.
+    @sentence "a timer I set to remind myself later silently did nothing while the port leaks"
+
+    test "strict matching (the default) requires EVERY term" do
+      assert {:ok, []} = Search.lexical_search(@sentence)
+    end
+
+    test "relax: true falls back to any-term matching when strict finds nothing", %{
+      warm_port: warm_port
+    } do
+      assert {:ok, results} = Search.lexical_search(@sentence, relax: true)
+      assert warm_port.id in Enum.map(results, & &1.issue.id)
+    end
+
+    test "relax: true does NOT widen a query that strict already answered", %{
+      warm_port: warm_port
+    } do
+      assert {:ok, strict} = Search.lexical_search("file descriptor")
+      assert {:ok, relaxed} = Search.lexical_search("file descriptor", relax: true)
+
+      assert Enum.map(strict, & &1.issue.id) == Enum.map(relaxed, & &1.issue.id)
+      assert titles(relaxed) == [warm_port.title]
+    end
+
+    test "a -exclusion is never relaxed — ORing it would invert what was asked" do
+      # "-teardown" excludes the only issue the other terms could reach, so
+      # strict is empty; relaxing `a & !b` to `a | !b` would match nearly
+      # everything instead.
+      assert {:ok, []} = Search.lexical_search("descriptor ulimit -teardown", relax: true)
+    end
+
+    test "a quoted phrase is never relaxed" do
+      assert {:ok, []} =
+               Search.lexical_search("\"file descriptor\" \"quantum scheduler\"", relax: true)
+    end
+  end
+
+  describe "hybrid_search/2 relaxation" do
+    test "relaxes only when the vector leg is GONE, so noise can't dilute a good fusion", %{
+      warm_port: warm_port
+    } do
+      enable_embeddings()
+      chunk!(warm_port, "title", "title: #{warm_port.title}", embedding: axis(0))
+      stub_embedding(axis(1))
+
+      # Vector leg healthy: the sentence contributes no lexical hits and is
+      # NOT widened, so nothing noisy enters the fusion.
+      assert {:ok, _results, meta} = Search.hybrid_search_meta(@sentence)
+      assert meta.lexical == :ok
+      refute meta.degraded
+    end
+
+    test "with the vector leg down, a sentence query returns leads instead of nothing", %{
+      warm_port: warm_port
+    } do
+      refute OrcaHub.Embeddings.enabled?()
+
+      # Without relaxation this is the worst case: embeddings down AND a
+      # natural-language query, i.e. no results whatsoever.
+      assert {:ok, results, meta} = Search.hybrid_search_meta(@sentence)
+
+      assert meta.semantic == {:error, :disabled}
+      assert meta.lexical == :relaxed
+      assert meta.degraded
+      assert warm_port.id in Enum.map(results, & &1.issue.id)
+    end
+
+    test "meta reports both legs healthy when they are", %{warm_port: warm_port} do
+      enable_embeddings()
+      chunk!(warm_port, "title", "title: #{warm_port.title}", embedding: axis(0))
+      stub_embedding(axis(0))
+
+      assert {:ok, _results, meta} = Search.hybrid_search_meta("file descriptor")
+      assert meta == %{semantic: :ok, lexical: :ok, degraded: false}
+    end
+  end
+
   describe "semantic_search/2 when embeddings are unavailable" do
     test "returns {:error, :disabled} — the suite's default state" do
       refute OrcaHub.Embeddings.enabled?()
