@@ -68,6 +68,11 @@ defmodule OrcaHub.Application do
       OrcaHub.SessionHeartbeat,
       # Periodic churn sampling for ORCAHUB3-44 — hub-only, emits telemetry for Grafana.
       OrcaHub.ChurnSampler,
+      # Reconciles the pgvector issue index for writes whose inline reindex
+      # never completed. Hub-only for ChurnSampler's reason — two nodes
+      # sweeping one table would duplicate the work and race each other's
+      # upserts. Bounded per tick; see OrcaHub.Issues.IndexSweep moduledoc.
+      OrcaHub.Issues.IndexSweep,
       # Warm-process admission control — must start before SessionSupervisor so
       # streaming runners can request_slot at port-open.
       OrcaHub.Streaming.WarmPool,
