@@ -696,6 +696,19 @@ defmodule OrcaHub.Issues do
   missed one. So: **automatic dedup only reliably catches near-verbatim
   refiles.**
 
+  Lowering it was tested against every distinct pair in the corpus (89 pairs,
+  mirror-deduped) and REJECTED — don't re-propose it without new data:
+
+      >= 0.78 flags 9 pairs | >= 0.80 flags 7 | >= 0.82 flags 2 | >= 0.85 flags 1
+
+  At 0.80 roughly 2 of the 7 are real, i.e. ~30% precision, and the false ones
+  include pairs describing OPPOSITE defects (the churn detector's
+  false-negative vs its false-positive, 0.8143). 0.82 is the only tempting
+  alternative — both pairs it flags are plausibly real — but the highest FALSE
+  pair sits at 0.8158 and the lowest TRUE pair at 0.8231, a 0.007 gap on an
+  n=112 sample: a floor 0.004 above a known false positive is coincidence, not
+  calibration. 0.85 has real margin.
+
   The nuance that matters for agents: in every one of those probes the
   correct issue came back RANKED #1 from semantic search, including the 0.600
   paraphrase. Retrieval is strong far below the dedup floor; it is the
