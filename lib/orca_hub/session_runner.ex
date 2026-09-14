@@ -23,6 +23,11 @@ defmodule OrcaHub.SessionRunner do
 
   alias OrcaHub.Claude.StreamParser
 
+  defmodule StartFailure do
+    @moduledoc false
+    defexception [:stage, :exception, :stacktrace, message: "startup failure"]
+  end
+
   # Route a HubRPC call through the node that owns the session's DB record.
   # In multi-hub mode, the runner may be on a different node than the DB.
   #
@@ -1599,7 +1604,12 @@ defmodule OrcaHub.SessionRunner do
        }, [{:reply, from, :ok}]}
     rescue
       e ->
-        rescue_turn_start(from, %{data | messages: data.messages ++ [user_event]}, e)
+        rescue_turn_start(
+          from,
+          %{data | messages: data.messages ++ [user_event]},
+          e,
+          __STACKTRACE__
+        )
     end
   end
 
@@ -1847,7 +1857,7 @@ defmodule OrcaHub.SessionRunner do
 
       {:next_state, :running, data, [{:reply, from, :ok}]}
     rescue
-      e -> rescue_turn_start(from, base, e)
+      e -> rescue_turn_start(from, base, e, __STACKTRACE__)
     end
   end
 
@@ -1857,9 +1867,12 @@ defmodule OrcaHub.SessionRunner do
   # propagate through erpc and take the calling LiveView down with it. The
   # user event was already persisted/broadcast by the caller, so only the
   # error event is appended here.
-  defp rescue_turn_start(from, base, e) do
-    message = "Failed to start the agent CLI (#{inspect(base.backend)}): #{Exception.message(e)}"
-    Logger.error("[SessionRunner] #{message}")
+  defp rescue_turn_start(from, base, e, stacktrace) do
+    message =
+      "Failed to start the agent CLI (#{inspect(base.backend)}). Check the session error details for diagnostics."
+
+    detail = start_failure_detail(e, stacktrace)
+    Logger.error("[SessionRunner] #{message}\n#{detail}")
 
     error_event =
       stamp(%{
@@ -1871,7 +1884,7 @@ defmodule OrcaHub.SessionRunner do
     persist_message(base, error_event)
     broadcast(base.session_id, {:event, error_event})
 
-    update_session_status(base, %{status: "error", error_detail: truncate_error_detail(message)})
+    update_session_status(base, %{status: "error", error_detail: truncate_error_detail(detail)})
     broadcast(base.session_id, {:status, :error})
     AgentPresence.update_status(base.directory, base.session_id, "error")
     Streaming.WarmPool.release(base.session_id)
@@ -2309,19 +2322,8 @@ defmodule OrcaHub.SessionRunner do
   # §3.2/§5: `framing` picks the decode layer for this port's whole lifetime).
   defp open_port_streaming(data) do
     extra_env = call_prepare_session(data)
-    spec = data.backend.spawn_spec(:streaming, data)
-
-    port =
-      Port.open(
-        {:spawn_executable, spec.executable},
-        [
-          :binary,
-          :exit_status,
-          :stderr_to_stdout,
-          {:args, spec.args},
-          {:env, spec.env ++ extra_env}
-        ] ++ spec.port_opts
-      )
+    spec = call_spawn_spec(data.backend, :streaming, data)
+    port = open_backend_port(spec, extra_env)
 
     {port, spec.framing}
   end
@@ -2333,19 +2335,23 @@ defmodule OrcaHub.SessionRunner do
   # see spec §6.3(2)). Called for BOTH streaming and one-shot spawns since
   # both engines' child processes need to see the materialized state.
   defp call_prepare_session(data) do
-    case data.backend.prepare_session(data) do
-      {:ok, extra_env} when is_list(extra_env) -> extra_env
-      _ -> []
-    end
+    in_startup_stage(:prepare_session, fn ->
+      case data.backend.prepare_session(data) do
+        {:ok, extra_env} when is_list(extra_env) -> extra_env
+        _ -> []
+      end
+    end)
   end
 
   # Runs Backend.on_open/1 right after a streaming port opens (Codex's
   # `initialize` request; a no-op for Claude) and flushes any pending_writes
   # it queued — see spec §3.2. `data.port` must already be set.
   defp run_on_open(%{backend: backend, port: port} = data) do
-    {iodata, ctx} = backend.on_open(data)
-    Port.command(port, iodata)
-    flush_pending_writes(ctx)
+    in_startup_stage(:on_open, fn ->
+      {iodata, ctx} = backend.on_open(data)
+      Port.command(port, iodata)
+      flush_pending_writes(ctx)
+    end)
   end
 
   # Flushes `backend_state.pending_writes` (queued by normalize/2,
@@ -2519,9 +2525,17 @@ defmodule OrcaHub.SessionRunner do
   # Returns `{port, framing}` — see open_port_streaming/1.
   defp open_port(prompt, data) do
     extra_env = call_prepare_session(data)
-    spec = data.backend.spawn_spec(:one_shot, Map.put(data, :prompt, prompt))
+    spec = call_spawn_spec(data.backend, :one_shot, Map.put(data, :prompt, prompt))
 
-    port =
+    {open_backend_port(spec, extra_env), spec.framing}
+  end
+
+  defp call_spawn_spec(backend, engine, data) do
+    in_startup_stage(:backend_spawn_spec, fn -> backend.spawn_spec(engine, data) end)
+  end
+
+  defp open_backend_port(spec, extra_env) do
+    in_startup_stage(:port_open, fn ->
       Port.open(
         {:spawn_executable, spec.executable},
         [
@@ -2533,8 +2547,92 @@ defmodule OrcaHub.SessionRunner do
         ] ++
           spec.port_opts
       )
+    end)
+  end
 
-    {port, spec.framing}
+  defp in_startup_stage(stage, fun) do
+    fun.()
+  rescue
+    error ->
+      reraise %StartFailure{stage: stage, exception: error, stacktrace: __STACKTRACE__},
+              __STACKTRACE__
+  end
+
+  @doc false
+  def start_failure_detail(%StartFailure{} = failure, _outer_stacktrace) do
+    [
+      "Startup stage: #{startup_stage_name(failure.stage)}.",
+      startup_action(failure.stage),
+      "",
+      format_exception(failure.exception, failure.stacktrace)
+    ]
+    |> Enum.join("\n")
+  end
+
+  def start_failure_detail(error, stacktrace) do
+    [
+      "Startup stage: unknown.",
+      "Action: inspect the exception and stacktrace below.",
+      "",
+      format_exception(error, stacktrace)
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp startup_stage_name(:prepare_session), do: "prepare_session"
+  defp startup_stage_name(:backend_spawn_spec), do: "backend spawn_spec"
+  defp startup_stage_name(:port_open), do: "Port.open"
+  defp startup_stage_name(:on_open), do: "on_open"
+  defp startup_stage_name(_), do: "unknown"
+
+  defp startup_action(:prepare_session),
+    do: "Action: check the session directory and backend setup permissions."
+
+  defp startup_action(:backend_spawn_spec),
+    do: "Action: check the backend, model, and MCP configuration."
+
+  defp startup_action(:port_open),
+    do: "Action: check the CLI executable path, permissions, and service PATH."
+
+  defp startup_action(:on_open),
+    do: "Action: check the backend initialization and handshake configuration."
+
+  defp startup_action(_), do: "Action: inspect the exception and stacktrace below."
+
+  defp format_exception(%ErlangError{original: original}, stacktrace) do
+    ("** (ErlangError) Erlang error: #{inspect(original)}\n" <>
+       Exception.format_stacktrace(sanitize_stacktrace(stacktrace)))
+    |> redact_start_failure_secrets()
+  end
+
+  defp format_exception(error, stacktrace) do
+    ("** (#{inspect(error.__struct__)}) #{Exception.message(error)}\n" <>
+       Exception.format_stacktrace(sanitize_stacktrace(stacktrace)))
+    |> redact_start_failure_secrets()
+  end
+
+  # Runtime stacktraces may retain call arguments instead of an arity. Those
+  # arguments can include the full spawn environment, so preserve the call
+  # location while reducing arguments to their arity before formatting.
+  defp sanitize_stacktrace(stacktrace) do
+    Enum.map(stacktrace, fn
+      {module, function, args, location} when is_list(args) ->
+        {module, function, length(args), location}
+
+      entry ->
+        entry
+    end)
+  end
+
+  # Startup failures can contain backend-provided text. Keep their diagnostics
+  # useful without copying credentials into a session row or the application log.
+  defp redact_start_failure_secrets(text) do
+    text
+    |> String.replace(~r/(Bearer\s+)[^\s]+/i, "\\1[REDACTED]")
+    |> String.replace(
+      ~r/((?:"?(?:api[_-]?key|token|password|secret|authorization)"?)\s*(?:=|:)\s*)(?:"[^"]*"|'[^']*'|[^\s,}\]]+)/i,
+      "\\1[REDACTED]"
+    )
   end
 
   # Streaming warm-up: suppress every event of the hidden warm-up turn from the

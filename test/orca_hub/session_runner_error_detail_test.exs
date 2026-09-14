@@ -72,6 +72,36 @@ defmodule OrcaHub.SessionRunnerErrorDetailTest do
     assert updated.error_detail == nil
   end
 
+  test "startup failures identify every startup stage, include a stacktrace, and redact credentials" do
+    stacktrace = [
+      {__MODULE__, :startup_failure_test, 0,
+       [file: "test/session_runner_error_detail_test.exs", line: 88]}
+    ]
+
+    for {stage, name, action} <- [
+          {:prepare_session, "prepare_session", "session directory"},
+          {:backend_spawn_spec, "backend spawn_spec", "backend, model, and MCP"},
+          {:port_open, "Port.open", "CLI executable path"},
+          {:on_open, "on_open", "initialization and handshake"}
+        ] do
+      detail =
+        SessionRunner.start_failure_detail(
+          %SessionRunner.StartFailure{
+            stage: stage,
+            exception: RuntimeError.exception("token=super-secret-value"),
+            stacktrace: stacktrace
+          },
+          []
+        )
+
+      assert detail =~ "Startup stage: #{name}."
+      assert detail =~ action
+      assert detail =~ "startup_failure_test"
+      assert detail =~ "token=[REDACTED]"
+      refute detail =~ "super-secret-value"
+    end
+  end
+
   # ORCAHUB3-83: this test previously asserted `error_detail == nil` here
   # ("nothing to report"). That WAS the defect — a user staring at a red
   # `error` badge with an empty tooltip and no explanation anywhere. The

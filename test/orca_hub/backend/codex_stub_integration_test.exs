@@ -84,7 +84,12 @@ defmodule OrcaHub.Backend.CodexStubIntegrationTest do
     # is persisted on the session row so `search_sessions` can surface it
     # without an orchestrator having to infer the cause from a short lifetime.
     assert Sessions.get_session!(session.id).error_detail =~
-             "Failed to start the agent CLI (OrcaHub.Backend.Codex)"
+             "Startup stage: Port.open."
+
+    assert Sessions.get_session!(session.id).error_detail =~
+             "check the CLI executable path, permissions, and service PATH"
+
+    assert Sessions.get_session!(session.id).error_detail =~ "SessionRunner.in_startup_stage"
   end
 
   # Regression: the abandoned-session cleanup used to stop the runner between
