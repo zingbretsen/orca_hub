@@ -303,23 +303,54 @@ defmodule OrcaHub.Issues.Search do
   `:disabled`/endpoint-down and says less about what went wrong.
   """
   @spec hybrid_search(String.t(), keyword()) :: {:ok, [result()]} | {:error, term()}
-  def hybrid_search(query, opts \\ [])
+  def hybrid_search(query, opts \\ []) do
+    case hybrid_search_meta(query, opts) do
+      {:ok, results, _meta} -> {:ok, results}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
-  def hybrid_search(query, opts) when is_binary(query) do
+  @doc """
+  `hybrid_search/2` plus which legs actually ran:
+
+      {:ok, results, %{semantic: :ok | {:error, term}, lexical: :ok | {:error, term},
+                       degraded: boolean}}
+
+  A caller that SHOWS results to someone needs this — "no semantic hits" and
+  "the semantic leg never ran" are indistinguishable from the result list
+  alone, and only one of them means "try again later". `degraded: true`
+  whenever either leg failed.
+  """
+  @spec hybrid_search_meta(String.t(), keyword()) :: {:ok, [result()], map()} | {:error, term()}
+  def hybrid_search_meta(query, opts \\ [])
+
+  def hybrid_search_meta(query, opts) when is_binary(query) do
     if blank?(query) do
-      {:ok, []}
+      {:ok, [], %{semantic: :ok, lexical: :ok, degraded: false}}
     else
       semantic = leg(:semantic, fn -> semantic_search(query, oversampled(opts)) end)
       lexical = leg(:lexical, fn -> lexical_search(query, oversampled(opts)) end)
 
       case {semantic, lexical} do
-        {{:error, _}, {:error, lexical_reason}} -> {:error, lexical_reason}
-        {sem, lex} -> {:ok, fuse(ok(sem), ok(lex), limit(opts))}
+        {{:error, _}, {:error, lexical_reason}} ->
+          {:error, lexical_reason}
+
+        {sem, lex} ->
+          meta = %{
+            semantic: leg_status(sem),
+            lexical: leg_status(lex),
+            degraded: match?({:error, _}, sem) or match?({:error, _}, lex)
+          }
+
+          {:ok, fuse(ok(sem), ok(lex), limit(opts)), meta}
       end
     end
   end
 
-  def hybrid_search(other, _opts), do: {:error, {:invalid_query, other}}
+  def hybrid_search_meta(other, _opts), do: {:error, {:invalid_query, other}}
+
+  defp leg_status({:ok, _}), do: :ok
+  defp leg_status({:error, reason}), do: {:error, reason}
 
   # Each leg is asked for more than the caller's limit: an issue ranked 12th
   # semantically and 3rd lexically should be able to surface, which it can't

@@ -232,6 +232,244 @@ defmodule OrcaHub.MCP.Tools.IssuesTest do
     end
   end
 
+  # ── search_issues ────────────────────────────────────────────────────
+
+  describe "search_issues" do
+    # EMBEDDING_URL is unset for the whole suite, so every assertion here
+    # runs through the DEGRADED (keyword-only) path — which is the one that
+    # has to keep working during a gb10 outage. The semantic and fusion
+    # behaviour is covered with stubbed vectors in
+    # OrcaHub.Issues.SearchTest.
+    setup %{project: project} do
+      {:ok, fd_leak} =
+        Issues.create_issue(%{
+          title: "Warm port teardown leaks a file descriptor",
+          description: "idle_teardown closes the port but keeps the fd.",
+          project_id: project.id
+        })
+
+      %{fd_leak: fd_leak}
+    end
+
+    test "is exposed with query required" do
+      search = Enum.find(IssuesTool.list(), &(&1["name"] == "search_issues"))
+
+      assert search["inputSchema"]["required"] == ["query"]
+      assert search["description"] =~ "BEFORE filing a new issue"
+
+      props = search["inputSchema"]["properties"]
+      assert Map.has_key?(props, "status")
+      assert Map.has_key?(props, "kind")
+      assert Map.has_key?(props, "directory")
+      assert Map.has_key?(props, "this_project")
+      assert Map.has_key?(props, "mine")
+      assert Map.has_key?(props, "limit")
+    end
+
+    test "is visible to a regular (non-orchestrator) session, not just orchestrators" do
+      names =
+        %{orca_session_id: nil, orchestrator: false}
+        |> OrcaHub.MCP.Tools.list()
+        |> Enum.map(& &1["name"])
+
+      assert "search_issues" in names
+    end
+
+    test "returns compact ranked rows, not whole issue bodies", %{
+      state: state,
+      fd_leak: fd_leak
+    } do
+      decoded =
+        IssuesTool.call("search_issues", %{"query" => "file descriptor"}, state) |> decode!()
+
+      assert decoded["count"] >= 1
+      row = Enum.find(decoded["results"], &(&1["id"] == fd_leak.id))
+
+      assert row["title"] == fd_leak.title
+      assert row["status"] == "open"
+      assert row["kind"] == "task"
+      assert row["key"] =~ ~r/-\d+$/
+      assert row["url"] == "/issues/#{fd_leak.id}"
+      assert row["score"] > 0
+      assert row["matched_by"] == "lexical"
+      assert row["matched_field"] in ["title", "description"]
+      assert is_binary(row["snippet"])
+
+      # The full body is NOT in the payload — that's what get_issue is for.
+      refute Map.has_key?(row, "description")
+      refute Map.has_key?(row, "notes")
+    end
+
+    test "says so when the semantic half didn't run", %{state: state} do
+      refute OrcaHub.Embeddings.enabled?()
+
+      decoded =
+        IssuesTool.call("search_issues", %{"query" => "file descriptor"}, state) |> decode!()
+
+      assert decoded["note"] =~ "KEYWORD-only"
+      assert decoded["note"] =~ "inconclusive"
+    end
+
+    test "searches every project by default, unlike list_issues", %{state: state} do
+      other_dir =
+        Path.join(System.tmp_dir!(), "issues_tool_other_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(other_dir)
+      on_exit(fn -> File.rm_rf(other_dir) end)
+
+      {:ok, other} =
+        Projects.create_project(%{
+          name: "issues-tool-other",
+          directory: other_dir,
+          node: Atom.to_string(node()),
+          key_prefix: unique_key_prefix("TO")
+        })
+
+      {:ok, elsewhere} =
+        Issues.create_issue(%{
+          title: "A file descriptor problem in another project",
+          project_id: other.id
+        })
+
+      decoded =
+        IssuesTool.call("search_issues", %{"query" => "file descriptor"}, state) |> decode!()
+
+      assert elsewhere.id in Enum.map(decoded["results"], & &1["id"])
+
+      scoped =
+        IssuesTool.call(
+          "search_issues",
+          %{"query" => "file descriptor", "this_project" => true},
+          state
+        )
+        |> decode!()
+
+      refute elsewhere.id in Enum.map(scoped["results"], & &1["id"])
+    end
+
+    test "scopes to one project by directory", %{state: state, project: project, dir: dir} do
+      {:ok, mine} =
+        Issues.create_issue(%{title: "descriptor trouble here", project_id: project.id})
+
+      decoded =
+        IssuesTool.call("search_issues", %{"query" => "descriptor", "directory" => dir}, state)
+        |> decode!()
+
+      assert mine.id in Enum.map(decoded["results"], & &1["id"])
+    end
+
+    test "an unregistered directory is a clear error, not an empty result", %{state: state} do
+      result =
+        IssuesTool.call(
+          "search_issues",
+          %{"query" => "anything", "directory" => "/nope/not/a/project"},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} = result
+      assert msg =~ "No project is registered"
+    end
+
+    test "mine: true narrows to the caller's own issues", %{
+      state: state,
+      project: project,
+      caller: caller,
+      fd_leak: fd_leak
+    } do
+      {:ok, mine} =
+        Issues.create_issue(%{
+          title: "My own file descriptor report",
+          project_id: project.id,
+          created_by_session_id: caller.id
+        })
+
+      decoded =
+        IssuesTool.call("search_issues", %{"query" => "file descriptor", "mine" => true}, state)
+        |> decode!()
+
+      ids = Enum.map(decoded["results"], & &1["id"])
+      assert mine.id in ids
+      refute fd_leak.id in ids
+    end
+
+    test "status defaults to open and \"all\" reaches closed prior art", %{
+      state: state,
+      project: project
+    } do
+      {:ok, closed} =
+        Issues.create_issue(%{
+          title: "Old file descriptor bug, already fixed",
+          project_id: project.id,
+          status: "closed",
+          resolution: "Closed the fd in the teardown path."
+        })
+
+      open_only =
+        IssuesTool.call("search_issues", %{"query" => "file descriptor"}, state) |> decode!()
+
+      refute closed.id in Enum.map(open_only["results"], & &1["id"])
+
+      all =
+        IssuesTool.call(
+          "search_issues",
+          %{"query" => "file descriptor", "status" => "all"},
+          state
+        )
+        |> decode!()
+
+      assert closed.id in Enum.map(all["results"], & &1["id"])
+    end
+
+    test "filters by kind", %{state: state, project: project} do
+      {:ok, fr} =
+        Issues.create_issue(%{
+          title: "Please add a file descriptor dashboard",
+          project_id: project.id,
+          kind: "feature_request"
+        })
+
+      decoded =
+        IssuesTool.call(
+          "search_issues",
+          %{"query" => "file descriptor", "kind" => "feature_request"},
+          state
+        )
+        |> decode!()
+
+      assert Enum.map(decoded["results"], & &1["id"]) == [fr.id]
+    end
+
+    test "honours limit", %{state: state, project: project} do
+      for n <- 1..3 do
+        {:ok, _} =
+          Issues.create_issue(%{title: "file descriptor issue #{n}", project_id: project.id})
+      end
+
+      decoded =
+        IssuesTool.call("search_issues", %{"query" => "file descriptor", "limit" => 2}, state)
+        |> decode!()
+
+      assert decoded["count"] <= 2
+    end
+
+    test "a missing or blank query is a clear error", %{state: state} do
+      for args <- [%{}, %{"query" => ""}, %{"query" => nil}] do
+        assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+                 IssuesTool.call("search_issues", args, state)
+
+        assert msg =~ "non-empty `query`"
+      end
+    end
+
+    test "a query matching nothing is an empty result set, not an error", %{state: state} do
+      decoded =
+        IssuesTool.call("search_issues", %{"query" => "zzzznotawordanywhere"}, state) |> decode!()
+
+      assert decoded["count"] == 0
+      assert decoded["results"] == []
+    end
+  end
+
   # ── list_issues ──────────────────────────────────────────────────────
 
   describe "list_issues" do

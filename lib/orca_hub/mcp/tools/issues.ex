@@ -166,6 +166,61 @@ defmodule OrcaHub.MCP.Tools.Issues do
         }
       },
       %{
+        "name" => "search_issues",
+        "description" =>
+          "Search issues by MEANING, not just keywords — the same problem described in " <>
+            "completely different words will still come back. Use this BEFORE filing a new " <>
+            "issue (someone may already have reported it, worded differently) and BEFORE " <>
+            "starting unfamiliar work (a closed issue's resolution often IS the answer, and " <>
+            "its approaches_tried tells you what already failed). Prefer this over " <>
+            "list_issues whenever you're looking for a topic rather than browsing a " <>
+            "project's backlog. Returns a ranked list with the matching snippet, not whole " <>
+            "issue bodies — call get_issue on anything that looks relevant. Searches every " <>
+            "project by default, since the issue you need may well have been filed " <>
+            "elsewhere.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "query" => %{
+              "type" => "string",
+              "description" =>
+                "What you're looking for. A natural-language description of the problem " <>
+                  "works better than keywords — that's what the semantic half is for. " <>
+                  "Quoted \"exact phrases\" and -excluded terms are honoured by the " <>
+                  "keyword half."
+            },
+            "status" => %{
+              "type" => "string",
+              "description" =>
+                "\"open\" (default), \"in_progress\", \"closed\", \"abandoned\", or " <>
+                  "\"all\". Use \"all\" when you're looking for prior art rather than live " <>
+                  "work — a CLOSED issue is usually the more useful hit, since it carries " <>
+                  "the resolution."
+            },
+            "kind" => %{
+              "type" => "string",
+              "description" => "\"task\", \"feature_request\", or \"all\" (default)."
+            },
+            "directory" => %{
+              "type" => "string",
+              "description" =>
+                "Restrict to one project, by its absolute path. Default: search every " <>
+                  "project."
+            },
+            "this_project" => %{
+              "type" => "boolean",
+              "description" => "Restrict to YOUR OWN project. Default: false (search everywhere)."
+            },
+            "mine" => %{
+              "type" => "boolean",
+              "description" => "Only issues YOU (this session) created. Default: false."
+            },
+            "limit" => %{"type" => "integer", "description" => "Default 10."}
+          },
+          "required" => ["query"]
+        }
+      },
+      %{
         "name" => "get_issue",
         "description" =>
           "Fetch an issue's full record. While open/in_progress, also returns \"attempts\" " <>
@@ -456,6 +511,33 @@ defmodule OrcaHub.MCP.Tools.Issues do
     end
   end
 
+  def call("search_issues", args, state) do
+    query = args["query"]
+
+    cond do
+      not is_binary_non_empty(query) ->
+        error("search_issues requires a non-empty `query` string argument.")
+
+      true ->
+        case resolve_search_scope(args, state) do
+          {:ok, project_id} ->
+            opts =
+              [
+                status: args["status"] || "open",
+                kind: args["kind"] || "all",
+                limit: args["limit"] || 10
+              ]
+              |> maybe_put_opt(:project_id, project_id)
+              |> maybe_put_search_mine(args, state)
+
+            do_search_issues(query, opts)
+
+          {:error, message} ->
+            error(message)
+        end
+    end
+  end
+
   def call("get_issue", args, _state) do
     case resolve(args["id"], "get_issue") do
       {:ok, issue} -> text(Jason.encode!(issue_full_result(issue)))
@@ -679,6 +761,112 @@ defmodule OrcaHub.MCP.Tools.Issues do
   end
 
   defp maybe_put_mine(opts, _args, _state), do: opts
+
+  # ── search_issues helpers ────────────────────────────────────────────
+
+  # Scope defaults the OTHER way round from list_issues: that tool browses a
+  # backlog (yours, unless told otherwise), this one looks for prior art, and
+  # the issue that answers your question was quite possibly filed against a
+  # different project.
+  defp resolve_search_scope(%{"this_project" => true} = args, state) do
+    case resolve_target_project(args, state) do
+      {:ok, project} -> {:ok, project.id}
+      {:error, message} -> {:error, message}
+    end
+  end
+
+  defp resolve_search_scope(args, state) do
+    case blank_to_nil(args["directory"]) do
+      nil -> {:ok, nil}
+      _directory -> resolve_search_scope(Map.put(args, "this_project", true), state)
+    end
+  end
+
+  defp maybe_put_search_mine(opts, %{"mine" => true}, state) do
+    maybe_put_opt(opts, :created_by_session_id, state[:orca_session_id])
+  end
+
+  defp maybe_put_search_mine(opts, _args, _state), do: opts
+
+  defp maybe_put_opt(opts, _key, nil), do: opts
+  defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp do_search_issues(query, opts) do
+    case HubRPC.search_issues(query, opts) do
+      {:ok, results, meta} ->
+        payload =
+          %{
+            "count" => length(results),
+            "results" => Enum.map(results, &search_result/1)
+          }
+          |> maybe_put_search_note(meta, results)
+
+        text(Jason.encode!(payload))
+
+      {:error, reason} ->
+        error("Issue search failed: #{inspect(reason)}")
+    end
+  end
+
+  # Say so when the meaning-based half didn't run, rather than letting an
+  # agent read a keyword-only result set as "nothing like this exists".
+  defp maybe_put_search_note(payload, %{degraded: true, semantic: {:error, _}}, results) do
+    Map.put(
+      payload,
+      "note",
+      "Semantic (meaning-based) search was unavailable, so these #{length(results)} " <>
+        "result(s) are KEYWORD-only — an issue describing the same thing in different " <>
+        "words would not appear here. Treat an empty or thin result set as inconclusive."
+    )
+  end
+
+  defp maybe_put_search_note(payload, %{degraded: true, lexical: {:error, _}}, _results) do
+    Map.put(
+      payload,
+      "note",
+      "Keyword search was unavailable; these results are from semantic (meaning-based) " <>
+        "matching only, so an exact term you expected to match may be missing."
+    )
+  end
+
+  defp maybe_put_search_note(payload, _meta, _results), do: payload
+
+  defp search_result(%{issue: issue} = result) do
+    %{
+      id: issue.id,
+      key: HubRPC.render_issue_key(issue),
+      title: issue.title,
+      status: issue.status,
+      kind: issue.kind,
+      project: project_display_name(issue),
+      url: issue_url(issue.id),
+      score: round_score(result.score),
+      # Which half found it — :both is the strongest signal available here.
+      matched_by: result.source,
+      matched_field: result.field,
+      snippet: truncate_snippet(result.snippet)
+    }
+  end
+
+  defp round_score(score) when is_number(score), do: Float.round(score / 1, 4)
+  defp round_score(_), do: nil
+
+  # A snippet is meant to be enough to decide whether to call get_issue, not
+  # a substitute for it — a long chunk would put whole issue bodies back into
+  # the caller's context, which is exactly what this tool avoids.
+  @snippet_limit 320
+
+  defp truncate_snippet(nil), do: nil
+
+  defp truncate_snippet(snippet) do
+    snippet = snippet |> String.replace(~r/\s+/, " ") |> String.trim()
+
+    if String.length(snippet) > @snippet_limit do
+      String.slice(snippet, 0, @snippet_limit) <> "…"
+    else
+      snippet
+    end
+  end
 
   defp issue_summary_result(issue) do
     %{

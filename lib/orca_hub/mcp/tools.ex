@@ -110,7 +110,7 @@ defmodule OrcaHub.MCP.Tools do
   @regular_session_tools ~w(send_message_to_session open_file report_progress start_session
                              fork_queue
                              get_session_tail archive_session create_issue list_issues
-                             get_issue update_issue append_issue_note close_issue
+                             get_issue search_issues update_issue append_issue_note close_issue
                              file_feature_request list_feature_requests get_feature_request
                              append_feature_request_note close_feature_request save_artifact
                              open_artifact list_artifacts get_artifact update_artifact_data

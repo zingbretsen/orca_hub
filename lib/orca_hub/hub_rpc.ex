@@ -672,6 +672,26 @@ defmodule OrcaHub.HubRPC do
   # open -> in_progress auto-transition (issues_spec.md §9).
   def update_issue(issue, attrs), do: call(OrcaHub.Issues, :update_issue, [issue, attrs])
 
+  # Issue search (OrcaHub.Issues.Search). Hub-routed like everything else
+  # here, and for one extra reason: the vector leg needs `OrcaHub.Embeddings`,
+  # which is hub-only itself — an agent node calling this locally would have
+  # neither the Repo nor EMBEDDING_URL. The timeout is raised over the
+  # default because the hub-side call may include an embedding round trip to
+  # the GPU box (same budget @embeddings_erpc_timeout uses below).
+  @issue_search_erpc_timeout 65_000
+
+  def search_issues(query, opts \\ []),
+    do:
+      call(OrcaHub.Issues.Search, :hybrid_search_meta, [query, opts],
+        timeout: @issue_search_erpc_timeout
+      )
+
+  def similar_issues(text, opts \\ []),
+    do:
+      call(OrcaHub.Issues.Search, :similar_issues, [text, opts],
+        timeout: @issue_search_erpc_timeout
+      )
+
   # -------------------------------------------------------------------
   # Jobs (ORCAHUB3-25 — durable, detached background jobs; see OrcaHub.Jobs)
   # -------------------------------------------------------------------
