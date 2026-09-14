@@ -661,6 +661,8 @@ defmodule OrcaHub.MemoryExtraction do
     else
       report_and_archive(child, :error)
     end
+
+    :ok
   rescue
     e ->
       Logger.warning(
@@ -673,6 +675,7 @@ defmodule OrcaHub.MemoryExtraction do
 
   def finalize_self(child, :idle) do
     report_and_archive(child, :idle)
+    :ok
   rescue
     e ->
       Logger.warning(

@@ -227,7 +227,10 @@ defmodule OrcaHubWeb.SessionLive.Index do
     Cluster.stop_session(node, id)
     {:ok, _} = Cluster.archive_session(node, session)
     filter = socket.assigns.session_filter
-    tagged_sessions = Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
+
+    tagged_sessions =
+      Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
+
     node_map = Cluster.build_node_map(tagged_sessions)
     clustered = socket.assigns.clustered
 
@@ -252,7 +255,10 @@ defmodule OrcaHubWeb.SessionLive.Index do
       session = Cluster.get_session!(node, session_id)
       Cluster.unarchive_session(node, session)
       filter = socket.assigns.session_filter
-      tagged_sessions = Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
+
+      tagged_sessions =
+        Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
+
       node_map = Cluster.build_node_map(tagged_sessions)
       clustered = socket.assigns.clustered
 
@@ -401,7 +407,10 @@ defmodule OrcaHubWeb.SessionLive.Index do
     end
 
     filter = socket.assigns.session_filter
-    tagged_sessions = Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
+
+    tagged_sessions =
+      Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
+
     node_map = Cluster.build_node_map(tagged_sessions)
     clustered = socket.assigns.clustered
 

@@ -2261,6 +2261,40 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     end
   end
 
+  describe "search_sessions — include_background" do
+    test "excludes memory_extraction sessions by default", %{dir: dir, state: state} do
+      {:ok, ordinary} = Sessions.create_session(%{directory: dir, title: "ordinary"})
+
+      {:ok, background} =
+        Sessions.create_session(%{directory: dir, title: "background", kind: "memory_extraction"})
+
+      %{"content" => [%{"text" => text}]} =
+        SessionsTool.call("search_sessions", %{"directory" => dir}, state)
+
+      ids = Jason.decode!(text) |> Enum.map(& &1["id"])
+      assert ordinary.id in ids
+      refute background.id in ids
+    end
+
+    test "include_background: true reveals memory_extraction sessions too", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, background} =
+        Sessions.create_session(%{directory: dir, title: "background", kind: "memory_extraction"})
+
+      %{"content" => [%{"text" => text}]} =
+        SessionsTool.call(
+          "search_sessions",
+          %{"directory" => dir, "include_background" => true},
+          state
+        )
+
+      ids = Jason.decode!(text) |> Enum.map(& &1["id"])
+      assert background.id in ids
+    end
+  end
+
   describe "search_sessions — include_activity" do
     test "computes activity metadata and last_commit for the whole result page", %{
       dir: dir,

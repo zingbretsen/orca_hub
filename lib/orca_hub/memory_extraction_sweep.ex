@@ -49,7 +49,10 @@ defmodule OrcaHub.MemoryExtractionSweep do
     {:noreply, state}
   end
 
-  defp sweep do
+  # Public (not just called from handle_info/2) so tests can trigger a sweep
+  # directly rather than waiting on the real 30s boot delay.
+  @doc false
+  def sweep do
     orphans = HubRPC.list_orphaned_memory_extraction_sessions(@older_than_minutes)
 
     unless orphans == [] do
@@ -60,8 +63,11 @@ defmodule OrcaHub.MemoryExtractionSweep do
     end
 
     Enum.each(orphans, &cleanup_orphan/1)
+    length(orphans)
   rescue
-    e -> Logger.warning("MemoryExtractionSweep: sweep failed: #{Exception.message(e)}")
+    e ->
+      Logger.warning("MemoryExtractionSweep: sweep failed: #{Exception.message(e)}")
+      0
   end
 
   defp cleanup_orphan(session) do
@@ -77,7 +83,9 @@ defmodule OrcaHub.MemoryExtractionSweep do
 
   defp delete_transcript_file(session) do
     source_id = session.parent_session_id
-    file_path = MemoryExtraction.transcript_file_path(%{directory: session.directory, id: source_id})
+
+    file_path =
+      MemoryExtraction.transcript_file_path(%{directory: session.directory, id: source_id})
 
     case Cluster.runner_node_for(session) do
       nil ->

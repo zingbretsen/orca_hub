@@ -99,3 +99,12 @@ stateDiagram-v2
   scheduled sweep — not yet implemented — will call `dispatch/2`/
   `dispatch_many/2` for every session with new content past its watermark
   instead of a SessionRunner hook.
+- That's about DISPATCHING extraction — the extraction CHILD's own turn-end
+  (`sessions.kind: "memory_extraction"`) is a real SessionRunner hook: an
+  idle/error transition for one calls `MemoryExtraction.finalize_self/2`
+  directly, which posts a visibility event to its source, deletes its
+  transcript file, and archives itself (or retries once with the fallback
+  backend/model) — replacing the old in-memory completion-watcher `Task`,
+  which died on every hub restart. `OrcaHub.MemoryExtractionSweep` is the
+  hub-only boot-time backstop for whatever restart window still slips
+  through.

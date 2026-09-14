@@ -53,6 +53,7 @@ defmodule OrcaHub.HubRPC do
 
   def unarchive_session(session), do: call(OrcaHub.Sessions, :unarchive_session, [session])
   def defer_session(session), do: call(OrcaHub.Sessions, :defer_session, [session])
+
   def list_sessions(filter \\ :manual, opts \\ []),
     do: call(OrcaHub.Sessions, :list_sessions, [filter, opts])
 

@@ -106,6 +106,52 @@ defmodule OrcaHub.SessionsTest do
     end
   end
 
+  describe "kind field" do
+    test "defaults to \"session\"", %{project: project} do
+      session = create_session(project)
+      assert session.kind == "session"
+    end
+
+    test "can be set to \"memory_extraction\" on creation", %{project: project} do
+      session = create_session(project, %{kind: "memory_extraction"})
+      assert session.kind == "memory_extraction"
+    end
+
+    test "rejects an unrecognized value", %{project: project} do
+      assert {:error, changeset} =
+               Sessions.create_session(%{
+                 directory: project.directory,
+                 project_id: project.id,
+                 kind: "bogus"
+               })
+
+      assert "is invalid" in errors_on(changeset).kind
+    end
+  end
+
+  describe "list_sessions/2 — background (kind) filtering" do
+    test "excludes memory_extraction sessions by default", %{project: project} do
+      ordinary = create_session(project, %{title: "Ordinary"})
+      background = create_session(project, %{title: "Background", kind: "memory_extraction"})
+
+      session_ids = Sessions.list_sessions(:all) |> Enum.map(& &1.id)
+
+      assert ordinary.id in session_ids
+      refute background.id in session_ids
+    end
+
+    test "include_background: true reveals memory_extraction sessions too", %{project: project} do
+      ordinary = create_session(project, %{title: "Ordinary"})
+      background = create_session(project, %{title: "Background", kind: "memory_extraction"})
+
+      session_ids =
+        Sessions.list_sessions(:all, include_background: true) |> Enum.map(& &1.id)
+
+      assert ordinary.id in session_ids
+      assert background.id in session_ids
+    end
+  end
+
   describe "backend field" do
     test "defaults to \"claude\"", %{project: project} do
       session = create_session(project)
@@ -2068,7 +2114,10 @@ defmodule OrcaHub.SessionsTest do
         "memory_ids" => ["mem-1"]
       })
 
-      Sessions.persist_system_event(session.id, %{"type" => "system", "subtype" => "memory_extraction"})
+      Sessions.persist_system_event(session.id, %{
+        "type" => "system",
+        "subtype" => "memory_extraction"
+      })
 
       Sessions.persist_system_event(session.id, %{
         "type" => "system",

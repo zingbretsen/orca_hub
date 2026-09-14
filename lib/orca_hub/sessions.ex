@@ -108,7 +108,8 @@ defmodule OrcaHub.Sessions do
   needs a specific node, and the caller resolves that per-row.
   """
   def list_orphaned_memory_extraction_sessions(older_than_minutes) do
-    cutoff = DateTime.utc_now() |> DateTime.add(-older_than_minutes, :minute) |> DateTime.to_naive()
+    cutoff =
+      DateTime.utc_now() |> DateTime.add(-older_than_minutes, :minute) |> DateTime.to_naive()
 
     Repo.all(
       from s in Session,

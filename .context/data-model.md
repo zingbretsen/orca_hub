@@ -47,6 +47,7 @@ erDiagram
         string status "ready|idle|running|waiting|error|compacting"
         string model
         string backend "claude|codex|pi"
+        string kind "session|memory_extraction; hidden from index/search_sessions by default"
         boolean orchestrator
         boolean code_exec "default true; gates MCP meta-tools mode"
         binary_id parent_session_id "spawning parent; plain field, no assoc"

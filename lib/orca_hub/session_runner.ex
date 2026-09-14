@@ -1798,7 +1798,10 @@ defmodule OrcaHub.SessionRunner do
           Map.get(data, :turn_started_at)
         )
 
-        maybe_self_archive_memory_extraction(%{session | status: "idle", error_detail: nil}, :idle)
+        maybe_self_archive_memory_extraction(
+          %{session | status: "idle", error_detail: nil},
+          :idle
+        )
 
         MemoryGit.Server.snapshot_session_async(session)
         {:next_state, :idle, data}
