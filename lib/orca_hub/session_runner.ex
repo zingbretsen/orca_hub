@@ -1449,7 +1449,8 @@ defmodule OrcaHub.SessionRunner do
   @doc false
   def result_event_error_detail(result_ev, data) do
     error_detail_with_fallback(
-      result_ev["result"] || result_ev["message"] || result_errors_text(result_ev["errors"]),
+      result_ev["result"] || result_ev["message"] ||
+        result_errors_text(result_ev["errors"], result_ev["subtype"]),
       "The agent reported a failed turn with no error message",
       [path: "streaming result event", subtype: result_ev["subtype"]],
       data
@@ -1460,7 +1461,11 @@ defmodule OrcaHub.SessionRunner do
   # string on some failures — notably `subtype: "error_during_execution"` with
   # `["No conversation found with session ID: …"]`, the exact payload behind
   # ORCAHUB3-83's originating incident.
-  defp result_errors_text(errors) when is_list(errors) do
+  # The `subtype` is prefixed because it is the only machine-readable
+  # classification of the failure the event carries, and this text becomes the
+  # detail VERBATIM (it is real CLI text, so it short-circuits the synthesized
+  # fallback that would otherwise have named the subtype itself).
+  defp result_errors_text(errors, subtype) when is_list(errors) do
     errors
     |> Enum.map_join("\n", fn
       text when is_binary(text) -> text
@@ -1469,11 +1474,12 @@ defmodule OrcaHub.SessionRunner do
     |> String.trim()
     |> case do
       "" -> nil
+      text when is_binary(subtype) and subtype != "" -> "#{subtype}: #{text}"
       text -> text
     end
   end
 
-  defp result_errors_text(_), do: nil
+  defp result_errors_text(_errors, _subtype), do: nil
 
   # ORCAHUB3-83 — the fallback behind every `status: "error"` write.
   #
@@ -1886,8 +1892,18 @@ defmodule OrcaHub.SessionRunner do
 
   defp handle_streaming_progress(%{turn_result: :warmup_done} = data) do
     # Warm-up turn done — MCP is connected. Flush the queued real prompt(s).
+    #
+    # ORCAHUB3-83: flush_pending_to_stdin/2 clears `error_output`, which is
+    # right for the INTERRUPT flush it was written for (stale pre-interrupt
+    # bytes belonging to a turn we deliberately cut off) but wrong here.
+    # Anything the CLI wrote to stderr during warm-up describes a turn that
+    # never started, and is the only diagnostic we will have if the port dies
+    # moments later — which is exactly how this issue's originating incident
+    # persisted a NULL error_detail. Carry it across the flush. `buffer` is
+    # still reset by the flush: that one is framing state, not diagnostics.
+    warmup_stderr = data.error_output
     data = flush_pending_to_stdin(%{data | warming_up: false, turn_result: nil})
-    {:keep_state, data}
+    {:keep_state, %{data | error_output: warmup_stderr}}
   end
 
   # ORCAHUB3-83 — the warm-up turn itself FAILED. This is the exact shape of

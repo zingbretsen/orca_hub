@@ -151,6 +151,38 @@ defmodule OrcaHub.SessionRunnerErrorDetailTest do
       assert detail =~ "credential file unreadable"
     end
 
+    # This shape has NO `result`/`message` key at all — it carries its text in
+    # an `errors` LIST — so on a NORMAL (non-warm-up) turn it would have
+    # persisted NULL too, independently of the warm-up bug below.
+    test "reads the `errors` list, prefixed with the subtype" do
+      detail =
+        SessionRunner.result_event_error_detail(
+          %{
+            "type" => "result",
+            "subtype" => "error_during_execution",
+            "is_error" => true,
+            "errors" => ["No conversation found with session ID: fa7cfb6c"]
+          },
+          %{backend: OrcaHub.Backend.Claude, engine: :streaming, error_output: "", buffer: ""}
+        )
+
+      assert detail == "error_during_execution: No conversation found with session ID: fa7cfb6c"
+    end
+
+    test "an auth-shaped event still prefers its `result` string over `errors`" do
+      detail =
+        SessionRunner.result_event_error_detail(
+          %{
+            "subtype" => "error_during_execution",
+            "result" => "Invalid API key · Please run /login",
+            "errors" => ["secondary noise"]
+          },
+          %{backend: OrcaHub.Backend.Claude, engine: :streaming, error_output: "", buffer: ""}
+        )
+
+      assert detail == "Invalid API key · Please run /login"
+    end
+
     test "says so explicitly when there was no output at all to fall back on" do
       detail =
         SessionRunner.result_event_error_detail(
@@ -256,6 +288,9 @@ defmodule OrcaHub.SessionRunnerErrorDetailTest do
       updated = Sessions.get_session!(session.id)
       assert updated.status == "error"
       assert updated.error_detail =~ "No conversation found with session ID"
+      # The subtype rides along — the only machine-readable classification the
+      # event carries, and this shape has no `result`/`message` key at all.
+      assert updated.error_detail =~ "error_during_execution"
 
       # ...and the feed explains itself too — every other event of a warm-up
       # turn is suppressed, so without this card the user sees their own
@@ -263,6 +298,14 @@ defmodule OrcaHub.SessionRunnerErrorDetailTest do
       card = Enum.find(data.messages, &(&1["type"] == "cli_error"))
       refute is_nil(card)
       assert card["message"] =~ "No conversation found with session ID"
+
+      # (3) the exit that follows a moment later must not clobber the reason
+      # we just persisted with a poorer one. The port is already torn down, so
+      # this lands on :error's catch-all.
+      assert :keep_state_and_data =
+               SessionRunner.error(:info, {:fake_port, {:exit_status, 1}}, data)
+
+      assert Sessions.get_session!(session.id).error_detail =~ "No conversation found"
     end
 
     test "does not flush the user's queued prompt into the dying process", %{session: session} do
@@ -284,7 +327,7 @@ defmodule OrcaHub.SessionRunnerErrorDetailTest do
       # A real `cat` port so the flush is observable: the queued real prompt
       # must still reach stdin unchanged when the warm-up turn SUCCEEDS.
       port = Port.open({:spawn, "cat"}, [:binary])
-      data = %{warmup_data(session) | port: port}
+      data = %{warmup_data(session) | port: port, error_output: "a warning nobody acted on\n"}
 
       frame = Jason.encode!(%{"type" => "result", "subtype" => "success"}) <> "\n"
 
@@ -294,6 +337,13 @@ defmodule OrcaHub.SessionRunnerErrorDetailTest do
       assert echoed =~ "the user's real prompt"
       refute data.warming_up
       assert data.pending_prompts == []
+
+      # flush_pending_to_stdin/2 clears error_output for the INTERRUPT flush
+      # it was written for; on the warm-up path that threw away the only
+      # diagnostic a subsequent port death would have had. It survives now.
+      assert data.error_output == "a warning nobody acted on\n"
+      # `buffer` is framing state, not diagnostics — still reset.
+      assert data.buffer == ""
 
       Port.close(port)
       assert Sessions.get_session!(session.id).status == "running"
