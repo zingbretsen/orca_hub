@@ -53,6 +53,20 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - Which memories were loaded into a session is visible, not just injected silently: every `<orca-memory>` prepend (Claude/Codex first turn) or `ORCA_MEMORY` env build (pi, at port-open) persists a `memory_injected` system event (`Sessions.persist_system_event/2`) with `memory_ids`/hooks/pinned+recalled counts/the raw block. It renders collapsed in the feed and aggregates into a header "Memories" panel (`Sessions.list_memory_injected_events/1`); the leading block is stripped from the user bubble's display text since the event already shows it. Hooks link to `MEMORY_SERVICE_PUBLIC_URL/memories/<id>` when that env var is configured.
 - Two hub-scheduled triggers (`OrcaHub.MemoryReview`, upserted idempotently on boot by `TriggerLoader`) run automated memory REVIEW passes — nightly consolidation (`memory-consolidate-nightly`, merges clear near-duplicates and flags importance inflation/contradictions) and weekly verification (`memory-verify-weekly`, checks concrete claims via grep/git/curl and batch-verifies or flags). Both propose only: `merge_memories`/`flag_memory`/`verify_memories`, never `retire_memory` or a text rewrite of an existing memory — humans still decide. Both triggers set `memory_extract: false` so the passes never memory-extract themselves.
 
+## Database prerequisites
+
+pgvector's `vector` extension must be enabled by the Postgres superuser ONCE per
+database, before migrations run — `priv/repo/migrations/20260914100000_enable_pgvector.exs`
+only checks it's present and raises with this same command if not, it never
+creates the extension itself (the app's `orca_hub` role isn't a superuser, and
+this image's `vector.control` isn't marked `trusted`). `pg-provisioner` has no
+extension-enable endpoint, so a NEW database needs this run manually before its
+first deploy:
+
+```
+docker exec postgres psql -U postgres -d <DATABASE> -c "CREATE EXTENSION IF NOT EXISTS vector"
+```
+
 ## Deployment
 
 There are SIX prod instances; a full deploy updates all of them:
