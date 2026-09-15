@@ -442,7 +442,8 @@ erDiagram
   castable purely so a backfill/repair can set or clear it deliberately. The
   `vector` type only round-trips because `OrcaHub.PostgrexTypes` is wired into
   the Repo via `config :orca_hub, OrcaHub.Repo, types:` — `CREATE EXTENSION
-  vector` itself is a manual superuser step per database, not something the
+  vector` itself is a manual, one-time step per database (now runnable by the
+  database's own owner role since pgvector is `trusted`), not something the
   migration can do (see `priv/repo/migrations/*_enable_pgvector.exs`).
 - **`issues.search_tsv` is the lexical half of issue search**, and it is a
   `GENERATED ... STORED` tsvector column with a GIN index, not a

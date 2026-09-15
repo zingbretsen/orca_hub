@@ -55,15 +55,18 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 
 ## Database prerequisites
 
-pgvector's `vector` extension must be enabled by the Postgres superuser ONCE per
-database, before migrations run — `priv/repo/migrations/20260914100000_enable_pgvector.exs`
+pgvector's `vector` extension must be present ONCE per database before
+migrations run — `priv/repo/migrations/20260914100000_enable_pgvector.exs`
 only checks it's present and raises with this same command if not, it never
-creates the extension itself (the app's `orca_hub` role isn't a superuser, and
-this image's `vector.control` isn't marked `trusted`). `pg-provisioner` has no
-extension-enable endpoint, so a NEW database needs this run manually before its
-first deploy:
+creates the extension itself. As of the shared Postgres image's `trusted = true`
+pgvector build, the database's own owner role can install it directly; the
+`postgres`-superuser `docker exec` form below is the fallback for a database
+still owned by `postgres`. `pg-provisioner` has no extension-enable endpoint,
+so a NEW database needs this run manually before its first deploy:
 
 ```
+psql -d <DATABASE> -c "CREATE EXTENSION IF NOT EXISTS vector"
+# or, as the postgres superuser:
 docker exec postgres psql -U postgres -d <DATABASE> -c "CREATE EXTENSION IF NOT EXISTS vector"
 ```
 

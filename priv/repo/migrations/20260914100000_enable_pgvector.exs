@@ -3,15 +3,17 @@ defmodule OrcaHub.Repo.Migrations.EnablePgvector do
   Precondition check: fails loudly if the pgvector `vector` extension isn't
   already installed, instead of trying to install it.
 
-  This migration deliberately does NOT run `CREATE EXTENSION` — the app's
-  `orca_hub` role is not a superuser, and this Postgres image's
-  `vector.control` has no `trusted` line, so `CREATE EXTENSION vector` is
-  superuser-only no matter who owns the database. On 2026-09-14 an earlier
-  version of this migration tried it anyway and crash-looped the prod k3s
-  hub pod on every boot; the deploy had to be rolled back. Enabling the
-  extension is now a manual, one-time-per-database provisioning step run by
-  the `postgres` superuser (see `up/0` for the exact command) — this
-  migration only verifies that step already happened.
+  This migration deliberately does NOT run `CREATE EXTENSION` — nothing
+  guarantees a fresh database has had it installed yet, and this migration
+  isn't the place to fix that. On 2026-09-14 an earlier version of this
+  migration tried to install it anyway and crash-looped the prod k3s hub
+  pod on every boot; the deploy had to be rolled back. Enabling the
+  extension is a manual, one-time-per-database provisioning step (see
+  `up/0` for the exact command) — this migration only verifies that step
+  already happened. The shared Postgres image now marks pgvector's
+  `vector.control` `trusted = true`, so the database's own owner role can
+  run `CREATE EXTENSION vector` itself; the `postgres` superuser form is
+  only needed as a fallback for a database still owned by `postgres`.
   """
 
   use Ecto.Migration
@@ -28,10 +30,10 @@ defmodule OrcaHub.Repo.Migrations.EnablePgvector do
       raise """
       pgvector's `vector` extension is not installed on this database.
 
-      This migration cannot install it: the app's database role is not a
-      superuser, and pgvector's control file is not marked `trusted`, so
-      only the `postgres` superuser can run `CREATE EXTENSION vector`. On
-      the host running the shared Postgres container, run:
+      This migration deliberately doesn't install it for you. pgvector's
+      control file is marked `trusted`, so the database's own owner role
+      can run `CREATE EXTENSION vector` itself — or, as the `postgres`
+      superuser on the host running the shared Postgres container, run:
 
           #{@enable_command}
 
