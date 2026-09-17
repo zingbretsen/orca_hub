@@ -2,6 +2,7 @@ defmodule OrcaHubWeb.UserSocket do
   use Phoenix.Socket
 
   channel "terminal:*", OrcaHubWeb.TerminalChannel
+  channel "voice:*", OrcaHubWeb.VoiceChannel
 
   @impl true
   def connect(_params, socket, _connect_info) do
