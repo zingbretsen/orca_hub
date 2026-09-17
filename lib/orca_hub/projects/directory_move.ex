@@ -91,6 +91,11 @@ defmodule OrcaHub.Projects.DirectoryMove do
   # running (or being verified) out of the job's directory.
   @live_job_statuses ~w(running verifying)
 
+  # Budget for the filesystem move (and for moving it back on rollback). A
+  # same-filesystem rename is instant; a cross-filesystem move copies the whole
+  # tree, so this is generous compared to Cluster.rpc/5's 10s default.
+  @fs_move_timeout 300_000
+
   @type result :: %{
           from: String.t(),
           to: String.t(),
@@ -361,12 +366,23 @@ defmodule OrcaHub.Projects.DirectoryMove do
 
     ctx = put_in(ctx.plan.warnings, ctx.plan.warnings ++ stop_live_runners(ctx))
 
-    case Cluster.rpc(node, __MODULE__, :fs_move, [from, to], 60_000) do
+    case Cluster.rpc(node, __MODULE__, :fs_move, [from, to], @fs_move_timeout) do
       :ok ->
         finish_move(ctx, opts)
 
       {:fs_error, message} ->
         {:error, {:move_failed, "Could not move #{from} to #{to}#{on_node(node)}: #{message}"}}
+
+      # A cross-filesystem move of a large tree is a copy, and can outlast the
+      # rpc budget — the move itself is very likely STILL RUNNING remotely, so
+      # this must not read like a clean failure a caller can just retry.
+      {:error, {:rpc_timeout, _}} ->
+        {:error,
+         {:move_failed,
+          "The move of #{from} to #{to}#{on_node(node)} did not finish within " <>
+            "#{div(@fs_move_timeout, 1000)}s. It is probably still running (a cross-filesystem " <>
+            "move copies the whole tree); the database was NOT rewritten. Check the directory " <>
+            "on that node before retrying."}}
 
       {:error, reason} ->
         {:error, {:node_unavailable, node_unavailable_message(node, reason)}}
@@ -411,7 +427,7 @@ defmodule OrcaHub.Projects.DirectoryMove do
   # whether that worked.
   defp rewrite_failed_message(node, from, to, message) do
     rollback =
-      case Cluster.rpc(node, __MODULE__, :fs_move, [to, from], 60_000) do
+      case Cluster.rpc(node, __MODULE__, :fs_move, [to, from], @fs_move_timeout) do
         :ok ->
           "The directory was moved back to #{from}, so nothing is out of sync."
 
