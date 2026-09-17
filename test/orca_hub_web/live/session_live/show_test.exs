@@ -2073,7 +2073,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
         assert html =~ attr, "voice panel is missing #{attr}"
       end
 
-      for action <- ~w(send cancel start) do
+      for action <- ~w(send cancel start retry) do
         assert html =~ ~s(data-voice-action="#{action}"),
                "voice panel is missing the #{action} button"
       end
@@ -2085,6 +2085,32 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert view |> element("#voice-panel [data-voice-banner].hidden") |> has_element?()
       assert view |> element("#voice-panel [data-voice-arming].hidden") |> has_element?()
       assert view |> element("#voice-panel [data-voice-action='start'].hidden") |> has_element?()
+    end
+
+    test "the retry-warmup button is a peer SIBLING of the error box, never a child of it", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      html = view |> element("button[phx-click='toggle_voice']") |> render_click()
+
+      # The hook renders an error with `error.textContent = text`, which
+      # deletes every child node — so a retry button nested inside the error
+      # box would vanish the first time an error appeared, i.e. exactly when
+      # it is needed. It is a sibling, and Tailwind's `peer` variant (not JS
+      # on either side of the slice boundary) gives it the error's visibility.
+      refute view
+             |> element("#voice-panel [data-voice-error] [data-voice-action='retry']")
+             |> has_element?()
+
+      assert view |> element("#voice-panel [data-voice-error].peer") |> has_element?()
+
+      assert view
+             |> element("#voice-panel button[data-voice-action='retry'].hidden")
+             |> has_element?()
+
+      assert html =~ "peer-[:not(.hidden)]:inline-flex"
     end
 
     test "clicking Voice again removes the panel (that un-render IS the teardown)", %{

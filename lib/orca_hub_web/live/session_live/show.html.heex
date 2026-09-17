@@ -1571,7 +1571,24 @@
                   sending in <span data-voice-arming-ms></span>ms
                 </span>
               </div>
-              <div data-voice-error class="hidden alert alert-error py-1 text-xs"></div>
+              <%!-- `retry_warmup` is a first-class §8.1 event, so it gets a
+            first-class control — the hook's click-anywhere-on-the-error
+            fallback is only discoverable through a title tooltip, and a
+            failed ASR warm-up is precisely when the user has no obvious
+            next move. The button is a SIBLING rather than a child of the
+            error box on purpose: the hook renders errors with
+            `error.textContent = text`, which would delete any nested
+            node the first time an error appeared. `peer` gives it the
+            error box's visibility anyway, with no extra JS on either
+            side of the slice boundary. --%>
+              <div data-voice-error class="peer hidden alert alert-error py-1 text-xs"></div>
+              <button
+                type="button"
+                data-voice-action="retry"
+                class="hidden peer-[:not(.hidden)]:inline-flex btn btn-xs btn-outline btn-error self-start"
+              >
+                Retry warm-up
+              </button>
               <textarea
                 data-voice-draft
                 rows="2"
