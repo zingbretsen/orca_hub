@@ -213,25 +213,53 @@ defmodule OrcaHub.Backend.Pi do
 
   # Parses `pi --list-models` output: a header line
   # (`provider   model   context  max-out  thinking  images`) followed by
-  # whitespace-aligned rows. The picker id is pi's combined "provider/model"
-  # form (an embedded "/" resolves the provider — no separate --provider
-  # flag needed); the label is the model's basename plus provider, since
-  # Fireworks ids are long `accounts/fireworks/models/<name>` paths.
+  # whitespace-aligned rows with exactly those six columns. The picker id is
+  # pi's combined "provider/model" form (an embedded "/" resolves the
+  # provider — no separate --provider flag needed); the label is the model's
+  # basename plus provider, since Fireworks ids are long
+  # `accounts/fireworks/models/<name>` paths.
+  #
+  # A line only counts as a row if its FOUR trailing columns look like a real
+  # table row (numeric context/max-out, yes/no thinking/images) — anything
+  # else is dropped rather than guessed at. `models/0` shells out with
+  # `stderr_to_stdout: true`, so pi's prose reaches this parser: a
+  # schema-invalid models.json prints warnings, and the (much more common)
+  # no-authenticated-provider case prints `No models available. Use /login
+  # ...`. Under the old "any two tokens is a row" rule that prose became
+  # selectable options in the model picker — and `set_model` persists
+  # whatever string it's handed, so a user could pick `No/models` as their
+  # session's model.
+  @model_row ~r/^\s*(\S+)\s+(\S+(?:\s+\S+)*?)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$/
+  @token_count ~r/^\d+(?:\.\d+)?[KMGTkmgt]?$/i
+  @flag_cells ~w(yes no true false y n -)
+  @header_cells ~w(provider model context max-out thinking images)
+
   @doc false
   def parse_model_list(output) do
     output
     |> String.split("\n", trim: true)
-    |> Enum.drop_while(&String.starts_with?(&1, "provider"))
-    |> Enum.flat_map(fn line ->
-      case String.split(line, ~r/\s+/, trim: true) do
-        [provider, model | _rest] when provider != "provider" ->
-          [{"#{provider}/#{model}", "#{Path.basename(model)} (#{provider})"}]
-
-        _ ->
-          []
-      end
-    end)
+    |> Enum.flat_map(&parse_model_row/1)
   end
+
+  defp parse_model_row(line) do
+    with false <- header_line?(line),
+         [provider, model, context, max_out, thinking, images] <-
+           Regex.run(@model_row, line, capture: :all_but_first),
+         true <- Regex.match?(@token_count, context) and Regex.match?(@token_count, max_out),
+         true <- flag_cell?(thinking) and flag_cell?(images) do
+      [{"#{provider}/#{model}", "#{Path.basename(model)} (#{provider})"}]
+    else
+      _ -> []
+    end
+  end
+
+  # The header is matched explicitly rather than dropped with a
+  # `starts_with?("provider")` prefix test — that test also swallowed any
+  # real provider NAMED e.g. `providerfoo`, which sorts first in pi's
+  # provider-ordered table and so vanished from the picker entirely.
+  defp header_line?(line), do: String.split(line, ~r/\s+/, trim: true) == @header_cells
+
+  defp flag_cell?(cell), do: String.downcase(cell) in @flag_cells
 
   # ── Spawn ────────────────────────────────────────────────────────────
 

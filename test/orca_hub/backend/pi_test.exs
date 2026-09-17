@@ -174,6 +174,85 @@ defmodule OrcaHub.Backend.PiTest do
       assert Backend.parse_model_list("provider model\n\nonlyonecolumn\n") == []
       assert Backend.parse_model_list("") == []
     end
+
+    test "parses the real six-column table verbatim (live `pi --list-models` sample)" do
+      output = """
+      provider    model                                             context  max-out  thinking  images
+      fireworks   accounts/fireworks/models/deepseek-v4-flash-0731  1M       384K     yes       no
+      fireworks   accounts/fireworks/routers/glm-5p3-fast           1.0M     262.1K   yes       no
+      gb10        step-3.7-flash                                    32.8K    8.2K     yes       no
+      gb10-coder  qwen3-coder-next                                  262.1K   16.4K    no        no
+      """
+
+      assert Backend.parse_model_list(output) == [
+               {"fireworks/accounts/fireworks/models/deepseek-v4-flash-0731",
+                "deepseek-v4-flash-0731 (fireworks)"},
+               {"fireworks/accounts/fireworks/routers/glm-5p3-fast", "glm-5p3-fast (fireworks)"},
+               {"gb10/step-3.7-flash", "step-3.7-flash (gb10)"},
+               {"gb10-coder/qwen3-coder-next", "qwen3-coder-next (gb10-coder)"}
+             ]
+    end
+
+    # `models/0` shells out with stderr_to_stdout: true, so pi's prose lands
+    # in this parser. Treating any two-token line as a row turned it into
+    # selectable picker options, and set_model persists whatever it is given.
+    test "pi's schema-error prose never becomes a selectable model" do
+      output = """
+      Warning: models.json has errors
+      Invalid models.json
+        - providers.gw-badkey.apiKey: Required
+      File: /tmp/pi-bad-probe/agent/models.json
+      No models available. Use /login to authenticate a provider.
+      """
+
+      assert Backend.parse_model_list(output) == []
+    end
+
+    test "the bare no-authenticated-provider banner yields no models" do
+      assert Backend.parse_model_list(
+               "No models available. Use /login to authenticate a provider.\n"
+             ) ==
+               []
+    end
+
+    # The header used to be stripped with a leading `starts_with?("provider")`
+    # drop_while, which also swallowed a provider actually NAMED `providerfoo`
+    # — it sorts first in pi's provider-ordered table.
+    test "a provider whose name starts with \"provider\" survives" do
+      output = """
+      provider     model  context  max-out  thinking  images
+      providerfoo  m1     128K     32.8K    yes       no
+      zeta         m2     128K     32.8K    no        yes
+      """
+
+      assert Backend.parse_model_list(output) == [
+               {"providerfoo/m1", "m1 (providerfoo)"},
+               {"zeta/m2", "m2 (zeta)"}
+             ]
+    end
+
+    test "a model id containing spaces is kept intact, not truncated" do
+      output = """
+      provider  model              context  max-out  thinking  images
+      gw        model with spaces  262.1K   16.4K    no        no
+      """
+
+      assert Backend.parse_model_list(output) == [
+               {"gw/model with spaces", "model with spaces (gw)"}
+             ]
+    end
+
+    test "slash-containing model ids round-trip into the combined id" do
+      output = """
+      provider   model                                     context  max-out  thinking  images
+      fireworks  accounts/fireworks/models/kimi-k2p7-code  262K     262K     yes       yes
+      """
+
+      assert Backend.parse_model_list(output) == [
+               {"fireworks/accounts/fireworks/models/kimi-k2p7-code",
+                "kimi-k2p7-code (fireworks)"}
+             ]
+    end
   end
 
   # ── spawn_spec/2 ────────────────────────────────────────────────────────
