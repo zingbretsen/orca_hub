@@ -984,6 +984,18 @@ defmodule OrcaHubWeb.NodeLive.Show do
      )}
   end
 
+  # The other two shapes on the `pi_config` topic. The refresh above is already
+  # scheduled off `{:pi_config_updated}` (and deliberately delayed past
+  # PiConfigSync's debounce), so re-reacting to these node-local follow-ups
+  # would only race that timer — they're no-ops on purpose.
+  def handle_info({:pi_models_changed, _node}, socket), do: {:noreply, socket}
+
+  def handle_info({:pi_config_warm_port_evict, _node}, socket), do: {:noreply, socket}
+
+  # This LiveView subscribes to three topics (BackendInstaller, "skills",
+  # "pi_config"); swallow anything unrecognized rather than crashing the page.
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
   # -------------------------------------------------------------------
   # Private helpers
   # -------------------------------------------------------------------

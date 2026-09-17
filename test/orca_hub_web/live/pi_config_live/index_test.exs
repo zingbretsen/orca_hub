@@ -358,6 +358,44 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
       {:ok, _view, html} = live(conn, ~p"/settings/pi-config")
       assert html =~ "test-broadcast"
     end
+
+    # The `pi_config` topic carries THREE message shapes, not just the
+    # `{:pi_config_updated}` one this page acts on: `OrcaHub.PiConfigSync` also
+    # broadcasts `{:pi_models_changed, node}` (a node's models.json changed) and
+    # `{:pi_config_warm_port_evict, node}`. Subscribing to the topic means
+    # receiving all three, so every shape needs a clause — a missing one is a
+    # FunctionClauseError that takes the whole page down.
+    test "ORCAHUB3-85: a {:pi_models_changed, node} broadcast does not crash the page",
+         %{conn: conn} do
+      Process.flag(:trap_exit, true)
+
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config")
+      ref = Process.monitor(view.pid)
+
+      # Emitted by PiConfigSync right after "Refresh now" writes a model-managed
+      # provider's spec and the resulting models.json changes on a node.
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, PiConfig.topic(), {:pi_models_changed, node()})
+
+      refute_receive {:DOWN, ^ref, :process, _pid, _reason}, 500
+      assert render(view) =~ "Pi Config"
+    end
+
+    test "ORCAHUB3-85: a {:pi_config_warm_port_evict, node} broadcast does not crash the page",
+         %{conn: conn} do
+      Process.flag(:trap_exit, true)
+
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config")
+      ref = Process.monitor(view.pid)
+
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        PiConfig.topic(),
+        {:pi_config_warm_port_evict, node()}
+      )
+
+      refute_receive {:DOWN, ^ref, :process, _pid, _reason}, 500
+      assert render(view) =~ "Pi Config"
+    end
   end
 
   describe "form validation preserves user input" do

@@ -261,6 +261,23 @@ defmodule OrcaHubWeb.PiConfigLive.Index do
     {:noreply, assign(socket, entries: HubRPC.list_pi_config_entries())}
   end
 
+  # The `pi_config` topic carries two more shapes, both broadcast by
+  # `OrcaHub.PiConfigSync` and both about a NODE's on-disk state rather than the
+  # DB rows this page renders: `{:pi_models_changed, node}` (that node rewrote
+  # its `models.json`, so caches of `pi --list-models` drop) and
+  # `{:pi_config_warm_port_evict, node}` (that node should recycle idle pi
+  # ports). Nothing here derives from either, and any DB change that triggered
+  # them arrives separately as `{:pi_config_updated}` above — so these are
+  # deliberately no-ops, not missing work.
+  def handle_info({:pi_models_changed, _node}, socket), do: {:noreply, socket}
+
+  def handle_info({:pi_config_warm_port_evict, _node}, socket), do: {:noreply, socket}
+
+  # Subscribing to a shared topic means receiving every shape published on it,
+  # including ones added later. Swallow the rest rather than letting an
+  # unrecognized message take the page down with a FunctionClauseError.
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
   # Normalize spec based on kind before DB storage, using spec_text assign
   defp normalize_spec_for_kind_with_text(params, spec_text, kind)
        when kind in ["provider", "setting"] do

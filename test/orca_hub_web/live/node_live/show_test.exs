@@ -295,4 +295,39 @@ defmodule OrcaHubWeb.NodeLive.ShowTest do
       assert html =~ "gpt-5.5"
     end
   end
+
+  # This page subscribes to the `pi_config` topic (for its managed-pi-config
+  # section), which carries `{:pi_models_changed, node}` and
+  # `{:pi_config_warm_port_evict, node}` alongside the `{:pi_config_updated}`
+  # it acts on. Same defect as ORCAHUB3-85 on the Pi Config page: a shape with
+  # no clause is a FunctionClauseError that takes the whole page down.
+  describe "pi_config topic messages it doesn't act on" do
+    test "ORCAHUB3-85: a {:pi_models_changed, node} broadcast does not crash the page",
+         %{conn: conn} do
+      Process.flag(:trap_exit, true)
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+      {:ok, view, _html} = live(conn, ~p"/nodes/#{n.id}")
+      ref = Process.monitor(view.pid)
+
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "pi_config", {:pi_models_changed, node()})
+
+      refute_receive {:DOWN, ^ref, :process, _pid, _reason}, 500
+      assert render(view) =~ "this-node"
+    end
+
+    test "ORCAHUB3-85: a {:pi_config_warm_port_evict, node} broadcast does not crash the page",
+         %{conn: conn} do
+      Process.flag(:trap_exit, true)
+      {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+      {:ok, view, _html} = live(conn, ~p"/nodes/#{n.id}")
+      ref = Process.monitor(view.pid)
+
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "pi_config", {:pi_config_warm_port_evict, node()})
+
+      refute_receive {:DOWN, ^ref, :process, _pid, _reason}, 500
+      assert render(view) =~ "this-node"
+    end
+  end
 end
