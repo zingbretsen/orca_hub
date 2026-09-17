@@ -765,6 +765,17 @@ defmodule OrcaHub.HubRPC do
   def synthesize_tts(text, config), do: call(OrcaHub.TTS, :synthesize, [text, config])
 
   # -------------------------------------------------------------------
+  # ASR config (hub-managed transcription settings for voice mode — see
+  # OrcaHub.ASRConfig). Voice websockets can terminate on any node, but only
+  # the hub owns the DB, so resolution goes through here.
+  # -------------------------------------------------------------------
+
+  def resolve_asr_config, do: call(OrcaHub.ASRConfig, :resolve, [])
+  def asr_env_defaults, do: call(OrcaHub.ASRConfig, :env_defaults, [])
+  def get_asr_provider_entry, do: call(OrcaHub.ASRConfig, :get_provider_entry, [])
+  def put_asr_provider(attrs), do: call(OrcaHub.ASRConfig, :put_provider, [attrs])
+
+  # -------------------------------------------------------------------
   # Cross-node file store (OrcaHub.Files) — see its moduledoc for the
   # security invariants. Object store bytes never leave the hub except
   # through these calls.

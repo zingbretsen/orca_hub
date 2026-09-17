@@ -950,3 +950,103 @@
     </.form>
   </div>
 </div>
+
+<div class="mt-10" id="asr-settings">
+  <div class="flex items-center justify-between mb-4">
+    <h3 class="text-lg font-semibold">Speech recognition (ASR)</h3>
+  </div>
+
+  <p class="text-sm text-base-content/60 mb-4">
+    Transcription backend for voice mode — the GB10 sync lane, which is pinned to
+    <code>large-v3-turbo</code>
+    and offers no model selection. Every field is an <strong>optional override</strong>
+    — leave one blank and it inherits that field alone from its <code>ASR_*</code>
+    environment variable (shown as the placeholder). Changes apply to the <strong>next utterance</strong>, with no restart and no redeploy.
+  </p>
+
+  <.form
+    for={@asr_form}
+    id="asr-provider-form"
+    phx-submit="save_asr_provider"
+    phx-change="validate_asr_provider"
+    class="card bg-base-200 p-4 space-y-3"
+  >
+    <div class="flex gap-2">
+      <div class="flex-1">
+        <.input
+          field={@asr_form[:url]}
+          type="text"
+          label="Service URL"
+          placeholder={@asr_env_defaults.url}
+          phx-debounce="blur"
+        />
+      </div>
+      <div class="flex-1">
+        <.input
+          field={@asr_form[:path]}
+          type="text"
+          label="Transcribe path"
+          placeholder={@asr_env_defaults.path}
+          phx-debounce="blur"
+        />
+      </div>
+      <div class="w-32">
+        <.input
+          field={@asr_form[:language]}
+          type="text"
+          label="Language"
+          placeholder={@asr_env_defaults.language}
+          phx-debounce="blur"
+        />
+      </div>
+    </div>
+
+    <div class="flex gap-2">
+      <div class="flex-1">
+        <.input
+          field={@asr_form[:timeout_ms]}
+          type="text"
+          label="Request timeout (ms)"
+          placeholder={to_string(@asr_env_defaults.timeout_ms)}
+          phx-debounce="blur"
+        />
+      </div>
+      <div class="flex-1">
+        <.input
+          field={@asr_form[:warmup_timeout_ms]}
+          type="text"
+          label="Warm-up timeout (ms)"
+          placeholder={to_string(@asr_env_defaults.warmup_timeout_ms)}
+          phx-debounce="blur"
+        />
+      </div>
+      <div class="flex-1">
+        <.input
+          field={@asr_form[:threshold]}
+          type="text"
+          label="Intent match threshold"
+          placeholder={to_string(@asr_env_defaults.threshold)}
+          phx-debounce="blur"
+        />
+      </div>
+    </div>
+
+    <p class="text-xs text-base-content/50 -mt-1">
+      The URL is the service root; the path is appended to it. The request timeout is the
+      steady-state per-call cap (warm transcription takes 0.6-1.4s); the warm-up timeout applies
+      only to the ping fired when voice mode arms, where a cold start can take 35s. The threshold
+      (0.0-1.0) is how close a spoken tail must sound to a voice command before it counts as one —
+      raise it if commands fire by accident, lower it if they are missed.
+    </p>
+
+    <.input
+      field={@asr_form[:enabled]}
+      type="checkbox"
+      label="Enabled (uncheck to revert every field to its ASR_* environment variable)"
+    />
+
+    <div class="flex justify-end items-center gap-2 mt-2">
+      <.button type="submit" class="btn-sm">Save</.button>
+    </div>
+  </.form>
+</div>

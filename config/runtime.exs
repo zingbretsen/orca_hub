@@ -185,6 +185,27 @@ config :orca_hub, :tts_url, System.get_env("TTS_URL") || "https://ai.lab.ingbret
 config :orca_hub, :tts_model, System.get_env("TTS_MODEL") || "tts-chatterbox-23lang"
 config :orca_hub, :tts_language, System.get_env("TTS_LANGUAGE") || "en"
 
+# Speech-to-text for voice mode (OrcaHub.ASRConfig).
+#
+# This is NOT the ai_gateway above — the gateway proxies only TTS and 404s
+# every ASR path. ASR is the LAN sync lane of the `transcription` container
+# on GB10 (192.168.1.77:8000), unauthenticated on the LAN and pinned to
+# large-v3-turbo, so there is no model or key to configure.
+#
+# The two timeouts differ on purpose: ASR_TIMEOUT_MS is the steady-state
+# per-call cap (warm p50 is 570-1350ms), while ASR_WARMUP_TIMEOUT_MS covers
+# only the warm-up ping at voice-mode arm, where a cold start runs to 35s.
+# ASR_INTENT_THRESHOLD is OrcaHub.Voice.Intent's phonetic tail-matcher
+# threshold. All three stay strings here — OrcaHub.ASRConfig parses them, so
+# a malformed value degrades to the hardcoded default instead of crashing
+# the release at boot.
+config :orca_hub, :asr_url, System.get_env("ASR_URL") || "http://192.168.1.77:8000"
+config :orca_hub, :asr_path, System.get_env("ASR_PATH") || "/v1/transcribe/sync"
+config :orca_hub, :asr_language, System.get_env("ASR_LANGUAGE") || "en"
+config :orca_hub, :asr_timeout_ms, System.get_env("ASR_TIMEOUT_MS") || "10000"
+config :orca_hub, :asr_warmup_timeout_ms, System.get_env("ASR_WARMUP_TIMEOUT_MS") || "40000"
+config :orca_hub, :asr_intent_threshold, System.get_env("ASR_INTENT_THRESHOLD") || "0.85"
+
 config :orca_hub, :elevenlabs_api_key, System.get_env("ELEVENLABS_API_KEY")
 
 config :orca_hub,

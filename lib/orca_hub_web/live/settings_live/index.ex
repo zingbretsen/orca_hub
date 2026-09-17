@@ -49,7 +49,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
        token_form: to_form(HubRPC.change_api_token(%ApiToken{}, %{"scopes" => []})),
        revealed_secret: nil
      )
-     |> assign_tts()}
+     |> assign_tts()
+     |> assign_asr()}
   end
 
   @impl true
@@ -500,7 +501,7 @@ defmodule OrcaHubWeb.SettingsLive.Index do
          |> put_flash(:info, "TTS settings saved — in effect on the next request.")}
 
       {:error, changeset} ->
-        {:noreply, put_flash(socket, :error, "Could not save: #{tts_errors(changeset)}")}
+        {:noreply, put_flash(socket, :error, "Could not save: #{changeset_errors(changeset)}")}
     end
   end
 
@@ -568,6 +569,35 @@ defmodule OrcaHubWeb.SettingsLive.Index do
       {:error, reason} ->
         {:noreply,
          put_flash(socket, :error, "Sample failed after #{ms} ms: #{tts_error(reason)}")}
+    end
+  end
+
+  # ── Speech recognition (OrcaHub.ASRConfig) ─────────────────────────────
+  #
+  # Same contract as the TTS section above: every field is an OPTIONAL
+  # override, blank means "inherit this one field from its ASR_* env var",
+  # and saving takes effect on the very next transcription because
+  # ASRConfig.resolve/0 reads inside the call with no cache behind it.
+  # Unlike TTS there is no model catalog — the sync lane offers no model
+  # selection at all.
+
+  def handle_event("validate_asr_provider", %{"asr" => params}, socket) do
+    {:noreply, assign(socket, asr_form: to_form(params, as: :asr))}
+  end
+
+  def handle_event("save_asr_provider", %{"asr" => params}, socket) do
+    case HubRPC.put_asr_provider(params) do
+      {:ok, _entry} ->
+        {:noreply,
+         socket
+         |> assign_asr()
+         |> put_flash(:info, "ASR settings saved — in effect on the next transcription.")}
+
+      {:error, changeset} ->
+        {:noreply,
+         socket
+         |> assign(asr_form: to_form(params, as: :asr))
+         |> put_flash(:error, "Could not save: #{changeset_errors(changeset)}")}
     end
   end
 
@@ -774,6 +804,31 @@ defmodule OrcaHubWeb.SettingsLive.Index do
 
   def tts_providers, do: TTSConfig.Entry.providers()
 
+  # ── ASR helpers ────────────────────────────────────────────────────────
+
+  defp assign_asr(socket) do
+    entry = HubRPC.get_asr_provider_entry()
+    spec = if entry, do: entry.spec || %{}, else: %{}
+
+    assign(socket,
+      asr_env_defaults: HubRPC.asr_env_defaults(),
+      asr_enabled: if(entry, do: entry.enabled, else: true),
+      asr_form:
+        to_form(
+          %{
+            "url" => spec["url"] || "",
+            "path" => spec["path"] || "",
+            "language" => spec["language"] || "",
+            "timeout_ms" => spec["timeout_ms"] || "",
+            "warmup_timeout_ms" => spec["warmup_timeout_ms"] || "",
+            "threshold" => spec["threshold"] || "",
+            "enabled" => to_string(if(entry, do: entry.enabled, else: true))
+          },
+          as: :asr
+        )
+    )
+  end
+
   defp form_value(form, field, fallback) do
     case Phoenix.HTML.Form.input_value(form, field) do
       value when is_binary(value) ->
@@ -816,7 +871,7 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   defp tts_error({:crashed, message}), do: message
   defp tts_error(other), do: inspect(other)
 
-  defp tts_errors(%Ecto.Changeset{} = changeset) do
+  defp changeset_errors(%Ecto.Changeset{} = changeset) do
     changeset
     |> Ecto.Changeset.traverse_errors(fn {msg, _opts} -> msg end)
     |> Enum.map_join("; ", fn {field, msgs} -> "#{field} #{Enum.join(msgs, ", ")}" end)
