@@ -98,6 +98,20 @@ defmodule OrcaHubWeb.VoiceChannelTest do
     {reply, socket}
   end
 
+  defp await_release(session_id, attempts \\ 50) do
+    cond do
+      Registry.lookup(OrcaHub.SessionViewersRegistry, session_id) == [] ->
+        true
+
+      attempts == 0 ->
+        false
+
+      true ->
+        Process.sleep(20)
+        await_release(session_id, attempts - 1)
+    end
+  end
+
   defp pcm(samples), do: :binary.copy(<<0, 0>>, samples)
 
   defp segment(seq, samples, opts \\ []) do
@@ -192,7 +206,11 @@ defmodule OrcaHubWeb.VoiceChannelTest do
 
       leave(socket)
       assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 1_000
-      assert Registry.lookup(OrcaHub.SessionViewersRegistry, session.id) == []
+
+      # The registry drops the entry in its own partition process, which can
+      # lag our monitor by a scheduling quantum — so poll rather than
+      # asserting on the first read.
+      assert await_release(session.id), "the voice claim was never released"
 
       assert {_reply, _socket} = join_warm!(session.id)
     end
