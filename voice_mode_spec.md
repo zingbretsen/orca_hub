@@ -1,4 +1,4 @@
-# Voice Mode — Design Spec (DRAFT, v0.4)
+# Voice Mode — Design Spec (DRAFT, v0.4.1)
 
 Status: DRAFT, spike phase complete — SPIKEs 1, 2, 2b, 3 folded in. Two
 human-in-the-loop checks remain before phase 1 code: the acoustic AEC test and
@@ -794,6 +794,98 @@ tests"), never the payload.
   assigned `runner_node` is unavailable — surface the error. See
   `.context/clustering.md`.
 
+### 8.1 VoiceChannel wire contract (phase 1)
+
+This contract is fixed and is NORMATIVE for the VoiceChannel (slice D), the
+browser hook (slice E) and the `SessionLive.Show` panel (slice F). Any change
+must be agreed across all three before any of them deviates.
+
+#### Transport
+
+- Socket: the existing `OrcaHubWeb.UserSocket` at `/terminal_socket` (no new socket; reuse `window.__terminalSocket` exactly like `assets/js/terminal_hook.js` does).
+- Channel topic: `"voice:" <> session_id` (no client_ref suffix — there must be exactly ONE voice owner per session; a second join for the same session from any tab is REJECTED, see join errors).
+- Internal PubSub, if any is ever needed by the channel, uses the prefix `"voice_state:"` — NEVER `"voice:"` (Phoenix subscribes the channel process to its own topic name; same-name PubSub double-delivers — see `.context/terminals.md`).
+- Audio goes as Phoenix BINARY payloads: client `channel.push("segment", arrayBuffer)`; server `handle_in("segment", {:binary, bin}, socket)`. No base64.
+
+#### Binary segment frame (client -> server, event `"segment"`)
+
+Little-endian header, 20 bytes, then raw 16 kHz mono int16 PCM:
+
+    bytes 0-3   magic  "OVS1"
+    bytes 4-7   seq            u32   monotonically increasing per channel, from 1
+    bytes 8-11  start_sample   u32   absolute 16 kHz sample index of the first PCM sample (from the worklet's absolute index)
+    bytes 12-15 sample_count   u32   number of int16 samples that follow
+    bytes 16-19 flags          u32   bit0 = forced_end (client split the segment because it approached 18 s); bit1 = padded (client extended a sub-0.8 s VAD segment from its ring buffer); other bits 0
+
+The client ships RAW PCM; the SERVER wraps it in a 44-byte WAV header for the multipart upload (decision: one capture path aligned to VAD boundaries, minimal JS, and server-side merge/pad logic needs PCM anyway). The segment the client ships INCLUDES vad-web's preSpeechPad (500 ms) and redemption tail (~600 ms). The client enforces: sample_count <= 18 s * 16000 (force-end + bit0 above), and pads any completed segment shorter than 0.8 s from its ring buffer (bit1) — never synthesizes silence, never discards.
+
+#### Client -> server JSON events
+
+- `"speech_start"` `{}` — VAD onset. Cancels an open arming window IMMEDIATELY (the arming chip must die on speech ONSET, not 600 ms later when the segment completes).
+- `"mic"` `{muted: bool, reason: "tts" | "user"}` — the client's half-duplex state; the server mirrors it in `state.muted` and DROPS any `"segment"` that arrives while muted (defensive).
+- `"send_now"` `{}` — the manual Send button: sends the current draft immediately, no arming window. No-op on an empty draft.
+- `"cancel"` `{}` — clears the draft and any arming window.
+- `"draft_edit"` `{text: string}` — the user edited the draft textarea by hand; server replaces its draft with `text`.
+- `"retry_warmup"` `{}` — re-fire the ASR warm-up ping after an error.
+
+#### Join
+
+- `channel.join()` reply `ok`: `{state: <snapshot>}` (see below). Joining IS arming: the server fires the ASR warm-up ping immediately and `state.status` starts at `"warming"`.
+- reply `error`: `{reason: "not_found" | "voice_owned" | "node_unavailable" | "archived"}`. `voice_owned` = another channel process already holds the voice claim for this session in `OrcaHub.SessionViewersRegistry` (value `%{voice: true}`); `node_unavailable` = the session's `runner_node` is set but not connected — the client shows it, NEVER re-routes.
+
+#### Server -> client events
+
+- `"state"` — the FULL snapshot, pushed after every change. Shape:
+
+      {
+        status: "warming" | "listening" | "transcribing" | "arming" | "sending" | "error",
+        draft: string,                    // the accumulated draft, lines joined by " "
+        muted: bool,                      // mirror of the last "mic" event
+        warm: bool,                       // warm-up ping succeeded at least once
+        pending: int,                     // segments in flight to ASR
+        arming_ms: int | null,            // ms remaining in the SEND arming window (null when not arming); client renders the countdown chip from this
+        error: string | null              // human-readable; non-null forces status "error" until retry_warmup or the next successful call
+      }
+
+  `status` precedence: error > sending > arming > transcribing > warming > listening. `muted` is orthogonal (rendered as the half-duplex indicator, whatever the status).
+- `"segment_result"` — one per segment, for the per-utterance log: `{seq, text, intent: "send"|"cancel"|"stop"|"pause"|null, score: float, elapsed_seconds: float, duration: float, action: "appended"|"dropped_silence"|"dropped_command_only"|"dropped_short"|"dropped_muted"|"send"|"cancel"|"ignored_stop_pause"|"error", detail: string|null}`.
+- `"sent"` — `{text: string}` after `Cluster.send_message(..., :queue)` accepted the draft; server clears the draft and pushes a fresh `"state"` right after.
+
+#### Server-side semantics (slice D)
+
+- Warm-up: on join, `Voice.ASR.warmup/1` with `warmup_timeout_ms` (cold start up to 35 s). Success -> `warm: true`, status `listening`. Failure -> `error` with a readable message ("ASR unreachable at <url>: <reason>").
+- Per segment: verify magic/lengths (bad frame -> `segment_result` action `error`, no crash); if `muted` -> `dropped_muted`; if sample_count > 20 s*16000 -> `error` "segment over 20 s cap" (never dispatch); if sample_count < 0.8 s*16000 -> hold it up to 1500 ms and MERGE (concatenate PCM) with the next segment if one arrives, else dispatch it anyway if flag bit1 (client already padded) or drop it as `dropped_short` if not. Dispatch = `Voice.ASR.transcribe/2` in a `Task` (never block the channel process); results are applied in `seq` order (buffer out-of-order completions — the ASR lane is FIFO but be defensive).
+- On result: `Voice.ASR.silence?/1` (elapsed_seconds < 0.05 or blank text) -> `dropped_silence`. Else `Voice.Intent.intent(text, threshold: cfg.threshold)`:
+    - `nil` -> append text to the draft (`appended`).
+    - `:send` -> `Voice.Intent.strip_command/2`; append the remainder if non-empty (else `dropped_command_only`), then open the ARMING WINDOW (1500 ms). If the draft is empty, do NOT arm (`segment_result` action `send`, detail "empty draft").
+    - `:cancel` -> clear draft + arming (`cancel`).
+    - `:stop` / `:pause` -> strip the command from the segment, append the remainder if any, and take no other action (`ignored_stop_pause`). Phase 3 owns these; in half-duplex the mic is muted during playback so they are unreachable by design.
+- Arming window expiry -> status `sending`; `Cluster.send_message(runner_node, session_id, draft, :queue)` — `:queue`, never `:interrupt`. `:ok`/`{:queued, _}` -> `"sent"`, clear draft. Any error -> `error` with `Cluster.node_unavailable_message/1` when applicable (see `handle_delivery_result/3` in `session_live/show.ex:285` for the exact result shapes).
+- Arming is cancelled by `speech_start`, `cancel`, `draft_edit`, and by any appended non-command segment.
+- Ownership: on join, `Registry.lookup(OrcaHub.SessionViewersRegistry, session_id)` — if any entry's value has `voice: true`, reply `voice_owned`; else `Registry.register(OrcaHub.SessionViewersRegistry, session_id, %{voice: true})` (the registry is `keys: :duplicate`; `SessionLive.Show` registers `%{}` there and its `abandoned_cleanup` only checks for emptiness, so an extra `%{voice: true}` entry is harmless). The registry is per-node; the claim covers the node that terminates the websocket, which is the node that served the page. Note that in the moduledoc.
+- The channel never re-routes: it resolves the session via `HubRPC.get_session/1`, its node via `Cluster.runner_node_for/1`, and if `Cluster.node_available?/1` is false it rejects the join.
+
+#### DOM contract (slice F renders, slice E's hook drives)
+
+`SessionLive.Show` renders, when `@voice_mode` is true:
+
+    <div id="voice-panel" phx-hook="Voice" phx-update="ignore" data-session-id={@session.id}>
+      <div data-voice-banner class="hidden">   <!-- red non-secure-origin banner text, hook unhides -->
+      <span data-voice-status></span>            <!-- hook writes status text -->
+      <span data-voice-mic></span>               <!-- hook writes "mic: listening" / "mic muted (TTS playing)" -->
+      <div data-voice-error class="hidden"></div><!-- hook writes error text, unhides -->
+      <textarea data-voice-draft></textarea>     <!-- hook sets .value from state.draft; on user 'input' (debounced 300 ms) hook pushes draft_edit -->
+      <div data-voice-arming class="hidden"><span data-voice-arming-ms></span></div>  <!-- countdown chip -->
+      <button data-voice-action="send">Send now</button>
+      <button data-voice-action="cancel">Clear</button>
+      <button data-voice-action="start" class="hidden">Start listening</button>  <!-- fallback gesture if AudioContext stays suspended -->
+      <ol data-voice-log></ol>                   <!-- hook appends one <li> per segment_result -->
+    </div>
+
+The LiveView button that toggles `@voice_mode` (`phx-click="toggle_voice"`) is the user gesture (sticky activation) — the hook arms in `mounted()`; if `ctx.state` is still `suspended` after `resume()`, it unhides the `start` button and arms on that click instead. Leaving voice mode = the LiveView un-rendering the panel -> hook `destroyed()` tears everything down (channel leave, tracks stopped, AudioContext closed).
+
+Half-duplex: `TTSMethods` (app.js) dispatches `window.dispatchEvent(new CustomEvent("orca:tts-state", {detail: {playing: bool}}))` whenever `this.playing` changes (ttsStart/ttsPause/ttsResumeOrStart/ttsStop). The Voice hook listens, pauses the VAD + drops frames while playing, and pushes `"mic"` `{muted, reason: "tts"}`. Slice F owns that tiny additive emit in app.js; slice E owns the listener.
+
 ## 9. Known traps
 
 1. **`getUserMedia` requires a SECURE CONTEXT.**
@@ -916,6 +1008,8 @@ STILL OPEN — all three are human-in-the-loop or a small upstream change:
   (section 6).
 
 ## 12. Changelog
+
+**v0.4 -> v0.4.1** — §8.1 added, the VoiceChannel wire contract.
 
 **v0.3 -> v0.4** — SPIKE 2b (wake-word robustness on the GB10 sync lane,
 commit `4675905` in `/home/zach/transcription`, report `spike-asr/WAKEWORD.md`)
