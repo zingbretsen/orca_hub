@@ -783,9 +783,22 @@ tests"), never the payload.
 - FOLLOW-UP, out of scope for voice but do not lose it: replace the global
   `ORCA_API_TOKEN` pushed by `tts-config` with a `tts`-scoped, non-pinned
   `ApiToken`.
-- DEPLOYMENT PRECONDITION: every node that can terminate a voice websocket
-  must be able to reach `192.168.1.77:8000` — k3s pods included, since they
-  sit on the pod network rather than the LAN.
+- DEPLOYMENT PRECONDITION: the ASR call runs inside the `VoiceChannel`
+  process (`Task.start` in `voice_channel.ex`, warm-up ~line 161 and dispatch
+  ~line 217), i.e. on whichever node terminates the browser's websocket — so
+  in prod that is the k3s `orca-hub` pod and nothing else, and IT is what must
+  reach the ASR lane from the pod network. The other nodes are moot:
+  `orca-agent-discord`/`orca-agent-dell`/`mini`/`gb10` run in agent mode and
+  404 every page route via `:agent_mode_gate` (`lib/orca_hub_web/endpoint.ex`
+  lines 14-28), so a browser can never hold a voice websocket to them, and the
+  LAN instances on port 4001 are excluded a second time by `getUserMedia`'s
+  secure-origin requirement (§9 trap 1) — leaving only the pod (via
+  `https://orca.lab.ingbretsenhome.com`) plus a dev server on localhost. The
+  target is a config knob (`asr_provider` row > `ASR_URL` env > the
+  `http://192.168.1.77:8000` default), so an FQDN is fine as long as it
+  resolves from the hub pod; `ai.lab.ingbretsenhome.com` is NOT such an FQDN,
+  since the ai-gateway proxies only TTS (§6).
+  Reachability from the pod: <to be filled by the k3s check>
 - SENDING: `Cluster.send_message(node, session_id, text, :queue)`. Default
   `:queue`, matching the `TriggerExecutor` precedent — "send" must not cancel
   an in-flight turn.
@@ -1017,6 +1030,11 @@ built against it (slices A `f23b5b8`, B `0080399`, C `4a28f2b`, D `ef9f87a` +
 records that, and the architecture + invariants live in `.context/voice-mode.md`.
 Both phase 1 exit criteria (ACOUSTIC_TEST.md Parts A and B) remain un-run.
 
+- §8: the deployment precondition was overstated — narrowed from "every node
+  that can terminate a voice websocket" to the k3s `orca-hub` pod alone (the
+  agent-mode gate and `getUserMedia`'s secure-origin rule rule out every other
+  prod node), and noted that the ASR URL may be any FQDN resolvable from the
+  pod.
 - §8.1: integration found the arming window opens ~1.1 s after speech offset
   (600 ms VAD redemption + ~0.5 s ASR), so a `speech_start` in the gap before
   it opened was ignored and the send still fired. Arming is now skipped

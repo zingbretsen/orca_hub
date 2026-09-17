@@ -138,11 +138,14 @@ gzipped in the release, ~3.6 MB of it ort's wasm — first load only.
 
 ## DEPLOYMENT PRECONDITION (not yet satisfied)
 
-Every node that can terminate a voice websocket must reach
-`http://192.168.1.77:8000` — **including the k3s pods, which sit on the pod
-network, not the LAN**. NOT yet verified or configured for k3s: voice mode on a
-pod-served page will fail its warm-up ping until it is. Local/`mini`/`gb10` are
-on the LAN and fine.
+ASR runs in the `VoiceChannel` process (`Task.start`, `voice_channel.ex`
+~161/~217), so only the websocket-terminating node needs the lane — in prod the
+k3s **`orca-hub` pod** alone (agent-mode nodes 404 every page route via
+`:agent_mode_gate`, `endpoint.ex` 14-28; port-4001 LAN instances fail
+`getUserMedia`'s secure-origin rule). The URL is a config knob (`asr_provider`
+row > `ASR_URL` env > default), so any FQDN resolving from the pod works — not
+`ai.lab.ingbretsenhome.com` though, which proxies TTS only.
+Reachability from the pod: <to be filled by the k3s check>
 
 ## Out of scope / still pending
 
