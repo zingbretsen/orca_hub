@@ -19,6 +19,159 @@
 <div class="mt-2 text-sm text-base-content/60 font-mono flex items-center gap-3">
   <span>{@project.directory}</span>
   <span :if={@current_branch} class="badge badge-outline badge-sm">{@current_branch}</span>
+  <button type="button" phx-click="toggle_move_panel" class="btn btn-xs btn-ghost font-sans">
+    <.icon name="hero-arrow-right-circle-micro" class="size-4" />
+    {if @move_open, do: "Close move", else: "Move / rename directory"}
+  </button>
+</div>
+
+<div :if={@move_open} class="mt-3 card bg-base-100 border border-warning/50 p-4 space-y-4">
+  <div>
+    <h3 class="text-base font-semibold">Move / rename directory</h3>
+    <p class="text-xs text-base-content/70 mt-1">
+      This moves the real directory on
+      <span class="font-mono">{OrcaHub.Cluster.node_name(@project_node)}</span>
+      and rewrites every project, session, terminal and job row underneath it — including any
+      other project nested inside it (git worktrees, for example). It is destructive and hard
+      to reverse. Preview first; the move itself is a separate, explicit confirmation.
+    </p>
+  </div>
+
+  <div :if={@node_unavailable} class="alert alert-warning text-sm">
+    <.icon name="hero-signal-slash" class="size-5" />
+    <span>
+      {@node_unavailable_message} This project's directory can only be moved on its own node,
+      and OrcaHub never re-assigns a project to a different one — the move has to wait for that
+      node to come back.
+    </span>
+  </div>
+
+  <form phx-submit="preview_move" phx-change="move_form_change" class="flex gap-2 items-end">
+    <div class="flex-1">
+      <label class="label mb-1" for="move-destination">
+        <span class="label-text text-xs">New absolute path</span>
+      </label>
+      <input
+        type="text"
+        id="move-destination"
+        name="move[destination]"
+        value={@move_destination}
+        placeholder="/home/you/code/new-name"
+        autocomplete="off"
+        class="w-full input font-mono"
+      />
+    </div>
+    <button type="button" phx-click="browse" class="btn btn-outline">Browse</button>
+    <button
+      type="submit"
+      class="btn btn-primary"
+      disabled={@move_running || @node_unavailable != nil}
+    >
+      Preview
+    </button>
+  </form>
+
+  <div :if={@move_running} class="text-sm text-base-content/70 flex items-center gap-2">
+    <span class="loading loading-spinner loading-xs"></span>
+    Working — a move across filesystems copies the whole tree and can take a while.
+  </div>
+
+  <div :if={@move_error} class="alert alert-error text-sm block">
+    <p :if={elem(@move_error, 0) == :node_unavailable} class="font-semibold mb-1">
+      That project's node is down. The move can only run there — OrcaHub never re-assigns a
+      project to another node, so there is nothing to retry elsewhere.
+    </p>
+    <p class="whitespace-pre-wrap">{elem(@move_error, 1)}</p>
+  </div>
+
+  <div :if={@move_plan} class="border border-base-300 rounded p-3 space-y-3">
+    <div class="text-sm">
+      <div class="font-semibold mb-1">This is what will happen</div>
+      <div class="font-mono text-xs break-all">
+        {@move_plan.from} <span class="opacity-60">&rarr;</span> {@move_plan.to}
+      </div>
+      <div class="text-xs text-base-content/70 mt-1">
+        on {OrcaHub.Cluster.node_name(@move_plan.node)}
+      </div>
+    </div>
+
+    <div class="flex flex-wrap gap-2 text-xs">
+      <span class="badge badge-outline">{length(@move_plan.projects)} project row(s)</span>
+      <span class="badge badge-outline">{@move_plan.sessions} session row(s)</span>
+      <span class="badge badge-outline">{@move_plan.terminals} terminal row(s)</span>
+      <span class="badge badge-outline">{@move_plan.jobs} job row(s)</span>
+    </div>
+
+    <div :if={@move_plan.projects != []} class="text-xs">
+      <div class="font-semibold mb-1">Project rows rewritten</div>
+      <ul class="space-y-1">
+        <li :for={p <- @move_plan.projects} class="font-mono break-all">
+          <span class="font-sans font-medium">{p.name}</span>
+          — {p.from} <span class="opacity-60">&rarr;</span> {p.to}
+        </li>
+      </ul>
+    </div>
+
+    <div :if={@move_plan.blockers != []} class="alert alert-error text-sm block">
+      <div class="font-semibold mb-1">Live work is using this directory</div>
+      <ul class="list-disc list-inside space-y-1">
+        <li :for={blocker <- @move_plan.blockers}>{blocker}</li>
+      </ul>
+      <label class="label cursor-pointer justify-start gap-2 mt-2">
+        <input
+          type="checkbox"
+          class="checkbox checkbox-sm"
+          checked={@move_force}
+          phx-click="toggle_move_force"
+        />
+        <span class="label-text text-xs">
+          Move anyway, interrupting the live work above (force)
+        </span>
+      </label>
+    </div>
+
+    <div :if={@move_plan.warnings != []} class="alert alert-warning text-sm block">
+      <div class="font-semibold mb-1">Warnings</div>
+      <ul class="list-disc list-inside space-y-1">
+        <li :for={warning <- @move_plan.warnings}>{warning}</li>
+      </ul>
+    </div>
+
+    <div class="flex justify-end gap-2">
+      <button type="button" phx-click="cancel_move_preview" class="btn btn-sm">Cancel</button>
+      <button
+        type="button"
+        phx-click="confirm_move"
+        data-confirm={"Move #{@move_plan.from} to #{@move_plan.to}? This moves real files."}
+        class="btn btn-sm btn-error"
+        disabled={@move_running || (@move_plan.blockers != [] && !@move_force)}
+      >
+        Move the directory now
+      </button>
+    </div>
+  </div>
+
+  <div :if={@move_result} class="alert alert-success text-sm block">
+    <div class="font-semibold mb-1">Moved</div>
+    <div class="font-mono text-xs break-all">
+      {@move_result.from} <span class="opacity-60">&rarr;</span> {@move_result.to}
+    </div>
+    <div class="text-xs mt-2">
+      Rewrote {length(@move_result.projects)} project, {@move_result.sessions} session, {@move_result.terminals} terminal and {@move_result.jobs} job row(s).
+    </div>
+    <div :if={@move_result.side_effects != []} class="text-xs mt-2">
+      <div class="font-semibold">Side effects</div>
+      <ul class="list-disc list-inside">
+        <li :for={effect <- @move_result.side_effects}>{effect}</li>
+      </ul>
+    </div>
+    <div :if={@move_result.warnings != []} class="text-xs mt-2">
+      <div class="font-semibold">Warnings</div>
+      <ul class="list-disc list-inside">
+        <li :for={warning <- @move_result.warnings}>{warning}</li>
+      </ul>
+    </div>
+  </div>
 </div>
 
 <div
@@ -34,11 +187,17 @@
       class="space-y-4"
     >
       <.input field={@edit_form[:name]} type="text" label="Name" />
-      <div class="flex gap-2 items-end">
-        <div class="flex-1">
-          <.input field={@edit_form[:directory]} type="text" label="Directory" />
+      <div class="fieldset mb-2">
+        <span class="label mb-1">Directory</span>
+        <div class="font-mono text-sm break-all bg-base-200 rounded px-2 py-1">
+          {@project.directory}
         </div>
-        <button type="button" phx-click="browse" class="btn btn-outline mb-0.5">Browse</button>
+        <p class="text-xs text-base-content/60 mt-1">
+          Not editable here: retyping this path would only rewrite one database column while
+          the files stayed put, leaving every session, terminal and job under the old path
+          pointing at nothing. Use <span class="font-medium">Move / rename directory</span>
+          on the project page, which moves the directory and rewrites those rows together.
+        </p>
       </div>
       <div class="fieldset mb-2">
         <label for={@edit_form[:env_allowlist].id}>

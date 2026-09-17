@@ -3,6 +3,10 @@ defmodule OrcaHubWeb.ProjectLive.EditEnvAllowlistTest do
   The project edit modal's env_allowlist field — see
   OrcaHubWeb.NodeLive.ShowTest's "env_allowlist input" describe block for the
   sibling node-level form.
+
+  The form deliberately has no `directory` input any more (moving a project
+  directory goes through the Move action — see
+  OrcaHubWeb.ProjectLive.MoveDirectoryTest), so these fills only set `name`.
   """
   use OrcaHubWeb.ConnCase, async: true
 
@@ -31,11 +35,11 @@ defmodule OrcaHubWeb.ProjectLive.EditEnvAllowlistTest do
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/edit")
 
     view
-    |> form("form", project: %{name: project.name, directory: project.directory})
+    |> form("form", project: %{name: project.name})
     |> render_change(%{project: %{env_allowlist: "AWS_*, MY_TOKEN"}})
 
     view
-    |> form("form", project: %{name: project.name, directory: project.directory})
+    |> form("form", project: %{name: project.name})
     |> render_submit(%{project: %{env_allowlist: "AWS_*, MY_TOKEN"}})
 
     assert Projects.get_project(project.id).env_allowlist == ["AWS_*", "MY_TOKEN"]
@@ -46,13 +50,13 @@ defmodule OrcaHubWeb.ProjectLive.EditEnvAllowlistTest do
 
     html =
       view
-      |> form("form", project: %{name: project.name, directory: project.directory})
+      |> form("form", project: %{name: project.name})
       |> render_change(%{project: %{env_allowlist: "bad-entry!"}})
 
     assert html =~ "invalid entry"
 
     view
-    |> form("form", project: %{name: project.name, directory: project.directory})
+    |> form("form", project: %{name: project.name})
     |> render_submit(%{project: %{env_allowlist: "bad-entry!"}})
 
     assert Projects.get_project(project.id).env_allowlist == []

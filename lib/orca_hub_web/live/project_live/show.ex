@@ -65,6 +65,13 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        browsing: false,
        browse_path: nil,
        browse_entries: [],
+       move_open: false,
+       move_destination: "",
+       move_plan: nil,
+       move_force: false,
+       move_error: nil,
+       move_result: nil,
+       move_running: false,
        agent_memory: agent_memory,
        claude_expanded: MapSet.new(),
        claude_editing_filename: nil,
@@ -128,7 +135,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   @impl true
   def handle_event("save_project", %{"project" => params}, socket) do
-    case HubRPC.update_project(socket.assigns.project, parse_env_allowlist_param(params)) do
+    case HubRPC.update_project(socket.assigns.project, edit_params(params)) do
       {:ok, project} ->
         {:noreply,
          socket
@@ -143,7 +150,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   def handle_event("validate_project", %{"project" => params}, socket) do
     changeset =
       socket.assigns.project
-      |> Project.changeset(parse_env_allowlist_param(params))
+      |> Project.changeset(edit_params(params))
       |> Map.put(:action, :validate)
 
     {:noreply, assign(socket, edit_form: to_form(changeset))}
@@ -153,9 +160,14 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     {:noreply, assign(socket, show_archived_sessions: !socket.assigns.show_archived_sessions)}
   end
 
+  # The directory browser now serves the Move action's destination picker (the
+  # edit form no longer has an editable directory field). It starts at the
+  # parent of where the project lives today, which is the usual neighbourhood
+  # for a move, rather than this node's home directory — the project may not
+  # even live on this node.
   def handle_event("browse", _params, socket) do
-    home = System.user_home!()
-    {:noreply, browse_to(socket, home)}
+    start = Path.dirname(socket.assigns.project.directory || "/")
+    {:noreply, browse_to(socket, start)}
   end
 
   def handle_event("browse_navigate", %{"path" => path}, socket) do
@@ -167,17 +179,103 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     {:noreply, browse_to(socket, parent)}
   end
 
+  # "Move into this directory": the browser can only navigate directories that
+  # EXIST, but a move's destination must NOT exist yet — so the picked
+  # directory is treated as the new parent and the project's own basename is
+  # appended. The user can still edit the result before previewing.
   def handle_event("browse_select", _params, socket) do
-    project = socket.assigns.project
-    changeset = Project.changeset(project, %{"directory" => socket.assigns.browse_path})
+    destination =
+      Path.join(socket.assigns.browse_path, Path.basename(socket.assigns.project.directory || ""))
 
     {:noreply,
      socket
-     |> assign(browsing: false, edit_form: to_form(changeset))}
+     |> assign(browsing: false, move_open: true)
+     |> put_move_destination(destination)}
   end
 
   def handle_event("browse_close", _params, socket) do
     {:noreply, assign(socket, browsing: false)}
+  end
+
+  # -------------------------------------------------------------------
+  # Move / rename the project directory
+  #
+  # Two steps on purpose: Preview (`Projects.plan_directory_move/2`, mutates
+  # nothing) and then a SEPARATE confirm click (`Projects.move_directory/3`).
+  # There is deliberately no one-click path from a typed path to a real move.
+  # -------------------------------------------------------------------
+
+  def handle_event("toggle_move_panel", _params, socket) do
+    if socket.assigns.move_open do
+      {:noreply, reset_move(socket, move_open: false)}
+    else
+      {:noreply,
+       reset_move(socket, move_open: true, move_destination: socket.assigns.project.directory)}
+    end
+  end
+
+  def handle_event("move_form_change", %{"move" => %{"destination" => destination}}, socket) do
+    {:noreply, put_move_destination(socket, destination)}
+  end
+
+  def handle_event("toggle_move_force", _params, socket) do
+    {:noreply, assign(socket, move_force: !socket.assigns.move_force)}
+  end
+
+  def handle_event("cancel_move_preview", _params, socket) do
+    {:noreply, assign(socket, move_plan: nil, move_force: false, move_error: nil)}
+  end
+
+  def handle_event("preview_move", %{"move" => %{"destination" => destination}}, socket) do
+    project = socket.assigns.project
+
+    {:noreply,
+     socket
+     |> assign(
+       move_destination: destination,
+       move_plan: nil,
+       move_result: nil,
+       move_error: nil,
+       move_force: false,
+       move_running: true
+     )
+     |> start_async(:move_preview, fn -> Projects.plan_directory_move(project, destination) end)}
+  end
+
+  # Confirm only ever moves the destination the PREVIEW was computed for, and
+  # the blocker/force rule is re-checked here rather than trusted to the
+  # disabled attribute on the button. `move_directory/3` enforces it again
+  # server-side; this just keeps the UI from sending a call it knows will be
+  # refused.
+  def handle_event("confirm_move", _params, %{assigns: %{move_plan: nil}} = socket) do
+    {:noreply,
+     assign(socket,
+       move_error:
+         {:no_preview, "Preview the move first — there is nothing confirmed to move yet."}
+     )}
+  end
+
+  def handle_event("confirm_move", _params, socket) do
+    %{project: project, move_plan: plan, move_force: force} = socket.assigns
+
+    if plan.blockers != [] and not force do
+      {:noreply,
+       assign(socket,
+         move_error:
+           {:blocked,
+            "Live work is using this directory. Tick \"Move anyway\" to interrupt it, or stop " <>
+              "it first."}
+       )}
+    else
+      destination = plan.to
+
+      {:noreply,
+       socket
+       |> assign(move_error: nil, move_running: true)
+       |> start_async(:move_run, fn ->
+         Projects.move_directory(project, destination, force: force)
+       end)}
+    end
   end
 
   def handle_event("edit_file", _params, socket) do
@@ -924,6 +1022,84 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   end
 
   @impl true
+  def handle_async(:move_preview, {:ok, {:ok, plan}}, socket) do
+    {:noreply, assign(socket, move_plan: plan, move_running: false)}
+  end
+
+  def handle_async(:move_preview, {:ok, {:error, {reason, message}}}, socket) do
+    {:noreply, assign(socket, move_error: {reason, message}, move_running: false)}
+  end
+
+  def handle_async(:move_preview, {:exit, reason}, socket) do
+    {:noreply, assign(socket, move_error: crash_error(reason), move_running: false)}
+  end
+
+  def handle_async(:move_run, {:ok, {:ok, result}}, socket) do
+    project = HubRPC.get_project!(socket.assigns.project.id)
+
+    {:noreply,
+     assign(socket,
+       project: project,
+       move_result: result,
+       move_plan: nil,
+       move_force: false,
+       move_destination: result.to,
+       move_error: nil,
+       move_running: false
+     )}
+  end
+
+  def handle_async(:move_run, {:ok, {:error, {reason, message}}}, socket) do
+    {:noreply, assign(socket, move_error: {reason, message}, move_running: false)}
+  end
+
+  def handle_async(:move_run, {:exit, reason}, socket) do
+    {:noreply, assign(socket, move_error: crash_error(reason), move_running: false)}
+  end
+
+  # A crash mid-move is the one case where the UI genuinely does not know what
+  # landed on disk, so it says so instead of guessing.
+  defp crash_error(reason) do
+    {:crashed,
+     "The move task stopped unexpectedly (#{inspect(reason)}). Check the directory on the " <>
+       "project's node before trying again — the database may not have been rewritten."}
+  end
+
+  defp put_move_destination(socket, destination) do
+    # Any edit to the destination invalidates the preview: confirming moves
+    # the path that was actually previewed, never a path typed afterwards.
+    if destination == socket.assigns.move_destination do
+      assign(socket, move_destination: destination)
+    else
+      assign(socket,
+        move_destination: destination,
+        move_plan: nil,
+        move_force: false,
+        move_error: nil,
+        move_result: nil
+      )
+    end
+  end
+
+  defp reset_move(socket, extra) do
+    assign(
+      socket,
+      Keyword.merge(
+        [
+          move_open: false,
+          move_destination: "",
+          move_plan: nil,
+          move_force: false,
+          move_error: nil,
+          move_result: nil,
+          move_running: false
+        ],
+        extra
+      )
+    )
+  end
+
+  @impl true
   def handle_info({:file_selected, path}, socket) do
     project = socket.assigns.project
 
@@ -1036,6 +1212,19 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   # newline separated, see OrcaHubWeb.EnvAllowlistInput) — Project's
   # changeset casts `:env_allowlist` as {:array, :string}, so the raw string
   # must become a list before it reaches Project.changeset/2.
+  # `directory` is dropped from the edit form's params SERVER-SIDE, not just
+  # left out of the rendered form: writing that column on its own is silent
+  # corruption — nothing moves on disk, and every sessions/terminals/jobs row
+  # under the old path is left dangling. Relocating a project goes through
+  # the Move action (`OrcaHub.Projects.move_directory/3`), which does
+  # the whole operation. Project CREATION still sets a directory normally;
+  # this only guards the edit path.
+  defp edit_params(params) do
+    params
+    |> Map.drop(["directory", :directory])
+    |> parse_env_allowlist_param()
+  end
+
   defp parse_env_allowlist_param(%{"env_allowlist" => text} = params) when is_binary(text) do
     Map.put(params, "env_allowlist", OrcaHubWeb.EnvAllowlistInput.parse(text))
   end
