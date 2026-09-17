@@ -151,6 +151,22 @@ defmodule OrcaHub.Projects do
     |> Repo.update()
   end
 
+  @doc """
+  Dry run of a project directory move — see `OrcaHub.Projects.DirectoryMove.plan/2`.
+  Mutates nothing.
+  """
+  defdelegate plan_directory_move(project, destination),
+    to: OrcaHub.Projects.DirectoryMove,
+    as: :plan
+
+  @doc """
+  Moves a project's directory on disk and rewrites every `directory` row under
+  it — see `OrcaHub.Projects.DirectoryMove.move/3`. Opts: `force: boolean`.
+  """
+  defdelegate move_directory(project, destination, opts \\ []),
+    to: OrcaHub.Projects.DirectoryMove,
+    as: :move
+
   def delete_project(%Project{} = project) do
     project
     |> Project.changeset(%{deleted_at: DateTime.utc_now() |> DateTime.truncate(:second)})
