@@ -100,6 +100,14 @@ next join, not mid-utterance. `threshold` (0.85) is the matcher knob.
   `intent_test.exs` replays all 344 SPIKE 2b clips and pins intent AND score to
   1.0e-9 against the Python reference; the 6 misses at 0.85 are the
   REFERENCE's. Never "fix" them — parity IS the acceptance test.
+- **The arming window opens LATE, so it is also skipped retroactively**: the
+  command segment only closes 600 ms after speech offset (VAD redemption) and
+  its ASR round trip costs ~0.5 s, so the 1500 ms window really runs ~1.1 s ->
+  ~2.6 s after the user stopped talking. `speech_start` cancels an OPEN window;
+  an onset in the ~0.6-1.1 s gap before it opens makes `Voice.Session` not arm
+  at all (`segment_result` action `send`, detail "arming skipped: speech
+  resumed"). Speech resuming inside the first 600 ms merges into the same
+  segment, so no command is detected at all.
 - **Sending is `:queue`, never `:interrupt`** (`TriggerExecutor` precedent): a
   spoken "send" must not cancel an in-flight turn.
 - **Join-time refusals, never workarounds**: no re-routing when the session's

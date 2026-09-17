@@ -1,11 +1,11 @@
 # Voice Mode — Design Spec (DRAFT, v0.4.1)
 
 Status: DRAFT v0.4.1 — PHASE 1 IMPLEMENTED (commits: A `f23b5b8`, B `0080399`,
-C `4a28f2b`, D `ef9f87a`+`f101886`, E `df935f1`, F `6f0e6d4`+`097806d`); phase 1
-EXIT CRITERIA PENDING — `spikes/voice/ACOUSTIC_TEST.md` Parts A and B have not
-been run.
+C `4a28f2b`, D `ef9f87a`+`f101886`, E `df935f1`, F `6f0e6d4`+`097806d`+`735b396`,
+integration fix `8d67708`); phase 1 EXIT CRITERIA PENDING —
+`spikes/voice/ACOUSTIC_TEST.md` Parts A and B have not been run.
 Author: orchestrator handoff, 2026-09-14.
-Owner: finalize this document before writing production code.
+Owner: phase 1 landed; phase 2+ per §10.
 
 Real-time voice interaction with an OrcaHub session: open mic -> VAD-gated
 transcription on GB10 -> accumulate a draft -> a spoken trigger sends it ->
@@ -863,6 +863,7 @@ The client ships RAW PCM; the SERVER wraps it in a 44-byte WAV header for the mu
     - `:stop` / `:pause` -> strip the command from the segment, append the remainder if any, and take no other action (`ignored_stop_pause`). Phase 3 owns these; in half-duplex the mic is muted during playback so they are unreachable by design.
 - Arming window expiry -> status `sending`; `Cluster.send_message(runner_node, session_id, draft, :queue)` — `:queue`, never `:interrupt`. `:ok`/`{:queued, _}` -> `"sent"`, clear draft. Any error -> `error` with `Cluster.node_unavailable_message/1` when applicable (see `handle_delivery_result/3` in `session_live/show.ex:285` for the exact result shapes).
 - Arming is cancelled by `speech_start`, `cancel`, `draft_edit`, and by any appended non-command segment.
+- Arming is also SKIPPED — never opened — when speech resumed between the command segment's RECEIPT and its transcript landing: the segment only closes 600 ms after speech offset (VAD redemption) and its ASR round trip costs another ~0.5 s, so the window would otherwise open ~1.1 s after the user stopped talking and a `speech_start` in that gap would be forgotten. The stripped remainder is appended as usual and the `segment_result` goes out with action `send`, detail "arming skipped: speech resumed"; state stays `listening`. Only onsets strictly AFTER receipt count — the one that started the command utterance itself arrives before it. (Speech resuming within the first 600 ms merges into the same segment, so no command is detected at all.) Manual `send_now` is unaffected. Measured on the real page during phase 1 integration; fixed in `8d67708`.
 - Ownership: on join, `Registry.lookup(OrcaHub.SessionViewersRegistry, session_id)` — if any entry's value has `voice: true`, reply `voice_owned`; else `Registry.register(OrcaHub.SessionViewersRegistry, session_id, %{voice: true})` (the registry is `keys: :duplicate`; `SessionLive.Show` registers `%{}` there and its `abandoned_cleanup` only checks for emptiness, so an extra `%{voice: true}` entry is harmless). The registry is per-node; the claim covers the node that terminates the websocket, which is the node that served the page. Note that in the moduledoc.
 - The channel never re-routes: it resolves the session via `HubRPC.get_session/1`, its node via `Cluster.runner_node_for/1`, and if `Cluster.node_available?/1` is false it rejects the join.
 
@@ -1012,9 +1013,15 @@ STILL OPEN — all three are human-in-the-loop or a small upstream change:
 
 **v0.4 -> v0.4.1** — §8.1 added, the VoiceChannel wire contract. Phase 1 then
 built against it (slices A `f23b5b8`, B `0080399`, C `4a28f2b`, D `ef9f87a` +
-`f101886`, E `df935f1`, F `6f0e6d4` + `097806d`); the header now records that,
-and the architecture + invariants live in `.context/voice-mode.md`. Both phase 1
-exit criteria (ACOUSTIC_TEST.md Parts A and B) remain un-run.
+`f101886`, E `df935f1`, F `6f0e6d4` + `097806d` + `735b396`); the header now
+records that, and the architecture + invariants live in `.context/voice-mode.md`.
+Both phase 1 exit criteria (ACOUSTIC_TEST.md Parts A and B) remain un-run.
+
+- §8.1: integration found the arming window opens ~1.1 s after speech offset
+  (600 ms VAD redemption + ~0.5 s ASR), so a `speech_start` in the gap before
+  it opened was ignored and the send still fired. Arming is now skipped
+  outright in that case (action `send`, detail "arming skipped: speech
+  resumed") — `8d67708`.
 
 **v0.3 -> v0.4** — SPIKE 2b (wake-word robustness on the GB10 sync lane,
 commit `4675905` in `/home/zach/transcription`, report `spike-asr/WAKEWORD.md`)
