@@ -1,8 +1,9 @@
 # Voice Mode — Design Spec (DRAFT, v0.4.1)
 
-Status: DRAFT, spike phase complete — SPIKEs 1, 2, 2b, 3 folded in. Two
-human-in-the-loop checks remain before phase 1 code: the acoustic AEC test and
-the real-voice wake-word check (`spikes/voice/ACOUSTIC_TEST.md`).
+Status: DRAFT v0.4.1 — PHASE 1 IMPLEMENTED (commits: A `f23b5b8`, B `0080399`,
+C `4a28f2b`, D `ef9f87a`+`f101886`, E `df935f1`, F `6f0e6d4`+`097806d`); phase 1
+EXIT CRITERIA PENDING — `spikes/voice/ACOUSTIC_TEST.md` Parts A and B have not
+been run.
 Author: orchestrator handoff, 2026-09-14.
 Owner: finalize this document before writing production code.
 
@@ -1009,7 +1010,11 @@ STILL OPEN — all three are human-in-the-loop or a small upstream change:
 
 ## 12. Changelog
 
-**v0.4 -> v0.4.1** — §8.1 added, the VoiceChannel wire contract.
+**v0.4 -> v0.4.1** — §8.1 added, the VoiceChannel wire contract. Phase 1 then
+built against it (slices A `f23b5b8`, B `0080399`, C `4a28f2b`, D `ef9f87a` +
+`f101886`, E `df935f1`, F `6f0e6d4` + `097806d`); the header now records that,
+and the architecture + invariants live in `.context/voice-mode.md`. Both phase 1
+exit criteria (ACOUSTIC_TEST.md Parts A and B) remain un-run.
 
 **v0.3 -> v0.4** — SPIKE 2b (wake-word robustness on the GB10 sync lane,
 commit `4675905` in `/home/zach/transcription`, report `spike-asr/WAKEWORD.md`)

@@ -26,6 +26,8 @@ docs it points at stay on disk — `Read` them on demand, never inline them.
   reuse_session, archive_on_complete, per-trigger tool restrictions.
 - `.context/terminals.md` — PTY terminals, PubSub topics, multi-client
   pairing, cluster routing.
+- `.context/voice-mode.md` — voice mode phase 1: capture/VAD/ASR pipeline,
+  the OVS1 wire contract, ASRConfig, the browser traps, asset packaging.
 - Specs at repo root: `backend_abstraction_spec.md`, `issues_spec.md`,
   `pi_fork_spec.md`, `docs/api.md` (Agent Runs API).
 
@@ -72,6 +74,10 @@ docs it points at stay on disk — `Read` them on demand, never inline them.
 - **Git is shared with sibling sessions**: commit by explicit path
   (`git commit -o`), never `add -A`/reset/stash others' work; scope
   `mix format` to touched files; run tests via `bin/test`.
+- **Voice mode is client-VAD'd and refuses rather than works around**: the
+  vad-web settings are non-default and load-bearing, the draft is sent with
+  `:queue` (never `:interrupt`), and the channel refuses a join (one voice
+  owner, node unavailable) instead of re-routing. See `.context/voice-mode.md`.
 - **Six prod instances** (3 k3s deployments via Flux GitOps, `mini`,
   `gb10` arm64, local systemd); deploy only through
   `~/homelab/scripts/deploy-orca-hub.sh`, verify with

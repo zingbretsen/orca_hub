@@ -29,6 +29,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - **SessionLive.Show** (`lib/orca_hub_web/live/session_live/show.ex`): LiveView for viewing/interacting with a session. Handles message sending, image uploads, file uploads, and capability-gated chrome (usage panel, plan mode, AskUserQuestion, MCP toggles, model picker) via `Backend.capabilities_for/1`.
 - **MessageComponents** (`lib/orca_hub_web/components/message_components.ex`): Function components for rendering the message feed (user, assistant, tool use, results, system events). Backend-agnostic — every backend normalizes onto Claude's existing tool names (Bash/Write/Edit/mcp__*/WebSearch/TodoWrite), so no per-backend rendering code exists.
 - **OrcaHub.Claude** (`lib/orca_hub/claude/`): Modules for interacting with Claude CLI — builds CLI args (`Config`), parses streaming NDJSON output (`StreamParser`), and fetches usage metrics (`Usage`).
+- **Voice mode** (phase 1, see `.context/voice-mode.md` for the pipeline, the OVS1 wire contract and the invariants): `OrcaHubWeb.VoiceChannel` (transport + effects), `OrcaHub.Voice.Session` (pure state machine), `OrcaHub.Voice.ASR` (GB10 sync lane) and `OrcaHub.Voice.Intent` (phonetic command matcher), configured by `OrcaHub.ASRConfig`; the browser half is the `Voice` LiveView hook (`assets/js/voice/`).
 
 ## Common issues
 
