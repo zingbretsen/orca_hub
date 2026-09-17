@@ -159,10 +159,20 @@
     <div class="text-xs mt-2">
       Rewrote {length(@move_result.projects)} project, {@move_result.sessions} session, {@move_result.terminals} terminal and {@move_result.jobs} job row(s).
     </div>
-    <div :if={@move_result.side_effects != []} class="text-xs mt-2">
+    <div :if={side_effect_notes(@move_result.side_effects) != []} class="text-xs mt-2">
       <div class="font-semibold">Side effects</div>
       <ul class="list-disc list-inside">
-        <li :for={effect <- @move_result.side_effects}>{effect}</li>
+        <li :for={effect <- side_effect_notes(@move_result.side_effects)}>{effect}</li>
+      </ul>
+    </div>
+
+    <div
+      :if={side_effect_problems(@move_result.side_effects) != []}
+      class="alert alert-warning text-xs block mt-2"
+    >
+      <div class="font-semibold mb-1">Needs attention after the move</div>
+      <ul class="list-disc list-inside space-y-1">
+        <li :for={effect <- side_effect_problems(@move_result.side_effects)}>{effect}</li>
       </ul>
     </div>
     <div :if={@move_result.warnings != []} class="text-xs mt-2">

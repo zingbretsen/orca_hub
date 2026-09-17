@@ -353,4 +353,30 @@ defmodule OrcaHubWeb.ProjectLive.MoveDirectoryTest do
       refute File.exists?(destination)
     end
   end
+
+  describe "post-move side effects" do
+    # `OrcaHub.Projects.MoveSideEffects` cannot fail the move — by the time it
+    # runs the directory has moved and the rows are rewritten — so it reports
+    # problems as notes in the SAME `side_effects` list, prefixed "WARNING: ".
+    # Rendering the list flat would show "Claude's history was NOT migrated"
+    # as an ordinary success bullet. A LiveView test cannot inject a
+    # `move_result` assign, so the classification the template branches on is
+    # asserted directly.
+    test "WARNING: notes are separated from the ordinary ones" do
+      done = "Renamed Claude's history/memory directory /a -> /b."
+      repointed = "Repointed 3 memory-service memories from project slug -a to -b."
+      orphaned = "WARNING: Claude's history/memory directory was NOT migrated — it exists."
+      unfinished = "WARNING: the memory-service migration for /a -> /b did not finish."
+
+      notes = [done, orphaned, repointed, unfinished]
+
+      assert OrcaHubWeb.ProjectLive.Show.side_effect_problems(notes) == [orphaned, unfinished]
+      assert OrcaHubWeb.ProjectLive.Show.side_effect_notes(notes) == [done, repointed]
+    end
+
+    test "no side effects at all is a normal outcome, not a problem" do
+      assert OrcaHubWeb.ProjectLive.Show.side_effect_problems([]) == []
+      assert OrcaHubWeb.ProjectLive.Show.side_effect_notes([]) == []
+    end
+  end
 end

@@ -1057,6 +1057,26 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     {:noreply, assign(socket, move_error: crash_error(reason), move_running: false)}
   end
 
+  @doc """
+  Splits a move result's `:side_effects` notes into the ones that went wrong
+  and the ones that just happened.
+
+  `OrcaHub.Projects.MoveSideEffects` cannot fail the move — by the time it
+  runs, the directory has already moved and the database has already been
+  rewritten — so it reports problems as notes in the SAME list, prefixed
+  `WARNING: `. Rendering that list flat would show "Claude's history was NOT
+  migrated" as an ordinary success bullet, so the two are separated here.
+  Public only so the classification can be tested directly; a LiveView test
+  cannot inject a `move_result` assign.
+  """
+  def side_effect_problems(notes), do: Enum.filter(notes, &problem_note?/1)
+
+  @doc "The counterpart of `side_effect_problems/1`: notes that went fine."
+  def side_effect_notes(notes), do: Enum.reject(notes, &problem_note?/1)
+
+  defp problem_note?("WARNING: " <> _), do: true
+  defp problem_note?(_), do: false
+
   # A crash mid-move is the one case where the UI genuinely does not know what
   # landed on disk, so it says so instead of guessing.
   defp crash_error(reason) do
