@@ -20,6 +20,7 @@
 // Include phoenix_html to handle method=PUT/DELETE in forms and buttons.
 import "phoenix_html"
 import { TerminalHook } from "./terminal_hook"
+import { VoiceHook } from "./voice/voice_hook"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
@@ -583,6 +584,15 @@ const TTSMethods = {
 let Hooks = {
   ...colocatedHooks,
   Terminal: TerminalHook,
+
+  // Voice mode (voice_mode_spec.md §8.1). Mounted on `#voice-panel`, which
+  // SessionLive.Show renders only after the user clicks the Voice button —
+  // that click is the user gesture the autoplay policy needs, so the hook
+  // can arm the mic straight from mounted(). Un-rendering the panel is the
+  // teardown path (destroyed() leaves the channel and closes the audio
+  // graph); everything the panel displays comes over its own channel, not
+  // from LiveView.
+  Voice: VoiceHook,
 
   // Plays the audio the Settings page's "Speak sample" button pushes down as
   // a data URL. The bytes travel over the LiveView socket rather than being
