@@ -47,7 +47,10 @@ defmodule OrcaHub.Voice.Session do
   arming window, `:cancel` clears everything, `:stop`/`:pause` strip and
   append but do nothing else (phase 3 owns them). The arming window is
   cancelled by speech onset, an explicit cancel, a manual draft edit, and by
-  any segment that appends text.
+  any segment that appends text. It is never OPENED at all when speech
+  resumed between the command segment's receipt and its transcript landing
+  (`armable?/2`), which is the ~0.6-1.1 s window the `speech_start` cancel
+  cannot see.
 
   `pending` in the snapshot counts segments that are dispatched-but-unapplied
   PLUS a held one — i.e. everything on its way to ASR that the user has not
@@ -96,16 +99,21 @@ defmodule OrcaHub.Voice.Session do
             warming: true,
             sending: false,
             error: nil,
-            # ordered list of %{seq:, merged_from: [seq]} dispatched to ASR
+            # ordered list of %{seq:, merged_from: [seq], speech_at:}
+            # dispatched to ASR — `speech_at` is `speech_starts` as of the
+            # moment the segment was RECEIVED, see `armable?/2`
             awaiting: [],
             # seq => {:ok, asr_result} | {:error, message} completions not
             # yet applied, because an earlier seq has not come back
             buffered: %{},
-            # %{seq:, pcm:, sample_count:, flags:, until:} — the short
-            # segment waiting for a neighbour to merge with
+            # %{seq:, pcm:, sample_count:, flags:, until:, speech_at:} — the
+            # short segment waiting for a neighbour to merge with
             held: nil,
             # monotonic ms at which the SEND arming window expires
-            arming_until: nil
+            arming_until: nil,
+            # monotonically increasing count of VAD speech onsets, compared
+            # against a segment's `speech_at` when its result lands
+            speech_starts: 0
 
   @doc """
   A fresh voice session.
@@ -148,9 +156,17 @@ defmodule OrcaHub.Voice.Session do
   @doc """
   VAD speech onset. Cancels an open arming window IMMEDIATELY — the chip has
   to die on onset, not ~600 ms later when the segment completes.
+
+  It also bumps `speech_starts`, which is how an onset cancels an arming
+  window that has not OPENED yet: the command segment closes 600 ms
+  (VAD redemption) after speech offset and its ASR round trip takes another
+  ~0.5 s, so an onset landing in that ~0.6-1.1 s gap would otherwise be
+  forgotten by the time the `:send` result arrived and armed. See
+  `armable?/2`.
   """
   @spec speech_start(%__MODULE__{}) :: {%__MODULE__{}, [effect()]}
-  def speech_start(state), do: {%{state | arming_until: nil}, []}
+  def speech_start(state),
+    do: {%{state | arming_until: nil, speech_starts: state.speech_starts + 1}, []}
 
   @doc "Mirrors the client's half-duplex mic state."
   @spec mic(%__MODULE__{}, boolean()) :: {%__MODULE__{}, [effect()]}
@@ -252,12 +268,12 @@ defmodule OrcaHub.Voice.Session do
         hold(state, frame, merged_from, now)
 
       true ->
-        dispatch(state, frame, merged_from)
+        dispatch(state, frame, merged_from, state.speech_starts)
     end
   end
 
-  defp dispatch(state, frame, merged_from) do
-    entry = %{seq: frame.seq, merged_from: merged_from}
+  defp dispatch(state, frame, merged_from, speech_at) do
+    entry = %{seq: frame.seq, merged_from: merged_from, speech_at: speech_at}
     {%{state | awaiting: state.awaiting ++ [entry]}, [{:dispatch, frame.seq, frame.pcm}]}
   end
 
@@ -271,7 +287,8 @@ defmodule OrcaHub.Voice.Session do
       sample_count: frame.sample_count,
       flags: frame.flags,
       pcm: frame.pcm,
-      until: now + @hold_ms
+      until: now + @hold_ms,
+      speech_at: state.speech_starts
     }
 
     {%{state | held: held}, [{:schedule_tick, @hold_ms}]}
@@ -354,13 +371,25 @@ defmodule OrcaHub.Voice.Session do
     remainder = Intent.strip_command(res.text, :send, threshold: state.threshold)
     state = if remainder == "", do: state, else: append(state, remainder)
 
-    if state.draft == "" do
-      base = Keyword.put(base, :detail, join_detail(Keyword.get(base, :detail), "empty draft"))
-      {state, [result_effect(entry.seq, "send", base)]}
-    else
-      action = if remainder == "", do: "dropped_command_only", else: "send"
-      state = %{state | arming_until: now + @arming_ms}
-      {state, [result_effect(entry.seq, action, base), {:schedule_tick, @arming_ms}]}
+    cond do
+      state.draft == "" ->
+        base = Keyword.put(base, :detail, join_detail(Keyword.get(base, :detail), "empty draft"))
+        {state, [result_effect(entry.seq, "send", base)]}
+
+      not armable?(state, entry) ->
+        base =
+          Keyword.put(
+            base,
+            :detail,
+            join_detail(Keyword.get(base, :detail), "arming skipped: speech resumed")
+          )
+
+        {state, [result_effect(entry.seq, "send", base)]}
+
+      true ->
+        action = if remainder == "", do: "dropped_command_only", else: "send"
+        state = %{state | arming_until: now + @arming_ms}
+        {state, [result_effect(entry.seq, action, base), {:schedule_tick, @arming_ms}]}
     end
   end
 
@@ -375,6 +404,16 @@ defmodule OrcaHub.Voice.Session do
     base = Keyword.put(base, :intent_name, to_string(intent))
     {state, [result_effect(entry.seq, "ignored_stop_pause", base)]}
   end
+
+  # Spec 5.1: the arming chip dies on "any further speech". `speech_start/1`
+  # covers an onset once the window is OPEN; this covers the ~0.6-1.1 s blind
+  # spot before it opens — the command segment closes 600 ms after speech
+  # offset (VAD redemption) and its ASR round trip costs another ~0.5 s, so an
+  # onset in between would otherwise arm a send the user had already talked
+  # over. Only onsets STRICTLY AFTER the segment was received count; the one
+  # that started the command utterance itself arrives before receipt and is
+  # already folded into `entry.speech_at`.
+  defp armable?(state, entry), do: state.speech_starts <= entry.speech_at
 
   # Appending is also what cancels an open arming window — the user kept
   # talking, so whatever they said is not a confirmation of the last send.
@@ -419,7 +458,7 @@ defmodule OrcaHub.Voice.Session do
         # The client already padded this one from its ring buffer, so it is
         # the best clip that will ever exist for this utterance — spend the
         # round trip rather than silently dropping speech.
-        dispatch(state, held, held.merged_from)
+        dispatch(state, held, held.merged_from, held.speech_at)
       else
         {state,
          [

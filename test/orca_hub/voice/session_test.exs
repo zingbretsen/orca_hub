@@ -147,6 +147,65 @@ defmodule OrcaHub.Voice.SessionTest do
       assert state.draft == "let's ship it no wait"
     end
 
+    test "speech resuming before the :send result lands skips arming entirely" do
+      # The real timeline: the command segment closes 600 ms after speech
+      # offset, its ASR round trip takes ~0.5 s, and the user starts talking
+      # again in between — before the window would have opened.
+      {state, _} = Session.warm_ok(Session.new())
+      {state, _} = utterance(state, 1, "let's ship it")
+
+      {state, dispatch} = Session.segment_received(state, frame(2, 16_000), @t0)
+      assert [{:dispatch, 2, _pcm}] = dispatch
+
+      {state, []} = Session.speech_start(state)
+
+      {state, effects} = Session.transcript(state, 2, {:ok, asr("hold on orca send")}, @t0 + 500)
+
+      assert [%{seq: 2, action: "send", intent: "send", detail: detail}] = results(effects)
+      assert detail == "arming skipped: speech resumed"
+      refute Enum.any?(effects, &match?({:schedule_tick, _}, &1))
+
+      # The stripped remainder still lands in the draft, and nothing is armed.
+      assert state.draft == "let's ship it hold on"
+      assert state.arming_until == nil
+      assert Session.snapshot(state, @t0 + 500).status == "listening"
+      assert Session.snapshot(state, @t0 + 500).arming_ms == nil
+
+      # No deadline exists, so no amount of ticking sends anything.
+      assert {_state, []} = Session.tick(state, @t0 + 10_000)
+
+      # The resumed speech's own segment appends normally.
+      {state, effects} = utterance(state, 3, "actually not yet", @t0 + 1200)
+      assert actions(effects) == ["appended"]
+      assert state.draft == "let's ship it hold on actually not yet"
+    end
+
+    test "the speech onset that STARTED the command segment does not skip arming" do
+      {state, _} = utterance(Session.new(), 1, "let's ship it")
+
+      # Onset arrives BEFORE the segment it opens is received — the ordinary
+      # case for every utterance, and it must not count as "resumed speech".
+      {state, []} = Session.speech_start(state)
+      {state, dispatch} = Session.segment_received(state, frame(2, 16_000), @t0)
+      assert [{:dispatch, 2, _pcm}] = dispatch
+
+      {state, effects} = Session.transcript(state, 2, {:ok, asr("now orca send")}, @t0 + 500)
+
+      assert [%{action: "send", detail: nil}] = results(effects)
+      assert {:schedule_tick, 1500} in effects
+      assert state.draft == "let's ship it now"
+      assert state.arming_until == @t0 + 500 + 1500
+      assert Session.snapshot(state, @t0 + 500).status == "arming"
+    end
+
+    test "send_now is unaffected by speech resuming mid-flight" do
+      {state, _} = utterance(Session.new(), 1, "ship it")
+      {state, []} = Session.speech_start(state)
+      {_state, effects} = Session.send_now(state)
+
+      assert effects == [{:send, "ship it"}]
+    end
+
     test "send_now sends immediately with no arming window, and is a no-op when empty" do
       assert {%Session{} = empty, []} = Session.send_now(Session.new())
       assert empty.draft == ""
