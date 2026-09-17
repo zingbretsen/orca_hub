@@ -798,7 +798,25 @@ tests"), never the payload.
   `http://192.168.1.77:8000` default), so an FQDN is fine as long as it
   resolves from the hub pod; `ai.lab.ingbretsenhome.com` is NOT such an FQDN,
   since the ai-gateway proxies only TTS (§6).
-  Reachability from the pod: <to be filled by the k3s check>
+  Reachability from the pod: VERIFIED 2026-09-17 (read-only check from inside
+  `orca-hub-687d7b8b49-qbbw5`). `curl http://192.168.1.77:8000/healthz` returns
+  200 in ~5 ms with `lanes.sync.state: ready` and `cuda.available: true`; no
+  NetworkPolicy in `lab` selects `orca-hub`, so its egress is unrestricted.
+  Two names already exist in `~/homelab/k3s/apps/gb10.yaml` and both work as an
+  `ASR_URL`/`asr_provider` url: in-cluster
+  `http://whisperx-external.lab.svc.cluster.local:8000` (Service + Endpoints ->
+  192.168.1.77:8000) and LAN-wide `https://transcription.lab.ingbretsenhome.com`
+  (Traefik Ingress, deliberately without Authelia, so a localhost dev server can
+  use it too); the IP default works as well. The agent pods
+  (`orca-agent-dell`/`orca-agent-discord`) carry egress NetworkPolicies that do
+  NOT allow 192.168.1.77 — moot for voice, since agent nodes never terminate a
+  browser websocket, but relevant if anything else ever calls the lane from one.
+  Note `/healthz` returns 200 even when `gpu_ready` is false; voice warm-up is a
+  real transcription POST rather than a healthz probe, so it is unaffected.
+  TRAP: `gb10.lab.ingbretsenhome.com` (and
+  `promaxgb10-654f.lab.ingbretsenhome.com`) resolve to 192.168.1.177, the debian
+  Traefik wildcard — NOT the GB10; port 8000 there is connection-refused. Do not
+  use them.
 - SENDING: `Cluster.send_message(node, session_id, text, :queue)`. Default
   `:queue`, matching the `TriggerExecutor` precedent — "send" must not cancel
   an in-flight turn.
@@ -1035,6 +1053,13 @@ Both phase 1 exit criteria (ACOUSTIC_TEST.md Parts A and B) remain un-run.
   agent-mode gate and `getUserMedia`'s secure-origin rule rule out every other
   prod node), and noted that the ASR URL may be any FQDN resolvable from the
   pod.
+- §8: reachability from the `orca-hub` pod VERIFIED 2026-09-17 —
+  `http://192.168.1.77:8000/healthz` 200 in ~5 ms with the sync lane ready and
+  CUDA up, no NetworkPolicy restricting the pod's egress; the in-cluster
+  `whisperx-external` Service and the Authelia-free
+  `transcription.lab.ingbretsenhome.com` Ingress are equally valid targets, and
+  `gb10.lab.ingbretsenhome.com` is recorded as a trap (it resolves to the debian
+  Traefik wildcard, not the GB10).
 - §8.1: integration found the arming window opens ~1.1 s after speech offset
   (600 ms VAD redemption + ~0.5 s ASR), so a `speech_start` in the gap before
   it opened was ignored and the send still fired. Arming is now skipped

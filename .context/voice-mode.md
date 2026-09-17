@@ -136,7 +136,7 @@ immutable caching is bought back with a version-stamped `?vsn=` query
 gzips them and `Plug.Static` serves the `.gz`. Cost: ~16 MB raw / ~5.5 MB
 gzipped in the release, ~3.6 MB of it ort's wasm — first load only.
 
-## DEPLOYMENT PRECONDITION (not yet satisfied)
+## DEPLOYMENT PRECONDITION (reachability verified 2026-09-17)
 
 ASR runs in the `VoiceChannel` process (`Task.start`, `voice_channel.ex`
 ~161/~217), so only the websocket-terminating node needs the lane — in prod the
@@ -145,7 +145,13 @@ k3s **`orca-hub` pod** alone (agent-mode nodes 404 every page route via
 `getUserMedia`'s secure-origin rule). The URL is a config knob (`asr_provider`
 row > `ASR_URL` env > default), so any FQDN resolving from the pod works — not
 `ai.lab.ingbretsenhome.com` though, which proxies TTS only.
-Reachability from the pod: <to be filled by the k3s check>
+Reachability VERIFIED 2026-09-17 from inside the pod: `curl
+http://192.168.1.77:8000/healthz` -> 200 in ~5 ms, sync lane ready, CUDA up; no
+NetworkPolicy in `lab` selects `orca-hub`. `~/homelab/k3s/apps/gb10.yaml` also
+gives `http://whisperx-external.lab.svc.cluster.local:8000` and
+`https://transcription.lab.ingbretsenhome.com` (no Authelia, so localhost dev
+works too) — all three are valid. TRAP: `gb10.lab.ingbretsenhome.com` resolves
+to the debian Traefik wildcard 192.168.1.177, not the GB10 — port 8000 refused.
 
 ## Out of scope / still pending
 
