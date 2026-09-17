@@ -464,4 +464,158 @@ defmodule OrcaHubWeb.PiConfigLive.IndexTest do
       assert entry.spec["baseUrl"] == "http://localhost:11434"
     end
   end
+
+  # ── model-managed providers (OrcaHub.PiModelSync) ────────────────────
+
+  describe "model-managed providers" do
+    setup do
+      {:ok, entry} =
+        PiConfig.create_entry(%{
+          kind: "provider",
+          name: "managed-gw",
+          spec: %{
+            "baseUrl" => "http://gw.test/v1",
+            "api" => "openai-completions",
+            "apiKey" => "none",
+            "models" => [
+              %{"id" => "m1", "contextWindow" => 262_144},
+              %{"id" => "m2"}
+            ]
+          },
+          models_from: %{"url" => "http://gw.test/v1/models"},
+          models_refreshed_at: ~N[2026-09-17 12:00:00],
+          models_refresh_error: nil
+        })
+
+      %{entry: entry}
+    end
+
+    test "the index badges the source url, the refresh time, and the resolved ids", %{
+      conn: conn,
+      entry: entry
+    } do
+      {:ok, _view, html} = live(conn, ~p"/settings/pi-config")
+
+      assert html =~ "models from http://gw.test/v1/models"
+      assert html =~ "Models last refreshed 2026-09-17 12:00 UTC"
+      assert html =~ "m1, m2"
+      assert html =~ ~s(phx-value-id="#{entry.id}")
+      assert html =~ "refresh_models"
+    end
+
+    test "a recorded refresh error is surfaced, not silent", %{conn: conn, entry: entry} do
+      # The never-write-an-empty-list rule means a gateway that's been
+      # unreachable for a week looks identical on disk to one that's fine.
+      # This badge is the only place that difference shows up.
+      {:ok, _} =
+        PiConfig.record_models_refresh(entry, %{models_refresh_error: "gw.test: HTTP 502"})
+
+      {:ok, _view, html} = live(conn, ~p"/settings/pi-config")
+
+      assert html =~ "refresh failing"
+      assert html =~ "gw.test: HTTP 502"
+      assert html =~ "stored list left untouched"
+    end
+
+    test "the editor strips the machine-owned models array out of the spec textarea", %{
+      conn: conn,
+      entry: entry
+    } do
+      {:ok, view, html} = live(conn, ~p"/settings/pi-config/#{entry.id}/edit")
+
+      # The spec textarea carries everything EXCEPT models — a human saving
+      # their copy of that array back over it would revert discovery.
+      spec_textarea = view |> element("#spec-text-area") |> render()
+      assert spec_textarea =~ "http://gw.test/v1"
+      refute spec_textarea =~ "models"
+      refute spec_textarea =~ "262144"
+
+      # ...and the resolved list is shown read-only instead.
+      assert html =~ "Resolved models (read-only"
+      assert html =~ "models-from-text-area"
+    end
+
+    test "saving an unrelated field re-merges the stored models instead of wiping them", %{
+      conn: conn,
+      entry: entry
+    } do
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config/#{entry.id}/edit")
+
+      view
+      |> form("#pi-config-entry-form")
+      |> render_submit(%{
+        "pi_config_entry" => %{
+          "kind" => "provider",
+          "name" => "managed-gw",
+          # Exactly what the stripped textarea round-trips: no models key.
+          "spec" =>
+            ~s({"baseUrl":"http://gw.test/v2","api":"openai-completions","apiKey":"none"}),
+          "models_from" => ~s({"url":"http://gw.test/v1/models"})
+        }
+      })
+
+      reloaded = PiConfig.get_entry!(entry.id)
+      assert reloaded.spec["baseUrl"] == "http://gw.test/v2"
+      # The discovered list survived the human edit.
+      assert Enum.map(reloaded.spec["models"], & &1["id"]) == ["m1", "m2"]
+      assert Enum.find(reloaded.spec["models"], &(&1["id"] == "m1"))["contextWindow"] == 262_144
+    end
+
+    test "clearing models_from hands the row back to hand-authoring with its models intact", %{
+      conn: conn,
+      entry: entry
+    } do
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config/#{entry.id}/edit")
+
+      view
+      |> form("#pi-config-entry-form")
+      |> render_submit(%{
+        "pi_config_entry" => %{
+          "kind" => "provider",
+          "name" => "managed-gw",
+          "spec" =>
+            ~s({"baseUrl":"http://gw.test/v1","api":"openai-completions","apiKey":"none"}),
+          "models_from" => ""
+        }
+      })
+
+      reloaded = PiConfig.get_entry!(entry.id)
+      assert is_nil(reloaded.models_from)
+      assert Enum.map(reloaded.spec["models"], & &1["id"]) == ["m1", "m2"]
+    end
+
+    test "invalid models_from JSON is reported and blocks the save", %{conn: conn, entry: entry} do
+      {:ok, view, _html} = live(conn, ~p"/settings/pi-config/#{entry.id}/edit")
+
+      html =
+        view
+        |> form("#pi-config-entry-form")
+        |> render_submit(%{
+          "pi_config_entry" => %{
+            "kind" => "provider",
+            "name" => "managed-gw",
+            "spec" =>
+              ~s({"baseUrl":"http://gw.test/v9","api":"openai-completions","apiKey":"none"}),
+            "models_from" => "{not json"
+          }
+        })
+
+      assert html =~ "is not valid JSON"
+      assert PiConfig.get_entry!(entry.id).spec["baseUrl"] == "http://gw.test/v1"
+    end
+
+    test "an unmanaged provider gets no badge and no refresh button", %{conn: conn} do
+      {:ok, _} =
+        PiConfig.create_entry(%{
+          kind: "provider",
+          name: "handrolled-gw",
+          spec: %{"baseUrl" => "http://hand.test/v1", "models" => [%{"id" => "h1"}]}
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/settings/pi-config")
+
+      assert html =~ "handrolled-gw"
+      refute html =~ "models from http://hand.test"
+    end
+  end
 end

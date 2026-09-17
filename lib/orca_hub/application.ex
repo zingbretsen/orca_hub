@@ -78,6 +78,13 @@ defmodule OrcaHub.Application do
       # shared embedding box. Overflow is dropped and reconciled by the sweep
       # above — see OrcaHub.Issues.Indexer.reindex_async/1.
       OrcaHub.Issues.Indexer.task_supervisor_spec(),
+      # Hourly resolution of opted-in pi providers' model lists from the
+      # local LLM gateway's /v1/models. Hub-only for ChurnSampler's reason
+      # plus two of its own: only the hub owns the DB, and agent pods can't
+      # reach the gateway at all. The resulting PiConfig write fans out to
+      # every node through the existing {:pi_config_updated} broadcast.
+      # See OrcaHub.PiModelSync moduledoc.
+      OrcaHub.PiModelSync,
       # Warm-process admission control — must start before SessionSupervisor so
       # streaming runners can request_slot at port-open.
       OrcaHub.Streaming.WarmPool,

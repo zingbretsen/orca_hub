@@ -634,6 +634,15 @@ defmodule OrcaHub.HubRPC do
 
   def delete_pi_config_entry(entry), do: call(OrcaHub.PiConfig, :delete_entry, [entry])
 
+  # Manual "Refresh now" from the pi config UI. Routed to the hub like every
+  # other call here — the gateway is only reachable from the hub, and only
+  # the hub may write the resulting spec (see OrcaHub.PiModelSync).
+  # The timeout has to clear PiModelSync's own HTTP budget (15s default, and
+  # a row may configure more) plus the DB write, or a slow gateway surfaces
+  # as an erpc timeout on agent nodes while the hub is still mid-fetch.
+  def refresh_pi_config_entry_models(entry),
+    do: call(OrcaHub.PiModelSync, :refresh_entry, [entry], timeout: 60_000)
+
   # -------------------------------------------------------------------
   # Issues — full issues_spec.md tool-surface API (Phase 2a). The minimal
   # wrappers above (create_issue/get_issue/list_issues/0/list_issues_for_project/

@@ -77,6 +77,51 @@
         or <code class="font-mono">!command</code>
         references.
       </p>
+
+      <div :if={@current_kind == "provider"} class="mt-4">
+        <label class="label">
+          <span class="label-text">Resolve models from (optional)</span>
+        </label>
+        <textarea
+          id="models-from-text-area"
+          phx-change="validate"
+          class="textarea textarea-bordered w-full h-24 font-mono text-sm"
+          placeholder={
+            ~s({"url": "http://ai.lab.ingbretsenhome.com/v1/models", "exclude_id_patterns": ["^tts-"]})
+          }
+          name="pi_config_entry[models_from]"
+        >{@models_from_text || ""}</textarea>
+        <p :if={@models_from_error} class="text-error text-xs mt-1">
+          Resolve models from {@models_from_error}
+        </p>
+        <p :for={msg <- @entry_form[:models_from].errors} class="text-error text-xs mt-1">
+          {OrcaHubWeb.CoreComponents.translate_error(msg)}
+        </p>
+        <p class="text-xs text-base-content/50 mt-1">
+          Leave empty to hand-author the <span class="font-mono">models</span>
+          array in the spec above (the default, and what every existing provider does).
+          With a <span class="font-mono">url</span>, the model list is resolved hourly from that
+          endpoint's <span class="font-mono">/v1/models</span>
+          — the spec's <span class="font-mono">models</span>
+          array is then machine-owned and hidden from the editor above.
+          Optional keys: <span class="font-mono">defaults</span>
+          (per-model fallbacks for newly discovered ids), <span class="font-mono">include_ids</span>, <span class="font-mono">exclude_ids</span>, <span class="font-mono">exclude_id_patterns</span>, <span class="font-mono">timeout_ms</span>.
+        </p>
+
+        <div :if={model_managed?(@editing_entry)} class="mt-3 rounded bg-base-300/50 p-3">
+          <div class="text-xs font-semibold mb-1">
+            Resolved models (read-only — managed by PiModelSync)
+          </div>
+          <div class="text-xs font-mono break-all">
+            {Enum.join(model_ids(@editing_entry), ", ")}
+          </div>
+          <div :if={model_ids(@editing_entry) == []} class="text-xs text-warning mt-1">
+            <.icon name="hero-exclamation-triangle" class="inline size-4 align-middle" />
+            No models resolved yet — a provider with an empty models list is a hard failure in pi.
+            Saving will attempt an immediate refresh.
+          </div>
+        </div>
+      </div>
     </div>
 
     <div :if={
@@ -148,6 +193,38 @@
             ]}>
               {if entry.enabled, do: "enabled", else: "disabled"}
             </span>
+            <span
+              :if={model_managed?(entry)}
+              class="badge badge-xs badge-info"
+              title={"models resolved from #{models_source_url(entry)}"}
+            >
+              models from {models_source_url(entry)}
+            </span>
+            <span
+              :if={model_managed?(entry) && entry.models_refresh_error}
+              class="badge badge-xs badge-error"
+              title={entry.models_refresh_error}
+            >
+              refresh failing
+            </span>
+          </div>
+          <div :if={model_managed?(entry)} class="text-base-content/60 text-xs mt-0.5">
+            <span :if={entry.models_refreshed_at}>
+              Models last refreshed {Calendar.strftime(
+                entry.models_refreshed_at,
+                "%Y-%m-%d %H:%M UTC"
+              )}
+            </span>
+            <span :if={is_nil(entry.models_refreshed_at)} class="text-warning">
+              Models never successfully refreshed
+            </span>
+            <span class="font-mono">— {Enum.join(model_ids(entry), ", ")}</span>
+          </div>
+          <div
+            :if={model_managed?(entry) && entry.models_refresh_error}
+            class="text-error text-xs mt-0.5"
+          >
+            Last refresh failed: {entry.models_refresh_error} (stored list left untouched)
           </div>
           <div class="text-base-content/60 text-xs mt-0.5">
             <span :if={kind in ["provider", "setting"]}>
@@ -168,6 +245,15 @@
           </div>
         </div>
         <div class="flex items-center gap-1">
+          <button
+            :if={model_managed?(entry)}
+            phx-click="refresh_models"
+            phx-value-id={entry.id}
+            class="btn btn-xs btn-ghost"
+            title="Re-resolve this provider's model list from its endpoint now"
+          >
+            <.icon name="hero-arrow-path-micro" class="size-4" />
+          </button>
           <button
             phx-click="toggle"
             phx-value-id={entry.id}

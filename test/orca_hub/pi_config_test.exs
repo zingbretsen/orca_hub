@@ -216,4 +216,166 @@ defmodule OrcaHub.PiConfigTest do
       assert PiConfig.get_entry_by_kind_and_name("prompt", entry.name) == nil
     end
   end
+
+  # ── models_from: opt-in dynamic model resolution (OrcaHub.PiModelSync) ──
+
+  describe "models_from" do
+    test "defaults to nil — an existing provider keeps its hand-authored models" do
+      assert {:ok, entry} = PiConfig.create_entry(provider_attrs())
+
+      assert is_nil(entry.models_from)
+      assert is_nil(entry.models_refreshed_at)
+      assert is_nil(entry.models_refresh_error)
+    end
+
+    test "casts and deep-stringifies an atom-keyed config" do
+      assert {:ok, entry} =
+               PiConfig.create_entry(
+                 provider_attrs(%{
+                   models_from: %{
+                     url: "http://ai.test/v1/models",
+                     defaults: %{contextWindow: 8192}
+                   }
+                 })
+               )
+
+      assert entry.models_from == %{
+               "url" => "http://ai.test/v1/models",
+               "defaults" => %{"contextWindow" => 8192}
+             }
+    end
+
+    test "requires an http(s) url" do
+      assert {:error, changeset} =
+               PiConfig.create_entry(provider_attrs(%{models_from: %{"defaults" => %{}}}))
+
+      assert %{models_from: [message]} = errors_on(changeset)
+      assert message =~ "url"
+
+      assert {:error, _} =
+               PiConfig.create_entry(provider_attrs(%{models_from: %{"url" => "not-a-url"}}))
+
+      assert {:error, _} =
+               PiConfig.create_entry(
+                 provider_attrs(%{models_from: %{"url" => "ftp://ai.test/v1"}})
+               )
+    end
+
+    test "is rejected on any kind other than provider" do
+      assert {:error, changeset} =
+               PiConfig.create_entry(%{
+                 kind: "setting",
+                 name: "defaultModel",
+                 spec: %{"value" => "x"},
+                 models_from: %{"url" => "http://ai.test/v1/models"}
+               })
+
+      assert %{models_from: [message]} = errors_on(changeset)
+      assert message =~ "provider"
+    end
+
+    test "rejects malformed filter lists and an uncompilable exclude pattern" do
+      assert {:error, _} =
+               PiConfig.create_entry(
+                 provider_attrs(%{
+                   models_from: %{"url" => "http://ai.test/v1/models", "exclude_ids" => "tts"}
+                 })
+               )
+
+      assert {:error, _} =
+               PiConfig.create_entry(
+                 provider_attrs(%{
+                   models_from: %{"url" => "http://ai.test/v1/models", "defaults" => "nope"}
+                 })
+               )
+
+      assert {:error, changeset} =
+               PiConfig.create_entry(
+                 provider_attrs(%{
+                   models_from: %{
+                     "url" => "http://ai.test/v1/models",
+                     "exclude_id_patterns" => ["^tts-["]
+                   }
+                 })
+               )
+
+      assert %{models_from: [message]} = errors_on(changeset)
+      assert message =~ "invalid regex"
+    end
+
+    test "clearing models_from hands the row back to hand-authoring" do
+      {:ok, entry} =
+        PiConfig.create_entry(
+          provider_attrs(%{models_from: %{"url" => "http://ai.test/v1/models"}})
+        )
+
+      assert {:ok, updated} = PiConfig.update_entry(entry, %{models_from: nil})
+      assert is_nil(updated.models_from)
+    end
+  end
+
+  describe "list_model_managed_entries/0" do
+    test "returns only provider rows with a models_from, enabled or not" do
+      {:ok, managed} =
+        PiConfig.create_entry(
+          provider_attrs(%{models_from: %{"url" => "http://ai.test/v1/models"}})
+        )
+
+      {:ok, disabled} =
+        PiConfig.create_entry(
+          provider_attrs(%{
+            models_from: %{"url" => "http://ai.test/v1/models"},
+            enabled: false
+          })
+        )
+
+      {:ok, unmanaged} = PiConfig.create_entry(provider_attrs())
+
+      names = PiConfig.list_model_managed_entries() |> Enum.map(& &1.name)
+      assert managed.name in names
+      # Disabled rows are included on purpose: re-enabling one must not hand
+      # pi a months-stale list.
+      assert disabled.name in names
+      refute unmanaged.name in names
+    end
+  end
+
+  describe "record_models_refresh/2" do
+    test "stamps bookkeeping WITHOUT broadcasting {:pi_config_updated}" do
+      {:ok, entry} =
+        PiConfig.create_entry(
+          provider_attrs(%{models_from: %{"url" => "http://ai.test/v1/models"}})
+        )
+
+      assert_receive {:pi_config_updated}
+
+      now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+
+      assert {:ok, updated} =
+               PiConfig.record_models_refresh(entry, %{
+                 models_refreshed_at: now,
+                 models_refresh_error: nil
+               })
+
+      assert updated.models_refreshed_at == now
+      # THE point of this function: a no-op refresh must not fan a sync out
+      # to every node, because a models.json write evicts warm pi ports
+      # cluster-wide.
+      refute_receive {:pi_config_updated}
+    end
+
+    test "never touches spec, even if asked to" do
+      {:ok, entry} = PiConfig.create_entry(provider_attrs())
+      original = entry.spec
+
+      assert {:ok, updated} =
+               PiConfig.record_models_refresh(entry, %{
+                 spec: %{"baseUrl" => "http://evil/v1"},
+                 models_refresh_error: "boom"
+               })
+
+      assert updated.spec == original
+      assert updated.models_refresh_error == "boom"
+    end
+  end
 end

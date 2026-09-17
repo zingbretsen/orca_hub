@@ -66,6 +66,13 @@ config :orca_hub, :skill_sync_enabled, false
 # OrcaHub.PiConfigSync.sync/1 directly with an injected :home_dir.
 config :orca_hub, :pi_config_sync_enabled, false
 
+# OrcaHub.PiModelSync's boot/periodic tick makes a live HTTP call to the
+# local LLM gateway and then WRITES the resolved model list back to real
+# pi_config_entries rows in the shared dev DB. mix test boots the full
+# application, so the loop must stay off here. Tests call
+# OrcaHub.PiModelSync.refresh_entry/2 with an injected :fetcher instead.
+config :orca_hub, :pi_model_sync_enabled, false
+
 # OrcaHub.MemoryGit.Server's idle-transition hook (invoked from
 # SessionRunner, which mix test's SessionRunner/state-machine tests drive
 # for real) writes real files under a node's home dir (~/.claude, ~/.codex)

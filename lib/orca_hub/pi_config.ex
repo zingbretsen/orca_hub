@@ -77,6 +77,48 @@ defmodule OrcaHub.PiConfig do
 
   def change_entry(%Entry{} = entry, attrs \\ %{}), do: Entry.changeset(entry, attrs)
 
+  @doc """
+  Every `provider` entry that has opted into dynamic model resolution —
+  `OrcaHub.PiModelSync`'s work list. Disabled rows are included on purpose:
+  a disabled provider isn't materialized onto any node, so refreshing it is
+  harmless, and it means re-enabling one doesn't hand pi a months-stale list.
+  """
+  def list_model_managed_entries do
+    Repo.all(
+      from e in Entry,
+        where: e.kind == "provider" and not is_nil(e.models_from),
+        order_by: [asc: e.name]
+    )
+  end
+
+  @doc """
+  Records the outcome of a model-resolution pass WITHOUT broadcasting
+  `{:pi_config_updated}`.
+
+  Deliberately broadcast-free: a refresh that resolved to the same model set
+  (the overwhelmingly common case — the gateway's list changes via a git
+  edit of its `UPSTREAMS` env, not at runtime) must not fan a sync out to
+  every node, because an actual `models.json` write evicts every idle warm
+  pi port cluster-wide (`PiConfigSync.sync/1`). Only `spec` changes go
+  through `update_entry/2`.
+
+  Accepts only the three bookkeeping columns; `spec` is never touched here.
+  """
+  def record_models_refresh(%Entry{} = entry, attrs) do
+    attrs = Map.take(normalize_keys(attrs), [:models_refreshed_at, :models_refresh_error])
+
+    entry
+    |> Ecto.Changeset.change(attrs)
+    |> Repo.update()
+  end
+
+  defp normalize_keys(attrs) do
+    Map.new(attrs, fn
+      {k, v} when is_binary(k) -> {String.to_existing_atom(k), v}
+      {k, v} -> {k, v}
+    end)
+  end
+
   defp notify_change do
     Phoenix.PubSub.broadcast(OrcaHub.PubSub, @topic, {:pi_config_updated})
   end

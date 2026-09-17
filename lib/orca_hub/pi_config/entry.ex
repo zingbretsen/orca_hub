@@ -19,6 +19,29 @@ defmodule OrcaHub.PiConfig.Entry do
   `spec` is deep-stringified on cast, so a struct built from atom-keyed
   attrs reads the same as one loaded back from jsonb — `PiConfigSync` can
   rely on string keys everywhere without re-normalizing.
+
+  ## `models_from` — dynamic model-list resolution (providers only)
+
+  A `provider` row may opt into having its `spec["models"]` list resolved
+  from a live OpenAI-compatible `/v1/models` endpoint instead of being
+  hand-authored — see `OrcaHub.PiModelSync`. `models_from` is nil by
+  default, and a nil means "not managed": the row keeps today's fully
+  hand-authored behaviour and nothing ever rewrites it.
+
+  It's a COLUMN rather than a `spec` key on purpose — `spec` is written
+  verbatim into `models.json`, where a marker would be dead weight pi never
+  reads. Accepted shape:
+
+      %{"url" => "http://ai.lab.ingbretsenhome.com/v1/models",   # required
+        "defaults" => %{"contextWindow" => 131072, ...},          # per-model fallbacks for NEW ids
+        "include_ids" => ["a", "b"],                              # allow-list, if present
+        "exclude_ids" => ["tts-chatterbox-23lang"],               # deny-list
+        "exclude_id_patterns" => ["^tts-"],                       # deny-list, regexes
+        "timeout_ms" => 10_000}
+
+  `models_refreshed_at` is the last SUCCESSFUL resolution and
+  `models_refresh_error` the last failure (cleared on the next success);
+  both are written by `PiModelSync`, not by a human editing the form.
   """
 
   use Ecto.Schema
@@ -38,6 +61,12 @@ defmodule OrcaHub.PiConfig.Entry do
     field :spec, :map, default: %{}
     field :enabled, :boolean, default: true
 
+    # Dynamic model-list resolution (providers only) — see the moduledoc
+    # and OrcaHub.PiModelSync. Naive UTC, matching this table's timestamps().
+    field :models_from, :map
+    field :models_refreshed_at, :naive_datetime
+    field :models_refresh_error, :string
+
     timestamps()
   end
 
@@ -52,8 +81,17 @@ defmodule OrcaHub.PiConfig.Entry do
 
   def changeset(entry, attrs) do
     entry
-    |> cast(attrs, [:kind, :name, :spec, :enabled])
+    |> cast(attrs, [
+      :kind,
+      :name,
+      :spec,
+      :enabled,
+      :models_from,
+      :models_refreshed_at,
+      :models_refresh_error
+    ])
     |> update_change(:spec, &stringify/1)
+    |> update_change(:models_from, &stringify/1)
     |> validate_required([:kind, :name])
     |> validate_inclusion(:kind, @kinds)
     # No leading dot (pi's dot-prefixed files are off-limits), no path
@@ -63,6 +101,7 @@ defmodule OrcaHub.PiConfig.Entry do
         "must start with a letter or digit and contain only letters, digits, dots, hyphens, underscores"
     )
     |> validate_spec()
+    |> validate_models_from()
     # Error reported on :name (not the composite's first field, :kind) — the
     # name is what a caller can actually change to resolve the collision.
     |> unique_constraint(:name,
@@ -95,6 +134,77 @@ defmodule OrcaHub.PiConfig.Entry do
       true ->
         changeset
     end
+  end
+
+  # `models_from` is opt-in and providers-only. Validated eagerly here
+  # rather than in PiModelSync so a typo'd URL is a form error at save time
+  # instead of an hourly log line nobody reads.
+  defp validate_models_from(changeset) do
+    case get_field(changeset, :models_from) do
+      nil ->
+        changeset
+
+      config when is_map(config) ->
+        kind = get_field(changeset, :kind)
+
+        cond do
+          kind != "provider" ->
+            add_error(changeset, :models_from, ~s(is only supported for kind "provider"))
+
+          not valid_url?(config["url"]) ->
+            add_error(changeset, :models_from, ~s|must contain a "url" (http:// or https://)|)
+
+          not is_nil(config["defaults"]) and not is_map(config["defaults"]) ->
+            add_error(changeset, :models_from, ~s("defaults" must be a map))
+
+          bad_id_list = first_bad_id_list(config) ->
+            add_error(changeset, :models_from, ~s("#{bad_id_list}" must be a list of strings))
+
+          bad_pattern = first_bad_pattern(config) ->
+            add_error(
+              changeset,
+              :models_from,
+              ~s("exclude_id_patterns" contains an invalid regex: #{bad_pattern})
+            )
+
+          true ->
+            changeset
+        end
+
+      _ ->
+        add_error(changeset, :models_from, "must be a map")
+    end
+  end
+
+  defp valid_url?(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] ->
+        is_binary(host) and host != ""
+
+      _ ->
+        false
+    end
+  end
+
+  defp valid_url?(_), do: false
+
+  defp first_bad_id_list(config) do
+    Enum.find(["include_ids", "exclude_ids", "exclude_id_patterns"], fn key ->
+      case config[key] do
+        nil -> false
+        list when is_list(list) -> not Enum.all?(list, &is_binary/1)
+        _ -> true
+      end
+    end)
+  end
+
+  defp first_bad_pattern(config) do
+    config
+    |> Map.get("exclude_id_patterns", [])
+    |> List.wrap()
+    |> Enum.find(fn pattern ->
+      is_binary(pattern) and match?({:error, _}, Regex.compile(pattern))
+    end)
   end
 
   # Deep string-ification of map keys, so a jsonb round-trip is a no-op.
