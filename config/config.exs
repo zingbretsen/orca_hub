@@ -88,7 +88,44 @@ config :esbuild,
       ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.),
     cd: Path.expand("../assets", __DIR__),
     env: %{"NODE_PATH" => [Path.expand("../deps", __DIR__), Mix.Project.build_path()]}
+  ],
+  # Voice mode's non-bundleable assets -> priv/static/assets/voice/.
+  #
+  # Four entry points, two of which are plain copies:
+  #   capture-worklet.js           bundled, but MUST stay a separate file —
+  #                                audioWorklet.addModule() takes a URL, so it
+  #                                can never be part of app.js
+  #   ort-wasm-simd-threaded.mjs   onnxruntime-web's emscripten glue; `copy`
+  #   ort-wasm-simd-threaded.wasm  loader, because bundling it would break the
+  #                                import.meta.url paths it builds at runtime
+  #   silero_vad_v5.onnx           the VAD model, fetched at arm time
+  #
+  # `--entry-names=[name]` keeps the UNdigested filenames: ort and vad-web load
+  # these by name, and assets/js/voice/paths.js buys immutable caching back with
+  # a version-stamped `?vsn=` query instead (see the comment there).
+  orca_hub_voice: [
+    args: ~w(
+      js/voice/capture-worklet.js
+      node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs
+      node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm
+      node_modules/@ricky0123/vad-web/dist/silero_vad_v5.onnx
+      --bundle --target=es2022 --format=esm
+      --outdir=../priv/static/assets/voice
+      --entry-names=[name]
+      --loader:.mjs=copy --loader:.wasm=copy --loader:.onnx=copy
+    ),
+    cd: Path.expand("../assets", __DIR__),
+    env: %{"NODE_PATH" => [Path.expand("../deps", __DIR__), Mix.Project.build_path()]}
   ]
+
+# `mix phx.digest` only gzips extensions in this list, and Plug.Static's
+# `gzip: true` only serves a `.gz` sibling that exists. The ort wasm binary is
+# 13.96 MB raw / ~3.6 MB gzipped and never changes between deploys, which spec
+# section 3.2 calls the single biggest first-load lever; the ONNX model is
+# another 2.3 MB. The rest of the list is Phoenix's own default.
+config :phoenix,
+       :gzippable_exts,
+       ~w(.js .map .css .txt .text .html .json .svg .eot .ttf .mjs .wasm .onnx)
 
 # Configure tailwind (the version is required)
 config :tailwind,

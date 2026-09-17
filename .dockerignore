@@ -1,5 +1,12 @@
 _build/
 deps/
+# The Dockerfile runs `npm --prefix assets ci`, which deletes and rebuilds
+# assets/node_modules from the lockfile anyway — so shipping the host's copy in
+# the build context is pure waste. It stopped being cheap waste when voice mode
+# added onnxruntime-web: 137 MB of it (every wasm/webgpu/jspi build variant),
+# taking the context from ~10 MB to ~158 MB, on a build that streams the context
+# to a REMOTE buildx node (gb10) over ssh for the arm64 half.
+assets/node_modules/
 doc/
 cover/
 tmp/
