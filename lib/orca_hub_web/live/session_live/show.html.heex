@@ -1540,6 +1540,69 @@
             Sending now will steer the running turn instead of interrupting it.
           </p>
 
+          <%!-- Voice mode panel — voice_mode_spec.md §5.1 and the §8.1 DOM
+        contract. Every `data-voice-*` attribute below is LOAD-BEARING: the
+        `Voice` hook (assets/js/voice/voice_hook.js) selects on them and owns
+        all of the panel's content, which is why it is phx-update="ignore".
+        The LiveView contributes only the session id and the panel's
+        existence; draft/arming/ASR state belongs to OrcaHubWeb.VoiceChannel.
+        Hidden-by-default children are unhidden by the hook, never here. --%>
+          <div
+            :if={@voice_mode && !@session.archived_at}
+            id="voice-panel"
+            phx-hook="Voice"
+            phx-update="ignore"
+            data-session-id={@session.id}
+            class="card bg-base-200 border border-base-300"
+          >
+            <div class="card-body p-3 gap-2">
+              <%!-- §9 trap 1: getUserMedia needs a secure context, so a LAN
+            origin like http://host:4001 has no navigator.mediaDevices at
+            all. The hook fills in and unhides this. --%>
+              <div data-voice-banner class="hidden alert alert-error py-1 text-xs"></div>
+              <div class="flex items-center gap-2 text-xs">
+                <.icon name="hero-microphone" class="size-4 shrink-0" />
+                <span data-voice-status class="font-medium">starting…</span>
+                <span data-voice-mic class="opacity-60 truncate"></span>
+                <span
+                  data-voice-arming
+                  class="hidden badge badge-warning badge-sm ml-auto shrink-0"
+                >
+                  sending in <span data-voice-arming-ms></span>ms
+                </span>
+              </div>
+              <div data-voice-error class="hidden alert alert-error py-1 text-xs"></div>
+              <textarea
+                data-voice-draft
+                rows="2"
+                placeholder="Speak — transcribed text collects here, then say “orca send”."
+                class="textarea textarea-bordered w-full text-sm"
+              ></textarea>
+              <div class="flex items-center gap-2">
+                <button type="button" data-voice-action="send" class="btn btn-primary btn-xs">
+                  Send now
+                </button>
+                <button type="button" data-voice-action="cancel" class="btn btn-ghost btn-xs">
+                  Clear
+                </button>
+                <%!-- Fallback gesture: shown by the hook only if the
+              AudioContext is still suspended after resume(). --%>
+                <button
+                  type="button"
+                  data-voice-action="start"
+                  class="hidden btn btn-warning btn-xs"
+                >
+                  Start listening
+                </button>
+              </div>
+              <ol
+                data-voice-log
+                class="text-[11px] leading-snug opacity-60 max-h-24 overflow-y-auto"
+              >
+              </ol>
+            </div>
+          </div>
+
           <.form
             for={%{}}
             phx-submit="send_message"
@@ -1547,6 +1610,19 @@
             class="flex gap-2"
             multipart
           >
+            <%!-- The click IS the user gesture that satisfies the autoplay
+          policy (voice_mode_spec.md §9 trap 2) — the hook arms the mic in
+          mounted(), so the panel must never render without one. Hidden on
+          an archived session, which cannot be sent to. --%>
+            <button
+              :if={!@session.archived_at}
+              type="button"
+              phx-click="toggle_voice"
+              class={["btn btn-ghost btn-square", @voice_mode && "text-primary"]}
+              title={if @voice_mode, do: "Turn off voice mode", else: "Turn on voice mode"}
+            >
+              <.icon name="hero-microphone" class="size-5" />
+            </button>
             <button
               type="button"
               phx-click="toggle_tts"

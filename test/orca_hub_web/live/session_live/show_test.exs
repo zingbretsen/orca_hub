@@ -2018,6 +2018,91 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
   end
 
+  # voice_mode_spec.md §5.1, §9 trap 2 and the §8.1 DOM contract. The panel's
+  # `data-voice-*` attributes are an interface, not decoration — the `Voice`
+  # hook selects on every one of them — so they are pinned here rather than
+  # left to survive a refactor by luck.
+  describe "voice mode panel" do
+    test "the Voice button renders for a live session and is off by default", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert html =~ ~s(phx-click="toggle_voice")
+      # Trap 2: the panel must never exist without the click that arms it.
+      refute html =~ ~s(id="voice-panel")
+      refute :sys.get_state(view.pid).socket.assigns.voice_mode
+    end
+
+    test "the Voice button is hidden on an archived session", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, _} = Sessions.archive_session(session, extract_memories: false)
+
+      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      refute html =~ ~s(phx-click="toggle_voice")
+    end
+
+    test "clicking Voice renders the panel with the full DOM contract", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      html = view |> element("button[phx-click='toggle_voice']") |> render_click()
+
+      assert html =~ ~s(id="voice-panel")
+      assert html =~ ~s(phx-hook="Voice")
+      # The hook owns everything inside the panel; LiveView must not patch it.
+      assert html =~ ~s(phx-update="ignore")
+      assert html =~ ~s(data-session-id="#{session.id}")
+
+      for attr <- [
+            "data-voice-banner",
+            "data-voice-status",
+            "data-voice-mic",
+            "data-voice-error",
+            "data-voice-draft",
+            "data-voice-arming",
+            "data-voice-arming-ms",
+            "data-voice-log"
+          ] do
+        assert html =~ attr, "voice panel is missing #{attr}"
+      end
+
+      for action <- ~w(send cancel start) do
+        assert html =~ ~s(data-voice-action="#{action}"),
+               "voice panel is missing the #{action} button"
+      end
+
+      # The draft is the textarea the hook writes state.draft into.
+      assert view |> element("#voice-panel textarea[data-voice-draft]") |> has_element?()
+      # Hidden-by-default children — the hook unhides them, never the server.
+      assert view |> element("#voice-panel [data-voice-error].hidden") |> has_element?()
+      assert view |> element("#voice-panel [data-voice-banner].hidden") |> has_element?()
+      assert view |> element("#voice-panel [data-voice-arming].hidden") |> has_element?()
+      assert view |> element("#voice-panel [data-voice-action='start'].hidden") |> has_element?()
+    end
+
+    test "clicking Voice again removes the panel (that un-render IS the teardown)", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert view |> element("button[phx-click='toggle_voice']") |> render_click() =~
+               ~s(id="voice-panel")
+
+      refute view |> element("button[phx-click='toggle_voice']") |> render_click() =~
+               ~s(id="voice-panel")
+
+      refute :sys.get_state(view.pid).socket.assigns.voice_mode
+    end
+  end
+
   describe "project autocomplete (\"##\" mention)" do
     test "value carries the full project_id and the RAW node name, so start_session can target it directly",
          %{conn: conn, claude_session: session} do

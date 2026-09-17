@@ -312,6 +312,16 @@ const TTSMethods = {
     return text.trim()
   },
 
+  // Half-duplex hand-off to voice mode (voice_mode_spec.md §4.1/§8.1): the
+  // Voice hook listens on `window` for this and mutes the mic while the
+  // assistant is speaking, so the reply is never transcribed back into the
+  // draft. A window event rather than a direct call because the two live in
+  // different hooks with no reference to each other, and the emit must stay
+  // a pure side effect — playback behaviour is unchanged by it.
+  ttsEmitState() {
+    window.dispatchEvent(new CustomEvent("orca:tts-state", { detail: { playing: this.playing } }))
+  },
+
   // --- playback control (per-message state, keyed by this.activeId) ------
   ttsStart(id) {
     const text = this.ttsExtractText(id)
@@ -325,12 +335,14 @@ const TTSMethods = {
     this.chunks = chunks
     this.currentIndex = 0
     this.playing = true
+    this.ttsEmitState()
     this.ttsUpdateUI(id)
     this.ttsPlayCurrentChunk()
   },
 
   ttsPause() {
     this.playing = false
+    this.ttsEmitState()
     if (this.audio) this.audio.pause()
     this.ttsUpdateUI(this.activeId)
   },
@@ -338,6 +350,7 @@ const TTSMethods = {
   ttsResumeOrStart(id) {
     if (this.chunks.length > 0) {
       this.playing = true
+      this.ttsEmitState()
       if (this.audio) {
         this.audio.play()
       } else {
@@ -356,6 +369,7 @@ const TTSMethods = {
   // prefetch request in flight on every stop/rapid-toggle).
   ttsStop() {
     this.playing = false
+    this.ttsEmitState()
     if (this.audio) {
       this.audio.pause()
       this.audio.src = ""
