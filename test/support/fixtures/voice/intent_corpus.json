@@ -1,0 +1,3124 @@
+{
+ "source": {
+  "repo": "/home/zach/transcription (on gb10, 192.168.1.77)",
+  "commit": "4675905",
+  "reference": "spike-asr/intent_ref.py",
+  "inputs": [
+   "spike-asr/results/wakeword_transcripts.json",
+   "spike-asr/audio/wakeword_manifest.json"
+  ],
+  "threshold": 0.85,
+  "vocab": {
+   "send": "orca send",
+   "cancel": "orca cancel",
+   "stop": "orca stop",
+   "pause": "orca pause"
+  }
+ },
+ "aggregate": {
+  "positives": 190,
+  "tp": 184,
+  "wrong_intent": 0,
+  "miss": 6,
+  "negatives": 154,
+  "fp": 0
+ },
+ "observations": [
+  {
+   "clip": "c_orca_send__iso__v1",
+   "rep": 0,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__v1",
+   "rep": 1,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__term__v1",
+   "rep": 0,
+   "text": "Let's ship the patch today and tell the team about it. Orcasend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__term__v1",
+   "rep": 1,
+   "text": "Let's ship the patch today and tell the team about it. Orcasend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__pre300__v1",
+   "rep": 0,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre300__v1",
+   "rep": 1,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre800__v1",
+   "rep": 0,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre800__v1",
+   "rep": 1,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__v2",
+   "rep": 0,
+   "text": "Orcasend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__iso__v2",
+   "rep": 1,
+   "text": "Orcasend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__term__v2",
+   "rep": 0,
+   "text": "I think the transcription container is still holding the model in memory, Orcasend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__term__v2",
+   "rep": 1,
+   "text": "I think the transcription container is still holding the model in memory, Orcasend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__pre300__v2",
+   "rep": 0,
+   "text": "Orcasend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__pre300__v2",
+   "rep": 1,
+   "text": "Orcasend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__pre800__v2",
+   "rep": 0,
+   "text": "or Cascend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre800__v2",
+   "rep": 1,
+   "text": "or Cascend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__v3",
+   "rep": 0,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__v3",
+   "rep": 1,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__term__v3",
+   "rep": 0,
+   "text": "Add the new fixture to the integration test and then rerun it. OrcaSend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__term__v3",
+   "rep": 1,
+   "text": "Add the new fixture to the integration test and then rerun it. OrcaSend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__pre300__v3",
+   "rep": 0,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre300__v3",
+   "rep": 1,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre800__v3",
+   "rep": 0,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre800__v3",
+   "rep": 1,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__v4",
+   "rep": 0,
+   "text": "or consent.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9230769230769231
+  },
+  {
+   "clip": "c_orca_send__iso__v4",
+   "rep": 1,
+   "text": "or consent.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9230769230769231
+  },
+  {
+   "clip": "c_orca_send__term__v4",
+   "rep": 0,
+   "text": "We should write that down in the findings document before we forget. Orcasend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__term__v4",
+   "rep": 1,
+   "text": "We should write that down in the findings document before we forget. Orcasend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__pre300__v4",
+   "rep": 0,
+   "text": "or Cascend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre300__v4",
+   "rep": 1,
+   "text": "or Cascend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre800__v4",
+   "rep": 0,
+   "text": "or Cascend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre800__v4",
+   "rep": 1,
+   "text": "or Cascend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__v5",
+   "rep": 0,
+   "text": "Orc Ascend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__v5",
+   "rep": 1,
+   "text": "Orc Ascend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__term__v5",
+   "rep": 0,
+   "text": "The Arbiter refused admission for the batch model again this morning, or case sent.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__term__v5",
+   "rep": 1,
+   "text": "The Arbiter refused admission for the batch model again this morning, or case sent.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__pre300__v5",
+   "rep": 0,
+   "text": "Orc Ascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre300__v5",
+   "rep": 1,
+   "text": "Orc Ascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre800__v5",
+   "rep": 0,
+   "text": "Orc Ascend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__pre800__v5",
+   "rep": 1,
+   "text": "Orc Ascend.",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__d_slow",
+   "rep": 0,
+   "text": "Orcasand,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__iso__d_slow",
+   "rep": 1,
+   "text": "Orcasand,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_send__iso__d_fast",
+   "rep": 0,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__d_fast",
+   "rep": 1,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__d_hi",
+   "rep": 0,
+   "text": "or Cascend",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__d_hi",
+   "rep": 1,
+   "text": "or Cascend",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__d_lo",
+   "rep": 0,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_send__iso__d_lo",
+   "rep": 1,
+   "text": "or Cascend,",
+   "label": "positive",
+   "expected_intent": "send",
+   "ref_intent": "send",
+   "ref_score": 0.9411764705882353
+  },
+  {
+   "clip": "c_orca_cancel__iso__v1",
+   "rep": 0,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__v1",
+   "rep": 1,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__term__v1",
+   "rep": 0,
+   "text": "Let's ship the patch today and tell the team about it. Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__term__v1",
+   "rep": 1,
+   "text": "Let's ship the patch today and tell the team about it. Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre300__v1",
+   "rep": 0,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre300__v1",
+   "rep": 1,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre800__v1",
+   "rep": 0,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre800__v1",
+   "rep": 1,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__v2",
+   "rep": 0,
+   "text": "Orca Cancel,",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__v2",
+   "rep": 1,
+   "text": "Orca Cancel,",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__term__v2",
+   "rep": 0,
+   "text": "I think the transcription container is still holding the model in memory. Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__term__v2",
+   "rep": 1,
+   "text": "I think the transcription container is still holding the model in memory. Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre300__v2",
+   "rep": 0,
+   "text": "Orca Cancel,",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre300__v2",
+   "rep": 1,
+   "text": "Orca Cancel,",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre800__v2",
+   "rep": 0,
+   "text": "Orca Cancel,",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre800__v2",
+   "rep": 1,
+   "text": "Orca Cancel,",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__v3",
+   "rep": 0,
+   "text": "or cut cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 0.8571428571428571
+  },
+  {
+   "clip": "c_orca_cancel__iso__v3",
+   "rep": 1,
+   "text": "or cut cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 0.8571428571428571
+  },
+  {
+   "clip": "c_orca_cancel__term__v3",
+   "rep": 0,
+   "text": "Add the new fixture to the integration test and then rerun it. Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__term__v3",
+   "rep": 1,
+   "text": "Add the new fixture to the integration test and then rerun it. Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre300__v3",
+   "rep": 0,
+   "text": "or cut Cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 0.8571428571428571
+  },
+  {
+   "clip": "c_orca_cancel__pre300__v3",
+   "rep": 1,
+   "text": "or cut Cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 0.8571428571428571
+  },
+  {
+   "clip": "c_orca_cancel__pre800__v3",
+   "rep": 0,
+   "text": "or cut Cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 0.8571428571428571
+  },
+  {
+   "clip": "c_orca_cancel__pre800__v3",
+   "rep": 1,
+   "text": "or cut Cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 0.8571428571428571
+  },
+  {
+   "clip": "c_orca_cancel__iso__v4",
+   "rep": 0,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__v4",
+   "rep": 1,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__term__v4",
+   "rep": 0,
+   "text": "we should write that down in the findings document before we forget or cancel",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__term__v4",
+   "rep": 1,
+   "text": "we should write that down in the findings document before we forget or cancel",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre300__v4",
+   "rep": 0,
+   "text": "or it could cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": null,
+   "ref_score": 0.8
+  },
+  {
+   "clip": "c_orca_cancel__pre300__v4",
+   "rep": 1,
+   "text": "or it could cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": null,
+   "ref_score": 0.8
+  },
+  {
+   "clip": "c_orca_cancel__pre800__v4",
+   "rep": 0,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre800__v4",
+   "rep": 1,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__v5",
+   "rep": 0,
+   "text": "orca cancel,",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__v5",
+   "rep": 1,
+   "text": "orca cancel,",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre300__v5",
+   "rep": 0,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre300__v5",
+   "rep": 1,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre800__v5",
+   "rep": 0,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__pre800__v5",
+   "rep": 1,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__d_slow",
+   "rep": 0,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__d_slow",
+   "rep": 1,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__d_fast",
+   "rep": 0,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__d_fast",
+   "rep": 1,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__d_hi",
+   "rep": 0,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__d_hi",
+   "rep": 1,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__d_lo",
+   "rep": 0,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_cancel__iso__d_lo",
+   "rep": 1,
+   "text": "Orca cancel.",
+   "label": "positive",
+   "expected_intent": "cancel",
+   "ref_intent": "cancel",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__v1",
+   "rep": 0,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__v1",
+   "rep": 1,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__term__v1",
+   "rep": 0,
+   "text": "Let's ship the patch today and tell the team about it. Orca Stop!",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__term__v1",
+   "rep": 1,
+   "text": "Let's ship the patch today and tell the team about it. Orca Stop!",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre300__v1",
+   "rep": 0,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre300__v1",
+   "rep": 1,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre800__v1",
+   "rep": 0,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre800__v1",
+   "rep": 1,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__v2",
+   "rep": 0,
+   "text": "Orca Stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__v2",
+   "rep": 1,
+   "text": "Orca Stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__term__v2",
+   "rep": 0,
+   "text": "I think the transcription container is still holding the model in memory. OrcaStop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__term__v2",
+   "rep": 1,
+   "text": "I think the transcription container is still holding the model in memory. OrcaStop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre300__v2",
+   "rep": 0,
+   "text": "Orca Stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre300__v2",
+   "rep": 1,
+   "text": "Orca Stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre800__v2",
+   "rep": 0,
+   "text": "Orca Stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre800__v2",
+   "rep": 1,
+   "text": "Orca Stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__v3",
+   "rep": 0,
+   "text": "Orca stop?",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__v3",
+   "rep": 1,
+   "text": "Orca stop?",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__term__v3",
+   "rep": 0,
+   "text": "Add the new fixture to the integration test and then rerun it or cast up.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__term__v3",
+   "rep": 1,
+   "text": "Add the new fixture to the integration test and then rerun it or cast up.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre300__v3",
+   "rep": 0,
+   "text": "Orca stop?",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre300__v3",
+   "rep": 1,
+   "text": "Orca stop?",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre800__v3",
+   "rep": 0,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre800__v3",
+   "rep": 1,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__v4",
+   "rep": 0,
+   "text": "Orcastop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__v4",
+   "rep": 1,
+   "text": "Orcastop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__term__v4",
+   "rep": 0,
+   "text": "we should write that down in the findings document before we forget or cast off.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": null,
+   "ref_score": 0.8333333333333334
+  },
+  {
+   "clip": "c_orca_stop__term__v4",
+   "rep": 1,
+   "text": "we should write that down in the findings document before we forget or cast off.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": null,
+   "ref_score": 0.8333333333333334
+  },
+  {
+   "clip": "c_orca_stop__pre300__v4",
+   "rep": 0,
+   "text": "Orcastop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre300__v4",
+   "rep": 1,
+   "text": "Orcastop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre800__v4",
+   "rep": 0,
+   "text": "Orcastop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre800__v4",
+   "rep": 1,
+   "text": "Orcastop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__v5",
+   "rep": 0,
+   "text": "Orca stopped.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 0.9230769230769231
+  },
+  {
+   "clip": "c_orca_stop__iso__v5",
+   "rep": 1,
+   "text": "Orca stopped.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 0.9230769230769231
+  },
+  {
+   "clip": "c_orca_stop__term__v5",
+   "rep": 0,
+   "text": "The Arbiter refused admission for the batch model again this morning. Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__term__v5",
+   "rep": 1,
+   "text": "The Arbiter refused admission for the batch model again this morning. Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__pre300__v5",
+   "rep": 0,
+   "text": "Orca stopped.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 0.9230769230769231
+  },
+  {
+   "clip": "c_orca_stop__pre300__v5",
+   "rep": 1,
+   "text": "Orca stopped.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 0.9230769230769231
+  },
+  {
+   "clip": "c_orca_stop__pre800__v5",
+   "rep": 0,
+   "text": "Orca stopped.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 0.9230769230769231
+  },
+  {
+   "clip": "c_orca_stop__pre800__v5",
+   "rep": 1,
+   "text": "Orca stopped.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 0.9230769230769231
+  },
+  {
+   "clip": "c_orca_stop__iso__d_slow",
+   "rep": 0,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__d_slow",
+   "rep": 1,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__d_fast",
+   "rep": 0,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__d_fast",
+   "rep": 1,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__d_hi",
+   "rep": 0,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__d_hi",
+   "rep": 1,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__d_lo",
+   "rep": 0,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_stop__iso__d_lo",
+   "rep": 1,
+   "text": "Orca stop.",
+   "label": "positive",
+   "expected_intent": "stop",
+   "ref_intent": "stop",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__v1",
+   "rep": 0,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__v1",
+   "rep": 1,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__term__v1",
+   "rep": 0,
+   "text": "Let's ship the patch today and tell the team about it. Orca pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__term__v1",
+   "rep": 1,
+   "text": "Let's ship the patch today and tell the team about it. Orca pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre300__v1",
+   "rep": 0,
+   "text": "or Kapaz.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre300__v1",
+   "rep": 1,
+   "text": "or Kapaz.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre800__v1",
+   "rep": 0,
+   "text": "or Kapaz.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre800__v1",
+   "rep": 1,
+   "text": "or Kapaz.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__v2",
+   "rep": 0,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__v2",
+   "rep": 1,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__term__v2",
+   "rep": 0,
+   "text": "I think the transcription container is still holding the model in memory, OrcaPause,",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__term__v2",
+   "rep": 1,
+   "text": "I think the transcription container is still holding the model in memory, OrcaPause,",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre300__v2",
+   "rep": 0,
+   "text": "Orca pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre300__v2",
+   "rep": 1,
+   "text": "Orca pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre800__v2",
+   "rep": 0,
+   "text": "Orca pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre800__v2",
+   "rep": 1,
+   "text": "Orca pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__v3",
+   "rep": 0,
+   "text": "work a pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__v3",
+   "rep": 1,
+   "text": "work a pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__term__v3",
+   "rep": 0,
+   "text": "Add the new fixture to the integration test and then rerun it. Orca pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__term__v3",
+   "rep": 1,
+   "text": "Add the new fixture to the integration test and then rerun it. Orca pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre300__v3",
+   "rep": 0,
+   "text": "Work a pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre300__v3",
+   "rep": 1,
+   "text": "Work a pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre800__v3",
+   "rep": 0,
+   "text": "Work a pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre800__v3",
+   "rep": 1,
+   "text": "Work a pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__v4",
+   "rep": 0,
+   "text": "Orca paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__v4",
+   "rep": 1,
+   "text": "Orca paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__term__v4",
+   "rep": 0,
+   "text": "we should write that down in the findings document before we forget, or ca-pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__term__v4",
+   "rep": 1,
+   "text": "we should write that down in the findings document before we forget, or ca-pause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre300__v4",
+   "rep": 0,
+   "text": "Orca Paws",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre300__v4",
+   "rep": 1,
+   "text": "Orca Paws",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre800__v4",
+   "rep": 0,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre800__v4",
+   "rep": 1,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__v5",
+   "rep": 0,
+   "text": "OrcaPause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__v5",
+   "rep": 1,
+   "text": "OrcaPause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__term__v5",
+   "rep": 0,
+   "text": "the Arbiter refused admission for the batch model again this morning. Orca pause. The triade?",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": null,
+   "ref_score": 0.43478260869565216
+  },
+  {
+   "clip": "c_orca_pause__term__v5",
+   "rep": 1,
+   "text": "the Arbiter refused admission for the batch model again this morning. Orca pause. The triade?",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": null,
+   "ref_score": 0.43478260869565216
+  },
+  {
+   "clip": "c_orca_pause__pre300__v5",
+   "rep": 0,
+   "text": "OrcaPause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre300__v5",
+   "rep": 1,
+   "text": "OrcaPause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre800__v5",
+   "rep": 0,
+   "text": "OrcaPause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__pre800__v5",
+   "rep": 1,
+   "text": "OrcaPause.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__d_slow",
+   "rep": 0,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__d_slow",
+   "rep": 1,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__d_fast",
+   "rep": 0,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__d_fast",
+   "rep": 1,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__d_hi",
+   "rep": 0,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__d_hi",
+   "rep": 1,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__d_lo",
+   "rep": 0,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "c_orca_pause__iso__d_lo",
+   "rep": 1,
+   "text": "Orca Paws.",
+   "label": "positive",
+   "expected_intent": "pause",
+   "ref_intent": "pause",
+   "ref_score": 1.0
+  },
+  {
+   "clip": "n_d01__v1",
+   "rep": 0,
+   "text": "can you send the email to Bob and Copy Alice on it?",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_d01__v1",
+   "rep": 1,
+   "text": "can you send the email to Bob and Copy Alice on it?",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_d01__v3",
+   "rep": 0,
+   "text": "Can you send the email to Bob and copy Alice on it?",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_d01__v3",
+   "rep": 1,
+   "text": "Can you send the email to Bob and copy Alice on it?",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_d02__v1",
+   "rep": 0,
+   "text": "I want you to stop the server before you redeploy.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_d02__v1",
+   "rep": 1,
+   "text": "I want you to stop the server before you redeploy.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_d02__v3",
+   "rep": 0,
+   "text": "I want you to stop the server before you redeploy.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_d02__v3",
+   "rep": 1,
+   "text": "I want you to stop the server before you redeploy.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_d03__v1",
+   "rep": 0,
+   "text": "we need to cancel the build that is running on main.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_d03__v1",
+   "rep": 1,
+   "text": "we need to cancel the build that is running on main.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_d03__v3",
+   "rep": 0,
+   "text": "we need to cancel the build that is running on main.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_d03__v3",
+   "rep": 1,
+   "text": "we need to cancel the build that is running on main.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_d04__v1",
+   "rep": 0,
+   "text": "Let me pause here and think about the schema for a second. Just as 10.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5714285714285714
+  },
+  {
+   "clip": "n_d04__v1",
+   "rep": 1,
+   "text": "Let me pause here and think about the schema for a second. Just as 10.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5714285714285714
+  },
+  {
+   "clip": "n_d04__v3",
+   "rep": 0,
+   "text": "Let me pause here and think about the schema for a second.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7777777777777778
+  },
+  {
+   "clip": "n_d04__v3",
+   "rep": 1,
+   "text": "Let me pause here and think about the schema for a second.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7777777777777778
+  },
+  {
+   "clip": "n_d05__v1",
+   "rep": 0,
+   "text": "openlib slash orca hub slash voice slash intent.ex.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.75
+  },
+  {
+   "clip": "n_d05__v1",
+   "rep": 1,
+   "text": "openlib slash orca hub slash voice slash intent.ex.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.75
+  },
+  {
+   "clip": "n_d05__v3",
+   "rep": 0,
+   "text": "openlib slash orcahub slash voice slash intent dot ex.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.75
+  },
+  {
+   "clip": "n_d05__v3",
+   "rep": 1,
+   "text": "openlib slash orcahub slash voice slash intent dot ex.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.75
+  },
+  {
+   "clip": "n_d06__v1",
+   "rep": 0,
+   "text": "The TESP lives in test slash orcahub slash voicetest dot exs.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d06__v1",
+   "rep": 1,
+   "text": "The TESP lives in test slash orcahub slash voicetest dot exs.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d06__v3",
+   "rep": 0,
+   "text": "The test lives in test-slash-orca-hub-slash-voicetest.ex",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.75
+  },
+  {
+   "clip": "n_d06__v3",
+   "rep": 1,
+   "text": "The test lives in test-slash-orca-hub-slash-voicetest.ex",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.75
+  },
+  {
+   "clip": "n_d07__v1",
+   "rep": 0,
+   "text": "Rename the migration file and then run mix ectomigrate.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.47058823529411764
+  },
+  {
+   "clip": "n_d07__v1",
+   "rep": 1,
+   "text": "Rename the migration file and then run mix ectomigrate.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.47058823529411764
+  },
+  {
+   "clip": "n_d07__v3",
+   "rep": 0,
+   "text": "Rename the migration file and then run mix ectomigrate.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.47058823529411764
+  },
+  {
+   "clip": "n_d07__v3",
+   "rep": 1,
+   "text": "Rename the migration file and then run mix ectomigrate.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.47058823529411764
+  },
+  {
+   "clip": "n_d08__v1",
+   "rep": 0,
+   "text": "put the findings in spike-asac-findings.md",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.47058823529411764
+  },
+  {
+   "clip": "n_d08__v1",
+   "rep": 1,
+   "text": "put the findings in spike-asac-findings.md",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.47058823529411764
+  },
+  {
+   "clip": "n_d08__v3",
+   "rep": 0,
+   "text": "put the findings in spike-assessor-findings.md",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5882352941176471
+  },
+  {
+   "clip": "n_d08__v3",
+   "rep": 1,
+   "text": "put the findings in spike-assessor-findings.md",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5882352941176471
+  },
+  {
+   "clip": "n_d09__v1",
+   "rep": 0,
+   "text": "Check whether the container is still holding the model in Numery.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.4444444444444444
+  },
+  {
+   "clip": "n_d09__v1",
+   "rep": 1,
+   "text": "Check whether the container is still holding the model in Numery.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.4444444444444444
+  },
+  {
+   "clip": "n_d09__v3",
+   "rep": 0,
+   "text": "Check whether the container is still holding the model in memory. Abuso Kenyer's doing graphic. Check whether the",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.4
+  },
+  {
+   "clip": "n_d09__v3",
+   "rep": 1,
+   "text": "Check whether the container is still holding the model in memory. Abuso Kenyer's doing graphic. Check whether the",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.4
+  },
+  {
+   "clip": "n_d10__v1",
+   "rep": 0,
+   "text": "that function should return an OK tuple instead of raising.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d10__v1",
+   "rep": 1,
+   "text": "that function should return an OK tuple instead of raising.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d10__v3",
+   "rep": 0,
+   "text": "That function should return an OK tuple instead of raising. Inno!",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6153846153846154
+  },
+  {
+   "clip": "n_d10__v3",
+   "rep": 1,
+   "text": "That function should return an OK tuple instead of raising. Inno!",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6153846153846154
+  },
+  {
+   "clip": "n_d11__v1",
+   "rep": 0,
+   "text": "write a test for the case where the arbiter refuses admission.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d11__v1",
+   "rep": 1,
+   "text": "write a test for the case where the arbiter refuses admission.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d11__v3",
+   "rep": 0,
+   "text": "write a test for the case where the arbiter refuses admission, the lying, to come away a card, oh, and an",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_d11__v3",
+   "rep": 1,
+   "text": "write a test for the case where the arbiter refuses admission, the lying, to come away a card, oh, and an",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_d12__v1",
+   "rep": 0,
+   "text": "The browser records WebM Opus and posts it to the sync lane.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d12__v1",
+   "rep": 1,
+   "text": "The browser records WebM Opus and posts it to the sync lane.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d12__v3",
+   "rep": 0,
+   "text": "the browser records WebM Opus and posts it to the sync lane.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d12__v3",
+   "rep": 1,
+   "text": "the browser records WebM Opus and posts it to the sync lane.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d13__v1",
+   "rep": 0,
+   "text": "I think we should just send it to the orchestrator as a message.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.4444444444444444
+  },
+  {
+   "clip": "n_d13__v1",
+   "rep": 1,
+   "text": "I think we should just send it to the orchestrator as a message.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.4444444444444444
+  },
+  {
+   "clip": "n_d13__v3",
+   "rep": 0,
+   "text": "I think we should just send it to the orchestrator as a message.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.4444444444444444
+  },
+  {
+   "clip": "n_d13__v3",
+   "rep": 1,
+   "text": "I think we should just send it to the orchestrator as a message.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.4444444444444444
+  },
+  {
+   "clip": "n_d14__v1",
+   "rep": 0,
+   "text": "Before you do anything else, please read the integration document.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d14__v1",
+   "rep": 1,
+   "text": "Before you do anything else, please read the integration document.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d14__v3",
+   "rep": 0,
+   "text": "Before you do anything else, please read the integration document.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d14__v3",
+   "rep": 1,
+   "text": "Before you do anything else, please read the integration document.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d15__v1",
+   "rep": 0,
+   "text": "at a threshold so quiet speech does not get dropped silently.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d15__v1",
+   "rep": 1,
+   "text": "at a threshold so quiet speech does not get dropped silently.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d15__v3",
+   "rep": 0,
+   "text": "at a threshold so quiet speech does not get dropped silently.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d15__v3",
+   "rep": 1,
+   "text": "at a threshold so quiet speech does not get dropped silently.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "n_d16__v1",
+   "rep": 0,
+   "text": "Tell Bob that the meeting moved to Thursday and then send that.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d16__v1",
+   "rep": 1,
+   "text": "Tell Bob that the meeting moved to Thursday and then send that.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d16__v3",
+   "rep": 0,
+   "text": "Tell Bob that the meeting moved to Thursday and then send that.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d16__v3",
+   "rep": 1,
+   "text": "Tell Bob that the meeting moved to Thursday and then send that.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d17__v1",
+   "rep": 0,
+   "text": "Hold the process and start over with a clean checkout.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d17__v1",
+   "rep": 1,
+   "text": "Hold the process and start over with a clean checkout.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d17__v3",
+   "rep": 0,
+   "text": "kill the process, and start over with a clean checkout. He just oured. Khoris Liebel, the King Gao,",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d17__v3",
+   "rep": 1,
+   "text": "kill the process, and start over with a clean checkout. He just oured. Khoris Liebel, the King Gao,",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d18__v1",
+   "rep": 0,
+   "text": "Let's stop talking about the schema and actually write the code.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_d18__v1",
+   "rep": 1,
+   "text": "Let's stop talking about the schema and actually write the code.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_d18__v3",
+   "rep": 0,
+   "text": "let's stop talking about the schema and actually write the code. ESR is just altos and actually write",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d18__v3",
+   "rep": 1,
+   "text": "let's stop talking about the schema and actually write the code. ESR is just altos and actually write",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "n_d19__v1",
+   "rep": 0,
+   "text": "I would like to go ahead and merge this once the tests pass.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5714285714285714
+  },
+  {
+   "clip": "n_d19__v1",
+   "rep": 1,
+   "text": "I would like to go ahead and merge this once the tests pass.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5714285714285714
+  },
+  {
+   "clip": "n_d19__v3",
+   "rep": 0,
+   "text": "I would like to go ahead and merge this once the tests pass",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5714285714285714
+  },
+  {
+   "clip": "n_d19__v3",
+   "rep": 1,
+   "text": "I would like to go ahead and merge this once the tests pass",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5714285714285714
+  },
+  {
+   "clip": "n_d20__v1",
+   "rep": 0,
+   "text": "Scratch that, use the turbo model on the sync lane instead.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_d20__v1",
+   "rep": 1,
+   "text": "Scratch that, use the turbo model on the sync lane instead.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_d20__v3",
+   "rep": 0,
+   "text": "Scratch that, use the turbo model on the sync lane instead.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_d20__v3",
+   "rep": 1,
+   "text": "Scratch that, use the turbo model on the sync lane instead.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "s2_cmd_email_bob",
+   "rep": 0,
+   "text": "send the email to Bob.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "s2_cmd_email_bob",
+   "rep": 1,
+   "text": "send the email to Bob.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "s2_u3_a",
+   "rep": 0,
+   "text": "Orcasend, let's ship the patch today. FIMRD are free MENA,",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "s2_u3_a",
+   "rep": 1,
+   "text": "Orcasend, let's ship the patch today. FIMRD are free MENA,",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "s2_u3_b",
+   "rep": 0,
+   "text": "Send the email to Bob before the meeting starts.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.4
+  },
+  {
+   "clip": "s2_u3_b",
+   "rep": 1,
+   "text": "Send the email to Bob before the meeting starts.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.4
+  },
+  {
+   "clip": "s2_u5_a",
+   "rep": 0,
+   "text": "Orca cancel that last request, I typed the wrong file name into the prompt. That's...",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.36363636363636365
+  },
+  {
+   "clip": "s2_u5_a",
+   "rep": 1,
+   "text": "Orca cancel that last request, I typed the wrong file name into the prompt. That's...",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.36363636363636365
+  },
+  {
+   "clip": "s2_u5_b",
+   "rep": 0,
+   "text": "Can you check whether the transcription container is still holding the model in memory?",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.4444444444444444
+  },
+  {
+   "clip": "s2_u5_b",
+   "rep": 1,
+   "text": "Can you check whether the transcription container is still holding the model in memory?",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.4444444444444444
+  },
+  {
+   "clip": "s2_u8_a",
+   "rep": 0,
+   "text": "Orca stop. Actually, before you do anything else, please read the integration document in the docs folder and tell me what the sync lane does.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.46153846153846156
+  },
+  {
+   "clip": "s2_u8_a",
+   "rep": 1,
+   "text": "Orca stop. Actually, before you do anything else, please read the integration document in the docs folder and tell me what the sync lane does.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.46153846153846156
+  },
+  {
+   "clip": "s2_u8_b",
+   "rep": 0,
+   "text": "or Castap. Before you do anything else, please read the integration document that lives in the docs folder of the transcription repository and then tell me in plain language what the synchronous lane actually does differently.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5555555555555556
+  },
+  {
+   "clip": "s2_u8_b",
+   "rep": 1,
+   "text": "or Castap. Before you do anything else, please read the integration document that lives in the docs folder of the transcription repository and then tell me in plain language what the synchronous lane actually does differently.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5555555555555556
+  },
+  {
+   "clip": "s2_u10_a",
+   "rep": 0,
+   "text": "Send the email to Bob and copy Alice on it, then open a new session on the GB10 box and start benchmarking the transcription endpoint with 10-second utterances, please.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "s2_u10_a",
+   "rep": 1,
+   "text": "Send the email to Bob and copy Alice on it, then open a new session on the GB10 box and start benchmarking the transcription endpoint with 10-second utterances, please.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6666666666666666
+  },
+  {
+   "clip": "s2_u10_b",
+   "rep": 0,
+   "text": "send the email to Bob and copy Alice on it, then open a brand new session on the GB10 box, start benchmarking the transcription endpoint with 10 second utterances, and report the 95th percentile latency back to me when you have at least 30 samples in hand.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "s2_u10_b",
+   "rep": 1,
+   "text": "send the email to Bob and copy Alice on it, then open a brand new session on the GB10 box, start benchmarking the transcription endpoint with 10 second utterances, and report the 95th percentile latency back to me when you have at least 30 samples in hand.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "s2_jfk_real",
+   "rep": 0,
+   "text": "And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.8333333333333334
+  },
+  {
+   "clip": "s2_jfk_real",
+   "rep": 1,
+   "text": "And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.8333333333333334
+  },
+  {
+   "clip": "s2_c2_email_bob",
+   "rep": 0,
+   "text": "Send the email to Bob.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "s2_c2_email_bob",
+   "rep": 1,
+   "text": "Send the email to Bob.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5454545454545454
+  },
+  {
+   "clip": "s2_room_5s",
+   "rep": 0,
+   "text": "",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.0
+  },
+  {
+   "clip": "s2_room_5s",
+   "rep": 1,
+   "text": "",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.0
+  },
+  {
+   "clip": "s2_sil_5s",
+   "rep": 0,
+   "text": "",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.0
+  },
+  {
+   "clip": "s2_sil_5s",
+   "rep": 1,
+   "text": "",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.0
+  },
+  {
+   "clip": "n_e01__v1",
+   "rep": 0,
+   "text": "I filled in the form and then I clicked submit.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5333333333333333
+  },
+  {
+   "clip": "n_e01__v1",
+   "rep": 1,
+   "text": "I filled in the form and then I clicked submit.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5333333333333333
+  },
+  {
+   "clip": "n_e01__v3",
+   "rep": 0,
+   "text": "I filled in the form and then I click Submit.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5714285714285714
+  },
+  {
+   "clip": "n_e01__v3",
+   "rep": 1,
+   "text": "I filled in the form and then I click Submit.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5714285714285714
+  },
+  {
+   "clip": "n_e02__v1",
+   "rep": 0,
+   "text": "Let's go ahead and submit.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.46153846153846156
+  },
+  {
+   "clip": "n_e02__v1",
+   "rep": 1,
+   "text": "Let's go ahead and submit.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.46153846153846156
+  },
+  {
+   "clip": "n_e02__v3",
+   "rep": 0,
+   "text": "Let's go ahead and submit.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.46153846153846156
+  },
+  {
+   "clip": "n_e02__v3",
+   "rep": 1,
+   "text": "Let's go ahead and submit.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.46153846153846156
+  },
+  {
+   "clip": "n_e03__v1",
+   "rep": 0,
+   "text": "Tell the worker to open a channel and then send a message.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e03__v1",
+   "rep": 1,
+   "text": "Tell the worker to open a channel and then send a message.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e03__v3",
+   "rep": 0,
+   "text": "Tell the worker to open a channel and then send a message.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e03__v3",
+   "rep": 1,
+   "text": "Tell the worker to open a channel and then send a message.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e04__v1",
+   "rep": 0,
+   "text": "The function you want is called sendMessage.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5882352941176471
+  },
+  {
+   "clip": "n_e04__v1",
+   "rep": 1,
+   "text": "The function you want is called sendMessage.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5882352941176471
+  },
+  {
+   "clip": "n_e04__v3",
+   "rep": 0,
+   "text": "The function you want is called sendMessage.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5882352941176471
+  },
+  {
+   "clip": "n_e04__v3",
+   "rep": 1,
+   "text": "The function you want is called sendMessage.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5882352941176471
+  },
+  {
+   "clip": "n_e05__v1",
+   "rep": 0,
+   "text": "If the build is still running, we should cancel that. Fine.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6153846153846154
+  },
+  {
+   "clip": "n_e05__v1",
+   "rep": 1,
+   "text": "If the build is still running, we should cancel that. Fine.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6153846153846154
+  },
+  {
+   "clip": "n_e05__v3",
+   "rep": 0,
+   "text": "If the build is still running, we should cancel that. If cancel,",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.8333333333333334
+  },
+  {
+   "clip": "n_e05__v3",
+   "rep": 1,
+   "text": "If the build is still running, we should cancel that. If cancel,",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.8333333333333334
+  },
+  {
+   "clip": "n_e06__v1",
+   "rep": 0,
+   "text": "The tests have been failing for an hour, so let's stop now.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_e06__v1",
+   "rep": 1,
+   "text": "The tests have been failing for an hour, so let's stop now.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_e06__v3",
+   "rep": 0,
+   "text": "The tests have been failing for an hour so let's stop now.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_e06__v3",
+   "rep": 1,
+   "text": "The tests have been failing for an hour so let's stop now.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_e07__v1",
+   "rep": 0,
+   "text": "I need to look something up. Hold on.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e07__v1",
+   "rep": 1,
+   "text": "I need to look something up. Hold on.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e07__v3",
+   "rep": 0,
+   "text": "I need to look something up, hold on.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e07__v3",
+   "rep": 1,
+   "text": "I need to look something up, hold on.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e08__v1",
+   "rep": 0,
+   "text": "Actually, the config already has that key, nevermind.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e08__v1",
+   "rep": 1,
+   "text": "Actually, the config already has that key, nevermind.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e08__v3",
+   "rep": 0,
+   "text": "Actually, the config already has that key, never mind.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e08__v3",
+   "rep": 1,
+   "text": "Actually, the config already has that key, never mind.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e09__v1",
+   "rep": 0,
+   "text": "If you think the migration is safe, then go ahead. The migration has",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.38095238095238093
+  },
+  {
+   "clip": "n_e09__v1",
+   "rep": 1,
+   "text": "If you think the migration is safe, then go ahead. The migration has",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.38095238095238093
+  },
+  {
+   "clip": "n_e09__v3",
+   "rep": 0,
+   "text": "If you think the migration is safe, then go ahead. If you second,",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_e09__v3",
+   "rep": 1,
+   "text": "If you think the migration is safe, then go ahead. If you second,",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_e10__v1",
+   "rep": 0,
+   "text": "We have been at this for three hours, and I think it's over.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e10__v1",
+   "rep": 1,
+   "text": "We have been at this for three hours, and I think it's over.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e10__v3",
+   "rep": 0,
+   "text": "We had been at this for three hours and I think it's over.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e10__v3",
+   "rep": 1,
+   "text": "We had been at this for three hours and I think it's over.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.5
+  },
+  {
+   "clip": "n_e11__v1",
+   "rep": 0,
+   "text": "Once the Arbiter frees a memory, you can send it.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_e11__v1",
+   "rep": 1,
+   "text": "Once the Arbiter frees a memory, you can send it.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_e11__v3",
+   "rep": 0,
+   "text": "Once the arbiter frees the memory, you can send it.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_e11__v3",
+   "rep": 1,
+   "text": "Once the arbiter frees the memory, you can send it.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.7272727272727273
+  },
+  {
+   "clip": "n_e12__v1",
+   "rep": 0,
+   "text": "the deploy finished so you can stop the tail and pause now.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_e12__v1",
+   "rep": 1,
+   "text": "the deploy finished so you can stop the tail and pause now.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_e12__v3",
+   "rep": 0,
+   "text": "the deploy finished so you can stop the tell and pause now.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  },
+  {
+   "clip": "n_e12__v3",
+   "rep": 1,
+   "text": "the deploy finished so you can stop the tell and pause now.",
+   "label": "negative",
+   "expected_intent": null,
+   "ref_intent": null,
+   "ref_score": 0.6
+  }
+ ]
+}
