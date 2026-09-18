@@ -1296,6 +1296,224 @@ The contract:
   `composer {present: bool}` (sent at join and whenever the page's composer
   appears/disappears). New server -> client event: `send_request {text}`.
 
+### 8.3 Voice-driven interaction (phase 2c, C5 — ORCAHUB3-87)
+
+NORMATIVE for phase 2c. This contract was pinned by the orchestrator BEFORE any
+code was written, in the same manner as §7.1-7.3 and §8.2, and it SUPERSEDES
+§13 for everything it covers — §13 stays as the design record, so where the two
+disagree this section wins. Tracked as **ORCAHUB3-87**.
+
+#### 8.3.1 Focus
+
+`focus` is one of `"composer"` | `"palette"`. The CLIENT owns it and tells the
+server; the server NEVER infers it.
+
+- `composer` (default): transcripts accumulate into the server draft exactly as
+  §8.1/§8.2 describe.
+- `palette`: the Ctrl+K command palette is open. While focus is `palette` the
+  server does NOT touch the draft at all — no appends, no clears, no inserts.
+
+Focus resets to `"composer"` on join and on retarget.
+
+#### 8.3.2 Intent classes
+
+`OrcaHub.Voice.Intent` keeps `intent/2`, `strip_command/3`, `score/2`,
+`phonetic/1`, `ratio/2`, `tokenize/1`, `default_threshold/0` and
+`default_vocab/0` **unchanged and byte-for-byte compatible with §5.1.1**:
+`default_vocab/0` STAYS exactly the four phase-1 commands, and the 344-clip
+parity test in `test/orca_hub/voice/intent_test.exs` is NOT edited.
+
+Phase 2c adds, purely additively:
+
+- `command_vocab/0` — an ORDERED LIST of `{name, phrase}`: the four
+  `default_vocab/0` entries first, in their existing order
+  (`:send, :cancel, :stop, :pause`), then the phase 2c entries in the order of
+  §8.3.3. Ties keep the earlier entry, so no phase-1 behaviour can be displaced.
+- `class/1` — `name -> :action | :insert | :select | :navigate | :ignore`.
+  `:send`/`:cancel` -> `:action`; `:stop`/`:pause` -> `:ignore`; the rest per
+  the §8.3.3 table.
+- `payload/1` — `name -> map`. Insert names -> `%{text: "\n" | "\n\n" | "#" | "##"}`.
+  Select names -> `%{ordinal: n}` (1-BASED). Navigate names -> `%{kind: "open_palette"}`,
+  `%{kind: "close_palette"}`, `%{kind: "back"}`, or `%{kind: "navigate", path: "/sessions"}`.
+  Any other name -> `%{}`.
+- `match_label/2` — the conservative name matcher of §8.3.8.
+
+`Voice.Session` calls `intent/2` and `strip_command/3` with
+`vocab: Intent.command_vocab()` and its configured threshold.
+
+#### 8.3.3 Vocabulary
+
+Every phrase is AT MOST THREE TOKENS — the matcher only ever compares the last
+1-3 tokens of a segment, so a four-token phrase can never match in full. (That
+is why "orca the third one" from §13.5 is NOT in the list.)
+
+| name | phrase | class | payload | max score on negatives |
+|---|---|---|---|---|
+| `:search` | orca search | navigate | open_palette | measured in slice (a), recorded at close |
+| `:open` | orca open | navigate | open_palette | measured in slice (a), recorded at close |
+| `:back` | orca back | navigate | back | measured in slice (a), recorded at close |
+| `:sessions` | orca sessions | navigate | path `/sessions` | measured in slice (a), recorded at close |
+| `:new_session` | orca new session | navigate | path `/sessions/new` | measured in slice (a), recorded at close |
+| `:new_line` | orca new line | insert | `"\n"` | measured in slice (a), recorded at close |
+| `:new_paragraph` | orca new paragraph | insert | `"\n\n"` | measured in slice (a), recorded at close |
+| `:session_search` | orca session search | insert | `"#"` | measured in slice (a), recorded at close |
+| `:hashtag` | orca hashtag | insert | `"#"` | measured in slice (a), recorded at close |
+| `:project_search` | orca project search | insert | `"##"` | measured in slice (a), recorded at close |
+| `:double_hashtag` | orca double hashtag | insert | `"##"` | measured in slice (a), recorded at close |
+| `:first`..`:ninth` | orca first .. orca ninth | select | ordinal 1..9 | measured in slice (a), recorded at close |
+
+The "max score on negatives" column is deliberately unfilled: a sibling slice
+measures the real numbers against the corpus and a later documentation pass
+fills them in. Do not invent them.
+
+"orca newline" and "orca new line" reduce to the SAME target once spaces are
+removed (`orcanewline`), so the §13.5 alias needs no separate entry — say so in
+the docs rather than adding a duplicate.
+
+The list above is CANDIDATE; the shipped list is whatever survives §8.3.4.
+
+#### 8.3.4 Corpus acceptance bar
+
+Against `test/support/fixtures/voice/intent_corpus.json` with `command_vocab/0`
+at threshold 0.85, a COMMITTED test asserts:
+
+1. **Zero false positives** — every negative clip still returns `nil`.
+2. **No stolen positives** — every positive clip returns the SAME intent name it
+   returns under `default_vocab/0`.
+3. The §5.1.1 parity test (default vocab, scores pinned to 1.0e-9) is untouched
+   and still green.
+
+Any entry that breaks 1 or 2 is DROPPED or REWORDED, and the drop is recorded.
+Each shipped entry's MAXIMUM score over the negative clips is recorded.
+
+#### 8.3.5 Wire additions
+
+**Client -> server, one new event.**
+
+- `"ui_focus"` — `%{"focus" => "composer" | "palette", "candidates" => [%{"index" => i, "label" => s}]}`
+  - `index` is 0-BASED and is the index the CLIENT will act on.
+  - `label` is the visible text, truncated to 80 chars; at most 9 candidates.
+  - Pushed at join, on every focus change, and whenever the visible candidate
+    list changes; debounced 150 ms; pushed only when the value actually changed.
+  - `candidates` describes whichever selectable list is visible: the palette's
+    results when `focus == "palette"`, else the composer autocomplete dropdown's
+    items when it is open, else `[]`.
+
+**Server -> client, one new event.**
+
+- `"ui_action"` — `%{kind: k, payload: p}` with
+  `k ∈ "open_palette" | "close_palette" | "palette_query" | "select" | "navigate" | "back"`:
+  - `open_palette` / `close_palette` / `back` — payload `%{}`
+  - `palette_query` — `%{text: t}`, REPLACE semantics (each utterance replaces
+    the whole query; spoken corrections never accumulate)
+  - `select` — `%{ordinal: n}` (1-based, from an ordinal command) or
+    `%{index: i, label: l}` (0-based, from a name match)
+  - `navigate` — `%{path: "/sessions"}` etc., a path from the fixed set in
+    §8.3.3
+
+`"state"` (the full snapshot) gains `focus`, echoing the server's current belief.
+
+`"segment_result"`'s `action` gains `"insert"`, `"select"`, `"navigate"`,
+`"palette_query"`, `"ignored_palette_focus"`; `intent` carries the matched
+vocabulary name for each of them.
+
+#### 8.3.6 Routing rules (server, `Voice.Session`)
+
+For each applied transcript, in order:
+
+1. `intent/2` over `command_vocab/0` at the session threshold.
+2. If a command matched, dispatch by `class/1`:
+   - `:action` — §8.1/§8.2 unchanged, EXCEPT while `focus == "palette"`:
+     `:send` is IGNORED (`action: "ignored_palette_focus"`, draft untouched) and
+     `:cancel` emits `ui_action close_palette` and does NOT clear the draft.
+   - `:ignore` — unchanged (`ignored_stop_pause`).
+   - `:insert` — strip the command; if a remainder is left, append it with the
+     ordinary space-join FIRST; then append the payload text using §8.3.7's join
+     rule. Emits NO `ui_action` — the client learns about it through the ordinary
+     `"state"` snapshot, which the §8.2 draft-sink rule already mirrors into the
+     composer with a real bubbling `input` event (that is exactly what makes the
+     `#`/`##` autocomplete open as if typed). `action: "insert"`. IGNORED while
+     `focus == "palette"` (`ignored_palette_focus`).
+   - `:select` — strip the command, DISCARD any remainder (a selection utterance
+     is not dictation), emit `ui_action select %{ordinal: n}`, leave the draft
+     alone. `action: "select"`.
+   - `:navigate` — strip the command, discard any remainder, emit the
+     corresponding `ui_action`, leave the draft alone. `action: "navigate"`.
+3. If NO command matched:
+   - `focus == "composer"` -> §8.1 append, unchanged (`action: "appended"`).
+   - `focus == "palette"` -> try `match_label/2` against the last reported
+     `candidates` (§8.3.8); on a match emit `ui_action select %{index:, label:}`
+     (`action: "select"`), else emit `ui_action palette_query %{text:}`
+     (`action: "palette_query"`). The draft is NEVER touched either way.
+
+**Arming.** `:insert`, `:select`, `:navigate` and a palette query all CANCEL an
+open arming window (the user kept talking, so it is not a confirmation) and
+NEVER open one. Only `:send` ever opens it. Nothing in phase 2c sets `sending`.
+
+#### 8.3.7 Insert join rules
+
+- `"\n"` / `"\n\n"`: `String.trim_trailing/1` the existing draft, then
+  concatenate with NO separator.
+- `"#"` / `"##"`: joined with a SINGLE SPACE when the draft is non-empty and does
+  not already end in whitespace; otherwise concatenated directly.
+- After a `#`/`##` insert the session sets `pending_insert: true`, which makes
+  the NEXT appended transcript concatenate with NO separator — so the spoken
+  query lands immediately after the trigger where `Autocomplete`'s
+  `/#(\S*)$/` can see it. `pending_insert` is cleared by that append, by any
+  other insert, by `cancel/1`, by a send, and by a manual `draft_edit`.
+- KNOWN LIMITATION, documented not fixed: the autocomplete trigger regex stops
+  at the first space, so a multi-word spoken query searches on its FIRST WORD
+  only. Selecting a result replaces everything from the trigger to the caret, so
+  the extra words are consumed by the replacement rather than left behind.
+
+#### 8.3.8 Name matching — `match_label/2`
+
+Deliberately conservative: ordinals are the reliable path, names are a bonus.
+
+Compare the WHOLE transcript (not the terminal 1-3 tokens) against each
+candidate label, spaces removed on both sides, scoring
+`max(ratio(a, b), ratio(phonetic(a), phonetic(b)))`. A match requires
+`best >= 0.85` AND `best - runner_up >= 0.10` (with a single candidate, treat
+the runner-up as 0.0). Otherwise: no match.
+
+#### 8.3.9 Client obligations
+
+- **Focus tracking.** A MutationObserver on `document.body` recomputes
+  `{focus, candidates}`, debounced 150 ms. `focus = "palette"` iff
+  `#command-palette-results` is in the DOM. Candidates come from
+  `#command-palette-item-<i>` label text when the palette is open, else from
+  `#autocomplete-dropdown:not(.hidden) button[data-index]`, else `[]`.
+- **`open_palette`**: no-op when already open; else
+  `document.dispatchEvent(new CustomEvent("command-palette:toggle"))` (the
+  existing seam `CommandPalette` already binds).
+- **`close_palette`**: no-op when closed; else the same toggle seam.
+- **`palette_query`**: set `#command-palette-input.value`, then dispatch a
+  bubbling `input` AND a bubbling `KeyboardEvent("keyup")` — `phx-keyup="search"`
+  is what actually reaches the LiveComponent.
+- **`select`**: resolve to a 0-based index (`ordinal - 1` for an ordinal), then
+  apply to the active list — the composer autocomplete dropdown FIRST
+  (`#autocomplete-dropdown:not(.hidden) button[data-index="<i>"]` -> dispatch
+  `mousedown`, which is the handler that hook binds), else the palette
+  (`#command-palette-item-<i>` -> `.click()`, which carries `phx-click="select"`
+  with its `phx-value-index`). Out of range or no list: no-op plus a log line.
+- **`navigate`**: MUST live-navigate. `VoiceBarLive` renders one HIDDEN
+  `<.link navigate={path} data-voice-nav={path}>` per path in the fixed set, and
+  the hook clicks the matching anchor. NEVER `window.location`, never a plain
+  `<a href>` — a document reload takes the bar, the mic, the `AudioContext` and
+  the channel with it (§8.2).
+- **`back`**: `window.history.back()` (LiveView handles the popstate for
+  live-navigated pages).
+- The §8.2 draft-sink rule is unchanged; palette queries never go through it.
+
+#### 8.3.10 Discoverability
+
+The bar carries a help affordance listing the current vocabulary grouped by
+class, rendered from the SERVER-SIDE source of truth (`Intent.command_vocab/0` +
+`class/1`) so the list cannot drift from the matcher. Collapsed by default, and
+it must cost ZERO header height while collapsed — §8.2's 48 px idle / 64 px armed
+budget at 390 px still holds and is re-measured with `getBoundingClientRect`,
+never a screenshot.
+
 ## 9. Known traps
 
 1. **`getUserMedia` requires a SECURE CONTEXT.**
@@ -1400,7 +1618,7 @@ Phases 3, 4 and 5 keep their original numbers; only phase 2 was split, into 2,
 | C2 client streaming events | 2 | §7.2 | — | in progress |
 | C3 streaming TTS producer | 2 | §7.3 | — | in progress |
 | C4 global voice bar + single send | 2b | §8.2 | ORCAHUB3-88, ORCAHUB3-86 | in progress |
-| C5 voice-driven navigation | 2c | §13 (design notes only) | ORCAHUB3-87 | design |
+| C5 voice-driven navigation | 2c | §8.3 (design notes: §13) | ORCAHUB3-87 | in progress |
 
 Phase-1 contracts are unchanged and remain normative: §8.1 (wire + DOM),
 §5.1.1 (the matcher), §3.2 (the VAD settings).
@@ -1454,6 +1672,25 @@ STILL OPEN — all three are human-in-the-loop or a small upstream change:
   (section 6).
 
 ## 12. Changelog
+
+**v0.5 (2026-09-18, phase 2c contract pinned)** — §8.3 NEW (C5): phase 2c's
+contract, pinned BEFORE any of it was implemented, in the same manner as
+§7.1-7.3 and §8.2. It makes `focus` (`composer | palette`) a CLIENT-owned fact
+the server never infers; keeps §5.1.1's matcher and `default_vocab/0`
+byte-for-byte intact and adds `command_vocab/0` / `class/1` / `payload/1` /
+`match_label/2` purely additively; pins the candidate vocabulary (every phrase
+at most three tokens, so §13.5's "orca the third one" cannot ship) behind a
+corpus acceptance bar of zero new false positives and zero stolen positives at
+0.85; adds exactly one client -> server event (`ui_focus`) and one server ->
+client event (`ui_action`), plus `focus` on the `state` snapshot and five new
+`segment_result` actions; and pins the server routing table, the insert
+join/`pending_insert` rules, the conservative `match_label/2` margin, the
+client's live-navigation and palette-driving obligations, and a
+zero-header-height discoverability affordance. §8.3 SUPERSEDES §13, which is
+now labelled the DESIGN RECORD; §10.5's map re-points C5 at §8.3 with §13 kept
+as the design notes. The "max score on negatives" column in §8.3.3 is
+deliberately unfilled — a sibling slice measures it and a later doc pass fills
+it in.
 
 **v0.5 (2026-09-18, phase 2/2b landed)** — C1-C4 are IMPLEMENTED and
 integration-verified 9/9 at `113fa91` (commit list and the nine checks are in
@@ -1706,6 +1943,9 @@ assumptions so implementation does not inherit them.
   questions added.
 
 ## 13. Phase 2c design notes: voice-driven navigation (C5)
+
+**This section is now the DESIGN RECORD only — §8.3 is phase 2c's NORMATIVE
+contract and supersedes everything below wherever the two differ.**
 
 DESIGN ONLY. Nothing here is a contract yet — phase 2c is the design, and the
 implementation is a later phase that will get its OWN normative contract in the
