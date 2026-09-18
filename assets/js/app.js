@@ -164,7 +164,7 @@ const TTSMethods = {
     // turn end (§7.3) — the streaming producer records it in ttsSpokenIds
     // under both its stream id and the persisted message's own id.
     this.handleEvent("tts-autoplay", ({ message_id }) => {
-      if (this.ttsSpokenIds.has(message_id)) return
+      if (this.ttsWasSpoken(message_id)) return
       this.ttsPlayById(message_id)
     })
 
@@ -311,6 +311,13 @@ const TTSMethods = {
       // previous stream) gives way to the message being written right now.
       this.ttsStop()
       this.ttsStreamActiveId = streamId
+      // Marked spoken HERE, on the first chunk, not at the later re-key:
+      // the server's end-of-turn `tts-autoplay` push can land before the
+      // persisted message has rendered (measured: stream stop 2038ms,
+      // message in the DOM 2079ms, autoplay ~2100ms), and a suppression
+      // that waits for that render loses the race and reads the whole
+      // message a second time.
+      this.ttsSpokenIds.add(streamId)
       this.activeId = streamId
       this.activeNode = null
       this.chunks = [chunk]
@@ -399,6 +406,22 @@ const TTSMethods = {
       this.ttsAwaitingChunk = false
       this.ttsStop()
     }
+  },
+
+  // Was this message already read aloud while it streamed? The id the
+  // server pushes for autoplay is the FEED's key (`tts_message_id/1`,
+  // which prefers `uuid`/`row_id`), while the producer knows the message
+  // by its BACKEND id (the stream id) until the re-key catches up — so
+  // resolve one to the other through the rendered node rather than relying
+  // on the re-key having happened yet.
+  ttsWasSpoken(id) {
+    if (!id) return false
+    if (this.ttsSpokenIds.has(id)) return true
+    const footer = document.getElementById(`tts-footer-${id}`)
+    const streamId = footer && footer.closest("[data-message-id]")
+      ? footer.closest("[data-message-id]").dataset.messageId
+      : null
+    return !!streamId && this.ttsSpokenIds.has(streamId)
   },
 
   // Is `id` the target currently playing, allowing for a mid-playback
