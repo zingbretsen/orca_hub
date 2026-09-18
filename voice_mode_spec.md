@@ -1,16 +1,35 @@
 # Voice Mode — Design Spec (DRAFT, v0.5)
 
-Status: DRAFT v0.5 — **phase 1 deployed (`d679c12`); phase 2/2b in progress.**
+Status: DRAFT v0.5 — **phase 1 deployed (`d679c12`); phase 2 + 2b implemented
+at `113fa91`; phase 2c (voice navigation + spoken composer control sequences)
+next.**
 Phase 1 commits: A `f23b5b8`, B `0080399`, C `4a28f2b`, D `ef9f87a`+`f101886`,
 E `df935f1`, F `6f0e6d4`+`097806d`+`735b396`, integration fix `8d67708`, panel
 shrink §8.1 DOM change — see §12. Phase 1 EXIT CRITERIA PENDING —
 `spikes/voice/ACOUSTIC_TEST.md` Parts A and B have not been run; they gate
 phases 3-4, not phase 2.
+Phase 2/2b commits: A1 `a07de0d`+`202b870` (header nav -> live navigation),
+A2 `f112b6e` (assistant text deltas from claude/codex/pi,
+`OrcaHub.Backend.Deltas`, `Capabilities.streaming_deltas`), A3
+`d82b2e3`+`2ba418c` (this spec's v0.5 contracts C1-C5), B1
+`593fde6`+`8567169`+`908847d`+`528cde0`+`0e64e67` (AssistantStream bubble,
+streaming TTS producer `assets/js/tts_stream.js`, the "Speak while streaming"
+toggle, the spoken-mark race fix), B3 `9b56ea7`+`538ae5d`+`74f7541`
+(`Voice.Session` `send_request`/`sent_ack`/`send_failed`/`send_direct`/
+`composer`, the sticky `OrcaHubWeb.VoiceBarLive`, the hook rework, the in-page
+panel removed, the §8.1/§8.2 corrections), scroll fix `f5413f9`, stage-C fix
+`113fa91` (`QueueLive`'s `tts_stream_init` clause). Integration: 9/9 PASS on
+the real page at `0e64e67`+`113fa91` — Claude + pi live streaming, nav survival
+with one AudioContext and one join, spoken send through the composer with the
+attachment line persisted, half-duplex 143/143 muted samples, the prefetch gate
+holding 0/20 requests during a busy window, header 48/64/16 px at 390 px, and
+retarget carrying the draft.
 Phase 2 = §7.1-7.3 (C1-C3, streaming deltas + streaming TTS); phase 2b = §8.2
 (C4, the global voice bar and the single send path); phase 2c = §13 (C5, voice
-navigation — design only). See §10 and the §10.5 map.
+navigation + composer control sequences — design only). See §10 and the §10.5
+map.
 Author: orchestrator handoff, 2026-09-14; phase 2 contracts pinned 2026-09-18.
-Owner: phase 1 landed; phase 2+ per §10.
+Owner: phases 1-2b landed; phase 2c per §10.
 
 Real-time voice interaction with an OrcaHub session: open mic -> VAD-gated
 transcription on GB10 -> accumulate a draft -> a spoken trigger sends it ->
@@ -824,6 +843,18 @@ a small name -> phrase map, default "running a tool") and never the payload.
 A message spoken while streaming is marked spoken so the existing end-of-turn
 `tts-autoplay` does NOT read it again.
 
+**MEASURED NUANCE (stage-C integration, `113fa91`).** The mark has to be set on
+the message's FIRST released chunk, not at the `stop` re-key: the end-of-turn
+`tts-autoplay` push can arrive before the persisted message renders (measured
+stream stop 2038 ms, message in the DOM 2079 ms, autoplay ~2100 ms), so a
+suppression that waits for that render loses the race and reads the whole
+message a second time. Relatedly, the accumulator's `flush()` at `stop` can
+enqueue the tail sentence a few ms AFTER the persisted node has rendered
+(measured ~3 ms) — that is the same read continuing, not a re-read, because the
+queue is still the streamed one and is only then re-keyed onto the persisted
+id. So the invariant to assert is "no `ttsPlayById` for that message, and no
+duplicated text", NOT literally zero enqueues after the render.
+
 While a voice segment is in flight to ASR (the Voice hook dispatches
 `orca:voice-asr-busy {busy: bool}` on `window`), the prefetch pipeline does not
 start NEW synthesis requests (the current chunk finishes; the next fetch waits)
@@ -1423,6 +1454,18 @@ STILL OPEN — all three are human-in-the-loop or a small upstream change:
   (section 6).
 
 ## 12. Changelog
+
+**v0.5 (2026-09-18, phase 2/2b landed)** — C1-C4 are IMPLEMENTED and
+integration-verified 9/9 at `113fa91` (commit list and the nine checks are in
+the header). Spec changes in this pass are documentation only: the header now
+reads "phase 2 + 2b implemented at `113fa91`; phase 2c next", and §7.3 records
+the measured nuance that the spoken mark must be set on the FIRST chunk while
+the accumulator's `stop` flush may legitimately enqueue the tail sentence ~3 ms
+after the persisted node renders — the invariant is "no `ttsPlayById`, no
+duplicated text", not zero post-render enqueues. `.context/voice-mode.md` now
+carries the phase 2/2b map and its own invariants (live navigation, the
+two-segment rule for a spoken command, the shared-`TTSMethods` push rule, the
+48/64/16 px header budget). C5 (§13) stays design-only and is next.
 
 **v0.4.2 -> v0.5** — phase 2 opened. Three new NORMATIVE contracts (C1-C3) for
 streaming assistant deltas and streaming TTS, one (C4) for the global voice bar
