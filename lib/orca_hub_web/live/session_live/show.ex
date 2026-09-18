@@ -126,6 +126,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:attach_candidates, [])
      |> assign(:attach_query, "")
      |> assign(:tts_autoplay, false)
+     # C3 — hydrated from the client's localStorage by "tts_stream_init" on
+     # connect, exactly like :tts_autoplay above.
+     |> assign(:tts_stream, false)
      # voice_mode_spec.md §5.1/§9 trap 2 — voice mode is OFF on every mount
      # and can only be turned on by an explicit click, because that click is
      # the user gesture (sticky activation) the browser's autoplay policy
@@ -242,7 +245,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
        auto_upload: true
      )
      |> schedule_prefetch_older_messages(window.has_more)
-     |> maybe_push_tts_config()}
+     |> maybe_push_tts_config()
+     |> maybe_push_voice_target()}
   end
 
   @impl true
@@ -297,14 +301,26 @@ defmodule OrcaHubWeb.SessionLive.Show do
   defp handle_delivery_result({:queued, _status}, _socket, on_success), do: on_success.()
 
   defp handle_delivery_result({:error, :busy}, socket, _on_success) do
-    {:noreply, put_flash(socket, :error, "Session is busy")}
+    {:noreply, delivery_failed(socket, "Session is busy")}
   end
 
   defp handle_delivery_result({:error, reason}, socket, _on_success) do
     message =
       Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}"
 
-    {:noreply, put_flash(socket, :error, message)}
+    {:noreply, delivery_failed(socket, message)}
+  end
+
+  # C4/ORCAHUB3-86 single send path: a voice-driven send runs through THIS
+  # composer (the hook calls `form.requestSubmit()`), so the voice bar needs
+  # the failure signal the flash alone doesn't give it — on success the hook
+  # observes the existing `clear-prompt` push, on failure this one. A plain
+  # push_event with no listener is a no-op, so it costs nothing when voice
+  # mode is off.
+  defp delivery_failed(socket, message) do
+    socket
+    |> put_flash(:error, message)
+    |> push_event("voice-send-failed", %{reason: message})
   end
 
   defp maybe_subscribe_sessions_topic(socket) do
@@ -1153,6 +1169,25 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # resets on every reload/reconnect/navigation (tts_rewrite_spec.md).
   def handle_event("tts_autoplay_init", %{"enabled" => enabled}, socket) do
     {:noreply, assign(socket, :tts_autoplay, enabled)}
+  end
+
+  # voice_mode_spec.md §7.3 (C3) — "Speak while streaming": read the reply
+  # sentence-by-sentence as it is written instead of once at turn end. Same
+  # localStorage-backed init/persisted round-trip as autoplay above (the
+  # assign is transient; the client holds the durable value); the producer
+  # itself lives entirely in `TTSMethods`, so this toggle is the whole of the
+  # LiveView's involvement.
+  def handle_event("toggle_tts_stream", _params, socket) do
+    enabled = !socket.assigns.tts_stream
+
+    {:noreply,
+     socket
+     |> assign(:tts_stream, enabled)
+     |> push_event("tts_stream_persisted", %{enabled: enabled})}
+  end
+
+  def handle_event("tts_stream_init", %{"enabled" => enabled}, socket) do
+    {:noreply, assign(socket, :tts_stream, enabled)}
   end
 
   # voice_mode_spec.md §5.1, §8.1 DOM contract. This is the WHOLE of the
@@ -2505,6 +2540,70 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, socket}
   end
 
+  # voice_mode_spec.md §7.1/§7.2 (C1 -> C2): the runner's in-flight assistant
+  # deltas, forwarded straight to the browser as one `assistant-stream` event
+  # shape and NOTHING else. Deliberately no assigns: an accumulating string
+  # assign would re-render (and re-diff) the whole feed on every token, which
+  # is exactly the cost this design avoids — the `AssistantStream` half of the
+  # feed hook owns the in-progress bubble's DOM, and drops it once the
+  # persisted `{:event, ...}` message for the same `stream_id` has rendered.
+  # Best-effort by contract: a page that mounted mid-turn simply misses the
+  # deltas and sees the persisted message, so there is no catch-up path here.
+  @impl true
+  def handle_info({:assistant_stream_start, %{"stream_id" => id}}, socket) do
+    {:noreply, push_event(socket, "assistant-stream", %{op: "start", stream_id: id})}
+  end
+
+  @impl true
+  def handle_info({:assistant_block_start, payload}, socket) do
+    {:noreply,
+     push_event(
+       socket,
+       "assistant-stream",
+       drop_nils(%{
+         op: "block_start",
+         stream_id: payload["stream_id"],
+         block_index: payload["block_index"],
+         block_type: payload["type"],
+         name: payload["name"]
+       })
+     )}
+  end
+
+  @impl true
+  def handle_info({:assistant_delta, payload}, socket) do
+    {:noreply,
+     push_event(
+       socket,
+       "assistant-stream",
+       drop_nils(%{
+         op: "delta",
+         stream_id: payload["stream_id"],
+         block_index: payload["block_index"],
+         text: payload["text"]
+       })
+     )}
+  end
+
+  @impl true
+  def handle_info({:assistant_block_stop, payload}, socket) do
+    {:noreply,
+     push_event(
+       socket,
+       "assistant-stream",
+       drop_nils(%{
+         op: "block_stop",
+         stream_id: payload["stream_id"],
+         block_index: payload["block_index"]
+       })
+     )}
+  end
+
+  @impl true
+  def handle_info({:assistant_stream_stop, %{"stream_id" => id}}, socket) do
+    {:noreply, push_event(socket, "assistant-stream", %{op: "stop", stream_id: id})}
+  end
+
   # One-shot background prefetch scheduled by schedule_prefetch_older_messages/2
   # at mount — buffers the next-older page (see buffer_older_page/1) WITHOUT
   # touching @messages/the DOM, so it never disturbs scroll position or
@@ -2636,6 +2735,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # Catch-all: ignore unexpected messages so the LiveView never crashes.
   @impl true
   def handle_info(_msg, socket), do: {:noreply, socket}
+
+  # C2's "nil fields omitted" — a `block_index: null` on the wire would read
+  # as "block 0" to any client doing a loose check, so absent stays absent.
+  defp drop_nils(payload), do: Map.reject(payload, fn {_k, v} -> is_nil(v) end)
 
   # Auto-archive sessions that were opened and abandoned without a single
   # message (one-click creation paths make these easy to accumulate). The
@@ -3410,6 +3513,22 @@ defmodule OrcaHubWeb.SessionLive.Show do
   defp maybe_push_tts_config(socket) do
     if connected?(socket) do
       push_event(socket, "tts-config", %{api_token: Application.get_env(:orca_hub, :api_token)})
+    else
+      socket
+    end
+  end
+
+  # voice_mode_spec.md §7.4/C4 — tells the (page-independent, sticky) voice
+  # bar which session the user is now looking at, so the bar can retarget
+  # itself without the session page owning any voice state. There is
+  # deliberately no matching push on teardown: `terminate/2` cannot
+  # push_event, so the DISAPPEARANCE of the composer is the signal instead
+  # (`document.body.dataset.voiceComposerFor`, set/cleared by the feed
+  # hook's mounted/destroyed, plus the composer's own
+  # `data-voice-composer-for`). Harmless when no voice bar is listening.
+  defp maybe_push_voice_target(socket) do
+    if connected?(socket) do
+      push_event(socket, "voice-target", %{session_id: socket.assigns.session.id})
     else
       socket
     end

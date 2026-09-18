@@ -2006,6 +2006,37 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert_push_event(view, "tts_autoplay_persisted", %{enabled: true})
     end
 
+    # voice_mode_spec.md §7.3 (C3). The producer itself is client-side; the
+    # LiveView owns only the toggle, and owns it the same way it owns
+    # autoplay — a transient assign hydrated from localStorage on connect.
+    test "the speak-while-streaming toggle round-trips through localStorage", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert html =~ ~s(phx-click="toggle_tts_stream")
+      refute :sys.get_state(view.pid).socket.assigns.tts_stream
+
+      render_hook(view, "tts_stream_init", %{"enabled" => true})
+      assert :sys.get_state(view.pid).socket.assigns.tts_stream
+
+      # Toggling pushes the new value back for the client to persist.
+      view |> element("button[phx-click='toggle_tts_stream']") |> render_click()
+      assert_push_event(view, "tts_stream_persisted", %{enabled: false})
+      refute :sys.get_state(view.pid).socket.assigns.tts_stream
+
+      view |> element("button[phx-click='toggle_tts_stream']") |> render_click()
+      assert_push_event(view, "tts_stream_persisted", %{enabled: true})
+    end
+
+    test "speak-while-streaming is off on a fresh mount (the client holds the durable value)",
+         %{conn: conn, claude_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      refute :sys.get_state(view.pid).socket.assigns.tts_stream
+    end
+
     test "the ORCA_API_TOKEN for /api/tts is pushed once connected, never rendered into the page",
          %{conn: conn, claude_session: session} do
       Application.put_env(:orca_hub, :api_token, "tts-test-token")
@@ -2146,6 +2177,222 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
                ~s(id="voice-panel")
 
       refute :sys.get_state(view.pid).socket.assigns.voice_mode
+    end
+  end
+
+  # voice_mode_spec.md §7.1/§7.2 (C1 -> C2). The LiveView's entire share of
+  # streaming is this translation: five PubSub tuples in, one `assistant-stream`
+  # event shape out, nothing assigned. These pin the wire shape the
+  # `AssistantStream` half of the feed hook reads, including the "nil fields
+  # omitted" rule — a `block_index: nil` would read as block 0 on the client.
+  describe "assistant delta stream (C2 forwarding)" do
+    test "stream_start forwards as op=start with just the stream id", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      send(view.pid, {:assistant_stream_start, %{"stream_id" => "msg_abc"}})
+
+      assert_push_event(view, "assistant-stream", payload)
+      assert payload == %{op: "start", stream_id: "msg_abc"}
+    end
+
+    test "a text block_start forwards its index and type", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      send(
+        view.pid,
+        {:assistant_block_start,
+         %{"stream_id" => "msg_abc", "block_index" => 0, "type" => "text", "name" => nil}}
+      )
+
+      assert_push_event(view, "assistant-stream", payload)
+
+      assert payload == %{
+               op: "block_start",
+               stream_id: "msg_abc",
+               block_index: 0,
+               block_type: "text"
+             }
+
+      refute Map.has_key?(payload, :name)
+    end
+
+    test "a tool_use block_start carries the tool name (the chip/announcement source)", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      send(
+        view.pid,
+        {:assistant_block_start,
+         %{"stream_id" => "msg_abc", "block_index" => 1, "type" => "tool_use", "name" => "Bash"}}
+      )
+
+      assert_push_event(view, "assistant-stream", payload)
+
+      assert payload == %{
+               op: "block_start",
+               stream_id: "msg_abc",
+               block_index: 1,
+               block_type: "tool_use",
+               name: "Bash"
+             }
+    end
+
+    test "a delta forwards its text verbatim", %{conn: conn, claude_session: session} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      send(
+        view.pid,
+        {:assistant_delta, %{"stream_id" => "msg_abc", "block_index" => 0, "text" => "hel"}}
+      )
+
+      assert_push_event(view, "assistant-stream", payload)
+
+      assert payload == %{op: "delta", stream_id: "msg_abc", block_index: 0, text: "hel"}
+    end
+
+    test "block_stop and stream_stop forward as op=block_stop / op=stop", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      send(view.pid, {:assistant_block_stop, %{"stream_id" => "msg_abc", "block_index" => 0}})
+      assert_push_event(view, "assistant-stream", stop_block)
+      assert stop_block == %{op: "block_stop", stream_id: "msg_abc", block_index: 0}
+
+      send(view.pid, {:assistant_stream_stop, %{"stream_id" => "msg_abc"}})
+      assert_push_event(view, "assistant-stream", stop)
+      assert stop == %{op: "stop", stream_id: "msg_abc"}
+    end
+
+    test "deltas assign nothing — no growing string on the socket", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      before = :sys.get_state(view.pid).socket.assigns
+
+      send(view.pid, {:assistant_stream_start, %{"stream_id" => "msg_abc"}})
+
+      send(
+        view.pid,
+        {:assistant_delta, %{"stream_id" => "msg_abc", "block_index" => 0, "text" => "hello"}}
+      )
+
+      assert_push_event(view, "assistant-stream", %{op: "delta"})
+
+      assert :sys.get_state(view.pid).socket.assigns == before
+    end
+
+    test "the feed renders the hook's ignored slot for the in-progress bubble", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Inside the SCROLLING feed container (so the growing bubble follows
+      # the same scroll logic) and phx-update="ignore" (so a LiveView patch
+      # never sweeps the hook's children away).
+      assert view
+             |> element(~s(#message-feed #assistant-stream-slot[phx-update="ignore"]))
+             |> has_element?()
+    end
+
+    test "a persisted assistant message is addressable by the backend's own message id", %{
+      conn: conn,
+      claude_session: session
+    } do
+      # `stream_id` == `message.id` (C1), but the feed's OWN key
+      # (`tts_message_id/1`, used for `tts-text-`/`tts-footer-`) prefers
+      # `uuid` — they differ for Claude. `data-message-id` is the bridge the
+      # hook polls for to know the live bubble can be dropped, and the
+      # rendered message's `data-tts-target` is what it re-keys TTS onto.
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "assistant",
+            "uuid" => "row-uuid-1",
+            "message" => %{
+              "id" => "msg_abc",
+              "content" => [%{"type" => "text", "text" => "hello there"}]
+            }
+          }
+        })
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert html =~ ~s(data-message-id="msg_abc")
+
+      assert view
+             |> element(~s([data-message-id="msg_abc"] [data-tts-target="row-uuid-1"]))
+             |> has_element?()
+    end
+  end
+
+  # voice_mode_spec.md C4 (ORCAHUB3-88/86). The sticky voice bar is rendered
+  # OUTSIDE this LiveView, so everything it needs from the session page is an
+  # explicit, testable seam: which session is on screen (`voice-target`),
+  # which form is its composer (`data-voice-composer-for`), and whether a
+  # send it triggered failed (`voice-send-failed`, the negative counterpart
+  # of the existing `clear-prompt` success push).
+  describe "voice bar seams" do
+    test "mount pushes voice-target with this session's id once connected", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert_push_event(view, "voice-target", %{session_id: id})
+      assert id == session.id
+    end
+
+    test "the composer form carries data-voice-composer-for for this session", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert html =~ ~s(data-voice-composer-for="#{session.id}")
+
+      # It must be on the FORM (the thing the hook calls requestSubmit() on),
+      # and that form must be the one wrapping the composer textarea.
+      assert view
+             |> element(~s(form[data-voice-composer-for="#{session.id}"] textarea#prompt-input))
+             |> has_element?()
+    end
+
+    test "a failed delivery pushes voice-send-failed with the same reason as the flash", %{
+      conn: conn
+    } do
+      # A session assigned to a node that isn't in the cluster — the same
+      # delivery failure a real offline agent produces, and the one case
+      # where the voice bar must keep the draft instead of clearing it.
+      dir = Path.join(System.tmp_dir!(), "voice_send_fail_#{System.unique_integer([:positive])}")
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          runner_node: "debian@totally-offline-host"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      render_submit(view, "send_message", %{"prompt" => "hello"})
+
+      assert_push_event(view, "voice-send-failed", %{reason: reason})
+      assert reason =~ "not currently connected"
+      refute_push_event(view, "clear-prompt", %{})
     end
   end
 

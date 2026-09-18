@@ -1520,6 +1520,16 @@
           class="flex-1 overflow-y-auto space-y-1 p-4 bg-base-200 rounded-lg text-sm"
         >
           <MessageComponents.message_feed messages={@messages} session_node={@session_node} />
+          <%!-- In-progress assistant bubble (voice_mode_spec.md §7.2 / C2).
+        Empty and server-rendered ONLY as an anchor: the feed hook's
+        AssistantStream half appends `#stream-<stream_id>` here as deltas
+        arrive and removes it once the persisted message has rendered above.
+        `phx-update="ignore"` is load-bearing — a hook-created child of the
+        feed itself would be swept away by the next LiveView patch (the feed
+        is ordinary server-rendered markup, not a LiveView stream), and it
+        keeps the growing bubble inside the SCROLLING container so
+        ScrollToBottom's follow logic applies to it unchanged. --%>
+          <div id="assistant-stream-slot" phx-update="ignore"></div>
         </div>
 
         <div
@@ -1716,11 +1726,18 @@
         left the textarea a sliver at phone widths. At `sm:` and up
         `sm:flex-nowrap` + `sm:basis-auto` + `sm:order-none` restore the
         original single row exactly. --%>
+          <%!-- `data-voice-composer-for` is the C4 draft-sink/send-path seam:
+        the (page-independent) voice bar finds THIS form for THIS session,
+        mirrors the draft into its textarea and calls requestSubmit() on it,
+        so a voice send goes through the exact same `send_message` path a
+        typed one does — uploads consumed, attachments appended,
+        clear-prompt/voice-send-failed semantics intact. --%>
           <.form
             for={%{}}
             phx-submit="send_message"
             phx-change="validate"
             class="flex flex-wrap sm:flex-nowrap gap-2"
+            data-voice-composer-for={@session.id}
             multipart
           >
             <%!-- The click IS the user gesture that satisfies the autoplay
@@ -1743,6 +1760,26 @@
               title={if @tts_autoplay, do: "Disable TTS autoplay", else: "Enable TTS autoplay"}
             >
               <.icon name="hero-speaker-wave" class="size-5" />
+            </button>
+            <%!-- "Speak while streaming" (voice_mode_spec.md §7.3 / C3) —
+          reads the reply sentence-by-sentence as it is written instead of
+          once at turn end. Gated on the backend actually emitting deltas:
+          `Map.get/3` rather than `@capabilities.streaming_deltas` because
+          A2's capability field is still landing — the default keeps the
+          toggle visible until it exists, and hides it for a backend that
+          advertises `streaming_deltas: false` the moment it does. --%>
+            <button
+              :if={Map.get(@capabilities, :streaming_deltas, true)}
+              type="button"
+              phx-click="toggle_tts_stream"
+              class={["btn btn-ghost btn-square", @tts_stream && "text-primary"]}
+              title={
+                if @tts_stream,
+                  do: "Stop speaking replies while they stream",
+                  else: "Speak replies while they stream"
+              }
+            >
+              <.icon name="hero-bolt" class="size-5" />
             </button>
             <div class="dropdown dropdown-top">
               <div tabindex="0" role="button" class="btn btn-ghost btn-square">
