@@ -175,9 +175,12 @@ the contracts (§10.5 is the contract -> phase -> section map):
   that survives navigation, plus a SINGLE send path through the real composer
   form. SUPERSEDES the `SessionLive.Show` panel above; the `[data-voice-*]` DOM
   contract and every phase-1 event survive verbatim. Resolves ORCAHUB3-88 /
-  ORCAHUB3-86.
-- **§13 (C5), phase 2c** — voice navigation, DESIGN ONLY, no contract yet
-  (ORCAHUB3-87). New vocabulary must score 0 new FPs at 0.85 against
+  ORCAHUB3-86. Hard mobile budget: idle = one icon button in the EXISTING
+  header row, armed <= phase 1's 16 px at 390 px — it is on every page.
+- **§13 (C5), phase 2c** — voice navigation AND spoken composer control
+  sequences ("orca new line", the `#`/`##` autocomplete triggers as a new
+  "insert" intent class). DESIGN ONLY, no contract yet (ORCAHUB3-87). New
+  vocabulary must score 0 new FPs at 0.85 against
   `test/support/fixtures/voice/intent_corpus.json` before it ships.
 
 Still NOT built: openWakeWord stop/pause (3), AEC / duck-on-detect (4), the LLM

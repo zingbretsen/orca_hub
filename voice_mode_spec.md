@@ -1061,6 +1061,41 @@ What §8.1 keeps and what moves:
   `data-voice-status`, `data-voice-mic`, `data-voice-arming`,
   `data-voice-arming-ms`, `data-voice-log`, `data-voice-draft-target`. The hook
   selectors do not change.
+- **Carries over from §8.1's v0.4.2 rewrite, named explicitly because 2b is
+  exactly where each would silently break**:
+  - **The mic button is ALWAYS rendered and is a real click target** — it is the
+    autoplay-policy gesture (sticky activation) that `toggle_voice` was in phase
+    1. The hook still arms in `mounted()` and still unhides
+    `data-voice-action="start"` if `ctx.state` is `suspended` after `resume()`.
+    A bar that renders its mic only once voice is already on cannot be turned
+    on.
+  - **Every write to a composer textarea is followed by a bubbling synthetic
+    `input` event**, guarded so it is not echoed back as a `draft_edit`. A bare
+    `.value =` skips `Autocomplete`'s autoresize and leaves a one-row box
+    holding several rows of text. This now applies to whichever textarea the
+    draft sink rule selected, not just `#prompt-input`.
+  - **The never-clobber seeding rules**: pre-typed text is pushed as a
+    `draft_edit` seed at join (and, per the retarget rule below, at every
+    re-join), and an empty `state.draft` NEVER empties a non-empty composer.
+    Clearing stays explicit — `"sent"`, a `cancel` `segment_result`, or
+    `clear-prompt`. Retarget makes joins routine rather than once-per-page, so
+    this is load-bearing in 2b in a way it was not in phase 1.
+  - **The one-line strip and the `<details>` log** (`data-voice-log-details`,
+    CLOSED on load, `open` persisted in `localStorage` under
+    `orca:voice:log-open`, CSS-only because the panel is
+    `phx-update="ignore"`).
+- **MOBILE CONSTRAINT (a hard budget, not a preference)**: the bar's IDLE state
+  is ONE icon button sitting in the EXISTING header row — it adds no row and no
+  vertical pixels when voice is off. When armed, the status/mic/error/arming
+  strip must cost no more than phase 1's **16 px** on a 390 px viewport. Phase 1
+  spent a cycle getting the panel from 167 px down to 16 px (§12, v0.4.1 ->
+  v0.4.2) and `29c9778` then deliberately reclaimed the session header's budget
+  down to ~97 px on a phone; a global bar is on EVERY page, so regressing that
+  costs more than the phase-1 panel did. Measure it (`getBoundingClientRect`,
+  not a screenshot) at 390x844 before calling 2b done. The target-session picker
+  and the bar's own draft box are part of this budget: the picker is a control
+  in the same row, and the draft box is shown ONLY when the page has no composer
+  for the target.
 - **Moves**: the markup carrying those selectors moves OUT of
   `session_live/show.html.heex` and INTO `OrcaHubWeb.VoiceBarLive`, together with
   the `toggle_voice` gesture. §8.1's "slice F renders" now means VoiceBarLive
@@ -1325,6 +1360,21 @@ gate phases 3-4.
   the focus concept, the corpus-scoring requirement, and ORCAHUB3-87's
   motivating example, candidate vocabulary and design questions recorded
   verbatim, plus which of them §8.2 already makes easier.
+- §8.2, second pass: the three v0.4.2 §8.1 rules that 2b would most easily
+  break are now named rather than folded into "the DOM contract" — the mic
+  button as the always-rendered autoplay gesture, the bubbling synthetic
+  `input` event on every composer write, and the never-clobber seeding rules
+  (which retarget promotes from once-per-page to routine). Plus a hard MOBILE
+  BUDGET: idle = one icon button in the existing header row, armed <= phase
+  1's 16 px at 390 px, measured with `getBoundingClientRect`, picker and draft
+  box included — a global bar is on every page, so it cannot spend what
+  `29c9778` reclaimed.
+- §13.5 NEW (C5 addendum, from Zach 2026-09-18): spoken COMPOSER control
+  sequences — "orca new line" / "orca new paragraph" and the "#" / "##"
+  autocomplete triggers as a NEW "insert" intent class carrying a payload,
+  distinct from actions and NOT opening the arming window, with ordinal
+  selection shared with the palette (ONE selection mechanism) and the same
+  corpus-scoring gate.
 
 **v0.4.1 -> v0.4.2** — the §8.1 DOM contract shrank. The panel occupied roughly
 half a 390 px viewport (status row + its own 2-row draft textarea + a
@@ -1582,3 +1632,36 @@ makes "speak a command, land on another page, keep talking" possible at all. The
 client-directed effect the fourth question asks for is also the same shape as
 §8.2's `send_request` — a server -> client instruction the client executes —
 so that precedent, not `{:send, text}`, is the one to copy.
+
+### 13.5 C5 addendum (from Zach, 2026-09-18): spoken COMPOSER control sequences, in-session
+
+Beyond navigation, dictation needs a small set of spoken control sequences that
+insert Orca-specific tokens into the composer draft rather than trigger an
+action:
+
+- "orca new line" (also accept "orca newline") -> append "\n" to the draft (no
+  space-join around it); "orca new paragraph" -> "\n\n".
+- "orca session search" (or "orca hashtag") -> append "#" to the draft, which is
+  the composer's session-search autocomplete trigger; "orca project search" (or
+  "orca double hashtag") -> append "##", the project-search trigger. The words
+  spoken AFTER the trigger, in the same or the next segment, are the query; the
+  draft mirror must dispatch a real `input` event so the composer's autocomplete
+  hook opens exactly as if typed.
+- Picking a result from the autocomplete: spoken ordinal ("orca first" / "orca
+  second" / "orca the third one") as the reliable path; name matching as a
+  bonus. This is the same selection mechanism as the palette in C5 — design ONE
+  selection mechanism for both.
+- Rules that carry over unchanged: two-word `orca` prefix; terminal-position
+  matching on a completed segment; argmax-then-threshold on the phonetic
+  matcher; EVERY new vocabulary entry scored against
+  `test/support/fixtures/voice/intent_corpus.json` with 0 new false positives at
+  0.85 before it ships; insertion commands strip themselves from the draft the
+  way send/cancel do. Insertions are a NEW intent class ("insert" with a
+  payload) in `OrcaHub.Voice.Intent` / `Voice.Session`, distinct from actions,
+  and they must not open the arming window.
+- Discoverability: the voice bar's help affordance lists the current vocabulary.
+
+Still DESIGN ONLY, like the rest of §13. Note the dependency it creates on §8.2:
+the `input`-event rule these insertions need is exactly the one §8.2 carries
+over from §8.1, and the help affordance lives in the bar §8.2 introduces — so
+this addendum assumes phase 2b has landed.
