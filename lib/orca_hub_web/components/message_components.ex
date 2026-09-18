@@ -223,6 +223,18 @@ defmodule OrcaHubWeb.MessageComponents do
   def tts_message_id(msg),
     do: msg["uuid"] || msg["id"] || msg["row_id"] || "h#{:erlang.phash2(msg)}"
 
+  # The BACKEND's own id for this assistant message (`message.id` — Claude's
+  # API message id, or the UUID the Codex/pi normalizer mints), which is what
+  # the live delta stream keys on (voice_mode_spec.md §7.1: `stream_id` ==
+  # `message.id`). Deliberately NOT the same thing as tts_message_id/1 above,
+  # which prefers the transport-level `uuid`/row id — the two differ for
+  # Claude, so the streaming bubble has to correlate on this one and then
+  # read the rendered message's OWN key off `data-tts-target` to hand the
+  # TTS queue over. Rendered as `data-message-id`; absent when a message map
+  # has no `message.id` at all (older rows, direct component tests).
+  @doc false
+  def api_message_id(msg), do: get_in(msg, ["message", "id"])
+
   # Plain assistant text (all "text" content blocks joined), used both to
   # render the message and — from SessionLive.Show — to decide whether a
   # message is a valid autoplay target at all (tool-only turns aren't).
@@ -419,9 +431,10 @@ defmodule OrcaHubWeb.MessageComponents do
       |> assign(:tool_uses, regular_tools)
       |> assign(:agent_tools, agent_tools)
       |> assign(:msg_id, tts_message_id(assigns.msg))
+      |> assign(:api_msg_id, api_message_id(assigns.msg))
 
     ~H"""
-    <div :if={@has_text} class="chat chat-start">
+    <div :if={@has_text} class="chat chat-start" data-message-id={@api_msg_id}>
       <div class="chat-header text-xs opacity-50 mb-1">
         <.icon name="hero-sparkles-micro" class="size-3" /> Assistant
         <.timestamp value={@msg["timestamp"]} />

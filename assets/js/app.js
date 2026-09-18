@@ -21,6 +21,7 @@
 import "phoenix_html"
 import { TerminalHook } from "./terminal_hook"
 import { VoiceHook } from "./voice/voice_hook"
+import { createTtsStreamAccumulator, toolAnnouncement, SENTENCE_BOUNDARY } from "./tts_stream"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
@@ -104,6 +105,24 @@ document.addEventListener("click", (e) => {
 // surfaces share one implementation (no second copy-pasted player).
 const TTS_AUTOPLAY_KEY = "orca:tts-autoplay"
 
+// "Speak while streaming" (voice_mode_spec.md §7.3 / C3) — off by default,
+// persisted client-side exactly like autoplay above.
+const TTS_STREAM_KEY = "orca:tts-stream"
+
+// How often the accumulator is poked so its 1500ms idle rule can fire on
+// silence (no delta is arriving to carry it).
+const TTS_STREAM_TICK_MS = 500
+
+// Longest a synthesis request will wait on `orca:voice-asr-busy` before
+// going ahead anyway. The gate is a GPU-contention optimisation (§6.1: ASR
+// p50 541ms -> 842ms while TTS synthesises), not a correctness requirement,
+// so a missed `{busy: false}` must never wedge playback.
+const TTS_ASR_WAIT_MAX_MS = 4000
+
+// How long the streamed queue waits for the persisted message to render
+// before giving up on re-keying itself onto it.
+const TTS_REKEY_SETTLE_MS = 5000
+
 // Bounded retry for a rate-limited (429) synthesis request. The gateway's
 // MAX_CONCURRENCY semaphore is shared with LLM traffic, so a 429 is
 // transient contention rather than a bad request — see ttsRequestChunk.
@@ -126,6 +145,7 @@ const TTSMethods = {
     this.pendingControllers = new Map()
     this.pendingFetches = new Map()
     this.ttsApiToken = null
+    this.ttsStreamMount()
 
     this.el.addEventListener("click", (e) => {
       const target = e.target.closest("[data-tts-target]")
@@ -140,7 +160,13 @@ const TTSMethods = {
     // That scan broke the moment older pages could be spliced back above the
     // newest message (windowed feed + pagination); an id LiveView already
     // knows is correct regardless of DOM order or windowing.
-    this.handleEvent("tts-autoplay", ({ message_id }) => this.ttsPlayById(message_id))
+    // A message already read aloud while it streamed is not read again at
+    // turn end (§7.3) — the streaming producer records it in ttsSpokenIds
+    // under both its stream id and the persisted message's own id.
+    this.handleEvent("tts-autoplay", ({ message_id }) => {
+      if (this.ttsSpokenIds.has(message_id)) return
+      this.ttsPlayById(message_id)
+    })
 
     // Bearer credential for POST /api/tts (now behind :api_authed — see
     // router.ex). Delivered once over the already-connected LiveView socket
@@ -162,6 +188,243 @@ const TTSMethods = {
       } else {
         localStorage.removeItem(TTS_AUTOPLAY_KEY)
       }
+    })
+
+    // Same round-trip for "Speak while streaming" (C3).
+    const storedStream = localStorage.getItem(TTS_STREAM_KEY) === "1"
+    this.ttsStreamEnabled = storedStream
+    this.pushEvent("tts_stream_init", { enabled: storedStream })
+    this.handleEvent("tts_stream_persisted", ({ enabled }) => {
+      this.ttsStreamEnabled = enabled
+      if (enabled) {
+        localStorage.setItem(TTS_STREAM_KEY, "1")
+      } else {
+        localStorage.removeItem(TTS_STREAM_KEY)
+        // Turning it off mid-turn stops the sentence already in the air
+        // rather than letting the current message finish.
+        if (this.ttsStreamActiveId) this.ttsStop()
+        this.ttsStreams.clear()
+      }
+    })
+  },
+
+  // --- streaming producer (voice_mode_spec.md §7.3 / C3) ----------------
+  //
+  // A SECOND producer for the existing chunk queue, not a second player: it
+  // turns `assistant-stream` deltas into sentence-sized chunks and appends
+  // them to `this.chunks` while the message is still being written. The
+  // transport controls, prefetch, cache and abort machinery below are
+  // untouched — the only behavioural change they needed is "the end of the
+  // queue is not the end of the message while a stream is still open".
+  //
+  // It listens on the `window` CustomEvent the feed hook re-dispatches, not
+  // on the LiveView event directly, so the producer is not coupled to the
+  // feed's DOM (C2) and any future host can drive it the same way.
+  ttsStreamMount() {
+    this.ttsStreams = new Map()
+    this.ttsStreamActiveId = null
+    this.ttsStreamSuppressed = new Set()
+    this.ttsAliases = new Map()
+    this.ttsAwaitingChunk = false
+    this.ttsSpokenIds = new Set()
+    this.ttsAsrBusy = false
+
+    this._onAssistantStream = (e) => this.ttsStreamEvent(e.detail || {})
+    window.addEventListener(ASSISTANT_STREAM_EVENT, this._onAssistantStream)
+
+    // §7's GPU-contention rule: ASR and TTS share the GB10, so while a voice
+    // segment is in flight we do not START new synthesis (in-flight requests
+    // and playback continue).
+    this._onAsrBusy = (e) => {
+      this.ttsAsrBusy = !!(e.detail && e.detail.busy)
+    }
+    window.addEventListener("orca:voice-asr-busy", this._onAsrBusy)
+
+    this._ttsStreamTimer = setInterval(() => this.ttsStreamTick(), TTS_STREAM_TICK_MS)
+  },
+
+  ttsUnmountShared() {
+    this.ttsStop()
+    window.removeEventListener(ASSISTANT_STREAM_EVENT, this._onAssistantStream)
+    window.removeEventListener("orca:voice-asr-busy", this._onAsrBusy)
+    clearInterval(this._ttsStreamTimer)
+    this.ttsStreams.clear()
+  },
+
+  ttsStreamEvent({ op, stream_id, text, block_type, name }) {
+    if (!this.ttsStreamEnabled || !stream_id) return
+    const now = Date.now()
+
+    switch (op) {
+      case "start":
+        this.ttsStreamSuppressed.delete(stream_id)
+        this.ttsStreams.set(stream_id, createTtsStreamAccumulator(now))
+        break
+
+      case "block_start":
+        // One phrase per tool call, never its payload (§7).
+        if (block_type === "tool_use") {
+          this.ttsStreamEnqueue(stream_id, toolAnnouncement(name), false)
+        }
+        break
+
+      case "delta": {
+        const acc = this.ttsStreams.get(stream_id)
+        if (!acc) return
+        for (const chunk of acc.push(text, now)) this.ttsStreamEnqueue(stream_id, chunk)
+        break
+      }
+
+      case "block_stop": {
+        const acc = this.ttsStreams.get(stream_id)
+        if (!acc) return
+        for (const chunk of acc.flush(now)) this.ttsStreamEnqueue(stream_id, chunk)
+        break
+      }
+
+      case "stop":
+        this.ttsStreamEnd(stream_id)
+        break
+    }
+  },
+
+  // Drives the accumulator's idle rule, which by definition cannot fire on
+  // an incoming delta.
+  ttsStreamTick() {
+    if (!this.ttsStreams || this.ttsStreams.size === 0) return
+    const now = Date.now()
+    for (const [streamId, acc] of this.ttsStreams) {
+      for (const chunk of acc.tick(now)) this.ttsStreamEnqueue(streamId, chunk)
+    }
+  },
+
+  // Appends one chunk to the live queue, taking playback over on the first
+  // chunk of a stream. `clean` is false for tool announcements, which are
+  // already plain prose.
+  ttsStreamEnqueue(streamId, text, clean = true) {
+    if (this.ttsStreamSuppressed.has(streamId)) return
+    const chunk = clean ? this.ttsCleanText(text) : text
+    if (!chunk) return
+
+    if (this.ttsStreamActiveId !== streamId) {
+      // Whatever was playing (a manual read of an older message, or a
+      // previous stream) gives way to the message being written right now.
+      this.ttsStop()
+      this.ttsStreamActiveId = streamId
+      this.activeId = streamId
+      this.activeNode = null
+      this.chunks = [chunk]
+      this.currentIndex = 0
+      this.ttsAwaitingChunk = false
+      this.playing = true
+      this.ttsEmitState()
+      this.ttsPlayCurrentChunk()
+      return
+    }
+
+    this.chunks.push(chunk)
+
+    if (this.ttsAwaitingChunk) {
+      // Playback had caught up with the writer and parked — resume on the
+      // chunk that just arrived.
+      this.ttsAwaitingChunk = false
+      if (this.currentIndex < this.chunks.length - 1) this.currentIndex++
+      this.playing = true
+      this.ttsEmitState()
+      this.ttsPlayCurrentChunk()
+    } else {
+      this.ttsUpdateUI(this.activeId)
+    }
+  },
+
+  // The writer finished. Flush the tail, then hand the queue over to the
+  // persisted message so the per-message controls (and the "already spoken"
+  // suppression of autoplay) address the thing the user can actually see.
+  ttsStreamEnd(streamId) {
+    const acc = this.ttsStreams.get(streamId)
+    if (acc) {
+      for (const chunk of acc.flush(Date.now())) this.ttsStreamEnqueue(streamId, chunk)
+      this.ttsStreams.delete(streamId)
+    }
+    if (this.ttsStreamActiveId !== streamId) return
+
+    const startedAt = Date.now()
+    const poll = () => {
+      if (this.ttsStreamActiveId !== streamId) return
+
+      const rendered = this.ttsStreamPersistedNode(streamId)
+      if (rendered) {
+        this.ttsStreamRekey(streamId, rendered)
+      } else if (Date.now() - startedAt > TTS_REKEY_SETTLE_MS) {
+        // Never rendered (a tool-only turn, or the page navigated away) —
+        // let the queue finish under its stream id and stop cleanly.
+        this.ttsStreamActiveId = null
+        if (this.ttsAwaitingChunk) this.ttsStop()
+      } else {
+        setTimeout(poll, 100)
+      }
+    }
+    poll()
+  },
+
+  // The rendered message carries the backend's id (`data-message-id`, ==
+  // the stream id) while its TTS controls are keyed by the feed's own id
+  // (`data-tts-target`, which prefers `uuid` and so differs for Claude) —
+  // this resolves one to the other. See MessageComponents.api_message_id/1.
+  ttsStreamPersistedNode(streamId) {
+    const escaped = window.CSS && CSS.escape ? CSS.escape(streamId) : streamId
+    const bubble = document.querySelector(`[data-message-id="${escaped}"]`)
+    return bubble ? bubble.querySelector("[data-tts-target]") : null
+  },
+
+  ttsStreamRekey(streamId, footer) {
+    const domId = footer.dataset.ttsTarget
+    this.ttsSpokenIds.add(streamId)
+    this.ttsSpokenIds.add(domId)
+
+    if (this.activeId === streamId) {
+      // An `ended` handler captured mid-stream still refers to the stream
+      // id — the alias keeps it current instead of silently stranding
+      // playback on a chunk boundary (see ttsSameTarget).
+      this.ttsAliases.set(streamId, domId)
+      this.activeId = domId
+      this.activeNode = footer
+      this.ttsUpdateUI(domId)
+    }
+
+    this.ttsStreamActiveId = null
+    // Playback had already caught up with the writer and there is nothing
+    // more coming, so this is the natural end of the message.
+    if (this.ttsAwaitingChunk) {
+      this.ttsAwaitingChunk = false
+      this.ttsStop()
+    }
+  },
+
+  // Is `id` the target currently playing, allowing for a mid-playback
+  // re-key from stream id to persisted message id?
+  ttsSameTarget(id) {
+    return id === this.activeId || this.ttsAliases.get(id) === this.activeId
+  },
+
+  // Resolves once no voice segment is in flight to ASR. Bounded, because
+  // this is a scheduling courtesy, not a correctness gate.
+  ttsAwaitAsrIdle(signal) {
+    if (!this.ttsAsrBusy) return Promise.resolve()
+
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer)
+        window.removeEventListener("orca:voice-asr-busy", onBusy)
+        signal.removeEventListener("abort", done)
+        resolve()
+      }
+      const onBusy = (e) => {
+        if (!(e.detail && e.detail.busy)) done()
+      }
+      const timer = setTimeout(done, TTS_ASR_WAIT_MAX_MS)
+      window.addEventListener("orca:voice-asr-busy", onBusy)
+      signal.addEventListener("abort", done, { once: true })
     })
   },
 
@@ -216,7 +479,7 @@ const TTSMethods = {
   // --- chunking / text extraction (unchanged from the per-message player) --
   ttsSplitIntoChunks(text) {
     // Split on sentence-ending punctuation followed by whitespace
-    const raw = text.split(/(?<=[.!?])\s+/)
+    const raw = text.split(SENTENCE_BOUNDARY)
     const minChars = 80
     const chunks = []
     let buffer = ""
@@ -387,6 +650,16 @@ const TTSMethods = {
     this.currentIndex = 0
     this.activeId = null
     this.activeNode = null
+
+    // A stop DURING a live stream is an explicit "don't read this one" —
+    // later chunks of the same message must not silently restart playback.
+    if (this.ttsStreamActiveId) {
+      this.ttsStreamSuppressed.add(this.ttsStreamActiveId)
+      this.ttsStreamActiveId = null
+    }
+    this.ttsAwaitingChunk = false
+    if (this.ttsAliases) this.ttsAliases.clear()
+
     if (prevId) this.ttsResetUI(prevId)
   },
 
@@ -423,7 +696,11 @@ const TTSMethods = {
     const controller = new AbortController()
     this.pendingControllers.set(index, controller)
 
-    const promise = this.ttsRequestChunk(index, controller.signal)
+    // §7.3: while a voice segment is in flight to ASR, do not START a new
+    // synthesis request — the two contend for the same GB10 GPU. In-flight
+    // requests and current playback are deliberately untouched.
+    const promise = this.ttsAwaitAsrIdle(controller.signal)
+      .then(() => this.ttsRequestChunk(index, controller.signal))
       .then((blob) => {
         const url = URL.createObjectURL(blob)
         this.audioCache[index] = url
@@ -505,22 +782,27 @@ const TTSMethods = {
       // Stale by the time the fetch resolved (stopped, switched message, or
       // skipped ahead/back) — drop it rather than starting playback for a
       // chunk nobody asked for anymore.
-      if (!url || !this.playing || this.activeId !== id || this.currentIndex !== index) return
+      if (!url || !this.playing || !this.ttsSameTarget(id) || this.currentIndex !== index) return
 
       this.audio = new Audio()
       this.audio.preload = "auto"
       this.audio.addEventListener("ended", () => {
-        if (this.activeId !== id) return
+        if (!this.ttsSameTarget(id)) return
         if (this.currentIndex < this.chunks.length - 1) {
           this.currentIndex++
-          this.ttsUpdateUI(id)
+          this.ttsUpdateUI(this.activeId)
           this.ttsPlayCurrentChunk()
+        } else if (this.ttsStreamActiveId && this.ttsSameTarget(this.ttsStreamActiveId)) {
+          // The writer is still writing: the end of the QUEUE is not the end
+          // of the message. Park here and let ttsStreamEnqueue resume us.
+          this.ttsAwaitingChunk = true
+          this.ttsUpdateUI(this.activeId)
         } else {
           this.ttsStop()
         }
       })
       this.audio.addEventListener("canplaythrough", () => {
-        if (this.playing && this.activeId === id) this.audio.play()
+        if (this.playing && this.ttsSameTarget(id)) this.audio.play()
       }, { once: true })
       this.audio.src = url
 
@@ -539,12 +821,14 @@ const TTSMethods = {
       // call ttsStop(), so a single exhausted-retry chunk silenced the whole
       // message; skip past it and keep playing instead. Each pass advances
       // the index by one, so a run of failures still terminates at the end.
-      if (!this.playing || this.activeId !== id || this.currentIndex !== index) return
+      if (!this.playing || !this.ttsSameTarget(id) || this.currentIndex !== index) return
 
       if (index < this.chunks.length - 1) {
         this.currentIndex = index + 1
-        this.ttsUpdateUI(id)
+        this.ttsUpdateUI(this.activeId)
         this.ttsPlayCurrentChunk()
+      } else if (this.ttsStreamActiveId && this.ttsSameTarget(this.ttsStreamActiveId)) {
+        this.ttsAwaitingChunk = true
       } else {
         this.ttsStop()
       }
@@ -554,6 +838,9 @@ const TTSMethods = {
   ttsUpdateUI(id) {
     const footer = document.getElementById(`tts-footer-${id}`)
     if (!footer) {
+      // A message being read AS IT STREAMS has no persisted footer yet —
+      // there is no UI to update, which is not a reason to stop playing.
+      if (this.ttsStreamActiveId && this.ttsStreamActiveId === id) return
       this.ttsStop()
       return
     }
@@ -578,6 +865,196 @@ const TTSMethods = {
     const playBtn = footer.querySelector("[data-tts-action='toggle']")
     if (controls) controls.classList.add("hidden")
     if (playBtn) playBtn.innerHTML = TTS_ICON_PLAY
+  }
+}
+
+// In-progress assistant bubble (voice_mode_spec.md §7.2 / contract C2).
+// Mixed into the feed hook rather than being a second `phx-hook` — an element
+// may only carry one — so this is a methods object like TTSMethods above.
+//
+// It owns ONE DOM subtree per live assistant message, `#stream-<stream_id>`,
+// parked in the server-rendered `#assistant-stream-slot` (which is
+// `phx-update="ignore"`, so LiveView never patches over it). Nothing about the
+// live text reaches a socket assign — the server pushes deltas and forgets
+// them; a re-render mid-stream therefore costs the same as one with no stream
+// at all.
+//
+// Every event is ALSO re-dispatched as a `window` CustomEvent so consumers
+// that have no business touching the feed DOM (the streaming TTS producer,
+// and any future host) can listen without coupling to this hook.
+const ASSISTANT_STREAM_EVENT = "orca:assistant-stream"
+
+// How long to keep an orphaned live bubble around waiting for the persisted
+// message to render before giving up and removing it anyway. Only reached
+// when the persisted message never arrives (backend crash mid-turn) or
+// renders without a text bubble at all.
+const ASSISTANT_STREAM_SETTLE_MS = 5000
+
+const AssistantStreamMethods = {
+  assistantStreamMount() {
+    this.streamBubbles = new Map()
+
+    this.handleEvent("assistant-stream", (payload) => {
+      try {
+        this.assistantStreamApply(payload)
+      } finally {
+        // Emitted even if the DOM half threw: TTS must not be silenced by a
+        // rendering bug, and vice versa.
+        window.dispatchEvent(new CustomEvent(ASSISTANT_STREAM_EVENT, { detail: payload }))
+      }
+    })
+  },
+
+  assistantStreamDestroy() {
+    if (!this.streamBubbles) return
+    for (const id of [...this.streamBubbles.keys()]) this.assistantStreamRemove(id)
+    this.streamBubbles.clear()
+  },
+
+  assistantStreamApply({ op, stream_id, block_index, text, block_type, name }) {
+    if (!stream_id) return
+
+    switch (op) {
+      case "start":
+        this.assistantStreamEnsure(stream_id)
+        break
+      case "block_start":
+        if (block_type === "text") this.assistantStreamBlock(stream_id, block_index)
+        else if (block_type === "tool_use") this.assistantStreamChip(stream_id, name)
+        // "thinking" renders nothing live — the persisted message collapses
+        // it into a thinking block of its own (see MessageComponents).
+        break
+      case "delta":
+        this.assistantStreamAppend(stream_id, block_index, text)
+        break
+      case "stop":
+        this.assistantStreamFinish(stream_id)
+        break
+    }
+  },
+
+  assistantStreamEnsure(streamId) {
+    const existing = this.streamBubbles.get(streamId)
+    if (existing && existing.el.isConnected) return existing
+
+    const slot = document.getElementById("assistant-stream-slot")
+    if (!slot) return null
+
+    const el = document.createElement("div")
+    el.id = `stream-${streamId}`
+    el.className = "chat chat-start"
+    el.dataset.assistantStream = streamId
+
+    const header = document.createElement("div")
+    header.className = "chat-header text-xs opacity-50 mb-1"
+    header.textContent = "Assistant"
+
+    const body = document.createElement("div")
+    // Same bubble chrome as a persisted assistant message, minus `prose`:
+    // this is plain text, not rendered markdown, so it keeps its newlines
+    // via pre-wrap and gets re-rendered properly the moment the real
+    // message lands.
+    body.className =
+      "chat-bubble max-w-none min-w-0 max-w-full break-words whitespace-pre-wrap"
+    body.dataset.streamBody = ""
+
+    el.appendChild(header)
+    el.appendChild(body)
+    slot.appendChild(el)
+
+    const entry = { el, body, blocks: new Map() }
+    this.streamBubbles.set(streamId, entry)
+    this.assistantStreamFollow()
+    return entry
+  },
+
+  assistantStreamBlock(streamId, blockIndex) {
+    const entry = this.assistantStreamEnsure(streamId)
+    if (!entry) return null
+    const key = String(blockIndex ?? 0)
+    if (entry.blocks.has(key)) return entry.blocks.get(key)
+
+    const div = document.createElement("div")
+    div.dataset.streamBlock = key
+    entry.body.appendChild(div)
+    entry.blocks.set(key, div)
+    return div
+  },
+
+  // One line per tool call, never the payload (§7's "do not read 400 lines of
+  // diff aloud" rule, applied to the eye as well as the ear).
+  assistantStreamChip(streamId, name) {
+    const entry = this.assistantStreamEnsure(streamId)
+    if (!entry) return
+
+    const chip = document.createElement("div")
+    chip.className = "text-xs opacity-60 italic"
+    chip.textContent = `${name || "tool"}…`
+    entry.body.appendChild(chip)
+    this.assistantStreamFollow()
+  },
+
+  assistantStreamAppend(streamId, blockIndex, text) {
+    if (!text) return
+    const div = this.assistantStreamBlock(streamId, blockIndex)
+    if (!div) return
+    // textContent, never innerHTML — model output is untrusted input here
+    // exactly like anywhere else.
+    div.textContent += text
+    this.assistantStreamFollow()
+  },
+
+  // The persisted message replaces the live bubble, so removing it early
+  // would flash the text out and back in; removing it late would show the
+  // same paragraph twice. Poll for the real render (by the backend's own
+  // message id, which IS the stream id — §7.1) and swap only then.
+  assistantStreamFinish(streamId) {
+    const entry = this.streamBubbles.get(streamId)
+    if (!entry) return
+
+    // A tool-only turn never renders a text bubble to wait for.
+    if (!entry.body.textContent.trim()) {
+      this.assistantStreamRemove(streamId)
+      return
+    }
+
+    const startedAt = Date.now()
+    const poll = () => {
+      if (!this.streamBubbles.has(streamId)) return
+      if (
+        this.assistantStreamPersisted(streamId) ||
+        Date.now() - startedAt > ASSISTANT_STREAM_SETTLE_MS
+      ) {
+        this.assistantStreamRemove(streamId)
+      } else {
+        setTimeout(poll, 100)
+      }
+    }
+    poll()
+  },
+
+  assistantStreamPersisted(streamId) {
+    const escaped = window.CSS && CSS.escape ? CSS.escape(streamId) : streamId
+    return !!(
+      document.querySelector(`[data-message-id="${escaped}"]`) ||
+      document.getElementById(`tts-text-${streamId}`)
+    )
+  },
+
+  assistantStreamRemove(streamId) {
+    const entry = this.streamBubbles.get(streamId)
+    if (!entry) return
+    this.streamBubbles.delete(streamId)
+    entry.el.remove()
+  },
+
+  // A growing bubble must pin the feed exactly like a new message does —
+  // same `following` flag the LiveView-driven path uses, so a user who
+  // scrolled up is never yanked back down.
+  assistantStreamFollow() {
+    if (this.following && typeof this.scrollToBottom === "function") {
+      this.scrollToBottom(false)
+    }
   }
 }
 
@@ -1251,9 +1728,23 @@ let Hooks = {
       })
 
       this.ttsMountShared()
+      this.assistantStreamMount()
+
+      // C4 — the voice bar lives OUTSIDE this LiveView (sticky, in the app
+      // header) and has to know whether the page currently on screen owns a
+      // composer for its target session. `terminate/2` cannot push_event,
+      // so the feed hook's own lifecycle is the signal: set on mount,
+      // cleared on destroy. The composer form's `data-voice-composer-for`
+      // is the authoritative per-form marker; this is the cheap
+      // "is there one at all, and for whom" flag.
+      const composerFor = this.el.closest("[data-session-id]")?.dataset.sessionId ||
+        document.querySelector("form[data-voice-composer-for]")?.dataset.voiceComposerFor
+      if (composerFor) document.body.dataset.voiceComposerFor = composerFor
     },
     destroyed() {
-      this.ttsStop()
+      this.ttsUnmountShared()
+      this.assistantStreamDestroy()
+      delete document.body.dataset.voiceComposerFor
     },
     // Pushes "load_older_messages" once the user has scrolled near the top,
     // gated on the server-driven data-has-more/data-loading-older attributes
@@ -1326,7 +1817,8 @@ let Hooks = {
         behavior: smooth ? "smooth" : "instant"
       })
     },
-    ...TTSMethods
+    ...TTSMethods,
+    ...AssistantStreamMethods
   },
 
   // Same delegated read-aloud engine as ScrollToBottom above, mounted on the
@@ -1336,7 +1828,7 @@ let Hooks = {
       this.ttsMountShared()
     },
     destroyed() {
-      this.ttsStop()
+      this.ttsUnmountShared()
     },
     updated() {
       this.ttsCheckStillPresent()
