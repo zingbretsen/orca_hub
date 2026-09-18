@@ -98,9 +98,12 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       html = view |> voice_bar() |> render()
 
       assert html =~ ~s(data-voice-action="toggle")
-      # §8.2's budget: no strip, no picker, no draft box until voice is on.
+      # §8.2's budget: no strip, no picker, no draft box, no help until voice
+      # is on.
       refute html =~ "voice-bar-strip-row"
       refute html =~ "voice-strip"
+      refute html =~ "data-voice-help-toggle"
+      refute html =~ ~s(id="voice-help")
       refute html =~ "data-voice-bar-draft"
       refute html =~ ~s(name="session_id")
     end
@@ -183,6 +186,147 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       assert html =~ session.id,
              "the selected session must appear as an <option> or the select would " <>
                "silently show a DIFFERENT session as selected"
+    end
+  end
+
+  describe "the help affordance (§8.3.10)" do
+    # Everything here reads the vocabulary out of `Intent` at RUN time. That is
+    # the point of the slice: add or reword an entry in `command_vocab/0` and
+    # these tests demand the help panel show it, without anyone remembering to
+    # edit this file or the template.
+    alias OrcaHub.Voice.Intent
+
+    defp armed_bar(conn) do
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+      render_hook(bar, "voice-on", %{"on" => true})
+      bar
+    end
+
+    defp open_help(bar) do
+      bar |> element("[data-voice-help-toggle]") |> render_click()
+    end
+
+    # Scoped to the panel on purpose: these phrases are ordinary English and
+    # the picker lists real sessions off the shared dev DB, so an unscoped
+    # `html =~ phrase` could pass on a session TITLE.
+    defp help_text(html) do
+      html
+      |> Floki.parse_document!()
+      |> Floki.find("#voice-help")
+      |> Floki.text(sep: " ")
+    end
+
+    test "is collapsed by default — armed costs a trigger and no panel", %{conn: conn} do
+      html = armed_bar(conn) |> render()
+
+      assert html =~ "data-voice-help-toggle"
+
+      # Collapsed means ABSENT, not hidden: there is no node, so there is no
+      # box, so §8.2's 64 px armed budget cannot move.
+      refute html =~ ~s(id="voice-help")
+
+      for {_name, phrase} <- Intent.command_vocab() do
+        refute html =~ phrase,
+               "#{inspect(phrase)} is in the DOM while the help is collapsed — collapsed " <>
+                 "must mean not rendered at all"
+      end
+
+      # The trigger sits in the header row beside the mic, NOT in the strip
+      # row and NOT inside the hook-owned region.
+      doc = Floki.parse_document!(html)
+      assert Floki.find(doc, "#voice-strip [data-voice-help-toggle]") == []
+      assert Floki.find(doc, "#voice-bar-strip-row [data-voice-help-toggle]") == []
+    end
+
+    test "opens, and lists EVERY entry of Intent.command_vocab/0", %{conn: conn} do
+      bar = armed_bar(conn)
+      text = bar |> open_help() |> help_text()
+
+      vocab = Intent.command_vocab()
+      assert length(vocab) >= 24, "the vocabulary shrank — check §8.3.3 before touching this"
+
+      for {name, phrase} <- vocab do
+        assert text =~ phrase,
+               "the help panel does not teach #{inspect(name)} (#{phrase}). It must render " <>
+                 "from Intent.command_vocab/0, not from a hand-written list."
+      end
+    end
+
+    test "groups them by Intent.class/1, with a heading per class", %{conn: conn} do
+      bar = armed_bar(conn)
+      html = open_help(bar)
+
+      sections =
+        html
+        |> Floki.parse_document!()
+        |> Floki.find("#voice-help section")
+
+      classes =
+        Intent.command_vocab() |> Enum.map(fn {n, _} -> Intent.class(n) end) |> Enum.uniq()
+
+      assert length(sections) == length(classes),
+             "expected one section per class in #{inspect(classes)}, got #{length(sections)}"
+
+      # Each section's phrases all belong to that section's class — i.e. the
+      # grouping is real, not decorative.
+      by_class = Enum.group_by(Intent.command_vocab(), fn {n, _} -> Intent.class(n) end)
+
+      for section <- sections do
+        phrases =
+          section |> Floki.find("code") |> Enum.map(&Floki.text/1) |> Enum.map(&String.trim/1)
+
+        assert [{class, _} | _] =
+                 Enum.filter(by_class, fn {_c, entries} ->
+                   Enum.map(entries, fn {_n, p} -> p end) == phrases
+                 end),
+               "a help section lists #{inspect(phrases)}, which is not any one class's " <>
+                 "entries in order"
+
+        assert class in classes
+      end
+    end
+
+    test "teaches the FULL ordinal phrase and the truncated-ninth hazard", %{conn: conn} do
+      text = armed_bar(conn) |> open_help() |> help_text()
+
+      # Three tokens, straight from the vocabulary.
+      for {name, phrase} <- Intent.command_vocab(), Intent.class(name) == :select do
+        assert length(String.split(phrase)) == 3
+        assert text =~ phrase
+      end
+
+      # §8.3.4's measured hazard: "orca ninth" alone scores higher against
+      # "orca send" than against its own phrase. A help panel that lets the
+      # user think the ordinal word is enough is worse than none.
+      assert text =~ "orca ninth", "the ninth ordinal must be shown in full"
+      assert text =~ ~r/truncated .*orca ninth.* is heard as\s+orca send/i
+    end
+
+    test "the close button and a second click on the trigger both collapse it", %{conn: conn} do
+      bar = armed_bar(conn)
+
+      assert open_help(bar) =~ ~s(id="voice-help")
+
+      refute bar |> element("#voice-help button[phx-click='close_help']") |> render_click() =~
+               ~s(id="voice-help")
+
+      assert open_help(bar) =~ ~s(id="voice-help")
+      refute open_help(bar) =~ ~s(id="voice-help")
+    end
+
+    test "turning voice off takes an open panel with it", %{conn: conn} do
+      bar = armed_bar(conn)
+      assert open_help(bar) =~ ~s(id="voice-help")
+
+      off = render_hook(bar, "voice-on", %{"on" => false})
+      refute off =~ ~s(id="voice-help")
+      refute off =~ "data-voice-help-toggle"
+
+      # ...and it does not spring back open when the mic returns.
+      on_again = render_hook(bar, "voice-on", %{"on" => true})
+      assert on_again =~ "data-voice-help-toggle"
+      refute on_again =~ ~s(id="voice-help")
     end
   end
 end

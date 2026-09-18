@@ -33,6 +33,19 @@ defmodule OrcaHubWeb.VoiceBarLive do
   whole cycle earning (spec §12, v0.4.1 -> v0.4.2), which is why the picker
   is height-clamped rather than a stock `select-xs` (24 px).
 
+  ## The help affordance (§8.3.10)
+
+  A "?" next to the mic opens a panel listing the spoken vocabulary grouped by
+  `OrcaHub.Voice.Intent.class/1`. It is rendered from `Intent.command_vocab/0`
+  and `Intent.payload/1` — never from a copy of the phrases — so reword a
+  command in `Intent` and the help reworks itself. `vocab_groups/0` carries
+  only the group ORDER and the prose; `voice_bar_live_test.exs` fails if any
+  vocabulary entry stops appearing.
+
+  It costs nothing vertically: collapsed it is not in the DOM at all, and open
+  it is `position: fixed`, i.e. out of the header's flow. Both the trigger and
+  the panel exist only while voice is on, exactly like §8.3.9's nav anchors.
+
   ## Who owns what
 
   This LiveView owns structure and the one piece of server data (the
@@ -52,6 +65,7 @@ defmodule OrcaHubWeb.VoiceBarLive do
   use OrcaHubWeb, :live_view
 
   alias OrcaHub.HubRPC
+  alias OrcaHub.Voice.Intent
 
   # The picker is a jump list, not a session browser — /sessions is one
   # header link away.
@@ -69,19 +83,77 @@ defmodule OrcaHubWeb.VoiceBarLive do
   # and nothing else".
   @nav_paths ~w(/sessions /sessions/new)
 
+  # §8.3.10's group order, and the one line of prose each class is worth. ONLY
+  # the order and the prose live here — the phrases themselves are read out of
+  # `Intent.command_vocab/0` on every render, so the panel cannot drift from
+  # the matcher. A class that appears in `Intent.class/1` and NOT in this list
+  # still renders, at the end, under its own name (see `vocab_groups/0`).
+  @class_order [:action, :insert, :select, :navigate, :ignore]
+
+  @class_headings %{
+    action: "Send and cancel",
+    insert: "Type something for me",
+    select: "Pick from a list",
+    navigate: "Go somewhere",
+    ignore: "Heard, then ignored"
+  }
+
+  @class_notes %{
+    action:
+      "While the command palette is open, orca send is ignored and orca cancel " <>
+        "just closes the palette — your draft is never touched from there.",
+    insert:
+      "The command word is removed; anything you said before it is dictated first. " <>
+        "After # or ## the next thing you say lands straight in the search box.",
+    select:
+      "Say the whole three-token phrase. A truncated \"orca ninth\" is heard as " <>
+        "orca send, not as the ninth item. Picks from the command palette, or from " <>
+        "the # / ## autocomplete list when that is open.",
+    navigate: "Navigation stays in-app, so the microphone keeps listening across the move.",
+    ignore:
+      "Things you say to a person mid-sentence. The command word is dropped and the " <>
+        "rest of the sentence still lands in the draft — but nothing is ever sent."
+  }
+
+  # The two `:action` and two `:ignore` commands carry an EMPTY `payload/1`, so
+  # their effect cannot be derived the way every other class's can. Anything
+  # not listed here and not described by its payload simply renders with no
+  # hint — never dropped from the list.
+  @bare_hints %{
+    send: "sends the draft to the target session",
+    cancel: "clears the draft",
+    stop: "nothing — it will not stop a reply (that is phase 3)",
+    pause: "nothing — it will not pause a reply (that is phase 3)"
+  }
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
      socket
      |> assign(:voice_on, false)
+     |> assign(:help_open, false)
      |> assign(:target_session_id, nil)
      |> assign(:nav_paths, @nav_paths)
+     |> assign(:vocab_groups, vocab_groups())
      |> assign(:sessions, list_sessions()), layout: false}
   end
 
   @impl true
   def handle_event("voice-on", params, socket) do
-    {:noreply, assign(socket, :voice_on, params["on"] == true)}
+    on? = params["on"] == true
+    # Turning the mic off takes the help with it: its trigger lives in the
+    # armed bar, so an open panel would otherwise outlive the only control
+    # that can close it.
+    {:noreply,
+     socket |> assign(:voice_on, on?) |> assign(:help_open, on? && socket.assigns.help_open)}
+  end
+
+  def handle_event("toggle_help", _params, socket) do
+    {:noreply, assign(socket, :help_open, !socket.assigns.help_open)}
+  end
+
+  def handle_event("close_help", _params, socket) do
+    {:noreply, assign(socket, :help_open, false)}
   end
 
   def handle_event("voice-target", %{"session_id" => id}, socket) when is_binary(id) do
@@ -129,6 +201,24 @@ defmodule OrcaHubWeb.VoiceBarLive do
         <.icon name="hero-microphone" class="size-5" />
       </button>
 
+      <%!-- §8.3.10's help trigger. It is a SIBLING of the mic in the same
+           header flex row, so it costs width and exactly zero height, and it
+           only exists while voice is on — §8.2's idle budget is "the mic
+           button and nothing else", and the vocabulary is unusable until the
+           channel is joined anyway. --%>
+      <button
+        :if={@voice_on}
+        type="button"
+        phx-click="toggle_help"
+        aria-expanded={to_string(@help_open)}
+        aria-controls="voice-help"
+        data-voice-help-toggle
+        class={["btn btn-ghost btn-sm btn-circle shrink-0", @help_open && "text-primary"]}
+        title="What can I say?"
+      >
+        <.icon name="hero-question-mark-circle" class="size-5" />
+      </button>
+
       <%!-- §8.3.9's live-navigation anchors. `hidden` is display:none, so
            they are not flex items of the header and cost exactly zero of
            §8.2's height budget; the hook reaches them by their
@@ -144,6 +234,60 @@ defmodule OrcaHubWeb.VoiceBarLive do
       >
         {path}
       </.link>
+
+      <%!-- §8.3.10's panel. Two things keep it inside §8.2's budget: while
+           collapsed it is not rendered AT ALL (no node, so no box to measure),
+           and while open it is `position: fixed`, i.e. out of flow, so it
+           cannot grow the header either. It is deliberately OUTSIDE
+           `#voice-strip` — that region is `phx-update="ignore"` and belongs to
+           the hook, and a LiveView-patched panel in there would fight the
+           hook's writes.
+
+           Every phrase below comes from `Intent.command_vocab/0` via
+           `vocab_groups/0`; nothing spoken is spelled out in this template, so
+           the help cannot drift from the matcher. --%>
+      <div
+        :if={@voice_on and @help_open}
+        id="voice-help"
+        role="dialog"
+        aria-label="Voice commands"
+        phx-window-keydown="close_help"
+        phx-key="Escape"
+        class="fixed z-50 top-16 left-2 right-2 sm:left-auto sm:right-4 sm:w-96 max-h-[70vh] overflow-y-auto rounded-box border border-base-300 bg-base-100 shadow-xl p-3 text-xs"
+      >
+        <div class="flex items-center gap-2 mb-2">
+          <h2 class="font-semibold text-sm grow">What can I say?</h2>
+          <button
+            type="button"
+            phx-click="close_help"
+            aria-label="Close voice commands"
+            class="btn btn-ghost btn-xs btn-circle"
+          >
+            <.icon name="hero-x-mark" class="size-4" />
+          </button>
+        </div>
+
+        <section :for={group <- @vocab_groups} class="mb-3 last:mb-0">
+          <h3 class="font-semibold opacity-70 uppercase tracking-wide text-[10px]">
+            {group.heading}
+          </h3>
+          <ul class="mt-1 space-y-0.5">
+            <li :for={entry <- group.entries} class="flex flex-wrap items-baseline gap-x-2">
+              <code class="font-mono text-[11px] bg-base-200 rounded px-1 py-px">
+                {entry.phrase}
+              </code>
+              <span :if={entry.hint != ""} class="opacity-60">{entry.hint}</span>
+            </li>
+          </ul>
+          <p :if={group.note} class="mt-1 opacity-60 leading-snug">{group.note}</p>
+        </section>
+
+        <p class="mt-3 pt-2 border-t border-base-300 opacity-60 leading-snug">
+          Spaces are ignored when matching, so "orca newline" and "orca new line" are the
+          same command. Say a command at the END of a sentence — anything in front of it
+          is dictated first.
+        </p>
+      </div>
 
       <%!-- The second line, and the ONLY thing voice mode costs vertically.
            `basis-full` wraps it below the header row; the header's `gap-y-0`
@@ -238,6 +382,49 @@ defmodule OrcaHubWeb.VoiceBarLive do
       </div>
     </div>
     """
+  end
+
+  # §8.3.10: the help is a projection of the matcher's own vocabulary, grouped
+  # by `Intent.class/1`. Built once at mount — `command_vocab/0` is a compile
+  # time constant — but built from the FUNCTION, never from a copy of the list,
+  # which is the whole point: a phrase added to (or reworded in) `Intent` shows
+  # up here with no edit to this file, and cannot silently go missing.
+  defp vocab_groups do
+    grouped = Enum.group_by(Intent.command_vocab(), fn {name, _phrase} -> Intent.class(name) end)
+
+    # Known classes in §8.3.10's reading order, then any class this file has
+    # never heard of — so a new class degrades into "shown under its own name"
+    # rather than into "silently omitted".
+    order = @class_order ++ (Map.keys(grouped) -- @class_order)
+
+    for class <- order, entries = grouped[class] do
+      %{
+        class: class,
+        heading: Map.get(@class_headings, class, to_string(class)),
+        note: Map.get(@class_notes, class),
+        entries:
+          Enum.map(entries, fn {name, phrase} ->
+            %{name: name, phrase: phrase, hint: hint(name)}
+          end)
+      }
+    end
+  end
+
+  # What the command does, derived from `Intent.payload/1` wherever the payload
+  # says it — so insert text, ordinals and navigation targets are quoted from
+  # the same map the session routes on.
+  defp hint(name) do
+    case Intent.payload(name) do
+      %{text: "\n"} -> "starts a new line"
+      %{text: "\n\n"} -> "starts a new paragraph"
+      %{text: text} -> "types #{text} and searches on what you say next"
+      %{ordinal: n} -> "picks item #{n}"
+      %{kind: "navigate", path: path} -> "goes to #{path}"
+      %{kind: "open_palette"} -> "opens the command palette"
+      %{kind: "close_palette"} -> "closes the command palette"
+      %{kind: "back"} -> "goes back a page"
+      _empty -> Map.get(@bare_hints, name, "")
+    end
   end
 
   defp session_label(%{title: title}) when is_binary(title) and title != "",
