@@ -197,6 +197,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:show_mcp_server_picker, false)
      |> assign(:show_heartbeat_modal, false)
      |> assign(:show_mobile_actions, false)
+     # Below `sm:` the header collapses every badge except `status` behind a
+     # "+N" chip (the badges themselves stay in the DOM, one flex-basis flip
+     # away). Meaningless at `sm:` and up, where they're always inline.
+     |> assign(:show_meta, false)
      |> assign(:heartbeat_info, HubRPC.get_heartbeat(id))
      |> assign_ask_user_question(runner_status.status, id)
      # pi's extension-UI reply loop (spec §12.3): reconstructed purely from
@@ -901,6 +905,23 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def memory_extract_title(_),
     do: "Memory extraction: default (orchestrator/root sessions only — click to force on)"
+
+  @doc false
+  # How many header badges are collapsed behind the mobile "+N" chip —
+  # everything except `status`, which stays visible at every width. Mirrors
+  # the :if conditions on the badges themselves in show.html.heex; keep the
+  # two in sync.
+  def meta_badge_count(session, cluster_nodes, remote_session, capabilities, plan_mode) do
+    [
+      not is_nil(session.progress_phase),
+      length(cluster_nodes) > 1 or remote_session,
+      session.backend != "claude",
+      session.orchestrator,
+      session.kind == "memory_extraction",
+      capabilities.plan_mode and plan_mode in [:planning, :review]
+    ]
+    |> Enum.count(& &1)
+  end
 
   @doc false
   def memory_extract_class(%{memory_extract: true}), do: "text-primary"
@@ -1702,6 +1723,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
     session = socket.assigns.session
     {:ok, session} = Cluster.unarchive_session(socket.assigns.session_node, session)
     {:noreply, socket |> assign(:session, session) |> assign(:show_mobile_actions, false)}
+  end
+
+  def handle_event("toggle_meta", _params, socket) do
+    {:noreply, assign(socket, :show_meta, !socket.assigns.show_meta)}
   end
 
   def handle_event("open_mobile_actions", _params, socket) do

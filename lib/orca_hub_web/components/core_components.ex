@@ -315,8 +315,8 @@ defmodule OrcaHubWeb.CoreComponents do
   def header(assigns) do
     ~H"""
     <header class={[
-      @actions != [] && "flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-6",
-      "pb-4"
+      @actions != [] && "flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-6",
+      "pb-2 sm:pb-4"
     ]}>
       <div class="min-w-0">
         <h1 class="text-lg font-semibold leading-8">

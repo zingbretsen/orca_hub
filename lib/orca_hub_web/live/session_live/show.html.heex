@@ -23,192 +23,274 @@
   </div>
 
   <.header>
-    <.link navigate={~p"/sessions"} class="text-sm opacity-70">&larr; Sessions</.link>
-    <%= if @editing_title do %>
-      <form phx-submit="save_title" class="inline-flex items-center gap-1 ml-2">
-        <input
-          type="text"
-          name="title"
-          value={@session.title || ""}
-          placeholder="Session title"
-          class="input input-sm input-bordered w-64"
-          autofocus
-          phx-key="Escape"
-          phx-keydown="cancel_title_edit"
-        />
-        <button type="submit" class="btn btn-ghost btn-sm btn-circle" title="Save">
-          <.icon name="hero-check-micro" class="size-4" />
-        </button>
-        <button
-          type="button"
-          phx-click="cancel_title_edit"
-          class="btn btn-ghost btn-sm btn-circle"
-          title="Cancel"
+    <%!-- Below `sm:` this is ONE line: back-link + truncated title + the
+         `status` badge + a "+N" chip. Everything else (progress phase, node,
+         backend, orchestrator, memory, plan mode) stays in the DOM inside the
+         `sm:contents` wrapper below and flips into a second row when the chip
+         is tapped. At `sm:` and up the wrapper is `display: block` and the
+         group is `display: contents`, so every child flows inline in the h1
+         exactly as it did before. --%>
+    <span class="flex flex-wrap items-center gap-x-1 min-w-0 sm:block">
+      <.link navigate={~p"/sessions"} class="text-sm opacity-70 shrink-0">
+        &larr; Sessions
+      </.link>
+      <%= if @editing_title do %>
+        <%!-- Below `sm:` the rename form takes a row of its own (`basis-full`)
+             — sharing the title row with the back-link and badges left the
+             input about 70px wide. --%>
+        <form
+          phx-submit="save_title"
+          class="inline-flex items-center gap-1 basis-full mt-1 flex-1 min-w-0 sm:basis-auto sm:mt-0 sm:ml-2"
         >
-          <.icon name="hero-x-mark-micro" class="size-4" />
-        </button>
-      </form>
-    <% else %>
+          <input
+            type="text"
+            name="title"
+            value={@session.title || ""}
+            placeholder="Session title"
+            class="input input-sm input-bordered w-full sm:w-64"
+            autofocus
+            phx-key="Escape"
+            phx-keydown="cancel_title_edit"
+          />
+          <button type="submit" class="btn btn-ghost btn-sm btn-circle" title="Save">
+            <.icon name="hero-check-micro" class="size-4" />
+          </button>
+          <button
+            type="button"
+            phx-click="cancel_title_edit"
+            class="btn btn-ghost btn-sm btn-circle"
+            title="Cancel"
+          >
+            <.icon name="hero-x-mark-micro" class="size-4" />
+          </button>
+        </form>
+      <% else %>
+        <span
+          class="ml-2 cursor-pointer hover:underline group min-w-0 flex-1 truncate sm:flex-none sm:whitespace-normal sm:overflow-visible sm:text-clip sm:[overflow-wrap:anywhere]"
+          phx-click="edit_title"
+          title={"#{@session.title || @session.directory} — click to edit title"}
+        >
+          {@session.title || @session.directory}
+          <.icon name="hero-pencil-micro" class="size-3 opacity-0 group-hover:opacity-50 inline" />
+        </span>
+      <% end %>
       <span
-        class="ml-2 cursor-pointer hover:underline group [overflow-wrap:anywhere]"
-        phx-click="edit_title"
-        title="Click to edit title"
-      >
-        {@session.title || @session.directory}
-        <.icon name="hero-pencil-micro" class="size-3 opacity-0 group-hover:opacity-50 inline" />
-      </span>
-    <% end %>
-    <span
-      class={[
-        "badge ml-2",
-        @status == :running && "badge-warning",
-        @status == :compacting && "badge-warning",
-        @status == :waiting && "badge-info",
-        @status == :idle && "badge-success",
-        @status == :ready && "badge-ghost",
-        @status == :error && "badge-error"
-      ]}
-      title={@status == :error && @session.error_detail}
-    >
-      {@status}
-    </span>
-    <span
-      :if={@session.progress_phase}
-      class="badge badge-outline ml-1"
-      title={@session.progress_note}
-    >
-      {@session.progress_phase}
-    </span>
-    <%!-- Node badge with dropdown for switching nodes --%>
-    <div :if={length(@cluster_nodes) > 1} class="dropdown dropdown-end ml-1">
-      <div
-        tabindex="0"
-        role="button"
         class={[
-          "badge badge-ghost badge-outline cursor-pointer hover:badge-primary",
-          @session.original_node && @session.original_node != @session.runner_node &&
-            "badge-warning"
+          "badge shrink-0 ml-2",
+          @status == :running && "badge-warning",
+          @status == :compacting && "badge-warning",
+          @status == :waiting && "badge-info",
+          @status == :idle && "badge-success",
+          @status == :ready && "badge-ghost",
+          @status == :error && "badge-error"
         ]}
-        title={
-          if @session.original_node && @session.original_node != @session.runner_node,
-            do:
-              "Original: #{Cluster.node_name(@session.original_node)} → Current: #{@session_node_name}",
-            else: @session.runner_node
+        title={@status == :error && @session.error_detail}
+      >
+        {@status}
+      </span>
+      <%!-- Mobile-only opener for the collapsed badges. Counts what's hidden
+         (meta_badge_count/5 mirrors the :if conditions below it) so the chip
+         says what it's worth tapping for; never rendered when nothing is
+         collapsed. --%>
+      <button
+        :if={
+          meta_badge_count(@session, @cluster_nodes, @remote_session, @capabilities, @plan_mode) >
+            0
         }
+        type="button"
+        phx-click="toggle_meta"
+        class={[
+          "badge badge-sm ml-1 shrink-0 sm:hidden",
+          if(@show_meta, do: "badge-primary", else: "badge-ghost")
+        ]}
+        aria-expanded={to_string(@show_meta)}
+        title={if @show_meta, do: "Hide session badges", else: "Show session badges"}
       >
-        {@session_node_name}
-        <.icon name="hero-chevron-down-micro" class="size-3 ml-0.5" />
-      </div>
-      <ul
-        tabindex="0"
-        class="dropdown-content menu bg-base-300 rounded-box z-10 w-52 p-2 shadow-lg"
-      >
-        <li class="menu-title text-xs">Move session to:</li>
-        <li :for={node_info <- @cluster_nodes}>
-          <button
-            phx-click="change_node"
-            phx-value-node={node_info.node}
-            class={[Atom.to_string(node_info.node) == @session.runner_node && "active"]}
-          >
-            {node_info.name}
-            <span
-              :if={Atom.to_string(node_info.node) == @session.runner_node}
-              class="badge badge-xs"
-            >
-              current
-            </span>
-            <span
-              :if={
-                @session.original_node && Atom.to_string(node_info.node) == @session.original_node &&
-                  @session.original_node != @session.runner_node
-              }
-              class="badge badge-xs badge-warning"
-            >
-              original
-            </span>
-          </button>
-        </li>
-        <li
-          :if={@session.original_node && @session.original_node != @session.runner_node}
-          class="mt-2 border-t border-base-content/10 pt-2"
+        +{meta_badge_count(@session, @cluster_nodes, @remote_session, @capabilities, @plan_mode)}
+      </button>
+      <span class={[
+        "sm:contents",
+        if(@show_meta,
+          do: "basis-full flex flex-wrap items-center gap-1 mt-1",
+          else: "hidden"
+        )
+      ]}>
+        <span
+          :if={@session.progress_phase}
+          class="badge badge-outline badge-sm sm:badge-md ml-1"
+          title={@session.progress_note}
         >
-          <button
-            phx-click="change_node"
-            phx-value-node={@session.original_node}
-            class="text-warning"
+          {@session.progress_phase}
+        </span>
+        <%!-- Node badge with dropdown for switching nodes --%>
+        <div :if={length(@cluster_nodes) > 1} class="dropdown dropdown-end ml-1">
+          <div
+            tabindex="0"
+            role="button"
+            class={[
+              "badge badge-sm sm:badge-md badge-ghost badge-outline cursor-pointer hover:badge-primary",
+              @session.original_node && @session.original_node != @session.runner_node &&
+                "badge-warning"
+            ]}
+            title={
+              if @session.original_node && @session.original_node != @session.runner_node,
+                do:
+                  "Original: #{Cluster.node_name(@session.original_node)} → Current: #{@session_node_name}",
+                else: @session.runner_node
+            }
           >
-            <.icon name="hero-arrow-uturn-left-micro" class="size-4" /> Restore to original node
-          </button>
-        </li>
-      </ul>
-    </div>
-    <span
-      :if={length(@cluster_nodes) == 1 && @remote_session}
-      class="badge badge-ghost badge-outline ml-1"
-      title={@session.runner_node}
-    >
-      {@session_node_name}
-    </span>
-    <span
-      :if={@session.backend != "claude"}
-      class="badge badge-ghost badge-outline ml-1"
-      title="Agent backend"
-    >
-      {String.capitalize(@session.backend)}
-    </span>
-    <span
-      :if={@session.orchestrator}
-      class="badge badge-primary badge-outline ml-1"
-      title="Orchestrator mode: read-only, delegates work to other sessions"
-    >
-      orchestrator
-    </span>
-    <span
-      :if={@session.kind == "memory_extraction"}
-      class="badge badge-ghost badge-outline ml-1"
-      title="Background memory-extraction session — self-archives when it finishes"
-    >
-      memory
-    </span>
-    <span
-      :if={@capabilities.plan_mode && @plan_mode == :planning}
-      class="badge badge-warning badge-outline ml-1"
-    >
-      planning
-    </span>
-    <span
-      :if={@capabilities.plan_mode && @plan_mode == :review}
-      class="badge badge-info badge-outline ml-1"
-    >
-      needs review
+            {@session_node_name}
+            <.icon name="hero-chevron-down-micro" class="size-3 ml-0.5" />
+          </div>
+          <%!-- Same mobile escape as the backend/model picker further down: below
+           `sm:` this badge sits in the expanded meta row near the LEFT edge,
+           where a right-anchored (dropdown-end) menu would render mostly
+           off-screen. Go fixed and clamp to the viewport instead. --%>
+          <ul
+            tabindex="0"
+            class="dropdown-content menu bg-base-300 rounded-box z-10 p-2 shadow-lg max-h-[70vh] overflow-y-auto flex-nowrap fixed! inset-x-2! top-28! w-auto sm:absolute! sm:left-auto! sm:right-0! sm:top-full! sm:w-52"
+          >
+            <li class="menu-title text-xs">Move session to:</li>
+            <li :for={node_info <- @cluster_nodes}>
+              <button
+                phx-click="change_node"
+                phx-value-node={node_info.node}
+                class={[Atom.to_string(node_info.node) == @session.runner_node && "active"]}
+              >
+                {node_info.name}
+                <span
+                  :if={Atom.to_string(node_info.node) == @session.runner_node}
+                  class="badge badge-xs"
+                >
+                  current
+                </span>
+                <span
+                  :if={
+                    @session.original_node &&
+                      Atom.to_string(node_info.node) == @session.original_node &&
+                      @session.original_node != @session.runner_node
+                  }
+                  class="badge badge-xs badge-warning"
+                >
+                  original
+                </span>
+              </button>
+            </li>
+            <li
+              :if={@session.original_node && @session.original_node != @session.runner_node}
+              class="mt-2 border-t border-base-content/10 pt-2"
+            >
+              <button
+                phx-click="change_node"
+                phx-value-node={@session.original_node}
+                class="text-warning"
+              >
+                <.icon name="hero-arrow-uturn-left-micro" class="size-4" />
+                Restore to original node
+              </button>
+            </li>
+          </ul>
+        </div>
+        <span
+          :if={length(@cluster_nodes) == 1 && @remote_session}
+          class="badge badge-ghost badge-outline badge-sm sm:badge-md ml-1"
+          title={@session.runner_node}
+        >
+          {@session_node_name}
+        </span>
+        <span
+          :if={@session.backend != "claude"}
+          class="badge badge-ghost badge-outline badge-sm sm:badge-md ml-1"
+          title="Agent backend"
+        >
+          {String.capitalize(@session.backend)}
+        </span>
+        <span
+          :if={@session.orchestrator}
+          class="badge badge-primary badge-outline badge-sm sm:badge-md ml-1"
+          title="Orchestrator mode: read-only, delegates work to other sessions"
+        >
+          orchestrator
+        </span>
+        <span
+          :if={@session.kind == "memory_extraction"}
+          class="badge badge-ghost badge-outline badge-sm sm:badge-md ml-1"
+          title="Background memory-extraction session — self-archives when it finishes"
+        >
+          memory
+        </span>
+        <span
+          :if={@capabilities.plan_mode && @plan_mode == :planning}
+          class="badge badge-warning badge-outline badge-sm sm:badge-md ml-1"
+        >
+          planning
+        </span>
+        <span
+          :if={@capabilities.plan_mode && @plan_mode == :review}
+          class="badge badge-info badge-outline badge-sm sm:badge-md ml-1"
+        >
+          needs review
+        </span>
+      </span>
     </span>
     <:subtitle>
-      <.link
-        :if={@session.project}
-        navigate={~p"/projects/#{@session.project}"}
-        class="hover:underline"
-      >
-        {@session.project.name}
-      </.link>
-      <span :if={@session.project} class="text-base-content/40 ml-1 [overflow-wrap:anywhere]">
-        {@session.directory}
-      </span>
-      <span :if={!@session.project} class="[overflow-wrap:anywhere]">{@session.directory}</span>
-      <%!-- Orchestrator parentage (ORCAHUB3-50) — a session with no parent is
-           a normal, meaningful state, so it's stated plainly rather than
-           just omitting this span. --%>
-      <span class="text-base-content/40 ml-1 [overflow-wrap:anywhere]">
-        · Parent:
-        <%= if @parent_session do %>
-          <.link navigate={~p"/sessions/#{@parent_session.id}"} class="hover:underline">
-            {@parent_session.title || @parent_session.directory}
-          </.link>
-        <% else %>
-          none
-        <% end %>
+      <span class="block truncate sm:inline sm:whitespace-normal sm:overflow-visible sm:text-clip">
+        <.link
+          :if={@session.project}
+          navigate={~p"/projects/#{@session.project}"}
+          class="hover:underline"
+        >
+          {@session.project.name}
+        </.link>
+        <%!-- The absolute directory is the longest string in the header, so
+             below `sm:` only its basename is shown — the full path stays in
+             the DOM (and in the tooltip) for `sm:` and up. --%>
+        <span
+          class={["ml-1", @session.project && "text-base-content/40"]}
+          title={@session.directory}
+        >
+          <span class="sm:hidden">{Path.basename(@session.directory)}</span>
+          <span class="hidden sm:inline [overflow-wrap:anywhere]">{@session.directory}</span>
+        </span>
+        <%!-- Orchestrator parentage (ORCAHUB3-50) — a session with no parent is
+             a normal, meaningful state, so it's stated plainly rather than
+             just omitting this span. Below `sm:` only the "none" case is
+             hidden (pure metadata); a real parent keeps its link at every
+             width, since this is the only way to reach it. --%>
+        <span class={[
+          "text-base-content/40 ml-1 [overflow-wrap:anywhere]",
+          !@parent_session && "hidden sm:inline"
+        ]}>
+          · Parent:
+          <%= if @parent_session do %>
+            <.link navigate={~p"/sessions/#{@parent_session.id}"} class="hover:underline">
+              {@parent_session.title || @parent_session.directory}
+            </.link>
+          <% else %>
+            none
+          <% end %>
+        </span>
       </span>
     </:subtitle>
     <:actions>
+      <%!-- Below `sm:` the Conversation/Tree switch rides along in the header's
+           actions row instead of owning a whole line of its own underneath it
+           (the standalone `.join` further down is `hidden sm:inline-flex`).
+           `mr-auto` keeps it left-aligned against the right-packed buttons. --%>
+      <div class="join mr-auto sm:hidden">
+        <.link
+          patch={~p"/sessions/#{@session.id}?view=conversation"}
+          class={["btn btn-xs join-item", @view == :conversation && "btn-active"]}
+        >
+          Conversation
+        </.link>
+        <.link
+          patch={~p"/sessions/#{@session.id}?view=tree"}
+          class={["btn btn-xs join-item", @view == :tree && "btn-active"]}
+        >
+          Tree
+        </.link>
+      </div>
       <%!-- Mobile session navigation --%>
       <div :if={@prev_session_id || @next_session_id} class="sm:hidden flex items-center mr-1">
         <.link
@@ -876,7 +958,10 @@
     </div>
   </div>
 
-  <div class="join mb-2">
+  <%!-- Below `sm:` this switch lives in the header's actions row instead
+       (see the `.join` in the <:actions> slot above) — one fewer full-width
+       row between the header and the message feed on a phone. --%>
+  <div class="join mb-2 hidden sm:inline-flex">
     <.link
       patch={~p"/sessions/#{@session.id}?view=conversation"}
       class={["btn btn-sm join-item", @view == :conversation && "btn-active"]}
