@@ -332,7 +332,9 @@ export const VoiceHook = {
     // _writeDraft("") directly.
     if (text === "" && el.value !== "") return
 
-    this._writeDraft(text)
+    // Server-driven, so an append here is a freshly transcribed segment —
+    // follow it down rather than leaving the newest words below the fold.
+    this._writeDraft(text, { follow: true })
   },
 
   /** Write the draft into the composer textarea.
@@ -343,10 +345,28 @@ export const VoiceHook = {
    * event is what keeps the box growing within its max-h-[7.5rem]. The
    * _applyingDraft flag stops that synthetic event from bouncing straight back
    * to the server as a draft_edit.
+   *
+   * `follow: true` keeps the newest text visible once the draft outgrows the
+   * box (it stops at max-h-[7.5rem] and starts scrolling). Only the server's
+   * own appends follow — an explicit clear has nothing to follow, and neither
+   * does a shrinking correction.
+   *
+   * The one case that overrides all of that is a user parked mid-text with the
+   * caret: they are editing, and both their caret and their scroll position
+   * are left exactly where they put them.
    */
-  _writeDraft(text) {
+  _writeDraft(text, { follow = false } = {}) {
     const el = this._draftEl()
     if (!el || el.value === text) return
+    // All sampled BEFORE the write: it moves the caret, and the browser then
+    // scrolls that caret into view on a focused textarea all by itself.
+    const grew = text.length > el.value.length
+    const editingMidText =
+      document.activeElement === el &&
+      (el.selectionStart !== el.value.length || el.selectionEnd !== el.value.length)
+    const caret = editingMidText
+      ? { start: el.selectionStart, end: el.selectionEnd, scrollTop: el.scrollTop }
+      : null
     this._applyingDraft = true
     try {
       el.value = text
@@ -355,6 +375,18 @@ export const VoiceHook = {
     } finally {
       this._applyingDraft = false
     }
+    if (caret) {
+      // The server only ever appends, so a mid-text offset still points at the
+      // same character. Restore scroll LAST — setting the range re-scrolls.
+      el.selectionStart = Math.min(caret.start, text.length)
+      el.selectionEnd = Math.min(caret.end, text.length)
+      el.scrollTop = caret.scrollTop
+      return
+    }
+    // Autocomplete's autoresize is a plain `input` listener, so it has already
+    // run synchronously inside that dispatch — the height (and therefore
+    // scrollHeight) is final here, not one frame away.
+    if (follow && grew) el.scrollTop = el.scrollHeight
   },
 
   _pushDraftEdit(text) {
