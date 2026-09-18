@@ -53,6 +53,11 @@ export class VoiceChannel {
       "send_request",
       (m) => this.handlers.onSendRequest && this.handlers.onSendRequest(m)
     )
+    // Spec 8.3 / ORCAHUB3-87: the server asks the CLIENT to drive the UI —
+    // open/close the command palette, replace its query, pick the nth item of
+    // whichever list is visible, live-navigate, or go back. The client half of
+    // the same contract is the `ui_focus` push (see VoiceHook._syncUiFocus).
+    this.channel.on("ui_action", (m) => this.handlers.onUiAction && this.handlers.onUiAction(m))
 
     return new Promise((resolve, reject) => {
       this.channel

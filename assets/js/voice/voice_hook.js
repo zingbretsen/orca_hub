@@ -47,6 +47,21 @@
  *    hooks, so `phx:clear-prompt` and `phx:voice-send-failed` reach the bar
  *    directly and the session page needs no bridging code. With no composer
  *    we push `send_direct` and the server delivers as it did in phase 1.
+ *
+ * 6. UI CONTROL (§8.3, ORCAHUB3-87). Two new wire events, one each way:
+ *
+ *      -> ui_focus   {focus, candidates}  what the user is looking at
+ *      <- ui_action  {kind, payload}      what to do about it
+ *
+ *    The CLIENT owns `focus` — the server never infers it. Everything the
+ *    hook does here goes through a seam some other hook ALREADY binds, so a
+ *    spoken command drives the exact code path a keyboard does: the
+ *    palette's `command-palette:toggle` document event, its
+ *    `phx-keyup="search"` input, the autocomplete dropdown's `mousedown`
+ *    handler, the palette item's `phx-click="select"`, and — for navigation
+ *    — a HIDDEN `<.link navigate>` in VoiceBarLive, because
+ *    `window.location` would reload the document and take the mic, the
+ *    AudioContext and the channel with it (§8.2).
  */
 
 import { Capture, secureContextProblem, FRAME_SAMPLES } from "./capture"
@@ -64,6 +79,15 @@ const DRAFT_DEBOUNCE_MS = 300
 const LOG_LIMIT = 50
 const LOG_OPEN_KEY = "orca:voice:log-open"
 
+// §8.3.5/§8.3.9: focus + candidates are recomputed at most this often, and
+// only ever pushed when the computed value actually changed.
+const UI_SYNC_MS = 150
+// The vocabulary only reaches "orca ninth" (§8.3.3), so a tenth candidate is
+// unspeakable — do not spend wire bytes on it.
+const MAX_CANDIDATES = 9
+const LABEL_MAX = 80
+const PALETTE_ITEM_PREFIX = "command-palette-item-"
+
 const STATUS_LABEL = {
   warming: "warming up transcription…",
   listening: "listening",
@@ -78,6 +102,28 @@ const STATUS_LABEL = {
 function esc(value) {
   if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(value)
   return String(value).replace(/["\\]/g, "\\$&")
+}
+
+/** The PRIMARY label of a selectable row, for §8.3.5's `candidates`.
+ *
+ * `textContent` of the whole row would glue the name to its subtitle and its
+ * hint with no separator ("a sessionorca_hubarchived"), and §8.3.8 matches a
+ * spoken name against that string with the spaces removed — so a subtitle
+ * would quietly make every name unmatchable. Both lists we read (the palette
+ * item and the autocomplete button) put the name FIRST and wrap it in its own
+ * element, so the first non-empty text node's owner is exactly the label and
+ * nothing else. Icons are inline SVG and contribute no text.
+ */
+function labelOf(el) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  let node
+  while ((node = walker.nextNode())) {
+    if (node.nodeValue && node.nodeValue.trim() !== "") {
+      const owner = node.parentElement || el
+      return owner.textContent.replace(/\s+/g, " ").trim().slice(0, LABEL_MAX)
+    }
+  }
+  return ""
 }
 
 export const VoiceHook = {
@@ -107,6 +153,9 @@ export const VoiceHook = {
     this._lastSink = null
     this._inFlight = 0
     this._asrBusy = false
+    // §8.3.5: the last {focus, candidates} we told the server about, as JSON,
+    // so an unchanged recompute costs one string compare and no push.
+    this._lastUi = null
 
     this._bindDom()
     this._bindWindow()
@@ -233,6 +282,7 @@ export const VoiceHook = {
       onState: (s) => this._renderState(s),
       onSegmentResult: (r) => this._onSegmentResult(r),
       onSendRequest: (m) => this._onSendRequest(m),
+      onUiAction: (m) => this._onUiAction(m),
       onSent: () => {
         this._setArming(null)
         // The draft has been delivered and the server cleared its copy;
@@ -252,6 +302,11 @@ export const VoiceHook = {
     // The server's composer flag is per channel, so it is re-reported at
     // every join, not only when it changes.
     this._reportComposer(true)
+    // ...and so is focus: §8.3.1 resets it to "composer" on join and on
+    // retarget, so the server's belief starts from a blank slate and has to
+    // be told what is actually on screen. Forced, not debounced — a join is
+    // not a DOM change and there is nothing to coalesce.
+    this._syncUiFocus(true)
     return true
   },
 
@@ -473,6 +528,236 @@ export const VoiceHook = {
     this.channel && this.channel.push("send_failed", { reason })
   },
 
+  // ------------------------------------------------- focus + candidates (§8.3)
+
+  /** Everything on screen that a spoken ordinal could pick, in DOM order.
+   *
+   * §8.3.9 pins BOTH the rule and the order of preference: the palette wins
+   * whenever it is open (it is a modal over everything else), and the
+   * composer's autocomplete dropdown is consulted only when it is not.
+   *
+   * `index` is the index the CLIENT will act on, which is why it is read back
+   * out of the DOM (the palette's `#command-palette-item-<i>` suffix, the
+   * dropdown button's `data-index`) rather than being a position in this
+   * array: those are the two attributes `_uiSelect` selects by, so reporting
+   * anything else would let the server aim at a row we cannot click.
+   */
+  _uiState() {
+    const palette = document.getElementById("command-palette-results")
+    if (palette) {
+      const items = palette.querySelectorAll(`[id^="${PALETTE_ITEM_PREFIX}"]`)
+      return {
+        focus: "palette",
+        candidates: this._candidatesFrom(items, (el) => el.id.replace(PALETTE_ITEM_PREFIX, "")),
+      }
+    }
+    const dropdown = document.querySelector("#autocomplete-dropdown:not(.hidden)")
+    if (dropdown) {
+      const items = dropdown.querySelectorAll("button[data-index]")
+      return {
+        focus: "composer",
+        candidates: this._candidatesFrom(items, (el) => el.dataset.index),
+      }
+    }
+    return { focus: "composer", candidates: [] }
+  },
+
+  _candidatesFrom(nodes, indexOf) {
+    const out = []
+    for (const el of nodes) {
+      if (out.length >= MAX_CANDIDATES) break
+      const index = parseInt(indexOf(el), 10)
+      if (Number.isNaN(index)) continue
+      out.push({ index, label: labelOf(el) })
+    }
+    return out
+  },
+
+  /** Recompute and push `ui_focus` — but only when it actually changed.
+   *
+   * `force` re-pushes an unchanged value, which only a join needs (the
+   * server's copy is per channel and starts empty).
+   */
+  _syncUiFocus(force = false) {
+    if (this._timers.ui) {
+      clearTimeout(this._timers.ui)
+      this._timers.ui = null
+    }
+    const ui = this._uiState()
+    const json = JSON.stringify(ui)
+    if (!force && json === this._lastUi) return
+    if (!this.channel || !this.channel.joined()) {
+      // Nowhere to push it yet. Leave `_lastUi` alone so the next join's
+      // forced push is the first thing the server hears.
+      return
+    }
+    this._lastUi = json
+    this.channel.push("ui_focus", ui)
+  },
+
+  /** The DOM moved. Coalesce: at most one recompute per UI_SYNC_MS.
+   *
+   * Deliberately a trailing-edge THROTTLE rather than a restarting debounce.
+   * The observer below watches `class` on every node in the body subtree, and
+   * a streaming assistant reply mutates that many times a second — a
+   * restarting debounce would be starved by exactly the page voice mode is
+   * most often used on, and the palette would open with the server still
+   * believing focus is "composer".
+   */
+  _scheduleUiSync() {
+    if (this._timers.ui) return
+    this._timers.ui = setTimeout(() => {
+      this._timers.ui = null
+      this._syncUiFocus()
+    }, UI_SYNC_MS)
+  },
+
+  // ----------------------------------------------------------- ui_action (§8.3.9)
+
+  /** The server asked us to drive the UI. Also the test seam for this slice:
+   * `window.__orcaVoice._onUiAction({kind: "open_palette", payload: {}})`. */
+  _onUiAction(msg) {
+    const kind = (msg && msg.kind) || ""
+    const payload = (msg && msg.payload) || {}
+    let outcome
+    switch (kind) {
+      case "open_palette":
+        outcome = this._togglePalette(true)
+        break
+      case "close_palette":
+        outcome = this._togglePalette(false)
+        break
+      case "palette_query":
+        outcome = this._paletteQuery(payload.text || "")
+        break
+      case "select":
+        outcome = this._uiSelect(payload)
+        break
+      case "navigate":
+        outcome = this._uiNavigate(payload.path || "")
+        break
+      case "back":
+        // LiveView owns the popstate for a live-navigated page, so this
+        // unwinds inside the same document — the bar survives it.
+        window.history.back()
+        outcome = { result: "ok", detail: "history.back()" }
+        break
+      default:
+        outcome = { result: "error", detail: "unknown kind" }
+    }
+    this._logUiAction(kind, outcome)
+    // The palette opens/closes and the query lands through the SERVER, so the
+    // DOM change is a round-trip away; the body observer will catch it. This
+    // is belt and braces for the same-tick cases (a dropdown selection).
+    this._scheduleUiSync()
+  },
+
+  _paletteOpen() {
+    return !!document.getElementById("command-palette-results")
+  },
+
+  /** Open/close through the one seam `CommandPalette` already binds
+   * (`document.addEventListener("command-palette:toggle")`, which the header's
+   * search button also dispatches) — so voice and the keyboard cannot drift.
+   * It is a TOGGLE, so both directions are no-ops when already there. */
+  _togglePalette(open) {
+    if (this._paletteOpen() === open) {
+      return { result: "noop", detail: `already ${open ? "open" : "closed"}` }
+    }
+    document.dispatchEvent(new CustomEvent("command-palette:toggle"))
+    return { result: "ok" }
+  },
+
+  /** REPLACE semantics (§8.3.5): each utterance replaces the whole query, so
+   * a spoken correction never accumulates on top of the misheard one.
+   *
+   * `input` alone would resize/autocomplete but reach no server handler — the
+   * palette listens on `phx-keyup="search"`, so the keyup is the event that
+   * actually does the work. Both bubble, as `clear-command-palette-input`
+   * already relies on in app.js.
+   */
+  _paletteQuery(text) {
+    const input = document.getElementById("command-palette-input")
+    if (!input) return { result: "noop", detail: "palette not open" }
+    input.value = text
+    input.dispatchEvent(new Event("input", { bubbles: true }))
+    input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }))
+    return { result: "ok", detail: `“${text}”` }
+  },
+
+  /** §8.3.9: resolve to a 0-based index, then apply it to the ACTIVE list —
+   * the composer's autocomplete dropdown first, else the palette.
+   *
+   * Each list is poked through the handler it already has, not a re-
+   * implementation of what selecting means: `mousedown` for the dropdown
+   * (`Autocomplete.renderDropdown` binds exactly that, because a `click`
+   * would land after the textarea's blur has already hidden the list), and a
+   * real `.click()` for the palette, which carries `phx-click="select"` with
+   * its `phx-value-index` to the LiveComponent.
+   */
+  _uiSelect(payload) {
+    const index =
+      typeof payload.ordinal === "number"
+        ? payload.ordinal - 1
+        : typeof payload.index === "number"
+          ? payload.index
+          : null
+    if (index == null || index < 0 || !Number.isInteger(index))
+      return { result: "error", detail: "no usable index" }
+
+    const button = document.querySelector(
+      `#autocomplete-dropdown:not(.hidden) button[data-index="${index}"]`
+    )
+    if (button) {
+      button.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))
+      return { result: "ok", detail: `autocomplete #${index} “${labelOf(button)}”` }
+    }
+
+    const item = this._paletteOpen() && document.getElementById(PALETTE_ITEM_PREFIX + index)
+    if (item) {
+      const label = labelOf(item)
+      item.click()
+      return { result: "ok", detail: `palette #${index} “${label}”` }
+    }
+
+    return { result: "noop", detail: `nothing selectable at #${index}` }
+  },
+
+  /** MUST live-navigate (§8.3.9). `window.location` — or a plain `<a href>` —
+   * is a document reload, and a document reload takes the bar, the mic, the
+   * AudioContext and the channel with it (§8.2). So the bar renders one
+   * hidden `<.link navigate>` per path in the fixed set and we click THAT:
+   * LiveView's window-level click listener sees `data-phx-link="redirect"`,
+   * preventDefaults the anchor's own activation and routes it through the
+   * live socket, which a hidden anchor does just as well as a visible one.
+   *
+   * A missing anchor is a no-op ON PURPOSE. Falling back to
+   * `window.location` would "work" once and silently kill voice mode. */
+  _uiNavigate(path) {
+    if (!path) return { result: "error", detail: "no path" }
+    const anchor = document.querySelector(`[data-voice-nav="${esc(path)}"]`)
+    if (!anchor) return { result: "noop", detail: `no live-nav anchor for ${path}` }
+    anchor.click()
+    return { result: "ok", detail: path }
+  },
+
+  /** One line per ui_action in the same log the segment results use, so the
+   * integration slice can assert on what the browser actually did rather than
+   * on what the server thought it asked for. */
+  _logUiAction(kind, { result, detail } = {}) {
+    const log = this._el("[data-voice-log]")
+    if (!log) return
+    const li = document.createElement("li")
+    li.dataset.voiceUiAction = kind
+    li.dataset.voiceUiResult = result || ""
+    const bits = [`ui_action ${kind}`, `→ ${result}`]
+    if (detail) bits.push(`(${detail})`)
+    li.textContent = bits.join("  ")
+    log.appendChild(li)
+    while (log.children.length > LOG_LIMIT) log.removeChild(log.firstChild)
+    log.scrollTop = log.scrollHeight
+  },
+
   // ------------------------------------------------------------- the target
 
   /** The composer form bound to the CURRENT target, or null. */
@@ -520,6 +805,9 @@ export const VoiceHook = {
     }
     this._reportComposer()
     this._followSink()
+    // Live navigation swaps the whole page under the bar, so whatever was
+    // selectable a moment ago almost certainly is not any more.
+    this._scheduleUiSync()
   },
 
   _reportComposer(force = false) {
@@ -870,15 +1158,39 @@ export const VoiceHook = {
     this._windowEvents = []
   },
 
-  /** `body[data-voice-composer-for]` is the session page announcing itself.
-   * Watching the attribute directly means auto-follow survives a missed
-   * push_event and works for any future page that wants a composer. */
+  /** ONE observer, two jobs.
+   *
+   * 1. `body[data-voice-composer-for]` is the session page announcing itself.
+   *    Watching the attribute directly means auto-follow survives a missed
+   *    push_event and works for any future page that wants a composer.
+   * 2. §8.3.9's focus/candidate tracking. The palette is INSERTED and REMOVED
+   *    (`:if={@open}`, a childList change deep in the body) and the
+   *    autocomplete dropdown is shown by dropping one `hidden` CLASS — so the
+   *    subtree has to be watched for both, which is why the filter grew a
+   *    `class` and the config grew `childList`/`subtree`.
+   *
+   * A second observer would have been simpler to read, but `observe()` on a
+   * node already registered REPLACES its options rather than adding to them,
+   * so the two configs have to be one config on one observer.
+   *
+   * Job 1 is guarded by the cached page target rather than by scanning the
+   * records: with a subtree observer those records now arrive in the hundreds
+   * on a streaming session page, and `_syncPage` must keep firing exactly
+   * when it did before — when the page's session actually changes.
+   */
   _observeBody() {
     if (typeof MutationObserver === "undefined") return
-    this._bodyObserver = new MutationObserver(() => this._syncPage())
+    this._bodyObserver = new MutationObserver(() => {
+      if ((document.body.dataset.voiceComposerFor || null) !== this._lastPageTarget) {
+        this._syncPage()
+      }
+      this._scheduleUiSync()
+    })
     this._bodyObserver.observe(document.body, {
       attributes: true,
-      attributeFilter: ["data-voice-composer-for"],
+      attributeFilter: ["data-voice-composer-for", "class"],
+      childList: true,
+      subtree: true,
     })
   },
 
@@ -921,6 +1233,10 @@ export const VoiceHook = {
       vadFramesProcessed: this.vad ? this.vad.framesProcessed : 0,
       vadMaxBacklog: this.vad ? this.vad.maxBacklog : 0,
       channelJoined: this.channel ? this.channel.joined() : false,
+      // §8.3: what the browser believes is on screen right now, and what it
+      // last told the server. A numeric check has something to assert on.
+      ui: this._uiState(),
+      uiReported: this._lastUi ? JSON.parse(this._lastUi) : null,
       ctx: this.capture ? this.capture.ctx : null,
       state: this.state,
     }

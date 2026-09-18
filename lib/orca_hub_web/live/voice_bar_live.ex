@@ -57,12 +57,25 @@ defmodule OrcaHubWeb.VoiceBarLive do
   # header link away.
   @picker_limit 20
 
+  # voice_mode_spec.md §8.3.3's FIXED navigate set, and §8.3.9's rule for
+  # getting there: one HIDDEN `<.link navigate>` per path, which the hook
+  # clicks. `window.location` (or a plain `<a href>`) would reload the
+  # document, and a reload takes this bar — with the mic, the AudioContext
+  # and the voice channel — down with it. Clicking a `data-phx-link` anchor
+  # instead routes through the live socket, so the bar never unmounts.
+  #
+  # They are rendered only while voice is on: `ui_action navigate` can only
+  # arrive over a joined channel, and §8.2's idle budget is "the mic button
+  # and nothing else".
+  @nav_paths ~w(/sessions /sessions/new)
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
      socket
      |> assign(:voice_on, false)
      |> assign(:target_session_id, nil)
+     |> assign(:nav_paths, @nav_paths)
      |> assign(:sessions, list_sessions()), layout: false}
   end
 
@@ -115,6 +128,22 @@ defmodule OrcaHubWeb.VoiceBarLive do
       >
         <.icon name="hero-microphone" class="size-5" />
       </button>
+
+      <%!-- §8.3.9's live-navigation anchors. `hidden` is display:none, so
+           they are not flex items of the header and cost exactly zero of
+           §8.2's height budget; the hook reaches them by their
+           `data-voice-nav` path and clicks them. --%>
+      <.link
+        :for={path <- @nav_paths}
+        :if={@voice_on}
+        navigate={path}
+        data-voice-nav={path}
+        class="hidden"
+        tabindex="-1"
+        aria-hidden="true"
+      >
+        {path}
+      </.link>
 
       <%!-- The second line, and the ONLY thing voice mode costs vertically.
            `basis-full` wraps it below the header row; the header's `gap-y-0`
