@@ -98,6 +98,13 @@ defmodule OrcaHub.Voice.Session do
   trigger can see it. It is cleared by that append, by any other insert, by
   `cancel/1`, by a send, and by a manual `draft_edit/2`.
 
+  The other half of that rule is general rather than insert-specific: an
+  append NEVER doubles a separator, so when the draft already ends in
+  whitespace the next transcript is concatenated directly instead of
+  space-joined. Without it every spoken newline would put a leading space
+  on the line it just opened. It is invisible to phases 1 and 2, where a
+  draft could not end in whitespace in the first place.
+
   **Arming.** Only `:send` ever opens the window. Inserts, selections,
   navigations and palette queries all CANCEL an open one — the user kept
   talking, so it was not a confirmation — and never open one.
@@ -818,9 +825,18 @@ defmodule OrcaHub.Voice.Session do
   # Appending is also what cancels an open arming window — the user kept
   # talking, so whatever they said is not a confirmation of the last send.
   #
-  # §8.3.7: a pending `#`/`##` insert makes THIS append join with no
-  # separator, and is consumed by it — the spoken query has to land right
-  # after the trigger for `Autocomplete`'s `/#(\S*)$/` to see it.
+  # Two things suppress the joining space (§8.3.7):
+  #
+  #   * a pending `#`/`##` insert, which is CONSUMED by this append — the
+  #     spoken query has to land right after the trigger for
+  #     `Autocomplete`'s `/#(\S*)$/` to see it;
+  #   * a draft that already ends in whitespace, because an append must
+  #     never double a separator. That is what keeps a spoken newline from
+  #     putting a leading space on the line it just opened, and a
+  #     hand-typed trailing space from becoming a double space. It cannot
+  #     change phase-1 behaviour: `append/2` trims its own input and
+  #     `draft_edit/2` is the only other writer, so before phase 2c no
+  #     draft could end in whitespace at all.
   defp append(state, text) do
     text = String.trim(text)
 
@@ -829,6 +845,7 @@ defmodule OrcaHub.Voice.Session do
         text == "" -> state.draft
         state.draft == "" -> text
         state.pending_insert -> state.draft <> text
+        String.trim_trailing(state.draft) != state.draft -> state.draft <> text
         true -> state.draft <> " " <> text
       end
 

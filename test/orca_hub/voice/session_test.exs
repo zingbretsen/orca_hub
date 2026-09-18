@@ -878,15 +878,33 @@ defmodule OrcaHub.Voice.SessionTest do
       refute state.pending_insert
     end
 
-    # KNOWN WART in §8.3.7 as pinned, reported rather than fixed: the rules
-    # say what an insert does to the draft, and leave the NEXT append at
-    # §8.1's unchanged space-join — which puts a space right after a spoken
-    # newline. Pinned here so the closing doc pass cannot miss it.
-    test "a transcript after a NEWLINE insert still space-joins, dangling space and all" do
+    # §8.3.7 as amended: an append never doubles a separator. Without this,
+    # every spoken newline put a leading space on the line it had just
+    # opened — visible in the composer on every single use.
+    test "a transcript after a NEWLINE insert lands flush, with no leading space" do
       {state, _} = utterance(Session.new(), 1, "first line orca new line")
       {state, _} = utterance(state, 2, "second line", @t0 + 10)
 
-      assert state.draft == "first line\n second line"
+      assert state.draft == "first line\nsecond line"
+
+      # ...and the line after that still space-joins normally.
+      {state, _} = utterance(state, 3, "and more", @t0 + 20)
+      assert state.draft == "first line\nsecond line and more"
+    end
+
+    test "a paragraph insert keeps BOTH newlines, with no space after them" do
+      {state, _} = utterance(Session.new(), 1, "intro orca new paragraph")
+      {state, _} = utterance(state, 2, "body", @t0 + 10)
+
+      assert state.draft == "intro\n\nbody"
+    end
+
+    test "the same rule saves a HAND-TYPED trailing space from doubling" do
+      {state, _} = Session.draft_edit(Session.new(), "hello ")
+      {state, effects} = utterance(state, 1, "world")
+
+      assert actions(effects) == ["appended"]
+      assert state.draft == "hello world"
     end
   end
 
