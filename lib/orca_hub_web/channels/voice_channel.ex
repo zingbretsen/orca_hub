@@ -5,9 +5,20 @@ defmodule OrcaHubWeb.VoiceChannel do
   actual send.
 
   The wire contract — topic, the binary segment frame, every client and
-  server event, and the join replies — is `voice_mode_spec.md` section 8.1.
-  Read it before changing anything here; slices E (browser hook) and F
-  (LiveView panel) are written against the same text.
+  server event, and the join replies — is `voice_mode_spec.md` section 8.1,
+  amended by section 8.2 (the global voice bar and the single send path).
+  Read both before changing anything here; slices E (browser hook) and F
+  (`OrcaHubWeb.VoiceBarLive`) are written against the same text.
+
+  ## Sending (spec 8.2, ORCAHUB3-86)
+
+  This channel does NOT normally deliver the draft any more. On arming
+  expiry (or `send_now`) it pushes `"send_request"` and waits for the
+  browser to run the text through the page's real composer form, which is
+  what consumes staged uploads and appends the attachment lines. The client
+  answers with `sent_ack`, `send_failed` or `send_direct`; `send_direct` and
+  the 5 s no-composer fallback are the only paths that still reach
+  `Cluster.send_message(..., :queue)` here. See `OrcaHub.Voice.Session`.
 
   ## Thin adapter over a pure state machine
 
@@ -125,10 +136,31 @@ defmodule OrcaHubWeb.VoiceChannel do
   end
 
   def handle_in("send_now", _payload, socket),
-    do: apply_state(socket, &Session.send_now/1)
+    do: apply_state(socket, &Session.send_now(&1, now()))
 
   def handle_in("cancel", _payload, socket),
     do: apply_state(socket, &Session.cancel/1)
+
+  # -- spec 8.2, the single send path ----------------------------------------
+
+  def handle_in("composer", payload, socket),
+    do: apply_state(socket, &Session.composer(&1, payload["present"] == true))
+
+  def handle_in("sent_ack", _payload, socket),
+    do: apply_state(socket, &Session.sent_ack/1)
+
+  def handle_in("send_failed", payload, socket) do
+    reason =
+      case payload["reason"] do
+        reason when is_binary(reason) and reason != "" -> reason
+        _ -> "The composer could not send that message."
+      end
+
+    apply_state(socket, &Session.send_failed(&1, reason))
+  end
+
+  def handle_in("send_direct", _payload, socket),
+    do: apply_state(socket, &Session.send_direct/1)
 
   def handle_in("draft_edit", payload, socket) do
     text = payload["text"]
@@ -228,6 +260,15 @@ defmodule OrcaHubWeb.VoiceChannel do
 
   defp run_effect({:sent, text}, socket) do
     push(socket, "sent", %{text: text})
+    socket
+  end
+
+  # Spec 8.2: the send goes out through the CLIENT's composer form, so that
+  # staged uploads are consumed and the `[Attached image: …]` lines ride
+  # along (ORCAHUB3-86). The answer comes back as `sent_ack` / `send_failed`
+  # / `send_direct`, or as the 5 s deadline in `Session.tick/2`.
+  defp run_effect({:send_request, text}, socket) do
+    push(socket, "send_request", %{text: text})
     socket
   end
 

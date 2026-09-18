@@ -14,6 +14,10 @@ defmodule OrcaHub.Voice.Session do
     * `{:dispatch, seq, pcm}` — post this PCM to ASR (in a task), then feed
       the answer back through `transcript/4` under the same `seq`
     * `{:segment_result, map}` — push one `"segment_result"` event
+    * `{:send_request, text}` — push one `"send_request"` event and let the
+      CLIENT deliver it through the page's composer (spec §8.2, the single
+      send path); the answer comes back as `sent_ack/1`, `send_failed/2` or
+      `send_direct/1`
     * `{:send, text}` — hand `text` to `Cluster.send_message(..., :queue)`,
       then feed the answer back through `send_result/2`
     * `{:sent, text}` — push one `"sent"` event; the draft is already cleared
@@ -55,6 +59,32 @@ defmodule OrcaHub.Voice.Session do
   `pending` in the snapshot counts segments that are dispatched-but-unapplied
   PLUS a held one — i.e. everything on its way to ASR that the user has not
   seen a result for yet.
+
+  ## The single send path (spec §8.2, ORCAHUB3-86)
+
+  A send is no longer delivered by this side of the wire. When the arming
+  window expires (or `send_now/1` fires) the state machine emits
+  `{:send_request, text}` and parks in `send_pending`, status `sending`. The
+  browser is expected to run the draft through the page's REAL composer form
+  — which is what consumes staged uploads, appends the `[Attached image: …]`
+  lines and applies `handle_delivery_result/3`'s semantics — and report back:
+
+    * `sent_ack/1` — the composer's `clear-prompt` arrived: clear the draft
+      and push `"sent"`, exactly as phase 1's own delivery did.
+    * `send_failed/2` — the composer refused (busy session, unavailable
+      node): KEEP the draft, surface the reason. Nothing is retried
+      automatically; the text is still in the box.
+    * `send_direct/1` — the page has no composer for the target session (the
+      user is on `/queue`), so fall back to `{:send, text}`, i.e. phase 1's
+      `Cluster.send_message(..., :queue)`.
+
+  `send_pending` carries a 5 s deadline and the `composer_present` flag as of
+  the moment the request went out. If the client says nothing before it
+  expires, an absent composer means the direct path (the client is simply
+  not on a session page and its `send_direct` was lost) while a PRESENT one
+  means a visible error — a composer that was reported and then went silent
+  is a bug, and silently double-delivering around it is how ORCAHUB3-86 got
+  filed in the first place.
   """
 
   alias OrcaHub.Cluster
@@ -67,6 +97,10 @@ defmodule OrcaHub.Voice.Session do
 
   # How long a sub-0.8 s segment waits for a neighbour to merge with.
   @hold_ms 1500
+
+  # Spec 8.2: how long a `send_request` waits for the client to say what
+  # happened before the server decides for itself.
+  @send_request_ms 5000
 
   # Spec 3.2 / section 6, in SAMPLES at 16 kHz: the pre-dispatch floor and
   # the lane's hard cap. `OrcaHub.Voice.ASR` enforces both a second time.
@@ -88,6 +122,7 @@ defmodule OrcaHub.Voice.Session do
   @type effect ::
           {:dispatch, non_neg_integer(), binary()}
           | {:segment_result, map()}
+          | {:send_request, String.t()}
           | {:send, String.t()}
           | {:sent, String.t()}
           | {:schedule_tick, non_neg_integer()}
@@ -111,6 +146,13 @@ defmodule OrcaHub.Voice.Session do
             held: nil,
             # monotonic ms at which the SEND arming window expires
             arming_until: nil,
+            # spec 8.2: the client last told us whether the page it is on
+            # has a composer form for the target session. Decides the
+            # timeout fallback, not the request itself.
+            composer_present: false,
+            # %{text:, until:, composer:} — a `send_request` the client has
+            # not answered yet
+            send_pending: nil,
             # monotonically increasing count of VAD speech onsets, compared
             # against a segment's `speech_at` when its result lands
             speech_starts: 0
@@ -133,6 +175,9 @@ defmodule OrcaHub.Voice.Session do
 
   @doc "How long a sub-floor segment is held waiting for a merge, in milliseconds."
   def hold_ms, do: @hold_ms
+
+  @doc "How long a `send_request` waits for the client to answer, in milliseconds."
+  def send_request_ms, do: @send_request_ms
 
   # -- warm-up ---------------------------------------------------------------
 
@@ -177,19 +222,87 @@ defmodule OrcaHub.Voice.Session do
   def draft_edit(state, text) when is_binary(text),
     do: {%{state | draft: text, arming_until: nil}, []}
 
-  @doc "Clears the draft and any arming window."
+  @doc """
+  Clears the draft and any arming window.
+
+  Also abandons an outstanding `send_request` — a spoken "orca cancel" that
+  lands while one is in flight means the user changed their mind, and
+  letting the 5 s deadline fall back to a direct send afterwards would
+  deliver the very text they just cancelled.
+  """
   @spec cancel(%__MODULE__{}) :: {%__MODULE__{}, [effect()]}
-  def cancel(state), do: {%{state | draft: "", arming_until: nil}, []}
+  def cancel(state),
+    do: {%{state | draft: "", arming_until: nil, send_pending: nil, sending: false}, []}
+
+  @doc """
+  The client reported whether the page it is on has a composer form bound to
+  the target session (spec §8.2's `"composer"` event). Sent at join, at every
+  retarget, and whenever the page's composer appears or disappears.
+  """
+  @spec composer(%__MODULE__{}, boolean()) :: {%__MODULE__{}, [effect()]}
+  def composer(state, present?), do: {%{state | composer_present: !!present?}, []}
 
   @doc """
   The manual Send button: sends the current draft immediately, with no
   arming window. A no-op on an empty draft.
-  """
-  @spec send_now(%__MODULE__{}) :: {%__MODULE__{}, [effect()]}
-  def send_now(%__MODULE__{draft: ""} = state), do: {state, []}
 
-  def send_now(state),
-    do: {%{state | sending: true, arming_until: nil}, [{:send, state.draft}]}
+  `now` is the caller's monotonic clock, so the 5 s `send_request` deadline
+  is testable without sleeping.
+  """
+  @spec send_now(%__MODULE__{}, integer()) :: {%__MODULE__{}, [effect()]}
+  def send_now(state, now \\ System.monotonic_time(:millisecond))
+  def send_now(%__MODULE__{draft: ""} = state, _now), do: {state, []}
+  def send_now(state, now), do: request_send(state, now)
+
+  # Spec 8.2: the SERVER no longer delivers. It asks the client to run the
+  # draft through the real composer and waits @send_request_ms for an answer.
+  defp request_send(state, now) do
+    pending = %{
+      text: state.draft,
+      until: now + @send_request_ms,
+      composer: state.composer_present
+    }
+
+    {%{state | sending: true, arming_until: nil, send_pending: pending},
+     [{:send_request, state.draft}, {:schedule_tick, @send_request_ms}]}
+  end
+
+  @doc """
+  The client ran the draft through the composer and the LiveView pushed
+  `clear-prompt` — i.e. delivery SUCCEEDED, uploads and attachment lines
+  included. Clears the draft and pushes `"sent"`, exactly as phase 1's own
+  delivery did.
+
+  A no-op when nothing is pending, so a duplicate ack (or one racing the 5 s
+  fallback) cannot clear a draft the user has since rebuilt.
+  """
+  @spec sent_ack(%__MODULE__{}) :: {%__MODULE__{}, [effect()]}
+  def sent_ack(%__MODULE__{send_pending: nil} = state), do: {state, []}
+
+  def sent_ack(%__MODULE__{send_pending: pending} = state),
+    do: sent(%{state | send_pending: nil}, pending.text)
+
+  @doc """
+  The composer refused the send (busy session, unavailable node, …). The
+  draft is KEPT — the text is still sitting in the user's composer box and
+  losing the server's copy would desynchronise the two.
+  """
+  @spec send_failed(%__MODULE__{}, String.t()) :: {%__MODULE__{}, [effect()]}
+  def send_failed(%__MODULE__{send_pending: nil} = state, _reason), do: {state, []}
+
+  def send_failed(state, reason) when is_binary(reason),
+    do: {%{state | send_pending: nil, sending: false, error: reason}, []}
+
+  @doc """
+  The page has no composer for the target session, so the server delivers
+  the draft itself with `Cluster.send_message(..., :queue)` — phase 1's
+  path, unchanged. The outcome comes back through `send_result/2`.
+  """
+  @spec send_direct(%__MODULE__{}) :: {%__MODULE__{}, [effect()]}
+  def send_direct(%__MODULE__{send_pending: nil} = state), do: {state, []}
+
+  def send_direct(%__MODULE__{send_pending: pending} = state),
+    do: {%{state | send_pending: nil, sending: true}, [{:send, pending.text}]}
 
   @doc """
   The outcome of the channel's `Cluster.send_message(..., :queue)` call.
@@ -213,9 +326,11 @@ defmodule OrcaHub.Voice.Session do
   def send_result(state, other),
     do: {%{state | sending: false, error: "Could not send: #{inspect(other)}"}, []}
 
-  defp sent(state) do
-    text = state.draft
-    {%{state | sending: false, draft: "", arming_until: nil, error: nil}, [{:sent, text}]}
+  defp sent(state, text \\ nil) do
+    text = text || state.draft
+
+    {%{state | sending: false, draft: "", arming_until: nil, send_pending: nil, error: nil},
+     [{:sent, text}]}
   end
 
   # -- segments --------------------------------------------------------------
@@ -442,7 +557,8 @@ defmodule OrcaHub.Voice.Session do
   def tick(state, now) do
     {state, hold_effects} = expire_hold(state, now)
     {state, arming_effects} = expire_arming(state, now)
-    {state, hold_effects ++ arming_effects}
+    {state, request_effects} = expire_send_request(state, now)
+    {state, hold_effects ++ arming_effects ++ request_effects}
   end
 
   defp expire_hold(%__MODULE__{held: nil} = state, _now), do: {state, []}
@@ -481,8 +597,33 @@ defmodule OrcaHub.Voice.Session do
       if state.draft == "" do
         {state, []}
       else
-        {%{state | sending: true}, [{:send, state.draft}]}
+        request_send(state, now)
       end
+    end
+  end
+
+  defp expire_send_request(%__MODULE__{send_pending: nil} = state, _now), do: {state, []}
+
+  defp expire_send_request(%__MODULE__{send_pending: pending} = state, now) do
+    cond do
+      now < pending.until ->
+        {state, []}
+
+      # No composer was ever reported: the client is off a session page and
+      # its `send_direct` was simply lost. Deliver the phase-1 way.
+      not pending.composer ->
+        {%{state | send_pending: nil, sending: true}, [{:send, pending.text}]}
+
+      # A composer WAS reported and then said nothing. Do not guess — a
+      # silent second delivery here is exactly the double-send ORCAHUB3-86
+      # exists to prevent. Keep the draft, say so.
+      true ->
+        {%{
+           state
+           | send_pending: nil,
+             sending: false,
+             error: "The composer did not respond — nothing was sent. Try again."
+         }, []}
     end
   end
 

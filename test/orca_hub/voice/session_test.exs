@@ -99,7 +99,7 @@ defmodule OrcaHub.Voice.SessionTest do
       assert Session.snapshot(state, @t0).arming_ms == nil
     end
 
-    test "the arming window expiring sends the draft" do
+    test "the arming window expiring asks the CLIENT to send the draft" do
       {state, _} = Session.warm_ok(Session.new())
       {state, _} = utterance(state, 1, "let's ship it orca send")
 
@@ -109,11 +109,13 @@ defmodule OrcaHub.Voice.SessionTest do
       assert state.arming_until == @t0 + 1500
 
       {state, effects} = Session.tick(state, @t0 + 1500)
-      assert effects == [{:send, "let's ship it"}]
+      # Spec 8.2: the server no longer delivers — the client runs the draft
+      # through the real composer so uploads and attachment lines ride along.
+      assert effects == [{:send_request, "let's ship it"}, {:schedule_tick, 5000}]
       assert state.arming_until == nil
       assert Session.snapshot(state, @t0 + 1500).status == "sending"
 
-      {state, effects} = Session.send_result(state, :ok)
+      {state, effects} = Session.sent_ack(state)
       assert effects == [{:sent, "let's ship it"}]
       assert state.draft == ""
       assert Session.snapshot(state, @t0 + 1500).status == "listening"
@@ -201,25 +203,28 @@ defmodule OrcaHub.Voice.SessionTest do
     test "send_now is unaffected by speech resuming mid-flight" do
       {state, _} = utterance(Session.new(), 1, "ship it")
       {state, []} = Session.speech_start(state)
-      {_state, effects} = Session.send_now(state)
+      {_state, effects} = Session.send_now(state, @t0)
 
-      assert effects == [{:send, "ship it"}]
+      assert effects == [{:send_request, "ship it"}, {:schedule_tick, 5000}]
     end
 
     test "send_now sends immediately with no arming window, and is a no-op when empty" do
-      assert {%Session{} = empty, []} = Session.send_now(Session.new())
+      assert {%Session{} = empty, []} = Session.send_now(Session.new(), @t0)
       assert empty.draft == ""
 
       {state, _} = utterance(Session.new(), 1, "ship it")
-      {state, effects} = Session.send_now(state)
+      {state, effects} = Session.send_now(state, @t0)
 
-      assert effects == [{:send, "ship it"}]
+      assert effects == [{:send_request, "ship it"}, {:schedule_tick, 5000}]
       assert Session.snapshot(state, @t0).status == "sending"
     end
 
-    test "a failed send surfaces a readable error" do
+    test "a failed direct send surfaces a readable error" do
       {state, _} = utterance(Session.new(), 1, "ship it")
-      {state, _} = Session.send_now(state)
+      {state, _} = Session.send_now(state, @t0)
+      # No composer on the page, so the client asked the server to deliver.
+      {state, effects} = Session.send_direct(state)
+      assert effects == [{:send, "ship it"}]
 
       {busy, effects} = Session.send_result(state, {:error, :busy})
       assert effects == []
@@ -230,6 +235,109 @@ defmodule OrcaHub.Voice.SessionTest do
 
       {other, []} = Session.send_result(state, {:error, :nope})
       assert other.error == "Could not send: :nope"
+    end
+  end
+
+  # Spec 8.2 / ORCAHUB3-86: the send goes out through the page's REAL
+  # composer form, so staged uploads are consumed and the `[Attached
+  # image: …]` lines ride along. The server only asks, and only delivers
+  # by itself when the client says there is no composer.
+  describe "the single send path" do
+    setup do
+      {state, _} = Session.warm_ok(Session.new())
+      {state, _} = utterance(state, 1, "ship it orca send")
+      {state, effects} = Session.tick(state, @t0 + 1500)
+      assert [{:send_request, "ship it"} | _] = effects
+      %{armed: state}
+    end
+
+    test "sent_ack clears the draft and reports the sent text", %{armed: state} do
+      {state, effects} = Session.sent_ack(state)
+
+      assert effects == [{:sent, "ship it"}]
+      assert state.draft == ""
+      assert state.send_pending == nil
+      assert Session.snapshot(state, @t0 + 1600).status == "listening"
+
+      # A duplicate ack (or one racing the deadline) is inert.
+      assert {^state, []} = Session.sent_ack(state)
+    end
+
+    test "send_failed KEEPS the draft and shows the composer's reason", %{armed: state} do
+      {state, effects} = Session.send_failed(state, "Session is busy")
+
+      assert effects == []
+      assert state.draft == "ship it"
+      assert state.error == "Session is busy"
+      assert Session.snapshot(state, @t0 + 1600).status == "error"
+
+      # Nothing is retried behind the user's back.
+      assert {_state, []} = Session.tick(state, @t0 + 60_000)
+    end
+
+    test "send_direct falls back to the server's own delivery", %{armed: state} do
+      {state, effects} = Session.send_direct(state)
+
+      assert effects == [{:send, "ship it"}]
+      assert state.send_pending == nil
+      assert Session.snapshot(state, @t0 + 1600).status == "sending"
+
+      {state, effects} = Session.send_result(state, {:queued, :running})
+      assert effects == [{:sent, "ship it"}]
+      assert state.draft == ""
+    end
+
+    test "a silent client with NO composer falls back to a direct send after 5 s",
+         %{armed: state} do
+      assert {^state, []} = Session.tick(state, @t0 + 1500 + 4999)
+
+      {state, effects} = Session.tick(state, @t0 + 1500 + 5000)
+      assert effects == [{:send, "ship it"}]
+      assert state.error == nil
+      assert Session.snapshot(state, @t0).status == "sending"
+    end
+
+    test "a silent client that DID report a composer errors instead of double-sending" do
+      {state, _} = Session.warm_ok(Session.new())
+      {state, []} = Session.composer(state, true)
+      {state, _} = utterance(state, 1, "ship it orca send")
+      {state, _} = Session.tick(state, @t0 + 1500)
+
+      {state, effects} = Session.tick(state, @t0 + 1500 + 5000)
+
+      # Never {:send, _} — the composer may well have delivered it already.
+      assert effects == []
+      assert state.draft == "ship it"
+      assert state.error =~ "composer did not respond"
+      assert Session.snapshot(state, @t0).status == "error"
+    end
+
+    test "a spoken cancel abandons an outstanding send_request", %{armed: state} do
+      {state, []} = Session.cancel(state)
+
+      assert state.send_pending == nil
+      assert state.draft == ""
+      # The 5 s deadline must not resurrect the cancelled text.
+      assert {_state, []} = Session.tick(state, @t0 + 60_000)
+    end
+
+    test "ack/failed/direct are inert with nothing pending" do
+      state = Session.new()
+
+      assert {^state, []} = Session.sent_ack(state)
+      assert {^state, []} = Session.send_failed(state, "nope")
+      assert {^state, []} = Session.send_direct(state)
+    end
+
+    test "composer/2 mirrors the client's report" do
+      state = Session.new()
+      refute state.composer_present
+
+      {state, []} = Session.composer(state, true)
+      assert state.composer_present
+
+      {state, []} = Session.composer(state, false)
+      refute state.composer_present
     end
   end
 
@@ -443,10 +551,10 @@ defmodule OrcaHub.Voice.SessionTest do
       # arming still outranks transcribing
       assert Session.snapshot(transcribing, @t0).status == "arming"
 
-      {sending, _} = Session.send_now(armed)
+      {sending, _} = Session.send_now(armed, @t0)
       assert Session.snapshot(sending, @t0).status == "sending"
 
-      {errored, _} = Session.send_result(sending, {:error, :busy})
+      {errored, _} = Session.send_failed(sending, "Session is busy")
       assert Session.snapshot(errored, @t0).status == "error"
     end
 

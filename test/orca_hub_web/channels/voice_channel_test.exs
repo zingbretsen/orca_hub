@@ -276,7 +276,7 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       refute_receive {:voice_send, _, _, _, _}, 200
     end
 
-    test "send_now on a hand-typed draft sends it immediately", %{session: session} do
+    test "send_now on a hand-typed draft asks the client to send it", %{session: session} do
       {_reply, socket} = join_warm!(session.id)
 
       push(socket, "draft_edit", %{"text" => "ship it"})
@@ -284,9 +284,10 @@ defmodule OrcaHubWeb.VoiceChannelTest do
 
       push(socket, "send_now", %{})
 
-      assert_receive {:voice_send, _node, _id, "ship it", :queue}, 1_000
-      assert_push "sent", %{text: "ship it"}, 1_000
-      assert_push "state", %{draft: "", status: "listening"}, 1_000
+      # Spec 8.2: the request goes to the browser, not to Cluster.
+      assert_push "send_request", %{text: "ship it"}, 1_000
+      assert_push "state", %{status: "sending"}, 1_000
+      refute_receive {:voice_send, _, _, _, _}, 200
     end
 
     test "cancel clears the draft", %{session: session} do
@@ -318,9 +319,10 @@ defmodule OrcaHubWeb.VoiceChannelTest do
   # -- the happy path --------------------------------------------------------
 
   describe "the full SEND path" do
-    test "PCM in, transcript, strip, arming window, queued send out", %{session: session} do
+    test "PCM in, transcript, strip, arming window, send_request out", %{session: session} do
       {_reply, socket} = join_warm!(session.id)
 
+      push(socket, "composer", %{"present" => true})
       push(socket, "speech_start", %{})
       push(socket, "segment", {:binary, segment(1, 16_000)})
 
@@ -342,13 +344,79 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       assert_push "state", %{status: "arming", draft: "let's ship it", arming_ms: ms}, 1_000
       assert ms > 0 and ms <= 1500
 
-      # ...and after the window expires with no further speech, it goes.
-      assert_receive {:voice_send, sent_node, sent_id, "let's ship it", :queue}, 3_000
-      assert sent_node == node()
-      assert sent_id == session.id
+      # ...and after the window expires with no further speech, the CLIENT is
+      # asked to run it through the composer — ORCAHUB3-86. The server itself
+      # delivers nothing.
+      assert_push "send_request", %{text: "let's ship it"}, 3_000
+      assert_push "state", %{status: "sending"}, 1_000
+      refute_receive {:voice_send, _, _, _, _}, 200
+
+      # The composer's LiveView pushed clear-prompt: delivery succeeded, with
+      # whatever uploads were staged alongside it.
+      push(socket, "sent_ack", %{})
 
       assert_push "sent", %{text: "let's ship it"}, 1_000
       assert_push "state", %{status: "listening", draft: "", arming_ms: nil}, 1_000
+    end
+
+    test "a composer failure keeps the draft and shows the reason", %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      push(socket, "composer", %{"present" => true})
+      push(socket, "draft_edit", %{"text" => "ship it"})
+      push(socket, "send_now", %{})
+      assert_push "send_request", %{text: "ship it"}, 1_000
+
+      push(socket, "send_failed", %{"reason" => "Session is busy"})
+
+      assert_push "state", %{status: "error", error: "Session is busy", draft: "ship it"}, 1_000
+      refute_receive {:voice_send, _, _, _, _}, 200
+    end
+
+    test "send_failed with no reason still says something useful", %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      push(socket, "draft_edit", %{"text" => "ship it"})
+      push(socket, "send_now", %{})
+      assert_push "send_request", %{text: "ship it"}, 1_000
+
+      push(socket, "send_failed", %{})
+
+      assert_push "state", %{status: "error", error: error}, 1_000
+      assert error =~ "could not send"
+    end
+
+    test "with no composer on the page the server delivers it itself", %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      # The user is on /queue: the bar has its own draft box and no composer.
+      push(socket, "composer", %{"present" => false})
+      push(socket, "draft_edit", %{"text" => "ship it"})
+      push(socket, "send_now", %{})
+      assert_push "send_request", %{text: "ship it"}, 1_000
+
+      push(socket, "send_direct", %{})
+
+      assert_receive {:voice_send, sent_node, sent_id, "ship it", :queue}, 1_000
+      assert sent_node == node()
+      assert sent_id == session.id
+      assert_push "sent", %{text: "ship it"}, 1_000
+      assert_push "state", %{status: "listening", draft: ""}, 1_000
+    end
+
+    @tag timeout: 30_000
+    test "a client that never answers falls back to a direct send after 5 s",
+         %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      # No "composer" event was ever sent, so the fallback is allowed to
+      # deliver — the client is simply not on a session page.
+      push(socket, "draft_edit", %{"text" => "ship it"})
+      push(socket, "send_now", %{})
+      assert_push "send_request", %{text: "ship it"}, 1_000
+
+      assert_receive {:voice_send, _node, _id, "ship it", :queue}, 8_000
+      assert_push "sent", %{text: "ship it"}, 1_000
     end
   end
 end
