@@ -1,11 +1,15 @@
-# Voice Mode — Design Spec (DRAFT, v0.4.2)
+# Voice Mode — Design Spec (DRAFT, v0.5)
 
-Status: DRAFT v0.4.2 — PHASE 1 IMPLEMENTED (commits: A `f23b5b8`, B `0080399`,
-C `4a28f2b`, D `ef9f87a`+`f101886`, E `df935f1`, F `6f0e6d4`+`097806d`+`735b396`,
-integration fix `8d67708`, panel shrink §8.1 DOM change — see §12); phase 1
-EXIT CRITERIA PENDING —
-`spikes/voice/ACOUSTIC_TEST.md` Parts A and B have not been run.
-Author: orchestrator handoff, 2026-09-14.
+Status: DRAFT v0.5 — **phase 1 deployed (`d679c12`); phase 2/2b in progress.**
+Phase 1 commits: A `f23b5b8`, B `0080399`, C `4a28f2b`, D `ef9f87a`+`f101886`,
+E `df935f1`, F `6f0e6d4`+`097806d`+`735b396`, integration fix `8d67708`, panel
+shrink §8.1 DOM change — see §12. Phase 1 EXIT CRITERIA PENDING —
+`spikes/voice/ACOUSTIC_TEST.md` Parts A and B have not been run; they gate
+phases 3-4, not phase 2.
+Phase 2 = §7.1-7.3 (C1-C3, streaming deltas + streaming TTS); phase 2b = §8.2
+(C4, the global voice bar and the single send path); phase 2c = §13 (C5, voice
+navigation — design only). See §10 and the §10.5 map.
+Author: orchestrator handoff, 2026-09-14; phase 2 contracts pinned 2026-09-18.
 Owner: phase 1 landed; phase 2+ per §10.
 
 Real-time voice interaction with an OrcaHub session: open mic -> VAD-gated
@@ -752,6 +756,79 @@ read 400 lines of diff aloud". Policy: speak assistant PROSE blocks only;
 render tool activity as short earcons or a one-phrase announcement ("running
 tests"), never the payload.
 
+### 7.1 Delta stream contract (C1)
+
+**Assistant delta stream (server side; phase 2).** NORMATIVE.
+
+The SessionRunner broadcasts, on the existing `"session:<id>"` PubSub topic and
+WITHOUT persisting, these tuples (maps use string keys, same as persisted
+events):
+
+- `{:assistant_stream_start, %{"stream_id" => id}}` — once per assistant API
+  message.
+- `{:assistant_block_start, %{"stream_id" => id, "block_index" => i, "type" => "text" | "tool_use" | "thinking", "name" => tool_name_or_nil}}`
+- `{:assistant_delta, %{"stream_id" => id, "block_index" => i, "text" => chunk}}`
+  — TEXT blocks only. No tool-input JSON deltas, no thinking deltas.
+- `{:assistant_block_stop, %{"stream_id" => id, "block_index" => i}}`
+- `{:assistant_stream_stop, %{"stream_id" => id}}`
+
+`stream_id` MUST equal the `message.id` carried by the persisted `assistant`
+event that follows for the same message, so the client can correlate the live
+bubble with the final render. Claude: the API message id from `message_start`.
+Codex/pi: the normalizer mints one UUID per assistant message and stamps it into
+the normalized `assistant` event's `message.id` as well. Deltas are best-effort:
+a client that missed them (page loaded mid-turn) simply sees the persisted
+message. All three backends emit this shape; a backend that cannot stream emits
+nothing (no fake deltas).
+
+### 7.2 Client streaming events (C2)
+
+**Client streaming events (LiveView -> browser; phase 2).** NORMATIVE.
+
+`SessionLive.Show` forwards §7.1 as
+`push_event(socket, "assistant-stream", %{op: "start"|"block_start"|"delta"|"block_stop"|"stop", stream_id, block_index, text, block_type, name})`
+(nil fields omitted). A single `AssistantStream` hook on the feed container owns
+an in-progress bubble `#stream-<stream_id>` (plain text, escaped,
+`white-space: pre-wrap`; one `<div>` per text block; a one-line `"<name>…"` chip
+per tool_use block), appends deltas, and removes the bubble on `stop` after the
+persisted message has rendered (the LiveView also assigns nothing per delta — no
+growing string assigns).
+
+TTS consumes the SAME `assistant-stream` events inside `TTSMethods` (a `window`
+CustomEvent `orca:assistant-stream` re-dispatched by the hook, so QueueLive and
+any future host can listen without coupling to the feed DOM).
+
+### 7.3 Streaming TTS producer (C3)
+
+**Streaming TTS producer (phase 2).** NORMATIVE.
+
+A sentence accumulator in `TTSMethods`, enabled by a "Speak while streaming"
+toggle next to the existing autoplay toggle (localStorage key
+`orca:tts-stream`, off by default). Per `stream_id`:
+
+- buffer text deltas; track fence state (```` ``` ````/`~~~`) and never emit text
+  inside an open fence;
+- release a chunk when a sentence boundary is seen (reuse
+  `ttsSplitIntoChunks`' boundary rules) AND the buffered sentence is >= 40
+  chars, or when the buffer exceeds 240 chars at a clause boundary, or 1500 ms
+  have elapsed since the last release with >= 20 chars buffered;
+- flush the remainder at `block_stop`.
+
+Each released chunk goes through `ttsCleanText` and is appended to the existing
+chunk queue for this `stream_id` (`activeId = stream_id`; on `stop` the queue is
+re-keyed to the persisted message id so the per-message controls keep working).
+
+A tool_use `block_start` enqueues ONE short announcement ("running `<name>`" via
+a small name -> phrase map, default "running a tool") and never the payload.
+
+A message spoken while streaming is marked spoken so the existing end-of-turn
+`tts-autoplay` does NOT read it again.
+
+While a voice segment is in flight to ASR (the Voice hook dispatches
+`orca:voice-asr-busy {busy: bool}` on `window`), the prefetch pipeline does not
+start NEW synthesis requests (the current chunk finishes; the next fetch waits)
+— §7's GPU-contention rule.
+
 ## 8. Server-side shape
 
 - `OrcaHubWeb.VoiceChannel` — audio frames in, transcripts/state out.
@@ -829,9 +906,17 @@ tests"), never the payload.
 
 ### 8.1 VoiceChannel wire contract (phase 1)
 
+> **Read §8.2 with this section.** Phase 2b (C4) moves the markup below out of
+> `SessionLive.Show` and into `OrcaHubWeb.VoiceBarLive`, and replaces the
+> server-side delivery of `"orca send"` with a `send_request` the client
+> executes against the real composer form. Everything else here — the OVS1
+> frame, the join semantics, every phase-1 event, the `[data-voice-*]`
+> selectors — survives verbatim. §8.2 lists exactly what stays and what moves.
+
 This contract is fixed and is NORMATIVE for the VoiceChannel (slice D), the
-browser hook (slice E) and the `SessionLive.Show` panel (slice F). Any change
-must be agreed across all three before any of them deviates.
+browser hook (slice E) and the panel renderer (slice F — `SessionLive.Show` in
+phase 1, `VoiceBarLive` from phase 2b, see §8.2). Any change must be agreed
+across all three before any of them deviates.
 
 #### Transport
 
@@ -957,6 +1042,88 @@ The LiveView button that toggles `@voice_mode` (`phx-click="toggle_voice"`) is t
 
 Half-duplex: `TTSMethods` (app.js) dispatches `window.dispatchEvent(new CustomEvent("orca:tts-state", {detail: {playing: bool}}))` whenever `this.playing` changes (ttsStart/ttsPause/ttsResumeOrStart/ttsStop). The Voice hook listens, pauses the VAD + drops frames while playing, and pushes `"mic"` `{muted, reason: "tts"}`. Slice F owns that tiny additive emit in app.js; slice E owns the listener.
 
+### 8.2 Global voice bar and single send path (C4)
+
+NORMATIVE for phase 2b. This section RESOLVES **ORCAHUB3-88** (voice is
+per-session and dies on navigation) and **ORCAHUB3-86** (the spoken send path
+bypasses the composer's upload/attachment handling), and it SUPERSEDES phase 1's
+`SessionLive.Show`-only voice panel: after 2b, `SessionLive.Show` renders no
+voice toggle and no voice panel at all.
+
+What §8.1 keeps and what moves:
+
+- **Stays, unchanged and still normative**: the OVS1 binary segment frame, the
+  join semantics and join errors, every phase-1 client -> server and server ->
+  client event, the single-voice-owner claim, the no-re-routing rule, the
+  half-duplex `orca:tts-state` contract, and the whole `[data-voice-*]` DOM
+  contract — `#voice-panel`, `data-voice-banner`, `data-voice-error`,
+  `data-voice-action="retry"|"start"`, `data-voice-log-details`,
+  `data-voice-status`, `data-voice-mic`, `data-voice-arming`,
+  `data-voice-arming-ms`, `data-voice-log`, `data-voice-draft-target`. The hook
+  selectors do not change.
+- **Moves**: the markup carrying those selectors moves OUT of
+  `session_live/show.html.heex` and INTO `OrcaHubWeb.VoiceBarLive`, together with
+  the `toggle_voice` gesture. §8.1's "slice F renders" now means VoiceBarLive
+  renders.
+- **Changes**: the draft sink is no longer hard-wired to one page's
+  `#prompt-input` (see the draft sink rule below), and the SERVER no longer
+  delivers the draft by itself (see SINGLE SEND PATH below), which is the one
+  place 2b contradicts §8.1's phase-1 text.
+
+The contract:
+
+- `OrcaHubWeb.VoiceBarLive` is rendered in the app header via
+  `live_render(@socket, OrcaHubWeb.VoiceBarLive, id: "voice-bar", sticky: true)`
+  (same mechanism as the idle badge). It renders the mic button, a compact
+  status/mic/error/arming strip, a target-session picker, and a small draft box
+  that is shown ONLY when the current page has no composer for the target
+  session. It carries `phx-hook="Voice"` on its root (`id="voice-panel"` keeps
+  the existing hook selectors working). `SessionLive.Show` no longer renders a
+  voice toggle or panel.
+- All in-app navigation is LIVE navigation (`<.link navigate>` / `JS.navigate` /
+  `push_navigate`), never a plain `<a href>` to an internal route, so the sticky
+  bar (and the hook's mic/AudioContext/channel) survive page changes. External
+  links and downloads stay anchors.
+- **Target session**: the bar tracks `target_session_id`. When the user
+  navigates to `/sessions/:id`, the target auto-follows that session (the bar
+  listens for LiveView navigation: `SessionLive.Show` pushes
+  `voice-target {session_id}` on mount and `voice-target {session_id: null}` on
+  terminate; the bar's hook also reads `document.body.dataset.voiceComposerFor`,
+  set by the session page's composer form). Off a session page the target
+  persists as the last one; the picker lists recent non-archived sessions.
+- **Retarget (client -> channel)**: the hook leaves `voice:<old>` and joins
+  `voice:<new>`, carrying the CURRENT draft text client-side and seeding it with
+  `draft_edit` right after join (the server draft is per channel). Mic,
+  AudioContext, and VAD are NOT torn down on retarget.
+- **Draft sink rule**: if the page has
+  `form[data-voice-composer-for="<target>"]` with its textarea, mirror the draft
+  into that textarea (today's behaviour, incl. the scroll-to-end fix); otherwise
+  mirror into the bar's own draft box.
+- **SINGLE SEND PATH (ORCAHUB3-86)**: on arming expiry / `send_now`, the SERVER
+  no longer delivers by itself. It pushes `"send_request" {text}` to the client
+  and moves to status `sending`. The client:
+  - (a) if a composer form for the target is present: sets the textarea to
+    `text`, flushes any pending `draft_edit`, and calls `form.requestSubmit()` so
+    `SessionLive.Show`'s `send_message` runs — uploads consumed and transferred,
+    attachment lines appended, `handle_delivery_result` semantics intact,
+    `clear-prompt` pushed only on success. The hook observes `clear-prompt`
+    (success) -> pushes `"sent_ack"` to the channel (server clears draft, pushes
+    `sent`); or observes the LiveView's error flash / a
+    `voice-send-failed {reason}` event that `send_message` now pushes on failure
+    -> pushes `"send_failed" {reason}` (server keeps the draft, status `error`
+    with the reason).
+  - (b) if no composer is present: pushes `"send_direct"` and the server delivers
+    via `Cluster.send_message(node, id, text, :queue)` exactly as today.
+  - A `send_request` with no client response within 5 s -> server falls back to
+    `send_direct` semantics ONLY if no composer was reported present at
+    join/retarget time; otherwise it errors visibly ("composer did not
+    respond").
+- The existing OVS1 binary frame and all phase-1 events are unchanged. There is
+  NO `retarget` client -> server event — retarget is leave+join. New client ->
+  server events: `sent_ack`, `send_failed {reason}`, `send_direct`,
+  `composer {present: bool}` (sent at join and whenever the page's composer
+  appears/disappears). New server -> client event: `send_request {text}`.
+
 ## 9. Known traps
 
 1. **`getUserMedia` requires a SECURE CONTEXT.**
@@ -1021,7 +1188,27 @@ Half-duplex: `TTSMethods` (app.js) dispatches `window.dispatchEvent(new CustomEv
       (>= 19/20 correct, 0 wrong intent). If it fails, fall back to section
       5.1 option (a) — train `orca send` on openWakeWord and run it alongside
       the matcher.
-2. Streaming TTS off assistant deltas + speakable-content policy.
+2. **Streaming TTS off assistant deltas + speakable-content policy — C1-C3,
+   NORMATIVE in §7.1, §7.2 and §7.3.** Server-side delta broadcast on
+   `session:<id>` (§7.1), the `assistant-stream` push_event + `AssistantStream`
+   hook (§7.2), and the sentence accumulator behind the "Speak while streaming"
+   toggle (§7.3). IN PROGRESS.
+
+2b. **Global voice bar + single send path — C4, NORMATIVE in §8.2.**
+   `OrcaHubWeb.VoiceBarLive` sticky in the app header, live navigation
+   everywhere in-app, retarget by leave+join, and `send_request` -> the real
+   composer form so uploads and attachments stop being bypassed. Resolves
+   ORCAHUB3-88 and ORCAHUB3-86; supersedes phase 1's `SessionLive.Show`-only
+   panel. IN PROGRESS.
+
+2c. **Voice-driven navigation — C5, DESIGN ONLY, §13.** The `composer |
+   palette` focus concept, `orca search` / `orca open` / `orca back` /
+   `orca sessions` / `orca new session`, selection by spoken ordinal, and the
+   rule that every new vocabulary entry is scored against
+   `test/support/fixtures/voice/intent_corpus.json` (0 new FPs at 0.85) before
+   it ships. Tracked as ORCAHUB3-87. Implementation is a later phase and will
+   get its own contract; §13 is notes, not a contract.
+
 3. openWakeWord path for stop/pause during playback: trained `orca stop` /
    `orca pause` classifier heads, **playback-only, VAD-gated** (section 5.2).
    Blocked on phase 1's exit criterion 1.
@@ -1029,6 +1216,22 @@ Half-duplex: `TTSMethods` (app.js) dispatches `window.dispatchEvent(new CustomEv
    GO/NO-GO IS ACOUSTIC_TEST.md PART A's `AEC suppression` NUMBER: >15 dB go,
    6-15 dB duck-on-detect only, <6 dB do not build.
 5. LLM intent adjudicator, only if phase 1 heuristics prove insufficient.
+
+### 10.5 Contract -> phase -> section map
+
+Phases 3, 4 and 5 keep their original numbers; only phase 2 was split, into 2,
+2b and 2c.
+
+| Contract | Phase | Normative section | Issue | Status |
+|---|---|---|---|---|
+| C1 assistant delta stream (server) | 2 | §7.1 | — | in progress |
+| C2 client streaming events | 2 | §7.2 | — | in progress |
+| C3 streaming TTS producer | 2 | §7.3 | — | in progress |
+| C4 global voice bar + single send | 2b | §8.2 | ORCAHUB3-88, ORCAHUB3-86 | in progress |
+| C5 voice-driven navigation | 2c | §13 (design notes only) | ORCAHUB3-87 | design |
+
+Phase-1 contracts are unchanged and remain normative: §8.1 (wire + DOM),
+§5.1.1 (the matcher), §3.2 (the VAD settings).
 
 ## 11. Open questions for the finalizing orchestrator
 
@@ -1079,6 +1282,49 @@ STILL OPEN — all three are human-in-the-loop or a small upstream change:
   (section 6).
 
 ## 12. Changelog
+
+**v0.4.2 -> v0.5** — phase 2 opened. Three new NORMATIVE contracts (C1-C3) for
+streaming assistant deltas and streaming TTS, one (C4) for the global voice bar
+and the single send path, and a design-only record (C5) of voice-driven
+navigation. Header status is now "phase 1 deployed (`d679c12`); phase 2/2b in
+progress"; phase 1's two ACOUSTIC_TEST exit criteria are still un-run and still
+gate phases 3-4.
+
+- §7.1 NEW (C1): the assistant delta stream — `assistant_stream_start` /
+  `assistant_block_start` / `assistant_delta` / `assistant_block_stop` /
+  `assistant_stream_stop` on the existing `session:<id>` topic, unpersisted,
+  string-keyed. TEXT deltas only (no tool-input JSON, no thinking), `stream_id`
+  == the persisted message's `message.id` so the live bubble correlates with the
+  final render, best-effort (a client that missed them sees the persisted
+  message), and a backend that cannot stream emits NOTHING rather than fake
+  deltas.
+- §7.2 NEW (C2): `push_event "assistant-stream"` and the single
+  `AssistantStream` hook owning `#stream-<stream_id>` — no per-delta LiveView
+  assigns. TTS consumes the same events via a re-dispatched `window`
+  `orca:assistant-stream` CustomEvent, so nothing couples to the feed DOM.
+- §7.3 NEW (C3): the sentence accumulator in `TTSMethods` behind a
+  "Speak while streaming" toggle (`orca:tts-stream`, off by default) — fence
+  tracking, the 40/240/1500 ms release rules, re-keying the queue to the
+  persisted id at `stop`, ONE short announcement per tool_use block and never
+  the payload, spoken-marking so end-of-turn autoplay does not repeat it, and
+  §7's GPU-contention rule made concrete as `orca:voice-asr-busy`.
+- §8.2 NEW (C4): `OrcaHubWeb.VoiceBarLive`, sticky-rendered in the app header —
+  resolves ORCAHUB3-88 (voice died on navigation) and ORCAHUB3-86 (the spoken
+  send bypassed the composer's uploads/attachments). It SUPERSEDES phase 1's
+  `SessionLive.Show`-only panel: the `[data-voice-*]` DOM contract and every
+  phase-1 event survive verbatim, but the markup moves to `VoiceBarLive`, the
+  draft sink is indirected through `form[data-voice-composer-for]`, all in-app
+  navigation becomes live navigation, retarget is leave+join, and the server
+  stops delivering the draft itself — it pushes `send_request {text}` and the
+  client submits the real composer form (`sent_ack` / `send_failed` /
+  `send_direct` / `composer {present}` added).
+- §10: the phase list now splits phase 2 into 2 (C1-C3), 2b (C4) and 2c (C5,
+  design only); phases 3-5 keep their numbers. §10.5 NEW — a contract ->
+  phase -> section map.
+- §13 NEW (C5): the phase-2c design notes for voice-driven navigation —
+  the focus concept, the corpus-scoring requirement, and ORCAHUB3-87's
+  motivating example, candidate vocabulary and design questions recorded
+  verbatim, plus which of them §8.2 already makes easier.
 
 **v0.4.1 -> v0.4.2** — the §8.1 DOM contract shrank. The panel occupied roughly
 half a 390 px viewport (status row + its own 2-row draft textarea + a
@@ -1259,3 +1505,80 @@ assumptions so implementation does not inherit them.
   than naming the refuted string match.
 - §11: the ASR-endpoint question marked ANSWERED; SEND-path and upload-format
   questions added.
+
+## 13. Phase 2c design notes: voice-driven navigation (C5)
+
+DESIGN ONLY. Nothing here is a contract yet — phase 2c is the design, and the
+implementation is a later phase that will get its OWN normative contract in the
+manner of §7.1-7.3 and §8.2. Recorded here so the design is not re-derived, and
+because §5.1.1's correctness lives as much in the corpus as in the code.
+
+Tracked as **ORCAHUB3-87**.
+
+### 13.1 The shape (C5)
+
+A "focus" concept in the hook (`composer | palette`). `orca search` / `orca open`
+opens the Ctrl+K palette and routes transcript to its input (no server draft
+accumulation while `focus = palette` — the channel gets `focus {target:
+"palette"}` and treats transcripts as `query` events instead of draft appends).
+Selection by spoken ordinal (the reliable path) with name matching as a bonus.
+`orca back` / `orca sessions` / `orca new session`.
+
+**Every new vocabulary entry must be scored against
+`test/support/fixtures/voice/intent_corpus.json` (0 new FPs at 0.85) before it
+ships.**
+
+### 13.2 Motivating example and candidate vocabulary (from ORCAHUB3-87)
+
+Voice mode phase 1 can only do one thing with your voice: accumulate a
+transcript into the composer and send it ("orca send" / "orca cancel").
+Everything else in the app still needs hands. The natural next step is to let
+voice drive ordinary UI interaction, so a session can be operated end to end by
+speech.
+
+The motivating example from the user (2026-09-18): say "orca search" to open the
+Ctrl+K command palette, speak the query, then speak to select one of the results
+— a project, a session, an orchestrator — and navigate there. Generalising from
+that: a spoken command vocabulary for navigation and selection, not just send.
+
+Candidate commands worth scoping (not a committed list):
+
+- "orca search" / "orca open" — raise the Ctrl+K palette and route subsequent
+  transcript into its query input instead of the composer;
+- selecting a result by spoken ordinal ("the third one") or by name, with the
+  phonetic matcher doing the fuzzy work against the visible result labels;
+- "orca back", "orca sessions", "orca new session";
+- in-session chrome that currently needs a click: interrupt a running turn,
+  toggle the terminal/file panels, switch tabs.
+
+### 13.3 Design questions this will have to answer (from ORCAHUB3-87)
+
+- Where does the transcript go when the palette is open? The draft sink is
+  currently hard-wired to `#prompt-input` via the hook's `_draftSelector`; a
+  mode/focus concept is needed so the same pipeline can target a different
+  input, and so the server-side draft does not accumulate palette queries.
+- `OrcaHub.Voice.Intent` is a phonetic matcher over a fixed command set with a
+  tuned threshold and a 344-clip corpus
+  (`test/support/fixtures/voice/intent_corpus.json`). Growing the vocabulary
+  risks new false positives against ordinary dictation — every added command
+  needs to be scored against that corpus, not just eyeballed.
+- Matching a spoken selection against dynamic, arbitrary result labels (project
+  names, session titles) is a different problem from matching a fixed command
+  set, and probably wants ordinals as the reliable path with name matching as a
+  bonus.
+- Command adjudication is server-side in `OrcaHub.Voice.Session`, but navigation
+  is a client concern — this needs a new client-directed effect/event in the
+  OVS1 contract rather than another `{:send, text}`-shaped one.
+- Discoverability: a spoken vocabulary nobody can see is unusable. Probably
+  belongs in the voice strip's collapsed events area or a small help affordance.
+
+### 13.4 Notes against the phase-2b baseline
+
+Two of those questions get easier once §8.2 lands, and the design should assume
+it: the draft sink is already indirected (§8.2's draft sink rule replaces the
+hard-wired `#prompt-input`, so `focus = palette` is a third sink rather than a
+new mechanism), and the voice bar already survives navigation, which is what
+makes "speak a command, land on another page, keep talking" possible at all. The
+client-directed effect the fourth question asks for is also the same shape as
+§8.2's `send_request` — a server -> client instruction the client executes —
+so that precedent, not `{:send, text}`, is the one to copy.
