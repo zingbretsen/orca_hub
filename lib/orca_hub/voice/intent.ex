@@ -41,6 +41,89 @@ defmodule OrcaHub.Voice.Intent do
 
       iex> OrcaHub.Voice.Intent.intent("I clicked submit and then went home.")
       {nil, 0.6}
+
+  ## Phase 2c vocabulary (`voice_mode_spec.md` §8.3)
+
+  `command_vocab/0` is the phase-1 four PLUS §8.3.3's navigation, insertion and
+  selection commands; `class/1` says how `Voice.Session` routes a match and
+  `payload/1` carries its argument. `default_vocab/0` is deliberately frozen at
+  the four so the §5.1.1 parity corpus keeps measuring what the Python
+  reference measured.
+
+  Every shipped phrase was scored against all 344 corpus clips before it landed
+  (§8.3.4). The table is each entry's MAXIMUM score over the 154 negative clips
+  — the distance between it and the 0.85 threshold is the whole safety margin:
+
+  | name | phrase | class | max score on a negative |
+  |---|---|---|---|
+  | `:send` | orca send | action | 0.833 (phase 1, unchanged) |
+  | `:cancel` | orca cancel | action | 0.833 (phase 1, unchanged) |
+  | `:stop` | orca stop | ignore | 0.727 (phase 1, unchanged) |
+  | `:pause` | orca pause | ignore | 0.750 (phase 1, unchanged) |
+  | `:search` | orca search | navigate | 0.667 |
+  | `:open` | orca open | navigate | 0.727 |
+  | `:back` | orca back | navigate | 0.600 |
+  | `:sessions` | orca all sessions | navigate | 0.727 |
+  | `:new_session` | orca new session | navigate | 0.727 |
+  | `:new_line` | orca new line | insert | 0.667 |
+  | `:new_paragraph` | orca new paragraph | insert | 0.667 |
+  | `:session_search` | orca session search | insert | 0.714 |
+  | `:hashtag` | orca hashtag | insert | 0.667 |
+  | `:project_search` | orca project search | insert | 0.588 |
+  | `:double_hashtag` | orca double hashtag | insert | 0.667 |
+  | `:first` | orca first item | select | 0.714 |
+  | `:second` | orca second item | select | 0.769 |
+  | `:third` | orca third item | select | 0.769 |
+  | `:fourth` | orca fourth item | select | 0.769 |
+  | `:fifth` | orca fifth item | select | 0.667 |
+  | `:sixth` | orca sixth item | select | 0.667 |
+  | `:seventh` | orca seventh item | select | 0.714 |
+  | `:eighth` | orca eighth item | select | 0.667 |
+  | `:ninth` | orca ninth item | select | 0.833 |
+
+  ### What the measurement changed, and why
+
+  Three §8.3.3 candidates did not survive and were REWORDED rather than dropped:
+
+  * **the bare ordinals `orca first` .. `orca ninth`.** `orca second` is a
+    phonetic TWIN of the send command — `phonetic("orcasecond") == "arksknt" ==
+    phonetic("orcascend")`, and `or Cascend` is the single commonest ASR surface
+    form of "orca send" in the corpus. Added as-is it scored 1.0 on 30 positive
+    SEND clips and stole every one of them, plus two false positives at 0.900
+    ("...think about the schema for a second."). `orca ninth` separately scored
+    0.909 on a negative (the JFK passage's "...can do for your country"), a
+    false positive on its own. The whole family therefore ships with an `item`
+    suffix — `orca first item` .. `orca ninth item` — which drops the worst
+    negative in the family from 0.909 to 0.833 and the worst stolen-positive
+    count from 30 to 0, while keeping every sibling separable (worst intra-family
+    rival 0.933, `orca first item` vs `orca fourth item`).
+  * **`orca sessions`** scored 0.800 on a negative ("...test slash orcahub slash
+    voicetest dot exs") — no false positive, but only 0.05 of headroom. It ships
+    as `orca all sessions` (0.727), and the shorter `orca sessions` still
+    resolves to `:sessions` at 0.923, so nothing was taken away from the user.
+
+  Kept despite a thin margin: `:ninth` at 0.833 is the highest in the new
+  vocabulary, but it is no thinner than the phase-1 `:send`/`:cancel` entries
+  (0.833 each) that have been in production since phase 1, and dropping the
+  ninth slot would make the last palette result unreachable by ordinal.
+
+  ### Known limitations (measured, not fixed)
+
+  * **A truncated `orca ninth` resolves to `:send` (0.909), not `:ninth`.** The
+    ordinal word alone is closer to "orca send" than to its own phrase, so the
+    help affordance must teach the full three-token phrase. `orca first` ..
+    `orca eighth` do resolve to their own names (0.923-0.933); only the ninth
+    does not, and a stray send is recoverable (§5.1.1's asymmetry note).
+  * `orca second` (truncated) beats `:send` by only 0.010 — it resolves to
+    `:second`, which is the intent of the utterance, but do not narrow that gap
+    further when re-wording anything in this vocabulary.
+  * **`orca newline` needs no separate entry.** Spaces are removed on both sides
+    before scoring, so "orca newline" and "orca new line" are the SAME target
+    string (`orcanewline`) and both score 1.0 against `:new_line`. The same goes
+    for `orca hash tag` -> `:hashtag`. §13.5's aliases are already covered.
+  * **`orca the third one` cannot match** (0.571): it is four tokens, and
+    `score/2` never looks further back than three. Every phrase here is <= 3
+    tokens for that reason.
   """
 
   # The reference `VOCAB`, in the reference's insertion order. Order is load
@@ -53,7 +136,104 @@ defmodule OrcaHub.Voice.Intent do
     {:pause, "orca pause"}
   ]
 
+  # The phase 2c additions (`voice_mode_spec.md` §8.3.3), in the spec's order,
+  # APPENDED to the four phase-1 commands. Two rules constrain this list:
+  #
+  #   * at most THREE tokens per phrase — `score/2` only ever looks at the last
+  #     1-3 tokens of a segment, so a four-token phrase can never match in full;
+  #   * every phrase is scored against the 344-clip corpus before it ships (§8.3.4)
+  #     and drops out if it produces a false positive on a negative clip or steals
+  #     a positive clip from a phase-1 command.
+  #
+  # Three candidate phrases from §8.3.3 did not survive that measurement and were
+  # REWORDED; see the "Phase 2c vocabulary" section of the moduledoc for the
+  # numbers and the reasoning.
+  @command_vocab @default_vocab ++
+                   [
+                     {:search, "orca search"},
+                     {:open, "orca open"},
+                     {:back, "orca back"},
+                     {:sessions, "orca all sessions"},
+                     {:new_session, "orca new session"},
+                     {:new_line, "orca new line"},
+                     {:new_paragraph, "orca new paragraph"},
+                     {:session_search, "orca session search"},
+                     {:hashtag, "orca hashtag"},
+                     {:project_search, "orca project search"},
+                     {:double_hashtag, "orca double hashtag"},
+                     {:first, "orca first item"},
+                     {:second, "orca second item"},
+                     {:third, "orca third item"},
+                     {:fourth, "orca fourth item"},
+                     {:fifth, "orca fifth item"},
+                     {:sixth, "orca sixth item"},
+                     {:seventh, "orca seventh item"},
+                     {:eighth, "orca eighth item"},
+                     {:ninth, "orca ninth item"}
+                   ]
+
+  # §8.3.2: what the session DOES with a matched name. `:ignore` is the safe
+  # default for anything not listed, so an unknown name can never be routed as
+  # an action, an insert or a navigation.
+  @classes %{
+    send: :action,
+    cancel: :action,
+    stop: :ignore,
+    pause: :ignore,
+    search: :navigate,
+    open: :navigate,
+    back: :navigate,
+    sessions: :navigate,
+    new_session: :navigate,
+    new_line: :insert,
+    new_paragraph: :insert,
+    session_search: :insert,
+    hashtag: :insert,
+    project_search: :insert,
+    double_hashtag: :insert,
+    first: :select,
+    second: :select,
+    third: :select,
+    fourth: :select,
+    fifth: :select,
+    sixth: :select,
+    seventh: :select,
+    eighth: :select,
+    ninth: :select
+  }
+
+  # §8.3.2: the argument the class needs. Insert payloads are the literal text
+  # appended to the draft (§8.3.7 owns the join rule); select payloads are
+  # 1-BASED ordinals; navigate payloads are the `ui_action` the client executes.
+  @payloads %{
+    new_line: %{text: "\n"},
+    new_paragraph: %{text: "\n\n"},
+    session_search: %{text: "#"},
+    hashtag: %{text: "#"},
+    project_search: %{text: "##"},
+    double_hashtag: %{text: "##"},
+    first: %{ordinal: 1},
+    second: %{ordinal: 2},
+    third: %{ordinal: 3},
+    fourth: %{ordinal: 4},
+    fifth: %{ordinal: 5},
+    sixth: %{ordinal: 6},
+    seventh: %{ordinal: 7},
+    eighth: %{ordinal: 8},
+    ninth: %{ordinal: 9},
+    search: %{kind: "open_palette"},
+    open: %{kind: "open_palette"},
+    back: %{kind: "back"},
+    sessions: %{kind: "navigate", path: "/sessions"},
+    new_session: %{kind: "navigate", path: "/sessions/new"}
+  }
+
   @default_threshold 0.85
+
+  # §8.3.8: a spoken name has to CLEAR the same 0.85 the commands use AND beat
+  # the next-best label by this much. Names are a bonus path; ordinals are the
+  # reliable one, so an ambiguous field of candidates resolves to nothing.
+  @default_label_margin 0.10
 
   # The reference `_FOLD`: confusable consonants collapsed onto one spelling.
   @fold %{
@@ -77,6 +257,21 @@ defmodule OrcaHub.Voice.Intent do
   @type intent_name :: :send | :cancel | :stop | :pause
   @type vocab :: %{intent_name() => String.t()} | [{intent_name(), String.t()}]
 
+  @typedoc "Any name in `command_vocab/0` — the four phase-1 intents plus §8.3.3's."
+  @type command_name :: atom()
+
+  @typedoc "§8.3.2's routing classes. `:ignore` is also the fallback for unknown names."
+  @type class :: :action | :insert | :select | :navigate | :ignore
+
+  @typedoc """
+  One entry of the client's reported candidate list (§8.3.5's `ui_focus`).
+
+  Accepted with either string keys (straight off the wire) or atom keys.
+  `index` is 0-BASED and is echoed back untouched — it is the index the CLIENT
+  said it would act on, not a position in this list.
+  """
+  @type candidate :: %{optional(atom() | binary()) => term()}
+
   @doc """
   The corpus-tuned threshold, `0.85`.
 
@@ -95,6 +290,151 @@ defmodule OrcaHub.Voice.Intent do
   """
   @spec default_vocab() :: %{intent_name() => String.t()}
   def default_vocab, do: Map.new(@default_vocab)
+
+  @doc """
+  The full phase 2c vocabulary as an ORDERED list of `{name, phrase}` (§8.3.2).
+
+  The four `default_vocab/0` commands come first, in their existing order, then
+  §8.3.3's entries. Order is load bearing twice over: `intent/2` keeps the
+  EARLIER entry on an exact score tie, so nothing added here can displace
+  phase-1 behaviour, and the help affordance (§8.3.10) renders this list.
+
+  Pass it to `intent/2`/`strip_command/3` as `vocab:` — `default_vocab/0` is
+  deliberately left as the four phase-1 commands so the §5.1.1 parity corpus
+  keeps measuring exactly what the Python reference measured.
+
+      iex> OrcaHub.Voice.Intent.command_vocab() |> Enum.take(4)
+      [{:send, "orca send"}, {:cancel, "orca cancel"}, {:stop, "orca stop"}, {:pause, "orca pause"}]
+
+      iex> OrcaHub.Voice.Intent.intent("open the queue orca all sessions",
+      ...>   vocab: OrcaHub.Voice.Intent.command_vocab())
+      {:sessions, 1.0}
+  """
+  @spec command_vocab() :: [{command_name(), String.t()}]
+  def command_vocab, do: @command_vocab
+
+  @doc """
+  How `Voice.Session` should route a matched command (§8.3.2).
+
+  `:action` is §8.1/§8.2's send/cancel, `:ignore` is the barge-in stop/pause
+  pair, and `:insert`/`:select`/`:navigate` are phase 2c's. Anything not in
+  `command_vocab/0` is `:ignore`, so a stale or mistyped name degrades into
+  "do nothing" rather than into an action.
+
+      iex> {OrcaHub.Voice.Intent.class(:send), OrcaHub.Voice.Intent.class(:new_line)}
+      {:action, :insert}
+
+      iex> {OrcaHub.Voice.Intent.class(:third), OrcaHub.Voice.Intent.class(:nonesuch)}
+      {:select, :ignore}
+  """
+  @spec class(command_name()) :: class()
+  def class(name), do: Map.get(@classes, name, :ignore)
+
+  @doc """
+  The argument `class/1`'s routing needs (§8.3.2).
+
+  Insert names carry `%{text: ...}` — the literal draft text, joined by §8.3.7's
+  rule, NOT here. Select names carry `%{ordinal: n}`, 1-BASED. Navigate names
+  carry the `ui_action` payload the client executes. Every other name, including
+  `:send`/`:cancel`/`:stop`/`:pause` and anything unknown, carries `%{}`.
+
+      iex> OrcaHub.Voice.Intent.payload(:new_paragraph)
+      %{text: "\\n\\n"}
+
+      iex> OrcaHub.Voice.Intent.payload(:second)
+      %{ordinal: 2}
+
+      iex> OrcaHub.Voice.Intent.payload(:sessions)
+      %{kind: "navigate", path: "/sessions"}
+
+      iex> OrcaHub.Voice.Intent.payload(:send)
+      %{}
+  """
+  @spec payload(command_name()) :: map()
+  def payload(name), do: Map.get(@payloads, name, %{})
+
+  @doc """
+  Matches a whole transcript against the client's visible candidate labels (§8.3.8).
+
+  Used only when `focus == "palette"` and nothing in `command_vocab/0` matched:
+  the alternative to a name match is a palette query, so this is deliberately
+  CONSERVATIVE — ordinals (`class/1 == :select`) are the reliable selection
+  path and names are a bonus.
+
+  Unlike `intent/2` this compares the WHOLE transcript, not its terminal 1-3
+  tokens: a spoken selection is the entire utterance. Both sides are normalised
+  the way `score/2` normalises a candidate tail — lowercased, punctuation and
+  spaces removed — and scored `max(ratio(a, b), ratio(phonetic(a), phonetic(b)))`.
+
+  A match needs BOTH `best >= threshold` (default `default_threshold/0`) AND
+  `best - runner_up >= margin` (default `0.10`); with a single candidate the
+  runner-up is `0.0`. Anything else is `:no_match`, which the caller turns into
+  a `palette_query`.
+
+  `candidates` are §8.3.5's `ui_focus` entries, accepted with string OR atom
+  keys. `index` is echoed back untouched — it is the 0-BASED index the CLIENT
+  said it would act on. Entries without a usable label are skipped; an entry
+  without an `index` falls back to its position in the list.
+
+  ## Options
+
+    * `:threshold` — float, defaults to `default_threshold/0`.
+    * `:margin` — float, defaults to `0.10`.
+
+      iex> OrcaHub.Voice.Intent.match_label("deploy the hub", [
+      ...>   %{"index" => 0, "label" => "Deploy the hub"},
+      ...>   %{"index" => 1, "label" => "Voice mode phase 2c"}
+      ...> ])
+      {:ok, %{index: 0, label: "Deploy the hub", score: 1.0}}
+
+      iex> OrcaHub.Voice.Intent.match_label("deploy the hub", [
+      ...>   %{"index" => 0, "label" => "Deploy the hub"},
+      ...>   %{"index" => 1, "label" => "Deploy the hubs"}
+      ...> ])
+      :no_match
+  """
+  @spec match_label(String.t(), [candidate()], keyword()) ::
+          {:ok, %{index: integer(), label: String.t(), score: float()}} | :no_match
+  def match_label(text, candidates, opts \\ []) do
+    threshold = Keyword.get(opts, :threshold, default_threshold())
+    margin = Keyword.get(opts, :margin, @default_label_margin)
+    spoken = normalize(text)
+    spoken_p = phonetic(spoken)
+
+    scored =
+      candidates
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {candidate, position} ->
+        case candidate_label(candidate) do
+          "" ->
+            []
+
+          label ->
+            target = normalize(label)
+            s = max(ratio(spoken, target), ratio(spoken_p, phonetic(target)))
+            [{s, candidate_index(candidate, position), label}]
+        end
+      end)
+      |> Enum.sort_by(&elem(&1, 0), :desc)
+
+    case scored do
+      [] ->
+        :no_match
+
+      [{best, index, label} | rest] ->
+        runner_up =
+          case rest do
+            [{second, _index, _label} | _] -> second
+            [] -> 0.0
+          end
+
+        if best >= threshold and best - runner_up >= margin do
+          {:ok, %{index: index, label: label, score: best}}
+        else
+          :no_match
+        end
+    end
+  end
 
   @doc """
   Classifies the terminal 1-3 tokens of `text` as a spoken command.
@@ -306,6 +646,22 @@ defmodule OrcaHub.Voice.Intent do
 
   defp vocab_entries(vocab) when is_map(vocab), do: Enum.to_list(vocab)
   defp vocab_entries(vocab) when is_list(vocab), do: vocab
+
+  # -- label matching --------------------------------------------------------
+
+  # "Spaces removed on both sides" (§8.3.8), done with the SAME tokenizer
+  # `score/2` uses — so a label's punctuation ("Deploy the hub?") and an ASR
+  # transcript's punctuation are stripped identically before they are compared.
+  defp normalize(text), do: text |> tokenize() |> Enum.join()
+
+  defp candidate_label(%{"label" => label}) when is_binary(label), do: label
+  defp candidate_label(%{label: label}) when is_binary(label), do: label
+  defp candidate_label(label) when is_binary(label), do: label
+  defp candidate_label(_other), do: ""
+
+  defp candidate_index(%{"index" => index}, _position) when is_integer(index), do: index
+  defp candidate_index(%{index: index}, _position) when is_integer(index), do: index
+  defp candidate_index(_candidate, position), do: position
 
   # -- stripping -------------------------------------------------------------
 
