@@ -111,5 +111,15 @@ eq("mcp__ prefix", toolAnnouncement("mcp__orca__run_elixir"), "calling a tool")
 eq("unknown", toolAnnouncement("Sparkle"), "running a tool")
 eq("nil", toolAnnouncement(null), "running a tool")
 
+// 12. the idle clock starts at the FIRST DELTA, not at stream start — a model
+// that thinks for two seconds must not have its opening sentence chopped.
+{
+  const a = createTtsStreamAccumulator(0)
+  eq("no premature cut after a long think",
+     a.push("Volcanoes are massive geological formations that release molten", 2000), [])
+  eq("idle rule not yet met 400ms later", a.tick(2400), [])
+  eq("idle rule met 1600ms after the FIRST delta", a.tick(3600).length, 1)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

@@ -57,10 +57,21 @@ export class TtsStreamAccumulator {
     this.inFence = false
     this.fenceChar = null
     this.lastReleaseAt = now
+    this.started = false
   }
 
   // Feed one delta. Returns the chunks it made releasable, if any.
   push(text, now = this.lastReleaseAt) {
+    // The idle clock runs from the first TEXT, not from the stream's start:
+    // a model that thinks for two seconds before writing would otherwise
+    // arrive with the 1500ms rule already satisfied and have its opening
+    // sentence chopped at whatever word happened to land first (observed:
+    // "Volcanoes are massive geological formations that release molten" /
+    // "rock, known as magma …").
+    if (!this.started && text) {
+      this.started = true
+      this.lastReleaseAt = now
+    }
     if (text) this._absorb(text)
     return this._release(now)
   }
