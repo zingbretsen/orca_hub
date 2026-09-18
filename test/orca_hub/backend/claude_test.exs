@@ -589,7 +589,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
     [
       cwd: ctx.directory,
       input_format: "stream-json",
-      disallowed_tools: @expected_disallowed_tools
+      disallowed_tools: @expected_disallowed_tools,
+      include_partial_messages: true
     ]
     |> expected_maybe_put(:session_id, ctx.claude_session_id)
     |> expected_maybe_put(:model, ctx.model)
@@ -616,7 +617,11 @@ defmodule OrcaHub.Backend.ClaudeTest do
   end
 
   defp expected_one_shot_opts(ctx) do
-    [cwd: ctx.directory, disallowed_tools: @expected_disallowed_tools]
+    [
+      cwd: ctx.directory,
+      disallowed_tools: @expected_disallowed_tools,
+      include_partial_messages: true
+    ]
     |> expected_maybe_put(:session_id, ctx.claude_session_id)
     |> expected_maybe_put(:model, ctx.model)
     |> expected_maybe_put(:system_prompt, expected_system_prompt(ctx))
@@ -711,7 +716,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
         [
           cwd: ctx.directory,
           input_format: "stream-json",
-          disallowed_tools: @expected_disallowed_tools
+          disallowed_tools: @expected_disallowed_tools,
+          include_partial_messages: true
         ]
         |> expected_maybe_put(:system_prompt, expected_system_prompt_no_mcp(ctx))
         |> Keyword.put(:tools, "")
@@ -737,7 +743,8 @@ defmodule OrcaHub.Backend.ClaudeTest do
         [
           cwd: ctx.directory,
           input_format: "stream-json",
-          disallowed_tools: @expected_disallowed_tools
+          disallowed_tools: @expected_disallowed_tools,
+          include_partial_messages: true
         ]
         |> expected_maybe_put(:system_prompt, expected_system_prompt_api_run(ctx))
         |> Keyword.put(:tools, "")
@@ -1013,7 +1020,11 @@ defmodule OrcaHub.Backend.ClaudeTest do
       ctx = ctx(%{tools: "", prompt: "hi"})
 
       opts =
-        [cwd: ctx.directory, disallowed_tools: @expected_disallowed_tools]
+        [
+          cwd: ctx.directory,
+          disallowed_tools: @expected_disallowed_tools,
+          include_partial_messages: true
+        ]
         |> expected_maybe_put(:system_prompt, expected_system_prompt_no_mcp(ctx))
         |> Keyword.put(:tools, "")
 
@@ -1554,6 +1565,28 @@ defmodule OrcaHub.Backend.ClaudeTest do
       config = spec.args |> Enum.at(mcp_config_idx + 1) |> Jason.decode!()
 
       assert Enum.sort(Map.keys(config["mcpServers"])) == ["orca", "some-upstream"]
+    end
+  end
+
+  # ── C1 assistant delta stream (voice phase 2) ───────────────────────
+
+  describe "spawn_spec/2 — --include-partial-messages" do
+    # Verified present in the installed CLI's own `--help`
+    # ("--include-partial-messages  Include partial message chunks as they
+    # [arrive]"), claude 2.1.270. Without it the CLI emits whole `assistant`
+    # events only and no `stream_event` frame ever arrives, so the C1 delta
+    # stream would be silently empty for this backend.
+    test "streaming passes the flag" do
+      assert "--include-partial-messages" in Backend.spawn_spec(:streaming, ctx()).args
+    end
+
+    test "one_shot passes the flag (through the script PTY wrapper)" do
+      args = Backend.spawn_spec(:one_shot, ctx(%{prompt: "hi"})).args
+      assert Enum.any?(args, &String.contains?(&1, "--include-partial-messages"))
+    end
+
+    test "capabilities advertise streaming_deltas" do
+      assert Backend.capabilities().streaming_deltas
     end
   end
 end

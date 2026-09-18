@@ -15,6 +15,11 @@ defmodule OrcaHub.Claude.Config do
       over stdin as newline-delimited JSON user messages instead of as the
       positional `-p` argument (long-lived streaming engine). Default: text.
     * `:verbose` - enable verbose output (default: `true`)
+    * `:include_partial_messages` - emit `{"type":"stream_event",…}` frames
+      carrying the raw Anthropic streaming events (assistant text deltas).
+      Opt-in (default: off) so the flag only appears where a caller asked for
+      it; `OrcaHub.Backend.Claude` passes it for both spawn modes and
+      `OrcaHub.Claude.Deltas` translates the resulting frames.
     * `:skip_permissions` - skip permission prompts (default: `true`)
     * `:session_id` - resume a session by ID
     * `:allowed_tools` - list of allowed tool names (permission-style filtering)
@@ -50,6 +55,10 @@ defmodule OrcaHub.Claude.Config do
       |> maybe_add_flag(
         "--dangerously-skip-permissions",
         Keyword.get(opts, :skip_permissions, true)
+      )
+      |> maybe_add_flag(
+        "--include-partial-messages",
+        Keyword.get(opts, :include_partial_messages, false)
       )
       |> maybe_add_opt("--resume", Keyword.get(opts, :session_id))
       |> maybe_add_opt("--allowedTools", maybe_join(Keyword.get(opts, :allowed_tools)))

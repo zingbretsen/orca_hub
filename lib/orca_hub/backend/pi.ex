@@ -105,15 +105,23 @@ defmodule OrcaHub.Backend.Pi do
   scanning its own bundled `messages` for the last assistant's `stopReason`
   and summed `usage`/`cost`, without extra `backend_state` bookkeeping), so
   emitting from `turn_end`/`agent_end` too would duplicate every message in
-  the feed. `message_update` (streaming deltas) and `tool_execution_start`/
-  `tool_execution_update` are dropped per spec Q7 (v1 renders on
-  completion only).
+  the feed. `tool_execution_start`/`tool_execution_update` are dropped per
+  spec Q7 (the feed renders on completion only).
+
+  `message_update` used to be dropped alongside them; as of voice phase 2 its
+  `assistantMessageEvent` text deltas are normalized into the broadcast-only
+  `OrcaHub.Backend.Deltas` vocabulary (`"orca_delta"` events) so the UI can
+  render a live bubble and stream TTS. Those events are NEVER persisted and
+  never touch the feed — `message_end` remains the sole source of assistant
+  content — and they are correlated to it by a `stream_id` minted at
+  `message_start` and stamped into `assistant.message.id`.
   """
 
   @behaviour OrcaHub.Backend
 
   require Logger
 
+  alias OrcaHub.Backend.Deltas
   alias OrcaHub.Backend.SharedPrompts
   alias OrcaHub.HubRPC
 
@@ -183,7 +191,11 @@ defmodule OrcaHub.Backend.Pi do
       # spec §12.6: pi's native `steer` command delivers a mid-turn message
       # in place (after the current tool calls, before the next LLM call)
       # instead of interrupting the running turn — see encode_steer_turn/2.
-      steering: true
+      steering: true,
+      # `message_update`'s `assistantMessageEvent` deltas are no longer
+      # dropped (voice phase 2) — normalized into OrcaHub.Backend.Deltas
+      # events below.
+      streaming_deltas: true
     }
   end
 
@@ -736,20 +748,54 @@ defmodule OrcaHub.Backend.Pi do
     {[], %{ctx | backend_state: bs}}
   end
 
+  # ── C1 assistant delta stream (voice phase 2) ────────────────────────
+  # pi's AgentMessage has NO id of its own (live-verified against pi 0.85.1:
+  # an assistant message carries api/content/model/provider/responseId/role/
+  # stopReason/timestamp/usage — `responseId` names the PROVIDER response, not
+  # the message), so the normalizer mints one UUID per assistant message at
+  # `message_start` and stamps it into BOTH the delta events' `stream_id` and
+  # the persisted `assistant` event's `message.id`.
+  def normalize(%{"type" => "message_start", "message" => %{"role" => "assistant"}}, ctx) do
+    stream_id = Ecto.UUID.generate()
+
+    {[Deltas.stream_start(stream_id)], put_delta_stream(ctx, stream_id)}
+  end
+
+  # `message_update` is DELTA-ONLY as of pi 0.80-era upstream changes: the
+  # cumulative `message` snapshot and `assistantMessageEvent.partial` were
+  # removed (they caused quadratic output growth), so `delta` is already the
+  # chunk — no diffing against a previously-seen accumulated string, and no
+  # risk of re-emitting text. Blocks are keyed by pi's own `contentIndex`.
+  #
+  # Text deltas flow; thinking/toolcall deltas deliberately do NOT (C1 streams
+  # assistant TEXT only) — their blocks still get a start/stop pair so the UI
+  # can show a "running <name>…" chip without ever seeing the payload.
+  def normalize(%{"type" => "message_update", "assistantMessageEvent" => event}, ctx)
+      when is_map(event) do
+    {delta_events(event, delta_stream(ctx)), ctx}
+  end
+
   def normalize(
         %{"type" => "message_end", "message" => %{"role" => "assistant", "content" => content}},
         ctx
       )
       when is_list(content) and content != [] do
+    {stream_id, ctx} = pop_delta_stream(ctx)
     blocks = content |> Enum.map(&map_content_block/1) |> Enum.reject(&is_nil/1)
-    events = if blocks == [], do: [], else: [assistant_event(blocks)]
-    {events, ctx}
+    events = if blocks == [], do: [], else: [assistant_event(blocks, stream_id)]
+
+    {stop_events(stream_id) ++ events, ctx}
   end
 
   # Aborted-with-empty-content assistant messages, user/toolResult message_end
-  # echoes, etc. — dropped (assistant content is emitted exactly once above;
-  # tool results come from tool_execution_end below).
-  def normalize(%{"type" => "message_end"}, ctx), do: {[], ctx}
+  # echoes, etc. — no feed event (assistant content is emitted exactly once
+  # above; tool results come from tool_execution_end below). An open delta
+  # stream still has to be closed, or the client's live bubble would hang
+  # around until the next turn overwrote it.
+  def normalize(%{"type" => "message_end"}, ctx) do
+    {stream_id, ctx} = pop_delta_stream(ctx)
+    {stop_events(stream_id), ctx}
+  end
 
   def normalize(%{"type" => "tool_execution_end", "toolCallId" => id} = ev, ctx)
       when is_binary(id) do
@@ -899,9 +945,9 @@ defmodule OrcaHub.Backend.Pi do
     {[event], ctx}
   end
 
-  # Deltas and everything else (turn_start/turn_end, message_start,
-  # message_update, tool_execution_start/update, auto_retry_*,
-  # extension_error, …) — drop rather than emit a foreign shape (spec §3.3
+  # Everything else (turn_start/turn_end, a user-role message_start,
+  # tool_execution_start/update, auto_retry_*, extension_error, …) — drop
+  # rather than emit a foreign shape (spec §3.3
   # invariant). turn_end/agent_end embed the same assistant/tool content as
   # message_end/tool_execution_end already emitted from, so re-emitting here
   # would duplicate the feed.
@@ -926,8 +972,75 @@ defmodule OrcaHub.Backend.Pi do
     }
   end
 
-  defp assistant_event(blocks),
-    do: %{"type" => "assistant", "message" => %{"content" => blocks}}
+  # `message.id` is the C1 correlation key between the live delta bubble and
+  # this persisted event — the minted stream id (see the `message_start`
+  # clause). Omitted (rather than nil) when no stream was open, so nothing
+  # downstream has to special-case a null id.
+  defp assistant_event(blocks, stream_id) do
+    message = %{"content" => blocks}
+    message = if is_binary(stream_id), do: Map.put(message, "id", stream_id), else: message
+
+    %{"type" => "assistant", "message" => message}
+  end
+
+  # ── C1 delta-stream bookkeeping (backend_state.delta_stream_id) ──────
+  # One assistant message is in flight at a time, so a single slot suffices
+  # (unlike Codex, which keys by item id). SessionRunner resets
+  # `backend_state` to `%{}` on every port teardown/crash, so a cold reopen
+  # can never resume a half-finished stream.
+
+  defp put_delta_stream(ctx, stream_id),
+    do: %{ctx | backend_state: Map.put(ctx.backend_state, :delta_stream_id, stream_id)}
+
+  defp delta_stream(ctx), do: Map.get(ctx.backend_state, :delta_stream_id)
+
+  defp pop_delta_stream(ctx) do
+    {stream_id, bs} = Map.pop(ctx.backend_state, :delta_stream_id)
+    {stream_id, %{ctx | backend_state: bs}}
+  end
+
+  defp stop_events(nil), do: []
+  defp stop_events(stream_id), do: [Deltas.stream_stop(stream_id)]
+
+  # A `message_update` that arrives with no open stream (a `message_start` we
+  # never saw) has no id the persisted `assistant` event could match — drop it
+  # rather than invent one.
+  defp delta_events(_event, nil), do: []
+
+  defp delta_events(%{"type" => "text_start", "contentIndex" => i}, stream_id),
+    do: [Deltas.block_start(stream_id, i, "text")]
+
+  defp delta_events(%{"type" => "text_delta", "contentIndex" => i, "delta" => text}, stream_id)
+       when is_binary(text),
+       do: [Deltas.delta(stream_id, i, text)]
+
+  defp delta_events(%{"type" => "text_end", "contentIndex" => i}, stream_id),
+    do: [Deltas.block_stop(stream_id, i)]
+
+  defp delta_events(%{"type" => "thinking_start", "contentIndex" => i}, stream_id),
+    do: [Deltas.block_start(stream_id, i, "thinking")]
+
+  defp delta_events(%{"type" => "thinking_end", "contentIndex" => i}, stream_id),
+    do: [Deltas.block_stop(stream_id, i)]
+
+  # The tool name is translated to the SAME Claude-facing name the completed
+  # `tool_use` block will carry (`bash` -> `Bash`, …), so the live chip and the
+  # final tool card never disagree.
+  defp delta_events(
+         %{"type" => "toolcall_start", "contentIndex" => i, "toolName" => name},
+         stream_id
+       )
+       when is_binary(name) do
+    {claude_name, _input} = translate_tool(name, %{})
+    [Deltas.block_start(stream_id, i, "tool_use", claude_name)]
+  end
+
+  defp delta_events(%{"type" => "toolcall_end", "contentIndex" => i}, stream_id),
+    do: [Deltas.block_stop(stream_id, i)]
+
+  # thinking_delta / toolcall_delta (payloads C1 excludes) and anything
+  # unrecognized.
+  defp delta_events(_event, _stream_id), do: []
 
   defp tool_result_event(id, content, is_error) do
     %{

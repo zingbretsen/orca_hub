@@ -453,4 +453,193 @@ defmodule OrcaHub.SessionRunnerTest do
       assert has_stale_resolution?(session.id, "test-4")
     end
   end
+
+  # ── C1 assistant delta stream (voice phase 2) ───────────────────────
+
+  describe "handle_stream_event/2 — normalized assistant deltas" do
+    # Drives the REAL path: raw NDJSON bytes -> StreamParser -> the backend's
+    # normalize/2 -> handle_stream_event/2, so the delta clause is exercised
+    # exactly as a live port would exercise it.
+    defp delta_runner_data(session) do
+      %{
+        session_id: session.id,
+        directory: session.directory,
+        backend: OrcaHub.Backend.Claude,
+        backend_state: %{},
+        claude_session_id: nil,
+        model: nil,
+        port: :fake_port,
+        framing: :ndjson,
+        buffer: "",
+        error_output: "",
+        engine: :streaming,
+        warming_up: false,
+        turn_result: nil,
+        pending_questions: nil,
+        db_node: node(),
+        messages: [],
+        project_id: session.project_id
+      }
+    end
+
+    defp feed(data, frames) do
+      raw = Enum.map_join(frames, "", &(Jason.encode!(&1) <> "\n"))
+
+      # No `result` frame in any of these fixtures, so turn_result stays nil
+      # and handle_streaming_progress/1 always returns the plain keep_state —
+      # matching strictly keeps this honest if that ever changes.
+      {:keep_state, new_data} = SessionRunner.running(:info, {:fake_port, {:data, raw}}, data)
+      new_data
+    end
+
+    setup %{project: project} do
+      session = create_session(project, %{})
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session.id}")
+      %{session: session, data: delta_runner_data(session)}
+    end
+
+    test "broadcasts the C1 tuples for a text stream and persists NOTHING", %{
+      session: session,
+      data: data
+    } do
+      before = length(Sessions.list_messages(session.id))
+
+      data =
+        feed(data, [
+          %{
+            "type" => "stream_event",
+            "parent_tool_use_id" => nil,
+            "event" => %{
+              "type" => "message_start",
+              "message" => %{"id" => "msg_stream_1", "role" => "assistant", "content" => []}
+            }
+          },
+          %{
+            "type" => "stream_event",
+            "parent_tool_use_id" => nil,
+            "event" => %{
+              "type" => "content_block_start",
+              "index" => 0,
+              "content_block" => %{"type" => "text", "text" => ""}
+            }
+          },
+          %{
+            "type" => "stream_event",
+            "parent_tool_use_id" => nil,
+            "event" => %{
+              "type" => "content_block_delta",
+              "index" => 0,
+              "delta" => %{"type" => "text_delta", "text" => "one two"}
+            }
+          },
+          %{
+            "type" => "stream_event",
+            "parent_tool_use_id" => nil,
+            "event" => %{"type" => "content_block_stop", "index" => 0}
+          },
+          %{
+            "type" => "stream_event",
+            "parent_tool_use_id" => nil,
+            "event" => %{"type" => "message_stop"}
+          }
+        ])
+
+      assert_receive {:assistant_stream_start, %{"stream_id" => "msg_stream_1"}}
+
+      assert_receive {:assistant_block_start,
+                      %{
+                        "stream_id" => "msg_stream_1",
+                        "block_index" => 0,
+                        "type" => "text",
+                        "name" => nil
+                      }}
+
+      assert_receive {:assistant_delta,
+                      %{"stream_id" => "msg_stream_1", "block_index" => 0, "text" => "one two"}}
+
+      assert_receive {:assistant_block_stop, %{"stream_id" => "msg_stream_1", "block_index" => 0}}
+      assert_receive {:assistant_stream_stop, %{"stream_id" => "msg_stream_1"}}
+
+      # NOT persisted, NOT accumulated, and the turn-completion state the
+      # runner reads is untouched by the whole stream.
+      assert length(Sessions.list_messages(session.id)) == before
+      assert data.messages == []
+      assert data.turn_result == nil
+    end
+
+    test "the assistant event that follows IS persisted, with the matching message.id", %{
+      session: session,
+      data: data
+    } do
+      data =
+        feed(data, [
+          %{
+            "type" => "stream_event",
+            "parent_tool_use_id" => nil,
+            "event" => %{
+              "type" => "message_start",
+              "message" => %{"id" => "msg_stream_2", "role" => "assistant", "content" => []}
+            }
+          },
+          %{
+            "type" => "stream_event",
+            "parent_tool_use_id" => nil,
+            "event" => %{
+              "type" => "content_block_delta",
+              "index" => 0,
+              "delta" => %{"type" => "text_delta", "text" => "hi"}
+            }
+          },
+          %{
+            "type" => "stream_event",
+            "parent_tool_use_id" => nil,
+            "event" => %{"type" => "message_stop"}
+          },
+          %{
+            "type" => "assistant",
+            "message" => %{
+              "id" => "msg_stream_2",
+              "role" => "assistant",
+              "content" => [%{"type" => "text", "text" => "hi"}]
+            }
+          }
+        ])
+
+      assert_receive {:assistant_stream_start, %{"stream_id" => stream_id}}
+      assert_receive {:event, %{"type" => "assistant"} = persisted}
+
+      # The C1 correlation invariant, asserted against a real DB row rather
+      # than the in-memory event.
+      assert persisted["message"]["id"] == stream_id
+
+      messages = Sessions.list_messages(session.id)
+      assert [%{data: %{"type" => "assistant"}} = row] = messages
+      assert row.data["message"]["id"] == stream_id
+
+      # Exactly ONE row: the four frames above included three deltas.
+      assert length(messages) == 1
+      assert [%{"type" => "assistant"}] = data.messages
+    end
+
+    test "deltas during the hidden warm-up turn are swallowed like everything else", %{
+      session: session,
+      data: data
+    } do
+      data =
+        feed(%{data | warming_up: true}, [
+          %{
+            "type" => "stream_event",
+            "parent_tool_use_id" => nil,
+            "event" => %{
+              "type" => "message_start",
+              "message" => %{"id" => "msg_warmup", "role" => "assistant", "content" => []}
+            }
+          }
+        ])
+
+      refute_receive {:assistant_stream_start, _}, 100
+      assert Sessions.list_messages(session.id) == []
+      assert data.messages == []
+    end
+  end
 end

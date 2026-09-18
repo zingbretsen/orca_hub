@@ -2234,4 +2234,162 @@ defmodule OrcaHub.Backend.PiTest do
       assert Enum.any?(events, &(&1["type"] == "result"))
     end
   end
+
+  # ── C1 assistant delta stream (voice phase 2) ───────────────────────
+
+  describe "normalize/2 — assistant text deltas" do
+    alias OrcaHub.DeltaFixtures
+
+    # Frames are a LIVE capture from pi 0.85.1 — see the fixture dir's
+    # PROVENANCE.md for the command and what the capture pins.
+    defp delta_walk do
+      DeltaFixtures.normalize_all(Backend, DeltaFixtures.frames("pi_message_updates"), ctx())
+    end
+
+    test "translates an assistant message's message_update deltas into the C1 shape" do
+      {events, _ctx} = delta_walk()
+      [{:stream_start, stream_id} | _] = DeltaFixtures.shape(events)
+
+      assert DeltaFixtures.shape(events) == [
+               {:stream_start, stream_id},
+               {:block_start, 0, "text", nil},
+               {:delta, 0, "1"},
+               {:delta, 0, "  \n"},
+               {:delta, 0, "2"},
+               {:delta, 0, "  \n"},
+               {:delta, 0, "3"},
+               {:delta, 0, "  \n"},
+               {:delta, 0, "4"},
+               {:delta, 0, "  \n"},
+               {:delta, 0, "5"},
+               {:block_stop, 0},
+               {:stream_stop, stream_id}
+             ]
+    end
+
+    test "deltas are CHUNKS, not a cumulative snapshot — they concatenate to the final text" do
+      {events, _ctx} = delta_walk()
+
+      streamed =
+        events
+        |> DeltaFixtures.deltas_only()
+        |> Enum.filter(&(&1["kind"] == "delta"))
+        |> Enum.map_join("", & &1["text"])
+
+      assistant = Enum.find(events, &(&1["type"] == "assistant"))
+      assert streamed == "1  \n2  \n3  \n4  \n5"
+      assert [%{"type" => "text", "text" => ^streamed}] = assistant["message"]["content"]
+    end
+
+    test "stamps the minted stream_id into the persisted assistant event's message.id" do
+      {events, _ctx} = delta_walk()
+
+      assistant = Enum.find(events, &(&1["type"] == "assistant"))
+      [{:stream_start, stream_id} | _] = DeltaFixtures.shape(events)
+
+      assert assistant["message"]["id"] == stream_id
+      assert {:ok, _} = Ecto.UUID.cast(stream_id)
+    end
+
+    test "the user message's message_start/message_end open no stream" do
+      {events, _ctx} = delta_walk()
+
+      starts = Enum.filter(DeltaFixtures.shape(events), &match?({:stream_start, _}, &1))
+      assert length(starts) == 1
+    end
+
+    test "thinking and toolcall blocks get boundaries but never their payload" do
+      {_events, ctx} =
+        Backend.normalize(
+          %{"type" => "message_start", "message" => %{"role" => "assistant"}},
+          ctx()
+        )
+
+      frames = [
+        %{
+          "type" => "message_update",
+          "assistantMessageEvent" => %{"type" => "thinking_start", "contentIndex" => 0}
+        },
+        %{
+          "type" => "message_update",
+          "assistantMessageEvent" => %{
+            "type" => "thinking_delta",
+            "contentIndex" => 0,
+            "delta" => "secret reasoning"
+          }
+        },
+        %{
+          "type" => "message_update",
+          "assistantMessageEvent" => %{"type" => "thinking_end", "contentIndex" => 0}
+        },
+        %{
+          "type" => "message_update",
+          "assistantMessageEvent" => %{
+            "type" => "toolcall_start",
+            "contentIndex" => 1,
+            "id" => "call_1",
+            "toolName" => "bash"
+          }
+        },
+        %{
+          "type" => "message_update",
+          "assistantMessageEvent" => %{
+            "type" => "toolcall_delta",
+            "contentIndex" => 1,
+            "delta" => "{\"command\":"
+          }
+        },
+        %{
+          "type" => "message_update",
+          "assistantMessageEvent" => %{"type" => "toolcall_end", "contentIndex" => 1}
+        }
+      ]
+
+      {events, _ctx} = DeltaFixtures.normalize_all(Backend, frames, ctx)
+
+      # The tool name is the CLAUDE-facing one ("bash" -> "Bash"), matching
+      # the tool_use block the completed message will carry.
+      assert DeltaFixtures.shape(events) == [
+               {:block_start, 0, "thinking", nil},
+               {:block_stop, 0},
+               {:block_start, 1, "tool_use", "Bash"},
+               {:block_stop, 1}
+             ]
+    end
+
+    test "an aborted (empty-content) assistant message still closes its stream" do
+      {_events, ctx} =
+        Backend.normalize(
+          %{"type" => "message_start", "message" => %{"role" => "assistant"}},
+          ctx()
+        )
+
+      {events, ctx} =
+        Backend.normalize(
+          %{"type" => "message_end", "message" => %{"role" => "assistant", "content" => []}},
+          ctx
+        )
+
+      assert [{:stream_stop, _id}] = DeltaFixtures.shape(events)
+      refute Enum.any?(events, &(&1["type"] == "assistant"))
+      refute Map.has_key?(ctx.backend_state, :delta_stream_id)
+    end
+
+    test "a message_update with no open stream is dropped" do
+      frame = %{
+        "type" => "message_update",
+        "assistantMessageEvent" => %{
+          "type" => "text_delta",
+          "contentIndex" => 0,
+          "delta" => "orphan"
+        }
+      }
+
+      assert {[], _ctx} = Backend.normalize(frame, ctx())
+    end
+
+    test "capabilities advertise streaming_deltas" do
+      assert Backend.capabilities().streaming_deltas
+    end
+  end
 end

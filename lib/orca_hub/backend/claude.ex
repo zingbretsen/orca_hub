@@ -18,6 +18,7 @@ defmodule OrcaHub.Backend.Claude do
 
   alias OrcaHub.Backend.SharedPrompts
   alias OrcaHub.Claude.Config
+  alias OrcaHub.Claude.Deltas
   alias OrcaHub.HubRPC
 
   # CLI-native ScheduleWakeup's timer lives inside this very process, which
@@ -71,7 +72,9 @@ defmodule OrcaHub.Backend.Claude do
       system_prompt: :flag,
       warmup_turn: true,
       plan_mode: true,
-      ask_user_question: true
+      ask_user_question: true,
+      # `--include-partial-messages` + OrcaHub.Claude.Deltas (voice phase 2).
+      streaming_deltas: true
     }
   end
 
@@ -101,7 +104,12 @@ defmodule OrcaHub.Backend.Claude do
     claude_path = claude_executable!()
 
     opts =
-      [cwd: ctx.directory, input_format: "stream-json", disallowed_tools: @disallowed_tools]
+      [
+        cwd: ctx.directory,
+        input_format: "stream-json",
+        disallowed_tools: @disallowed_tools,
+        include_partial_messages: true
+      ]
       |> maybe_put(:session_id, ctx.claude_session_id)
       |> maybe_put(:model, ctx.model)
       |> maybe_put(:system_prompt, system_prompt(ctx))
@@ -128,7 +136,7 @@ defmodule OrcaHub.Backend.Claude do
     script_path = System.find_executable("script") || raise "script executable not found in PATH"
 
     opts =
-      [cwd: ctx.directory, disallowed_tools: @disallowed_tools]
+      [cwd: ctx.directory, disallowed_tools: @disallowed_tools, include_partial_messages: true]
       |> maybe_put(:session_id, ctx.claude_session_id)
       |> maybe_put(:model, ctx.model)
       |> maybe_put(:system_prompt, system_prompt(ctx))
@@ -315,7 +323,19 @@ defmodule OrcaHub.Backend.Claude do
 
   # ── Normalization ────────────────────────────────────────────────────
 
+  # Still identity for every event the feed persists — the ONE exception is
+  # the `stream_event` frames `--include-partial-messages` adds, which carry
+  # raw Anthropic streaming events rather than anything Claude-shaped.
+  # `OrcaHub.Claude.Deltas` turns the few we care about into normalized
+  # `"orca_delta"` events (broadcast-only, never persisted — see
+  # `OrcaHub.Backend.Deltas`) and drops the rest, so nothing new reaches the
+  # message feed.
   @impl true
+  def normalize(%{"type" => "stream_event"} = frame, ctx) do
+    {events, backend_state} = Deltas.normalize(frame, Map.get(ctx, :backend_state) || %{})
+    {events, Map.put(ctx, :backend_state, backend_state)}
+  end
+
   def normalize(native_event, ctx), do: {[native_event], ctx}
 
   @impl true

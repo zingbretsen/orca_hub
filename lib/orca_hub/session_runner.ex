@@ -21,6 +21,7 @@ defmodule OrcaHub.SessionRunner do
     Streaming
   }
 
+  alias OrcaHub.Backend.Deltas
   alias OrcaHub.Claude.StreamParser
 
   defmodule StartFailure do
@@ -2773,6 +2774,26 @@ defmodule OrcaHub.SessionRunner do
       %{"type" => "result"} -> %{data | turn_result: :warmup_done}
       _ -> data
     end
+  end
+
+  # Voice phase 2 (C1) — a normalized assistant delta from any backend
+  # (`OrcaHub.Backend.Deltas`). BROADCAST-ONLY and deliberately terminal: it
+  # returns `data` untouched, so deltas never reach `messages`, never persist,
+  # and can never influence `turn_result` / the accumulator the turn-completion
+  # path reads. The persisted `assistant` event that follows is still the one
+  # source of truth for the feed; `stream_id` equals its `message.id` so a
+  # client can swap its live bubble for the real render. A client that missed
+  # the deltas (page loaded mid-turn) simply sees the persisted message.
+  #
+  # Sits BELOW the `warming_up` clause above on purpose: the hidden warm-up
+  # turn's deltas are swallowed there along with everything else it emits.
+  defp handle_stream_event(%{"type" => "orca_delta"} = event, data) do
+    case Deltas.broadcast_payload(event) do
+      {tag, payload} -> broadcast(data.session_id, {tag, payload})
+      :ignore -> :ok
+    end
+
+    data
   end
 
   # spec §12.6 — pi's steering/follow-up queue changed. Broadcast-only, like

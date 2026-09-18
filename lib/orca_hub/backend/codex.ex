@@ -35,12 +35,15 @@ defmodule OrcaHub.Backend.Codex do
 
   require Logger
 
-  alias OrcaHub.Backend.{McpUrl, SharedPrompts}
+  alias OrcaHub.Backend.{Deltas, McpUrl, SharedPrompts}
 
-  # Suppress delta notifications at the source (v1 renders on item/completed
-  # only — spec §6.2/Q7).
+  # Suppress the delta notifications we have no consumer for, at the source.
+  # `item/agentMessage/delta` was on this list until voice phase 2 — it is now
+  # the one delta stream we DO want (normalized into `OrcaHub.Backend.Deltas`
+  # events below), so it is deliberately absent. Reasoning/command-output
+  # deltas stay suppressed: the C1 contract streams assistant TEXT only, and
+  # `item/completed` remains the sole source of persisted feed content.
   @delta_notification_methods [
-    "item/agentMessage/delta",
     "item/reasoning/textDelta",
     "item/commandExecution/outputDelta"
   ]
@@ -61,7 +64,10 @@ defmodule OrcaHub.Backend.Codex do
       # no built-in `AskUserQuestion` tool (spec §6.3(4)/(5)) — both fall
       # back to plain assistant text with no status tracking.
       plan_mode: false,
-      ask_user_question: false
+      ask_user_question: false,
+      # `item/agentMessage/delta` is no longer opted out of (voice phase 2) —
+      # normalized into OrcaHub.Backend.Deltas events below.
+      streaming_deltas: true
     }
   end
 
@@ -287,7 +293,74 @@ defmodule OrcaHub.Backend.Codex do
   def normalize(%{"id" => id, "error" => error}, ctx),
     do: handle_response(id, {:error, error}, ctx)
 
+  # An agentMessage item starting is the one item/started we act on: it opens
+  # the C1 delta stream (voice phase 2). Codex items have no message id of
+  # their own that the persisted `assistant` event could also carry, so we
+  # mint a UUID here, key it by the Codex item id, and stamp the SAME id into
+  # `assistant.message.id` at item/completed.
+  def normalize(
+        %{
+          "method" => "item/started",
+          "params" => %{"item" => %{"type" => "agentMessage", "id" => item_id}}
+        },
+        ctx
+      )
+      when is_binary(item_id) do
+    {stream_id, ctx} = open_delta_stream(ctx, item_id)
+
+    {[Deltas.stream_start(stream_id), Deltas.block_start(stream_id, 0, "text")], ctx}
+  end
+
   def normalize(%{"method" => "item/started"}, ctx), do: {[], ctx}
+
+  # Assistant text deltas. Codex models an agentMessage as one flat text run,
+  # so everything lands on block index 0.
+  def normalize(
+        %{
+          "method" => "item/agentMessage/delta",
+          "params" => %{"itemId" => item_id, "delta" => text}
+        },
+        ctx
+      )
+      when is_binary(item_id) and is_binary(text) do
+    case delta_stream_id(ctx, item_id) do
+      nil ->
+        # No item/started seen for this item (opted-out/reordered) — open the
+        # stream now so the text is never silently dropped.
+        {stream_id, ctx} = open_delta_stream(ctx, item_id)
+
+        {[
+           Deltas.stream_start(stream_id),
+           Deltas.block_start(stream_id, 0, "text"),
+           Deltas.delta(stream_id, 0, text)
+         ], ctx}
+
+      stream_id ->
+        {[Deltas.delta(stream_id, 0, text)], ctx}
+    end
+  end
+
+  def normalize(
+        %{
+          "method" => "item/completed",
+          "params" => %{"item" => %{"type" => "agentMessage", "id" => item_id, "text" => text}}
+        },
+        ctx
+      )
+      when is_binary(item_id) and is_binary(text) do
+    {stream_id, streamed?, ctx} = close_delta_stream(ctx, item_id)
+
+    # If no delta stream was ever opened for this item (deltas suppressed or
+    # an older app-server), emit the persisted event alone rather than a pair
+    # of stops for a stream no client ever saw — but still stamp the minted
+    # id, so `message.id` is present either way.
+    stops =
+      if streamed?,
+        do: [Deltas.block_stop(stream_id, 0), Deltas.stream_stop(stream_id)],
+        else: []
+
+    {stops ++ [assistant_text_event(text, stream_id)], ctx}
+  end
 
   def normalize(%{"method" => "item/completed", "params" => %{"item" => item}}, ctx)
       when is_map(item) do
@@ -555,9 +628,44 @@ defmodule OrcaHub.Backend.Codex do
 
   defp mcp_result_content(_), do: ""
 
-  defp assistant_text_event(text) do
-    %{"type" => "assistant", "message" => %{"content" => [%{"type" => "text", "text" => text}]}}
+  # `message.id` is the C1 correlation key between the live delta bubble and
+  # this persisted event. Codex has no id of its own for an assistant message
+  # — `item.id` names the ITEM, not an API message, and is not guaranteed to
+  # be shaped like one — so the delta bookkeeping mints a UUID per agentMessage
+  # and both sides use it. Omitted (rather than nil) when there is none, so
+  # nothing downstream has to special-case a null id.
+  defp assistant_text_event(text, stream_id \\ nil) do
+    message = %{"content" => [%{"type" => "text", "text" => text}]}
+    message = if is_binary(stream_id), do: Map.put(message, "id", stream_id), else: message
+
+    %{"type" => "assistant", "message" => message}
   end
+
+  # ── C1 delta-stream bookkeeping (backend_state.delta_streams) ────────
+  # `%{codex_item_id => minted_stream_id}`. SessionRunner resets
+  # `backend_state` to `%{}` on every port teardown/crash, so a cold reopen
+  # can never resume a half-finished stream.
+
+  defp open_delta_stream(ctx, item_id) do
+    stream_id = Ecto.UUID.generate()
+    streams = Map.put(delta_streams(ctx), item_id, stream_id)
+
+    {stream_id, put_delta_streams(ctx, streams)}
+  end
+
+  defp delta_stream_id(ctx, item_id), do: Map.get(delta_streams(ctx), item_id)
+
+  defp close_delta_stream(ctx, item_id) do
+    case Map.pop(delta_streams(ctx), item_id) do
+      {nil, _streams} -> {Ecto.UUID.generate(), false, ctx}
+      {stream_id, streams} -> {stream_id, true, put_delta_streams(ctx, streams)}
+    end
+  end
+
+  defp delta_streams(ctx), do: Map.get(ctx.backend_state, :delta_streams, %{})
+
+  defp put_delta_streams(ctx, streams),
+    do: %{ctx | backend_state: Map.put(ctx.backend_state, :delta_streams, streams)}
 
   defp assistant_thinking_event(text) do
     %{

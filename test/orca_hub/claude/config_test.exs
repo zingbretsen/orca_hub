@@ -126,4 +126,35 @@ defmodule OrcaHub.Claude.ConfigTest do
       refute "--input-format" in args
     end
   end
+
+  describe "include_partial_messages" do
+    test "is off by default (the flag never appears unasked)" do
+      {args, _} = Config.build_args("hello")
+      refute "--include-partial-messages" in args
+
+      {args, _} = Config.build_args(nil, input_format: "stream-json")
+      refute "--include-partial-messages" in args
+    end
+
+    test "adds --include-partial-messages when requested" do
+      {args, _} =
+        Config.build_args(nil, input_format: "stream-json", include_partial_messages: true)
+
+      assert args == [
+               "-p",
+               "--input-format",
+               "stream-json",
+               "--output-format",
+               "stream-json",
+               "--verbose",
+               "--dangerously-skip-permissions",
+               "--include-partial-messages"
+             ]
+    end
+
+    test "works for the text engine too" do
+      {args, _} = Config.build_args("hello", include_partial_messages: true)
+      assert "--include-partial-messages" in args
+    end
+  end
 end

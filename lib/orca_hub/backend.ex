@@ -66,7 +66,8 @@ defmodule OrcaHub.Backend do
             plan_mode_toggle: boolean,
             ask_user_question: boolean,
             session_stats: boolean,
-            steering: boolean
+            steering: boolean,
+            streaming_deltas: boolean
           }
 
     defstruct streaming: true,
@@ -114,7 +115,17 @@ defmodule OrcaHub.Backend do
               # interrupt-then-resend queueing every other backend uses.
               # Defaults false so Claude/Codex need no code change here — only
               # `Backend.Pi` overrides it (pi's native `steer` command).
-              steering: false
+              steering: false,
+              # Voice phase 2 (C1): whether this backend's `normalize/2` emits
+              # the broadcast-only `"orca_delta"` events of
+              # `OrcaHub.Backend.Deltas` — live assistant text deltas on
+              # `"session:<id>"`, correlated to the persisted `assistant`
+              # event by `stream_id`. Gates the UI's live-streaming/streaming-
+              # TTS affordances. Defaults `false` so a future backend with no
+              # partial-output channel is honest by omission (a backend that
+              # cannot stream emits NOTHING — never synthesized deltas); all
+              # three shipped adapters set it `true`.
+              streaming_deltas: false
   end
 
   @typedoc "Long-lived streaming port vs. a per-turn one-shot process."

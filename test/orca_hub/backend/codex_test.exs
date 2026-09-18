@@ -98,8 +98,10 @@ defmodule OrcaHub.Backend.CodexTest do
       assert req["params"]["clientInfo"]["name"] == "orca_hub"
       assert req["params"]["capabilities"]["experimentalApi"] == true
 
+      # item/agentMessage/delta is deliberately NOT opted out of as of voice
+      # phase 2 — it feeds the C1 delta stream (see the delta describe block
+      # at the bottom of this file).
       assert req["params"]["capabilities"]["optOutNotificationMethods"] == [
-               "item/agentMessage/delta",
                "item/reasoning/textDelta",
                "item/commandExecution/outputDelta"
              ]
@@ -467,12 +469,12 @@ defmodule OrcaHub.Backend.CodexTest do
           ctx()
         )
 
-      assert events == [
-               %{
-                 "type" => "assistant",
-                 "message" => %{"content" => [%{"type" => "text", "text" => "final answer"}]}
-               }
-             ]
+      # `message.id` is the minted C1 stream_id (voice phase 2) — the content
+      # mapping itself is unchanged. No stops here: no delta stream was open
+      # (no item/started), so the client never saw a bubble to close.
+      assert [%{"type" => "assistant", "message" => message}] = events
+      assert message["content"] == [%{"type" => "text", "text" => "final answer"}]
+      assert {:ok, _} = Ecto.UUID.cast(message["id"])
     end
 
     test "reasoning -> assistant thinking, joined content lines" do
@@ -1247,6 +1249,102 @@ defmodule OrcaHub.Backend.CodexTest do
         :ok -> :ok
         {:error, report} -> flunk(report)
       end
+    end
+  end
+
+  # ── C1 assistant delta stream (voice phase 2) ───────────────────────
+
+  describe "normalize/2 — assistant text deltas" do
+    alias OrcaHub.DeltaFixtures
+
+    # Frames are a LIVE capture from codex-cli 0.154.0, driven through the
+    # same handshake on_open/1 uses — see the fixture dir's PROVENANCE.md.
+    defp delta_walk do
+      DeltaFixtures.normalize_all(Backend, DeltaFixtures.frames("codex_agent_message"), ctx())
+    end
+
+    test "opts IN to item/agentMessage/delta at initialize (and still suppresses the rest)" do
+      {iodata, _ctx} = Backend.on_open(ctx())
+
+      opted_out =
+        get_in(decode_write(iodata), ["params", "capabilities", "optOutNotificationMethods"])
+
+      refute "item/agentMessage/delta" in opted_out
+      assert "item/reasoning/textDelta" in opted_out
+      assert "item/commandExecution/outputDelta" in opted_out
+    end
+
+    test "translates an agentMessage item's lifecycle into the C1 delta shape" do
+      {events, _ctx} = delta_walk()
+      [{:stream_start, stream_id} | _] = DeltaFixtures.shape(events)
+
+      assert DeltaFixtures.shape(events) == [
+               {:stream_start, stream_id},
+               {:block_start, 0, "text", nil},
+               {:delta, 0, "1"},
+               {:delta, 0, "\n"},
+               {:delta, 0, "2"},
+               {:delta, 0, "\n"},
+               {:delta, 0, "3"},
+               {:delta, 0, "\n"},
+               {:delta, 0, "4"},
+               {:delta, 0, "\n"},
+               {:delta, 0, "5"},
+               {:block_stop, 0},
+               {:stream_stop, stream_id}
+             ]
+    end
+
+    test "stamps the minted stream_id into the persisted assistant event's message.id" do
+      {events, _ctx} = delta_walk()
+
+      assistant = Enum.find(events, &(&1["type"] == "assistant"))
+      [{:stream_start, stream_id} | _] = DeltaFixtures.shape(events)
+
+      assert assistant["message"]["id"] == stream_id
+      assert {:ok, _} = Ecto.UUID.cast(stream_id)
+      assert assistant["message"]["content"] == [%{"type" => "text", "text" => "1\n2\n3\n4\n5"}]
+    end
+
+    test "opens no stream for a non-agentMessage item (the fixture's userMessage)" do
+      # The userMessage item/started+item/completed pair in the fixture must
+      # contribute nothing at all — exactly one stream_start in the walk.
+      {events, _ctx} = delta_walk()
+
+      starts = Enum.filter(DeltaFixtures.shape(events), &match?({:stream_start, _}, &1))
+      assert length(starts) == 1
+    end
+
+    test "a delta with no item/started opens the stream rather than dropping the text" do
+      frame = %{
+        "method" => "item/agentMessage/delta",
+        "params" => %{"itemId" => "msg_orphan", "delta" => "hi"}
+      }
+
+      {events, ctx} = Backend.normalize(frame, ctx())
+
+      assert [{:stream_start, id}, {:block_start, 0, "text", nil}, {:delta, 0, "hi"}] =
+               DeltaFixtures.shape(events)
+
+      assert ctx.backend_state[:delta_streams]["msg_orphan"] == id
+    end
+
+    test "an item/completed with no open stream emits the assistant event alone" do
+      frame = %{
+        "method" => "item/completed",
+        "params" => %{"item" => %{"type" => "agentMessage", "id" => "msg_x", "text" => "done"}}
+      }
+
+      {events, _ctx} = Backend.normalize(frame, ctx())
+
+      # No stops for a stream the client never saw — but message.id is still
+      # stamped, so nothing downstream has to handle a missing id.
+      assert [%{"type" => "assistant"} = assistant] = events
+      assert {:ok, _} = Ecto.UUID.cast(assistant["message"]["id"])
+    end
+
+    test "capabilities advertise streaming_deltas" do
+      assert Backend.capabilities().streaming_deltas
     end
   end
 end
