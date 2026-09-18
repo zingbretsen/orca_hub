@@ -1085,13 +1085,12 @@ let Hooks = {
   ...colocatedHooks,
   Terminal: TerminalHook,
 
-  // Voice mode (voice_mode_spec.md §8.1). Mounted on `#voice-panel`, which
-  // SessionLive.Show renders only after the user clicks the Voice button —
-  // that click is the user gesture the autoplay policy needs, so the hook
-  // can arm the mic straight from mounted(). Un-rendering the panel is the
-  // teardown path (destroyed() leaves the channel and closes the audio
-  // graph); everything the panel displays comes over its own channel, not
-  // from LiveView.
+  // Voice mode (voice_mode_spec.md §8.1 + §8.2). Mounted on `#voice-panel`,
+  // the root of OrcaHubWeb.VoiceBarLive in the app header — always present,
+  // on every page, since the bar is a sticky nested LiveView. The hook does
+  // NOT arm on mount: the mic button click is the user gesture the autoplay
+  // policy needs (§9 trap 2). Everything the bar displays comes over its own
+  // channel, not from LiveView.
   Voice: VoiceHook,
 
   // Plays the audio the Settings page's "Speak sample" button pushes down as
