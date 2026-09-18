@@ -73,15 +73,15 @@ defmodule OrcaHubWeb.Layouts do
          `calc(100vh - Xrem)` that silently rots every time the header changes. --%>
     <div class="flex flex-col h-dvh">
       <header class="flex items-center gap-2 px-4 py-2 sm:px-6 lg:px-8 shrink-0">
-        <a href="/" class="flex items-center gap-2 font-semibold">
+        <.link navigate={~p"/"} class="flex items-center gap-2 font-semibold">
           <img src={~p"/images/logo.png"} alt="OrcaHub" class="h-8 w-auto" /> OrcaHub
-        </a>
+        </.link>
 
         <nav class="hidden md:flex items-center gap-1 ml-4 mr-auto">
-          <a :for={link <- @nav_links} href={link.href} class="btn btn-ghost btn-sm">
+          <.link :for={link <- @nav_links} navigate={link.href} class="btn btn-ghost btn-sm">
             {link.label}
             <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-desktop" />
-          </a>
+          </.link>
           <.settings_nav_dropdown links={@settings_menu_links} />
         </nav>
 
@@ -112,13 +112,13 @@ defmodule OrcaHubWeb.Layouts do
               class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-52"
             >
               <li :for={link <- @nav_links}>
-                <a href={link.href}>
+                <.link navigate={link.href} onclick={dropdown_close_js()}>
                   {link.label}
                   <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-mobile" />
-                </a>
+                </.link>
               </li>
               <li :for={link <- @settings_menu_links}>
-                <a href={link.href}>{link.label}</a>
+                <.link navigate={link.href} onclick={dropdown_close_js()}>{link.label}</.link>
               </li>
 
               <li class="menu-title text-xs uppercase opacity-60 mt-2">Theme</li>
@@ -210,7 +210,7 @@ defmodule OrcaHubWeb.Layouts do
     assigns = assign(assigns, :single, single)
 
     ~H"""
-    <a href={@single.href} class="btn btn-ghost btn-sm">{@single.label}</a>
+    <.link navigate={@single.href} class="btn btn-ghost btn-sm">{@single.label}</.link>
     """
   end
 
@@ -221,11 +221,23 @@ defmodule OrcaHubWeb.Layouts do
         Settings <.icon name="hero-chevron-down-micro" class="size-3" />
       </div>
       <ul tabindex="0" class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-40">
-        <li :for={link <- @links}><a href={link.href}>{link.label}</a></li>
+        <li :for={link <- @links}>
+          <.link navigate={link.href} onclick={dropdown_close_js()}>{link.label}</.link>
+        </li>
       </ul>
     </div>
     """
   end
+
+  # A daisyUI dropdown is held open purely by `:focus-within`, and live
+  # navigation (unlike the full reload these links used to do) leaves the
+  # header DOM — and therefore the focused link — in place, so the menu would
+  # stay open over the new page. Blurring whatever holds focus (the tapped
+  # link on desktop, the trigger div on mobile, where a tap never moves focus
+  # into the link) drops `:focus-within` and closes it. Inline rather than a
+  # JS command because LiveView has no `JS.blur`, and this runs before
+  # navigation without cancelling it.
+  defp dropdown_close_js, do: "document.activeElement?.blur()"
 
   def node_filter_opener(assigns) do
     ~H"""
