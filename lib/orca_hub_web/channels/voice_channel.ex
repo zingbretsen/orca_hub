@@ -6,9 +6,19 @@ defmodule OrcaHubWeb.VoiceChannel do
 
   The wire contract — topic, the binary segment frame, every client and
   server event, and the join replies — is `voice_mode_spec.md` section 8.1,
-  amended by section 8.2 (the global voice bar and the single send path).
-  Read both before changing anything here; slices E (browser hook) and F
-  (`OrcaHubWeb.VoiceBarLive`) are written against the same text.
+  amended by section 8.2 (the global voice bar and the single send path) and
+  section 8.3 (focus, the phase 2c intent classes and `ui_action`). Read all
+  three before changing anything here; the browser hook
+  (`assets/js/voice/`) and `OrcaHubWeb.VoiceBarLive` are written against the
+  same text.
+
+  ## Focus and UI actions (spec 8.3)
+
+  Two events carry phase 2c: the client pushes `"ui_focus"` (`composer` vs
+  `palette`, plus the visible candidate labels) and this channel pushes
+  `"ui_action"` (`open_palette`, `close_palette`, `palette_query`, `select`,
+  `navigate`, `back`). The routing decision is entirely
+  `OrcaHub.Voice.Session`'s; this module only relays.
 
   ## Sending (spec 8.2, ORCAHUB3-86)
 
@@ -141,6 +151,16 @@ defmodule OrcaHubWeb.VoiceChannel do
   def handle_in("cancel", _payload, socket),
     do: apply_state(socket, &Session.cancel/1)
 
+  # -- spec 8.3, focus ------------------------------------------------------
+
+  # What the user is looking at, plus the labels of whichever selectable list
+  # is visible. The CLIENT owns this; the server never infers it, not even
+  # from an `open_palette` it just emitted. `Session.ui_focus/3` normalises
+  # whatever arrives, so a malformed payload degrades to composer focus with
+  # no candidates rather than being dropped on the floor.
+  def handle_in("ui_focus", payload, socket),
+    do: apply_state(socket, &Session.ui_focus(&1, payload["focus"], payload["candidates"]))
+
   # -- spec 8.2, the single send path ----------------------------------------
 
   def handle_in("composer", payload, socket),
@@ -260,6 +280,15 @@ defmodule OrcaHubWeb.VoiceChannel do
 
   defp run_effect({:sent, text}, socket) do
     push(socket, "sent", %{text: text})
+    socket
+  end
+
+  # Spec §8.3.5. The palette, the autocomplete dropdown and live navigation
+  # all live in the browser — there is nothing to do here but say WHAT
+  # happened and let the hook drive the DOM (never `window.location`, which
+  # would reload the page out from under the bar, the mic and this channel).
+  defp run_effect({:ui_action, kind, payload}, socket) do
+    push(socket, "ui_action", %{kind: kind, payload: payload})
     socket
   end
 

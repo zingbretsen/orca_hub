@@ -6,7 +6,7 @@ defmodule OrcaHub.Voice.SessionTest do
   """
   use ExUnit.Case, async: true
 
-  alias OrcaHub.Voice.Session
+  alias OrcaHub.Voice.{Intent, Session}
 
   @t0 1_000_000
 
@@ -563,6 +563,364 @@ defmodule OrcaHub.Voice.SessionTest do
 
       assert Session.snapshot(state, @t0 + 400).arming_ms == 1100
       assert Session.snapshot(state, @t0 + 9_999).arming_ms == 0
+    end
+  end
+
+  # -- phase 2c: focus, the new intent classes, ui_action (spec §8.3) --------
+
+  defp ui_actions(effects), do: for({:ui_action, kind, payload} <- effects, do: {kind, payload})
+
+  # `ui_focus` is pure and effect-free, so the assertion is part of the helper.
+  defp focused(state, focus, candidates \\ []) do
+    {state, []} = Session.ui_focus(state, focus, candidates)
+    state
+  end
+
+  # The wire shape §8.3.5 says the client sends: 0-based index, visible label.
+  @candidates [
+    %{"index" => 0, "label" => "Deploy the hub"},
+    %{"index" => 1, "label" => "Voice mode phase 2c"}
+  ]
+
+  describe "focus (§8.3.1)" do
+    test "a fresh session is composer-focused, and the snapshot echoes focus back" do
+      state = Session.new()
+      assert state.focus == "composer"
+      assert Session.snapshot(state, @t0).focus == "composer"
+
+      state = focused(state, "palette", @candidates)
+      assert state.focus == "palette"
+      assert state.candidates == @candidates
+      assert Session.snapshot(state, @t0).focus == "palette"
+    end
+
+    test "anything that is not \"palette\" reads as composer" do
+      for value <- ["composer", "Palette", "PALETTE", nil, "", 42] do
+        assert focused(Session.new(), value).focus == "composer",
+               "#{inspect(value)} was read as palette focus"
+      end
+    end
+
+    test "candidates are capped at nine, and a missing list is empty" do
+      many = for i <- 0..20, do: %{"index" => i, "label" => "item #{i}"}
+
+      assert length(focused(Session.new(), "palette", many).candidates) == 9
+      assert focused(Session.new(), "palette", nil).candidates == []
+      assert focused(Session.new(), "palette").candidates == []
+    end
+
+    test "reporting focus is a report about the DOM, so it never disarms a send" do
+      {state, _} = utterance(Session.new(), 1, "ship it orca send")
+      assert state.arming_until == @t0 + 1500
+
+      assert focused(state, "palette", @candidates).arming_until == @t0 + 1500
+    end
+  end
+
+  describe "the new intent classes in composer focus (§8.3.6)" do
+    test ":insert appends the payload text and emits NO ui_action" do
+      {state, effects} = utterance(Session.new(), 1, "first line orca new line")
+
+      assert [%{action: "insert", intent: "new_line"}] = results(effects)
+      # The client learns about it through the ordinary `state` snapshot —
+      # that is what mirrors it into the real composer with an `input` event.
+      assert ui_actions(effects) == []
+      assert state.draft == "first line\n"
+    end
+
+    test ":select emits a 1-BASED ordinal and leaves the draft alone" do
+      {state, _} = utterance(Session.new(), 1, "some dictation")
+      {state, effects} = utterance(state, 2, "orca third item")
+
+      assert [%{action: "select", intent: "third"}] = results(effects)
+      assert ui_actions(effects) == [{"select", %{ordinal: 3}}]
+      assert state.draft == "some dictation"
+    end
+
+    test ":select discards its remainder — a selection is not dictation" do
+      {state, effects} = utterance(Session.new(), 1, "hmm let me see orca first item")
+
+      assert [%{action: "select", intent: "first"}] = results(effects)
+      assert ui_actions(effects) == [{"select", %{ordinal: 1}}]
+      assert state.draft == ""
+    end
+
+    test ":navigate emits the payload's kind, with :kind stripped out of the payload" do
+      for {said, expected} <- [
+            {"orca search", {"open_palette", %{}}},
+            {"orca open", {"open_palette", %{}}},
+            {"orca back", {"back", %{}}},
+            {"orca all sessions", {"navigate", %{path: "/sessions"}}},
+            {"orca new session", {"navigate", %{path: "/sessions/new"}}}
+          ] do
+        {state, _} = utterance(Session.new(), 1, "keep this")
+        {state, effects} = utterance(state, 2, said)
+
+        assert [%{action: "navigate"}] = results(effects), "#{said} did not navigate"
+        assert ui_actions(effects) == [expected]
+        assert state.draft == "keep this"
+      end
+    end
+
+    test "routing is by class, so every vocabulary entry has a home" do
+      # The guard against a future `Intent` entry that this module has never
+      # heard of: whatever it is, it routes somewhere, and never crashes.
+      for {name, phrase} <- Intent.command_vocab() do
+        {state, effects} = utterance(Session.new(), 1, phrase)
+
+        assert [%{action: action, intent: intent}] = results(effects),
+               "#{phrase} produced #{inspect(actions(effects))}"
+
+        assert intent == to_string(name)
+        assert action in ~w(send dropped_command_only cancel ignored_stop_pause insert select
+                            navigate)
+
+        refute state.sending, "#{phrase} set `sending`"
+      end
+    end
+  end
+
+  describe "the new intent classes in palette focus (§8.3.6)" do
+    setup do
+      {state, _} = utterance(Session.new(), 1, "draft I care about")
+      {:ok, state: focused(state, "palette", @candidates)}
+    end
+
+    test ":send is ignored outright — draft untouched, nothing armed", %{state: state} do
+      {state, effects} = utterance(state, 2, "ship it orca send", @t0 + 10)
+
+      assert [%{action: "ignored_palette_focus", intent: "send"}] = results(effects)
+      assert state.draft == "draft I care about"
+      assert state.arming_until == nil
+      assert ui_actions(effects) == []
+      refute state.sending
+    end
+
+    test ":cancel closes the palette and does NOT clear the draft", %{state: state} do
+      {state, effects} = utterance(state, 2, "or cut cancel.", @t0 + 10)
+
+      assert [%{action: "cancel", intent: "cancel"}] = results(effects)
+      assert ui_actions(effects) == [{"close_palette", %{}}]
+      assert state.draft == "draft I care about"
+    end
+
+    test ":insert is ignored — the draft is untouchable while the palette is open",
+         %{state: state} do
+      {state, effects} = utterance(state, 2, "orca hashtag", @t0 + 10)
+
+      assert [%{action: "ignored_palette_focus", intent: "hashtag"}] = results(effects)
+      assert state.draft == "draft I care about"
+      refute state.pending_insert
+    end
+
+    test ":stop does not append its remainder either", %{state: state} do
+      {state, effects} = utterance(state, 2, "hang on Orcastop.", @t0 + 10)
+
+      assert [%{action: "ignored_stop_pause", intent: "stop"}] = results(effects)
+      assert state.draft == "draft I care about"
+    end
+
+    test ":select and :navigate work in either focus", %{state: state} do
+      {selected, effects} = utterance(state, 2, "orca first item", @t0 + 10)
+      assert actions(effects) == ["select"]
+      assert ui_actions(effects) == [{"select", %{ordinal: 1}}]
+      assert selected.draft == "draft I care about"
+
+      {_navigated, effects} = utterance(state, 2, "orca back", @t0 + 10)
+      assert actions(effects) == ["navigate"]
+      assert ui_actions(effects) == [{"back", %{}}]
+    end
+
+    test "a non-command utterance becomes a palette query, never a draft append",
+         %{state: state} do
+      {state, effects} = utterance(state, 2, "the deploy script", @t0 + 10)
+
+      assert [%{action: "palette_query", intent: nil}] = results(effects)
+      assert ui_actions(effects) == [{"palette_query", %{text: "the deploy script"}}]
+      assert state.draft == "draft I care about"
+    end
+
+    test "a palette query REPLACES rather than accumulating", %{state: state} do
+      {state, effects} = utterance(state, 2, "the deploy script", @t0 + 10)
+      assert ui_actions(effects) == [{"palette_query", %{text: "the deploy script"}}]
+
+      {_state, effects} = utterance(state, 3, "some dictation", @t0 + 20)
+      assert ui_actions(effects) == [{"palette_query", %{text: "some dictation"}}]
+    end
+
+    test "a non-command utterance that NAMES a candidate selects it by index",
+         %{state: state} do
+      {state, effects} = utterance(state, 2, "deploy the hub", @t0 + 10)
+
+      assert [%{action: "select", intent: nil, detail: "matched Deploy the hub"}] =
+               results(effects)
+
+      assert ui_actions(effects) == [{"select", %{index: 0, label: "Deploy the hub"}}]
+      assert state.draft == "draft I care about"
+    end
+
+    test "a NEAR miss falls through to a palette query rather than guessing (§8.3.8)" do
+      # Two candidates a hair apart: over the 0.85 threshold but inside the
+      # 0.10 margin, so the matcher refuses to pick one.
+      state =
+        focused(Session.new(), "palette", [
+          %{"index" => 0, "label" => "Deploy the hub"},
+          %{"index" => 1, "label" => "Deploy the hubs"}
+        ])
+
+      {_state, effects} = utterance(state, 1, "deploy the hub")
+
+      assert actions(effects) == ["palette_query"]
+      assert ui_actions(effects) == [{"palette_query", %{text: "deploy the hub"}}]
+    end
+
+    test "with no candidates reported at all, everything is a query", %{state: state} do
+      state = focused(state, "palette", [])
+      {_state, effects} = utterance(state, 2, "deploy the hub", @t0 + 10)
+
+      assert actions(effects) == ["palette_query"]
+    end
+  end
+
+  describe "insert join rules (§8.3.7)" do
+    test "a newline insert trims the draft's trailing whitespace and concatenates" do
+      {state, _} = Session.draft_edit(Session.new(), "first line   ")
+      {state, effects} = utterance(state, 1, "orca new line")
+
+      assert actions(effects) == ["insert"]
+      assert state.draft == "first line\n"
+      refute state.pending_insert
+
+      {state, _} = utterance(state, 2, "orca new paragraph", @t0 + 10)
+      assert state.draft == "first line\n\n"
+    end
+
+    test "a hashtag insert space-joins, and the NEXT transcript lands flush against it" do
+      {state, _} = utterance(Session.new(), 1, "look at")
+      {state, effects} = utterance(state, 2, "orca hashtag", @t0 + 10)
+
+      assert actions(effects) == ["insert"]
+      assert state.draft == "look at #"
+      assert state.pending_insert
+
+      {state, effects} = utterance(state, 3, "voice", @t0 + 20)
+      assert actions(effects) == ["appended"]
+      assert state.draft == "look at #voice"
+      refute state.pending_insert
+
+      # ...and the one after that is an ordinary space join again.
+      {state, _} = utterance(state, 4, "mode", @t0 + 30)
+      assert state.draft == "look at #voice mode"
+    end
+
+    test "both spellings of each trigger produce the same text" do
+      for {said, expected} <- [
+            {"orca hashtag", "#"},
+            {"orca session search", "#"},
+            {"orca double hashtag", "##"},
+            {"orca project search", "##"}
+          ] do
+        {state, _} = utterance(Session.new(), 1, said)
+        assert state.draft == expected, "#{said} inserted #{inspect(state.draft)}"
+        assert state.pending_insert
+      end
+    end
+
+    test "a hashtag insert on an empty draft, or after whitespace, does not double-space" do
+      {state, _} = utterance(Session.new(), 1, "orca double hashtag")
+      assert state.draft == "##"
+
+      {state, _} = Session.draft_edit(Session.new(), "note: ")
+      {state, _} = utterance(state, 1, "orca hashtag")
+      assert state.draft == "note: #"
+    end
+
+    test "the remainder joins with the ordinary space rule BEFORE the payload goes on" do
+      {state, _} = utterance(Session.new(), 1, "see")
+      {state, effects} = utterance(state, 2, "the logs orca new line", @t0 + 10)
+
+      assert actions(effects) == ["insert"]
+      assert state.draft == "see the logs\n"
+    end
+
+    test "pending_insert is cleared by ANOTHER insert" do
+      {state, _} = utterance(Session.new(), 1, "orca hashtag")
+      assert state.pending_insert
+
+      {state, _} = utterance(state, 2, "orca new line", @t0 + 10)
+      refute state.pending_insert
+      assert state.draft == "#\n"
+    end
+
+    test "pending_insert is cleared by cancel, by a draft edit and by a send" do
+      {hash, _} = utterance(Session.new(), 1, "orca hashtag")
+      assert hash.pending_insert
+
+      {cancelled, _} = Session.cancel(hash)
+      refute cancelled.pending_insert
+
+      {edited, _} = Session.draft_edit(hash, "typed")
+      refute edited.pending_insert
+
+      {requested, _} = Session.send_now(hash, @t0)
+      refute requested.pending_insert
+
+      {sent, _} = Session.sent_ack(requested)
+      refute sent.pending_insert
+    end
+
+    test "a SPOKEN cancel clears pending_insert too" do
+      {state, _} = utterance(Session.new(), 1, "orca hashtag")
+      {state, effects} = utterance(state, 2, "or cut cancel.", @t0 + 10)
+
+      assert actions(effects) == ["cancel"]
+      assert state.draft == ""
+      refute state.pending_insert
+    end
+
+    # KNOWN WART in §8.3.7 as pinned, reported rather than fixed: the rules
+    # say what an insert does to the draft, and leave the NEXT append at
+    # §8.1's unchanged space-join — which puts a space right after a spoken
+    # newline. Pinned here so the closing doc pass cannot miss it.
+    test "a transcript after a NEWLINE insert still space-joins, dangling space and all" do
+      {state, _} = utterance(Session.new(), 1, "first line orca new line")
+      {state, _} = utterance(state, 2, "second line", @t0 + 10)
+
+      assert state.draft == "first line\n second line"
+    end
+  end
+
+  describe "arming and the phase 2c classes (§8.3.6)" do
+    test "an insert, a selection, a navigation and a palette query all CANCEL an open window" do
+      armed = fn ->
+        {state, _} = utterance(Session.new(), 1, "ship it orca send")
+        assert state.arming_until == @t0 + 1500
+        state
+      end
+
+      for said <- ["orca new line", "orca third item", "orca back", "orca search"] do
+        {state, effects} = utterance(armed.(), 2, said, @t0 + 100)
+
+        assert state.arming_until == nil, "#{said} left the arming window open"
+        refute Enum.any?(effects, &match?({:schedule_tick, _}, &1))
+        assert Session.snapshot(state, @t0 + 100).status != "arming"
+      end
+
+      {state, _} =
+        utterance(focused(armed.(), "palette", @candidates), 2, "the deploy script", @t0 + 100)
+
+      assert state.arming_until == nil
+    end
+
+    test "and NONE of them ever opens one" do
+      for said <- ["orca new line", "orca third item", "orca back", "orca search"] do
+        {state, effects} = utterance(Session.new(), 1, said)
+
+        assert state.arming_until == nil, "#{said} armed a send"
+        refute state.sending
+        refute Enum.any?(effects, &match?({:schedule_tick, _}, &1))
+        refute Enum.any?(effects, &match?({:send_request, _}, &1))
+      end
     end
   end
 end

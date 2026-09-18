@@ -419,4 +419,148 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       assert_push "sent", %{text: "ship it"}, 1_000
     end
   end
+
+  # -- spec 8.3: focus and ui_action -----------------------------------------
+
+  # The setup stub answers every ASR call with @transcript; the 8.3 tests
+  # need their own words, so they re-stub before pushing a segment.
+  defp stub_transcript(text) do
+    Req.Test.stub(@stub, fn conn ->
+      Req.Test.json(conn, %{
+        "text" => text,
+        "language" => "en",
+        "duration" => 2.4,
+        "model" => "large-v3-turbo",
+        "elapsed_seconds" => 0.61
+      })
+    end)
+  end
+
+  describe "focus and ui_action (spec 8.3)" do
+    test "the join snapshot starts in composer focus", %{session: session} do
+      {:ok, reply, _socket} = join(session.id)
+
+      assert %{state: %{focus: "composer"}} = reply
+    end
+
+    test "a ui_focus push lands and is echoed back in the snapshot", %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      push(socket, "ui_focus", %{
+        "focus" => "palette",
+        "candidates" => [%{"index" => 0, "label" => "Deploy the hub"}]
+      })
+
+      assert_push "state", %{focus: "palette"}, 1_000
+
+      push(socket, "ui_focus", %{"focus" => "composer", "candidates" => []})
+      assert_push "state", %{focus: "composer"}, 1_000
+    end
+
+    test "a malformed ui_focus degrades to composer instead of crashing the channel",
+         %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      push(socket, "ui_focus", %{})
+      assert_push "state", %{focus: "composer"}, 1_000
+
+      push(socket, "ui_focus", %{"focus" => 42, "candidates" => "not a list"})
+      assert_push "state", %{focus: "composer"}, 1_000
+
+      # Still alive and still speaking the rest of the contract.
+      push(socket, "draft_edit", %{"text" => "still here"})
+      assert_push "state", %{draft: "still here"}, 1_000
+    end
+
+    test "a spoken navigation pushes a ui_action and leaves the draft alone",
+         %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      push(socket, "draft_edit", %{"text" => "keep this"})
+      assert_push "state", %{draft: "keep this"}, 1_000
+
+      stub_transcript("orca all sessions")
+      push(socket, "segment", {:binary, segment(1, 16_000)})
+
+      assert_push "segment_result", %{seq: 1, action: "navigate", intent: "sessions"}, 2_000
+      assert_push "ui_action", %{kind: "navigate", payload: %{path: "/sessions"}}, 1_000
+      assert_push "state", %{draft: "keep this"}, 1_000
+    end
+
+    test "a spoken ordinal pushes a 1-based select", %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      stub_transcript("orca third item")
+      push(socket, "segment", {:binary, segment(1, 16_000)})
+
+      assert_push "segment_result", %{seq: 1, action: "select", intent: "third"}, 2_000
+      assert_push "ui_action", %{kind: "select", payload: %{ordinal: 3}}, 1_000
+    end
+
+    test "in palette focus a non-command becomes a palette query, not a draft append",
+         %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      push(socket, "draft_edit", %{"text" => "untouchable"})
+      assert_push "state", %{draft: "untouchable"}, 1_000
+
+      push(socket, "ui_focus", %{
+        "focus" => "palette",
+        "candidates" => [%{"index" => 0, "label" => "Deploy the hub"}]
+      })
+
+      assert_push "state", %{focus: "palette"}, 1_000
+
+      stub_transcript("the deploy script")
+      push(socket, "segment", {:binary, segment(1, 16_000)})
+
+      assert_push "segment_result", %{seq: 1, action: "palette_query"}, 2_000
+
+      assert_push "ui_action",
+                  %{kind: "palette_query", payload: %{text: "the deploy script"}},
+                  1_000
+
+      assert_push "state", %{draft: "untouchable", focus: "palette"}, 1_000
+    end
+
+    test "in palette focus a spoken send is ignored and nothing is delivered",
+         %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      push(socket, "draft_edit", %{"text" => "not yet"})
+      assert_push "state", %{draft: "not yet"}, 1_000
+
+      push(socket, "ui_focus", %{"focus" => "palette", "candidates" => []})
+      assert_push "state", %{focus: "palette"}, 1_000
+
+      # The setup stub's transcript is exactly "let's ship it orca send".
+      push(socket, "segment", {:binary, segment(1, 16_000)})
+
+      assert_push "segment_result",
+                  %{seq: 1, action: "ignored_palette_focus", intent: "send"},
+                  2_000
+
+      assert_push "state", %{draft: "not yet", status: status}, 1_000
+      refute status == "arming"
+      refute_receive {:voice_send, _, _, _, _}, 2_500
+    end
+
+    test "a spoken cancel in palette focus closes the palette and keeps the draft",
+         %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      push(socket, "draft_edit", %{"text" => "still mine"})
+      assert_push "state", %{draft: "still mine"}, 1_000
+
+      push(socket, "ui_focus", %{"focus" => "palette", "candidates" => []})
+      assert_push "state", %{focus: "palette"}, 1_000
+
+      stub_transcript("or cut cancel.")
+      push(socket, "segment", {:binary, segment(1, 16_000)})
+
+      assert_push "segment_result", %{seq: 1, action: "cancel", intent: "cancel"}, 2_000
+      assert_push "ui_action", %{kind: "close_palette", payload: %{}}, 1_000
+      assert_push "state", %{draft: "still mine"}, 1_000
+    end
+  end
 end

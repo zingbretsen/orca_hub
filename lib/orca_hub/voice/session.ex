@@ -5,7 +5,9 @@ defmodule OrcaHub.Voice.Session do
   result ordering.
 
   The normative behaviour is `voice_mode_spec.md` section 8.1 ("VoiceChannel
-  wire contract"); read it before changing anything here.
+  wire contract"), amended by §8.2 (the global bar and the single send path)
+  and §8.3 (focus, the phase 2c intent classes and the insert join rules);
+  read them before changing anything here.
 
   Nothing in this module opens a socket, spawns a task, starts a timer or
   makes an HTTP call. Every function takes a state and returns
@@ -21,6 +23,9 @@ defmodule OrcaHub.Voice.Session do
     * `{:send, text}` — hand `text` to `Cluster.send_message(..., :queue)`,
       then feed the answer back through `send_result/2`
     * `{:sent, text}` — push one `"sent"` event; the draft is already cleared
+    * `{:ui_action, kind, payload}` — push one `"ui_action"` event (spec
+      §8.3.5); the BROWSER drives the palette, the autocomplete dropdown and
+      live navigation, because none of them exist on this side of the wire
     * `{:schedule_tick, ms}` — call `tick/2` no later than `ms` from now
 
   `tick/2` is IDEMPOTENT and deadline-driven: it fires whatever deadlines
@@ -46,12 +51,16 @@ defmodule OrcaHub.Voice.Session do
   their turn. A merge consumes two seqs and produces ONE entry, which is why
   the ordering is an explicit list rather than a counter.
 
-  An applied transcript is classified by `OrcaHub.Voice.Intent`: no command
-  appends to the draft, `:send` strips the command and opens the 1500 ms
-  arming window, `:cancel` clears everything, `:stop`/`:pause` strip and
-  append but do nothing else (phase 3 owns them). The arming window is
-  cancelled by speech onset, an explicit cancel, a manual draft edit, and by
-  any segment that appends text. It is never OPENED at all when speech
+  An applied transcript is classified by `OrcaHub.Voice.Intent` over
+  `Intent.command_vocab/0` and routed by `Intent.class/1` — never by a
+  hardcoded list of names, so a vocabulary entry added to `Intent` needs no
+  change here. No command appends to the draft, `:send` strips the command
+  and opens the 1500 ms arming window, `:cancel` clears everything,
+  `:stop`/`:pause` strip and append but do nothing else (phase 3 owns them).
+  The arming window is cancelled by speech onset, an explicit cancel, a
+  manual draft edit, and by any segment that appends text (§8.3 adds
+  inserts, selections, navigations and palette queries to that list, and
+  none of them can open one). It is never OPENED at all when speech
   resumed between the command segment's receipt and its transcript landing
   (`armable?/2`), which is the ~0.6-1.1 s window the `speech_start` cancel
   cannot see.
@@ -59,6 +68,39 @@ defmodule OrcaHub.Voice.Session do
   `pending` in the snapshot counts segments that are dispatched-but-unapplied
   PLUS a held one — i.e. everything on its way to ASR that the user has not
   seen a result for yet.
+
+  ## Focus and the phase 2c classes (spec §8.3)
+
+  `focus` is `"composer"` or `"palette"` and the CLIENT owns it: it reports
+  the value through `ui_focus/3` along with the labels of whatever
+  selectable list is visible, and this module NEVER infers it — not even
+  from an `open_palette` it just emitted. It resets to `"composer"` on join
+  (i.e. in `new/1`) and, because the bar rejoins on retarget, on retarget.
+
+  While `focus == "palette"` the draft is untouchable: no appends, no
+  clears, no inserts. A spoken `:send` is ignored there, a `:cancel` only
+  closes the palette, and an utterance that matches no command becomes
+  either a name-matched `select` (`Intent.match_label/3`) or a
+  `palette_query` that REPLACES the palette's search text.
+
+  Beyond `:action` and `:ignore`, `Intent.class/1` routes three new classes:
+
+    * `:insert` — `#`/`##`/newline text joined into the draft by §8.3.7's
+      rules and mirrored into the page's composer by the ordinary `state`
+      snapshot, which is what makes the autocomplete open "as if typed";
+    * `:select` — an ordinal, emitted as `{:ui_action, "select", …}`;
+    * `:navigate` — palette open/close, history back, or a live navigation
+      to one path from §8.3.3's fixed set.
+
+  `pending_insert` is the one piece of carry-over state they need: a `#` or
+  `##` insert sets it, and it makes the NEXT appended transcript join with
+  NO separator so the spoken query lands where `Autocomplete`'s `/#(\\S*)$/`
+  trigger can see it. It is cleared by that append, by any other insert, by
+  `cancel/1`, by a send, and by a manual `draft_edit/2`.
+
+  **Arming.** Only `:send` ever opens the window. Inserts, selections,
+  navigations and palette queries all CANCEL an open one — the user kept
+  talking, so it was not a confirmation — and never open one.
 
   ## The single send path (spec §8.2, ORCAHUB3-86)
 
@@ -125,7 +167,14 @@ defmodule OrcaHub.Voice.Session do
           | {:send_request, String.t()}
           | {:send, String.t()}
           | {:sent, String.t()}
+          | {:ui_action, String.t(), map()}
           | {:schedule_tick, non_neg_integer()}
+
+  @type focus :: String.t()
+
+  # Spec §8.3.5: the client sends at most nine, but the server is the one
+  # that hands them to the matcher, so it caps them itself.
+  @max_candidates 9
 
   defstruct threshold: Intent.default_threshold(),
             draft: "",
@@ -155,7 +204,17 @@ defmodule OrcaHub.Voice.Session do
             send_pending: nil,
             # monotonically increasing count of VAD speech onsets, compared
             # against a segment's `speech_at` when its result lands
-            speech_starts: 0
+            speech_starts: 0,
+            # spec §8.3.1: "composer" | "palette", as last REPORTED by the
+            # client. Never inferred here.
+            focus: "composer",
+            # spec §8.3.5: the client's last `ui_focus` candidate list, in
+            # its wire shape (`%{"index" => i, "label" => s}`), fed to
+            # `Intent.match_label/3` on a palette-focus non-command.
+            candidates: [],
+            # spec §8.3.7: a `#`/`##` insert just landed, so the next
+            # appended transcript concatenates with NO separator.
+            pending_insert: false
 
   @doc """
   A fresh voice session.
@@ -217,10 +276,40 @@ defmodule OrcaHub.Voice.Session do
   @spec mic(%__MODULE__{}, boolean()) :: {%__MODULE__{}, [effect()]}
   def mic(state, muted?), do: {%{state | muted: !!muted?}, []}
 
-  @doc "The user edited the draft by hand. Replaces the draft, cancels arming."
+  @doc """
+  The client's `ui_focus` event (spec §8.3.5): what the user is looking at,
+  and the labels of whichever selectable list is visible.
+
+  `focus` is `"palette"` or `"composer"`; ANYTHING else — a typo, a nil, a
+  future value this server does not know — reads as `"composer"`, the focus
+  in which the draft behaves exactly as phases 1 and 2 describe. Candidates
+  are kept in their wire shape (`Intent.match_label/3` accepts it directly)
+  and capped at nine; the client already truncates the labels.
+
+  Deliberately does NOT touch the arming window. It is a report about the
+  DOM, not speech, and §8.3's arming rules list only speech-driven events.
+  """
+  @spec ui_focus(%__MODULE__{}, term(), term()) :: {%__MODULE__{}, [effect()]}
+  def ui_focus(state, focus, candidates) do
+    focus = if focus == "palette", do: "palette", else: "composer"
+
+    candidates =
+      candidates
+      |> List.wrap()
+      |> Enum.take(@max_candidates)
+
+    {%{state | focus: focus, candidates: candidates}, []}
+  end
+
+  @doc """
+  The user edited the draft by hand. Replaces the draft, cancels arming.
+
+  Also clears `pending_insert` — the draft the spoken `#` was meant to
+  attach to is not the draft any more (spec §8.3.7).
+  """
   @spec draft_edit(%__MODULE__{}, String.t()) :: {%__MODULE__{}, [effect()]}
   def draft_edit(state, text) when is_binary(text),
-    do: {%{state | draft: text, arming_until: nil}, []}
+    do: {%{state | draft: text, arming_until: nil, pending_insert: false}, []}
 
   @doc """
   Clears the draft and any arming window.
@@ -231,8 +320,16 @@ defmodule OrcaHub.Voice.Session do
   deliver the very text they just cancelled.
   """
   @spec cancel(%__MODULE__{}) :: {%__MODULE__{}, [effect()]}
-  def cancel(state),
-    do: {%{state | draft: "", arming_until: nil, send_pending: nil, sending: false}, []}
+  def cancel(state) do
+    {%{
+       state
+       | draft: "",
+         arming_until: nil,
+         send_pending: nil,
+         sending: false,
+         pending_insert: false
+     }, []}
+  end
 
   @doc """
   The client reported whether the page it is on has a composer form bound to
@@ -263,7 +360,10 @@ defmodule OrcaHub.Voice.Session do
       composer: state.composer_present
     }
 
-    {%{state | sending: true, arming_until: nil, send_pending: pending},
+    # §8.3.7: a send clears `pending_insert`. The draft is final as of this
+    # moment, so whatever the `#` was going to collect, it is not collecting
+    # it any more — even on the paths where the draft survives the attempt.
+    {%{state | sending: true, arming_until: nil, send_pending: pending, pending_insert: false},
      [{:send_request, state.draft}, {:schedule_tick, @send_request_ms}]}
   end
 
@@ -329,8 +429,15 @@ defmodule OrcaHub.Voice.Session do
   defp sent(state, text \\ nil) do
     text = text || state.draft
 
-    {%{state | sending: false, draft: "", arming_until: nil, send_pending: nil, error: nil},
-     [{:sent, text}]}
+    {%{
+       state
+       | sending: false,
+         draft: "",
+         arming_until: nil,
+         send_pending: nil,
+         pending_insert: false,
+         error: nil
+     }, [{:sent, text}]}
   end
 
   # -- segments --------------------------------------------------------------
@@ -473,8 +580,34 @@ defmodule OrcaHub.Voice.Session do
     if ASR.silence?(res) do
       {state, [result_effect(entry.seq, "dropped_silence", base)]}
     else
-      {intent, score} = Intent.intent(res.text, threshold: state.threshold)
+      {intent, score} = Intent.intent(res.text, intent_opts(state))
       classify_intent(state, entry, res, intent, score, Keyword.put(base, :score, score), now)
+    end
+  end
+
+  # Nothing in the vocabulary matched: §8.3.6 step 3. In composer focus this
+  # is phase 1's plain append; in palette focus the draft is off limits and
+  # the utterance is either a name-matched selection or a search query.
+  defp classify_intent(%__MODULE__{focus: "palette"} = state, entry, res, nil, _score, base, _now) do
+    text = String.trim(res.text)
+
+    case Intent.match_label(text, state.candidates, threshold: state.threshold) do
+      {:ok, %{index: index, label: label}} ->
+        {disarm(state),
+         [
+           result_effect(entry.seq, "select", Keyword.put(base, :detail, "matched #{label}")),
+           {:ui_action, "select", %{index: index, label: label}}
+         ]}
+
+      :no_match ->
+        # REPLACE semantics (§8.3.5): the palette query is the whole
+        # utterance every time, so a spoken correction overwrites rather
+        # than accumulating the way the draft does.
+        {disarm(state),
+         [
+           result_effect(entry.seq, "palette_query", base),
+           {:ui_action, "palette_query", %{text: text}}
+         ]}
     end
   end
 
@@ -482,8 +615,31 @@ defmodule OrcaHub.Voice.Session do
     {append(state, res.text), [result_effect(entry.seq, "appended", base)]}
   end
 
-  defp classify_intent(state, entry, res, :send, _score, base, now) do
-    remainder = Intent.strip_command(res.text, :send, threshold: state.threshold)
+  # §8.3.6 step 2: dispatch on the CLASS, never on the name. A vocabulary
+  # entry added to `Intent` routes itself.
+  defp classify_intent(state, entry, res, name, _score, base, now) do
+    route(
+      Intent.class(name),
+      state,
+      entry,
+      res,
+      name,
+      Keyword.put(base, :intent_name, to_string(name)),
+      now
+    )
+  end
+
+  # -- :action (§8.1/§8.2, plus §8.3.6's palette-focus exceptions) -----------
+
+  # The palette is open and the user said "orca send". There is no draft in
+  # view to confirm, so the safe reading is that they meant the palette —
+  # do nothing at all rather than firing a send they cannot see.
+  defp route(:action, %__MODULE__{focus: "palette"} = state, entry, _res, :send, base, _now) do
+    {state, [result_effect(entry.seq, "ignored_palette_focus", base)]}
+  end
+
+  defp route(:action, state, entry, res, :send, base, now) do
+    remainder = Intent.strip_command(res.text, :send, intent_opts(state))
     state = if remainder == "", do: state, else: append(state, remainder)
 
     cond do
@@ -508,16 +664,145 @@ defmodule OrcaHub.Voice.Session do
     end
   end
 
-  defp classify_intent(state, entry, _res, :cancel, _score, base, _now) do
-    {%{state | draft: "", arming_until: nil}, [result_effect(entry.seq, "cancel", base)]}
+  # §8.3.6: in palette focus a cancel means "close this palette", NOT "throw
+  # away my draft" — the draft is not even on screen. The arming window is
+  # still killed: a cancel must never be followed by a send the user thinks
+  # they called off.
+  defp route(:action, %__MODULE__{focus: "palette"} = state, entry, _res, :cancel, base, _now) do
+    {disarm(state),
+     [result_effect(entry.seq, "cancel", base), {:ui_action, "close_palette", %{}}]}
   end
 
-  defp classify_intent(state, entry, res, intent, _score, base, _now)
-       when intent in [:stop, :pause] do
-    remainder = Intent.strip_command(res.text, intent, threshold: state.threshold)
-    state = if remainder == "", do: state, else: append(state, remainder)
-    base = Keyword.put(base, :intent_name, to_string(intent))
+  defp route(:action, state, entry, _res, :cancel, base, _now) do
+    {%{state | draft: "", arming_until: nil, pending_insert: false},
+     [result_effect(entry.seq, "cancel", base)]}
+  end
+
+  # `Intent.class/1` only ever answers `:action` for `:send`/`:cancel`, but a
+  # future entry must degrade into "do nothing" here rather than into a send.
+  defp route(:action, state, entry, res, name, base, now),
+    do: route(:ignore, state, entry, res, name, base, now)
+
+  # -- :ignore (stop/pause — phase 3 owns the barge-in itself) ---------------
+
+  defp route(:ignore, state, entry, res, name, base, _now) do
+    # §8.3.1 beats §8.3.6's "unchanged" here: while the palette is open the
+    # draft is untouchable, so the stripped remainder is discarded instead of
+    # appended. The action string is the same either way.
+    state =
+      if state.focus == "palette" do
+        state
+      else
+        case Intent.strip_command(res.text, name, intent_opts(state)) do
+          "" -> state
+          remainder -> append(state, remainder)
+        end
+      end
+
     {state, [result_effect(entry.seq, "ignored_stop_pause", base)]}
+  end
+
+  # -- :insert (§8.3.6 / §8.3.7) ---------------------------------------------
+
+  defp route(:insert, %__MODULE__{focus: "palette"} = state, entry, _res, _name, base, _now) do
+    {state, [result_effect(entry.seq, "ignored_palette_focus", base)]}
+  end
+
+  defp route(:insert, state, entry, res, name, base, _now) do
+    # The remainder is dictation that came BEFORE the command, so it joins
+    # the draft with the ordinary space rule first; only then does the
+    # payload text go on with §8.3.7's rule.
+    state =
+      case Intent.strip_command(res.text, name, intent_opts(state)) do
+        "" -> state
+        remainder -> append(state, remainder)
+      end
+
+    state = insert(state, Map.get(Intent.payload(name), :text, ""))
+
+    # No `ui_action`: the client mirrors the draft into the real composer
+    # off the ordinary `state` snapshot (§8.2's draft sink), with a bubbling
+    # `input` event — which is exactly what makes `#`/`##` open the
+    # autocomplete as if the user had typed it.
+    {state, [result_effect(entry.seq, "insert", base)]}
+  end
+
+  # -- :select (§8.3.6) ------------------------------------------------------
+
+  # A selection utterance is not dictation: the remainder is DISCARDED and
+  # the draft is left exactly as it was, in either focus. Ordinals work
+  # against the composer's autocomplete dropdown too, so this is not gated
+  # on the palette being open — the client resolves which list is live.
+  defp route(:select, state, entry, _res, name, base, _now) do
+    case Intent.payload(name) do
+      %{ordinal: ordinal} ->
+        {disarm(state),
+         [
+           result_effect(entry.seq, "select", base),
+           {:ui_action, "select", %{ordinal: ordinal}}
+         ]}
+
+      _no_ordinal ->
+        {state, [result_effect(entry.seq, "ignored_stop_pause", base)]}
+    end
+  end
+
+  # -- :navigate (§8.3.6) ----------------------------------------------------
+
+  defp route(:navigate, state, entry, _res, name, base, _now) do
+    case Intent.payload(name) do
+      %{kind: kind} = payload ->
+        {disarm(state),
+         [
+           result_effect(entry.seq, "navigate", base),
+           {:ui_action, kind, Map.delete(payload, :kind)}
+         ]}
+
+      _no_kind ->
+        {state, [result_effect(entry.seq, "ignored_stop_pause", base)]}
+    end
+  end
+
+  # -- Anything `class/1` grows later ----------------------------------------
+
+  defp route(_class, state, entry, _res, _name, base, _now),
+    do: {state, [result_effect(entry.seq, "ignored_stop_pause", base)]}
+
+  # The options every `Intent` call in this module shares: the phase 2c
+  # vocabulary at the session's configured threshold.
+  defp intent_opts(state), do: [threshold: state.threshold, vocab: Intent.command_vocab()]
+
+  # §8.3.6's arming rule for everything except `:send`: the user kept
+  # talking, so an open window dies and no new one opens.
+  defp disarm(state), do: %{state | arming_until: nil}
+
+  # §8.3.7's join rules, expressed structurally rather than as a list of
+  # literals so a future insert entry needs no change here:
+  #
+  #   * an insert that STARTS with whitespace (`"\n"`, `"\n\n"`) trims the
+  #     draft's trailing whitespace and concatenates directly — a newline
+  #     after a trailing space would otherwise leave one dangling;
+  #   * anything else (`"#"`, `"##"`) joins with a SINGLE space, unless the
+  #     draft is empty or already ends in whitespace;
+  #   * an insert that does NOT end in whitespace leaves the draft ending in
+  #     a trigger the next words must attach to, so it sets `pending_insert`.
+  defp insert(state, ""), do: disarm(state)
+
+  defp insert(state, text) do
+    draft =
+      cond do
+        String.trim_leading(text) != text -> String.trim_trailing(state.draft) <> text
+        state.draft == "" -> text
+        String.trim_trailing(state.draft) != state.draft -> state.draft <> text
+        true -> state.draft <> " " <> text
+      end
+
+    %{
+      state
+      | draft: draft,
+        arming_until: nil,
+        pending_insert: String.trim_trailing(text) == text
+    }
   end
 
   # Spec 5.1: the arming chip dies on "any further speech". `speech_start/1`
@@ -532,17 +817,27 @@ defmodule OrcaHub.Voice.Session do
 
   # Appending is also what cancels an open arming window — the user kept
   # talking, so whatever they said is not a confirmation of the last send.
+  #
+  # §8.3.7: a pending `#`/`##` insert makes THIS append join with no
+  # separator, and is consumed by it — the spoken query has to land right
+  # after the trigger for `Autocomplete`'s `/#(\S*)$/` to see it.
   defp append(state, text) do
     text = String.trim(text)
 
     draft =
-      case {state.draft, text} do
-        {draft, ""} -> draft
-        {"", text} -> text
-        {draft, text} -> draft <> " " <> text
+      cond do
+        text == "" -> state.draft
+        state.draft == "" -> text
+        state.pending_insert -> state.draft <> text
+        true -> state.draft <> " " <> text
       end
 
-    %{state | draft: draft, arming_until: nil}
+    %{
+      state
+      | draft: draft,
+        arming_until: nil,
+        pending_insert: state.pending_insert and text == ""
+    }
   end
 
   # -- timers ----------------------------------------------------------------
@@ -644,6 +939,9 @@ defmodule OrcaHub.Voice.Session do
       warm: state.warm,
       pending: pending(state),
       arming_ms: arming_remaining(state, now),
+      # §8.3.5: the server's current BELIEF about focus, echoed back so the
+      # client can see when its `ui_focus` push has actually been applied.
+      focus: state.focus,
       error: state.error
     }
   end
