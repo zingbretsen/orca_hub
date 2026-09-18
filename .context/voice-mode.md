@@ -47,14 +47,21 @@ sequenceDiagram
 - `asr_config.ex` — hub-managed config, sibling of `TTSConfig`.
 - `assets/js/voice/*.js` — capture + resample, VAD, OVS1 encoding, channel
   client, asset URLs, the `Voice` hook (`wav.js` is offline verification only).
-- `session_live/show.{ex,html.heex}` — renders `#voice-panel` (the
-  `data-voice-*` DOM contract) behind `toggle_voice`; that plus the
-  `orca:tts-state` emit in `app.js` is the WHOLE LiveView involvement. The
-  panel is a ONE-LINE strip (status + mic + arming chip + an `events`
-  disclosure), with no draft textarea and no Send/Clear buttons — the
-  transcript goes into the page's normal composer (`#prompt-input`, named by
-  `data-voice-draft-target`). Phase 2b moves all of this to `VoiceBarLive`
-  (spec §8.2).
+- `live/voice_bar_live.ex` — the GLOBAL voice bar (phase 2b, spec §8.2 /
+  ORCAHUB3-88). One sticky nested LiveView `live_render`ed in the app header
+  (`layouts.ex`), so the mic, the `AudioContext`, the VAD session and the
+  `voice:<id>` channel survive live navigation. It renders `#voice-panel` (the
+  `data-voice-*` DOM contract), the mic button, the target-session picker and
+  the bar's own draft box; the hook-written part is an inner `#voice-strip`
+  under `phx-update="ignore"`. IDLE is one icon button in the existing header
+  row (0 extra px); ARMED costs exactly 16 px at 390 px wide.
+- `session_live/show.{ex,html.heex}` — holds NO voice state since 2b (no
+  `toggle_voice`, no `:voice_mode`, no panel). Its whole remaining share is
+  three stateless seams: `data-voice-composer-for` on the composer form (the
+  draft sink and the send target), a `voice-target` push on mount, and a
+  `voice-send-failed {reason}` push when delivery fails. The transcript goes
+  into that composer's `#prompt-input`; off a session page it goes into the
+  bar's own box instead.
 
 ## Wire contract (summary — §8.1 is normative)
 

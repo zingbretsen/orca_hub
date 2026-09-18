@@ -1055,12 +1055,36 @@ What §8.1 keeps and what moves:
 - **Stays, unchanged and still normative**: the OVS1 binary segment frame, the
   join semantics and join errors, every phase-1 client -> server and server ->
   client event, the single-voice-owner claim, the no-re-routing rule, the
-  half-duplex `orca:tts-state` contract, and the whole `[data-voice-*]` DOM
+  half-duplex `orca:tts-state` contract, and the `[data-voice-*]` DOM
   contract — `#voice-panel`, `data-voice-banner`, `data-voice-error`,
   `data-voice-action="retry"|"start"`, `data-voice-log-details`,
   `data-voice-status`, `data-voice-mic`, `data-voice-arming`,
-  `data-voice-arming-ms`, `data-voice-log`, `data-voice-draft-target`. The hook
-  selectors do not change.
+  `data-voice-arming-ms`, `data-voice-log`.
+
+  **CORRECTION, written after implementing 2b (`538ae5d`)** — this list
+  originally also promised `data-voice-draft-target`, and that one could not
+  survive:
+
+  - **`data-voice-draft-target` is GONE.** It was the server DECLARING the
+    sink, which only works while the sink is one fixed element on one page.
+    The 2b sink rule is a client-side FUNCTION of the current target
+    (`form[data-voice-composer-for="<target>"] textarea`, else
+    `[data-voice-bar-draft]`), re-evaluated on every write, so there is
+    nothing for the server to declare. `_draftSelector` became `_draftEl()`.
+  - **`data-session-id` on the panel became `data-target-session-id`**, and it
+    is now the single source of truth for the target: the hook never sets the
+    target directly, it pushes `voice-target` at `VoiceBarLive` and reacts to
+    the re-render, so the picker and the channel cannot diverge.
+  - **`phx-update="ignore"` moved off the panel root onto an inner
+    `#voice-strip`.** The root has to be patchable now — it carries
+    `data-target-session-id`, which changes. Everything the hook writes is
+    still inside an ignored subtree; nothing else about the contract moves.
+  - **Two new selectors**: `data-voice-action="toggle"` (the mic button — the
+    autoplay gesture that `toggle_voice` used to be) and
+    `[data-voice-bar-draft]` (the bar's own draft box).
+  - **Element lookups are lazy.** The strip only exists while voice mode is
+    on, so `mounted()` cannot cache `_els`; every writer resolves its element
+    per call and tolerates a null.
 - **Carries over from §8.1's v0.4.2 rewrite, named explicitly because 2b is
   exactly where each would silently break**:
   - **The mic button is ALWAYS rendered and is a real click target** — it is the
@@ -1096,6 +1120,28 @@ What §8.1 keeps and what moves:
   and the bar's own draft box are part of this budget: the picker is a control
   in the same row, and the draft box is shown ONLY when the page has no composer
   for the target.
+
+  **MEASURED at 390x844 in Chromium 153 (`538ae5d`), the budget met:** header
+  **48.00 px idle before and after** the bar exists (reconstructed in-page by
+  restoring the old header class list and removing the bar, so it is the same
+  CSS and the same content), and **64.00 px armed — a strip of exactly
+  16.00 px**. Three things were needed to land on 16 and each is load-bearing:
+
+  - the header is `flex-wrap` with **`gap-y-0`** (`gap-x-2` is the old
+    `gap-2`, since nothing else in that row wraps). The strip is a
+    `basis-full` item; an 8 px row gap would have spent half the budget on
+    the wrap itself.
+  - the picker is height-clamped (`h-4 min-h-0 py-0 … text-[11px]`). A stock
+    daisyUI `select-xs` is **24 px** and blows the budget on its own.
+  - the bar's draft box is hidden until it holds text. Left visible whenever
+    a page has no composer it is **37 px**, which took `/projects` armed to
+    53 px before it was fixed.
+
+  Two `display: contents` wrappers are what let a nested LiveView put one item
+  in the header row and another on a wrapped line below it: both the
+  `live_render` container (`container: {:div, class: "contents"}`) and the
+  template root are `contents`, so the real children are flex items of the
+  header itself.
 - **Moves**: the markup carrying those selectors moves OUT of
   `session_live/show.html.heex` and INTO `OrcaHubWeb.VoiceBarLive`, together with
   the `toggle_voice` gesture. §8.1's "slice F renders" now means VoiceBarLive
@@ -1108,8 +1154,9 @@ What §8.1 keeps and what moves:
 The contract:
 
 - `OrcaHubWeb.VoiceBarLive` is rendered in the app header via
-  `live_render(@socket, OrcaHubWeb.VoiceBarLive, id: "voice-bar", sticky: true)`
-  (same mechanism as the idle badge). It renders the mic button, a compact
+  `live_render(@socket, OrcaHubWeb.VoiceBarLive, id: "voice-bar", sticky: true,
+  container: {:div, class: "contents"})` (same mechanism as the idle badge; the
+  `container` is the correction above). It renders the mic button, a compact
   status/mic/error/arming strip, a target-session picker, and a small draft box
   that is shown ONLY when the current page has no composer for the target
   session. It carries `phx-hook="Voice"` on its root (`id="voice-panel"` keeps
@@ -1126,6 +1173,22 @@ The contract:
   terminate; the bar's hook also reads `document.body.dataset.voiceComposerFor`,
   set by the session page's composer form). Off a session page the target
   persists as the last one; the picker lists recent non-archived sessions.
+
+  **CORRECTIONS from implementing it (`538ae5d`):**
+
+  - **There is no `terminate` push.** `Phoenix.LiveView.terminate/2` cannot
+    `push_event`. The signal that a page stopped being a session page is the
+    DISAPPEARANCE of its composer — `document.body.dataset.voiceComposerFor`,
+    set and deleted by the feed hook's own mount/destroy (`593fde6`), watched
+    with a `MutationObserver` on that one attribute.
+  - **Auto-follow fires on NAVIGATION, not on every sync.** The hook's page
+    sync runs on each re-render too, and an unconditional push would snap the
+    target straight back to the page on screen the instant the user chose a
+    different session in the picker. The rule is therefore: push
+    `voice-target` only when the PAGE's session id changes from the last one
+    observed. Picking manually then sticks until you navigate somewhere else.
+    (Found by the browser check: the picker appeared to do nothing because
+    two retargets fired and cancelled out.)
 - **Retarget (client -> channel)**: the hook leaves `voice:<old>` and joins
   `voice:<new>`, carrying the CURRENT draft text client-side and seeding it with
   `draft_edit` right after join (the server draft is per channel). Mic,
@@ -1134,6 +1197,24 @@ The contract:
   `form[data-voice-composer-for="<target>"]` with its textarea, mirror the draft
   into that textarea (today's behaviour, incl. the scroll-to-end fix); otherwise
   mirror into the bar's own draft box.
+
+  **CORRECTIONS from implementing it (`538ae5d`):**
+
+  - **The never-clobber rule applies to a COMPOSER, not to the bar's own
+    box.** §8.1's rule protects text the user typed into the page. The bar's
+    box is our scratch space, so a draft carried across a retarget WINS over
+    whatever is still sitting in it. Seeding the new channel is therefore:
+    pre-typed composer text if any, else the carried draft.
+  - **The bar's box is cleared whenever it is not the sink.** Otherwise the
+    last draft it held resurfaces — and, under the rule above, would have
+    out-voted the real draft at the next join.
+  - **It is shown only once it holds something** (or has focus), not merely
+    because voice is on and no composer is present. An empty box is 37px that
+    the 16px budget below cannot afford on every composer-less page.
+  - **The draft `input` listener is delegated on `document`**, not bound to
+    the sink element. The sink moves between pages and between targets; a
+    per-element listener would have to be rebound on every navigation and
+    would leak one per page.
 - **SINGLE SEND PATH (ORCAHUB3-86)**: on arming expiry / `send_now`, the SERVER
   no longer delivers by itself. It pushes `"send_request" {text}` to the client
   and moves to status `sending`. The client:
@@ -1153,6 +1234,31 @@ The contract:
     `send_direct` semantics ONLY if no composer was reported present at
     join/retarget time; otherwise it errors visibly ("composer did not
     respond").
+
+  **CORRECTIONS / findings from implementing it (`9b56ea7`, `538ae5d`):**
+
+  - **No bridging code is needed in the session page, and none was added.**
+    This bullet assumed the bar would have to be handed `clear-prompt`
+    somehow, since a page LiveView's `push_event` reaches only ITS OWN hooks.
+    It does not: `LiveSocket.dispatchEvents` ALSO dispatches every
+    `push_event` on `window` as `phx:<event>`. The bar listens for
+    `phx:clear-prompt`, `phx:voice-send-failed` and `phx:voice-target`
+    directly. This is a generally useful seam for any sticky/nested LiveView
+    that needs to hear a page LiveView's events.
+  - **The "error flash" half of the (a) branch was not implemented and should
+    not be.** `voice-send-failed {reason}` (`593fde6`) is the signal; reading
+    a flash would be guessing at DOM that means many other things too.
+  - **`clear-prompt` carries no session id**, so the bar scopes it with its
+    own `composer_present` flag — true only when the page on screen owns a
+    composer for the CURRENT target. A submit from any other page's composer
+    is correctly ignored.
+  - **A `clear-prompt` with no send pending means the user pressed Send
+    themselves**, so the bar pushes `cancel` to clear the server's copy of
+    the draft. Otherwise the next spoken send would repeat text that has
+    already gone.
+  - **`cancel` abandons an outstanding `send_request`.** A spoken "orca
+    cancel" landing while one is in flight otherwise lets the 5 s deadline
+    deliver the very text the user just cancelled.
 - The existing OVS1 binary frame and all phase-1 events are unchanged. There is
   NO `retarget` client -> server event — retarget is leave+join. New client ->
   server events: `sent_ack`, `send_failed {reason}`, `send_direct`,
