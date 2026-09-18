@@ -90,6 +90,23 @@ defmodule OrcaHubWeb.QueueLiveTest do
       assert :sys.get_state(view.pid).socket.assigns.tts_autoplay
     end
 
+    test "tts_stream_init is accepted here too, so the autoplay hydration before it survives", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, ~p"/queue")
+
+      # app.js's ttsMountShared pushes BOTH of these on mount, in this order,
+      # from the SHARED TTSMethods — /queue hosts that mixin via the TTSFeed
+      # hook even though the "Speak while streaming" toggle (C3) lives only on
+      # the session page. With no clause for the second one the LiveView died
+      # on every connect and took the first one's state with it.
+      render_hook(view, "tts_autoplay_init", %{"enabled" => true})
+      render_hook(view, "tts_stream_init", %{"enabled" => true})
+
+      assert Process.alive?(view.pid)
+      assert :sys.get_state(view.pid).socket.assigns.tts_autoplay
+    end
+
     test "toggling autoplay pushes the new value back for localStorage persistence", %{
       conn: conn
     } do

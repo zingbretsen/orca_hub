@@ -313,6 +313,18 @@ defmodule OrcaHubWeb.QueueLive do
     {:noreply, assign(socket, :tts_autoplay, enabled)}
   end
 
+  # `ttsMountShared` pushes this next to "tts_autoplay_init" above, from the
+  # SHARED TTSMethods — so every host of that mixin gets it, not just the
+  # session page that owns the "Speak while streaming" toggle
+  # (voice_mode_spec.md §7.3 / C3). Accepted and ignored here: /queue renders
+  # no such toggle and receives no assistant deltas, so there is no server
+  # state to hydrate. Without the clause this raised FunctionClauseError and
+  # killed the LiveView on EVERY connect, which silently threw away the
+  # `tts_autoplay_init` that had just been applied one push earlier.
+  def handle_event("tts_stream_init", %{"enabled" => _enabled}, socket) do
+    {:noreply, socket}
+  end
+
   def handle_event("show_all", _params, socket) do
     {:noreply, assign(socket, :show_all, !socket.assigns.show_all)}
   end
