@@ -1,7 +1,9 @@
-/* LiveView hook `Voice` — the browser half of voice mode (spec section 10,
- * phase 1). Registered in assets/js/app.js as `Voice`.
+/* LiveView hook `Voice` — the browser half of voice mode. Registered in
+ * assets/js/app.js as `Voice`, and mounted on `#voice-panel`, which since
+ * phase 2b is the root of `OrcaHubWeb.VoiceBarLive` in the app header rather
+ * than a strip inside one session page (voice_mode_spec.md §8.1 + §8.2).
  *
- * Pipeline, all of it inside this hook's lifetime:
+ * Pipeline, unchanged from phase 1:
  *
  *   getUserMedia (AEC/NS/AGC on, voiceIsolation off)
  *     -> AudioContext at whatever rate it negotiates
@@ -10,16 +12,41 @@
  *     -> vad-web's FrameProcessor + Silero v5, fed OUR frames (see vad.js)
  *     -> onSpeechEnd -> OVS1 binary frame -> channel.push("segment", ...)
  *
- * The DOM is the pinned `[data-voice-*]` contract (spec 8.1); the strip carries
- * phx-update="ignore", so everything inside it is ours to write.
+ * What §8.2 changed, and why each line of it is load-bearing:
  *
- * ONE element we write is NOT inside it: the draft sink. The transcript lands
- * in the page's normal composer textarea (`data-voice-draft-target`, i.e.
- * `#prompt-input`), not in a second box of our own. That textarea belongs to
- * the `Autocomplete` hook inside a phx-update="ignore" wrapper, so every write
- * goes through _writeDraft(), which dispatches a real `input` event afterwards
- * — a bare `.value =` skips Autocomplete's autoresize and leaves a one-row box
- * holding three rows of text.
+ * 1. LIFECYCLE. The bar is ALWAYS mounted, so `mounted()` must not arm the
+ *    mic — that would ask for microphone permission on every page load. The
+ *    mic BUTTON is the gesture (sticky activation, §9 trap 2): the first
+ *    click opens the AudioContext and joins. `destroyed()` now only fires on
+ *    a full page reload, because the bar is `sticky: true`.
+ *
+ * 2. TARGET. `#voice-panel[data-target-session-id]` is the ONE source of
+ *    truth for which session we are dictating into. The hook never sets it
+ *    directly: it asks VoiceBarLive (`pushEvent("voice-target")`) and reacts
+ *    in `updated()`, so the picker and the channel cannot disagree. A page
+ *    advertises itself through `body[data-voice-composer-for]`, watched with
+ *    a MutationObserver so this works even if a push_event is missed.
+ *
+ * 3. RETARGET is leave + join, never a teardown: the mic, the AudioContext
+ *    and the VAD session outlive it. The current draft is carried across in
+ *    JS and re-seeded with `draft_edit` right after the new join, since the
+ *    server's draft is per channel.
+ *
+ * 4. DRAFT SINK. `_draftEl()` is a FUNCTION, not a fixed selector: the
+ *    composer textarea of `form[data-voice-composer-for="<target>"]` when the
+ *    page has one, else the bar's own `[data-voice-bar-draft]` box. Both are
+ *    written through `_writeDraft()`, which dispatches a real bubbling
+ *    `input` event — a bare `.value =` skips `Autocomplete`'s autoresize and
+ *    leaves a one-row box holding several rows of text.
+ *
+ * 5. SEND (ORCAHUB3-86). The server asks (`send_request`); we answer. With a
+ *    composer on the page we set its textarea and `requestSubmit()` it, so
+ *    `SessionLive.Show.send_message` runs and staged uploads/attachment lines
+ *    ride along, then report `sent_ack` / `send_failed`. LiveView dispatches
+ *    EVERY push_event on `window` as `phx:<event>` as well as to its own
+ *    hooks, so `phx:clear-prompt` and `phx:voice-send-failed` reach the bar
+ *    directly and the session page needs no bridging code. With no composer
+ *    we push `send_direct` and the server delivers as it did in phase 1.
  */
 
 import { Capture, secureContextProblem, FRAME_SAMPLES } from "./capture"
@@ -46,12 +73,21 @@ const STATUS_LABEL = {
   error: "error",
 }
 
+/** CSS.escape with a fallback, since the target is a UUID from the server and
+ * goes straight into a selector. */
+function esc(value) {
+  if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(value)
+  return String(value).replace(/["\\]/g, "\\$&")
+}
+
 export const VoiceHook = {
   mounted() {
-    this.sessionId = this.el.dataset.sessionId
-    this.armed = false
+    this.target = this.el.dataset.targetSessionId || null
+    this.active = false // voice mode engaged (the user clicked the mic)
+    this.armed = false // the mic is actually capturing
     this.muted = false
     this.state = null
+    this.composerPresent = false
     this.metrics = {
       sampleRate: null,
       ratio: null,
@@ -61,63 +97,89 @@ export const VoiceHook = {
       segmentsSent: 0,
       misfires: 0,
       processorError: null,
+      joins: 0,
+      retargets: 0,
       startedAt: Date.now(),
     }
     this._timers = {}
     this._applyingDraft = false
-    this._els = {
-      banner: this.el.querySelector("[data-voice-banner]"),
-      status: this.el.querySelector("[data-voice-status]"),
-      mic: this.el.querySelector("[data-voice-mic]"),
-      error: this.el.querySelector("[data-voice-error]"),
-      arming: this.el.querySelector("[data-voice-arming]"),
-      armingMs: this.el.querySelector("[data-voice-arming-ms]"),
-      log: this.el.querySelector("[data-voice-log]"),
-      logDetails: this.el.querySelector("[data-voice-log-details]"),
-      start: this.el.querySelector('[data-voice-action="start"]'),
+    this._pendingSend = null
+    this._lastSink = null
+    this._inFlight = 0
+    this._asrBusy = false
+
+    this._bindDom()
+    this._bindWindow()
+    this._observeBody()
+    this._syncPage()
+
+    if (typeof window !== "undefined") window.__orcaVoice = this
+  },
+
+  /** The bar re-rendered: the target may have changed (picker or page), and
+   * the strip may have just been inserted. */
+  updated() {
+    const next = this.el.dataset.targetSessionId || null
+    if (next !== this.target) {
+      const carried = this._currentDraftText()
+      this.target = next
+      this._retarget(carried)
     }
-    // The draft sink lives OUTSIDE the strip (the composer's own textarea);
-    // it is resolved lazily so a re-rendered composer can never leave us
-    // holding a detached node.
-    this._draftSelector = this.el.dataset.voiceDraftTarget || "#prompt-input"
-
     this._bindLogToggle()
+    this._syncPage()
+    this._renderMic()
+  },
 
-    // Trap 1: no secure context means navigator.mediaDevices is simply absent,
-    // with no error thrown. Say so loudly before anything else fails weirdly.
-    const insecure = secureContextProblem()
-    if (insecure) {
-      this._showBanner(insecure)
-      this._setStatusText("unavailable")
+  /** Sticky: this only fires on a full page reload, never on navigation. */
+  destroyed() {
+    this._unbindWindow()
+    if (this._bodyObserver) {
+      this._bodyObserver.disconnect()
+      this._bodyObserver = null
+    }
+    if (this._onDocInput) document.removeEventListener("input", this._onDocInput, true)
+    this._teardown()
+    if (window.__orcaVoice === this) delete window.__orcaVoice
+  },
+
+  // ------------------------------------------------------------- voice mode
+
+  /** The mic button: the user gesture that satisfies the autoplay policy. */
+  async _toggle() {
+    if (this.active) {
+      this._teardown()
+      this.active = false
+      this.pushEvent("voice-on", { on: false })
       return
     }
 
-    this._bindDom()
-    this._onTtsState = (e) => this._handleTtsState(e)
-    window.addEventListener("orca:tts-state", this._onTtsState)
+    this.active = true
+    this.pushEvent("voice-on", { on: true })
 
-    if (typeof window !== "undefined") window.__orcaVoice = this
-
-    this._connect()
+    // Trap 1: no secure context means navigator.mediaDevices is simply
+    // absent, with no error thrown. Say so loudly before anything else
+    // fails weirdly. The strip has just been asked for, so give LiveView a
+    // frame to render it into before writing.
+    const insecure = secureContextProblem()
+    requestAnimationFrame(() => {
+      if (insecure) {
+        this._showBanner(insecure)
+        this._setStatusText("unavailable")
+        return
+      }
+      this._connect()
+    })
   },
 
-  destroyed() {
-    if (this._onTtsState) window.removeEventListener("orca:tts-state", this._onTtsState)
-    // The composer and the log <details> OUTLIVE this hook (the composer is
-    // always on the page; the strip is only un-rendered around it), so their
-    // listeners must come off explicitly or a second voice session would
-    // double-push every keystroke.
-    const draft = this._draftEl()
-    if (draft && this._onDraftInput) draft.removeEventListener("input", this._onDraftInput)
-    if (this._els && this._els.logDetails && this._onLogToggle) {
-      this._els.logDetails.removeEventListener("toggle", this._onLogToggle)
-    }
+  _teardown() {
     Object.values(this._timers).forEach((t) => {
       if (!t) return
       clearInterval(t)
       clearTimeout(t)
     })
     this._timers = {}
+    this._pendingSend = null
+    this._setAsrBusy(0)
     if (this.vad) {
       this.vad.destroy()
       this.vad = null
@@ -130,38 +192,76 @@ export const VoiceHook = {
       this.channel.leave()
       this.channel = null
     }
-    if (window.__orcaVoice === this) delete window.__orcaVoice
+    this.armed = false
+    this.state = null
+    this._renderMic()
   },
 
   // ------------------------------------------------------------------ channel
 
   async _connect() {
-    // Whatever the user had already typed into the composer before turning
-    // voice mode on is the draft's starting point — the server owns the draft,
-    // so it has to be told, or the first "state" push would wipe that text.
-    const draftEl = this._draftEl()
-    this._pendingSeed = draftEl ? draftEl.value : ""
+    if (!(await this._joinChannel(""))) return
+    // Joining IS arming on the server (it fires the ASR warm-up
+    // immediately); arm the browser half right away too, never on first
+    // speech — SPIKE 1 measured 499-809 ms of VAD session init.
+    this._arm()
+  },
 
-    this.channel = new VoiceChannel(this.sessionId, {
+  /** Join `voice:<target>`. `carried` is a draft rescued from the channel we
+   * just left, which only wins when the new sink is EMPTY — §8.1's
+   * never-clobber rule outranks it. */
+  async _joinChannel(carried) {
+    if (!this.target) {
+      this._showError("Pick a session in the voice bar to dictate into.")
+      return false
+    }
+    // Pre-typed text in a COMPOSER outranks a carried draft — that is §8.1's
+    // never-clobber rule, and it protects something the user typed into the
+    // page. The bar's OWN box gets no such deference: it is our scratch
+    // space, so a carried draft wins over whatever is still sitting in it.
+    const composer = this._composerForm()
+    const typed = composer ? composer.querySelector("textarea").value : ""
+    this._pendingSeed = typed !== "" ? typed : carried || ""
+
+    this.channel = new VoiceChannel(this.target, {
       onState: (s) => this._renderState(s),
       onSegmentResult: (r) => this._onSegmentResult(r),
+      onSendRequest: (m) => this._onSendRequest(m),
       onSent: () => {
         this._setArming(null)
-        // The server has already delivered the draft (with :queue) and cleared
-        // its own copy; clear ours so the text is not sent twice.
+        // The draft has been delivered and the server cleared its copy;
+        // clear ours so the text cannot be sent twice.
         this._writeDraft("")
       },
     })
     try {
       await this.channel.join()
     } catch (e) {
+      this.channel = null
       this._showError(e.message)
-      return
+      return false
     }
-    // Joining IS arming on the server (it fires the ASR warm-up immediately);
-    // arm the browser half right away too, never on first speech — SPIKE 1
-    // measured 499-809 ms of VAD session init.
-    this._arm()
+    this.metrics.joins++
+    this._hideError()
+    // The server's composer flag is per channel, so it is re-reported at
+    // every join, not only when it changes.
+    this._reportComposer(true)
+    return true
+  },
+
+  /** Leave the old channel and join the new one. The mic, the AudioContext
+   * and the VAD are NOT torn down (C4) — retargeting is routine. */
+  async _retarget(carried) {
+    this._setArming(null)
+    this._pendingSend = null
+    if (!this.active) return
+    if (this.channel) {
+      this.channel.leave()
+      this.channel = null
+    }
+    this.metrics.retargets++
+    await this._joinChannel(carried)
+    this._renderMic()
   },
 
   // --------------------------------------------------------------------- arm
@@ -188,11 +288,11 @@ export const VoiceHook = {
       if (this.capture.suspended()) {
         // Autoplay policy (trap 2): no sticky activation yet. Fall back to an
         // explicit gesture rather than silently capturing nothing.
-        this._show(this._els.start)
+        this._show(this._el('[data-voice-action="start"]'))
         this._setStatusText("click “Start listening” to arm the mic")
         return
       }
-      this._hide(this._els.start)
+      this._hide(this._el('[data-voice-action="start"]'))
 
       const ready = await this.capture.start()
       this.metrics.sampleRate = this.capture.sampleRate
@@ -271,6 +371,9 @@ export const VoiceHook = {
     })
     this.channel.pushSegment(frame)
     this.metrics.segmentsSent++
+    // Spec §7's GPU-contention rule: TTS must not start NEW synthesis while
+    // a segment is on its way to the same GB10 box.
+    this._setAsrBusy(this._inFlight + 1)
   },
 
   // -------------------------------------------------------------- half-duplex
@@ -287,6 +390,176 @@ export const VoiceHook = {
     this._renderMic()
   },
 
+  /** `orca:voice-asr-busy` — consumed by TTSMethods' streaming prefetch. */
+  _setAsrBusy(count) {
+    this._inFlight = Math.max(0, count)
+    const busy = this._inFlight > 0
+    if (busy === this._asrBusy) return
+    this._asrBusy = busy
+    window.dispatchEvent(new CustomEvent("orca:voice-asr-busy", { detail: { busy } }))
+  },
+
+  // --------------------------------------------------------------- the send
+
+  /** Spec §8.2 / ORCAHUB3-86: the server asked us to send. */
+  _onSendRequest(msg) {
+    const text = (msg && msg.text) || ""
+    const form = this._composerForm()
+
+    if (!form) {
+      // No composer bound to the target on this page — let the server
+      // deliver it the phase-1 way.
+      this.channel && this.channel.push("send_direct", {})
+      return
+    }
+
+    this._pendingSend = { text, sessionId: this.target }
+    this._writeDraft(text)
+    // The textarea IS the draft now; a debounced draft_edit landing after the
+    // submit would only re-seed text the server is about to clear.
+    this._clearDraftTimer()
+
+    try {
+      form.requestSubmit()
+    } catch (e) {
+      this._pendingSend = null
+      this.channel &&
+        this.channel.push("send_failed", {
+          reason: `The composer could not be submitted: ${e && e.message ? e.message : e}`,
+        })
+    }
+  },
+
+  /** `clear-prompt` — LiveView pushes it only after delivery SUCCEEDED.
+   *
+   * A page LiveView's `push_event` reaches only ITS OWN hooks, and this hook
+   * lives in the sticky bar; but LiveView ALSO dispatches every push_event on
+   * `window` as `phx:<event>` (`LiveSocket.dispatchEvents`), which is the
+   * seam used here — no re-dispatch is needed in the session page.
+   *
+   * `clear-prompt` carries no session id, so the scope comes from
+   * `composerPresent`: it is only true when the page on screen owns a
+   * composer for OUR target, and a submit from any other page's composer is
+   * therefore correctly ignored.
+   */
+  _onComposerSent(e) {
+    const sessionId = e && e.detail && (e.detail.sessionId || e.detail.session_id)
+    if (sessionId && this.target && sessionId !== this.target) return
+    if (!sessionId && !this.composerPresent) return
+
+    this._clearDraftTimer()
+    this._setArming(null)
+
+    if (this._pendingSend) {
+      this._pendingSend = null
+      this.channel && this.channel.push("sent_ack", {})
+    } else {
+      // The user pressed Send themselves. The draft left the box, so the
+      // server's copy must go too or the next spoken send would repeat it.
+      this.channel && this.channel.push("cancel", {})
+    }
+  },
+
+  _onComposerSendFailed(e) {
+    if (!this._pendingSend) return
+    const reason = (e && e.detail && e.detail.reason) || "The composer could not send that message."
+    this._pendingSend = null
+    this.channel && this.channel.push("send_failed", { reason })
+  },
+
+  // ------------------------------------------------------------- the target
+
+  /** The composer form bound to the CURRENT target, or null. */
+  _composerForm() {
+    if (!this.target) return null
+    const form = document.querySelector(`form[data-voice-composer-for="${esc(this.target)}"]`)
+    if (!form) return null
+    return form.querySelector("textarea") ? form : null
+  },
+
+  /** §8.2's draft sink rule: the target's composer textarea when the page has
+   * one, else the bar's own box. Resolved lazily so a re-rendered composer
+   * can never leave us holding a detached node. */
+  _draftEl() {
+    const form = this._composerForm()
+    if (form) return form.querySelector("textarea")
+    return this.el.querySelector("[data-voice-bar-draft]")
+  },
+
+  _currentDraftText() {
+    // A debounce still in flight means the box is newer than the server.
+    if (this._timers.draft) {
+      const el = this._draftEl()
+      if (el) return el.value
+    }
+    return (this.state && this.state.draft) || ""
+  },
+
+  /** Re-read the page: which session it is showing, and whether it carries a
+   * composer for our target. Cheap and idempotent — called from `updated()`,
+   * from the body observer and after live navigation. */
+  _syncPage() {
+    const pageTarget = document.body.dataset.voiceComposerFor || null
+    // Auto-follow fires on NAVIGATION — when the page's session actually
+    // changes — not on every sync. `_syncPage` also runs on each re-render,
+    // and an unconditional push would snap the target straight back to the
+    // page the user is looking at the instant they chose a different one in
+    // the picker. Off a session page the target PERSISTS (C4): a null page
+    // target is remembered, so returning to the same page does not re-push.
+    if (pageTarget !== this._lastPageTarget) {
+      this._lastPageTarget = pageTarget
+      if (pageTarget && pageTarget !== this.target) {
+        this.pushEvent("voice-target", { session_id: pageTarget })
+      }
+    }
+    this._reportComposer()
+    this._followSink()
+  },
+
+  _reportComposer(force = false) {
+    const present = !!this._composerForm()
+    const changed = present !== this.composerPresent
+    this.composerPresent = present
+    this._syncBarBox()
+    if (!force && !changed) return
+    if (this.channel && this.channel.joined()) this.channel.push("composer", { present })
+  },
+
+  /** The bar's own box exists to catch a draft with nowhere else to go.
+   *
+   * Two rules, both paid for in §8.2's 16 px budget:
+   *
+   *  - while a composer is present it is not the sink, so it must not keep
+   *    showing the last draft it held. Stale text there would resurface —
+   *    and out-vote the real draft at the next join — the moment the sink
+   *    came back to it.
+   *  - an EMPTY box is 37 px of nothing on every composer-less page. It
+   *    appears when it actually holds a transcript (or the user has clicked
+   *    into it), not merely because voice is on.
+   */
+  _syncBarBox() {
+    const box = this.el.querySelector("[data-voice-bar-draft]")
+    if (!box) return
+    if (!this.active || this.composerPresent) {
+      this._hide(box)
+      box.value = ""
+      return
+    }
+    if (box.value !== "" || document.activeElement === box) this._show(box)
+    else this._hide(box)
+  },
+
+  /** The sink changed under us (navigation, retarget): move the draft into
+   * the new one. Never the other way round, and never with an empty draft —
+   * that would be the clobber §8.1 forbids. */
+  _followSink() {
+    const el = this._draftEl()
+    if (el === this._lastSink) return
+    this._lastSink = el
+    const text = (this.state && this.state.draft) || ""
+    if (el && text !== "" && el.value === "") this._writeDraft(text, { follow: true })
+  },
+
   // ------------------------------------------------------------------ rendering
 
   _renderState(state) {
@@ -299,21 +572,19 @@ export const VoiceHook = {
     else this._hideError()
 
     this._renderDraft(state.draft || "")
+    this._syncBarBox()
     this._setArming(state.arming_ms)
     this._renderMic()
-  },
-
-  /** The composer textarea — the draft sink. Outside `this.el`. */
-  _draftEl() {
-    return document.querySelector(this._draftSelector)
   },
 
   _renderDraft(text) {
     const el = this._draftEl()
     if (!el) return
+    this._lastSink = el
 
     // Seed pass: the join reply's snapshot is a fresh, empty draft. If the
-    // composer already held text, the server is the one that is out of date.
+    // sink already held text (or we carried one across a retarget), the
+    // server is the one that is out of date.
     if (this._pendingSeed != null) {
       const seed = this._pendingSeed
       this._pendingSeed = null
@@ -327,9 +598,9 @@ export const VoiceHook = {
     // draft_edit is still debouncing, the local value is the newer truth.
     if (this._timers.draft) return
     // ...and never let a stale empty snapshot eat typed text either. An empty
-    // draft only reaches the composer through an EXPLICIT clear — "sent", a
-    // spoken "orca cancel", or the composer's own submit — each of which calls
-    // _writeDraft("") directly.
+    // draft only reaches the sink through an EXPLICIT clear — "sent", a
+    // spoken "orca cancel", or the composer's own submit — each of which
+    // calls _writeDraft("") directly.
     if (text === "" && el.value !== "") return
 
     // Server-driven, so an append here is a freshly transcribed segment —
@@ -337,7 +608,7 @@ export const VoiceHook = {
     this._writeDraft(text, { follow: true })
   },
 
-  /** Write the draft into the composer textarea.
+  /** Write the draft into whichever textarea the sink rule picked.
    *
    * `#prompt-input` is owned by the `Autocomplete` hook and sits inside a
    * phx-update="ignore" wrapper, so assigning `.value` alone would skip its
@@ -347,9 +618,8 @@ export const VoiceHook = {
    * to the server as a draft_edit.
    *
    * `follow: true` keeps the newest text visible once the draft outgrows the
-   * box (it stops at max-h-[7.5rem] and starts scrolling). Only the server's
-   * own appends follow — an explicit clear has nothing to follow, and neither
-   * does a shrinking correction.
+   * box. Only the server's own appends follow — an explicit clear has nothing
+   * to follow, and neither does a shrinking correction.
    *
    * The one case that overrides all of that is a user parked mid-text with the
    * caret: they are editing, and both their caret and their scroll position
@@ -389,17 +659,21 @@ export const VoiceHook = {
     if (follow && grew) el.scrollTop = el.scrollHeight
   },
 
-  _pushDraftEdit(text) {
+  _clearDraftTimer() {
     if (this._timers.draft) {
       clearTimeout(this._timers.draft)
       this._timers.draft = null
     }
+  },
+
+  _pushDraftEdit(text) {
+    this._clearDraftTimer()
     this._setArming(null)
     this.channel && this.channel.push("draft_edit", { text })
   },
 
   _renderMic() {
-    const el = this._els.mic
+    const el = this._el("[data-voice-mic]")
     if (!el) return
     const serverMuted = this.state && this.state.muted
     if (this.muted || serverMuted) el.textContent = "mic muted (TTS playing)"
@@ -412,8 +686,9 @@ export const VoiceHook = {
       clearInterval(this._timers.arming)
       this._timers.arming = null
     }
+    const chip = this._el("[data-voice-arming]")
     if (ms == null) {
-      this._hide(this._els.arming)
+      this._hide(chip)
       return
     }
     const deadline = performance.now() + ms
@@ -422,26 +697,27 @@ export const VoiceHook = {
       if (remaining <= 0) {
         clearInterval(this._timers.arming)
         this._timers.arming = null
-        this._hide(this._els.arming)
+        this._hide(this._el("[data-voice-arming]"))
         return
       }
-      if (this._els.armingMs) this._els.armingMs.textContent = (remaining / 1000).toFixed(1)
+      const box = this._el("[data-voice-arming-ms]")
+      if (box) box.textContent = `${(remaining / 1000).toFixed(1)}s`
     }
-    this._show(this._els.arming)
+    this._show(chip)
     tick()
     this._timers.arming = setInterval(tick, 50)
   },
 
   _onSegmentResult(result) {
-    // A spoken "orca cancel" clears the draft server-side; the composer is the
-    // draft now, so it has to be told explicitly (_renderDraft refuses to
-    // empty a non-empty box on its own).
+    this._setAsrBusy(this._inFlight - 1)
+    // A spoken "orca cancel" clears the draft server-side; the sink has to be
+    // told explicitly (_renderDraft refuses to empty a non-empty box).
     if (result && result.action === "cancel") this._writeDraft("")
     this._appendLog(result)
   },
 
   _appendLog(result) {
-    const log = this._els.log
+    const log = this._el("[data-voice-log]")
     if (!log) return
     const li = document.createElement("li")
     li.dataset.voiceSeq = result.seq
@@ -460,25 +736,35 @@ export const VoiceHook = {
     log.scrollTop = log.scrollHeight
   },
 
+  /** Everything the hook writes lives inside `#voice-strip`, which LiveView
+   * only renders while voice mode is on — so every lookup is lazy and every
+   * writer tolerates a null. */
+  _el(selector) {
+    return this.el.querySelector(selector)
+  },
+
   _setStatusText(text) {
-    if (this._els.status) this._els.status.textContent = text
+    const el = this._el("[data-voice-status]")
+    if (el) el.textContent = text
   },
 
   _showBanner(text) {
-    if (!this._els.banner) return
-    this._els.banner.textContent = text
-    this._show(this._els.banner)
+    const el = this._el("[data-voice-banner]")
+    if (!el) return
+    el.textContent = text
+    this._show(el)
   },
 
   _showError(text) {
-    if (!this._els.error) return
-    this._els.error.textContent = text
-    this._els.error.title = "Click to retry the transcription warm-up"
-    this._show(this._els.error)
+    const el = this._el("[data-voice-error]")
+    if (!el) return
+    el.textContent = text
+    el.title = "Click to retry the transcription warm-up"
+    this._show(el)
   },
 
   _hideError() {
-    this._hide(this._els.error)
+    this._hide(this._el("[data-voice-error]"))
   },
 
   _show(el) {
@@ -499,7 +785,8 @@ export const VoiceHook = {
         // "send"/"cancel" have no buttons any more (the composer's Send and a
         // select-all-delete do those jobs), but both remain §8.1 events and
         // both are still pushed from elsewhere in this hook.
-        if (action === "send") this.channel && this.channel.push("send_now", {})
+        if (action === "toggle") this._toggle()
+        else if (action === "send") this.channel && this.channel.push("send_now", {})
         else if (action === "cancel") {
           this._setArming(null)
           this._writeDraft("")
@@ -508,74 +795,127 @@ export const VoiceHook = {
         else if (action === "retry") this.channel && this.channel.push("retry_warmup", {})
         return
       }
-      if (this._els.error && this._els.error.contains(e.target)) {
+      const error = this._el("[data-voice-error]")
+      if (error && error.contains(e.target)) {
         this.channel && this.channel.push("retry_warmup", {})
       }
     }
     this.el.addEventListener("click", this._onClick)
 
-    const draft = this._draftEl()
-    if (draft) {
-      this._onDraftInput = () => {
-        // Our own _writeDraft dispatches `input` to drive Autocomplete's
-        // autoresize; that is not a user edit and must not echo back.
-        if (this._applyingDraft) return
-        if (this._timers.draft) clearTimeout(this._timers.draft)
-        this._timers.draft = setTimeout(() => {
-          this._timers.draft = null
-          const el = this._draftEl()
-          this._setArming(null)
-          this.channel && this.channel.push("draft_edit", { text: el ? el.value : "" })
-        }, DRAFT_DEBOUNCE_MS)
-      }
-      draft.addEventListener("input", this._onDraftInput)
-    }
-
-    // The composer sent the draft the ordinary way. LiveView only pushes
-    // clear-prompt after delivery SUCCEEDED, so this never drops a draft that
-    // is still sitting in the box after a failed send.
-    this.handleEvent("clear-prompt", () => {
-      if (this._timers.draft) {
-        clearTimeout(this._timers.draft)
+    // DELEGATED, on the document, because the sink is not one fixed element
+    // any more: it moves between the bar's own box and whichever composer the
+    // current page renders. A per-element listener would have to be rebound
+    // on every navigation and would leak one per page.
+    this._onDocInput = (e) => {
+      // Our own _writeDraft dispatches `input` to drive Autocomplete's
+      // autoresize; that is not a user edit and must not echo back.
+      if (this._applyingDraft) return
+      if (!this.channel || e.target !== this._draftEl()) return
+      this._clearDraftTimer()
+      this._timers.draft = setTimeout(() => {
         this._timers.draft = null
-      }
-      this._setArming(null)
-      this.channel && this.channel.push("cancel", {})
+        const el = this._draftEl()
+        this._setArming(null)
+        this.channel && this.channel.push("draft_edit", { text: el ? el.value : "" })
+      }, DRAFT_DEBOUNCE_MS)
+    }
+    document.addEventListener("input", this._onDocInput, true)
+  },
+
+  /** Every listener is on `window`, because nothing the bar reacts to is
+   * inside its own LiveView:
+   *
+   *   phx:clear-prompt       SessionLive.Show's success push (see above)
+   *   phx:voice-send-failed  ...and its failure counterpart
+   *   phx:voice-target       the session page announcing itself on mount
+   *   phx:page-loading-stop  the end of a live navigation
+   *   orca:tts-state         half-duplex, §8.1
+   *   orca:composer-*        optional aliases, in case a future page wants to
+   *                          report a send that is not a `clear-prompt`
+   */
+  _bindWindow() {
+    this._onTtsState = (e) => this._handleTtsState(e)
+    this._onVoiceTarget = (e) => {
+      const d = (e && e.detail) || {}
+      const id = d.sessionId || d.session_id
+      if (id && id !== this.target) this.pushEvent("voice-target", { session_id: id })
+    }
+    this._onSent = (e) => this._onComposerSent(e)
+    this._onSendFailed = (e) => this._onComposerSendFailed(e)
+    // LiveView fires this at the end of every live navigation, which is
+    // exactly when the composer (and therefore the sink) appears or vanishes.
+    this._onPageLoaded = () => this._syncPage()
+
+    this._windowEvents = [
+      ["orca:tts-state", this._onTtsState],
+      ["phx:voice-target", this._onVoiceTarget],
+      ["orca:voice-target", this._onVoiceTarget],
+      ["phx:clear-prompt", this._onSent],
+      ["orca:composer-sent", this._onSent],
+      ["phx:voice-send-failed", this._onSendFailed],
+      ["orca:composer-send-failed", this._onSendFailed],
+      ["phx:page-loading-stop", this._onPageLoaded],
+    ]
+    this._windowEvents.forEach(([name, fn]) => window.addEventListener(name, fn))
+  },
+
+  _unbindWindow() {
+    ;(this._windowEvents || []).forEach(([name, fn]) => window.removeEventListener(name, fn))
+    this._windowEvents = []
+  },
+
+  /** `body[data-voice-composer-for]` is the session page announcing itself.
+   * Watching the attribute directly means auto-follow survives a missed
+   * push_event and works for any future page that wants a composer. */
+  _observeBody() {
+    if (typeof MutationObserver === "undefined") return
+    this._bodyObserver = new MutationObserver(() => this._syncPage())
+    this._bodyObserver.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["data-voice-composer-for"],
     })
   },
 
   /** The per-segment log is collapsed by default; the strip is
    * phx-update="ignore", so the disclosure is native <details> and only its
-   * remembered open state is ours. */
+   * remembered open state is ours. Idempotent: the strip appears and
+   * disappears with voice mode. */
   _bindLogToggle() {
-    const details = this._els.logDetails
-    if (!details) return
+    const details = this._el("[data-voice-log-details]")
+    if (!details || details.dataset.voiceBound === "1") return
+    details.dataset.voiceBound = "1"
     try {
       if (window.localStorage.getItem(LOG_OPEN_KEY) === "1") details.open = true
     } catch (_e) {
       /* private mode / storage disabled — default closed is fine */
     }
-    this._onLogToggle = () => {
+    details.addEventListener("toggle", () => {
       try {
         window.localStorage.setItem(LOG_OPEN_KEY, details.open ? "1" : "0")
       } catch (_e) {
         /* ignore */
       }
-    }
-    details.addEventListener("toggle", this._onLogToggle)
+    })
   },
 
-  /** Snapshot for the headless capture check and for eyeballing in the console. */
+  /** Snapshot for the headless capture check and for eyeballing in the
+   * console. `ctx` is the live AudioContext object itself: the phase-2
+   * navigation check asserts its IDENTITY is unchanged across pages. */
   stats() {
     return {
       ...this.metrics,
+      active: this.active,
       armed: this.armed,
       muted: this.muted,
+      target: this.target,
+      composerPresent: this.composerPresent,
+      asrBusy: this._asrBusy,
       frameSamples: FRAME_SAMPLES,
       vadSettings: VAD_SETTINGS,
       vadFramesProcessed: this.vad ? this.vad.framesProcessed : 0,
       vadMaxBacklog: this.vad ? this.vad.maxBacklog : 0,
       channelJoined: this.channel ? this.channel.joined() : false,
+      ctx: this.capture ? this.capture.ctx : null,
       state: this.state,
     }
   },

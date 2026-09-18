@@ -72,7 +72,13 @@ defmodule OrcaHubWeb.Layouts do
          can just say `h-full` instead of guessing the chrome height with a
          `calc(100vh - Xrem)` that silently rots every time the header changes. --%>
     <div class="flex flex-col h-dvh">
-      <header class="flex items-center gap-2 px-4 py-2 sm:px-6 lg:px-8 shrink-0">
+      <%!-- `flex-wrap` + `gap-y-0` exist for the voice bar and nothing else:
+           its strip is a `basis-full` item that has to wrap onto a second
+           line while voice mode is on, and a row gap would charge that wrap
+           8px it does not have to spare (voice_mode_spec.md §8.2's 16px
+           budget). Nothing else in this header wraps, so `gap-x-2` is the
+           old `gap-2` exactly. --%>
+      <header class="flex flex-wrap items-center gap-x-2 gap-y-0 px-4 py-2 sm:px-6 lg:px-8 shrink-0">
         <.link navigate={~p"/"} class="flex items-center gap-2 font-semibold">
           <img src={~p"/images/logo.png"} alt="OrcaHub" class="h-8 w-auto" /> OrcaHub
         </.link>
@@ -126,6 +132,25 @@ defmodule OrcaHubWeb.Layouts do
             </ul>
           </div>
         </div>
+
+        <%!-- The global voice bar (voice_mode_spec.md §8.2 / ORCAHUB3-88).
+             A DIRECT child of <header>, not of the control cluster above:
+             both its container and its own root are `display: contents`, so
+             its mic button becomes an ordinary item of THIS flex row and its
+             strip can be a `basis-full` item that wraps below — neither of
+             which works one level down inside a nested nowrap flex box.
+
+             Deliberately NOT inside any `<.link>` (its controls would
+             navigate on click) and deliberately NOT behind `md:hidden` (the
+             mic has to be reachable on a phone, which is where voice mode is
+             worth having at all). `sticky: true` is what carries the mic,
+             the AudioContext, the VAD session and the voice channel across
+             live navigation. --%>
+        {live_render(@socket, OrcaHubWeb.VoiceBarLive,
+          id: "voice-bar",
+          sticky: true,
+          container: {:div, class: "contents"}
+        )}
       </header>
 
       <main class="@container flex-1 min-h-0 overflow-y-auto px-4 py-6 sm:px-6 sm:py-10 lg:px-8">

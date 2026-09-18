@@ -61,4 +61,25 @@ defmodule OrcaHubWeb.LayoutsTest do
       assert path in hrefs, "expected a live-nav header link to #{path}"
     end
   end
+
+  # The other half of the same contract: live navigation only buys anything
+  # if the sticky child is actually IN the header, and the voice bar's
+  # controls only work if they are not inside one of the links above.
+  test "the voice bar is a header child and no link contains it", %{conn: conn} do
+    {:ok, _view, html} = live(conn, ~p"/projects")
+    doc = Floki.parse_document!(html)
+
+    assert [_ | _] = Floki.find(doc, "div.h-dvh > header #voice-bar"),
+           "OrcaHubWeb.VoiceBarLive must be live_render'd inside the app header"
+
+    # A button inside an <a data-phx-link="redirect"> navigates on click, so
+    # the mic would arm and immediately be carried off the page.
+    assert Floki.find(doc, "header a #voice-bar") == [],
+           "the voice bar must not be nested inside a header link"
+
+    # Sticky is what carries the mic/AudioContext/channel across navigation;
+    # without it the bar is just the old per-page panel in a new place.
+    assert Floki.find(doc, "#voice-bar[data-phx-sticky]") != [],
+           "the voice bar must be rendered with sticky: true"
+  end
 end

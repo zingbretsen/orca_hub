@@ -1635,91 +1635,14 @@
             Sending now will steer the running turn instead of interrupting it.
           </p>
 
-          <%!-- Voice mode strip — voice_mode_spec.md §5.1 and the §8.1 DOM
-        contract. Every `data-voice-*` attribute below is LOAD-BEARING: the
-        `Voice` hook (assets/js/voice/voice_hook.js) selects on them and owns
-        all of the strip's content, which is why it is phx-update="ignore".
-        The LiveView contributes only the session id, the draft target and the
-        strip's existence; draft/arming/ASR state belongs to
-        OrcaHubWeb.VoiceChannel. Hidden-by-default children are unhidden by the
-        hook, never here.
-
-        There is deliberately NO draft textarea and no Send/Clear buttons: the
-        transcript is rendered into the composer's own `#prompt-input` below
-        (`data-voice-draft-target`), whose Send button and select-all-delete
-        already do those two jobs. On a 390px viewport the old panel ate half
-        the screen; what is left is one line plus rare-but-critical children
-        (banner, error, retry, the suspended-AudioContext fallback) that only
-        take height when their condition fires. --%>
-          <div
-            :if={@voice_mode && !@session.archived_at}
-            id="voice-panel"
-            phx-hook="Voice"
-            phx-update="ignore"
-            data-session-id={@session.id}
-            data-voice-draft-target="#prompt-input"
-            class="flex flex-col gap-1 text-xs"
-          >
-            <%!-- §9 trap 1: getUserMedia needs a secure context, so a LAN
-          origin like http://host:4001 has no navigator.mediaDevices at
-          all. The hook fills in and unhides this. --%>
-            <div data-voice-banner class="hidden alert alert-error py-1 text-xs"></div>
-            <%!-- `retry_warmup` is a first-class §8.1 event, so it gets a
-          first-class control — the hook's click-anywhere-on-the-error
-          fallback is only discoverable through a title tooltip, and a
-          failed ASR warm-up is precisely when the user has no obvious
-          next move. The button is a SIBLING rather than a child of the
-          error box on purpose: the hook renders errors with
-          `error.textContent = text`, which would delete any nested
-          node the first time an error appeared. `peer` gives it the
-          error box's visibility anyway, with no extra JS on either
-          side of the slice boundary. --%>
-            <div data-voice-error class="peer hidden alert alert-error py-1 text-xs"></div>
-            <button
-              type="button"
-              data-voice-action="retry"
-              class="hidden peer-[:not(.hidden)]:inline-flex btn btn-xs btn-outline btn-error self-start"
-            >
-              Retry warm-up
-            </button>
-            <%!-- The per-segment log is the debugging surface, not the primary
-          UI, so it is collapsed by default. The strip is phx-update="ignore",
-          so this has to be either native `<details>` or hook-managed — never a
-          LiveView assign. `<details>` it is; the hook only restores/persists
-          the open state in localStorage. --%>
-            <details data-voice-log-details class="group">
-              <summary class="flex items-center gap-2 list-none cursor-pointer">
-                <.icon name="hero-microphone" class="size-4 shrink-0" />
-                <span data-voice-status class="font-medium shrink-0">starting…</span>
-                <span data-voice-mic class="opacity-60 truncate min-w-0 flex-1"></span>
-                <span data-voice-arming class="hidden badge badge-warning badge-sm shrink-0">
-                  sending in <span data-voice-arming-ms></span>ms
-                </span>
-                <span class="shrink-0 opacity-50 flex items-center gap-0.5">
-                  events
-                  <.icon
-                    name="hero-chevron-right"
-                    class="size-3 transition-transform group-open:rotate-90"
-                  />
-                </span>
-              </summary>
-              <ol
-                data-voice-log
-                class="mt-1 text-[11px] leading-snug opacity-60 max-h-24 overflow-y-auto"
-              >
-              </ol>
-            </details>
-            <%!-- Fallback gesture: shown by the hook only if the
-          AudioContext is still suspended after resume(). --%>
-            <button
-              type="button"
-              data-voice-action="start"
-              class="hidden btn btn-warning btn-xs self-start"
-            >
-              Start listening
-            </button>
-          </div>
-
+          <%!-- The voice strip used to live here. It is now
+        OrcaHubWeb.VoiceBarLive in the app header (voice_mode_spec.md §8.2 /
+        ORCAHUB3-88): one sticky nested LiveView for the whole app, so the
+        mic, the AudioContext and the `voice:<id>` channel survive navigating
+        away from this page. This page's remaining involvement in voice mode
+        is three seams and no state: `data-voice-composer-for` on the
+        composer below, the `voice-target` push on mount, and
+        `voice-send-failed` on a failed delivery. --%>
           <%!-- Below `sm:` the row wraps into two lines — the textarea takes a
         full line of its own (`basis-full order-first`) and the icon buttons +
         Send sit on the line beneath it, since three square toggles plus Send
@@ -1740,19 +1663,10 @@
             data-voice-composer-for={@session.id}
             multipart
           >
-            <%!-- The click IS the user gesture that satisfies the autoplay
-          policy (voice_mode_spec.md §9 trap 2) — the hook arms the mic in
-          mounted(), so the panel must never render without one. Hidden on
-          an archived session, which cannot be sent to. --%>
-            <button
-              :if={!@session.archived_at}
-              type="button"
-              phx-click="toggle_voice"
-              class={["btn btn-ghost btn-square", @voice_mode && "text-primary"]}
-              title={if @voice_mode, do: "Turn off voice mode", else: "Turn on voice mode"}
-            >
-              <.icon name="hero-microphone" class="size-5" />
-            </button>
+            <%!-- The mic button moved to the header's voice bar (§8.2). It
+          has to be one control for the whole app, not one per page: it is
+          the user gesture that satisfies the autoplay policy (§9 trap 2),
+          and a per-page one could not arm a mic that outlives the page. --%>
             <button
               type="button"
               phx-click="toggle_tts"

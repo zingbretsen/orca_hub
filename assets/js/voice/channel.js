@@ -45,6 +45,14 @@ export class VoiceChannel {
       (r) => this.handlers.onSegmentResult && this.handlers.onSegmentResult(r)
     )
     this.channel.on("sent", (m) => this.handlers.onSent && this.handlers.onSent(m))
+    // Spec 8.2 / ORCAHUB3-86: the server asks the CLIENT to deliver the draft
+    // through the page's real composer, so staged uploads and the
+    // "[Attached image: ...]" lines ride along. Answered with sent_ack /
+    // send_failed / send_direct.
+    this.channel.on(
+      "send_request",
+      (m) => this.handlers.onSendRequest && this.handlers.onSendRequest(m)
+    )
 
     return new Promise((resolve, reject) => {
       this.channel

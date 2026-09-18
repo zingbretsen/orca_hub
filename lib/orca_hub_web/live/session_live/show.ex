@@ -129,13 +129,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
      # C3 — hydrated from the client's localStorage by "tts_stream_init" on
      # connect, exactly like :tts_autoplay above.
      |> assign(:tts_stream, false)
-     # voice_mode_spec.md §5.1/§9 trap 2 — voice mode is OFF on every mount
-     # and can only be turned on by an explicit click, because that click is
-     # the user gesture (sticky activation) the browser's autoplay policy
-     # requires before an AudioContext may run. Never auto-arm on page load,
-     # and deliberately NOT persisted to localStorage the way :tts_autoplay
-     # is: a restored-on-load "on" would open the mic without a gesture.
-     |> assign(:voice_mode, false)
      |> assign(:open_files, [])
      |> assign(:active_file_tab, nil)
      |> assign(:subscribed_artifact_ids, MapSet.new())
@@ -1190,17 +1183,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
     {:noreply, assign(socket, :tts_stream, enabled)}
   end
 
-  # voice_mode_spec.md §5.1, §8.1 DOM contract. This is the WHOLE of the
-  # LiveView's involvement in voice mode: it renders/un-renders `#voice-panel`
-  # and nothing else. The draft, the arming window and all ASR state live in
-  # `OrcaHubWeb.VoiceChannel` and reach the panel over its own channel — a
-  # LiveView round-trip per VAD segment would be both too slow and the wrong
-  # process to hold audio state. Un-rendering the panel is how voice mode is
-  # torn down: the `Voice` hook's `destroyed()` leaves the channel, stops the
-  # mic tracks and closes the AudioContext.
-  def handle_event("toggle_voice", _params, socket) do
-    {:noreply, assign(socket, :voice_mode, !socket.assigns.voice_mode)}
-  end
+  # voice_mode_spec.md §8.2 (C4): `toggle_voice` and the `:voice_mode` assign
+  # are GONE. Voice mode is owned by `OrcaHubWeb.VoiceBarLive` in the app
+  # header, which outlives this page — a per-page toggle could only ever arm
+  # a mic that dies at the next navigation (ORCAHUB3-88). What is left here
+  # is three stateless seams: `data-voice-composer-for` on the composer, the
+  # `voice-target` push on mount, and `voice-send-failed` on a failed
+  # delivery. The draft, the arming window and all ASR state remain in
+  # `OrcaHubWeb.VoiceChannel`.
 
   def handle_event("toggle_todos", _params, socket) do
     {:noreply,

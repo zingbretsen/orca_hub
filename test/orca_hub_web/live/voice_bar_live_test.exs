@@ -1,0 +1,188 @@
+defmodule OrcaHubWeb.VoiceBarLiveTest do
+  @moduledoc """
+  The global voice bar (`voice_mode_spec.md` §8.2 / ORCAHUB3-88).
+
+  Three things are worth pinning here and are all cheap to break:
+
+    * the bar is rendered by the app LAYOUT, so it is on every page rather
+      than one — a regression looks like "voice only works on /sessions/:id",
+      which is the issue this replaced;
+    * IDLE is exactly ONE control. The mic button plus nothing else is the
+      whole §8.2 mobile budget: the strip, the target picker and the bar's
+      own draft box may only appear once voice mode is on;
+    * the target-session picker actually lists sessions and follows both the
+      page and the user's choice.
+
+  The armed half is driven by the `Voice` hook (`pushEvent("voice-on")`),
+  which `render_hook/3` stands in for here. Everything the hook WRITES
+  (status text, the log, errors) is inside `phx-update="ignore"` and belongs
+  to the browser check, not to this file.
+  """
+
+  # async: false — shared dev DB (see CLAUDE.md), and the bar queries the
+  # real session list.
+  use OrcaHubWeb.ConnCase, async: false
+
+  import Phoenix.LiveViewTest
+
+  alias OrcaHub.Sessions
+
+  defp new_session(attrs) do
+    dir = Path.join(System.tmp_dir!(), "voice_bar_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    {:ok, session} =
+      Sessions.create_session(
+        Map.merge(
+          %{directory: dir, status: "idle", runner_node: Atom.to_string(node())},
+          attrs
+        )
+      )
+
+    session
+  end
+
+  # The bar is a nested LiveView; `live_children/1` is how the parent reaches
+  # it, and finding it there is itself the proof that the layout rendered it.
+  defp voice_bar(view) do
+    view
+    |> live_children()
+    |> Enum.find(fn child -> render(child) =~ ~s(id="voice-panel") end)
+  end
+
+  describe "placement" do
+    for path <- ["/sessions", "/queue", "/projects"] do
+      test "the bar renders in the header on #{path}", %{conn: conn} do
+        {:ok, view, html} = live(conn, unquote(path))
+
+        assert html =~ ~s(id="voice-bar")
+        assert voice_bar(view), "expected a sticky VoiceBarLive child on #{unquote(path)}"
+      end
+    end
+
+    test "it sits inside the app header and outside every link", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/projects")
+      doc = Floki.parse_document!(html)
+
+      # The layout's own header, not a page's nested one.
+      assert [_ | _] = Floki.find(doc, "div.h-dvh > header #voice-bar"),
+             "the voice bar must be rendered inside the app header"
+
+      # An interactive control inside an <a> navigates on click, which would
+      # make the mic button unusable (A1's caveat on the live-nav header).
+      assert Floki.find(doc, "a #voice-bar") == [],
+             "the voice bar must not be nested inside a link"
+
+      assert Floki.find(doc, "#voice-bar [data-voice-action='toggle']") != [],
+             "the mic button must be rendered on every page"
+    end
+
+    test "the mic is not hidden behind the mobile burger menu", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/projects")
+
+      [button] =
+        html
+        |> Floki.parse_document!()
+        |> Floki.find("#voice-bar [data-voice-action='toggle']")
+
+      classes = button |> Floki.attribute("class") |> List.first() || ""
+      refute classes =~ "md:hidden", "the mic must be reachable on a phone"
+      refute classes =~ "hidden ", "the mic must never render hidden"
+    end
+  end
+
+  describe "the idle state" do
+    test "is the mic button and nothing else", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      html = view |> voice_bar() |> render()
+
+      assert html =~ ~s(data-voice-action="toggle")
+      # §8.2's budget: no strip, no picker, no draft box until voice is on.
+      refute html =~ "voice-bar-strip-row"
+      refute html =~ "voice-strip"
+      refute html =~ "data-voice-bar-draft"
+      refute html =~ ~s(name="session_id")
+    end
+  end
+
+  describe "the armed state" do
+    test "adds the strip, the picker and the DOM contract's selectors", %{conn: conn} do
+      session = new_session(%{title: "a target session"})
+
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+
+      html = render_hook(bar, "voice-on", %{"on" => true})
+
+      # Every §8.1 selector the hook drives has to survive the move.
+      for selector <- ~w(
+            data-voice-banner data-voice-error data-voice-status data-voice-mic
+            data-voice-arming data-voice-arming-ms data-voice-log
+            data-voice-log-details data-voice-bar-draft
+          ) do
+        assert html =~ selector, "missing #{selector} in the armed bar"
+      end
+
+      assert html =~ ~s(data-voice-action="retry")
+      assert html =~ ~s(data-voice-action="start")
+      # The hook writes in here, so LiveView must not patch it back.
+      assert html =~ ~s(phx-update="ignore")
+
+      # The picker lists real sessions.
+      assert html =~ "a target session"
+      assert html =~ session.id
+
+      # ...and turning it off takes the whole line away again.
+      off = render_hook(bar, "voice-on", %{"on" => false})
+      refute off =~ "voice-bar-strip-row"
+    end
+  end
+
+  describe "the target session" do
+    test "the picker sets it, and the root advertises it to the hook", %{conn: conn} do
+      session = new_session(%{title: "picked by hand"})
+
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+      render_hook(bar, "voice-on", %{"on" => true})
+
+      html =
+        render_change(form(bar, "form[phx-change='set_target']"), %{"session_id" => session.id})
+
+      assert html =~ ~s(data-target-session-id="#{session.id}")
+    end
+
+    test "a page can push the target, and it PERSISTS when the page clears it",
+         %{conn: conn} do
+      session = new_session(%{title: "followed from the page"})
+
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+
+      html = render_hook(bar, "voice-target", %{"session_id" => session.id})
+      assert html =~ ~s(data-target-session-id="#{session.id}")
+
+      # Off a session page the target is KEPT (C4) — the user can still
+      # dictate at whatever they were last looking at.
+      html = render_hook(bar, "voice-target", %{"session_id" => nil})
+      assert html =~ ~s(data-target-session-id="#{session.id}")
+    end
+
+    test "a session missing from the recent window is still selectable", %{conn: conn} do
+      session = new_session(%{title: "off the end of the list"})
+
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+      render_hook(bar, "voice-on", %{"on" => true})
+
+      # Force the picker to a short list that cannot contain the target, the
+      # way a busy hub would.
+      html = render_hook(bar, "voice-target", %{"session_id" => session.id})
+
+      assert html =~ session.id,
+             "the selected session must appear as an <option> or the select would " <>
+               "silently show a DIFFERENT session as selected"
+    end
+  end
+end

@@ -2049,134 +2049,49 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
   end
 
-  # voice_mode_spec.md §5.1, §9 trap 2 and the §8.1 DOM contract. The panel's
-  # `data-voice-*` attributes are an interface, not decoration — the `Voice`
-  # hook selects on every one of them — so they are pinned here rather than
-  # left to survive a refactor by luck.
-  describe "voice mode panel" do
-    test "the Voice button renders for a live session and is off by default", %{
+  # voice_mode_spec.md §8.2 (C4) / ORCAHUB3-88: the phase-1 in-page voice
+  # panel and its toggle are GONE from this page — voice mode is one sticky
+  # OrcaHubWeb.VoiceBarLive in the app header, and the §8.1 DOM contract is
+  # pinned there instead (test/orca_hub_web/live/voice_bar_live_test.exs).
+  #
+  # This is the removal's own guard, and it is not redundant with that file:
+  # two `#voice-panel` elements on one page is a duplicate-id crash in
+  # LiveView and, worse, a second `Voice` hook pushing `voice-target` at a
+  # LiveView that has no such handler.
+  describe "voice mode (moved to the header bar)" do
+    test "the session page renders no voice panel and no voice toggle", %{
       conn: conn,
       claude_session: session
     } do
       {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
 
-      assert html =~ ~s(phx-click="toggle_voice")
-      # Trap 2: the panel must never exist without the click that arms it.
-      refute html =~ ~s(id="voice-panel")
-      refute :sys.get_state(view.pid).socket.assigns.voice_mode
+      # Scoped to THIS page's own content: the layout legitimately renders
+      # the bar's `#voice-panel` in the header, and asserting on the whole
+      # document would pass vacuously in one direction and fail in the other.
+      page =
+        html |> Floki.parse_document!() |> Floki.find("div.h-dvh > main") |> Floki.raw_html()
+
+      assert page =~ ~s(id="prompt-input"), "expected to be scoped to the session page"
+      refute page =~ ~s(phx-click="toggle_voice")
+      refute page =~ ~s(id="voice-panel")
+      refute page =~ ~s(phx-hook="Voice")
+      refute Map.has_key?(:sys.get_state(view.pid).socket.assigns, :voice_mode)
+
+      # ...and exactly one voice panel in the document as a whole. Two would
+      # be a LiveView duplicate-id crash.
+      assert html |> Floki.parse_document!() |> Floki.find("#voice-panel") |> length() == 1
     end
 
-    test "the Voice button is hidden on an archived session", %{
+    test "the composer is still the draft sink and the send path", %{
       conn: conn,
       claude_session: session
     } do
-      {:ok, _} = Sessions.archive_session(session, extract_memories: false)
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
 
-      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
-
-      refute html =~ ~s(phx-click="toggle_voice")
-    end
-
-    test "clicking Voice renders the panel with the full DOM contract", %{
-      conn: conn,
-      claude_session: session
-    } do
-      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
-
-      html = view |> element("button[phx-click='toggle_voice']") |> render_click()
-
-      assert html =~ ~s(id="voice-panel")
-      assert html =~ ~s(phx-hook="Voice")
-      # The hook owns everything inside the panel; LiveView must not patch it.
-      assert html =~ ~s(phx-update="ignore")
-      assert html =~ ~s(data-session-id="#{session.id}")
-
-      for attr <- [
-            "data-voice-banner",
-            "data-voice-status",
-            "data-voice-mic",
-            "data-voice-error",
-            "data-voice-arming",
-            "data-voice-arming-ms",
-            "data-voice-log",
-            "data-voice-log-details"
-          ] do
-        assert html =~ attr, "voice panel is missing #{attr}"
-      end
-
-      for action <- ~w(start retry) do
-        assert html =~ ~s(data-voice-action="#{action}"),
-               "voice panel is missing the #{action} button"
-      end
-
-      # The draft sink is the page's NORMAL composer textarea, not a second box
-      # of the panel's own — that redundant textarea plus its Send/Clear row is
-      # what made the panel eat half a phone screen.
-      assert html =~ ~s(data-voice-draft-target="#prompt-input")
-      refute view |> element("#voice-panel textarea") |> has_element?()
-      refute html =~ ~s(data-voice-action="send")
-      refute html =~ ~s(data-voice-action="cancel")
+      # The bar finds THIS form for THIS session, mirrors the draft into its
+      # textarea and requestSubmit()s it — see `describe "voice bar seams"`.
+      assert html =~ ~s(data-voice-composer-for="#{session.id}")
       assert view |> element("textarea#prompt-input") |> has_element?()
-
-      # The event log is collapsed behind a <details> that is CLOSED on load —
-      # a LiveView assign could not drive it anyway (phx-update="ignore"), so
-      # the disclosure is native and the hook only remembers the choice.
-      assert view |> element("#voice-panel details[data-voice-log-details]") |> has_element?()
-
-      refute view
-             |> element("#voice-panel details[data-voice-log-details][open]")
-             |> has_element?()
-
-      assert view
-             |> element("#voice-panel details[data-voice-log-details] ol[data-voice-log]")
-             |> has_element?()
-
-      # Hidden-by-default children — the hook unhides them, never the server.
-      assert view |> element("#voice-panel [data-voice-error].hidden") |> has_element?()
-      assert view |> element("#voice-panel [data-voice-banner].hidden") |> has_element?()
-      assert view |> element("#voice-panel [data-voice-arming].hidden") |> has_element?()
-      assert view |> element("#voice-panel [data-voice-action='start'].hidden") |> has_element?()
-    end
-
-    test "the retry-warmup button is a peer SIBLING of the error box, never a child of it", %{
-      conn: conn,
-      claude_session: session
-    } do
-      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
-
-      html = view |> element("button[phx-click='toggle_voice']") |> render_click()
-
-      # The hook renders an error with `error.textContent = text`, which
-      # deletes every child node — so a retry button nested inside the error
-      # box would vanish the first time an error appeared, i.e. exactly when
-      # it is needed. It is a sibling, and Tailwind's `peer` variant (not JS
-      # on either side of the slice boundary) gives it the error's visibility.
-      refute view
-             |> element("#voice-panel [data-voice-error] [data-voice-action='retry']")
-             |> has_element?()
-
-      assert view |> element("#voice-panel [data-voice-error].peer") |> has_element?()
-
-      assert view
-             |> element("#voice-panel button[data-voice-action='retry'].hidden")
-             |> has_element?()
-
-      assert html =~ "peer-[:not(.hidden)]:inline-flex"
-    end
-
-    test "clicking Voice again removes the panel (that un-render IS the teardown)", %{
-      conn: conn,
-      claude_session: session
-    } do
-      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
-
-      assert view |> element("button[phx-click='toggle_voice']") |> render_click() =~
-               ~s(id="voice-panel")
-
-      refute view |> element("button[phx-click='toggle_voice']") |> render_click() =~
-               ~s(id="voice-panel")
-
-      refute :sys.get_state(view.pid).socket.assigns.voice_mode
     end
   end
 
