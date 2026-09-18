@@ -1620,11 +1620,17 @@
             </div>
           </div>
 
+          <%!-- Below `sm:` the row wraps into two lines — the textarea takes a
+        full line of its own (`basis-full order-first`) and the icon buttons +
+        Send sit on the line beneath it, since three square toggles plus Send
+        left the textarea a sliver at phone widths. At `sm:` and up
+        `sm:flex-nowrap` + `sm:basis-auto` + `sm:order-none` restore the
+        original single row exactly. --%>
           <.form
             for={%{}}
             phx-submit="send_message"
             phx-change="validate"
-            class="flex gap-2"
+            class="flex flex-wrap sm:flex-nowrap gap-2"
             multipart
           >
             <%!-- The click IS the user gesture that satisfies the autoplay
@@ -1680,7 +1686,11 @@
                 </li>
               </ul>
             </div>
-            <div class="flex-1 min-w-0 relative" id="prompt-wrapper" phx-update="ignore">
+            <div
+              class="basis-full order-first sm:basis-auto sm:order-none flex-1 min-w-0 relative"
+              id="prompt-wrapper"
+              phx-update="ignore"
+            >
               <textarea
                 name="prompt"
                 placeholder={
@@ -1710,7 +1720,15 @@
             >
               <.icon name="hero-stop" class="size-5" />
             </button>
-            <.button type="submit" disabled={@node_unavailable != nil}>
+            <%!-- `class` REPLACES the component's default classes (see
+          CoreComponents.button/1), so the btn variant is spelled out here.
+          `ml-auto` pins Send to the right end of the wrapped button line on
+          phones; at `sm:` the flex-1 textarea already does that. --%>
+            <.button
+              type="submit"
+              class="btn btn-primary btn-soft ml-auto sm:ml-0"
+              disabled={@node_unavailable != nil}
+            >
               Send
             </.button>
           </.form>
