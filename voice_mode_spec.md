@@ -1347,30 +1347,78 @@ Every phrase is AT MOST THREE TOKENS — the matcher only ever compares the last
 1-3 tokens of a segment, so a four-token phrase can never match in full. (That
 is why "orca the third one" from §13.5 is NOT in the list.)
 
-| name | phrase | class | payload | max score on negatives |
+This is `command_vocab/0` in full and it is the SHIPPED list — measured against
+the corpus and pinned by `test/orca_hub/voice/intent_vocab_test.exs` (`ceb43d7`),
+not the original proposal. The first four rows are §5.1.1's phase-1 entries,
+unchanged and first in the ordering. "max on negatives" is each entry's MAXIMUM
+score over the corpus's 154 negative clips — the closest any ordinary dictation
+comes to firing it, against the 0.85 threshold. Re-wording an entry means
+re-measuring it, never guessing.
+
+| name | phrase | class | payload | max on negatives |
 |---|---|---|---|---|
-| `:search` | orca search | navigate | open_palette | measured in slice (a), recorded at close |
-| `:open` | orca open | navigate | open_palette | measured in slice (a), recorded at close |
-| `:back` | orca back | navigate | back | measured in slice (a), recorded at close |
-| `:sessions` | orca sessions | navigate | path `/sessions` | measured in slice (a), recorded at close |
-| `:new_session` | orca new session | navigate | path `/sessions/new` | measured in slice (a), recorded at close |
-| `:new_line` | orca new line | insert | `"\n"` | measured in slice (a), recorded at close |
-| `:new_paragraph` | orca new paragraph | insert | `"\n\n"` | measured in slice (a), recorded at close |
-| `:session_search` | orca session search | insert | `"#"` | measured in slice (a), recorded at close |
-| `:hashtag` | orca hashtag | insert | `"#"` | measured in slice (a), recorded at close |
-| `:project_search` | orca project search | insert | `"##"` | measured in slice (a), recorded at close |
-| `:double_hashtag` | orca double hashtag | insert | `"##"` | measured in slice (a), recorded at close |
-| `:first`..`:ninth` | orca first .. orca ninth | select | ordinal 1..9 | measured in slice (a), recorded at close |
+| `:send` | orca send | action | — | 0.833 (phase 1) |
+| `:cancel` | orca cancel | action | — | 0.833 (phase 1) |
+| `:stop` | orca stop | ignore | — | 0.727 (phase 1) |
+| `:pause` | orca pause | ignore | — | 0.750 (phase 1) |
+| `:search` | orca search | navigate | open_palette | 0.667 |
+| `:open` | orca open | navigate | open_palette | 0.727 |
+| `:back` | orca back | navigate | back | 0.600 |
+| `:sessions` | orca all sessions | navigate | path `/sessions` | 0.727 |
+| `:new_session` | orca new session | navigate | path `/sessions/new` | 0.727 |
+| `:new_line` | orca new line | insert | `"\n"` | 0.667 |
+| `:new_paragraph` | orca new paragraph | insert | `"\n\n"` | 0.667 |
+| `:session_search` | orca session search | insert | `"#"` | 0.714 |
+| `:hashtag` | orca hashtag | insert | `"#"` | 0.667 |
+| `:project_search` | orca project search | insert | `"##"` | 0.588 |
+| `:double_hashtag` | orca double hashtag | insert | `"##"` | 0.667 |
+| `:first` | orca first item | select | ordinal 1 | 0.714 |
+| `:second` | orca second item | select | ordinal 2 | 0.769 |
+| `:third` | orca third item | select | ordinal 3 | 0.769 |
+| `:fourth` | orca fourth item | select | ordinal 4 | 0.769 |
+| `:fifth` | orca fifth item | select | ordinal 5 | 0.667 |
+| `:sixth` | orca sixth item | select | ordinal 6 | 0.667 |
+| `:seventh` | orca seventh item | select | ordinal 7 | 0.714 |
+| `:eighth` | orca eighth item | select | ordinal 8 | 0.667 |
+| `:ninth` | orca ninth item | select | ordinal 9 | 0.833 |
 
-The "max score on negatives" column is deliberately unfilled: a sibling slice
-measures the real numbers against the corpus and a later documentation pass
-fills them in. Do not invent them.
+**Two entries were REWORDED by §8.3.4, and the reason is recorded here rather
+than rediscovered:**
 
-"orca newline" and "orca new line" reduce to the SAME target once spaces are
-removed (`orcanewline`), so the §13.5 alias needs no separate entry — say so in
-the docs rather than adding a duplicate.
+- **The BARE ORDINALS are out** — the proposal's `orca first` .. `orca ninth`
+  failed BOTH acceptance bars. `orca second` is a phonetic TWIN of the commonest
+  ASR surface form of `orca send`: `phonetic("orcasecond") == "arksknt" ==
+  phonetic("orcascend")`. It scored 1.0 against and STOLE 30 positive SEND
+  clips, and produced 2 false positives at 0.900; `orca ninth` fired on a
+  negative (the JFK clip) at 0.909, a false positive on its own. `orca <ord>
+  item` fixes both — worst-in-family negative 0.909 -> 0.833, stolen positives
+  30 -> 0 — while keeping the siblings separable (worst rival 0.933, first-item
+  vs fourth-item). The CARDINAL families (`orca select one`..`nine`, `orca
+  number one`..`nine`, `orca one`..`nine`) are ALL disqualified for a different
+  reason: "one" and "nine" are phonetically IDENTICAL after folding (score
+  1.000), so slot 9 could never be reached at all.
+- **`orca sessions` ships as `orca all sessions`.** The short form is not a
+  false positive but sits at 0.800 — 0.05 of headroom against the threshold.
+  The reworded phrase measures 0.727, and the user loses nothing: speaking the
+  short "orca sessions" still resolves to `:sessions` at 0.923.
 
-The list above is CANDIDATE; the shipped list is whatever survives §8.3.4.
+`:ninth` is KEPT despite measuring 0.833, which is the same margin phase-1's
+`:send` and `:cancel` have carried since day one; dropping it would make the
+9th palette result unreachable by ordinal.
+
+**Known limitations, each pinned as a test:**
+
+- A truncated `orca ninth` resolves to `:send` (0.909), NOT `:ninth` — so the
+  §8.3.10 help text must teach the full three-token phrase. `orca first` ..
+  `orca eighth` DO resolve to their own names (0.909-0.933).
+- Truncated `orca second` beats `:send` by only 0.010 (0.933 vs 0.923). Do not
+  narrow that margin.
+- Aliases that need no entry because they already reduce to the same target:
+  `orca newline` == `orca new line` (1.0), `orca hash tag` -> `:hashtag` (1.0),
+  `orca go back` -> `:back` (1.0).
+
+Both rewordings stayed inside the three-token budget above, which is why
+`orca <ord> item` was available at all.
 
 #### 8.3.4 Corpus acceptance bar
 
@@ -1385,6 +1433,11 @@ at threshold 0.85, a COMMITTED test asserts:
 
 Any entry that breaks 1 or 2 is DROPPED or REWORDED, and the drop is recorded.
 Each shipped entry's MAXIMUM score over the negative clips is recorded.
+
+That test is `test/orca_hub/voice/intent_vocab_test.exs` (`ceb43d7`). It ran
+against all 344 clips and forced the two rewordings recorded in §8.3.3; the
+per-entry margins it pins are the same numbers as that section's table, so the
+two cannot drift apart.
 
 #### 8.3.5 Wire additions
 
@@ -1475,6 +1528,23 @@ candidate label, spaces removed on both sides, scoring
 `max(ratio(a, b), ratio(phonetic(a), phonetic(b)))`. A match requires
 `best >= 0.85` AND `best - runner_up >= 0.10` (with a single candidate, treat
 the runner-up as 0.0). Otherwise: no match.
+
+**As implemented (`ceb43d7`)** — the signatures the `Voice.Session` slice calls,
+pinned here because the contract left the exact shapes open:
+
+    Intent.command_vocab() :: [{name, phrase}]
+    Intent.class(name)     :: :action | :insert | :select | :navigate | :ignore
+    Intent.payload(name)   :: map
+    Intent.match_label(text, candidates, opts \\ []) ::
+      {:ok, %{index: integer, label: String.t(), score: float}} | :no_match
+
+`class/1` returns `:ignore` for an unknown name and `payload/1` returns `%{}`,
+so an unrecognised name can never be routed as an action, an insert or a
+navigation. `match_label/3` accepts candidates in the §8.3.5 WIRE shape
+(`%{"index" => i, "label" => s}`), with atom keys, or as bare strings — a bare
+or missing index falls back to list position — and takes `:threshold` (0.85)
+and `:margin` (0.10) as options rather than hard-coding them. The default
+`opts` is what makes it satisfy this section's `match_label/2`.
 
 #### 8.3.9 Client obligations
 
@@ -1688,9 +1758,24 @@ join/`pending_insert` rules, the conservative `match_label/2` margin, the
 client's live-navigation and palette-driving obligations, and a
 zero-header-height discoverability affordance. §8.3 SUPERSEDES §13, which is
 now labelled the DESIGN RECORD; §10.5's map re-points C5 at §8.3 with §13 kept
-as the design notes. The "max score on negatives" column in §8.3.3 is
-deliberately unfilled — a sibling slice measures it and a later doc pass fills
-it in.
+as the design notes.
+
+**§8.3.3 filled in from the measurement (`ceb43d7`)** — the candidate table is
+replaced by `command_vocab/0` as SHIPPED, with each entry's real maximum score
+over the corpus's 154 negative clips, pinned by
+`test/orca_hub/voice/intent_vocab_test.exs`. Scoring forced the two rewordings
+§8.3.4 anticipated, both now recorded with their reasons: the BARE ORDINALS are
+out (`orca second` is a phonetic twin of `orca send` — identical after folding —
+and stole 30 positive SEND clips plus 2 FPs at 0.900; `orca ninth` was an FP on
+its own at 0.909), replaced by `orca <ord> item`, with the cardinal families
+disqualified separately because "one" and "nine" fold identically and slot 9
+would be unreachable; and `orca sessions` (0.800, only 0.05 of headroom) ships
+as `orca all sessions` (0.727) while the short form still resolves at 0.923.
+`:ninth` is kept at 0.833 — phase-1 `:send`/`:cancel` have carried that same
+margin since day one. Three known limitations are recorded and tested, the
+sharpest being that a truncated `orca ninth` resolves to `:send`, so §8.3.10's
+help text has to teach the full three-token phrase. §8.3.8 also gains the
+concrete `Intent` signatures that slice's implementation pinned.
 
 **v0.5 (2026-09-18, phase 2/2b landed)** — C1-C4 are IMPLEMENTED and
 integration-verified 9/9 at `113fa91` (commit list and the nine checks are in
