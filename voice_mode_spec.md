@@ -1,8 +1,9 @@
-# Voice Mode — Design Spec (DRAFT, v0.4.1)
+# Voice Mode — Design Spec (DRAFT, v0.4.2)
 
-Status: DRAFT v0.4.1 — PHASE 1 IMPLEMENTED (commits: A `f23b5b8`, B `0080399`,
+Status: DRAFT v0.4.2 — PHASE 1 IMPLEMENTED (commits: A `f23b5b8`, B `0080399`,
 C `4a28f2b`, D `ef9f87a`+`f101886`, E `df935f1`, F `6f0e6d4`+`097806d`+`735b396`,
-integration fix `8d67708`); phase 1 EXIT CRITERIA PENDING —
+integration fix `8d67708`, panel shrink §8.1 DOM change — see §12); phase 1
+EXIT CRITERIA PENDING —
 `spikes/voice/ACOUSTIC_TEST.md` Parts A and B have not been run.
 Author: orchestrator handoff, 2026-09-14.
 Owner: phase 1 landed; phase 2+ per §10.
@@ -855,9 +856,9 @@ The client ships RAW PCM; the SERVER wraps it in a 44-byte WAV header for the mu
 
 - `"speech_start"` `{}` — VAD onset. Cancels an open arming window IMMEDIATELY (the arming chip must die on speech ONSET, not 600 ms later when the segment completes).
 - `"mic"` `{muted: bool, reason: "tts" | "user"}` — the client's half-duplex state; the server mirrors it in `state.muted` and DROPS any `"segment"` that arrives while muted (defensive).
-- `"send_now"` `{}` — the manual Send button: sends the current draft immediately, no arming window. No-op on an empty draft.
+- `"send_now"` `{}` — sends the current draft immediately, no arming window. No-op on an empty draft. Still served, but no longer pushed by the panel: the composer's own Send button submits through `SessionLive.Show`'s `send_message` (also `:queue`) instead.
 - `"cancel"` `{}` — clears the draft and any arming window.
-- `"draft_edit"` `{text: string}` — the user edited the draft textarea by hand; server replaces its draft with `text`.
+- `"draft_edit"` `{text: string}` — the user edited the draft by hand in the composer textarea (see the DOM contract below); server replaces its draft with `text`. Also used to SEED the server with whatever was already typed into the composer when voice mode was turned on.
 - `"retry_warmup"` `{}` — re-fire the ASR warm-up ping after an error.
 
 #### Join
@@ -902,20 +903,57 @@ The client ships RAW PCM; the SERVER wraps it in a 44-byte WAV header for the mu
 
 `SessionLive.Show` renders, when `@voice_mode` is true:
 
-    <div id="voice-panel" phx-hook="Voice" phx-update="ignore" data-session-id={@session.id}>
+    <div id="voice-panel" phx-hook="Voice" phx-update="ignore"
+         data-session-id={@session.id} data-voice-draft-target="#prompt-input">
       <div data-voice-banner class="hidden">   <!-- red non-secure-origin banner text, hook unhides -->
-      <span data-voice-status></span>            <!-- hook writes status text -->
-      <span data-voice-mic></span>               <!-- hook writes "mic: listening" / "mic muted (TTS playing)" -->
-      <div data-voice-error class="hidden"></div><!-- hook writes error text, unhides -->
-      <textarea data-voice-draft></textarea>     <!-- hook sets .value from state.draft; on user 'input' (debounced 300 ms) hook pushes draft_edit -->
-      <div data-voice-arming class="hidden"><span data-voice-arming-ms></span></div>  <!-- countdown chip -->
-      <button data-voice-action="send">Send now</button>
-      <button data-voice-action="cancel">Clear</button>
+      <div data-voice-error class="peer hidden"></div>  <!-- hook writes error text, unhides -->
+      <button data-voice-action="retry" class="hidden peer-[:not(.hidden)]:inline-flex">Retry warm-up</button>
+      <details data-voice-log-details>         <!-- CLOSED on load; hook restores/persists `open` in localStorage "orca:voice:log-open" -->
+        <summary>
+          <span data-voice-status></span>      <!-- hook writes status text -->
+          <span data-voice-mic></span>         <!-- hook writes "mic: listening" / "mic muted (TTS playing)" -->
+          <div data-voice-arming class="hidden"><span data-voice-arming-ms></span></div>  <!-- countdown chip -->
+          events                               <!-- the disclosure affordance -->
+        </summary>
+        <ol data-voice-log></ol>               <!-- hook appends one <li> per segment_result -->
+      </details>
       <button data-voice-action="start" class="hidden">Start listening</button>  <!-- fallback gesture if AudioContext stays suspended -->
-      <ol data-voice-log></ol>                   <!-- hook appends one <li> per segment_result -->
     </div>
 
-The LiveView button that toggles `@voice_mode` (`phx-click="toggle_voice"`) is the user gesture (sticky activation) — the hook arms in `mounted()`; if `ctx.state` is still `suspended` after `resume()`, it unhides the `start` button and arms on that click instead. Leaving voice mode = the LiveView un-rendering the panel -> hook `destroyed()` tears everything down (channel leave, tracks stopped, AudioContext closed).
+**The draft sink is the page's NORMAL composer textarea, not an element of the
+panel's own.** `data-voice-draft-target` is a selector for it (`#prompt-input`);
+there is no `data-voice-draft`, no "Send now" and no "Clear" button, because the
+composer's Send button and a select-all-delete already do those two jobs and the
+second textarea cost roughly half a 390 px viewport. The hook therefore writes
+OUTSIDE its own element, which imposes three rules:
+
+- `#prompt-input` belongs to the `Autocomplete` hook inside a
+  `phx-update="ignore"` wrapper, so every write must be followed by a bubbling
+  `input` event — a bare `.value =` skips Autocomplete's autoresize and leaves a
+  one-row box holding several rows of text. The hook guards that synthetic event
+  so it is not echoed straight back as a `draft_edit`.
+- The composer's `input` (debounced 300 ms) still pushes `draft_edit`, exactly as
+  the old draft textarea did. Text already typed into the composer when voice
+  mode is turned on is pushed as a `draft_edit` seed on join, so the first
+  `"state"` snapshot cannot wipe it.
+- **An empty `state.draft` never empties a non-empty composer.** Clearing is
+  explicit only: the `"sent"` event, a `segment_result` with action `cancel`, and
+  the LiveView's `clear-prompt` push (which also pushes `"cancel"` so the server
+  draft cannot be re-sent). That ordering is what keeps a stale snapshot from
+  destroying typed text.
+
+`"orca send"` is unchanged: the SERVER delivers the draft with
+`Cluster.send_message(..., :queue)` on arming expiry and pushes `"sent"`. The
+client does NOT submit the composer form for it (that would double-send); it
+only clears the box. `"send_now"` remains a valid client->server event but has no
+button any more.
+
+The per-segment log is collapsed behind a native `<details>`, CLOSED on load. The
+panel is `phx-update="ignore"`, so a LiveView assign could not drive a toggle
+inside it; the disclosure is CSS-only and the hook merely restores/persists the
+choice in `localStorage`.
+
+The LiveView button that toggles `@voice_mode` (`phx-click="toggle_voice"`) is the user gesture (sticky activation) — the hook arms in `mounted()`; if `ctx.state` is still `suspended` after `resume()`, it unhides the `start` button and arms on that click instead. Leaving voice mode = the LiveView un-rendering the panel -> hook `destroyed()` tears everything down (channel leave, tracks stopped, AudioContext closed, and the composer's `input` listener removed — the composer outlives the hook).
 
 Half-duplex: `TTSMethods` (app.js) dispatches `window.dispatchEvent(new CustomEvent("orca:tts-state", {detail: {playing: bool}}))` whenever `this.playing` changes (ttsStart/ttsPause/ttsResumeOrStart/ttsStop). The Voice hook listens, pauses the VAD + drops frames while playing, and pushes `"mic"` `{muted, reason: "tts"}`. Slice F owns that tiny additive emit in app.js; slice E owns the listener.
 
@@ -1041,6 +1079,30 @@ STILL OPEN — all three are human-in-the-loop or a small upstream change:
   (section 6).
 
 ## 12. Changelog
+
+**v0.4.1 -> v0.4.2** — the §8.1 DOM contract shrank. The panel occupied roughly
+half a 390 px viewport (status row + its own 2-row draft textarea + a
+Send/Clear button row + a tall scrolling log), leaving the conversation feed a
+sliver, while the real composer sat right below it with a second, redundant
+textarea. Measured headlessly at 390x844 and 1440x900: 167 px -> 16 px, all
+151 px of it returned to `#message-feed`.
+
+- §8.1 DOM contract: `data-voice-draft` and the `send`/`cancel` buttons are
+  GONE. The draft sink is the composer's own `#prompt-input`, named by a new
+  `data-voice-draft-target` attribute on the panel; the hook writes it and then
+  dispatches a bubbling `input` event so `Autocomplete`'s autoresize still runs.
+  Merge rule: `draft_edit` still flows composer -> server (debounced 300 ms) and
+  now also SEEDS the server with pre-typed text at join, and an empty
+  `state.draft` never empties a non-empty composer — clearing is explicit
+  (`"sent"`, a `cancel` segment_result, or LiveView's `clear-prompt`).
+- §8.1 DOM contract: the per-segment log moved inside a native `<details>`
+  (`data-voice-log-details`) that is CLOSED on load, with the open state
+  persisted in `localStorage` under `orca:voice:log-open`. The panel is
+  `phx-update="ignore"`, so the disclosure cannot be a LiveView assign.
+- Unchanged, and re-pinned here because the shrink could have broken it:
+  `"orca send"` still delivers SERVER-side with `:queue` (never `:interrupt`,
+  never a client-side form submit), and the `toggle_voice` button is still an
+  always-rendered real click target for the autoplay policy.
 
 **v0.4 -> v0.4.1** — §8.1 added, the VoiceChannel wire contract. Phase 1 then
 built against it (slices A `f23b5b8`, B `0080399`, C `4a28f2b`, D `ef9f87a` +

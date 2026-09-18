@@ -2065,21 +2065,41 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
             "data-voice-status",
             "data-voice-mic",
             "data-voice-error",
-            "data-voice-draft",
             "data-voice-arming",
             "data-voice-arming-ms",
-            "data-voice-log"
+            "data-voice-log",
+            "data-voice-log-details"
           ] do
         assert html =~ attr, "voice panel is missing #{attr}"
       end
 
-      for action <- ~w(send cancel start retry) do
+      for action <- ~w(start retry) do
         assert html =~ ~s(data-voice-action="#{action}"),
                "voice panel is missing the #{action} button"
       end
 
-      # The draft is the textarea the hook writes state.draft into.
-      assert view |> element("#voice-panel textarea[data-voice-draft]") |> has_element?()
+      # The draft sink is the page's NORMAL composer textarea, not a second box
+      # of the panel's own — that redundant textarea plus its Send/Clear row is
+      # what made the panel eat half a phone screen.
+      assert html =~ ~s(data-voice-draft-target="#prompt-input")
+      refute view |> element("#voice-panel textarea") |> has_element?()
+      refute html =~ ~s(data-voice-action="send")
+      refute html =~ ~s(data-voice-action="cancel")
+      assert view |> element("textarea#prompt-input") |> has_element?()
+
+      # The event log is collapsed behind a <details> that is CLOSED on load —
+      # a LiveView assign could not drive it anyway (phx-update="ignore"), so
+      # the disclosure is native and the hook only remembers the choice.
+      assert view |> element("#voice-panel details[data-voice-log-details]") |> has_element?()
+
+      refute view
+             |> element("#voice-panel details[data-voice-log-details][open]")
+             |> has_element?()
+
+      assert view
+             |> element("#voice-panel details[data-voice-log-details] ol[data-voice-log]")
+             |> has_element?()
+
       # Hidden-by-default children — the hook unhides them, never the server.
       assert view |> element("#voice-panel [data-voice-error].hidden") |> has_element?()
       assert view |> element("#voice-panel [data-voice-banner].hidden") |> has_element?()

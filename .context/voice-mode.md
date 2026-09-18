@@ -49,7 +49,11 @@ sequenceDiagram
   client, asset URLs, the `Voice` hook (`wav.js` is offline verification only).
 - `session_live/show.{ex,html.heex}` — renders `#voice-panel` (the
   `data-voice-*` DOM contract) behind `toggle_voice`; that plus the
-  `orca:tts-state` emit in `app.js` is the WHOLE LiveView involvement.
+  `orca:tts-state` emit in `app.js` is the WHOLE LiveView involvement. The
+  panel is a ONE-LINE strip: status + mic + arming chip + an `events`
+  disclosure. It has no draft textarea and no Send/Clear buttons — the
+  transcript goes into the page's normal composer (`#prompt-input`, named by
+  `data-voice-draft-target`).
 
 ## Wire contract (summary — §8.1 is normative)
 
@@ -109,7 +113,19 @@ next join, not mid-utterance. `threshold` (0.85) is the matcher knob.
   resumed"). Speech resuming inside the first 600 ms merges into the same
   segment, so no command is detected at all.
 - **Sending is `:queue`, never `:interrupt`** (`TriggerExecutor` precedent): a
-  spoken "send" must not cancel an in-flight turn.
+  spoken "send" must not cancel an in-flight turn. "orca send" is delivered
+  SERVER-side on arming expiry; the client never submits the composer form for
+  it (that would double-send), it only clears the box on `"sent"`.
+- **The draft lives in the composer textarea, which the hook does not own.**
+  `#prompt-input` belongs to the `Autocomplete` hook inside a
+  `phx-update="ignore"` wrapper, so every write is followed by a bubbling
+  `input` event (a bare `.value =` skips the autoresize) and guarded against
+  echoing back as a `draft_edit`. Merge rule, chosen because it cannot destroy
+  typing: composer edits still push `draft_edit` (300 ms debounce) and seed the
+  server at join, and an empty `state.draft` NEVER empties a non-empty
+  composer — clearing is explicit only (`"sent"`, a `cancel` segment_result,
+  LiveView's `clear-prompt`). The composer outlives the hook, so `destroyed()`
+  must remove that listener.
 - **Join-time refusals, never workarounds**: no re-routing when the session's
   node is unavailable (`node_unavailable`), and exactly ONE voice owner per
   session via a `%{voice: true}` claim in `SessionViewersRegistry`, released
