@@ -158,17 +158,23 @@ export const VoiceHook = {
 
     // Trap 1: no secure context means navigator.mediaDevices is simply
     // absent, with no error thrown. Say so loudly before anything else
-    // fails weirdly. The strip has just been asked for, so give LiveView a
-    // frame to render it into before writing.
+    // fails weirdly.
+    //
+    // Only the BANNER waits, because it lands in a strip LiveView is only
+    // now rendering — and it waits on a timer rather than
+    // requestAnimationFrame, which a hidden tab throttles to never. The
+    // connect path deliberately does NOT wait: it stays inside this click's
+    // own task, so `AudioContext.resume()` runs under the user activation
+    // that the click just granted rather than relying on it being sticky.
     const insecure = secureContextProblem()
-    requestAnimationFrame(() => {
-      if (insecure) {
+    if (insecure) {
+      setTimeout(() => {
         this._showBanner(insecure)
         this._setStatusText("unavailable")
-        return
-      }
-      this._connect()
-    })
+      }, 50)
+      return
+    }
+    this._connect()
   },
 
   _teardown() {
