@@ -505,6 +505,65 @@ seconds, but only because it already knew the mechanism. "The orchestrator
 ignored it instantly" is the §B.4 fatigue confound appearing inside the
 measurement run itself, and is evidence of nothing.
 
+### C.5 Second live specimen — a false positive that SURVIVES the adopted rule
+
+A second alert fired during ORCAHUB3-66's own stage 2, on the worker building
+the `EditFailure` module. Its command:
+
+```
+python3 - <<'PY'
+p='lib/orca_hub/sessions/edit_failure.ex'
+s=open(p).read()
+… two structured replace() operations …
+open(p,'w').write(s)
+print("ok")
+PY
+```
+
+Alert: `programmatic_write`, unpaired, **21 calls/15m, 0% repeats**, "no commit
+6m", with `Top edited files: …/edit_failure.ex (1), …/edit_failure_test.exs (1)`.
+
+Unambiguously a false positive: a worker making a structured multi-site edit to
+a file it is itself authoring. Scored against the adopted rule:
+
+| clause | fires? | why |
+|---|---|---|
+| D6 (no corroborating detail) | **no** | `Top edited files:` is non-empty |
+| D1 (path not in git) | yes | brand-new file, untracked |
+| D2b (same command reads back or executes) | **no** | the command neither re-reads nor runs what it wrote |
+| **U1b = D6 ∨ (D1 ∧ D2b)** | **no — the alert is KEPT** | |
+
+**This is the honest limit of the recommendation, and it belongs in the
+headline, not a footnote.** U1b cuts ~31% of alert volume at no measured cost to
+true positives, but it does **not** touch the largest remaining false-positive
+class: the structured programmatic edit to a file the worker is authoring —
+low repeat rate, no preceding failed edit, ORCAHUB3-66's own "pattern 2". That
+class is most of the 34 false positives in §C.1 (samples #8, #10, #11, #15, #21,
+#23 and #24 are all the same shape), and it is precisely why sample precision
+only moves **7.7% → 12.0%**. That modest number was always the tell; this
+specimen is what the tell looks like in the wild.
+
+#### A tightening considered and REJECTED
+
+D6 currently requires `top_edited_files` **and** `top_repeated_signatures` to
+both be empty. This specimen has a `Top edited files:` line whose every entry
+has a count of **(1)** — each file touched exactly once. The tempting tightening
+is therefore "no repeated signatures AND no file edited more than once", which
+would suppress it.
+
+**Not shipping it.** It would be tuned against a single specimen, which is
+exactly the failure mode §D.1 documents: D4 looked superb in aggregate (81.2%
+suppression) and destroyed 3 of 3 hand-labelled true positives. A rule invented
+to explain one anecdote has no *measured* true-positive cost, and "no measured
+cost" and "no cost" are different claims. It is recorded here as a **candidate
+for ORCAHUB3-111 to measure against a fresh hand-labelled sample**, not a change
+to make now. The next person should inherit the reasoning, not the temptation.
+
+One further datum for §D.3: this alert's `no commit 6m` clause fired on a worker
+roughly **20 minutes** into a task that commits once, at the end, by design. The
+clause is not measuring staleness there; on a single-commit role, until that one
+commit lands, the age it prints is the age of somebody else's.
+
 ---
 
 ## D. Counterfactual — what each discriminator would have suppressed
@@ -623,7 +682,10 @@ this corpus.
 
 Sample precision after U1b: 3/25 = **12.0%**, up from 7.7%. That is the honest
 number: a ~31% cut in volume with no measured loss, and precision still poor,
-because the file-surgery clause itself is nearly uninformative.
+because the file-surgery clause itself is nearly uninformative. **§C.5 is what
+U1b leaves standing** — a structured programmatic edit to a file the worker is
+authoring passes every clause of the rule, and that class is most of the
+remaining false positives.
 
 ### D.3 D5 / `no_commit_for` — alerts on sessions that never edit the repo
 
@@ -632,7 +694,10 @@ the worker made no repo edits at all in the window. These are deploy workers,
 gate workers, cleanup workers and measurement workers (this one included),
 operating outside the repo by design. The `no commit Nm` clause in the metric
 line fires on them mechanically: the role does not commit. D5 alone loses TP
-#30, so it must not be used alone, but it is a component of U1b via D6.
+#30, so it must not be used alone, but it is a component of U1b via D6. The
+clause also misfires on single-commit roles that DO edit the repo — see §C.5,
+where it reported "no commit 6m" against a worker 20 minutes into a task that
+commits once at the end.
 
 ### D.4 The ORCAHUB3-63 §1 check — no recommendation becomes "alert only at high volume"
 
