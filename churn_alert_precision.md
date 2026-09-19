@@ -30,7 +30,9 @@ labels govern.
 DELIVERED, not against detections** — a detection that never became an alert
 was recorded nowhere. See **§F.0**, which also explains why this comparison
 cannot be repeated the same way on future data. **§F** is the post-change
-closing pass: what shipped, what it dropped, and what it cost.
+closing pass: what shipped, what it dropped, and what it cost. **§G** is the
+post-deploy addendum: a defect class caught in review, the production check that
+the new columns are in the intended shape, and one anecdote kept labelled as one.
 
 ---
 
@@ -1160,3 +1162,192 @@ the surgery detector does not find (§D.4: failed editor calls number 0 in 223
 of the 229 alert windows, 1 in 5, 2 in 1; none of the three true positives has
 one). The two populations are disjoint. **No suppression anywhere in this
 issue may be justified with "63 §1 will catch it" — measurably, it will not.**
+
+---
+
+## G. Post-deploy addenda
+
+Three items that arrived after §F was written: a defect caught in review whose
+SHAPE matters more than the defect, the production check that the new columns
+are in the shape they were designed to be in, and five alerts that are an
+anecdote and are labelled as one. The code is deployed at `2925d44` on all six
+instances; every figure below was measured against `orca_hub_prod` on
+2026-09-19 at 20:12 UTC.
+
+### G.1 The `insert_all` atom bug — a class, not a changelog entry
+
+Worker D caught this in review, before it shipped. `FileSurgery` evidence
+carries `:kind` as an ATOM (`:write_to_tracked`, `:programmatic_write`, …), and
+`Sessions.insert_churn_samples/1` uses `insert_all`, which dumps values straight
+through the schema's field types with **no casting** — a changeset would have
+cast the atom; `insert_all` does not. An atom in a `:string` column raises
+`Ecto.ChangeError`. That raise lands inside `run_sweep/1`, whose outer rescue
+logs and returns — discarding **the entire sweep**: every session's sample, not
+merely the offending row, every 120 seconds, with one `Logger` line as the only
+trace.
+
+**The point is not the bug, it is the shape: the fix's failure mode would have
+been indistinguishable from the bug it was fixing.** This document exists
+because file surgery was never recorded — `churn_suspected` true 0 times in
+1,480 samples (§0), because the sampler called `Churn.assess/3` and never
+computed it. Had the atom shipped, the sampler would have begun computing file
+surgery and stopped persisting anything at all. Symptom before: a column that is
+uniformly void. Symptom after: a table that stops growing. Both present to an
+analyst as *"there is no file-surgery data in `churn_samples`"* — which is the
+sentence §0 already had to write. The gap would have been closed and replaced by
+a total sampling OUTAGE, and the evidence for "fixed" and the evidence for
+"worse than before" would have been the same evidence. Nobody would have
+noticed, because nobody had noticed for seven weeks while the table was already
+empty for the other reason.
+
+**The structural answer adopted is containment, not just the corrected atom.**
+`Atom.to_string/1` at the boundary (`file_surgery_kind/1`) is the one-line
+correction and it is the smaller half. The larger half is that each new
+computation which can raise is contained PER SESSION rather than per sweep:
+`surgery_alert_decision/2` rescues and fails closed to `nil` for that session
+only, and `FileSurgery.fetch_many/2` rescues internally and guarantees a key per
+requested id, so a DB failure degrades to "no evidence anywhere" rather than to
+no sweep. One bad row now costs one row. `run_sweep/1`'s outer rescue stays, but
+nothing added by this issue is allowed to reach it. The asymmetry is what makes
+this the right trade: `surgery_alert_decision` is an observability field — losing
+it for one session loses one datum, while losing the sweep loses every session's
+core churn metrics for that tick.
+
+**Generalised: a fix whose failure mode reproduces the symptom of the thing it
+fixes cannot be validated by absence.** "The table is empty" could not
+distinguish success from failure here in *either* direction — before, empty meant
+"never computed"; after a botched fix, empty would mean "never written"; after a
+good fix, empty means "nothing detected yet", and all three look identical for
+as long as nothing is detected. A change of that shape needs an independent
+POSITIVE check: a row that EXISTS, in production, carrying the value the fix was
+supposed to produce. It has to be run after the deploy, not in the suite — the
+suite writes its own rows and proves only that the code CAN write one. §G.2 is
+that check, performed, which is why it reports row counts and a live detection
+rather than "the migration is up".
+
+### G.2 Production confirmation — nullable-no-default, checked at the schema level
+
+Measured against **`orca_hub_prod`** (§0's corpus database; `.env`'s
+`DB_NAME=orca_hub_dev` is a different database and answers a different
+question), read-only, with `2925d44` deployed on all six instances.
+
+**Deliberately at the schema level.** `mix ecto.migrations` reporting "up" is a
+claim about the `schema_migrations` table, not about the shape of the deployed
+database; the question is what the columns actually are.
+
+| column | type | nullable | default |
+|---|---|---|---|
+| `file_surgery_suspected` | boolean | YES | **none** |
+| `file_surgery_kind` | varchar | YES | none |
+| `file_surgery_path` | text | YES | none |
+| `surgery_alert_decision` | varchar | YES | none |
+| `churn_suspected` *(for contrast)* | boolean | **NO** | **false** |
+
+`churn_samples_surgery_alert_decision_idx` on
+`(surgery_alert_decision, sampled_at) WHERE surgery_alert_decision IS NOT NULL`
+is present.
+
+| rows, 2026-09-19 20:12 UTC | |
+|---|---:|
+| `churn_samples` total | 5,171 |
+| **`file_surgery_suspected IS NULL`** — never computed | **5,168** |
+| non-null — written by the deployed sampler | 3 |
+
+The 5,168 void rows span 2026-09-05 22:42 → 2026-09-19 20:05 (the table's own
+prune window is why the corpus starts there; §0's 1,480 is an earlier window of
+the same table); the first non-null row is at 20:08:48, the deploy restart. The
+dev database holds **95 rows, 95 of them NULL** — same conclusion on a smaller,
+non-authoritative corpus. A report quoting "95 rows" is quoting that database,
+not the deployed one.
+
+**What this confirms: the discontinuity is now QUERYABLE, not merely documented
+in prose.** `where file_surgery_suspected is null` selects exactly the rows on
+which the question was never asked — in the table itself, with no date filter and
+no access to this document. `default: false` would have backfilled all 5,168 of
+them into the same value the sampler writes when it looks and finds nothing,
+merging "never asked" with "asked, answer no" permanently; no date filter could
+undo it, because the six instances restart at different moments and the prune
+window rolls rows out on its own schedule.
+
+This is what makes §0's "**Do not try to rebuild this corpus from
+`churn_samples`**" self-enforcing rather than advisory. The warning now lives in
+the data: an analyst who never reads this document gets a NULL, which is not a
+number they can average.
+
+**And it is the independent positive check §G.1 demands.** The table is not
+empty and the three post-deploy rows carry the intended shapes: two `false`
+(no evidence, decision `nil`) and one genuine detection —
+`file_surgery_suspected = true`, `file_surgery_kind = "write_to_tracked"`,
+`file_surgery_path = "run-2925d44.sh"`, `surgery_alert_decision =
+"suppress:untracked_and_verified"`. That is the §E deploy-runner false positive:
+detected, suppressed by U1b, and **recorded** — precisely the population §F.0
+says was recorded nowhere before. The same session had, 3.5 minutes earlier at
+20:05:15 UTC, delivered an old-style `[Worker alert]` on the same file to
+another orchestrator: same worker, same write, an alert before the restart and a
+durable `suppress:` row after it. One row in four minutes proves the
+detection → policy → persistence path works end to end. It proves nothing
+whatever about rates — §G.3 is about not pretending otherwise. (It is also §F.4's
+technique once more: the first detection the new observability ever recorded was
+the deploy of the change that added it.)
+
+### G.3 Five alerts in 44 minutes — an anecdote, and labelled as one
+
+While this issue was being built, the PRE-change detector fired five
+`[Worker alert]` churn alerts into the orchestrating session's feed — one on
+each of the five workers, 18:59:22 → 19:43:12 UTC on 2026-09-19.
+
+| delivered (UTC) | worker | named path | family | metric line | write-up |
+|---|---|---|---|---|---|
+| 18:59:22 | measurement (this document) | `…/probe1.exs` | `write_to_tracked` | 11 calls/15m, 18% repeats | §C.4 |
+| 19:27:35 | `EditFailure` | `…/edit_failure.ex` | `programmatic_write` | 21 calls/15m, 0% repeats | §C.5 |
+| 19:29:17 | `SurgeryAlertPolicy` + message rewrite | `…/alert_evaluator.ex` | `programmatic_write` | 35 calls/15m, 0% repeats | §C.5, third specimen |
+| 19:31:23 | matcher defects | `…/matcher.exs` | `programmatic_write` | 34 calls/15m, 0% repeats | below |
+| 19:43:12 | observability + `EditFailure` wiring | `…/churn_sample.ex` | `programmatic_write` | 31 calls/15m, 0% repeats | below |
+
+**All five were false positives. None was true.** Every one fired on a worker
+doing exactly what its brief instructed, and every one fired through the
+file-surgery branch alone — four carry 0% repeats and all five sit far below
+`@churn_min_repetition` (0.5), exactly as §C.4 describes.
+
+The two not yet written up:
+
+- **The matcher worker was alerted BY the defect it was actively repairing.**
+  The alert named `/home/zach/orca-hub-churn-analysis/matcher.exs` — a file the
+  command only `Code.require_file`'d — while the real writes went to
+  `cat > /tmp/wa66/corpus.exs` and `File.write!("/tmp/wa66/rows.bin", …)`, both
+  under an excluded `/tmp` path. That is §A.6(1) exactly: family (c) taking the
+  path from anywhere in the command. It is the second time that defect
+  demonstrated itself on its own repair; §F.4 is the other.
+- **The observability worker was alerted for a `python3` heredoc edit to
+  `churn_sample.ex`** — a tracked path, and the genuine write target, so the
+  matcher was right about the file here. Its `Top edited files:` line is
+  non-empty (the migration), so D6 is false, and D1 is false because the path is
+  tracked; it therefore **survives U1b**, for the same reason §C.5's third
+  specimen does.
+
+**Five is an anecdote, not a measurement, and no rate may be derived from it.**
+Deriving one would be self-refuting in a document that spends §D.1 showing a
+vivid small sample getting it exactly backwards — D4 looked superb in aggregate
+(81.2% suppression) and destroyed 3 of 3 hand-labelled true positives — and
+§F.2 stating the rule outright: a memorable specimen is evidence of EXISTENCE,
+never of FREQUENCY. The population here would poison any rate anyway: all five
+workers were editing or measuring the detector itself, using heredocs and
+`python3` one-liners, which is the precise idiom the detector matches on. And
+four of the five arrived AFTER the 237-alert corpus was frozen — its last alert
+is the 18:59:22 row above — so none of them is inside any figure in §A–§F.
+
+What it IS: the lived cost of the pre-change detector across one stage of one
+ordinary multi-worker issue — five interruptions into a single orchestrator's
+feed inside 44 minutes, each an invitation to peek at a worker that was fine.
+§B's corpus-wide "cost a peek and produced nothing" figure is 53.2%; this is
+what that number feels like from the receiving end, on one afternoon.
+
+**The provenance is the only reason it is worth recording at all.** These alerts
+were not gathered to argue for fixing the detector; they arrived as a BYPRODUCT
+of fixing it, at an orchestrator already committed to the change, and they are a
+complete enumeration of that orchestrator's alerts for the window rather than a
+selection of the vivid ones. Evidence that arrives while you are looking
+elsewhere cannot have been constructed to fit the case — the same argument
+§C.5's third specimen rests on. That protects against one bias, not all of them:
+it is still five, still self-observed, still one unusual kind of work. Record it
+as an anecdote with good provenance, and use it for nothing else.
