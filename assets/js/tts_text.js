@@ -17,6 +17,23 @@
 // `<code>` spans go through the same `speakCodeSpan` identifier-splitter as
 // the streaming path's backtick rule.
 //
+// Chunking happens BEFORE cleaning, not after. `extractSpeakableFromElement`
+// returns the RAW text alongside a `spans` provenance map (which DOM node —
+// or coarsely, which whole node for a `<code>`/`<br>`/block-boundary run —
+// each run of output characters came from); `splitIntoChunksWithOffsets`
+// splits that raw text into the same sentence-then-80-char chunks as before,
+// but keeps each chunk's `[start, end)` offsets into the raw string; and
+// `resolveChunkRange` turns a chunk's offsets, via `spans`, into a DOM range
+// spec app.js can build a real `Range` from — the anchor for a highlight
+// showing which chunk is currently being read aloud. Only THEN is each
+// chunk's text run through `cleanTextForTTS` individually, on its way to
+// synthesis — the same order the streaming path has always used, so the two
+// converge rather than diverge. Chunking the ALREADY-cleaned text (as this
+// module used to) would have no DOM positions left to map back to: cleaning
+// drops `<pre>` subtrees, rewrites ".md" to "dot markdown", spells out
+// hashes, splits identifiers — a cleaned-text offset corresponds to nothing
+// in the rendered page.
+//
 // INVARIANT (agreed with voice mode, load-bearing): a message that is
 // entirely a fenced code block must make `cleanTextForTTS` return the empty
 // string, not e.g. a stray "." — app.js's `ttsStart` gates its `this.playing
@@ -35,6 +52,11 @@
 // token never gets torn apart by the path/filename regexes; the term map
 // runs before all of it so e.g. "HEEx" doesn't collide with the later
 // extension pronunciation of a literal ".heex" file.
+
+// The one sentence-boundary rule, shared with tts_stream.js — imported
+// rather than forked, so the whole-message chunker below and the streaming
+// producer can never drift into speaking to two different rhythms.
+import { SENTENCE_BOUNDARY } from "./tts_stream.js"
 
 // Elixir/programming term pronunciations. Deliberately no lowercase
 // "heex"/"eex" entries here (unlike the capitalized "HEEx"/"EEx" prose
@@ -193,8 +215,10 @@ function replaceUnits(text) {
 // Elements that stand for a paragraph/line/cell break in rendered markdown —
 // extractSpeakableFromElement emits a blank-line (two newlines) after each,
 // which the `\n{2,}` -> ". " rule downstream turns into a sentence break.
-// <pre> is deliberately absent: it's skipped wholesale, not walked.
-const BLOCK_TAGS = new Set([
+// <pre> is deliberately absent: it's skipped wholesale, not walked. Exported
+// so app.js's highlight fallback (no CSS Custom Highlight API support) can
+// walk up to "the nearest block-level ancestor" using the same tag list.
+export const BLOCK_TAGS = new Set([
   "P", "DIV", "LI", "UL", "OL", "H1", "H2", "H3", "H4", "H5", "H6",
   "BLOCKQUOTE", "TABLE", "TR", "TD", "TH", "HR",
 ])
@@ -243,40 +267,165 @@ export function speakCodeSpan(code) {
     .join(" ")
 }
 
-// Walks a rendered message bubble and returns its speakable text. This is
-// the DOM-extraction counterpart to cleanTextForTTS's inline-code/fence
-// rules: by the time a bubble is rendered HTML, there are no backticks left
-// for those regexes to see, so code-block/code-span handling has to happen
-// here, at walk time, instead. `<pre>` subtrees (fenced code blocks) are
-// dropped entirely and SILENTLY — no "code block" announcement, matching
+// Walks a rendered message bubble and returns its speakable RAW text (not
+// yet cleaned — see the header comment) alongside a `spans` provenance map:
+// `[{ start, end, node, mode }]`, a partition of `[0, text.length)` in
+// emission order, where `mode` is:
+//   - "text": `node` is the TEXT node that contributed `text.slice(start,
+//     end)` 1:1 — offset `pos` within this run is character offset
+//     `pos - start` inside that node.
+//   - "node": `node` is an ELEMENT whose entire run is attributed coarsely
+//     to the WHOLE node (a `<code>` span, since speakCodeSpan changes the
+//     length so there is no 1:1 mapping; a `<br>`'s single "\n"; or a block
+//     tag's synthetic trailing "\n\n", which isn't sourced from any single
+//     child). A chunk boundary landing anywhere in a "node" span resolves
+//     to that whole node — coarse is fine, callers only need chunk
+//     BOUNDARIES to land somewhere sane, not a precise character position.
+//
+// This is the DOM-extraction counterpart to cleanTextForTTS's inline-code/
+// fence rules: by the time a bubble is rendered HTML, there are no backticks
+// left for those regexes to see, so code-block/code-span handling has to
+// happen here, at walk time, instead. `<pre>` subtrees (fenced code blocks)
+// are dropped entirely and SILENTLY — no "code block" announcement, matching
 // how tts_stream.js's accumulator withholds fenced content on the streaming
 // path. Written against only nodeType/nodeName/childNodes/textContent (the
 // same shape on a real DOM node or a plain object literal) so it's
 // exercisable from the node-only check script.
 export function extractSpeakableFromElement(el) {
   let out = ""
+  const spans = []
+  const emit = (str, node, mode) => {
+    if (!str) return
+    spans.push({ start: out.length, end: out.length + str.length, node, mode })
+    out += str
+  }
   const walk = (node) => {
     if (!node) return
     if (node.nodeType === 3) { // TEXT_NODE
-      out += node.textContent || ""
+      emit(node.textContent || "", node, "text")
       return
     }
     if (node.nodeType !== 1) return // skip comments etc.
     const tag = (node.nodeName || "").toUpperCase()
     if (tag === "PRE") return // fenced code block: silent, not read aloud
     if (tag === "BR") {
-      out += "\n"
+      emit("\n", node, "node")
       return
     }
     if (tag === "CODE") {
-      out += speakCodeSpan(node.textContent || "")
+      emit(speakCodeSpan(node.textContent || ""), node, "node")
       return
     }
     for (const child of node.childNodes || []) walk(child)
-    if (BLOCK_TAGS.has(tag)) out += "\n\n"
+    if (BLOCK_TAGS.has(tag)) emit("\n\n", node, "node")
   }
   walk(el)
-  return out
+  return { text: out, spans }
+}
+
+// Resolves a chunk's `[start, end)` offsets into `text` (as returned by
+// extractSpeakableFromElement, BEFORE cleaning) into a DOM range spec, via
+// its `spans` provenance map. Returns `{ startNode, startOffset, endNode,
+// endOffset }` — duck-typed to `Range.setStart`/`setEnd`'s own `(container,
+// offset)` argument shape, so app.js's only remaining job is
+// `range.setStart(spec.startNode, spec.startOffset)` (same for end) and
+// nothing more. For a "node"-mode span this points at the whole node's
+// contents (offset 0 for the start edge, `node.childNodes.length` for the
+// end edge) — valid because `Range.setStart/setEnd` treats a non-Text
+// container's offset as a CHILD INDEX, so `(node, 0)` .. `(node,
+// childNodes.length)` spans everything inside it without needing
+// `parentNode`/`selectNode` at all, which keeps this resolvable from a
+// fake-DOM literal exposing only nodeType/nodeName/childNodes/textContent.
+// Returns null if `start`/`end` don't fall inside `spans` at all (an empty
+// or out-of-range chunk — should not happen for a chunk `splitIntoChunksWithOffsets`
+// produced from this same `text`, but callers should still treat null as
+// "no highlight" rather than assume it can't happen).
+export function resolveChunkRange(spans, start, end) {
+  if (end <= start) return null
+  const startAnchor = anchorAt(spans, start, "start")
+  const endAnchor = anchorAt(spans, end - 1, "end")
+  if (!startAnchor || !endAnchor) return null
+  return {
+    startNode: startAnchor.node, startOffset: startAnchor.offset,
+    endNode: endAnchor.node, endOffset: endAnchor.offset,
+  }
+}
+
+function anchorAt(spans, pos, edge) {
+  const span = spans.find((s) => s.start <= pos && pos < s.end)
+  if (!span) return null
+  if (span.mode === "text") {
+    const within = pos - span.start
+    return { node: span.node, offset: edge === "start" ? within : within + 1 }
+  }
+  return { node: span.node, offset: edge === "start" ? 0 : (span.node.childNodes ? span.node.childNodes.length : 0) }
+}
+
+// Same sentence-then-80-char-merge rule as before, but chunking the RAW
+// (pre-clean) text and returning `[{ text, start, end }]` — offsets into
+// that raw text — instead of bare cleaned strings, so each chunk can be
+// resolved to a DOM range via resolveChunkRange before it's cleaned. Chunk
+// boundaries only ever land at a SENTENCE_BOUNDARY match, so a term/path/
+// hash token (never itself a sentence boundary) can never straddle two
+// chunks — cleaning each chunk independently afterwards is equivalent to
+// cleaning the whole text first and then splitting it, MODULO the merge
+// threshold tripping at a different sentence when a cleaning rule changes a
+// preceding sentence's length (e.g. a path collapses to just its filename).
+// See tts_text.check.mjs's raw-vs-cleaned parity check for how much that
+// matters in practice on a realistic sample.
+const CHUNK_MIN_CHARS = 80
+
+export function splitIntoChunksWithOffsets(text) {
+  const scan = new RegExp(SENTENCE_BOUNDARY.source, SENTENCE_BOUNDARY.flags.replace("g", "") + "g")
+  const sentences = []
+  let start = 0
+  let m
+  while ((m = scan.exec(text)) !== null) {
+    const cut = m.index + m[0].length
+    sentences.push({ start, end: cut })
+    start = cut
+    if (m[0].length === 0) scan.lastIndex++
+  }
+  sentences.push({ start, end: text.length })
+
+  const chunks = []
+  const flush = (s, e) => {
+    const c = trimSpan(text, s, e)
+    if (c) chunks.push(c)
+  }
+
+  let bufStart = null
+  let bufEnd = null
+  for (const sentence of sentences) {
+    if (sentence.end <= sentence.start) continue
+    if (bufStart === null) bufStart = sentence.start
+    bufEnd = sentence.end
+    if (bufEnd - bufStart >= CHUNK_MIN_CHARS) {
+      flush(bufStart, bufEnd)
+      bufStart = null
+      bufEnd = null
+    }
+  }
+  if (bufStart !== null) {
+    if (chunks.length > 0 && bufEnd - bufStart < CHUNK_MIN_CHARS) {
+      const prev = chunks.pop()
+      flush(prev.start, bufEnd)
+    } else {
+      flush(bufStart, bufEnd)
+    }
+  }
+  return chunks
+}
+
+// Trims a [start, end) span inward to exclude leading/trailing whitespace —
+// trimming the RANGE rather than the string keeps the returned offsets valid
+// positions in the original `text`. Returns null if nothing but whitespace
+// remains (mirrors the old `if (buffer.trim())` guard).
+function trimSpan(text, start, end) {
+  while (start < end && /\s/.test(text[start])) start++
+  while (end > start && /\s/.test(text[end - 1])) end--
+  if (start >= end) return null
+  return { text: text.slice(start, end), start, end }
 }
 
 export function cleanTextForTTS(text) {

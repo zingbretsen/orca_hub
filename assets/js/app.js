@@ -21,8 +21,10 @@
 import "phoenix_html"
 import { TerminalHook } from "./terminal_hook"
 import { VoiceHook } from "./voice/voice_hook"
-import { createTtsStreamAccumulator, toolAnnouncement, SENTENCE_BOUNDARY } from "./tts_stream"
-import { cleanTextForTTS, extractSpeakableFromElement } from "./tts_text"
+import { createTtsStreamAccumulator, toolAnnouncement } from "./tts_stream"
+import {
+  cleanTextForTTS, extractSpeakableFromElement, splitIntoChunksWithOffsets, resolveChunkRange, BLOCK_TAGS,
+} from "./tts_text"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
@@ -130,6 +132,13 @@ const TTS_REKEY_SETTLE_MS = 5000
 const TTS_MAX_ATTEMPTS = 3
 const TTS_RETRY_BASE_MS = 400
 
+// The chunk-currently-being-read highlight (voice_mode_spec.md's read-aloud
+// UX request). Only the persisted-message player has stable DOM positions
+// to highlight — see ttsHighlightChunk's header comment for why the
+// streaming path is deliberately left out.
+const TTS_HIGHLIGHT_NAME = "tts-reading"
+const TTS_HIGHLIGHT_FALLBACK_CLASS = "tts-reading-fallback"
+
 const TTS_ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor"><path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z"/></svg>`
 const TTS_ICON_PAUSE = `<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor"><path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zM12.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75a.75.75 0 00-.75-.75h-1.5z"/></svg>`
 
@@ -138,6 +147,13 @@ const TTSMethods = {
   ttsMountShared() {
     this.audio = null
     this.chunks = []
+    // Parallel to `chunks`, same length and index — the resolved DOM range
+    // spec for each chunk's highlight, or null where none could be resolved.
+    // Left SHORTER than `chunks` (or entries left undefined) for anything
+    // enqueued outside ttsStart, e.g. the streaming producer's plain-string
+    // chunks — ttsHighlightChunk treats a missing entry as "no highlight"
+    // rather than assuming every index has one.
+    this.chunkRanges = []
     this.currentIndex = 0
     this.playing = false
     this.activeId = null
@@ -500,47 +516,25 @@ const TTSMethods = {
     return headers
   },
 
-  // --- chunking / text extraction (unchanged from the per-message player) --
-  ttsSplitIntoChunks(text) {
-    // Split on sentence-ending punctuation followed by whitespace
-    const raw = text.split(SENTENCE_BOUNDARY)
-    const minChars = 80
-    const chunks = []
-    let buffer = ""
-
-    for (const sentence of raw) {
-      if (buffer) {
-        buffer += " " + sentence
-      } else {
-        buffer = sentence
-      }
-      if (buffer.length >= minChars) {
-        chunks.push(buffer.trim())
-        buffer = ""
-      }
-    }
-    if (buffer.trim()) {
-      // Merge remainder into last chunk if it's too short, otherwise add as new chunk
-      if (chunks.length > 0 && buffer.trim().length < minChars) {
-        chunks[chunks.length - 1] += " " + buffer.trim()
-      } else {
-        chunks.push(buffer.trim())
-      }
-    }
-    return chunks
-  },
-
+  // --- chunking / text extraction ---------------------------------------
+  // Chunking (splitIntoChunksWithOffsets, tts_text.js) happens BEFORE
+  // cleaning, not after — see that module's header comment for why: cleaning
+  // drops/rewrites/shortens text, so a chunk offset computed on cleaned text
+  // has no DOM position left to map back to for the read-aloud highlight.
+  // ttsExtractText therefore returns the RAW extraction, and ttsStart is
+  // where chunking, per-chunk cleaning and range resolution all happen.
   ttsExtractText(id) {
     // Locate the message's text bubble by id lookup — never by DOM
     // position (see TTSMethods' header comment / tts_rewrite_spec.md §5).
     // Walk the bubble with extractSpeakableFromElement rather than reading
     // `bubble.innerText` — a detached-clone `innerText` degrades to
     // `textContent` and silently drops line breaks, and only a real walk
-    // can drop `<pre>` (fenced code) subtrees and route `<code>` spans
-    // through speakCodeSpan (see tts_text.js's header comment).
+    // can drop `<pre>` (fenced code) subtrees, route `<code>` spans through
+    // speakCodeSpan, and produce the provenance map the highlight needs
+    // (see tts_text.js's header comment).
     const bubble = document.getElementById(`tts-text-${id}`)
-    if (!bubble) return ""
-    return this.ttsCleanText(extractSpeakableFromElement(bubble))
+    if (!bubble) return { text: "", spans: [] }
+    return extractSpeakableFromElement(bubble)
   },
 
   // Thin delegate to the pure, unit-tested normalizer in tts_text.js — kept
@@ -562,15 +556,34 @@ const TTSMethods = {
 
   // --- playback control (per-message state, keyed by this.activeId) ------
   ttsStart(id) {
-    const text = this.ttsExtractText(id)
+    const { text, spans } = this.ttsExtractText(id)
     if (!text) return
 
-    const chunks = this.ttsSplitIntoChunks(text)
+    const rawChunks = splitIntoChunksWithOffsets(text)
+    if (rawChunks.length === 0) return
+
+    // Clean each chunk on its way to synthesis (same order the streaming
+    // path has always used) and resolve its range for the highlight — kept
+    // as two PARALLEL arrays (chunks/chunkRanges), same index, rather than
+    // an array of pairs, so every existing `this.chunks[...]` site below
+    // (fetch/cache/prefetch, all keyed by index) is untouched. A chunk that
+    // cleans to nothing (defensive — no known rule deletes real content, but
+    // nothing guarantees one never will) is dropped from BOTH arrays
+    // together rather than sending an empty string to /api/tts.
+    const chunks = []
+    const chunkRanges = []
+    for (const rc of rawChunks) {
+      const cleaned = this.ttsCleanText(rc.text)
+      if (!cleaned) continue
+      chunks.push(cleaned)
+      chunkRanges.push(resolveChunkRange(spans, rc.start, rc.end))
+    }
     if (chunks.length === 0) return
 
     this.activeId = id
     this.activeNode = document.getElementById(`tts-footer-${id}`)
     this.chunks = chunks
+    this.chunkRanges = chunkRanges
     this.currentIndex = 0
     this.playing = true
     this.ttsEmitState()
@@ -583,6 +596,7 @@ const TTSMethods = {
     this.ttsEmitState()
     if (this.audio) this.audio.pause()
     this.ttsUpdateUI(this.activeId)
+    this.ttsClearHighlight()
   },
 
   ttsResumeOrStart(id) {
@@ -591,6 +605,7 @@ const TTSMethods = {
       this.ttsEmitState()
       if (this.audio) {
         this.audio.play()
+        this.ttsHighlightChunk(this.currentIndex)
       } else {
         this.ttsPlayCurrentChunk()
       }
@@ -608,6 +623,7 @@ const TTSMethods = {
   ttsStop() {
     this.playing = false
     this.ttsEmitState()
+    this.ttsClearHighlight()
     if (this.audio) {
       this.audio.pause()
       this.audio.src = ""
@@ -621,6 +637,7 @@ const TTSMethods = {
 
     const prevId = this.activeId
     this.chunks = []
+    this.chunkRanges = []
     this.currentIndex = 0
     this.activeId = null
     this.activeNode = null
@@ -751,6 +768,14 @@ const TTSMethods = {
     const id = this.activeId
     const index = this.currentIndex
 
+    // "Set on chunk start, replace on advance" — this is the single choke
+    // point every "now targeting chunk N" transition passes through (initial
+    // start, advance on `ended`, prev/next, retry-after-failure), so
+    // highlighting here covers all of them at once. A no-op for the
+    // streaming path (chunkRanges has no entry for those indices) and for
+    // any chunk whose range failed to resolve.
+    this.ttsHighlightChunk(index)
+
     try {
       const url = await this.ttsFetchAudio(index)
       // Stale by the time the fetch resolved (stopped, switched message, or
@@ -839,6 +864,63 @@ const TTSMethods = {
     const playBtn = footer.querySelector("[data-tts-action='toggle']")
     if (controls) controls.classList.add("hidden")
     if (playBtn) playBtn.innerHTML = TTS_ICON_PLAY
+  },
+
+  // --- read-aloud highlight (which chunk is currently being read) --------
+  // No highlighting on the streaming path: there is no stable persisted DOM
+  // while a message is still being written (the in-progress bubble is
+  // re-keyed at stream_stop — see AssistantStreamMethods' header comment),
+  // so a streaming chunk's `chunkRanges` entry is simply absent and
+  // ttsHighlightChunk below no-ops for it. Left for a future pass.
+  //
+  // Uses the CSS Custom Highlight API (no DOM mutation — nothing for a
+  // LiveView patch to clobber, no phx-update fight) with a fallback for
+  // browsers without it: the nearest block-level ancestor of the chunk's
+  // start gets a class instead. LOAD-BEARING invariant (see tts_text.js's
+  // empty-extraction invariant note for the sibling half of this): a
+  // highlight failure must never abort playback mid-flight, so every DOM
+  // API call that could plausibly throw (an unsupported/detached node, a
+  // Highlight constructor rejecting a malformed Range) is wrapped — the
+  // worst case is silently NO highlight, never a broken turn.
+  ttsHighlightChunk(index) {
+    this.ttsClearHighlight()
+    const spec = this.chunkRanges && this.chunkRanges[index]
+    if (!spec) return
+    try {
+      const range = document.createRange()
+      range.setStart(spec.startNode, spec.startOffset)
+      range.setEnd(spec.endNode, spec.endOffset)
+
+      if (typeof CSS !== "undefined" && CSS.highlights) {
+        CSS.highlights.set(TTS_HIGHLIGHT_NAME, new Highlight(range))
+        this._ttsHighlighted = true
+      } else {
+        let node = spec.startNode
+        while (node && node.nodeType !== Node.ELEMENT_NODE) node = node.parentNode
+        while (node && !BLOCK_TAGS.has(node.nodeName)) node = node.parentNode
+        if (node) {
+          node.classList.add(TTS_HIGHLIGHT_FALLBACK_CLASS)
+          this._ttsHighlightFallbackNode = node
+        }
+      }
+    } catch (e) {
+      // A highlight failure is never a reason to stop or skip a chunk —
+      // see this method's header comment. Leave state as "no highlight".
+      console.error("TTS highlight error:", e)
+    }
+  },
+
+  ttsClearHighlight() {
+    if (this._ttsHighlighted) {
+      try {
+        if (typeof CSS !== "undefined" && CSS.highlights) CSS.highlights.delete(TTS_HIGHLIGHT_NAME)
+      } catch (e) { /* nothing to clean up if this throws either */ }
+      this._ttsHighlighted = false
+    }
+    if (this._ttsHighlightFallbackNode) {
+      this._ttsHighlightFallbackNode.classList.remove(TTS_HIGHLIGHT_FALLBACK_CLASS)
+      this._ttsHighlightFallbackNode = null
+    }
   }
 }
 

@@ -259,3 +259,20 @@
   border: 0;
   border-radius: 0;
 }
+
+/* TTS "currently being read aloud" highlight (app.js's ttsHighlightChunk).
+   A low-opacity mix against --color-primary rather than a hard-coded
+   colour, so it stays subtle and correct in both themes automatically —
+   --color-primary already differs between "dark" and "light" above. The
+   CSS Custom Highlight API path (`::highlight(tts-reading)`, set via
+   `CSS.highlights.set(...)` in JS — no DOM mutation, so nothing for a
+   LiveView patch to clobber) is primary; `.tts-reading-fallback` backs the
+   browsers without it (Firefox, as of this writing), applied to the
+   nearest block-level ancestor of the chunk instead of a precise range. */
+::highlight(tts-reading) {
+  background-color: color-mix(in oklch, var(--color-primary) 25%, transparent);
+}
+.tts-reading-fallback {
+  background-color: color-mix(in oklch, var(--color-primary) 15%, transparent);
+  border-radius: 0.25rem;
+}

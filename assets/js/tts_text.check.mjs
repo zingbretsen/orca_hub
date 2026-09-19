@@ -7,7 +7,7 @@
 // rules in tts_text.js.
 import {
   cleanTextForTTS, HASH_SPOKEN_CHARS, EXTENSION_MAP, TERM_MAP,
-  speakCodeSpan, extractSpeakableFromElement,
+  speakCodeSpan, extractSpeakableFromElement, splitIntoChunksWithOffsets, resolveChunkRange,
 } from "./tts_text.js"
 
 let pass = 0, fail = 0
@@ -140,16 +140,19 @@ eq("inline code containing a path still resolves through the path rule afterward
 // on every element (not just text nodes) wherever the walker reads it.
 const textNode = (s) => ({ nodeType: 3, textContent: s })
 const elNode = (name, children, textContent) => ({ nodeType: 1, nodeName: name, childNodes: children, textContent })
+// extractSpeakableFromElement returns { text, spans } (provenance for the
+// highlight feature) — most of section F only cares about the text.
+const extractText = (el) => extractSpeakableFromElement(el).text
 
 eq("extractSpeakableFromElement: a <pre> subtree vanishes silently, no announcement",
-   cleanTextForTTS(extractSpeakableFromElement(elNode("DIV", [
+   cleanTextForTTS(extractText(elNode("DIV", [
      textNode("before "),
      elNode("PRE", [elNode("CODE", [textNode("secret_code_here")], "secret_code_here")], "secret_code_here"),
      textNode(" after"),
    ]))),
    "before after.")
 eq("extractSpeakableFromElement: an inline <code> span is routed through speakCodeSpan",
-   cleanTextForTTS(extractSpeakableFromElement(elNode("DIV", [
+   cleanTextForTTS(extractText(elNode("DIV", [
      textNode("Rename "),
      elNode("CODE", [textNode("SessionRunner")], "SessionRunner"),
      textNode(" please"),
@@ -159,11 +162,128 @@ eq("INVARIANT: a message that is entirely a fenced code block extracts to the em
    "not a stray \".\" — ttsStart's `if (!text) return` gate depends on this to stay a no-op " +
    "(no playback, no ttsEmitState, no half-started player) instead of emitting {playing: true} " +
    "with nothing to guarantee a matching {playing: false} (see tts_text.js's header comment)",
-   cleanTextForTTS(extractSpeakableFromElement(elNode("DIV", [
+   cleanTextForTTS(extractText(elNode("DIV", [
      elNode("PRE", [elNode("CODE", [textNode("defmodule Foo do\n  :ok\nend")], "defmodule Foo do\n  :ok\nend")],
        "defmodule Foo do\n  :ok\nend"),
    ]))),
    "")
+
+// -- G. splitIntoChunksWithOffsets / resolveChunkRange (highlight feature) --
+
+{
+  const bubble = elNode("DIV", [
+    textNode("Run "),
+    elNode("CODE", [textNode("mix test")], "mix test"),
+    textNode(" then check the file. It matters a lot for correctness across the whole test suite, honestly."),
+  ])
+  const { text, spans } = extractSpeakableFromElement(bubble)
+  const chunks = splitIntoChunksWithOffsets(text)
+  eq("splitIntoChunksWithOffsets: one chunk for a short message (under the 80-char threshold)",
+     chunks.length, 1)
+  eq("splitIntoChunksWithOffsets: chunk text matches the raw slice at its own offsets",
+     chunks[0].text, text.slice(chunks[0].start, chunks[0].end))
+  const range = resolveChunkRange(spans, chunks[0].start, chunks[0].end)
+  eq("resolveChunkRange: a chunk starting inside plain text resolves to that text node",
+     range.startNode.nodeType, 3)
+  eq("resolveChunkRange: start offset 0 for a chunk starting at the very first character",
+     range.startOffset, 0)
+}
+
+{
+  // A chunk that starts AND ends inside the same <code> span: coarse "node"
+  // mode selects the whole node's contents via (node, 0)..(node,
+  // childNodes.length) rather than a character offset.
+  const bubble = elNode("DIV", [elNode("CODE", [textNode("SessionRunner")], "SessionRunner")])
+  const { text, spans } = extractSpeakableFromElement(bubble)
+  const chunks = splitIntoChunksWithOffsets(text)
+  const range = resolveChunkRange(spans, chunks[0].start, chunks[0].end)
+  eq("resolveChunkRange: a code-only chunk resolves to the <code> node itself",
+     range.startNode.nodeName, "CODE")
+  eq("resolveChunkRange: a 'node'-mode start offset is 0 (before all children)",
+     range.startOffset, 0)
+  eq("resolveChunkRange: a 'node'-mode end offset is childNodes.length (after all children)",
+     range.endOffset, range.endNode.childNodes.length)
+}
+
+{
+  // Two sentences, each independently over the 80-char threshold, must
+  // become two chunks with two DIFFERENT, correctly-ordered ranges.
+  const bubble = elNode("DIV", [
+    textNode("This is the first sentence and it is long enough on its own to trip the eighty character threshold rule."),
+    textNode(" This is the second sentence, also long enough by itself to trip the same eighty character threshold rule again."),
+  ])
+  const { text, spans } = extractSpeakableFromElement(bubble)
+  const chunks = splitIntoChunksWithOffsets(text)
+  eq("splitIntoChunksWithOffsets: two long sentences become two chunks", chunks.length, 2)
+  const r0 = resolveChunkRange(spans, chunks[0].start, chunks[0].end)
+  const r1 = resolveChunkRange(spans, chunks[1].start, chunks[1].end)
+  eq("resolveChunkRange: the second chunk's range starts after the first chunk's",
+     r1.startOffset > r0.startOffset, true)
+}
+
+eq("resolveChunkRange: an empty/inverted range resolves to null rather than throwing",
+   resolveChunkRange([{ start: 0, end: 5, node: textNode("hello"), mode: "text" }], 3, 3),
+   null)
+
+// splitIntoChunksWithOffsets chunks the RAW text and cleanTextForTTS is run
+// per-chunk afterwards (see tts_text.js's header comment on why) — the OLD
+// architecture cleaned the WHOLE text first and split the cleaned text.
+// These two orders are not guaranteed identical: they can diverge whenever a
+// cleaning rule changes a sentence's length enough to move which side of the
+// 80-char threshold it lands on. Replicated inline (not imported) since
+// production no longer has the old code path to import.
+function oldCleanThenSplit(text) {
+  const raw = cleanTextForTTS(text).split(/(?<=[.!?])\s+/)
+  const minChars = 80
+  const chunks = []
+  let buffer = ""
+  for (const sentence of raw) {
+    buffer = buffer ? buffer + " " + sentence : sentence
+    if (buffer.length >= minChars) { chunks.push(buffer.trim()); buffer = "" }
+  }
+  if (buffer.trim()) {
+    if (chunks.length > 0 && buffer.trim().length < minChars) chunks[chunks.length - 1] += " " + buffer.trim()
+    else chunks.push(buffer.trim())
+  }
+  return chunks
+}
+function newSplitThenClean(text) {
+  return splitIntoChunksWithOffsets(text).map((c) => cleanTextForTTS(c.text))
+}
+
+{
+  // A realistic sample: several sentences mixing prose, a relative path, a
+  // git hash, and a unit — exactly the content this feature exists to
+  // highlight correctly. On this sample the two orderings AGREE.
+  const sample = "I looked into the bug you reported and found the root cause. It was in " +
+    "lib/orca_hub/session_runner.ex, right where the timeout is computed. The fix landed in " +
+    "commit 4dc631d, which also touched three other files across the module. After that change " +
+    "the p50 latency dropped from 842ms to about 210ms in local testing. I also updated " +
+    "priv/static/assets/js/app.js to match, since the old bundle still referenced the removed " +
+    "export. Let me know if you see any regressions once this deploys, and I will keep an eye " +
+    "on the dashboards for the rest of the day."
+  eq("PARITY: raw-then-cleaned chunking matches cleaned-then-chunked on a realistic mixed sample",
+     JSON.stringify(newSplitThenClean(sample)), JSON.stringify(oldCleanThenSplit(sample)))
+}
+
+{
+  // KNOWN, REPORTED DIVERGENCE: a sentence containing a long path that
+  // collapses drastically once cleaned (here, an absolute path down to just
+  // its filename) can independently cross the 80-char threshold in its RAW
+  // form and flush as its own chunk, even though the CLEANED text would
+  // have stayed short enough to merge with the next sentence. Pinned here
+  // as a known, accepted difference from chunking BEFORE cleaning — not a
+  // bug to fix, since chunking after cleaning has no DOM positions left to
+  // highlight (see tts_text.js's header comment).
+  const sample = "See /some/very/long/absolute/path/to/a/deeply/nested/file/that/is/extremely/verbose/" +
+    "for/testing/purposes/only.ex for details. This second sentence is deliberately plain prose " +
+    "with no shrinkage at all from cleaning, long on its own."
+  eq("DIVERGENCE (known, reported): old cleaned-then-split produces ONE merged chunk here",
+     oldCleanThenSplit(sample).length, 1)
+  eq("DIVERGENCE (known, reported): new raw-then-split produces TWO chunks here " +
+     "(the raw path sentence alone already crosses 80 chars, before cleaning shrinks it)",
+     newSplitThenClean(sample).length, 2)
+}
 
 eq("EXTENSION_MAP has exactly the spec's list",
    Object.keys(EXTENSION_MAP).sort().join(","),
