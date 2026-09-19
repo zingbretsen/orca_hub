@@ -517,8 +517,10 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   # `paired_with_failed_edit` was never once true across 229 production
   # alerts, so every alert ever delivered was labelled "lower confidence"
   # against a high-confidence branch that cannot fire. The flag is being
-  # removed from `FileSurgery` altogether — a field with only one reachable
-  # value implies the other is reachable. The pairing CONCEPT has graduated
+  # retired from `FileSurgery` — a field with only one reachable value
+  # implies the other is reachable. Nothing here reads it either way: the
+  # match below binds `path`/`command`/`kind` only. The pairing CONCEPT has
+  # graduated
   # into `OrcaHub.Sessions.EditFailure` (ORCAHUB3-63 §1, e144743), which
   # detects "this worker cannot land an edit" as a signal in its own right
   # rather than as a confidence modifier bolted onto a different one. The

@@ -51,8 +51,8 @@ defmodule OrcaHub.Sessions.SurgeryAlertPolicy do
       is carried for mining only and is **never** a gate here;
     - D3 (require the write to be paired with a failed editor call)
       suppresses 100% — it is an off switch, not a discriminator. Pairing was
-      never once true in production across 229 alerts, which is why
-      `FileSurgery` no longer carries the flag at all. The pairing CONCEPT
+      never once true in production across 229 alerts, so it is being retired
+      from `FileSurgery` rather than kept as a dead field. The pairing CONCEPT
       graduated into `OrcaHub.Sessions.EditFailure` (ORCAHUB3-63 §1) instead:
       "this worker cannot land an edit" is a signal in its own right, and in
       this corpus it is DISJOINT from "this worker writes files from the
