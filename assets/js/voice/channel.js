@@ -59,11 +59,27 @@ export class VoiceChannel {
     // the same contract is the `ui_focus` push (see VoiceHook._syncUiFocus).
     this.channel.on("ui_action", (m) => this.handlers.onUiAction && this.handlers.onUiAction(m))
 
+    // The shared socket reconnects on its own (a phone unlocking), and Phoenix
+    // then REJOINS this channel without the hook running `join()` again. The
+    // server side is a brand new `VoiceChannel` with a brand new
+    // `Voice.Session` — `composer_present: false`, focus "composer", an empty
+    // draft — so everything `_joinChannel` sends after a join has to be sent
+    // again or a spoken send silently takes the `send_direct` path and drops
+    // staged uploads (spec §8.2). `receive("ok")` hooks re-fire on every
+    // successful rejoin, which is what makes this reachable at all.
+    this.channel.onError(() => this.handlers.onDisconnect && this.handlers.onDisconnect())
+
     return new Promise((resolve, reject) => {
+      let joins = 0
       this.channel
         .join()
         .receive("ok", (resp) => {
+          joins++
           if (resp && resp.state && this.handlers.onState) this.handlers.onState(resp.state)
+          if (joins > 1) {
+            this.handlers.onRejoin && this.handlers.onRejoin(resp)
+            return
+          }
           resolve(resp)
         })
         .receive("error", (resp) => {

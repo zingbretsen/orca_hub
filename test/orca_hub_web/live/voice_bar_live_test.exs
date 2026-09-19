@@ -187,6 +187,47 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
              "the selected session must appear as an <option> or the select would " <>
                "silently show a DIFFERENT session as selected"
     end
+
+    # ORCAHUB3-91. The hook restores its target after a reconnect re-mounts the
+    # bar (see the `updated()` restore in voice_hook.js), and the session it
+    # restores may no longer be resolvable — the phone slept for hours, the
+    # session was deleted, the hub it lived on is gone. `ensure_listed/2` used
+    # to give up there, leaving a <select> in which NO option is selected: the
+    # browser then displays the FIRST option, so the bar claims to be pointed
+    # at a session it is not pointed at. That is the server-side half of the
+    # reported "the bar was attached to a different (earlier) session".
+    test "ORCAHUB3-91: an unresolvable target never shows a DIFFERENT session as selected",
+         %{conn: conn} do
+      _decoy = new_session(%{title: "definitely not the target"})
+      gone = Ecto.UUID.generate()
+
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+      render_hook(bar, "voice-on", %{"on" => true})
+
+      html = render_hook(bar, "voice-target", %{"session_id" => gone})
+
+      assert selected_value(html) == gone,
+             "the picker must show the TARGET as its value (or say it is unavailable); " <>
+               "with nothing selected the browser silently displays the first option"
+    end
+
+    # What the browser would report as the <select>'s value: the first option
+    # carrying `selected`, else the first option. Anything else is the picker
+    # disagreeing with `data-target-session-id`.
+    defp selected_value(html) do
+      options =
+        html
+        |> Floki.parse_document!()
+        |> Floki.find("form[phx-change='set_target'] option")
+
+      selected = Enum.find(options, &(Floki.attribute(&1, "selected") != []))
+
+      case selected || List.first(options) do
+        nil -> nil
+        option -> option |> Floki.attribute("value") |> List.first()
+      end
+    end
   end
 
   describe "the help affordance (§8.3.10)" do

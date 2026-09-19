@@ -35,11 +35,13 @@ export function secureContextProblem() {
 }
 
 export class Capture {
-  constructor({ prerollMs = 500, onFrame, onProcessorError } = {}) {
+  constructor({ prerollMs = 500, onFrame, onProcessorError, onLiveness } = {}) {
     this.prerollMs = prerollMs
     this.onFrame = onFrame || (() => {})
     this.onProcessorError = onProcessorError || (() => {})
+    this.onLiveness = onLiveness || (() => {})
     this.stream = null
+    this.track = null
     this.ctx = null
     this.node = null
     this.source = null
@@ -49,6 +51,7 @@ export class Capture {
     this.framesSeen = 0
     this._pending = new Map()
     this._seq = 0
+    this._closing = false
   }
 
   /** Opens the mic and the AudioContext. Does NOT start the worklet — call
@@ -59,17 +62,48 @@ export class Capture {
 
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS })
     const track = this.stream.getAudioTracks()[0]
+    this.track = track || null
     this.trackSettings = track && track.getSettings ? track.getSettings() : {}
+    this._watchTrack(track)
 
     // Never force a sampleRate: the context negotiates its own and the browser
     // resamples the track into it. The worklet reads whatever it gets.
     this.ctx = new AudioContext()
+    this.ctx.onstatechange = () =>
+      this._liveness(`audio capture ${this.ctx ? this.ctx.state : "closed"}`)
     try {
       await this.ctx.resume()
     } catch (_e) {
       /* resume() can reject before a gesture; the caller checks ctx.state */
     }
     return this.ctx.state
+  }
+
+  /* ORCAHUB3-91: the OS takes the microphone away WITHOUT an error. A phone
+   * locking its screen suspends the AudioContext and can end or mute the
+   * track; nothing throws, `getUserMedia` stays resolved, the promise that
+   * `start()` returned stays resolved, and the worklet simply stops being
+   * pulled. So liveness has to be OBSERVED — never inferred from the fact
+   * that `start()` once succeeded. */
+  _watchTrack(track) {
+    if (!track) return
+    track.onended = () => this._liveness("the microphone stopped")
+    track.onmute = () => this._liveness("the microphone was muted by the system")
+    track.onunmute = () => this._liveness("the microphone came back")
+  }
+
+  _liveness(reason) {
+    if (this._closing) return
+    this.onLiveness(reason, this.live())
+  }
+
+  /** Is audio ACTUALLY flowing right now? Three independent ways to lose it —
+   * a suspended/closed context, a track the OS ended, a track the OS muted —
+   * and the pipeline survives none of them. */
+  live() {
+    if (this.suspended()) return false
+    if (!this.track) return false
+    return this.track.readyState === "live" && !this.track.muted
   }
 
   suspended() {
@@ -168,6 +202,16 @@ export class Capture {
   }
 
   async stop() {
+    // Tearing down fires `statechange` (and can fire `ended`); those are our
+    // own doing, not the OS taking the mic away, so they must not reach the
+    // liveness callback and trigger a repair of something we are closing.
+    this._closing = true
+    if (this.ctx) this.ctx.onstatechange = null
+    if (this.track) {
+      this.track.onended = null
+      this.track.onmute = null
+      this.track.onunmute = null
+    }
     try {
       this.node && (this.node.port.onmessage = null)
       this.node && this.node.disconnect()
@@ -191,6 +235,7 @@ export class Capture {
     this.source = null
     this.sink = null
     this.ctx = null
+    this.track = null
     this._pending.clear()
   }
 }

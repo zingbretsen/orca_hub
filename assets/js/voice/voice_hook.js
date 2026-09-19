@@ -62,6 +62,22 @@
  *    — a HIDDEN `<.link navigate>` in VoiceBarLive, because
  *    `window.location` would reload the document and take the mic, the
  *    AudioContext and the channel with it (§8.2).
+ *
+ * 7. LIFECYCLE, and why none of the above is enough on a phone
+ *    (ORCAHUB3-91). Backgrounding a page takes the microphone AND the
+ *    LiveView away, and neither loss reports itself:
+ *
+ *    - The OS suspends the AudioContext and can end or mute the track. No
+ *      error is thrown, so `armed` alone is a LIE — everything the user sees
+ *      is rendered from `_micLive()`, `Capture` reports the transitions, and
+ *      `visibilitychange` repairs the pipeline in place (resume, else re-arm
+ *      the stream) without touching the channel, the draft or the target.
+ *    - The live socket drops (app.js force-reconnects after >10 s hidden),
+ *      so `VoiceBarLive` RE-MOUNTS with no target and voice off, while this
+ *      hook keeps both. `_restoreAfterRemount()` re-asserts them; read the
+ *      comment there for why that cannot fight the target picker.
+ *    - The voice channel rejoins by itself against a brand new server-side
+ *      session, so `_onChannelRejoin()` re-sends what `_joinChannel` sends.
  */
 
 import { Capture, secureContextProblem, FRAME_SAMPLES } from "./capture"
@@ -156,6 +172,10 @@ export const VoiceHook = {
     // §8.3.5: the last {focus, candidates} we told the server about, as JSON,
     // so an unchanged recompute costs one string compare and no push.
     this._lastUi = null
+    // ORCAHUB3-91: one mic-button press is spent on repairing a stopped
+    // microphone; the next one turns voice off as usual. Cleared whenever the
+    // microphone is actually capturing again.
+    this._repairAttempted = false
 
     this._bindDom()
     this._bindWindow()
@@ -169,7 +189,9 @@ export const VoiceHook = {
    * the strip may have just been inserted. */
   updated() {
     const next = this.el.dataset.targetSessionId || null
-    if (next !== this.target) {
+    if (next === null && this.target !== null) {
+      this._restoreAfterRemount()
+    } else if (next !== this.target) {
       const carried = this._currentDraftText()
       this.target = next
       this._retarget(carried)
@@ -179,9 +201,19 @@ export const VoiceHook = {
     this._renderMic()
   },
 
+  /** The bar's LiveView rejoined after a dropped socket (ORCAHUB3-91).
+   *
+   * Belt and braces for `updated()`'s restore: `reconnected()` fires at the
+   * end of every rejoin regardless of what the patch happened to touch, and
+   * `_restoreAfterRemount` is idempotent, so calling both is free. */
+  reconnected() {
+    this._restoreAfterRemount()
+  },
+
   /** Sticky: this only fires on a full page reload, never on navigation. */
   destroyed() {
     this._unbindWindow()
+    this.el.removeEventListener("click", this._onClick)
     if (this._bodyObserver) {
       this._bodyObserver.disconnect()
       this._bodyObserver = null
@@ -196,6 +228,17 @@ export const VoiceHook = {
   /** The mic button: the user gesture that satisfies the autoplay policy. */
   async _toggle() {
     if (this.active) {
+      // ORCAHUB3-91: voice is on but the microphone has stopped (the screen
+      // was off), and the strip the user is reading says "tap the mic to
+      // resume" — so REPAIR on this press instead of switching voice off.
+      // Turning it off and back on is exactly the two-press dance the old
+      // `armed` latch forced. One attempt only: if the repair did not take,
+      // the next press does the ordinary thing and turns voice off, so a mic
+      // that is permanently gone can never trap the button.
+      if (!this._micLive() && !this._repairAttempted) {
+        this._repairAttempted = true
+        return this._reconcileMic()
+      }
       this._teardown()
       this.active = false
       this.pushEvent("voice-on", { on: false })
@@ -248,6 +291,10 @@ export const VoiceHook = {
       this.channel = null
     }
     this.armed = false
+    // A teardown is the END of voice mode, so say so here rather than relying
+    // on every caller to remember: a stale `active` left `_retarget` and the
+    // liveness repair running against a pipeline that no longer exists.
+    this.active = false
     this.state = null
     this._renderMic()
   },
@@ -283,6 +330,8 @@ export const VoiceHook = {
       onSegmentResult: (r) => this._onSegmentResult(r),
       onSendRequest: (m) => this._onSendRequest(m),
       onUiAction: (m) => this._onUiAction(m),
+      onRejoin: () => this._onChannelRejoin(),
+      onDisconnect: () => this._onChannelDisconnect(),
       onSent: () => {
         this._setArming(null)
         // The draft has been delivered and the server cleared its copy;
@@ -310,6 +359,28 @@ export const VoiceHook = {
     return true
   },
 
+  /** Phoenix rejoined `voice:<target>` by itself after the shared socket came
+   * back (ORCAHUB3-91). The server state is new; re-send the per-channel facts
+   * `_joinChannel` normally sends, or the server keeps believing the page has
+   * no composer and knows nothing about what is selectable on screen. */
+  _onChannelRejoin() {
+    this.metrics.joins++
+    this._hideError()
+    this._reportComposer(true)
+    this._syncUiFocus(true)
+    const el = this._draftEl()
+    if (el && el.value !== "") this._pushDraftEdit(el.value)
+    this._renderMic()
+  },
+
+  /** The channel dropped. Segments are discarded while it is down
+   * (`_onSpeechEnd` refuses to push on a channel that is not joined), so say
+   * so instead of looking like a working mic that transcribes nothing. */
+  _onChannelDisconnect() {
+    if (!this.active) return
+    this._setStatusText("voice connection lost — reconnecting…")
+  },
+
   /** Leave the old channel and join the new one. The mic, the AudioContext
    * and the VAD are NOT torn down (C4) — retargeting is routine. */
   async _retarget(carried) {
@@ -328,7 +399,12 @@ export const VoiceHook = {
   // --------------------------------------------------------------------- arm
 
   async _arm() {
-    if (this.armed || this._arming) return
+    // `armed` alone is NOT a reason to refuse (ORCAHUB3-91): it used to be a
+    // latch that only `_teardown()` cleared, so once the OS had taken the
+    // microphone the only way back was voice-off-then-on — the two presses in
+    // the report. Refuse only while genuinely capturing, so re-arming repairs.
+    if (this._arming) return
+    if (this.armed && this.capture && this.capture.live()) return
     this._arming = true
     try {
       if (!this.capture) {
@@ -339,6 +415,7 @@ export const VoiceHook = {
             this.metrics.processorError = msg
             this._showError(msg)
           },
+          onLiveness: (reason, live) => this._onLiveness(reason, live),
         })
         await this.capture.open()
       }
@@ -383,6 +460,87 @@ export const VoiceHook = {
     } finally {
       this._arming = false
     }
+  },
+
+  // ------------------------------------------------------- liveness (3-91)
+
+  /** Is the microphone ACTUALLY capturing? `armed` says "we finished arming
+   * once"; this says "audio is flowing right now". Everything the user sees
+   * is rendered from THIS, so the bar can no longer claim "mic: listening"
+   * while zero frames arrive. */
+  _micLive() {
+    const live = !!(this.armed && this.capture && this.capture.live())
+    if (live) this._repairAttempted = false
+    return live
+  },
+
+  /** `Capture` observed the microphone go away (or come back). */
+  _onLiveness(reason, live) {
+    this._renderMic()
+    if (!this.active) return
+    if (live) {
+      this._renderStatus()
+      return
+    }
+    this._setStatusText(`${reason} — resuming…`)
+    // A HIDDEN page is expected to lose the mic; that is the browser doing its
+    // job, and re-acquiring a stream there can hang. The visibility handler
+    // repairs it on the way back.
+    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+      this._scheduleReconcile()
+    }
+  },
+
+  /** Coalesce: a screen unlock can fire `statechange` and `unmute` together. */
+  _scheduleReconcile() {
+    if (this._timers.reconcile) return
+    this._timers.reconcile = setTimeout(() => {
+      this._timers.reconcile = null
+      this._reconcileMic()
+    }, 250)
+  },
+
+  /** Put the capture pipeline back into the state the UI claims it is in.
+   *
+   * Cheapest repair first: a merely SUSPENDED context keeps the worklet, the
+   * ring buffer and the VAD session, so `resume()` costs nothing. A track the
+   * OS ended cannot be revived, so the stream is rebuilt — but the channel,
+   * the draft and the target are untouched: this is a re-arm, not a teardown.
+   */
+  async _reconcileMic() {
+    if (!this.active || this._arming) return
+    if (!this.capture) return this._arm()
+    if (this.capture.live()) {
+      this._renderMic()
+      return
+    }
+
+    if (this.capture.ctx && this.capture.ctx.state === "suspended") {
+      try {
+        await this.capture.resume()
+      } catch (_e) {
+        /* needs a gesture — the mic button and the "Start listening" fallback
+           are both still there, and `_arm` now repairs rather than refuse */
+      }
+    }
+
+    if (this.capture.live()) {
+      this._hide(this._el('[data-voice-action="start"]'))
+      this._renderStatus()
+      this._renderMic()
+      return
+    }
+
+    this.armed = false
+    if (this.vad) {
+      this.vad.destroy()
+      this.vad = null
+    }
+    const dead = this.capture
+    this.capture = null
+    this._renderMic()
+    await dead.stop()
+    await this._arm()
   },
 
   // ------------------------------------------------------------------- audio
@@ -786,6 +944,57 @@ export const VoiceHook = {
     return (this.state && this.state.draft) || ""
   },
 
+  /** What the SERVER currently believes about voice mode, read back out of
+   * its own render (`aria-pressed` on the mic button). */
+  _serverVoiceOn() {
+    const btn = this._el('[data-voice-action="toggle"]')
+    return !!btn && btn.getAttribute("aria-pressed") === "true"
+  },
+
+  /** ORCAHUB3-91 — re-assert our state after `VoiceBarLive` re-mounted.
+   *
+   * A dropped LiveView socket (a phone unlocking does it every time: app.js
+   * force-reconnects after >10 s hidden) re-runs `VoiceBarLive.mount/3`, which
+   * starts from `target_session_id: nil` and `voice_on: false`. Sticky
+   * survives NAVIGATION, not socket loss. The hook is the only place the
+   * target still exists at that moment, and neither path that could announce
+   * it fires: `_syncPage`'s auto-follow is gated on the PAGE's session having
+   * changed (it has not), and the session page's own `voice-target` push is
+   * gated on it differing from `this.target` (it does not). So without this
+   * the two halves silently disagree until a full page reload.
+   *
+   * An absent `data-target-session-id` after we held one is unambiguous:
+   * `VoiceBarLive` has NO path that clears a target once set — both
+   * `voice-target` and `set_target` require a binary id and no-op otherwise
+   * (voice_bar_live.ex) — so the only way the attribute can vanish is a fresh
+   * mount.
+   *
+   * Why this cannot re-open the fight the change-only rule exists to prevent
+   * (spec §8.2: "an unconditional sync fights the picker"): that bug was the
+   * PAGE's session id being pushed on every sync, which snapped the target
+   * back to the page on screen the instant the user picked a different session
+   * in the picker. This pushes `this.target` — the value the picker itself
+   * last produced, since a manual pick travels server -> `data-target-session-
+   * id` -> `updated()` -> `this.target`. Restoring it re-states the user's own
+   * choice; it can never out-vote it. `_syncPage`'s gate is untouched.
+   *
+   * Idempotent on purpose: once the server answers, the DOM matches and a
+   * second call pushes nothing, so `updated()` and `reconnected()` can both
+   * call it during the same rejoin.
+   */
+  _restoreAfterRemount() {
+    if (this.target && !(this.el.dataset.targetSessionId || null)) {
+      this.pushEvent("voice-target", { session_id: this.target })
+    }
+    // The strip, the picker, the §8.3.9 nav anchors and the error box all hang
+    // off `voice_on`, so a bar that thinks voice is off while the mic is still
+    // capturing is not merely cosmetic: a spoken "orca sessions" finds no
+    // `data-voice-nav` anchor and silently does nothing.
+    if (this.active !== this._serverVoiceOn()) {
+      this.pushEvent("voice-on", { on: this.active })
+    }
+  },
+
   /** Re-read the page: which session it is showing, and whether it carries a
    * composer for our target. Cheap and idempotent — called from `updated()`,
    * from the body observer and after live navigation. */
@@ -858,9 +1067,7 @@ export const VoiceHook = {
 
   _renderState(state) {
     this.state = state
-    const label = STATUS_LABEL[state.status] || state.status
-    const pending = state.pending > 0 ? ` (${state.pending} in flight)` : ""
-    this._setStatusText(label + pending)
+    this._renderStatus()
 
     if (state.error) this._showError(state.error)
     else this._hideError()
@@ -869,6 +1076,16 @@ export const VoiceHook = {
     this._syncBarBox()
     this._setArming(state.arming_ms)
     this._renderMic()
+  },
+
+  /** The server's own status line. Also how a local, transient message (a
+   * microphone that stopped) is taken back down once the pipeline is well
+   * again, without inventing a second source of truth for the text. */
+  _renderStatus() {
+    if (!this.state) return
+    const label = STATUS_LABEL[this.state.status] || this.state.status
+    const pending = this.state.pending > 0 ? ` (${this.state.pending} in flight)` : ""
+    this._setStatusText(label + pending)
   },
 
   _renderDraft(text) {
@@ -971,7 +1188,10 @@ export const VoiceHook = {
     if (!el) return
     const serverMuted = this.state && this.state.muted
     if (this.muted || serverMuted) el.textContent = "mic muted (TTS playing)"
-    else if (this.armed) el.textContent = "mic: listening"
+    else if (this._micLive()) el.textContent = "mic: listening"
+    // ORCAHUB3-91: armed-but-not-live is the state that used to render as
+    // "listening" while nothing was being captured.
+    else if (this.armed) el.textContent = "mic: stopped — tap the mic to resume"
     else el.textContent = "mic: not armed"
   },
 
@@ -1126,6 +1346,12 @@ export const VoiceHook = {
    *   orca:tts-state         half-duplex, §8.1
    *   orca:composer-*        optional aliases, in case a future page wants to
    *                          report a send that is not a `clear-prompt`
+   *   visibilitychange       ORCAHUB3-91 — the screen came back on
+   *   pageshow               ...and the bfcache restore that fires instead
+   *
+   * `visibilitychange` is dispatched at `document` and BUBBLES, so a window
+   * listener sees it (Phoenix's own socket binds it the same way) and it is
+   * unbound with all the others in `_unbindWindow`.
    */
   _bindWindow() {
     this._onTtsState = (e) => this._handleTtsState(e)
@@ -1139,6 +1365,14 @@ export const VoiceHook = {
     // LiveView fires this at the end of every live navigation, which is
     // exactly when the composer (and therefore the sink) appears or vanishes.
     this._onPageLoaded = () => this._syncPage()
+    // The screen came back on. The AudioContext may be suspended and the
+    // track may have been ended or muted while we were away, so re-derive
+    // what the pipeline is actually doing instead of trusting `armed`.
+    this._onVisible = () => {
+      if (typeof document === "undefined" || document.visibilityState === "visible") {
+        this._reconcileMic()
+      }
+    }
 
     this._windowEvents = [
       ["orca:tts-state", this._onTtsState],
@@ -1149,6 +1383,8 @@ export const VoiceHook = {
       ["phx:voice-send-failed", this._onSendFailed],
       ["orca:composer-send-failed", this._onSendFailed],
       ["phx:page-loading-stop", this._onPageLoaded],
+      ["visibilitychange", this._onVisible],
+      ["pageshow", this._onVisible],
     ]
     this._windowEvents.forEach(([name, fn]) => window.addEventListener(name, fn))
   },
@@ -1224,6 +1460,14 @@ export const VoiceHook = {
       ...this.metrics,
       active: this.active,
       armed: this.armed,
+      // ORCAHUB3-91: `armed` is "we finished arming once", `micLive` is "audio
+      // is flowing right now". The browser check asserts on the second.
+      micLive: this._micLive(),
+      captureLive: this.capture ? this.capture.live() : false,
+      ctxState: this.capture && this.capture.ctx ? this.capture.ctx.state : null,
+      trackState: this.capture && this.capture.track ? this.capture.track.readyState : null,
+      serverVoiceOn: this._serverVoiceOn(),
+      domTarget: this.el.dataset.targetSessionId || null,
       muted: this.muted,
       target: this.target,
       composerPresent: this.composerPresent,

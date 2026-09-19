@@ -427,6 +427,9 @@ defmodule OrcaHubWeb.VoiceBarLive do
     end
   end
 
+  defp session_label(%{unavailable: true, id: id}),
+    do: "session " <> String.slice(id, 0, 8) <> " (unavailable)"
+
   defp session_label(%{title: title}) when is_binary(title) and title != "",
     do: String.slice(title, 0, 30)
 
@@ -440,16 +443,28 @@ defmodule OrcaHubWeb.VoiceBarLive do
   # Keep the selected session in the list even when it has fallen off the
   # recent window — otherwise the <select> would silently render a DIFFERENT
   # session as selected and the next spoken send would go to it.
+  #
+  # ORCAHUB3-91: that has to hold even when the session cannot be RESOLVED.
+  # The hook restores its target after a reconnect re-mounts this LiveView, and
+  # by then the session may be gone (deleted, or on a hub this node can no
+  # longer reach). Giving up here left a <select> with nothing selected, which
+  # a browser renders as its FIRST option — the bar then displays a session it
+  # is not targeting, which is the reported symptom. A placeholder row carrying
+  # the target's own id keeps the control's value equal to the target and says
+  # out loud that it is unavailable.
   defp ensure_listed(socket, nil), do: socket
 
   defp ensure_listed(socket, id) do
     if Enum.any?(socket.assigns.sessions, &(&1.id == id)) do
       socket
     else
-      case HubRPC.get_session(id) do
-        %{} = session -> assign(socket, :sessions, [session | socket.assigns.sessions])
-        _ -> socket
-      end
+      listed =
+        case HubRPC.get_session(id) do
+          %{} = session -> session
+          _ -> %{id: id, title: nil, unavailable: true}
+        end
+
+      assign(socket, :sessions, [listed | socket.assigns.sessions])
     end
   end
 end
