@@ -15,8 +15,9 @@ ABSOLUTE 16 kHz index) -> Silero v5 via vad-web, 512-sample (32 ms) frames ->
 `Voice.Session.segment_received/3` -> `{:dispatch, seq, pcm}` after
 merge/pad/drop -> `Voice.ASR.transcribe/2` in a `Task` ->
 `Voice.Session.transcript/4` in DISPATCH order -> `Voice.Intent` ->
-`nil | :send | :cancel | :stop | :pause` -> `{:send, draft}` after the 1500 ms
-arming window -> `send_request` to the client (phase 1 delivered it server-side
+`nil | :send | :cancel | :stop | :pause` -> `{:send, draft}` (or, since
+§8.3.11, `{:cancelled, draft}`) after the 1500 ms arming window ->
+`send_request` to the client (phase 1 delivered it server-side
 with `Cluster.send_message(node, id, draft, :queue)`).
 
 ## Module map
@@ -62,10 +63,11 @@ with `Cluster.send_message(node, id, draft, :queue)`).
   bit1 client-padded), then 16 kHz mono int16 PCM — the SERVER adds the WAV
   header.
 - Client -> server: `speech_start`, `mic`, `send_now`, `cancel`, `draft_edit`,
-  `retry_warmup` + 2b's `sent_ack`, `send_failed`, `send_direct`, `composer`.
+  `retry_warmup` + 2b's `sent_ack`, `send_failed`, `send_direct`, `composer`
+  + §8.3.11's `restore_draft`, `draft_delivered`.
   Server -> client: `state` (the FULL snapshot, after every change),
   `segment_result` (one per segment, carrying its `action`), `sent` + 2b's
-  `send_request`. Join errors:
+  `send_request` + §8.3.11's `cancelled`. Join errors:
   `not_found | voice_owned | node_unavailable | archived`. Joining IS arming —
   the warm-up ping fires at once (cold start up to 35 s). Retarget is
   leave+join; there is no `retarget` event.
@@ -118,7 +120,10 @@ agent nodes have no DB), so a change lands on the next join, not mid-utterance.
   because it cannot destroy typing: composer edits push `draft_edit` (300 ms
   debounce) and seed the server at every join (retarget makes joins routine),
   and an empty `state.draft` NEVER empties a non-empty composer — clearing is
-  explicit only (`"sent"`, a `cancel` segment_result, `clear-prompt`). The
+  explicit only (`"sent"`, §8.3.11's `"cancelled"` event, `clear-prompt`). It
+  is NOT the `cancel` segment_result any more: since §8.3.11 that announces an
+  armed countdown 1500 ms before the clear, and in palette focus it announces
+  no clear at all. The
   bar's OWN box is scratch space, not protected text: a draft carried across a
   retarget out-votes it, and it is cleared whenever it is not the sink.
 - **Join-time refusals, never workarounds**: no re-routing when the session's
@@ -283,7 +288,33 @@ Invariants that bite:
   the palette.
 - **Nothing in phase 2c opens the arming window.** Inserts, selections,
   navigations and palette queries all CANCEL an open one (the user kept
-  talking, so it was not a confirmation) and never open one. Only `:send` does.
+  talking, so it was not a confirmation) and never open one. Only the two
+  `:action` commands do — `:send`, and since §8.3.11 `:cancel` too.
+- **A spoken cancel is ARMED, and every cancel is UNDOABLE (§8.3.11,
+  ORCAHUB3-99).** A real 41-segment dictation lost ~4 minutes to one false
+  positive: `:send` had a 1500 ms window any further speech aborts, `:cancel`
+  fired instantly, and the guards were backwards — send's FP is recoverable,
+  cancel's was not. A spoken `:cancel` now opens the SAME window (one timer,
+  `arming_until` + `arming_kind`, aborted by `speech_start`/`armable?`/the
+  next appended segment), and whatever any cancel clears is kept in
+  `last_cancelled_draft` behind a "restore draft" control in the bar. The
+  explicit `cancel/1` gesture is NOT armed — a button press is not a
+  transcription guess — only recoverable. The client's copy of the sink wins
+  on restore, because a debounced `draft_edit` can leave the box ahead of the
+  server.
+- **The threshold is NOT the lever here, and that is measured.** The utterance
+  that did the damage scores `0.8571428571428571` against `orca cancel` — and
+  so do six GENUINE "orca cancel" clips in the corpus (`"or cut cancel."`),
+  bit for bit. Every threshold above it, up to and including 1.0, takes cancel
+  true positives from 44/46 to 38/46 to remove that one FP, so `:cancel` keeps
+  the shared 0.85. Do not re-propose an asymmetric threshold without re-reading
+  `intent_vocab_test.exs`'s "§8.3.11 real dictation" block.
+- **The 41-segment transcript is a committed fixture**
+  (`test/support/fixtures/voice/dictation_orcahub3_99.json`) — the only
+  adversarial sample here a human actually produced, and better than the
+  344-clip corpus at this precisely because the corpus is one synthetic voice
+  reading a fixed script. It also pins a second near-miss: "…do a bunch of
+  research," reaches 0.8333 against `orca search`, 0.0167 from firing.
 - **Navigation goes through hidden `data-voice-nav` anchors**, one
   `<.link navigate>` per path rendered by `VoiceBarLive`, clicked by the hook.
   Never `window.location`, never a plain `<a href>`: any document reload takes

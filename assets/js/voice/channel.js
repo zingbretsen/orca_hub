@@ -45,6 +45,14 @@ export class VoiceChannel {
       (r) => this.handlers.onSegmentResult && this.handlers.onSegmentResult(r)
     )
     this.channel.on("sent", (m) => this.handlers.onSent && this.handlers.onSent(m))
+    // Spec §8.3.11 / ORCAHUB3-99: a cancel actually threw a draft away. Its
+    // own event, because the `segment_result` that announces a spoken cancel
+    // now fires 1500 ms BEFORE the clear (and, in palette focus, before no
+    // clear at all).
+    this.channel.on(
+      "cancelled",
+      (m) => this.handlers.onCancelled && this.handlers.onCancelled(m)
+    )
     // Spec 8.2 / ORCAHUB3-86: the server asks the CLIENT to deliver the draft
     // through the page's real composer, so staged uploads and the
     // "[Attached image: ...]" lines ride along. Answered with sent_ack /

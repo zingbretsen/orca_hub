@@ -119,7 +119,8 @@ defmodule OrcaHubWeb.VoiceBarLive do
 
   @class_notes %{
     action:
-      "While the command palette is open, orca send is ignored and orca cancel " <>
+      "Both count down for 1.5 seconds first, and any further speech calls them off. " <>
+        "While the command palette is open, orca send is ignored and orca cancel " <>
         "just closes the palette — your draft is never touched from there.",
     insert:
       "The command word is removed; anything you said before it is dictated first. " <>
@@ -140,7 +141,8 @@ defmodule OrcaHubWeb.VoiceBarLive do
   # hint — never dropped from the list.
   @bare_hints %{
     send: "sends the draft to the target session",
-    cancel: "clears the draft",
+    cancel:
+      "clears the draft — after a 1.5 s countdown you can talk over, and \"restore draft\" puts it back",
     stop: "nothing — it will not stop a reply (that is phase 3)",
     pause: "nothing — it will not pause a reply (that is phase 3)"
   }
@@ -480,9 +482,29 @@ defmodule OrcaHubWeb.VoiceBarLive do
               <.icon name="hero-microphone" class="size-4 shrink-0" />
               <span data-voice-status class="font-medium shrink-0">starting…</span>
               <span data-voice-mic class="opacity-60 truncate min-w-0 flex-1"></span>
+              <%!-- §8.3.11: the countdown now belongs to EITHER action, so the verb
+                   is written by the hook off `state.arming` rather than baked
+                   in here. A cancel's countdown is the whole point of
+                   ORCAHUB3-99 — it is the 1500 ms in which the user can talk a
+                   false positive away — so it has to say which one it is. --%>
               <span data-voice-arming class="hidden badge badge-warning badge-xs shrink-0">
-                sending in <span data-voice-arming-ms></span>
+                <span data-voice-arming-label>sending in</span>
+                <span data-voice-arming-ms></span>
               </span>
+              <%!-- §8.3.11's undo. It lives in the summary ROW, clamped to the
+                   same h-4 as everything else in it, so the affordance that
+                   makes a cancel non-destructive costs zero of §8.2's vertical
+                   budget. The hook shows it only while there is something to
+                   put back, and swallows the click so it does not toggle the
+                   <details> it sits inside. --%>
+              <button
+                type="button"
+                data-voice-action="restore"
+                class="hidden btn btn-xs btn-outline btn-warning h-4 min-h-0 px-1 leading-none shrink-0"
+                title="Put back the draft that was just cancelled"
+              >
+                restore draft
+              </button>
               <span class="shrink-0 opacity-50 flex items-center gap-0.5">
                 events
                 <.icon

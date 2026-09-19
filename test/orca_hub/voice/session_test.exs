@@ -312,13 +312,28 @@ defmodule OrcaHub.Voice.SessionTest do
       assert Session.snapshot(state, @t0).status == "error"
     end
 
-    test "a spoken cancel abandons an outstanding send_request", %{armed: state} do
-      {state, []} = Session.cancel(state)
+    test "a cancel abandons an outstanding send_request", %{armed: state} do
+      {state, [{:cancelled, "ship it"}]} = Session.cancel(state)
 
       assert state.send_pending == nil
       assert state.draft == ""
       # The 5 s deadline must not resurrect the cancelled text.
       assert {_state, []} = Session.tick(state, @t0 + 60_000)
+    end
+
+    # §8.3.11: the hook pushes this instead of `cancel` when the page's own
+    # composer delivered the draft. Same clearing, no undo — a restore
+    # affordance for a message that WAS sent invites a double send.
+    test "draft_delivered clears like a cancel but records no undo", %{armed: state} do
+      {state, []} = Session.draft_delivered(state)
+
+      assert state.draft == ""
+      assert state.send_pending == nil
+      assert state.last_cancelled_draft == nil
+      refute Session.snapshot(state, @t0).restorable
+
+      {state, []} = Session.restore(state)
+      assert state.draft == ""
     end
 
     test "ack/failed/direct are inert with nothing pending" do
@@ -341,14 +356,229 @@ defmodule OrcaHub.Voice.SessionTest do
     end
   end
 
+  # §8.3.11 / ORCAHUB3-99. A spoken cancel destroyed ~4 minutes of real
+  # dictation on a 0.857 false positive, with no undo, while the RECOVERABLE
+  # action (send) was the only one that had an arming window. These tests pin
+  # both halves of the correction: the window, and the undo.
   describe "the CANCEL command" do
-    test "clears the draft and any arming window" do
+    test "kills an open send window immediately, and only ARMS the clear" do
       {state, _} = utterance(Session.new(), 1, "let's ship it orca send")
+      assert state.arming_kind == :send
+
       {state, effects} = utterance(state, 2, "or cut cancel.", @t0 + 100)
 
       assert actions(effects) == ["cancel"]
+      # The send it called off is gone at once — that is not destructive.
+      refute state.send_pending
+      # The draft is NOT gone. It is counting down.
+      assert state.draft == "let's ship it"
+      assert state.arming_kind == :cancel
+      assert Session.snapshot(state, @t0 + 100).arming == "cancel"
+      assert Session.snapshot(state, @t0 + 100).status == "arming"
+      assert {:schedule_tick, 1500} in effects
+
+      # ...and the send that was armed before it never fires.
+      {state, effects} = Session.tick(state, @t0 + 100 + 1500)
+      assert effects == [{:cancelled, "let's ship it"}]
       assert state.draft == ""
+    end
+
+    test "the armed clear fires on expiry and is restorable byte for byte" do
+      {state, _} = utterance(Session.new(), 1, "a detailed design argument")
+      {state, _} = utterance(state, 2, "about pi forking", @t0 + 10)
+      {state, _} = utterance(state, 3, "or cut cancel.", @t0 + 20)
+
+      before = "a detailed design argument about pi forking"
+      assert state.draft == before
+
+      {state, effects} = Session.tick(state, @t0 + 20 + 1500)
+      assert effects == [{:cancelled, before}]
+      assert state.draft == ""
+      assert Session.snapshot(state, @t0).restorable
+
+      {state, []} = Session.restore(state)
+      assert state.draft == before
+      refute Session.snapshot(state, @t0).restorable
+    end
+
+    # The whole point of the window: the user was mid-sentence, so they are
+    # still talking, so the false positive costs nothing.
+    test "speech onset during the window aborts the clear" do
+      {state, _} = utterance(Session.new(), 1, "forty segments of dictation")
+      {state, _} = utterance(state, 2, "or cut cancel.", @t0 + 10)
+      assert state.arming_kind == :cancel
+
+      {state, []} = Session.speech_start(state)
       assert state.arming_until == nil
+      assert state.arming_kind == nil
+
+      assert {state, []} = Session.tick(state, @t0 + 60_000)
+      assert state.draft == "forty segments of dictation"
+      refute Session.snapshot(state, @t0).restorable
+    end
+
+    test "a following segment aborts the clear, and its words still land" do
+      {state, _} = utterance(Session.new(), 1, "forty segments of dictation")
+      {state, _} = utterance(state, 2, "or cut cancel.", @t0 + 10)
+
+      {state, effects} = utterance(state, 3, "and more after that", @t0 + 20)
+      assert actions(effects) == ["appended"]
+      assert state.arming_until == nil
+
+      assert {state, []} = Session.tick(state, @t0 + 60_000)
+      assert state.draft == "forty segments of dictation and more after that"
+    end
+
+    # `armable?/2` — the ~0.6-1.1 s blind spot between the command segment's
+    # receipt and its transcript landing. Send has always refused to arm
+    # there; cancel refuses to clear.
+    test "no window opens at all when speech resumed before the transcript landed" do
+      {state, _} = utterance(Session.new(), 1, "forty segments of dictation")
+      {state, _} = Session.segment_received(state, frame(2, 16_000), @t0 + 10)
+      {state, []} = Session.speech_start(state)
+      {state, effects} = Session.transcript(state, 2, {:ok, asr("or cut cancel.")}, @t0 + 20)
+
+      assert [%{action: "cancel", detail: detail}] = results(effects)
+      assert detail =~ "arming skipped: speech resumed"
+      assert state.arming_until == nil
+      assert state.draft == "forty segments of dictation"
+    end
+
+    # The measured defect verbatim. #41 of Zach's transcript scores
+    # 0.8571428571428571 against "orca cancel" — over the 0.85 threshold, and
+    # bit-identical to six GENUINE "orca cancel" clips in the §5.1.1 corpus,
+    # so no threshold can tell them apart. The window and the undo are what
+    # make it survivable.
+    test "ORCAHUB3-99: the real false positive no longer destroys the draft" do
+      assert Intent.intent("That is not what the original goal was.",
+               vocab: Intent.command_vocab()
+             ) == {:cancel, 0.8571428571428571}
+
+      {state, _} = utterance(Session.new(), 1, "This does not mean")
+
+      {state, _} =
+        utterance(
+          state,
+          2,
+          "that, for example, when we create a brand new orchestrator, " <>
+            "we cannot give it useful information when we start it.",
+          @t0 + 10
+        )
+
+      kept = state.draft
+
+      # The user is mid-dictation, so speech has resumed: the window never
+      # even opens and nothing is lost at all.
+      {state, _} = Session.segment_received(state, frame(3, 16_000), @t0 + 20)
+      {state, []} = Session.speech_start(state)
+
+      {state, effects} =
+        Session.transcript(
+          state,
+          3,
+          {:ok, asr("That is not what the original goal was.")},
+          @t0 + 30
+        )
+
+      assert [%{action: "cancel"}] = results(effects)
+      assert {state, []} = Session.tick(state, @t0 + 60_000)
+      assert String.starts_with?(state.draft, kept)
+    end
+
+    # Worst case: the user really had stopped talking, so the clear fires.
+    # The undo is what stops that from being four lost minutes.
+    test "ORCAHUB3-99: even a cancel that FIRES is fully recoverable" do
+      {state, _} = utterance(Session.new(), 1, "four minutes of speech")
+
+      {state, _} =
+        Session.transcript(
+          elem(Session.segment_received(state, frame(2, 16_000), @t0 + 10), 0),
+          2,
+          {:ok, asr("That is not what the original goal was.")},
+          @t0 + 20
+        )
+
+      {state, [{:cancelled, lost}]} = Session.tick(state, @t0 + 20 + 1500)
+      assert state.draft == ""
+
+      {state, []} = Session.restore(state)
+      assert state.draft == lost
+      assert String.starts_with?(state.draft, "four minutes of speech")
+    end
+
+    # Found by the browser check: the undo buffer outlived the send that
+    # followed it, so `restorable` came back true minutes later offering text
+    # the user had long since dealt with.
+    test "a DELIVERED draft retires the undo, but ordinary typing does not" do
+      {state, _} = utterance(Session.new(), 1, "four minutes of speech")
+      {state, [{:cancelled, lost}]} = Session.cancel(state)
+      assert Session.snapshot(state, @t0).restorable
+
+      # One word typed while deciding: the undo is merely out of the way...
+      {typing, _} = Session.draft_edit(state, "wait")
+      refute Session.snapshot(typing, @t0).restorable
+      assert typing.last_cancelled_draft == lost
+
+      # ...and comes back the moment there is room for it again.
+      {typing, _} = Session.draft_edit(typing, "")
+      assert Session.snapshot(typing, @t0).restorable
+      {typing, []} = Session.restore(typing)
+      assert typing.draft == lost
+
+      # A delivery, on the other hand, retires it for good.
+      {delivered, []} = Session.draft_delivered(state)
+      refute Session.snapshot(delivered, @t0).restorable
+      assert delivered.last_cancelled_draft == nil
+
+      {state, _} = Session.draft_edit(state, "a new message")
+      {state, _} = Session.send_now(state, @t0)
+      {state, [{:sent, "a new message"}]} = Session.sent_ack(state)
+      refute Session.snapshot(state, @t0).restorable
+    end
+
+    test "restore is a no-op with nothing to restore, or over a live draft" do
+      assert {%Session{draft: ""}, []} = Session.restore(Session.new())
+
+      {state, _} = utterance(Session.new(), 1, "first draft")
+      {state, [{:cancelled, "first draft"}]} = Session.cancel(state)
+      {state, _} = utterance(state, 2, "second draft", @t0 + 10)
+
+      # Restoring here would destroy "second draft" — the exact failure mode
+      # this whole affordance exists to prevent.
+      {unchanged, []} = Session.restore(state)
+      assert unchanged.draft == "second draft"
+      assert unchanged.last_cancelled_draft == "first draft"
+    end
+
+    test "a cancel that clears nothing records nothing" do
+      {state, effects} = utterance(Session.new(), 1, "or cut cancel.")
+
+      assert [%{action: "cancel", detail: detail}] = results(effects)
+      assert detail =~ "empty draft"
+      assert state.arming_until == nil
+      refute Session.snapshot(state, @t0).restorable
+
+      # ...and it cannot erase an earlier undo either.
+      {state, _} = utterance(state, 2, "something worth keeping", @t0 + 10)
+      {state, [{:cancelled, _}]} = Session.cancel(state)
+      {state, _} = utterance(state, 3, "or cut cancel.", @t0 + 20)
+      assert state.last_cancelled_draft == "something worth keeping"
+    end
+
+    # Dictation that came BEFORE the command word is still dictation, exactly
+    # as it is for `:send`. An aborted cancel must not eat it.
+    test "the stripped remainder is appended, not discarded" do
+      {state, _} = utterance(Session.new(), 1, "keep this")
+      {state, _} = utterance(state, 2, "and this too or cut cancel.", @t0 + 10)
+
+      assert state.draft == "keep this and this too"
+      assert state.arming_kind == :cancel
+
+      {state, [{:cancelled, lost}]} = Session.tick(state, @t0 + 10 + 1500)
+      assert lost == "keep this and this too"
+
+      {state, []} = Session.restore(state)
+      assert state.draft == "keep this and this too"
     end
   end
 
@@ -956,13 +1186,18 @@ defmodule OrcaHub.Voice.SessionTest do
       refute sent.pending_insert
     end
 
+    # §8.3.11: `pending_insert` dies when the cancel LANDS, not when its
+    # window expires — the `#` it was going to feed is not being typed into
+    # any more either way, and an aborted cancel must not leave a stale one.
     test "a SPOKEN cancel clears pending_insert too" do
       {state, _} = utterance(Session.new(), 1, "orca hashtag")
       {state, effects} = utterance(state, 2, "or cut cancel.", @t0 + 10)
 
       assert actions(effects) == ["cancel"]
-      assert state.draft == ""
       refute state.pending_insert
+
+      {state, [{:cancelled, "#"}]} = Session.tick(state, @t0 + 10 + 1500)
+      assert state.draft == ""
     end
 
     # §8.3.7 as amended: an append never doubles a separator. Without this,

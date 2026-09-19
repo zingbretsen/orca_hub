@@ -121,14 +121,28 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       # Every §8.1 selector the hook drives has to survive the move.
       for selector <- ~w(
             data-voice-banner data-voice-error data-voice-status data-voice-mic
-            data-voice-arming data-voice-arming-ms data-voice-log
-            data-voice-log-details data-voice-bar-draft
+            data-voice-arming data-voice-arming-ms data-voice-arming-label
+            data-voice-log data-voice-log-details data-voice-bar-draft
           ) do
         assert html =~ selector, "missing #{selector} in the armed bar"
       end
 
       assert html =~ ~s(data-voice-action="retry")
       assert html =~ ~s(data-voice-action="start")
+
+      # §8.3.11 / ORCAHUB3-99: the undo for a cancelled draft. Hidden until
+      # the hook has something to put back, and inside the summary ROW so it
+      # costs none of §8.2's vertical budget.
+      restore = Floki.find(Floki.parse_document!(html), "[data-voice-action='restore']")
+      assert restore != [], "missing the restore-draft control"
+      assert Floki.attribute(restore, "class") |> List.first() =~ "hidden"
+
+      assert Floki.find(
+               Floki.parse_document!(html),
+               "summary [data-voice-action='restore']"
+             ) != [],
+             "the restore control must live in the summary row, not on a line of its own"
+
       # The hook writes in here, so LiveView must not patch it back.
       assert html =~ ~s(phx-update="ignore")
 

@@ -39,6 +39,13 @@
  *    `input` event — a bare `.value =` skips `Autocomplete`'s autoresize and
  *    leaves a one-row box holding several rows of text.
  *
+ *    §8.3.11 (ORCAHUB3-99): the sink is the copy that survives a cancel.
+ *    `"cancelled"` captures `_draftEl().value` BEFORE emptying it, because a
+ *    debounced `draft_edit` may still be in flight and the box is then ahead
+ *    of the server; "restore draft" writes that copy back through
+ *    `_writeDraft` + `draft_edit`, i.e. the ordinary sink path, so composer
+ *    and server land on the same text.
+ *
  * 5. SEND (ORCAHUB3-86). The server asks (`send_request`); we answer. With a
  *    composer on the page we set its textarea and `requestSubmit()` it, so
  *    `SessionLive.Show.send_message` runs and staged uploads/attachment lines
@@ -225,6 +232,11 @@ export const VoiceHook = {
     this._applyingDraft = false
     this._pendingSend = null
     this._lastSink = null
+    // §8.3.11 (ORCAHUB3-99): the draft the last cancel threw away, as the
+    // SINK held it. This copy outranks the server's, because a debounced
+    // `draft_edit` may still have been in flight when the cancel landed —
+    // §8.2's merge rule already says the sink can be ahead of the server.
+    this._cancelledDraft = null
     this._inFlight = 0
     this._asrBusy = false
     // §8.3.5: the last {focus, candidates} we told the server about, as JSON,
@@ -439,6 +451,7 @@ export const VoiceHook = {
       onSegmentResult: (r) => this._onSegmentResult(r),
       onSendRequest: (m) => this._onSendRequest(m),
       onUiAction: (m) => this._onUiAction(m),
+      onCancelled: (m) => this._onCancelled(m),
       onRejoin: () => this._onChannelRejoin(),
       onDisconnect: () => this._onChannelDisconnect(),
       onSent: () => {
@@ -895,7 +908,12 @@ export const VoiceHook = {
     } else {
       // The user pressed Send themselves. The draft left the box, so the
       // server's copy must go too or the next spoken send would repeat it.
-      this.channel && this.channel.push("cancel", {})
+      //
+      // §8.3.11: its own event, not `"cancel"`. This is DELIVERY
+      // BOOKKEEPING — the text is in the session, not lost — so it must not
+      // record an undo. A "restore draft" button after a successful typed
+      // send would be an invitation to send the same thing twice.
+      this.channel && this.channel.push("draft_delivered", {})
     }
   },
 
@@ -1329,7 +1347,8 @@ export const VoiceHook = {
 
     this._renderDraft(state.draft || "")
     this._syncBarBox()
-    this._setArming(state.arming_ms)
+    this._setArming(state.arming_ms, state.arming)
+    this._renderRestore()
     this._renderMic()
   },
 
@@ -1338,7 +1357,12 @@ export const VoiceHook = {
    * again, without inventing a second source of truth for the text. */
   _renderStatus() {
     if (!this.state) return
-    const label = STATUS_LABEL[this.state.status] || this.state.status
+    // §8.3.11: one server status, "arming", covers both actions — the kind
+    // rides alongside it, so the status line says which one is counting down.
+    const label =
+      this.state.status === "arming" && this.state.arming === "cancel"
+        ? "cancelling shortly"
+        : STATUS_LABEL[this.state.status] || this.state.status
     const pending = this.state.pending > 0 ? ` (${this.state.pending} in flight)` : ""
     this._setStatusText(label + pending)
   },
@@ -1450,7 +1474,10 @@ export const VoiceHook = {
     else el.textContent = "mic: not armed"
   },
 
-  _setArming(ms) {
+  /** §8.3.11: `kind` is "send" or "cancel" — the countdown belongs to either
+   * action now, and a cancel countdown has to SAY so, because those 1500 ms
+   * are the user's chance to talk a false positive away (ORCAHUB3-99). */
+  _setArming(ms, kind = "send") {
     if (this._timers.arming) {
       clearInterval(this._timers.arming)
       this._timers.arming = null
@@ -1459,6 +1486,13 @@ export const VoiceHook = {
     if (ms == null) {
       this._hide(chip)
       return
+    }
+    const cancelling = kind === "cancel"
+    const label = this._el("[data-voice-arming-label]")
+    if (label) label.textContent = cancelling ? "cancelling in" : "sending in"
+    if (chip) {
+      chip.classList.toggle("badge-error", cancelling)
+      chip.classList.toggle("badge-warning", !cancelling)
     }
     const deadline = performance.now() + ms
     const tick = () => {
@@ -1479,10 +1513,65 @@ export const VoiceHook = {
 
   _onSegmentResult(result) {
     this._setAsrBusy(this._inFlight - 1)
-    // A spoken "orca cancel" clears the draft server-side; the sink has to be
-    // told explicitly (_renderDraft refuses to empty a non-empty box).
-    if (result && result.action === "cancel") this._writeDraft("")
+    // The sink is NOT cleared here any more (§8.3.11). A spoken cancel's
+    // `segment_result` now announces an armed countdown, 1500 ms before the
+    // draft is actually thrown away — and in palette focus it announces a
+    // cancel that clears nothing at all. Both used to empty the box on the
+    // spot. The `"cancelled"` event is the one that means "it is gone".
     this._appendLog(result)
+  },
+
+  /** §8.3.11 (ORCAHUB3-99): a cancel actually cleared the draft.
+   *
+   * The sink is emptied here — `_renderDraft` deliberately refuses to empty a
+   * non-empty box, so an explicit clear is the only way — and its text is
+   * kept first. The SINK's copy is the one kept, not the server's: a
+   * `draft_edit` may still have been debouncing when the cancel landed, in
+   * which case the box holds characters the server has never seen. */
+  _onCancelled(msg) {
+    const el = this._draftEl()
+    const local = el ? el.value : ""
+    const remote = (msg && msg.text) || ""
+    // Longer wins rather than "local always wins": after a retarget the sink
+    // can legitimately be the emptier of the two.
+    this._cancelledDraft = local.length >= remote.length ? local : remote
+    this._clearDraftTimer()
+    this._setArming(null)
+    this._writeDraft("")
+    this._renderRestore()
+  },
+
+  /** The undo affordance, shown only while there is something to put back
+   * AND nothing would be overwritten by putting it back.
+   *
+   * Server truth (`state.restorable`) OR our own copy — either is enough, and
+   * after a rejoin only one of them survives. The emptiness guard mirrors
+   * `Session.restore/1`'s: restoring over fresh dictation would be a second
+   * way to lose text, which is the whole bug this closes. */
+  _renderRestore() {
+    const btn = this._el('[data-voice-action="restore"]')
+    if (!btn) return
+    const el = this._draftEl()
+    const busy = (el && el.value !== "") || !!(this.state && this.state.draft)
+    const has = !!this._cancelledDraft || !!(this.state && this.state.restorable)
+    if (has && !busy) this._show(btn)
+    else this._hide(btn)
+  },
+
+  /** Put the cancelled draft back through the ORDINARY draft-sink path, so
+   * the composer and the server end up agreeing: write the sink, then push
+   * it as a `draft_edit`. Falls back to asking the server when this client
+   * has no copy of its own (a rejoin, or a second tab). */
+  _restoreDraft() {
+    const text = this._cancelledDraft
+    this._cancelledDraft = null
+    if (text) {
+      this._writeDraft(text, { follow: true })
+      this._pushDraftEdit(text)
+    } else if (this.channel) {
+      this.channel.push("restore_draft", {})
+    }
+    this._renderRestore()
   },
 
   _appendLog(result) {
@@ -1553,11 +1642,21 @@ export const VoiceHook = {
         if (action === "toggle") this._toggle()
         else if (action === "send") this.channel && this.channel.push("send_now", {})
         else if (action === "cancel") {
+          // §8.3.11: the sink is NOT emptied optimistically any more. The
+          // server answers every clearing cancel with `"cancelled"`, and
+          // that handler is the single place that captures the sink's text
+          // before wiping it — clearing here first would throw away the very
+          // copy the restore affordance depends on.
           this._setArming(null)
-          this._writeDraft("")
           this.channel && this.channel.push("cancel", {})
         } else if (action === "start") this._arm()
         else if (action === "retry") this.channel && this.channel.push("retry_warmup", {})
+        else if (action === "restore") {
+          // It sits inside the <details> summary; a bare click would toggle
+          // the event log open or shut underneath it.
+          e.preventDefault()
+          this._restoreDraft()
+        }
         return
       }
       const error = this._el("[data-voice-error]")

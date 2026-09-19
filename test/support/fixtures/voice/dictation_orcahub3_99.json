@@ -1,0 +1,216 @@
+{
+  "source": {
+    "issue": "ORCAHUB3-99",
+    "reported": "2026-09-19",
+    "what": "41 consecutive VAD segments of real dictation (~4 minutes), pasted by Zach out of the voice bar's own per-segment event log after segment #41 was classified as :cancel and destroyed the whole draft. Whisper large-v3-turbo transcripts, verbatim, including its punctuation and casing.",
+    "why": "The 344-clip §5.1.1 corpus is ONE synthetic voice reading a fixed script. It cannot cover what a person actually says, and this transcript is the proof: it produced a cancel false positive on the first long real session. 40 sentences of ordinary speech is a better adversarial sample than anything in the corpus, so it is kept.",
+    "action_key": "what Voice.Session actually did with the segment at the time"
+  },
+  "segments": [
+    {
+      "n": 1,
+      "text": "Okay, let's unpack the pie thing because I feel like",
+      "action": "appended"
+    },
+    {
+      "n": 2,
+      "text": "Things have gotten recorded that may or may not actually hold true.",
+      "action": "appended"
+    },
+    {
+      "n": 3,
+      "text": "The idea behind pie.",
+      "action": "appended"
+    },
+    {
+      "n": 4,
+      "text": "that if we're using local models,",
+      "action": "appended"
+    },
+    {
+      "n": 5,
+      "text": "we might want a different way of leveraging",
+      "action": "appended"
+    },
+    {
+      "n": 6,
+      "text": "child sessions.",
+      "action": "appended"
+    },
+    {
+      "n": 7,
+      "text": "if we're using",
+      "action": "appended"
+    },
+    {
+      "n": 8,
+      "text": "hosted model, so for example, if we're using Claude,",
+      "action": "appended"
+    },
+    {
+      "n": 9,
+      "text": "And we're using a powerful orchestrator.",
+      "action": "appended"
+    },
+    {
+      "n": 10,
+      "text": "like an Opus or a Fable model,",
+      "action": "appended"
+    },
+    {
+      "n": 11,
+      "text": "We want",
+      "action": "appended"
+    },
+    {
+      "n": 12,
+      "text": "to be able to split up the context so that",
+      "action": "appended"
+    },
+    {
+      "n": 13,
+      "text": "We're using smaller sonnet or haiku sessions for doing a lot of the reading and the grunt work and then reporting the important things back up to the orchestrator because the orchestrator is more expensive.",
+      "action": "appended"
+    },
+    {
+      "n": 14,
+      "text": "And we don't want it being flooded with a lot of unnecessary information or doing a whole lot of work itself.",
+      "action": "appended"
+    },
+    {
+      "n": 15,
+      "text": "So we're really trying to manage the context so that the high volume, low thinking things will go to the cheaper sessions, the cheaper models.",
+      "action": "appended"
+    },
+    {
+      "n": 16,
+      "text": "with pi.",
+      "action": "appended"
+    },
+    {
+      "n": 17,
+      "text": "we will likely be using one model for everything.",
+      "action": "appended"
+    },
+    {
+      "n": 18,
+      "text": "and it's local.",
+      "action": "appended"
+    },
+    {
+      "n": 19,
+      "text": "So we're not paying anything.",
+      "action": "appended"
+    },
+    {
+      "n": 20,
+      "text": "cost-wise to use a thinking model or",
+      "action": "appended"
+    },
+    {
+      "n": 21,
+      "text": "a model with more parameters",
+      "action": "appended"
+    },
+    {
+      "n": 22,
+      "text": "we might have to wait more time",
+      "action": "appended"
+    },
+    {
+      "n": 23,
+      "text": "but we're not paying more and we don't have usage limits. None of that applies.",
+      "action": "appended"
+    },
+    {
+      "n": 24,
+      "text": "So if we're using a powerful model",
+      "action": "appended"
+    },
+    {
+      "n": 25,
+      "text": "relatively speaking for the orchestrator.",
+      "action": "appended"
+    },
+    {
+      "n": 26,
+      "text": "already has a lot of context",
+      "action": "appended"
+    },
+    {
+      "n": 27,
+      "text": "You might just want to fork that session.",
+      "action": "appended"
+    },
+    {
+      "n": 28,
+      "text": "Because with Pi, we can fork a session so that it shares all the previous history.",
+      "action": "appended"
+    },
+    {
+      "n": 29,
+      "text": "but then we can have new prompts on top of it.",
+      "action": "appended"
+    },
+    {
+      "n": 30,
+      "text": "So this way we could potentially have one session, do a bunch of research,",
+      "action": "appended"
+    },
+    {
+      "n": 31,
+      "text": "and then fork into multiple sub-children to then go and actually work on a piece of that. But this way they can share all of the context so we can reuse that previous cache, that previous slot,",
+      "action": "appended"
+    },
+    {
+      "n": 32,
+      "text": "In order to do that, we can't be modifying the system prompt",
+      "action": "appended"
+    },
+    {
+      "n": 33,
+      "text": "Because if we have an orchestrator, which gets one system prompt, and then we split that off to a bunch of children, which get a different system prompt that would then break the cash and make all of that previous work unnecessary and the fork.",
+      "action": "appended"
+    },
+    {
+      "n": 34,
+      "text": "not actually do what we're hoping to do.",
+      "action": "appended"
+    },
+    {
+      "n": 35,
+      "text": "maybe the different children,",
+      "action": "appended"
+    },
+    {
+      "n": 36,
+      "text": "could somehow benefit from having that shared context, but I actually don't know if that applies or if they would just consume different slots regardless.",
+      "action": "appended"
+    },
+    {
+      "n": 37,
+      "text": "But that is the goal.",
+      "action": "appended"
+    },
+    {
+      "n": 38,
+      "text": "of keeping the PI system prompt consistent when we fork a session.",
+      "action": "appended"
+    },
+    {
+      "n": 39,
+      "text": "This does not mean",
+      "action": "appended"
+    },
+    {
+      "n": 40,
+      "text": "that, for example, when we create a brand new orchestrator, we cannot give it useful information when we start it.",
+      "action": "appended"
+    },
+    {
+      "n": 41,
+      "text": "That is not what the original goal was.",
+      "action": "cancel"
+    }
+  ]
+}

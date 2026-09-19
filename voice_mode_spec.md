@@ -1619,6 +1619,91 @@ it must cost ZERO header height while collapsed — §8.2's 48 px idle / 64 px a
 budget at 390 px still holds and is re-measured with `getBoundingClientRect`,
 never a screenshot.
 
+#### 8.3.11 Cancel is armed, and cancel is undoable (ORCAHUB3-99)
+
+**The defect.** On 2026-09-19 a user dictated 41 segments — ~4 minutes, a
+detailed design argument — and segment #41, `"That is not what the original
+goal was."`, was classified `:cancel`. `Voice.Session.cancel/1` set
+`draft: ""` and the whole thing was gone, with no undo. They never said
+"orca cancel".
+
+**The guards were backwards.** §5.1.1's asymmetry note — "a false positive
+sends early (recoverable by a follow-up message)" — is a statement about
+SEND, and it was the only action guarded. `:send` got a 1500 ms arming
+window that any further speech aborts; `:cancel`, whose false positive
+destroys unbounded work, fired instantly.
+
+**The threshold is NOT the lever, and this is measured, not assumed.**
+Segment #41 scores `0.8571428571428571` against `orca cancel` — 0.0071 over
+the shared 0.85. Six GENUINE "orca cancel" clips in the §5.1.1 corpus, which
+Whisper heard as `"or cut cancel."`, score the IDENTICAL float. A
+`:cancel`-specific threshold is defensible in principle (the error costs
+really are asymmetric) and impossible in practice: every threshold strictly
+above 0.8571428571428571 — including 1.0, since nothing sits in between —
+takes the corpus's cancel true positives from 44/46 to 38/46 while removing
+exactly one false positive. `Intent`'s threshold therefore stays at 0.85 for
+every entry, and the defence is the two rules below. Pinned in
+`intent_vocab_test.exs`, "§8.3.11 real dictation".
+
+**Rule 1 — a spoken cancel ARMS.** It reuses the SAME machinery `:send`
+uses (`arming_until` + a new `arming_kind`, `speech_start/1`, `armable?/2`),
+never a second timer:
+
+- the stripped remainder is appended first, exactly as `:send` does it — an
+  aborted cancel must not eat the dictation that preceded the command word;
+- an open SEND window and any outstanding `send_request` die immediately, as
+  before — calling off a send is never destructive;
+- the draft is cleared only when the window expires, and the window is
+  aborted by speech onset, `armable?/2`'s resumed-speech case, a following
+  appended segment, a manual `draft_edit`, and every §8.3.6 non-action class;
+- `status` stays `"arming"`, with the snapshot's new `arming: "send"|"cancel"`
+  saying which. The bar renders "cancelling in 1.2s" in an error-coloured
+  chip, because those 1500 ms are the user's chance to talk it away.
+- the EXPLICIT gesture (`cancel/1`, the `"cancel"` wire event) is NOT armed.
+  A button press is not a transcription guess.
+
+**Rule 2 — every clear is recoverable.** Whatever a cancel throws away is
+kept in `last_cancelled_draft`, the snapshot carries `restorable`, and the
+bar shows a "restore draft" control in the summary ROW (zero extra header
+height). Tuning the matcher only reduces the FREQUENCY of a false positive;
+keeping the text removes its SEVERITY, which is why this half ships even
+though the measurement above says the matcher cannot be tuned out of the
+problem at all.
+
+Wire additions, on top of §8.3.5:
+
+- server -> client `"cancelled" {text}` — a cancel actually cleared a draft.
+  Its own event, because the spoken cancel's `segment_result` now fires
+  1500 ms BEFORE the clear, and a palette-focus cancel fires it before no
+  clear at all.
+- client -> server `"restore_draft" {}` — put it back. A no-op when there is
+  nothing to restore, and a no-op over a NON-EMPTY draft: restoring over
+  fresh dictation would be a second way to lose text.
+- client -> server `"draft_delivered" {}` — the page's own composer delivered
+  the draft (a TYPED send). Clears exactly what `"cancel"` clears and records
+  NO undo. The hook used to push `"cancel"` here, which was harmless only
+  while a cancel had no undo to get wrong; a "restore draft" button after a
+  successful send would invite a double send.
+- snapshot gains `arming` and `restorable`.
+
+**The client's copy of the draft wins.** §8.2's merge rule already allows the
+sink to be ahead of the server — a debounced `draft_edit` may be in flight —
+so the hook captures `_draftEl().value` BEFORE emptying it and restores THAT,
+writing it back through the ordinary sink path (`_writeDraft` + `draft_edit`)
+so the composer and the server agree. `"restore_draft"` is the fallback for a
+client with no copy of its own (a rejoin, a second tab, the bar's own box).
+
+**The other finding from the same transcript.** Scored against the whole
+vocabulary, the other 40 segments fire nothing — but #30, "…do a bunch of
+research,", reaches **0.8333 against `orca search`**, 0.0167 short of opening
+the command palette and having "bunch of research" eaten out of the draft by
+`strip_command/3`. That is the same hazard shape as ORCAHUB3-92's "…orca hub"
+and it was found the same way: by hand, against a phrase the corpus does not
+contain. Not reworded (no false positive, and `orca search` is the phrase
+users actually reach for), but pinned in `intent_vocab_test.exs` so a future
+re-wording that makes it worse fails loudly. #9 and #25 both reach 0.800
+against `orca third item`, on the word "orchestrator".
+
 ## 9. Known traps
 
 1. **`getUserMedia` requires a SECURE CONTEXT.**
@@ -1793,6 +1878,21 @@ search. §8.3.5 records that the nine-candidate cap is enforced independently on
 both sides of the wire, so a future reader does not delete one believing the
 other covers it. §10.5's C5 row is retitled "voice-driven interaction" to match
 §8.3, which covers inserts and selection as well as navigation.
+
+**v0.5.1 (2026-09-19, ORCAHUB3-99)** — §8.3.11 NEW: a spoken `:cancel` is
+ARMED with the same 1500 ms window `:send` already had, and every cleared
+draft is recoverable (`last_cancelled_draft` + `restore/1` + a "restore draft"
+control in the bar). Filed after a real 41-segment dictation lost ~4 minutes
+to one false positive. The threshold question is answered by MEASUREMENT and
+the answer is "no change": the offending utterance scores
+`0.8571428571428571` against `orca cancel` and so do six genuine "orca cancel"
+corpus clips, so no `:cancel`-specific threshold can separate them (cancel TP
+would go 44/46 -> 38/46 for one fewer FP). Wire additions: `"cancelled"`,
+`"restore_draft"`, `"draft_delivered"`, plus `arming` and `restorable` on the
+snapshot. The 41-segment transcript ships as
+`test/support/fixtures/voice/dictation_orcahub3_99.json` — the project's only
+adversarial sample produced by a human — and pins a second finding: "…do a
+bunch of research," sits 0.0167 under firing `orca search`.
 
 **v0.5 (2026-09-18, phase 2c contract pinned)** — §8.3 NEW (C5): phase 2c's
 contract, pinned BEFORE any of it was implemented, in the same manner as

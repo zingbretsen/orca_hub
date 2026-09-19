@@ -23,6 +23,9 @@ defmodule OrcaHub.Voice.Session do
     * `{:send, text}` — hand `text` to `Cluster.send_message(..., :queue)`,
       then feed the answer back through `send_result/2`
     * `{:sent, text}` — push one `"sent"` event; the draft is already cleared
+    * `{:cancelled, text}` — push one `"cancelled"` event carrying the text a
+      cancel just threw away; the draft is already cleared and `restore/1`
+      can put it back (spec §8.3.11)
     * `{:ui_action, kind, payload}` — push one `"ui_action"` event (spec
       §8.3.5); the BROWSER drives the palette, the autocomplete dropdown and
       live navigation, because none of them exist on this side of the wire
@@ -55,7 +58,8 @@ defmodule OrcaHub.Voice.Session do
   `Intent.command_vocab/0` and routed by `Intent.class/1` — never by a
   hardcoded list of names, so a vocabulary entry added to `Intent` needs no
   change here. No command appends to the draft, `:send` strips the command
-  and opens the 1500 ms arming window, `:cancel` clears everything,
+  and opens the 1500 ms arming window, `:cancel` strips the command and opens
+  the SAME window (§8.3.11) and clears everything only when it expires,
   `:stop`/`:pause` strip and append but do nothing else (phase 3 owns them).
   The arming window is cancelled by speech onset, an explicit cancel, a
   manual draft edit, and by any segment that appends text (§8.3 adds
@@ -109,9 +113,43 @@ defmodule OrcaHub.Voice.Session do
   on the line it just opened. It is invisible to phases 1 and 2, where a
   draft could not end in whitespace in the first place.
 
-  **Arming.** Only `:send` ever opens the window. Inserts, selections,
-  navigations and palette queries all CANCEL an open one — the user kept
-  talking, so it was not a confirmation — and never open one.
+  **Arming.** Only the two `:action` commands ever open the window, and
+  `arming_kind` says which of them did. Inserts, selections, navigations and
+  palette queries all CANCEL an open one — the user kept talking, so it was
+  not a confirmation — and never open one.
+
+  ## A cancel is armed, and a cancel is undoable (spec §8.3.11, ORCAHUB3-99)
+
+  A SPOKEN `:cancel` does not clear anything when it lands. It opens the same
+  1500 ms window `:send` opens, tagged `arming_kind: :cancel`, and the draft
+  is destroyed only when that window expires — so the speech the user is
+  almost certainly still producing aborts it through `speech_start/1`,
+  `armable?/2` or the next appended segment, exactly as it aborts a send.
+  The guards used to be backwards: send's false positive is recoverable (send
+  a follow-up), cancel's destroyed unbounded dictation, and only send was
+  armed.
+
+  Whatever DOES get cleared is then kept in `last_cancelled_draft` and handed
+  back by `restore/1`. That covers all three clearing paths — the armed
+  spoken cancel, the immediate `cancel/1` gesture, and a palette-focus cancel
+  (which clears nothing, so stores nothing). The buffer survives ordinary
+  typing (a user who dictates one word, realises, and clears it again still
+  gets their four minutes back) but NOT a delivery: `sent/1` and
+  `draft_delivered/1` retire it, because an undo that outlives the send after
+  it resurfaces minutes later offering text the user has long since dealt
+  with. Tuning the matcher only reduces
+  the FREQUENCY of a false positive; keeping the text removes its SEVERITY,
+  which is why this half ships even though the measurement below says the
+  matcher cannot be tuned out of the problem at all.
+
+  **Measured (ORCAHUB3-99).** The utterance that destroyed ~4 minutes of real
+  dictation, `"That is not what the original goal was."`, scores
+  `0.8571428571428571` against `orca cancel` — and so do six GENUINE
+  "orca cancel" clips in the §5.1.1 corpus, which Whisper heard as
+  `"or cut cancel."`. Bit for bit the same float. No `:cancel`-specific
+  threshold can reject the false positive without also rejecting those six
+  true positives (cancel TP 44/46 -> 38/46), so the threshold is deliberately
+  left at the shared 0.85 and the defence is arming plus restore.
 
   ## The single send path (spec §8.2, ORCAHUB3-86)
 
@@ -143,7 +181,8 @@ defmodule OrcaHub.Voice.Session do
   alias OrcaHub.Cluster
   alias OrcaHub.Voice.{ASR, Intent}
 
-  # Spec 5.1: the SEND arming window. The spec calls it configurable; it is
+  # Spec 5.1: the arming window — a send, or (§8.3.11) a cancel. The spec
+  # calls it configurable; it is
   # not a phase-1 config knob (the matcher threshold is, and comes from
   # ASRConfig).
   @arming_ms 1500
@@ -178,6 +217,7 @@ defmodule OrcaHub.Voice.Session do
           | {:send_request, String.t()}
           | {:send, String.t()}
           | {:sent, String.t()}
+          | {:cancelled, String.t()}
           | {:ui_action, String.t(), map()}
           | {:schedule_tick, non_neg_integer()}
 
@@ -204,8 +244,17 @@ defmodule OrcaHub.Voice.Session do
             # %{seq:, pcm:, sample_count:, flags:, until:, speech_at:} — the
             # short segment waiting for a neighbour to merge with
             held: nil,
-            # monotonic ms at which the SEND arming window expires
+            # monotonic ms at which the arming window expires
             arming_until: nil,
+            # §8.3.11: which `:action` the open window will fire, `:send` or
+            # `:cancel`. Always nil exactly when `arming_until` is nil — every
+            # writer goes through `arm/3` or `disarm/1`.
+            arming_kind: nil,
+            # §8.3.11: the text the most recent cancel threw away, kept so
+            # `restore/1` can hand it back. Never cleared by a cancel that
+            # cleared nothing, so a stray second cancel cannot erase the
+            # undo of the first one.
+            last_cancelled_draft: nil,
             # spec 8.2: the client last told us whether the page it is on
             # has a composer form for the target session. Decides the
             # timeout fallback, not the request itself.
@@ -281,7 +330,7 @@ defmodule OrcaHub.Voice.Session do
   """
   @spec speech_start(%__MODULE__{}) :: {%__MODULE__{}, [effect()]}
   def speech_start(state),
-    do: {%{state | arming_until: nil, speech_starts: state.speech_starts + 1}, []}
+    do: {%{disarm(state) | speech_starts: state.speech_starts + 1}, []}
 
   @doc "Mirrors the client's half-duplex mic state."
   @spec mic(%__MODULE__{}, boolean()) :: {%__MODULE__{}, [effect()]}
@@ -320,27 +369,82 @@ defmodule OrcaHub.Voice.Session do
   """
   @spec draft_edit(%__MODULE__{}, String.t()) :: {%__MODULE__{}, [effect()]}
   def draft_edit(state, text) when is_binary(text),
-    do: {%{state | draft: text, arming_until: nil, pending_insert: false}, []}
+    do: {%{disarm(state) | draft: text, pending_insert: false}, []}
 
   @doc """
-  Clears the draft and any arming window.
+  Clears the draft and any arming window, IMMEDIATELY.
 
-  Also abandons an outstanding `send_request` — a spoken "orca cancel" that
-  lands while one is in flight means the user changed their mind, and
-  letting the 5 s deadline fall back to a direct send afterwards would
-  deliver the very text they just cancelled.
+  This is the explicit gesture — the `"cancel"` wire event behind the bar's
+  own control and the composer's select-all-delete. It is deliberately NOT
+  armed the way the SPOKEN cancel is (§8.3.11): a button press is not a
+  transcription guess, so there is nothing to second-guess. It is still
+  recoverable, because `last_cancelled_draft` is written by every clearing
+  path (`restore/1`).
+
+  Also abandons an outstanding `send_request` — a cancel that lands while one
+  is in flight means the user changed their mind, and letting the 5 s
+  deadline fall back to a direct send afterwards would deliver the very text
+  they just cancelled.
   """
   @spec cancel(%__MODULE__{}) :: {%__MODULE__{}, [effect()]}
   def cancel(state) do
+    clear_draft(%{disarm(state) | send_pending: nil, sending: false})
+  end
+
+  @doc """
+  The page's composer delivered the draft itself — a TYPED send (§8.3.11).
+
+  Identical to `cancel/1` in what it clears, and deliberately different in
+  what it remembers: nothing. The text went into the session rather than into
+  the bin, so offering to "restore" it would be an invitation to send the
+  same message twice. This is the event the hook pushes when it sees
+  `clear-prompt` with no spoken send of its own outstanding; before
+  ORCAHUB3-99 it reused `"cancel"`, which was harmless only because a cancel
+  had no undo to get wrong.
+  """
+  @spec draft_delivered(%__MODULE__{}) :: {%__MODULE__{}, [effect()]}
+  def draft_delivered(state) do
     {%{
-       state
+       disarm(state)
        | draft: "",
-         arming_until: nil,
          send_pending: nil,
          sending: false,
-         pending_insert: false
+         pending_insert: false,
+         last_cancelled_draft: nil
      }, []}
   end
+
+  @doc """
+  Puts back the draft the last cancel threw away (§8.3.11, ORCAHUB3-99).
+
+  A no-op when there is nothing to restore, and a no-op when a draft already
+  exists — restoring over live dictation would be a second way to lose text,
+  which is the bug this whole affordance exists to close. The client's own
+  copy of the sink is the one that wins when the two disagree; it reaches
+  here as an ordinary `draft_edit/2`, so this is the fallback for a client
+  that has no copy (a rejoin, a second tab, the bar's own box).
+  """
+  @spec restore(%__MODULE__{}) :: {%__MODULE__{}, [effect()]}
+  def restore(%__MODULE__{last_cancelled_draft: text} = state)
+      when is_binary(text) and text != "" do
+    if state.draft == "" do
+      {%{disarm(state) | draft: text, last_cancelled_draft: nil, pending_insert: false}, []}
+    else
+      {state, []}
+    end
+  end
+
+  def restore(state), do: {state, []}
+
+  # The one place a draft is ever thrown away by a cancel. Remembers what it
+  # threw away and says so, so no clearing path can forget to.
+  defp clear_draft(%__MODULE__{draft: ""} = state),
+    do: {%{state | pending_insert: false}, []}
+
+  defp clear_draft(%__MODULE__{draft: text} = state),
+    do:
+      {%{state | draft: "", last_cancelled_draft: text, pending_insert: false},
+       [{:cancelled, text}]}
 
   @doc """
   The client reported whether the page it is on has a composer form bound to
@@ -374,7 +478,7 @@ defmodule OrcaHub.Voice.Session do
     # §8.3.7: a send clears `pending_insert`. The draft is final as of this
     # moment, so whatever the `#` was going to collect, it is not collecting
     # it any more — even on the paths where the draft survives the attempt.
-    {%{state | sending: true, arming_until: nil, send_pending: pending, pending_insert: false},
+    {%{disarm(state) | sending: true, send_pending: pending, pending_insert: false},
      [{:send_request, state.draft}, {:schedule_tick, @send_request_ms}]}
   end
 
@@ -441,13 +545,16 @@ defmodule OrcaHub.Voice.Session do
     text = text || state.draft
 
     {%{
-       state
+       disarm(state)
        | sending: false,
          draft: "",
-         arming_until: nil,
          send_pending: nil,
          pending_insert: false,
-         error: nil
+         error: nil,
+         # §8.3.11: a DELIVERED draft retires whatever undo was outstanding.
+         # An undo buffer that outlives the send that followed it resurfaces
+         # minutes later offering text the user has long since dealt with.
+         last_cancelled_draft: nil
      }, [{:sent, text}]}
   end
 
@@ -687,8 +794,9 @@ defmodule OrcaHub.Voice.Session do
 
       true ->
         action = if remainder == "", do: "dropped_command_only", else: "send"
-        state = %{state | arming_until: now + @arming_ms}
-        {state, [result_effect(entry.seq, action, base), {:schedule_tick, @arming_ms}]}
+
+        {arm(state, :send, now),
+         [result_effect(entry.seq, action, base), {:schedule_tick, @arming_ms}]}
     end
   end
 
@@ -701,9 +809,46 @@ defmodule OrcaHub.Voice.Session do
      [result_effect(entry.seq, "cancel", base), {:ui_action, "close_palette", %{}}]}
   end
 
-  defp route(:action, state, entry, _res, :cancel, base, _now) do
-    {%{state | draft: "", arming_until: nil, pending_insert: false},
-     [result_effect(entry.seq, "cancel", base)]}
+  # §8.3.11 (ORCAHUB3-99): a spoken cancel is ARMED, exactly like a spoken
+  # send. It destroys nothing when it lands — `expire_arming/2` does that
+  # 1500 ms later, by which time speech onset, `armable?/2` or the next
+  # appended segment has usually killed it. The error costs are asymmetric
+  # in cancel's favour, not send's: a false send is recoverable with a
+  # follow-up message, while a false cancel used to be unrecoverable full
+  # stop, and only send was guarded.
+  #
+  # Three things happen at LAND time regardless, because they are all
+  # "stop the send you were about to do", which is never destructive:
+  # an open send window dies, an outstanding `send_request` is abandoned,
+  # and `pending_insert` is dropped.
+  defp route(:action, state, entry, res, :cancel, base, now) do
+    # As for `:send`: dictation that came BEFORE the command word is still
+    # dictation. Appending it means an ABORTED cancel keeps those words
+    # instead of eating them, and a cancel that does fire carries them into
+    # `last_cancelled_draft` with everything else.
+    remainder = Intent.strip_command(res.text, :cancel, intent_opts(state))
+    state = if remainder == "", do: state, else: append(state, remainder)
+    state = %{disarm(state) | send_pending: nil, sending: false, pending_insert: false}
+
+    cond do
+      state.draft == "" ->
+        base = Keyword.put(base, :detail, join_detail(Keyword.get(base, :detail), "empty draft"))
+        {state, [result_effect(entry.seq, "cancel", base)]}
+
+      not armable?(state, entry) ->
+        base =
+          Keyword.put(
+            base,
+            :detail,
+            join_detail(Keyword.get(base, :detail), "arming skipped: speech resumed")
+          )
+
+        {state, [result_effect(entry.seq, "cancel", base)]}
+
+      true ->
+        {arm(state, :cancel, now),
+         [result_effect(entry.seq, "cancel", base), {:schedule_tick, @arming_ms}]}
+    end
   end
 
   # `Intent.class/1` only ever answers `:action` for `:send`/`:cancel`, but a
@@ -800,9 +945,15 @@ defmodule OrcaHub.Voice.Session do
   # vocabulary at the session's configured threshold.
   defp intent_opts(state), do: [threshold: state.threshold, vocab: Intent.command_vocab()]
 
-  # §8.3.6's arming rule for everything except `:send`: the user kept
-  # talking, so an open window dies and no new one opens.
-  defp disarm(state), do: %{state | arming_until: nil}
+  # §8.3.6's arming rule for everything except the two `:action` commands:
+  # the user kept talking, so an open window dies and no new one opens.
+  #
+  # `arming_until` and `arming_kind` are ONE fact in two fields, so nothing
+  # outside these two helpers may write either of them.
+  defp disarm(state), do: %{state | arming_until: nil, arming_kind: nil}
+
+  defp arm(state, kind, now) when kind in [:send, :cancel],
+    do: %{state | arming_until: now + @arming_ms, arming_kind: kind}
 
   # §8.3.7's join rules, expressed structurally rather than as a list of
   # literals so a future insert entry needs no change here:
@@ -892,8 +1043,8 @@ defmodule OrcaHub.Voice.Session do
   # -- timers ----------------------------------------------------------------
 
   @doc """
-  Fires any deadline that has passed: the SEND arming window, and the
-  short-segment hold.
+  Fires any deadline that has passed: the arming window (a send OR, since
+  §8.3.11, a cancel — `arming_kind` decides), and the short-segment hold.
 
   Idempotent — safe to call at any time, from any number of stale timers.
   """
@@ -936,12 +1087,14 @@ defmodule OrcaHub.Voice.Session do
     if now < state.arming_until do
       {state, []}
     else
-      state = %{state | arming_until: nil}
+      kind = state.arming_kind
+      state = disarm(state)
 
-      if state.draft == "" do
-        {state, []}
-      else
-        request_send(state, now)
+      cond do
+        # Nothing to send and nothing to throw away. Both windows agree.
+        state.draft == "" -> {state, []}
+        kind == :cancel -> clear_draft(state)
+        true -> request_send(state, now)
       end
     end
   end
@@ -988,6 +1141,19 @@ defmodule OrcaHub.Voice.Session do
       warm: state.warm,
       pending: pending(state),
       arming_ms: arming_remaining(state, now),
+      # §8.3.11: WHICH action the countdown will fire. The bar renders
+      # "sending in 1.2s" or "cancelling in 1.2s" off this, so a window the
+      # user did not ask for is legible while there is still time to talk
+      # over it.
+      arming: state.arming_kind && to_string(state.arming_kind),
+      # §8.3.11: is there a cancelled draft to put back, AND is there room to
+      # put it? It is false while a draft exists, because `restore/1` refuses
+      # to overwrite one — the affordance must never be offered when pressing
+      # it would do nothing (or, worse, be expected to clobber). The text
+      # itself rides the `"cancelled"` event, not every snapshot.
+      restorable:
+        state.draft == "" and is_binary(state.last_cancelled_draft) and
+          state.last_cancelled_draft != "",
       # §8.3.5: the server's current BELIEF about focus, echoed back so the
       # client can see when its `ui_focus` push has actually been applied.
       focus: state.focus,

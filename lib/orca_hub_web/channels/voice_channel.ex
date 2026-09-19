@@ -151,6 +151,20 @@ defmodule OrcaHubWeb.VoiceChannel do
   def handle_in("cancel", _payload, socket),
     do: apply_state(socket, &Session.cancel/1)
 
+  # §8.3.11 (ORCAHUB3-99): the page's own composer delivered the draft (a
+  # TYPED send). Clears exactly what `cancel` clears and records NO undo —
+  # the text is in the session, and a restore affordance for it would be an
+  # invitation to send it twice.
+  def handle_in("draft_delivered", _payload, socket),
+    do: apply_state(socket, &Session.draft_delivered/1)
+
+  # §8.3.11 (ORCAHUB3-99): put back the draft the last cancel threw away.
+  # The client normally restores its OWN copy through `draft_edit` — the
+  # sink can hold characters this side never saw — and falls back to this
+  # when it has none (a rejoin, a second tab, the bar's own box).
+  def handle_in("restore_draft", _payload, socket),
+    do: apply_state(socket, &Session.restore/1)
+
   # -- spec 8.3, focus ------------------------------------------------------
 
   # What the user is looking at, plus the labels of whichever selectable list
@@ -280,6 +294,20 @@ defmodule OrcaHubWeb.VoiceChannel do
 
   defp run_effect({:sent, text}, socket) do
     push(socket, "sent", %{text: text})
+    socket
+  end
+
+  # §8.3.11 (ORCAHUB3-99): a cancel actually threw a draft away. The client
+  # needs this as its OWN event rather than inferring it from a
+  # `segment_result` — the armed spoken cancel clears 1500 ms after that
+  # result, a palette-focus cancel emits the same result and clears nothing,
+  # and the hook's sink-clear has to follow the clear, not the guess.
+  #
+  # `text` is the server's copy. The client keeps its own (the sink may hold
+  # characters a debounced `draft_edit` had not delivered yet) and prefers
+  # it when restoring.
+  defp run_effect({:cancelled, text}, socket) do
+    push(socket, "cancelled", %{text: text})
     socket
   end
 

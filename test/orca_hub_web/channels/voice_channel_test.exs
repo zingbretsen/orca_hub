@@ -300,6 +300,34 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       assert_push "state", %{draft: ""}, 1_000
     end
 
+    # §8.3.11 / ORCAHUB3-99. The wire half of "a cancelled draft is never
+    # lost": the clear announces itself with its own event carrying the text,
+    # the snapshot says an undo exists, and `restore_draft` puts it back
+    # byte for byte.
+    test "a cancel pushes \"cancelled\" and restore_draft puts it back",
+         %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      text = "four minutes of speech that must not be lost"
+      push(socket, "draft_edit", %{"text" => text})
+      assert_push "state", %{draft: ^text}, 1_000
+
+      push(socket, "cancel", %{})
+      assert_push "cancelled", %{text: ^text}, 1_000
+      assert_push "state", %{draft: "", restorable: true}, 1_000
+
+      push(socket, "restore_draft", %{})
+      assert_push "state", %{draft: ^text, restorable: false}, 1_000
+    end
+
+    test "a cancel with nothing to clear pushes no \"cancelled\"", %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      push(socket, "cancel", %{})
+      assert_push "state", %{draft: "", restorable: false}, 1_000
+      refute_push "cancelled", _payload
+    end
+
     test "speech_start cancels an open arming window", %{session: session} do
       {_reply, socket} = join_warm!(session.id)
 
@@ -424,11 +452,13 @@ defmodule OrcaHubWeb.VoiceChannelTest do
     end
 
     # The structural half of "voice sends only". A TYPED send reaches this
-    # channel as `cancel` — the hook answers the composer's `clear-prompt`
-    # with `cancel` whenever it has no pending spoken send of its own (see
-    # `_onComposerSent`), precisely so the server's draft copy cannot be sent
-    # twice. `cancel` clears the draft and pushes nothing, so a typed send has
-    # no route to a sound even though it went through the same composer.
+    # channel as `draft_delivered` — the hook answers the composer's
+    # `clear-prompt` with it whenever it has no pending spoken send of its own
+    # (see `_onComposerSent`), precisely so the server's draft copy cannot be
+    # sent twice. It pushes nothing, so a typed send has no route to a sound
+    # even though it went through the same composer. §8.3.11 split it out of
+    # `cancel`: a cancel now records an undo, and offering to restore a
+    # message that was successfully SENT would invite a double send.
     test "a typed send clears the draft without pushing \"sent\"", %{session: session} do
       {_reply, socket} = join_warm!(session.id)
 
@@ -436,10 +466,11 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       push(socket, "draft_edit", %{"text" => "typed by hand"})
       assert_push "state", %{draft: "typed by hand"}, 1_000
 
-      push(socket, "cancel", %{})
-      assert_push "state", %{draft: ""}, 1_000
+      push(socket, "draft_delivered", %{})
+      assert_push "state", %{draft: "", restorable: false}, 1_000
 
       refute_push "sent", _payload
+      refute_push "cancelled", _payload
     end
 
     @tag timeout: 30_000
@@ -599,6 +630,55 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       assert_push "segment_result", %{seq: 1, action: "cancel", intent: "cancel"}, 2_000
       assert_push "ui_action", %{kind: "close_palette", payload: %{}}, 1_000
       assert_push "state", %{draft: "still mine"}, 1_000
+      # It cleared nothing, so there is nothing to offer back.
+      refute_push "cancelled", _payload
+    end
+
+    # §8.3.11 / ORCAHUB3-99, over the real wire: the spoken cancel counts
+    # down before it destroys anything, says which countdown it is, and
+    # announces the clear separately when the window actually expires.
+    @tag timeout: 30_000
+    test "a spoken cancel arms first and clears only on expiry", %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      text = "forty segments of dictation"
+      push(socket, "draft_edit", %{"text" => text})
+      assert_push "state", %{draft: ^text}, 1_000
+
+      stub_transcript("or cut cancel.")
+      push(socket, "segment", {:binary, segment(1, 16_000)})
+
+      assert_push "segment_result", %{seq: 1, action: "cancel", intent: "cancel"}, 2_000
+      # Still there, counting down, and legible as a CANCEL countdown.
+      assert_push "state", %{draft: ^text, status: "arming", arming: "cancel"}, 1_000
+      refute_push "cancelled", _payload, 500
+
+      assert_push "cancelled", %{text: ^text}, 3_000
+      assert_push "state", %{draft: "", restorable: true}, 1_000
+
+      push(socket, "restore_draft", %{})
+      assert_push "state", %{draft: ^text}, 1_000
+    end
+
+    test "speech during the cancel window aborts it and nothing is lost",
+         %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      text = "forty segments of dictation"
+      push(socket, "draft_edit", %{"text" => text})
+      assert_push "state", %{draft: ^text}, 1_000
+
+      stub_transcript("or cut cancel.")
+      push(socket, "segment", {:binary, segment(1, 16_000)})
+      assert_push "segment_result", %{seq: 1, action: "cancel"}, 2_000
+      assert_push "state", %{status: "arming", arming: "cancel"}, 1_000
+
+      # The user was mid-sentence, which is the whole reason this window
+      # exists — they are still talking.
+      push(socket, "speech_start", %{})
+      assert_push "state", %{draft: ^text, arming: nil}, 1_000
+
+      refute_push "cancelled", _payload, 2_500
     end
   end
 end

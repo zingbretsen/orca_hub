@@ -24,6 +24,11 @@ defmodule OrcaHub.Voice.IntentVocabTest do
 
   @corpus Path.expand("../../support/fixtures/voice/intent_corpus.json", __DIR__)
 
+  # ORCAHUB3-99: 41 segments of REAL dictation, pasted out of the bar's own
+  # event log the night a cancel false positive ate four minutes of it. The
+  # corpus is one synthetic voice reading a fixed script; this is a person.
+  @dictation Path.expand("../../support/fixtures/voice/dictation_orcahub3_99.json", __DIR__)
+
   # Each entry's MAXIMUM score over the 154 negative clips, i.e. the closest any
   # ordinary dictation in the corpus comes to firing it. These numbers are the
   # published safety margin (they are in the moduledoc table and the spec), so
@@ -62,7 +67,8 @@ defmodule OrcaHub.Voice.IntentVocabTest do
     {:ok,
      corpus: corpus,
      negatives: Enum.filter(corpus["observations"], &(&1["label"] == "negative")),
-     positives: Enum.filter(corpus["observations"], &(&1["label"] == "positive"))}
+     positives: Enum.filter(corpus["observations"], &(&1["label"] == "positive")),
+     dictation: (@dictation |> File.read!() |> Jason.decode!())["segments"]}
   end
 
   describe "§8.3.4 corpus acceptance bar" do
@@ -151,6 +157,108 @@ defmodule OrcaHub.Voice.IntentVocabTest do
             do: name
 
       assert Enum.sort(thin) == [:cancel, :ninth, :send]
+    end
+  end
+
+  # ORCAHUB3-99. The corpus is one synthetic voice reading a fixed script and
+  # it says the vocabulary has ZERO false positives. Four minutes of a real
+  # person talking says otherwise. Everything in here is a measurement against
+  # that transcript, kept because it is the only adversarial sample this
+  # project has that a human actually produced.
+  describe "§8.3.11 real dictation (ORCAHUB3-99)" do
+    test "the fixture is the whole incident: 41 segments, 40 appended, 1 cancel",
+         %{dictation: dictation} do
+      assert length(dictation) == 41
+      assert Enum.count(dictation, &(&1["action"] == "appended")) == 40
+
+      assert [%{"n" => 41, "text" => text, "action" => "cancel"}] =
+               Enum.filter(dictation, &(&1["action"] == "cancel"))
+
+      assert text == "That is not what the original goal was."
+    end
+
+    # THE number the issue asked for. Pinned to its full float, because the
+    # next test turns on it being EXACTLY equal to something else.
+    test "segment #41 scores 0.8571428571428571 against \"orca cancel\"" do
+      text = "That is not what the original goal was."
+
+      assert Intent.score(text, "orca cancel") == 0.8571428571428571
+      assert Intent.intent(text, vocab: Intent.command_vocab()) == {:cancel, 0.8571428571428571}
+      # Over the shared threshold by 0.0071 — a rounding error's worth of margin.
+      assert Intent.score(text, "orca cancel") - Intent.default_threshold() < 0.008
+    end
+
+    # The finding that decided the threshold question, and the reason there is
+    # no `:cancel`-specific threshold in `Intent`. A higher bar for :cancel is
+    # defensible in principle — the error costs ARE asymmetric — but it cannot
+    # be implemented here, because the false positive and six TRUE positives
+    # are the same float. Any threshold that rejects one rejects all seven.
+    test "six GENUINE \"orca cancel\" clips score the identical float, so no threshold separates them",
+         %{positives: positives} do
+      fp = Intent.score("That is not what the original goal was.", "orca cancel")
+
+      identical =
+        for clip <- positives,
+            clip["expected_intent"] == "cancel",
+            Intent.score(clip["text"], "orca cancel") == fp,
+            do: clip["text"]
+
+      assert length(identical) == 6
+      # One Whisper surface form, in two casings — "or cut cancel."
+      assert identical |> Enum.map(&String.downcase/1) |> Enum.uniq() == ["or cut cancel."]
+
+      # What a `:cancel`-only threshold would actually cost, measured rather
+      # than asserted: the corpus's cancel true positives fall 44 -> 38.
+      cancel_positives = Enum.filter(positives, &(&1["expected_intent"] == "cancel"))
+      scores = Enum.map(cancel_positives, &Intent.score(&1["text"], "orca cancel"))
+
+      assert length(cancel_positives) == 46
+      assert Enum.count(scores, &(&1 >= 0.85)) == 44
+      # Anything strictly above the false positive takes those six with it —
+      # all the way up to 1.0, because nothing sits in between.
+      for threshold <- [0.86, 0.90, 0.95, 1.0] do
+        assert Enum.count(scores, &(&1 >= threshold)) == 38
+      end
+    end
+
+    # The rest of the transcript, scored against the WHOLE vocabulary. Two
+    # segments sit inside 0.05 of firing a command they were never meant to,
+    # which is the same near-miss class as ORCAHUB3-92's "…orca hub". They are
+    # pinned so a re-wording that makes either one WORSE fails here.
+    test "no other segment of four minutes of real speech fires a command",
+         %{dictation: dictation} do
+      fired =
+        for %{"n" => n, "text" => text} <- dictation,
+            n != 41,
+            {name, score} = Intent.intent(text, vocab: Intent.command_vocab()),
+            name != nil,
+            do: {n, name, score}
+
+      assert fired == []
+    end
+
+    test "the two near misses in the transcript are pinned, not forgotten",
+         %{dictation: dictation} do
+      near =
+        for %{"n" => n, "text" => text} <- dictation,
+            n != 41,
+            best =
+              Intent.command_vocab()
+              |> Enum.map(fn {name, phrase} -> {Intent.score(text, phrase), name} end)
+              |> Enum.max(),
+            elem(best, 0) >= 0.80,
+            do: {n, elem(best, 1), Float.round(elem(best, 0), 4)}
+
+      # #30 "...do a bunch of research," is 0.0167 away from opening the
+      # command palette AND having "bunch of research" eaten out of the draft
+      # by strip_command/3 — the same shape of hazard as "…orca hub" was for
+      # `orca help`, found the same way (by hand, against a phrase the corpus
+      # does not contain).
+      assert near == [
+               {9, :third, 0.8},
+               {25, :third, 0.8},
+               {30, :search, 0.8333}
+             ]
     end
   end
 
