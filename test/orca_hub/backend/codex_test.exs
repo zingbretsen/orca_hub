@@ -1229,6 +1229,36 @@ defmodule OrcaHub.Backend.CodexTest do
     end
   end
 
+  describe "system_prompt/1 — active_sessions_prompt (peer-awareness for orchestrators)" do
+    test "an orchestrator with a peer in the same directory sees the richer listing, not the terse one-liner" do
+      dir = "/tmp/codex_active_sessions_test_#{System.unique_integer([:positive])}"
+      {:ok, peer} = OrcaHub.Sessions.create_session(%{directory: dir, title: "a peer session"})
+
+      prompt = Backend.system_prompt(ctx(%{orchestrator: true, directory: dir}))
+
+      assert prompt =~ "# Active Sessions In This Directory"
+      assert prompt =~ peer.id
+      refute prompt =~ "Other agent sessions may be active in this directory."
+    end
+
+    test "an orchestrator with no peers still gets the terse fallback one-liner" do
+      prompt = Backend.system_prompt(ctx(%{orchestrator: true}))
+
+      assert prompt =~ "Other agent sessions may be active in this directory."
+      refute prompt =~ "# Active Sessions In This Directory"
+    end
+
+    test "a worker (non-orchestrator) never gets the richer listing, even with peers present" do
+      dir = "/tmp/codex_active_sessions_worker_test_#{System.unique_integer([:positive])}"
+      {:ok, _peer} = OrcaHub.Sessions.create_session(%{directory: dir, title: "a peer session"})
+
+      prompt = Backend.system_prompt(ctx(%{orchestrator: false, directory: dir}))
+
+      refute prompt =~ "# Active Sessions In This Directory"
+      assert prompt =~ "Other agent sessions may be active in this directory."
+    end
+  end
+
   # ── Golden fence (pi_fork_spec.md §5) ──────────────────────────────────
   # Byte-pins Codex's system prompt across the whole flag matrix. Same
   # rationale as the Claude fence: `SharedPrompts` is shared with `Backend.Pi`,

@@ -1408,7 +1408,7 @@ defmodule OrcaHub.Backend.Pi do
   # ~2s, plus it craters every co-tenant on the shared llama-server).
   #
   # So `system_prompt/1` is now a PURE FUNCTION of
-  # `(orchestrator, code_exec, commit_trailer)`. The four fragments that used
+  # `(orchestrator, code_exec, commit_trailer)`. The five fragments that used
   # to diverge per session moved into `ORCA_IDENTITY` (`orca_identity_json/1`
   # below) and are delivered by `priv/pi/orca-identity.ts` as a
   # `custom_message` session entry instead:
@@ -1419,6 +1419,8 @@ defmodule OrcaHub.Backend.Pi do
   #   4. `SharedPrompts.open_issues_prompt/1` — a LIVE DB query, so it varied
   #      per session AND per moment; it was already busting same-session
   #      prefix caching on every cold reopen, forks aside.
+  #   5. `SharedPrompts.active_sessions_prompt/3` — same reasoning as #4 (a
+  #      live, per-moment DB query); orchestrator-only.
   #
   # `orchestrator_prompt/3` and `worker_practices_prompt/2` still take a
   # session id but ignore it (`_session_id`), so they are not divergence
@@ -1432,8 +1434,9 @@ defmodule OrcaHub.Backend.Pi do
   #
   # This determinism is pinned by "system_prompt/1 — byte determinism" in
   # test/orca_hub/backend/pi_test.exs. Claude and Codex are UNAFFECTED (they
-  # keep all four fragments inline) and are byte-pinned by the golden fence in
-  # their own test files — `SharedPrompts` was extended, never mutated.
+  # keep all fragments inline, `active_sessions_prompt/3` included) and are
+  # byte-pinned by the golden fence in their own test files —
+  # `SharedPrompts` was extended, never mutated.
 
   @impl true
   def system_prompt(ctx) do
@@ -1511,6 +1514,7 @@ defmodule OrcaHub.Backend.Pi do
   defp orca_identity_json(ctx) do
     commit_trailer? = Map.get(ctx, :commit_trailer, true)
     issue_key = Map.get(ctx, :issue_key)
+    code_exec = OrcaHub.MCP.CodeExec.enabled?(Map.get(ctx, :code_exec, false))
 
     %{
       "session_id" => to_string(ctx.session_id),
@@ -1520,7 +1524,11 @@ defmodule OrcaHub.Backend.Pi do
         if(commit_trailer? && issue_key,
           do: SharedPrompts.issue_commit_trailer_prompt(issue_key)
         ),
-      "open_issues" => SharedPrompts.open_issues_prompt(ctx.session_id)
+      "open_issues" => SharedPrompts.open_issues_prompt(ctx.session_id),
+      "active_sessions" =>
+        if(ctx.orchestrator,
+          do: SharedPrompts.active_sessions_prompt(ctx.session_id, ctx.directory, code_exec)
+        )
     }
     |> Jason.encode!()
   end

@@ -1890,6 +1890,21 @@ defmodule OrcaHub.Backend.PiTest do
       refute prompt =~ c.project_id
       refute prompt =~ "ORCA-142"
     end
+
+    test "active_sessions_prompt/3 never leaks into the flags-only system_prompt/1, even when a peer exists" do
+      dir = "/tmp/pi_active_sessions_determinism_test_#{System.unique_integer([:positive])}"
+      {:ok, peer} = OrcaHub.Sessions.create_session(%{directory: dir, title: "a peer session"})
+
+      c = ctx(%{orchestrator: true, directory: dir})
+
+      # Guard the fixture: it really would have something to say via ORCA_IDENTITY.
+      assert OrcaHub.Backend.SharedPrompts.active_sessions_prompt(c.session_id, dir, false) =~
+               peer.id
+
+      prompt = Backend.system_prompt(c)
+      refute prompt =~ "# Active Sessions In This Directory"
+      refute prompt =~ peer.id
+    end
   end
 
   # ── ORCA_IDENTITY (pi_fork_spec.md §5.1) ───────────────────────────────
@@ -1951,6 +1966,28 @@ defmodule OrcaHub.Backend.PiTest do
 
     test "open_issues is null when the session created no open/in_progress issues" do
       assert identity_payload(ctx())["open_issues"] == nil
+    end
+
+    test "carries the active-sessions peer listing for an orchestrator with a peer in its directory" do
+      dir = "/tmp/pi_active_sessions_test_#{System.unique_integer([:positive])}"
+      {:ok, peer} = OrcaHub.Sessions.create_session(%{directory: dir, title: "a peer session"})
+
+      payload = identity_payload(ctx(%{orchestrator: true, directory: dir}))
+
+      assert payload["active_sessions"] =~ "# Active Sessions In This Directory"
+      assert payload["active_sessions"] =~ peer.id
+    end
+
+    test "active_sessions is null for a non-orchestrator, even with a peer in its directory" do
+      dir = "/tmp/pi_active_sessions_worker_test_#{System.unique_integer([:positive])}"
+      {:ok, _peer} = OrcaHub.Sessions.create_session(%{directory: dir, title: "a peer session"})
+
+      assert identity_payload(ctx(%{orchestrator: false, directory: dir}))["active_sessions"] ==
+               nil
+    end
+
+    test "active_sessions is null for an orchestrator with no peers" do
+      assert identity_payload(ctx(%{orchestrator: true}))["active_sessions"] == nil
     end
 
     # The payload is UTF-8 (every SharedPrompts fragment is full of em

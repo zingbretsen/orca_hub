@@ -623,6 +623,152 @@ defmodule OrcaHub.Backend.SharedPrompts do
     end
   end
 
+  # How far back an idle/ready/error session still counts as "currently
+  # active" for active_sessions_prompt/3 — a `running`/`waiting` session
+  # counts regardless of age (it is provably live right now), but an
+  # orchestrator sitting `idle` between turns is exactly the case this
+  # fragment exists to surface, so recency alone can't be "status ==
+  # running". 24h is a guess at "still probably around today"; widen or
+  # narrow here if that's wrong in practice.
+  @active_sessions_recent_hours 24
+  # Prompt-byte budget: cap the listing rather than let a busy directory's
+  # session count grow this fragment unboundedly (Port.open's argv/env size
+  # guard — see SessionRunner.check_spawn_spec_sizes!/2).
+  @active_sessions_cap 15
+  # Fetched before filtering to "active" and capping to @active_sessions_cap
+  # — generous enough that a busy directory's truly-active sessions aren't
+  # cut off by the fetch limit before the recency filter even runs.
+  @active_sessions_fetch_limit 100
+  @active_sessions_title_max_chars 60
+
+  @doc """
+  Lists OTHER sessions currently active in `directory` — the file-conflict
+  signal the user asked for: a fresh orchestrator should know who else is
+  working in its own working directory before spawning workers onto shared
+  files. Orchestrator-only at the call site (workers keep the terser
+  `sibling_sessions_prompt/2` one-liner instead — see `Backend.Claude`/
+  `Backend.Codex`); pi rides this in `ORCA_IDENTITY` rather than the flags
+  prompt (see `Backend.Pi`'s `orca_identity_json/1`), since it's a live,
+  per-moment DB query exactly like `open_issues_prompt/1`.
+
+  "Currently active" is deliberately NOT `status == "running"` — an
+  orchestrator idling between turns is exactly the case worth surfacing, so
+  this is: same directory, not archived, not a background `kind` (already
+  `HubRPC.search_sessions_by_directory/2`'s defaults), not this session
+  itself, and either `running`/`waiting` (live right now regardless of age)
+  or updated within `@active_sessions_recent_hours`. Orchestrators are
+  sorted first (the peers worth checking in with), then by most recently
+  updated; the list is capped at `@active_sessions_cap` with a "… and N
+  more" tail when truncated.
+
+  Returns `nil` when there is nothing to report (same convention as
+  `open_issues_prompt/1`) — including when `session_id` is `nil`.
+  """
+  def active_sessions_prompt(nil, _directory, _code_exec), do: nil
+
+  def active_sessions_prompt(session_id, directory, code_exec) do
+    directory
+    |> HubRPC.search_sessions_by_directory(%{limit: @active_sessions_fetch_limit})
+    |> Enum.reject(&(&1.id == session_id))
+    |> Enum.filter(&currently_active?/1)
+    |> sort_active_sessions()
+    |> case do
+      [] -> nil
+      peers -> render_active_sessions_prompt(peers, directory, code_exec)
+    end
+  end
+
+  defp currently_active?(%{status: status}) when status in ["running", "waiting"], do: true
+  defp currently_active?(%{updated_at: nil}), do: false
+
+  defp currently_active?(%{updated_at: %NaiveDateTime{} = updated_at}) do
+    NaiveDateTime.diff(NaiveDateTime.utc_now(), updated_at, :second) <=
+      @active_sessions_recent_hours * 3600
+  end
+
+  # Stable two-pass sort (Enum.sort_by/2's merge sort preserves prior
+  # relative order for equal keys): sort by recency first, then by
+  # orchestrator-first — so within each group (orchestrators, non-
+  # orchestrators) the most recently updated still comes first. Deliberately
+  # NOT a single `Enum.sort_by(&{...})` compound key — comparing a tuple that
+  # embeds a `%NaiveDateTime{}` falls back to Erlang's field-order struct
+  # comparison, not chronological order (see CLAUDE.md's timestamp-sort
+  # invariant).
+  defp sort_active_sessions(sessions) do
+    sessions
+    |> Enum.sort_by(& &1.updated_at, {:desc, NaiveDateTime})
+    |> Enum.sort_by(&(!&1.orchestrator))
+  end
+
+  defp render_active_sessions_prompt(peers, directory, code_exec) do
+    {shown, hidden_count} =
+      if length(peers) > @active_sessions_cap do
+        {Enum.take(peers, @active_sessions_cap), length(peers) - @active_sessions_cap}
+      else
+        {peers, 0}
+      end
+
+    search_ref =
+      if code_exec,
+        do: "`Tools.search_sessions(%{})`",
+        else: "the `mcp__orca__search_sessions` MCP tool with no arguments"
+
+    tail_ref =
+      if code_exec, do: "`Tools.get_session_tail(...)`", else: "`mcp__orca__get_session_tail`"
+
+    message_ref =
+      if code_exec,
+        do: "`Tools.send_message_to_session(...)`",
+        else: "`mcp__orca__send_message_to_session`"
+
+    more_line =
+      if hidden_count > 0,
+        do: "\n- … and #{hidden_count} more (call #{search_ref} to see the rest)",
+        else: ""
+
+    "# Active Sessions In This Directory\n\n" <>
+      "Other sessions are already active in `#{directory}` — this worktree is " <>
+      "shared, so before spawning workers onto files they may also be " <>
+      "touching, consider checking in with the peer orchestrators below about " <>
+      "file ownership:\n\n" <>
+      Enum.map_join(shown, "\n", &active_session_line/1) <>
+      more_line <>
+      "\n\nCall #{search_ref} at any time to see everything currently active " <>
+      "in this directory (running AND idle — a session sitting idle between " <>
+      "turns is still live). Use #{tail_ref} to peek at a session's progress " <>
+      "non-interruptively, and #{message_ref} to check in directly."
+  end
+
+  defp active_session_line(session) do
+    role = if session.orchestrator, do: " [orchestrator]", else: ""
+    parent = session.parent_session_id || "root"
+    progress = active_session_progress_suffix(session)
+
+    "- #{session.id}#{role} \"#{truncate_title(session.title)}\" " <>
+      "(#{session.status}, parent: #{parent})#{progress}"
+  end
+
+  defp active_session_progress_suffix(%{progress_phase: nil, progress_note: nil}), do: ""
+
+  defp active_session_progress_suffix(session) do
+    " — " <>
+      Enum.map_join(
+        Enum.reject([session.progress_phase, session.progress_note], &is_nil/1),
+        ": ",
+        & &1
+      )
+  end
+
+  defp truncate_title(nil), do: "(untitled)"
+
+  defp truncate_title(title) do
+    if String.length(title) > @active_sessions_title_max_chars do
+      String.slice(title, 0, @active_sessions_title_max_chars) <> "…"
+    else
+      title
+    end
+  end
+
   @doc """
   The resume-hook prompt fragment (issues_spec.md §10) — lists issues this
   session created that are still open/in_progress, with their `plan` (the

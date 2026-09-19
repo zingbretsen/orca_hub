@@ -29,7 +29,8 @@
  *   { "session_id": "...",          // required
  *     "commit_trailer": "..."|null, // OrcaHub-Session trailer instruction
  *     "issue_trailer":  "..."|null, // OrcaHub-Issue trailer, when linked
- *     "open_issues":    "..."|null } // issues_spec.md §10 resume hook
+ *     "open_issues":    "..."|null, // issues_spec.md §10 resume hook
+ *     "active_sessions":"..."|null } // other active sessions in this directory (orchestrators only)
  *
  * Env is invisible to the KV cache, so this whole payload varying per child
  * costs nothing.
@@ -100,6 +101,7 @@ type IdentityPayload = {
   commit_trailer?: string | null;
   issue_trailer?: string | null;
   open_issues?: string | null;
+  active_sessions?: string | null;
 };
 
 // A custom_message's `content` is "String or (TextContent | ImageContent)[]"
@@ -162,7 +164,12 @@ function renderIdentity(payload: IdentityPayload, previousSessionId?: string): s
     parts.push(`Your OrcaHub session ID is ${sessionId}.`);
   }
 
-  for (const fragment of [payload.commit_trailer, payload.issue_trailer, payload.open_issues]) {
+  for (const fragment of [
+    payload.commit_trailer,
+    payload.issue_trailer,
+    payload.open_issues,
+    payload.active_sessions,
+  ]) {
     if (typeof fragment === "string" && fragment.trim() !== "") parts.push(fragment);
   }
 

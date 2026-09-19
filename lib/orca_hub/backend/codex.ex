@@ -836,7 +836,7 @@ defmodule OrcaHub.Backend.Codex do
         do: SharedPrompts.issue_commit_trailer_prompt(ctx.issue_key)
       ),
       if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec)),
-      sibling_sessions_prompt(ctx.orchestrator, code_exec),
+      sibling_or_active_sessions_prompt(ctx, code_exec),
       SharedPrompts.context_manifest_prompt(ctx.directory),
       SharedPrompts.open_issues_prompt(ctx.session_id)
     ]
@@ -903,6 +903,20 @@ defmodule OrcaHub.Backend.Codex do
     Remember: you orchestrate, you don't implement. If you find yourself wanting to edit a file or run a command, spawn a worker session instead.
     """
     |> String.trim()
+  end
+
+  # For an orchestrator, the richer `SharedPrompts.active_sessions_prompt/3`
+  # (which already tells it how to look peers up itself) supersedes the
+  # terse one-liner below — falling back to the one-liner only when there's
+  # nothing to list, so an orchestrator with no current peers still learns
+  # `search_sessions` exists at all.
+  defp sibling_or_active_sessions_prompt(%{orchestrator: true} = ctx, code_exec) do
+    SharedPrompts.active_sessions_prompt(ctx.session_id, ctx.directory, code_exec) ||
+      sibling_sessions_prompt(true, code_exec)
+  end
+
+  defp sibling_or_active_sessions_prompt(ctx, code_exec) do
+    sibling_sessions_prompt(ctx.orchestrator, code_exec)
   end
 
   # In code-exec mode, EVERY coordination tool including

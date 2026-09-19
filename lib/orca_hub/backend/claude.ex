@@ -403,7 +403,7 @@ defmodule OrcaHub.Backend.Claude do
           do: SharedPrompts.worker_practices_prompt(mcp_orchestration, code_exec)
         ),
         if(!ctx.orchestrator, do: ask_user_question_prompt()),
-        if(mcp_orchestration, do: sibling_sessions_prompt(ctx.orchestrator, code_exec)),
+        if(mcp_orchestration, do: sibling_or_active_sessions_prompt(ctx, code_exec)),
         if(result_schema, do: submit_result_prompt()),
         SharedPrompts.context_manifest_prompt(ctx.directory),
         if(mcp_orchestration, do: SharedPrompts.open_issues_prompt(ctx.session_id))
@@ -433,6 +433,20 @@ defmodule OrcaHub.Backend.Claude do
     only act on the question once the user has actually responded.\
     """
     |> String.trim()
+  end
+
+  # For an orchestrator, the richer `SharedPrompts.active_sessions_prompt/3`
+  # (which already tells it how to look peers up itself) supersedes the
+  # terse one-liner below — falling back to the one-liner only when there's
+  # nothing to list, so an orchestrator with no current peers still learns
+  # `search_sessions` exists at all.
+  defp sibling_or_active_sessions_prompt(%{orchestrator: true} = ctx, code_exec) do
+    SharedPrompts.active_sessions_prompt(ctx.session_id, ctx.directory, code_exec) ||
+      sibling_sessions_prompt(true, code_exec)
+  end
+
+  defp sibling_or_active_sessions_prompt(ctx, code_exec) do
+    sibling_sessions_prompt(ctx.orchestrator, code_exec)
   end
 
   # Orchestrator sessions can use `search_sessions`; regular sessions cannot,
