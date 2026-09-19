@@ -344,6 +344,21 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       assert text =~ ~r/truncated .*orca ninth.* is heard as\s+orca send/i
     end
 
+    test "lists the spoken way to open itself, with a usable hint (ORCAHUB3-92)", %{conn: conn} do
+      # The panel already lists it by derivation (the test above covers every
+      # entry), but `:help` is the one entry whose absence would be invisible:
+      # a user who does not know the phrase cannot open the panel to read it.
+      text = armed_bar(conn) |> open_help() |> help_text()
+
+      {:help, phrase} = Enum.find(Intent.command_vocab(), &(elem(&1, 0) == :help))
+      assert phrase == "orca help menu"
+      assert text =~ phrase
+
+      # And the hint teaches the short form, which is what the user will say.
+      assert text =~ "opens this list"
+      assert text =~ "orca help"
+    end
+
     test "the close button and a second click on the trigger both collapse it", %{conn: conn} do
       bar = armed_bar(conn)
 

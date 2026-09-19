@@ -651,7 +651,8 @@ defmodule OrcaHub.Voice.SessionTest do
             {"orca open", {"open_palette", %{}}},
             {"orca back", {"back", %{}}},
             {"orca all sessions", {"navigate", %{path: "/sessions"}}},
-            {"orca new session", {"navigate", %{path: "/sessions/new"}}}
+            {"orca new session", {"navigate", %{path: "/sessions/new"}}},
+            {"orca help menu", {"open_help", %{}}}
           ] do
         {state, _} = utterance(Session.new(), 1, "keep this")
         {state, effects} = utterance(state, 2, said)
@@ -660,6 +661,29 @@ defmodule OrcaHub.Voice.SessionTest do
         assert ui_actions(effects) == [expected]
         assert state.draft == "keep this"
       end
+    end
+
+    test "\"orca help menu\" routes itself: no new clause, no draft, no arming (ORCAHUB3-92)" do
+      # The point of §8.3.6's dispatch-on-class: `:help` was added to `Intent`
+      # alone and arrived here as a `:navigate` with a new kind. If this test
+      # ever needs a `route/7` clause of its own, the class is wrong.
+      {state, _} = utterance(Session.new(), 1, "keep this draft")
+      {armed, _} = utterance(state, 2, "orca send", @t0 + 10)
+      assert armed.arming_until != nil
+
+      {state, effects} = utterance(armed, 3, "what can I say orca help menu", @t0 + 20)
+
+      assert [%{action: "navigate", intent: "help"}] = results(effects)
+      assert ui_actions(effects) == [{"open_help", %{}}]
+
+      # A navigation utterance is not dictation, so the whole of it — command
+      # and the "what can I say" in front of it — is discarded and the draft is
+      # exactly what it was...
+      assert state.draft == "keep this draft"
+      # ...and a help panel is not a send: the arming window is closed, not
+      # opened, so the pending "orca send" cannot land behind it.
+      assert state.arming_until == nil
+      refute state.sending
     end
 
     test "routing is by class, so every vocabulary entry has a home" do

@@ -80,6 +80,7 @@ defmodule OrcaHub.Voice.Intent do
   | `:seventh` | orca seventh item | select | 0.714 |
   | `:eighth` | orca eighth item | select | 0.667 |
   | `:ninth` | orca ninth item | select | 0.833 |
+  | `:help` | orca help menu | navigate | 0.625 |
 
   ### What the measurement changed, and why
 
@@ -101,6 +102,20 @@ defmodule OrcaHub.Voice.Intent do
     voicetest dot exs") — no false positive, but only 0.05 of headroom. It ships
     as `orca all sessions` (0.727), and the shorter `orca sessions` still
     resolves to `:sessions` at 0.923, so nothing was taken away from the user.
+
+  A fourth, `:help` (ORCAHUB3-92), was reworded for a hazard the CORPUS CANNOT
+  SEE. `orca help` passes every §8.3.4 bar and passes them well — 0.571 on the
+  negatives, the lowest score in the whole vocabulary, 0 stolen positives — but
+  the corpus contains no clip with the word "help" in it and only one saying
+  "orca hub", mid-sentence. Scored by hand against the phrase this project says
+  more than any other, **`orca help` matches a terminal "orca hub" at 0.909**:
+  "deploy orca hub." would have fired the panel AND had those two words eaten
+  out of the draft by `strip_command/3`. It therefore ships as
+  `orca help menu` (0.625 on the negatives), which drops the whole "…orca hub"
+  family to 0.769 — 0.081 of headroom, more than the reworded `:sessions` got —
+  while the natural short forms still reach it: `orca help` at 0.857 and
+  `orca help me` at 0.933, exactly the way `orca sessions` still reaches
+  `:sessions`.
 
   Kept despite a thin margin: `:ninth` at 0.833 is the highest in the new
   vocabulary, but it is no thinner than the phase-1 `:send`/`:cancel` entries
@@ -124,6 +139,11 @@ defmodule OrcaHub.Voice.Intent do
   * **`orca the third one` cannot match** (0.571): it is four tokens, and
     `score/2` never looks further back than three. Every phrase here is <= 3
     tokens for that reason.
+  * **A sentence ending in "orca hub menu" opens the help** (0.933 against
+    `orca help menu`). It is the residue of the `:help` rewording above: the
+    plain "…orca hub" ending, the one that actually occurs, is safe at 0.800,
+    and "hub menu" is not a thing this app has. A help panel is read-only, so
+    the cost is the two eaten words rather than an action.
   """
 
   # The reference `VOCAB`, in the reference's insertion order. Order is load
@@ -146,8 +166,8 @@ defmodule OrcaHub.Voice.Intent do
   #     a positive clip from a phase-1 command.
   #
   # Three candidate phrases from §8.3.3 did not survive that measurement and were
-  # REWORDED; see the "Phase 2c vocabulary" section of the moduledoc for the
-  # numbers and the reasoning.
+  # REWORDED, as was `:help` (added later, ORCAHUB3-92); see the "Phase 2c
+  # vocabulary" section of the moduledoc for the numbers and the reasoning.
   @command_vocab @default_vocab ++
                    [
                      {:search, "orca search"},
@@ -169,7 +189,13 @@ defmodule OrcaHub.Voice.Intent do
                      {:sixth, "orca sixth item"},
                      {:seventh, "orca seventh item"},
                      {:eighth, "orca eighth item"},
-                     {:ninth, "orca ninth item"}
+                     {:ninth, "orca ninth item"},
+                     # ORCAHUB3-92, appended AFTER §8.3.3's entries because it
+                     # arrived after them and order is a tie-break, not a
+                     # taxonomy. "orca help" — the phrase actually asked for —
+                     # is a terminal-position twin of "orca hub"; see the
+                     # moduledoc.
+                     {:help, "orca help menu"}
                    ]
 
   # §8.3.2: what the session DOES with a matched name. `:ignore` is the safe
@@ -199,7 +225,8 @@ defmodule OrcaHub.Voice.Intent do
     sixth: :select,
     seventh: :select,
     eighth: :select,
-    ninth: :select
+    ninth: :select,
+    help: :navigate
   }
 
   # §8.3.2: the argument the class needs. Insert payloads are the literal text
@@ -225,7 +252,8 @@ defmodule OrcaHub.Voice.Intent do
     open: %{kind: "open_palette"},
     back: %{kind: "back"},
     sessions: %{kind: "navigate", path: "/sessions"},
-    new_session: %{kind: "navigate", path: "/sessions/new"}
+    new_session: %{kind: "navigate", path: "/sessions/new"},
+    help: %{kind: "open_help"}
   }
 
   @default_threshold 0.85

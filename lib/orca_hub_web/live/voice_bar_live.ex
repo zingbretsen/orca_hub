@@ -423,6 +423,7 @@ defmodule OrcaHubWeb.VoiceBarLive do
       %{kind: "open_palette"} -> "opens the command palette"
       %{kind: "close_palette"} -> "closes the command palette"
       %{kind: "back"} -> "goes back a page"
+      %{kind: "open_help"} -> "opens this list — \"orca help\" on its own works too"
       _empty -> Map.get(@bare_hints, name, "")
     end
   end

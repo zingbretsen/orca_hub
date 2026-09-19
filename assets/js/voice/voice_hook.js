@@ -800,6 +800,9 @@ export const VoiceHook = {
         window.history.back()
         outcome = { result: "ok", detail: "history.back()" }
         break
+      case "open_help":
+        outcome = this._toggleHelp(true)
+        break
       default:
         outcome = { result: "error", detail: "unknown kind" }
     }
@@ -823,6 +826,30 @@ export const VoiceHook = {
       return { result: "noop", detail: `already ${open ? "open" : "closed"}` }
     }
     document.dispatchEvent(new CustomEvent("command-palette:toggle"))
+    return { result: "ok" }
+  },
+
+  /** §8.3.10's panel is server-rendered, so its existence in the DOM IS the
+   * open/closed state — `VoiceBarLive` only renders `#voice-help` while
+   * `help_open` is true. */
+  _helpOpen() {
+    return !!document.getElementById("voice-help")
+  },
+
+  /** Open/close the help panel through the trigger the bar already renders
+   * beside the mic (`phx-click="toggle_help"`), for the same reason
+   * `_togglePalette` goes through the palette's own event: one code path, so
+   * spoken and clicked cannot drift. It is a TOGGLE, hence the guard — a
+   * second "orca help menu" while the panel is open must leave it open, not
+   * close it. The trigger only exists while voice is on, which a spoken
+   * command implies. */
+  _toggleHelp(open) {
+    if (this._helpOpen() === open) {
+      return { result: "noop", detail: `already ${open ? "open" : "closed"}` }
+    }
+    const trigger = document.querySelector("[data-voice-help-toggle]")
+    if (!trigger) return { result: "noop", detail: "no help trigger" }
+    trigger.click()
     return { result: "ok" }
   },
 

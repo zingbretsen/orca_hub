@@ -17,7 +17,7 @@ defmodule OrcaHubWeb.VoiceChannel do
   Two events carry phase 2c: the client pushes `"ui_focus"` (`composer` vs
   `palette`, plus the visible candidate labels) and this channel pushes
   `"ui_action"` (`open_palette`, `close_palette`, `palette_query`, `select`,
-  `navigate`, `back`). The routing decision is entirely
+  `navigate`, `back`, `open_help`). The routing decision is entirely
   `OrcaHub.Voice.Session`'s; this module only relays.
 
   ## Sending (spec 8.2, ORCAHUB3-86)

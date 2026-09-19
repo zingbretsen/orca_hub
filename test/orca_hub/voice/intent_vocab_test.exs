@@ -52,7 +52,8 @@ defmodule OrcaHub.Voice.IntentVocabTest do
     sixth: 0.667,
     seventh: 0.714,
     eighth: 0.667,
-    ninth: 0.833
+    ninth: 0.833,
+    help: 0.625
   }
 
   setup_all do
@@ -183,7 +184,7 @@ defmodule OrcaHub.Voice.IntentVocabTest do
       assert phrases == Enum.uniq(phrases)
     end
 
-    test "the phase 2c additions are §8.3.3's, in §8.3.3's order" do
+    test "the phase 2c additions are §8.3.3's, in §8.3.3's order, then later arrivals" do
       assert Enum.drop(Intent.command_vocab(), 4) == [
                {:search, "orca search"},
                {:open, "orca open"},
@@ -204,7 +205,9 @@ defmodule OrcaHub.Voice.IntentVocabTest do
                {:sixth, "orca sixth item"},
                {:seventh, "orca seventh item"},
                {:eighth, "orca eighth item"},
-               {:ninth, "orca ninth item"}
+               {:ninth, "orca ninth item"},
+               # ORCAHUB3-92, after §8.3.3's block: arrival order, not taxonomy.
+               {:help, "orca help menu"}
              ]
     end
   end
@@ -369,6 +372,74 @@ defmodule OrcaHub.Voice.IntentVocabTest do
     end
   end
 
+  describe ":help (ORCAHUB3-92) — the hazard the corpus cannot see" do
+    # The three bars above all PASS for the bare "orca help": 0.571 on the
+    # negatives (the lowest score in the vocabulary), 0 false positives, 0
+    # stolen positives. It was reworded anyway, because the corpus contains no
+    # clip with the word "help" and only one saying "orca hub" — and this
+    # project's own name is what the danger is made of. Keep the rejected
+    # wording measured here so the rewording is not undone as pointless.
+    test "the rejected \"orca help\" would have fired on a terminal \"orca hub\"" do
+      assert_in_delta Intent.score("deploy orca hub", "orca help"), 0.9091, 5.0e-4
+      assert Intent.score("deploy orca hub", "orca help") >= 0.85
+
+      # ...and `strip_command/3` would then have eaten the project's name out
+      # of the draft, which is the part that makes it worse than a stray panel.
+      rejected = Intent.command_vocab() ++ [{:help_rejected, "orca help"}]
+
+      assert Intent.strip_command("deploy the orca hub", :help_rejected, vocab: rejected) ==
+               "deploy the"
+    end
+
+    test "the shipped \"orca help menu\" leaves the whole \"…orca hub\" family alone" do
+      vocab = Intent.command_vocab()
+
+      for said <- [
+            "orca hub",
+            "the orca hub",
+            "deploy orca hub",
+            "restart orca hub",
+            "let's look at orca hub"
+          ] do
+        assert_in_delta Intent.score(said, "orca help menu"), 0.7692, 5.0e-4
+
+        refute match?({:help, _}, Intent.intent(said, vocab: vocab)),
+               "#{inspect(said)} fired :help — #{inspect(Intent.intent(said, vocab: vocab))}"
+      end
+    end
+
+    test "the short forms a user actually says still reach it" do
+      vocab = Intent.command_vocab()
+
+      assert {:help, 1.0} = Intent.intent("orca help menu", vocab: vocab)
+      assert {:help, 1.0} = Intent.intent("Orca help menu.", vocab: vocab)
+      assert {:help, 1.0} = Intent.intent("orca helpmenu", vocab: vocab)
+
+      # The same bargain `orca all sessions` struck: the long phrase ships, the
+      # short one the user reaches for still resolves.
+      assert {:help, short} = Intent.intent("orca help", vocab: vocab)
+      assert_in_delta short, 0.8571, 5.0e-4
+
+      assert {:help, with_me} = Intent.intent("orca help me", vocab: vocab)
+      assert_in_delta with_me, 0.9333, 5.0e-4
+    end
+
+    test "a bare \"help\" mid-dictation is just dictation" do
+      vocab = Intent.command_vocab()
+
+      assert {nil, _} = Intent.intent("help", vocab: vocab)
+      assert {nil, _} = Intent.intent("can you help me with this", vocab: vocab)
+      assert {nil, _} = Intent.intent("that was not very helpful", vocab: vocab)
+    end
+
+    test "the residue, pinned: a terminal \"orca hub menu\" does fire it" do
+      # Accepted, and recorded in the moduledoc's known limitations: the panel
+      # is read-only and "hub menu" is not a phrase this app has.
+      assert {:help, score} = Intent.intent("orca hub menu", vocab: Intent.command_vocab())
+      assert_in_delta score, 0.9333, 5.0e-4
+    end
+  end
+
   describe "§8.3.2 class/1" do
     test "every name in the vocabulary has a class, and only the documented ones" do
       for {name, _phrase} <- Intent.command_vocab() do
@@ -384,7 +455,7 @@ defmodule OrcaHub.Voice.IntentVocabTest do
     end
 
     test "the phase 2c names carry §8.3.3's classes" do
-      for name <- [:search, :open, :back, :sessions, :new_session] do
+      for name <- [:search, :open, :back, :sessions, :new_session, :help] do
         assert Intent.class(name) == :navigate
       end
 
@@ -433,6 +504,7 @@ defmodule OrcaHub.Voice.IntentVocabTest do
       assert Intent.payload(:back) == %{kind: "back"}
       assert Intent.payload(:sessions) == %{kind: "navigate", path: "/sessions"}
       assert Intent.payload(:new_session) == %{kind: "navigate", path: "/sessions/new"}
+      assert Intent.payload(:help) == %{kind: "open_help"}
     end
 
     test "every navigate path is one of §8.3.3's fixed set" do
@@ -454,10 +526,17 @@ defmodule OrcaHub.Voice.IntentVocabTest do
     test "class and payload agree: every class gets the shape its router expects" do
       for {name, _phrase} <- Intent.command_vocab() do
         case {Intent.class(name), Intent.payload(name)} do
-          {:insert, payload} -> assert is_binary(payload[:text])
-          {:select, payload} -> assert payload[:ordinal] in 1..9
-          {:navigate, payload} -> assert payload[:kind] in ["open_palette", "back", "navigate"]
-          {_action_or_ignore, payload} -> assert payload == %{}
+          {:insert, payload} ->
+            assert is_binary(payload[:text])
+
+          {:select, payload} ->
+            assert payload[:ordinal] in 1..9
+
+          {:navigate, payload} ->
+            assert payload[:kind] in ["open_palette", "back", "navigate", "open_help"]
+
+          {_action_or_ignore, payload} ->
+            assert payload == %{}
         end
       end
     end
