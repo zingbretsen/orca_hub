@@ -174,6 +174,57 @@ defmodule OrcaHub.Backend.SharedPromptsActiveSessionsTest do
       assert prompt =~ "and 5 more"
     end
 
+    test "truncates an overlong title" do
+      d = dir()
+      self = session!(d)
+      peer = session!(d, %{title: String.duplicate("x", 200)})
+
+      prompt = SharedPrompts.active_sessions_prompt(self.id, d, false)
+
+      assert prompt =~ String.duplicate("x", 60) <> "…"
+      refute prompt =~ String.duplicate("x", 61)
+      assert prompt =~ peer.id
+    end
+
+    test "truncates an overlong progress_note" do
+      d = dir()
+      self = session!(d)
+
+      session!(d, %{progress_phase: "implementing", progress_note: String.duplicate("y", 200)})
+
+      prompt = SharedPrompts.active_sessions_prompt(self.id, d, false)
+
+      assert prompt =~ String.duplicate("y", 80) <> "…"
+      refute prompt =~ String.duplicate("y", 81)
+    end
+
+    test "a hard byte ceiling bounds the WHOLE fragment, independent of and on top of the row cap" do
+      d = dir()
+      self = session!(d)
+
+      # Exactly @active_sessions_cap rows (so the ROW cap alone would not
+      # truncate anything), each with title/phase/note already at their own
+      # per-field max length — demonstrating the overall-byte backstop fires
+      # even when field-level truncation and the row cap both already did
+      # their job individually.
+      for _ <- 1..15 do
+        session!(d, %{
+          title: String.duplicate("t", 200),
+          progress_phase: String.duplicate("p", 200),
+          progress_note: String.duplicate("n", 200)
+        })
+      end
+
+      prompt = SharedPrompts.active_sessions_prompt(self.id, d, false)
+
+      refute prompt =~ ~r/and \d+ more/
+      assert prompt =~ "truncated at 4096 bytes"
+      assert prompt =~ "search_sessions"
+      # Bounded near the cap, not merely "smaller than unbounded" — a small
+      # fixed allowance for the truncation marker text appended after the cut.
+      assert byte_size(prompt) < 4096 + 200
+    end
+
     test "non-code-exec: points at the standalone search_sessions/get_session_tail/send_message_to_session MCP tools" do
       d = dir()
       self = session!(d)

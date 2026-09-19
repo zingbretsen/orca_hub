@@ -640,6 +640,18 @@ defmodule OrcaHub.Backend.SharedPrompts do
   # cut off by the fetch limit before the recency filter even runs.
   @active_sessions_fetch_limit 100
   @active_sessions_title_max_chars 60
+  # `progress_phase`/`progress_note` are free text set by the report_progress
+  # tool (Session's schema has no length validation on either) — truncate
+  # per-row so one verbose session can't dominate the listing on its own.
+  @active_sessions_progress_max_chars 80
+  # Hard backstop on the WHOLE rendered fragment, independent of the row cap
+  # above: @active_sessions_cap bounds row COUNT, not bytes, so it alone
+  # can't guarantee a bound if some future field gains unbounded length.
+  # Mirrors `bounded_manifest/2`'s pattern (same cut-on-UTF-8-boundary
+  # `safe_binary_prefix/2` helper) — small relative to that fragment's 16 KiB
+  # cap since this is one of several fragments sharing the same
+  # 128 KiB `MAX_ARG_STRLEN` budget (`SessionRunner.check_spawn_spec_sizes!/2`).
+  @active_sessions_max_bytes 4096
 
   @doc """
   Lists OTHER sessions currently active in `directory` — the file-conflict
@@ -659,7 +671,11 @@ defmodule OrcaHub.Backend.SharedPrompts do
   or updated within `@active_sessions_recent_hours`. Orchestrators are
   sorted first (the peers worth checking in with), then by most recently
   updated; the list is capped at `@active_sessions_cap` with a "… and N
-  more" tail when truncated.
+  more" tail when truncated. Per-row title/progress text is length-capped
+  too, and the WHOLE rendered fragment has a hard `@active_sessions_max_bytes`
+  backstop independent of the row cap — free-text `progress_phase`/
+  `progress_note` have no length validation at the schema level, so the row
+  cap alone can't guarantee a byte bound.
 
   Returns `nil` when there is nothing to report (same convention as
   `open_issues_prompt/1`) — including when `session_id` is `nil`.
@@ -726,17 +742,31 @@ defmodule OrcaHub.Backend.SharedPrompts do
         do: "\n- … and #{hidden_count} more (call #{search_ref} to see the rest)",
         else: ""
 
-    "# Active Sessions In This Directory\n\n" <>
-      "Other sessions are already active in `#{directory}` — this worktree is " <>
-      "shared, so before spawning workers onto files they may also be " <>
-      "touching, consider checking in with the peer orchestrators below about " <>
-      "file ownership:\n\n" <>
-      Enum.map_join(shown, "\n", &active_session_line/1) <>
-      more_line <>
-      "\n\nCall #{search_ref} at any time to see everything currently active " <>
-      "in this directory (running AND idle — a session sitting idle between " <>
-      "turns is still live). Use #{tail_ref} to peek at a session's progress " <>
-      "non-interruptively, and #{message_ref} to check in directly."
+    ("# Active Sessions In This Directory\n\n" <>
+       "Other sessions are already active in `#{directory}` — this worktree is " <>
+       "shared, so before spawning workers onto files they may also be " <>
+       "touching, consider checking in with the peer orchestrators below about " <>
+       "file ownership:\n\n" <>
+       Enum.map_join(shown, "\n", &active_session_line/1) <>
+       more_line <>
+       "\n\nCall #{search_ref} at any time to see everything currently active " <>
+       "in this directory (running AND idle — a session sitting idle between " <>
+       "turns is still live). Use #{tail_ref} to peek at a session's progress " <>
+       "non-interruptively, and #{message_ref} to check in directly.")
+    |> bound_active_sessions_prompt(search_ref)
+  end
+
+  # Hard backstop independent of the row cap (see @active_sessions_max_bytes)
+  # — free-text fields with no length validation (progress_phase/note) could
+  # otherwise blow the byte budget even with only @active_sessions_cap rows.
+  defp bound_active_sessions_prompt(text, search_ref) do
+    if byte_size(text) <= @active_sessions_max_bytes do
+      text
+    else
+      safe_binary_prefix(text, @active_sessions_max_bytes) <>
+        "\n\n[Active Sessions listing truncated at #{@active_sessions_max_bytes} bytes — " <>
+        "call #{search_ref} for the full picture.]"
+    end
   end
 
   defp active_session_line(session) do
@@ -755,17 +785,18 @@ defmodule OrcaHub.Backend.SharedPrompts do
       Enum.map_join(
         Enum.reject([session.progress_phase, session.progress_note], &is_nil/1),
         ": ",
-        & &1
+        &truncate(&1, @active_sessions_progress_max_chars)
       )
   end
 
   defp truncate_title(nil), do: "(untitled)"
+  defp truncate_title(title), do: truncate(title, @active_sessions_title_max_chars)
 
-  defp truncate_title(title) do
-    if String.length(title) > @active_sessions_title_max_chars do
-      String.slice(title, 0, @active_sessions_title_max_chars) <> "…"
+  defp truncate(text, max_chars) do
+    if String.length(text) > max_chars do
+      String.slice(text, 0, max_chars) <> "…"
     else
-      title
+      text
     end
   end
 
