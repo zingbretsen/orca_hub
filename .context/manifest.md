@@ -26,9 +26,10 @@ docs it points at stay on disk — `Read` them on demand, never inline them.
   reuse_session, archive_on_complete, per-trigger tool restrictions.
 - `.context/terminals.md` — PTY terminals, PubSub topics, multi-client
   pairing, cluster routing.
-- `.context/voice-mode.md` — voice mode phases 1-2b: capture/VAD/ASR pipeline,
+- `.context/voice-mode.md` — voice mode phases 1-2c: capture/VAD/ASR pipeline,
   the OVS1 wire contract, ASRConfig, browser traps, asset packaging, assistant
-  deltas, streaming TTS, the global voice bar.
+  deltas, streaming TTS, the global voice bar, and voice-driven interaction
+  (client-owned focus, `ui_action`, inserts, spoken ordinals).
 - Specs at repo root: `backend_abstraction_spec.md`, `issues_spec.md`,
   `pi_fork_spec.md`, `docs/api.md` (Agent Runs API).
 

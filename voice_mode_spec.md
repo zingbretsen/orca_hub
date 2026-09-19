@@ -1451,6 +1451,13 @@ two cannot drift apart.
   - `candidates` describes whichever selectable list is visible: the palette's
     results when `focus == "palette"`, else the composer autocomplete dropdown's
     items when it is open, else `[]`.
+  - The nine-candidate cap is enforced INDEPENDENTLY on both sides — the client
+    stops collecting at `MAX_CANDIDATES` (`assets/js/voice/voice_hook.js`) and
+    the server re-applies `@max_candidates` in `Voice.Session.ui_focus/3`. That
+    is deliberate duplication, not redundancy to be tidied away: the client cap
+    keeps unspeakable rows off the wire, and the server cap is what stops a
+    stale, hostile or simply buggy client from growing the state it keeps per
+    session. Removing either one because "the other does it" is a regression.
 
 **Server -> client, one new event.**
 
@@ -1499,6 +1506,18 @@ For each applied transcript, in order:
      (`action: "select"`), else emit `ui_action palette_query %{text:}`
      (`action: "palette_query"`). The draft is NEVER touched either way.
 
+**Amendment (measured 2026-09-18, landed with `e3afb74`).** The text of a
+`palette_query` is stripped of trailing sentence punctuation (`.`, `,`, `!`,
+`?`, and runs of them) before it goes on the wire; the DRAFT is never stripped.
+Every filter behind `CommandPaletteLive` is a literal `String.contains?` on the
+downcased name, and the ASR punctuates nearly every utterance — so `"security."`
+matched zero rows where `"security"` matched one, which made every spoken query
+dead on arrival. The normalization lives on the spoken-query path alone:
+`CommandPaletteLive`'s matching belongs to typed users, and dictation must keep
+its punctuation. `match_label/3` is deliberately NOT given the stripped text —
+it already normalizes for itself, and it matched `"session."` to the `Sessions`
+row before this amendment and still does.
+
 **Arming.** `:insert`, `:select`, `:navigate` and a palette query all CANCEL an
 open arming window (the user kept talking, so it is not a confirmation) and
 NEVER open one. Only `:send` ever opens it. Nothing in phase 2c sets `sending`.
@@ -1514,10 +1533,23 @@ NEVER open one. Only `:send` ever opens it. Nothing in phase 2c sets `sending`.
   query lands immediately after the trigger where `Autocomplete`'s
   `/#(\S*)$/` can see it. `pending_insert` is cleared by that append, by any
   other insert, by `cancel/1`, by a send, and by a manual `draft_edit`.
+- An append never doubles a separator: when the draft already ends in
+  whitespace, the next appended transcript is concatenated directly rather than
+  space-joined. (Amendment landed with `1214efa`. Without it every spoken
+  newline would put a leading space on the line it just opened. It is invisible
+  to phases 1 and 2, where a draft could not end in whitespace at all.)
 - KNOWN LIMITATION, documented not fixed: the autocomplete trigger regex stops
   at the first space, so a multi-word spoken query searches on its FIRST WORD
   only. Selecting a result replaces everything from the trigger to the caret, so
   the extra words are consumed by the replacement rather than left behind.
+- KNOWN LIMITATION, measured 2026-09-18 and documented not fixed: the ASR
+  punctuates nearly every utterance, and that punctuation is part of the DRAFT,
+  so a spoken `#` query arrives as `#Voice.` and the session search behind the
+  autocomplete — an ILIKE on the raw query — matches nothing. Unlike the palette
+  query (§8.3.6) this CANNOT be normalized on the voice path: the text is
+  literally the user's draft, and dictation keeps its punctuation. Fixing it
+  means changing the trigger regex or the search itself, i.e. the typed-user
+  path, which is out of scope for phase 2c.
 
 #### 8.3.8 Name matching — `match_label/2`
 
@@ -1688,7 +1720,7 @@ Phases 3, 4 and 5 keep their original numbers; only phase 2 was split, into 2,
 | C2 client streaming events | 2 | §7.2 | — | in progress |
 | C3 streaming TTS producer | 2 | §7.3 | — | in progress |
 | C4 global voice bar + single send | 2b | §8.2 | ORCAHUB3-88, ORCAHUB3-86 | in progress |
-| C5 voice-driven navigation | 2c | §8.3 (design notes: §13) | ORCAHUB3-87 | in progress |
+| C5 voice-driven interaction | 2c | §8.3 (design notes: §13) | ORCAHUB3-87 | in progress |
 
 Phase-1 contracts are unchanged and remain normative: §8.1 (wire + DOM),
 §5.1.1 (the matcher), §3.2 (the VAD settings).
@@ -1742,6 +1774,22 @@ STILL OPEN — all three are human-in-the-loop or a small upstream change:
   (section 6).
 
 ## 12. Changelog
+
+**v0.6 (2026-09-18, phase 2c integration-verified)** — the contract survived
+contact with a real page, a fake mic and real speech; the amendments here are
+what the measurement forced, not redesign. §8.3.6 gains the palette-query
+PUNCTUATION amendment (`e3afb74`): the ASR punctuates nearly every utterance
+and every palette filter is a literal `String.contains?`, so `"security."`
+matched zero rows where `"security"` matched one and spoken palette search was
+dead on arrival — stripped on the spoken-query path only, never on the draft.
+§8.3.7 records `1214efa`'s append amendment verbatim (an append never doubles a
+separator) and a SECOND, deliberately unfixed punctuation limitation: the same
+full stop reaches the composer autocomplete inside the DRAFT, where it cannot
+be normalized without either rewriting dictation or changing the typed-user
+search. §8.3.5 records that the nine-candidate cap is enforced independently on
+both sides of the wire, so a future reader does not delete one believing the
+other covers it. §10.5's C5 row is retitled "voice-driven interaction" to match
+§8.3, which covers inserts and selection as well as navigation.
 
 **v0.5 (2026-09-18, phase 2c contract pinned)** — §8.3 NEW (C5): phase 2c's
 contract, pinned BEFORE any of it was implemented, in the same manner as

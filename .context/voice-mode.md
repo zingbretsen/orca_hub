@@ -219,10 +219,79 @@ More invariants that bite:
   `orca:voice-asr-busy` holds only NEW synthesis, only for 4000 ms, so a missed
   `{busy: false}` cannot wedge playback.
 
-Phase 2c (§13 / C5, ORCAHUB3-87) is next and DESIGN ONLY — voice navigation
-plus spoken composer control sequences; new vocabulary must score 0 new FPs at
-0.85 against `test/support/fixtures/voice/intent_corpus.json`. Phases 3-5 are
-unbuilt (openWakeWord stop/pause, AEC / duck-on-detect, the LLM adjudicator);
+## Phase 2c (landed, `e3afb74`)
+
+Voice-driven INTERACTION (§8.3 / C5, ORCAHUB3-87) — not just navigation: the
+palette, the composer autocomplete, ordinal selection and newline/`#` inserts.
+§8.3 is normative and supersedes §13, which is now the design record. Verified
+23/24 end to end on the real page with a fake mic and real speech (the one FAIL
+is the autocomplete punctuation limitation below, which is documented, not a
+regression).
+
+- **Shape.** `Intent` grows `command_vocab/0` (the phase-1 four FIRST, then
+  §8.3.3's, so nothing added can displace phase-1 behaviour on a tie),
+  `class/1`, `payload/1` and `match_label/3`. `default_vocab/0` and the 344-clip
+  §5.1.1 parity test are frozen. `Voice.Session` routes on the CLASS
+  (`:action | :insert | :select | :navigate | :ignore`), never on a name, so a
+  vocabulary entry added to `Intent` routes itself. Two new wire events, one
+  each way: `ui_focus` up, `ui_action` down.
+
+Invariants that bite:
+
+- **`focus` is CLIENT-owned and the server NEVER infers it** — not even from an
+  `open_palette` it just emitted. The browser's MutationObserver decides
+  (`focus == "palette"` iff `#command-palette-results` is in the DOM), reports
+  it with `ui_focus`, and the server only echoes it back in `state`. Resets to
+  `"composer"` on join and on retarget.
+- **`ui_action` is the ONE client-directed effect.** Everything it does goes
+  through a seam some other hook already binds — the palette's
+  `command-palette:toggle` document event, its `phx-keyup="search"` input, the
+  dropdown's `mousedown`, the palette item's `phx-click="select"` — so a spoken
+  command drives the exact code path a keyboard does.
+- **An insert emits NO `ui_action`; it rides the existing draft mirror.** The
+  ordinary `state` snapshot is written into the composer by §8.2's draft sink,
+  which dispatches a REAL bubbling `input` event — and that bubbling `input` is
+  precisely what makes the `#`/`##` autocomplete open as if typed. Adding a
+  dedicated event for inserts would bypass the thing that makes them work.
+- **Ordinals are THREE tokens** (`orca third item`), and that is not cosmetic:
+  `phonetic("orcasecond") == phonetic("orcascend")`, so bare ordinals stole 30
+  positive SEND clips from the corpus. A TRUNCATED `orca ninth` therefore
+  resolves to **`:send`**, not to the 9th item — which is why §8.3.10's help
+  panel must teach the full phrase. `orca newline` and `orca new line` reduce to
+  the same target once spaces are removed, so no alias entry is needed.
+- **The draft is untouchable while focus is `palette`** — no appends, no
+  clears, no inserts. A spoken `:send` there is ignored; `:cancel` only closes
+  the palette.
+- **Nothing in phase 2c opens the arming window.** Inserts, selections,
+  navigations and palette queries all CANCEL an open one (the user kept
+  talking, so it was not a confirmation) and never open one. Only `:send` does.
+- **Navigation goes through hidden `data-voice-nav` anchors**, one
+  `<.link navigate>` per path rendered by `VoiceBarLive`, clicked by the hook.
+  Never `window.location`, never a plain `<a href>`: any document reload takes
+  the bar, the mic, the `AudioContext` and the channel with it. A missing
+  anchor is a deliberate no-op — a `window.location` fallback would "work" once
+  and silently kill voice mode. (The anchors only render while `voice_on`.)
+- **The spoken palette query is punctuation-stripped; the DRAFT is not.** The
+  ASR puts a full stop on nearly every utterance and every palette filter is a
+  literal `String.contains?`, so `"security."` matched 0 rows where
+  `"security"` matched 1 — spoken palette search was dead on arrival
+  (`e3afb74`). Stripped on the `palette_query` path ONLY: dictation keeps its
+  punctuation, and `CommandPaletteLive`'s matching belongs to typed users.
+  `match_label/3` is deliberately not given the stripped text; it normalizes for
+  itself and matched `"session."` to the `Sessions` row both before and after.
+- **The SAME full stop still breaks the composer autocomplete, and that one is
+  NOT fixed.** A spoken `#` query lands as `#Voice.` and the session search
+  behind it matches nothing. It cannot be normalized the same way, because the
+  text is literally the user's draft — fixing it means changing the trigger
+  regex or the search, i.e. the typed-user path. Out of scope for 2c; see
+  §8.3.7 for both this and the first-word-only trigger limitation.
+- **The 9-candidate cap is enforced on BOTH sides independently** (client
+  `MAX_CANDIDATES`, server `@max_candidates`). Do not delete one believing the
+  other is doing the work: the client cap keeps unspeakable rows off the wire,
+  the server cap bounds per-session state against a stale or hostile client.
+
+Phases 3-5 are unbuilt (openWakeWord stop/pause, AEC / duck-on-detect, the LLM
+adjudicator);
 `:stop`/`:pause` are recognized and stripped but take no action. **Phase 1's
 EXIT CRITERIA still await a human** — `spikes/voice/ACOUSTIC_TEST.md` Part A
 (real-hardware AEC) and Part B (real-voice matcher, >= 95% TP / 0 FP at 0.85;
