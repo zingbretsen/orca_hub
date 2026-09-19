@@ -43,10 +43,42 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   after a restart instead of waiting out its cooldown. Accepted per the
   issue: the DB-persisted piece is the subscription CONFIG, not this
   transient edge-tracking.
+
+  ## Three signals feed the `"churn"` condition, and they are not equivalent
+
+  `"churn"` is one subscribable condition with three independent drivers:
+
+    1. **Volumetric** (`Churn.assess/5`) — rate x repetition. Never
+       suppressed by any file-surgery policy.
+    2. **File surgery** (`FileSurgery`, ORCAHUB3-61) — gated by
+       `SurgeryAlertPolicy` (ORCAHUB3-66), which suppresses ~31% of it.
+    3. **Edit failure** (`EditFailure`, ORCAHUB3-63 §1) — repeated editor
+       failures on one path with no success in between. **Deliberately
+       gated by nothing**: not by volume, not by repetition, and not by
+       `SurgeryAlertPolicy`.
+
+  (3) is ungated on purpose. The signal's defining property is that it is
+  VOLUMETRICALLY INVISIBLE — the motivating live case was two identical
+  failed `Edit` calls at `tool_calls_15m = 4` with `churn_suspected`
+  false — so any volume or repetition gate would switch off exactly the
+  population it exists to find. `SurgeryAlertPolicy` is equally wrong for
+  it: that policy's clauses are about where a SHELL WRITE landed and
+  whether the command verified itself, which say nothing about a failing
+  editor call, so applying it here would suppress on irrelevant grounds.
+
+  **Expected yield is low, and that is measured, not hoped.** Across the
+  229 historical file-surgery alert windows (`churn_alert_precision.md`
+  §D.4), failed `Edit`/`Write`/`MultiEdit` calls number 0 in 223 windows,
+  1 in 5 and 2 in 1; none of the three hand-labelled true positives has a
+  single one. So (2) and (3) are DISJOINT populations in that corpus. (3)
+  is ADDITIVE COVERAGE of something (2) does not find — it is **not** a
+  recovery mechanism for anything `SurgeryAlertPolicy` suppresses, and no
+  suppression anywhere may be justified with "63 §1 will catch it".
+  Measurably, it will not.
   """
 
   alias OrcaHub.{AlertSubscriptions, Cluster, Sessions}
-  alias OrcaHub.Sessions.{Churn, ChurnDetail, FileSurgery, SurgeryAlertPolicy}
+  alias OrcaHub.Sessions.{Churn, ChurnDetail, EditFailure, FileSurgery, SurgeryAlertPolicy}
 
   @doc """
   Evaluates every enabled alert subscription and returns `{alerts,
@@ -82,12 +114,14 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
       commit_map = fetch_commit_info_for(sessions)
       pending_questions = fetch_pending_questions_for(session_ids)
       file_surgery_evidence = fetch_file_surgery_evidence_for(session_ids)
+      edit_failure_evidence = fetch_edit_failure_evidence_for(session_ids)
 
       Enum.reduce(sessions, {[], edge_state}, fn session, {alerts_acc, edge_acc} ->
         activity = Map.get(activity_map, session.id, %{})
         commit_info = Map.get(commit_map, session.id)
         pending_question_evidence = Map.get(pending_questions, session.id, nil)
         file_surgery = Map.get(file_surgery_evidence, session.id, nil)
+        edit_failure = Map.get(edit_failure_evidence, session.id, nil)
 
         churn = Churn.assess(activity, session, commit_info, now, file_surgery)
 
@@ -100,13 +134,22 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
           if surgery_gate_applies?(subscription.conditions || %{}, churn),
             do: ChurnDetail.fetch(session.id)
 
+        # One bundle for everything a message/gate needs beyond `churn`
+        # itself, so adding the third churn driver did not push `apply_edge`
+        # and `fire` to eleven positional arguments.
+        signals = %{churn_detail: churn_detail, edit_failure: edit_failure}
+
         conditions =
           evaluate_conditions(
             subscription.conditions || %{},
             session,
             activity,
             churn,
-            %{pending_question: pending_question_evidence, file_surgery: file_surgery},
+            %{
+              pending_question: pending_question_evidence,
+              file_surgery: file_surgery,
+              edit_failure: edit_failure
+            },
             churn_detail
           )
 
@@ -123,7 +166,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
               now,
               edge2,
               discriminator,
-              churn_detail
+              signals
             )
             |> case do
               {nil, edge3} -> {alerts2, edge3}
@@ -197,6 +240,17 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     FileSurgery.fetch_many(session_ids, window_minutes: 10)
   end
 
+  # Batch-fetch EditFailure evidence for all watched sessions in ONE query,
+  # the same shape as fetch_file_surgery_evidence_for/1. `fetch_many/2`
+  # guarantees a key per requested id and rescues internally, so a DB failure
+  # degrades to "no evidence" rather than raising into
+  # `ChurnSampler.evaluate_and_deliver_alerts/1`'s outer rescue — which, per
+  # that function's moduledoc, would silently END alerting rather than degrade
+  # it. Failing closed to a neutral value LOCALLY is the rule here.
+  defp fetch_edit_failure_evidence_for(session_ids) do
+    EditFailure.fetch_many(session_ids, window_minutes: 10)
+  end
+
   defp valid_uuid?(id) when is_binary(id) do
     case Ecto.UUID.cast(id) do
       {:ok, _} -> true
@@ -225,13 +279,15 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   #   - :pending_question -> pi: %{id:, method:, title:, message:, options:} or nil;
   #     claude: checked via status == "waiting" in process
   #   - :file_surgery -> FileSurgery.detect/1 evidence or nil
+  #   - :edit_failure -> EditFailure.detect/1 evidence or nil
   defp evaluate_conditions(conditions, session, activity, churn, evidence, churn_detail) do
     pending_question_evidence = Map.get(evidence, :pending_question, nil)
 
     conditions
     |> Enum.flat_map(fn
       {"churn", true} ->
-        [{"churn", churn_alertable?(churn, session, churn_detail), nil}]
+        edit_failure = Map.get(evidence, :edit_failure, nil)
+        [{"churn", churn_alertable?(churn, session, churn_detail, edit_failure), nil}]
 
       {"stall", true} ->
         [{"stall", stall?(session, activity), nil}]
@@ -252,19 +308,30 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     end)
   end
 
-  # ORCAHUB3-66. `churn.churn_suspected` is `volumetric OR file_surgery` and
-  # stays that way — detection is untouched. What changes is what we ALERT
-  # on: the file-surgery half now has to clear `SurgeryAlertPolicy`, while
-  # the volumetric half is never suppressed by a surgery policy.
+  # ORCAHUB3-66 + ORCAHUB3-63 §1. `churn.churn_suspected` is `volumetric OR
+  # file_surgery` and stays that way — detection is untouched. What changes is
+  # what we ALERT on.
   #
-  # Note what this does NOT get us: a suppressed detection leaves no durable
-  # trace today. ChurnSampler.run_sweep/1 calls Churn.assess/3, which never
-  # computes file surgery, so churn_samples has never carried one — and the
-  # only record of an alert has always been the DELIVERED message. Persisting
-  # suppressed detections (with the reason from SurgeryAlertPolicy.decide/2)
-  # needs a migration and is tracked separately. See Churn's moduledoc.
-  defp churn_alertable?(churn, session, churn_detail) do
+  # Three drivers, listed in the moduledoc:
+  #
+  #   - volumetric — never suppressed by a surgery policy;
+  #   - EDIT FAILURE — never suppressed by ANYTHING. Not by volume (the
+  #     motivating case was 4 tool calls/15m), not by repetition, and not by
+  #     SurgeryAlertPolicy, whose clauses are about where a shell write landed
+  #     and cannot speak to a failing editor call. Gating it would switch off
+  #     precisely the volumetrically-invisible population it exists to find;
+  #   - file surgery — the only one that has to clear `SurgeryAlertPolicy`.
+  #
+  # Since 2026-09-19 a suppressed file-surgery detection DOES leave a durable
+  # trace: `ChurnSampler.run_sweep/1` now computes evidence and persists
+  # `SurgeryAlertPolicy`'s decision into `churn_samples.surgery_alert_decision`.
+  # It re-derives the decision there rather than reusing this one — the two
+  # paths run on different cadences over different session sets — so the
+  # column is the RECORD, not the mechanism. Rows written before that date
+  # carry a void `churn_suspected`; see `OrcaHub.Sessions.ChurnSample`.
+  defp churn_alertable?(churn, session, churn_detail, edit_failure) do
     churn.volumetric_churn_suspected or
+      not is_nil(edit_failure) or
       (churn.file_surgery_suspected and
          SurgeryAlertPolicy.alertable_for_session?(session, churn.file_surgery, churn_detail))
   end
@@ -327,7 +394,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
          now,
          edge_state,
          discriminator,
-         churn_detail
+         signals
        ) do
     key = {subscription.id, session.id, condition}
     prior = Map.get(edge_state, key, %{state: false, last_alerted_at: nil})
@@ -351,7 +418,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
           edge_state,
           key,
           discriminator,
-          churn_detail
+          signals
         )
 
       condition == "pending_question" and Map.get(prior, :discriminator, nil) != discriminator ->
@@ -366,7 +433,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
           edge_state,
           key,
           discriminator,
-          churn_detail
+          signals
         )
 
       cooldown_elapsed?(prior.last_alerted_at, subscription.cooldown_seconds, now) ->
@@ -380,7 +447,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
           edge_state,
           key,
           discriminator,
-          churn_detail
+          signals
         )
 
       true ->
@@ -403,13 +470,13 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
          edge_state,
          key,
          discriminator,
-         churn_detail
+         signals
        ) do
     alert = %{
       orchestrator_session_id: subscription.orchestrator_session_id,
       session_id: session.id,
       condition: condition,
-      message: build_message(session, condition, activity, churn, churn_detail)
+      message: build_message(session, condition, activity, churn, signals)
     }
 
     edge_entry = %{state: true, last_alerted_at: now}
@@ -439,17 +506,32 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   # were true because of the `Repeated calls:` block the alert carried
   # alongside the file-surgery sentence, not because of the sentence itself.
   # The old format led with the weakest evidence.
-  defp build_message(session, condition, activity, churn, churn_detail) do
+  defp build_message(session, condition, activity, churn, signals) do
     title = session.title || "session #{String.slice(session.id, 0, 8)}"
 
-    detail = churn_detail || ChurnDetail.fetch(session.id)
+    detail = signals[:churn_detail] || ChurnDetail.fetch(session.id)
     detail_block = format_detail(detail)
 
     header =
       "[Worker alert] #{condition} on #{title} (#{session.id}): " <>
         metric_line(condition, session, activity, churn, detail)
 
-    [header, detail_block, surgery_block(condition, churn, detail_block), @suggested_action]
+    # ORCAHUB3-63 §1 sits directly under the header, ABOVE the ChurnDetail
+    # block that ORCAHUB3-66 promoted to lead. That is not a reversal of
+    # worker B's ordering: the surgery sentence was demoted because it is
+    # nearly uninformative on its own (P~0.08 hand-labelled), whereas this
+    # one was scored at P=0.89 in `churn_signal_mining.md` and IS the finding
+    # rather than a hint to corroborate. It also has to outrank the header's
+    # own volumetric numbers, which by construction look unremarkable when
+    # this is what fired — "4 calls/15m, 0% repeats" reads as nothing at all
+    # unless the next line says what is actually wrong.
+    [
+      header,
+      edit_failure_block(condition, signals[:edit_failure]),
+      detail_block,
+      surgery_block(condition, churn, detail_block),
+      @suggested_action
+    ]
     |> Enum.reject(&(&1 in [nil, ""]))
     |> Enum.join("\n\n")
   end
@@ -482,12 +564,24 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     "progress last updated #{churn.minutes_since_progress_update}m ago#{phase}"
   end
 
+  # Same misattribution `commit_clause/2` below was fixed for, in the other
+  # place it was rendered. `minutes_since_last_commit` is a property of the
+  # DIRECTORY, not of this session — `Sessions.git_head_info/1` runs
+  # `git log -1` with `cd: directory`, no author filter, and
+  # `fetch_commit_info_for/1` dedupes by `{runner_node, directory}` so every
+  # session sharing a worktree is handed the identical number. "last commit
+  # 6m ago" read as a statement about the alerted worker; in a shared
+  # worktree it is a sibling's commit (`churn_alert_precision.md` §D.3).
+  #
+  # The CONDITION is deliberately untouched — `no_commit_for?/4` still keys
+  # off the same directory-level number, and whether that is the right gate
+  # is ORCAHUB3-111's question. This is the rendered text only.
   defp metric_line("no_commit_for", _session, _activity, churn, _detail) do
     calls = churn.tool_calls_15m || 0
 
     case churn.minutes_since_last_commit do
-      nil -> "#{calls} tool calls/15m, no commit observed yet"
-      age -> "#{calls} tool calls/15m, last commit #{age}m ago"
+      nil -> "#{calls} tool calls/15m, no commit in the directory yet"
+      age -> "#{calls} tool calls/15m, directory HEAD #{age}m old"
     end
   end
 
@@ -509,6 +603,39 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
         "pending dialog (#{session.backend})"
     end
   end
+
+  # ORCAHUB3-63 §1. Unlike `surgery_block/3` this one states a finding rather
+  # than hedging toward one: a second failed editor call on the same path
+  # with no success in between is not an ambiguous idiom, it is the worker
+  # telling us it cannot land the edit. `identical_calls` is surfaced because
+  # a byte-identical retry means the model has stopped reading the error at
+  # all, which is a materially worse state than two different attempts.
+  #
+  # Expect this to fire RARELY — see the moduledoc's measured yield. A block
+  # that almost never appears is the correct outcome for a P=0.89/R=0.08
+  # signal, not evidence that the wiring is broken.
+  defp edit_failure_block("churn", %{
+         path: path,
+         failure_count: count,
+         tools: tools,
+         identical_calls: identical,
+         last_error: last_error
+       }) do
+    qualifier = if identical, do: "identical ", else: ""
+
+    # `count` is always >= EditFailure's threshold of 2, so the plural is
+    # unconditional rather than a "(s)" hedge.
+    lead =
+      "Cannot land an edit: #{count} #{qualifier}failed #{Enum.join(tools, "/")} " <>
+        "calls on #{path}, with no successful edit to it in between."
+
+    case last_error do
+      nil -> lead
+      error -> lead <> "\nLast error: #{error}"
+    end
+  end
+
+  defp edit_failure_block(_condition, _evidence), do: nil
 
   # Advisory, not a diagnosis. The old wording ("worker rebuilding X from
   # shell fragments") asserted a conclusion the evidence does not support —

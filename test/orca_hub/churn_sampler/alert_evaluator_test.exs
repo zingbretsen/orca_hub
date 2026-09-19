@@ -88,6 +88,125 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
     session
   end
 
+  # A failed editor call: the assistant `tool_use` block plus the matching
+  # `tool_result` with `is_error: true`. EditFailure pairs them by id.
+  defp failed_edit(session_id, file_path, error, opts \\ []) do
+    id = Keyword.get(opts, :id, "toolu_#{System.unique_integer([:positive])}")
+    old_string = Keyword.get(opts, :old_string, "needle")
+
+    {:ok, _} =
+      Sessions.create_message(%{
+        session_id: session_id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{
+                "type" => "tool_use",
+                "id" => id,
+                "name" => "Edit",
+                "input" => %{"file_path" => file_path, "old_string" => old_string}
+              }
+            ]
+          }
+        }
+      })
+
+    {:ok, _} =
+      Sessions.create_message(%{
+        session_id: session_id,
+        data: %{
+          "type" => "user",
+          "message" => %{
+            "content" => [
+              %{
+                "type" => "tool_result",
+                "tool_use_id" => id,
+                "is_error" => true,
+                "content" => error
+              }
+            ]
+          }
+        }
+      })
+
+    :ok
+  end
+
+  # A SUCCESSFUL editor call. `edit_message/2` above is not one: it emits a
+  # `tool_use` with no id and no `tool_result`, which EditFailure classifies
+  # as UNKNOWN — deliberately neither a failure nor a streak reset, so that a
+  # window boundary landing between a call and its result cannot erase a real
+  # streak. Resetting the streak needs a real success.
+  defp successful_edit(session_id, file_path) do
+    id = "toolu_ok_#{System.unique_integer([:positive])}"
+
+    {:ok, _} =
+      Sessions.create_message(%{
+        session_id: session_id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{
+                "type" => "tool_use",
+                "id" => id,
+                "name" => "Edit",
+                "input" => %{"file_path" => file_path, "old_string" => "needle"}
+              }
+            ]
+          }
+        }
+      })
+
+    {:ok, _} =
+      Sessions.create_message(%{
+        session_id: session_id,
+        data: %{
+          "type" => "user",
+          "message" => %{
+            "content" => [
+              %{
+                "type" => "tool_result",
+                "tool_use_id" => id,
+                "is_error" => false,
+                "content" => "The file has been updated."
+              }
+            ]
+          }
+        }
+      })
+
+    :ok
+  end
+
+  # A git repo whose only commit is backdated, so `no_commit_for` has
+  # something older than its threshold to fire on. `git_head_info/1` reads
+  # the COMMITTER date (`%cI`), so GIT_COMMITTER_DATE is the one that counts.
+  defp git_session_with_old_commit(prefix, attrs, minutes_ago) do
+    dir = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    when_iso =
+      DateTime.utc_now() |> DateTime.add(-minutes_ago, :minute) |> DateTime.to_iso8601()
+
+    System.cmd("git", ["init"], cd: dir, stderr_to_stdout: true)
+    System.cmd("git", ["config", "user.email", "test@example.com"], cd: dir)
+    System.cmd("git", ["config", "user.name", "Test"], cd: dir)
+    File.write!(Path.join(dir, "test.txt"), "initial")
+    System.cmd("git", ["add", "."], cd: dir)
+
+    System.cmd("git", ["commit", "-m", "initial"],
+      cd: dir,
+      stderr_to_stdout: true,
+      env: [{"GIT_COMMITTER_DATE", when_iso}, {"GIT_AUTHOR_DATE", when_iso}]
+    )
+
+    {:ok, session} = Sessions.create_session(Map.merge(%{directory: dir}, attrs))
+    session
+  end
+
   defp subscribe(orchestrator_id, attrs) do
     {:ok, subscription} = AlertSubscriptions.upsert(orchestrator_id, attrs)
     subscription
@@ -559,6 +678,218 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       assert alert.message =~ ~r/directory HEAD \d+m old/
       refute alert.message =~ "no commit "
       refute alert.message =~ "no repo edits in window"
+    end
+  end
+
+  describe "evaluate/3 — edit-failure signal (ORCAHUB3-63 §1)" do
+    # The whole point of this signal is that it is VOLUMETRICALLY INVISIBLE.
+    # The motivating live case was two identical failed Edit calls at
+    # tool_calls_15m = 4 with churn_suspected false. So the tests that matter
+    # are the ones proving it fires with almost no activity behind it.
+
+    test "fires at LOW volume — two failed edits and nothing else" do
+      orchestrator_id = Ecto.UUID.generate()
+      session = git_session("alert-edit-failure-low-vol", %{status: "running"})
+
+      # `Edit` cannot create a file that does not exist; the worker retries
+      # the identical call verbatim. Four tool calls in the window, total.
+      :ok = failed_edit(session.id, "lib/new_thing.ex", "File does not exist.")
+      :ok = failed_edit(session.id, "lib/new_thing.ex", "File does not exist.")
+
+      activity = Sessions.activity_metadata([session.id]) |> Map.get(session.id, %{})
+      churn = Churn.assess(activity, session, nil, DateTime.utc_now(), nil)
+
+      # Preconditions — without these the test proves nothing.
+      assert activity.tool_calls_15m < 25,
+             "fixture must sit below @churn_min_calls or this is not a low-volume test"
+
+      refute churn.volumetric_churn_suspected,
+             "the volumetric half must be FALSE — this signal exists for the case it misses"
+
+      refute churn.file_surgery_suspected,
+             "no shell write here: the two populations are disjoint and must stay so"
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [session.id], conditions: %{"churn" => true}})
+
+      assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
+      assert alert.condition == "churn"
+      assert alert.message =~ "Cannot land an edit: 2 identical failed Edit calls"
+      assert alert.message =~ "lib/new_thing.ex"
+      assert alert.message =~ "Last error: File does not exist."
+    end
+
+    test "the finding sits above the detail block, not below it as an advisory" do
+      orchestrator_id = Ecto.UUID.generate()
+      session = git_session("alert-edit-failure-order", %{status: "running"})
+
+      :ok = failed_edit(session.id, "lib/new_thing.ex", "File does not exist.")
+      :ok = failed_edit(session.id, "lib/new_thing.ex", "File does not exist.")
+      {:ok, _} = edit_message(session.id, "lib/other.ex")
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [session.id], conditions: %{"churn" => true}})
+
+      assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
+
+      edit_failure_at = :binary.match(alert.message, "Cannot land an edit:") |> elem(0)
+      detail_at = :binary.match(alert.message, "Top edited files:") |> elem(0)
+
+      assert edit_failure_at < detail_at,
+             "a P=0.89 finding must outrank the corroboration block it does not need"
+    end
+
+    test "a single failure is not a signal — one failed edit does not fire" do
+      orchestrator_id = Ecto.UUID.generate()
+      session = git_session("alert-edit-failure-single", %{status: "running"})
+
+      :ok = failed_edit(session.id, "lib/new_thing.ex", "File does not exist.")
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [session.id], conditions: %{"churn" => true}})
+
+      assert {[], _edge_state} = AlertEvaluator.evaluate([subscription])
+    end
+
+    test "a success between failures resets the streak and nothing fires" do
+      orchestrator_id = Ecto.UUID.generate()
+      session = git_session("alert-edit-failure-reset", %{status: "running"})
+
+      :ok = failed_edit(session.id, "lib/new_thing.ex", "String not found.")
+      :ok = successful_edit(session.id, "lib/new_thing.ex")
+      :ok = failed_edit(session.id, "lib/new_thing.ex", "String not found.")
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [session.id], conditions: %{"churn" => true}})
+
+      assert {[], _edge_state} = AlertEvaluator.evaluate([subscription])
+    end
+
+    test "SurgeryAlertPolicy never gates it — it fires where U1b would suppress" do
+      # Same D6 shape that suppresses a file-surgery alert outright (no repo
+      # edits, no repeated signatures), but with a failed-edit streak in it.
+      # The surgery policy's clauses are about where a SHELL WRITE landed;
+      # they must have no say over this signal.
+      orchestrator_id = Ecto.UUID.generate()
+      session = plain_session("alert-edit-failure-ungated", %{status: "running"})
+
+      {:ok, _} =
+        bash_message(
+          session.id,
+          "cat > /tmp/scratch.txt <<'EOF'\nx\nEOF\n && cat /tmp/scratch.txt"
+        )
+
+      :ok = failed_edit(session.id, "lib/new_thing.ex", "File does not exist.")
+      :ok = failed_edit(session.id, "lib/new_thing.ex", "File does not exist.")
+
+      activity = Sessions.activity_metadata([session.id]) |> Map.get(session.id, %{})
+      evidence = FileSurgery.fetch(session.id, window_minutes: 10)
+
+      # Precondition: the surgery half of this fixture really is suppressed.
+      refute SurgeryAlertPolicy.alertable_for_session?(
+               session,
+               evidence,
+               ChurnDetail.fetch(session.id)
+             ),
+             "expected the surgery half of this fixture to be suppressed by U1b"
+
+      refute Churn.assess(activity, session, nil, DateTime.utc_now(), evidence).volumetric_churn_suspected
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [session.id], conditions: %{"churn" => true}})
+
+      assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
+      assert alert.message =~ "Cannot land an edit:"
+
+      refute alert.message =~ "Advisory: wrote",
+             "the surgery half is still suppressed; only the edit-failure half fired"
+    end
+
+    test "non-identical retries are reported without the identical qualifier" do
+      orchestrator_id = Ecto.UUID.generate()
+      session = git_session("alert-edit-failure-distinct", %{status: "running"})
+
+      :ok = failed_edit(session.id, "lib/tracked.ex", "String not found.", old_string: "alpha")
+      :ok = failed_edit(session.id, "lib/tracked.ex", "String not found.", old_string: "beta")
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [session.id], conditions: %{"churn" => true}})
+
+      assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
+      assert alert.message =~ "Cannot land an edit: 2 failed Edit calls"
+      refute alert.message =~ "identical"
+    end
+
+    test "does not attach to a condition other than churn" do
+      orchestrator_id = Ecto.UUID.generate()
+      session = plain_session("alert-edit-failure-stall", %{status: "running"})
+
+      :ok = failed_edit(session.id, "lib/new_thing.ex", "File does not exist.")
+      :ok = failed_edit(session.id, "lib/new_thing.ex", "File does not exist.")
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [session.id], conditions: %{"stall" => true}})
+
+      # There IS tool activity, so "stall" is false and nothing fires at all —
+      # the edit-failure evidence must not leak into an unrelated condition.
+      assert {[], _edge_state} = AlertEvaluator.evaluate([subscription])
+    end
+  end
+
+  describe "evaluate/3 — no_commit_for message text (ORCAHUB3-66)" do
+    test "the commit age is labelled as a DIRECTORY fact, not a session one" do
+      # Identical reasoning to the churn clause worker B fixed:
+      # minutes_since_last_commit comes from `git log -1` with cd: directory —
+      # no author filter — and fetch_commit_info_for/1 dedupes by
+      # {runner_node, directory}. "last commit 6m ago" read as a claim about
+      # this worker; in a shared worktree it is a sibling's commit.
+      orchestrator_id = Ecto.UUID.generate()
+      session = git_session_with_old_commit("alert-no-commit-wording", %{status: "running"}, 90)
+      {:ok, _} = tool_use_message(session.id, "Bash")
+
+      subscription =
+        subscribe(orchestrator_id, %{
+          session_ids: [session.id],
+          conditions: %{"no_commit_for" => 45}
+        })
+
+      assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
+      assert alert.condition == "no_commit_for"
+      assert alert.message =~ ~r/directory HEAD \d+m old/
+      refute alert.message =~ "last commit"
+    end
+
+    test "says so of the DIRECTORY when there is no commit at all" do
+      orchestrator_id = Ecto.UUID.generate()
+      session = plain_session("alert-no-commit-none-wording", %{status: "running"})
+      {:ok, _} = tool_use_message(session.id, "Bash")
+
+      subscription =
+        subscribe(orchestrator_id, %{
+          session_ids: [session.id],
+          conditions: %{"no_commit_for" => 45}
+        })
+
+      assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
+      assert alert.message =~ "no commit in the directory yet"
+      refute alert.message =~ "no commit observed yet"
+    end
+
+    test "the CONDITION itself is unchanged — still fires on the same input" do
+      # The brief fixed the rendered text only; no_commit_for?/4 still keys
+      # off the same directory-level number. Whether that is the right gate is
+      # ORCAHUB3-111's question, not this change's.
+      orchestrator_id = Ecto.UUID.generate()
+      fresh = git_session("alert-no-commit-cond-fresh", %{status: "running"})
+      {:ok, _} = tool_use_message(fresh.id, "Bash")
+
+      subscription =
+        subscribe(orchestrator_id, %{
+          session_ids: [fresh.id],
+          conditions: %{"no_commit_for" => 45}
+        })
+
+      assert {[], _edge_state} = AlertEvaluator.evaluate([subscription])
     end
   end
 
