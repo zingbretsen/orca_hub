@@ -78,6 +78,14 @@
  *      comment there for why that cannot fight the target picker.
  *    - The voice channel rejoins by itself against a brand new server-side
  *      session, so `_onChannelRejoin()` re-sends what `_joinChannel` sends.
+ *
+ *    The rule underneath all three: NO STATE THIS HOOK HOLDS MAY BE A LATCH
+ *    THAT ONLY AN EXTERNAL EVENT CAN CLEAR. `armed` was one; `muted` was the
+ *    last one (ORCAHUB3-95), cleared only by an `orca:tts-state
+ *    {playing: false}` that a half-started player need never send. Both are
+ *    now re-derived — `armed` from `_micLive()`, `muted` from the mute
+ *    watchdog and its wall-clock reconcile — and `_reconcileMic()` is the one
+ *    path that re-derives both on the way back from a backgrounded page.
  */
 
 import { Capture, secureContextProblem, FRAME_SAMPLES } from "./capture"
@@ -105,6 +113,36 @@ const UI_SYNC_MS = 150
 const MAX_CANDIDATES = 9
 const LABEL_MAX = 80
 const PALETTE_ITEM_PREFIX = "command-palette-item-"
+
+// ORCAHUB3-95: the longest a mute is allowed to outlive the event that set it.
+//
+// `_handleTtsState` mutes on `orca:tts-state {playing: true}` and unmutes on
+// the matching `{playing: false}`. "No event at all" is safe — nothing is
+// muted. The asymmetric loss is not: a player that half-starts and bails, an
+// exception between the two emits, a page-visibility interaction, and the mic
+// is held down FOREVER with nothing to re-derive it. This is the expiry on the
+// promise the player makes when it mutes us.
+//
+// Why TEN MINUTES rather than a handful of seconds: the mute covers a WHOLE
+// message. `_handleTtsState` is edge-driven (deliberately — see its comment),
+// so no second `{playing: true}` ever re-arms the timer while playback runs,
+// and the cap has to clear the longest message the hub can speak start to
+// finish, plus the per-chunk synthesis round-trips to the GB10 box that sit
+// between the audio.
+//
+// Measured against this hub's own database (the most recent 50,000 assistant
+// messages, 7,184 of which carried speakable text): 118 characters at the
+// median, 637 at p90, 1,708 at p99, 3,736 at p99.9, and 5,647 at the longest
+// ever recorded. At a deliberately SLOW 10 characters/second — neural TTS runs
+// nearer 15 — that all-time longest message is 9.4 minutes of audio and p99.9
+// is 6.2. Ten minutes clears both.
+//
+// The asymmetry of the two failures is what sets the value, not tidiness: an
+// unmute during genuine playback feeds the assistant's own voice back into the
+// VAD, which is precisely the echo half-duplex exists to prevent and a worse
+// outcome than the wedge being fixed here. So the cap is sized to be a last
+// resort that real playback never reaches.
+const MUTE_WATCHDOG_MS = 10 * 60 * 1000
 
 const STATUS_LABEL = {
   warming: "warming up transcription…",
@@ -163,8 +201,26 @@ export const VoiceHook = {
       processorError: null,
       joins: 0,
       retargets: 0,
+      // ORCAHUB3-95: how many times the mute watchdog had to unwedge the mic.
+      // Should be 0 forever; anything else is a lost `{playing: false}` and
+      // the browser check asserts on it.
+      muteWatchdogs: 0,
       startedAt: Date.now(),
     }
+    // ORCAHUB3-95. NOT in `this._timers`: that whole map is wiped by
+    // `_teardown()`, and the mute latch OUTLIVES a voice-mode teardown — the
+    // TTS player keeps playing when the user switches voice off, and its
+    // `{playing: false}` is still the only thing that clears `muted`. A
+    // watchdog cancelled by voice-off would hand the latch straight back.
+    this._muteTimer = null
+    // Wall-clock stamp of the mute, because a timer is not enough on a phone:
+    // a backgrounded page has its timers throttled or frozen outright, so the
+    // cap is re-derived from elapsed time in `_reconcileMuteWatchdog`.
+    this._mutedAt = null
+    // Production's cap everywhere except the headless check, which shortens it
+    // so the real timer path can be DRIVEN in seconds instead of asserted in a
+    // comment — the same seam `maxWaitMs` gave the waiting tick in 71ab628.
+    this.muteWatchdogMs = MUTE_WATCHDOG_MS
     this._timers = {}
     this._applyingDraft = false
     this._pendingSend = null
@@ -264,6 +320,11 @@ export const VoiceHook = {
     }
     if (this._onDocInput) document.removeEventListener("input", this._onDocInput, true)
     this._teardown()
+    // The mute watchdog deliberately survives `_teardown` (see its field
+    // comment), so the hook going away is the one place it has to be
+    // cancelled by hand — otherwise a dead hook is retained for the length of
+    // the cap by a timer whose only job is to repair a page that is gone.
+    this._clearMuteWatchdog()
     if (this.sounds) this.sounds.destroy()
     if (window.__orcaVoice === this) delete window.__orcaVoice
   },
@@ -569,6 +630,11 @@ export const VoiceHook = {
    * the draft and the target are untouched: this is a re-arm, not a teardown.
    */
   async _reconcileMic() {
+    // ORCAHUB3-95, FIRST and before every early return below: a stuck mute is
+    // independent of whether the capture pipeline needs repairing, of whether
+    // voice is even on, and of whether we are mid-arm. Repairing the stream
+    // and handing it back still muted would fix nothing the user can hear.
+    this._reconcileMuteWatchdog()
     if (!this.active || this._arming) return
     if (!this.capture) return this._arm()
     if (this.capture.live()) {
@@ -658,6 +724,11 @@ export const VoiceHook = {
 
   // -------------------------------------------------------------- half-duplex
 
+  /** `orca:tts-state`, §8.1. Still edge-driven, and deliberately so: the
+   * player owns the transitions and this reacts to them. ORCAHUB3-95 adds a
+   * watchdog UNDER it, not a rewrite of it — a mute is armed with an expiry
+   * and an unmute disarms it, so the only thing that changed for a normal
+   * play/stop pair is that the timer is created and then thrown away. */
   _handleTtsState(e) {
     const playing = !!(e && e.detail && e.detail.playing)
     if (playing === this.muted) return
@@ -666,8 +737,84 @@ export const VoiceHook = {
       if (playing) this.vad.pause()
       else this.vad.resume()
     }
+    if (playing) this._armMuteWatchdog()
+    else this._clearMuteWatchdog()
     this.channel && this.channel.push("mic", { muted: playing, reason: "tts" })
     this._renderMic()
+  },
+
+  /** ORCAHUB3-95: start the clock on a mute.
+   *
+   * `mutedAt` is the moment the mute began, which is NOT always now — the
+   * wall-clock reconcile re-arms an in-flight mute for whatever is left of its
+   * cap, and the stamp has to keep pointing at the original mute or every
+   * reconcile would quietly extend the wedge it exists to end. */
+  _armMuteWatchdog(mutedAt = Date.now()) {
+    this._clearMuteWatchdog()
+    this._mutedAt = mutedAt
+    const remaining = Math.max(0, this.muteWatchdogMs - (Date.now() - mutedAt))
+    this._muteTimer = setTimeout(() => {
+      this._muteTimer = null
+      this._expireMute("timer")
+    }, remaining)
+  },
+
+  _clearMuteWatchdog() {
+    if (this._muteTimer) clearTimeout(this._muteTimer)
+    this._muteTimer = null
+    this._mutedAt = null
+  },
+
+  /** The cap was reached: the `{playing: false}` that should have arrived did
+   * not. Undo the mute exactly the way `_handleTtsState` would have, but say
+   * `"tts-watchdog"` on the wire so the server (and the log, and anyone
+   * reading `stats()`) can tell a repair from an ordinary end of playback. */
+  _expireMute(how) {
+    if (!this.muted) return this._clearMuteWatchdog()
+    const heldMs = this._mutedAt === null ? null : Date.now() - this._mutedAt
+    this._clearMuteWatchdog()
+    this.muted = false
+    this.metrics.muteWatchdogs++
+    if (this.vad) this.vad.resume()
+    this.channel && this.channel.push("mic", { muted: false, reason: "tts-watchdog" })
+    this._logMuteWatchdog(how, heldMs)
+    this._renderMic()
+  },
+
+  /** Re-derive the cap from WALL CLOCK rather than from the timer.
+   *
+   * Folded into `_reconcileMic` (ORCAHUB3-91's resume path) because the timer
+   * alone cannot be trusted across a backgrounded page: a hidden tab has its
+   * timers throttled, and a phone with the screen off has the whole page
+   * frozen, so a `setTimeout` armed before the page went away may still be
+   * pending after far more than its cap has actually elapsed. Coming back
+   * permanently muted is the exact failure ORCAHUB3-91 fixed for `armed`.
+   *
+   * Three cases, one rule: not muted, nothing to do; over the cap, expire now;
+   * under it, re-arm for the REMAINING time so the timer matches the clock.
+   */
+  _reconcileMuteWatchdog() {
+    if (!this.muted) return this._clearMuteWatchdog()
+    if (this._mutedAt === null) {
+      // Muted with no stamp: a latch from before the watchdog existed in this
+      // page's lifetime (or one that outlived a teardown). Give it a full cap
+      // from now rather than expiring a mute that may be seconds old.
+      this._armMuteWatchdog()
+      return
+    }
+    if (Date.now() - this._mutedAt >= this.muteWatchdogMs) return this._expireMute("resume")
+    this._armMuteWatchdog(this._mutedAt)
+  },
+
+  /** One line in the same log the segment results and ui_actions use, so the
+   * browser check can assert on what actually happened rather than on a
+   * counter alone. */
+  _logMuteWatchdog(how, heldMs) {
+    const li = document.createElement("li")
+    li.dataset.voiceMuteWatchdog = how
+    const held = typeof heldMs === "number" ? `${(heldMs / 1000).toFixed(1)}s` : "unknown"
+    li.textContent = `mic unmuted by watchdog (${how})  held ${held}  no tts-state {playing: false} arrived`
+    this._appendLogItem(li)
   },
 
   /** `orca:voice-asr-busy` — consumed by TTSMethods' streaming prefetch. */
@@ -991,14 +1138,22 @@ export const VoiceHook = {
    * integration slice can assert on what the browser actually did rather than
    * on what the server thought it asked for. */
   _logUiAction(kind, { result, detail } = {}) {
-    const log = this._el("[data-voice-log]")
-    if (!log) return
     const li = document.createElement("li")
     li.dataset.voiceUiAction = kind
     li.dataset.voiceUiResult = result || ""
     const bits = [`ui_action ${kind}`, `→ ${result}`]
     if (detail) bits.push(`(${detail})`)
     li.textContent = bits.join("  ")
+    this._appendLogItem(li)
+  },
+
+  /** The one place the log is actually written: three kinds of line (segment
+   * results, ui_actions, the mute watchdog) share the same trim and the same
+   * scroll, and the strip only exists while voice mode is on, so every writer
+   * has to tolerate a missing list. */
+  _appendLogItem(li) {
+    const log = this._el("[data-voice-log]")
+    if (!log) return
     log.appendChild(li)
     while (log.children.length > LOG_LIMIT) log.removeChild(log.firstChild)
     log.scrollTop = log.scrollHeight
@@ -1319,8 +1474,6 @@ export const VoiceHook = {
   },
 
   _appendLog(result) {
-    const log = this._el("[data-voice-log]")
-    if (!log) return
     const li = document.createElement("li")
     li.dataset.voiceSeq = result.seq
     li.dataset.voiceAction = result.action || ""
@@ -1333,9 +1486,7 @@ export const VoiceHook = {
       bits.push(`${result.elapsed_seconds.toFixed(2)}s asr`)
     if (result.intent) bits.push(`intent=${result.intent}@${(result.score || 0).toFixed(2)}`)
     li.textContent = bits.join("  ")
-    log.appendChild(li)
-    while (log.children.length > LOG_LIMIT) log.removeChild(log.firstChild)
-    log.scrollTop = log.scrollHeight
+    this._appendLogItem(li)
   },
 
   /** Everything the hook writes lives inside `#voice-strip`, which LiveView
@@ -1557,6 +1708,12 @@ export const VoiceHook = {
       serverVoiceOn: this._serverVoiceOn(),
       domTarget: this.el.dataset.targetSessionId || null,
       muted: this.muted,
+      // ORCAHUB3-95: is the mute currently on a clock, and for how long has it
+      // been held? `muteWatchdogs` (from `metrics`, spread above) counts the
+      // repairs. A muted mic with `muteWatchdogArmed: false` is the wedge.
+      muteWatchdogArmed: !!this._muteTimer,
+      muteWatchdogMs: this.muteWatchdogMs,
+      mutedForMs: this._mutedAt === null ? null : Date.now() - this._mutedAt,
       target: this.target,
       composerPresent: this.composerPresent,
       asrBusy: this._asrBusy,
