@@ -117,6 +117,275 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
     end
   end
 
+  describe "detect/1 — defect A.6(1): the reported path must be the WRITE TARGET" do
+    test "a heredoc script that READS a tracked file and writes /tmp does not fire" do
+      # The corpus defect verbatim: `match_family_c/1` used to split the whole
+      # command and return the first tracked-looking token, so this was
+      # delivered as "worker rebuilding lib/foo.ex".
+      messages = [
+        assistant_message([
+          bash("""
+          python3 - <<'PY'
+          src = open('lib/foo.ex').read()
+          open("/tmp/out.txt", "w").write(src)
+          PY\
+          """)
+        ])
+      ]
+
+      assert FileSurgery.detect(messages) == nil
+    end
+
+    test "a genuine File.write! on a tracked path still fires and names it" do
+      messages = [
+        assistant_message([
+          bash(
+            "mix run --no-start -e 'old = File.read!(\"lib/bar.ex\")\nFile.write!(\"lib/foo.ex\", old)'"
+          )
+        ])
+      ]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.kind == :programmatic_write
+    end
+
+    test "a write target bound to a literal EARLIER in the same command resolves" do
+      # The overwhelmingly common corpus shape: `p='x.py'` … `open(p,'w')`.
+      messages = [
+        assistant_message([
+          bash("""
+          python3 - <<'PY'
+          p='tests/test_execution.py'
+          s=open(p).read()
+          open(p,'w').write(s.replace(old, new))
+          PY\
+          """)
+        ])
+      ]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "tests/test_execution.py"
+      assert evidence.kind == :programmatic_write
+    end
+
+    test "a rebound write variable resolves to the binding in force AT that write" do
+      # Straight-line patch scripts rebind the same name per file; BOTH files
+      # are written, and the reported path must be one of them.
+      messages = [
+        assistant_message([
+          bash("""
+          python3 - <<'PY'
+          p='lib/first.ex'
+          open(p,'w').write(a)
+          p='lib/second.ex'
+          open(p,'w').write(b)
+          PY\
+          """)
+        ])
+      ]
+
+      assert FileSurgery.detect(messages).path == "lib/first.ex"
+    end
+
+    test "pathlib: p = pathlib.Path(\"build_clips.py\") … p.write_text(s) fires" do
+      # Hand-labelled true positive #30 of churn_alert_precision.md — it must
+      # survive the defect-1 fix.
+      messages = [
+        assistant_message([
+          bash("""
+          cd tmp/voice2c && python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path("build_clips.py")
+          s = p.read_text()
+          p.write_text(s.replace(old, new))
+          PY\
+          """)
+        ])
+      ]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "build_clips.py"
+      assert evidence.kind == :programmatic_write
+    end
+
+    test "an INDETERMINATE write target returns nil rather than guessing" do
+      # `dst` is computed, so nothing in the command says which file is
+      # written — and `lib/foo.ex`, which it merely reads, must not be named.
+      messages = [
+        assistant_message([
+          bash("""
+          python3 - <<'PY'
+          text = open('lib/foo.ex').read()
+          dst = os.path.join(outdir, name)
+          open(dst, "w").write(text)
+          PY\
+          """)
+        ])
+      ]
+
+      assert FileSurgery.detect(messages) == nil
+    end
+  end
+
+  describe "detect/1 — defect A.6(2): `>` inside a quoted string is not a redirect" do
+    test "the sed 's/PASSWORD=.*/PASSWORD=<redacted>/' pure-read command does not fire" do
+      # Sample #27, verbatim: one of only two `slice_and_redirect` alerts ever
+      # delivered, and a pure READ. Its `>` is the literal `<redacted>`.
+      messages = [
+        assistant_message([
+          bash(
+            "cat config/test.exs | head -40 && echo \"=== env ===\" && " <>
+              "env | grep -i -E \"database|postgres\" | sed 's/PASSWORD=.*/PASSWORD=<redacted>/'"
+          )
+        ])
+      ]
+
+      assert FileSurgery.detect(messages) == nil
+    end
+
+    test "an ASCII arrow inside an echo is not a redirect (the §E deploy-runner shape)" do
+      messages = [
+        assistant_message([
+          bash(
+            "cd /home/zach/orca-hub-deploy-logs && cp run-a.sh run-b.sh && " <>
+              "echo \"=== diff run-a.sh -> run-b.sh ===\" && diff run-a.sh run-b.sh; echo \"(rc=$?)\""
+          )
+        ])
+      ]
+
+      assert FileSurgery.detect(messages) == nil
+    end
+
+    test "a real `cat x > lib/foo.ex` still fires after quote-stripping" do
+      messages = [assistant_message([bash("cat /tmp/x > lib/foo.ex")])]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.kind == :write_to_tracked
+    end
+
+    test "a quoted `>` no longer SHADOWS the command's real redirect target" do
+      # The quoted arrow used to be found first, so the extracted target was
+      # garbage and the match fell through to a later family naming a file the
+      # command only read.
+      messages = [
+        assistant_message([
+          bash("echo \"patching a => b\" && cat /tmp/new.js > assets/js/app.js")
+        ])
+      ]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "assets/js/app.js"
+      assert evidence.kind == :write_to_tracked
+    end
+
+    test "a `>` in a heredoc BODY is data, not a redirect" do
+      messages = [
+        assistant_message([
+          bash("""
+          python3 - <<'PY'
+          print("wrote lib/foo.ex > /tmp/nope")
+          PY\
+          """)
+        ])
+      ]
+
+      assert FileSurgery.detect(messages) == nil
+    end
+
+    test "quote-blanking does not shift the redirect target that follows it" do
+      messages = [
+        assistant_message([bash("sed -n '1,50p' lib/foo.ex > /tmp/slice.txt")])
+      ]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.kind == :slice_and_redirect
+    end
+  end
+
+  describe "detect/1 — verified_in_command (the measured D2b signal)" do
+    test "true when the same command READS the written path back" do
+      messages = [
+        assistant_message([bash("cat /tmp/new.ex > lib/foo.ex && head -20 lib/foo.ex")])
+      ]
+
+      assert FileSurgery.detect(messages).verified_in_command == true
+    end
+
+    test "true when the same command EXECUTES what it wrote" do
+      messages = [
+        assistant_message([
+          bash("cat /tmp/x > tmp/probe.exs && mix run --no-start tmp/probe.exs")
+        ])
+      ]
+
+      assert FileSurgery.detect(messages).verified_in_command == true
+    end
+
+    test "false for a bare write with no verification" do
+      messages = [assistant_message([bash("cat /tmp/new.ex > lib/foo.ex")])]
+
+      assert FileSurgery.detect(messages).verified_in_command == false
+    end
+
+    test "the §C.4 live specimen (write heredoc, then `mix run` it) is verified" do
+      # This alert fired on the session that produced churn_alert_precision.md.
+      # Read-back alone (D2a) misses it; catching it is the measured argument
+      # for the wider read-back-OR-execute form.
+      messages = [
+        assistant_message([
+          bash("""
+          cat > /home/zach/orca-hub-churn-analysis/probe1.exs <<'EOF'
+          IO.puts("hi")
+          EOF
+          export $(grep -E '^DB_' .env | xargs) && mix run --no-start --no-compile \
+          /home/zach/orca-hub-churn-analysis/probe1.exs 2>&1 | head -80\
+          """)
+        ])
+      ]
+
+      evidence = FileSurgery.detect(messages)
+      assert evidence.path == "/home/zach/orca-hub-churn-analysis/probe1.exs"
+      assert evidence.verified_in_command == true
+    end
+  end
+
+  describe "detect/1 — same_path_matches (INFORMATIONAL ONLY, never a gate)" do
+    test "counts every match on the reported path across the window" do
+      messages = [
+        assistant_message([bash("cat /tmp/a > lib/foo.ex")]),
+        assistant_message([bash("cat /tmp/b > lib/other.ex")]),
+        assistant_message([bash("sed -i 's/a/b/' lib/foo.ex")]),
+        assistant_message([bash("cat /tmp/c > lib/foo.ex")])
+      ]
+
+      evidence = FileSurgery.detect(messages)
+
+      assert evidence.path == "lib/foo.ex"
+      assert evidence.same_path_matches == 3
+    end
+
+    test "is 1 for a single match, and never 0" do
+      messages = [assistant_message([bash("cat /tmp/a > lib/foo.ex")])]
+
+      assert FileSurgery.detect(messages).same_path_matches == 1
+    end
+
+    test "does not count matches on OTHER paths" do
+      messages = [
+        assistant_message([bash("cat /tmp/a > lib/one.ex")]),
+        assistant_message([bash("cat /tmp/b > lib/two.ex")])
+      ]
+
+      evidence = FileSurgery.detect(messages)
+
+      assert evidence.path == "lib/two.ex"
+      assert evidence.same_path_matches == 1
+    end
+  end
+
   describe "detect/1 — ORCAHUB3-61 regression fixture: the real qwen sed-i/File.write! incident" do
     test "the 3cd4a43c session's actual command sequence fires via a non-redirect family" do
       # Replayed in order from the live incident: worker read the file,
