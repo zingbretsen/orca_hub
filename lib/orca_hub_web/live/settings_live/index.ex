@@ -591,7 +591,12 @@ defmodule OrcaHubWeb.SettingsLive.Index do
         {:noreply,
          socket
          |> assign_asr()
-         |> put_flash(:info, "ASR settings saved — in effect on the next transcription.")}
+         |> put_flash(
+           :info,
+           "ASR settings saved — in effect on the next transcription. " <>
+             "The three microphone constraints are the exception: switch voice mode " <>
+             "off and on again, since they are read when the mic is armed."
+         )}
 
       {:error, changeset} ->
         {:noreply,
@@ -822,11 +827,27 @@ defmodule OrcaHubWeb.SettingsLive.Index do
             "timeout_ms" => spec["timeout_ms"] || "",
             "warmup_timeout_ms" => spec["warmup_timeout_ms"] || "",
             "threshold" => spec["threshold"] || "",
+            "echo_cancellation" => spec["echo_cancellation"] || "",
+            "noise_suppression" => spec["noise_suppression"] || "",
+            "auto_gain_control" => spec["auto_gain_control"] || "",
             "enabled" => to_string(if(entry, do: entry.enabled, else: true))
           },
           as: :asr
         )
     )
+  end
+
+  @doc """
+  Options for one of the three tri-state capture constraints
+  (ORCAHUB3-105). Blank is a real choice — "inherit this one field from its
+  env var" — which is why these are selects rather than checkboxes.
+  """
+  def asr_constraint_options(env_default, env_var) do
+    [
+      {"Inherit from #{env_var} (#{env_default})", ""},
+      {"true — request it", "true"},
+      {"false — do not request it", "false"}
+    ]
   end
 
   defp form_value(form, field, fallback) do

@@ -18,7 +18,10 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
     :asr_language,
     :asr_timeout_ms,
     :asr_warmup_timeout_ms,
-    :asr_intent_threshold
+    :asr_intent_threshold,
+    :asr_echo_cancellation,
+    :asr_noise_suppression,
+    :asr_auto_gain_control
   ]
 
   setup do
@@ -37,6 +40,9 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
     Application.put_env(:orca_hub, :asr_timeout_ms, "1111")
     Application.put_env(:orca_hub, :asr_warmup_timeout_ms, "2222")
     Application.put_env(:orca_hub, :asr_intent_threshold, "0.5")
+    Application.put_env(:orca_hub, :asr_echo_cancellation, "true")
+    Application.put_env(:orca_hub, :asr_noise_suppression, "true")
+    Application.put_env(:orca_hub, :asr_auto_gain_control, "true")
 
     :ok
   end
@@ -49,6 +55,9 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
       "timeout_ms" => "",
       "warmup_timeout_ms" => "",
       "threshold" => "",
+      "echo_cancellation" => "",
+      "noise_suppression" => "",
+      "auto_gain_control" => "",
       "enabled" => "true"
     }
 
@@ -67,6 +76,17 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
       assert html =~ "1111"
       assert html =~ "2222"
       assert html =~ "0.5"
+    end
+
+    test "renders the three capture constraints and says when they take effect", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/settings")
+
+      assert html =~ "Microphone capture constraints"
+      assert html =~ "Echo cancellation (AEC)"
+      assert html =~ "Noise suppression (NS)"
+      assert html =~ "Auto gain control (AGC)"
+      assert html =~ "ASR_ECHO_CANCELLATION"
+      assert html =~ "next ARM"
     end
 
     test "there is no model catalog on this lane", %{conn: conn} do
@@ -93,8 +113,62 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
                language: "en",
                timeout_ms: 7000,
                warmup_timeout_ms: 2222,
-               threshold: 0.9
+               threshold: 0.9,
+               echo_cancellation: true,
+               noise_suppression: true,
+               auto_gain_control: true
              }
+    end
+
+    test "a constraint set to false in the UI is what the voice channel hands the browser",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      submit(view, %{"echo_cancellation" => "false"})
+
+      assert ASRConfig.capture_constraints() == %{
+               echoCancellation: false,
+               noiseSuppression: true,
+               autoGainControl: true
+             }
+    end
+
+    test "leaving a constraint blank inherits that one from env", %{conn: conn} do
+      Application.put_env(:orca_hub, :asr_auto_gain_control, "false")
+
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      submit(view, %{"echo_cancellation" => "false"})
+
+      assert ASRConfig.resolve().echo_cancellation == false
+      assert ASRConfig.resolve().auto_gain_control == false
+      assert ASRConfig.get_provider_entry().spec["auto_gain_control"] == ""
+    end
+
+    test "a constraint that is neither true nor false is rejected", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      html =
+        view
+        |> form("#asr-provider-form", %{"asr" => %{"url" => ""}})
+        |> render_submit(%{
+          "asr" => %{
+            "url" => "",
+            "path" => "",
+            "language" => "",
+            "timeout_ms" => "",
+            "warmup_timeout_ms" => "",
+            "threshold" => "",
+            "echo_cancellation" => "maybe",
+            "noise_suppression" => "",
+            "auto_gain_control" => "",
+            "enabled" => "true"
+          }
+        })
+
+      assert html =~ "Could not save"
+      assert html =~ "echo_cancellation must be"
+      assert ASRConfig.get_provider_entry() == nil
     end
 
     test "saving a blank field reverts that field alone to env", %{conn: conn} do
@@ -162,6 +236,9 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
             "timeout_ms" => "",
             "warmup_timeout_ms" => "",
             "threshold" => "",
+            "echo_cancellation" => "",
+            "noise_suppression" => "",
+            "auto_gain_control" => "",
             "enabled" => "true"
           }
         })

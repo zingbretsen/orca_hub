@@ -1039,6 +1039,68 @@
       raise it if commands fire by accident, lower it if they are missed.
     </p>
 
+    <div class="divider text-xs text-base-content/50 mt-4 mb-0">
+      Microphone capture constraints
+    </div>
+
+    <div class="flex gap-2">
+      <div class="flex-1">
+        <.input
+          field={@asr_form[:echo_cancellation]}
+          type="select"
+          label="Echo cancellation (AEC)"
+          options={
+            asr_constraint_options(
+              @asr_env_defaults.echo_cancellation,
+              "ASR_ECHO_CANCELLATION"
+            )
+          }
+        />
+      </div>
+      <div class="flex-1">
+        <.input
+          field={@asr_form[:noise_suppression]}
+          type="select"
+          label="Noise suppression (NS)"
+          options={
+            asr_constraint_options(
+              @asr_env_defaults.noise_suppression,
+              "ASR_NOISE_SUPPRESSION"
+            )
+          }
+        />
+      </div>
+      <div class="flex-1">
+        <.input
+          field={@asr_form[:auto_gain_control]}
+          type="select"
+          label="Auto gain control (AGC)"
+          options={
+            asr_constraint_options(
+              @asr_env_defaults.auto_gain_control,
+              "ASR_AUTO_GAIN_CONTROL"
+            )
+          }
+        />
+      </div>
+    </div>
+
+    <p class="text-xs text-base-content/50 -mt-1">
+      The three <code>getUserMedia</code>
+      constraints the browser opens the microphone with.
+      <strong>
+        Unlike every other field here, a change takes effect on the next ARM, not the next
+        utterance
+      </strong>
+      — switch voice mode off and on again. They are exposed for <strong>diagnosis</strong>
+      (ORCAHUB3-105): requesting echo cancellation puts the browser into communications audio
+      mode, which on Android forces Bluetooth from A2DP to HFP/SCO and stops media — including
+      other apps' — reaching the car. Defaults are all <code>true</code>, which is what
+      <code>voice_mode_spec.md</code>
+      §4 decided; turning one off is a test, not a fix. The values actually in force are logged
+      at each arm — server-side in the hub log, and in the browser console as <code>[voice] microphone armed</code>, which also reports what the track actually applied.
+    </p>
+
     <.input
       field={@asr_form[:enabled]}
       type="checkbox"

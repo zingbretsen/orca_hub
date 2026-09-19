@@ -54,6 +54,14 @@ defmodule OrcaHubWeb.VoiceChannel do
   settings, try again" gesture. A config change therefore takes effect on
   the next join or retry, not mid-utterance.
 
+  The join reply also carries `audio_constraints` — the three
+  `getUserMedia` capture constraints (ORCAHUB3-105), camelCased for the Web
+  Audio API — which the browser spreads into the constraint object it opens
+  the microphone with. Those are the ONE field group whose change does NOT
+  land on the next utterance: the browser reads them when it ARMS, so a
+  change needs voice off and on again. Resolved values are logged at `:info`
+  on every join.
+
   ## Ownership
 
   Exactly one voice owner per session. On join the channel looks for a
@@ -107,7 +115,18 @@ defmodule OrcaHubWeb.VoiceChannel do
 
       send(self(), :warmup)
 
-      {:ok, %{state: Session.snapshot(state, now())}, socket}
+      constraints = capture_constraints(config)
+
+      # ORCAHUB3-105: one info line per join, so a report about inaudible
+      # audio can say what the microphone was ACTUALLY opened with instead of
+      # what we assume the defaults are. The browser logs the same set (plus
+      # what the track reports back) at `Capture.open`.
+      Logger.info(
+        "VoiceChannel: capture constraints for #{session_id}: #{inspect(constraints)} " <>
+          "(applied on the browser's next arm)"
+      )
+
+      {:ok, %{state: Session.snapshot(state, now()), audio_constraints: constraints}, socket}
     else
       {:error, reason} -> {:error, %{reason: to_string(reason)}}
     end
@@ -413,6 +432,10 @@ defmodule OrcaHubWeb.VoiceChannel do
   end
 
   defp resolve_config, do: HubRPC.resolve_asr_config()
+
+  # A pure reshape of the config we already have — no Repo, so it needs no
+  # HubRPC hop even on an agent node.
+  defp capture_constraints(config), do: OrcaHub.ASRConfig.capture_constraints(config)
 
   # -- frame decoding --------------------------------------------------------
 

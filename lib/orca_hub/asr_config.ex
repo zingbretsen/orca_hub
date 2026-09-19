@@ -17,7 +17,7 @@ defmodule OrcaHub.ASRConfig do
 
   ## Resolution: DB wins, else env, else hardcoded — PER FIELD
 
-  `resolve/0` decides six fields independently. For each one it takes the
+  `resolve/0` decides nine fields independently. For each one it takes the
   first usable of:
 
     1. the DB value (the `"asr_provider"` row's `spec`),
@@ -54,6 +54,30 @@ defmodule OrcaHub.ASRConfig do
   knob rather than a module attribute, so that a user who keeps getting
   false "send" triggers can turn it up without a redeploy.
 
+  ## The three capture constraints (ORCAHUB3-105)
+
+  `echo_cancellation`, `noise_suppression` and `auto_gain_control` are
+  booleans, all defaulting to TRUE, and they are not used on this side at
+  all: the voice channel hands them to the browser in its join reply and
+  `assets/js/voice/capture.js` passes them straight to `getUserMedia`. They
+  live here because they need to be A/B-testable in seconds on a real phone,
+  and as a module constant in JS every hypothesis cost a full
+  gate-and-deploy cycle.
+
+  The defaults reproduce that constant EXACTLY; changing one is a deliberate
+  act. WHEN a change takes effect also differs from every other field here:
+  the constraints are read once, when the microphone is OPENED, so a change
+  applies on the NEXT ARM (voice off, then on) — not on the next utterance,
+  and never mid-session.
+
+  Why they are tunable at all: requesting `echoCancellation` puts the browser
+  into communications audio mode, which on Android forces Bluetooth from A2DP
+  (media) to HFP/SCO (call) — the suspected cause of ORCAHUB3-105, where
+  arming the mic silences ALL audio output on the device, unrelated apps
+  included. This is the knob for TESTING that, not a decision to turn AEC
+  off; `voice_mode_spec.md` §4 still says AEC-on and the defaults still obey
+  it.
+
   ## No cache, deliberately
 
   `resolve/0` queries inside the call. Voice traffic is very low QPS, and a
@@ -84,6 +108,14 @@ defmodule OrcaHub.ASRConfig do
   @default_warmup_timeout_ms 40_000
   @default_threshold 0.85
 
+  # ORCAHUB3-105. These three ARE the old `AUDIO_CONSTRAINTS` module constant
+  # in assets/js/voice/capture.js — do not change them without changing spec
+  # §4, and note that `asr_config_test.exs` asserts they still match the JS
+  # file byte-for-byte in meaning.
+  @default_echo_cancellation true
+  @default_noise_suppression true
+  @default_auto_gain_control true
+
   @doc "The PubSub topic mutations broadcast on."
   def topic, do: @topic
 
@@ -92,8 +124,9 @@ defmodule OrcaHub.ASRConfig do
 
   @doc """
   The effective ASR config: `%{url:, path:, language:, timeout_ms:,
-  warmup_timeout_ms:, threshold:}`, each field resolved DB → env →
-  hardcoded independently, with the numeric fields returned TYPED.
+  warmup_timeout_ms:, threshold:, echo_cancellation:, noise_suppression:,
+  auto_gain_control:}`, each field resolved DB → env → hardcoded
+  independently, with the numeric and boolean fields returned TYPED.
 
   A DB read failure degrades to env-only rather than failing the call —
   transcribing against the env config is strictly better than dropping the
@@ -114,7 +147,45 @@ defmodule OrcaHub.ASRConfig do
           :asr_warmup_timeout_ms,
           @default_warmup_timeout_ms
         ),
-      threshold: pick_threshold(spec["threshold"], :asr_intent_threshold, @default_threshold)
+      threshold: pick_threshold(spec["threshold"], :asr_intent_threshold, @default_threshold),
+      echo_cancellation:
+        pick_boolean(
+          spec["echo_cancellation"],
+          :asr_echo_cancellation,
+          @default_echo_cancellation
+        ),
+      noise_suppression:
+        pick_boolean(
+          spec["noise_suppression"],
+          :asr_noise_suppression,
+          @default_noise_suppression
+        ),
+      auto_gain_control:
+        pick_boolean(
+          spec["auto_gain_control"],
+          :asr_auto_gain_control,
+          @default_auto_gain_control
+        )
+    }
+  end
+
+  @doc """
+  Just the three `getUserMedia` capture constraints from `resolve/0`, keyed
+  the way the Web Audio API spells them — what `OrcaHubWeb.VoiceChannel`
+  puts in its join reply and `assets/js/voice/capture.js` spreads into
+  `getUserMedia({audio: ...})`.
+
+  `channelCount: 1` and `voiceIsolation: false` are NOT here: they stay
+  pinned in the JS, because nothing about ORCAHUB3-105 makes them worth
+  varying and spec §4 pins `voiceIsolation` explicitly.
+  """
+  def capture_constraints(config \\ nil) do
+    config = config || resolve()
+
+    %{
+      echoCancellation: config.echo_cancellation,
+      noiseSuppression: config.noise_suppression,
+      autoGainControl: config.auto_gain_control
     }
   end
 
@@ -131,7 +202,10 @@ defmodule OrcaHub.ASRConfig do
       language: pick(nil, :asr_language, @default_language),
       timeout_ms: pick_integer(nil, :asr_timeout_ms, @default_timeout_ms),
       warmup_timeout_ms: pick_integer(nil, :asr_warmup_timeout_ms, @default_warmup_timeout_ms),
-      threshold: pick_threshold(nil, :asr_intent_threshold, @default_threshold)
+      threshold: pick_threshold(nil, :asr_intent_threshold, @default_threshold),
+      echo_cancellation: pick_boolean(nil, :asr_echo_cancellation, @default_echo_cancellation),
+      noise_suppression: pick_boolean(nil, :asr_noise_suppression, @default_noise_suppression),
+      auto_gain_control: pick_boolean(nil, :asr_auto_gain_control, @default_auto_gain_control)
     }
   end
 
@@ -140,22 +214,35 @@ defmodule OrcaHub.ASRConfig do
   end
 
   defp pick_integer(db_value, env_key, default),
-    do: pick_number(db_value, env_key, default, &positive_integer/1)
+    do: pick_parsed(db_value, env_key, default, &positive_integer/1)
 
   defp pick_threshold(db_value, env_key, default),
-    do: pick_number(db_value, env_key, default, &unit_float/1)
+    do: pick_parsed(db_value, env_key, default, &unit_float/1)
 
-  defp pick_number(db_value, env_key, default, parser) do
-    number(db_value, "the DB row", env_key, parser) ||
-      number(Application.get_env(:orca_hub, env_key), "the environment", env_key, parser) ||
+  defp pick_boolean(db_value, env_key, default),
+    do: pick_parsed(db_value, env_key, default, &Entry.parse_boolean/1)
+
+  # `with nil <-` rather than `||`: a resolved `false` is a REAL value here
+  # (that is the whole point of the capture constraints), and `||` would
+  # treat it as "not set" and fall through to the default `true`.
+  defp pick_parsed(db_value, env_key, default, parser) do
+    with nil <- parsed(db_value, "the DB row", env_key, parser),
+         nil <-
+           parsed(
+             Application.get_env(:orca_hub, env_key),
+             "the environment",
+             env_key,
+             parser
+           ) do
       default
+    end
   end
 
-  # One layer of a numeric field: blank is "not set here" and falls through
+  # One layer of a parsed field: blank is "not set here" and falls through
   # silently; a populated-but-unusable value falls through LOUDLY, since it
   # is a config mistake the user will otherwise never see.
-  defp number(raw, source, env_key, parser) do
-    if blank_number?(raw) do
+  defp parsed(raw, source, env_key, parser) do
+    if blank_layer?(raw) do
       nil
     else
       case parser.(raw) do
@@ -186,9 +273,9 @@ defmodule OrcaHub.ASRConfig do
     end
   end
 
-  defp blank_number?(nil), do: true
-  defp blank_number?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank_number?(_), do: false
+  defp blank_layer?(nil), do: true
+  defp blank_layer?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_layer?(_), do: false
 
   defp blank_to_nil(value) when is_binary(value) do
     case String.trim(value) do
@@ -220,14 +307,15 @@ defmodule OrcaHub.ASRConfig do
 
   @doc """
   Upserts the single provider row. `attrs` carries `url`/`path`/`language`/
-  `timeout_ms`/`warmup_timeout_ms`/`threshold` (string or atom keys); a
-  blank value is stored as-is and read back as "fall back to env for this
-  field".
+  `timeout_ms`/`warmup_timeout_ms`/`threshold`/`echo_cancellation`/
+  `noise_suppression`/`auto_gain_control` (string or atom keys); a blank
+  value is stored as-is and read back as "fall back to env for this field".
   """
   def put_provider(attrs) do
     spec =
       Map.new(
-        ~w(url path language timeout_ms warmup_timeout_ms threshold)a,
+        ~w(url path language timeout_ms warmup_timeout_ms threshold
+           echo_cancellation noise_suppression auto_gain_control)a,
         fn key -> {to_string(key), fetch(attrs, key)} end
       )
 

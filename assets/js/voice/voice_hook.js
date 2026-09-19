@@ -93,6 +93,13 @@
  *    now re-derived — `armed` from `_micLive()`, `muted` from the mute
  *    watchdog and its wall-clock reconcile — and `_reconcileMic()` is the one
  *    path that re-derives both on the way back from a backgrounded page.
+ *
+ * 8. CAPTURE CONSTRAINTS COME FROM THE HUB (ORCAHUB3-105). The join reply
+ *    carries `audio_constraints` — AEC/NS/AGC as the hub resolved them — and
+ *    `_arm()` hands them to `Capture`, which reads them exactly once, at
+ *    `getUserMedia`. So a settings change takes effect on the NEXT ARM, not
+ *    the next utterance: the live track is never reshaped underneath a
+ *    session that is already listening.
  */
 
 import { Capture, secureContextProblem, FRAME_SAMPLES } from "./capture"
@@ -197,6 +204,11 @@ export const VoiceHook = {
     this.muted = false
     this.state = null
     this.composerPresent = false
+    // ORCAHUB3-105: the hub-resolved getUserMedia constraints, refreshed from
+    // every join reply. `null` until the first join, and `Capture` falls back
+    // to the shipped defaults for it — an older server that sends no
+    // `audio_constraints` therefore behaves exactly as it does today.
+    this.audioConstraints = null
     this.metrics = {
       sampleRate: null,
       ratio: null,
@@ -470,13 +482,15 @@ export const VoiceHook = {
         this.sounds.startWaiting()
       },
     })
+    let reply
     try {
-      await this.channel.join()
+      reply = await this.channel.join()
     } catch (e) {
       this.channel = null
       this._showError(e.message)
       return false
     }
+    this._readAudioConstraints(reply)
     this.metrics.joins++
     this._hideError()
     // The server's composer flag is per channel, so it is re-reported at
@@ -494,14 +508,25 @@ export const VoiceHook = {
    * back (ORCAHUB3-91). The server state is new; re-send the per-channel facts
    * `_joinChannel` normally sends, or the server keeps believing the page has
    * no composer and knows nothing about what is selectable on screen. */
-  _onChannelRejoin() {
+  _onChannelRejoin(reply) {
     this.metrics.joins++
+    this._readAudioConstraints(reply)
     this._hideError()
     this._reportComposer(true)
     this._syncUiFocus(true)
     const el = this._draftEl()
     if (el && el.value !== "") this._pushDraftEdit(el.value)
     this._renderMic()
+  },
+
+  /** Remember the hub-resolved capture constraints from a join reply
+   * (ORCAHUB3-105). Deliberately does NOT touch a live `Capture`: constraints
+   * are read when the mic is OPENED, so a settings change lands on the next
+   * arm — voice off, then on — and never reshapes the track underneath a
+   * session that is already listening. */
+  _readAudioConstraints(reply) {
+    const next = reply && reply.audio_constraints
+    if (next && typeof next === "object") this.audioConstraints = next
   },
 
   /** The channel dropped. Segments are discarded while it is down
@@ -545,6 +570,7 @@ export const VoiceHook = {
       if (!this.capture) {
         this.capture = new Capture({
           prerollMs: VAD_SETTINGS.preSpeechPadMs,
+          constraints: this.audioConstraints,
           onFrame: (m) => this._onFrame(m),
           onProcessorError: (msg) => {
             this.metrics.processorError = msg

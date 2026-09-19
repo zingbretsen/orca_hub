@@ -240,6 +240,33 @@ mop-up, not a primary defence.
 DECISION: use the browser's AEC. Do NOT hand-roll signal-domain cancellation
 of the known playback signal.
 
+**AMENDMENT (ORCAHUB3-105): the decision is unchanged, but it is no longer a
+constant.** `echoCancellation`/`noiseSuppression`/`autoGainControl` moved out
+of the `AUDIO_CONSTRAINTS` module constant in `assets/js/voice/capture.js` and
+into `OrcaHub.ASRConfig` (DB row > `ASR_ECHO_CANCELLATION` /
+`ASR_NOISE_SUPPRESSION` / `ASR_AUTO_GAIN_CONTROL` > default), delivered to the
+browser in the voice channel's join reply (section 8.1) and surfaced on the
+Settings page. **All three still default to `true`, so an unconfigured install
+does exactly what this section decided** — a test asserts the resolved
+defaults still equal this file's constant, read out of the JS source.
+
+Why: ORCAHUB3-105 reports that arming the mic makes ALL audio output on the
+device inaudible — our TTS, our cues, AND an unrelated podcast app, in the car
+over Bluetooth. Nothing in our code can silence another app, so the suspect is
+the OS taking the audio route: requesting AEC puts the browser into
+communications audio mode, which on Android forces Bluetooth from A2DP (media)
+to HFP/SCO (call), at which point the head unit is a call endpoint and media
+from every app stops reaching it. Only Zach's device can answer which
+constraint does it, and as a module constant each hypothesis cost a full
+gate-and-deploy cycle. The knob exists so that question can be settled in
+seconds; it is NOT a decision to turn AEC off. The resolved set is logged once
+per arm, server-side and in the browser console (with what the track actually
+applied), so a report can state what was in force rather than what we assume.
+
+`channelCount: 1` and `voiceIsolation: false` stay pinned in the JS and are
+deliberately NOT configurable — see below for why `voiceIsolation` in
+particular is pinned by name.
+
 Knowing the played signal exactly is the easy 10% of AEC. The hard parts:
 
 - The mic hears the signal convolved with room + speaker + mic, an unknown and
@@ -979,7 +1006,8 @@ The client ships RAW PCM; the SERVER wraps it in a 44-byte WAV header for the mu
 
 #### Join
 
-- `channel.join()` reply `ok`: `{state: <snapshot>}` (see below). Joining IS arming: the server fires the ASR warm-up ping immediately and `state.status` starts at `"warming"`.
+- `channel.join()` reply `ok`: `{state: <snapshot>, audio_constraints: {echoCancellation, noiseSuppression, autoGainControl}}` (see below). Joining IS arming: the server fires the ASR warm-up ping immediately and `state.status` starts at `"warming"`.
+- `audio_constraints` (ORCAHUB3-105) is the hub-resolved half of the `getUserMedia` constraint object — `OrcaHub.ASRConfig.capture_constraints/1`, resolved DB row > `ASR_*` env var > default, defaults all `true` per section 4. The client merges it under its own pinned `channelCount: 1` / `voiceIsolation: false` (`audioConstraints()` in `assets/js/voice/capture.js`) and ignores anything that is not one of those three keys as a boolean. It is the ONE part of the join reply that does NOT take effect on the next utterance: the browser reads it when it OPENS the mic, so a change lands on the next ARM. An older client, or a reply with the key absent, falls back to the shipped defaults and behaves exactly as before.
 - reply `error`: `{reason: "not_found" | "voice_owned" | "node_unavailable" | "archived"}`. `voice_owned` = another channel process already holds the voice claim for this session in `OrcaHub.SessionViewersRegistry` (value `%{voice: true}`); `node_unavailable` = the session's `runner_node` is set but not connected — the client shows it, NEVER re-routes.
 
 #### Server -> client events

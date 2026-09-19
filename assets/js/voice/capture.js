@@ -4,22 +4,63 @@
  * chance of the VAD and the server disagreeing about what was said.
  */
 
-import { captureWorkletUrl } from "./paths"
+// Extension spelled out — unlike the rest of the bundle, this module is also
+// imported by `capture.check.mjs` under plain node, which does not do
+// esbuild's extensionless resolution.
+import { captureWorkletUrl } from "./paths.js"
 
 export const TARGET_RATE = 16000
 export const FRAME_SAMPLES = 512 // Silero v5: 512 samples = 32 ms
 export const MS_PER_FRAME = (FRAME_SAMPLES / TARGET_RATE) * 1000
 
-/* Spec section 4: the browser's AEC/NS/AGC, explicitly requested. `channelCount`
- * pinned to 1 and `voiceIsolation` pinned to FALSE rather than inherited —
- * where it exists it is a third processing stage alongside NS and AEC and can
- * distort speech. */
-export const AUDIO_CONSTRAINTS = {
+/* Spec section 4: the browser's AEC/NS/AGC, explicitly requested.
+ *
+ * ORCAHUB3-105 split these in two. The three PROCESSING constraints are now
+ * runtime-configurable — `OrcaHub.ASRConfig` resolves them (DB row > `ASR_*`
+ * env var > these defaults) and the voice channel hands them to the browser in
+ * its join reply — because requesting `echoCancellation` puts the browser into
+ * communications audio mode, which is the leading suspect for arming the mic
+ * silencing every other app on an Android/Bluetooth device. They have to be
+ * A/B-testable on a real phone in seconds; as a module constant, each
+ * hypothesis cost a whole deploy.
+ *
+ * DEFAULTS REPRODUCE THE OLD CONSTANT EXACTLY. This is a knob, not a fix: spec
+ * §4 still says AEC-on, and `test/orca_hub/asr_config_test.exs` reads this very
+ * file to assert the server's defaults still agree with it. */
+export const DEFAULT_TUNABLE_CONSTRAINTS = {
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true,
+}
+
+/* Not tunable, and deliberately so. `channelCount` is pinned to 1 and
+ * `voiceIsolation` pinned to FALSE rather than inherited — where it exists it
+ * is a third processing stage alongside NS and AEC and can distort speech
+ * (spec §4 pins it by name). Nothing about the routing question makes either
+ * worth varying, so neither is exposed. */
+export const FIXED_CONSTRAINTS = {
   channelCount: 1,
   voiceIsolation: false,
+}
+
+/* What we shipped before ORCAHUB3-105, and still what an unconfigured install
+ * resolves to. Kept exported as the one place the full default object exists. */
+export const AUDIO_CONSTRAINTS = { ...DEFAULT_TUNABLE_CONSTRAINTS, ...FIXED_CONSTRAINTS }
+
+/** The constraint object to open the mic with, given whatever the server sent.
+ *
+ * Only the three known keys are honoured, and only as real booleans: the input
+ * is a websocket payload, and a typo'd or half-decoded field must fall back to
+ * the shipped default rather than reach `getUserMedia` as garbage. The fixed
+ * constraints are applied LAST so nothing on the wire can override them. */
+export function audioConstraints(tunable) {
+  const picked = {}
+  if (tunable && typeof tunable === "object") {
+    for (const key of Object.keys(DEFAULT_TUNABLE_CONSTRAINTS)) {
+      if (typeof tunable[key] === "boolean") picked[key] = tunable[key]
+    }
+  }
+  return { ...DEFAULT_TUNABLE_CONSTRAINTS, ...picked, ...FIXED_CONSTRAINTS }
 }
 
 export function secureContextProblem() {
@@ -35,8 +76,11 @@ export function secureContextProblem() {
 }
 
 export class Capture {
-  constructor({ prerollMs = 500, onFrame, onProcessorError, onLiveness } = {}) {
+  constructor({ prerollMs = 500, onFrame, onProcessorError, onLiveness, constraints } = {}) {
     this.prerollMs = prerollMs
+    // Resolved ONCE, here, because `open()` is what reads them: a constraint
+    // change lands on the next arm, never on the live track (ORCAHUB3-105).
+    this.constraints = audioConstraints(constraints)
     this.onFrame = onFrame || (() => {})
     this.onProcessorError = onProcessorError || (() => {})
     this.onLiveness = onLiveness || (() => {})
@@ -60,11 +104,26 @@ export class Capture {
     const problem = secureContextProblem()
     if (problem) throw new Error(problem)
 
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS })
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio: this.constraints })
     const track = this.stream.getAudioTracks()[0]
     this.track = track || null
     this.trackSettings = track && track.getSettings ? track.getSettings() : {}
     this._watchTrack(track)
+
+    // ORCAHUB3-105: one line per arm, at info. REQUESTED and APPLIED are both
+    // here on purpose — a constraint the browser silently declined looks
+    // identical to one we never asked for, and the whole point of the knob is
+    // that a report can state what was in force rather than what we assume.
+    console.info("[voice] microphone armed", {
+      requested: this.constraints,
+      applied: {
+        echoCancellation: this.trackSettings.echoCancellation,
+        noiseSuppression: this.trackSettings.noiseSuppression,
+        autoGainControl: this.trackSettings.autoGainControl,
+        channelCount: this.trackSettings.channelCount,
+        voiceIsolation: this.trackSettings.voiceIsolation,
+      },
+    })
 
     // Never force a sampleRate: the context negotiates its own and the browser
     // resamples the track into it. The worklet reads whatever it gets.

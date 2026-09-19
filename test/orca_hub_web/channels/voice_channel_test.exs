@@ -144,10 +144,32 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       assert socket.assigns.session_id == session.id
       assert socket.assigns.runner_node == node()
 
+      # ORCAHUB3-105: the browser opens the mic with whatever the hub
+      # resolved, so the join reply has to carry it. Default install =
+      # exactly the constraint set we shipped as a JS constant.
+      assert reply.audio_constraints == %{
+               echoCancellation: true,
+               noiseSuppression: true,
+               autoGainControl: true
+             }
+
       assert [{_pid, %{voice: true}}] =
                Registry.lookup(OrcaHub.SessionViewersRegistry, session.id)
 
       assert_push "state", %{status: "listening", warm: true}, 5_000
+    end
+
+    test "a configured constraint reaches the browser on the next join", %{session: session} do
+      on_exit(fn -> OrcaHub.ASRConfig.delete_provider() end)
+      {:ok, _} = OrcaHub.ASRConfig.put_provider(%{echo_cancellation: "false"})
+
+      {:ok, reply, _socket} = join(session.id)
+
+      assert reply.audio_constraints == %{
+               echoCancellation: false,
+               noiseSuppression: true,
+               autoGainControl: true
+             }
     end
 
     test "the warm-up ping runs without blocking the join reply", %{session: session} do

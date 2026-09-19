@@ -75,11 +75,22 @@ with `Cluster.send_message(node, id, draft, :queue)`).
 ## Config surface
 
 `ASRConfig.resolve/0` -> `%{url, path, language, timeout_ms,
-warmup_timeout_ms, threshold}`, resolved PER FIELD: DB row (`asr_provider`) >
-`ASR_*` env > default, no cache, deliberately. No `model` field — the lane
-offers none. The channel resolves at join and on `retry_warmup` (via `HubRPC`;
-agent nodes have no DB), so a change lands on the next join, not mid-utterance.
-`threshold` (0.85) is the matcher knob.
+warmup_timeout_ms, threshold, echo_cancellation, noise_suppression,
+auto_gain_control}`, resolved PER FIELD: DB row (`asr_provider`) > `ASR_*` env >
+default, no cache, deliberately. No `model` field — the lane offers none. The
+channel resolves at join and on `retry_warmup` (via `HubRPC`; agent nodes have
+no DB), so a change lands on the next join, not mid-utterance. `threshold`
+(0.85) is the matcher knob.
+
+The last three are the `getUserMedia` capture constraints (ORCAHUB3-105), all
+defaulting to `true` — exactly the JS constant they replaced, so an
+unconfigured install is unchanged. They ride the join reply as
+`audio_constraints` (camelCased) into `Capture`, which reads them ONCE at
+`getUserMedia`, so they are the one field group that takes effect on the next
+ARM rather than the next utterance. They exist to A/B the suspicion that
+requesting AEC flips Android Bluetooth from A2DP to HFP/SCO and silences every
+app's audio; spec §4 still says AEC-on. Logged once per arm, server-side and in
+the browser console.
 
 ## Invariants that bite
 

@@ -227,6 +227,19 @@ config :orca_hub, :asr_timeout_ms, System.get_env("ASR_TIMEOUT_MS") || "10000"
 config :orca_hub, :asr_warmup_timeout_ms, System.get_env("ASR_WARMUP_TIMEOUT_MS") || "40000"
 config :orca_hub, :asr_intent_threshold, System.get_env("ASR_INTENT_THRESHOLD") || "0.85"
 
+# ORCAHUB3-105: the three getUserMedia capture constraints the browser opens
+# the microphone with, moved out of a JS module constant so they can be A/B
+# tested on a real phone without a deploy. Defaults reproduce the constant
+# exactly (all true, per voice_mode_spec.md §4) — flipping one is a
+# deliberate act. Strings, parsed by OrcaHub.ASRConfig like the numbers
+# above; anything other than "true"/"false" logs and falls back.
+#
+# THEY TAKE EFFECT ON THE NEXT ARM, not the next utterance: the browser reads
+# them once, when it opens the mic. Toggle voice off and on after changing one.
+config :orca_hub, :asr_echo_cancellation, System.get_env("ASR_ECHO_CANCELLATION") || "true"
+config :orca_hub, :asr_noise_suppression, System.get_env("ASR_NOISE_SUPPRESSION") || "true"
+config :orca_hub, :asr_auto_gain_control, System.get_env("ASR_AUTO_GAIN_CONTROL") || "true"
+
 config :orca_hub, :elevenlabs_api_key, System.get_env("ELEVENLABS_API_KEY")
 
 config :orca_hub,
