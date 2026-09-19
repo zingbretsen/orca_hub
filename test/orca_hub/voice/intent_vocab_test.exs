@@ -436,6 +436,12 @@ defmodule OrcaHub.Voice.IntentVocabTest do
       # a slightly closer neighbour of those two segments than `orca third item`
       # was. Still 0.0265 below the threshold, and the re-framing bought far more
       # than that back on the corpus negatives (family worst 0.833 -> 0.714).
+      #
+      # The whole 41-segment fixture was re-run against the new vocabulary rather
+      # than these three numbers being patched: 16 of 41 segments moved their top
+      # score, the largest rise being #14 at +0.0833 to 0.75, but the >= 0.80
+      # MEMBERSHIP is unchanged (#9, #25, #30, and #41's known false positive)
+      # and the fire set is still exactly #41. The worst non-fire is still #30.
       assert near == [
                {9, :third, 0.8235},
                {25, :third, 0.8235},
@@ -801,13 +807,57 @@ defmodule OrcaHub.Voice.IntentVocabTest do
   end
 
   describe "known limitations, pinned so they are not rediscovered as bugs" do
-    test "a truncated \"orca ninth\" resolves to :send, not :ninth" do
-      # The ordinal word alone is closer to "orca send" (0.909) than to its own
-      # phrase, which is exactly why the bare ordinals were rejected in §8.3.4
-      # and why the help affordance must teach the full three-token phrase.
+    # Re-measured for the `orca select <ord>` frame, not carried over: under the
+    # OLD wording this was a TRUNCATION hazard ("orca ninth" is `orca ninth item`
+    # minus its last token). It is no longer a truncation of anything — the
+    # shipped phrase is `orca select ninth` — but the hazard survives unchanged
+    # at the same 0.909, because "orca ninth" folds onto "orca send" itself
+    # rather than onto its own entry. Same number, different reason.
+    test "\"orca ninth\" with no slot word resolves to :send, not :ninth" do
       assert {:send, score} = Intent.intent("orca ninth", vocab: Intent.command_vocab())
       assert_in_delta score, 0.9091, 5.0e-4
       assert {:ninth, 1.0} = Intent.intent("orca select ninth", vocab: Intent.command_vocab())
+
+      # Dropping the "orca" instead of the "select" lands just under the bar, so
+      # it is dictated rather than acted on.
+      assert {nil, near} = Intent.intent("select ninth", vocab: Intent.command_vocab())
+      assert_in_delta near, 0.8462, 5.0e-4
+    end
+
+    # ORCAHUB3-103 side effect, measured while re-running the dictation fixture
+    # and pinned because it is a SAFETY property the re-framing bought by
+    # accident: under `orca <ord> item` several bare cardinal utterances fired a
+    # selection, including the almost-content-free "orca item" at 0.909. Under
+    # `orca select <ord>` they fall below the bar and are dictated. A future
+    # re-wording that puts the ordinal back in terminal position reintroduces
+    # all of these, so they are asserted rather than left as a footnote.
+    test "bare cardinals and \"orca item\" no longer fire a selection" do
+      for said <- ["orca item", "orca six", "orca seven", "orca eight", "orca three", "orca four"] do
+        assert {nil, _} = Intent.intent(said, vocab: Intent.command_vocab()),
+               "#{inspect(said)} fired #{inspect(Intent.intent(said, vocab: Intent.command_vocab()))}"
+      end
+
+      # What they used to do, so the improvement is a measurement and not a claim.
+      superseded =
+        Enum.map(Intent.command_vocab(), fn {name, phrase} ->
+          if Intent.class(name) == :select,
+            do: {name, "orca #{String.replace(phrase, "orca select ", "")} item"},
+            else: {name, phrase}
+        end)
+
+      assert {:fifth, was} = Intent.intent("orca item", vocab: superseded)
+      assert_in_delta was, 0.9091, 5.0e-4
+      assert {:eighth, _} = Intent.intent("orca eight", vocab: superseded)
+      assert {:sixth, _} = Intent.intent("orca six", vocab: superseded)
+
+      # NOT improved and NOT caused by the re-framing: "orca nine"/"orca one"
+      # both resolve to :open at 0.889 under BOTH vocabularies, because
+      # phonetic("orcanine") == "arkn" against :open's "arkpn". Pre-existing,
+      # untouched here, and recorded so it is not mistaken for fallout.
+      for said <- ["orca nine", "orca one"] do
+        assert {:open, _} = Intent.intent(said, vocab: Intent.command_vocab())
+        assert {:open, _} = Intent.intent(said, vocab: superseded)
+      end
     end
 
     # ORCAHUB3-103. This test used to assert the OPPOSITE — that a truncated
