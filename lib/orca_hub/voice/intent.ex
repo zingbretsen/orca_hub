@@ -71,15 +71,15 @@ defmodule OrcaHub.Voice.Intent do
   | `:hashtag` | orca hashtag | insert | 0.667 |
   | `:project_search` | orca project search | insert | 0.588 |
   | `:double_hashtag` | orca double hashtag | insert | 0.667 |
-  | `:first` | orca first item | select | 0.714 |
-  | `:second` | orca second item | select | 0.769 |
-  | `:third` | orca third item | select | 0.769 |
-  | `:fourth` | orca fourth item | select | 0.769 |
-  | `:fifth` | orca fifth item | select | 0.667 |
-  | `:sixth` | orca sixth item | select | 0.667 |
-  | `:seventh` | orca seventh item | select | 0.714 |
-  | `:eighth` | orca eighth item | select | 0.667 |
-  | `:ninth` | orca ninth item | select | 0.833 |
+  | `:first` | orca select first | select | 0.700 |
+  | `:second` | orca select second | select | 0.700 |
+  | `:third` | orca select third | select | 0.700 |
+  | `:fourth` | orca select fourth | select | 0.667 |
+  | `:fifth` | orca select fifth | select | 0.667 |
+  | `:sixth` | orca select sixth | select | 0.700 |
+  | `:seventh` | orca select seventh | select | 0.700 |
+  | `:eighth` | orca select eighth | select | 0.667 |
+  | `:ninth` | orca select ninth | select | 0.714 |
   | `:help` | orca help menu | navigate | 0.625 |
 
   ### What the measurement changed, and why
@@ -93,11 +93,12 @@ defmodule OrcaHub.Voice.Intent do
     SEND clips and stole every one of them, plus two false positives at 0.900
     ("...think about the schema for a second."). `orca ninth` separately scored
     0.909 on a negative (the JFK passage's "...can do for your country"), a
-    false positive on its own. The whole family therefore ships with an `item`
-    suffix — `orca first item` .. `orca ninth item` — which drops the worst
+    false positive on its own. The family first shipped with an `item`
+    suffix — `orca first item` .. `orca ninth item` — which dropped the worst
     negative in the family from 0.909 to 0.833 and the worst stolen-positive
-    count from 30 to 0, while keeping every sibling separable (worst intra-family
-    rival 0.933, `orca first item` vs `orca fourth item`).
+    count from 30 to 0. That was NOT ENOUGH: it left `:second` still beating
+    `:send` on the ASR's commonest mangling of it, and the whole family was
+    re-framed as `orca select <ord>` in ORCAHUB3-103 — see below.
   * **`orca sessions`** scored 0.800 on a negative ("...test slash orcahub slash
     voicetest dot exs") — no false positive, but only 0.05 of headroom. It ships
     as `orca all sessions` (0.727), and the shorter `orca sessions` still
@@ -122,16 +123,108 @@ defmodule OrcaHub.Voice.Intent do
   (0.833 each) that have been in production since phase 1, and dropping the
   ninth slot would make the last palette result unreachable by ordinal.
 
+  ### The ordinals moved BEHIND "select" (ORCAHUB3-103)
+
+  The `item` suffix above reduced the `:second`/`:send` collision; it did not
+  end it. Zach hit it in live use, with `orca send` heard as **"Work Ascend."**
+  and classified `:second` at 0.9333 against `:send`'s 0.9231 — the ordinal
+  winning by 0.0102, the send never firing, and `strip_command/3` eating the
+  tail so a `select` fired instead.
+
+  The reason `item` bought so little is arithmetic. `second`'s "d" folds to "t"
+  and `item`'s "t" collapses into it, so three extra letters contribute exactly
+  ONE phonetic character:
+
+      phonetic("workascend")       == "arksknt"   # what the ASR gave us
+      phonetic("orcasecond")       == "arksknt"   # byte-identical
+      phonetic("orcaseconditem")   == "arkskntm"  # the suffix bought one "m"
+      phonetic("orcasend")         == "arksnt"
+
+  `"arksknt"` is a PREFIX of `"arkskntm"`, so the mangling still scored 0.9333 —
+  over the threshold and over `:send`.
+
+  **A tie-break cannot fix this, and that is measured rather than assumed.**
+  `phonetic("work ascend") == phonetic("orca second")`, so the two utterances
+  score IDENTICALLY against every entry that can reach the threshold (they
+  differ only on `:help`, 0.533 vs 0.545, nowhere near it). An epsilon rule
+  favouring `:send` is therefore not a tie-break but a coin already flipped: at
+  eps 0.02 it fixes all 25 adversarial renderings of "orca send" AND turns
+  `orca second` and `orca seventh` into sends. It relocates the defect. Rejected.
+
+  The fix is structural instead: the ordinal moved out of TERMINAL position and
+  behind the slot word, so the whole family ships as
+  **`orca select first` .. `orca select ninth`**. Terminal position is the only
+  thing `score/2` looks at, and "…ascend" is an ordinal-shaped ending; putting
+  "select" there pulls all nine entries off that shape at once. Measured against
+  the same inputs:
+
+  | | `orca <ord> item` | `orca select <ord>` |
+  |---|---|---|
+  | `:second` on "Work Ascend." | **0.9333 (beat `:send`)** | 0.7778 |
+  | worst family entry on "Work Ascend." | 0.9333 | 0.8750 (`:ninth`) |
+  | headroom under `:send`'s 0.9231 | **-0.0102** | +0.0481 |
+  | worst family score on a negative | 0.833 (`:ninth`) | 0.714 (`:ninth`) |
+  | entries within 0.05 of the threshold | `:cancel`, `:ninth`, `:send` | `:cancel`, `:send` |
+  | corpus diffs / FPs / stolen positives | 0 / 0 / 0 | 0 / 0 / 0 |
+  | dictation fires | 0 | 0 |
+
+  So the frame improves every §8.3.4 number as well as fixing the defect, and it
+  takes `:ninth` out of the thin-margin set it had been in since phase 2c.
+
+  **What it costs: sibling confusion, measured rather than assumed.** All nine
+  entries now share the long `orcaselect` prefix, so clean-speech runner-ups are
+  closer than anything else in the vocabulary — `:first` vs `:fourth` is 0.9524,
+  a margin of 0.0476, below the 0.05 the rest of the vocabulary holds to. That
+  number is a PROXY for "survives ASR noise", so the noise was measured
+  directly: 70 hand-built manglings of the nine phrases (homophones "forth" /
+  "turd" / "ate", verb slips "orca selects third", prefix elisions
+  "or a select first", the leading-"w" shape that produced "Work Ascend",
+  dropped final consonants). Result: **60 of 61 WORD-form manglings resolve to
+  the right slot, none fall below the threshold, and none fire `:send`.** The
+  0.0476 clean-speech margin is therefore accepted on evidence rather than
+  waived — and a wrong row is a failure the user SEES and can correct, where a
+  lost send is silent.
+
+  **The new acceptance bar (§8.3.4b), pinned in `intent_vocab_test.exs`:** no
+  vocabulary entry may OUTSCORE `:send` on any plausible rendering of "orca
+  send". The corpus bars could not have caught this defect — "Work Ascend" is
+  not in the corpus, because the corpus is one synthetic voice reading a fixed
+  script. Note the bar is `>`, not `>=`: under the OLD frame `:ninth` TIED
+  `:send` at 0.9091 on "Orca cent.", which was safe only because `:send` is the
+  first entry of `command_vocab/0` and `intent/2`'s strict `s > best_score`
+  keeps the earlier entry. The new frame has real headroom there (0.1091), but
+  the ordering is still load bearing for the bar and is pinned separately.
+
   ### Known limitations (measured, not fixed)
 
-  * **A truncated `orca ninth` resolves to `:send` (0.909), not `:ninth`.** The
-    ordinal word alone is closer to "orca send" than to its own phrase, so the
-    help affordance must teach the full three-token phrase. `orca first` ..
-    `orca eighth` do resolve to their own names (0.923-0.933); only the ninth
-    does not, and a stray send is recoverable (§5.1.1's asymmetry note).
-  * `orca second` (truncated) beats `:send` by only 0.010 — it resolves to
-    `:second`, which is the intent of the utterance, but do not narrow that gap
-    further when re-wording anything in this vocabulary.
+  * **The bare ordinals are not reachable at all now, and that is the point.**
+    `orca second` resolves to `:send` (0.923) and `orca ninth` to `:send`
+    (0.909), because after folding they ARE the ASR's rendering of "orca send" —
+    `phonetic("orcasecond") == phonetic("workascend")` exactly. Nothing in this
+    matcher can separate them, so the collision is resolved in favour of the far
+    more frequent command. The help affordance must teach the full three-token
+    phrase.
+  * **The superseded `orca <ord> item` phrases are gone, and two of them SEND.**
+    Seven fall below the threshold and are simply dictated, but
+    `orca second item` and `orca seventh item` both resolve to `:send` (0.857) —
+    so a user still saying the old wording delivers their draft instead of
+    picking a row. This is the accepted cost of the re-framing: the help panel
+    renders `command_vocab/0` and therefore teaches the new phrasing from the
+    moment it ships, and both stale phrases were only ever one release old.
+  * **A truncated `orca select` selects the THIRD row** (0.875), not nothing.
+    `"orcaselect"` is closer to `"orcaselectthird"` than to any sibling, so the
+    slot word alone is not a safe no-op. It is a visible wrong selection rather
+    than a send, which is the tolerable direction, but it is why the help text
+    says the ordinal is required.
+  * **Ordinals the ASR writes as NUMERALS mostly land on the wrong row.**
+    `letters_only/1` strips digits before folding, so `orca select 4th` ..
+    `orca select 9th` all fold to `"arkslkt"` and resolve to `:third`, and
+    `orca select 2nd` resolves to `:ninth`. Only 1st and 3rd land correctly.
+    This is a PRE-EXISTING property of the matcher, not something the rewording
+    introduced — under `orca <ord> item` the same seven numerals resolved to
+    `:fifth`. Recorded here rather than fixed: the fix is digit-to-word
+    normalisation ahead of `phonetic/1`, which is a change to the §5.1.1
+    matcher and needs its own re-measurement against the parity corpus.
   * **`orca newline` needs no separate entry.** Spaces are removed on both sides
     before scoring, so "orca newline" and "orca new line" are the SAME target
     string (`orcanewline`) and both score 1.0 against `:new_line`. The same goes
@@ -181,15 +274,21 @@ defmodule OrcaHub.Voice.Intent do
                      {:hashtag, "orca hashtag"},
                      {:project_search, "orca project search"},
                      {:double_hashtag, "orca double hashtag"},
-                     {:first, "orca first item"},
-                     {:second, "orca second item"},
-                     {:third, "orca third item"},
-                     {:fourth, "orca fourth item"},
-                     {:fifth, "orca fifth item"},
-                     {:sixth, "orca sixth item"},
-                     {:seventh, "orca seventh item"},
-                     {:eighth, "orca eighth item"},
-                     {:ninth, "orca ninth item"},
+                     # ORCAHUB3-103: the ordinal moved BEHIND "select". The
+                     # `<ord> item` frame put the ordinal in terminal position,
+                     # where "second item" is a near-twin of the ASR's commonest
+                     # mangling of "orca send" ("Work Ascend.") and outscored
+                     # `:send` on it. Prefixing the slot word pulls the whole
+                     # family off that shape; see the moduledoc.
+                     {:first, "orca select first"},
+                     {:second, "orca select second"},
+                     {:third, "orca select third"},
+                     {:fourth, "orca select fourth"},
+                     {:fifth, "orca select fifth"},
+                     {:sixth, "orca select sixth"},
+                     {:seventh, "orca select seventh"},
+                     {:eighth, "orca select eighth"},
+                     {:ninth, "orca select ninth"},
                      # ORCAHUB3-92, appended AFTER §8.3.3's entries because it
                      # arrived after them and order is a tie-break, not a
                      # taxonomy. "orca help" — the phrase actually asked for —

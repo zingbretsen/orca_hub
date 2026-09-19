@@ -41,7 +41,17 @@ async function withFixture(fixtureName, fn, { aec = true } = {}) {
       // Chrome LOOPS this file for the lifetime of the browser, which is why
       // each fixture is built as exactly one loop period.
       `--use-file-for-fake-audio-capture=${wav}`,
-      '--autoplay-policy=no-user-gesture-required',
+      // NO --autoplay-policy here. It used to say
+      // `--autoplay-policy=no-user-gesture-required`, which silently disabled
+      // the one rule that decides whether a lazily-created AudioContext can
+      // make a sound — and ORCAHUB3-104 is the bug that shipped past an 18/18
+      // sweep because of it: a headless browser that always allows autoplay
+      // cannot tell you anything about a user's browser, which does not.
+      // Real user activation is granted by a real click below instead, which
+      // is strictly more faithful AND keeps this harness working.
+      // Set SPIKE_ALLOW_AUTOPLAY=1 to put the old flag back if a scenario
+      // turns out to need it — but never for a check about AUDIBLE OUTPUT.
+      ...(process.env.SPIKE_ALLOW_AUTOPLAY ? ['--autoplay-policy=no-user-gesture-required'] : []),
       '--allow-file-access-from-files',
       '--no-sandbox',
     ],
@@ -52,6 +62,15 @@ async function withFixture(fixtureName, fn, { aec = true } = {}) {
   page.on('console', m => { if (m.type() === 'error') errs.push(m.text()); });
   page.on('pageerror', e => errs.push('pageerror: ' + e.message));
   await page.goto(BASE + '/', { waitUntil: 'load' });
+  // ONE real click, to grant the sticky user activation Chrome requires before
+  // an AudioContext may leave `suspended` — `window.__spike.scenario()` is
+  // driven from page.evaluate(), which carries no activation of its own, so
+  // without this the harness's own `new AudioContext()` would start suspended.
+  // (2,2) is inside `body`'s 1.2rem padding, so it cannot hit a control.
+  // Measured 2026-09-19 against Chrome 149 with no autoplay flag: a bare
+  // AudioContext with no gesture reads "suspended", and "running" after this
+  // click — so the click really is doing the flag's job.
+  await page.mouse.click(2, 2);
   await page.waitForFunction(() => !!window.__spike, null, { timeout: 20000 });
   let out;
   try { out = await fn(page, fx); } finally {

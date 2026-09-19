@@ -49,15 +49,15 @@ defmodule OrcaHub.Voice.IntentVocabTest do
     hashtag: 0.667,
     project_search: 0.588,
     double_hashtag: 0.667,
-    first: 0.714,
-    second: 0.769,
-    third: 0.769,
-    fourth: 0.769,
+    first: 0.700,
+    second: 0.700,
+    third: 0.700,
+    fourth: 0.667,
     fifth: 0.667,
-    sixth: 0.667,
-    seventh: 0.714,
+    sixth: 0.700,
+    seventh: 0.700,
     eighth: 0.667,
-    ninth: 0.833,
+    ninth: 0.714,
     help: 0.625
   }
 
@@ -144,19 +144,197 @@ defmodule OrcaHub.Voice.IntentVocabTest do
       end
     end
 
-    test "only the two phase-1 entries and :ninth are within 0.05 of the threshold", %{
+    test "only the two phase-1 entries are within 0.05 of the threshold", %{
       negatives: negatives
     } do
       # A thin-margin canary rather than a hard bar: :send/:cancel have carried
-      # 0.833 since phase 1, and :ninth is the price of a reachable ninth slot.
-      # Anything else creeping into this set wants re-measuring before it ships.
+      # 0.833 since phase 1. Anything else creeping into this set wants
+      # re-measuring before it ships.
+      #
+      # ORCAHUB3-103 took :ninth OUT of this set: `orca ninth item` scored 0.833
+      # on a negative, `orca select ninth` scores 0.714. The re-framing improved
+      # every entry in the family (worst 0.833 -> 0.714).
       thin =
         for {name, phrase} <- Intent.command_vocab(),
             max = negatives |> Enum.map(&Intent.score(&1["text"], phrase)) |> Enum.max(),
             max >= 0.80,
             do: name
 
-      assert Enum.sort(thin) == [:cancel, :ninth, :send]
+      assert Enum.sort(thin) == [:cancel, :send]
+    end
+  end
+
+  # ORCAHUB3-103's bar, and the reason it is a separate one: the three §8.3.4
+  # bars above are all measured against the 344-clip corpus, which is one
+  # SYNTHETIC voice reading a fixed script. "Work Ascend." — the rendering that
+  # actually broke Zach's sends — is not in it, and no amount of re-running the
+  # corpus would have produced it. So the vocabulary now also has to survive a
+  # hand-built adversarial set: every plausible way an ASR mangles the
+  # highest-frequency command in the app.
+  #
+  # The bar is `>`, not `>=`. A TIE is safe, because `:send` is the first entry
+  # of `command_vocab/0` and `intent/2`'s strict `s > best_score` keeps the
+  # earlier entry on one. Under the SUPERSEDED `orca <ord> item` frame a tie
+  # really existed (`:ninth` on "Orca cent."); the `orca select <ord>` frame has
+  # 0.1091 of headroom there instead. The ordering is still load bearing and is
+  # pinned separately below.
+  describe "§8.3.4b no entry may outscore :send on a mangled \"orca send\" (ORCAHUB3-103)" do
+    # Zach's own log line is the first entry; the rest are the corpus's known
+    # send surface forms plus hand-built neighbours. Add to this list rather
+    # than relaxing it.
+    @send_renderings [
+      "Work Ascend.",
+      "Orc Ascend.",
+      "Orcasend.",
+      "Work a send.",
+      "Or a send.",
+      "Orca send.",
+      "or Cascend.",
+      "Orca ascend.",
+      "Or cascend.",
+      "Orcus end.",
+      "Work Assend.",
+      "Orca Sind.",
+      "Orka send.",
+      "work ascend",
+      "or KaSend.",
+      "Orcascend.",
+      "Oracle send.",
+      "Orc a send.",
+      "Orca sent.",
+      "Orca cent.",
+      "Work a Cent.",
+      "Or cast end.",
+      "Orca's end.",
+      "orcasend",
+      "Orkasend."
+    ]
+
+    test "no vocabulary entry outscores :send on any of them" do
+      beaten =
+        for said <- @send_renderings,
+            send_score = Intent.score(said, "orca send"),
+            {name, phrase} <- Intent.command_vocab(),
+            name != :send,
+            score = Intent.score(said, phrase),
+            score > send_score do
+          %{said: said, entry: name, phrase: phrase, scored: score, send: send_score}
+        end
+
+      assert beaten == [],
+             "#{length(beaten)} entry/rendering pairs outscore :send — the send would be " <>
+               "eaten and the other command would fire instead:\n" <>
+               Enum.map_join(beaten, "\n", &inspect/1)
+    end
+
+    test "and every one of them actually resolves to :send" do
+      # Stronger than the bar above, and the thing the user experiences: not
+      # merely "nothing beat :send" but "the send fires".
+      wrong =
+        for said <- @send_renderings,
+            {name, score} = Intent.intent(said, vocab: Intent.command_vocab()),
+            name != :send,
+            do: {said, name, score}
+
+      assert wrong == []
+    end
+
+    test "the defect itself: \"Work Ascend.\" resolved to :second under the old frame" do
+      # Executable proof the issue was real, kept so the re-framing is not undone
+      # as cosmetic. These are the exact floats from Zach's report.
+      superseded = "orca second item"
+
+      assert_in_delta Intent.score("Work Ascend.", superseded), 0.9333, 5.0e-4
+      assert_in_delta Intent.score("Work Ascend.", "orca send"), 0.9231, 5.0e-4
+      assert Intent.score("Work Ascend.", superseded) > Intent.score("Work Ascend.", "orca send")
+
+      # ...and the reason the `item` suffix bought so little: the fold collapses
+      # `second`'s "d" and `item`'s "t" together, so three extra letters add one
+      # phonetic character, and the mangling's key is a PREFIX of the result.
+      assert Intent.phonetic("workascend") == "arksknt"
+      assert Intent.phonetic("orcasecond") == "arksknt"
+      assert Intent.phonetic("orcaseconditem") == "arkskntm"
+      assert Intent.phonetic("orcasend") == "arksnt"
+
+      # The shipped frame, on the same input: the ordinal is no longer in
+      # terminal position, so nothing in the family is near the "…ascend" shape.
+      assert_in_delta Intent.score("Work Ascend.", "orca select second"), 0.7778, 5.0e-4
+      assert_in_delta Intent.score("Work Ascend.", "orca select ninth"), 0.875, 5.0e-4
+      assert {:send, _} = Intent.intent("Work Ascend.", vocab: Intent.command_vocab())
+    end
+
+    test "why no tie-break was added: the two utterances are the SAME to this matcher" do
+      # The rejected alternative fix was an epsilon tie-break favouring :send.
+      # It cannot work, and this is why rather than an opinion: "work ascend"
+      # and "orca second" fold to the identical key, so they score identically
+      # against every entry that can reach the threshold. Any rule that sends
+      # one sends the other.
+      assert Intent.phonetic("work ascend") == Intent.phonetic("orca second")
+
+      differ =
+        for {name, phrase} <- Intent.command_vocab(),
+            a = Intent.score("work ascend", phrase),
+            b = Intent.score("orca second", phrase),
+            a != b,
+            do: {name, a, b}
+
+      # One entry differs, and it is nowhere near the threshold.
+      assert [{:help, help_a, help_b}] = differ
+      assert help_a < 0.6 and help_b < 0.6
+    end
+
+    test "the old frame's tie on \"Orca cent.\" is gone, and order still protects the bar" do
+      # Under `orca <ord> item`, :ninth and :send both scored 0.9091 here and
+      # only vocabulary ORDER kept the send. The new frame has real headroom, but
+      # the ordering guarantee is what the `>` in this bar rests on, so it stays
+      # pinned: put any entry ahead of :send and a future tie becomes a defect
+      # with no score change anywhere.
+      assert_in_delta Intent.score("Orca cent.", "orca ninth item"), 0.9091, 5.0e-4
+      assert_in_delta Intent.score("Orca cent.", "orca select ninth"), 0.7143, 5.0e-4
+      assert {:send, _} = Intent.intent("Orca cent.", vocab: Intent.command_vocab())
+
+      assert 0 == Enum.find_index(Intent.command_vocab(), &(elem(&1, 0) == :send)),
+             ":send must stay the FIRST entry — it is what wins every tie"
+    end
+
+    test "the rewording did not cost the corpus or the real-dictation bars anything", %{
+      corpus: corpus,
+      negatives: negatives,
+      dictation: dictation
+    } do
+      # The §8.3.4 bars are asserted in full above; this pins the SPECIFIC
+      # before/after for the entry that moved, so a future re-wording has a
+      # baseline to beat rather than a vibe.
+      assert_in_delta negatives
+                      |> Enum.map(&Intent.score(&1["text"], "orca ninth item"))
+                      |> Enum.max(),
+                      0.8333,
+                      5.0e-4
+
+      assert_in_delta negatives
+                      |> Enum.map(&Intent.score(&1["text"], "orca select ninth"))
+                      |> Enum.max(),
+                      0.7143,
+                      5.0e-4
+
+      assert [] ==
+               for(
+                 obs <- corpus["observations"],
+                 {was, _} = Intent.intent(obs["text"], threshold: 0.85),
+                 {now, _} =
+                   Intent.intent(obs["text"], vocab: Intent.command_vocab(), threshold: 0.85),
+                 was != now,
+                 do: {obs["clip"], was, now}
+               )
+
+      assert [] ==
+               for(
+                 %{"n" => n, "text" => text} <- dictation,
+                 n != 41,
+                 {name, score} = Intent.intent(text, vocab: Intent.command_vocab()),
+                 name != nil,
+                 do: {n, name, score}
+               )
     end
   end
 
@@ -254,9 +432,13 @@ defmodule OrcaHub.Voice.IntentVocabTest do
       # by strip_command/3 — the same shape of hazard as "…orca hub" was for
       # `orca help`, found the same way (by hand, against a phrase the corpus
       # does not contain).
+      # ORCAHUB3-103 moved #9 and #25 from 0.80 to 0.8235: `orca select third` is
+      # a slightly closer neighbour of those two segments than `orca third item`
+      # was. Still 0.0265 below the threshold, and the re-framing bought far more
+      # than that back on the corpus negatives (family worst 0.833 -> 0.714).
       assert near == [
-               {9, :third, 0.8},
-               {25, :third, 0.8},
+               {9, :third, 0.8235},
+               {25, :third, 0.8235},
                {30, :search, 0.8333}
              ]
     end
@@ -305,15 +487,15 @@ defmodule OrcaHub.Voice.IntentVocabTest do
                {:hashtag, "orca hashtag"},
                {:project_search, "orca project search"},
                {:double_hashtag, "orca double hashtag"},
-               {:first, "orca first item"},
-               {:second, "orca second item"},
-               {:third, "orca third item"},
-               {:fourth, "orca fourth item"},
-               {:fifth, "orca fifth item"},
-               {:sixth, "orca sixth item"},
-               {:seventh, "orca seventh item"},
-               {:eighth, "orca eighth item"},
-               {:ninth, "orca ninth item"},
+               {:first, "orca select first"},
+               {:second, "orca select second"},
+               {:third, "orca select third"},
+               {:fourth, "orca select fourth"},
+               {:fifth, "orca select fifth"},
+               {:sixth, "orca select sixth"},
+               {:seventh, "orca select seventh"},
+               {:eighth, "orca select eighth"},
+               {:ninth, "orca select ninth"},
                # ORCAHUB3-92, after §8.3.3's block: arrival order, not taxonomy.
                {:help, "orca help menu"}
              ]
@@ -345,15 +527,24 @@ defmodule OrcaHub.Voice.IntentVocabTest do
           {1.0 - rival_score, name, rival}
         end
 
+      # ORCAHUB3-103 lowered this bar from 0.05 to 0.045, deliberately and on
+      # evidence. `orca select <ord>` makes all nine ordinals share the long
+      # "orcaselect" prefix, so :first vs :fourth is 0.9524 — a 0.0476 margin.
+      # The 0.05 was always a PROXY for "survives ASR noise"; the frame change
+      # made it cheap to measure the noise directly instead, which the
+      # sibling-confusion test below does (60 of 61 word-form manglings resolve
+      # correctly, none below threshold, none firing :send). The proxy loses to
+      # the direct measurement.
       for {margin, name, rival} <- margins do
-        assert margin >= 0.05,
+        assert margin >= 0.045,
                "#{name} beats #{rival} by only #{Float.round(margin, 4)} — too close to survive ASR noise"
       end
 
       # The tightest pair in the shipped vocabulary, pinned so a re-wording that
       # tightens it further has to say so out loud.
-      assert {tightest, _name, _rival} = Enum.min(margins)
-      assert_in_delta tightest, 0.0667, 5.0e-4
+      assert {tightest, name, rival} = Enum.min(margins)
+      assert_in_delta tightest, 0.0476, 5.0e-4
+      assert {name, rival} in [{:first, :fourth}, {:fourth, :first}]
     end
 
     test "the near-collisions §8.3's review called out all resolve the right way" do
@@ -362,9 +553,9 @@ defmodule OrcaHub.Voice.IntentVocabTest do
       assert {:search, 1.0} = Intent.intent("orca search", vocab: vocab)
       assert {:session_search, 1.0} = Intent.intent("orca session search", vocab: vocab)
       assert {:sessions, 1.0} = Intent.intent("orca all sessions", vocab: vocab)
-      assert {:first, 1.0} = Intent.intent("orca first item", vocab: vocab)
-      assert {:third, 1.0} = Intent.intent("orca third item", vocab: vocab)
-      assert {:fourth, 1.0} = Intent.intent("orca fourth item", vocab: vocab)
+      assert {:first, 1.0} = Intent.intent("orca select first", vocab: vocab)
+      assert {:third, 1.0} = Intent.intent("orca select third", vocab: vocab)
+      assert {:fourth, 1.0} = Intent.intent("orca select fourth", vocab: vocab)
       assert {:hashtag, 1.0} = Intent.intent("orca hashtag", vocab: vocab)
       assert {:double_hashtag, 1.0} = Intent.intent("orca double hashtag", vocab: vocab)
 
@@ -372,14 +563,17 @@ defmodule OrcaHub.Voice.IntentVocabTest do
       # comfortably below each phrase's own 1.0.
       assert_in_delta Intent.score("orca search", "orca session search"), 0.8571, 5.0e-4
       assert_in_delta Intent.score("orca all sessions", "orca session search"), 0.8, 5.0e-4
-      assert_in_delta Intent.score("orca first item", "orca fourth item"), 0.9333, 5.0e-4
+      # ORCAHUB3-103 tightened this pair (0.9333 -> 0.9524) as the price of
+      # taking the family off the "…ascend" shape; §8.3.4c measures what that
+      # costs against real ASR noise rather than leaving it to the margin alone.
+      assert_in_delta Intent.score("orca select first", "orca select fourth"), 0.9524, 5.0e-4
     end
 
     test "and each one survives the punctuation and casing the ASR actually emits" do
       vocab = Intent.command_vocab()
 
-      assert {:first, 1.0} = Intent.intent("Orca first item.", vocab: vocab)
-      assert {:ninth, 1.0} = Intent.intent("Orca, ninth item!", vocab: vocab)
+      assert {:first, 1.0} = Intent.intent("Orca select first.", vocab: vocab)
+      assert {:ninth, 1.0} = Intent.intent("Orca, select ninth!", vocab: vocab)
 
       assert {:new_paragraph, 1.0} =
                Intent.intent("that is the plan orca new paragraph", vocab: vocab)
@@ -413,19 +607,195 @@ defmodule OrcaHub.Voice.IntentVocabTest do
       assert {:back, 1.0} = Intent.intent("orca go back", vocab: Intent.command_vocab())
     end
 
-    test "bare ordinals one through eight still reach their own select command" do
-      for {spoken, want} <- [
-            {"orca first", :first},
-            {"orca second", :second},
-            {"orca third", :third},
-            {"orca fourth", :fourth},
-            {"orca fifth", :fifth},
-            {"orca sixth", :sixth},
-            {"orca seventh", :seventh},
-            {"orca eighth", :eighth}
-          ] do
-        assert {^want, _} = Intent.intent(spoken, vocab: Intent.command_vocab()),
-               "#{inspect(spoken)} -> #{inspect(Intent.intent(spoken, vocab: Intent.command_vocab()))}"
+    test "bare ordinals reach NO select command any more, and never a wrong send" do
+      # ORCAHUB3-103 replaced `orca <ord> item` with `orca select <ord>`, which
+      # deliberately gives up the bare-ordinal short forms: the ordinal alone is
+      # what collided with "orca send" in the first place. What matters is that
+      # giving them up is SAFE — a bare ordinal is dictated, not acted on.
+      #
+      # The two exceptions are the two that were always the problem: "second"
+      # and "ninth" fold onto "orca send" itself.
+      got =
+        Map.new(
+          ~w(first second third fourth fifth sixth seventh eighth ninth),
+          fn ord ->
+            {ord, Intent.intent("orca #{ord}", vocab: Intent.command_vocab()) |> elem(0)}
+          end
+        )
+
+      # All three of these fold onto "orca send" itself: "arksknt" / "arksfnt" /
+      # "arksnt" against send's "arksnt".
+      assert got["second"] == :send
+      assert got["seventh"] == :send
+      assert got["ninth"] == :send
+
+      for ord <- ~w(first third fourth fifth sixth eighth) do
+        assert got[ord] == nil,
+               "bare \"orca #{ord}\" fired #{inspect(got[ord])} — it should just be dictated"
+      end
+    end
+  end
+
+  # ORCAHUB3-103's OTHER bar. Moving the ordinal behind "select" fixed the send
+  # collision by giving all nine entries a long shared prefix — which is exactly
+  # what makes them closer to EACH OTHER than anything else in the vocabulary
+  # (:first vs :fourth is 0.9524). The clean-speech margin alone would be a
+  # rounding error to rely on, and relying on clean-speech numbers is precisely
+  # the mistake that let the original defect through. So the noise is measured.
+  #
+  # Ranked failure modes, worst first: firing :send (silently loses the user's
+  # turn) > falling below threshold (the phrase is dictated into the draft) >
+  # selecting the wrong row (the user SEES it and can correct it). Only the
+  # third is acceptable, and only the third occurs.
+  describe "§8.3.4c sibling confusion in the \"orca select <ord>\" family (ORCAHUB3-103)" do
+    # Plausible ASR manglings per slot: homophones ("forth" / "turd" / "ate"),
+    # verb-agreement slips ("orca selects third"), prefix elisions
+    # ("or a select first"), the leading-"w" shape that produced "Work Ascend",
+    # and dropped final consonants ("firs", "six", "nine").
+    @manglings %{
+      first: [
+        "Orca select first.",
+        "or a select first",
+        "Work select first.",
+        "orca selects first",
+        "orcaselect first",
+        "orca select firs",
+        "orca select furs",
+        "or Kaselect first"
+      ],
+      second: [
+        "Orca select second.",
+        "or a select second",
+        "Work select second.",
+        "orca selects second",
+        "orcaselect second",
+        "orca select seconds",
+        "orca select secund"
+      ],
+      third: [
+        "Orca select third.",
+        "or a select third",
+        "Work select third.",
+        "orca selects third",
+        "orcaselect third",
+        "orca select thirds",
+        "orca select turd"
+      ],
+      fourth: [
+        "Orca select fourth.",
+        "or a select fourth",
+        "Work select fourth.",
+        "orca selects fourth",
+        "orcaselect fourth",
+        "orca select forth",
+        "orca select fort",
+        "orca select force"
+      ],
+      fifth: [
+        "Orca select fifth.",
+        "or a select fifth",
+        "Work select fifth.",
+        "orca selects fifth",
+        "orcaselect fifth",
+        "orca select fith"
+      ],
+      sixth: [
+        "Orca select sixth.",
+        "or a select sixth",
+        "Work select sixth.",
+        "orca selects sixth",
+        "orcaselect sixth",
+        "orca select six"
+      ],
+      seventh: [
+        "Orca select seventh.",
+        "or a select seventh",
+        "Work select seventh.",
+        "orca selects seventh",
+        "orcaselect seventh",
+        "orca select seven"
+      ],
+      eighth: [
+        "Orca select eighth.",
+        "or a select eighth",
+        "Work select eighth.",
+        "orca selects eighth",
+        "orcaselect eighth",
+        "orca select eight",
+        "orca select ate"
+      ],
+      ninth: [
+        "Orca select ninth.",
+        "or a select ninth",
+        "Work select ninth.",
+        "orca selects ninth",
+        "orcaselect ninth",
+        "orca select nine"
+      ]
+    }
+
+    defp classify(said, want) do
+      case Intent.intent(said, vocab: Intent.command_vocab()) do
+        {^want, _} -> :correct
+        {nil, _} -> :below_threshold
+        {:send, _} -> :fired_send
+        {other, _} -> if Intent.class(other) == :select, do: :wrong_row, else: :wrong_class
+      end
+    end
+
+    test "not one word-form mangling fires :send — the failure that loses a turn" do
+      offenders =
+        for {want, saids} <- @manglings,
+            said <- saids,
+            classify(said, want) == :fired_send,
+            do: {said, want}
+
+      assert offenders == []
+    end
+
+    test "not one falls below the threshold and gets dictated into the draft instead" do
+      offenders =
+        for {want, saids} <- @manglings,
+            said <- saids,
+            classify(said, want) == :below_threshold,
+            do: {said, want, Intent.intent(said, vocab: Intent.command_vocab())}
+
+      assert offenders == []
+    end
+
+    test "and none of them is answered by a command from a different CLASS" do
+      offenders =
+        for {want, saids} <- @manglings,
+            said <- saids,
+            classify(said, want) == :wrong_class,
+            do: {said, want, Intent.intent(said, vocab: Intent.command_vocab())}
+
+      assert offenders == []
+    end
+
+    test "the residue is wrong-row only, and the exact set is pinned" do
+      wrong =
+        for {want, saids} <- @manglings,
+            said <- saids,
+            classify(said, want) == :wrong_row,
+            do: {said, want, Intent.intent(said, vocab: Intent.command_vocab()) |> elem(0)}
+
+      # One of 61. "ate" for "eighth" is the most generous reading of a homophone
+      # in the set, and it lands on a neighbouring row rather than on a send.
+      assert wrong == [{"orca select ate", :eighth, :third}]
+
+      total = @manglings |> Map.values() |> List.flatten() |> length()
+      assert total == 61
+      correct = for {w, ss} <- @manglings, s <- ss, classify(s, w) == :correct, do: s
+      assert length(correct) == 60
+    end
+
+    test "the tight first/fourth pair specifically survives every mangling of both" do
+      # The 0.0476 clean-speech margin lives here. Both slots resolve correctly
+      # on all of their own manglings, which is what justifies accepting it.
+      for want <- [:first, :fourth], said <- @manglings[want] do
+        assert {^want, _} = Intent.intent(said, vocab: Intent.command_vocab()),
+               "#{inspect(said)} -> #{inspect(Intent.intent(said, vocab: Intent.command_vocab()))}"
       end
     end
   end
@@ -437,13 +807,84 @@ defmodule OrcaHub.Voice.IntentVocabTest do
       # and why the help affordance must teach the full three-token phrase.
       assert {:send, score} = Intent.intent("orca ninth", vocab: Intent.command_vocab())
       assert_in_delta score, 0.9091, 5.0e-4
-      assert {:ninth, 1.0} = Intent.intent("orca ninth item", vocab: Intent.command_vocab())
+      assert {:ninth, 1.0} = Intent.intent("orca select ninth", vocab: Intent.command_vocab())
     end
 
-    test "a truncated \"orca second\" wins over :send by only 0.010" do
-      assert {:second, second} = Intent.intent("orca second", vocab: Intent.command_vocab())
-      assert_in_delta second, 0.9333, 5.0e-4
-      assert_in_delta Intent.score("orca second", "orca send"), 0.9231, 5.0e-4
+    # ORCAHUB3-103. This test used to assert the OPPOSITE — that a truncated
+    # `orca second` beat `:send` by 0.010 and resolved to `:second`. That was
+    # the defect: the same 0.010 applied to "Work Ascend.", the ASR's commonest
+    # mangling of "orca send", and ate the send. The collision is now resolved
+    # in favour of `:send`, permanently and by construction.
+    test "a bare \"orca second\" resolves to :send, because nothing can separate them" do
+      assert {:send, score} = Intent.intent("orca second", vocab: Intent.command_vocab())
+      assert_in_delta score, 0.9231, 5.0e-4
+
+      # The full phrase is unambiguous, which is what the help affordance teaches.
+      assert {:second, 1.0} = Intent.intent("orca select second", vocab: Intent.command_vocab())
+    end
+
+    test "a truncated \"orca select\" picks the THIRD row rather than doing nothing" do
+      # The slot word alone is closer to `orcaselectthird` than to any sibling,
+      # so it is not a safe no-op. A visible wrong selection rather than a send,
+      # which is the tolerable direction — and why the help text says the
+      # ordinal is required.
+      assert {:third, score} = Intent.intent("orca select", vocab: Intent.command_vocab())
+      assert_in_delta score, 0.875, 5.0e-4
+    end
+
+    test "the superseded \"orca <ord> item\" phrases are gone, and two of them SEND" do
+      # The accepted cost of the re-framing, pinned so it is a known quantity
+      # rather than a surprise: seven of the nine old phrases fall below the
+      # threshold and are simply dictated, but two land on :send.
+      resolved =
+        Map.new(
+          ~w(first second third fourth fifth sixth seventh eighth ninth),
+          fn ord ->
+            {ord, Intent.intent("orca #{ord} item", vocab: Intent.command_vocab()) |> elem(0)}
+          end
+        )
+
+      assert resolved["second"] == :send
+      assert resolved["seventh"] == :send
+
+      for ord <- ~w(first third fourth fifth sixth eighth ninth) do
+        assert resolved[ord] == nil,
+               "stale \"orca #{ord} item\" resolved to #{inspect(resolved[ord])}"
+      end
+    end
+
+    test "ordinals the ASR writes as NUMERALS mostly land on the wrong row (pre-existing)" do
+      # `letters_only/1` strips digits before folding, so every "<n>th" collapses
+      # to the same key. NOT introduced by ORCAHUB3-103 — under `orca <ord> item`
+      # the same seven numerals resolved to :fifth instead of :third. Recorded
+      # rather than fixed: the fix is digit-to-word normalisation ahead of
+      # `phonetic/1`, which is a §5.1.1 matcher change needing its own parity run.
+      assert Intent.phonetic("orcaselect4th") == Intent.phonetic("orcaselect9th")
+
+      got =
+        for {numeral, want} <-
+              Enum.zip(~w(1st 2nd 3rd 4th 5th 6th 7th 8th 9th), [
+                :first,
+                :second,
+                :third,
+                :fourth,
+                :fifth,
+                :sixth,
+                :seventh,
+                :eighth,
+                :ninth
+              ]) do
+          {numeral, want,
+           Intent.intent("orca select #{numeral}", vocab: Intent.command_vocab()) |> elem(0)}
+        end
+
+      correct = for {n, want, got} <- got, want == got, do: n
+      assert correct == ["1st", "3rd"]
+
+      # Every wrong one is a wrong SELECTION, never a send — the tolerable
+      # direction, and the reason this is a limitation rather than a blocker.
+      refute Enum.any?(got, fn {_n, _want, g} -> g == :send end)
+      refute Enum.any?(got, fn {_n, _want, g} -> is_nil(g) end)
     end
 
     test "the rejected bare ordinals really would have broken the corpus", %{
@@ -467,11 +908,20 @@ defmodule OrcaHub.Voice.IntentVocabTest do
       assert negatives |> Enum.map(&Intent.score(&1["text"], "orca ninth")) |> Enum.max() >= 0.85
       assert negatives |> Enum.map(&Intent.score(&1["text"], "orca second")) |> Enum.max() >= 0.85
 
-      # The shipped wording fixes both.
+      # Both intermediate wordings fixed the corpus bar...
       assert negatives |> Enum.map(&Intent.score(&1["text"], "orca ninth item")) |> Enum.max() <
                0.85
 
       assert negatives |> Enum.map(&Intent.score(&1["text"], "orca second item")) |> Enum.max() <
+               0.85
+
+      # ...and the SHIPPED `orca select <ord>` frame improves on them, which is
+      # the ORCAHUB3-103 half of the story: the corpus bar was never the binding
+      # constraint, the mangled-send bar was.
+      assert negatives |> Enum.map(&Intent.score(&1["text"], "orca select ninth")) |> Enum.max() <
+               negatives |> Enum.map(&Intent.score(&1["text"], "orca ninth item")) |> Enum.max()
+
+      assert negatives |> Enum.map(&Intent.score(&1["text"], "orca select second")) |> Enum.max() <
                0.85
     end
 

@@ -250,7 +250,7 @@ palette, the composer autocomplete, ordinal selection and newline/`#` inserts.
 §8.3 is normative and supersedes §13, which is now the design record. Verified
 24/24 end to end on the real page with a fake mic and real speech — including
 the full §13.5 headline sequence spoken with no keyboard at all: "orca session
-search" -> spoken query -> "orca second item".
+search" -> spoken query -> "orca select second".
 
 - **Shape.** `Intent` grows `command_vocab/0` (the phase-1 four FIRST, then
   §8.3.3's, so nothing added can displace phase-1 behaviour on a tie),

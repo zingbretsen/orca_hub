@@ -936,7 +936,7 @@ defmodule OrcaHub.Voice.SessionTest do
 
     test ":select emits a 1-BASED ordinal and leaves the draft alone" do
       {state, _} = utterance(Session.new(), 1, "some dictation")
-      {state, effects} = utterance(state, 2, "orca third item")
+      {state, effects} = utterance(state, 2, "orca select third")
 
       assert [%{action: "select", intent: "third"}] = results(effects)
       assert ui_actions(effects) == [{"select", %{ordinal: 3}}]
@@ -944,7 +944,7 @@ defmodule OrcaHub.Voice.SessionTest do
     end
 
     test ":select discards its remainder — a selection is not dictation" do
-      {state, effects} = utterance(Session.new(), 1, "hmm let me see orca first item")
+      {state, effects} = utterance(Session.new(), 1, "hmm let me see orca select first")
 
       assert [%{action: "select", intent: "first"}] = results(effects)
       assert ui_actions(effects) == [{"select", %{ordinal: 1}}]
@@ -1051,7 +1051,7 @@ defmodule OrcaHub.Voice.SessionTest do
     end
 
     test ":select and :navigate work in either focus", %{state: state} do
-      {selected, effects} = utterance(state, 2, "orca first item", @t0 + 10)
+      {selected, effects} = utterance(state, 2, "orca select first", @t0 + 10)
       assert actions(effects) == ["select"]
       assert ui_actions(effects) == [{"select", %{ordinal: 1}}]
       assert selected.draft == "draft I care about"
@@ -1314,7 +1314,7 @@ defmodule OrcaHub.Voice.SessionTest do
         state
       end
 
-      for said <- ["orca new line", "orca third item", "orca back", "orca search"] do
+      for said <- ["orca new line", "orca select third", "orca back", "orca search"] do
         {state, effects} = utterance(armed.(), 2, said, @t0 + 100)
 
         assert state.arming_until == nil, "#{said} left the arming window open"
@@ -1329,7 +1329,7 @@ defmodule OrcaHub.Voice.SessionTest do
     end
 
     test "and NONE of them ever opens one" do
-      for said <- ["orca new line", "orca third item", "orca back", "orca search"] do
+      for said <- ["orca new line", "orca select third", "orca back", "orca search"] do
         {state, effects} = utterance(Session.new(), 1, said)
 
         assert state.arming_until == nil, "#{said} armed a send"

@@ -342,20 +342,27 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       end
     end
 
-    test "teaches the FULL ordinal phrase and the truncated-ninth hazard", %{conn: conn} do
+    test "teaches the FULL ordinal phrase and every hazard of truncating it", %{conn: conn} do
       text = armed_bar(conn) |> open_help() |> help_text()
 
-      # Three tokens, straight from the vocabulary.
+      # Three tokens, straight from the vocabulary — and the panel renders
+      # `command_vocab/0`, so ORCAHUB3-103's re-framing reached it for free.
+      # This is what makes the phrases below assertions about the SHIPPED
+      # vocabulary rather than about a copy of it in this file.
       for {name, phrase} <- Intent.command_vocab(), Intent.class(name) == :select do
         assert length(String.split(phrase)) == 3
         assert text =~ phrase
+        assert String.starts_with?(phrase, "orca select ")
       end
 
-      # §8.3.4's measured hazard: "orca ninth" alone scores higher against
-      # "orca send" than against its own phrase. A help panel that lets the
-      # user think the ordinal word is enough is worse than none.
-      assert text =~ "orca ninth", "the ninth ordinal must be shown in full"
-      assert text =~ ~r/truncated .*orca ninth.* is heard as\s+orca send/i
+      # §8.3.4/§8.3.4b's measured hazards, all three of them. A help panel that
+      # lets the user think a shorter form will do is worse than none:
+      #   - the ordinal alone is heard as "orca send" (second/seventh/ninth),
+      #   - the slot word alone silently picks the THIRD row,
+      #   - a numeral ("3rd") does not resolve to its own slot.
+      assert text =~ ~r/bare .*orca second.* or .*orca ninth.* is heard as\s+orca send/i
+      assert text =~ ~r/bare .*orca select.* picks the third row/i
+      assert text =~ ~r/"third", not "3rd"/i
     end
 
     test "lists the spoken way to open itself, with a usable hint (ORCAHUB3-92)", %{conn: conn} do

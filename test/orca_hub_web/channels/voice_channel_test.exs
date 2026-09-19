@@ -559,7 +559,7 @@ defmodule OrcaHubWeb.VoiceChannelTest do
     test "a spoken ordinal pushes a 1-based select", %{session: session} do
       {_reply, socket} = join_warm!(session.id)
 
-      stub_transcript("orca third item")
+      stub_transcript("orca select third")
       push(socket, "segment", {:binary, segment(1, 16_000)})
 
       assert_push "segment_result", %{seq: 1, action: "select", intent: "third"}, 2_000

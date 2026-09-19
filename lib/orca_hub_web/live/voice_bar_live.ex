@@ -126,9 +126,11 @@ defmodule OrcaHubWeb.VoiceBarLive do
       "The command word is removed; anything you said before it is dictated first. " <>
         "After # or ## the next thing you say lands straight in the search box.",
     select:
-      "Say the whole three-token phrase. A truncated \"orca ninth\" is heard as " <>
-        "orca send, not as the ninth item. Picks from the command palette, or from " <>
-        "the # / ## autocomplete list when that is open.",
+      "Say the whole three-token phrase — the word \"select\" and the ordinal. " <>
+        "A bare \"orca second\" or \"orca ninth\" is heard as orca send instead, " <>
+        "and a bare \"orca select\" picks the third row. Say \"third\", not \"3rd\". " <>
+        "Picks from the command palette, or from the # / ## autocomplete list " <>
+        "when that is open.",
     navigate: "Navigation stays in-app, so the microphone keeps listening across the move.",
     ignore:
       "Things you say to a person mid-sentence. The command word is dropped and the " <>
