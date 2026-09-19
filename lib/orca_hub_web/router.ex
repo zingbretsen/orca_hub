@@ -120,7 +120,11 @@ defmodule OrcaHubWeb.Router do
     post "/runs/:id/tool_result", ApiRunController, :tool_result
 
     get "/sessions", SessionApiController, :index
+    # /recent MUST stay above /:id — Phoenix matches in declaration order and
+    # "recent" would otherwise be swallowed as a session id.
+    get "/sessions/recent", SessionApiController, :recent
     get "/sessions/:id", SessionApiController, :show
+    get "/sessions/:id/tail", SessionApiController, :tail
   end
 
   # Inbound A2A (Agent2Agent) v0.3.0 server surface (docs/a2a.md). Hub-only —

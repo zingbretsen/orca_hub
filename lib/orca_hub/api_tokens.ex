@@ -152,6 +152,9 @@ defmodule OrcaHub.ApiTokens do
   defp required_scope(%{method: "GET", path_info: ["api", "v1", "sessions", _id]}),
     do: {:ok, "sessions:read"}
 
+  defp required_scope(%{method: "GET", path_info: ["api", "v1", "sessions", _id, "tail"]}),
+    do: {:ok, "sessions:read"}
+
   defp required_scope(%{method: "POST", path_info: ["api", "tts"]}), do: {:ok, "tts"}
   defp required_scope(%{path_info: ["a2a" | _]}), do: {:ok, "a2a"}
   defp required_scope(_conn), do: :error

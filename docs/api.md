@@ -384,17 +384,28 @@ curl -s https://orca.example/api/v1/runs/run-1 -H "Authorization: Bearer $ORCA_A
 ## GET /api/v1/sessions
 
 Read-only session listing, behind the same bearer-token auth as the rest of
-this API. First consumer is a Wear OS watch companion app — the response is
-a deliberately COMPACT projection (not the full session record with every
-association) so a battery/bandwidth-constrained client can poll it cheaply.
+this API (`sessions:read` on a scoped token). Consumers are the unified
+Android app (phone + Wear + Android Auto) and its Wear OS predecessor — the
+response is a deliberately COMPACT projection (not the full session record
+with every association) so a battery/bandwidth-constrained client can poll it
+cheaply.
 
-Defaults to non-archived sessions. Supports two optional query-string
-filters:
+Defaults to non-archived, non-background sessions (`kind == "session"`, so
+`memory_extraction` children never appear).
 
 | param | notes |
 |---|---|
-| `status` | exact match, e.g. `?status=running` |
+| `status` | exact match, e.g. `?status=running`. **Repeatable** — `?status=idle&status=error` is a union, as is `?status[]=idle&status[]=error` and `?status=idle,error` |
 | `project_id` | exact match against the session's project |
+| `limit` | default `100`, max `500`. Over-max is clamped, not rejected; a non-integer or non-positive value is `400 {"error": "invalid limit"}` |
+| `offset` | default `0`. A negative value is `400 {"error": "invalid offset"}` |
+
+### Ordering
+
+**`last_activity_at` DESC, nulls LAST, ties broken on `id` ASC.** The tiebreak
+is what makes `limit`/`offset` paging stable: without it, two sessions sharing
+a timestamp (or the whole no-messages tail, which is every such id at once)
+could swap places between two pages.
 
 ### Response
 
@@ -407,25 +418,102 @@ filters:
       "title": "…",
       "progress_phase": "…",
       "progress_note": "…",
-      "last_activity_at": "2026-08-21T18:04:12Z",
+      "last_activity_at": "2026-08-21T18:04:12.123456Z",
       "directory": "/home/zach/orca_hub",
       "project_id": "…",
       "project_name": "…"
     }
-  ]
+  ],
+  "total": 84,
+  "limit": 100,
+  "offset": 0,
+  "has_more": false
 }
 ```
 
 `progress_phase`/`progress_note`/`project_id`/`project_name` are `null` when
-unset/no project. `last_activity_at` is the session's `updated_at`, as an
-ISO 8601 UTC timestamp.
+unset/no project. `total` is the count of rows matching the filters BEFORE
+`limit`/`offset`.
+
+**`last_activity_at` is message-derived, not the session row's `updated_at`**
+— it is `max(messages.inserted_at)` for the session
+(`Sessions.activity_metadata/1`), as an ISO 8601 UTC timestamp, or `null` for
+a session that has no messages yet. This changed in the 2026-09 Android-app
+work: it previously reported `updated_at`, which moves on *any* write (a
+progress-phase update, an archive flag, a node reassignment), so a client
+sorting "what just finished" by it saw sessions no agent had spoken in for
+hours. Sort on it, and treat `null` as "never active" rather than "active at
+the epoch".
 
 ### Example
 
 ```bash
-curl -s "https://orca.example/api/v1/sessions?status=running" \
+curl -s "https://orca.example/api/v1/sessions?status=running&limit=5" \
   -H "Authorization: Bearer $ORCA_API_TOKEN"
-# {"sessions":[{"id":"…","status":"running","title":"…","progress_phase":"implementing","progress_note":"…","last_activity_at":"2026-08-21T18:04:12Z","directory":"/tmp","project_id":"…","project_name":"…"}]}
+# {"sessions":[{"id":"…","status":"running","title":"…","progress_phase":"implementing","progress_note":"…","last_activity_at":"2026-08-21T18:04:12.123456Z","directory":"/tmp","project_id":"…","project_name":"…"}],"total":3,"limit":5,"offset":0,"has_more":false}
+```
+
+## GET /api/v1/sessions/recent
+
+The "what just finished / what is active" feed. Same auth, same filters and
+the same item shape as `GET /api/v1/sessions` — a client carries ONE session
+model for both — plus a `since` filter, an optional tail excerpt, and a much
+smaller default page.
+
+| param | notes |
+|---|---|
+| `limit` | default `20`, max `100` (clamped, same rules as above) |
+| `offset` | default `0` |
+| `since` | ISO 8601 instant; keeps only sessions whose **message activity** is strictly after it. An offset (`2026-09-07T08:00:00-04:00`) or a naive (`2026-09-07T12:00:00`) form are both accepted and normalized to UTC. Unparseable is `400 {"error": "invalid since"}`. A session with no messages is never "recently active", so `since` always excludes the `null` tail |
+| `status` | repeatable, exactly as on `/sessions` |
+| `project_id` | exact match |
+| `include_tail` | `true`/`1`/`yes` — adds `last_assistant_text` (via `Sessions.session_tail/2`) to every item |
+
+Ordering is identical: `last_activity_at` DESC, nulls last, tiebreak on `id`.
+
+### Response
+
+```json
+{
+  "sessions": [
+    {
+      "id": "…",
+      "status": "idle",
+      "title": "Fix the flaky test",
+      "progress_phase": null,
+      "progress_note": null,
+      "last_activity_at": "2026-09-06T11:00:00.000000Z",
+      "directory": "/home/zach/orca_hub",
+      "project_id": "…",
+      "project_name": "…",
+      "last_assistant_text": "I've pushed the fix, tests are green…",
+      "last_assistant_text_truncated": true
+    }
+  ],
+  "fetched_at": "2026-09-06T11:02:44.000000Z",
+  "total": 3,
+  "limit": 20,
+  "offset": 0,
+  "has_more": false
+}
+```
+
+`fetched_at` is the server's clock at response time — a client's freshness
+signal, so "how old is this list" is part of the data rather than something
+the caller has to infer.
+
+The two tail fields are present ONLY when `include_tail` is set.
+`last_assistant_text` is the session's most recent assistant text, truncated
+to **400 characters plus a `…`**; `last_assistant_text_truncated` says whether
+that happened. `null` (with `false`) means the session has no assistant text
+yet. For the untruncated text and the recent tool calls, use
+`/api/v1/sessions/:id/tail`.
+
+### Example
+
+```bash
+curl -s "https://orca.example/api/v1/sessions/recent?since=2026-09-06T10:00:00Z&status=idle&status=error&include_tail=true" \
+  -H "Authorization: Bearer $ORCA_API_TOKEN"
 ```
 
 ## GET /api/v1/sessions/:id
@@ -434,8 +522,50 @@ The same compact projection as above, for a single session.
 
 ```bash
 curl -s https://orca.example/api/v1/sessions/<id> -H "Authorization: Bearer $ORCA_API_TOKEN"
-# {"id":"…","status":"idle","title":"…","progress_phase":null,"progress_note":null,"last_activity_at":"2026-08-21T18:04:12Z","directory":"/tmp","project_id":null,"project_name":null}
+# {"id":"…","status":"idle","title":"…","progress_phase":null,"progress_note":null,"last_activity_at":"2026-08-21T18:04:12.123456Z","directory":"/tmp","project_id":null,"project_name":null}
 ```
 
 `404 {"error": "session not found"}` for both a nonexistent id and a
-malformed one (never a raw `Ecto.Query.CastError`).
+malformed one (never a raw `Ecto.Query.CastError`). An **archived** session
+(or a background-kind one) is still fetchable by id even though it is hidden
+from the two list endpoints — a client holding an id from a push notification
+must be able to resolve it after the session is archived.
+
+## GET /api/v1/sessions/:id/tail
+
+A slim, read-only tail for one session: its last assistant text plus its most
+recent tool calls, oldest to newest. Read straight from the message table —
+it never touches the live `SessionRunner`, so it cannot interrupt a working
+agent. Same `sessions:read` scope and the same 404 rules as
+`/api/v1/sessions/:id`.
+
+| param | notes |
+|---|---|
+| `tool_call_limit` | default `10`, max `50` (clamped). Non-integer/non-positive is `400 {"error": "invalid tool_call_limit"}` |
+
+```bash
+curl -s "https://orca.example/api/v1/sessions/<id>/tail?tool_call_limit=3" \
+  -H "Authorization: Bearer $ORCA_API_TOKEN"
+```
+
+```json
+{
+  "session_id": "…",
+  "last_assistant_text": "I've pushed the fix, tests are green",
+  "recent_tool_calls": [
+    {"name": "Bash", "input": {"command": "mix test"}},
+    {"name": "Read", "input": {"file_path": "lib/orca_hub/sessions.ex"}}
+  ],
+  "tool_calls_truncated": false,
+  "tool_calls_total": 2
+}
+```
+
+`last_assistant_text` is `null` when the session has no assistant text yet,
+and is NOT truncated here (unlike `/sessions/recent?include_tail=true`).
+`recent_tool_calls` is capped at `tool_call_limit`, keeping the MOST RECENT
+calls; `tool_calls_truncated` says whether older ones were dropped and
+`tool_calls_total` is how many were found in the scanned window.
+(`Sessions.session_tail/2` names that flag `tool_calls_truncated?` in Elixir;
+the trailing `?` is dropped on the wire so clients get an ordinary JSON
+identifier.)
