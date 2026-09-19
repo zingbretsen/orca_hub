@@ -26,6 +26,12 @@ The proxy and the hand labels **disagree by a factor of ~3** and that
 disagreement is itself a finding — see §B.4. Where they disagree, the hand
 labels govern.
 
+**Every figure in this document is measured against alerts that were
+DELIVERED, not against detections** — a detection that never became an alert
+was recorded nowhere. See **§F.0**, which also explains why this comparison
+cannot be repeated the same way on future data. **§F** is the post-change
+closing pass: what shipped, what it dropped, and what it cost.
+
 ---
 
 ## Step 0 — corpus and database
@@ -50,6 +56,15 @@ evidence, via `assess/5`. That is the mechanical reason
 ORCAHUB3-44 was closed on) over the same period in which 229 file-surgery alerts
 were delivered. The two are measuring different things, and the delivered
 messages are the only record of what the detector actually fired on.
+
+**As of 2026-09-19 this is fixed going FORWARD but not backward.** The sampler
+now computes file surgery and persists `file_surgery_suspected` /
+`file_surgery_kind` / `file_surgery_path` / `surgery_alert_decision`, so a
+suppressed detection leaves a durable trace from that date on — and a future
+version of this analysis must be built on `churn_samples` rather than on
+delivered messages (§F.0). Rows written BEFORE that date are unchanged and
+their `churn_suspected` remains void; they are identified by
+`file_surgery_suspected IS NULL`, not by a date filter.
 
 ### Extraction rule, and what it excludes
 
@@ -143,8 +158,20 @@ quantifies why.
 The distribution is also inverted relative to the mining run's predictions.
 `programmatic_write` was measured at P=1.00 **R=0.02** — the rarest family — and
 is now 57% of all alerts. `slice_and_redirect`, the family the original
-ORCAHUB3-61 incident was written around, has fired twice, and **both** were
-matcher artefacts rather than file surgery (§A.6).
+ORCAHUB3-61 incident was written around, has fired twice.
+
+> **Correction (2026-09-19, after the matcher fix was implemented and
+> replayed).** This paragraph, and §A.6(2) below, originally said **both**
+> `slice_and_redirect` alerts were matcher artefacts. Measured against the
+> fixed matcher, only **one** is: sample #27, where the `>` came from the
+> literal string `<redacted>` in a pure read. The other, sample #28
+> (`sed -n '526,645p' assets/js/hooks/teleprompter.js > /tmp/del_a.txt && …`),
+> is a **genuine** slice-and-redirect with a real redirect operator, and it
+> still fires correctly after the fix. Note what that does and does not say:
+> the matcher is right about what #28 wrote. §C.1 still labels it FALSE —
+> "recon, not repair" — which is a judgement about whether the write was
+> worth alerting on, not about whether the match was real. Those are
+> different claims and this document conflated them here.
 
 ### A.4 What is being written
 
@@ -199,8 +226,9 @@ Found by reading the flagged commands, not by testing:
    write was `open("/tmp/tts-arb-check/blocks.txt","w")`. With
    `programmatic_write` at 57% of the corpus this is not a corner case.
 
-2. **`real_output_redirect?/1` sees `>` inside ordinary text.** Both
-   `slice_and_redirect` alerts are this. Sample #27's command is
+2. **`real_output_redirect?/1` sees `>` inside ordinary text.** **One** of
+   the two `slice_and_redirect` alerts is this — see the correction in §A.3;
+   this sentence originally claimed both. Sample #27's command is
    `cat config/test.exs | head -40 && echo "=== env ===" && env | grep … | sed 's/PASSWORD=.*/PASSWORD=<redacted>/'`
    — a pure READ. The `>` that made `real_output_redirect?` true came from the
    literal string `<redacted>`.
@@ -938,3 +966,156 @@ command follows; say "unpaired — advisory, judge from the detail below" instea
 of "worker rebuilding X from shell fragments"; and drop the paired/unpaired
 confidence language until pairing can actually fire. The detector change is
 worth shipping; the message change is probably worth more.
+
+---
+
+## F. Closing pass — what actually shipped, and what it cost
+
+Written 2026-09-19, after ORCAHUB3-66's four implementation workers landed.
+Everything above this line is the measurement as it stood BEFORE any code
+changed; this section is the post-change accounting. Where a number here
+disagrees with one above, this section is the later one.
+
+### F.0 LABEL THE DENOMINATOR — read this before quoting any figure below
+
+Every percentage in this section, and every percentage above it, is measured
+against **alerts that were DELIVERED**. It is not measured against detections.
+
+There is no denominator of detections available, and never was: a detection
+that did not become an alert was **recorded nowhere at all**. `ChurnSampler`
+called `Churn.assess/3` and so never computed file surgery (§0), and the only
+persistent record of the detector firing has always been the message
+`SessionHeartbeat.deliver_or_queue/2` wrote into an orchestrator's feed. So the
+corpus is exact — but it is exactly the set of alerts that got sent.
+
+Phrase results accordingly. **"Of the alerts that WERE delivered historically,
+N would not have been"** is supportable. *"N% of detections are suppressed"* and
+*"measured in production"* are not; the first invents a denominator that does
+not exist, the second implies a live A/B that never ran. This is an OFFLINE
+replay against stored transcripts.
+
+**And the comparison cannot be repeated this way on future data.** Once
+suppression ships, a suppressed alert does not enter the delivered corpus
+either — so re-running this analysis in a month would measure only the alerts
+that survived the policy, and would silently report the suppressed population
+as though it had never been detected. That is precisely the gap item 1 of this
+issue closes: `churn_samples` now carries `file_surgery_suspected`,
+`file_surgery_kind`, `file_surgery_path` and `surgery_alert_decision`, so the
+suppressed set is durably recorded going forward. **Any future version of this
+analysis must be built on `churn_samples`, not on delivered messages.**
+
+Corollary, and it is the one most likely to be forgotten: **every
+`churn_samples` row written before 2026-09-19 has a void `churn_suspected`** —
+uniformly `false` for reasons that have nothing to do with churn. Those rows
+are identified by `file_surgery_suspected IS NULL`, not by a date. 1,480 falses
+are not 1,480 clean sessions; they are 1,480 rows on which the question was
+never asked.
+
+### F.1 The matcher fixes: 20/229 stop firing, 5 fire on a corrected path
+
+Worker A implemented the two §A.6 defects' fixes and replayed the corpus. The
+old matcher reproduced the delivered path AND kind on **229/229** alerts, so
+the before/after comparison is exact rather than approximate — there is no
+replay error to net out.
+
+| outcome under the fixed matcher | alerts | share of delivered |
+|---|---:|---:|
+| stops firing outright | **20** | **8.7%** |
+| — defect 1 (family (c) took the path from anywhere in the command) | 17 | 7.4% |
+|   · real write target is not a tracked source path | 11 | 4.8% |
+|   · genuinely indeterminate | 6 | 2.6% |
+| — defect 2 (`real_output_redirect?/1` saw `>` in ordinary text) | 3 | 1.3% |
+| still fires, on a CORRECTED path or family | **5** | **2.2%** |
+| unchanged | 204 | 89.1% |
+
+**0 of the 3 hand-labelled true positives is lost.**
+
+### F.2 The policy is the bigger lever; the corrected paths matter anyway
+
+Stated plainly, because the two changes are easy to mix up:
+
+- **U1b (the suppression policy) suppresses 72/229 — 31.4%.**
+- **The matcher fixes drop 20/229 — 8.7%.**
+
+**The policy change is the bigger lever, by roughly 3.6x.** If only one of the
+two had shipped, it should have been that one. Neither loses a hand-labelled
+true positive.
+
+But volume is the wrong yardstick for the **5** alerts that now fire on a
+corrected path, and they matter out of proportion to their count. An alert that
+suppresses costs a reader nothing. An alert that names the WRONG FILE does not
+merely waste a peek — **it misleads**. §A.6(1)'s confirmed instance is sample
+#6, where the alert said `/home/zach/projects/tts/README.md` for a command
+whose only write was `open("/tmp/tts-arb-check/blocks.txt","w")`. An
+orchestrator acting on that alert would have gone and looked at a README that
+nothing had touched. Suppression makes the detector quieter; this makes it
+*honest*, and only one of those two failure modes can send a reader somewhere
+that does not exist.
+
+### F.3 The honest cost — what these fixes take away
+
+Neither fix is free, and neither cost is visible in the aggregate tables.
+
+**The fix deletes the corpus's luckiest alert.** Defect 2's fix removes AMBIG
+#27 from the corpus — the alert §B and §C identify as the single most
+serendipitously valuable one ever delivered, whose peek surfaced a genuine
+70-call DB/env yak-shave and produced a "STOP the database/environment work"
+redirect. It was a parse artefact: the `>` came from the literal string
+`<redacted>`, and the command only ever read. Removing it is exactly what
+§A.6(2) asks for and the right call. It is also true that the change deletes
+the luckiest alert in the record, and that belongs on the record rather than
+being quietly netted out of a suppression percentage.
+
+**The 6 "indeterminate" drops are probably real writes now missed.** These are
+`open(path, "w")` inside a loop, and destinations computed at runtime — cases
+where the fixed matcher declines to name a path because it cannot determine one
+rather than because there was no write. That is the sanctioned trade: a missed
+detection is better than an alert naming the wrong file, for the reason §F.2
+gives. It is still a cost, not a free win, and the correct summary is "8.7% of
+delivered alerts stop firing, of which about a third are writes we can no
+longer resolve" — not "8.7% of delivered alerts were noise".
+
+### F.4 The irony, placed after the numbers rather than ahead of them
+
+The third live specimen (§C.5) is the **alert evaluator alerting on the worker
+who was editing the alert evaluator**. It arrived unprompted, mid-measurement,
+in the file the measurement was about.
+
+It is also the specimen that exposed the directory-attribution bug: its "no
+commit 1m" clause was reporting sibling worker C's commit `e144743`, not
+anything the alerted worker had done — which is how the confound in §D.3 got
+noticed at all, and which then turned out to affect a second rendering site
+(`metric_line("no_commit_for", …)`, still saying "last commit Nm ago") that no
+amount of reading the counterfactual tables had surfaced.
+
+**Self-application found what the measurement pass did not.** Four sections of
+offline replay over 229 alerts and a hand-labelled sample of 39 did not surface
+the misattribution; one alert fired at the author did, within minutes, because
+the author could check the claim against what they knew they had done. That is
+a cheap technique and it is underused: run the detector on the work of building
+the detector. The numbers above are the substance and this is a footnote to
+them — but it is a footnote that changed the code twice.
+
+### F.5 What shipped
+
+| item | where |
+|---|---|
+| U1b suppression policy (`D6 ∨ (D1 ∧ D2b)`), reason-returning | `lib/orca_hub/sessions/surgery_alert_policy.ex` |
+| §A.6 matcher defects 1 and 2 | `lib/orca_hub/sessions/file_surgery.ex` |
+| message reorder; `paired_with_failed_edit` deleted | `lib/orca_hub/churn_sampler/alert_evaluator.ex`, `file_surgery.ex` |
+| `no commit Nm` → `directory HEAD Nm old`, BOTH render sites | `alert_evaluator.ex` (`commit_clause/2`, `metric_line/5`) |
+| "worker cannot land an edit" detector, wired ungated | `lib/orca_hub/sessions/edit_failure.ex`, `alert_evaluator.ex` |
+| sampler computes file surgery + persists the policy decision | `lib/orca_hub/churn_sampler.ex`, migration `20260919160000` |
+
+Not shipped, deliberately: the §C.5 tightening ("no repeated signatures AND no
+file edited more than once"), which two live specimens sit on opposite sides
+of; and the "repetition is the real signal" hypothesis — both are
+**ORCAHUB3-111**, to be measured against a fresh hand-labelled sample rather
+than argued.
+
+**ORCAHUB3-63 §1 is NOT a component of any of this.** It ships alongside U1b,
+ungated by volume or by `SurgeryAlertPolicy`, because it covers a population
+the surgery detector does not find (§D.4: failed editor calls number 0 in 223
+of the 229 alert windows, 1 in 5, 2 in 1; none of the three true positives has
+one). The two populations are disjoint. **No suppression anywhere in this
+issue may be justified with "63 §1 will catch it" — measurably, it will not.**
