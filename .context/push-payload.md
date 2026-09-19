@@ -41,7 +41,10 @@ convenience, and do not rename or drop one without changing the client.
 - `status` — `"idle"` or `"error"`; changes the client's tone and channel.
 - `excerpt` — `last_assistant_text` from `Sessions.session_tail/2`, whitespace
   collapsed and truncated to 400 chars on a WORD boundary with a trailing `…`.
-  `""` (never `null`) when the turn produced no assistant text.
+  `""` (never `null`) when the turn produced no assistant text. The rule lives
+  in `Sessions.truncate_excerpt/2`, shared with
+  `GET /api/v1/sessions/recent?include_tail=true` — the notification body and
+  the in-app list row it opens must not disagree about where the text stops.
 
 `extras.orca` is namespaced so it can never collide with Gotify's own
 `client::*` extras. `Notify.build_extras/1` takes a generic `extras` map

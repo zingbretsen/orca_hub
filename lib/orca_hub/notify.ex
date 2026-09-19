@@ -29,7 +29,6 @@ defmodule OrcaHub.Notify do
   # that is unreachable (DESIGN.md §1.4 / R12). Namespaced so it can never
   # collide with Gotify's own `client::*` extras.
   @orca_extras_key "orca"
-  @excerpt_limit 400
   @idle_priority 4
   @error_priority 8
 
@@ -96,30 +95,17 @@ defmodule OrcaHub.Notify do
   end
 
   @doc """
-  Truncate `text` to at most `limit` characters, cutting on a word boundary
-  and appending an ellipsis. Public so the payload contract's excerpt rule
-  is testable on its own.
+  Truncate `text` for the `excerpt` field: whitespace collapsed, cut to
+  `limit` (default 400) characters on a word boundary, ellipsised.
+
+  Delegated to `OrcaHub.Sessions` rather than implemented here, so the
+  string a push carries and the one
+  `GET /api/v1/sessions/recent?include_tail=true` returns can never drift —
+  an Android notification and the in-app list row it opens must not
+  disagree about where the text stops.
   """
-  def truncate_excerpt(text, limit \\ @excerpt_limit)
-  def truncate_excerpt(nil, _limit), do: nil
-
-  def truncate_excerpt(text, limit) when is_binary(text) do
-    text = text |> String.replace(~r/\s+/, " ") |> String.trim()
-
-    if String.length(text) <= limit do
-      text
-    else
-      head = String.slice(text, 0, limit)
-
-      case String.split(head, " ") do
-        [_single] ->
-          String.trim_trailing(head) <> "…"
-
-        words ->
-          words |> Enum.drop(-1) |> Enum.join(" ") |> String.trim_trailing() |> Kernel.<>("…")
-      end
-    end
-  end
+  defdelegate truncate_excerpt(text), to: Sessions
+  defdelegate truncate_excerpt(text, limit), to: Sessions
 
   @doc "True when this node has Gotify credentials (i.e. it is the hub)."
   def configured?, do: match?({:ok, _}, require_token())
