@@ -41,6 +41,16 @@ Every alert ever delivered is persisted, because `AlertEvaluator` hands its
 alerts to `SessionHeartbeat.deliver_or_queue/2`, which writes them into the
 ORCHESTRATOR's own message feed. So the corpus is exact, not sampled.
 
+**Do not try to rebuild this corpus from `churn_samples` — it is not there.**
+`ChurnSampler.run_sweep/1` calls `Churn.assess/3`, so both `now` and
+`file_surgery` take their defaults and `file_surgery` is always `nil`: the
+sampler never computes file surgery at all. Only `AlertEvaluator` passes
+evidence, via `assess/5`. That is the mechanical reason
+`churn_samples.churn_suspected` was true 0 times in 1,480 samples (the figure
+ORCAHUB3-44 was closed on) over the same period in which 229 file-surgery alerts
+were delivered. The two are measuring different things, and the delivered
+messages are the only record of what the detector actually fired on.
+
 ### Extraction rule, and what it excludes
 
 ```sql
@@ -572,7 +582,11 @@ hand-labelled true positive when applied alone.** Loudly:
   same path within 10 calls, and across all 229 alert windows there are **6**
   alerts with even one failed editor call and **1** with two. The behaviour the
   pairing signal was built to catch does not co-occur with the behaviour the
-  detector actually fires on.
+  detector actually fires on. Stage 2 is deleting the field rather than keeping
+  it, which is the right call for a reason this measurement makes concrete: a
+  boolean that has only ever taken one value still *advertises* that the other
+  value exists, so every alert's "unpaired (lower confidence)" reads as a
+  meaningful downgrade from a higher tier no orchestrator has ever seen.
 - **D4 (zero repeats on the same path) loses 3/3 while suppressing 81% of the
   corpus.** 186/229 alerts fire on a path matched exactly once in the window.
   This is the most dangerous entry in the table: it looks like a near-total
@@ -712,6 +726,53 @@ guard). Run each with `export $(grep -E '^DB_' .env | xargs)` then
 | `labels.exs` | the §C hand labels |
 | `counterfactual.exs` | the §D table, ground-truth checks, live specimen |
 | `proxy_vs_hand.exs` | the §B.4 proxy-vs-hand-label confusion |
+
+---
+
+## Conclusions
+
+### The must-keep case and the must-kill case are the same shape
+
+The most transferable result here is not a number, it is a collision. The
+deploy-runner false positive (§E) and the wedged `nohup`/`until`-loop true
+positive (§E) are **structurally identical under D1, the discriminator proposed
+to kill the first of them.** Both workers wrote to a file outside git, and they
+did so for the same ordinary reason: a deploy runner belongs in
+`orca-hub-deploy-logs/`, a browser harness belongs in `tmp/voice2c/`, and
+neither is repository source. "Path not in git" separates repo work from
+scaffolding. It does not separate distress from competence, because distress and
+competence both produce scaffolding.
+
+That is a general property, not an accident of this corpus. **A discriminator
+chosen by staring at false positives will reliably also match true positives
+that happen to share the false positives' incidental properties** — and it will
+look excellent right up until someone scores it against hand-labelled TRUE
+cases, which is the only step that can expose it. Every candidate in this
+issue's brief failed exactly this way (§D.1): D1 on outside-git-ness, D2 on
+self-verification, D4 on same-path repeat count, D3 on a field that is always
+false. Each is a real regularity among the false positives; none of them is
+*about* the thing being detected.
+
+The practical consequence is that the fix is a CONJUNCTION, not a signal. D1 is
+**adopted, not rejected** — as a conjunct with same-command verification (D2b),
+gated by the corroborating-evidence clause (D6). D1 alone suppresses 101 alerts
+and costs 2 of 3 true positives; inside `D6 ∨ (D1 ∧ D2b)` it contributes to
+suppressing 72 and costs none. The extra conjunct is what encodes "outside git
+AND the worker exercised what it wrote", which is a statement about the
+worker's behaviour rather than about where the file lives.
+
+Anyone proposing a further discriminator for this detector should expect to
+score it against §C's labelled table before it is taken seriously, and should
+expect the aggregate suppression figure to be misleading in its favour.
+
+### Out of scope, filed separately
+
+§C.3 and the D6 result both point the same way: two of three true positives were
+true because of the `Repeated calls:` block, and the clause that loses nothing
+is the one demanding corroborating repetition. The stronger hypothesis that
+follows — *repetition is the real signal and the file-surgery match is
+decoration* — is filed as **ORCAHUB3-111** and is explicitly **out of scope for
+ORCAHUB3-66**. Nothing in this document's recommendation depends on it.
 
 ---
 
