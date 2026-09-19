@@ -195,6 +195,22 @@ phase -> section); here is the shape and the traps.
 
 More invariants that bite:
 
+- **Backgrounding a page takes BOTH the mic and the LiveView, silently**
+  (ORCAHUB3-91, `47ea985`). The OS suspends the `AudioContext` and can end or
+  mute the track with nothing thrown, so `armed` means "we finished arming
+  once" and only `Capture.live()`/`_micLive()` means "audio is flowing" —
+  render from the latter, and never re-add an `armed` short-circuit to
+  `_arm()`, which is what forced the two-press recovery. Separately, `app.js`
+  force-reconnects the live socket after >10 s hidden, so `VoiceBarLive`
+  RE-MOUNTS with `target_session_id: nil` and `voice_on: false` (sticky
+  survives navigation, not socket loss) while the hook keeps both;
+  `_restoreAfterRemount()` re-asserts the HOOK's target, which is the picker's
+  own last value and therefore cannot fight it the way an unconditional page
+  sync did. An absent `data-target-session-id` after one was set means "the
+  LiveView re-mounted" and nothing else — keep it that way: `voice-target` and
+  `set_target` must stay no-ops for a nil/empty id. The voice CHANNEL also
+  rejoins by itself onto a fresh server-side session, so `composer`,
+  `ui_focus` and the draft seed are re-sent from `_onChannelRejoin()`.
 - **Every internal link must live-navigate** (`<.link navigate>`,
   `JS.navigate`, `push_navigate`). One plain `<a href>` to an in-app route
   reloads the document and takes the bar, the mic, the `AudioContext` and the
