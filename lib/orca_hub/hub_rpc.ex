@@ -168,6 +168,9 @@ defmodule OrcaHub.HubRPC do
 
   def get_session_tree(session_id), do: call(OrcaHub.Sessions, :get_session_tree, [session_id])
 
+  def list_unarchived_descendants(session_id),
+    do: call(OrcaHub.Sessions, :list_unarchived_descendants, [session_id])
+
   def list_sessions_by_ids(ids), do: call(OrcaHub.Sessions, :list_sessions_by_ids, [ids])
 
   def list_sessions_for_trigger(trigger_id),

@@ -347,8 +347,10 @@ defmodule OrcaHub.Cluster do
   Archives `session` (on `node`, via `archive_session/3` — same as a plain
   single-session archive) and then, unless `opts[:archive_children] ==
   false`, cascades into every unarchived descendant of its whole spawn
-  subtree (`OrcaHub.Sessions.list_unarchived_descendants/1` — recursively,
-  grandchildren included). A descendant whose status is "running"/"waiting"
+  subtree (`OrcaHub.Sessions.list_unarchived_descendants/1`, reached via
+  `HubRPC` like every other DB read in this module — an agent node has no
+  local `OrcaHub.Repo` — recursively, grandchildren included). A descendant
+  whose status is "running"/"waiting"
   is left alone entirely (not stopped, not archived) and reported back as
   skipped — but the subtree isn't pruned there, its own already-idle
   children are still cascaded into. Each descendant is resolved to its
@@ -372,7 +374,7 @@ defmodule OrcaHub.Cluster do
         {archived, skipped} =
           if Keyword.get(opts, :archive_children, true) do
             session.id
-            |> OrcaHub.Sessions.list_unarchived_descendants()
+            |> HubRPC.list_unarchived_descendants()
             |> Enum.map(& &1.id)
             |> Enum.reduce({[], []}, fn id, acc -> cascade_descendant(id, opts, acc) end)
           else
