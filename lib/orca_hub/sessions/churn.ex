@@ -17,6 +17,22 @@ defmodule OrcaHub.Sessions.Churn do
 
   All four volumetric threshold constants are advisory heuristics (see
   ORCAHUB3-44).
+
+  ## This module OBSERVES; it does not decide what is worth alerting on
+
+  `churn_suspected` stays exactly as measured — volumetric OR file-surgery —
+  and every detection keeps flowing into `churn_samples`. ORCAHUB3-66's
+  suppression policy deliberately lives OUTSIDE this module, in
+  `OrcaHub.Sessions.SurgeryAlertPolicy`, and is applied by
+  `OrcaHub.ChurnSampler.AlertEvaluator` to the ALERT only. That is what keeps
+  the policy's own effect measurable after it ships: the raw observation is
+  still recorded for every suppressed alert. Do not fold the policy in here.
+  See `churn_alert_precision.md` (repo root) for the measurement that
+  authorises it.
+
+  `volumetric_churn_suspected` is exposed separately for the same reason —
+  an alert driven by the volumetric half must never be suppressed by a
+  file-surgery policy.
   """
 
   alias OrcaHub.Sessions.FileSurgery
@@ -105,6 +121,7 @@ defmodule OrcaHub.Sessions.Churn do
       minutes_since_last_commit: minutes_since_last_commit,
       file_surgery: file_surgery,
       file_surgery_suspected: file_surgery_suspected,
+      volumetric_churn_suspected: volumetric_churn_suspected,
       churn_suspected: churn_suspected
     }
   end

@@ -50,6 +50,56 @@ defmodule OrcaHub.Sessions.ChurnTest do
 
       assert result.churn_suspected == true
     end
+
+    test "ORCAHUB3-66: the two halves of churn_suspected are exposed separately" do
+      # `AlertEvaluator` has to suppress the file-surgery half of an alert
+      # without ever touching the volumetric half, so it needs to see which
+      # one is true. The OBSERVATION itself is unchanged — churn_suspected
+      # is still `volumetric or file_surgery` and still feeds churn_samples.
+      activity = %{
+        tool_calls_15m: 3,
+        tool_calls_30m: 30,
+        distinct_tools_15m: 3,
+        distinct_tools_30m: 25
+      }
+
+      session = %{
+        progress_updated_at: NaiveDateTime.utc_now() |> NaiveDateTime.add(-60, :minute)
+      }
+
+      now = DateTime.utc_now()
+
+      file_surgery =
+        FileSurgery.detect([
+          assistant_message([
+            tool_use("Bash", %{"command" => "sed -i 's/foo/bar/' lib/orca_hub/thing.ex"})
+          ])
+        ])
+
+      surgery_only = Churn.assess(activity, session, nil, now, file_surgery)
+
+      assert surgery_only.file_surgery_suspected == true
+      assert surgery_only.volumetric_churn_suspected == false
+      assert surgery_only.churn_suspected == true
+
+      volumetric =
+        Churn.assess(
+          %{
+            tool_calls_15m: 30,
+            tool_calls_30m: 50,
+            distinct_tools_15m: 10,
+            distinct_tools_30m: 20
+          },
+          session,
+          nil,
+          now,
+          nil
+        )
+
+      assert volumetric.volumetric_churn_suspected == true
+      assert volumetric.file_surgery_suspected == false
+      assert volumetric.churn_suspected == true
+    end
   end
 
   describe "assess/4" do

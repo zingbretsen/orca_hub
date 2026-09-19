@@ -3,6 +3,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
 
   alias OrcaHub.{AlertSubscriptions, Sessions}
   alias OrcaHub.ChurnSampler.AlertEvaluator
+  alias OrcaHub.Sessions.{Churn, ChurnDetail, FileSurgery, SurgeryAlertPolicy}
 
   # Mirrors churn_sampler_test.exs's own fixture helpers — same shapes, same
   # reasoning (a fresh tmp dir per session, optionally a real git repo).
@@ -41,6 +42,50 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
         }
       }
     })
+  end
+
+  defp bash_message(session_id, command) do
+    Sessions.create_message(%{
+      session_id: session_id,
+      data: %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{"type" => "tool_use", "name" => "Bash", "input" => %{"command" => command}}
+          ]
+        }
+      }
+    })
+  end
+
+  defp edit_message(session_id, file_path) do
+    Sessions.create_message(%{
+      session_id: session_id,
+      data: %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{"type" => "tool_use", "name" => "Edit", "input" => %{"file_path" => file_path}}
+          ]
+        }
+      }
+    })
+  end
+
+  # A git repo with a real tracked source file, so the D1 half of the
+  # suppression policy ("path not tracked by git") can answer honestly.
+  defp git_session_with_tracked_file(prefix, attrs) do
+    session = git_session(prefix, attrs)
+    File.mkdir_p!(Path.join(session.directory, "lib"))
+    File.write!(Path.join(session.directory, "lib/tracked.ex"), "defmodule Tracked do end\n")
+    System.cmd("git", ["add", "lib/tracked.ex"], cd: session.directory)
+
+    System.cmd("git", ["commit", "-m", "add tracked"],
+      cd: session.directory,
+      stderr_to_stdout: true
+    )
+
+    session
   end
 
   defp subscribe(orchestrator_id, attrs) do
@@ -358,6 +403,154 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
       assert alert.session_id == idle_session.id
       assert alert.condition == "churn"
+    end
+  end
+
+  describe "evaluate/3 — file-surgery suppression policy (ORCAHUB3-66)" do
+    # The gate is `volumetric or (file_surgery and SurgeryAlertPolicy)`.
+    # See `churn_alert_precision.md` and OrcaHub.Sessions.SurgeryAlertPolicy
+    # for why the rule is D6 OR (D1 AND D2b) and nothing else.
+
+    test "suppresses a surgery-only alert carrying no corroborating detail at all (D6)" do
+      orchestrator_id = Ecto.UUID.generate()
+      session = plain_session("alert-surgery-d6-test", %{status: "running"})
+
+      # One shell write and nothing else: no repo edits, no repeated
+      # signature — the file-surgery sentence would be the entire alert.
+      {:ok, _} = bash_message(session.id, "cat > lib/scratch.ex <<'EOF'\ndefmodule S do end\nEOF")
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [session.id], conditions: %{"churn" => true}})
+
+      churn =
+        Churn.assess(
+          Sessions.activity_metadata([session.id]) |> Map.get(session.id, %{}),
+          session,
+          nil,
+          DateTime.utc_now(),
+          FileSurgery.fetch(session.id, window_minutes: 10)
+        )
+
+      assert churn.file_surgery_suspected, "fixture must actually trip FileSurgery"
+
+      assert churn.churn_suspected,
+             "the raw OBSERVATION must still be true — we suppress the alert, not the detection"
+
+      refute churn.volumetric_churn_suspected
+
+      assert {[], _edge_state} = AlertEvaluator.evaluate([subscription])
+    end
+
+    test "preserves a surgery alert that carries corroborating detail" do
+      orchestrator_id = Ecto.UUID.generate()
+      session = git_session_with_tracked_file("alert-surgery-keep-test", %{status: "running"})
+
+      cmd = "cat > lib/tracked.ex <<'EOF'\ndefmodule Tracked do end\nEOF"
+      {:ok, _} = bash_message(session.id, cmd)
+      {:ok, _} = bash_message(session.id, cmd)
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [session.id], conditions: %{"churn" => true}})
+
+      assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
+      assert alert.condition == "churn"
+      assert alert.message =~ "Repeated calls:"
+      assert alert.message =~ "Advisory: wrote lib/tracked.ex from the shell"
+    end
+
+    test "a volumetric churn alert is never suppressed by the surgery policy" do
+      orchestrator_id = Ecto.UUID.generate()
+
+      # No git repo (D1 true) and the command reads back what it wrote
+      # (D2b true), so the surgery half alone would be suppressed.
+      session =
+        plain_session("alert-volumetric-test", %{
+          status: "running",
+          progress_updated_at: DateTime.utc_now() |> DateTime.add(-30, :minute)
+        })
+
+      cmd = "cat > scratch.exs <<'EOF'\nIO.puts(1)\nEOF\n && cat scratch.exs"
+      Enum.each(1..30, fn _ -> bash_message(session.id, cmd) end)
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [session.id], conditions: %{"churn" => true}})
+
+      activity = Sessions.activity_metadata([session.id]) |> Map.get(session.id, %{})
+      evidence = FileSurgery.fetch(session.id, window_minutes: 10)
+      churn = Churn.assess(activity, session, nil, DateTime.utc_now(), evidence)
+
+      assert churn.volumetric_churn_suspected
+      assert churn.file_surgery_suspected
+
+      # Precondition for this test to mean anything: the policy really does
+      # want the surgery half gone (untracked path + same-command verify).
+      refute SurgeryAlertPolicy.alertable_for_session?(
+               session,
+               evidence,
+               ChurnDetail.fetch(session.id)
+             ),
+             "expected D1 AND D2b to suppress the surgery half of this fixture"
+
+      assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
+      assert alert.condition == "churn"
+    end
+  end
+
+  describe "evaluate/3 — churn message format (ORCAHUB3-66)" do
+    setup do
+      orchestrator_id = Ecto.UUID.generate()
+      session = git_session_with_tracked_file("alert-message-test", %{status: "running"})
+
+      cmd = "cat > lib/tracked.ex <<'EOF'\ndefmodule Tracked do end\nEOF"
+      {:ok, _} = bash_message(session.id, cmd)
+      {:ok, _} = bash_message(session.id, cmd)
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [session.id], conditions: %{"churn" => true}})
+
+      assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
+      {:ok, session: session, message: alert.message}
+    end
+
+    test "the corroborating detail LEADS and the flagged command FOLLOWS it", %{message: message} do
+      detail_at = :binary.match(message, "Repeated calls:") |> elem(0)
+      advisory_at = :binary.match(message, "Advisory: wrote") |> elem(0)
+      command_at = :binary.match(message, "Command: ") |> elem(0)
+
+      assert detail_at < advisory_at
+      assert advisory_at < command_at
+    end
+
+    test "no confidence wording appears anywhere in the message", %{message: message} do
+      refute message =~ "confidence"
+      refute message =~ "paired"
+      refute message =~ "unpaired"
+      refute message =~ "rebuilding"
+      refute message =~ "shell fragments"
+    end
+
+    test "the flagged command is advisory, not a diagnosis", %{message: message} do
+      assert message =~ "Advisory: wrote lib/tracked.ex from the shell (write_to_tracked)"
+      assert message =~ "judge from the detail above, not from this line"
+    end
+
+    test "the no-commit clause is replaced when the session made no repo edits",
+         %{message: message} do
+      assert message =~ "no repo edits in window"
+      refute message =~ "no commit "
+    end
+
+    test "the no-commit clause survives when the session DID edit the repo", %{session: session} do
+      orchestrator_id = Ecto.UUID.generate()
+      {:ok, _} = edit_message(session.id, "lib/tracked.ex")
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [session.id], conditions: %{"churn" => true}})
+
+      assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
+      assert alert.message =~ "Top edited files: lib/tracked.ex"
+      assert alert.message =~ "no commit "
+      refute alert.message =~ "no repo edits in window"
     end
   end
 
