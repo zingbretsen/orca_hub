@@ -1,20 +1,46 @@
 defmodule OrcaHub.Notify do
   @moduledoc """
-  Hub-side Gotify push-notification client, backing the `send_notification`
-  MCP tool (`OrcaHub.MCP.Tools.Notify`).
+  Hub-side Gotify push-notification client.
+
+  Two entry points:
+
+    * `deliver/1` — the generic sender, backing the `send_notification` MCP
+      tool (`OrcaHub.MCP.Tools.Notify`).
+    * `deliver_session_finished/1` — the AUTOMATIC turn-end push fired by
+      `OrcaHub.SessionRunner` on a genuine `running -> idle|error`
+      transition. Its `extras["orca"]` payload is a strict contract; see
+      `.context/push-payload.md`.
 
   Unlike `OrcaHub.MCP.Tools.Databases`/`PhxAgents` (which call their external
   API directly from the session's own runner node, so every node needs the
   token), this module is only ever invoked on the hub — sessions reach it
-  through `OrcaHub.HubRPC.send_notification/1`, which runs locally on the hub
-  and `:erpc`s there otherwise. Only the hub needs `GOTIFY_TOKEN` configured.
+  through `OrcaHub.HubRPC.send_notification/1` /
+  `OrcaHub.HubRPC.send_session_finished_notification/1`, which run locally on
+  the hub and `:erpc` there otherwise. Only the hub needs `GOTIFY_TOKEN`
+  configured.
   """
 
   require Logger
 
+  alias OrcaHub.Sessions
+
+  # The Android client (orca-watch) renders the notification ENTIRELY from
+  # this payload — it cannot call back to OrcaHub when OrcaHub is the thing
+  # that is unreachable (DESIGN.md §1.4 / R12). Namespaced so it can never
+  # collide with Gotify's own `client::*` extras.
+  @orca_extras_key "orca"
+  @excerpt_limit 400
+  @idle_priority 4
+  @error_priority 8
+
   @doc """
   Deliver a Gotify notification. `payload` may use string OR atom keys:
-  `message` (required), `title`, `priority`, `click_url`, `markdown`.
+  `message` (required), `title`, `priority`, `click_url`, `markdown`,
+  `extras`.
+
+  `extras` is a generic passthrough merged into the Gotify `extras` object
+  under the caller's own keys; `markdown`/`click_url` still add their
+  `client::display`/`client::notification` entries on top of it.
   """
   def deliver(payload) do
     payload = normalize(payload)
@@ -25,7 +51,118 @@ defmodule OrcaHub.Notify do
     end
   end
 
-  @known_keys ~w(message title priority click_url markdown)a
+  @doc """
+  The automatic turn-end push for a session that just went idle or errored.
+
+  Called ON THE HUB (via `OrcaHub.HubRPC.send_session_finished_notification/1`)
+  with only the three fields the runner knows — `session_id`,
+  `session_title`, `status` — because the fourth, `excerpt`, comes from
+  `Sessions.session_tail/2`, a hub-local DB read. Building it here rather
+  than on the runner keeps the cross-node hop to three small strings and
+  means an agent node never needs DB or Gotify credentials.
+
+  Returns `{:ok, :skipped}` — silently, with no log line — when Gotify is
+  not configured, so an unconfigured hub produces no log spam on every turn
+  end.
+  """
+  def deliver_session_finished(attrs) do
+    attrs = stringify_keys(attrs)
+    session_id = attrs["session_id"]
+    status = to_string(attrs["status"] || "idle")
+
+    case require_token() do
+      {:error, _reason} ->
+        {:ok, :skipped}
+
+      {:ok, _token} ->
+        title = presence(attrs["session_title"]) || "Session #{short_id(session_id)}"
+        excerpt = attrs["excerpt"] || session_excerpt(session_id)
+
+        deliver(%{
+          title: finish_title(title, status),
+          message: presence(excerpt) || default_message(status),
+          priority: if(status == "error", do: @error_priority, else: @idle_priority),
+          click_url: session_click_url(session_id),
+          extras: %{
+            @orca_extras_key => %{
+              "session_id" => session_id,
+              "session_title" => title,
+              "status" => status,
+              "excerpt" => excerpt || ""
+            }
+          }
+        })
+    end
+  end
+
+  @doc """
+  Truncate `text` to at most `limit` characters, cutting on a word boundary
+  and appending an ellipsis. Public so the payload contract's excerpt rule
+  is testable on its own.
+  """
+  def truncate_excerpt(text, limit \\ @excerpt_limit)
+  def truncate_excerpt(nil, _limit), do: nil
+
+  def truncate_excerpt(text, limit) when is_binary(text) do
+    text = text |> String.replace(~r/\s+/, " ") |> String.trim()
+
+    if String.length(text) <= limit do
+      text
+    else
+      head = String.slice(text, 0, limit)
+
+      case String.split(head, " ") do
+        [_single] ->
+          String.trim_trailing(head) <> "…"
+
+        words ->
+          words |> Enum.drop(-1) |> Enum.join(" ") |> String.trim_trailing() |> Kernel.<>("…")
+      end
+    end
+  end
+
+  @doc "True when this node has Gotify credentials (i.e. it is the hub)."
+  def configured?, do: match?({:ok, _}, require_token())
+
+  defp session_excerpt(nil), do: nil
+
+  defp session_excerpt(session_id) do
+    session_id
+    |> Sessions.session_tail(tool_call_limit: 1)
+    |> Map.get(:last_assistant_text)
+    |> truncate_excerpt()
+  rescue
+    e ->
+      Logger.warning(
+        "[notify] session_tail for #{inspect(session_id)} failed: #{Exception.message(e)}"
+      )
+
+      nil
+  end
+
+  defp finish_title(title, "error"), do: "⚠ " <> title
+  defp finish_title(title, _status), do: title
+
+  defp default_message("error"), do: "Session errored."
+  defp default_message(_status), do: "Session finished."
+
+  defp short_id(nil), do: "?"
+  defp short_id(id) when is_binary(id), do: String.slice(id, 0, 8)
+  defp short_id(id), do: inspect(id)
+
+  # The runner may be on an agent node whose PHX_HOST is a LAN address; this
+  # runs on the hub, whose endpoint URL is the public (ingress) one.
+  defp session_click_url(nil), do: nil
+
+  defp session_click_url(session_id) do
+    String.trim_trailing(OrcaHubWeb.Endpoint.url(), "/") <> "/sessions/#{session_id}"
+  end
+
+  defp presence(nil), do: nil
+  defp presence(str) when is_binary(str), do: if(String.trim(str) == "", do: nil, else: str)
+  defp presence(other), do: other
+
+  @known_keys ~w(message title priority click_url markdown extras)a
 
   defp normalize(payload) do
     Map.new(@known_keys, fn key ->
@@ -71,10 +208,27 @@ defmodule OrcaHub.Notify do
   end
 
   defp build_extras(payload) do
-    %{}
+    payload
+    |> custom_extras()
     |> maybe_put_markdown(payload)
     |> maybe_put_click_url(payload)
   end
+
+  # Generic passthrough: whatever the caller put under `extras`, JSON-keyed.
+  # Merged FIRST so the `client::*` entries below always win a key clash.
+  defp custom_extras(payload) do
+    case Map.get(payload, :extras) do
+      extras when is_map(extras) and map_size(extras) > 0 -> stringify_keys(extras)
+      _ -> %{}
+    end
+  end
+
+  defp stringify_keys(map) when is_map(map) and not is_struct(map) do
+    Map.new(map, fn {k, v} -> {to_string(k), stringify_keys(v)} end)
+  end
+
+  defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
+  defp stringify_keys(other), do: other
 
   defp maybe_put_markdown(extras, payload) do
     if Map.get(payload, :markdown) do

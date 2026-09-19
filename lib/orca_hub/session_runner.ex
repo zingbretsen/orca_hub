@@ -979,15 +979,10 @@ defmodule OrcaHub.SessionRunner do
         broadcast(data.session_id, {:status, broadcast_status})
         AgentPresence.update_status(data.directory, data.session_id, db_status)
 
-        maybe_notify_parent(
+        handle_turn_end(
           %{session | status: db_status, error_detail: session_error_detail},
           notify_status(db_status),
-          Map.get(data, :turn_started_at)
-        )
-
-        maybe_self_archive_memory_extraction(
-          %{session | status: db_status, error_detail: session_error_detail},
-          notify_status(db_status)
+          data
         )
 
         if code == 0 && (session.title == nil || session.title == "") do
@@ -1205,6 +1200,18 @@ defmodule OrcaHub.SessionRunner do
   defp notify_status("error"), do: :error
   defp notify_status(_status), do: nil
 
+  # Every `running -> idle|error` turn-end side effect in ONE place, so a new
+  # hook lands on all five transition paths (one-shot exit, streaming idle,
+  # streaming error, streaming port-exit-mid-turn, kill-switch downgrade) at
+  # once instead of being added to four of them. Each callee is individually
+  # fire-and-forget: none of them may block, or crash, the transition.
+  defp handle_turn_end(session, status, data) do
+    maybe_notify_parent(session, status, Map.get(data, :turn_started_at))
+    maybe_self_archive_memory_extraction(session, status)
+    maybe_notify_finished(session, status, Map.get(data, :first_prompt))
+    :ok
+  end
+
   defp maybe_notify_parent(_session, nil, _turn_started_at), do: :ok
 
   # Never notify a session about itself, and nothing to do without a parent
@@ -1246,6 +1253,89 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp maybe_self_archive_memory_extraction(_session, _status), do: :ok
+
+  # ── Turn-end push notification (orca-watch DESIGN.md §7c / R12) ──────
+  # An AUTOMATIC Gotify push on a genuine running->idle|error transition,
+  # distinct from the opt-in `send_notification` MCP tool: the Android client
+  # renders its notification ENTIRELY from this payload, because when OrcaHub
+  # is unreachable it cannot backfill anything the push left out. The four
+  # contract fields ride under `extras["orca"]` — see `.context/push-payload.md`.
+  #
+  # Fires ONCE PER TURN END, on the transition itself: `handle_turn_end/3` is
+  # only reached from the five running->idle|error paths, never from an idle
+  # heartbeat or a status refresh, and never for a session that was not
+  # running this turn. Suppressed for background `memory_extraction`
+  # sessions, for archived sessions, and for any non-turn-end status
+  # ("waiting"/"compacting", where notify_status/1 already returns nil).
+  #
+  # Delivery is fire-and-forget on the TaskSupervisor and routed through the
+  # hub (HubRPC), since only the hub holds GOTIFY_TOKEN and only the hub can
+  # read the DB for the excerpt — a runner on an agent node needs neither.
+
+  defp maybe_notify_finished(_session, nil, _first_prompt), do: :ok
+  defp maybe_notify_finished(%{kind: "memory_extraction"}, _status, _first_prompt), do: :ok
+
+  defp maybe_notify_finished(%{archived_at: archived_at}, _status, _first_prompt)
+       when not is_nil(archived_at),
+       do: :ok
+
+  defp maybe_notify_finished(session, status, first_prompt) when status in [:idle, :error] do
+    if finish_notifications_enabled?() do
+      Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+        deliver_finish_notification(session, status, first_prompt)
+      end)
+    end
+
+    :ok
+  end
+
+  @doc """
+  Node-local kill switch for the automatic turn-end push: set
+  `ORCA_NOTIFY_ON_FINISH=false` (or `0`) to silence it. Defaults ON.
+  """
+  def finish_notifications_enabled?,
+    do: Application.get_env(:orca_hub, :notify_on_finish, true) != false
+
+  @doc false
+  # Public as a test seam (same pattern as `deliver_parent_notification/3`):
+  # builds the payload and makes the hub hop synchronously in the caller.
+  def deliver_finish_notification(session, status, first_prompt \\ nil)
+      when status in [:idle, :error] do
+    case HubRPC.send_session_finished_notification(%{
+           session_id: session.id,
+           session_title: finish_notification_title(session, first_prompt),
+           status: Atom.to_string(status)
+         }) do
+      {:error, reason} ->
+        Logger.warning("[finish notify] session #{session.id}: #{inspect(reason)}")
+
+      _ok ->
+        :ok
+    end
+
+    :ok
+  rescue
+    e ->
+      Logger.warning("[finish notify] session #{session.id} raised: #{Exception.message(e)}")
+      :ok
+  catch
+    :exit, reason ->
+      Logger.warning("[finish notify] session #{session.id} exited: #{inspect(reason)}")
+      :ok
+  end
+
+  # The push has to name the session even when the agent never titled it and
+  # the server-side fallback title has not landed yet (it is written during
+  # the same transition, with no ordering guarantee) — so fall back to the
+  # same dumb first-prompt truncation `maybe_generate_title/2` uses.
+  defp finish_notification_title(%{title: title}, _first_prompt)
+       when is_binary(title) and title != "",
+       do: title
+
+  defp finish_notification_title(_session, first_prompt) when is_binary(first_prompt),
+    do: fallback_title(first_prompt)
+
+  defp finish_notification_title(_session, _first_prompt), do: nil
 
   # A redundant-idle window: how far back to look for a child->parent
   # session_interactions edge when `turn_started_at` is unavailable (e.g. a
@@ -1996,16 +2086,7 @@ defmodule OrcaHub.SessionRunner do
         broadcast(data.session_id, {:status, :idle})
         AgentPresence.update_status(data.directory, data.session_id, "idle")
 
-        maybe_notify_parent(
-          %{session | status: "idle", error_detail: nil},
-          :idle,
-          Map.get(data, :turn_started_at)
-        )
-
-        maybe_self_archive_memory_extraction(
-          %{session | status: "idle", error_detail: nil},
-          :idle
-        )
+        handle_turn_end(%{session | status: "idle", error_detail: nil}, :idle, data)
 
         MemoryGit.Server.snapshot_session_async(session)
         {:next_state, :idle, data}
@@ -2078,16 +2159,7 @@ defmodule OrcaHub.SessionRunner do
     broadcast(data.session_id, {:status, :error})
     AgentPresence.update_status(data.directory, data.session_id, "error")
 
-    maybe_notify_parent(
-      %{session | status: "error", error_detail: error_detail},
-      :error,
-      Map.get(data, :turn_started_at)
-    )
-
-    maybe_self_archive_memory_extraction(
-      %{session | status: "error", error_detail: error_detail},
-      :error
-    )
+    handle_turn_end(%{session | status: "error", error_detail: error_detail}, :error, data)
 
     # A turn-level error must not leave a stale warm process behind — it may be
     # wedged (e.g. spawned before login credentials existed, so every retry on
@@ -2138,15 +2210,10 @@ defmodule OrcaHub.SessionRunner do
     broadcast(data.session_id, {:status, broadcast_status})
     AgentPresence.update_status(data.directory, data.session_id, db_status)
 
-    maybe_notify_parent(
+    handle_turn_end(
       %{session | status: db_status, error_detail: nil},
       notify_status(db_status),
-      Map.get(data, :turn_started_at)
-    )
-
-    maybe_self_archive_memory_extraction(
-      %{session | status: db_status, error_detail: nil},
-      notify_status(db_status)
+      data
     )
 
     if generate_title? and (session.title == nil or session.title == "") do
@@ -2235,16 +2302,7 @@ defmodule OrcaHub.SessionRunner do
       broadcast(data.session_id, {:status, :error})
       AgentPresence.update_status(data.directory, data.session_id, "error")
 
-      maybe_notify_parent(
-        %{session | status: "error", error_detail: error_detail},
-        :error,
-        Map.get(data, :turn_started_at)
-      )
-
-      maybe_self_archive_memory_extraction(
-        %{session | status: "error", error_detail: error_detail},
-        :error
-      )
+      handle_turn_end(%{session | status: "error", error_detail: error_detail}, :error, data)
 
       {:next_state, :error, data}
     else

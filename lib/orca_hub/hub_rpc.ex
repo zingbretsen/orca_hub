@@ -528,6 +528,12 @@ defmodule OrcaHub.HubRPC do
 
   def send_notification(payload), do: call(OrcaHub.Notify, :deliver, [payload])
 
+  # The automatic turn-end push (SessionRunner running->idle|error). The
+  # runner sends only session_id/session_title/status; the hub fills in the
+  # `excerpt` from its own DB. See OrcaHub.Notify.deliver_session_finished/1.
+  def send_session_finished_notification(attrs),
+    do: call(OrcaHub.Notify, :deliver_session_finished, [attrs])
+
   # -------------------------------------------------------------------
   # Memory service (external agent-memory store, see OrcaHub.MemoryClient
   # — hub-only creds, same shape as Notify above)

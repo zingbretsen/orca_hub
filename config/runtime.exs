@@ -122,7 +122,24 @@ config :orca_hub, OrcaHubWeb.Endpoint,
 # (OrcaHub.Notify). ONLY the hub needs these — the tool routes delivery
 # through the hub via HubRPC, so agent/systemd nodes hold nothing.
 config :orca_hub, :gotify_url, System.get_env("GOTIFY_URL") || "https://gotify.ingbretsenhome.com"
-config :orca_hub, :gotify_token, System.get_env("GOTIFY_TOKEN")
+# In :test a developer's .env GOTIFY_TOKEN must NEVER reach the real Gotify:
+# the automatic turn-end push below fires from every SessionRunner
+# running->idle|error transition, and mix test drives those for real. nil
+# makes OrcaHub.Notify a silent no-op; tests that exercise the HTTP path set
+# :gotify_token plus :gotify_req_options (plug: {Req.Test, ...}) themselves,
+# exactly like the memory-service/embedding endpoints in config/test.exs.
+config :orca_hub,
+       :gotify_token,
+       if(config_env() == :test, do: nil, else: System.get_env("GOTIFY_TOKEN"))
+
+# Automatic turn-end Gotify push (SessionRunner running->idle|error, see
+# OrcaHub.Notify.deliver_session_finished/1 and .context/push-payload.md).
+# ON by default; ORCA_NOTIFY_ON_FINISH=false/0 silences it on THIS node
+# (it is read on the runner's node, so set it on the node whose sessions
+# should stay quiet). A hub with no GOTIFY_TOKEN is already a silent no-op.
+config :orca_hub,
+       :notify_on_finish,
+       System.get_env("ORCA_NOTIFY_ON_FINISH") not in ~w(0 false)
 
 # External agent-memory service (OrcaHub.MemoryClient). ONLY the hub needs
 # these — every memory tool routes through HubRPC, so agent/systemd nodes

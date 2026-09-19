@@ -165,6 +165,63 @@ defmodule OrcaHub.MCP.Tools.NotifyTest do
     end
   end
 
+  describe "OrcaHub.Notify.deliver/1 extras passthrough" do
+    test "merges a caller-supplied extras map under its own keys" do
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        body = Jason.decode!(raw)
+
+        assert body["extras"] == %{
+                 "orca" => %{"session_id" => "abc", "status" => "idle"}
+               }
+
+        Req.Test.json(conn, %{"id" => 6})
+      end)
+
+      assert {:ok, _} =
+               OrcaHub.Notify.deliver(%{
+                 message: "hi",
+                 extras: %{"orca" => %{session_id: "abc", status: "idle"}}
+               })
+    end
+
+    test "coexists with the existing markdown/click_url extras" do
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        body = Jason.decode!(raw)
+
+        assert body["extras"] == %{
+                 "orca" => %{"session_id" => "abc"},
+                 "client::display" => %{"contentType" => "text/markdown"},
+                 "client::notification" => %{"click" => %{"url" => "https://orca.example.com"}}
+               }
+
+        Req.Test.json(conn, %{"id" => 7})
+      end)
+
+      assert {:ok, _} =
+               OrcaHub.Notify.deliver(%{
+                 message: "hi",
+                 markdown: true,
+                 click_url: "https://orca.example.com",
+                 extras: %{"orca" => %{"session_id" => "abc"}}
+               })
+    end
+
+    test "an empty extras map adds no extras key at all (unchanged MCP-tool behaviour)" do
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        body = Jason.decode!(raw)
+
+        refute Map.has_key?(body, "extras")
+
+        Req.Test.json(conn, %{"id" => 8})
+      end)
+
+      assert {:ok, _} = OrcaHub.Notify.deliver(%{message: "hi", extras: %{}})
+    end
+  end
+
   describe "OrcaHub.Notify.deliver/1 directly" do
     test "accepts atom keys" do
       Req.Test.stub(@stub, fn conn ->
