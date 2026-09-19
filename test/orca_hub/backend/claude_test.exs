@@ -1513,6 +1513,19 @@ defmodule OrcaHub.Backend.ClaudeTest do
       # because the pinned session id owns no issues. Assert it, don't assume.
       assert OrcaHub.Backend.SharedPrompts.open_issues_prompt(PromptGolden.session_id()) == nil
 
+      # active_sessions_prompt/3 is likewise a LIVE DB query — the golden is
+      # only stable because the pinned nonexistent directory has no other
+      # sessions in it, so an orchestrator case falls through to the
+      # pre-existing terse one-liner. If that directory ever became real (or
+      # the nil-fallback shape changed), the golden would go silently
+      # nondeterministic — assert the precondition so that fails loudly here
+      # instead of flaking mysteriously elsewhere.
+      assert OrcaHub.Backend.SharedPrompts.active_sessions_prompt(
+               PromptGolden.session_id(),
+               PromptGolden.directory(),
+               false
+             ) == nil
+
       extra = [
         {"no_mcp (tools=\"\")", %{tools: ""}},
         {"api_run", %{api_run: true}},
