@@ -404,6 +404,44 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       assert_push "state", %{status: "listening", draft: ""}, 1_000
     end
 
+    # ORCAHUB3-93. `"sent"` is the ONE trigger for the send-confirmation sound
+    # and for starting the waiting tick, so what does NOT push it carries as
+    # much weight as what does: a sound on recognition, or on a send that then
+    # failed, would be a lie the user acts on without looking at the screen.
+    test "a failed send pushes no \"sent\", so nothing can chime for it",
+         %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      push(socket, "composer", %{"present" => true})
+      push(socket, "draft_edit", %{"text" => "ship it"})
+      push(socket, "send_now", %{})
+      assert_push "send_request", %{text: "ship it"}, 1_000
+
+      push(socket, "send_failed", %{"reason" => "Session is busy"})
+      assert_push "state", %{status: "error"}, 1_000
+
+      refute_push "sent", _payload
+    end
+
+    # The structural half of "voice sends only". A TYPED send reaches this
+    # channel as `cancel` — the hook answers the composer's `clear-prompt`
+    # with `cancel` whenever it has no pending spoken send of its own (see
+    # `_onComposerSent`), precisely so the server's draft copy cannot be sent
+    # twice. `cancel` clears the draft and pushes nothing, so a typed send has
+    # no route to a sound even though it went through the same composer.
+    test "a typed send clears the draft without pushing \"sent\"", %{session: session} do
+      {_reply, socket} = join_warm!(session.id)
+
+      push(socket, "composer", %{"present" => true})
+      push(socket, "draft_edit", %{"text" => "typed by hand"})
+      assert_push "state", %{draft: "typed by hand"}, 1_000
+
+      push(socket, "cancel", %{})
+      assert_push "state", %{draft: ""}, 1_000
+
+      refute_push "sent", _payload
+    end
+
     @tag timeout: 30_000
     test "a client that never answers falls back to a direct send after 5 s",
          %{session: session} do

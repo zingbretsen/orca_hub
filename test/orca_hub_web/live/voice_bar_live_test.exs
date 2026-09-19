@@ -385,4 +385,149 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       refute on_again =~ ~s(id="voice-help")
     end
   end
+
+  describe "audio feedback (ORCAHUB3-93)" do
+    # Zach asked for a sound when a SPOKEN message is actually sent, plus a
+    # quiet tick while the model works. The sounds themselves are WebAudio in
+    # `assets/js/voice/sounds.js` and belong to the browser check; what this
+    # file owns is the server half — the toggle, and the one event that tells
+    # the hook the TARGET session started answering.
+
+    defp armed(conn) do
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+      render_hook(bar, "voice-on", %{"on" => true})
+      bar
+    end
+
+    defp pressed?(html, selector) do
+      html
+      |> Floki.parse_document!()
+      |> Floki.find(selector)
+      |> Floki.attribute("aria-pressed")
+      |> List.first()
+    end
+
+    test "the toggle is armed-only and defaults ON", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+
+      # §8.2's idle budget: the mic and nothing else.
+      refute render(bar) =~ "data-voice-sounds-toggle"
+
+      html = render_hook(bar, "voice-on", %{"on" => true})
+      assert html =~ "data-voice-sounds-toggle"
+
+      assert pressed?(html, "[data-voice-sounds-toggle]") == "true",
+             "the default is ON — a cue only ever follows a send the user asked for out loud"
+    end
+
+    test "toggling it off tells the client to persist that, and flips the icon",
+         %{conn: conn} do
+      bar = armed(conn)
+
+      off = bar |> element("[data-voice-sounds-toggle]") |> render_click()
+      assert pressed?(off, "[data-voice-sounds-toggle]") == "false"
+      assert off =~ "hero-speaker-x-mark"
+      assert_push_event(bar, "voice-sounds-persisted", %{enabled: false})
+
+      on = bar |> element("[data-voice-sounds-toggle]") |> render_click()
+      assert pressed?(on, "[data-voice-sounds-toggle]") == "true"
+      assert on =~ "hero-speaker-wave"
+      assert_push_event(bar, "voice-sounds-persisted", %{enabled: true})
+    end
+
+    test "the client's localStorage wins at mount", %{conn: conn} do
+      bar = armed(conn)
+
+      html = render_hook(bar, "voice-sounds-init", %{"enabled" => false})
+      assert pressed?(html, "[data-voice-sounds-toggle]") == "false"
+    end
+
+    test "the help panel says what the button does, and that typing is silent",
+         %{conn: conn} do
+      html = armed(conn) |> element("[data-voice-help-toggle]") |> render_click()
+
+      text =
+        html |> Floki.parse_document!() |> Floki.find("#voice-help") |> Floki.text(sep: " ")
+
+      assert text =~ "speaker button"
+      assert text =~ "Typed sends never make a sound."
+    end
+
+    # The tick has to follow the TARGET session's turn rather than the page on
+    # screen, which is why the bar — not the session page — subscribes.
+    test "the target's first streamed delta tells the hook to stop ticking",
+         %{conn: conn} do
+      session = new_session(%{title: "the one being answered"})
+      bar = armed(conn)
+      render_hook(bar, "voice-target", %{"session_id" => session.id})
+
+      broadcast(session.id, {:assistant_stream_start, %{"stream_id" => "s-1"}})
+
+      assert_push_event(bar, "voice-turn", %{
+        session_id: id,
+        answering: true,
+        reason: "stream_start"
+      })
+
+      assert id == session.id
+    end
+
+    test "a backend with no deltas still stops it, on the assistant message or on idle",
+         %{conn: conn} do
+      session = new_session(%{title: "no deltas here"})
+      bar = armed(conn)
+      render_hook(bar, "voice-target", %{"session_id" => session.id})
+
+      broadcast(session.id, {:event, %{"type" => "assistant", "message" => %{}}})
+      assert_push_event(bar, "voice-turn", %{answering: true, reason: "assistant"})
+
+      broadcast(session.id, {:status, :idle})
+      assert_push_event(bar, "voice-turn", %{answering: true, reason: "idle"})
+
+      broadcast(session.id, {:status, :error})
+      assert_push_event(bar, "voice-turn", %{answering: true, reason: "error"})
+    end
+
+    test "nothing else on that busy topic is mistaken for an answer", %{conn: conn} do
+      session = new_session(%{title: "noisy topic"})
+      bar = armed(conn)
+      render_hook(bar, "voice-target", %{"session_id" => session.id})
+
+      # The turn STARTING, progress, queue churn and a user echo all arrive on
+      # `session:<id>` and none of them means the model has begun answering.
+      broadcast(session.id, {:status, :running})
+      broadcast(session.id, {:status, :compacting})
+      broadcast(session.id, {:progress, "implementing", "still going"})
+      broadcast(session.id, {:queue_update, [], []})
+      broadcast(session.id, {:event, %{"type" => "user", "message" => %{}}})
+
+      # Round-trip the bar so every broadcast above has been handled before we
+      # conclude nothing was pushed.
+      render(bar)
+      refute_push_event(bar, "voice-turn", %{}, 200)
+    end
+
+    test "retargeting stops listening to the session we left", %{conn: conn} do
+      first = new_session(%{title: "the one we left"})
+      second = new_session(%{title: "the one we moved to"})
+
+      bar = armed(conn)
+      render_hook(bar, "voice-target", %{"session_id" => first.id})
+      render_hook(bar, "voice-target", %{"session_id" => second.id})
+
+      broadcast(first.id, {:assistant_stream_start, %{"stream_id" => "stale"}})
+      render(bar)
+      refute_push_event(bar, "voice-turn", %{}, 200)
+
+      broadcast(second.id, {:assistant_stream_start, %{"stream_id" => "live"}})
+      assert_push_event(bar, "voice-turn", %{session_id: id, answering: true})
+      assert id == second.id
+    end
+
+    defp broadcast(session_id, payload) do
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", payload)
+    end
+  end
 end

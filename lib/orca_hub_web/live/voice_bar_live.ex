@@ -61,6 +61,23 @@ defmodule OrcaHubWeb.VoiceBarLive do
       reacts to the re-render, so picker and channel cannot diverge.
     * `"refresh_sessions"` — the picker was focused; re-read the list rather
       than re-querying on every session status broadcast.
+
+  ## The target session's turn state (ORCAHUB3-93)
+
+  The waiting tick has to follow the TARGET session's turn, not whatever page
+  the browser happens to be on — the bar is global and the session being
+  dictated at is very often not the one on screen, so nothing in the page's
+  DOM can answer "is it answering yet". This LiveView therefore subscribes to
+  the target's existing `session:<id>` topic (re-subscribed on every retarget,
+  never more than one at a time) and pushes ONE event at the hook:
+
+      voice-turn  %{session_id: id, answering: true, reason: ...}
+
+  `reason` is `"stream_start"` for `Backend.Deltas`' first delta — the
+  earliest reliable "it is answering" — with `"assistant"` (a persisted
+  assistant event) and `"idle"`/`"error"` as the backstops for a backend that
+  streams no deltas at all. Nothing here starts the tick: that is the hook's
+  `"sent"` handler, because only the hook knows the send was a VOICE send.
   """
   use OrcaHubWeb, :live_view
 
@@ -132,7 +149,12 @@ defmodule OrcaHubWeb.VoiceBarLive do
      socket
      |> assign(:voice_on, false)
      |> assign(:help_open, false)
+     # ORCAHUB3-93 — default ON, then corrected by the client's localStorage
+     # via "voice-sounds-init". Default ON is defensible because a cue only
+     # ever follows a send the user asked for out loud a moment earlier.
+     |> assign(:sounds_on, true)
      |> assign(:target_session_id, nil)
+     |> assign(:watching, nil)
      |> assign(:nav_paths, @nav_paths)
      |> assign(:vocab_groups, vocab_groups())
      |> assign(:sessions, list_sessions()), layout: false}
@@ -156,8 +178,25 @@ defmodule OrcaHubWeb.VoiceBarLive do
     {:noreply, assign(socket, :help_open, false)}
   end
 
+  # ORCAHUB3-93's toggle. It is a sibling of the mic and the "?" in the same
+  # header flex row, so it costs width and exactly zero of §8.2's height
+  # budget, and — like the "?" — it exists only while voice is on, because
+  # there is nothing it could affect while the mic is off.
+  def handle_event("toggle_sounds", _params, socket) do
+    enabled = !socket.assigns.sounds_on
+
+    {:noreply,
+     socket
+     |> assign(:sounds_on, enabled)
+     |> push_event("voice-sounds-persisted", %{enabled: enabled})}
+  end
+
+  def handle_event("voice-sounds-init", %{"enabled" => enabled}, socket) do
+    {:noreply, assign(socket, :sounds_on, !!enabled)}
+  end
+
   def handle_event("voice-target", %{"session_id" => id}, socket) when is_binary(id) do
-    {:noreply, socket |> assign(:target_session_id, id) |> ensure_listed(id)}
+    {:noreply, socket |> assign(:target_session_id, id) |> ensure_listed(id) |> watch_turn(id)}
   end
 
   # An explicit null means "the page stopped being a session page". The
@@ -168,7 +207,7 @@ defmodule OrcaHubWeb.VoiceBarLive do
   def handle_event("set_target", %{"session_id" => ""}, socket), do: {:noreply, socket}
 
   def handle_event("set_target", %{"session_id" => id}, socket) do
-    {:noreply, socket |> assign(:target_session_id, id) |> ensure_listed(id)}
+    {:noreply, socket |> assign(:target_session_id, id) |> ensure_listed(id) |> watch_turn(id)}
   end
 
   def handle_event("refresh_sessions", _params, socket) do
@@ -176,6 +215,64 @@ defmodule OrcaHubWeb.VoiceBarLive do
      socket
      |> assign(:sessions, list_sessions())
      |> ensure_listed(socket.assigns.target_session_id)}
+  end
+
+  # ORCAHUB3-93 — the target session's turn, off its own `session:<id>` topic.
+  #
+  # Only ONE direction is reported: "it is answering, stop the tick". Starting
+  # the tick is the hook's job, because only the hook knows the send that
+  # opened this wait was a spoken one.
+  #
+  # `Backend.Deltas`' stream_start is the earliest reliable signal and the one
+  # that makes this feel right; the other two are backstops for a backend that
+  # streams nothing, where "the turn is over" is the best we can do.
+  @impl true
+  def handle_info({:assistant_stream_start, _payload}, socket),
+    do: {:noreply, turn_answering(socket, "stream_start")}
+
+  def handle_info({:event, %{"type" => "assistant"}}, socket),
+    do: {:noreply, turn_answering(socket, "assistant")}
+
+  def handle_info({:status, status}, socket) when status in [:idle, :error],
+    do: {:noreply, turn_answering(socket, to_string(status))}
+
+  # `session:<id>` carries far more than the three above — progress, queue
+  # updates, every other event type, `:running`, `:compacting`. None of it is
+  # evidence the answer has started, and none of it may crash the header.
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
+  defp turn_answering(socket, reason) do
+    case socket.assigns.watching do
+      nil ->
+        socket
+
+      id ->
+        push_event(socket, "voice-turn", %{
+          session_id: id,
+          answering: true,
+          reason: reason
+        })
+    end
+  end
+
+  # Exactly one subscription at a time: retargeting the bar must stop the old
+  # session's turn from ever stopping the new session's tick.
+  defp watch_turn(socket, id) do
+    cond do
+      not connected?(socket) ->
+        socket
+
+      socket.assigns.watching == id ->
+        socket
+
+      true ->
+        if socket.assigns.watching do
+          Phoenix.PubSub.unsubscribe(OrcaHub.PubSub, "session:#{socket.assigns.watching}")
+        end
+
+        if id, do: Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{id}")
+        assign(socket, :watching, id)
+    end
   end
 
   @impl true
@@ -217,6 +314,29 @@ defmodule OrcaHubWeb.VoiceBarLive do
         title="What can I say?"
       >
         <.icon name="hero-question-mark-circle" class="size-5" />
+      </button>
+
+      <%!-- ORCAHUB3-93's sound toggle. Same shape and same budget as the "?"
+           above: a sibling in the header row, so it costs width and zero
+           height, and present only while voice is on. The label says what it
+           covers — these are SPOKEN sends only, never a typed one. --%>
+      <button
+        :if={@voice_on}
+        type="button"
+        phx-click="toggle_sounds"
+        aria-pressed={to_string(@sounds_on)}
+        data-voice-sounds-toggle
+        class={["btn btn-ghost btn-sm btn-circle shrink-0", @sounds_on && "text-primary"]}
+        title={
+          if @sounds_on,
+            do: "Sounds on: a chime when a spoken message is sent, a tick while it is answered",
+            else: "Sounds off for spoken sends"
+        }
+      >
+        <.icon
+          name={if @sounds_on, do: "hero-speaker-wave", else: "hero-speaker-x-mark"}
+          class="size-5"
+        />
       </button>
 
       <%!-- §8.3.9's live-navigation anchors. `hidden` is display:none, so
@@ -286,6 +406,15 @@ defmodule OrcaHubWeb.VoiceBarLive do
           Spaces are ignored when matching, so "orca newline" and "orca new line" are the
           same command. Say a command at the END of a sentence — anything in front of it
           is dictated first.
+        </p>
+
+        <%!-- ORCAHUB3-93. The control itself is the speaker button in the
+             header; this is where someone reading the help finds out what it
+             does and that it is spoken sends only. --%>
+        <p class="mt-2 opacity-60 leading-snug">
+          The speaker button next to the mic is <strong>{if @sounds_on, do: "on", else: "off"}</strong>:
+          a short chime when a spoken message is actually delivered, then a quiet tick every
+          few seconds until the session starts answering. Typed sends never make a sound.
         </p>
       </div>
 

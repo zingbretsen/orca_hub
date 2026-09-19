@@ -90,6 +90,8 @@ import {
   MIN_SEGMENT_SAMPLES,
 } from "./frame"
 import { createVad, VAD_SETTINGS } from "./vad"
+import * as Sounds from "./sounds"
+import { persistSoundsEnabled, soundsEnabled, VoiceSounds } from "./sounds"
 
 const DRAFT_DEBOUNCE_MS = 300
 const LOG_LIMIT = 50
@@ -177,12 +179,50 @@ export const VoiceHook = {
     // microphone is actually capturing again.
     this._repairAttempted = false
 
+    this._bindSounds()
     this._bindDom()
     this._bindWindow()
     this._observeBody()
     this._syncPage()
 
-    if (typeof window !== "undefined") window.__orcaVoice = this
+    if (typeof window !== "undefined") {
+      window.__orcaVoice = this
+      // ORCAHUB3-93's measurement seam, exposed for the same reason
+      // `__orcaVoice` is: the headless VAD check has to render the SHIPPED
+      // graph through an OfflineAudioContext to build the microphone file it
+      // feeds back in, and a check that renders anything but this module's
+      // own builders would prove nothing about what users hear.
+      window.__orcaVoiceSounds = Sounds
+    }
+  },
+
+  /** ORCAHUB3-93's two cues, and the one round-trip that persists the
+   * preference.
+   *
+   * The preference lives in `localStorage` (the bar is re-mounted on every
+   * reconnect, so a plain socket assign would reset it) and is hydrated into
+   * VoiceBarLive exactly the way `orca:tts-autoplay` / `orca:tts-stream` are:
+   * client reads it, pushes an init, and writes back whatever the server
+   * echoes. The difference is the DEFAULT — absent means ON here, because
+   * these sounds only ever follow a send the user asked for out loud.
+   *
+   * `voice-turn` is the target session's own turn state, pushed by
+   * VoiceBarLive from the `session:<id>` topic. It has to come from the
+   * SERVER rather than from anything on screen: the bar is global, and the
+   * session being dictated at is very often not the page being looked at. */
+  _bindSounds() {
+    this.sounds = new VoiceSounds({ enabled: soundsEnabled() })
+    this.pushEvent("voice-sounds-init", { enabled: this.sounds.enabled })
+    this.handleEvent("voice-sounds-persisted", ({ enabled }) => {
+      this.sounds.setEnabled(enabled)
+      persistSoundsEnabled(enabled)
+    })
+    this.handleEvent("voice-turn", ({ session_id, answering }) => {
+      // Scoped defensively: VoiceBarLive only ever subscribes to the current
+      // target, but a retarget and an in-flight broadcast can cross.
+      if (session_id && this.target && session_id !== this.target) return
+      if (answering) this.sounds.stopWaiting()
+    })
   },
 
   /** The bar re-rendered: the target may have changed (picker or page), and
@@ -220,6 +260,7 @@ export const VoiceHook = {
     }
     if (this._onDocInput) document.removeEventListener("input", this._onDocInput, true)
     this._teardown()
+    if (this.sounds) this.sounds.destroy()
     if (window.__orcaVoice === this) delete window.__orcaVoice
   },
 
@@ -277,6 +318,9 @@ export const VoiceHook = {
     })
     this._timers = {}
     this._pendingSend = null
+    // Voice off is not "the answer arrived", but it IS the end of the thing
+    // the tick was reporting on, and a bar with no mic must make no noise.
+    this.sounds && this.sounds.stopWaiting()
     this._setAsrBusy(0)
     if (this.vad) {
       this.vad.destroy()
@@ -337,6 +381,15 @@ export const VoiceHook = {
         // The draft has been delivered and the server cleared its copy;
         // clear ours so the text cannot be sent twice.
         this._writeDraft("")
+        // ORCAHUB3-93. `"sent"` is CONFIRMED DELIVERY — the server pushes it
+        // only after the composer's `clear-prompt` (sent_ack) or after a
+        // direct delivery returned :ok, never on recognising "orca send" and
+        // never after `send_failed`. It is also the reason these sounds
+        // cannot reach a TYPED send: a typed send produces `clear-prompt`
+        // with no `_pendingSend`, which this hook answers with `"cancel"`,
+        // so no `"sent"` is ever pushed back.
+        this.sounds.sent()
+        this.sounds.startWaiting()
       },
     })
     try {
@@ -386,6 +439,10 @@ export const VoiceHook = {
   async _retarget(carried) {
     this._setArming(null)
     this._pendingSend = null
+    // The tick reports on ONE session's turn. Pointing the bar at a different
+    // one means we are no longer waiting on the old answer and VoiceBarLive
+    // has stopped listening for it, so the tick would never be stopped.
+    this.sounds && this.sounds.stopWaiting()
     if (!this.active) return
     if (this.channel) {
       this.channel.leave()
@@ -1504,6 +1561,11 @@ export const VoiceHook = {
       vadFramesProcessed: this.vad ? this.vad.framesProcessed : 0,
       vadMaxBacklog: this.vad ? this.vad.maxBacklog : 0,
       channelJoined: this.channel ? this.channel.joined() : false,
+      // ORCAHUB3-93: what the two cues have actually done. The headless VAD
+      // measurement asserts on `sounds.ticks` against `segment_result`.
+      sounds: this.sounds
+        ? { enabled: this.sounds.enabled, waiting: this.sounds.waiting, ...this.sounds.stats }
+        : null,
       // §8.3: what the browser believes is on screen right now, and what it
       // last told the server. A numeric check has something to assert on.
       ui: this._uiState(),
