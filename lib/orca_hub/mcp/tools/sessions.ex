@@ -66,7 +66,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "search_sessions",
         "description" =>
-          "Search for other OrcaHub sessions. By default, searches for sessions in the same project directory as the calling session. You can optionally provide a different directory to search in, search across all projects, or filter by title. Use this to discover other sessions you may want to coordinate with or learn from.",
+          "Search for other OrcaHub sessions. By default, searches for sessions in the same project directory as the calling session. Call with NO arguments to see everything currently active there (running AND idle — a session sitting idle between turns is still active, just not mid-turn). You can optionally provide a different directory to search in, search across all projects, or filter by title. Each result includes an \"orchestrator\" flag. Use this to discover other sessions you may want to coordinate with or learn from.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -2149,6 +2149,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       project: if(session.project, do: session.project.name),
       backend: session.backend,
       model: session.model,
+      orchestrator: session.orchestrator,
       parent_session_id: session.parent_session_id,
       progress_phase: session.progress_phase,
       progress_note: session.progress_note,

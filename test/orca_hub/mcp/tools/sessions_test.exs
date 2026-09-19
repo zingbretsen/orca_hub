@@ -1326,6 +1326,21 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert error_result["model"] == "opus"
       assert error_result["error_detail"] == "Error: model not found: sonnet-5"
     end
+
+    test "surfaces the orchestrator flag", %{dir: dir, state: state} do
+      {:ok, orchestrator_session} =
+        Sessions.create_session(%{directory: dir, orchestrator: true})
+
+      {:ok, worker_session} = Sessions.create_session(%{directory: dir, orchestrator: false})
+
+      %{"content" => [%{"text" => text}]} =
+        SessionsTool.call("search_sessions", %{"directory" => dir}, state)
+
+      results = Jason.decode!(text) |> Enum.into(%{}, &{&1["id"], &1})
+
+      assert results[orchestrator_session.id]["orchestrator"] == true
+      assert results[worker_session.id]["orchestrator"] == false
+    end
   end
 
   describe "get_session_tail" do
