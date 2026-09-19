@@ -41,9 +41,10 @@ the new columns are in the intended shape, and one anecdote kept labelled as one
 Same setup as `churn_signal_mining.md`: **`orca_hub_prod`** on the shared
 Postgres host, reached with `.env`'s `DB_HOST`/`DB_USERNAME`/`DB_PASSWORD` but
 with `database: "orca_hub_prod"` overridden explicitly in every script
-(`.env`'s `DB_NAME=orca_hub_dev` is the wrong database). All queries were
-read-only. `orca_hub_prod` currently holds 4,314 sessions and 1,163,256
-messages spanning 2026-02-01 → 2026-09-19.
+(`.env`'s `DB_NAME=orca_hub_dev` is the wrong database — see the named hazard
+below, which is the reason that override is stated in every script rather than
+assumed). All queries were read-only. `orca_hub_prod` currently holds 4,314
+sessions and 1,163,256 messages spanning 2026-02-01 → 2026-09-19.
 
 Every alert ever delivered is persisted, because `AlertEvaluator` hands its
 alerts to `SessionHeartbeat.deliver_or_queue/2`, which writes them into the
@@ -67,6 +68,42 @@ version of this analysis must be built on `churn_samples` rather than on
 delivered messages (§F.0). Rows written BEFORE that date are unchanged and
 their `churn_suspected` remains void; they are identified by
 `file_surgery_suspected IS NULL`, not by a date filter.
+
+### Hazard — a correct check pointed at the wrong database
+
+**A correct check pointed at the wrong database.** During ORCAHUB3-66's deploy
+verification, a worker deliberately verified the new `churn_samples` columns at
+the SCHEMA level rather than trusting `mix ecto.migrations` — reasoning,
+correctly, that an "already up" `schema_migrations` table is a claim about that
+table, not about the shape of the deployed database. Sound reasoning. It ran
+against `orca_hub_dev` and reported "all 95 pre-existing rows are NULL". The
+real figure in `orca_hub_prod` is **5,168 of 5,171** (§G.2) — the same
+CONCLUSION, a 54x different magnitude, and a different database from the one
+anyone reading the report would assume.
+
+**This is categorically different from not checking, and it cannot be caught by
+asking "did you verify?"** — the answer is yes, and the verification was
+well-designed. The check was better than the one it replaced; the defect is
+upstream of the check entirely. Only *"which database did it run against?"*
+catches it. Anything derived from `.env` without an explicit override silently
+answers a different question than the one asked: `DB_NAME=orca_hub_dev`, so a
+script that builds its connection out of the environment and says nothing about
+it is aimed at the dev database by default, and its output is shaped exactly
+like the answer that was wanted.
+
+It bit **three times in one day** — 2026-09-19, over this one piece of work —
+which is why it is recorded here as a named hazard rather than as an anecdote.
+A single occurrence would have been evidence only that it can happen; the
+recurrences are what make it a property of the setup rather than of one worker.
+
+**The rule: state the database explicitly in every query AND in every reported
+figure**, so that a number carries its own provenance. Every script behind this
+document overrides `database: "orca_hub_prod"` rather than inheriting it, and
+every count is written with its database attached. "**5,168 of 5,171 in
+`orca_hub_prod`**" is auditable by anyone who reads it; "all 95 rows" is not —
+it cannot be checked, reproduced, or falsified without asking its author a
+question that, by the time anyone thinks to ask, they may no longer be able to
+answer.
 
 ### Extraction rule, and what it excludes
 
@@ -1229,7 +1266,9 @@ rather than "the migration is up".
 
 Measured against **`orca_hub_prod`** (§0's corpus database; `.env`'s
 `DB_NAME=orca_hub_dev` is a different database and answers a different
-question), read-only, with `2925d44` deployed on all six instances.
+question — §0's *"a correct check pointed at the wrong database"* hazard is the
+general form of the mistake this section names its database to avoid), read-only,
+with `2925d44` deployed on all six instances.
 
 **Deliberately at the schema level.** `mix ecto.migrations` reporting "up" is a
 claim about the `schema_migrations` table, not about the shape of the deployed
@@ -1258,7 +1297,8 @@ prune window is why the corpus starts there; §0's 1,480 is an earlier window of
 the same table); the first non-null row is at 20:08:48, the deploy restart. The
 dev database holds **95 rows, 95 of them NULL** — same conclusion on a smaller,
 non-authoritative corpus. A report quoting "95 rows" is quoting that database,
-not the deployed one.
+not the deployed one; that report was written, and §0's named hazard is what it
+cost.
 
 **What this confirms: the discontinuity is now QUERYABLE, not merely documented
 in prose.** `where file_surgery_suspected is null` selects exactly the rows on
