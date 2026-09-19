@@ -728,7 +728,19 @@ export const VoiceHook = {
    * player owns the transitions and this reacts to them. ORCAHUB3-95 adds a
    * watchdog UNDER it, not a rewrite of it — a mute is armed with an expiry
    * and an unmute disarms it, so the only thing that changed for a normal
-   * play/stop pair is that the timer is created and then thrown away. */
+   * play/stop pair is that the timer is created and then thrown away.
+   *
+   * The watchdog arms on the `true` EDGE and on nothing else — never on the
+   * ABSENCE of events. A message that is entirely a fenced code block is not
+   * spoken at all (9b640af), so the player emits neither `true` nor `false`
+   * and hearing nothing for minutes is ORDINARY, not an anomaly: any recovery
+   * condition shaped like "no `orca:tts-state` seen recently" would fire all
+   * through a code-heavy session, unmuting a mic nobody had muted and pushing
+   * `mic` for it. The player's half of the contract is that a `true` is never
+   * emitted on a path that can fail to emit its `false` (its empty-extraction
+   * check sits ahead of `playing = true`), so an orphaned `true` means a
+   * genuine mid-playback throw — the one case this exists for. This is a net,
+   * not a poller. */
   _handleTtsState(e) {
     const playing = !!(e && e.detail && e.detail.playing)
     if (playing === this.muted) return
