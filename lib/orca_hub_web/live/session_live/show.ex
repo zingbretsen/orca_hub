@@ -893,11 +893,18 @@ defmodule OrcaHubWeb.SessionLive.Show do
   defp do_archive(socket, opts) do
     session = socket.assigns.session
     Cluster.stop_session(socket.assigns.session_node, session.id)
-    {:ok, _} = Cluster.archive_session(socket.assigns.session_node, session, opts)
+
+    {:ok, %{archived: archived}} =
+      Cluster.cascade_archive_session(socket.assigns.session_node, session, opts)
+
+    # Undo must restore the exact set this cascade actually archived — the
+    # root plus whichever descendants weren't skipped — not just the root,
+    # so `undo[]` always carries the full list even when it's one entry.
+    undo_ids = [session.id | Enum.map(archived, & &1.id)]
 
     {:noreply,
      socket
-     |> push_navigate(to: ~p"/sessions?undo=#{session.id}")
+     |> push_navigate(to: ~p"/sessions?#{[undo: undo_ids]}")
      |> assign(:show_mobile_actions, false)}
   end
 

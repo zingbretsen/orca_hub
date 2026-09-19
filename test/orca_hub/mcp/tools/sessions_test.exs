@@ -3778,6 +3778,79 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     end
   end
 
+  describe "archive_session — cascades into descendants" do
+    setup %{dir: dir} do
+      {:ok, root} = Sessions.create_session(%{directory: dir, status: "idle"})
+
+      {:ok, child} =
+        Sessions.create_session(%{directory: dir, status: "idle", parent_session_id: root.id})
+
+      {:ok, grandchild} =
+        Sessions.create_session(%{directory: dir, status: "idle", parent_session_id: child.id})
+
+      on_exit(fn ->
+        stop_if_alive(root.id)
+        stop_if_alive(child.id)
+        stop_if_alive(grandchild.id)
+      end)
+
+      %{root: root, child: child, grandchild: grandchild}
+    end
+
+    test "archives the root and reports the cascaded child count", %{
+      root: root,
+      child: child,
+      grandchild: grandchild
+    } do
+      result = SessionsTool.call("archive_session", %{"session_id" => root.id}, %{})
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text == "Session #{root.id} archived, along with 2 child sessions."
+
+      refute is_nil(Sessions.get_session!(root.id).archived_at)
+      refute is_nil(Sessions.get_session!(child.id).archived_at)
+      refute is_nil(Sessions.get_session!(grandchild.id).archived_at)
+    end
+
+    test "a running child is reported as skipped and left alone", %{
+      root: root,
+      child: child,
+      grandchild: grandchild
+    } do
+      {:ok, _} = Sessions.update_session(child, %{status: "running"})
+
+      result = SessionsTool.call("archive_session", %{"session_id" => root.id}, %{})
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text =~ "Session #{root.id} archived, along with 1 child session."
+      assert text =~ "1 child left unarchived (still running): #{child.id}"
+
+      refute is_nil(Sessions.get_session!(root.id).archived_at)
+      assert Sessions.get_session!(child.id).archived_at == nil
+      refute is_nil(Sessions.get_session!(grandchild.id).archived_at)
+    end
+
+    test "archive_children: false archives only the root", %{
+      root: root,
+      child: child,
+      grandchild: grandchild
+    } do
+      result =
+        SessionsTool.call(
+          "archive_session",
+          %{"session_id" => root.id, "archive_children" => false},
+          %{}
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text == "Session #{root.id} archived."
+
+      refute is_nil(Sessions.get_session!(root.id).archived_at)
+      assert Sessions.get_session!(child.id).archived_at == nil
+      assert Sessions.get_session!(grandchild.id).archived_at == nil
+    end
+  end
+
   describe "extract_memories tool — orchestrator-only" do
     setup do
       test_pid = self()

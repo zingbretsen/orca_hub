@@ -12,7 +12,7 @@ defmodule OrcaHub.ClusterTest do
   use OrcaHub.DataCase, async: true
 
   alias OrcaHub.Cluster
-  alias OrcaHub.{Projects, Sessions, Terminals}
+  alias OrcaHub.{ClusterNodes, Projects, Sessions, Terminals}
   alias OrcaHub.Sessions.Session
 
   @offline_node :"debian@totally-offline-host"
@@ -289,6 +289,146 @@ defmodule OrcaHub.ClusterTest do
 
     test "an empty node_map resolves nothing" do
       assert Cluster.node_names(%{}) == %{}
+    end
+  end
+
+  describe "cascade_archive_session/3" do
+    setup %{} do
+      {:ok, root} = Sessions.create_session(%{directory: "/tmp/x", status: "idle"})
+
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: "/tmp/x",
+          status: "idle",
+          parent_session_id: root.id
+        })
+
+      {:ok, grandchild} =
+        Sessions.create_session(%{
+          directory: "/tmp/x",
+          status: "idle",
+          parent_session_id: child.id
+        })
+
+      %{root: root, child: child, grandchild: grandchild}
+    end
+
+    test "archives the whole subtree, grandchildren included", %{
+      root: root,
+      child: child,
+      grandchild: grandchild
+    } do
+      assert {:ok, %{root: archived_root, archived: archived, skipped: []}} =
+               Cluster.cascade_archive_session(node(), root)
+
+      refute is_nil(archived_root.archived_at)
+      archived_ids = Enum.map(archived, & &1.id) |> Enum.sort()
+      assert archived_ids == Enum.sort([child.id, grandchild.id])
+
+      refute is_nil(Sessions.get_session!(child.id).archived_at)
+      refute is_nil(Sessions.get_session!(grandchild.id).archived_at)
+    end
+
+    test "a running/waiting descendant is skipped, but its own idle children are still cascaded",
+         %{root: root, child: child, grandchild: grandchild} do
+      {:ok, child} = Sessions.update_session(child, %{status: "running"})
+
+      assert {:ok, %{archived: archived, skipped: skipped}} =
+               Cluster.cascade_archive_session(node(), root)
+
+      assert [%{session: skipped_session, reason: :running}] = skipped
+      assert skipped_session.id == child.id
+      assert Enum.map(archived, & &1.id) == [grandchild.id]
+
+      assert Sessions.get_session!(child.id).archived_at == nil
+      refute is_nil(Sessions.get_session!(grandchild.id).archived_at)
+    end
+
+    test "a waiting descendant is skipped the same way as running", %{root: root, child: child} do
+      {:ok, child} = Sessions.update_session(child, %{status: "waiting"})
+
+      assert {:ok, %{skipped: [%{session: skipped_session, reason: :running}]}} =
+               Cluster.cascade_archive_session(node(), root)
+
+      assert skipped_session.id == child.id
+    end
+
+    test "archive_children: false archives only the root", %{
+      root: root,
+      child: child,
+      grandchild: grandchild
+    } do
+      assert {:ok, %{archived: [], skipped: []}} =
+               Cluster.cascade_archive_session(node(), root, archive_children: false)
+
+      refute is_nil(Sessions.get_session!(root.id).archived_at)
+      assert Sessions.get_session!(child.id).archived_at == nil
+      assert Sessions.get_session!(grandchild.id).archived_at == nil
+    end
+
+    test "a descendant on an isolated/unavailable node is skipped and left alone, never re-routed — " <>
+           "but its own (locally-resolvable) child still gets cascaded into, same as a running skip",
+         %{root: root, child: child, grandchild: grandchild} do
+      node_row =
+        ClusterNodes.get_by_name(Atom.to_string(node())) ||
+          (
+            {:ok, row} = ClusterNodes.upsert_seen(Atom.to_string(node()), Atom.to_string(node()))
+            row
+          )
+
+      {:ok, _} = ClusterNodes.update_node(node_row, %{isolated: true})
+
+      {:ok, child} =
+        Sessions.update_session(child, %{runner_node: "debian@totally-offline-host"})
+
+      assert {:ok, %{archived: archived, skipped: skipped}} =
+               Cluster.cascade_archive_session(node(), root)
+
+      assert [%{session: skipped_session, reason: :node_unavailable}] = skipped
+      assert skipped_session.id == child.id
+      assert Enum.map(archived, & &1.id) == [grandchild.id]
+
+      assert Sessions.get_session!(child.id).archived_at == nil
+      refute is_nil(Sessions.get_session!(grandchild.id).archived_at)
+    end
+
+    test "extract_memories: false skips dispatch for the root and every cascaded descendant", %{
+      root: root
+    } do
+      test_pid = self()
+
+      Application.put_env(:orca_hub, :memory_extraction_dispatch_fun, fn session, opts ->
+        send(test_pid, {:dispatched, session.id, opts})
+        {:ok, :dispatched}
+      end)
+
+      on_exit(fn -> Application.delete_env(:orca_hub, :memory_extraction_dispatch_fun) end)
+
+      assert {:ok, _} = Cluster.cascade_archive_session(node(), root, extract_memories: false)
+
+      refute_receive {:dispatched, _, _}, 200
+    end
+
+    test "extract_memories: true (the default) dispatches for the root and every cascaded descendant",
+         %{root: root, child: child, grandchild: grandchild} do
+      test_pid = self()
+
+      Application.put_env(:orca_hub, :memory_extraction_dispatch_fun, fn session, opts ->
+        send(test_pid, {:dispatched, session.id, opts})
+        {:ok, :dispatched}
+      end)
+
+      on_exit(fn -> Application.delete_env(:orca_hub, :memory_extraction_dispatch_fun) end)
+
+      assert {:ok, _} = Cluster.cascade_archive_session(node(), root)
+
+      dispatched_ids =
+        for _ <- 1..3 do
+          assert_receive {:dispatched, id, _opts}, 500
+          id
+        end
+
+      assert Enum.sort(dispatched_ids) == Enum.sort([root.id, child.id, grandchild.id])
     end
   end
 end

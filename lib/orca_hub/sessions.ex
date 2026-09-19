@@ -1171,6 +1171,25 @@ defmodule OrcaHub.Sessions do
     {root, collect_tree_members([root])}
   end
 
+  @doc """
+  Every descendant of `session_id` (NOT including `session_id` itself) that
+  is not yet archived — the read half of cascading archive (see
+  `OrcaHub.Cluster.cascade_archive_session/3` for the write side, which
+  needs node resolution this context doesn't have). Reuses
+  `collect_tree_members/2`'s breadth-first walk down `parent_session_id`,
+  seeded at the direct children rather than the tree root. The traversal
+  itself does not filter on `archived_at` — it walks straight through an
+  already-archived intermediate node to find a still-live grandchild
+  underneath it (e.g. one archived earlier by hand while its child kept
+  running) — only the final result is filtered to unarchived rows.
+  """
+  def list_unarchived_descendants(session_id) do
+    from(s in Session, where: s.parent_session_id == ^session_id)
+    |> Repo.all()
+    |> collect_tree_members()
+    |> Enum.reject(& &1.archived_at)
+  end
+
   defp find_root_session(%Session{parent_session_id: nil} = session), do: session
 
   defp find_root_session(%Session{parent_session_id: parent_id} = session) do

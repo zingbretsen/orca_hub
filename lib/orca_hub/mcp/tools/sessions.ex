@@ -278,7 +278,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "archive_session",
         "description" =>
-          "Archive a session. Orchestrators should call this after a child session has finished its task to keep the queue and UI clean. Archived sessions are automatically unarchived when you send them a message via `send_message_to_session`, so it's safe to archive a session and resume the conversation later. By default this also dispatches automatic memory extraction (see extract_memories) for in-scope sessions (orchestrators and root/human-driven sessions) — a cheap background session reviews new transcript since the last extraction and saves anything durable worth remembering, then posts a summary into this session's feed.",
+          "Archive a session. Orchestrators should call this after a child session has finished its task to keep the queue and UI clean. Archived sessions are automatically unarchived when you send them a message via `send_message_to_session`, so it's safe to archive a session and resume the conversation later. By default this also dispatches automatic memory extraction (see extract_memories) for in-scope sessions (orchestrators and root/human-driven sessions) — a cheap background session reviews new transcript since the last extraction and saves anything durable worth remembering, then posts a summary into this session's feed. Also by default (see archive_children), this CASCADES: every unarchived descendant of this session (children, grandchildren, ...) is archived too. A descendant that's still running or waiting is left alone (not stopped, not archived) and reported back in the result text instead — its own already-idle children are still cascaded into. extract_memories applies to every archived session in the cascade, not just the root.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -291,7 +291,15 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "description" =>
                 "Whether to dispatch automatic memory extraction as part of archiving " <>
                   "(default true). Pass false to archive without extracting — e.g. a " <>
-                  "throwaway/experimental session with nothing worth remembering."
+                  "throwaway/experimental session with nothing worth remembering. Applies to " <>
+                  "the root and every cascaded descendant alike."
+            },
+            "archive_children" => %{
+              "type" => "boolean",
+              "description" =>
+                "Whether to cascade the archive into every unarchived descendant session " <>
+                  "(default true). Pass false to archive only this session and leave its " <>
+                  "children as they are."
             }
           },
           "required" => ["session_id"]
@@ -599,15 +607,17 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   def call("archive_session", args, _state) do
     target_id = args["session_id"]
     extract_memories = args["extract_memories"] != false
+    archive_children = args["archive_children"] != false
 
     case Cluster.find_session(target_id) do
       {node, session} ->
         if NodePolicy.cross_node_allowed?(node) do
-          case Cluster.archive_session(node, session, extract_memories: extract_memories) do
-            {:ok, _} ->
-              text(
-                "Session #{target_id} archived. Send it a message to resume — it will be automatically unarchived."
-              )
+          case Cluster.cascade_archive_session(node, session,
+                 extract_memories: extract_memories,
+                 archive_children: archive_children
+               ) do
+            {:ok, %{archived: archived, skipped: skipped}} ->
+              text(describe_cascade_archive(target_id, archived, skipped))
 
             {:error, changeset} ->
               error("Failed to archive session #{target_id}: #{inspect(changeset.errors)}")
@@ -977,6 +987,47 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
       :ok
   end
+
+  # One short paragraph: how many children got archived alongside the root,
+  # plus — only when there were any — which ones were left alone and why.
+  # Mirrors OrcaHub.Cluster.cascade_archive_session/3's %{session:, reason:}
+  # skip shape.
+  defp describe_cascade_archive(target_id, archived, skipped) do
+    archived_clause =
+      case length(archived) do
+        0 -> "Session #{target_id} archived."
+        1 -> "Session #{target_id} archived, along with 1 child session."
+        n -> "Session #{target_id} archived, along with #{n} child sessions."
+      end
+
+    case skipped do
+      [] -> archived_clause
+      skipped -> archived_clause <> " " <> describe_skips(skipped)
+    end
+  end
+
+  defp describe_skips(skipped) do
+    noun = if length(skipped) == 1, do: "child", else: "children"
+    reasons = skipped |> Enum.map(& &1.reason) |> Enum.uniq()
+
+    label =
+      case reasons do
+        [one_reason] -> " (#{skip_reason_label(one_reason)})"
+        _ -> ""
+      end
+
+    items =
+      Enum.map_join(skipped, ", ", fn %{session: s, reason: reason} ->
+        item = "#{s.id} (#{s.title || s.directory})"
+        if label == "", do: "#{item} — #{skip_reason_label(reason)}", else: item
+      end)
+
+    "#{length(skipped)} #{noun} left unarchived#{label}: #{items}."
+  end
+
+  defp skip_reason_label(:running), do: "still running"
+  defp skip_reason_label(:node_unavailable), do: "node unavailable"
+  defp skip_reason_label(:error), do: "failed to archive"
 
   defp do_extract_memories(target_id) do
     case Cluster.find_session(target_id) do

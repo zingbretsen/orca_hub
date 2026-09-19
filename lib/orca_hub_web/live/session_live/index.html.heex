@@ -490,10 +490,17 @@
   </div>
 </div>
 
-<div :if={@undo_archive_session} class="toast toast-bottom toast-end z-50">
+<div :if={@undo_archive_sessions != []} class="toast toast-bottom toast-end z-50">
   <div class="alert alert-info w-80 sm:w-96">
     <.icon name="hero-archive-box" class="size-5 shrink-0" />
-    <span>Session archived</span>
+    <span>
+      <%= case length(@undo_archive_sessions) do %>
+        <% 1 -> %>
+          Session archived
+        <% n -> %>
+          Session + {n - 1} children archived
+      <% end %>
+    </span>
     <button phx-click="undo_archive" class="btn btn-sm btn-ghost">Undo</button>
   </div>
 </div>

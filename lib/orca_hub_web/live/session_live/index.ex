@@ -54,7 +54,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
        browse_path: nil,
        browse_entries: [],
        browse_show_hidden: false,
-       undo_archive_session: nil,
+       undo_archive_sessions: [],
        undo_archive_timer: nil,
        heartbeat_session_ids: heartbeat_session_ids,
        selected_sessions: MapSet.new(),
@@ -74,7 +74,9 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
     case params["undo"] do
       nil -> socket
-      id -> schedule_undo_archive(socket, id)
+      "" -> socket
+      ids when is_list(ids) -> schedule_undo_archive(socket, ids)
+      id when is_binary(id) -> schedule_undo_archive(socket, [id])
     end
   end
 
@@ -225,7 +227,8 @@ defmodule OrcaHubWeb.SessionLive.Index do
     node = Map.get(socket.assigns.node_map, id, node())
     session = Cluster.get_session!(node, id)
     Cluster.stop_session(node, id)
-    {:ok, _} = Cluster.archive_session(node, session)
+    {:ok, %{root: root, archived: archived}} = Cluster.cascade_archive_session(node, session)
+    undo_ids = [root.id | Enum.map(archived, & &1.id)]
     filter = socket.assigns.session_filter
 
     tagged_sessions =
@@ -244,38 +247,48 @@ defmodule OrcaHubWeb.SessionLive.Index do
         node_map: node_map
       )
       |> kick_worktree_fetches(worktree_fetches_needed)
-      |> schedule_undo_archive(id)
+      |> schedule_undo_archive(undo_ids)
 
     {:noreply, socket}
   end
 
   def handle_event("undo_archive", _params, socket) do
-    if session_id = socket.assigns.undo_archive_session do
-      node = Map.get(socket.assigns.node_map, session_id, node())
-      session = Cluster.get_session!(node, session_id)
-      Cluster.unarchive_session(node, session)
-      filter = socket.assigns.session_filter
+    case socket.assigns.undo_archive_sessions do
+      [] ->
+        {:noreply, socket}
 
-      tagged_sessions =
-        Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
+      session_ids ->
+        # Resolve fresh (not via @node_map, which only tracks currently
+        # unarchived/listed sessions and would miss what we just archived)
+        # so a cross-node descendant unarchives on the node that actually
+        # owns it rather than silently falling back to the local node.
+        Enum.each(session_ids, fn session_id ->
+          case Cluster.find_session(session_id) do
+            {node, session} -> Cluster.unarchive_session(node, session)
+            nil -> :ok
+          end
+        end)
 
-      node_map = Cluster.build_node_map(tagged_sessions)
-      clustered = socket.assigns.clustered
+        filter = socket.assigns.session_filter
 
-      {grouped_sessions, worktree_fetches_needed} =
-        group_sessions(tagged_sessions, socket.assigns.projects, clustered)
+        tagged_sessions =
+          Cluster.list_sessions(filter, include_background: socket.assigns.show_background)
 
-      {:noreply,
-       socket
-       |> cancel_undo_timer()
-       |> assign(undo_archive_session: nil)
-       |> assign(
-         grouped_sessions: grouped_sessions,
-         node_map: node_map
-       )
-       |> kick_worktree_fetches(worktree_fetches_needed)}
-    else
-      {:noreply, socket}
+        node_map = Cluster.build_node_map(tagged_sessions)
+        clustered = socket.assigns.clustered
+
+        {grouped_sessions, worktree_fetches_needed} =
+          group_sessions(tagged_sessions, socket.assigns.projects, clustered)
+
+        {:noreply,
+         socket
+         |> cancel_undo_timer()
+         |> assign(undo_archive_sessions: [])
+         |> assign(
+           grouped_sessions: grouped_sessions,
+           node_map: node_map
+         )
+         |> kick_worktree_fetches(worktree_fetches_needed)}
     end
   end
 
@@ -399,12 +412,31 @@ defmodule OrcaHubWeb.SessionLive.Index do
     selected = socket.assigns.selected_sessions
     node_map = socket.assigns.node_map
 
-    for session_id <- selected do
-      node = Map.get(node_map, session_id, node())
-      session = Cluster.get_session!(node, session_id)
-      Cluster.stop_session(node, session_id)
-      Cluster.archive_session(node, session)
-    end
+    # Cascading each selection independently would double-archive a
+    # session that's both selected directly AND a descendant of another
+    # selection — prune those out first, archiving only the selected
+    # sessions with no selected ancestor (their own cascade already covers
+    # any selected descendant underneath them).
+    roots =
+      selected
+      |> Enum.map(fn session_id ->
+        node = Map.get(node_map, session_id, node())
+        {session_id, node, Cluster.get_session!(node, session_id)}
+      end)
+      |> Enum.reject(fn {_id, _node, session} -> selected_ancestor?(session, selected) end)
+
+    {archived_all, skipped_all} =
+      Enum.reduce(roots, {[], []}, fn {session_id, node, session}, {archived_acc, skipped_acc} ->
+        Cluster.stop_session(node, session_id)
+
+        case Cluster.cascade_archive_session(node, session) do
+          {:ok, %{root: root, archived: archived, skipped: skipped}} ->
+            {[root | archived] ++ archived_acc, skipped ++ skipped_acc}
+
+          {:error, _changeset} ->
+            {archived_acc, skipped_acc}
+        end
+      end)
 
     filter = socket.assigns.session_filter
 
@@ -417,6 +449,12 @@ defmodule OrcaHubWeb.SessionLive.Index do
     {grouped_sessions, worktree_fetches_needed} =
       group_sessions(tagged_sessions, socket.assigns.projects, clustered)
 
+    flash_message =
+      case length(skipped_all) do
+        0 -> "Archived #{length(archived_all)} session(s)"
+        n -> "Archived #{length(archived_all)} session(s) (#{n} left unarchived — still running)"
+      end
+
     {:noreply,
      socket
      |> assign(
@@ -425,12 +463,29 @@ defmodule OrcaHubWeb.SessionLive.Index do
        selected_sessions: MapSet.new()
      )
      |> kick_worktree_fetches(worktree_fetches_needed)
-     |> put_flash(:info, "Archived #{MapSet.size(selected)} session(s)")}
+     |> put_flash(:info, flash_message)}
+  end
+
+  # Whether any ancestor (not just the direct parent) of `session` is also
+  # in `selected_ids` — walks up via parent_session_id, fetching each
+  # unselected ancestor to keep climbing until it finds a selected one or
+  # runs out of parents.
+  defp selected_ancestor?(%{parent_session_id: nil}, _selected_ids), do: false
+
+  defp selected_ancestor?(%{parent_session_id: parent_id}, selected_ids) do
+    if MapSet.member?(selected_ids, parent_id) do
+      true
+    else
+      case HubRPC.get_session(parent_id) do
+        nil -> false
+        parent -> selected_ancestor?(parent, selected_ids)
+      end
+    end
   end
 
   @impl true
   def handle_info(:clear_undo_archive, socket) do
-    {:noreply, assign(socket, undo_archive_session: nil, undo_archive_timer: nil)}
+    {:noreply, assign(socket, undo_archive_sessions: [], undo_archive_timer: nil)}
   end
 
   def handle_info({_session_id, _payload}, socket) do
@@ -492,10 +547,10 @@ defmodule OrcaHubWeb.SessionLive.Index do
   defp maybe_put_default(map, _key, nil), do: map
   defp maybe_put_default(map, key, value), do: Map.put(map, key, value)
 
-  defp schedule_undo_archive(socket, session_id) do
+  defp schedule_undo_archive(socket, session_ids) do
     socket = cancel_undo_timer(socket)
     timer = Process.send_after(self(), :clear_undo_archive, 5000)
-    assign(socket, undo_archive_session: session_id, undo_archive_timer: timer)
+    assign(socket, undo_archive_sessions: session_ids, undo_archive_timer: timer)
   end
 
   defp cancel_undo_timer(socket) do

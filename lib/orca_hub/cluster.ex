@@ -337,6 +337,88 @@ defmodule OrcaHub.Cluster do
   def list_messages(_n, session_id), do: HubRPC.list_messages(session_id)
   def archive_session(_n, session, opts \\ []), do: HubRPC.archive_session(session, opts)
   def unarchive_session(_n, session), do: HubRPC.unarchive_session(session)
+
+  # Statuses that mean "still doing work" — a cascade must never stop or
+  # archive a descendant in one of these, per the "skip live descendants"
+  # design decision. `error`/`compacting`/`ready`/`idle` are all fair game.
+  @live_statuses ~w(running waiting)
+
+  @doc """
+  Archives `session` (on `node`, via `archive_session/3` — same as a plain
+  single-session archive) and then, unless `opts[:archive_children] ==
+  false`, cascades into every unarchived descendant of its whole spawn
+  subtree (`OrcaHub.Sessions.list_unarchived_descendants/1` — recursively,
+  grandchildren included). A descendant whose status is "running"/"waiting"
+  is left alone entirely (not stopped, not archived) and reported back as
+  skipped — but the subtree isn't pruned there, its own already-idle
+  children are still cascaded into. Each descendant is resolved to its
+  owning node via `find_session/1` + `NodePolicy.cross_node_allowed?/1`
+  (same as this module's other cross-node call sites) — an
+  unavailable/isolated node gets the descendant skipped and reported too,
+  never re-routed to a different node (never-reassign rule).
+  `opts[:extract_memories]` passes straight through, unchanged, to every
+  archive call this makes (root and every cascaded descendant alike) — the
+  existing per-session gating in `OrcaHub.MemoryExtraction.dispatch/2`
+  (child workers skipped by default) decides from there.
+
+  Returns `{:ok, %{root: session, archived: [session], skipped: [%{session:
+  session, reason: :running | :node_unavailable}]}}` on success, or
+  `{:error, changeset}` if archiving the root itself fails (descendants are
+  never touched in that case).
+  """
+  def cascade_archive_session(node, session, opts \\ []) do
+    case archive_session(node, session, opts) do
+      {:ok, archived_root} ->
+        {archived, skipped} =
+          if Keyword.get(opts, :archive_children, true) do
+            session.id
+            |> OrcaHub.Sessions.list_unarchived_descendants()
+            |> Enum.map(& &1.id)
+            |> Enum.reduce({[], []}, fn id, acc -> cascade_descendant(id, opts, acc) end)
+          else
+            {[], []}
+          end
+
+        {:ok,
+         %{root: archived_root, archived: Enum.reverse(archived), skipped: Enum.reverse(skipped)}}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp cascade_descendant(id, opts, {archived_acc, skipped_acc} = acc) do
+    case find_session(id) do
+      nil ->
+        # Vanished (concurrently deleted) between collection and here —
+        # nothing left to archive or report.
+        acc
+
+      {_node, %{archived_at: at}} when not is_nil(at) ->
+        # Already archived by something else in the meantime — not ours to
+        # touch or report.
+        acc
+
+      {_node, %{status: status} = live_session} when status in @live_statuses ->
+        {archived_acc, [%{session: live_session, reason: :running} | skipped_acc]}
+
+      {node, live_session} ->
+        if OrcaHub.NodePolicy.cross_node_allowed?(node) do
+          stop_session(node, live_session.id)
+
+          case archive_session(node, live_session, opts) do
+            {:ok, archived} ->
+              {[archived | archived_acc], skipped_acc}
+
+            {:error, _} ->
+              {archived_acc, [%{session: live_session, reason: :error} | skipped_acc]}
+          end
+        else
+          {archived_acc, [%{session: live_session, reason: :node_unavailable} | skipped_acc]}
+        end
+    end
+  end
+
   def update_session(_n, session, attrs), do: HubRPC.update_session(session, attrs)
   def delete_session(_n, session), do: HubRPC.delete_session(session)
   def defer_session(_n, session), do: HubRPC.defer_session(session)

@@ -702,6 +702,23 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert Show.abandoned_cleanup(session.id, node()) == :kept
       assert is_nil(Sessions.get_session!(session.id).archived_at)
     end
+
+    # This is not a user-initiated "archive this orchestrator" action, so it
+    # must NOT cascade — it archives the abandoned session itself and
+    # leaves any child untouched, unlike do_archive/2.
+    test "archives only itself, not a child session", %{claude_session: session} do
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: session.directory,
+          runner_node: Atom.to_string(node()),
+          parent_session_id: session.id,
+          status: "idle"
+        })
+
+      assert Show.abandoned_cleanup(session.id, node()) == :archived
+      refute is_nil(Sessions.get_session!(session.id).archived_at)
+      assert Sessions.get_session!(child.id).archived_at == nil
+    end
   end
 
   describe "Cluster.send_message runner restart" do
@@ -2522,8 +2539,8 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       # the redirect happens (which implies the handler completed and closed the modal)
       {:error, {:live_redirect, %{to: path}}} = render_click(view, "archive")
 
-      # Verify the redirect went to /sessions with undo param
-      assert path =~ "/sessions?undo="
+      # Verify the redirect went to /sessions with an undo[] param
+      assert path =~ "/sessions?undo"
     end
 
     test "closes when unarchive is clicked", %{
@@ -2575,6 +2592,77 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       # The modal should stay open
       assert has_element?(view, ~s|#session-mobile-actions[open]|)
+    end
+  end
+
+  describe "archive — cascades into descendants" do
+    setup %{claude_session: root} do
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: root.directory,
+          runner_node: Atom.to_string(node()),
+          parent_session_id: root.id,
+          status: "idle"
+        })
+
+      {:ok, grandchild} =
+        Sessions.create_session(%{
+          directory: root.directory,
+          runner_node: Atom.to_string(node()),
+          parent_session_id: child.id,
+          status: "idle"
+        })
+
+      %{child: child, grandchild: grandchild}
+    end
+
+    test "archiving the root also archives every descendant", %{
+      conn: conn,
+      claude_session: root,
+      child: child,
+      grandchild: grandchild
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{root.id}")
+
+      {:error, {:live_redirect, %{to: path}}} = render_click(view, "archive")
+      assert path =~ "/sessions?"
+
+      refute is_nil(Sessions.get_session!(root.id).archived_at)
+      refute is_nil(Sessions.get_session!(child.id).archived_at)
+      refute is_nil(Sessions.get_session!(grandchild.id).archived_at)
+    end
+
+    test "the undo toast/link restores the root plus every archived descendant", %{
+      conn: conn,
+      claude_session: root,
+      child: child,
+      grandchild: grandchild
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{root.id}")
+      {:error, {:live_redirect, %{to: path}}} = render_click(view, "archive")
+
+      {:ok, index_view, _html} = live(conn, path)
+      render_click(index_view, "undo_archive")
+
+      assert Sessions.get_session!(root.id).archived_at == nil
+      assert Sessions.get_session!(child.id).archived_at == nil
+      assert Sessions.get_session!(grandchild.id).archived_at == nil
+    end
+
+    test "a running descendant is left alone (not stopped, not archived)", %{
+      conn: conn,
+      claude_session: root,
+      child: child,
+      grandchild: grandchild
+    } do
+      {:ok, _} = Sessions.update_session(child, %{status: "running"})
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{root.id}")
+      render_click(view, "archive")
+
+      refute is_nil(Sessions.get_session!(root.id).archived_at)
+      assert Sessions.get_session!(child.id).archived_at == nil
+      refute is_nil(Sessions.get_session!(grandchild.id).archived_at)
     end
   end
 
