@@ -8,21 +8,8 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
     %{data: %{"type" => "assistant", "message" => %{"content" => blocks}}}
   end
 
-  defp user_message(blocks) do
-    %{data: %{"type" => "user", "message" => %{"content" => blocks}}}
-  end
-
   defp tool_use(id, name, input) do
     %{"type" => "tool_use", "id" => id, "name" => name, "input" => input}
-  end
-
-  defp tool_result(tool_use_id, opts) do
-    %{
-      "type" => "tool_result",
-      "tool_use_id" => tool_use_id,
-      "is_error" => Keyword.get(opts, :is_error, false),
-      "content" => [%{"type" => "text", "text" => Keyword.get(opts, :text, "")}]
-    }
   end
 
   defp bash(cmd), do: tool_use("t-bash", "Bash", %{"command" => cmd})
@@ -207,6 +194,32 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
       evidence = FileSurgery.detect(messages)
       assert evidence.path == "build_clips.py"
       assert evidence.kind == :programmatic_write
+    end
+
+    test "the live specimen: Code.require_file of a tracked .exs, writing only /tmp" do
+      # A REAL command from the wild rather than a constructed one: this is
+      # the command the worker fixing this defect ran to replay the corpus,
+      # and the unfixed matcher alerted on it — "worker rebuilding
+      # /home/zach/orca-hub-churn-analysis/matcher.exs from shell fragments"
+      # — when that file was only `Code.require_file`'d. The command's
+      # actual writes are /tmp/wa66/corpus.exs and /tmp/wa66/rows.bin, both
+      # excluded paths. Fourth live specimen of defect 1, caught on the
+      # session repairing it.
+      messages = [
+        assistant_message([
+          bash("""
+          cat > /tmp/wa66/corpus.exs <<'PROBE'
+          Code.require_file("/home/zach/orca-hub-churn-analysis/matcher.exs")
+          alias OrcaHub.Sessions.FileSurgery
+          parsed = File.read!("/home/zach/orca-hub-churn-analysis/parsed.bin") |> :erlang.binary_to_term()
+          File.write!("/tmp/wa66/rows.bin", :erlang.term_to_binary(rows))
+          PROBE
+          cd /home/zach/orca_hub && mix run --no-start /tmp/wa66/corpus.exs 2>&1 | tail -25\
+          """)
+        ])
+      ]
+
+      assert FileSurgery.detect(messages) == nil
     end
 
     test "an INDETERMINATE write target returns nil rather than guessing" do
@@ -484,7 +497,20 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
                "cat /home/zach/orca_hub/lib/orca_hub/pi_config_sync.ex | head -215 > /tmp/pi_config_part1.ex"
 
       assert evidence.kind == :slice_and_redirect
-      assert evidence.paired_with_failed_edit == false
+    end
+
+    test "the evidence map carries no paired_with_failed_edit key at all" do
+      # It could only ever be false — never once true across 229 delivered
+      # alerts — so it implied a high-confidence branch that cannot occur.
+      # The concept lives in OrcaHub.Sessions.EditFailure now.
+      messages = [assistant_message([bash("cat lib/foo.ex | head -50 > /tmp/x")])]
+
+      evidence = FileSurgery.detect(messages)
+
+      refute Map.has_key?(evidence, :paired_with_failed_edit)
+
+      assert evidence |> Map.keys() |> Enum.sort() ==
+               [:command, :kind, :path, :same_path_matches, :verified_in_command]
     end
 
     test "head -n with a target line count" do
@@ -524,75 +550,6 @@ defmodule OrcaHub.Sessions.FileSurgeryTest do
       ]
 
       assert FileSurgery.detect(messages).path == "lib/b.ex"
-    end
-
-    test "paired_with_failed_edit: true when a failed Edit on the same path precedes it" do
-      messages = [
-        assistant_message([tool_use("t-edit", "Edit", %{"file_path" => "lib/foo.ex"})]),
-        user_message([
-          tool_result("t-edit",
-            is_error: true,
-            text: "Could not find the exact text in lib/foo.ex."
-          )
-        ]),
-        assistant_message([bash("cat lib/foo.ex | head -50 > /tmp/x")])
-      ]
-
-      evidence = FileSurgery.detect(messages)
-
-      assert evidence.path == "lib/foo.ex"
-      assert evidence.kind == :slice_and_redirect
-      assert evidence.paired_with_failed_edit == true
-    end
-
-    test "paired_with_failed_edit: false when the preceding Edit on the same path succeeded" do
-      messages = [
-        assistant_message([tool_use("t-edit", "Edit", %{"file_path" => "lib/foo.ex"})]),
-        user_message([tool_result("t-edit", is_error: false, text: "ok")]),
-        assistant_message([bash("cat lib/foo.ex | head -50 > /tmp/x")])
-      ]
-
-      evidence = FileSurgery.detect(messages)
-
-      assert evidence.path == "lib/foo.ex"
-      assert evidence.paired_with_failed_edit == false
-    end
-
-    test "paired_with_failed_edit: false when the failed edit was on a DIFFERENT path" do
-      messages = [
-        assistant_message([tool_use("t-edit", "Edit", %{"file_path" => "lib/other.ex"})]),
-        user_message([tool_result("t-edit", is_error: true, text: "no match")]),
-        assistant_message([bash("cat lib/foo.ex | head -50 > /tmp/x")])
-      ]
-
-      evidence = FileSurgery.detect(messages)
-
-      assert evidence.path == "lib/foo.ex"
-      assert evidence.paired_with_failed_edit == false
-    end
-
-    test "paired_with_failed_edit: false when the failed edit is outside the lookback window" do
-      old_failed_edit = [
-        tool_use("t-edit", "Edit", %{"file_path" => "lib/foo.ex"})
-      ]
-
-      filler =
-        for n <- 1..11 do
-          assistant_message([tool_use("t-filler-#{n}", "Read", %{"file_path" => "lib/other.ex"})])
-        end
-
-      messages =
-        [
-          assistant_message(old_failed_edit),
-          user_message([tool_result("t-edit", is_error: true)])
-        ] ++
-          filler ++
-          [assistant_message([bash("cat lib/foo.ex | head -50 > /tmp/x")])]
-
-      evidence = FileSurgery.detect(messages)
-
-      assert evidence.path == "lib/foo.ex"
-      assert evidence.paired_with_failed_edit == false
     end
   end
 

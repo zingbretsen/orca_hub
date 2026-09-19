@@ -41,14 +41,13 @@ defmodule OrcaHub.Sessions.FileSurgery do
   judges. Within claude sessions specifically, family D is nearly INERT
   (2 true positives) while A∨B∨C finds 16 — family A is load-bearing for
   that backend, not the cat/head sub-pattern this issue was written
-  around. `paired_with_failed_edit` is the independent, and stronger,
-  confidence signal (P=0.92 paired vs P=0.72 unpaired for the same
-  fragment-read pattern) — a paired `:in_place_edit` is more trustworthy
-  than an unpaired one of any family.
+  around.
 
-  `detect/1`'s evidence map splits WHICH pattern fired (`kind`, a family
-  atom) from HOW MUCH to trust it (`paired_with_failed_edit`, a boolean
-  confidence modifier) — see the two fields' individual docs below.
+  `detect/1`'s evidence map reports WHICH pattern fired (`kind`, a family
+  atom) and two pieces of context for the policy layer to weigh
+  (`verified_in_command`, `same_path_matches`) — see the fields' individual
+  docs below. Deciding whether any of it is worth an alert is
+  `OrcaHub.Sessions.SurgeryAlertPolicy`'s job, not this module's.
 
   Computed from the messages table's assistant `tool_use` blocks (mirrors
   `OrcaHub.Sessions.ChurnDetail`'s extraction shape exactly — see its
@@ -91,13 +90,27 @@ defmodule OrcaHub.Sessions.FileSurgery do
   survive** — the only alert from the labelled sample that disappears is
   #27, the parse artefact above.
 
-  **`paired_with_failed_edit` has NEVER been true in production.** Across
-  all 229 alert windows there are 6 with even one failed `Edit`/`Write`/
-  `MultiEdit` call and 1 with two; none of the three hand-labelled true
-  positives has a single one. "Worker cannot land an edit" and "worker
-  writes a file from the shell" are, in this corpus, disjoint populations,
-  so the field stays as evidence but nothing should be gated on it — a
-  require-paired rule suppresses 100% of the corpus (§D).
+  **There is no `paired_with_failed_edit` field any more.** It was a
+  confidence modifier — "a failed `Edit`/`Write`/`MultiEdit` on this path
+  preceded the shell write" — and it was never once true across all 229
+  delivered alerts, every one of which was therefore labelled "unpaired
+  (lower confidence)" against a high-confidence branch that could not
+  occur. The concept graduated into `OrcaHub.Sessions.EditFailure`, which
+  detects "this worker cannot land an edit" as a signal in its own right:
+  failed editor calls number 0 in 223 of the 229 alert windows, so the two
+  populations are disjoint and were never a confidence modifier on each
+  other in the first place.
+
+  **What the denominator is.** Every count in this moduledoc is measured
+  against alerts that were actually DELIVERED. It is not a sample of all
+  DETECTIONS: nothing persisted a detection that did not become an alert
+  (`ChurnSampler.run_sweep/1` calls `Churn.assess/3`, so `churn_samples`
+  never carried file surgery at all). Read each figure as "of the alerts
+  that WERE delivered historically, N would not have been" — never as "N%
+  of detections". The comparison also cannot be repeated the same way on
+  future data until that observability gap is closed, since an alert
+  suppressed by `SurgeryAlertPolicy` will not appear in the delivered
+  corpus either.
 
   Suppression POLICY is deliberately not here: `detect/1` reports evidence,
   `OrcaHub.Sessions.SurgeryAlertPolicy` decides what to do with it.
@@ -112,9 +125,6 @@ defmodule OrcaHub.Sessions.FileSurgery do
 
   @default_window_minutes 30
   @sweep_window_minutes 10
-  @pairing_lookback 10
-
-  @edit_tool_names ~w(Edit Write MultiEdit)
 
   @tracked_extensions ~w(.ex .exs .eex .heex .leex .js .jsx .ts .tsx .css .scss .json .yaml .yml .md .sh .sql .html .erl .hrl .py .toml)
   @excluded_substrings ~w(/tmp/ /var/ _build/ deps/ node_modules/ priv/static/ .git/ log/ logs/ .elixir_ls/ cover/)
@@ -269,7 +279,6 @@ defmodule OrcaHub.Sessions.FileSurgery do
       %{path: "lib/orca_hub/pi_config_sync.ex",
         command: "<full Bash command string>",
         kind: :write_to_tracked | :in_place_edit | :programmatic_write | :slice_and_redirect,
-        paired_with_failed_edit: boolean,
         verified_in_command: boolean,
         same_path_matches: pos_integer}
 
@@ -281,11 +290,6 @@ defmodule OrcaHub.Sessions.FileSurgery do
   tracked path — that's the SANCTIONED recovery procedure) and formatter
   commands (`mix format`, `prettier --write`, `eslint --fix`) are excluded
   before any family is checked.
-
-  `paired_with_failed_edit` is a confidence modifier, orthogonal to
-  `kind`: `true` when a failed Edit/Write/MultiEdit on the SAME path
-  appears in the preceding #{@pairing_lookback} tool calls, else `false`.
-  It has never once been `true` in production — see the moduledoc.
 
   `verified_in_command` is the measured D2b signal: `true` when the flagged
   command ITSELF, after the write, either reads the written path back
@@ -304,16 +308,13 @@ defmodule OrcaHub.Sessions.FileSurgery do
   """
   def detect(messages) when is_list(messages) do
     safely(fn ->
-      tool_use_events = Enum.flat_map(messages, &tool_use_blocks/1)
-      result_errors = build_result_index(messages)
-
       matches =
-        tool_use_events
-        |> Enum.with_index()
-        |> Enum.flat_map(fn {block, idx} ->
+        messages
+        |> Enum.flat_map(&tool_use_blocks/1)
+        |> Enum.flat_map(fn block ->
           with cmd when is_binary(cmd) <- bash_command(block),
                {path, kind} <- match_surgery_pattern(cmd) do
-            [{idx, path, kind, cmd}]
+            [{path, kind, cmd}]
           else
             _ -> []
           end
@@ -323,13 +324,11 @@ defmodule OrcaHub.Sessions.FileSurgery do
         nil ->
           nil
 
-        {idx, path, kind, cmd} ->
+        {path, kind, cmd} ->
           %{
             path: path,
             command: cmd,
             kind: kind,
-            paired_with_failed_edit:
-              paired_with_failed_edit?(tool_use_events, idx, path, result_errors),
             verified_in_command: verified_in_command?(cmd, path),
             # INFORMATIONAL ONLY. This number must NEVER gate an alert.
             # ORCAHUB3-66 §D measured the obvious discriminator built on it
@@ -341,7 +340,7 @@ defmodule OrcaHub.Sessions.FileSurgery do
             # iterating on a scratch script is the most normal thing anyone
             # does with a scratch script. It looks superb in aggregate and is
             # wrong in kind. Carried for the alert message and future mining.
-            same_path_matches: Enum.count(matches, fn {_, p, _, _} -> p == path end)
+            same_path_matches: Enum.count(matches, fn {p, _, _} -> p == path end)
           }
       end
     end)
@@ -764,35 +763,6 @@ defmodule OrcaHub.Sessions.FileSurgery do
   defp executes_written_file?(_cmd, _path), do: false
 
   # -------------------------------------------------------------------
-  # Pairing (confidence modifier, orthogonal to which family fired)
-  # -------------------------------------------------------------------
-
-  defp paired_with_failed_edit?(tool_use_events, idx, path, result_errors) do
-    window_start = max(0, idx - @pairing_lookback)
-    window = Enum.slice(tool_use_events, window_start, idx - window_start)
-
-    Enum.any?(window, fn block ->
-      block["name"] in @edit_tool_names and
-        get_in(block, ["input", "file_path"]) == path and
-        Map.get(result_errors, block["id"], false)
-    end)
-  end
-
-  # tool_use_id -> is_error, from tool_result blocks across the whole
-  # window (a result can land in the message right after its call).
-  defp build_result_index(messages) do
-    messages
-    |> Enum.flat_map(&tool_result_blocks/1)
-    |> Enum.reduce(%{}, fn
-      %{"tool_use_id" => id} = block, acc when is_binary(id) ->
-        Map.put(acc, id, block["is_error"] == true)
-
-      _, acc ->
-        acc
-    end)
-  end
-
-  # -------------------------------------------------------------------
   # Shared message parsing (mirrors ChurnDetail)
   # -------------------------------------------------------------------
 
@@ -804,13 +774,4 @@ defmodule OrcaHub.Sessions.FileSurgery do
   end
 
   defp tool_use_blocks(_), do: []
-
-  defp tool_result_blocks(%{data: data}) do
-    data
-    |> get_in(["message", "content"])
-    |> List.wrap()
-    |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_result"))
-  end
-
-  defp tool_result_blocks(_), do: []
 end
