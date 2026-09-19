@@ -1511,6 +1511,54 @@ defmodule OrcaHub.Sessions do
     if text == "", do: nil, else: text
   end
 
+  # Default excerpt budget: a notification body / a watch screen, not a
+  # transcript. `OrcaHub.Notify` and the sessions API both cut to this.
+  @excerpt_limit 400
+
+  @doc """
+  Collapse a tail excerpt's whitespace (runs of spaces/newlines become one
+  space) and trim it — the shared normalization step behind
+  `truncate_excerpt/2`. Exposed on its own so a caller that needs to know
+  whether a cut actually happened can measure the normalized length without
+  re-deriving the rule.
+  """
+  def normalize_excerpt(nil), do: nil
+
+  def normalize_excerpt(text) when is_binary(text),
+    do: text |> String.replace(~r/\s+/, " ") |> String.trim()
+
+  @doc """
+  Truncate an assistant-text excerpt to at most `limit` characters, cutting
+  on a WORD boundary and appending an ellipsis (a single word longer than
+  the budget is cut hard, since there is no boundary to find).
+
+  Lives here rather than in either caller because the excerpt a Gotify push
+  carries (`OrcaHub.Notify.notify_session_finished/1`) and the one
+  `GET /api/v1/sessions/recent?include_tail=true` returns are the SAME
+  string as far as a client is concerned — an Android notification and the
+  in-app list row it opens must not disagree about where the text stops.
+  """
+  def truncate_excerpt(text, limit \\ @excerpt_limit)
+  def truncate_excerpt(nil, _limit), do: nil
+
+  def truncate_excerpt(text, limit) when is_binary(text) do
+    text = normalize_excerpt(text)
+
+    if String.length(text) <= limit do
+      text
+    else
+      head = String.slice(text, 0, limit)
+
+      case String.split(head, " ") do
+        [_single] ->
+          String.trim_trailing(head) <> "…"
+
+        words ->
+          words |> Enum.drop(-1) |> Enum.join(" ") |> String.trim_trailing() |> Kernel.<>("…")
+      end
+    end
+  end
+
   @doc """
   A slim, read-only "tail" for a session: its last assistant text message plus
   the last `tool_call_limit` tool calls (name + raw input, oldest to newest) —

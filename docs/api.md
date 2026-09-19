@@ -503,11 +503,20 @@ signal, so "how old is this list" is part of the data rather than something
 the caller has to infer.
 
 The two tail fields are present ONLY when `include_tail` is set.
-`last_assistant_text` is the session's most recent assistant text, truncated
-to **400 characters plus a `…`**; `last_assistant_text_truncated` says whether
-that happened. `null` (with `false`) means the session has no assistant text
-yet. For the untruncated text and the recent tool calls, use
+`last_assistant_text` is the session's most recent assistant text, with runs
+of whitespace collapsed to single spaces and truncated to **400 characters
+plus a `…`, cut on a word boundary** (a single word longer than the budget is
+cut hard, since there is no boundary to find).
+`last_assistant_text_truncated` says whether a cut happened — it is measured
+on the normalized text, so a reply that only shrank because its blank lines
+collapsed reports `false`. `null` (with `false`) means the session has no
+assistant text yet. For the untruncated text and the recent tool calls, use
 `/api/v1/sessions/:id/tail`.
+
+That rule is `OrcaHub.Sessions.truncate_excerpt/2`, shared with the Gotify
+push payload's `excerpt` field (see `.context/push-payload.md`) — a
+notification body and the list row it opens must not disagree about where the
+text stops.
 
 ### Example
 

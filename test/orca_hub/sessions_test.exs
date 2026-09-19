@@ -2140,4 +2140,45 @@ defmodule OrcaHub.SessionsTest do
       assert Sessions.list_memory_injected_events(session.id) == []
     end
   end
+
+  # The excerpt rule has TWO consumers that must agree byte for byte: the
+  # Gotify push payload (OrcaHub.Notify) and
+  # GET /api/v1/sessions/recent?include_tail=true. A notification body and
+  # the list row it opens cutting in different places is the bug this shared
+  # helper exists to prevent.
+  describe "truncate_excerpt/2 and normalize_excerpt/1" do
+    test "returns short text unchanged, with whitespace collapsed" do
+      assert Sessions.truncate_excerpt("tests are green", 400) == "tests are green"
+      assert Sessions.truncate_excerpt("tests\n\n  are   green\n", 400) == "tests are green"
+    end
+
+    test "nil in, nil out" do
+      assert Sessions.truncate_excerpt(nil, 400) == nil
+      assert Sessions.normalize_excerpt(nil) == nil
+    end
+
+    test "cuts on a word boundary and appends an ellipsis" do
+      assert Sessions.truncate_excerpt("alpha beta gamma delta", 16) == "alpha beta…"
+      refute String.contains?(Sessions.truncate_excerpt("alpha beta gamma", 12), "gamm")
+    end
+
+    test "cuts a single over-long word hard, since there is no boundary to find" do
+      assert Sessions.truncate_excerpt(String.duplicate("a", 20), 10) ==
+               String.duplicate("a", 10) <> "…"
+    end
+
+    test "text exactly at the budget is not cut" do
+      text = String.duplicate("a", 400)
+      assert Sessions.truncate_excerpt(text, 400) == text
+    end
+
+    test "normalize_excerpt/1 measures what truncate_excerpt/2 decides on" do
+      text = String.duplicate("a\n\n\n", 200)
+
+      assert String.length(text) == 800
+      assert String.length(Sessions.normalize_excerpt(text)) == 399
+      # Raw length is over budget but normalized length is not, so nothing is cut.
+      refute String.ends_with?(Sessions.truncate_excerpt(text, 400), "…")
+    end
+  end
 end

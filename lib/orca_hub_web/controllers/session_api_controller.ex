@@ -28,6 +28,10 @@ defmodule OrcaHubWeb.SessionApiController do
 
   alias OrcaHub.HubRPC
 
+  # Pure helpers only (excerpt normalization/truncation) — every DB read goes
+  # through HubRPC, since an agent node has no local Repo.
+  alias OrcaHub.Sessions
+
   # /recent is the small-surface feed (watch tile, Auto list) — a short
   # default and a hard ceiling. /sessions is the older full-list endpoint,
   # which was unbounded until pagination was added, so its default is high
@@ -38,7 +42,10 @@ defmodule OrcaHubWeb.SessionApiController do
   @index_max_limit 500
 
   # `include_tail`'s excerpt budget. ~400 chars is a notification body / a
-  # watch screen, not a transcript — the full text is one /tail away.
+  # watch screen, not a transcript — the full text is one /tail away. The
+  # CUT ITSELF is `Sessions.truncate_excerpt/2`, shared with the Gotify push
+  # payload (`OrcaHub.Notify`): a notification and the list row it opens must
+  # not disagree about where the text stops.
   @tail_excerpt_chars 400
 
   @default_tool_call_limit 10
@@ -367,19 +374,18 @@ defmodule OrcaHubWeb.SessionApiController do
   defp tail_excerpt(session_id) do
     %{last_assistant_text: text} = HubRPC.session_tail(session_id, tool_call_limit: 1)
 
-    {excerpt, truncated?} = truncate(text, @tail_excerpt_chars)
-    %{last_assistant_text: excerpt, last_assistant_text_truncated: truncated?}
+    %{
+      last_assistant_text: Sessions.truncate_excerpt(text, @tail_excerpt_chars),
+      last_assistant_text_truncated: truncated?(text, @tail_excerpt_chars)
+    }
   end
 
-  defp truncate(nil, _max), do: {nil, false}
+  # Measured on the NORMALIZED text, not the raw one: collapsing a run of
+  # newlines is not a truncation, so a reply that only shrank because of
+  # whitespace must not claim it was cut.
+  defp truncated?(nil, _max), do: false
 
-  defp truncate(text, max) do
-    if String.length(text) > max do
-      {String.slice(text, 0, max) <> "…", true}
-    else
-      {text, false}
-    end
-  end
+  defp truncated?(text, max), do: String.length(Sessions.normalize_excerpt(text)) > max
 
   defp iso8601(nil), do: nil
   defp iso8601(%DateTime{} = dt), do: DateTime.to_iso8601(dt)

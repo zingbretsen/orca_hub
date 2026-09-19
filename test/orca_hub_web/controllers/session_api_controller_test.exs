@@ -623,6 +623,65 @@ defmodule OrcaHubWeb.SessionApiControllerTest do
       end)
     end
 
+    # The excerpt rule is OrcaHub.Sessions.truncate_excerpt/2, shared with the
+    # Gotify push payload — a notification body and the list row it opens must
+    # cut in the same place.
+    test "include_tail cuts on a word boundary and collapses whitespace", %{conn: conn} do
+      with_token(fn ->
+        project = create_project()
+        session = create_session(%{project_id: project.id})
+
+        # 80 × "wordy " = 480 chars, so the cut lands mid-word at 400 and must
+        # retreat to the preceding space. The newlines must collapse first.
+        text = String.duplicate("wordy\n\n", 80)
+        insert_message_at(session, ~N[2026-09-08 11:00:00.000000], assistant_message(text))
+
+        body =
+          conn
+          |> authed()
+          |> get(~p"/api/v1/sessions/recent", %{
+            "project_id" => project.id,
+            "include_tail" => "true"
+          })
+          |> json_response(200)
+
+        excerpt = hd(body["sessions"])["last_assistant_text"]
+
+        assert String.length(excerpt) <= 401
+        assert String.ends_with?(excerpt, "wordy…")
+        refute String.contains?(excerpt, "\n")
+        refute String.contains?(excerpt, "  ")
+        assert hd(body["sessions"])["last_assistant_text_truncated"] == true
+      end)
+    end
+
+    test "text that only shrinks from whitespace collapsing is not reported as truncated",
+         %{conn: conn} do
+      with_token(fn ->
+        project = create_project()
+        session = create_session(%{project_id: project.id})
+
+        # 800 raw chars, but 399 once the blank lines collapse — under budget,
+        # so nothing was actually cut and the flag must stay false.
+        text = String.duplicate("a\n\n\n", 200)
+        insert_message_at(session, ~N[2026-09-08 12:00:00.000000], assistant_message(text))
+
+        body =
+          conn
+          |> authed()
+          |> get(~p"/api/v1/sessions/recent", %{
+            "project_id" => project.id,
+            "include_tail" => "true"
+          })
+          |> json_response(200)
+
+        item = hd(body["sessions"])
+        assert item["last_assistant_text"] == String.trim(String.duplicate("a ", 200))
+        assert item["last_assistant_text_truncated"] == false
+        refute String.ends_with?(item["last_assistant_text"], "…")
+      end)
+    end
+
     test "include_tail reports null text for a session with no assistant message", %{conn: conn} do
       with_token(fn ->
         project = create_project()
