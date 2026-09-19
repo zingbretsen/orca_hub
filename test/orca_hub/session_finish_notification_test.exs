@@ -223,6 +223,30 @@ defmodule OrcaHub.SessionFinishNotificationTest do
       refute_gotify()
     end
 
+    test "a child session never notifies — workers report to their orchestrator", %{dir: dir} do
+      {:ok, parent} =
+        Sessions.create_session(%{directory: dir, status: "idle", title: "the orchestrator"})
+
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          status: "running",
+          title: "worker 7",
+          parent_session_id: parent.id
+        })
+
+      assistant_message(session.id, "migration written")
+
+      assert {:next_state, :idle, _} =
+               SessionRunner.running(
+                 :info,
+                 {:fake_port, {:exit_status, 0}},
+                 base_data(session, %{})
+               )
+
+      refute_gotify()
+    end
+
     test "an archived session never notifies", %{dir: dir} do
       {:ok, session} =
         Sessions.create_session(%{directory: dir, status: "running", title: "archived one"})

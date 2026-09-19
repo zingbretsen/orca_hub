@@ -1,8 +1,10 @@
 # Turn-end push payload contract (Gotify)
 
-Every genuine SessionRunner `running -> idle | error` transition fires ONE
-Gotify notification, automatically. This is distinct from the opt-in
-`send_notification` MCP tool, which only fires when an agent asks for it.
+A genuine SessionRunner `running -> idle | error` transition fires ONE Gotify
+notification, automatically, for the sessions Zach talks to himself (roots,
+orchestrators, trigger sessions — see "When it fires" for what's suppressed).
+This is distinct from the opt-in `send_notification` MCP
+tool, which only fires when an agent asks for it.
 
 The consumer is the unified Android app (phone + Wear + Android Auto) — see
 `/home/zach/experiments/orca-watch/DESIGN.md` §7c, §1.4 and risk **R12**. That
@@ -62,6 +64,12 @@ refresh, and never for a session that was not running this turn.
 Suppressed for:
 
 - background sessions (`kind: "memory_extraction"`);
+- CHILD sessions (`parent_session_id` set and not the session's own id) — a
+  worker reports to its orchestrator, not to the phone, so a twenty-worker
+  swarm doesn't buzz once per worker per turn. The phone/Auto/Wear surfaces
+  exist for the sessions Zach talks to himself: roots, orchestrators (roots)
+  and trigger sessions. A child adopted via `detach_session` becomes a root
+  and starts notifying again, no flag needed;
 - archived sessions (`archived_at` set);
 - non-turn-end statuses — `"waiting"` (an unanswered AskUserQuestion) and
   `"compacting"` both map to `nil` via `notify_status/1`;
@@ -72,7 +80,9 @@ Suppressed for:
 There is deliberately **no per-session opt-out**: `sessions` has no generic
 settings map to hang one off, and the brief ruled out inventing a migration.
 `notify_parent` is NOT reused for this — it means "ping my parent session",
-a different audience and a different decision.
+a different audience and a different decision; the child suppression above is
+unconditional and does not consult it. A per-session push flag is a later,
+separate call.
 
 ## Where it runs
 

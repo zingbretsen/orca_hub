@@ -1265,8 +1265,9 @@ defmodule OrcaHub.SessionRunner do
   # only reached from the five running->idle|error paths, never from an idle
   # heartbeat or a status refresh, and never for a session that was not
   # running this turn. Suppressed for background `memory_extraction`
-  # sessions, for archived sessions, and for any non-turn-end status
-  # ("waiting"/"compacting", where notify_status/1 already returns nil).
+  # sessions, for child sessions, for archived sessions, and for any
+  # non-turn-end status ("waiting"/"compacting", where notify_status/1
+  # already returns nil).
   #
   # Delivery is fire-and-forget on the TaskSupervisor and routed through the
   # hub (HubRPC), since only the hub holds GOTIFY_TOKEN and only the hub can
@@ -1274,6 +1275,18 @@ defmodule OrcaHub.SessionRunner do
 
   defp maybe_notify_finished(_session, nil, _first_prompt), do: :ok
   defp maybe_notify_finished(%{kind: "memory_extraction"}, _status, _first_prompt), do: :ok
+
+  # Never push for a child: a worker reports to its ORCHESTRATOR (that's
+  # `maybe_notify_parent/3`'s job), not to the phone, so a twenty-worker swarm
+  # doesn't buzz once per worker per turn. The phone surfaces exist for the
+  # sessions Zach himself talks to — roots, orchestrators, trigger sessions.
+  # A child he adopts via `detach_session` becomes a root and starts notifying
+  # again with no further action. Same "set, and not self-referential"
+  # condition as maybe_notify_parent/3 above.
+  defp maybe_notify_finished(%{parent_session_id: parent_id, id: id}, _status, _first_prompt)
+       when not is_nil(parent_id) and parent_id != id do
+    :ok
+  end
 
   defp maybe_notify_finished(%{archived_at: archived_at}, _status, _first_prompt)
        when not is_nil(archived_at),
