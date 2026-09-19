@@ -23,7 +23,19 @@ defmodule OrcaHub.Jobs.LauncherTest do
     }
   end
 
-  defp unique_id, do: "launcher-test-#{System.unique_integer([:positive])}"
+  # Unique across RUNS, not merely within one. `System.unique_integer/1` restarts
+  # from low numbers every time the BEAM boots, so by itself it hands out ids that
+  # earlier runs already used — and these tests write into a SHARED
+  # ~/.orca_hub/jobs. That matters because the sentinel is written by the detached
+  # wrapper, which can land `<id>.exit` AFTER on_exit cleanup has already deleted
+  # it: 150 such orphans had piled up there between Aug 18 and today, every one of
+  # them an `.exit` and nothing else. Reissuing one of those ids is what makes
+  # `refute File.exists?(sentinel_path(id))` fail at random, and the odds were
+  # growing with the orphan count.
+  defp unique_id do
+    "launcher-test-#{System.unique_integer([:positive])}-" <>
+      Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
+  end
 
   defp cleanup(id) do
     [
