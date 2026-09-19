@@ -1014,9 +1014,13 @@ never asked.
 ### F.1 The matcher fixes: 20/229 stop firing, 5 fire on a corrected path
 
 Worker A implemented the two §A.6 defects' fixes and replayed the corpus. The
-old matcher reproduced the delivered path AND kind on **229/229** alerts, so
-the before/after comparison is exact rather than approximate — there is no
-replay error to net out.
+old matcher reproduces the delivered path AND kind on **229/229** alerts —
+zero nils, zero mismatches — so the before/after comparison is **exact rather
+than estimated**; there is no replay error to net out and no need to qualify
+any figure below with a reproduction-rate caveat. Re-verified independently
+against `parsed.bin` rather than carried over from a report, since every
+number in this section rests on it. The replay is reproducible:
+`/home/zach/orca-hub-churn-analysis/fixed_matcher_replay.exs`.
 
 | outcome under the fixed matcher | alerts | share of delivered |
 |---|---:|---:|
@@ -1025,10 +1029,29 @@ replay error to net out.
 |   · real write target is not a tracked source path | 11 | 4.8% |
 |   · genuinely indeterminate | 6 | 2.6% |
 | — defect 2 (`real_output_redirect?/1` saw `>` in ordinary text) | 3 | 1.3% |
-| still fires, on a CORRECTED path or family | **5** | **2.2%** |
-| unchanged | 204 | 89.1% |
+| still fires, on a CORRECTED path or family | **5**\* | **2.2%** |
+| — corrected PATH | 4 | 1.7% |
+| — corrected FAMILY, path unchanged | 1 | 0.4% |
+| wholly unchanged (path AND family) | 204 | 89.1% |
 
 **0 of the 3 hand-labelled true positives is lost.**
+
+\* **Read the 4/1 split before comparing this table to any other figure.**
+The related headline — **24/229 (10.5%) of delivered alerts NAMED THE WRONG
+FILE** — is `20 + 4`, not `20 + 5`, because the fifth correction is a FAMILY
+change on an *unchanged* path: `tools/label_false_accepts.py`, reclassified
+`programmatic_write` -> `write_to_tracked` (the command both writes it from
+the shell and patches another file programmatically, and a `=>` arrow
+function inside a heredoc used to shadow the real redirect, so family (a)
+never got a look). Same file named, more accurate family — it never misled
+anyone, which is why it is outside the wrong-file count. A reader who sees
+"5" here and "4 re-paths" in the implementing worker's report is looking at
+two correct answers to two different questions.
+
+Defect 2's 3 drops break down as 1 `slice_and_redirect` + 2
+`write_to_tracked` — **exactly one `slice_and_redirect`**, which independently
+confirms the §A.3 correction above: the other one is a genuine match and
+survives the fix.
 
 ### F.2 The policy is the bigger lever; the corrected paths matter anyway
 
@@ -1040,6 +1063,24 @@ Stated plainly, because the two changes are easy to mix up:
 **The policy change is the bigger lever, by roughly 3.6x.** If only one of the
 two had shipped, it should have been that one. Neither loses a hand-labelled
 true positive.
+
+**That is not what either change FELT like, and the gap is the lesson.** The
+matcher defects felt like the main event, because the most vivid specimen in
+the whole corpus was a worker being alerted by the very defect it was
+repairing (§F.4). The replay says otherwise: 31.4% against 8.7%. **A memorable
+specimen is evidence of EXISTENCE, never of FREQUENCY.** A vivid case proves a
+failure mode is real and tells you nothing whatever about how often it occurs
+— and vividness correlates with how *recently and personally* a reader met the
+case, which is not a property of the data at all.
+
+This is §D.1's lesson wearing different clothes. There, a discriminator chosen
+by staring at false positives looked excellent until it was scored against
+labelled true positives; here, a defect chosen by staring at one striking
+alert looked like the main event until it was scored against the corpus. Both
+are the same instruction: **the specimen tells you what to go and count; it is
+never itself the count.** Worth stating plainly because it caught two
+experienced readers of this document in the same week — it is not a beginner's
+error, and noticing it required the replay, not more careful reading.
 
 But volume is the wrong yardstick for the **5** alerts that now fire on a
 corrected path, and they matter out of proportion to their count. An alert that
