@@ -22,6 +22,7 @@ import "phoenix_html"
 import { TerminalHook } from "./terminal_hook"
 import { VoiceHook } from "./voice/voice_hook"
 import { createTtsStreamAccumulator, toolAnnouncement, SENTENCE_BOUNDARY } from "./tts_stream"
+import { cleanTextForTTS } from "./tts_text"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
@@ -537,66 +538,11 @@ const TTSMethods = {
     return this.ttsCleanText(bubble.innerText || "")
   },
 
+  // Thin delegate to the pure, unit-tested normalizer in tts_text.js — kept
+  // here (rather than inlined) because it's referenced by name in
+  // tts_stream.js's header comment and called from two sites below.
   ttsCleanText(text) {
-    // Strip markdown artifacts that innerText might preserve
-    text = text.replace(/^#{1,6}\s+/gm, "")          // markdown headers
-    text = text.replace(/```[\s\S]*?```/g, "")        // code blocks
-    text = text.replace(/`([^`]+)`/g, "$1")           // inline code (keep content)
-
-    // Elixir/programming term pronunciations (run BEFORE path/hash replacements)
-    const termMap = {
-      "HEEx": "heeks",
-      "EEx": "eeks",
-      "heex": "heeks",
-      "eex": "eeks",
-      "defp": "def p",
-      "defmodule": "def module",
-      "GenServer": "gen server",
-      "PubSub": "pub sub",
-      "LiveView": "live view",
-      "ExUnit": "ex unit",
-      "iex": "I E X",
-      "CSRF": "C S R F",
-      "JSONL": "JSON lines",
-      "nginx": "engine x",
-      "stdin": "standard in",
-      "stdout": "standard out",
-      "stderr": "standard error",
-      "CLI": "C L I",
-      "OTP": "O T P",
-      "npm": "N P M",
-      "UUID": "U U I D",
-      "regex": "regex",
-      "phx": "phoenix",
-    }
-
-    for (const [term, replacement] of Object.entries(termMap)) {
-      text = text.replace(new RegExp(`\\b${term}\\b`, "g"), replacement)
-    }
-
-    // Symbols
-    text = text.replace(/->/g, " to ")
-
-    // File paths with directories: extract just the filename
-    text = text.replace(/(?:\/[\w.-]+)+\/([\w.-]+)/g, (match, filename) => {
-      return filename
-        .replace(/_/g, " ")
-        .replace(/\.(\w+)$/, " dot $1")
-    })
-
-    // Standalone filenames (word.ext): "show.ex" -> "show dot ex"
-    text = text.replace(/\b(\w[\w-]*)\.(ex|exs|js|ts|css|html|json|md|yml|yaml|toml|txt|rb|py|go|rs|sh|heex|eex|leex)\b/g,
-      (match, name, ext) => `${name.replace(/_/g, " ")} dot ${ext}`
-    )
-
-    // Remaining underscores to spaces (variable names etc.)
-    text = text.replace(/_/g, " ")
-
-    // Clean up excessive whitespace
-    text = text.replace(/\n{2,}/g, ". ")
-    text = text.replace(/\s+/g, " ")
-
-    return text.trim()
+    return cleanTextForTTS(text)
   },
 
   // Half-duplex hand-off to voice mode (voice_mode_spec.md §4.1/§8.1): the

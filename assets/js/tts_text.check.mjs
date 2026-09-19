@@ -1,0 +1,109 @@
+// Standalone checks for the TTS text normalizer (`cleanTextForTTS`). The
+// repo has no JS test runner, so this is a plain node script:
+//
+//     node assets/js/tts_text.check.mjs
+//
+// Exits non-zero on the first broken expectation. Keep it in sync with the
+// rules in tts_text.js.
+import { cleanTextForTTS, HASH_SPOKEN_CHARS, EXTENSION_MAP, TERM_MAP } from "./tts_text.js"
+
+let pass = 0, fail = 0
+const eq = (name, got, want) => {
+  const g = JSON.stringify(got), w = JSON.stringify(want)
+  if (g === w) { pass++; console.log(`  ok   ${name}`) }
+  else { fail++; console.log(`  FAIL ${name}\n       got  ${g}\n       want ${w}`) }
+}
+
+// -- regressions: behaviour that already existed ----------------------------
+
+eq("term map: GenServer", cleanTextForTTS("a GenServer crashed"), "a gen server crashed")
+eq("term map: iex", cleanTextForTTS("open iex"), "open I E X")
+eq("symbol: arrow", cleanTextForTTS("a -> b"), "a to b")
+eq("path to filename", cleanTextForTTS("see /lib/orca_hub/session_runner.ex for it"),
+   "see session runner dot ex for it")
+eq("underscores in prose", cleanTextForTTS("the foo_bar variable"), "the foo bar variable")
+eq("markdown header stripped", cleanTextForTTS("# Title\nbody"), "Title body")
+eq("code block dropped", cleanTextForTTS("before\n```\ncode\n```\nafter"), "before. after")
+eq("inline code keeps content", cleanTextForTTS("run `mix test` now"), "run mix test now")
+
+// -- A. extension pronunciation ---------------------------------------------
+
+eq("standalone .ex", cleanTextForTTS("open show.ex"), "open show dot ex")
+eq("standalone .md", cleanTextForTTS("read README.md"), "read README dot markdown")
+eq("standalone .py", cleanTextForTTS("run foo.py"), "run foo dot pie")
+eq("standalone .exs", cleanTextForTTS("script.exs"), "script dot ex s")
+eq("standalone .mjs newly added to alternation", cleanTextForTTS("bundle.mjs"), "bundle dot M J S")
+eq("standalone .lock newly added to alternation", cleanTextForTTS("mix.lock"), "mix dot lock")
+eq("standalone .json", cleanTextForTTS("data.json"), "data dot jason")
+eq("standalone .yml", cleanTextForTTS("ci.yml"), "ci dot yamel")
+eq("standalone .html", cleanTextForTTS("index.html"), "index dot H T M L")
+eq("path with known extension", cleanTextForTTS("see /a/b/foo.md here"), "see foo dot markdown here")
+eq("path with unknown extension keeps raw text (no invented pronunciation)",
+   cleanTextForTTS("see /a/b/archive.rar here"), "see archive dot rar here")
+eq("standalone unknown extension untouched (unchanged from before)",
+   cleanTextForTTS("archive.rar"), "archive.rar")
+eq(".heex file: term map does not swallow the dot",
+   cleanTextForTTS("HEEx templates live in show.heex"), "heeks templates live in show dot heeks")
+eq("lowercase heex in prose (not a filename) is left alone — a deliberate narrowing, see TERM_MAP comment",
+   cleanTextForTTS("the heex templating language"), "the heex templating language")
+
+// -- B. git hashes / UUIDs ---------------------------------------------------
+
+eq("bare hash: digit+letter always counts, no keyword needed", cleanTextForTTS("landed at 4dc631d today"),
+   "landed at 4 D C 6 today")
+eq("hash after keyword with intervening paren", cleanTextForTTS("see commit (4dc631d) for the fix"),
+   "see commit (4 D C 6) for the fix")
+eq("hash after keyword with intervening unmatched backtick (streaming partial chunk)",
+   cleanTextForTTS("sha `4dc631d is the fix"), "sha `4 D C 6 is the fix")
+eq("pure-letter hex NOT rewritten without a keyword", cleanTextForTTS("we deadbeef today"), "we deadbeef today")
+eq("pure-letter hex IS rewritten with a keyword", cleanTextForTTS("ref deadbeef is old"), "ref D E A D is old")
+eq("pure-digit token is not a hash without a keyword", cleanTextForTTS("there are 1234567 items"),
+   "there are 1234567 items")
+eq("pure-digit token IS a hash with a keyword", cleanTextForTTS("revision 1234567 broke it"),
+   "revision 1 2 3 4 broke it")
+eq("plain english word, no digit, no keyword: untouched", cleanTextForTTS("cafebabe"), "cafebabe")
+eq("HASH_SPOKEN_CHARS tuning knob is 4", HASH_SPOKEN_CHARS, 4)
+eq("uuid rewritten to first HASH_SPOKEN_CHARS chars",
+   cleanTextForTTS("session 8f14e45f-ceea-467e-adde-cd0f0143ea0d done"), "session 8 F 1 4 done")
+eq("uuid rule runs before bare-hash rule (no double match on its hex segments)",
+   cleanTextForTTS("id 8f14e45f-ceea-467e-adde-cd0f0143ea0d"), "id 8 F 1 4")
+
+// -- C. units -----------------------------------------------------------
+
+eq("Hz invariant, count 1", cleanTextForTTS("1 Hz"), "1 hertz")
+eq("Hz invariant, count > 1", cleanTextForTTS("60 Hz"), "60 hertz")
+eq("GHz with decimal", cleanTextForTTS("a 3.5GHz chip"), "a 3.5 gigahertz chip")
+eq("ms singular", cleanTextForTTS("wait 1ms"), "wait 1 millisecond")
+eq("ms plural", cleanTextForTTS("wait 250ms"), "wait 250 milliseconds")
+eq("ns plural", cleanTextForTTS("12 ns"), "12 nanoseconds")
+eq("MB singular", cleanTextForTTS("a 1 MB file"), "a 1 megabyte file")
+eq("MB plural", cleanTextForTTS("a 12 MB file"), "a 12 megabytes file")
+eq("case matters: lowercase mb untouched", cleanTextForTTS("12 mb of foo"), "12 mb of foo")
+eq("KB/s rate tried before bare KB in the alternation", cleanTextForTTS("throughput 5 KB/s"),
+   "throughput 5 kilobytes per second")
+eq("Mbps invariant per-second phrase", cleanTextForTTS("a 100 Mbps link"), "a 100 megabits per second link")
+eq("px plural", cleanTextForTTS("a 200px wide box"), "a 200 pixels wide box")
+eq("px singular", cleanTextForTTS("a 1px border"), "a 1 pixel border")
+eq("fps invariant", cleanTextForTTS("running at 60fps"), "running at 60 frames per second")
+eq("rpm invariant", cleanTextForTTS("2000 rpm"), "2000 revolutions per minute")
+eq("percent before a word (no \\b needed after %)", cleanTextForTTS("50% done"), "50 percent done")
+eq("percent before punctuation (the literal \\b template would fail here)",
+   cleanTextForTTS("it's 100%."), "it's 100 percent.")
+eq("comma-grouped thousands still pluralizes (not exactly \"1\")",
+   cleanTextForTTS("1,000 MB"), "1,000 megabytes")
+eq("bare s/m/h left alone — too ambiguous", cleanTextForTTS("wait 5s or 3m or 1h"), "wait 5s or 3m or 1h")
+
+// -- D. ordering / no rule eats another's input ------------------------------
+
+eq("hash resolved before the path regex ever sees it",
+   cleanTextForTTS("commit 4dc631d touched /lib/foo/bar.ex"), "commit 4 D C 6 touched bar dot ex")
+eq("unit rewrite does not create a token the filename regex re-splits",
+   cleanTextForTTS("download.py is 12MB"), "download dot pie is 12 megabytes")
+eq("EXTENSION_MAP has exactly the spec's list",
+   Object.keys(EXTENSION_MAP).sort().join(","),
+   ["md", "txt", "py", "ex", "exs", "heex", "eex", "leex", "js", "mjs", "ts", "json", "yml", "yaml",
+    "toml", "css", "html", "sh", "rb", "rs", "go", "lock"].sort().join(","))
+eq("TERM_MAP's literal-word UUID entry is untouched", TERM_MAP["UUID"], "U U I D")
+
+console.log(`\n${pass} passed, ${fail} failed`)
+process.exit(fail ? 1 : 0)

@@ -182,7 +182,10 @@ phase -> section); here is the shape and the traps.
   boundary past 240 chars / 1500 ms idle with >= 20 chars (a 500 ms tick fires
   that last rule during silence) — behind the "Speak while streaming" toggle
   (`orca:tts-stream`, off by default). At `stream_stop` the queue re-keys onto
-  the persisted id.
+  the persisted id. `assets/js/tts_text.js` (`cleanTextForTTS`, delegated to by
+  `ttsCleanText` in app.js) is the pure text normalizer both TTS paths share —
+  extension/hash/UUID/unit pronunciation, safe on partial streamed chunks; see
+  `assets/js/tts_text.check.mjs`.
 - **Single send path (C4).** The server stops delivering the draft: it pushes
   `send_request {text}` and the client `requestSubmit()`s the REAL composer
   form, so staged uploads and `[Attached image: …]` lines ride along, then
