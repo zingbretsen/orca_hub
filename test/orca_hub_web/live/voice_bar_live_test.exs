@@ -391,7 +391,7 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
     # quiet tick while the model works. The sounds themselves are WebAudio in
     # `assets/js/voice/sounds.js` and belong to the browser check; what this
     # file owns is the server half — the toggle, and the one event that tells
-    # the hook the TARGET session started answering.
+    # the hook the TARGET session's turn has ended the wait.
 
     defp armed(conn) do
       {:ok, view, _html} = live(conn, ~p"/projects")
@@ -467,13 +467,17 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
 
       assert_push_event(bar, "voice-turn", %{
         session_id: id,
-        answering: true,
+        stop: true,
         reason: "stream_start"
       })
 
       assert id == session.id
     end
 
+    # The flag is `stop`, and this test is why it cannot be called
+    # `answering`: an idle turn has ENDED, and nobody is answering it. It
+    # shares exactly one thing with a streamed delta — the tick must stop — so
+    # that is what the field is named for, and `reason` says which case it was.
     test "a backend with no deltas still stops it, on the assistant message or on idle",
          %{conn: conn} do
       session = new_session(%{title: "no deltas here"})
@@ -481,13 +485,24 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       render_hook(bar, "voice-target", %{"session_id" => session.id})
 
       broadcast(session.id, {:event, %{"type" => "assistant", "message" => %{}}})
-      assert_push_event(bar, "voice-turn", %{answering: true, reason: "assistant"})
+      assert_push_event(bar, "voice-turn", %{stop: true, reason: "assistant"})
 
       broadcast(session.id, {:status, :idle})
-      assert_push_event(bar, "voice-turn", %{answering: true, reason: "idle"})
+      assert_push_event(bar, "voice-turn", %{stop: true, reason: "idle"})
+    end
+
+    # Called out on its own because it is the case a user is likeliest to meet
+    # while staring at a silent screen: a turn that FAILED. A tick that
+    # outlived it would be the worst version of this feature.
+    test "a failed turn stops the tick too", %{conn: conn} do
+      session = new_session(%{title: "the one that failed"})
+      bar = armed(conn)
+      render_hook(bar, "voice-target", %{"session_id" => session.id})
 
       broadcast(session.id, {:status, :error})
-      assert_push_event(bar, "voice-turn", %{answering: true, reason: "error"})
+
+      assert_push_event(bar, "voice-turn", %{session_id: id, stop: true, reason: "error"})
+      assert id == session.id
     end
 
     test "nothing else on that busy topic is mistaken for an answer", %{conn: conn} do
@@ -522,7 +537,7 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       refute_push_event(bar, "voice-turn", %{}, 200)
 
       broadcast(second.id, {:assistant_stream_start, %{"stream_id" => "live"}})
-      assert_push_event(bar, "voice-turn", %{session_id: id, answering: true})
+      assert_push_event(bar, "voice-turn", %{session_id: id, stop: true})
       assert id == second.id
     end
 

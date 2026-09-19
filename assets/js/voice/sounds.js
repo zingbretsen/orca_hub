@@ -65,7 +65,7 @@ export const TICK_SOUND = "tick-1"
  * fast answer never ticks at all. */
 export const TICK_PERIOD_S = 3.5
 
-/** Hard stop on the tick, however the "it is answering" signal is lost — a
+/** Hard stop on the tick, however the bar's `stop` signal is lost — a
  * backend with no deltas that also never reports idle, a dropped LiveView
  * socket, a session whose node went away. A missed signal costs three minutes
  * of quiet clicking, never an afternoon of it. */
@@ -251,8 +251,14 @@ export function persistSoundsEnabled(enabled) {
  * takes effect on the next tick rather than needing the wait restarted.
  */
 export class VoiceSounds {
-  constructor({ enabled = true } = {}) {
+  // `maxWaitMs` is production's WAITING_MAX_MS everywhere except the headless
+  // check, which shortens it so the cap can be PROVEN rather than asserted in
+  // a comment — the cap is the last line of defence when every one of the
+  // bar's four stop signals is lost (a dropped PubSub message, a backend that
+  // emits none of them), so "it probably works" is not good enough for it.
+  constructor({ enabled = true, maxWaitMs = WAITING_MAX_MS } = {}) {
     this.enabled = !!enabled
+    this.maxWaitMs = maxWaitMs
     this.ctx = null
     this.waiting = false
     this._timer = null
@@ -289,7 +295,7 @@ export class VoiceSounds {
     this._cap = setTimeout(() => {
       this.stats.capped++
       this.stopWaiting()
-    }, WAITING_MAX_MS)
+    }, this.maxWaitMs)
     if (this.enabled) this._startTimer()
   }
 

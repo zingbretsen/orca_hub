@@ -217,11 +217,15 @@ export const VoiceHook = {
       this.sounds.setEnabled(enabled)
       persistSoundsEnabled(enabled)
     })
-    this.handleEvent("voice-turn", ({ session_id, answering }) => {
+    this.handleEvent("voice-turn", ({ session_id, stop }) => {
       // Scoped defensively: VoiceBarLive only ever subscribes to the current
       // target, but a retarget and an in-flight broadcast can cross.
       if (session_id && this.target && session_id !== this.target) return
-      if (answering) this.sounds.stopWaiting()
+      // `stop`, not `answering`: two of the four cases the bar reports
+      // (`idle`, `error`) are a turn that ENDED with nobody answering. The
+      // errored one matters most — an endless tick after a failed turn is the
+      // worst version of this feature.
+      if (stop) this.sounds.stopWaiting()
     })
   },
 

@@ -71,13 +71,15 @@ defmodule OrcaHubWeb.VoiceBarLive do
   the target's existing `session:<id>` topic (re-subscribed on every retarget,
   never more than one at a time) and pushes ONE event at the hook:
 
-      voice-turn  %{session_id: id, answering: true, reason: ...}
+      voice-turn  %{session_id: id, stop: true, reason: ...}
 
-  `reason` is `"stream_start"` for `Backend.Deltas`' first delta — the
-  earliest reliable "it is answering" — with `"assistant"` (a persisted
-  assistant event) and `"idle"`/`"error"` as the backstops for a backend that
-  streams no deltas at all. Nothing here starts the tick: that is the hook's
-  `"sent"` handler, because only the hook knows the send was a VOICE send.
+  The flag is `stop`, not `answering`: `"stream_start"` (`Backend.Deltas`'
+  first delta, the earliest reliable "it is answering") and `"assistant"` (a
+  persisted assistant event) really are an answer, but `"idle"` and
+  `"error"` — the backstops for a backend that streams no deltas — mean the
+  turn ENDED with nobody answering. One flag, one meaning; `reason` carries
+  which it was. Nothing here starts the tick: that is the hook's `"sent"`
+  handler, because only the hook knows the send was a VOICE send.
   """
   use OrcaHubWeb, :live_view
 
@@ -219,29 +221,36 @@ defmodule OrcaHubWeb.VoiceBarLive do
 
   # ORCAHUB3-93 — the target session's turn, off its own `session:<id>` topic.
   #
-  # Only ONE direction is reported: "it is answering, stop the tick". Starting
-  # the tick is the hook's job, because only the hook knows the send that
-  # opened this wait was a spoken one.
+  # Only ONE direction is reported, and the flag is named for it: `stop: true`,
+  # "stop the tick". It is deliberately NOT called `answering`, because two of
+  # the four cases are not an answer at all — an errored or idle turn has
+  # ENDED, and nobody is answering. All four share exactly one thing, so the
+  # field says exactly that thing and `reason` carries the detail.
+  #
+  # Starting the tick is the hook's job, because only the hook knows the send
+  # that opened this wait was a spoken one.
   #
   # `Backend.Deltas`' stream_start is the earliest reliable signal and the one
-  # that makes this feel right; the other two are backstops for a backend that
-  # streams nothing, where "the turn is over" is the best we can do.
+  # that makes this feel right; the rest are backstops for a backend that
+  # streams nothing. `:error` matters most of all: a failed turn is when the
+  # user is likeliest to be sitting in front of a silent screen, and a tick
+  # that outlived it would be the worst version of this feature.
   @impl true
   def handle_info({:assistant_stream_start, _payload}, socket),
-    do: {:noreply, turn_answering(socket, "stream_start")}
+    do: {:noreply, stop_ticking(socket, "stream_start")}
 
   def handle_info({:event, %{"type" => "assistant"}}, socket),
-    do: {:noreply, turn_answering(socket, "assistant")}
+    do: {:noreply, stop_ticking(socket, "assistant")}
 
   def handle_info({:status, status}, socket) when status in [:idle, :error],
-    do: {:noreply, turn_answering(socket, to_string(status))}
+    do: {:noreply, stop_ticking(socket, to_string(status))}
 
   # `session:<id>` carries far more than the three above — progress, queue
-  # updates, every other event type, `:running`, `:compacting`. None of it is
-  # evidence the answer has started, and none of it may crash the header.
+  # updates, every other event type, `:running`, `:compacting`. None of it
+  # ends the wait, and none of it may crash the header.
   def handle_info(_msg, socket), do: {:noreply, socket}
 
-  defp turn_answering(socket, reason) do
+  defp stop_ticking(socket, reason) do
     case socket.assigns.watching do
       nil ->
         socket
@@ -249,7 +258,7 @@ defmodule OrcaHubWeb.VoiceBarLive do
       id ->
         push_event(socket, "voice-turn", %{
           session_id: id,
-          answering: true,
+          stop: true,
           reason: reason
         })
     end
