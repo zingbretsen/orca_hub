@@ -1,18 +1,31 @@
 # Turn-end push payload contract (Gotify)
 
-A genuine SessionRunner `running -> idle | error` transition fires ONE Gotify
-notification, automatically, for the sessions Zach talks to himself (roots,
-orchestrators, trigger sessions — see "When it fires" for what's suppressed).
-This is distinct from the opt-in `send_notification` MCP
-tool, which only fires when an agent asks for it.
+**Status: OPT-IN, OFF BY DEFAULT.** When enabled, a genuine SessionRunner
+`running -> idle | error` transition fires ONE Gotify notification for the
+sessions Zach talks to himself (roots, orchestrators, trigger sessions — see
+"When it fires" for what's suppressed). Nothing is sent unless
+`ORCA_NOTIFY_ON_FINISH` is set on the runner's node (see "Enabling it").
+This is distinct from the `send_notification` MCP tool, which is per-call and
+only fires when an agent asks for it.
 
-The consumer is the unified Android app (phone + Wear + Android Auto) — see
-`/home/zach/experiments/orca-watch/DESIGN.md` §7c, §1.4 and risk **R12**. That
-app renders its `MessagingStyle` notification **entirely from this payload**:
-when OrcaHub is unreachable (the "reply from the car, VPN down" scenario) the
-client cannot call back to fill anything in. **Anything missing from the push
-is missing forever.** Treat the four fields below as a contract, not a
-convenience, and do not rename or drop one without changing the client.
+**Why it defaults off (D6).** It shipped default-ON for the Android app
+(ebf8ffb), and every session turn end on every node buzzed the phone — a flood
+in practice. Zach then decided (D6) the app will receive finish events from a
+**direct authenticated Phoenix channel on the hub** instead of via Gotify, so
+Gotify is no longer this feature's delivery path for the primary consumer. The
+code paths below are deliberately KEPT and still work — the push is now
+something you turn on for a node when you want it, not the default behaviour.
+The hub channel itself is a later phase and does not exist yet.
+
+The consumer this payload was designed for is the unified Android app (phone +
+Wear + Android Auto) — see `/home/zach/experiments/orca-watch/DESIGN.md` §7c,
+§1.4 and risk **R12**. That app renders its `MessagingStyle` notification
+**entirely from this payload**: when OrcaHub is unreachable (the "reply from
+the car, VPN down" scenario) the client cannot call back to fill anything in.
+**Anything missing from the push is missing forever.** Treat the four fields
+below as a contract, not a convenience, and do not rename or drop one without
+changing the client — the same four fields are the obvious starting shape for
+the hub channel that replaces this path.
 
 ## The wire shape
 
@@ -55,7 +68,8 @@ add their `client::*` entries on top and win any key clash.
 
 ## When it fires
 
-Only from `SessionRunner.handle_turn_end/3`, which is reached from exactly the
+Only when `ORCA_NOTIFY_ON_FINISH` is enabled on the runner's node, and then
+only from `SessionRunner.handle_turn_end/3`, which is reached from exactly the
 five `running -> idle|error` paths (one-shot exit, streaming idle, streaming
 error, streaming port-exit-mid-turn, kill-switch downgrade). So: once per turn
 end, on the transition itself — never from an idle heartbeat or a status
@@ -73,7 +87,8 @@ Suppressed for:
 - archived sessions (`archived_at` set);
 - non-turn-end statuses — `"waiting"` (an unanswered AskUserQuestion) and
   `"compacting"` both map to `nil` via `notify_status/1`;
-- `ORCA_NOTIFY_ON_FINISH=false` / `0` (see below);
+- **every node where `ORCA_NOTIFY_ON_FINISH` is unset** — the default (see
+  "Enabling it" below); an explicit `false` / `0` also suppresses;
 - a hub with no `GOTIFY_TOKEN`, which is a SILENT no-op — `{:ok, :skipped}`,
   no log line, so an unconfigured hub produces no per-turn log spam.
 
@@ -97,12 +112,16 @@ endpoint URL, which is the public ingress host — an agent node's `PHX_HOST`
 is typically a LAN address). So an agent node needs neither `GOTIFY_TOKEN`
 nor DB access for this, exactly like the `send_notification` tool.
 
-## Kill switch
+## Enabling it
 
-`ORCA_NOTIFY_ON_FINISH=false` (or `0`) silences the automatic push. Defaults
-ON. It is read on the RUNNER's node (`Application.get_env(:orca_hub,
-:notify_on_finish, true)`), so set it on the node whose sessions should stay
-quiet. The MCP `send_notification` tool is unaffected by it.
+`ORCA_NOTIFY_ON_FINISH=true` (or `1`) turns the push on. **Defaults OFF** (D6,
+above) — unset, empty, `false` and `0` all mean no push, so there is nothing
+to "silence": a node stays quiet until someone opts it in. It is read on the
+RUNNER's node (`SessionRunner.finish_notifications_enabled?/0` →
+`Application.get_env(:orca_hub, :notify_on_finish, false) == true`, set from
+the env var in `config/runtime.exs`), so set it on the node whose sessions
+should push, not only on the hub. The MCP `send_notification` tool is
+unaffected by it and keeps working regardless.
 
 In `:test`, `config/runtime.exs` forces `:gotify_token` to `nil` regardless of
 a developer's `.env`, because `mix test` drives real turn-end transitions —
@@ -112,5 +131,7 @@ tests that want the HTTP path set `:gotify_token` plus `:gotify_req_options`
 ## Tests
 
 `test/orca_hub/session_finish_notification_test.exs` (contract, suppression,
-kill switch) and the extras-passthrough block in
+the opt-in switch — its `setup` enables the flag, since every delivery AND
+suppression assertion there would otherwise pass for the wrong reason) and the
+extras-passthrough block in
 `test/orca_hub/mcp/tools/notify_test.exs`.

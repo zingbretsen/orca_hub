@@ -1,12 +1,18 @@
 defmodule OrcaHub.SessionFinishNotificationTest do
   @moduledoc """
-  The AUTOMATIC turn-end Gotify push (orca-watch DESIGN.md §7c, risk R12).
+  The turn-end Gotify push (orca-watch DESIGN.md §7c, risk R12).
 
-  Unlike the opt-in `send_notification` MCP tool, this fires on every genuine
-  `running -> idle|error` transition, and the Android client renders its
-  notification ENTIRELY from the payload — it cannot call back to OrcaHub
-  when OrcaHub is the unreachable thing (§1.4 step 3). So the four fields
-  under `extras["orca"]` are a CONTRACT, asserted here field by field.
+  It is OPT-IN and OFF by default (D6 — the Android app takes finish events
+  from a direct authenticated channel on the hub instead), so every test
+  below that asserts either delivery OR suppression turns the flag on
+  explicitly in `setup`; otherwise a suppression test would pass for the
+  wrong reason. The one test that exercises the default leaves it unset.
+
+  When enabled it fires on every genuine `running -> idle|error` transition,
+  and the Android client renders its notification ENTIRELY from the payload —
+  it cannot call back to OrcaHub when OrcaHub is the unreachable thing (§1.4
+  step 3). So the four fields under `extras["orca"]` are a CONTRACT, asserted
+  here field by field.
 
   State-transition tests drive `SessionRunner.running/3` directly against a
   real DB-backed session (no live port needed) — same pattern as
@@ -21,6 +27,8 @@ defmodule OrcaHub.SessionFinishNotificationTest do
   @stub OrcaHub.SessionFinishNotificationStub
 
   setup do
+    # The push is opt-in since D6 — nothing fires without this.
+    Application.put_env(:orca_hub, :notify_on_finish, true)
     Application.put_env(:orca_hub, :gotify_token, "test-token")
     Application.put_env(:orca_hub, :gotify_url, "https://gotify.example.com")
     Application.put_env(:orca_hub, :gotify_req_options, plug: {Req.Test, @stub})
@@ -264,7 +272,29 @@ defmodule OrcaHub.SessionFinishNotificationTest do
       refute_gotify()
     end
 
-    test "ORCA_NOTIFY_ON_FINISH=false (config :notify_on_finish false) silences it", %{dir: dir} do
+    test "with no ORCA_NOTIFY_ON_FINISH set at all, the hook is a no-op", %{dir: dir} do
+      # D6: the push is opt-in. Unset means OFF — not "off unless someone
+      # remembered to silence it" — so a turn end must produce NO Gotify call.
+      Application.delete_env(:orca_hub, :notify_on_finish)
+      refute SessionRunner.finish_notifications_enabled?()
+
+      {:ok, session} =
+        Sessions.create_session(%{directory: dir, status: "running", title: "default quiet"})
+
+      assistant_message(session.id, "done")
+
+      assert {:next_state, :idle, _} =
+               SessionRunner.running(
+                 :info,
+                 {:fake_port, {:exit_status, 0}},
+                 base_data(session, %{})
+               )
+
+      refute_gotify()
+    end
+
+    test "an explicit ORCA_NOTIFY_ON_FINISH=false (config :notify_on_finish false) silences it",
+         %{dir: dir} do
       Application.put_env(:orca_hub, :notify_on_finish, false)
       refute SessionRunner.finish_notifications_enabled?()
 
@@ -283,8 +313,11 @@ defmodule OrcaHub.SessionFinishNotificationTest do
       refute_gotify()
     end
 
-    test "the kill switch defaults ON when unset" do
+    test "the switch defaults OFF when unset, and only a literal true opts in" do
       Application.delete_env(:orca_hub, :notify_on_finish)
+      refute SessionRunner.finish_notifications_enabled?()
+
+      Application.put_env(:orca_hub, :notify_on_finish, true)
       assert SessionRunner.finish_notifications_enabled?()
     end
 

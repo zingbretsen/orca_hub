@@ -1303,11 +1303,13 @@ defmodule OrcaHub.SessionRunner do
   end
 
   @doc """
-  Node-local kill switch for the automatic turn-end push: set
-  `ORCA_NOTIFY_ON_FINISH=false` (or `0`) to silence it. Defaults ON.
+  Node-local switch for the turn-end push: set `ORCA_NOTIFY_ON_FINISH=true`
+  (or `1`) to enable it. Defaults OFF — per D6 the Android app gets finish
+  events from a direct authenticated channel on the hub, not from Gotify, so
+  the push is opt-in rather than something you have to silence.
   """
   def finish_notifications_enabled?,
-    do: Application.get_env(:orca_hub, :notify_on_finish, true) != false
+    do: Application.get_env(:orca_hub, :notify_on_finish, false) == true
 
   @doc false
   # Public as a test seam (same pattern as `deliver_parent_notification/3`):

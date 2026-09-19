@@ -6,9 +6,10 @@ defmodule OrcaHub.Notify do
 
     * `deliver/1` — the generic sender, backing the `send_notification` MCP
       tool (`OrcaHub.MCP.Tools.Notify`).
-    * `deliver_session_finished/1` — the AUTOMATIC turn-end push fired by
+    * `deliver_session_finished/1` — the turn-end push fired by
       `OrcaHub.SessionRunner` on a genuine `running -> idle|error`
-      transition. Its `extras["orca"]` payload is a strict contract; see
+      transition, when `ORCA_NOTIFY_ON_FINISH` opts that node in (off by
+      default). Its `extras["orca"]` payload is a strict contract; see
       `.context/push-payload.md`.
 
   Unlike `OrcaHub.MCP.Tools.Databases`/`PhxAgents` (which call their external
@@ -51,7 +52,8 @@ defmodule OrcaHub.Notify do
   end
 
   @doc """
-  The automatic turn-end push for a session that just went idle or errored.
+  The turn-end push for a session that just went idle or errored — opt-in,
+  gated on `SessionRunner.finish_notifications_enabled?/0` (off by default).
 
   Called ON THE HUB (via `OrcaHub.HubRPC.send_session_finished_notification/1`)
   with only the three fields the runner knows — `session_id`,

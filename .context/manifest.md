@@ -26,7 +26,8 @@ docs it points at stay on disk — `Read` them on demand, never inline them.
   reuse_session, archive_on_complete, per-trigger tool restrictions.
 - `.context/terminals.md` — PTY terminals, PubSub topics, multi-client
   pairing, cluster routing.
-- `.context/push-payload.md` — the automatic turn-end Gotify push contract.
+- `.context/push-payload.md` — turn-end Gotify push contract (opt-in, off by
+  default since D6).
 - `.context/voice-mode.md` — voice mode phases 1-2c: capture/VAD/ASR pipeline,
   the OVS1 wire contract, ASRConfig, browser traps, asset packaging, assistant
   deltas, streaming TTS, the global voice bar, and voice-driven interaction
