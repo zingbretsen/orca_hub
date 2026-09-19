@@ -196,8 +196,12 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "description" =>
                 "pi-backend only. Fork the CALLER's session: the new child starts with a " <>
                   "byte-identical copy of your full conversation context (cheap on a " <>
-                  "prompt-cached provider) instead of a blank context. The child is a " <>
-                  "normal child session in every other respect. Default: false."
+                  "prompt-cached provider) instead of a blank context. The child INHERITS " <>
+                  "the caller's backend, model, and orchestrator flag — a flag-changing " <>
+                  "fork would render different system-prompt bytes and inherit none of the " <>
+                  "cached prefix, defeating the point — and a conflicting backend/model/" <>
+                  "directory/project_id/node argument is REJECTED rather than silently " <>
+                  "overridden. Otherwise a normal child session. Default: false."
             },
             "tool_allowlist" => %{
               "type" => "array",
