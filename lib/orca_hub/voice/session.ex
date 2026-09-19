@@ -613,7 +613,7 @@ defmodule OrcaHub.Voice.Session do
         {disarm(state),
          [
            result_effect(entry.seq, "palette_query", base),
-           {:ui_action, "palette_query", %{text: text}}
+           {:ui_action, "palette_query", %{text: spoken_query(text)}}
          ]}
     end
   end
@@ -634,6 +634,23 @@ defmodule OrcaHub.Voice.Session do
       Keyword.put(base, :intent_name, to_string(name)),
       now
     )
+  end
+
+  # §8.3.6 amendment: a spoken palette query is stripped of the sentence
+  # punctuation the ASR adds; the draft is NEVER stripped.
+  #
+  # Measured end to end on 2026-09-18: every palette filter behind
+  # `CommandPaletteLive` is a literal `String.contains?` on the downcased
+  # name, so the period Whisper puts on the end of "security." takes the
+  # result list from 1 row to 0 — and Whisper punctuates essentially every
+  # utterance, which made EVERY spoken query match nothing. This is the one
+  # place it is safe to fix: `CommandPaletteLive`'s matching belongs to typed
+  # users, and dictation must keep its punctuation, so the normalization
+  # lives on the spoken-query path only.
+  defp spoken_query(text) do
+    text
+    |> String.replace(~r/[.,!?]+\s*$/u, "")
+    |> String.trim()
   end
 
   # -- :action (§8.1/§8.2, plus §8.3.6's palette-focus exceptions) -----------

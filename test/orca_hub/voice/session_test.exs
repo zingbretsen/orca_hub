@@ -740,6 +740,33 @@ defmodule OrcaHub.Voice.SessionTest do
       assert state.draft == "draft I care about"
     end
 
+    test "a spoken palette query is stripped of the ASR's sentence punctuation",
+         %{state: state} do
+      # Every filter behind the palette is a literal `String.contains?`, and
+      # the ASR punctuates nearly every utterance — so an unstripped period
+      # takes a query that matched one row to matching none.
+      for {heard, wire} <- [
+            {"the deploy script.", "the deploy script"},
+            {"the deploy script?", "the deploy script"},
+            {"the deploy script!", "the deploy script"},
+            {"the deploy script,", "the deploy script"},
+            {"the deploy script...", "the deploy script"},
+            {"the deploy script. ", "the deploy script"}
+          ] do
+        {_state, effects} = utterance(state, 2, heard, @t0 + 10)
+
+        assert ui_actions(effects) == [{"palette_query", %{text: wire}}],
+               "heard #{inspect(heard)} should reach the palette as #{inspect(wire)}"
+      end
+    end
+
+    test "stripping is spoken-query-only: dictation keeps its punctuation" do
+      {state, effects} = utterance(Session.new(), 1, "ship it. then tell me.", @t0)
+
+      assert actions(effects) == ["appended"]
+      assert state.draft == "ship it. then tell me."
+    end
+
     test "a palette query REPLACES rather than accumulating", %{state: state} do
       {state, effects} = utterance(state, 2, "the deploy script", @t0 + 10)
       assert ui_actions(effects) == [{"palette_query", %{text: "the deploy script"}}]
