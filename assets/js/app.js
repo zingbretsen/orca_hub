@@ -22,7 +22,7 @@ import "phoenix_html"
 import { TerminalHook } from "./terminal_hook"
 import { VoiceHook } from "./voice/voice_hook"
 import { createTtsStreamAccumulator, toolAnnouncement, SENTENCE_BOUNDARY } from "./tts_stream"
-import { cleanTextForTTS } from "./tts_text"
+import { cleanTextForTTS, extractSpeakableFromElement } from "./tts_text"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
@@ -533,9 +533,14 @@ const TTSMethods = {
   ttsExtractText(id) {
     // Locate the message's text bubble by id lookup — never by DOM
     // position (see TTSMethods' header comment / tts_rewrite_spec.md §5).
+    // Walk the bubble with extractSpeakableFromElement rather than reading
+    // `bubble.innerText` — a detached-clone `innerText` degrades to
+    // `textContent` and silently drops line breaks, and only a real walk
+    // can drop `<pre>` (fenced code) subtrees and route `<code>` spans
+    // through speakCodeSpan (see tts_text.js's header comment).
     const bubble = document.getElementById(`tts-text-${id}`)
     if (!bubble) return ""
-    return this.ttsCleanText(bubble.innerText || "")
+    return this.ttsCleanText(extractSpeakableFromElement(bubble))
   },
 
   // Thin delegate to the pure, unit-tested normalizer in tts_text.js — kept

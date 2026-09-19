@@ -5,7 +5,10 @@
 //
 // Exits non-zero on the first broken expectation. Keep it in sync with the
 // rules in tts_text.js.
-import { cleanTextForTTS, HASH_SPOKEN_CHARS, EXTENSION_MAP, TERM_MAP } from "./tts_text.js"
+import {
+  cleanTextForTTS, HASH_SPOKEN_CHARS, EXTENSION_MAP, TERM_MAP,
+  speakCodeSpan, extractSpeakableFromElement,
+} from "./tts_text.js"
 
 let pass = 0, fail = 0
 const eq = (name, got, want) => {
@@ -109,6 +112,58 @@ eq("relative path with 1 slash, no extension: left alone (ambiguous with prose)"
    cleanTextForTTS("and/or"), "and/or")
 eq("fraction-looking text with 1 slash, no extension: left alone",
    cleanTextForTTS("open 24/7"), "open 24/7")
+
+// -- E. speakCodeSpan: identifier splitting inside code spans ---------------
+
+eq("code span: bracket punctuation collapsed to spaces", speakCodeSpan("%{foo: 1}"), "% foo: 1")
+eq("code span: a whole shell command tokenizes normally, not mangled as one blob",
+   speakCodeSpan("mix test --only repro"), "mix test --only repro")
+eq("code span: PascalCase split on case transitions", speakCodeSpan("SessionRunner"), "Session Runner")
+eq("code span: camelCase split on case transitions", speakCodeSpan("handleEvent"), "handle Event")
+eq("code span: acronym-run then PascalCase boundary", speakCodeSpan("TTSPlayer"), "TTS Player")
+eq("code span: snake_case split on internal underscore", speakCodeSpan("my_var"), "my var")
+eq("code span: a flag is left alone (dash, no case/underscore transition)",
+   speakCodeSpan("--skip-arm64"), "--skip-arm64")
+eq("code span: a path is left untouched so the downstream path rule can still resolve it",
+   speakCodeSpan("lib/orca_hub/tts.ex"), "lib/orca_hub/tts.ex")
+
+eq("inline code backtick rule speaks the span instead of reading it verbatim",
+   cleanTextForTTS("call `handleEvent` please"), "call handle Event please")
+eq("inline code containing a path still resolves through the path rule afterwards",
+   cleanTextForTTS("see `lib/orca_hub/tts.ex` here"), "see tts dot ex here")
+
+// -- F. extractSpeakableFromElement: DOM walk (pre dropped, code spoken) ----
+// Hand-built fake-DOM object literals — nodeType/nodeName/childNodes/
+// textContent only, the same shape a real DOM node exposes, so the walker
+// under test never knows the difference. Unlike a real element, a plain
+// object literal has no computed textContent, so fixtures set it explicitly
+// on every element (not just text nodes) wherever the walker reads it.
+const textNode = (s) => ({ nodeType: 3, textContent: s })
+const elNode = (name, children, textContent) => ({ nodeType: 1, nodeName: name, childNodes: children, textContent })
+
+eq("extractSpeakableFromElement: a <pre> subtree vanishes silently, no announcement",
+   cleanTextForTTS(extractSpeakableFromElement(elNode("DIV", [
+     textNode("before "),
+     elNode("PRE", [elNode("CODE", [textNode("secret_code_here")], "secret_code_here")], "secret_code_here"),
+     textNode(" after"),
+   ]))),
+   "before after.")
+eq("extractSpeakableFromElement: an inline <code> span is routed through speakCodeSpan",
+   cleanTextForTTS(extractSpeakableFromElement(elNode("DIV", [
+     textNode("Rename "),
+     elNode("CODE", [textNode("SessionRunner")], "SessionRunner"),
+     textNode(" please"),
+   ]))),
+   "Rename Session Runner please.")
+eq("INVARIANT: a message that is entirely a fenced code block extracts to the empty string, " +
+   "not a stray \".\" — ttsStart's `if (!text) return` gate depends on this to stay a no-op " +
+   "(no playback, no ttsEmitState, no half-started player) instead of emitting {playing: true} " +
+   "with nothing to guarantee a matching {playing: false} (see tts_text.js's header comment)",
+   cleanTextForTTS(extractSpeakableFromElement(elNode("DIV", [
+     elNode("PRE", [elNode("CODE", [textNode("defmodule Foo do\n  :ok\nend")], "defmodule Foo do\n  :ok\nend")],
+       "defmodule Foo do\n  :ok\nend"),
+   ]))),
+   "")
 
 eq("EXTENSION_MAP has exactly the spec's list",
    Object.keys(EXTENSION_MAP).sort().join(","),

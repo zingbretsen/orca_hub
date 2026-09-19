@@ -9,7 +9,23 @@
 //
 // `ttsCleanText` in app.js is a thin delegate to `cleanTextForTTS` here; it
 // is kept because it's referenced by name in tts_stream.js's header comment
-// and called from two sites (ttsExtractText, ttsStreamEnqueue).
+// and called from two sites (ttsExtractText, ttsStreamEnqueue). `ttsExtractText`
+// itself delegates DOM extraction to `extractSpeakableFromElement` below,
+// rather than `bubble.innerText`, so fenced code blocks (rendered as `<pre>`
+// by the time the bubble is real HTML — no backticks left for
+// `cleanTextForTTS`'s markdown-strip rule to see) are dropped, and inline
+// `<code>` spans go through the same `speakCodeSpan` identifier-splitter as
+// the streaming path's backtick rule.
+//
+// INVARIANT (agreed with voice mode, load-bearing): a message that is
+// entirely a fenced code block must make `cleanTextForTTS` return the empty
+// string, not e.g. a stray "." — app.js's `ttsStart` gates its `this.playing
+// = true` / `ttsEmitState()` behind `if (!text) return`, and the voice hook
+// latches its mic-mute on that emitted `{playing}` boolean, so a `true` with
+// no matching `false` (a one-chunk player that "plays" punctuation and never
+// really starts) leaves the mic dead with no error and no recovery short of
+// toggling voice off and on. See the whitespace-cleanup step's trim-before-
+// the-period-rule comment below for the mechanics.
 //
 // Rule order (each step runs on the previous step's output, and later rules
 // must not re-mangle an earlier rule's result):
@@ -174,11 +190,106 @@ function replaceUnits(text) {
   })
 }
 
+// Elements that stand for a paragraph/line/cell break in rendered markdown —
+// extractSpeakableFromElement emits a blank-line (two newlines) after each,
+// which the `\n{2,}` -> ". " rule downstream turns into a sentence break.
+// <pre> is deliberately absent: it's skipped wholesale, not walked.
+const BLOCK_TAGS = new Set([
+  "P", "DIV", "LI", "UL", "OL", "H1", "H2", "H3", "H4", "H5", "H6",
+  "BLOCKQUOTE", "TABLE", "TR", "TD", "TH", "HR",
+])
+
+// Punctuation collapsed to a space ONLY inside a code span — bracket noise
+// like `%{foo: 1}` otherwise reads badly aloud. `/`, `.` and `-` are
+// deliberately NOT in this list: they must survive so the path/extension/
+// hash rules downstream still fire on a path or hash inside a code span.
+const CODE_BRACKET_RE = /[(){}\[\]]/g
+
+// lower/digit -> upper ("handleEvent" -> "handle Event") and the acronym
+// boundary upper-run -> upper+lower ("TTSPlayer" -> "TTS Player").
+function splitCamelCase(token) {
+  return token
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+}
+
+// Splits one whitespace-delimited token from inside a code span into
+// speakable words: snake_case on internal underscores, camelCase/PascalCase
+// on case transitions. Left alone: flags ("--skip-arm64"), bare words,
+// numbers — anything with no internal case/underscore transition to split
+// on. A token containing "/" is left completely untouched: it's path-like,
+// and the path/extension/hash rules downstream (which run after inline code
+// is resolved, in the same cleanTextForTTS pass) already handle it — a
+// pre-emptive split here (e.g. "orca_hub" -> "orca hub" inside
+// "lib/orca_hub/tts.ex") would insert a space into what those regexes need
+// to see as one contiguous slash-separated run, breaking the match.
+function splitIdentifierToken(token) {
+  if (token.includes("/")) return token
+  let out = token
+  if (/\w_\w/.test(out)) out = out.replace(/_/g, " ")
+  return splitCamelCase(out)
+}
+
+// Turns the text of an inline (or standalone) `<code>` span into something
+// speakable, one whitespace-delimited token at a time — an inline span is
+// often a whole shell command ("mix test --only repro"), which must still
+// read as the command, tokenized normally, not as a single mangled blob.
+export function speakCodeSpan(code) {
+  return code
+    .replace(CODE_BRACKET_RE, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(splitIdentifierToken)
+    .join(" ")
+}
+
+// Walks a rendered message bubble and returns its speakable text. This is
+// the DOM-extraction counterpart to cleanTextForTTS's inline-code/fence
+// rules: by the time a bubble is rendered HTML, there are no backticks left
+// for those regexes to see, so code-block/code-span handling has to happen
+// here, at walk time, instead. `<pre>` subtrees (fenced code blocks) are
+// dropped entirely and SILENTLY — no "code block" announcement, matching
+// how tts_stream.js's accumulator withholds fenced content on the streaming
+// path. Written against only nodeType/nodeName/childNodes/textContent (the
+// same shape on a real DOM node or a plain object literal) so it's
+// exercisable from the node-only check script.
+export function extractSpeakableFromElement(el) {
+  let out = ""
+  const walk = (node) => {
+    if (!node) return
+    if (node.nodeType === 3) { // TEXT_NODE
+      out += node.textContent || ""
+      return
+    }
+    if (node.nodeType !== 1) return // skip comments etc.
+    const tag = (node.nodeName || "").toUpperCase()
+    if (tag === "PRE") return // fenced code block: silent, not read aloud
+    if (tag === "BR") {
+      out += "\n"
+      return
+    }
+    if (tag === "CODE") {
+      out += speakCodeSpan(node.textContent || "")
+      return
+    }
+    for (const child of node.childNodes || []) walk(child)
+    if (BLOCK_TAGS.has(tag)) out += "\n\n"
+  }
+  walk(el)
+  return out
+}
+
 export function cleanTextForTTS(text) {
   // Strip markdown artifacts that innerText might preserve
   text = text.replace(/^#{1,6}\s+/gm, "")          // markdown headers
-  text = text.replace(/```[\s\S]*?```/g, "")        // code blocks
-  text = text.replace(/`([^`]+)`/g, "$1")           // inline code (keep content)
+  text = text.replace(/```[\s\S]*?```/g, "")        // code blocks (only ever
+                                                      // fires on the streaming
+                                                      // path — a rendered
+                                                      // bubble's backticks are
+                                                      // long gone by the time
+                                                      // extractSpeakableFromElement
+                                                      // hands text here)
+  text = text.replace(/`([^`]+)`/g, (m, content) => speakCodeSpan(content)) // inline code
 
   // Elixir/programming term pronunciations (run BEFORE path/hash replacements)
   for (const [term, replacement] of Object.entries(TERM_MAP)) {
@@ -235,6 +346,16 @@ export function cleanTextForTTS(text) {
 
   // Remaining underscores to spaces (variable names etc.)
   text = text.replace(/_/g, " ")
+
+  // Text with no real content at all — e.g. extractSpeakableFromElement on a
+  // bubble that's entirely a dropped <pre>, which contributes nothing but
+  // its own trailing block-boundary newlines ("\n\n") — must come back as
+  // the empty string, not fall into the blank-line -> ". " rule below and
+  // come out as a stray "." (see the module header comment's INVARIANT
+  // note: a truthy "." would defeat ttsStart's `if (!text) return` gate).
+  // Checked here rather than folded into the generic whitespace cleanup so
+  // real content keeps its existing trailing-period behaviour untouched.
+  if (!text.trim()) return ""
 
   // Clean up excessive whitespace
   text = text.replace(/\n{2,}/g, ". ")
