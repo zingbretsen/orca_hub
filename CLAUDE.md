@@ -244,6 +244,13 @@ HPACK/QPACK DoS). Neither is a direct dep; both were fixed just by
 with security advisories" line in ordinary output is never noise — stop and read
 it.
 
+Note that the audit tally moves on its own: advisories get published, amended or
+withdrawn upstream between runs. cowlib's EEF-CVE-2026-43971 was listed on
+2026-09-11 and gone by 2026-09-18 with no change on our side. So a shrinking
+count is not evidence that a run fixed something, and a growing one is not
+necessarily a regression you introduced — compare package VERSIONS, not counts,
+before claiming either.
+
 **Where the changelogs live.** Check `mix hex.info <dep>` FIRST — it often prints
 a `Changelog:` link already pinned to the release tag (dotenvy does), which beats
 guessing a raw path. Otherwise nearly every Elixir dep keeps a `CHANGELOG.md` at
@@ -266,6 +273,8 @@ Confirmed paths for this project's deps:
 | mint | `github.com/elixir-mint/mint` /CHANGELOG.md |
 | dotenvy | `mix hex.info dotenvy` prints a tag-pinned `Changelog:` link |
 | dialyxir | GitHub **Releases**, not a changelog file — and its 1.x tags have NO `v` prefix (`1.4.8`, not `v1.4.8`), so `compare/v1.4.7...v1.4.8` 404s |
+| tz | **no CHANGELOG.md on `main`** (404) — use the tag diff. Its releases bundle the IANA database, so read the diff for a "Update included data set to <year><rev>" commit |
+| pgvector | `github.com/pgvector/pgvector-elixir` — has a CHANGELOG.md but no raw path advertised; `gh api repos/pgvector/pgvector-elixir/contents/CHANGELOG.md --jq '.content' \| base64 -d` reads it |
 
 That `gh api .../compare/v<old>...v<new>` trick is the general fallback for any
 dep with no changelog and no GitHub Releases. Reach for it whenever a changelog
@@ -394,10 +403,10 @@ agent output is allowed to render, which is a product decision rather than a
 dependency bump. Do not silently "upgrade past" this item on a future run;
 there is nothing to upgrade to.
 
-**Still deferred, re-checked 2026-09-11: phoenix_live_view 1.1 -> 1.2**
-(1.1.33 vs 1.2.11, unchanged for three weeks; raised with the user
-2026-08-14, 2026-08-21 and 2026-08-28, still not decided — do not keep
-re-deriving the analysis below, just re-raise it). Everything else is current. 1.2 needs `mix.exs`
+**Still deferred, re-checked 2026-09-18: phoenix_live_view 1.1 -> 1.2**
+(1.1.33 vs 1.2.12; raised with the user 2026-08-14, 08-21, 08-28 and 09-11,
+still not decided — do not keep re-deriving the analysis below, just
+re-raise it). Everything else is current. 1.2 needs `mix.exs`
 `~> 1.1.0` -> `~> 1.2` and carries real breaking changes: the
 `Phoenix.Component` global-attribute list was realigned to MDN and the removed
 attributes are NOT enumerated in the changelog (fix per-site with
