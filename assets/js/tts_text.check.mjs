@@ -99,6 +99,17 @@ eq("hash resolved before the path regex ever sees it",
    cleanTextForTTS("commit 4dc631d touched /lib/foo/bar.ex"), "commit 4 D C 6 touched bar dot ex")
 eq("unit rewrite does not create a token the filename regex re-splits",
    cleanTextForTTS("download.py is 12MB"), "download dot pie is 12 megabytes")
+eq("relative path, 2+ segments with extension (the pre-existing defect)",
+   cleanTextForTTS("see lib/orca_hub/tts.ex for it"), "see tts dot ex for it")
+eq("relative path, 1 slash + extension", cleanTextForTTS("edit assets/js/app.js"), "edit app dot J S")
+eq("absolute path (regression, unchanged from before)",
+   cleanTextForTTS("see /a/b/foo.md here"), "see foo dot markdown here")
+eq("relative directory-only path, 2+ slashes", cleanTextForTTS("in priv/static/assets"), "in assets")
+eq("relative path with 1 slash, no extension: left alone (ambiguous with prose)",
+   cleanTextForTTS("and/or"), "and/or")
+eq("fraction-looking text with 1 slash, no extension: left alone",
+   cleanTextForTTS("open 24/7"), "open 24/7")
+
 eq("EXTENSION_MAP has exactly the spec's list",
    Object.keys(EXTENSION_MAP).sort().join(","),
    ["md", "txt", "py", "ex", "exs", "heex", "eex", "leex", "js", "mjs", "ts", "json", "yml", "yaml",

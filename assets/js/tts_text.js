@@ -196,12 +196,36 @@ export function cleanTextForTTS(text) {
   text = replaceUuids(text)
   text = replaceHashes(text)
 
-  // File paths with directories: extract just the filename
-  text = text.replace(/(?:\/[\w.-]+)+\/([\w.-]+)/g, (match, filename) => {
-    return filename
+  // File paths with directories: extract just the filename. Three shapes,
+  // in order:
+  //  1. absolute paths (leading slash) — any number of directory segments,
+  //     final segment need not have an extension. Requires a leading slash
+  //     as its unambiguous "this is a path" signal, and a lookbehind makes
+  //     sure that slash isn't just the interior separator of a relative
+  //     path (without it, "lib/orca_hub/tts.ex" matches starting at the
+  //     "/" after "lib", stranding "lib" as an unmangled prefix — the
+  //     original bug, just relocated to this rule instead of removed).
+  //  2. relative paths whose FINAL segment has a file extension — the
+  //     extension is itself an unambiguous filename signal, so one slash
+  //     is enough ("lib/tts.ex"). Deliberately does NOT require a leading
+  //     slash, and so must not require one at the match start either, or
+  //     it reproduces the absolute-only bug this replaced: matching would
+  //     be forced to start AT an interior slash, stranding the segment
+  //     before it (e.g. "lib/orca_hub/tts.ex" -> "lib" + "orca_hub" eaten
+  //     mid-word -> "liborca hub dot ex"). Leaving the start unanchored
+  //     lets the engine try from index 0, consuming the whole path.
+  //  3. relative, directory-only (no extension on the final segment) —
+  //     needs two or more slashes. A single slash here is indistinguishable
+  //     from ordinary prose ("and/or", "24/7"), so it is deliberately left
+  //     alone; two or more is unambiguous enough to treat as a path
+  //     ("priv/static/assets").
+  const stripPathDirs = (filename) =>
+    filename
       .replace(/_/g, " ")
       .replace(/\.(\w+)$/, (m, ext) => ` dot ${pronounceExtension(ext)}`)
-  })
+  text = text.replace(/(?<![\w.-])(?:\/[\w.-]+)+\/([\w.-]+)/g, (match, filename) => stripPathDirs(filename))
+  text = text.replace(/(?:[\w.-]+\/)+([\w.-]+\.[A-Za-z0-9]+)/g, (match, filename) => stripPathDirs(filename))
+  text = text.replace(/(?:[\w.-]+\/){2,}([\w.-]+)/g, (match, filename) => stripPathDirs(filename))
 
   // Standalone filenames (word.ext): "show.ex" -> "show dot ex"
   const extAlternation = Object.keys(EXTENSION_MAP).join("|")
