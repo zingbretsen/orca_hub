@@ -38,6 +38,36 @@ defmodule OrcaHub.ChurnSamplerTest do
     session
   end
 
+  defp bash_message(session_id, command) do
+    Sessions.create_message(%{
+      session_id: session_id,
+      data: %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{"type" => "tool_use", "name" => "Bash", "input" => %{"command" => command}}
+          ]
+        }
+      }
+    })
+  end
+
+  # A git repo with a real tracked source file, so the D1 half of
+  # SurgeryAlertPolicy ("path not tracked by git") can answer honestly.
+  defp git_session_with_tracked_file(prefix, attrs) do
+    session = git_session(prefix, attrs)
+    File.mkdir_p!(Path.join(session.directory, "lib"))
+    File.write!(Path.join(session.directory, "lib/tracked.ex"), "defmodule Tracked do end\n")
+    System.cmd("git", ["add", "lib/tracked.ex"], cd: session.directory)
+
+    System.cmd("git", ["commit", "-m", "add tracked"],
+      cd: session.directory,
+      stderr_to_stdout: true
+    )
+
+    session
+  end
+
   defp tool_use_message(session_id, tool_name) do
     Sessions.create_message(%{
       session_id: session_id,
@@ -114,6 +144,128 @@ defmodule OrcaHub.ChurnSamplerTest do
 
       assert {:ok, [sample]} = ChurnSampler.run_sweep([session])
       assert sample.churn_suspected == false
+    end
+  end
+
+  # ORCAHUB3-66. The sampler used to call Churn.assess/3, so `file_surgery`
+  # took its nil default and file surgery was NEVER computed here — which is
+  # the mechanical reason churn_samples.churn_suspected was true 0 times in
+  # 1,480 samples while 229 file-surgery alerts were being delivered. These
+  # tests pin that the sampler now computes it AND records what the
+  # suppression policy would decide, since a suppressed alert would otherwise
+  # leave no trace anywhere at all.
+  describe "run_sweep/1 file-surgery observability (ORCAHUB3-66)" do
+    test "records file-surgery evidence the sampler previously never computed" do
+      session =
+        git_session_with_tracked_file("sampler-surgery-test", %{
+          progress_updated_at: DateTime.utc_now()
+        })
+
+      # Two shell writes to a tracked source file, plus a real repo edit so
+      # the alert would carry corroborating detail (D6 false) — i.e. a
+      # detection the policy would NOT suppress.
+      cmd = "cat > lib/tracked.ex <<'EOF'\ndefmodule Tracked do end\nEOF"
+      {:ok, _} = bash_message(session.id, cmd)
+      {:ok, _} = bash_message(session.id, cmd)
+
+      assert {:ok, [sample]} = ChurnSampler.run_sweep([session])
+
+      assert sample.file_surgery_suspected == true,
+             "the sampler must now compute file surgery — assess/3 never did"
+
+      assert sample.file_surgery_kind == "write_to_tracked"
+      assert sample.file_surgery_path == "lib/tracked.ex"
+      assert sample.churn_suspected == true
+      refute sample.repetition_ratio_15m && sample.repetition_ratio_15m >= 0.5
+
+      assert [persisted] = Sessions.list_churn_samples(session.id)
+      assert persisted.file_surgery_suspected == true
+      assert persisted.file_surgery_kind == "write_to_tracked"
+      assert persisted.file_surgery_path == "lib/tracked.ex"
+    end
+
+    test "records false (not nil) when the session has no file surgery" do
+      # The distinction is load-bearing: `nil` is reserved to mean "this row
+      # predates the migration and the question was never asked", which is
+      # what makes churn_suspected void on every historical row.
+      session = git_session("sampler-no-surgery-test", %{progress_updated_at: DateTime.utc_now()})
+      Enum.each(["Bash", "Read"], &tool_use_message(session.id, &1))
+
+      assert {:ok, [sample]} = ChurnSampler.run_sweep([session])
+      assert sample.file_surgery_suspected == false
+      refute is_nil(sample.file_surgery_suspected)
+      assert is_nil(sample.file_surgery_kind)
+      assert is_nil(sample.file_surgery_path)
+
+      assert [persisted] = Sessions.list_churn_samples(session.id)
+      assert persisted.file_surgery_suspected == false
+      assert is_nil(persisted.surgery_alert_decision)
+    end
+
+    test "persists the suppression reason, and it round-trips through the DB" do
+      # D6: one shell write and nothing else — no repo edits, no repeated
+      # signature — so the file-surgery sentence would be the whole alert.
+      session = plain_session("sampler-suppress-test", %{progress_updated_at: DateTime.utc_now()})
+      {:ok, _} = bash_message(session.id, "cat > lib/scratch.ex <<'EOF'\ndefmodule S do end\nEOF")
+
+      assert {:ok, [sample]} = ChurnSampler.run_sweep([session])
+
+      assert sample.file_surgery_suspected == true,
+             "the DETECTION must survive — we suppress the alert, not the detection"
+
+      assert sample.surgery_alert_decision == "suppress:no_corroborating_detail"
+
+      # The whole point of the migration: readable back out of the DB a month
+      # later, not just present in the in-memory sample map.
+      assert [persisted] = Sessions.list_churn_samples(session.id)
+      assert persisted.surgery_alert_decision == "suppress:no_corroborating_detail"
+
+      assert String.starts_with?(persisted.surgery_alert_decision, "suppress:"),
+             "the encoding must stay prefix-queryable"
+    end
+
+    test "persists \"alert\" for a detection the policy would deliver" do
+      session =
+        git_session_with_tracked_file("sampler-alert-decision-test", %{
+          progress_updated_at: DateTime.utc_now()
+        })
+
+      cmd = "cat > lib/tracked.ex <<'EOF'\ndefmodule Tracked do end\nEOF"
+      {:ok, _} = bash_message(session.id, cmd)
+      {:ok, _} = bash_message(session.id, cmd)
+
+      assert {:ok, [sample]} = ChurnSampler.run_sweep([session])
+      assert sample.surgery_alert_decision == "alert"
+
+      assert [persisted] = Sessions.list_churn_samples(session.id)
+      assert persisted.surgery_alert_decision == "alert"
+    end
+
+    test "telemetry metadata carries the new fields" do
+      session =
+        plain_session("sampler-telemetry-test", %{progress_updated_at: DateTime.utc_now()})
+
+      {:ok, _} = bash_message(session.id, "cat > lib/scratch.ex <<'EOF'\ndefmodule S do end\nEOF")
+
+      handler_id = "churn-sample-test-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:orca_hub, :churn, :sample],
+        fn _event, _measurements, metadata, _config ->
+          if metadata.session_id == session.id, do: send(test_pid, {:sample, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert {:ok, [_sample]} = ChurnSampler.run_sweep([session])
+
+      assert_received {:sample, metadata}
+      assert metadata.file_surgery_suspected == true
+      assert metadata.surgery_alert_decision == "suppress:no_corroborating_detail"
     end
   end
 

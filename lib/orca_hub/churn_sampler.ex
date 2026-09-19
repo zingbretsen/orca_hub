@@ -5,7 +5,7 @@ defmodule OrcaHub.ChurnSampler do
   Runs only on hub nodes (registered in `Application.hub_children/1` next to
   `OrcaHub.SessionHeartbeat`) and samples every non-archived `status:
   "running"` session every 120 seconds, computing churn metrics via
-  `OrcaHub.Sessions.Churn.assess/4` and persisting them to the
+  `OrcaHub.Sessions.Churn.assess/5` and persisting them to the
   `churn_samples` table.
 
   ## Sample structure
@@ -17,13 +17,50 @@ defmodule OrcaHub.ChurnSampler do
       `SessionHeartbeat.Digest.fetch_last_commits/1` — one `git log` per
       distinct working directory, not one per session
     - Session progress state (progress_updated_at)
-    - Churn assessment from `Sessions.Churn.assess/4`
+    - File-surgery evidence from `Sessions.FileSurgery.fetch_many/2` (see
+      below) and, for a session that has some, what
+      `Sessions.SurgeryAlertPolicy` would decide about alerting on it
+    - Churn assessment from `Sessions.Churn.assess/5`
+
+  ## File surgery: the observability gap this sampler used to have (ORCAHUB3-66)
+
+  Until 2026-09-19 `run_sweep/1` called `Churn.assess/3` — the arity-3 form,
+  in which `file_surgery` takes its `nil` default — so **this sampler never
+  computed file surgery at all**, and `churn_samples` never carried a
+  qualitative detection. `churn_suspected` was true 0 times in 1,480 samples
+  over the same weeks in which 229 file-surgery alerts were delivered from
+  `AlertEvaluator`, which was the only caller that passed evidence.
+
+  **Every `churn_samples` row written before that date has a void
+  `churn_suspected`** — see `OrcaHub.Sessions.ChurnSample`'s moduledoc for the
+  full warning and for how to identify those rows (`file_surgery_suspected IS
+  NULL`, not a date filter).
+
+  It now computes evidence with the BATCHED `FileSurgery.fetch_many/2` — one
+  query for the whole sweep, not one per session — and passes it explicitly to
+  `Churn.assess/5`. `Churn.assess_with_detail/4` would do the same job but
+  issues an N+1 of single `FileSurgery.fetch/2` calls, which is the wrong
+  shape for a job that runs every 120s over every running session.
+
+  The `SurgeryAlertPolicy` decision is recorded too, and it is the reason the
+  migration exists: ORCAHUB3-66 suppresses ~31% of file-surgery alerts, and a
+  suppressed alert would otherwise leave NO TRACE ANYWHERE, since the only
+  record of an alert has always been the DELIVERED message. Only a session
+  that actually has evidence pays for that decision (it costs a
+  `ChurnDetail.fetch/1` and, when D6 does not already decide, a `git ls-files`
+  on the session's own node), so the common no-detection case adds nothing
+  beyond the one batched query.
 
   ## Telemetry hook (ORCAHUB3-36)
 
   Emits `[:orca_hub, :churn, :sample]` per sample with:
     - measurements: churn metric values (tool_calls_15m, distinct_tools_15m, etc.)
-    - metadata: %{session_id: id, churn_suspected: bool}
+    - metadata: `%{session_id:, churn_suspected:, file_surgery_suspected:,
+      file_surgery_kind:, surgery_alert_decision:}`
+
+  The last three are ORCAHUB3-66 additions. An exporter written against the
+  old two-key metadata keeps working; one that wants to chart suppression
+  rate can group on `surgery_alert_decision`.
 
   This allows Grafana exporters to hook into this event and export metrics.
 
@@ -61,6 +98,7 @@ defmodule OrcaHub.ChurnSampler do
 
   alias OrcaHub.{Cluster, SessionHeartbeat, Sessions, Sessions.Churn}
   alias OrcaHub.ChurnSampler.AlertEvaluator
+  alias OrcaHub.Sessions.{ChurnDetail, FileSurgery, SurgeryAlertPolicy}
 
   @interval_seconds 120
   @prune_days 14
@@ -198,12 +236,16 @@ defmodule OrcaHub.ChurnSampler do
     session_ids = Enum.map(sessions, & &1.id)
     activity_map = Sessions.activity_metadata(session_ids)
     commit_info_map = fetch_all_commit_info(sessions)
+    file_surgery_map = fetch_all_file_surgery(session_ids)
 
     samples =
       Enum.map(sessions, fn session ->
         activity = Map.get(activity_map, session.id, %{})
         commit_info = Map.get(commit_info_map, session.id)
-        churn_result = Churn.assess(activity, session, commit_info)
+        file_surgery = Map.get(file_surgery_map, session.id)
+
+        churn_result =
+          Churn.assess(activity, session, commit_info, DateTime.utc_now(), file_surgery)
 
         %{
           session_id: session.id,
@@ -217,7 +259,11 @@ defmodule OrcaHub.ChurnSampler do
           repetition_ratio_30m: Map.get(churn_result, :repetition_ratio_30m),
           minutes_since_progress_update: Map.get(churn_result, :minutes_since_progress_update),
           minutes_since_last_commit: Map.get(churn_result, :minutes_since_last_commit),
-          churn_suspected: Map.get(churn_result, :churn_suspected, false)
+          churn_suspected: Map.get(churn_result, :churn_suspected, false),
+          file_surgery_suspected: Map.get(churn_result, :file_surgery_suspected, false),
+          file_surgery_kind: file_surgery_kind(file_surgery),
+          file_surgery_path: file_surgery_path(file_surgery),
+          surgery_alert_decision: surgery_alert_decision(session, file_surgery)
         }
       end)
 
@@ -230,6 +276,69 @@ defmodule OrcaHub.ChurnSampler do
     Logger.info("Churn sampler: pruned #{pruned} samples older than #{@prune_days} days")
 
     {:ok, samples}
+  end
+
+  # ONE query for the whole sweep — `fetch_many/2` is the batched shape, and
+  # at a 120s cadence over every running session an N+1 of `FileSurgery.fetch/2`
+  # (which is what `Churn.assess_with_detail/4` would give us) is not
+  # affordable. The 10-minute window matches AlertEvaluator's, so the
+  # sampler and the alert path are looking at the same evidence.
+  #
+  # Never raises: `fetch_many/2` rescues internally and guarantees a key per
+  # requested id, so a DB failure degrades to "no evidence anywhere" rather
+  # than losing the entire sweep to `run_sweep/1`'s outer rescue.
+  defp fetch_all_file_surgery(session_ids) do
+    FileSurgery.fetch_many(session_ids, window_minutes: 10)
+  end
+
+  # `FileSurgery` evidence carries `:kind` as an ATOM (`:write_to_tracked`,
+  # `:programmatic_write`, …) and `Sessions.insert_churn_samples/1` uses
+  # `insert_all`, which dumps values straight through the schema's field types
+  # with NO casting — an atom in a `:string` column raises `Ecto.ChangeError`
+  # and, via `run_sweep/1`'s outer rescue, discards the entire sweep. Convert
+  # here, not at the schema.
+  defp file_surgery_kind(%{kind: kind}) when is_atom(kind) and not is_nil(kind),
+    do: Atom.to_string(kind)
+
+  defp file_surgery_kind(%{kind: kind}) when is_binary(kind), do: kind
+  defp file_surgery_kind(_evidence), do: nil
+
+  defp file_surgery_path(%{path: path}) when is_binary(path), do: path
+  defp file_surgery_path(_evidence), do: nil
+
+  # What `SurgeryAlertPolicy` WOULD decide about alerting on this detection,
+  # persisted so a suppressed detection leaves a durable trace. This sampler
+  # does not deliver alerts (`AlertEvaluator` does, and re-derives its own
+  # decision there) — this column is the record, not the mechanism.
+  #
+  # Encoding, matching the schema's moduledoc:
+  #   nil            -> not evaluated
+  #   "alert"        -> policy would deliver
+  #   "suppress:..." -> policy would suppress, with `decide/2`'s reason
+  #
+  # `nil` is returned for a session with no evidence (there is nothing to
+  # decide about) AND on the failure path. Those two are still tellable apart
+  # in the row, because `file_surgery_suspected` is `true` only in the second
+  # case — a detection with a nil decision means the decision itself failed.
+  defp surgery_alert_decision(_session, nil), do: nil
+
+  defp surgery_alert_decision(session, evidence) do
+    case SurgeryAlertPolicy.decide_for_session(session, evidence, ChurnDetail.fetch(session.id)) do
+      :alert -> "alert"
+      {:suppress, reason} -> "suppress:#{reason}"
+      _ -> nil
+    end
+  rescue
+    e ->
+      # Fail closed to "not recorded" for THIS session only. The outer rescue
+      # in `run_sweep/1` would discard the whole sweep, which is a far worse
+      # trade for an observability field.
+      Logger.warning(
+        "Churn sampler: surgery alert decision failed for session #{session.id} - " <>
+          Exception.message(e)
+      )
+
+      nil
   end
 
   # Dedupes by {runner_node, directory} so sessions sharing a working
@@ -294,7 +403,10 @@ defmodule OrcaHub.ChurnSampler do
 
     metadata = %{
       session_id: sample.session_id,
-      churn_suspected: sample.churn_suspected
+      churn_suspected: sample.churn_suspected,
+      file_surgery_suspected: sample.file_surgery_suspected,
+      file_surgery_kind: sample.file_surgery_kind,
+      surgery_alert_decision: sample.surgery_alert_decision
     }
 
     :telemetry.execute([:orca_hub, :churn, :sample], measurements, metadata)

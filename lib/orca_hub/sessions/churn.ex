@@ -28,16 +28,22 @@ defmodule OrcaHub.Sessions.Churn do
   `churn_alert_precision.md` (repo root) for the measurement that authorises
   it.
 
-  **A suppressed detection currently leaves no durable trace, and that is a
-  known gap, not a design.** `OrcaHub.ChurnSampler.run_sweep/1` calls
-  `assess/3` — the arity-3 form, which defaults `file_surgery` to nil — so
-  `churn_samples` has never carried a file-surgery detection at all
-  (`churn_samples.churn_suspected` was true 0 times in 1480 samples while 229
-  file-surgery alerts were being delivered). File surgery is computed only on
-  the alert path and in the heartbeat digest, and the only historical record
-  of an alert is the DELIVERED message in the orchestrator's feed. Recording
-  suppressed detections durably needs a migration and a change to the
-  sampler; it is tracked separately rather than done here.
+  **A suppressed detection now leaves a durable trace — and before
+  2026-09-19 it did not, which makes the old data unreadable.**
+  `OrcaHub.ChurnSampler.run_sweep/1` used to call `assess/3` — the arity-3
+  form, which defaults `file_surgery` to nil — so `churn_samples` never
+  carried a file-surgery detection at all (`churn_samples.churn_suspected` was
+  true 0 times in 1,480 samples while 229 file-surgery alerts were being
+  delivered). File surgery was computed only on the alert path and in the
+  heartbeat digest, and the only record of an alert was the DELIVERED message
+  in the orchestrator's feed.
+
+  The sampler now calls `assess/5` with batched `FileSurgery.fetch_many/2`
+  evidence and persists the detection plus `SurgeryAlertPolicy`'s decision.
+  **Every `churn_samples` row written before that change has a void
+  `churn_suspected`** — uniformly false for reasons unrelated to churn. See
+  `OrcaHub.Sessions.ChurnSample`'s moduledoc for the full warning and for how
+  to identify those rows.
 
   `volumetric_churn_suspected` is exposed separately for the same reason —
   an alert driven by the volumetric half must never be suppressed by a
