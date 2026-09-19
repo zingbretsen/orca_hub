@@ -21,6 +21,7 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - Tests run against the shared dev DB, not an isolated test DB — hub-boot GenServers write real rows; this is expected.
 - Don't trust this doc's flake list as-is before a deploy gate — establish the baseline empirically by running the full suite yourself (ideally more than once) against the SHA you're about to ship, since this file can silently drift out of date (it did for weeks before being corrected 2026-08-09), and a single clean run isn't guaranteed given the intermittent flakes above.
 - 2026-08-13/14 observation: four consecutive full-suite runs (2×2316 tests @ `4dc631d`, 2×2325 tests @ `340489a`) each produced exactly ONE failure — the known `TriggersTest` flake above. The other two listed intermittents (`NodeLive.IndexTest`, `PiStubIntegrationTest`) did not occur in any of the four. Four runs isn't proof they're fixed — keep running the baseline yourself per the advice above, don't drop them from the list on this evidence alone.
+- 2026-09-18 observation (note the suite has grown a lot since the entry above — those 2316/2325 counts are long stale): the pre-deploy gate ran the full suite twice in the foreground at `dc6d8cc` (157.4 s and 164.5 s), each reporting `19 doctests, 4102 tests, 0 failures, 13 excluded`. None of the three listed intermittents fired in either run — not even the pre-approved `TriggersTest` flake. Two clean runs still aren't proof; the list stays, and a gate should establish its own baseline against the SHA it's shipping.
 
 ## Architecture
 
