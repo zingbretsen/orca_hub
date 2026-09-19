@@ -534,13 +534,20 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       assert message =~ "judge from the detail above, not from this line"
     end
 
-    test "the no-commit clause is replaced when the session made no repo edits",
+    test "the commit clause is replaced when the session made no repo edits",
          %{message: message} do
       assert message =~ "no repo edits in window"
       refute message =~ "no commit "
+      refute message =~ "directory HEAD"
     end
 
-    test "the no-commit clause survives when the session DID edit the repo", %{session: session} do
+    test "the commit age is labelled as a DIRECTORY fact, never as a session one",
+         %{session: session} do
+      # minutes_since_last_commit comes from `git log -1` with cd: directory —
+      # no author filter, no session attribution, and fetch_commit_info_for/1
+      # dedupes by {runner_node, directory}. In a shared worktree the number
+      # is a sibling's commit, so it must not read as "this worker has not
+      # committed".
       orchestrator_id = Ecto.UUID.generate()
       {:ok, _} = edit_message(session.id, "lib/tracked.ex")
 
@@ -549,7 +556,8 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
 
       assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
       assert alert.message =~ "Top edited files: lib/tracked.ex"
-      assert alert.message =~ "no commit "
+      assert alert.message =~ ~r/directory HEAD \d+m old/
+      refute alert.message =~ "no commit "
       refute alert.message =~ "no repo edits in window"
     end
   end

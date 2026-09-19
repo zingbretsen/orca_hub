@@ -95,7 +95,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
         # decision (it is D6's input in SurgeryAlertPolicy) as well as for
         # the message body. Fetched at most once per session per tick and
         # threaded through both — nil here means "not needed yet", and
-        # `fire/9` fetches it only if no gate ever asked for it.
+        # `build_message/5` fetches it only if no gate ever asked for it.
         churn_detail =
           if surgery_gate_applies?(subscription.conditions || %{}, churn),
             do: ChurnDetail.fetch(session.id)
@@ -253,10 +253,16 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   end
 
   # ORCAHUB3-66. `churn.churn_suspected` is `volumetric OR file_surgery` and
-  # stays that way (the raw observation keeps flowing into churn_samples —
-  # see Churn's moduledoc). What changes is what we ALERT on: the
-  # file-surgery half now has to clear `SurgeryAlertPolicy`, while the
-  # volumetric half is never suppressed by a surgery policy.
+  # stays that way — detection is untouched. What changes is what we ALERT
+  # on: the file-surgery half now has to clear `SurgeryAlertPolicy`, while
+  # the volumetric half is never suppressed by a surgery policy.
+  #
+  # Note what this does NOT get us: a suppressed detection leaves no durable
+  # trace today. ChurnSampler.run_sweep/1 calls Churn.assess/3, which never
+  # computes file surgery, so churn_samples has never carried one — and the
+  # only record of an alert has always been the DELIVERED message. Persisting
+  # suppressed detections (with the reason from SurgeryAlertPolicy.decide/2)
+  # needs a migration and is tracked separately. See Churn's moduledoc.
   defp churn_alertable?(churn, session, churn_detail) do
     churn.volumetric_churn_suspected or
       (churn.file_surgery_suspected and
@@ -529,16 +535,37 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
 
   defp surgery_block(_condition, _churn, _detail_block), do: nil
 
-  # "no commit Nm" is only evidence of anything if the session was editing
-  # the repo at all. 80 of 229 production file-surgery alerts carried this
-  # clause on deploy/gate/cleanup/measurement workers that do not commit by
-  # design. When there are no repo edits in the window, say that instead of
-  # implying a missing commit. (This is the CLAUSE only — the `no_commit_for`
-  # CONDITION is untouched.)
+  # The old "no commit Nm" clause was wrong in two different ways.
+  #
+  # 1. MISATTRIBUTION. `minutes_since_last_commit` is not a property of the
+  #    SESSION, it is a property of the DIRECTORY: `Sessions.git_head_info/1`
+  #    runs `git log -1` with `cd: directory`, with no author filter and no
+  #    session attribution, and `fetch_commit_info_for/1` above deliberately
+  #    dedupes by `{runner_node, directory}` so every session sharing a
+  #    worktree gets the IDENTICAL number. In a shared worktree "no commit
+  #    1m" reports a SIBLING's commit while reading as a statement about the
+  #    alerted worker. So the clause is now LABELLED as the directory fact it
+  #    is, never phrased as something this session did or failed to do.
+  # 2. IRRELEVANCE. 80 of 229 production file-surgery alerts carried it on
+  #    deploy/gate/cleanup/measurement workers that do not commit by design.
+  #    When this session made no repo edits at all in the window there is
+  #    nothing for a HEAD age to inform, so we say THAT instead — and unlike
+  #    the commit age, "no repo edits" really is a per-session fact
+  #    (ChurnDetail counts this session's own Edit/Write/MultiEdit calls).
+  #
+  # This is the CLAUSE only. The `no_commit_for` CONDITION is untouched.
+  #
+  # Out of scope here, but the same directory-vs-session confound feeds the
+  # VOLUMETRIC gate in `Churn.assess/5`, which requires
+  # `minutes_since_last_commit > 30`: in a shared worktree with active
+  # siblings that conjunct is almost never true, which is a candidate
+  # explanation for the volumetric half having fired exactly ONCE in seven
+  # weeks. Filed as ORCAHUB3-111 — changing what fires is that issue's job.
   defp commit_clause(_churn, %{top_edited_files: []}), do: "no repo edits in window"
 
   defp commit_clause(churn, _detail),
-    do: churn.minutes_since_last_commit && "no commit #{churn.minutes_since_last_commit}m"
+    do:
+      churn.minutes_since_last_commit && "directory HEAD #{churn.minutes_since_last_commit}m old"
 
   defp present?(str), do: is_binary(str) and String.trim(str) != ""
 

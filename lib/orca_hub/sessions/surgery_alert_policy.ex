@@ -4,9 +4,23 @@ defmodule OrcaHub.Sessions.SurgeryAlertPolicy do
 
   `OrcaHub.Sessions.FileSurgery` keeps detecting exactly what it detected
   before; this module decides whether a detection is worth waking an
-  orchestrator for. The split is deliberate — the raw detection still flows
-  into `churn_samples` so the effect of this policy stays measurable after
-  it ships. We suppress the ALERT, not the OBSERVATION.
+  orchestrator for. **The matcher's job is to be accurate about what was
+  written; the policy layer decides whether that is worth alerting about.**
+
+  That split is load-bearing, not tidiness. Suppressing noise by making the
+  matcher decline to resolve a path it COULD resolve buys the right outcome
+  today and arms a flood for whoever next improves the matcher — a latent
+  regression with a delayed fuse. Noise gets suppressed HERE, where the
+  reason is explicit and can be re-measured.
+
+  We suppress the ALERT, not the DETECTION. Note the gap that leaves, though:
+  a suppressed detection currently leaves no durable trace anywhere —
+  `ChurnSampler.run_sweep/1` calls `Churn.assess/3`, which never computes
+  file surgery, so `churn_samples` has never carried one, and the only record
+  of an alert has always been the DELIVERED message in the orchestrator's
+  feed. `decide/2` returns WHICH clause suppressed precisely so that a
+  follow-up (migration + sampler change, tracked separately) can persist the
+  reason without re-deriving it.
 
   ## The rule: U1b = D6 ∨ (D1 ∧ D2b)
 
@@ -35,9 +49,10 @@ defmodule OrcaHub.Sessions.SurgeryAlertPolicy do
     - D4 (same-path repeat count) suppresses 81% and destroys 3/3 while
       looking like a near-total cleanup in aggregate. `evidence.same_path_matches`
       is carried for mining only and is **never** a gate here;
-    - D3 (require `paired_with_failed_edit`) suppresses 100% — it is an off
-      switch, not a discriminator. Pairing has never once been true in
-      production.
+    - D3 (require the write to be paired with a failed editor call)
+      suppresses 100% — it is an off switch, not a discriminator. Pairing was
+      never once true in production across 229 alerts, which is why
+      `FileSurgery` no longer carries the flag at all.
 
   ## Unknown never suppresses
 
@@ -51,24 +66,45 @@ defmodule OrcaHub.Sessions.SurgeryAlertPolicy do
   alias OrcaHub.Cluster
 
   @doc """
-  The pinned predicate: `true` means "deliver this file-surgery alert".
+  The full decision, WITH the reason: `:alert` or `{:suppress, reason}`.
 
   Pure over explicit inputs — no DB, no git, no node — so the truth table is
   directly testable:
 
-      alertable?(evidence, %{tracked_in_git: true | false | nil,
-                             has_corroborating_detail: boolean})
+      decide(evidence, %{tracked_in_git: true | false | nil,
+                         has_corroborating_detail: boolean})
 
-  `evidence` is a `FileSurgery.detect/1` evidence map (`nil` means there is no
-  file-surgery alert to deliver at all, so `false`).
+  Reasons:
+
+    - `:no_corroborating_detail` — D6;
+    - `:untracked_and_verified` — D1 ∧ D2b;
+    - `:no_evidence` — there was no file-surgery detection to begin with.
+
+  Both suppressing clauses can hold at once (12/12 deploy-runner alerts in
+  the measured corpus satisfy D1 ∧ D2b, and 11 of those 12 also satisfy D6).
+  D6 is reported in that case, since it is the cheaper and stricter claim —
+  "this alert had no content besides the shell write" — and it is the clause
+  that needs no git check to justify. Callers that need both should evaluate
+  the two predicates themselves rather than reading precedence into this.
   """
-  def alertable?(evidence, context)
+  def decide(evidence, context)
 
-  def alertable?(nil, _context), do: false
+  def decide(nil, _context), do: {:suppress, :no_evidence}
 
-  def alertable?(evidence, context) when is_map(evidence) and is_map(context) do
-    not (d6?(context) or (d1?(context) and d2b?(evidence)))
+  def decide(evidence, context) when is_map(evidence) and is_map(context) do
+    cond do
+      d6?(context) -> {:suppress, :no_corroborating_detail}
+      d1?(context) and d2b?(evidence) -> {:suppress, :untracked_and_verified}
+      true -> :alert
+    end
   end
+
+  @doc """
+  The pinned predicate: `true` means "deliver this file-surgery alert".
+
+  `decide/2` without the reason, for the call sites that only need the gate.
+  """
+  def alertable?(evidence, context), do: decide(evidence, context) == :alert
 
   # D6 — no corroborating detail at all; the surgery sentence IS the alert.
   defp d6?(context), do: Map.get(context, :has_corroborating_detail, true) == false
@@ -82,9 +118,9 @@ defmodule OrcaHub.Sessions.SurgeryAlertPolicy do
   defp d2b?(evidence), do: Map.get(evidence, :verified_in_command, false) == true
 
   @doc """
-  Applies `alertable?/2` for a live session: resolves D1 with a real git check
-  on the session's OWN runner node and D6 from an already-fetched
-  `ChurnDetail` map.
+  Applies `decide/2` for a live session: resolves D1 with a real git check on
+  the session's OWN runner node and D6 from an already-fetched `ChurnDetail`
+  map. Returns `:alert` or `{:suppress, reason}`.
 
   `churn_detail` is threaded in rather than fetched here so a tick pays for at
   most one `ChurnDetail.fetch/1` per session (the alert message needs the same
@@ -94,17 +130,23 @@ defmodule OrcaHub.Sessions.SurgeryAlertPolicy do
   `D6 ∨ (D1 ∧ D2b)` is true regardless of D1 once D6 holds, so shelling out
   would only cost a `git ls-files` for an answer that cannot change.
   """
-  def alertable_for_session?(session, evidence, churn_detail)
+  def decide_for_session(session, evidence, churn_detail)
 
-  def alertable_for_session?(_session, nil, _churn_detail), do: false
+  def decide_for_session(_session, nil, _churn_detail), do: {:suppress, :no_evidence}
 
-  def alertable_for_session?(session, evidence, churn_detail) do
+  def decide_for_session(session, evidence, churn_detail) do
     has_detail = corroborating_detail?(churn_detail)
 
     tracked = if has_detail, do: git_tracked?(session, Map.get(evidence, :path)), else: nil
 
-    alertable?(evidence, %{tracked_in_git: tracked, has_corroborating_detail: has_detail})
+    decide(evidence, %{tracked_in_git: tracked, has_corroborating_detail: has_detail})
   end
+
+  @doc """
+  `decide_for_session/3` without the reason.
+  """
+  def alertable_for_session?(session, evidence, churn_detail),
+    do: decide_for_session(session, evidence, churn_detail) == :alert
 
   @doc """
   D6's input: does this `ChurnDetail` map carry anything BESIDES the

@@ -11,7 +11,6 @@ defmodule OrcaHub.Sessions.SurgeryAlertPolicyTest do
         path: "lib/orca_hub/foo.ex",
         command: "cat > lib/orca_hub/foo.ex <<'EOF' ... EOF",
         kind: :write_to_tracked,
-        paired_with_failed_edit: false,
         verified_in_command: false,
         same_path_matches: 1
       },
@@ -93,9 +92,12 @@ defmodule OrcaHub.Sessions.SurgeryAlertPolicyTest do
       end
     end
 
-    test "paired_with_failed_edit is not a gate either (D3 is an off switch)" do
-      # Kept in the evidence map for mining; requiring it would suppress 100%
-      # of the corpus and lose 3/3 true positives.
+    test "pairing with a failed edit is not consulted either (D3 is an off switch)" do
+      # Requiring it would suppress 100% of the corpus and lose 3/3 true
+      # positives, which is why FileSurgery no longer carries the flag. The
+      # policy must not care whether the key is present OR absent.
+      assert SurgeryAlertPolicy.alertable?(evidence(), context(true, true))
+
       assert SurgeryAlertPolicy.alertable?(
                evidence(%{paired_with_failed_edit: false}),
                context(true, true)
@@ -104,6 +106,52 @@ defmodule OrcaHub.Sessions.SurgeryAlertPolicyTest do
 
     test "no evidence at all is not alertable" do
       refute SurgeryAlertPolicy.alertable?(nil, context(true, true))
+    end
+  end
+
+  describe "decide/2 — which clause suppressed" do
+    # The reason exists so a follow-up can PERSIST why an alert was dropped
+    # without re-deriving it: a suppressed detection currently leaves no
+    # durable trace anywhere (ChurnSampler calls Churn.assess/3, which never
+    # computes file surgery, so churn_samples has never carried one).
+    test "reports D6 as :no_corroborating_detail" do
+      assert SurgeryAlertPolicy.decide(evidence(), context(true, false)) ==
+               {:suppress, :no_corroborating_detail}
+    end
+
+    test "reports D1 AND D2b as :untracked_and_verified" do
+      assert SurgeryAlertPolicy.decide(
+               evidence(%{verified_in_command: true}),
+               context(false, true)
+             ) ==
+               {:suppress, :untracked_and_verified}
+    end
+
+    test "reports D6 when BOTH clauses hold — it needs no git check to justify" do
+      assert SurgeryAlertPolicy.decide(
+               evidence(%{verified_in_command: true}),
+               context(false, false)
+             ) == {:suppress, :no_corroborating_detail}
+    end
+
+    test "reports :alert when nothing suppresses" do
+      assert SurgeryAlertPolicy.decide(evidence(), context(true, true)) == :alert
+    end
+
+    test "reports :no_evidence when there was no detection at all" do
+      assert SurgeryAlertPolicy.decide(nil, context(true, true)) == {:suppress, :no_evidence}
+    end
+
+    test "alertable?/2 agrees with decide/2 across the whole truth table" do
+      for tracked <- [true, false, nil],
+          verified <- [true, false],
+          corroborated <- [true, false] do
+        ev = evidence(%{verified_in_command: verified})
+        ctx = context(tracked, corroborated)
+
+        assert SurgeryAlertPolicy.alertable?(ev, ctx) ==
+                 (SurgeryAlertPolicy.decide(ev, ctx) == :alert)
+      end
     end
   end
 

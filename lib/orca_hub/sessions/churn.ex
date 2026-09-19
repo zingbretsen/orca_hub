@@ -20,15 +20,24 @@ defmodule OrcaHub.Sessions.Churn do
 
   ## This module OBSERVES; it does not decide what is worth alerting on
 
-  `churn_suspected` stays exactly as measured — volumetric OR file-surgery —
-  and every detection keeps flowing into `churn_samples`. ORCAHUB3-66's
-  suppression policy deliberately lives OUTSIDE this module, in
+  `churn_suspected` stays exactly as measured — volumetric OR file-surgery.
+  ORCAHUB3-66's suppression policy deliberately lives OUTSIDE this module, in
   `OrcaHub.Sessions.SurgeryAlertPolicy`, and is applied by
-  `OrcaHub.ChurnSampler.AlertEvaluator` to the ALERT only. That is what keeps
-  the policy's own effect measurable after it ships: the raw observation is
-  still recorded for every suppressed alert. Do not fold the policy in here.
-  See `churn_alert_precision.md` (repo root) for the measurement that
-  authorises it.
+  `OrcaHub.ChurnSampler.AlertEvaluator` to the ALERT only, so detection here
+  stays intact. Do not fold the policy in here. See
+  `churn_alert_precision.md` (repo root) for the measurement that authorises
+  it.
+
+  **A suppressed detection currently leaves no durable trace, and that is a
+  known gap, not a design.** `OrcaHub.ChurnSampler.run_sweep/1` calls
+  `assess/3` — the arity-3 form, which defaults `file_surgery` to nil — so
+  `churn_samples` has never carried a file-surgery detection at all
+  (`churn_samples.churn_suspected` was true 0 times in 1480 samples while 229
+  file-surgery alerts were being delivered). File surgery is computed only on
+  the alert path and in the heartbeat digest, and the only historical record
+  of an alert is the DELIVERED message in the orchestrator's feed. Recording
+  suppressed detections durably needs a migration and a change to the
+  sampler; it is tracked separately rather than done here.
 
   `volumetric_churn_suspected` is exposed separately for the same reason —
   an alert driven by the volumetric half must never be suppressed by a
