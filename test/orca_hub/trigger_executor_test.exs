@@ -411,4 +411,23 @@ defmodule OrcaHub.TriggerExecutorTest do
       assert prompt =~ "Webhook payload:"
     end
   end
+
+  describe "archive_completed_session/1 (archive_on_complete's archive step)" do
+    test "archives only the trigger session itself, not a child under it", %{project: project} do
+      {:ok, session} =
+        Sessions.create_session(%{directory: project.directory, project_id: project.id})
+
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: project.directory,
+          project_id: project.id,
+          parent_session_id: session.id
+        })
+
+      TriggerExecutor.archive_completed_session(session.id)
+
+      refute is_nil(Sessions.get_session!(session.id).archived_at)
+      assert Sessions.get_session!(child.id).archived_at == nil
+    end
+  end
 end

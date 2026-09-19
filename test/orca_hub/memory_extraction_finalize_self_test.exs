@@ -82,6 +82,26 @@ defmodule OrcaHub.MemoryExtractionFinalizeSelfTest do
       assert event.data["type"] == "system"
       assert event.data["subtype"] == "memory_extraction"
     end
+
+    test "archives only the memory-extraction child itself, not any session under it", %{
+      project: project
+    } do
+      source = create_source(project)
+      child = create_child(project, source)
+
+      {:ok, grandchild} =
+        Sessions.create_session(%{
+          directory: project.directory,
+          project_id: project.id,
+          parent_session_id: child.id,
+          runner_node: Atom.to_string(node())
+        })
+
+      assert MemoryExtraction.finalize_self(child, :idle) == :ok
+
+      refute is_nil(Sessions.get_session(child.id).archived_at)
+      assert Sessions.get_session(grandchild.id).archived_at == nil
+    end
   end
 
   describe "finalize_self/2 — :error, non-retryable" do

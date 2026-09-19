@@ -104,4 +104,25 @@ defmodule OrcaHub.MemoryExtractionSweepTest do
 
     assert MemoryExtractionSweep.sweep() == 0
   end
+
+  test "archives only the orphaned extraction session itself, not any session under it",
+       %{project: project} do
+    {:ok, source} =
+      Sessions.create_session(%{directory: project.directory, project_id: project.id})
+
+    child = create_child(project, source, %{})
+
+    {:ok, grandchild} =
+      Sessions.create_session(%{
+        directory: project.directory,
+        project_id: project.id,
+        parent_session_id: child.id,
+        runner_node: Atom.to_string(node())
+      })
+
+    assert MemoryExtractionSweep.sweep() == 1
+
+    refute is_nil(Sessions.get_session(child.id).archived_at)
+    assert Sessions.get_session(grandchild.id).archived_at == nil
+  end
 end

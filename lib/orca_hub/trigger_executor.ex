@@ -297,8 +297,7 @@ defmodule OrcaHub.TriggerExecutor do
     receive do
       {:status, status} when status in [:idle, :error] ->
         Logger.info("Trigger session #{session_id} completed (#{status}), archiving")
-        session = HubRPC.get_session!(session_id)
-        HubRPC.archive_session(session)
+        archive_completed_session(session_id)
 
       _ ->
         wait_for_completion(session_id)
@@ -306,5 +305,15 @@ defmodule OrcaHub.TriggerExecutor do
       :timer.hours(4) ->
         Logger.warning("Trigger session #{session_id} timed out waiting for completion")
     end
+  end
+
+  # Public (not just inlined in wait_for_completion/1) so tests can pin this
+  # single-session archive directly instead of driving it through a full
+  # execute/1 + real SessionRunner + PubSub round trip (mirrors the
+  # `MemoryExtractionSweep.sweep/0` `@doc false` test-seam pattern).
+  @doc false
+  def archive_completed_session(session_id) do
+    session = HubRPC.get_session!(session_id)
+    HubRPC.archive_session(session)
   end
 end
