@@ -1533,7 +1533,7 @@ defmodule OrcaHub.Sessions do
   the budget is cut hard, since there is no boundary to find).
 
   Lives here rather than in either caller because the excerpt a Gotify push
-  carries (`OrcaHub.Notify.notify_session_finished/1`) and the one
+  carries (`OrcaHub.Notify.deliver_session_finished/1`) and the one
   `GET /api/v1/sessions/recent?include_tail=true` returns are the SAME
   string as far as a client is concerned — an Android notification and the
   in-app list row it opens must not disagree about where the text stops.
