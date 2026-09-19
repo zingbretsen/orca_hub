@@ -514,10 +514,15 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   # shell fragments") asserted a conclusion the evidence does not support —
   # 34 of 39 hand-labelled alerts were a deliberate, successful, one-shot
   # shell edit. The paired/unpaired "confidence" language is gone entirely:
-  # `paired_with_failed_edit` has never once been true in production, so
-  # every alert ever delivered was labelled "lower confidence" against a
-  # high-confidence branch that cannot fire. The boolean stays in the
-  # evidence map for mining; it is just no longer printed as a claim.
+  # `paired_with_failed_edit` was never once true across 229 production
+  # alerts, so every alert ever delivered was labelled "lower confidence"
+  # against a high-confidence branch that cannot fire. The flag is being
+  # removed from `FileSurgery` altogether — a field with only one reachable
+  # value implies the other is reachable. The pairing CONCEPT has graduated
+  # into `OrcaHub.Sessions.EditFailure` (ORCAHUB3-63 §1, e144743), which
+  # detects "this worker cannot land an edit" as a signal in its own right
+  # rather than as a confidence modifier bolted onto a different one. The
+  # two populations are disjoint in the corpus, so that is the right shape.
   defp surgery_block("churn", churn, detail_block) do
     case churn.file_surgery do
       %{path: path, command: cmd, kind: kind} ->
