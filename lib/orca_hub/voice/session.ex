@@ -821,6 +821,20 @@ defmodule OrcaHub.Voice.Session do
   # "stop the send you were about to do", which is never destructive:
   # an open send window dies, an outstanding `send_request` is abandoned,
   # and `pending_insert` is dropped.
+  #
+  # Abandoning the `send_request` at LAND rather than at FIRE is deliberate.
+  # Deferring it would leave §8.2's 5 s deadline in `expire_send_request/2`
+  # free to expire inside the cancel window and DELIVER — on the no-composer
+  # branch, a real delivery of the very text being cancelled, i.e.
+  # ORCAHUB3-86 resurrected. The converse risk (the cancel aborts, and a send
+  # the user never called off is gone) costs one repeated "orca send" with
+  # the draft untouched, which is §5.1.1's cheap side. Aborting the cancel
+  # never resurrects the send; `session_test.exs` pins that.
+  #
+  # And this is only reachable in the STUCK-composer path at all: the
+  # composer round trip is ~100 ms while a spoken command cannot land sooner
+  # than ~1.1 s, so a cancel that still sees `send_pending` is looking at a
+  # draft `request_send/2` left intact and nobody has delivered.
   defp route(:action, state, entry, res, :cancel, base, now) do
     # As for `:send`: dictation that came BEFORE the command word is still
     # dictation. Appending it means an ABORTED cancel keeps those words

@@ -321,6 +321,82 @@ defmodule OrcaHub.Voice.SessionTest do
       assert {_state, []} = Session.tick(state, @t0 + 60_000)
     end
 
+    # §8.3.11 had to answer this explicitly: a SPOKEN cancel is armed now, so
+    # does an outstanding `send_request` die when the cancel LANDS or when it
+    # FIRES? The two halves are separable and are separated:
+    #
+    #   * abandoning the send is NOT destructive, so it happens at LAND time.
+    #     Waiting for the window would let the 5 s deadline in
+    #     `expire_send_request/2` deliver — and on the no-composer branch that
+    #     is a real delivery of the very text being cancelled, i.e.
+    #     ORCAHUB3-86 resurrected.
+    #   * clearing the DRAFT is destructive, so it waits for the window.
+    #
+    # Note what state this can even be reached in: the composer round trip is
+    # ~100 ms, while a spoken command cannot land sooner than ~1.1 s (600 ms
+    # VAD redemption + ~0.5 s ASR). A cancel that still sees `send_pending` is
+    # therefore always the STUCK-composer path — where the draft demonstrably
+    # has NOT been delivered and still needs protecting (see the fixture
+    # above: `request_send/2` leaves `draft` intact).
+    test "a SPOKEN cancel abandons the send_request at LAND time, not at fire time",
+         %{armed: state} do
+      assert state.send_pending
+      assert state.draft == "ship it"
+
+      {state, effects} = utterance(state, 2, "or cut cancel.", @t0 + 1600)
+      assert actions(effects) == ["cancel"]
+
+      # Dead on arrival: the deadline can no longer deliver anything.
+      assert state.send_pending == nil
+      refute state.sending
+      # ...but the draft is only counting down.
+      assert state.draft == "ship it"
+      assert state.arming_kind == :cancel
+
+      {state, effects} = Session.tick(state, @t0 + 60_000)
+      assert effects == [{:cancelled, "ship it"}]
+      assert state.draft == ""
+    end
+
+    # The property that makes the choice above safe rather than merely early:
+    # aborting the cancel must NOT resurrect the send. The cost of getting
+    # this wrong in the other direction is an unwanted delivery; the cost of
+    # this direction is saying "orca send" again, which is §5.1.1's own cheap
+    # side of the asymmetry.
+    test "aborting the cancel leaves the draft intact and the send still abandoned",
+         %{armed: state} do
+      {state, _} = utterance(state, 2, "or cut cancel.", @t0 + 1600)
+      {state, []} = Session.speech_start(state)
+
+      assert state.arming_until == nil
+      assert state.draft == "ship it"
+      assert state.send_pending == nil
+
+      # Nothing delivers, ever, without the user asking again.
+      assert {state, []} = Session.tick(state, @t0 + 120_000)
+      assert state.draft == "ship it"
+
+      # And asking again works, from a clean slate.
+      {state, [{:send_request, "ship it"}, _tick]} = Session.send_now(state, @t0 + 130_000)
+      assert state.send_pending
+    end
+
+    # The reverse race: an explicit send during an armed cancel. `request_send`
+    # disarms, so the send wins and no clear is left pending behind it.
+    test "a manual send during an armed cancel wins, and kills the window" do
+      {state, _} = utterance(Session.new(), 1, "ship it")
+      {state, _} = utterance(state, 2, "or cut cancel.", @t0 + 10)
+      assert state.arming_kind == :cancel
+
+      {state, [{:send_request, "ship it"} | _]} = Session.send_now(state, @t0 + 20)
+      assert state.arming_until == nil
+      assert state.arming_kind == nil
+
+      {state, effects} = Session.tick(state, @t0 + 20 + 1500)
+      refute Enum.any?(effects, &match?({:cancelled, _}, &1))
+      assert state.draft == "ship it"
+    end
+
     # §8.3.11: the hook pushes this instead of `cancel` when the page's own
     # composer delivered the draft. Same clearing, no undo — a restore
     # affordance for a message that WAS sent invites a double send.

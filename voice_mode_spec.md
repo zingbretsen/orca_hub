@@ -1651,8 +1651,33 @@ never a second timer:
 
 - the stripped remainder is appended first, exactly as `:send` does it — an
   aborted cancel must not eat the dictation that preceded the command word;
-- an open SEND window and any outstanding `send_request` die immediately, as
-  before — calling off a send is never destructive;
+- an open SEND window and any outstanding `send_request` die immediately, at
+  LAND time, not when the window fires. The two halves of a cancel are
+  separable and are separated: **abandoning a send is not destructive, so it
+  is immediate; clearing a draft is, so it waits.** Deferring the
+  abandonment to fire time would leave §8.2's 5 s `send_request` deadline
+  free to expire inside the cancel window and DELIVER — and on the
+  no-composer branch that is a real delivery of the very text being
+  cancelled, i.e. ORCAHUB3-86 resurrected. The converse risk (aborting the
+  cancel after the send was already abandoned) costs one repeated "orca
+  send", which is §5.1.1's own cheap side of the asymmetry, and the draft is
+  untouched throughout. Aborting the cancel must never resurrect the send;
+  that is pinned.
+
+  Note which states this is even reachable in. The composer round trip is
+  ~100 ms, while a spoken command cannot land sooner than ~1.1 s (600 ms VAD
+  redemption + ~0.5 s ASR). A cancel that still sees `send_pending` set is
+  therefore always the STUCK-composer path — the one where the draft
+  demonstrably has NOT been delivered (`request_send/2` leaves `draft`
+  intact; only `sent_ack` clears it) and still needs the window's
+  protection. "The send is about to complete, so there is nothing left to
+  protect" is true of the normal path and false of every path that can
+  actually get here.
+
+  An explicit send during an armed cancel wins the other way: `request_send`
+  disarms, so `send_now/1` beats a pending clear and leaves nothing armed
+  behind it.
+
 - the draft is cleared only when the window expires, and the window is
   aborted by speech onset, `armable?/2`'s resumed-speech case, a following
   appended segment, a manual `draft_edit`, and every §8.3.6 non-action class;
