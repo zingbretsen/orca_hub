@@ -111,6 +111,26 @@ defmodule OrcaHub.Jobs.ProgressTest do
   end
 
   describe "sample/1 — command, bounded execution" do
+    # The only test that wants a SHORT budget, so it is the only one that sets
+    # one. It used to get it from a suite-wide 200ms in config/test.exs, which
+    # bought this test's speed by making every other command test race a loaded
+    # machine — and they lost. Scoped here, `sleep 30` still proves the bound in
+    # a fraction of a second and nothing else inherits the threshold.
+    #
+    # Safe despite `async: true`: ExUnit runs a module's own tests serially, and
+    # this key is read nowhere outside OrcaHub.Jobs.Progress, which is exercised
+    # only here.
+    setup do
+      previous = Application.get_env(:orca_hub, :job_progress_command_timeout_ms)
+      Application.put_env(:orca_hub, :job_progress_command_timeout_ms, 200)
+
+      on_exit(fn ->
+        Application.put_env(:orca_hub, :job_progress_command_timeout_ms, previous)
+      end)
+
+      :ok
+    end
+
     test "a hanging command times out and returns :unchanged rather than blocking forever" do
       assert Progress.sample(%{progress_kind: "command", progress_command: "sleep 30"}) ==
                :unchanged

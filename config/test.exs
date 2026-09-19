@@ -86,4 +86,13 @@ config :orca_hub, :memory_git_enabled, false
 # completion don't each cost multiple seconds of real wall-clock waiting.
 config :orca_hub, job_poll_interval_ms: 100
 config :orca_hub, job_kill_grace_ms: 300
-config :orca_hub, job_progress_command_timeout_ms: 200
+
+# NOT shortened, unlike the two above. `progress_kind: "command"` samples fork a
+# real shell, and this is the budget for that fork — so a short suite-wide value
+# is a timing threshold every command test has to beat while the whole suite
+# competes for the machine. At 200ms it lost: `sample/1 — command, unparseable
+# free text` failed twice in a row in a full run (`:unchanged`, i.e. the echo was
+# reaped as a timeout) while passing alone every time, on a box where an idle
+# `sh -c echo` measures 2-26ms. Tests get production's own margin instead; the
+# one test that needs a SHORT bound sets it for itself.
+config :orca_hub, job_progress_command_timeout_ms: 5_000
