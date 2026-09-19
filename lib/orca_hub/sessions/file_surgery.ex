@@ -570,9 +570,10 @@ defmodule OrcaHub.Sessions.FileSurgery do
   # canonical production instance: the only `>` in
   # `… | sed 's/PASSWORD=.*/PASSWORD=<redacted>/'` is the literal
   # `<redacted>`, and the command is a pure READ. (`churn_alert_precision.md`
-  # §A.3 calls BOTH `slice_and_redirect` alerts matcher artefacts; replaying
-  # the corpus says one of the two — §A.6(2)'s own sample #27 — is this bug,
-  # and the other is a genuine `sed -n '526,645p' file.js > /tmp/x`.)
+  # said BOTH `slice_and_redirect` alerts were this bug, in §A.3 AND in
+  # §A.6(2) itself. Replaying the corpus says one of the two — sample #27,
+  # above — is; the other is a genuine `sed -n '526,645p' file.js > /tmp/x`
+  # that still fires after this fix. Corrected in the doc at 56e2807.)
   #
   # The blanking is LENGTH-PRESERVING — every masked byte becomes a space,
   # while quote delimiters and newlines stay where they are — so an offset in
