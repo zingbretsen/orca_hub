@@ -172,6 +172,11 @@ Repetition ratio in the alert body (churn alerts, n=230):
 | ≥20% | 2 |
 | n/a | 1 |
 
+**Read the `no commit Nm` clause with §D.3 open**: it is a property of the
+alerted session's *directory*, not of the session, so in a shared worktree it
+reports someone else's commit. Every `no commit Nm` value parsed out of this
+corpus is confounded that way.
+
 **Every single alert is below `@churn_min_repetition` (0.5 = 50%).** The highest
 repetition ratio ever carried by a delivered alert is 23%. Tool-call volume:
 67 alerts under 25 calls/15m (below `@churn_min_calls`), 85 at 25–49, 77 at ≥50.
@@ -543,6 +548,21 @@ class is most of the 34 false positives in §C.1 (samples #8, #10, #11, #15, #21
 only moves **7.7% → 12.0%**. That modest number was always the tell; this
 specimen is what the tell looks like in the wild.
 
+#### A third specimen, leaking through the OTHER clause
+
+A third alert fired the same day, on worker B — editing
+`lib/orca_hub/churn_sampler/alert_evaluator.ex`, and therefore alerted *by the
+alert evaluator*. Same idiom (`python3 - <<'PY' … open(p,'w') … PY`), but with a
+same-command `grep -n … alert_evaluator.ex` after it. 35 calls/15m, **0%
+repeats**, "no commit 1m" — and that 1 minute was sibling worker C's commit
+`e144743`, not anything this worker did (see §D.3).
+
+It survives U1b too, but **for a different reason than §C.5's does**: here the
+path IS tracked, so D1 is false and the `D1 ∧ D2b` conjunct never engages;
+§C.5's path is untracked and it survives because D2b is false instead. Between
+them the two specimens show the recommended rule leaking on **each of its two
+clauses independently**, not on one weak spot.
+
 #### A tightening considered and REJECTED
 
 D6 currently requires `top_edited_files` **and** `top_repeated_signatures` to
@@ -558,6 +578,15 @@ to explain one anecdote has no *measured* true-positive cost, and "no measured
 cost" and "no cost" are different claims. It is recorded here as a **candidate
 for ORCAHUB3-111 to measure against a fresh hand-labelled sample**, not a change
 to make now. The next person should inherit the reasoning, not the temptation.
+
+**And the third specimen settles it, having arrived unprompted rather than been
+constructed to make the point.** Its `Top edited files:` line is
+`alert_evaluator.ex (5)` — five edits to one file — where §C.5's has every file
+at (1). So the rejected tightening would suppress the first of these two false
+positives and would **not** suppress the second; they sit on opposite sides of
+the very threshold it proposes. **No single tightening covers both.**
+That is a stronger argument than "it would be tuned on one anecdote", and it is
+stronger precisely because nobody went looking for it.
 
 One further datum for §D.3: this alert's `no commit 6m` clause fired on a worker
 roughly **20 minutes** into a task that commits once, at the end, by design. The
@@ -698,6 +727,44 @@ line fires on them mechanically: the role does not commit. D5 alone loses TP
 clause also misfires on single-commit roles that DO edit the repo — see §C.5,
 where it reported "no commit 6m" against a worker 20 minutes into a task that
 commits once at the end.
+
+#### `no commit Nm` is a property of the DIRECTORY, not of the session
+
+The mechanism is more general than the single-commit-role case above, and the
+source says so plainly:
+
+- **`OrcaHub.Sessions.git_head_info/1`** (`lib/orca_hub/sessions.ex:1732`) runs
+  `git log -1 --format=%H%n%h%n%cI%n%s` with `cd: directory`. No author filter,
+  no session attribution — it is the **directory's HEAD, whoever made it**.
+- **`AlertEvaluator.fetch_commit_info_for/1`** dedupes by
+  `{runner_node, directory}` *explicitly*, so every session sharing a working
+  directory is handed the identical number. `ChurnSampler` and
+  `SessionHeartbeat.Digest` do the same.
+
+In a shared worktree the clause therefore reports a fact about **someone else's
+work** while reading as a fact about the alerted worker. That is not merely
+uninformative, it is misattributing: §C.5's third specimen was told "no commit
+1m" about a sibling's commit `e144743`.
+
+**Consequence for this corpus, stated explicitly: every `no commit Nm` value
+parsed here is confounded.** 20 working directories, several carrying multiple
+concurrent workers, means the field cannot be read as session-level anywhere in
+§A–§E, and no future analysis should treat it as such.
+
+**Checked, and nothing in this document's conclusions rests on it.** The field is
+parsed in `parse_alerts.exs:24` and then never consumed: no breakdown groups by
+it, no discriminator reads it, and D5 keys off `top_edited_files` being empty,
+not off commit age. The §A.5 distribution tables are over `repeats` and
+`calls/15m`; §B's proxy is over orchestrator actions; §D's counterfactual is over
+git-tracking, verification, same-path matches and detail-block emptiness. The
+confound is real and it is inert here — but it would not have been inert had D5
+been defined the obvious other way, on commit age, which is worth noticing.
+
+One forward pointer, not developed here because it is not this issue's: the
+volumetric gate also requires `minutes_since_last_commit > 30`, so the same
+directory-level confound plausibly explains why the volumetric half of
+`churn_suspected` fired exactly **once** in seven weeks (§A.2). The full
+argument is filed as **ORCAHUB3-111**.
 
 ### D.4 The ORCAHUB3-63 §1 check — no recommendation becomes "alert only at high volume"
 
