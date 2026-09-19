@@ -96,7 +96,11 @@ defmodule OrcaHub.Voice.Session do
   `##` insert sets it, and it makes the NEXT appended transcript join with
   NO separator so the spoken query lands where `Autocomplete`'s `/#(\\S*)$/`
   trigger can see it. It is cleared by that append, by any other insert, by
-  `cancel/1`, by a send, and by a manual `draft_edit/2`.
+  `cancel/1`, by a send, and by a manual `draft_edit/2`. That same append also
+  STRIPS the ASR's trailing sentence punctuation, because a segment consuming a
+  `#`/`##` trigger is a search query rather than prose — `#Voice.` matches
+  nothing where `#Voice` matches two. Ordinary dictation keeps its punctuation,
+  and so does the line after a spoken NEWLINE, which never sets the flag.
 
   The other half of that rule is general rather than insert-specific: an
   append NEVER doubles a separator, so when the draft already ends in
@@ -856,6 +860,17 @@ defmodule OrcaHub.Voice.Session do
   #     draft could end in whitespace at all.
   defp append(state, text) do
     text = String.trim(text)
+
+    # §8.3.7 amendment: the segment that CONSUMES a `#`/`##` trigger is the
+    # spoken AUTOCOMPLETE QUERY, not prose, so it loses the ASR's sentence
+    # punctuation for exactly the reason §8.3.6's palette query does — the
+    # session search behind the trigger is an ILIKE on the raw text, and
+    # `#Voice.` matches nothing where `#Voice` matches two.
+    #
+    # Scoped by `pending_insert`, which ONLY a `#`/`##` insert sets (a newline
+    # insert leaves trailing whitespace, so it does not) — ordinary dictation
+    # and the line after a spoken newline both keep their punctuation.
+    text = if state.pending_insert, do: spoken_query(text), else: text
 
     draft =
       cond do

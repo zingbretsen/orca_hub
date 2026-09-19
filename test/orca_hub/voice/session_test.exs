@@ -870,6 +870,42 @@ defmodule OrcaHub.Voice.SessionTest do
       assert state.draft == "see the logs\n"
     end
 
+    test "the segment consuming a # trigger loses the ASR's sentence punctuation" do
+      # The session search behind the trigger is an ILIKE on the raw text, so
+      # `#Voice.` matches nothing where `#Voice` matches two.
+      for {heard, draft} <- [
+            {"voice.", "#voice"},
+            {"voice?", "#voice"},
+            {"voice!", "#voice"},
+            {"voice,", "#voice"},
+            {"voice...", "#voice"}
+          ] do
+        {state, _} = utterance(Session.new(), 1, "orca session search")
+        assert state.pending_insert
+
+        {state, effects} = utterance(state, 2, heard, @t0 + 10)
+        assert actions(effects) == ["appended"]
+        assert state.draft == draft, "heard #{inspect(heard)} produced #{inspect(state.draft)}"
+      end
+    end
+
+    test "stripping is scoped to the trigger: ordinary dictation keeps its punctuation" do
+      {state, _} = utterance(Session.new(), 1, "ship it.")
+      assert state.draft == "ship it."
+
+      {state, _} = utterance(state, 2, "then tell me.", @t0 + 10)
+      assert state.draft == "ship it. then tell me."
+    end
+
+    test "a NEWLINE insert never sets pending_insert, so the next line keeps its full stop" do
+      {state, _} = utterance(Session.new(), 1, "hello there.")
+      {state, _} = utterance(state, 2, "orca new line", @t0 + 10)
+      refute state.pending_insert
+
+      {state, _} = utterance(state, 3, "good morning.", @t0 + 20)
+      assert state.draft == "hello there.\ngood morning."
+    end
+
     test "pending_insert is cleared by ANOTHER insert" do
       {state, _} = utterance(Session.new(), 1, "orca hashtag")
       assert state.pending_insert

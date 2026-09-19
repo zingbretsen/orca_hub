@@ -1542,14 +1542,17 @@ NEVER open one. Only `:send` ever opens it. Nothing in phase 2c sets `sending`.
   at the first space, so a multi-word spoken query searches on its FIRST WORD
   only. Selecting a result replaces everything from the trigger to the caret, so
   the extra words are consumed by the replacement rather than left behind.
-- KNOWN LIMITATION, measured 2026-09-18 and documented not fixed: the ASR
-  punctuates nearly every utterance, and that punctuation is part of the DRAFT,
-  so a spoken `#` query arrives as `#Voice.` and the session search behind the
-  autocomplete — an ILIKE on the raw query — matches nothing. Unlike the palette
-  query (§8.3.6) this CANNOT be normalized on the voice path: the text is
-  literally the user's draft, and dictation keeps its punctuation. Fixing it
-  means changing the trigger regex or the search itself, i.e. the typed-user
-  path, which is out of scope for phase 2c.
+- The segment that CONSUMES `pending_insert` also loses the ASR's trailing
+  sentence punctuation, by the same argument as §8.3.6's palette query: that
+  segment is by definition the spoken query for a `#`/`##` trigger the user has
+  just uttered, not prose. Measured 2026-09-18: the session search behind the
+  autocomplete is an ILIKE on the raw query, so `#Voice.` matched nothing where
+  `#Voice` matches two. The normalization is `pending_insert`-scoped and reuses
+  §8.3.6's normalizer, so ordinary dictation keeps its punctuation — and so
+  does the line after a spoken NEWLINE, which never sets the flag. This is what
+  makes the whole §13.5 headline sequence reachable BY VOICE: "orca session
+  search" -> spoken query -> "orca second item", verified end to end with no
+  keyboard.
 
 #### 8.3.8 Name matching — `match_label/2`
 

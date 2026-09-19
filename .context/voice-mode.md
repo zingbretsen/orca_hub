@@ -224,9 +224,9 @@ More invariants that bite:
 Voice-driven INTERACTION (§8.3 / C5, ORCAHUB3-87) — not just navigation: the
 palette, the composer autocomplete, ordinal selection and newline/`#` inserts.
 §8.3 is normative and supersedes §13, which is now the design record. Verified
-23/24 end to end on the real page with a fake mic and real speech (the one FAIL
-is the autocomplete punctuation limitation below, which is documented, not a
-regression).
+24/24 end to end on the real page with a fake mic and real speech — including
+the full §13.5 headline sequence spoken with no keyboard at all: "orca session
+search" -> spoken query -> "orca second item".
 
 - **Shape.** `Intent` grows `command_vocab/0` (the phase-1 four FIRST, then
   §8.3.3's, so nothing added can displace phase-1 behaviour on a tie),
@@ -279,12 +279,16 @@ Invariants that bite:
   punctuation, and `CommandPaletteLive`'s matching belongs to typed users.
   `match_label/3` is deliberately not given the stripped text; it normalizes for
   itself and matched `"session."` to the `Sessions` row both before and after.
-- **The SAME full stop still breaks the composer autocomplete, and that one is
-  NOT fixed.** A spoken `#` query lands as `#Voice.` and the session search
-  behind it matches nothing. It cannot be normalized the same way, because the
-  text is literally the user's draft — fixing it means changing the trigger
-  regex or the search, i.e. the typed-user path. Out of scope for 2c; see
-  §8.3.7 for both this and the first-word-only trigger limitation.
+- **The segment that consumes a `#`/`##` trigger is stripped too** — same
+  normalizer, scoped by `pending_insert`. The session search behind the
+  autocomplete is an ILIKE on the raw query, so `#Voice.` matched nothing where
+  `#Voice` matches two; without this the headline sequence was only reachable
+  by TYPING the query. Ordinary dictation keeps its punctuation, and so does
+  the line after a spoken newline — a newline insert leaves trailing
+  whitespace and so never sets `pending_insert`, which is the whole reason the
+  scoping works. The remaining §8.3.7 limitation is genuinely out of scope: the
+  trigger regex stops at the first space, so a multi-word spoken query searches
+  on its FIRST WORD only.
 - **The 9-candidate cap is enforced on BOTH sides independently** (client
   `MAX_CANDIDATES`, server `@max_candidates`). Do not delete one believing the
   other is doing the work: the client cap keeps unspeakable rows off the wire,
