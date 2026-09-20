@@ -21,7 +21,8 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
     :asr_intent_threshold,
     :asr_echo_cancellation,
     :asr_noise_suppression,
-    :asr_auto_gain_control
+    :asr_auto_gain_control,
+    :asr_release_mic_during_playback
   ]
 
   setup do
@@ -43,6 +44,7 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
     Application.put_env(:orca_hub, :asr_echo_cancellation, "true")
     Application.put_env(:orca_hub, :asr_noise_suppression, "true")
     Application.put_env(:orca_hub, :asr_auto_gain_control, "true")
+    Application.put_env(:orca_hub, :asr_release_mic_during_playback, "false")
 
     :ok
   end
@@ -58,6 +60,7 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
       "echo_cancellation" => "",
       "noise_suppression" => "",
       "auto_gain_control" => "",
+      "release_mic_during_playback" => "",
       "enabled" => "true"
     }
 
@@ -89,6 +92,21 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
       assert html =~ "next ARM"
     end
 
+    test "renders the release-during-playback knob and says when IT takes effect",
+         %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/settings")
+
+      assert html =~ "Microphone during TTS playback"
+      assert html =~ "Release the microphone while the assistant speaks"
+      assert html =~ "ASR_RELEASE_MIC_DURING_PLAYBACK"
+      # Its timing is the NEXT JOIN, which is a different answer from the
+      # capture constraints' "next arm" three fields above it.
+      assert html =~ "next <strong>join</strong>"
+      # The env default is rendered into the inherit option, so the page
+      # shows what a blank select will actually do.
+      assert html =~ "ASR_RELEASE_MIC_DURING_PLAYBACK (false)"
+    end
+
     test "there is no model catalog on this lane", %{conn: conn} do
       {:ok, _view, html} = live(conn, ~p"/settings")
 
@@ -116,7 +134,8 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
                threshold: 0.9,
                echo_cancellation: true,
                noise_suppression: true,
-               auto_gain_control: true
+               auto_gain_control: true,
+               release_mic_during_playback: false
              }
     end
 
@@ -131,6 +150,31 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
                noiseSuppression: true,
                autoGainControl: true
              }
+    end
+
+    test "turning the release on in the UI is what the voice channel hands the browser",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      submit(view, %{"release_mic_during_playback" => "true"})
+
+      assert ASRConfig.resolve().release_mic_during_playback == true
+      # ...and it changed nothing about the constraint object, which is a
+      # separate mechanism with a separate timing.
+      assert ASRConfig.capture_constraints() == %{
+               echoCancellation: true,
+               noiseSuppression: true,
+               autoGainControl: true
+             }
+    end
+
+    test "leaving the release blank inherits it from env, off by default", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      submit(view, %{"url" => "http://db-asr.test:8000"})
+
+      assert ASRConfig.get_provider_entry().spec["release_mic_during_playback"] == ""
+      assert ASRConfig.resolve().release_mic_during_playback == false
     end
 
     test "leaving a constraint blank inherits that one from env", %{conn: conn} do

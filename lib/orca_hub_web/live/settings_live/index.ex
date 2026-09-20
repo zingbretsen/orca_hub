@@ -594,8 +594,9 @@ defmodule OrcaHubWeb.SettingsLive.Index do
          |> put_flash(
            :info,
            "ASR settings saved — in effect on the next transcription. " <>
-             "The three microphone constraints are the exception: switch voice mode " <>
-             "off and on again, since they are read when the mic is armed."
+             "The microphone settings are the exception: switch voice mode off and " <>
+             "on again, since the three capture constraints are read when the mic is " <>
+             "armed and the release-during-playback behaviour is read at join."
          )}
 
       {:error, changeset} ->
@@ -830,6 +831,7 @@ defmodule OrcaHubWeb.SettingsLive.Index do
             "echo_cancellation" => spec["echo_cancellation"] || "",
             "noise_suppression" => spec["noise_suppression"] || "",
             "auto_gain_control" => spec["auto_gain_control"] || "",
+            "release_mic_during_playback" => spec["release_mic_during_playback"] || "",
             "enabled" => to_string(if(entry, do: entry.enabled, else: true))
           },
           as: :asr
@@ -847,6 +849,20 @@ defmodule OrcaHubWeb.SettingsLive.Index do
       {"Inherit from #{env_var} (#{env_default})", ""},
       {"true — request it", "true"},
       {"false — do not request it", "false"}
+    ]
+  end
+
+  @doc """
+  Options for `release_mic_during_playback` (ORCAHUB3-105). Same tri-state
+  shape and the same reason for it as `asr_constraint_options/2`, but the
+  labels say what the two states DO rather than what is requested — this one
+  is not a `getUserMedia` constraint, it is a behaviour.
+  """
+  def asr_release_mic_options(env_default, env_var) do
+    [
+      {"Inherit from #{env_var} (#{env_default})", ""},
+      {"true — stop the mic while the assistant speaks", "true"},
+      {"false — only mute it (current behaviour)", "false"}
     ]
   end
 

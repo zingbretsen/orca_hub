@@ -17,7 +17,7 @@ defmodule OrcaHub.ASRConfig do
 
   ## Resolution: DB wins, else env, else hardcoded — PER FIELD
 
-  `resolve/0` decides nine fields independently. For each one it takes the
+  `resolve/0` decides ten fields independently. For each one it takes the
   first usable of:
 
     1. the DB value (the `"asr_provider"` row's `spec`),
@@ -78,6 +78,31 @@ defmodule OrcaHub.ASRConfig do
   off; `voice_mode_spec.md` §4 still says AEC-on and the defaults still obey
   it.
 
+  ## `release_mic_during_playback` (ORCAHUB3-105, the A/B's answer)
+
+  The constraint A/B came back NEGATIVE: with all three turned off, arming
+  the mic still silenced the device. The discriminator Zach measured is
+  track LIVENESS — an open `MediaStreamTrack` holds the audio route, and our
+  half-duplex "muted" is only a software state on top of a track that is
+  still open.
+
+  So this field, a boolean defaulting to **FALSE**, turns on the candidate
+  fix: the browser STOPS the capture track when TTS starts playing and
+  re-acquires it when playback has been idle for a beat, instead of merely
+  pausing the VAD. Default off because it costs a real re-acquire (the mic
+  is genuinely deaf for the debounce plus the `getUserMedia` round trip) and
+  because the outcome it is aiming at — audio actually coming out of the
+  speaker — cannot be observed anywhere but on Zach's own device.
+
+  Like the three constraints it is not used on this side at all; it rides
+  the join reply as `release_mic_during_playback` and is read by
+  `assets/js/voice/voice_hook.js`. WHEN it takes effect differs from BOTH
+  its neighbours: the constraints are read when the mic is opened (next
+  arm), everything else lands on the next utterance, and this one is read at
+  the next `orca:tts-state {playing: true}` edge using whatever the LAST
+  JOIN reply carried — so a change lands on the next JOIN (voice off/on, a
+  retarget, or a socket rejoin), and never mid-playback.
+
   ## No cache, deliberately
 
   `resolve/0` queries inside the call. Voice traffic is very low QPS, and a
@@ -116,6 +141,11 @@ defmodule OrcaHub.ASRConfig do
   @default_noise_suppression true
   @default_auto_gain_control true
 
+  # ORCAHUB3-105's candidate FIX, and the reason it defaults to false: it
+  # changes what the microphone does during every single reply, and the only
+  # instrument that can tell whether it works is a human with a speaker.
+  @default_release_mic_during_playback false
+
   @doc "The PubSub topic mutations broadcast on."
   def topic, do: @topic
 
@@ -125,7 +155,7 @@ defmodule OrcaHub.ASRConfig do
   @doc """
   The effective ASR config: `%{url:, path:, language:, timeout_ms:,
   warmup_timeout_ms:, threshold:, echo_cancellation:, noise_suppression:,
-  auto_gain_control:}`, each field resolved DB → env → hardcoded
+  auto_gain_control:, release_mic_during_playback:}`, each field resolved DB → env → hardcoded
   independently, with the numeric and boolean fields returned TYPED.
 
   A DB read failure degrades to env-only rather than failing the call —
@@ -165,6 +195,12 @@ defmodule OrcaHub.ASRConfig do
           spec["auto_gain_control"],
           :asr_auto_gain_control,
           @default_auto_gain_control
+        ),
+      release_mic_during_playback:
+        pick_boolean(
+          spec["release_mic_during_playback"],
+          :asr_release_mic_during_playback,
+          @default_release_mic_during_playback
         )
     }
   end
@@ -205,7 +241,13 @@ defmodule OrcaHub.ASRConfig do
       threshold: pick_threshold(nil, :asr_intent_threshold, @default_threshold),
       echo_cancellation: pick_boolean(nil, :asr_echo_cancellation, @default_echo_cancellation),
       noise_suppression: pick_boolean(nil, :asr_noise_suppression, @default_noise_suppression),
-      auto_gain_control: pick_boolean(nil, :asr_auto_gain_control, @default_auto_gain_control)
+      auto_gain_control: pick_boolean(nil, :asr_auto_gain_control, @default_auto_gain_control),
+      release_mic_during_playback:
+        pick_boolean(
+          nil,
+          :asr_release_mic_during_playback,
+          @default_release_mic_during_playback
+        )
     }
   end
 
@@ -308,14 +350,16 @@ defmodule OrcaHub.ASRConfig do
   @doc """
   Upserts the single provider row. `attrs` carries `url`/`path`/`language`/
   `timeout_ms`/`warmup_timeout_ms`/`threshold`/`echo_cancellation`/
-  `noise_suppression`/`auto_gain_control` (string or atom keys); a blank
-  value is stored as-is and read back as "fall back to env for this field".
+  `noise_suppression`/`auto_gain_control`/`release_mic_during_playback`
+  (string or atom keys); a blank value is stored as-is and read back as
+  "fall back to env for this field".
   """
   def put_provider(attrs) do
     spec =
       Map.new(
         ~w(url path language timeout_ms warmup_timeout_ms threshold
-           echo_cancellation noise_suppression auto_gain_control)a,
+           echo_cancellation noise_suppression auto_gain_control
+           release_mic_during_playback)a,
         fn key -> {to_string(key), fetch(attrs, key)} end
       )
 

@@ -1101,6 +1101,40 @@
       at each arm — server-side in the hub log, and in the browser console as <code>[voice] microphone armed</code>, which also reports what the track actually applied.
     </p>
 
+    <div class="divider text-xs text-base-content/50 mt-4 mb-0">
+      Microphone during TTS playback
+    </div>
+
+    <.input
+      field={@asr_form[:release_mic_during_playback]}
+      type="select"
+      label="Release the microphone while the assistant speaks"
+      options={
+        asr_release_mic_options(
+          @asr_env_defaults.release_mic_during_playback,
+          "ASR_RELEASE_MIC_DURING_PLAYBACK"
+        )
+      }
+    />
+
+    <p class="text-xs text-base-content/50 -mt-1">
+      Voice mode is half-duplex: while the assistant is speaking the microphone is muted so the
+      reply is never transcribed back into the draft. Muting, though, is only a software state —
+      the <code>MediaStreamTrack</code>
+      stays OPEN, and an open capture track is what holds the device in communications mode, which
+      is what stops any audio (ours and other apps') reaching the speaker. Turning this on makes
+      the browser <strong>stop</strong>
+      the track for the duration of playback and re-acquire it about a second after the audio
+      stops. <strong>Default off</strong>: it costs a real re-acquire, so the microphone is deaf
+      for that second plus the time the browser takes to hand the device back, and whether it
+      actually restores audio output can only be judged on a real device. A change takes effect on
+      the next <strong>join</strong>
+      — switch voice mode off and on again. Watch the voice log for
+      <code>mic released for playback</code>
+      / <code>mic re-acquired</code>
+      lines, which carry the measured re-acquire time.
+    </p>
+
     <.input
       field={@asr_form[:enabled]}
       type="checkbox"

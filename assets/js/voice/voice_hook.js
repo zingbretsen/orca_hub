@@ -100,6 +100,35 @@
  *    `getUserMedia`. So a settings change takes effect on the NEXT ARM, not
  *    the next utterance: the live track is never reshaped underneath a
  *    session that is already listening.
+ *
+ * 9. RELEASING THE MICROPHONE DURING PLAYBACK (ORCAHUB3-105, default OFF).
+ *    The same join reply carries `release_mic_during_playback`. With it on,
+ *    `{playing: true}` STOPS the capture track rather than only pausing the
+ *    VAD, and the track is re-acquired once playback has been idle for
+ *    `micReacquireDebounceMs`.
+ *
+ *    Why: muting is a software state. The open `MediaStreamTrack` is what
+ *    holds the device's audio route, and Zach measured that a live track —
+ *    even with our mute showing, even with AEC/NS/AGC all turned off —
+ *    silences ALL output on the device, ours and other apps' alike. Only
+ *    STOPPING it gives the speaker back.
+ *
+ *    This crosses three other mechanisms, so it carries its own state
+ *    (`_micReleased`) rather than reusing `armed`/`muted`:
+ *
+ *    - §7's liveness watcher would read a stopped track as "the microphone
+ *      stopped — tap the mic to resume" and report a failure on every
+ *      single reply. `_micReleased` is what tells it this loss is OURS:
+ *      `_onLiveness`, `_reconcileMic` and the mic button's repair press all
+ *      stand down while it is set, and `_renderMic` says so in words.
+ *    - The mute watchdog is UNCHANGED and still arms on the `{playing:true}`
+ *      edge — the release happens alongside the mute, not instead of it. If
+ *      it ever fires (a lost `{playing:false}`), it now also re-acquires
+ *      immediately, because unmuting a microphone that no longer exists is
+ *      the same wedge one layer down.
+ *    - The VAD is never fed from a track that is not genuinely live: frames
+ *      are dropped for the whole release, and `_reacquireMic` declares
+ *      success only on `Capture.live()` — never on a timer.
  */
 
 import { Capture, secureContextProblem, FRAME_SAMPLES } from "./capture"
@@ -158,6 +187,34 @@ const PALETTE_ITEM_PREFIX = "command-palette-item-"
 // resort that real playback never reaches.
 const MUTE_WATCHDOG_MS = 10 * 60 * 1000
 
+// ORCAHUB3-105: how long playback has to have been IDLE before a released
+// microphone is taken back.
+//
+// The cost of this number is paid twice over and in opposite directions,
+// which is why it is neither 0 nor a comfortable 5 s:
+//
+//   TOO SHORT and it thrashes. Streaming TTS plays in chunks, the producer
+//   emits them on sentence boundaries (tts_stream.js), and synthesis of the
+//   next one is a GB10 round trip — so a gap of a second or two INSIDE one
+//   reply is ordinary. Today the player parks with `playing` still true
+//   across that gap and emits no `{playing: false}` at all, so the gaps are
+//   invisible to us; this debounce is what stops that from being load-
+//   bearing. It also absorbs the stop/start pair around the stream ->
+//   persisted-message hand-off and a user double-tapping pause/play.
+//
+//   TOO LONG and the mic is deaf exactly when the user wants to answer. The
+//   whole requirement is "speak, hear the reply, speak again" — every
+//   millisecond here is added to the re-acquire itself, and unlike an
+//   ordinary mute there is no 500 ms preroll ring to rescue a clipped first
+//   word, because the ring buffer died with the track.
+//
+// One second: longer than any stop/start pair the player produces back to
+// back, and inside the ~700 ms-1 s a human typically leaves before
+// answering, so the re-acquire overlaps the pause rather than following it.
+// Exposed as a field (like `muteWatchdogMs`) so the headless check can drive
+// the real path in milliseconds instead of asserting it in a comment.
+const MIC_REACQUIRE_DEBOUNCE_MS = 1000
+
 const STATUS_LABEL = {
   warming: "warming up transcription…",
   listening: "listening",
@@ -209,6 +266,20 @@ export const VoiceHook = {
     // to the shipped defaults for it — an older server that sends no
     // `audio_constraints` therefore behaves exactly as it does today.
     this.audioConstraints = null
+    // ORCAHUB3-105 §9, refreshed from every join reply. Defaults to the
+    // hub's own default (OFF) so an older server that sends the field at
+    // all behaves exactly as it does today.
+    this.releaseMicDuringPlayback = false
+    // The DELIBERATE-release state. `armed`/`muted` cannot express it: a
+    // released mic is un-armed AND muted, and both of those already mean
+    // something the liveness machinery reacts to.
+    this._micReleased = false
+    this._reacquiring = false
+    // Wall-clock stamp of the moment playback last went idle, for the same
+    // reason `_mutedAt` exists: a backgrounded page has its timers throttled
+    // or frozen, so the debounce has to be re-derivable from the clock.
+    this._playbackIdleSince = null
+    this.micReacquireDebounceMs = MIC_REACQUIRE_DEBOUNCE_MS
     this.metrics = {
       sampleRate: null,
       ratio: null,
@@ -224,6 +295,14 @@ export const VoiceHook = {
       // Should be 0 forever; anything else is a lost `{playing: false}` and
       // the browser check asserts on it.
       muteWatchdogs: 0,
+      // ORCAHUB3-105 §9: releases attempted, microphones handed back, and
+      // how long the last hand-back took from `{playing:false}`+debounce to
+      // `Capture.live()`. The last one is the number the issue asked for.
+      micReleases: 0,
+      micReacquires: 0,
+      micReacquireMs: null,
+      micReacquireWorstMs: null,
+      micReacquireFailures: 0,
       startedAt: Date.now(),
     }
     // ORCAHUB3-95. NOT in `this._timers`: that whole map is wiped by
@@ -365,7 +444,11 @@ export const VoiceHook = {
       // `armed` latch forced. One attempt only: if the repair did not take,
       // the next press does the ordinary thing and turns voice off, so a mic
       // that is permanently gone can never trap the button.
-      if (!this._micLive() && !this._repairAttempted) {
+      // ORCAHUB3-105 §9: a released mic is not a stopped one, the bar says
+      // so, and there is nothing to repair — so the press does the ordinary
+      // thing and switches voice off. Without this guard every reply would
+      // silently spend the one repair press the user gets.
+      if (!this._micReleased && !this._micLive() && !this._repairAttempted) {
         this._repairAttempted = true
         return this._reconcileMic()
       }
@@ -419,6 +502,14 @@ export const VoiceHook = {
       this.capture.stop()
       this.capture = null
     }
+    // ORCAHUB3-105 §9. `this._timers` (cleared above) held the re-acquire
+    // timer, so the release state has to be dropped with it or a later arm
+    // would start life believing a microphone is out on loan. UNLIKE the
+    // mute latch, this one must NOT outlive a teardown: it exists to
+    // suppress repairs of a capture path that no longer exists either way.
+    this._micReleased = false
+    this._reacquiring = false
+    this._playbackIdleSince = null
     if (this.channel) {
       this.channel.leave()
       this.channel = null
@@ -491,6 +582,7 @@ export const VoiceHook = {
       return false
     }
     this._readAudioConstraints(reply)
+    this._readReleaseMicFlag(reply)
     this.metrics.joins++
     this._hideError()
     // The server's composer flag is per channel, so it is re-reported at
@@ -511,6 +603,7 @@ export const VoiceHook = {
   _onChannelRejoin(reply) {
     this.metrics.joins++
     this._readAudioConstraints(reply)
+    this._readReleaseMicFlag(reply)
     this._hideError()
     this._reportComposer(true)
     this._syncUiFocus(true)
@@ -527,6 +620,23 @@ export const VoiceHook = {
   _readAudioConstraints(reply) {
     const next = reply && reply.audio_constraints
     if (next && typeof next === "object") this.audioConstraints = next
+  },
+
+  /** Remember whether the hub wants the microphone RELEASED during playback
+   * rather than merely muted (ORCAHUB3-105 §9).
+   *
+   * Read at every `{playing: true}` edge from whatever the last join left
+   * here, so a settings change lands on the next JOIN — a third timing,
+   * different from both its neighbours: the capture constraints need a
+   * re-arm, everything else in the ASR config lands on the next utterance.
+   *
+   * Only a real boolean counts. This is a websocket payload, and a missing
+   * or half-decoded field must leave the shipped default (off) in place
+   * rather than turning the microphone off mid-reply on the strength of a
+   * truthy string. */
+  _readReleaseMicFlag(reply) {
+    const next = reply && reply.release_mic_during_playback
+    if (typeof next === "boolean") this.releaseMicDuringPlayback = next
   },
 
   /** The channel dropped. Segments are discarded while it is down
@@ -639,6 +749,12 @@ export const VoiceHook = {
   _onLiveness(reason, live) {
     this._renderMic()
     if (!this.active) return
+    // ORCAHUB3-105 §9: WE stopped the track. `Capture.stop()` already
+    // suppresses its own callbacks, so this should be unreachable for the
+    // release itself — it is here for the race where a callback was already
+    // queued when the release began, which must not be answered with a
+    // repair of something we are deliberately holding down.
+    if (this._micReleased) return
     if (live) {
       this._renderStatus()
       return
@@ -675,6 +791,24 @@ export const VoiceHook = {
     // and handing it back still muted would fix nothing the user can hear.
     this._reconcileMuteWatchdog()
     if (!this.active || this._arming) return
+
+    // ORCAHUB3-105 §9, and it has to sit ahead of the `!this.capture` line
+    // below, which would otherwise re-arm the microphone we are deliberately
+    // holding down — on every `visibilitychange`, i.e. every time a phone
+    // comes back mid-reply.
+    //
+    // Still muted: the release is current, leave it alone.
+    // No longer muted: the release is OWED a re-acquire, and a page that was
+    // frozen can have eaten the debounce timer. Re-derive it from the clock
+    // exactly the way `_reconcileMuteWatchdog` re-derives the mute cap — due
+    // now, take it back; not due yet, let the pending timer do its job.
+    if (this._micReleased) {
+      if (this.muted) return
+      const idleFor = Date.now() - (this._playbackIdleSince || 0)
+      if (idleFor >= this.micReacquireDebounceMs) return this._reacquireMic("reconcile")
+      return
+    }
+
     if (!this.capture) return this._arm()
     if (this.capture.live()) {
       this._renderMic()
@@ -713,6 +847,11 @@ export const VoiceHook = {
 
   _onFrame(m) {
     this.metrics.framesSeen++
+    // ORCAHUB3-105 §9: never feed the VAD from a pipeline that is being torn
+    // down or built back up. In practice `this.vad` is already null for most
+    // of a release — this is the explicit statement of the rule, so that a
+    // frame in flight from the old worklet cannot land in a new VAD session.
+    if (this._micReleased || this._reacquiring) return
     if (this.muted || !this.vad) return // half-duplex: drop, do not buffer
     this.vad.feed(m.samples, m.endSample)
   },
@@ -792,6 +931,151 @@ export const VoiceHook = {
     else this._clearMuteWatchdog()
     this.channel && this.channel.push("mic", { muted: playing, reason: "tts" })
     this._renderMic()
+    // ORCAHUB3-105 §9, LAST: the mute above is unconditional and unchanged,
+    // and the release is a second thing layered on top of it — never a
+    // replacement for it. With the flag off this line is the only trace of
+    // the feature on the half-duplex path.
+    //
+    // Note the asymmetry: a `{playing: false}` must be honoured even when
+    // the flag has since been turned OFF, or a mic released under the old
+    // setting would never come back. So only the RELEASE is gated.
+    if (playing) {
+      if (this.releaseMicDuringPlayback) this._releaseMicForPlayback()
+    } else {
+      this._scheduleMicReacquire()
+    }
+  },
+
+  // ------------------------------------------- releasing the mic (3-105 §9)
+
+  /** Stop the capture track for the duration of playback.
+   *
+   * `Capture.stop()` and not something gentler, deliberately. It ends the
+   * track AND closes the AudioContext, which is the complete release: a
+   * half-release would leave the question this issue exists to answer
+   * unanswerable, because "still no sound" would have two explanations
+   * instead of one. The cost is that coming back is a full `_arm()` —
+   * `getUserMedia`, a fresh context, the worklet and a new VAD session —
+   * which is what `micReacquireMs` measures. If that latency turns out to
+   * hurt more than the silence it fixes, a track-only release (keeping the
+   * context) is the next thing to try, not a shorter debounce.
+   *
+   * `stop()` suppresses its OWN liveness callbacks (`_closing`), so this
+   * fires no `onended` at the watcher; `_micReleased` covers everything
+   * else that polls for liveness rather than being told about it. */
+  async _releaseMicForPlayback() {
+    this._clearMicReacquireTimer()
+    this._playbackIdleSince = null
+    if (this._micReleased) return
+    const released = this.capture
+    // Nothing to release: voice is off, or the mic never armed. Say so by
+    // staying out of the released state entirely — a `_micReleased` with no
+    // capture behind it would suppress the liveness repair for a microphone
+    // this feature never touched.
+    if (!released) return
+
+    this._micReleased = true
+    this.metrics.micReleases++
+    this.armed = false
+    this.capture = null
+    if (this.vad) {
+      this.vad.destroy()
+      this.vad = null
+    }
+    this._renderMic()
+    this._logMicRelease("released", null)
+    await released.stop()
+    this._renderMic()
+  },
+
+  /** Playback stopped: start the clock on handing the microphone back.
+   *
+   * Debounced rather than immediate — see `MIC_REACQUIRE_DEBOUNCE_MS`. A
+   * `{playing: true}` arriving inside the window cancels this (via
+   * `_releaseMicForPlayback`), which is the entire thrash defence. */
+  _scheduleMicReacquire() {
+    if (!this._micReleased) return
+    this._playbackIdleSince = Date.now()
+    this._clearMicReacquireTimer()
+    this._timers.micReacquire = setTimeout(() => {
+      this._timers.micReacquire = null
+      this._reacquireMic("debounce")
+    }, this.micReacquireDebounceMs)
+  },
+
+  _clearMicReacquireTimer() {
+    if (this._timers.micReacquire) clearTimeout(this._timers.micReacquire)
+    this._timers.micReacquire = null
+  },
+
+  /** Take the microphone back, and do not claim to have done so until the
+   * track is GENUINELY live.
+   *
+   * The success test is `Capture.live()` — the signal ORCAHUB3-91 added for
+   * exactly this question — and never elapsed time: `_arm()` resolving means
+   * the pipeline was built, not that the OS handed the device over. If it is
+   * not live, the release ends anyway and the ordinary liveness repair takes
+   * the problem from here; that is no longer OUR loss to suppress. */
+  async _reacquireMic(why) {
+    this._clearMicReacquireTimer()
+    if (!this._micReleased) return
+    this._playbackIdleSince = null
+
+    if (!this.active) {
+      // Voice went off while we held the release. There is nothing to hand
+      // back, and re-arming here would turn the microphone on behind a user
+      // who switched it off.
+      this._micReleased = false
+      this._renderMic()
+      return
+    }
+
+    const startedAt = performance.now()
+    this._reacquiring = true
+    // Cleared BEFORE `_arm()`: from here on a dead microphone is a genuine
+    // failure and the watcher is welcome to it.
+    this._micReleased = false
+    this._renderMic()
+    try {
+      await this._arm()
+    } finally {
+      this._reacquiring = false
+    }
+
+    const live = !!(this.capture && this.capture.live())
+    const took = +(performance.now() - startedAt).toFixed(1)
+    this.metrics.micReacquires++
+    this.metrics.micReacquireMs = took
+    if (!this.metrics.micReacquireWorstMs || took > this.metrics.micReacquireWorstMs) {
+      this.metrics.micReacquireWorstMs = took
+    }
+    if (!live) this.metrics.micReacquireFailures++
+    this._logMicRelease(live ? "re-acquired" : "re-acquire-failed", took, why)
+    this._renderMic()
+    // Not live after a full arm — a denied permission, a suspended context
+    // needing a gesture, a device the OS has not given back yet. `_arm()`
+    // has already surfaced whichever of those it could; this hands the rest
+    // to §7's repair path rather than sitting on a silent dead mic.
+    if (!live) this._scheduleReconcile()
+  },
+
+  /** One line in the voice log per transition, the same seam the mute
+   * watchdog uses — so the browser check asserts on what HAPPENED rather
+   * than on a counter, and a report from a real device can quote the
+   * measured re-acquire instead of estimating it. */
+  _logMicRelease(kind, ms, why) {
+    const li = document.createElement("li")
+    li.dataset.voiceMicRelease = kind
+    if (typeof ms === "number") li.dataset.voiceMicReleaseMs = String(ms)
+    const took = typeof ms === "number" ? `  took ${(ms / 1000).toFixed(2)}s` : ""
+    const reason = why ? `  (${why})` : ""
+    const text = {
+      released: "mic released for playback — the track is stopped, not just muted",
+      "re-acquired": "mic re-acquired",
+      "re-acquire-failed": "mic re-acquire did NOT come back live — falling back to repair",
+    }[kind]
+    li.textContent = `${text}${took}${reason}`
+    this._appendLogItem(li)
   },
 
   /** ORCAHUB3-95: start the clock on a mute.
@@ -830,6 +1114,16 @@ export const VoiceHook = {
     this.channel && this.channel.push("mic", { muted: false, reason: "tts-watchdog" })
     this._logMuteWatchdog(how, heldMs)
     this._renderMic()
+    // ORCAHUB3-105 §9. The watchdog firing means the `{playing: false}` that
+    // ends the mute never arrived — and if the microphone was RELEASED for
+    // that same playback, nothing else will ever ask for it back. Unmuting a
+    // microphone that no longer exists is the identical wedge one layer
+    // down, so the repair has to cover both halves.
+    //
+    // Immediately, not debounced: ten minutes have already passed with no
+    // event, so there is no thrash left to defend against and the debounce
+    // would only add a second to a wedge this long.
+    if (this._micReleased) this._reacquireMic(`mute-watchdog:${how}`)
   },
 
   /** Re-derive the cap from WALL CLOCK rather than from the timer.
@@ -1492,7 +1786,13 @@ export const VoiceHook = {
     const el = this._el("[data-voice-mic]")
     if (!el) return
     const serverMuted = this.state && this.state.muted
-    if (this.muted || serverMuted) el.textContent = "mic muted (TTS playing)"
+    // ORCAHUB3-105 §9 FIRST, ahead of the mute: during a release the mic is
+    // not merely muted, and — critically — it is not the "stopped, tap to
+    // resume" failure two branches down either. Saying so is what stops
+    // every single reply looking like a microphone fault.
+    if (this._reacquiring) el.textContent = "mic: taking the microphone back…"
+    else if (this._micReleased) el.textContent = "mic released (TTS playing)"
+    else if (this.muted || serverMuted) el.textContent = "mic muted (TTS playing)"
     else if (this._micLive()) el.textContent = "mic: listening"
     // ORCAHUB3-91: armed-but-not-live is the state that used to render as
     // "listening" while nothing was being captured.
@@ -1851,6 +2151,17 @@ export const VoiceHook = {
       muteWatchdogArmed: !!this._muteTimer,
       muteWatchdogMs: this.muteWatchdogMs,
       mutedForMs: this._mutedAt === null ? null : Date.now() - this._mutedAt,
+      // ORCAHUB3-105 §9: the flag as the hub resolved it, and the three
+      // states the release can be in. `micReleased` true with
+      // `micReacquireArmed` false and `muted` false is this feature's
+      // version of the wedge — the browser check asserts it never happens.
+      releaseMicDuringPlayback: this.releaseMicDuringPlayback,
+      micReleased: this._micReleased,
+      micReacquiring: this._reacquiring,
+      micReacquireArmed: !!this._timers.micReacquire,
+      micReacquireDebounceMs: this.micReacquireDebounceMs,
+      playbackIdleForMs:
+        this._playbackIdleSince === null ? null : Date.now() - this._playbackIdleSince,
       target: this.target,
       composerPresent: this.composerPresent,
       asrBusy: this._asrBusy,

@@ -23,7 +23,8 @@ defmodule OrcaHub.ASRConfigTest do
     :asr_intent_threshold,
     :asr_echo_cancellation,
     :asr_noise_suppression,
-    :asr_auto_gain_control
+    :asr_auto_gain_control,
+    :asr_release_mic_during_playback
   ]
 
   @hardcoded %{
@@ -35,12 +36,15 @@ defmodule OrcaHub.ASRConfigTest do
     threshold: 0.85,
     echo_cancellation: true,
     noise_suppression: true,
-    auto_gain_control: true
+    auto_gain_control: true,
+    release_mic_during_playback: false
   }
 
-  # The three constraints are deliberately NOT all-true here: env "false" has
-  # to survive resolution, and a boolean false is exactly the value a `||`
-  # fallback chain silently eats.
+  # The four booleans deliberately do NOT all match their defaults here: a
+  # boolean is exactly the value a `||` fallback chain silently eats, so the
+  # three default-TRUE constraints are exercised with env "false", and
+  # `release_mic_during_playback` — which defaults FALSE — is exercised with
+  # env "true", covering the trap from both sides.
   @from_env %{
     url: "http://env.example:9000",
     path: "/env/transcribe",
@@ -50,12 +54,13 @@ defmodule OrcaHub.ASRConfigTest do
     threshold: 0.5,
     echo_cancellation: false,
     noise_suppression: true,
-    auto_gain_control: false
+    auto_gain_control: false,
+    release_mic_during_playback: true
   }
 
   setup do
     # Snapshot and restore rather than delete-on-exit: config/runtime.exs
-    # sets all nine for real, and leaving them deleted would silently change
+    # sets all ten for real, and leaving them deleted would silently change
     # what every later test resolves.
     saved = Map.new(@env_keys, fn key -> {key, Application.fetch_env(:orca_hub, key)} end)
 
@@ -75,6 +80,7 @@ defmodule OrcaHub.ASRConfigTest do
     Application.put_env(:orca_hub, :asr_echo_cancellation, "false")
     Application.put_env(:orca_hub, :asr_noise_suppression, "true")
     Application.put_env(:orca_hub, :asr_auto_gain_control, "false")
+    Application.put_env(:orca_hub, :asr_release_mic_during_playback, "true")
 
     :ok
   end
@@ -161,7 +167,8 @@ defmodule OrcaHub.ASRConfigTest do
         threshold: "0.7",
         echo_cancellation: "true",
         noise_suppression: "false",
-        auto_gain_control: "true"
+        auto_gain_control: "true",
+        release_mic_during_playback: "false"
       })
 
       assert ASRConfig.resolve() == %{
@@ -173,7 +180,8 @@ defmodule OrcaHub.ASRConfigTest do
                threshold: 0.7,
                echo_cancellation: true,
                noise_suppression: false,
-               auto_gain_control: true
+               auto_gain_control: true,
+               release_mic_during_playback: false
              }
     end
 
@@ -373,6 +381,76 @@ defmodule OrcaHub.ASRConfigTest do
     end
   end
 
+  describe "release_mic_during_playback (ORCAHUB3-105)" do
+    test "defaults to FALSE with nothing configured — the knob ships inert" do
+      Enum.each(@env_keys, &Application.delete_env(:orca_hub, &1))
+
+      assert ASRConfig.resolve().release_mic_during_playback == false
+      assert ASRConfig.env_defaults().release_mic_during_playback == false
+    end
+
+    test "env `true` turns it on — the default-false field's version of the `||` trap" do
+      # `@from_env` sets the env var to "true"; the hardcoded default is
+      # false, so a chain that fell through would read false here.
+      assert ASRConfig.resolve().release_mic_during_playback == true
+    end
+
+    test "a DB value wins over env, in both directions" do
+      put_provider!(%{release_mic_during_playback: "false"})
+      assert ASRConfig.resolve().release_mic_during_playback == false
+
+      put_provider!(%{release_mic_during_playback: "true"})
+      assert ASRConfig.resolve().release_mic_during_playback == true
+    end
+
+    test "it is independent of the three capture constraints" do
+      put_provider!(%{release_mic_during_playback: "true", echo_cancellation: "true"})
+
+      resolved = ASRConfig.resolve()
+
+      assert resolved.release_mic_during_playback == true
+      assert resolved.echo_cancellation == true
+      # ...and it is NOT one of the getUserMedia constraints: the browser
+      # spreads that map straight into getUserMedia, where an unknown key is
+      # at best ignored and at worst an OverconstrainedError.
+      refute Map.has_key?(ASRConfig.capture_constraints(resolved), :releaseMicDuringPlayback)
+
+      assert ASRConfig.capture_constraints(resolved) |> Map.keys() |> Enum.sort() ==
+               [:autoGainControl, :echoCancellation, :noiseSuppression]
+    end
+
+    test "a blank DB value inherits from env, like every other field" do
+      put_provider!(%{echo_cancellation: "false"})
+
+      assert ASRConfig.get_provider_entry().spec["release_mic_during_playback"] == ""
+      assert ASRConfig.resolve().release_mic_during_playback == true
+    end
+
+    test "a malformed value is ignored with a warning rather than read as truthy" do
+      Application.put_env(:orca_hub, :asr_release_mic_during_playback, "yes")
+
+      log =
+        capture_log(fn ->
+          assert ASRConfig.resolve().release_mic_during_playback == false
+        end)
+
+      assert log =~ "ignoring invalid asr_release_mic_during_playback"
+    end
+
+    test "rejects a non-boolean at save time" do
+      assert {:error, changeset} =
+               ASRConfig.put_provider(%{release_mic_during_playback: "sometimes"})
+
+      assert ~s(release_mic_during_playback must be "true" or "false") in errors_on(changeset).spec
+    end
+
+    test "a disabled row reverts it to env like every other field" do
+      put_provider!(%{release_mic_during_playback: "false"}, enabled: false)
+
+      assert ASRConfig.resolve().release_mic_during_playback == true
+    end
+  end
+
   describe "changesets" do
     test "rejects a url without an http(s) scheme" do
       assert {:error, changeset} = ASRConfig.put_provider(%{url: "192.168.1.77:8000"})
@@ -465,7 +543,8 @@ defmodule OrcaHub.ASRConfigTest do
         threshold: "0.7",
         echo_cancellation: "true",
         noise_suppression: "false",
-        auto_gain_control: "true"
+        auto_gain_control: "true",
+        release_mic_during_playback: "false"
       })
 
       assert ASRConfig.env_defaults() == @from_env

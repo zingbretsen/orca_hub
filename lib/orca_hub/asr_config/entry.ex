@@ -14,7 +14,8 @@ defmodule OrcaHub.ASRConfig.Entry do
       holds `%{"url" => ..., "path" => ..., "language" => ...,
       "timeout_ms" => ..., "warmup_timeout_ms" => ..., "threshold" => ...,
       "echo_cancellation" => ..., "noise_suppression" => ...,
-      "auto_gain_control" => ...}`. Any key may be blank or absent, in which
+      "auto_gain_control" => ..., "release_mic_during_playback" => ...}`.
+      Any key may be blank or absent, in which
       case that ONE field falls back to its `ASR_*` env var — see
       `OrcaHub.ASRConfig.resolve/0`. `enabled: false` disables the whole row,
       reverting every field to env without having to delete it.
@@ -32,15 +33,15 @@ defmodule OrcaHub.ASRConfig.Entry do
   PARSE and are in range, so a bad value is rejected at save time rather
   than silently falling back to env forever.
 
-  ## The three capture constraints are TRI-STATE, not checkboxes
+  ## The four browser-side booleans are TRI-STATE, not checkboxes
 
-  `echo_cancellation`/`noise_suppression`/`auto_gain_control` (ORCAHUB3-105)
-  are the `getUserMedia` constraints the browser mic is opened with, and they
-  need three states, not two: `"true"`, `"false"`, and BLANK meaning "inherit
-  this one from its env var". A checkbox cannot express the third, so the
-  Settings UI renders them as selects and they are stored as the strings
-  `"true"`/`"false"`/`""` like every other field here — never as a jsonb
-  boolean by way of the form.
+  `echo_cancellation`/`noise_suppression`/`auto_gain_control` (the
+  `getUserMedia` constraints the browser mic is opened with) and
+  `release_mic_during_playback` (ORCAHUB3-105) all need three states, not
+  two: `"true"`, `"false"`, and BLANK meaning "inherit this one from its env
+  var". A checkbox cannot express the third, so the Settings UI renders them
+  as selects and they are stored as the strings `"true"`/`"false"`/`""` like
+  every other field here — never as a jsonb boolean by way of the form.
 
   `spec` is deep-stringified on cast so a struct built from atom-keyed attrs
   reads identically to one loaded back from jsonb.
@@ -92,6 +93,7 @@ defmodule OrcaHub.ASRConfig.Entry do
       |> validate_boolean(spec["echo_cancellation"], "echo_cancellation")
       |> validate_boolean(spec["noise_suppression"], "noise_suppression")
       |> validate_boolean(spec["auto_gain_control"], "auto_gain_control")
+      |> validate_boolean(spec["release_mic_during_playback"], "release_mic_during_playback")
     else
       add_error(changeset, :spec, "must be a map")
     end

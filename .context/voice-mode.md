@@ -76,13 +76,14 @@ with `Cluster.send_message(node, id, draft, :queue)`).
 
 `ASRConfig.resolve/0` -> `%{url, path, language, timeout_ms,
 warmup_timeout_ms, threshold, echo_cancellation, noise_suppression,
-auto_gain_control}`, resolved PER FIELD: DB row (`asr_provider`) > `ASR_*` env >
+auto_gain_control, release_mic_during_playback}`, resolved PER FIELD: DB row (`asr_provider`) > `ASR_*` env >
 default, no cache, deliberately. No `model` field — the lane offers none. The
 channel resolves at join and on `retry_warmup` (via `HubRPC`; agent nodes have
 no DB), so a change lands on the next join, not mid-utterance. `threshold`
 (0.85) is the matcher knob.
 
-The last three are the `getUserMedia` capture constraints (ORCAHUB3-105), all
+`echo_cancellation`/`noise_suppression`/`auto_gain_control` are the
+`getUserMedia` capture constraints (ORCAHUB3-105), all
 defaulting to `true` — exactly the JS constant they replaced, so an
 unconfigured install is unchanged. They ride the join reply as
 `audio_constraints` (camelCased) into `Capture`, which reads them ONCE at
@@ -92,8 +93,34 @@ requesting AEC flips Android Bluetooth from A2DP to HFP/SCO and silences every
 app's audio; spec §4 still says AEC-on. Logged once per arm, server-side and in
 the browser console.
 
+`release_mic_during_playback` (ORCAHUB3-105, **default FALSE**) is the answer
+to that A/B, which came back NEGATIVE: with all three constraints off, output
+was STILL silent while the mic was armed. The discriminator is track
+liveness — an open `MediaStreamTrack` holds the device's audio route, and our
+half-duplex "muted" is only a software state on top of a still-open track. With
+this on, `_handleTtsState` STOPS the capture (track + AudioContext + VAD) on
+`{playing: true}` and re-acquires it after playback has been idle for
+`MIC_REACQUIRE_DEBOUNCE_MS` (1 s) — the release is held across chunk gaps so a
+chunked reply costs ONE release, not one per chunk. It rides the join reply as
+its own boolean (never inside `audio_constraints`, which is spread straight
+into `getUserMedia`) and is read at each `{playing: true}` edge, so a change
+lands on the NEXT JOIN. Measured re-acquire on desktop Chrome with a fake
+device: ~110 ms warm (getUserMedia ~6-12 ms, worklet ~8-40 ms, Silero re-init
+~90-160 ms); a real Bluetooth A2DP<->HFP flap is not measurable here and is
+expected to dominate. Whether it achieves anything is a REAL-DEVICE question —
+headless has no audio route to lose.
+
 ## Invariants that bite
 
+- **A DELIBERATE mic release is not a mic failure** (ORCAHUB3-105 §9). With
+  `release_mic_during_playback` on, the hook's `_micReleased` is what tells
+  ORCAHUB3-91's liveness machinery to stand down: `_onLiveness`,
+  `_reconcileMic` and the mic button's one repair press all skip while it is
+  set, and the bar says "mic released (TTS playing)" rather than "stopped —
+  tap the mic to resume". Do not add a new path that repairs a dead capture
+  without checking it. The mute watchdog (ORCAHUB3-95) is UNCHANGED and still
+  arms on the same edge; if it fires it now re-acquires immediately too,
+  because unmuting a microphone that no longer exists is the same wedge.
 - **The VAD settings are non-default and load-bearing**: `model: 'v5'`,
   `0.5/0.35`, `redemptionMs: 600`, `preSpeechPadMs: 500`, `minSpeechMs: 250`.
   The defaults measured EOS 1376 ms (2x budget) and silently discard a bare

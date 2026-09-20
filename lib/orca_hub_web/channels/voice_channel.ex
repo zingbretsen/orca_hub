@@ -62,6 +62,14 @@ defmodule OrcaHubWeb.VoiceChannel do
   change needs voice off and on again. Resolved values are logged at `:info`
   on every join.
 
+  Alongside them the reply carries `release_mic_during_playback`
+  (ORCAHUB3-105, default FALSE) — whether the browser STOPS the capture
+  track while TTS plays instead of merely muting the VAD. A third timing
+  again: it is read at each `orca:tts-state {playing: true}` edge from
+  whatever the last join reply carried, so a change lands on the next JOIN
+  (voice off/on, a retarget, or a socket rejoin) rather than on the next arm
+  or the next utterance.
+
   ## Ownership
 
   Exactly one voice owner per session. On join the channel looks for a
@@ -123,10 +131,16 @@ defmodule OrcaHubWeb.VoiceChannel do
       # what the track reports back) at `Capture.open`.
       Logger.info(
         "VoiceChannel: capture constraints for #{session_id}: #{inspect(constraints)} " <>
-          "(applied on the browser's next arm)"
+          "(applied on the browser's next arm), release_mic_during_playback=" <>
+          "#{config.release_mic_during_playback}"
       )
 
-      {:ok, %{state: Session.snapshot(state, now()), audio_constraints: constraints}, socket}
+      {:ok,
+       %{
+         state: Session.snapshot(state, now()),
+         audio_constraints: constraints,
+         release_mic_during_playback: config.release_mic_during_playback
+       }, socket}
     else
       {:error, reason} -> {:error, %{reason: to_string(reason)}}
     end

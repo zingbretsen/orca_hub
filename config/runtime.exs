@@ -240,6 +240,23 @@ config :orca_hub, :asr_echo_cancellation, System.get_env("ASR_ECHO_CANCELLATION"
 config :orca_hub, :asr_noise_suppression, System.get_env("ASR_NOISE_SUPPRESSION") || "true"
 config :orca_hub, :asr_auto_gain_control, System.get_env("ASR_AUTO_GAIN_CONTROL") || "true"
 
+# ORCAHUB3-105's candidate FIX, default OFF. The constraint A/B above came
+# back negative — turning all three off did NOT restore audio output — and
+# the discriminator turned out to be track LIVENESS: an open
+# MediaStreamTrack holds the device's audio route, and "muted" is only a
+# software state on top of a track that is still open. With this on, the
+# browser STOPS the capture track while TTS plays and re-acquires it once
+# playback has been idle for a beat, instead of just pausing the VAD.
+#
+# Off by default because it makes the microphone genuinely deaf for the
+# debounce plus a getUserMedia round trip after every reply, and because
+# whether it achieves anything can only be judged on a real device with a
+# real speaker. It is read at each `{playing: true}` edge from whatever the
+# LAST JOIN carried, so a change lands on the next JOIN — voice off and on.
+config :orca_hub,
+       :asr_release_mic_during_playback,
+       System.get_env("ASR_RELEASE_MIC_DURING_PLAYBACK") || "false"
+
 config :orca_hub, :elevenlabs_api_key, System.get_env("ELEVENLABS_API_KEY")
 
 config :orca_hub,

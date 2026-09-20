@@ -153,6 +153,10 @@ defmodule OrcaHubWeb.VoiceChannelTest do
                autoGainControl: true
              }
 
+      # ...and ORCAHUB3-105's release-during-playback behaviour ships OFF,
+      # so a default install keeps muting exactly as it does today.
+      assert reply.release_mic_during_playback == false
+
       assert [{_pid, %{voice: true}}] =
                Registry.lookup(OrcaHub.SessionViewersRegistry, session.id)
 
@@ -167,6 +171,25 @@ defmodule OrcaHubWeb.VoiceChannelTest do
 
       assert reply.audio_constraints == %{
                echoCancellation: false,
+               noiseSuppression: true,
+               autoGainControl: true
+             }
+    end
+
+    test "release_mic_during_playback rides the join reply, separately from the constraints",
+         %{session: session} do
+      on_exit(fn -> OrcaHub.ASRConfig.delete_provider() end)
+      {:ok, _} = OrcaHub.ASRConfig.put_provider(%{release_mic_during_playback: "true"})
+
+      {:ok, reply, _socket} = join(session.id)
+
+      assert reply.release_mic_during_playback == true
+
+      # It must NOT leak into the constraint map: the browser spreads that
+      # object straight into `getUserMedia`, where an unknown key is at best
+      # ignored and at worst an OverconstrainedError.
+      assert reply.audio_constraints == %{
+               echoCancellation: true,
                noiseSuppression: true,
                autoGainControl: true
              }
