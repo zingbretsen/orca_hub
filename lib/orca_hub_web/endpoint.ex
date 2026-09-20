@@ -29,6 +29,13 @@ defmodule OrcaHubWeb.Endpoint do
 
   socket "/terminal_socket", OrcaHubWeb.UserSocket, websocket: true
 
+  # The API push socket (session turn-end events). Token-authenticated in
+  # `OrcaHubWeb.ApiSocket.connect/3` — including its own agent-mode refusal,
+  # since the caveat above means `agent_mode_gate` never sees this path.
+  # WebSocket only: the client is a long-lived Android foreground service,
+  # and longpoll would buy it nothing but a second auth surface.
+  socket "/api/v1/socket", OrcaHubWeb.ApiSocket, websocket: true, longpoll: false
+
   socket "/live", Phoenix.LiveView.Socket,
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]

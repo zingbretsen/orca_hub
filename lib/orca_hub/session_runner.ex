@@ -1208,7 +1208,7 @@ defmodule OrcaHub.SessionRunner do
   defp handle_turn_end(session, status, data) do
     maybe_notify_parent(session, status, Map.get(data, :turn_started_at))
     maybe_self_archive_memory_extraction(session, status)
-    maybe_notify_finished(session, status, Map.get(data, :first_prompt))
+    maybe_emit_turn_end(session, status, Map.get(data, :first_prompt))
     :ok
   end
 
@@ -1254,48 +1254,34 @@ defmodule OrcaHub.SessionRunner do
 
   defp maybe_self_archive_memory_extraction(_session, _status), do: :ok
 
-  # ── Turn-end push notification (orca-watch DESIGN.md §7c / R12) ──────
-  # An AUTOMATIC Gotify push on a genuine running->idle|error transition,
-  # distinct from the opt-in `send_notification` MCP tool: the Android client
-  # renders its notification ENTIRELY from this payload, because when OrcaHub
-  # is unreachable it cannot backfill anything the push left out. The four
-  # contract fields ride under `extras["orca"]` — see `.context/push-payload.md`.
+  # ── Turn-end push (orca-watch DESIGN.md §7c / D6 / R12) ──────────────
+  # A genuine running->idle|error transition tells the HUB about the turn
+  # end, ALWAYS — the hub then fans it onto two wires
+  # (`OrcaHub.SessionEvents.turn_end/1`): the `session_events` channel the
+  # Android app holds open (unconditional, D6's delivery path), and the
+  # opt-in Gotify push (only when this node sets ORCA_NOTIFY_ON_FINISH,
+  # which is why the flag is read HERE and carried across as `gotify:`).
+  # Both are distinct from the per-call `send_notification` MCP tool.
   #
-  # Fires ONCE PER TURN END, on the transition itself: `handle_turn_end/3` is
-  # only reached from the five running->idle|error paths, never from an idle
-  # heartbeat or a status refresh, and never for a session that was not
-  # running this turn. Suppressed for background `memory_extraction`
-  # sessions, for child sessions, for archived sessions, and for any
-  # non-turn-end status ("waiting"/"compacting", where notify_status/1
-  # already returns nil).
+  # The client renders its notification ENTIRELY from the payload, because
+  # when OrcaHub is unreachable it cannot backfill anything the push left
+  # out — see `.context/push-payload.md` for the field contract.
+  #
+  # Fires ONCE PER TURN END, on the transition itself: `handle_turn_end/3`
+  # is only reached from the five running->idle|error paths, never from an
+  # idle heartbeat or a status refresh, and never for a session that was not
+  # running this turn.
   #
   # Delivery is fire-and-forget on the TaskSupervisor and routed through the
   # hub (HubRPC), since only the hub holds GOTIFY_TOKEN and only the hub can
   # read the DB for the excerpt — a runner on an agent node needs neither.
 
-  defp maybe_notify_finished(_session, nil, _first_prompt), do: :ok
-  defp maybe_notify_finished(%{kind: "memory_extraction"}, _status, _first_prompt), do: :ok
+  defp maybe_emit_turn_end(session, status, first_prompt) do
+    if turn_end_push_eligible?(session, status) do
+      gotify? = finish_notifications_enabled?()
 
-  # Never push for a child: a worker reports to its ORCHESTRATOR (that's
-  # `maybe_notify_parent/3`'s job), not to the phone, so a twenty-worker swarm
-  # doesn't buzz once per worker per turn. The phone surfaces exist for the
-  # sessions Zach himself talks to — roots, orchestrators, trigger sessions.
-  # A child he adopts via `detach_session` becomes a root and starts notifying
-  # again with no further action. Same "set, and not self-referential"
-  # condition as maybe_notify_parent/3 above.
-  defp maybe_notify_finished(%{parent_session_id: parent_id, id: id}, _status, _first_prompt)
-       when not is_nil(parent_id) and parent_id != id do
-    :ok
-  end
-
-  defp maybe_notify_finished(%{archived_at: archived_at}, _status, _first_prompt)
-       when not is_nil(archived_at),
-       do: :ok
-
-  defp maybe_notify_finished(session, status, first_prompt) when status in [:idle, :error] do
-    if finish_notifications_enabled?() do
       Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
-        deliver_finish_notification(session, status, first_prompt)
+        deliver_turn_end(session, status, first_prompt, gotify?)
       end)
     end
 
@@ -1303,10 +1289,46 @@ defmodule OrcaHub.SessionRunner do
   end
 
   @doc """
-  Node-local switch for the turn-end push: set `ORCA_NOTIFY_ON_FINISH=true`
-  (or `1`) to enable it. Defaults OFF — per D6 the Android app gets finish
-  events from a direct authenticated channel on the hub, not from Gotify, so
-  the push is opt-in rather than something you have to silence.
+  The ONE suppression predicate behind both turn-end wires (channel and
+  Gotify), so they can never drift apart: true only for a genuine
+  `running -> idle|error` transition on a session the phone surfaces exist
+  for.
+
+  False for:
+
+    * a non-turn-end status — `notify_status/1` already maps `"waiting"`
+      (an unanswered AskUserQuestion) and `"compacting"` to `nil`;
+    * background `kind: "memory_extraction"` sessions;
+    * CHILD sessions (`parent_session_id` set and not self-referential) — a
+      worker reports to its ORCHESTRATOR (`maybe_notify_parent/3`'s job),
+      not to the phone, so a twenty-worker swarm doesn't buzz once per
+      worker per turn. The phone/Auto/Wear surfaces exist for the sessions
+      Zach himself talks to: roots, orchestrators, trigger sessions. A child
+      he adopts via `detach_session` becomes a root and starts pushing again
+      with no further action;
+    * archived sessions.
+  """
+  def turn_end_push_eligible?(session, status)
+  def turn_end_push_eligible?(_session, nil), do: false
+  def turn_end_push_eligible?(%{kind: "memory_extraction"}, _status), do: false
+
+  def turn_end_push_eligible?(%{parent_session_id: parent_id, id: id}, _status)
+      when not is_nil(parent_id) and parent_id != id,
+      do: false
+
+  def turn_end_push_eligible?(%{archived_at: archived_at}, _status)
+      when not is_nil(archived_at),
+      do: false
+
+  def turn_end_push_eligible?(_session, status) when status in [:idle, :error], do: true
+  def turn_end_push_eligible?(_session, _status), do: false
+
+  @doc """
+  Node-local switch for the GOTIFY half of the turn-end push: set
+  `ORCA_NOTIFY_ON_FINISH=true` (or `1`) to enable it. Defaults OFF — per D6
+  the Android app gets finish events from the `session_events` channel on
+  the hub, which is NOT gated on this flag, so Gotify is opt-in rather than
+  something you have to silence.
   """
   def finish_notifications_enabled?,
     do: Application.get_env(:orca_hub, :notify_on_finish, false) == true
@@ -1314,12 +1336,13 @@ defmodule OrcaHub.SessionRunner do
   @doc false
   # Public as a test seam (same pattern as `deliver_parent_notification/3`):
   # builds the payload and makes the hub hop synchronously in the caller.
-  def deliver_finish_notification(session, status, first_prompt \\ nil)
+  def deliver_turn_end(session, status, first_prompt \\ nil, gotify? \\ false)
       when status in [:idle, :error] do
-    case HubRPC.send_session_finished_notification(%{
+    case HubRPC.send_session_turn_end(%{
            session_id: session.id,
            session_title: finish_notification_title(session, first_prompt),
-           status: Atom.to_string(status)
+           status: Atom.to_string(status),
+           gotify: gotify?
          }) do
       {:error, reason} ->
         Logger.warning("[finish notify] session #{session.id}: #{inspect(reason)}")

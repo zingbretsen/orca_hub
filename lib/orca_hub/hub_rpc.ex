@@ -531,11 +531,13 @@ defmodule OrcaHub.HubRPC do
 
   def send_notification(payload), do: call(OrcaHub.Notify, :deliver, [payload])
 
-  # The opt-in turn-end push (SessionRunner running->idle|error). The
-  # runner sends only session_id/session_title/status; the hub fills in the
-  # `excerpt` from its own DB. See OrcaHub.Notify.deliver_session_finished/1.
-  def send_session_finished_notification(attrs),
-    do: call(OrcaHub.Notify, :deliver_session_finished, [attrs])
+  # Every turn end (SessionRunner running->idle|error) that survives
+  # SessionRunner.turn_end_push_eligible?/2. The runner sends only
+  # session_id/session_title/status plus `gotify:` (its OWN node's
+  # ORCA_NOTIFY_ON_FINISH); the hub fills in the `excerpt` from its own DB,
+  # ALWAYS broadcasts the session_events channel event, and sends Gotify
+  # only when asked. See OrcaHub.SessionEvents.turn_end/1.
+  def send_session_turn_end(attrs), do: call(OrcaHub.SessionEvents, :turn_end, [attrs])
 
   # -------------------------------------------------------------------
   # Memory service (external agent-memory store, see OrcaHub.MemoryClient

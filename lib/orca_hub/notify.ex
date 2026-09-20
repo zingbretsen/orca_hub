@@ -6,17 +6,20 @@ defmodule OrcaHub.Notify do
 
     * `deliver/1` — the generic sender, backing the `send_notification` MCP
       tool (`OrcaHub.MCP.Tools.Notify`).
-    * `deliver_session_finished/1` — the turn-end push fired by
-      `OrcaHub.SessionRunner` on a genuine `running -> idle|error`
-      transition, when `ORCA_NOTIFY_ON_FINISH` opts that node in (off by
-      default). Its `extras["orca"]` payload is a strict contract; see
+    * `deliver_session_finished/1` — the OPT-IN turn-end push. Since D6 the
+      runner no longer calls this directly: every eligible
+      `running -> idle|error` transition goes to
+      `OrcaHub.SessionEvents.turn_end/1`, which always broadcasts the
+      `session_events` channel event and calls this only when
+      `ORCA_NOTIFY_ON_FINISH` opted the runner's node in (off by default).
+      Its `extras["orca"]` payload is a strict contract; see
       `.context/push-payload.md`.
 
   Unlike `OrcaHub.MCP.Tools.Databases`/`PhxAgents` (which call their external
   API directly from the session's own runner node, so every node needs the
   token), this module is only ever invoked on the hub — sessions reach it
   through `OrcaHub.HubRPC.send_notification/1` /
-  `OrcaHub.HubRPC.send_session_finished_notification/1`, which run locally on
+  `OrcaHub.HubRPC.send_session_turn_end/1`, which run locally on
   the hub and `:erpc` there otherwise. Only the hub needs `GOTIFY_TOKEN`
   configured.
   """
@@ -55,12 +58,14 @@ defmodule OrcaHub.Notify do
   The turn-end push for a session that just went idle or errored — opt-in,
   gated on `SessionRunner.finish_notifications_enabled?/0` (off by default).
 
-  Called ON THE HUB (via `OrcaHub.HubRPC.send_session_finished_notification/1`)
-  with only the three fields the runner knows — `session_id`,
-  `session_title`, `status` — because the fourth, `excerpt`, comes from
-  `Sessions.session_tail/2`, a hub-local DB read. Building it here rather
-  than on the runner keeps the cross-node hop to three small strings and
-  means an agent node never needs DB or Gotify credentials.
+  Called ON THE HUB by `OrcaHub.SessionEvents.turn_end/1` (reached from the
+  runner — possibly on an agent node — via
+  `OrcaHub.HubRPC.send_session_turn_end/1`), which has already resolved
+  `excerpt` from `Sessions.session_tail/2`, a hub-local DB read, and passes
+  it in so this push and the channel event carry the SAME string. Keeping
+  that read on the hub is what lets the cross-node hop be three small
+  strings and an agent node need neither DB nor Gotify credentials.
+  `excerpt` is still filled in here when a caller omits it.
 
   Returns `{:ok, :skipped}` — silently, with no log line — when Gotify is
   not configured, so an unconfigured hub produces no log spam on every turn

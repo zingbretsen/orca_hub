@@ -71,6 +71,11 @@ defmodule OrcaHub.ApiTokens do
   @doc """
   Revoke a token by id (sets `revoked_at`). Never touches any other token —
   scoped or the legacy global one.
+
+  Also kicks any live WebSocket the token holds: an HTTP client dies on its
+  next request, but a socket (`OrcaHubWeb.ApiSocket`, whose `id/1` is
+  `"api_token:<id>"`) makes no further requests and would otherwise keep
+  receiving pushes for as long as it stayed connected.
   """
   def revoke_token(id) do
     case Repo.get(ApiToken, id) do
@@ -78,10 +83,29 @@ defmodule OrcaHub.ApiTokens do
         {:error, :not_found}
 
       token ->
-        token
-        |> Ecto.Changeset.change(revoked_at: DateTime.utc_now() |> DateTime.truncate(:second))
-        |> Repo.update()
+        result =
+          token
+          |> Ecto.Changeset.change(revoked_at: DateTime.utc_now() |> DateTime.truncate(:second))
+          |> Repo.update()
+
+        with {:ok, revoked} <- result do
+          disconnect_sockets(revoked.id)
+        end
+
+        result
     end
+  end
+
+  # Best-effort, exactly like the `last_used_at` touch: a failed disconnect
+  # broadcast must not turn a successful revocation into an error the UI
+  # reports as "revoke failed" when the row is already revoked.
+  defp disconnect_sockets(id) do
+    OrcaHubWeb.Endpoint.broadcast("api_token:#{id}", "disconnect", %{})
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
   end
 
   @doc """
