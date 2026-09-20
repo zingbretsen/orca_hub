@@ -103,7 +103,7 @@ this on, `_handleTtsState` STOPS the capture (track + AudioContext + VAD) on
 `MIC_REACQUIRE_DEBOUNCE_MS` (1 s) — the release is held across chunk gaps so a
 chunked reply costs ONE release, not one per chunk. It rides the join reply as
 its own boolean (never inside `audio_constraints`, which is spread straight
-into `getUserMedia`) and is read at each `{playing: true}` edge, so a change
+into `getUserMedia`) and is read at each `{playing: true}`, so a change
 lands on the NEXT JOIN. Measured re-acquire on desktop Chrome with a fake
 device: ~110 ms warm (getUserMedia ~6-12 ms, worklet ~8-40 ms, Silero re-init
 ~90-160 ms); a real Bluetooth A2DP<->HFP flap is not measurable here and is
@@ -118,8 +118,15 @@ headless has no audio route to lose.
   `_reconcileMic` and the mic button's one repair press all skip while it is
   set, and the bar says "mic released (TTS playing)" rather than "stopped —
   tap the mic to resume". Do not add a new path that repairs a dead capture
-  without checking it. The mute watchdog (ORCAHUB3-95) is UNCHANGED and still
-  arms on the same edge; if it fires it now re-acquires immediately too,
+  without checking it. The MUTE is edge-driven; the RELEASE is NOT (that was
+  the ORCAHUB3-105 manual-play defect — the release rode the mute's early
+  return, so a lone `{playing: true}` against a stale mute released nothing,
+  which is the shape `ttsResumeOrStart` emits when you press play on the
+  message already being read; every autoplay entry calls `ttsStop()` first
+  and so never showed it). Both `_releaseMicForPlayback` and
+  `_scheduleMicReacquire` are idempotent — keep them that way rather than
+  re-gating them on an edge. The mute watchdog (ORCAHUB3-95) is UNCHANGED and
+  still arms on the same edge; if it fires it now re-acquires immediately too,
   because unmuting a microphone that no longer exists is the same wedge.
 - **The VAD settings are non-default and load-bearing**: `model: 'v5'`,
   `0.5/0.35`, `redemptionMs: 600`, `preSpeechPadMs: 500`, `minSpeechMs: 250`.

@@ -342,6 +342,15 @@ Ship in this order; each rung is independently useful:
    for echo and is justified only by the device's audio ROUTE. Zach's
    requirement rules out push-to-talk, so the release must be invisible
    in normal use — the debounce and the re-acquire exist for that.
+   The release is driven by the `orca:tts-state` LEVEL, not by the mute
+   EDGE, and both `_releaseMicForPlayback` and `_scheduleMicReacquire`
+   are idempotent so that it can be. That is not a detail: while the
+   release rode the mute's edge it only ran when `playing` disagreed with
+   the mute state, which the autoplay entry points always arrange (they
+   call `ttsStop()` first) and `ttsResumeOrStart` — pressing play on the
+   message already being read — never does. Confirmed by Zach on a real
+   device 2026-09-20: autoplay released and was audible, manual play
+   stayed "muted" and silent.
 2. DUCK-ON-DETECT — drop TTS to ~20% when VAD fires. Also cuts echo, and
    feels responsive.
 3. FULL DUPLEX — open channel, browser AEC + text-domain rejection.
@@ -1036,7 +1045,7 @@ The client ships RAW PCM; the SERVER wraps it in a 44-byte WAV header for the mu
 
 - `channel.join()` reply `ok`: `{state: <snapshot>, audio_constraints: {echoCancellation, noiseSuppression, autoGainControl}, release_mic_during_playback: <bool>}` (see below). Joining IS arming: the server fires the ASR warm-up ping immediately and `state.status` starts at `"warming"`.
 - `audio_constraints` (ORCAHUB3-105) is the hub-resolved half of the `getUserMedia` constraint object — `OrcaHub.ASRConfig.capture_constraints/1`, resolved DB row > `ASR_*` env var > default, defaults all `true` per section 4. The client merges it under its own pinned `channelCount: 1` / `voiceIsolation: false` (`audioConstraints()` in `assets/js/voice/capture.js`) and ignores anything that is not one of those three keys as a boolean. It is the ONE part of the join reply that does NOT take effect on the next utterance: the browser reads it when it OPENS the mic, so a change lands on the next ARM. An older client, or a reply with the key absent, falls back to the shipped defaults and behaves exactly as before.
-- `release_mic_during_playback` (ORCAHUB3-105, section 4's second amendment, DEFAULT FALSE) is a plain boolean, resolved the same DB row > `ASR_RELEASE_MIC_DURING_PLAYBACK` > default way. It is deliberately NOT inside `audio_constraints`: that object is spread straight into `getUserMedia`, where an unknown key is at best ignored and at worst an `OverconstrainedError`. It is also a THIRD timing — the client reads it at each `orca:tts-state {playing: true}` edge from whatever the last join left it, so a change lands on the next JOIN (voice off/on, a retarget, a socket rejoin), neither on the next arm nor on the next utterance. Only a real boolean is honoured; anything else leaves the client's last value in place.
+- `release_mic_during_playback` (ORCAHUB3-105, section 4's second amendment, DEFAULT FALSE) is a plain boolean, resolved the same DB row > `ASR_RELEASE_MIC_DURING_PLAYBACK` > default way. It is deliberately NOT inside `audio_constraints`: that object is spread straight into `getUserMedia`, where an unknown key is at best ignored and at worst an `OverconstrainedError`. It is also a THIRD timing — the client reads it at each `orca:tts-state {playing: true}` from whatever the last join left it, so a change lands on the next JOIN (voice off/on, a retarget, a socket rejoin), neither on the next arm nor on the next utterance. Only a real boolean is honoured; anything else leaves the client's last value in place.
 - reply `error`: `{reason: "not_found" | "voice_owned" | "node_unavailable" | "archived"}`. `voice_owned` = another channel process already holds the voice claim for this session in `OrcaHub.SessionViewersRegistry` (value `%{voice: true}`); `node_unavailable` = the session's `runner_node` is set but not connected — the client shows it, NEVER re-routes.
 
 #### Server -> client events

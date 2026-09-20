@@ -902,11 +902,18 @@ export const VoiceHook = {
 
   // -------------------------------------------------------------- half-duplex
 
-  /** `orca:tts-state`, §8.1. Still edge-driven, and deliberately so: the
-   * player owns the transitions and this reacts to them. ORCAHUB3-95 adds a
-   * watchdog UNDER it, not a rewrite of it — a mute is armed with an expiry
+  /** `orca:tts-state`, §8.1. The MUTE is edge-driven, and deliberately so:
+   * the player owns the transitions and this reacts to them. ORCAHUB3-95 adds
+   * a watchdog UNDER it, not a rewrite of it — a mute is armed with an expiry
    * and an unmute disarms it, so the only thing that changed for a normal
    * play/stop pair is that the timer is created and then thrown away.
+   *
+   * The RELEASE (ORCAHUB3-105 §9) is NOT edge-driven, for the reason spelled
+   * out at the bottom of this function: it is idempotent, it answers "is the
+   * assistant speaking right now", and making it wait for a mute edge made
+   * the one entry point that emits no `{playing: false}` first —
+   * `ttsResumeOrStart`, i.e. pressing play on the message already being read
+   * — the only one that could not recover from a stale mute.
    *
    * The watchdog arms on the `true` EDGE and on nothing else — never on the
    * ABSENCE of events. A message that is entirely a fenced code block is not
@@ -921,24 +928,49 @@ export const VoiceHook = {
    * not a poller. */
   _handleTtsState(e) {
     const playing = !!(e && e.detail && e.detail.playing)
-    if (playing === this.muted) return
-    this.muted = playing
-    if (this.vad) {
-      if (playing) this.vad.pause()
-      else this.vad.resume()
+    // The MUTE is still edge-driven, byte for byte: an event that says
+    // nothing new about the mute changes nothing about it, and the watchdog
+    // still arms on the `true` EDGE and on nothing else.
+    if (playing !== this.muted) {
+      this.muted = playing
+      if (this.vad) {
+        if (playing) this.vad.pause()
+        else this.vad.resume()
+      }
+      if (playing) this._armMuteWatchdog()
+      else this._clearMuteWatchdog()
+      this.channel && this.channel.push("mic", { muted: playing, reason: "tts" })
+      this._renderMic()
     }
-    if (playing) this._armMuteWatchdog()
-    else this._clearMuteWatchdog()
-    this.channel && this.channel.push("mic", { muted: playing, reason: "tts" })
-    this._renderMic()
-    // ORCAHUB3-105 §9, LAST: the mute above is unconditional and unchanged,
-    // and the release is a second thing layered on top of it — never a
-    // replacement for it. With the flag off this line is the only trace of
-    // the feature on the half-duplex path.
+    // ORCAHUB3-105 §9, LAST: the mute above is unchanged, and the release is
+    // a second thing layered on top of it — never a replacement for it. With
+    // the flag off this branch is the only trace of the feature on the
+    // half-duplex path.
     //
-    // Note the asymmetry: a `{playing: false}` must be honoured even when
-    // the flag has since been turned OFF, or a mic released under the old
-    // setting would never come back. So only the RELEASE is gated.
+    // It sits OUTSIDE the mute edge above, which is the ORCAHUB3-105
+    // manual-play fix. The release used to ride the mute's early return, so
+    // it only ever ran when `playing` disagreed with `this.muted`. Every
+    // AUTOPLAY entry point hides that: `ttsStreamEnqueue` and the
+    // `activeId !== id` half of `ttsHandleAction` both call `ttsStop()`
+    // first, so a `{playing: false}` clears any stale mute a moment before
+    // the `{playing: true}` arrives and the edge is always clean. Pressing
+    // play on the message that is ALREADY `activeId` goes through
+    // `ttsResumeOrStart`, which emits `{playing: true}` and nothing else —
+    // so against a mute left standing by a lost `{playing: false}` (the
+    // state ORCAHUB3-95's watchdog exists to bound) the whole handler
+    // returned at the old line 924: no mute change, and no release either.
+    // The bar went on saying "muted", the track stayed live, and the device
+    // kept the audio route. That was the one path that could not self-heal.
+    //
+    // Both calls are idempotent by construction — `_releaseMicForPlayback`
+    // returns early when the microphone is already out on loan, and
+    // `_scheduleMicReacquire` returns unless there is a release to undo — so
+    // running them on every event rather than only on an edge costs nothing
+    // and removes a precondition that was never theirs to depend on.
+    //
+    // Note the asymmetry that remains: a `{playing: false}` must be honoured
+    // even when the flag has since been turned OFF, or a mic released under
+    // the old setting would never come back. So only the RELEASE is gated.
     if (playing) {
       if (this.releaseMicDuringPlayback) this._releaseMicForPlayback()
     } else {

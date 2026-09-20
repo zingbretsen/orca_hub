@@ -590,5 +590,102 @@ console.log("\n12. the flag turning OFF mid-playback still returns the mic")
   hook._teardown()
 }
 
+// ======================================================================
+// ORCAHUB3-105 follow-up: MANUAL play released nothing while AUTOPLAY did.
+//
+// The player has two shapes of entry. Every autoplay one — `ttsStreamEnqueue`
+// and the `activeId !== id` half of `ttsHandleAction` — calls `ttsStop()`
+// first, so a `{playing: false}` lands a moment before the `{playing: true}`
+// and the mute edge is always clean. Pressing play on the message that is
+// ALREADY `activeId` goes through `ttsResumeOrStart`, which emits
+// `{playing: true}` ALONE. Against a mute left standing by a lost
+// `{playing: false}`, that lone `true` used to return from `_handleTtsState`
+// before the release branch existed to it: the bar went on saying "muted",
+// the track stayed live, and the device kept the audio route.
+//
+// The precondition below is built the way it happens, not by poking `muted`:
+// a real playback that never emits its `{playing: false}` (ORCAHUB3-95's
+// premise), after which the microphone comes back by repair.
+console.log("\n13. a LONE {playing: true} — manual replay against a stale mute")
+
+async function staleMuteWithLiveMic(opts) {
+  const hook = await freshHook(opts)
+  tts(true) // a playback whose `{playing: false}` never arrives
+  await settle()
+  // ...and the microphone is back (a liveness repair, or the flag was off and
+  // it never left). What is left over is the MUTE, not the release.
+  if (hook._micReleased) {
+    hook._micReleased = false
+    hook.capture = globalThis.__voiceStubs.captures.at(-1)
+    hook.capture.stopped = false
+    hook.capture.track.readyState = "live"
+    hook.armed = true
+    hook._renderMic()
+  }
+  return hook
+}
+
+{
+  const hook = await staleMuteWithLiveMic({ release: true, debounceMs: 40 })
+  ok("precondition: muted, not released, and the track is live", hook.muted === true &&
+    hook._micReleased === false && hook._micLive() === true)
+  eq("precondition: the bar is stuck on the mute", micEl.textContent, "mic muted (TTS playing)")
+
+  const pushesBefore = globalThis.__voiceStubs.channels.at(-1).pushes.length
+  tts(true) // ttsResumeOrStart: no preceding `false`
+  await settle()
+  ok("the lone `true` now releases the microphone", hook._micReleased === true)
+  ok("the track really is stopped, not merely muted", hook._micLive() === false)
+  eq("and the bar says so", micEl.textContent, "mic released (TTS playing)")
+  // The MUTE stays edge-driven: nothing about the mute changed, so nothing is
+  // re-pushed and ORCAHUB3-95's watchdog is not re-armed from now.
+  eq("no second `mic` push — the mute edge is untouched",
+    globalThis.__voiceStubs.channels.at(-1).pushes.length, pushesBefore)
+  ok("still muted", hook.muted === true)
+
+  // ...and the end of playback still hands it back on the ordinary path.
+  tts(false)
+  await settle(120)
+  ok("the microphone comes back at the end of playback", hook._micLive() === true)
+  hook._teardown()
+}
+
+{
+  // Flag OFF must stay byte-for-byte what it was: a lone `true` against a
+  // stale mute does nothing at all to the microphone.
+  const hook = await staleMuteWithLiveMic({ release: false, debounceMs: 40 })
+  const stopsBefore = globalThis.__voiceStubs.stops.length
+  tts(true)
+  await settle()
+  ok("flag off: nothing was released", hook._micReleased === false)
+  eq("flag off: no track was stopped", globalThis.__voiceStubs.stops.length, stopsBefore)
+  ok("flag off: the mic is still live", hook._micLive() === true)
+  hook._teardown()
+}
+
+{
+  // Idempotency is what lets the release stop depending on the edge. Repeats
+  // of either event must be free.
+  const hook = await freshHook({ release: true, debounceMs: 60 })
+  tts(true)
+  await settle()
+  const stopsAfterFirst = globalThis.__voiceStubs.stops.length
+  tts(true)
+  tts(true)
+  await settle()
+  eq("three `true`s, one release", hook.metrics.micReleases, 1)
+  eq("three `true`s, one stopped track", globalThis.__voiceStubs.stops.length, stopsAfterFirst)
+
+  tts(false)
+  await settle(20)
+  tts(false) // a duplicate `false` restarts the debounce; it must not skip it
+  await settle(20)
+  ok("a repeated `false` has not re-acquired early", hook._micReleased === true)
+  await settle(90)
+  eq("exactly one re-acquire for the pair", hook.metrics.micReacquires, 1)
+  eq("one release, one re-acquire, in that order", logKinds(), ["released", "re-acquired"])
+  hook._teardown()
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
