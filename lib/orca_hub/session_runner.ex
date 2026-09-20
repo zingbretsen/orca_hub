@@ -2153,6 +2153,13 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp finalize_streaming_turn(result_ev, data) do
+    # ORCAHUB3-114 — the single funnel for every way a streaming turn ends
+    # (queue flush after an interrupt, user stop, error, success), so one sweep
+    # here covers all four. The persisted `assistant` events for this turn have
+    # already been broadcast by the time the `result` frame lands, so a client
+    # that still holds a live bubble can swap it for the real render at once.
+    data = %{data | backend_state: sweep_delta_streams(data.session_id, data.backend_state)}
+
     decision =
       streaming_turn_decision(%{
         pending_prompts: data.pending_prompts,
@@ -2306,6 +2313,11 @@ defmodule OrcaHub.SessionRunner do
     # ORCAHUB3-60: clear any pending pi dialogs before going cold.
     # Scan for unanswered pi_ui_request events and persist stale resolutions.
     clear_pi_dialogs_on_exit(data)
+
+    # ORCAHUB3-114: a crash mid-message never delivers the backend's own
+    # end-of-message frame, so the only `stream_stop` the client will ever get
+    # for that stream is this synthetic one.
+    sweep_delta_streams(data.session_id, data.backend_state)
 
     data = %{
       data
@@ -2572,6 +2584,11 @@ defmodule OrcaHub.SessionRunner do
 
     # The warm process is gone — free its slot (idempotent).
     Streaming.WarmPool.release(data.session_id)
+
+    # ORCAHUB3-114 — the state we are about to throw away may still hold an
+    # open stream (eviction or a backend switch mid-message). Close it out on
+    # the wire before it stops existing here.
+    sweep_delta_streams(data.session_id, data.backend_state)
 
     %{
       data
@@ -2985,6 +3002,35 @@ defmodule OrcaHub.SessionRunner do
     persist_message(data, event)
     broadcast(data.session_id, {:event, event})
     %{data | messages: data.messages ++ [event]}
+  end
+
+  # ORCAHUB3-114 — close out any delta stream still open in `backend_state`,
+  # broadcasting a SYNTHETIC `stream_stop` for each. Returns the state with the
+  # bookkeeping keys dropped; callers that reset `backend_state` to `%{}`
+  # anyway just call it for the broadcast.
+  #
+  # Every path that ends a turn or discards `backend_state` goes through here,
+  # because the adapters only emit a real `stream_stop` when they see the
+  # backend's own end-of-message frame. An interrupt (the stop button, or
+  # ORCAHUB3-29's queued-message escalation), a port teardown and a crash
+  # mid-message all skip that frame — and the client's live bubble has no other
+  # removal trigger, so it outlives the persisted message and duplicates its
+  # text until a page refresh.
+  #
+  # `@doc false` rather than private: the sweep is the whole behaviour, and
+  # this is how it gets tested without a live CLI.
+  @doc false
+  def sweep_delta_streams(session_id, backend_state) do
+    {stops, cleaned} = Deltas.close_open_streams(backend_state)
+
+    for stop <- stops do
+      case Deltas.broadcast_payload(stop) do
+        {tag, payload} -> broadcast(session_id, {tag, payload})
+        :ignore -> :ok
+      end
+    end
+
+    cleaned
   end
 
   defp maybe_mark_waiting(event, data) do

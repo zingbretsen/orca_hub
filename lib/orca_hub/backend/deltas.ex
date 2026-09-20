@@ -39,6 +39,15 @@ defmodule OrcaHub.Backend.Deltas do
 
   @type kind :: :stream_start | :block_start | :delta | :block_stop | :stream_stop
 
+  # The two `backend_state` shapes adapters use to remember an in-flight
+  # stream id: Claude and pi keep exactly ONE (`:delta_stream_id`, since a
+  # single assistant message is in flight at a time), Codex keys a map by its
+  # own item id (`:delta_streams`). `open_stream_ids/1` below is the one place
+  # that knows both, so a caller sweeping a turn's leftovers never has to
+  # branch on the backend.
+  @single_stream_key :delta_stream_id
+  @multi_stream_key :delta_streams
+
   @doc "Source event for the `:assistant_stream_start` broadcast."
   @spec stream_start(String.t()) :: map
   def stream_start(stream_id) when is_binary(stream_id) do
@@ -135,4 +144,53 @@ defmodule OrcaHub.Backend.Deltas do
   end
 
   def broadcast_payload(_event), do: :ignore
+
+  @doc """
+  Every stream id an adapter currently holds open in `backend_state`.
+
+  Reads both bookkeeping shapes (see `@single_stream_key`/`@multi_stream_key`)
+  and tolerates anything else it finds there — `backend_state` is an opaque
+  per-adapter map, so an unexpected value means "no open stream", never a
+  crash on a teardown path.
+  """
+  @spec open_stream_ids(map) :: [String.t()]
+  def open_stream_ids(backend_state) when is_map(backend_state) do
+    single =
+      case Map.get(backend_state, @single_stream_key) do
+        id when is_binary(id) -> [id]
+        _ -> []
+      end
+
+    multi =
+      case Map.get(backend_state, @multi_stream_key) do
+        streams when is_map(streams) -> streams |> Map.values() |> Enum.filter(&is_binary/1)
+        _ -> []
+      end
+
+    Enum.uniq(single ++ multi)
+  end
+
+  def open_stream_ids(_backend_state), do: []
+
+  @doc """
+  Closes out every stream still open in `backend_state`: returns the synthetic
+  `stream_stop` events to broadcast, plus the state with the bookkeeping keys
+  dropped (so a second sweep is a no-op).
+
+  ORCAHUB3-114. A `stream_stop` is otherwise emitted ONLY by the adapter clause
+  that sees the backend's own end-of-message frame — Claude's `message_stop`,
+  Codex's `item/completed`, pi's `message_end`. An interrupt, a port teardown
+  or a crash mid-message means that frame never arrives, and the client's live
+  bubble has no other removal trigger, so it outlives the persisted message and
+  shows the same text twice until a full page refresh. Every path that ends a
+  turn or discards `backend_state` has to sweep it through here first.
+  """
+  @spec close_open_streams(map) :: {[map], map}
+  def close_open_streams(backend_state) when is_map(backend_state) do
+    stops = backend_state |> open_stream_ids() |> Enum.map(&stream_stop/1)
+
+    {stops, backend_state |> Map.delete(@single_stream_key) |> Map.delete(@multi_stream_key)}
+  end
+
+  def close_open_streams(backend_state), do: {[], backend_state}
 end

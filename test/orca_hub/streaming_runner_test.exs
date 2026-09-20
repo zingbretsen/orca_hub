@@ -476,4 +476,65 @@ defmodule OrcaHub.StreamingRunnerTest do
              }
     end
   end
+
+  describe "sweep_delta_streams/2 — synthetic stream_stop on an abnormal end (ORCAHUB3-114)" do
+    # The client's live assistant bubble has no removal trigger other than an
+    # `op: "stop"` push, and the adapters only emit a real `stream_stop` when
+    # they see their backend's own end-of-message frame. An interrupt, a port
+    # teardown or a crash mid-message skips that frame, so without this sweep
+    # the bubble outlives its persisted message and shows the same text twice
+    # until a page refresh.
+    #
+    # Wired into `finalize_streaming_turn/2` (the single funnel for all four
+    # turn-end decisions, including the interrupt/queue-flush path),
+    # `teardown_port/1` and `handle_streaming_exit/3`.
+
+    setup do
+      session_id = Ecto.UUID.generate()
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session_id}")
+      {:ok, session_id: session_id}
+    end
+
+    test "an open single-stream id is closed out on the wire", %{session_id: session_id} do
+      cleaned = SessionRunner.sweep_delta_streams(session_id, %{delta_stream_id: "msg_1"})
+
+      assert_receive {:assistant_stream_stop, %{"stream_id" => "msg_1"}}
+      assert cleaned == %{}
+    end
+
+    test "every id in Codex's multi-stream map is closed out", %{session_id: session_id} do
+      state = %{delta_streams: %{"item_a" => "uuid-a", "item_b" => "uuid-b"}}
+
+      assert SessionRunner.sweep_delta_streams(session_id, state) == %{}
+
+      assert_receive {:assistant_stream_stop, %{"stream_id" => "uuid-a"}}
+      assert_receive {:assistant_stream_stop, %{"stream_id" => "uuid-b"}}
+    end
+
+    test "a turn that ended normally broadcasts nothing", %{session_id: session_id} do
+      # The adapter already popped its id at `message_stop`, so there is
+      # nothing to sweep — and the client must NOT get a second stop.
+      assert SessionRunner.sweep_delta_streams(session_id, %{}) == %{}
+      refute_receive {:assistant_stream_stop, _}, 50
+    end
+
+    test "sweeping twice does not double-stop", %{session_id: session_id} do
+      cleaned = SessionRunner.sweep_delta_streams(session_id, %{delta_stream_id: "msg_1"})
+      assert_receive {:assistant_stream_stop, %{"stream_id" => "msg_1"}}
+
+      SessionRunner.sweep_delta_streams(session_id, cleaned)
+      refute_receive {:assistant_stream_stop, _}, 50
+    end
+
+    test "unrelated backend_state is preserved for the still-warm port", %{
+      session_id: session_id
+    } do
+      state = %{delta_stream_id: "msg_1", pending_writes: [:w], codex_handshake: :done}
+
+      cleaned = SessionRunner.sweep_delta_streams(session_id, state)
+
+      assert_receive {:assistant_stream_stop, %{"stream_id" => "msg_1"}}
+      assert cleaned == %{pending_writes: [:w], codex_handshake: :done}
+    end
+  end
 end

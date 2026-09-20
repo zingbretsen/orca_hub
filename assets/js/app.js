@@ -22,6 +22,7 @@ import "phoenix_html"
 import { TerminalHook } from "./terminal_hook"
 import { VoiceHook } from "./voice/voice_hook"
 import { createTtsStreamAccumulator, toolAnnouncement } from "./tts_stream"
+import { AssistantStreamMethods, ASSISTANT_STREAM_EVENT } from "./assistant_stream"
 import {
   cleanTextForTTS, extractSpeakableFromElement, splitIntoChunksWithOffsets, resolveChunkRange, BLOCK_TAGS,
 } from "./tts_text"
@@ -924,196 +925,6 @@ const TTSMethods = {
   }
 }
 
-// In-progress assistant bubble (voice_mode_spec.md §7.2 / contract C2).
-// Mixed into the feed hook rather than being a second `phx-hook` — an element
-// may only carry one — so this is a methods object like TTSMethods above.
-//
-// It owns ONE DOM subtree per live assistant message, `#stream-<stream_id>`,
-// parked in the server-rendered `#assistant-stream-slot` (which is
-// `phx-update="ignore"`, so LiveView never patches over it). Nothing about the
-// live text reaches a socket assign — the server pushes deltas and forgets
-// them; a re-render mid-stream therefore costs the same as one with no stream
-// at all.
-//
-// Every event is ALSO re-dispatched as a `window` CustomEvent so consumers
-// that have no business touching the feed DOM (the streaming TTS producer,
-// and any future host) can listen without coupling to this hook.
-const ASSISTANT_STREAM_EVENT = "orca:assistant-stream"
-
-// How long to keep an orphaned live bubble around waiting for the persisted
-// message to render before giving up and removing it anyway. Only reached
-// when the persisted message never arrives (backend crash mid-turn) or
-// renders without a text bubble at all.
-const ASSISTANT_STREAM_SETTLE_MS = 5000
-
-const AssistantStreamMethods = {
-  assistantStreamMount() {
-    this.streamBubbles = new Map()
-
-    this.handleEvent("assistant-stream", (payload) => {
-      try {
-        this.assistantStreamApply(payload)
-      } finally {
-        // Emitted even if the DOM half threw: TTS must not be silenced by a
-        // rendering bug, and vice versa.
-        window.dispatchEvent(new CustomEvent(ASSISTANT_STREAM_EVENT, { detail: payload }))
-      }
-    })
-  },
-
-  assistantStreamDestroy() {
-    if (!this.streamBubbles) return
-    for (const id of [...this.streamBubbles.keys()]) this.assistantStreamRemove(id)
-    this.streamBubbles.clear()
-  },
-
-  assistantStreamApply({ op, stream_id, block_index, text, block_type, name }) {
-    if (!stream_id) return
-
-    switch (op) {
-      case "start":
-        this.assistantStreamEnsure(stream_id)
-        break
-      case "block_start":
-        if (block_type === "text") this.assistantStreamBlock(stream_id, block_index)
-        else if (block_type === "tool_use") this.assistantStreamChip(stream_id, name)
-        // "thinking" renders nothing live — the persisted message collapses
-        // it into a thinking block of its own (see MessageComponents).
-        break
-      case "delta":
-        this.assistantStreamAppend(stream_id, block_index, text)
-        break
-      case "stop":
-        this.assistantStreamFinish(stream_id)
-        break
-    }
-  },
-
-  assistantStreamEnsure(streamId) {
-    const existing = this.streamBubbles.get(streamId)
-    if (existing && existing.el.isConnected) return existing
-
-    const slot = document.getElementById("assistant-stream-slot")
-    if (!slot) return null
-
-    const el = document.createElement("div")
-    el.id = `stream-${streamId}`
-    el.className = "chat chat-start"
-    el.dataset.assistantStream = streamId
-
-    const header = document.createElement("div")
-    header.className = "chat-header text-xs opacity-50 mb-1"
-    header.textContent = "Assistant"
-
-    const body = document.createElement("div")
-    // Same bubble chrome as a persisted assistant message, minus `prose`:
-    // this is plain text, not rendered markdown, so it keeps its newlines
-    // via pre-wrap and gets re-rendered properly the moment the real
-    // message lands.
-    body.className =
-      "chat-bubble max-w-none min-w-0 max-w-full break-words whitespace-pre-wrap"
-    body.dataset.streamBody = ""
-
-    el.appendChild(header)
-    el.appendChild(body)
-    slot.appendChild(el)
-
-    const entry = { el, body, blocks: new Map() }
-    this.streamBubbles.set(streamId, entry)
-    this.assistantStreamFollow()
-    return entry
-  },
-
-  assistantStreamBlock(streamId, blockIndex) {
-    const entry = this.assistantStreamEnsure(streamId)
-    if (!entry) return null
-    const key = String(blockIndex ?? 0)
-    if (entry.blocks.has(key)) return entry.blocks.get(key)
-
-    const div = document.createElement("div")
-    div.dataset.streamBlock = key
-    entry.body.appendChild(div)
-    entry.blocks.set(key, div)
-    return div
-  },
-
-  // One line per tool call, never the payload (§7's "do not read 400 lines of
-  // diff aloud" rule, applied to the eye as well as the ear).
-  assistantStreamChip(streamId, name) {
-    const entry = this.assistantStreamEnsure(streamId)
-    if (!entry) return
-
-    const chip = document.createElement("div")
-    chip.className = "text-xs opacity-60 italic"
-    chip.textContent = `${name || "tool"}…`
-    entry.body.appendChild(chip)
-    this.assistantStreamFollow()
-  },
-
-  assistantStreamAppend(streamId, blockIndex, text) {
-    if (!text) return
-    const div = this.assistantStreamBlock(streamId, blockIndex)
-    if (!div) return
-    // textContent, never innerHTML — model output is untrusted input here
-    // exactly like anywhere else.
-    div.textContent += text
-    this.assistantStreamFollow()
-  },
-
-  // The persisted message replaces the live bubble, so removing it early
-  // would flash the text out and back in; removing it late would show the
-  // same paragraph twice. Poll for the real render (by the backend's own
-  // message id, which IS the stream id — §7.1) and swap only then.
-  assistantStreamFinish(streamId) {
-    const entry = this.streamBubbles.get(streamId)
-    if (!entry) return
-
-    // A tool-only turn never renders a text bubble to wait for.
-    if (!entry.body.textContent.trim()) {
-      this.assistantStreamRemove(streamId)
-      return
-    }
-
-    const startedAt = Date.now()
-    const poll = () => {
-      if (!this.streamBubbles.has(streamId)) return
-      if (
-        this.assistantStreamPersisted(streamId) ||
-        Date.now() - startedAt > ASSISTANT_STREAM_SETTLE_MS
-      ) {
-        this.assistantStreamRemove(streamId)
-      } else {
-        setTimeout(poll, 100)
-      }
-    }
-    poll()
-  },
-
-  assistantStreamPersisted(streamId) {
-    const escaped = window.CSS && CSS.escape ? CSS.escape(streamId) : streamId
-    return !!(
-      document.querySelector(`[data-message-id="${escaped}"]`) ||
-      document.getElementById(`tts-text-${streamId}`)
-    )
-  },
-
-  assistantStreamRemove(streamId) {
-    const entry = this.streamBubbles.get(streamId)
-    if (!entry) return
-    this.streamBubbles.delete(streamId)
-    entry.el.remove()
-  },
-
-  // A growing bubble must pin the feed exactly like a new message does —
-  // same `following` flag the LiveView-driven path uses, so a user who
-  // scrolled up is never yanked back down.
-  assistantStreamFollow() {
-    if (this.following && typeof this.scrollToBottom === "function") {
-      this.scrollToBottom(false)
-    }
-  }
-}
-
 let Hooks = {
   ...colocatedHooks,
   Terminal: TerminalHook,
@@ -1796,6 +1607,13 @@ let Hooks = {
         document.querySelector("form[data-voice-composer-for]")?.dataset.voiceComposerFor
       if (composerFor) document.body.dataset.voiceComposerFor = composerFor
     },
+    // ORCAHUB3-114 — a live bubble cannot survive a socket gap. Anything
+    // pushed while we were disconnected (including the `stop` this bubble is
+    // waiting for) is gone for good, and the persisted message is
+    // authoritative, so drop the lot rather than wait forever.
+    reconnected() {
+      this.assistantStreamReconnected()
+    },
     destroyed() {
       this.ttsUnmountShared()
       this.assistantStreamDestroy()
@@ -1865,6 +1683,12 @@ let Hooks = {
       // See TTSMethods.ttsCheckStillPresent — stop reading a message that
       // just got patched out of the DOM.
       this.ttsCheckStillPresent()
+
+      // ORCAHUB3-114 — this patch may be the one that rendered the persisted
+      // message a live bubble is standing in for. Reconcile here so the
+      // duplicate never survives a single frame, instead of depending on an
+      // `op: "stop"` push that may never arrive.
+      this.assistantStreamReconcile()
     },
     scrollToBottom(smooth) {
       this.el.scrollTo({

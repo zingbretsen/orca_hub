@@ -2651,6 +2651,19 @@ defmodule OrcaHubWeb.SessionLive.Show do
         socket
       end
 
+    # ORCAHUB3-114 — belt-and-braces over the runner's own synthetic
+    # `stream_stop` sweep: the turn is over, so NOTHING may still be streaming.
+    # This catches a bubble whose stream id the runner no longer knows about
+    # (backend_state already reset by an earlier teardown), and costs one tiny
+    # push per turn end. The client treats it exactly like a stop — it still
+    # waits for the persisted message to render before swapping.
+    socket =
+      if status in [:idle, :error] do
+        push_event(socket, "assistant-stream", %{op: "clear"})
+      else
+        socket
+      end
+
     {:noreply, socket}
   end
 
