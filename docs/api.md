@@ -24,6 +24,12 @@ Set `ORCA_API_TOKEN` in the environment to enable the API. Unset/empty means
 the API is disabled — every request gets `503 {"error": "API disabled"}`. A
 missing/incorrect token gets `401 {"error": "unauthorized"}`.
 
+Scoped, revocable tokens (`orca_…`, managed in Settings) are accepted on the
+same header and are additionally checked against each route's required scope
+and, when session-pinned, its one allowed session. They are the ONLY
+credential the push socket takes — see
+[Session events socket](#session-events-socket).
+
 ## POST /api/v1/runs
 
 Creates a session and a run, sends the prompt, and returns immediately.
@@ -578,3 +584,113 @@ calls; `tool_calls_truncated` says whether older ones were dropped and
 (`Sessions.session_tail/2` names that flag `tool_calls_truncated?` in Elixir;
 the trailing `?` is dropped on the wire so clients get an ordinary JSON
 identifier.)
+
+## Session events socket
+
+The push half of this API: a token-authenticated Phoenix channel that
+delivers a session's **turn end** (`running -> idle | error`) the moment it
+happens, instead of making a client poll for it. This is what the unified
+OrcaHub Android app listens on (orca-watch `DESIGN.md` **D6** — it replaced
+a Gotify round trip, so push and fetch now share one server, one token and
+one reachability condition).
+
+```
+wss://orca.example/api/v1/socket/websocket?vsn=2.0.0&token=<orca_… secret>
+```
+
+WebSocket only — there is no longpoll transport. The `token` is a **query
+param, not a header**: a browser/OkHttp WebSocket handshake cannot set
+`Authorization`. It is the SAME `orca_…` secret the HTTP client sends as
+`Authorization: Bearer`, and it goes through the same verification path
+(SHA-256 hash lookup, revoked and expired refused, `last_used_at` touched).
+
+**Scope: `sessions:read`** — the channel is a push-shaped read of exactly
+the data `GET /api/v1/sessions*` already gates on that scope. A missing,
+unknown, revoked, expired or wrongly-scoped token is refused at the
+**handshake** (`:error` → HTTP 403), never accepted and then refused at
+join. The legacy static `ORCA_API_TOKEN` is **not** accepted here; this
+surface is scoped-token-only.
+
+**Revocation kicks live sockets.** Revoking a token disconnects every socket
+it holds, immediately — a socket makes no further HTTP requests, so waiting
+for the next one would leave a revoked token receiving pushes indefinitely.
+
+### Topics
+
+| topic | who may join |
+|---|---|
+| `session_events:all` | any token with `sessions:read` that is **not** session-pinned |
+| `session_events:<session_id>` | any token with `sessions:read`; a **session-pinned** token may join only its own session's topic |
+
+A pinned token joining `session_events:all` (or another session's topic) is
+refused with `{"reason": "forbidden"}`, mirroring the pin check on
+`GET /api/v1/sessions/:id`. A topic whose id is not a UUID is refused the
+same way.
+
+### Event: `turn_end`
+
+```json
+{
+  "session_id": "3bac88a6-…",
+  "session_title": "the worker",
+  "status": "idle",
+  "excerpt": "All three migrations applied cleanly.",
+  "occurred_at": "2026-09-19T18:04:12.123456Z"
+}
+```
+
+Every field is always present. This is a **contract, not a convenience**
+(orca-watch R12): the Android client renders its notification entirely from
+this payload, because a client that can receive a push cannot be assumed to
+still be able to call back a moment later.
+
+- `session_id` — the reply target (`POST /api/v1/runs` with this
+  `session_id` continues the session). Without it a reply cannot be
+  addressed at all.
+- `session_title` — the agent-managed title; falls back to a truncation of
+  the session's first prompt, and then to `"Session <first 8 of id>"`. Never
+  null or blank.
+- `status` — `"idle"` or `"error"`. `"waiting"` (an unanswered
+  AskUserQuestion) and `"compacting"` are not turn ends and never fire.
+- `excerpt` — the session's last assistant text, whitespace collapsed and
+  truncated to 400 characters on a word boundary with a trailing `…`. `""`
+  (never null) when the turn produced no assistant text. Byte-identical to
+  `last_assistant_text` from `/sessions/recent?include_tail=true` — the same
+  `Sessions.truncate_excerpt/2` rule — so a notification and the list row it
+  opens cannot disagree about where the text stops.
+- `occurred_at` — ISO 8601 UTC instant the hub fanned the event out.
+
+**Which sessions fire.** Roots, orchestrators and trigger sessions — the
+ones a human talks to directly. Suppressed for CHILD sessions (a worker
+reports to its orchestrator, so a twenty-worker swarm doesn't push once per
+worker per turn), for background `memory_extraction` sessions, and for
+archived sessions. One predicate decides this for both this channel and the
+opt-in Gotify push, so the two can't drift.
+
+### Event: `ping`
+
+Client → server liveness check; replies `{"pong": true}` and touches no
+database. Use it to distinguish "the socket is open" from "the socket is a
+half-open TCP corpse" without a round trip through the HTTP API.
+
+### No backlog on join
+
+Joining replays **nothing**. Events are delivered live or not at all; the
+channel holds no per-token cursor and has no opinion about what a
+disconnected client missed.
+
+That is deliberate, and it is why reconnect handling is the client's job:
+
+1. Reconnect with **capped exponential backoff plus jitter** (the socket is
+   the primary delivery path, not a reliable one).
+2. **After every reconnect — including the first connect — call
+   `GET /api/v1/sessions/recent?since=<high-water>&include_tail=true`** and
+   fold the results in. Your high-water mark is the newest
+   `last_activity_at` you have already handled.
+3. De-duplicate on `session_id` + activity instant. A push and a poll
+   result that name the same session at or before the same instant are the
+   same event; notify-once semantics on the client make the overlap
+   harmless.
+
+Treat the socket as a latency optimization over polling, never as a
+guarantee: a dropped socket then becomes a *delay*, not a *loss*.

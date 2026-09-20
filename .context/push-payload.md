@@ -1,21 +1,34 @@
-# Turn-end push payload contract (Gotify)
+# Turn-end push payload contract (two wires)
 
-**Status: OPT-IN, OFF BY DEFAULT.** When enabled, a genuine SessionRunner
-`running -> idle | error` transition fires ONE Gotify notification for the
-sessions Zach talks to himself (roots, orchestrators, trigger sessions — see
-"When it fires" for what's suppressed). Nothing is sent unless
-`ORCA_NOTIFY_ON_FINISH` is set on the runner's node (see "Enabling it").
-This is distinct from the `send_notification` MCP tool, which is per-call and
-only fires when an agent asks for it.
+**The contract now rides TWO wires**, from ONE hub-side fan-out
+(`OrcaHub.SessionEvents.turn_end/1`), for one genuine SessionRunner
+`running -> idle | error` transition:
 
-**Why it defaults off (D6).** It shipped default-ON for the Android app
-(ebf8ffb), and every session turn end on every node buzzed the phone — a flood
-in practice. Zach then decided (D6) the app will receive finish events from a
-**direct authenticated Phoenix channel on the hub** instead of via Gotify, so
-Gotify is no longer this feature's delivery path for the primary consumer. The
-code paths below are deliberately KEPT and still work — the push is now
-something you turn on for a node when you want it, not the default behaviour.
-The hub channel itself is a later phase and does not exist yet.
+1. **The `session_events` channel — ALWAYS.** A
+   `OrcaHubWeb.Endpoint.broadcast/3` on `"session_events:all"` and
+   `"session_events:<session_id>"`, consumed over the token-authenticated
+   `/api/v1/socket` (`OrcaHubWeb.ApiSocket` +
+   `OrcaHubWeb.SessionEventsChannel`, scope `sessions:read`). This is D6's
+   delivery path for the Android app and is NOT gated on any flag. Its wire
+   shape — the four fields below plus `occurred_at` — is documented for
+   clients in `docs/api.md` ("Session events socket").
+2. **Gotify — OPT-IN, OFF BY DEFAULT.** The same four fields under
+   `extras["orca"]`, sent only when `ORCA_NOTIFY_ON_FINISH` is set on the
+   RUNNER's node (see "Enabling it"). Both are distinct from the
+   `send_notification` MCP tool, which is per-call and only fires when an
+   agent asks for it.
+
+Both wires are fed the SAME resolved title and excerpt (the DB read happens
+once, on the hub), and both are gated by the SAME suppression predicate,
+`SessionRunner.turn_end_push_eligible?/2` — they cannot drift.
+
+**Why Gotify defaults off (D6).** It shipped default-ON for the Android app
+(ebf8ffb), and every session turn end on every node buzzed the phone — a
+flood in practice. Zach then decided (D6) the app receives finish events from
+the direct authenticated channel on the hub instead, so Gotify is no longer
+this feature's delivery path for the primary consumer. The code paths below
+are deliberately KEPT and still work — the Gotify push is now something you
+turn on for a node when you want it, not the default behaviour.
 
 The consumer this payload was designed for is the unified Android app (phone +
 Wear + Android Auto) — see `/home/zach/experiments/orca-watch/DESIGN.md` §7c,
@@ -24,10 +37,32 @@ Wear + Android Auto) — see `/home/zach/experiments/orca-watch/DESIGN.md` §7c,
 the car, VPN down" scenario) the client cannot call back to fill anything in.
 **Anything missing from the push is missing forever.** Treat the four fields
 below as a contract, not a convenience, and do not rename or drop one without
-changing the client — the same four fields are the obvious starting shape for
-the hub channel that replaces this path.
+changing the client — they are the SAME four fields on both wires, which is
+what made D6 a change of transport rather than of contract.
 
-## The wire shape
+## The wire shape — channel (primary)
+
+`OrcaHubWeb.Endpoint.broadcast("session_events:all" | "session_events:<id>",
+"turn_end", payload)`, forwarded verbatim to every joined client:
+
+```json
+{
+  "session_id":    "3bac88a6-…",
+  "session_title": "the worker",
+  "status":        "idle",
+  "excerpt":       "All three migrations applied cleanly.",
+  "occurred_at":   "2026-09-19T18:04:12.123456Z"
+}
+```
+
+`occurred_at` (ISO 8601 UTC, the hub's clock at fan-out) is the ONE field
+the channel adds over Gotify's `extras.orca`: a channel payload is a map,
+so there is no reason to make the client infer an arrival time it can hold
+in a high-water mark. Client-facing docs, including the socket URL, the
+topics, the `ping` reply and the no-backlog/reconnect rules, live in
+`docs/api.md` ("Session events socket").
+
+## The wire shape — Gotify (opt-in)
 
 `POST <gotify>/message?token=…`
 
@@ -68,8 +103,10 @@ add their `client::*` entries on top and win any key clash.
 
 ## When it fires
 
-Only when `ORCA_NOTIFY_ON_FINISH` is enabled on the runner's node, and then
-only from `SessionRunner.handle_turn_end/3`, which is reached from exactly the
+The CHANNEL broadcast fires on every eligible turn end, with no flag; the
+GOTIFY push additionally requires `ORCA_NOTIFY_ON_FINISH` on the runner's
+node. Both come only from
+`SessionRunner.handle_turn_end/3`, which is reached from exactly the
 five `running -> idle|error` paths (one-shot exit, streaming idle, streaming
 error, streaming port-exit-mid-turn, kill-switch downgrade). So: once per turn
 end, on the transition itself — never from an idle heartbeat or a status
@@ -87,10 +124,16 @@ Suppressed for:
 - archived sessions (`archived_at` set);
 - non-turn-end statuses — `"waiting"` (an unanswered AskUserQuestion) and
   `"compacting"` both map to `nil` via `notify_status/1`;
-- **every node where `ORCA_NOTIFY_ON_FINISH` is unset** — the default (see
-  "Enabling it" below); an explicit `false` / `0` also suppresses;
-- a hub with no `GOTIFY_TOKEN`, which is a SILENT no-op — `{:ok, :skipped}`,
-  no log line, so an unconfigured hub produces no per-turn log spam.
+- (GOTIFY ONLY) **every node where `ORCA_NOTIFY_ON_FINISH` is unset** — the
+  default (see "Enabling it" below); an explicit `false` / `0` also
+  suppresses. The channel broadcast is unaffected by the flag;
+- (GOTIFY ONLY) a hub with no `GOTIFY_TOKEN`, which is a SILENT no-op —
+  `{:ok, :skipped}`, no log line, so an unconfigured hub produces no
+  per-turn log spam.
+
+The first four bullets are ONE predicate,
+`SessionRunner.turn_end_push_eligible?/2`, consulted once before the hub hop
+— so a suppression rule can never apply to one wire and not the other.
 
 There is deliberately **no per-session opt-out**: `sessions` has no generic
 settings map to hang one off, and the brief ruled out inventing a migration.
@@ -101,20 +144,26 @@ separate call.
 
 ## Where it runs
 
-`maybe_notify_finished/3` spawns a `Task.Supervisor` child, so delivery can
-never block or crash the transition; the task itself rescues/catches
-everything and only logs.
+`SessionRunner.maybe_emit_turn_end/3` spawns a `Task.Supervisor` child, so
+neither wire can block or crash the transition; the task itself
+rescues/catches everything and only logs, and the hub-side fan-out
+(`OrcaHub.SessionEvents.turn_end/1`) additionally rescues around each
+broadcast and around the Gotify hand-off, so one failing wire cannot take
+the other down.
 
 The runner may be on an agent node. It sends only `session_id`,
-`session_title` and `status` through `HubRPC.send_session_finished_notification/1`;
-the hub fills in `excerpt` (a DB read) and the click URL (from the HUB's
-endpoint URL, which is the public ingress host — an agent node's `PHX_HOST`
-is typically a LAN address). So an agent node needs neither `GOTIFY_TOKEN`
-nor DB access for this, exactly like the `send_notification` tool.
+`session_title`, `status` and `gotify:` (its own node's flag) through
+`HubRPC.send_session_turn_end/1`; the hub fills in `excerpt` (ONE DB read,
+shared by both wires) and the click URL (from the HUB's endpoint URL, which
+is the public ingress host — an agent node's `PHX_HOST` is typically a LAN
+address). So an agent node needs neither `GOTIFY_TOKEN` nor DB access for
+this, exactly like the `send_notification` tool. PubSub auto-distributes via
+`:pg`, so a socket held on any node still receives the broadcast.
 
 ## Enabling it
 
-`ORCA_NOTIFY_ON_FINISH=true` (or `1`) turns the push on. **Defaults OFF** (D6,
+`ORCA_NOTIFY_ON_FINISH=true` (or `1`) turns the GOTIFY push on — it does not
+gate the channel broadcast, which always fires. **Defaults OFF** (D6,
 above) — unset, empty, `false` and `0` all mean no push, so there is nothing
 to "silence": a node stays quiet until someone opts it in. It is read on the
 RUNNER's node (`SessionRunner.finish_notifications_enabled?/0` →
@@ -130,7 +179,13 @@ tests that want the HTTP path set `:gotify_token` plus `:gotify_req_options`
 
 ## Tests
 
-`test/orca_hub/session_finish_notification_test.exs` (contract, suppression,
+`test/orca_hub/session_turn_end_broadcast_test.exs` (the channel wire: the
+five fields, the per-session topic, suppression, and that it fires with the
+Gotify flag OFF),
+`test/orca_hub_web/channels/session_events_channel_test.exs` (socket auth,
+topic authorization, `ping`, no-backlog-on-join),
+`test/orca_hub/session_finish_notification_test.exs` (the Gotify wire's
+contract, suppression,
 the opt-in switch — its `setup` enables the flag, since every delivery AND
 suppression assertion there would otherwise pass for the wrong reason) and the
 extras-passthrough block in
