@@ -215,7 +215,12 @@ export const AssistantStreamMethods = {
     const entry = this.streamBubbles.get(streamId)
     if (!entry) return
 
-    // A tool-only turn never renders a text bubble to wait for.
+    // Only a genuinely empty bubble short-circuits here (e.g. a thinking-only
+    // turn, which renders nothing live) — NOT a tool-only turn: chips are
+    // appended into entry.body too (assistantStreamChip), so its textContent
+    // is non-empty and it falls through to the poll below, lingering for up
+    // to ASSISTANT_STREAM_SETTLE_MS waiting for a persisted text node that
+    // will never exist. That's cosmetic, not incorrect.
     if (!entry.body.textContent.trim()) {
       this.assistantStreamRemove(streamId)
       return
