@@ -223,7 +223,54 @@ defmodule OrcaHub.Cluster.FleetStatusTest do
       assert row.not_loaded == [e.module]
       assert row.absent == []
       assert row.missing_classified?
-      assert row.status == :out_of_date
+      # And NOT out of date: the node has the code and will load it on
+      # demand. See the dedicated test below.
+      refute row.status == :out_of_date
+    end
+
+    test "not_loaded is NOT out-of-date: a node with only unloaded modules is healthy" do
+      # The regression this pins: `not_loaded` used to be summed into
+      # `drifted` + `absent`, so a freshly deployed, perfectly healthy node
+      # rendered OUT OF DATE purely for not having demanded most of
+      # Mix.Tasks.*/Inspect.* into memory yet (253 of 289 measured on a real
+      # idle node; a node serving traffic on the identical image reported
+      # zero). Nothing about that state is fixable by a push.
+      dir = Path.join(System.tmp_dir!(), "fleet_status_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      # Many unloaded modules, zero drifted, zero absent — the shape of an
+      # idle embedded release.
+      unloaded =
+        for _ <- 1..25 do
+          e = entry(unique_module("FSTest.Healthy"), "def v, do: 1")
+          File.write!(Path.join(dir, "#{e.module}.beam"), e.binary)
+          :code.purge(e.module)
+          :code.delete(e.module)
+          refute :erlang.module_loaded(e.module)
+          e
+        end
+
+      true = :code.add_pathz(to_charlist(dir))
+      on_exit(fn -> :code.del_path(to_charlist(dir)) end)
+
+      publish!(unloaded)
+
+      row = row_for(FleetStatus.report())
+
+      assert length(row.not_loaded) == 25
+      assert row.drifted == []
+      assert row.absent == []
+      assert row.unknown == []
+      assert row.identical == 0
+      assert row.missing_classified?
+
+      # HEALTHY. (Every real OrcaHub module is resident and absent from this
+      # 25-module generation, so the truthful verdict here is :orphans_only
+      # — the point is that it is not :out_of_date, and that the verdict does
+      # not move when not_loaded grows.)
+      refute row.status == :out_of_date
+      assert row.status in [:in_sync, :orphans_only]
     end
 
     test "a resident module absent from the generation is ORPHANED" do

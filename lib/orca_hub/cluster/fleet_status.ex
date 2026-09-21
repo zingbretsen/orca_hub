@@ -48,7 +48,11 @@ defmodule OrcaHub.Cluster.FleetStatus do
   one of:
 
     * `absent` — `:non_existing` there. Genuinely not on the node.
-    * `not_loaded` — in its code path, not currently loaded.
+    * `not_loaded` — in its code path, not currently loaded. NORMAL, not a
+      fault: a release in embedded mode loads on demand, so an idle node
+      legitimately reports hundreds of these and a busy node on the same
+      image reports none. It is never counted as out-of-date — see
+      `annotate/1`.
     * `unknown` — the probe could not say. Counted and labelled as unknown,
       never quietly merged into either of the above.
 
@@ -264,8 +268,21 @@ defmodule OrcaHub.Cluster.FleetStatus do
 
   # A single field the UI can colour on, so "this node is wrong" does not
   # have to be reconstructed from five counts at a glance.
+  #
+  # `not_loaded` is DELIBERATELY NOT part of this sum, and must never be
+  # added to it. On a release in embedded mode it is the NORMAL resting
+  # state, not a defect: an idle node has simply never demanded most of
+  # `Mix.Tasks.*`/`Inspect.*` into memory, so a freshly deployed, perfectly
+  # healthy node reports hundreds of them (253 of 289 measured on a real
+  # one), while a node serving traffic on the IDENTICAL image reports zero.
+  # A module in the code path will be loaded on demand from the code the
+  # node already has — there is nothing to push and nothing to fix, so
+  # counting it as "out of date" turns a working node red and sends an
+  # operator chasing a push that cannot change anything. Only `drifted`
+  # (running different code) and `absent` (not on the node at all) describe
+  # something a push would actually correct.
   defp annotate(row) do
-    out_of_date = length(row.drifted) + length(row.absent) + length(row.not_loaded)
+    out_of_date = length(row.drifted) + length(row.absent)
 
     status =
       cond do
