@@ -178,6 +178,20 @@ headless has no audio route to lose.
 - **Half-duplex via `orca:tts-state`**: `app.js` dispatches it on every
   playback transition; the hook pauses the VAD, drops frames and pushes
   `mic {muted, reason: "tts"}`, and the server drops segments while muted.
+- **AUTOPLAY WAITS WHILE THE USER IS WRITING** (§8.4, ORCAHUB3-113 6/7).
+  Because playback mutes (and with 105's knob on, RELEASES) the mic, a reply
+  that autoplays mid-dictation takes the microphone away mid-sentence. Both
+  autoplay entry points — the end-of-turn `tts-autoplay` push and §7.3's
+  streaming takeover — ask `draftIsBusy` first; MANUAL play never does. The
+  rules are pure in `assets/js/tts_hold.js` (`tts_hold.check.mjs`, gated by
+  `OrcaHubWeb.TtsHoldCheckTest`); the wiring is `TTSMethods` in app.js. Three
+  things not to undo: a held reply is VISIBLE ("Reply ready" in the bar's
+  `#voice-tts-transport`, which is also item 6's pause/stop and is NOT gated
+  on `@voice_on`) — a silent hold is worse than the bug; only a recent SEND
+  (`phx:clear-prompt`, re-checked a tick later) makes it speak by itself, not
+  merely an empty box; and a held STREAM is suppressed, never banked. A hold
+  emits no `orca:tts-state`, so it strictly REDUCES how often 105's
+  release/re-acquire runs.
 - **`getUserMedia` needs a secure origin**: the https ingress or
   `http://localhost:4000`, never `http://192.168.1.x:4001`, where
   `navigator.mediaDevices` is simply `undefined` and nothing throws. Instances

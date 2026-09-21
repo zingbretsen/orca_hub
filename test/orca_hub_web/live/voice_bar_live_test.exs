@@ -107,6 +107,20 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       refute html =~ "data-voice-bar-draft"
       refute html =~ ~s(name="session_id")
     end
+
+    test "the read-aloud transport is present but hidden, costing nothing", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      html = view |> voice_bar() |> render()
+
+      # ORCAHUB3-113 item 6. It is in the DOM on every page and in every
+      # state, because app.js writes into it from the FEED's hook and cannot
+      # ask this LiveView to render it first — so the markup must already be
+      # there. `hidden` is display:none, so an idle bar is still "the mic
+      # button and nothing else" as far as §8.2's budget is concerned.
+      bar = Floki.find(Floki.parse_document!(html), "[data-tts-bar]")
+      assert bar != [], "missing the read-aloud transport"
+      assert Floki.attribute(bar, "class") |> List.first() =~ "hidden"
+    end
   end
 
   describe "the armed state" do
@@ -153,6 +167,41 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       # ...and turning it off takes the whole line away again.
       off = render_hook(bar, "voice-on", %{"on" => false})
       refute off =~ "voice-bar-strip-row"
+    end
+  end
+
+  describe "the read-aloud transport (ORCAHUB3-113 items 6/7)" do
+    test "is reachable with the microphone OFF and is hook-owned", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+
+      # Item 6 is "a prominent pause reachable without hunting". Gating it on
+      # voice mode would mean turning the microphone ON to stop a reply that
+      # is already talking — so it is deliberately NOT behind `@voice_on`,
+      # and that has to hold in the idle bar as well as the armed one.
+      idle = render(bar)
+      armed = render_hook(bar, "voice-on", %{"on" => true})
+
+      for html <- [idle, armed] do
+        doc = Floki.parse_document!(html)
+
+        assert Floki.find(doc, "[data-tts-bar-label]") != [],
+               "the transport's status label must exist for app.js to write into"
+
+        assert Floki.find(doc, "[data-tts-bar-action='toggle']") != [],
+               "missing the play/pause control"
+
+        assert Floki.find(doc, "[data-tts-bar-action='stop']") != [],
+               "missing the stop control"
+
+        # app.js re-renders this from the feed's hook; the bar re-renders
+        # itself on every target change and session refresh. Without
+        # phx-update="ignore" morphdom would put the idle markup back over a
+        # live transport.
+        wrapper = Floki.find(doc, "#voice-tts-transport")
+        assert wrapper != []
+        assert Floki.attribute(wrapper, "phx-update") == ["ignore"]
+      end
     end
   end
 

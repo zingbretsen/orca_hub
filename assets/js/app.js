@@ -26,6 +26,7 @@ import { AssistantStreamMethods, ASSISTANT_STREAM_EVENT } from "./assistant_stre
 import {
   cleanTextForTTS, extractSpeakableFromElement, splitIntoChunksWithOffsets, resolveChunkRange, BLOCK_TAGS,
 } from "./tts_text"
+import { draftIsBusy, holdReleaseAction, ttsBarState, TTS_HOLD_MAX_AGE_MS } from "./tts_hold"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
@@ -140,6 +141,12 @@ const TTS_RETRY_BASE_MS = 400
 const TTS_HIGHLIGHT_NAME = "tts-reading"
 const TTS_HIGHLIGHT_FALLBACK_CLASS = "tts-reading-fallback"
 
+// How long after a successful send we wait before deciding whether a HELD
+// reply should speak. `clear-prompt` is pushed alongside the patch that
+// empties the textarea, not after it, so reading the box in the same tick
+// would still see the text that was just sent (see ttsHoldOnSend).
+const TTS_HOLD_SETTLE_MS = 100
+
 const TTS_ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor"><path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z"/></svg>`
 const TTS_ICON_PAUSE = `<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 20 20" fill="currentColor"><path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zM12.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75a.75.75 0 00-.75-.75h-1.5z"/></svg>`
 
@@ -163,7 +170,12 @@ const TTSMethods = {
     this.pendingControllers = new Map()
     this.pendingFetches = new Map()
     this.ttsApiToken = null
+    // ORCAHUB3-113 item 7: `{id, at}` for a reply autoplay declined to start
+    // because the user was writing, else null. Never a latch — the bar
+    // always shows it (ttsRenderBar) and the stop button always drops it.
+    this.ttsHeld = null
     this.ttsStreamMount()
+    this.ttsHoldMount()
 
     this.el.addEventListener("click", (e) => {
       const target = e.target.closest("[data-tts-target]")
@@ -181,8 +193,15 @@ const TTSMethods = {
     // A message already read aloud while it streamed is not read again at
     // turn end (§7.3) — the streaming producer records it in ttsSpokenIds
     // under both its stream id and the persisted message's own id.
+    // ORCAHUB3-113 item 7: AUTOPLAY, and only autoplay, waits while there is
+    // a draft in the sink. Starting playback mutes (and, with ORCAHUB3-105's
+    // knob on, RELEASES) the microphone, so a reply that starts speaking
+    // mid-dictation takes the mic away from a sentence the user is still
+    // saying. Held is not silent-dropped: the voice bar says "Reply ready"
+    // and offers the play control — see ttsHoldAutoplay.
     this.handleEvent("tts-autoplay", ({ message_id }) => {
       if (this.ttsWasSpoken(message_id)) return
+      if (this.ttsDraftBusy()) return this.ttsHoldAutoplay(message_id)
       this.ttsPlayById(message_id)
     })
 
@@ -267,6 +286,7 @@ const TTSMethods = {
     window.removeEventListener("orca:voice-asr-busy", this._onAsrBusy)
     clearInterval(this._ttsStreamTimer)
     this.ttsStreams.clear()
+    this.ttsHoldUnmount()
   },
 
   ttsStreamEvent({ op, stream_id, text, block_type, name }) {
@@ -325,6 +345,17 @@ const TTSMethods = {
     if (!chunk) return
 
     if (this.ttsStreamActiveId !== streamId) {
+      // ORCAHUB3-113 item 7 again, and this is the WORSE of the two autoplay
+      // entry points: "speak while streaming" starts talking mid-turn, so it
+      // can grab the microphone while the user is still dictating the NEXT
+      // message. Suppress the streamed read for this message rather than
+      // accumulating it silently — the stream id is never marked spoken, so
+      // the end-of-turn `tts-autoplay` push still offers the whole message
+      // (itself held, with a play control, if he is still writing then).
+      if (this.ttsDraftBusy()) {
+        this.ttsStreamSuppressed.add(streamId)
+        return
+      }
       // Whatever was playing (a manual read of an older message, or a
       // previous stream) gives way to the message being written right now.
       this.ttsStop()
@@ -481,6 +512,157 @@ const TTSMethods = {
     }
   },
 
+  // --- the autoplay hold + the voice bar's transport (ORCAHUB3-113 6/7) ---
+  //
+  // The RULES are in `tts_hold.js` (pure, node-checkable — see
+  // tts_hold.check.mjs); everything here is the wiring they need.
+  //
+  // The transport lives in VoiceBarLive's `#voice-tts-transport`, which is
+  // OUTSIDE this hook's element (the bar is a sticky nested LiveView in the
+  // app header, the player is mounted on the feed). Two consequences the
+  // code below is shaped by: the click listener is delegated on `document`
+  // rather than bound to the element, the way the Voice hook does it for the
+  // same reason; and the markup sits under `phx-update="ignore"` so what we
+  // write here survives the bar's own re-renders.
+  ttsHoldMount() {
+    // A successful composer send. LiveView dispatches every push_event on
+    // `window` as `phx:<event>`, so this reaches us with no bridging code on
+    // the session page — the same seam the Voice hook uses for `sent_ack`.
+    this._onComposerSent = () => this.ttsHoldOnSend()
+    window.addEventListener("phx:clear-prompt", this._onComposerSent)
+
+    this._onTtsBarClick = (e) => {
+      const btn = e.target.closest && e.target.closest("[data-tts-bar-action]")
+      if (!btn) return
+      e.preventDefault()
+      this.ttsBarAction(btn.dataset.ttsBarAction)
+    }
+    document.addEventListener("click", this._onTtsBarClick)
+
+    this.ttsRenderBar()
+  },
+
+  ttsHoldUnmount() {
+    window.removeEventListener("phx:clear-prompt", this._onComposerSent)
+    document.removeEventListener("click", this._onTtsBarClick)
+    this.ttsHeld = null
+    // The bar outlives this hook (it is sticky; we are not), so leaving it
+    // showing a transport for a player that no longer exists would be a
+    // dead control on every page after this one.
+    this.ttsRenderBar()
+  },
+
+  ttsDraftBusy() {
+    return draftIsBusy(document)
+  },
+
+  // Autoplay declined. Record it and SAY SO — a hold the user cannot see is
+  // worse than the interruption it prevents, because the reply simply never
+  // speaks and nothing explains why.
+  ttsHoldAutoplay(id) {
+    if (!id) return
+    this.ttsHeld = { id, at: Date.now() }
+    this.ttsRenderBar()
+  },
+
+  // "I've actually sent off my thing." The composer is emptied by the same
+  // patch that carries `clear-prompt`, so the draft is re-read a tick later
+  // rather than now — and it is re-read at all because a send that left text
+  // behind (he kept typing) is not the waiting-for-a-reply case.
+  ttsHoldOnSend() {
+    const held = this.ttsHeld
+    if (!held) return
+    setTimeout(() => {
+      if (this.ttsHeld !== held) return
+      const action = holdReleaseAction({
+        held,
+        now: Date.now(),
+        draftBusy: this.ttsDraftBusy(),
+        maxAgeMs: TTS_HOLD_MAX_AGE_MS,
+      })
+      if (action !== "play") return
+      this.ttsHeld = null
+      this.ttsRenderBar()
+      this.ttsPlayById(held.id)
+    }, TTS_HOLD_SETTLE_MS)
+  },
+
+  // The bar's play/pause/stop. `held` is the only mode that is not plain
+  // transport: pressing play there is an EXPLICIT instruction and is obeyed
+  // whatever the composer holds (item 5) — the hold only ever governs
+  // autoplay.
+  ttsBarAction(action) {
+    const state = ttsBarState({
+      playing: this.playing,
+      queued: this.chunks.length,
+      held: this.ttsHeld,
+    })
+
+    if (action === "stop") {
+      if (state.mode === "held") {
+        this.ttsHeld = null
+        this.ttsRenderBar()
+      } else {
+        this.ttsStop()
+      }
+      return
+    }
+
+    if (action !== "toggle") return
+
+    if (state.mode === "playing") this.ttsPause()
+    else if (state.mode === "paused") this.ttsResumeOrStart(this.activeId)
+    else if (state.mode === "held") {
+      const id = this.ttsHeld.id
+      this.ttsHeld = null
+      this.ttsRenderBar()
+      this.ttsPlayById(id)
+    }
+  },
+
+  // The socket dropped and came back. `VoiceBarLive` is sticky against
+  // NAVIGATION, not against socket loss (ORCAHUB3-91): it RE-MOUNTS, which
+  // rebuilds the transport markup in its idle, hidden state — while this
+  // hook, and the audio it is playing, survived untouched. Re-assert it.
+  // Twice, because the remount's render may land either side of this
+  // callback; a second bounded pass is cheaper and more honest than a poll.
+  ttsHoldReconnected() {
+    this.ttsRenderBar()
+    setTimeout(() => this.ttsRenderBar(), 300)
+  },
+
+  ttsRenderBar() {
+    const bar = document.querySelector("[data-tts-bar]")
+    if (!bar) return
+
+    const state = ttsBarState({
+      playing: this.playing,
+      queued: this.chunks ? this.chunks.length : 0,
+      held: this.ttsHeld,
+    })
+
+    bar.classList.toggle("hidden", !state.visible)
+    bar.classList.toggle("flex", state.visible)
+    if (!state.visible) return
+
+    const label = bar.querySelector("[data-tts-bar-label]")
+    if (label) label.textContent = state.label
+
+    const toggle = bar.querySelector("[data-tts-bar-action='toggle']")
+    if (toggle) {
+      toggle.innerHTML = state.icon === "pause" ? TTS_ICON_PAUSE : TTS_ICON_PLAY
+      toggle.title = state.toggleTitle
+      toggle.setAttribute("aria-label", state.toggleTitle)
+      toggle.classList.toggle("text-warning", state.warn)
+    }
+
+    const stop = bar.querySelector("[data-tts-bar-action='stop']")
+    if (stop) {
+      stop.title = state.stopTitle
+      stop.setAttribute("aria-label", state.stopTitle)
+    }
+  },
+
   // --- click delegation / transport -----------------------------------
   ttsHandleAction(id, action) {
     if (action === "toggle") {
@@ -551,8 +733,14 @@ const TTSMethods = {
   // draft. A window event rather than a direct call because the two live in
   // different hooks with no reference to each other, and the emit must stay
   // a pure side effect — playback behaviour is unchanged by it.
+  //
+  // It is also the one choke point every playback transition already passes
+  // through, so the voice bar's transport is re-rendered from here
+  // (ORCAHUB3-113 item 6) rather than from five call sites. Still a pure
+  // side effect: nothing it does feeds back into playback.
   ttsEmitState() {
     window.dispatchEvent(new CustomEvent("orca:tts-state", { detail: { playing: this.playing } }))
+    this.ttsRenderBar()
   },
 
   // --- playback control (per-message state, keyed by this.activeId) ------
@@ -580,6 +768,11 @@ const TTSMethods = {
       chunkRanges.push(resolveChunkRange(spans, rc.start, rc.end))
     }
     if (chunks.length === 0) return
+
+    // Whatever was being held, this read supersedes it — a manual press is
+    // an explicit instruction, and a held reply that is now playing has no
+    // business still being advertised as waiting.
+    this.ttsHeld = null
 
     this.activeId = id
     this.activeNode = document.getElementById(`tts-footer-${id}`)
@@ -653,6 +846,11 @@ const TTSMethods = {
     if (this.ttsAliases) this.ttsAliases.clear()
 
     if (prevId) this.ttsResetUI(prevId)
+    // The `ttsEmitState()` above ran while `activeId`/`chunks` still held the
+    // message being torn down, so the bar it drew is one state stale. Redraw
+    // now that the queue is genuinely empty — this is also what reveals a
+    // held reply again after a stop.
+    this.ttsRenderBar()
   },
 
   ttsPrev() {
@@ -1613,6 +1811,7 @@ let Hooks = {
     // authoritative, so drop the lot rather than wait forever.
     reconnected() {
       this.assistantStreamReconnected()
+      this.ttsHoldReconnected()
     },
     destroyed() {
       this.ttsUnmountShared()
@@ -1708,6 +1907,9 @@ let Hooks = {
     },
     destroyed() {
       this.ttsUnmountShared()
+    },
+    reconnected() {
+      this.ttsHoldReconnected()
     },
     updated() {
       this.ttsCheckStillPresent()

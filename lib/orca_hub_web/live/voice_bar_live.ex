@@ -352,6 +352,50 @@ defmodule OrcaHubWeb.VoiceBarLive do
         />
       </button>
 
+      <%!-- ORCAHUB3-113 item 6: the read-aloud transport. A sibling of the
+           mic in the same header flex row (so it costs width and zero
+           height, exactly like the "?" and speaker buttons above), and
+           deliberately NOT behind `:if={@voice_on}` — a reply can be read
+           aloud with voice mode off, and a pause you have to turn the
+           microphone on to reach is not a pause.
+
+           Everything inside is written by `TTSMethods.ttsRenderBar` in
+           app.js, which lives in the FEED's hook rather than this LiveView
+           (the player is per-page, the bar is sticky). Hence
+           `phx-update="ignore"`: this bar re-renders on every target change
+           and session refresh, and morphdom would otherwise put the idle
+           markup back over a live transport. `class="contents"` on the
+           ignored wrapper keeps the strip itself an item of the header row,
+           the same trick `#voice-panel` uses one level up.
+
+           Item 7's HELD state renders here too ("Reply ready"): an autoplay
+           that declines to start while the user is writing must never be
+           silent, so the thing that did not speak is always one tap away. --%>
+      <div id="voice-tts-transport" phx-update="ignore" class="contents">
+        <div data-tts-bar class="hidden items-center gap-0.5 shrink-0">
+          <span
+            data-tts-bar-label
+            class="text-[11px] leading-none opacity-70 whitespace-nowrap"
+          >
+          </span>
+          <button
+            type="button"
+            data-tts-bar-action="toggle"
+            aria-label="Read aloud"
+            class="btn btn-ghost btn-sm btn-circle shrink-0"
+          >
+          </button>
+          <button
+            type="button"
+            data-tts-bar-action="stop"
+            aria-label="Stop reading"
+            class="btn btn-ghost btn-sm btn-circle shrink-0"
+          >
+            <.icon name="hero-x-mark" class="size-4" />
+          </button>
+        </div>
+      </div>
+
       <%!-- §8.3.9's live-navigation anchors. `hidden` is display:none, so
            they are not flex items of the header and cost exactly zero of
            §8.2's height budget; the hook reaches them by their

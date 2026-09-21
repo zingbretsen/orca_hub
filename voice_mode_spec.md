@@ -1892,6 +1892,72 @@ users actually reach for), but pinned in `intent_vocab_test.exs` so a future
 re-wording that makes it worse fails loudly. #9 and #25 both reach 0.800
 against `orca third item`, on the word "orchestrator".
 
+### 8.4 Autoplay waits while the user is writing (ORCAHUB3-113 items 6/7)
+
+**The complaint.** Zach, 2026-09-20, after using voice mode on a phone:
+*"If I'm in the middle of talking I don't necessarily want the microphone to
+get grabbed away from me… if I have something currently being written in the
+input box, hold off on starting the text-to-speech, which mutes the
+microphone, until I've actually sent off my thing. If I have fired off a
+message and I'm just waiting to hear a result back, then sure, play it
+automatically."*
+
+Voice mode is HALF-DUPLEX (§4.1): starting playback mutes the mic, and with
+ORCAHUB3-105's knob on it STOPS the capture track outright. So a reply that
+starts speaking while a dictation is in flight does not merely talk over the
+user — it takes the microphone away mid-sentence.
+
+**The rule.** AUTOPLAY, and only autoplay, waits while the draft sink holds
+non-whitespace text. The two autoplay entry points both ask:
+`SessionLive.Show`/`QueueLive`'s end-of-turn `tts-autoplay` push, and §7.3's
+streaming producer at the moment it would take playback over (the worse of
+the two — it starts mid-turn). Manual play never asks: pressing play with a
+draft open is an explicit instruction and is obeyed.
+
+The rules live in `assets/js/tts_hold.js` — pure, and driven by
+`tts_hold.check.mjs`, which the suite gates via
+`OrcaHubWeb.TtsHoldCheckTest`. The four decisions they pin:
+
+1. **"Non-empty" is `value.trim()`, and FOCUS IS NOT PART OF IT.** Dictation
+   writes into the composer through `_writeDraft` without focusing it
+   (§8.2), so a focus requirement would miss the exact case this exists for.
+   The sinks are §8.2's, in its order: the page's
+   `form[data-voice-composer-for]` textarea, else the bar's own
+   `[data-voice-bar-draft]` box — the latter only while VISIBLE, since the
+   hook hides and clears it whenever a composer is present.
+2. **A held reply is never silent.** A hold the user cannot see is worse
+   than the interruption it prevents: the reply simply never speaks and
+   nothing says why. The voice bar's transport shows **"Reply ready"** with a
+   play control and a dismiss.
+3. **Only a SEND releases it, and only a recent one.** "The composer became
+   empty" is not enough — clearing a stale draft ten minutes later would
+   start a voice out of nowhere. The signal is the composer's own
+   `phx:clear-prompt` push (the same seam §8.2 uses for `sent_ack`),
+   re-checked a tick later because the box is emptied by the patch that
+   carries it; past `TTS_HOLD_MAX_AGE_MS` (2 min) the reply stays held and
+   manually playable rather than speaking.
+4. **A streamed read is SUPPRESSED rather than accumulated.** Holding §7.3's
+   producer would bank a whole message of chunks for a playback that may
+   never start. Instead the stream id goes into `ttsStreamSuppressed` and is
+   never marked spoken, so the end-of-turn `tts-autoplay` push still offers
+   the complete persisted message.
+
+**The transport (item 6).** `#voice-tts-transport` in `VoiceBarLive`, a
+sibling of the mic in the header row — width, zero height, same budget as the
+"?" and speaker buttons. Deliberately NOT behind `@voice_on`: a pause you
+have to turn the microphone on to reach is not a pause. It is written by
+`TTSMethods.ttsRenderBar` in app.js, which lives in the FEED's hook rather
+than in the bar, hence `phx-update="ignore"` — and hence
+`ttsHoldReconnected()`, because the bar is sticky against NAVIGATION but
+re-mounts on socket loss (§7 of the hook's header), rebuilding the transport
+idle underneath live playback.
+
+**This composes with ORCAHUB3-105 rather than competing with it.** The hold
+emits no `orca:tts-state` at all, so a held reply runs neither the mute nor
+the release/re-acquire cycle — item 7 REDUCES how often 105's machinery runs.
+When the held reply is eventually played, it goes through `ttsStart` and the
+release fires exactly as it does for any manual play (`0bf68b2`).
+
 ## 9. Known traps
 
 1. **`getUserMedia` requires a SECURE CONTEXT.**
