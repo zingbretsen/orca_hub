@@ -4,6 +4,7 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   alias OrcaHub.ApiTokens.ApiToken
   alias OrcaHub.Cluster
   alias OrcaHub.Cluster.CodeSync
+  alias OrcaHub.Cluster.FleetStatus
   alias OrcaHub.EmailInboxes.EmailInbox
   alias OrcaHub.HubRPC
   alias OrcaHub.TTSConfig
@@ -38,7 +39,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
        node_records: node_records_map(cluster_nodes),
        code_sync_result: nil,
        code_sync_loading: false,
-       drift_results: nil,
+       fleet: nil,
+       drift_loading: false,
        secret_keys: HubRPC.list_secret_keys(),
        email_inboxes: HubRPC.list_email_inboxes(),
        show_inbox_form: false,
@@ -227,9 +229,13 @@ defmodule OrcaHubWeb.SettingsLive.Index do
     {:noreply, socket}
   end
 
+  # Async like the push buttons: the fleet report is several `:erpc` rounds
+  # per node (build sha, code stamp, md5 diff, missing classification,
+  # resident modules), and a node that has gone away costs a full timeout.
   def handle_event("check_drift", _params, socket) do
-    drift = CodeSync.check_drift()
-    {:noreply, assign(socket, drift_results: drift)}
+    socket = assign(socket, drift_loading: true)
+    send(self(), :do_check_drift)
+    {:noreply, socket}
   end
 
   def handle_event("restart_supervisor", %{"node" => node_str, "supervisor" => sup_str}, socket) do
@@ -608,6 +614,10 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   end
 
   @impl true
+  def handle_info(:do_check_drift, socket) do
+    {:noreply, assign(socket, fleet: FleetStatus.report(), drift_loading: false)}
+  end
+
   def handle_info(:do_push_all, socket) do
     result = CodeSync.push_all()
 
@@ -654,6 +664,25 @@ defmodule OrcaHubWeb.SettingsLive.Index do
   end
 
   def token_scopes, do: ApiToken.scopes()
+
+  # One badge per node in the fleet report. `:uncertain` is deliberately a
+  # warning rather than a success: it means the missing-module probe could
+  # not say whether those modules are absent or merely unloaded, and a green
+  # badge over an unanswered question is exactly the lie this view exists to
+  # stop telling.
+  defp fleet_status_class(:in_sync), do: "badge-success"
+  defp fleet_status_class(:out_of_date), do: "badge-error"
+  defp fleet_status_class(:unreachable), do: "badge-error"
+  defp fleet_status_class(:uncertain), do: "badge-warning"
+  defp fleet_status_class(:orphans_only), do: "badge-info"
+  defp fleet_status_class(_), do: "badge-ghost"
+
+  defp fleet_status_label(:in_sync), do: "in sync"
+  defp fleet_status_label(:out_of_date), do: "OUT OF DATE"
+  defp fleet_status_label(:unreachable), do: "unreachable"
+  defp fleet_status_label(:uncertain), do: "uncertain"
+  defp fleet_status_label(:orphans_only), do: "orphans only"
+  defp fleet_status_label(_), do: "unknown"
 
   # Maps each connected node's atom to its `nodes`-table row (or nil if it
   # has none yet), so the Connected Nodes list can link through to

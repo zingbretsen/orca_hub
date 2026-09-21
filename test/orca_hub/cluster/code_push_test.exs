@@ -18,7 +18,7 @@ defmodule OrcaHub.Cluster.CodePushTest do
 
   use OrcaHub.DataCase, async: false
 
-  alias OrcaHub.Cluster.{BeamTransport, CodePush}
+  alias OrcaHub.Cluster.{BeamTransport, CodePush, CodeStamp}
   alias OrcaHub.CodeGenerations
   alias OrcaHub.CodeGenerations.CodeGeneration
 
@@ -193,6 +193,87 @@ defmodule OrcaHub.Cluster.CodePushTest do
     test "errors cleanly when there is no generation to reconcile toward" do
       pid = start_idle_reconciler()
       assert {:error, :no_generation} = GenServer.call(pid, {:reconcile_node, node(), []})
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # The stamp: what code a node is ACTUALLY running
+  # ------------------------------------------------------------------
+
+  describe "reconcile stamps the node with the generation it is now running" do
+    setup do
+      CodeStamp.clear()
+      on_exit(&CodeStamp.clear/0)
+      :ok
+    end
+
+    test "a push stamps the target, so /api/version there stops reporting only its image" do
+      pid = start_idle_reconciler()
+
+      name = unique_module("CPTest.Stamp")
+      e = entry(name, "def v, do: 7")
+      :code.purge(e.module)
+      :code.delete(e.module)
+
+      generation = publish!([e], %{base_sha: "stampsha0001"}) |> newer_than_this_node()
+
+      assert %{status: :reconciled, pushed: 1} =
+               GenServer.call(pid, {:reconcile_node, node(), []})
+
+      assert {:ok, stamp} = CodeStamp.read(node())
+      assert stamp.generation_id == generation.id
+      assert stamp.base_sha == "stampsha0001"
+      assert stamp.apply_status == "reconciled"
+      assert stamp.modules_loaded == 1
+      # Distinct from the image, which is the entire point.
+      refute stamp.base_sha == OrcaHub.BuildInfo.sha()
+    end
+
+    test "an in_sync reconcile still stamps — the node IS running the generation" do
+      pid = start_idle_reconciler()
+
+      publish!([entry(unique_module("CPTest.StampInSync"), "def v, do: 1")])
+      |> newer_than_this_node()
+
+      assert %{status: :in_sync} = GenServer.call(pid, {:reconcile_node, node(), []})
+
+      assert {:ok, %{apply_status: "in_sync", modules_loaded: 0}} = CodeStamp.read(node())
+    end
+
+    test "a SKIPPED reconcile leaves the previous stamp alone" do
+      pid = start_idle_reconciler()
+
+      # An ERTS the target cannot match: the reconcile refuses, and nothing
+      # about the node's running code changed — so neither may the stamp.
+      publish!([entry(unique_module("CPTest.StampSkipped"), "def v, do: 1")], %{
+        erts_version: "0.0.0-not-this-one"
+      })
+      |> newer_than_this_node()
+
+      assert %{status: :skipped} = GenServer.call(pid, {:reconcile_node, node(), []})
+      assert {:ok, nil} = CodeStamp.read(node())
+    end
+
+    test "publishing stamps the hub itself via its self-apply" do
+      pid = start_idle_reconciler()
+
+      e = entry(unique_module("CPTest.StampSelf"), "def v, do: 1")
+      :code.purge(e.module)
+      :code.delete(e.module)
+
+      payload = %{
+        entries: [e],
+        base_sha: "selfstamp001",
+        dirty: false,
+        erts_version: @erts,
+        otp_release: List.to_string(:erlang.system_info(:otp_release)),
+        elixir_version: System.version(),
+        published_from_node: to_string(node())
+      }
+
+      assert {:ok, _} = GenServer.call(pid, {:publish, payload, []})
+
+      assert {:ok, %{base_sha: "selfstamp001"}} = CodeStamp.read(node())
     end
   end
 

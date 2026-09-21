@@ -658,8 +658,13 @@
   <div class="flex items-center justify-between mb-4">
     <h3 class="text-lg font-semibold">Cluster Code Sync</h3>
     <div class="flex gap-2">
-      <button phx-click="check_drift" class="btn btn-sm btn-ghost" title="Check for code drift">
-        <.icon name="hero-magnifying-glass-micro" class="size-4" /> Check Drift
+      <button
+        phx-click="check_drift"
+        class="btn btn-sm btn-ghost"
+        title="What code is each node actually running?"
+        disabled={@drift_loading}
+      >
+        <.icon name="hero-magnifying-glass-micro" class="size-4" /> Fleet Status
       </button>
       <button
         phx-click="push_changed_code"
@@ -763,26 +768,135 @@
     </div>
   </div>
 
-  <%!-- Drift check results --%>
-  <div :if={@drift_results} class="mt-4">
-    <h4 class="text-sm font-semibold text-base-content/70 mb-2">Code Drift Report</h4>
+  <%!-- Fleet code status: build sha vs. live code sha, plus drift per node --%>
+  <div :if={@drift_loading} class="mt-4 flex items-center gap-2 text-sm text-base-content/60">
+    <span class="loading loading-spinner loading-sm"></span> Checking the fleet...
+  </div>
+
+  <div :if={@fleet && !@drift_loading} class="mt-4">
+    <div class="flex items-baseline justify-between mb-2">
+      <h4 class="text-sm font-semibold text-base-content/70">Fleet Code Status</h4>
+      <span class="text-xs text-base-content/50">
+        compared against {@fleet.basis.label} &middot; {@fleet.total_checked} modules
+      </span>
+    </div>
+
     <div class="bg-base-200 rounded-lg divide-y divide-base-300 overflow-hidden">
-      <div :for={dr <- @drift_results} class="px-4 py-3 text-sm">
-        <div class="flex items-center gap-2 mb-1">
-          <span class="font-medium font-mono text-xs">{dr.node}</span>
-          <span :if={dr.drifted == [] && dr.missing == []} class="badge badge-xs badge-success">
-            in sync
+      <div :for={row <- @fleet.nodes} class="px-4 py-3 text-sm">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="font-medium">{row.name}</span>
+          <span :if={row.self?} class="badge badge-xs badge-primary">this node</span>
+          <span class={["badge badge-xs", fleet_status_class(row.status)]}>
+            {fleet_status_label(row.status)}
           </span>
-          <span :if={dr.drifted != [] || dr.missing != []} class="badge badge-xs badge-warning">
-            {length(dr.drifted)} drifted, {length(dr.missing)} missing
+          <span class="flex-1"></span>
+          <button
+            :if={!row.self? && row.status != :unreachable}
+            phx-click="push_to_node"
+            phx-value-node={row.node}
+            class="btn btn-xs btn-ghost"
+            title="Push code to this node"
+            disabled={@code_sync_loading}
+          >
+            <.icon name="hero-arrow-up-tray-micro" class="size-4" /> Push
+          </button>
+        </div>
+
+        <div class="text-base-content/50 text-xs mt-0.5 font-mono">{row.node}</div>
+
+        <%!-- The two shas, side by side. They answer different questions and a
+              node can be right on one and wrong on the other. --%>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 mt-2 text-xs">
+          <div>
+            <span class="text-base-content/50">build sha</span>
+            <span class="font-mono ml-2">{row.build_sha || "—"}</span>
+            <span :if={row.build_sha_error} class="text-error ml-2">
+              {row.build_sha_error}
+            </span>
+          </div>
+          <div>
+            <span class="text-base-content/50">live code_sha</span>
+            <span :if={row.code} class="font-mono ml-2">
+              {String.slice(row.code.base_sha || "", 0, 12)}
+            </span>
+            <span :if={row.code && row.code.dirty} class="badge badge-xs badge-warning ml-1">
+              dirty
+            </span>
+            <span :if={row.code} class="text-base-content/40 ml-2">
+              {row.code.apply_status}, applied {row.code.applied_at}
+            </span>
+            <span :if={!row.code && !row.code_error} class="ml-2 text-base-content/40">
+              none applied — running its image
+            </span>
+            <span :if={row.code_error} class="text-error ml-2">{row.code_error}</span>
+          </div>
+        </div>
+
+        <div :if={row.error} class="text-xs text-error mt-2">{row.error}</div>
+
+        <%!-- Drift counts. `absent` and `not_loaded` are both what the md5
+              probe calls "missing"; they are kept apart because the md5 probe
+              genuinely cannot tell them apart and one number would imply a
+              precision we do not have. --%>
+        <div :if={!row.error && row.total_checked > 0} class="flex flex-wrap gap-2 mt-2 text-xs">
+          <span class="badge badge-xs badge-ghost">{row.identical} identical</span>
+          <span class={[
+            "badge badge-xs",
+            if(row.drifted == [], do: "badge-ghost", else: "badge-warning")
+          ]}>
+            {length(row.drifted)} drifted
+          </span>
+          <span class={[
+            "badge badge-xs",
+            if(row.absent == [], do: "badge-ghost", else: "badge-error")
+          ]}>
+            {length(row.absent)} absent
+          </span>
+          <span class={[
+            "badge badge-xs",
+            if(row.not_loaded == [], do: "badge-ghost", else: "badge-warning")
+          ]}>
+            {length(row.not_loaded)} not loaded
+          </span>
+          <span
+            :if={row.unknown != []}
+            class="badge badge-xs badge-warning"
+            title="The md5 probe called these missing and the follow-up :code.which/1 probe could not say whether they are absent or merely unloaded."
+          >
+            {length(row.unknown)} unknown
+          </span>
+          <span class={[
+            "badge badge-xs",
+            if(row.orphaned == [], do: "badge-ghost", else: "badge-info")
+          ]}>
+            {length(row.orphaned)} orphaned
           </span>
         </div>
-        <div :if={dr.drifted != []} class="text-xs text-base-content/60 mt-1">
-          Drifted: {dr.drifted |> Enum.map(&inspect/1) |> Enum.join(", ")}
+
+        <div :if={!row.missing_classified?} class="text-xs text-warning/80 mt-1">
+          Could not classify the missing modules on this node — "absent" vs "not loaded" is unknown here.
         </div>
-        <div :if={dr.missing != []} class="text-xs text-base-content/60 mt-1">
-          Missing: {dr.missing |> Enum.map(&inspect/1) |> Enum.join(", ")}
-        </div>
+
+        <details :if={row.drifted != []} class="text-xs text-base-content/60 mt-1">
+          <summary class="cursor-pointer">Drifted</summary>
+          <div class="mt-1">{row.drifted |> Enum.map(&inspect/1) |> Enum.join(", ")}</div>
+        </details>
+        <details :if={row.absent != []} class="text-xs text-base-content/60 mt-1">
+          <summary class="cursor-pointer">Absent</summary>
+          <div class="mt-1">{row.absent |> Enum.map(&inspect/1) |> Enum.join(", ")}</div>
+        </details>
+        <details :if={row.not_loaded != []} class="text-xs text-base-content/60 mt-1">
+          <summary class="cursor-pointer">Not loaded</summary>
+          <div class="mt-1">{row.not_loaded |> Enum.map(&inspect/1) |> Enum.join(", ")}</div>
+        </details>
+        <details :if={row.unknown != []} class="text-xs text-base-content/60 mt-1">
+          <summary class="cursor-pointer">Unclassified</summary>
+          <div class="mt-1">{row.unknown |> Enum.map(&inspect/1) |> Enum.join(", ")}</div>
+        </details>
+        <details :if={row.orphaned != []} class="text-xs text-base-content/60 mt-1">
+          <summary class="cursor-pointer">Orphaned (resident but not in the desired set)</summary>
+          <div class="mt-1">{row.orphaned |> Enum.map(&inspect/1) |> Enum.join(", ")}</div>
+        </details>
       </div>
     </div>
   </div>

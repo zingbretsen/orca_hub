@@ -256,6 +256,72 @@ defmodule OrcaHub.Cluster.CodeSync do
     end
   end
 
+  @doc """
+  Why `target` reported each of `modules` as `missing` — the precision
+  `drift/3` cannot supply on its own.
+
+  `drift/3` learns "missing" by asking `:erlang.get_module_info/2`, which
+  raises for a module the node has not LOADED. That single answer covers
+  two very different situations, and an operator handed one number cannot
+  tell them apart:
+
+    * `:not_loaded` — the module sits in the node's code path and would be
+      loaded on demand. Under a release (embedded mode, everything in the
+      boot script is loaded up front) this is unusual and interesting; under
+      `mix` it is ordinary.
+    * `:absent` — `:code.which/1` says `:non_existing`. The node genuinely
+      does not have this module anywhere and never will without a push.
+
+  `:code.which/1` answers exactly this question and answers it in embedded
+  mode too, where it searches the release's code path rather than only what
+  is loaded. Anything it cannot classify — including a probe that fails —
+  comes back `:unknown` rather than being folded into either real answer.
+  """
+  @spec code_locations(node(), [module()], keyword()) ::
+          {:ok, %{optional(module()) => :not_loaded | :absent | :unknown}} | {:error, term()}
+  def code_locations(target_node, modules, opts \\ [])
+
+  def code_locations(_target_node, [], _opts), do: {:ok, %{}}
+
+  def code_locations(target_node, modules, opts) when is_atom(target_node) and is_list(modules) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    deadline = System.monotonic_time(:millisecond) + timeout
+
+    requests =
+      Enum.map(modules, fn mod ->
+        {mod, :erpc.send_request(target_node, :code, :which, [mod])}
+      end)
+
+    Enum.reduce_while(requests, {:ok, %{}}, fn {mod, request_id}, {:ok, acc} ->
+      case await_which(request_id, deadline) do
+        {:ok, location} -> {:cont, {:ok, Map.put(acc, mod, location)}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  catch
+    kind, reason -> {:error, {:unreachable, target_node, {kind, reason}}}
+  end
+
+  defp await_which(request_id, deadline) do
+    try do
+      case :erpc.receive_response(request_id, {:abs, deadline}) do
+        :non_existing -> {:ok, :absent}
+        path when is_list(path) -> {:ok, :not_loaded}
+        # :preloaded and :cover_compiled are atoms, not paths — the module
+        # is there but came from somewhere a push cannot be compared against.
+        other when is_atom(other) -> {:ok, :unknown}
+      end
+    catch
+      :error, {:erpc, :timeout} -> {:error, :timeout}
+      :exit, {:erpc, :timeout} -> {:error, :timeout}
+      :error, {:erpc, :noconnection} -> {:error, :noconnection}
+      :exit, {:erpc, :noconnection} -> {:error, :noconnection}
+      :error, {:erpc, reason} -> {:error, {:erpc, reason}}
+      :exit, {:erpc, reason} -> {:error, {:erpc, reason}}
+      _kind, _reason -> {:ok, :unknown}
+    end
+  end
+
   # -------------------------------------------------------------------
   # Push
   # -------------------------------------------------------------------
@@ -566,7 +632,16 @@ defmodule OrcaHub.Cluster.CodeSync do
     end)
   end
 
-  @doc "Check which modules differ between this node and remote nodes."
+  @doc """
+  Check which modules differ between this node and remote nodes.
+
+  The raw, pre-generation view: it compares against THIS node's build,
+  reports `missing` without distinguishing "absent" from "not loaded", and
+  cannot see the hub's desired generation, orphaned modules, or what code a
+  node is actually running. `OrcaHub.Cluster.FleetStatus.report/1` answers
+  all of those and is what the Settings page renders; prefer it for
+  anything an operator reads.
+  """
   def check_drift(dir \\ nil) do
     case load_beams(dir || default_ebin_dir()) do
       {:ok, entries} ->

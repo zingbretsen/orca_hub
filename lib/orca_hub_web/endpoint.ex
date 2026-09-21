@@ -96,8 +96,34 @@ defmodule OrcaHubWeb.Endpoint do
   # this from plain localhost/cluster HTTP without minting a bearer token.
   # Handled directly in the endpoint, ahead of the session/router pipeline,
   # so it works identically for the local systemd, mini, and k8s instances.
+  #
+  # TWO shas, and they answer different questions:
+  #
+  #   * `sha`/`built_at` — the IMAGE this node booted from, compile-time
+  #     attributes of `OrcaHub.BuildInfo` (a module that is deliberately
+  #     never hot-pushed). deploy-orca-hub.sh and verify-orca-deploy.sh both
+  #     parse `sha` with `grep -o '"sha":"[^"]*"'` and gate on it, so its
+  #     name, shape and meaning are frozen — and note no other key here may
+  #     END in a bare `"sha":"`, which is why the live one is `code_sha`.
+  #   * `code_sha` — the generation currently APPLIED here, from
+  #     `OrcaHub.Cluster.CodeStamp`. Once a node has been hot-loaded this is
+  #     the only field describing the code it is actually running.
+  #
+  # `code_sha` is `null`, and `code.source` is `"image"`, when no generation
+  # has been applied. It deliberately does NOT fall back to echoing `sha`:
+  # the entire point of the field is to distinguish "running its image" from
+  # "running a generation", and a fallback would make those two identical on
+  # the wire.
   defp version(%{request_path: "/api/version"} = conn, _opts) do
-    body = Jason.encode!(%{sha: OrcaHub.BuildInfo.sha(), built_at: OrcaHub.BuildInfo.built_at()})
+    stamp = OrcaHub.Cluster.CodeStamp.local()
+
+    body =
+      Jason.encode!(%{
+        sha: OrcaHub.BuildInfo.sha(),
+        built_at: OrcaHub.BuildInfo.built_at(),
+        code_sha: stamp && Map.get(stamp, :base_sha),
+        code: OrcaHub.Cluster.CodeStamp.to_json(stamp)
+      })
 
     conn
     |> Plug.Conn.put_resp_content_type("application/json")

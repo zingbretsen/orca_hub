@@ -211,7 +211,7 @@ defmodule OrcaHub.Cluster.CodePush do
 
   require Logger
 
-  alias OrcaHub.Cluster.{BeamTransport, HotLoadGate}
+  alias OrcaHub.Cluster.{BeamTransport, CodeStamp, HotLoadGate}
   alias OrcaHub.CodeGenerations
 
   @name __MODULE__
@@ -776,11 +776,53 @@ defmodule OrcaHub.Cluster.CodePush do
 
   defp reconcile_against(generation, target, opts, state) do
     result = reconcile_one(generation, target, opts)
+    stamp_node(generation, target, result)
     log_node_result(target, result)
 
     entry = Map.put(result, :at, DateTime.utc_now())
     {result, %{state | last: Map.put(state.last, to_string(target), entry)}}
   end
+
+  # Records on the NODE ITSELF which generation it is now running, so
+  # `/api/version` there can answer "what code is actually loaded" rather
+  # than only "what image did I boot from" — see `OrcaHub.Cluster.CodeStamp`.
+  #
+  # Only outcomes where the node demonstrably matches the generation are
+  # stamped. `:skipped` (ERTS mismatch, no-downgrade) and `:error` leave the
+  # previous stamp alone: the node is running whatever it was running
+  # before, and overwriting the stamp would assert a generation that was
+  # explicitly NOT applied. `:partial` IS stamped, carrying its own status,
+  # because some beams did land and a half-applied node is exactly the state
+  # an operator most needs named.
+  defp stamp_node(generation, target, %{status: status} = result)
+       when status in [:in_sync, :reconciled, :partial] do
+    attrs = %{
+      generation_id: generation.id,
+      base_sha: generation.base_sha,
+      dirty: generation.dirty,
+      module_count: generation.module_count,
+      modules_loaded: Map.get(result, :pushed, 0),
+      apply_status: to_string(status)
+    }
+
+    case CodeStamp.record(target, attrs) do
+      {:ok, _stamp} ->
+        :ok
+
+      {:error, reason} ->
+        # A stamp failure is a REPORTING failure, never a reconcile failure:
+        # the beams are already loaded there. Log it and move on rather than
+        # turning a healthy node into an error row.
+        Logger.warning(
+          "CodePush: reconciled #{target} but could not stamp it with generation " <>
+            "#{generation.id} — #{inspect(reason)}. /api/version there will under-report."
+        )
+
+        :ok
+    end
+  end
+
+  defp stamp_node(_generation, _target, _result), do: :ok
 
   defp reconcile_one(generation, target, opts) do
     with :ok <- check_erts(generation, target),

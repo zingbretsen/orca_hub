@@ -244,4 +244,56 @@ defmodule OrcaHubWeb.SettingsLive.IndexTest do
       assert html =~ "Configure Pi"
     end
   end
+
+  # The fleet drift view. `/api/version`'s build sha describes the IMAGE a
+  # node booted from, not the code it is running after a hot load — this
+  # panel is where the difference is supposed to be visible at a glance.
+  describe "Fleet Code Status" do
+    setup do
+      OrcaHub.Cluster.CodeStamp.clear()
+      on_exit(&OrcaHub.Cluster.CodeStamp.clear/0)
+      :ok
+    end
+
+    test "renders both shas and all drift categories for this node", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      # The report is computed off a self-sent message (the probe is several
+      # erpc rounds per node), so re-render once it has been handled.
+      view |> element("button[phx-click='check_drift']") |> render_click()
+      html = render(view)
+
+      assert html =~ "Fleet Code Status"
+      assert html =~ "build sha"
+      assert html =~ "live code_sha"
+      # Nothing applied here: it must SAY so rather than echo the build sha.
+      assert html =~ "none applied"
+
+      assert html =~ "drifted"
+      assert html =~ "absent"
+      assert html =~ "not loaded"
+      assert html =~ "orphaned"
+    end
+
+    test "a stamped node shows the generation it is actually running", %{conn: conn} do
+      {:ok, _} =
+        OrcaHub.Cluster.CodeStamp.record(node(), %{
+          generation_id: "gen-live",
+          base_sha: "abcdef012345",
+          dirty: true,
+          module_count: 3,
+          modules_loaded: 3,
+          apply_status: "reconciled"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      view |> element("button[phx-click='check_drift']") |> render_click()
+      html = render(view)
+
+      assert html =~ "abcdef012345"
+      assert html =~ "dirty"
+      refute html =~ "none applied"
+    end
+  end
 end
