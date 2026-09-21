@@ -19,8 +19,12 @@ defmodule OrcaHub.MemoryReview do
 
   A pass must NEVER retire, hard-delete, or rewrite the text of an
   existing memory (`retire_memory` and `update_memory`/`remember` on an
-  existing memory's own id are off-limits — both prompts say so
-  explicitly). Every run ends by saving a review artifact
+  existing memory's own id are off-limits). Both prompts say so explicitly
+  AND both triggers carry a `tool_denylist` that actually enforces it
+  (`@forbidden_memory_write_tools`) — the prose explains *why* and what to do
+  instead (flag it), the denylist removes the choice. Belt and braces
+  deliberately: `OrcaHub.ToolPolicy` fails OPEN, so during a hub blip the
+  prose is all that's left. Every run ends by saving a review artifact
   (`OrcaHub.MCP.Tools.Artifacts.save_artifact`) so a human has something
   concrete to act on. Both spawned sessions are created with
   `memory_extract: false` (via each trigger's own `Trigger.memory_extract`
@@ -68,6 +72,35 @@ defmodule OrcaHub.MemoryReview do
   @verify_cron "0 4 * * 0"
   @verify_default_cap 60
 
+  # The ENFORCED half of the "you may NEVER call X" paragraph both prompts
+  # carry — stamped onto every session either trigger spawns as
+  # `Trigger.tool_denylist` (see that schema's docs and
+  # `OrcaHub.ToolPolicy`), so the invariant no longer depends on a model
+  # choosing to obey prose. Exactly the memory-mutating tools that are NOT
+  # among the three permitted writes (`merge_memories`, `flag_memory`,
+  # `verify_memories`/`verify_memory`): retiring, rewriting an existing
+  # memory, or authoring a new one. Together with `find_duplicate_memories`,
+  # `list_memories` and `recall` (all read-only), that covers the whole
+  # `OrcaHub.MCP.Tools.Memory` surface — a memory tool added later is NOT
+  # covered automatically and must be classified here.
+  #
+  # `remember` is denied outright, slightly stricter than the prompts'
+  # literal "targeting an EXISTING memory's own id" wording: `remember` takes
+  # no id at all, so a tool-name policy cannot make that distinction, and a
+  # review pass has no business authoring memories either way (the same
+  # reasoning as `memory_extract: false` below).
+  #
+  # A DENYlist rather than an allowlist on purpose. The invariant being
+  # protected is narrow and fully enumerable, while the set of tools a pass
+  # legitimately reaches for is not: the verification pass is told to check
+  # claims "using whatever tool fits the claim", and real runs have called
+  # e.g. `list_issues`/`get_feature_request` to settle a memory's claim —
+  # tools neither prompt enumerates. Under an allowlist those become silent
+  # denials the pass just works around, quietly degrading the artifact.
+  # Note also that `OrcaHub.ToolPolicy` gates MCP tools only, not Bash/Read,
+  # so default-deny would not be a sandbox here regardless.
+  @forbidden_memory_write_tools ~w(retire_memory update_memory remember)
+
   @doc """
   Idempotently creates or updates the two scheduled review-pass triggers
   (upsert by `name`) in the orca_hub project itself
@@ -106,6 +139,7 @@ defmodule OrcaHub.MemoryReview do
       archive_on_complete: true,
       # An automated review pass must never itself be memory-extracted.
       memory_extract: false,
+      tool_denylist: @forbidden_memory_write_tools,
       enabled: true
     }
 

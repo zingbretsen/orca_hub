@@ -1,7 +1,7 @@
 defmodule OrcaHub.MemoryReviewTest do
   use OrcaHub.DataCase, async: true
 
-  alias OrcaHub.{MemoryReview, Projects, Triggers}
+  alias OrcaHub.{MemoryReview, Projects, ToolPolicy, Triggers}
 
   describe "consolidate_prompt/1" do
     test "defaults to a cap of 40 and mentions every allowed tool" do
@@ -189,6 +189,10 @@ defmodule OrcaHub.MemoryReviewTest do
         assert trigger.archive_on_complete == true
         assert trigger.memory_extract == false
         assert trigger.enabled == true
+        assert trigger.tool_denylist == ["retire_memory", "update_memory", "remember"]
+        # Deliberately a denylist, not an allowlist — see the module's
+        # @forbidden_memory_write_tools comment.
+        assert trigger.tool_allowlist == nil
       end
 
       consolidate = Enum.find(triggers, &(&1.name == "memory-consolidate-nightly"))
@@ -198,6 +202,45 @@ defmodule OrcaHub.MemoryReviewTest do
       verify = Enum.find(triggers, &(&1.name == "memory-verify-weekly"))
       assert verify.cron_expression == "0 4 * * 0"
       assert verify.prompt == MemoryReview.verify_prompt()
+    end
+
+    # The prompts' "you may NEVER call X" paragraph is prose a model can
+    # ignore; this asserts the denylist it is paired with actually refuses
+    # those three and still permits every write/read the passes need — the
+    # tools real runs of both passes have been observed to call.
+    test "the stamped denylist refuses exactly the forbidden memory writes", %{
+      dir: dir,
+      project: project
+    } do
+      assert :ok = MemoryReview.ensure_triggers!(directory: dir)
+
+      for trigger <- Triggers.list_triggers_for_project(project.id) do
+        policy = ToolPolicy.from_session(trigger)
+
+        for denied <- ~w(retire_memory update_memory remember) do
+          refute ToolPolicy.allowed?(policy, denied),
+                 "#{trigger.name} must not be able to call #{denied}"
+        end
+
+        for permitted <- ~w(merge_memories flag_memory verify_memories verify_memory
+                            find_duplicate_memories list_memories recall save_artifact
+                            list_issues get_feature_request) do
+          assert ToolPolicy.allowed?(policy, permitted),
+                 "#{trigger.name} still needs #{permitted}"
+        end
+      end
+    end
+
+    test "restores a hand-cleared denylist on the next run", %{dir: dir, project: project} do
+      assert :ok = MemoryReview.ensure_triggers!(directory: dir)
+
+      [drifted | _] = Triggers.list_triggers_for_project(project.id)
+      {:ok, _} = Triggers.update_trigger(drifted, %{tool_denylist: []})
+
+      assert :ok = MemoryReview.ensure_triggers!(directory: dir)
+
+      restored = OrcaHub.HubRPC.get_trigger!(drifted.id)
+      assert restored.tool_denylist == ["retire_memory", "update_memory", "remember"]
     end
 
     test "is idempotent — running it again never duplicates", %{dir: dir, project: project} do
