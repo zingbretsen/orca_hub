@@ -786,14 +786,23 @@ defmodule OrcaHub.Deploys do
   # targets are unioned in so a target dropped from the registry mid-flight
   # is still reconciled rather than orphaned.
   #
-  # KNOWN GAP, stated rather than glossed: a lease is enumerable here only
-  # via its target, because `OrcaHub.Deploys.Leases` exposes no "every
-  # unreleased lease" query — `list_live/0` deliberately excludes EXPIRED
-  # ones. So an unreleased-and-expired lease for a key that is no longer in
-  # the registry is invisible to this function. Nothing reaches that state
-  # today (every lease `start_deploy/2` takes names a registry target, and
-  # an expired one for a live registry target IS visited), but a
-  # `list_unreleased/0` on the lease context would close it properly.
+  # KNOWN GAP, CONSCIOUSLY ACCEPTED — written down so it is not an accident
+  # somebody rediscovers. A lease is enumerable here only via its target,
+  # because `OrcaHub.Deploys.Leases` exposes no "every unreleased lease"
+  # query: `list_live/0` deliberately excludes EXPIRED ones. So an
+  # unreleased-AND-expired lease whose target is no longer in the registry
+  # is in neither set and nothing ever visits it.
+  #
+  # Accepted because the practical impact is small on three counts: every
+  # lease `start_deploy/2` takes names a registry target; an expired lease
+  # for a target still IN the registry IS visited; and such a row is
+  # already excluded from `list_live/0`, so it blocks nothing — if the
+  # target ever comes back, `Leases.acquire/2` reaps it in the same
+  # transaction as the new insert. The cost is a stale audit row, not a
+  # wedged target.
+  #
+  # To close it properly: a `list_unreleased/0` on the lease context (Piece
+  # 1's file) plus a `HubRPC` entry, then sweep rows instead of targets.
   defp sweepable_targets(nil) do
     (Registry.keys() ++ Enum.map(HubRPC.list_live_deploy_leases(), & &1.target))
     |> Enum.uniq()

@@ -474,11 +474,24 @@ defmodule OrcaHub.DeploysTest do
       # signals its own setsid process group), so the local poller's
       # `[ -d /proc/$REMOTE ]` guard releases it and it reports 70.
       #
-      # The watcher's poll interval is widened from the test default of
-      # 100ms to 5s — prod's real value — precisely because this path is a
-      # race (see OrcaHub.Deploys' moduledoc): with a 100ms tick the
-      # watcher always sees the rebound remote pid gone before the local
-      # half's 1s poll can write 70, and finalize_crashed wins instead.
+      # Two assertions, deliberately, because the end-to-end one is
+      # timing-dependent and this is the single most load-bearing test in
+      # the file:
+      #
+      #   * the SENTINEL reaching '70' is race-free — the local half owns
+      #     that write and nothing competes for it, so it holds under any
+      #     scheduling. That is the reserved-70 mechanism itself.
+      #   * exit_code == 70 additionally proves the mechanism is wired
+      #     through to the job row. THAT one races JobWatcher, which now
+      #     sees the rebound remote pid gone (see OrcaHub.Deploys'
+      #     moduledoc). So the watcher's interval is restored to prod's
+      #     real 5s rather than the suite's 100ms: at 100ms the watcher
+      #     wins essentially always and the test would be asserting a
+      #     timing that cannot occur in production.
+      #
+      # Neither assertion is relaxed to make this pass. If the exit_code
+      # one ever goes red while the sentinel one stays green, the bug is
+      # the race, not the assertion.
       prev_poll = Application.get_env(:orca_hub, :job_poll_interval_ms)
       Application.put_env(:orca_hub, :job_poll_interval_ms, 5_000)
       on_exit(fn -> Application.put_env(:orca_hub, :job_poll_interval_ms, prev_poll) end)
@@ -491,6 +504,13 @@ defmodule OrcaHub.DeploysTest do
       remote = read_pid!(Deploys.remote_pid_path(job.id))
 
       wait_until(fn -> not alive?(remote) end)
+
+      # Race-free half: the remote died with no sentinel, so the local
+      # half's /proc guard must release it and report the reserved marker.
+      sentinel = Paths.sentinel_path(job.id)
+      wait_until(fn -> File.read(sentinel) == {:ok, "70"} end)
+      assert File.read!(sentinel) == "70"
+
       finished = wait_for_terminal(job.id)
 
       IO.puts(
