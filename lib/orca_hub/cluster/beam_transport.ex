@@ -112,6 +112,71 @@ defmodule OrcaHub.Cluster.BeamTransport do
   end
 
   @doc """
+  This node's Erlang compiler version, e.g. `"8.5.5"`.
+
+  The counterpart to `payload_compiler_version/1`: comparing the two is
+  what distinguishes "these beams were built here, now" from "these beams
+  were lying in `_build` from a different toolchain".
+  """
+  @spec local_compiler_version() :: String.t()
+  def local_compiler_version, do: :compiler |> Application.spec(:vsn) |> List.to_string()
+
+  @doc """
+  The single Erlang compiler version every beam in `entries` was produced
+  by, read from each beam's own `compile_info` chunk.
+
+  Returns `{:error, {:mixed_payload, {:heterogeneous, versions}}}` when they
+  disagree.
+
+  ## Why this is asked of the FILES and not of the runtime
+
+  `compatible?/1` compares live runtimes — the publishing node's against
+  the target's. That is the right question for "may this node's fresh
+  output run over there", and it is blind to the question here: a `.beam`
+  file carries no ERTS stamp, so a stale artifact left in `_build` by a
+  previous, different toolchain sails straight through a runtime
+  comparison while being exactly the wrong bytes.
+
+  The `compile_info` chunk is the one piece of provenance the file itself
+  carries. It names the Erlang COMPILER version rather than ERTS, which is
+  a weaker signal — two OTP patch releases can ship the same compiler — so
+  this is a verifier, not a proof. The actual guarantee comes from
+  compiling the payload as part of publishing; this catches the case where
+  that compile silently did nothing because Mix considered the stale beams
+  up to date.
+  """
+  @spec payload_compiler_version([entry]) ::
+          {:ok, String.t()} | {:error, {:mixed_payload, {:heterogeneous, [String.t()]}}}
+  def payload_compiler_version([]), do: {:ok, local_compiler_version()}
+
+  def payload_compiler_version(entries) do
+    versions =
+      entries
+      |> Enum.map(&beam_compiler_version(&1.binary))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    case versions do
+      [one] -> {:ok, one}
+      many -> {:error, {:mixed_payload, {:heterogeneous, many}}}
+    end
+  end
+
+  defp beam_compiler_version(binary) do
+    case :beam_lib.chunks(binary, [:compile_info]) do
+      {:ok, {_mod, [compile_info: info]}} ->
+        case Keyword.get(info, :version) do
+          v when is_list(v) -> List.to_string(v)
+          v when is_binary(v) -> v
+          _ -> "unknown"
+        end
+
+      _ ->
+        "unknown"
+    end
+  end
+
+  @doc """
   Every `:orca_hub` module `target` could currently execute.
 
   Two sources, unioned, because neither alone is complete:

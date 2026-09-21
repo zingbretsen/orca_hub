@@ -58,9 +58,12 @@ defmodule OrcaHub.MCP.Tools.CodePush do
             "a deploy: the generation is stored durably, so a node that connects later " <>
             "(an agent that was powered off, a pod that just restarted) is brought up to " <>
             "it automatically, and the hub applies it to itself on boot. The ORIGIN must " <>
-            "be a node that owns a checkout and has already run `MIX_ENV=prod mix " <>
-            "compile` there — beams are read from <directory>/_build/prod/lib/orca_hub/" <>
-            "ebin. REFUSES a dirty checkout (pass allow_dirty to override; the " <>
+            "be a node that owns a checkout; publishing runs `MIX_ENV=prod mix compile` " <>
+            "there ITSELF rather than trusting whatever is already in " <>
+            "<directory>/_build/prod/lib/orca_hub/ebin, then verifies every beam in the " <>
+            "payload was produced by this node's own Erlang compiler — a stale artifact " <>
+            "from a different toolchain passes every runtime-level check while being " <>
+            "exactly the wrong bytes. REFUSES a dirty checkout (pass allow_dirty to override; the " <>
             "generation is then permanently marked dirty) and REFUSES a change set the " <>
             "hot-load safety gate rejects — dependency/config/migration/supervision-tree/" <>
             "defstruct changes need a real deploy (pass force to override; the " <>
@@ -106,6 +109,13 @@ defmodule OrcaHub.MCP.Tools.CodePush do
               "description" =>
                 "Publish despite a hot-load safety gate refusal. The overridden reasons " <>
                   "are recorded on the generation and logged. Default false."
+            },
+            "force_compile" => %{
+              "type" => "boolean",
+              "description" =>
+                "Go straight to `mix compile --force` rather than an incremental compile. " <>
+                  "Rarely needed — a payload that disagrees with this node's compiler " <>
+                  "triggers a forced recompile automatically. Default false."
             },
             "notes" => %{
               "type" => "string",
@@ -283,6 +293,7 @@ defmodule OrcaHub.MCP.Tools.CodePush do
       |> put_unless_nil(:ebin, args["ebin"])
       |> Keyword.put(:allow_dirty, args["allow_dirty"] == true)
       |> Keyword.put(:force, args["force"] == true)
+      |> Keyword.put(:force_compile, args["force_compile"] == true)
 
     case Cluster.rpc(origin, OrcaHub.Cluster.CodePush, :collect_payload, [opts], @collect_timeout) do
       {:ok, payload} ->
@@ -304,6 +315,19 @@ defmodule OrcaHub.MCP.Tools.CodePush do
 
       {:error, {:git_failed, message}} ->
         {:error, "git failed on #{origin}: #{message}"}
+
+      {:error, {:compile_failed, _, _} = reason} ->
+        {:error,
+         "Refusing to publish — the checkout did not compile on #{origin}.\n\n" <>
+           OrcaHub.Cluster.CodePush.describe_provenance_error(reason)}
+
+      {:error, {:mixed_payload, _} = reason} ->
+        {:error,
+         "Refusing to publish — " <>
+           OrcaHub.Cluster.CodePush.describe_provenance_error(reason) <>
+           ".\n\nA forced recompile was already attempted and did not resolve it. This is " <>
+           "usually a toolchain mismatch on #{origin}: check that its Erlang/Elixir match " <>
+           "the repo's pin before publishing."}
 
       {:error, reason} ->
         {:error,
@@ -386,7 +410,7 @@ defmodule OrcaHub.MCP.Tools.CodePush do
       base SHA:  #{g.base_sha}#{if g.dirty, do: "   *** DIRTY — the fleet is running UNCOMMITTED code ***", else: ""}
       status:    #{g.status}#{healthy_suffix(g)}
       modules:   #{g.module_count} (#{g.total_bytes} bytes)
-      toolchain: ERTS #{g.erts_version}, OTP #{g.otp_release}, Elixir #{g.elixir_version}
+      toolchain: ERTS #{g.erts_version}, OTP #{g.otp_release}, Elixir #{g.elixir_version}, compiler #{g.compiler_version || "unrecorded"}
       published: #{g.created_at} by #{g.published_by || "unknown"} from #{g.published_from_node || "unknown"}#{forced_lines(g)}#{notes_line(g)}
     """
   end

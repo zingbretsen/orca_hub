@@ -82,6 +82,47 @@ defmodule OrcaHub.Cluster.CodePush do
   here, and would silently ship a module whose callers still hold the old
   inlined constant. Do not do it.
 
+  ## Payload provenance: a compile this code performed or verified
+
+  **A payload is only ever the output of a compile this code performed or
+  verified — never whatever happened to be on disk.**
+
+  `collect_payload/1` therefore runs `MIX_ENV=prod mix compile` in the
+  checkout itself rather than trusting a pre-existing `_build/prod`, and
+  then checks what it got.
+
+  The check exists because compiling is not on its own sufficient. Mix
+  decides whether to recompile from its own manifest, which tracks the
+  Elixir version and the OTP RELEASE (`"27"`) — not the full ERTS version.
+  So a host that drifts from OTP 27.3.4 (erts-15.2.7.9) to the pinned
+  27.2.3 (erts-15.2.2) keeps the same OTP release, Mix considers every
+  existing beam up to date, and `mix compile` does nothing at all. The tree
+  stays a mix of beams from two toolchains and looks freshly built.
+
+  Nothing else in the system can see that. `CodeSync.compatible?/1`
+  compares LIVE RUNTIMES — the publishing node's against the target's — and
+  a `.beam` file carries no ERTS stamp, so a stale artifact passes the ERTS
+  gate while being exactly the wrong bytes.
+
+  What a beam DOES carry is its `compile_info` chunk, naming the Erlang
+  compiler that produced it. So after compiling, every beam in the payload
+  must agree on that version AND agree with the publishing runtime's own
+  compiler. A mismatch triggers one automatic `mix compile --force`; if the
+  payload is still not homogeneous after that, publishing REFUSES.
+
+  The escalation is deliberately automatic rather than a flag: the day this
+  matters is the day someone's toolchain quietly moved, which is precisely
+  the day nobody knows to pass a flag. The compiler version that survives
+  the check is recorded on the generation (`compiler_version`), so the
+  question "what actually built these bytes" has a durable answer rather
+  than one reconstructed from whoever happened to publish.
+
+  This is a verifier, not a proof: two OTP patch releases can ship the same
+  compiler version, so the check can pass on a genuinely mixed tree. It is
+  the strongest signal the artifacts themselves carry. The real guarantee
+  is the compile; this catches the case where that compile silently did
+  nothing.
+
   ## Orphaned modules are REPORTED, never purged automatically
 
   Hot loading cannot un-load a module. A module deleted from source stays
@@ -299,7 +340,7 @@ defmodule OrcaHub.Cluster.CodePush do
          {:ok, dirty?} <- git_dirty?(dir),
          :ok <- check_dirty(dirty?, Keyword.get(opts, :allow_dirty, false)),
          {:ok, verdict} <- gate_verdict(dir, Keyword.get(opts, :base), opts),
-         {:ok, entries} <- BeamTransport.load_beams(ebin) do
+         {:ok, entries, compiler_version} <- build_payload(dir, ebin, opts) do
       {:ok,
        %{
          entries: BeamTransport.sanitize(entries),
@@ -308,12 +349,100 @@ defmodule OrcaHub.Cluster.CodePush do
          erts_version: List.to_string(:erlang.system_info(:version)),
          otp_release: List.to_string(:erlang.system_info(:otp_release)),
          elixir_version: System.version(),
+         compiler_version: compiler_version,
          published_from_node: to_string(node()),
          forced_reasons: forced_reasons(verdict),
          ebin: ebin
        }}
     end
   end
+
+  # ------------------------------------------------------------------
+  # Payload provenance: compile it, then prove what compiled it
+  # ------------------------------------------------------------------
+
+  # Compiles the checkout and returns a payload only if every beam in it
+  # agrees on its compiler — see the payload-provenance section of the
+  # moduledoc for why a pre-existing _build cannot be trusted.
+  #
+  # The escalation is deliberate: an ordinary publish pays a cheap
+  # incremental compile, a tree poisoned by a toolchain change pays one
+  # forced recompile automatically, and a tree that is still heterogeneous
+  # after that refuses rather than shipping. Nobody has to know to pass a
+  # flag on the day it matters.
+  defp build_payload(dir, ebin, opts) do
+    with :ok <- maybe_compile(dir, opts) do
+      case verified_payload(ebin) do
+        {:ok, _entries, _version} = ok ->
+          ok
+
+        {:error, {:mixed_payload, _} = reason} ->
+          if Keyword.get(opts, :compile, true) do
+            Logger.warning(
+              "CodePush: #{describe_provenance_error(reason)} — forcing a full recompile."
+            )
+
+            with :ok <- compile(dir, ["compile", "--force"]), do: verified_payload(ebin)
+          else
+            {:error, reason}
+          end
+
+        {:error, _} = error ->
+          error
+      end
+    end
+  end
+
+  defp maybe_compile(dir, opts) do
+    cond do
+      not Keyword.get(opts, :compile, true) -> :ok
+      Keyword.get(opts, :force_compile, false) -> compile(dir, ["compile", "--force"])
+      true -> compile(dir, ["compile"])
+    end
+  end
+
+  defp compile(dir, args) do
+    case System.cmd("mix", args, cd: dir, env: [{"MIX_ENV", "prod"}], stderr_to_stdout: true) do
+      {_out, 0} -> :ok
+      {out, code} -> {:error, {:compile_failed, code, String.trim(out)}}
+    end
+  rescue
+    e -> {:error, {:compile_failed, :exception, Exception.message(e)}}
+  end
+
+  # Reads the payload and asserts every beam names the SAME compiler, and
+  # that it is this runtime's compiler. The second half is the one that
+  # catches a stale artifact: a beam left over from a different toolchain
+  # carries that toolchain's compiler version in its own `compile_info`
+  # chunk, which no amount of comparing live runtimes can reveal.
+  defp verified_payload(ebin) do
+    with {:ok, entries} <- BeamTransport.load_beams(ebin),
+         {:ok, version} <- BeamTransport.payload_compiler_version(entries) do
+      expected = BeamTransport.local_compiler_version()
+
+      if version == expected do
+        {:ok, entries, version}
+      else
+        {:error, {:mixed_payload, {:runtime_mismatch, version, expected}}}
+      end
+    end
+  end
+
+  @doc false
+  def describe_provenance_error({:compile_failed, code, out}),
+    do: "`MIX_ENV=prod mix compile` failed (exit #{code}):\n#{out}"
+
+  def describe_provenance_error({:mixed_payload, {:runtime_mismatch, found, expected}}),
+    do:
+      "the compiled beams were produced by Erlang compiler #{found}, but this node runs " <>
+        "compiler #{expected} — the payload is a stale artifact from a different toolchain"
+
+  def describe_provenance_error({:mixed_payload, {:heterogeneous, versions}}),
+    do:
+      "the payload mixes beams from #{length(versions)} different Erlang compilers " <>
+        "(#{Enum.join(versions, ", ")}) — part of _build is stale"
+
+  def describe_provenance_error(other), do: inspect(other)
 
   defp check_dirty(false, _allow), do: :ok
   defp check_dirty(true, true), do: :ok
@@ -786,6 +915,7 @@ defmodule OrcaHub.Cluster.CodePush do
       erts_version: payload.erts_version,
       otp_release: payload[:otp_release],
       elixir_version: payload[:elixir_version],
+      compiler_version: payload[:compiler_version],
       forced_reasons: payload[:forced_reasons] || [],
       notes: Keyword.get(opts, :notes)
     }

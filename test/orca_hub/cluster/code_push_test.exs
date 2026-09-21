@@ -573,7 +573,8 @@ defmodule OrcaHub.Cluster.CodePushTest do
     end
 
     test "collects beams plus provenance from a clean checkout", %{dir: dir, ebin: ebin, sha: sha} do
-      assert {:ok, payload} = CodePush.collect_payload(dir: dir, ebin: ebin, base: nil)
+      assert {:ok, payload} =
+               CodePush.collect_payload(dir: dir, ebin: ebin, compile: false, base: nil)
 
       assert payload.base_sha == sha
       refute payload.dirty
@@ -587,7 +588,7 @@ defmodule OrcaHub.Cluster.CodePushTest do
       File.write!(Path.join(dir, "lib/dirty.ex"), "# uncommitted\n")
 
       assert {:error, {:dirty_checkout, message}} =
-               CodePush.collect_payload(dir: dir, ebin: ebin, base: nil)
+               CodePush.collect_payload(dir: dir, ebin: ebin, compile: false, base: nil)
 
       assert message =~ "uncommitted or untracked"
       assert message =~ "allow_dirty"
@@ -599,7 +600,7 @@ defmodule OrcaHub.Cluster.CodePushTest do
       File.write!(Path.join(dir, "lib/sibling_scratch.ex"), "# not mine\n")
 
       assert {:error, {:dirty_checkout, _}} =
-               CodePush.collect_payload(dir: dir, ebin: ebin, base: nil)
+               CodePush.collect_payload(dir: dir, ebin: ebin, compile: false, base: nil)
     end
 
     test "allow_dirty publishes but marks the payload dirty — never silently", %{
@@ -609,7 +610,13 @@ defmodule OrcaHub.Cluster.CodePushTest do
       File.write!(Path.join(dir, "lib/dirty.ex"), "# uncommitted\n")
 
       assert {:ok, payload} =
-               CodePush.collect_payload(dir: dir, ebin: ebin, base: nil, allow_dirty: true)
+               CodePush.collect_payload(
+                 dir: dir,
+                 ebin: ebin,
+                 compile: false,
+                 base: nil,
+                 allow_dirty: true
+               )
 
       assert payload.dirty
     end
@@ -620,7 +627,7 @@ defmodule OrcaHub.Cluster.CodePushTest do
       base: base
     } do
       assert {:error, {:gate_refused, explanation, reasons}} =
-               CodePush.collect_payload(dir: dir, ebin: ebin, base: base)
+               CodePush.collect_payload(dir: dir, ebin: ebin, compile: false, base: base)
 
       assert explanation =~ "REFUSED"
       assert Enum.any?(reasons, &(&1.path == "mix.lock"))
@@ -632,7 +639,13 @@ defmodule OrcaHub.Cluster.CodePushTest do
       base: base
     } do
       assert {:ok, payload} =
-               CodePush.collect_payload(dir: dir, ebin: ebin, base: base, force: true)
+               CodePush.collect_payload(
+                 dir: dir,
+                 ebin: ebin,
+                 compile: false,
+                 base: base,
+                 force: true
+               )
 
       assert [%{"category" => category, "path" => "mix.lock"}] = payload.forced_reasons
       assert is_binary(category)
@@ -640,7 +653,83 @@ defmodule OrcaHub.Cluster.CodePushTest do
 
     test "a missing ebin directory is an error, not an empty generation", %{dir: dir} do
       assert {:error, _} =
-               CodePush.collect_payload(dir: dir, ebin: Path.join(dir, "nope"), base: nil)
+               CodePush.collect_payload(
+                 dir: dir,
+                 ebin: Path.join(dir, "nope"),
+                 base: nil,
+                 compile: false
+               )
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # Payload provenance
+  # ------------------------------------------------------------------
+
+  describe "payload provenance" do
+    setup do
+      {:ok, repo} = git_fixture()
+      on_exit(fn -> File.rm_rf!(repo.dir) end)
+      repo
+    end
+
+    test "records the compiler version the beams were actually built by", %{dir: dir, ebin: ebin} do
+      assert {:ok, payload} =
+               CodePush.collect_payload(dir: dir, ebin: ebin, base: nil, compile: false)
+
+      # Read out of each beam's own compile_info chunk, not asserted by the
+      # publisher — that is the whole point.
+      assert payload.compiler_version == BeamTransport.local_compiler_version()
+    end
+
+    test "REFUSES a payload whose beams disagree with this node's compiler", %{
+      dir: dir,
+      ebin: ebin
+    } do
+      # A beam stamped with a compiler this node is not running — exactly the
+      # shape of an artifact left in _build by a previous toolchain, and
+      # exactly what CodeSync.compatible?/1 cannot see, since it compares
+      # live runtimes and a .beam carries no ERTS stamp.
+      write_beam_with_foreign_compiler(ebin)
+
+      assert {:error, {:mixed_payload, _} = reason} =
+               CodePush.collect_payload(dir: dir, ebin: ebin, base: nil, compile: false)
+
+      message = CodePush.describe_provenance_error(reason)
+      assert message =~ "stale artifact" or message =~ "different Erlang compilers"
+    end
+
+    test "REFUSES when the checkout does not compile", %{dir: dir, ebin: ebin} do
+      # The fixture repo has no mix.exs, so a real compile attempt fails.
+      assert {:error, {:compile_failed, _, _} = reason} =
+               CodePush.collect_payload(dir: dir, ebin: ebin, base: nil)
+
+      assert CodePush.describe_provenance_error(reason) =~ "mix compile"
+    end
+  end
+
+  describe "BeamTransport.payload_compiler_version/1" do
+    test "agrees with the runtime for beams compiled here" do
+      entries = [entry(unique_module("CPTest.Compiler.A"), "def v, do: 1")]
+
+      assert {:ok, version} = BeamTransport.payload_compiler_version(entries)
+      assert version == BeamTransport.local_compiler_version()
+    end
+
+    test "reports every distinct compiler when a payload is heterogeneous" do
+      ours = entry(unique_module("CPTest.Compiler.Ours"), "def v, do: 1")
+      foreign = %{ours | binary: beam_with_foreign_compiler(ours.binary)}
+
+      assert {:error, {:mixed_payload, {:heterogeneous, versions}}} =
+               BeamTransport.payload_compiler_version([ours, foreign])
+
+      assert length(versions) == 2
+      assert BeamTransport.local_compiler_version() in versions
+    end
+
+    test "an empty payload falls back to the runtime rather than erroring" do
+      assert {:ok, version} = BeamTransport.payload_compiler_version([])
+      assert version == BeamTransport.local_compiler_version()
     end
   end
 
@@ -772,6 +861,11 @@ defmodule OrcaHub.Cluster.CodePushTest do
     git.(["config", "user.name", "test"])
     git.(["config", "commit.gpgsign", "false"])
 
+    # Build output is gitignored in the fixture exactly as `_build` is in the
+    # real repo. Without this the ebin is tracked, and a test that rewrites a
+    # beam to simulate a stale artifact trips the dirty-checkout refusal
+    # before it ever reaches the provenance check it is trying to exercise.
+    File.write!(Path.join(dir, ".gitignore"), "ebin/\n")
     File.write!(Path.join(dir, "mix.lock"), "%{}\n")
     File.write!(Path.join(dir, "lib/thing.ex"), "defmodule Thing do\n  def v, do: 1\nend\n")
     git.(["add", "."])
@@ -784,6 +878,31 @@ defmodule OrcaHub.Cluster.CodePushTest do
     {sha, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: dir)
 
     {:ok, %{dir: dir, ebin: ebin, base: String.trim(base), sha: String.trim(sha)}}
+  end
+
+  # Rewrites a beam's compile_info chunk to name a compiler this node is not
+  # running, producing the exact artifact a toolchain drift leaves behind.
+  defp beam_with_foreign_compiler(binary) do
+    {:ok, _mod, chunks} = :beam_lib.all_chunks(binary)
+
+    rewritten =
+      Enum.map(chunks, fn
+        {~c"CInf", data} ->
+          info = :erlang.binary_to_term(data)
+          {~c"CInf", :erlang.term_to_binary(Keyword.put(info, :version, ~c"0.0.0-foreign"))}
+
+        other ->
+          other
+      end)
+
+    {:ok, out} = :beam_lib.build_module(rewritten)
+    out
+  end
+
+  defp write_beam_with_foreign_compiler(ebin) do
+    [file] = ebin |> File.ls!() |> Enum.filter(&String.ends_with?(&1, ".beam"))
+    path = Path.join(ebin, file)
+    File.write!(path, path |> File.read!() |> beam_with_foreign_compiler())
   end
 
   defp eventually(fun, remaining \\ 60) do

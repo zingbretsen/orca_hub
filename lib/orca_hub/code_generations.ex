@@ -293,6 +293,7 @@ defmodule OrcaHub.CodeGenerations do
       erts_version: g.erts_version,
       otp_release: g.otp_release,
       elixir_version: g.elixir_version,
+      compiler_version: g.compiler_version,
       module_count: g.module_count,
       total_bytes: g.total_bytes,
       forced_reasons: g.forced_reasons,

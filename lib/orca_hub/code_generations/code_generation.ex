@@ -52,6 +52,9 @@ defmodule OrcaHub.CodeGenerations.CodeGeneration do
     field :erts_version, :string
     field :otp_release, :string
     field :elixir_version, :string
+    # The Erlang compiler version read out of the beams themselves — see the
+    # payload-provenance section of OrcaHub.Cluster.CodePush.
+    field :compiler_version, :string
 
     field :module_count, :integer, default: 0
     field :total_bytes, :integer, default: 0
@@ -86,6 +89,7 @@ defmodule OrcaHub.CodeGenerations.CodeGeneration do
       :erts_version,
       :otp_release,
       :elixir_version,
+      :compiler_version,
       :module_count,
       :total_bytes,
       :status,
