@@ -840,6 +840,9 @@ defmodule OrcaHub.HubRPC do
   def reconcile_code_node(target),
     do: call(OrcaHub.Cluster.CodePush, :reconcile_node, [target], timeout: :timer.minutes(2))
 
+  def purge_orphaned_modules(target),
+    do: call(OrcaHub.Cluster.CodePush, :purge_orphaned, [target], timeout: :timer.minutes(2))
+
   def list_code_generations(limit \\ 20),
     do: call(OrcaHub.CodeGenerations, :list, [limit])
 end

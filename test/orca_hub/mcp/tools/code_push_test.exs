@@ -5,7 +5,7 @@ defmodule OrcaHub.MCP.Tools.CodePushTest do
   alias OrcaHub.MCP.Tools.CodePush
 
   @tool_names ~w(publish_code_generation code_generation_status supersede_code_generation
-                 reconcile_code)
+                 reconcile_code purge_orphaned_modules)
 
   test "every tool is registered on the shared facade" do
     registered = Enum.map(Tools.list(), & &1["name"])
@@ -50,6 +50,18 @@ defmodule OrcaHub.MCP.Tools.CodePushTest do
     assert publish["description"] =~ "allow_dirty"
     assert publish["description"] =~ "force"
     assert publish["description"] =~ "Does NOT restart"
+  end
+
+  test "purge's description names it as destructive and states it never kills a process" do
+    [purge] = Enum.filter(CodePush.list(), &(&1["name"] == "purge_orphaned_modules"))
+
+    # The one destructive tool in this category. An operator reading only the
+    # description should learn both that hot loading cannot remove a module
+    # (why the tool exists) and that a module in use is refused rather than
+    # forced (why it is safe to run).
+    assert purge["description"] =~ "never kills a process"
+    assert purge["description"] =~ "wedged"
+    assert purge["description"] =~ "deleted from source"
   end
 
   test "publish_code_generation requires a directory" do

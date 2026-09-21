@@ -143,6 +143,28 @@ defmodule OrcaHub.MCP.Tools.CodePush do
         }
       },
       %{
+        "name" => "purge_orphaned_modules",
+        "description" =>
+          "Unload modules a node still carries that the current code generation does NOT " <>
+            "contain — i.e. modules deleted from source. Hot loading can never remove a " <>
+            "module, so a deleted one stays resident and callable on every node that ever " <>
+            "had it; a reconcile reports these as `orphaned` but will not remove them. " <>
+            "This is the explicit, destructive follow-up. It never kills a process: a " <>
+            "module whose old code is still running comes back as wedged, untouched. " <>
+            "Refuses entirely when no generation is published, since without one there is " <>
+            "nothing for a module to be orphaned relative to.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "node" => %{
+              "type" => "string",
+              "description" =>
+                "Erlang node to purge orphaned modules on. Defaults to your own node."
+            }
+          }
+        }
+      },
+      %{
         "name" => "reconcile_code",
         "description" =>
           "Reconcile connected nodes against the current code generation by hand — " <>
@@ -205,6 +227,25 @@ defmodule OrcaHub.MCP.Tools.CodePush do
 
       {:error, message} ->
         error(message)
+    end
+  end
+
+  def call("purge_orphaned_modules", args, _state) do
+    with {:ok, target} <- NodeArg.resolve(args["node"]),
+         :ok <- check_isolation(target),
+         {:ok, result} <- safe_hub(fn -> HubRPC.purge_orphaned_modules(target) end) do
+      case result do
+        {:ok, report} ->
+          text(render_purge(report))
+
+        {:error, :no_generation} ->
+          error("There is no current code generation to compare against.")
+
+        other ->
+          error("Unexpected result: #{inspect(other)}")
+      end
+    else
+      {:error, message} -> error(message)
     end
   end
 
@@ -394,13 +435,26 @@ defmodule OrcaHub.MCP.Tools.CodePush do
     """
   end
 
+  defp render_purge(%{purged: [], deleted_not_purged: [], wedged: [], errors: []} = r),
+    do: "#{r.node}: no orphaned modules — everything resident is part of the current generation."
+
+  defp render_purge(r) do
+    """
+    #{r.node} orphaned-module purge:
+      fully unloaded:      #{format_nodes(r.purged)}
+      deleted, not purged: #{format_nodes(r.deleted_not_purged)}#{if r.deleted_not_purged == [], do: "", else: "\n        (uncallable for new work; their old code goes away as the processes on it exit)"}
+      wedged, untouched:   #{format_nodes(r.wedged)}#{if r.wedged == [], do: "", else: "\n        (processes are still running these; refused rather than killed — retry later)"}#{if r.errors == [], do: "", else: "\n  errors: " <> Enum.join(r.errors, "; ")}
+    """
+  end
+
   defp render_node(result, name \\ nil)
 
   defp render_node(%{status: :in_sync} = r, name),
-    do: "#{prefix(name)}in sync (#{r[:identical] || 0} modules identical)"
+    do: "#{prefix(name)}in sync (#{r[:identical] || 0} modules identical)#{orphan_suffix(r)}"
 
   defp render_node(%{status: :reconciled} = r, name),
-    do: "#{prefix(name)}reconciled — #{r.pushed} module(s) loaded#{wedged_suffix(r)}"
+    do:
+      "#{prefix(name)}reconciled — #{r.pushed} module(s) loaded#{wedged_suffix(r)}#{orphan_suffix(r)}"
 
   defp render_node(%{status: :partial} = r, name),
     do:
@@ -410,6 +464,19 @@ defmodule OrcaHub.MCP.Tools.CodePush do
     do: "#{prefix(name)}#{status} — #{reason}"
 
   defp render_node(other, name), do: "#{prefix(name)}#{inspect(other)}"
+
+  # Orphans are reported on every reconcile but never acted on — removing
+  # them is purge_orphaned_modules, a separate and destructive step.
+  defp orphan_suffix(%{orphaned: []}), do: ""
+
+  defp orphan_suffix(%{orphaned: orphaned}),
+    do:
+      "; #{length(orphaned)} orphaned module(s) still resident but absent from the generation " <>
+        "(deleted from source — hot loading cannot remove them; use purge_orphaned_modules): " <>
+        Enum.join(Enum.take(orphaned, 10), ", ") <>
+        if(length(orphaned) > 10, do: ", …", else: "")
+
+  defp orphan_suffix(_), do: ""
 
   defp wedged_suffix(%{wedged: []}), do: ""
 

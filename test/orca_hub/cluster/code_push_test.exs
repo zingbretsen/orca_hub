@@ -45,6 +45,22 @@ defmodule OrcaHub.Cluster.CodePushTest do
     %{module: mod, binary: binary, md5: md5, path: ~c"fixture.beam"}
   end
 
+  # Loads a fixture the way real code arrives on a node — under a `.beam`
+  # load path — rather than as an in-memory module. Orphan detection only
+  # considers beam-backed code (see BeamTransport.resident_modules/1), so a
+  # fixture compiled straight into memory would be invisible to it and the
+  # test would prove nothing.
+  defp entry_loaded_as_beam(name, body) do
+    e = entry(name, body)
+    :code.purge(e.module)
+    :code.delete(e.module)
+
+    {:module, _} =
+      :code.load_binary(e.module, ~c"/fixture/#{e.module}.beam", e.binary)
+
+    e
+  end
+
   defp publish!(entries, overrides \\ %{}) do
     attrs =
       Map.merge(
@@ -181,6 +197,106 @@ defmodule OrcaHub.Cluster.CodePushTest do
   end
 
   # ------------------------------------------------------------------
+  # Orphaned modules (deleted from source)
+  # ------------------------------------------------------------------
+
+  describe "orphaned modules" do
+    test "a reconcile REPORTS resident modules absent from the generation" do
+      pid = start_idle_reconciler()
+
+      kept = entry(unique_module("CPTest.Orphan.Kept"), "def v, do: 1")
+      # Compiled and loaded, then deliberately left out of the generation —
+      # exactly the shape of a module deleted from source.
+      deleted =
+        entry_loaded_as_beam(
+          "OrcaHub.CPTestOrphanGone#{System.unique_integer([:positive])}",
+          "def v, do: 1"
+        )
+
+      publish!([kept]) |> newer_than_this_node()
+
+      assert %{orphaned: orphaned} = GenServer.call(pid, {:reconcile_node, node(), []})
+      assert to_string(deleted.module) in orphaned
+
+      # Reported only. Hot loading cannot remove it, and the reconcile does
+      # not try — it is still callable.
+      assert deleted.module.v() == 1
+    end
+
+    test "NEVER reports OrcaHub.BuildInfo as orphaned, though it is in no generation" do
+      pid = start_idle_reconciler()
+
+      publish!([entry(unique_module("CPTest.Orphan.BuildInfo"), "def v, do: 1")])
+      |> newer_than_this_node()
+
+      assert %{orphaned: orphaned} = GenServer.call(pid, {:reconcile_node, node(), []})
+
+      # BuildInfo is deliberately excluded from every payload, so without the
+      # carve-out it would read as permanently orphaned on every node — and
+      # be a purge candidate, which would take /api/version down with it.
+      refute "Elixir.OrcaHub.BuildInfo" in orphaned
+      refute to_string(OrcaHub.BuildInfo) in orphaned
+    end
+
+    test "purge_orphaned unloads an orphan without touching the generation's modules" do
+      pid = start_idle_reconciler()
+
+      kept = entry(unique_module("CPTest.Purge.Kept"), "def v, do: 1")
+
+      gone =
+        entry_loaded_as_beam(
+          "OrcaHub.CPTestPurgeGone#{System.unique_integer([:positive])}",
+          "def v, do: 1"
+        )
+
+      publish!([kept]) |> newer_than_this_node()
+
+      assert {:ok, report} = GenServer.call(pid, {:purge_orphaned, node()})
+      assert to_string(gone.module) in report.purged
+
+      refute :erlang.module_loaded(gone.module)
+      # The generation's own module is untouched.
+      assert kept.module.v() == 1
+      assert :erlang.module_loaded(kept.module)
+    end
+
+    test "purge_orphaned REFUSES when no generation is published" do
+      pid = start_idle_reconciler()
+
+      # Without a generation every resident module would qualify as orphaned,
+      # so refusing is the only safe reading of the request.
+      assert {:error, :no_generation} = GenServer.call(pid, {:purge_orphaned, node()})
+    end
+
+    test "purge_orphaned never kills a process — a module in use comes back wedged" do
+      pid = start_idle_reconciler()
+
+      busy_name = "OrcaHub.CPTestBusy#{System.unique_integer([:positive])}"
+
+      busy =
+        entry_loaded_as_beam(busy_name, """
+        def loop, do: receive do: (:stop -> :ok; _ -> loop())
+        """)
+
+      # A process parked INSIDE the module's code: :code.soft_purge/1 must
+      # refuse, and purge must honour that rather than reaching for
+      # :code.purge/1 and killing it.
+      runner = spawn(fn -> busy.module.loop() end)
+      assert Process.alive?(runner)
+
+      publish!([entry(unique_module("CPTest.Wedged.Other"), "def v, do: 1")])
+      |> newer_than_this_node()
+
+      assert {:ok, report} = GenServer.call(pid, {:purge_orphaned, node()})
+
+      assert to_string(busy.module) in (report.wedged ++ report.deleted_not_purged)
+      assert Process.alive?(runner), "purge killed a process running old code"
+
+      send(runner, :stop)
+    end
+  end
+
+  # ------------------------------------------------------------------
   # Ordering: never downgrade
   # ------------------------------------------------------------------
 
@@ -219,7 +335,7 @@ defmodule OrcaHub.Cluster.CodePushTest do
                GenServer.call(pid, {:reconcile_node, node(), []})
 
       assert reason =~ "ERTS mismatch"
-      assert reason =~ "0.0.0-not-a-real-erts"
+      assert reason =~ "erts-0.0.0-not-a-real-erts"
       assert v2.module.v() == 1
     end
 
@@ -553,6 +669,63 @@ defmodule OrcaHub.Cluster.CodePushTest do
 
       assert [SomeModule, OrcaHub.Cluster.CodeSync, OrcaHub.Cluster.CodePush] ==
                entries |> BeamTransport.sanitize() |> Enum.map(& &1.module)
+    end
+  end
+
+  describe "BeamTransport.resident_modules/1" do
+    test "unions the app's declared modules with loaded OrcaHub modules" do
+      # A module that exists ONLY because it was compiled at runtime appears
+      # in no .app file anywhere — it is exactly the case the all_loaded half
+      # exists to catch, and the case a previous generation creates.
+      runtime_only =
+        entry_loaded_as_beam(
+          "OrcaHub.CPTestResident#{System.unique_integer([:positive])}",
+          "def v, do: 1"
+        )
+
+      assert {:ok, resident} = BeamTransport.resident_modules(node())
+
+      assert runtime_only.module in resident
+      assert OrcaHub.Cluster.CodePush in resident
+      assert OrcaHub.BuildInfo in resident
+    end
+
+    test "IGNORES in-memory modules — only beam-backed code is ever a purge candidate" do
+      # A module compiled straight into memory (a .exs script, a runtime
+      # Code.compile_*, an ExUnit test module) was never part of any
+      # generation and is not ours to unload. This test module is itself
+      # exactly that shape, and an earlier cut of resident_modules/1 swept it
+      # into the orphan set and unloaded it mid-run.
+      [{in_memory, _}] =
+        Code.compile_string(
+          "defmodule OrcaHub.CPTestInMemory#{System.unique_integer([:positive])} do def v, do: 1 end"
+        )
+
+      assert {:ok, resident} = BeamTransport.resident_modules(node())
+
+      refute in_memory in resident
+      refute __MODULE__ in resident
+    end
+
+    test "an unreachable node is an error, not an empty set" do
+      # An empty set would read as "this node has nothing resident", which
+      # would make every generation module look missing.
+      assert {:error, _} = BeamTransport.resident_modules(:nope@nowhere)
+    end
+  end
+
+  describe "BeamTransport.unload/2" do
+    test "fully unloads a module nothing is running" do
+      e =
+        entry_loaded_as_beam(
+          "OrcaHub.CPTestUnload#{System.unique_integer([:positive])}",
+          "def v, do: 1"
+        )
+
+      assert :erlang.module_loaded(e.module)
+
+      assert {:ok, :purged} = BeamTransport.unload(node(), e.module)
+      refute :erlang.module_loaded(e.module)
     end
   end
 
