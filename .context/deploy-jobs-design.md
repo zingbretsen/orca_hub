@@ -340,25 +340,147 @@ but that wrapper's child is an `ssh` client whose *remote* end runs in
 `user.slice`. Step 7 kills the local ssh client; the real deploy keeps running
 and completes.
 
-**Honest cost of (c), stated rather than glossed:** killing the local ssh client
-severs the pipe, so the wrapper's sentinel records the *ssh client's* exit
-status, not the deploy's. For the OrcaHub target the job's own exit code is
-therefore **not trustworthy after step 7**. That is acceptable and even correct,
-because the deploy's real success criterion is not its exit code — it is
-`verify-orca-deploy.sh` reporting all six instances on the new SHA. So:
+#### ⚠ The naive form of (c) is BROKEN — and it was, in this doc's first draft
 
-```elixir
-verify_command: "~/homelab/scripts/verify-orca-deploy.sh <sha>"
+An earlier revision claimed the wrapper's sentinel would record "the ssh
+client's exit status", and that `verify_command` would then carry the real
+verdict. **Both halves are false.** The wrapper (`sh <wrapper>`) is itself in
+`/system.slice/orca-hub.service` — `setsid` did not move it (§1.3) — so the
+restart SIGTERMs the wrapper too, and a shell killed by SIGTERM never reaches
+the line after its command. `Launcher.wrapper_script/4` has **no `trap` and no
+`exec`** [launcher.ex:91-101]; the sentinel write is simply the next line.
+
+Verified, not reasoned (job-shaped replica in a throwaway dir, `sleep`
+stand-ins, SIGTERM at t=2s):
+
+```
+--- variant: A_plain_group (kill: group) ---      --- variant: B (kill: wrapper only) ---
+wrapper pid/pgid/sid: 4157214 4157214 4157214     wrapper pid/pgid/sid: 4157255 …
+wrapper still alive?   no                         wrapper still alive?   no
+sentinel exists?       NO                         sentinel exists?       NO
+sentinel .tmp exists?  no                         sentinel .tmp exists?  no
 ```
 
-This is precisely what `Jobs`' existing `verify_command` is for — "done" means a
-VERIFIED result, never a merely-present one. Flow: main command exits → watcher
-(re-attached by `JobResumer` after the restart) sees the sentinel → launches
-verify → `succeeded` iff all six instances report the SHA, else
-`verification_failed`. `wake_when_done` fires only on that terminal status.
+**No sentinel at all — not even the `.tmp`**, under either kill mode. So the
+real chain was: no sentinel → `JobResumer` re-attaches → "pid gone, no
+sentinel" → `finalize_crashed` → **failed** with the misleading OOM note → and
+`verify_command` **never runs**, because verify is gated on the main command
+exiting 0 [job_watcher.ex:207-218]. That is the exact false negative §1.3 exists
+to prevent, merely relocated from the deploy process to the wrapper.
+
+#### ✅ Chosen resolution: remote side owns log + sentinel, **and `job.pid` is rebound to the remote pid**
+
+Two deploy-layer-only changes, neither touching `Jobs.Launcher` or `JobWatcher`.
+
+**1. The remote (user.slice) half owns the real log and sentinel.** This works
+because of a property worth stating explicitly, since it is easy to get
+backwards: `PrivateTmp=yes` means the ssh side does **not** share `/tmp`, but it
+**does** share `$HOME` — and `Jobs.Paths` deliberately lives at
+`$HOME/.orca_hub/jobs`, not `/tmp` [paths.ex:6-34]. Verified:
+
+```
+$ echo hi > /tmp/_probe; ssh localhost 'cat /tmp/_probe'
+cat: /tmp/_probe: No such file or directory      ← /tmp is PRIVATE
+$ ssh localhost 'cat ~/.orca_hub_probe_marker'
+home-marker                                      ← $HOME is SHARED
+$ ssh localhost 'ls -d ~/.orca_hub/jobs'
+/home/zach/.orca_hub/jobs
+```
+
+(My first attempt at this experiment used `/tmp` and reported a false negative
+— the remote wrote a sentinel the service could not see. Worth remembering: any
+experiment crossing this ssh boundary must use `$HOME`.)
+
+The local half then **blocks** on that shared sentinel, so the job does not
+finish instantly (the explicit constraint on this resolution). Composed shape:
+
+```sh
+ssh -o BatchMode=yes localhost "setsid sh -c '
+  echo \$\$ > <jobs_dir>/<id>.remote.pid
+  cd <dir> && <script> <args>
+  rc=\$?; printf %s \$rc > <id>.exit.tmp; mv <id>.exit.tmp <id>.exit
+' </dev/null >'<jobs_dir>/<id>.log' 2>&1 & sleep 0.5"
+while [ ! -f '<jobs_dir>/<id>.exit' ] && [ -d /proc/\$REMOTE ]; do sleep 2; done
+exit \$(cat '<jobs_dir>/<id>.exit' 2>/dev/null || echo 70)
+```
+
+The `[ -d /proc/$REMOTE ]` half of the poll condition stops the local poller
+spinning forever if the remote is cancelled and no sentinel is ever written.
+
+**2. Rebind `job.pid`/`job.pgid` to the REMOTE pid** once the remote half has
+reported it. This is what closes the race — and there *is* a real race without
+it, measured:
+
+```
+t=3s   local wrapper alive? YES
+t=5s   wrapper alive? no | sentinel? NO  <-- race window: pid-gone + no-sentinel
+t=17s  sentinel? YES -> '7'
+```
+
+Between the restart and the remote finishing, a resumed watcher would see
+pid-gone + no-sentinel and wrongly `finalize_crashed`. Rebinding fixes it
+because `/proc` is shared (no PID namespace on this unit) and the remote process
+outlives the kill:
+
+```
+remote pid        : 4160476
+remote visible in /proc from THIS (service-cgroup) shell? YES
+remote cgroup     : 0::/user.slice/user-1000.slice/session-791.scope
+--- after the kill ---
+local wrapper alive?  no
+REMOTE pid alive?     YES  <-- watcher pid_alive? TRUE, so NO finalize_crashed
+sentinel yet?         no (still deploying - correct)
+--- after remote completes ---
+REMOTE pid alive?     no
+sentinel?             YES -> '0'
+log:                  DEPLOY_DONE|
+```
+
+The rebind is a plain `HubRPC.update_job(job, %{pid: r, pgid: r})` — the same
+mechanism `update_job_progress_metric` already relies on, because `JobWatcher`
+re-reads the job row **fresh on every tick** rather than caching it
+[job_watcher.ex:6-13]. No watcher IPC, no Launcher change. It also makes
+`cancel_job` more correct, not less: it signals `-pgid`, which now names the
+remote process group that is actually doing the work.
+
+**Why the alternatives lost.** (i) alone — remote owns the sentinel, no rebind —
+leaves the measured race above, and a design that prides itself on honesty
+should not ship "in practice the hub boots slower than the remainder of the
+deploy". (ii) `trap … TERM` in the composed command *does* fire (verified: it
+wrote `143`), but it can only write a **premature, invented** exit code while
+the real deploy is still running remotely — it finalizes the job on the wrong
+event, which is worse than the bug it fixes. (iii) deploy-specific boot
+reconciliation that re-verifies rather than trusting `finalize_crashed` is a
+genuine fallback, but it is strictly more machinery than the rebind and it
+leaves a window where `deploy_status` reports `failed` for a healthy deploy;
+keep it in the back pocket, do not build it now.
+
+#### What `status` / `exit_code` / `verify_*` MEAN for an `escape_cgroup: true` target
+
+This is the contract `deploy_status` must report truthfully:
+
+| Field | Meaning | Trustworthy? |
+|---|---|---|
+| `status` | Normal ladder. `running` spans the whole deploy *including* the hub restart. | **Yes** |
+| `exit_code` | The **remote deploy script's own** exit code, written by the remote half into the shared sentinel. Not the ssh client's, not the wrapper's. | **Yes** — this is the correction; the previous draft wrongly said otherwise |
+| `exit_code == 70` | Sentinel absent when the local poller gave up — remote died without writing. Reserved marker meaning "indeterminate", not a script exit code. | Yes, as a signal |
+| `verify_exit_code` | `verify-orca-deploy.sh`'s exit: 0 = all six instances on the new SHA. Runs only if `exit_code == 0`. | **Yes** |
+| `status == succeeded` | Deploy exited 0 **and** all six instances confirmed the SHA. | **Yes** |
+| `status == failed` | Deploy itself exited non-zero. | Yes |
+| `status == verification_failed` | Deploy exited 0 but ≥1 instance is not on the new SHA. The common real-world case (a slow gb10 or Flux reconcile). | Yes |
+
+Caveat that remains, stated plainly: a deploy exiting 0 can still have had a
+**non-fatal** mini/gb10/k3s-poll failure (§1.1 — six warn-only paths). That is
+why `deploy_status` surfaces `warnings[]` separately (§2.6) and why
+`verify_command` is not optional for this target.
+
+```elixir
+verify_command: "/home/zach/homelab/scripts/verify-orca-deploy.sh <sha>"
+```
 
 Targets that do not restart their own host (content-studio, video-search) set
-`escape_cgroup: false` and keep a fully trustworthy exit code.
+`escape_cgroup: false`, take the plain `Launcher` path unchanged, and none of
+the above applies to them.
 
 ### 2.4 The deploy registry — decision: **checked-in map, overridable by config**
 
@@ -378,7 +500,7 @@ change**, satisfying the stated bar.
     name: "OrcaHub",
     command: "/home/zach/homelab/scripts/deploy-orca-hub.sh",
     directory: "/home/zach/orca_hub",
-    node: "orca@debian",            # pinned; never re-routed
+    node: "debian@192.168.1.177",   # pinned; never re-routed. SEE NOTE BELOW.
     allowed_flags: ~w(--skip-push --skip-build --skip-local --skip-k3s
                       --skip-env --skip-mini --skip-gb10 --skip-arm64
                       --allow-dirty),
@@ -396,6 +518,19 @@ change**, satisfying the stated bar.
     positional: :ref, escape_cgroup: false, ttl_seconds: 2700 }
 }
 ```
+
+**NOTE on `node` — the implementer must resolve this, not copy it.** The
+registry stores an Erlang node name as a string, matched against
+`jobs.runner_node` (`Atom.to_string(node())`). An earlier draft of this doc
+guessed `"orca@debian"`, which is **wrong**. The real local node is
+`debian@192.168.1.177`, built by `rel/env.sh.eex:11-13` from the `NODE_NAME` env
+var in `/home/zach/orca-hub-releases/.env` (only the `RELEASE_NODE_BASENAME`
+fallback path produces an `orca@…` name, and this host does not use it). So:
+**resolve each target's node from the live system at implementation time**
+(`Node.self()` on the target host, or that host's `NODE_NAME`) and treat any
+node string written in this document as illustrative. A wrong value here does
+not silently misroute — `Cluster.rpc/5` refuses an unknown node — but it does
+produce a confusing `node_unavailable` refusal for a healthy host.
 
 `allowed_flags` is an **exact-match allow-list**, not a parser. Anything not in
 the list is refused before launch — this is argument validation against shell
@@ -532,7 +667,7 @@ in practice.
 
 | Case | Behaviour |
 |---|---|
-| **Hub restarts mid-deploy** (the normal OrcaHub path) | Detached job untouched (it is in `user.slice` via §2.3). `JobResumer` re-attaches a watcher at boot; sentinel is read, `verify_command` launches. Lease survives — it is a DB row, and TTL covers the whole window. Boot sweep reconciles anything the `LeaseReaper` missed while dead. |
+| **Hub restarts mid-deploy** (the normal OrcaHub path) | The LOCAL wrapper + ssh client are killed with the cgroup (§1.3, measured); the REMOTE half in `user.slice` is untouched and keeps deploying. Because `job.pid` was rebound to the remote pid (§2.3), the watcher resumed by `JobResumer` sees `pid_alive? == true` and does **not** `finalize_crashed`. When the remote finishes it writes the true log + sentinel into shared `$HOME`; the next tick reads the real exit code and launches `verify_command`. Lease survives — it is a DB row, and the TTL covers the whole window. Boot sweep reconciles anything the `LeaseReaper` missed while dead. |
 | **Job killed** (`cancel_job`, timeout, OOM) | `JobWatcher` finalizes `cancelled`/`timed_out`/`failed`; `LeaseReaper` releases on the broadcast. Note a group-kill means no sentinel, which `JobWatcher` already handles by confirming the process is gone [job_watcher.ex:32-39]. |
 | **Lease expires while the deploy is still running** | `in_flight_deploys` reports `lease_expired_job_running`. **We refuse to steal**, because the job is demonstrably alive. Surfaced with the job id so an operator can extend (`renew`) or cancel. This is the one case where TTL alone would be actively wrong. |
 | **Two sessions race `start_deploy`** | Both attempt the insert; Postgres' partial unique index lets exactly one win. The loser gets `{"ok":false,"reason":"held", …}` naming the holder. No read-then-write anywhere. |
@@ -569,11 +704,31 @@ invented), asserting `steps_seen` ordering, `skipped_steps`, `errors`,
 `lib/orca_hub/deploys/lease_reaper.ex`, and the one-line child addition to
 `lib/orca_hub/application.ex` (hub-only). Composes command + `escape_cgroup`
 wrapper, routes `start_job` to the pinned node, wires `verify_command`.
+
+**Scope grew with §2.3's resolution** — this piece now also owns the
+**remote-half composition and the pid rebind**, which is the subtlest code in
+the whole design and deserves the most review attention:
+- compose the `ssh … setsid …` remote half so that the REMOTE side writes
+  `<id>.log` and `<id>.exit` into `Jobs.Paths.jobs_dir/0` (shared `$HOME`,
+  never `/tmp` — §2.3), and `<id>.remote.pid` alongside them;
+- the local half blocks on `[ ! -f sentinel ] && [ -d /proc/$REMOTE ]`;
+- after launch, read `<id>.remote.pid` (bounded poll, a few seconds) and
+  `HubRPC.update_job(job, %{pid: r, pgid: r})`. **If the remote pid never
+  appears, do not leave the job silently mis-bound** — cancel and report, since
+  an un-rebound job will be wrongly `finalize_crashed` at step 7.
+
 Tests: command composition for both `escape_cgroup` values (assert the exact
 string, including `ssh -o BatchMode=yes localhost`); refusal on an unavailable
 node **asserting no lease was taken**; reaper releases on a simulated
 `{:job_finished, …}` broadcast; boot sweep releases leases whose job is terminal
-and flags `lease_expired_job_running`.
+and flags `lease_expired_job_running`. Plus, for the new scope — and these
+should be real process tests, not mocks, since paper reasoning is exactly what
+got §2.3 wrong the first time: the rebind actually lands in the job row; a
+SIGTERM to the local wrapper's process group leaves the remote alive and the
+job non-terminal; the remote's true exit code (use a distinctive non-zero
+value) reaches `exit_code` after the local half is killed; the missing-sentinel
+path yields the reserved `70`. Use `sleep`/`echo` stand-ins in a temp
+`ORCA_JOBS_DIR` — **never a real deploy script.**
 
 **Piece 4 — Tool surface.** Owns: `lib/orca_hub/mcp/tools/deploys.ex`, the
 `Deploys` entries in `@categories`/alias in `lib/orca_hub/mcp/tools.ex`, and
