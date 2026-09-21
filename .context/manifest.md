@@ -32,6 +32,9 @@ docs it points at stay on disk — `Read` them on demand, never inline them.
   the OVS1 wire contract, ASRConfig, browser traps, asset packaging, assistant
   deltas, streaming TTS, the global voice bar, and voice-driven interaction
   (client-owned focus, `ui_action`, inserts, spoken ordinals).
+- `.context/deploy-jobs-design.md` — DESIGN ONLY (unimplemented): running
+  deploys as durable Jobs with a TTL lease; why `setsid` does not escape
+  systemd's cgroup.
 - Specs at repo root: `backend_abstraction_spec.md`, `issues_spec.md`,
   `pi_fork_spec.md`, `docs/api.md` (Agent Runs API).
 
