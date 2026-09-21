@@ -14,7 +14,20 @@ defmodule OrcaHub.DrainStatus do
       `waiting` is an unanswered AskUserQuestion and `compacting` a context
       compaction, both mid-turn states a restart would drop;
     * jobs in `OrcaHub.Jobs.Job.nonterminal_statuses/0` (`running` /
-      `verifying`).
+      `verifying`). A job's OS process is DETACHED and survives a restart —
+      only its watcher dies, and `OrcaHub.JobResumer` re-attaches on boot —
+      so this is a softer signal than an active session. It still counts
+      against `safe_to_restart`: refusing is the fail-safe direction, the
+      caller gets the per-job detail to judge for itself, and the deploy
+      script has an override flag.
+
+  ## Excluding the caller's own session
+
+  An agent-driven deploy runs INSIDE a session on the very host it's about
+  to restart, so it would forever refuse to restart itself. `report/2`
+  takes a list of session ids to leave out of the counts (the HTTP layer
+  exposes it as `?ignore=<id>,<id>`), and echoes them back as `ignored` so
+  the exclusion is visible rather than silent.
 
   ## Degrading honestly
 
@@ -23,7 +36,7 @@ defmodule OrcaHub.DrainStatus do
   question is UNANSWERABLE — and an unanswerable drain check must never
   read as "all clear", or the one failure mode this whole feature exists to
   prevent (restarting a busy agent) comes back disguised as a green light.
-  So `report/1` returns `state: "unknown"` with `safe_to_restart: false`
+  So `report/2` returns `state: "unknown"` with `safe_to_restart: false`
   and a `reason` whenever the lookup raises or exits, and callers are
   expected to treat that as a refusal.
   """
@@ -48,16 +61,19 @@ defmodule OrcaHub.DrainStatus do
 
   @doc """
   The JSON-ready restart-readiness report for `node_name` (defaults to this
-  node). Never raises: a failed lookup becomes the `"unknown"` state.
+  node), with `ignore_ids` (session ids) left out of the counts.
+
+  Never raises: a failed lookup becomes the `"unknown"` state.
   """
-  def report(node_name \\ to_string(node())) do
-    case fetch(node_name) do
+  def report(node_name \\ to_string(node()), ignore_ids \\ []) do
+    case fetch(node_name, ignore_ids) do
       {:ok, counts} ->
         Map.merge(
           %{
             safe_to_restart: counts.sessions.active == 0 and counts.jobs.nonterminal == 0,
             state: "ok",
-            node: node_name
+            node: node_name,
+            ignored: ignore_ids
           },
           counts
         )
@@ -67,6 +83,7 @@ defmodule OrcaHub.DrainStatus do
           safe_to_restart: false,
           state: "unknown",
           node: node_name,
+          ignored: ignore_ids,
           reason: reason
         }
     end
@@ -76,8 +93,8 @@ defmodule OrcaHub.DrainStatus do
   `{:ok, %{sessions: ..., jobs: ...}}` for `node_name`, or `{:error,
   reason}` if the hub couldn't be reached (see the moduledoc).
   """
-  def fetch(node_name) do
-    {:ok, HubRPC.call(__MODULE__, :for_node, [node_name])}
+  def fetch(node_name, ignore_ids \\ []) do
+    {:ok, HubRPC.call(__MODULE__, :for_node, [node_name, ignore_ids])}
   rescue
     e -> {:error, Exception.message(e)}
   catch
@@ -88,17 +105,19 @@ defmodule OrcaHub.DrainStatus do
   The raw counts/items for `node_name`, queried straight from the database.
 
   Runs ON THE HUB — agent nodes reach it through `HubRPC.call/3` in
-  `fetch/1`, which is why it's a single public function doing both queries
+  `fetch/2`, which is why it's a single public function doing both queries
   rather than two `HubRPC` calls (one erpc round trip, one consistent
-  snapshot).
+  snapshot). `ignore_ids` is applied HERE, in the query, so the counts and
+  the item list can never disagree about what was excluded.
   """
-  def for_node(node_name) when is_binary(node_name) do
+  def for_node(node_name, ignore_ids \\ []) when is_binary(node_name) and is_list(ignore_ids) do
     sessions =
       Repo.all(
         from s in Session,
           where: is_nil(s.archived_at),
           where: s.runner_node == ^node_name,
           where: s.status in ^@active_statuses,
+          where: s.id not in ^ignore_ids,
           order_by: [asc: s.status, desc: s.updated_at],
           select: %{id: s.id, title: s.title, status: s.status, kind: s.kind}
       )

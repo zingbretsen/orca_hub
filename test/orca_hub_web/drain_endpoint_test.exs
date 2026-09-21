@@ -128,6 +128,45 @@ defmodule OrcaHubWeb.DrainEndpointTest do
       assert body["jobs"]["nonterminal"] == 0
     end
 
+    test "?ignore drops the caller's own session from the counts", %{conn: conn} do
+      # The case this exists for: an agent-driven deploy runs INSIDE a
+      # session on the host it's about to restart.
+      self_session = create_session(%{status: "running", title: "the deploy itself"})
+      other = create_session(%{status: "running", title: "someone else's work"})
+
+      body = Jason.decode!(get(conn, "/api/drain?ignore=#{self_session.id}").resp_body)
+
+      assert body["ignored"] == [self_session.id]
+      assert body["safe_to_restart"] == false
+      assert body["sessions"]["active"] == 1
+      assert [%{"id" => id}] = body["sessions"]["items"]
+      assert id == other.id
+    end
+
+    test "?ignore covering everything in flight reports safe", %{conn: conn} do
+      a = create_session(%{status: "running", title: "a"})
+      b = create_session(%{status: "waiting", title: "b"})
+
+      body = Jason.decode!(get(conn, "/api/drain?ignore=#{a.id},#{b.id}").resp_body)
+
+      assert body["safe_to_restart"] == true
+      assert body["sessions"]["active"] == 0
+    end
+
+    test "a non-UUID ?ignore value is dropped, not handed to Ecto", %{conn: conn} do
+      create_session(%{status: "running", title: "busy"})
+
+      # A bare `not in ^["oops"]` would raise an Ecto cast error and turn a
+      # typo into a bogus "unknown" state — the endpoint filters first.
+      conn = get(conn, "/api/drain?ignore=oops,,%20")
+      body = Jason.decode!(conn.resp_body)
+
+      assert conn.status == 200
+      assert body["state"] == "ok"
+      assert body["ignored"] == []
+      assert body["safe_to_restart"] == false
+    end
+
     test "the response is greppable the way the deploy script parses it", %{conn: conn} do
       create_session(%{status: "running", title: "busy"})
 

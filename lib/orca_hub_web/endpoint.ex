@@ -117,8 +117,15 @@ defmodule OrcaHubWeb.Endpoint do
   # unreachable from an agent node, DB down, ...) — see
   # `OrcaHub.DrainStatus`. The status code and the `safe_to_restart`
   # boolean agree: an unanswerable check is a refusal, never a green light.
+  #
+  # `?ignore=<uuid>,<uuid>` drops those session ids from the counts — an
+  # agent-driven deploy runs inside a session on the host it's restarting,
+  # and would otherwise forever refuse to restart itself. Anything that
+  # isn't a well-formed UUID is dropped here rather than handed to Ecto,
+  # which would raise a cast error and turn a typo into a bogus "unknown".
   defp drain(%{request_path: "/api/drain"} = conn, _opts) do
-    report = OrcaHub.DrainStatus.report()
+    conn = Plug.Conn.fetch_query_params(conn)
+    report = OrcaHub.DrainStatus.report(to_string(node()), ignore_ids(conn.query_params))
     status = if report.state == "ok", do: 200, else: 503
 
     conn
@@ -128,6 +135,17 @@ defmodule OrcaHubWeb.Endpoint do
   end
 
   defp drain(conn, _opts), do: conn
+
+  @uuid_re ~r/\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/
+
+  defp ignore_ids(%{"ignore" => ignore}) when is_binary(ignore) do
+    ignore
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.filter(&Regex.match?(@uuid_re, &1))
+  end
+
+  defp ignore_ids(_params), do: []
 
   defp agent_mode_gate(conn, _opts) do
     if OrcaHub.Mode.agent?() and not agent_mode_allowed?(conn.path_info) do
