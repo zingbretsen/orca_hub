@@ -48,7 +48,6 @@ defmodule OrcaHub.MCP.Tools do
   alias OrcaHub.MCP.Tools.{
     Artifacts,
     Databases,
-    Deploys,
     Discord,
     Files,
     ForkQueue,
@@ -82,10 +81,6 @@ defmodule OrcaHub.MCP.Tools do
     PhxAgents,
     Notify,
     Jobs,
-    # Deliberately NOT added to @regular_session_tools below: start_deploy is
-    # a production-deploy trigger reachable by an LLM, and the two read-only
-    # deploy tools are scoped with it (see OrcaHub.MCP.Tools.Deploys).
-    Deploys,
     Probes
   ]
 

@@ -108,12 +108,6 @@ defmodule OrcaHub.Application do
       # Re-attaches job watchers orphaned by this restart — the job-subsystem
       # analog of OrcaHub.SessionResumer above. See OrcaHub.JobResumer moduledoc.
       OrcaHub.JobResumer,
-      # Releases a deploy lease when its job finishes, plus a boot sweep for
-      # the leases whose completion it missed because the deploy restarted
-      # this very hub. Hub-only for MemoryExtractionSweep's reason: the lease
-      # table is the hub's and one reaper serves the whole cluster.
-      # See OrcaHub.Deploys.LeaseReaper moduledoc.
-      OrcaHub.Deploys.LeaseReaper,
       OrcaHub.LoginSupervisor,
       {Registry, keys: :unique, name: OrcaHub.BackendInstallerRegistry},
       OrcaHub.BackendInstallerSupervisor,
