@@ -22,6 +22,16 @@ defmodule OrcaHub.Cluster.CodeSyncDistributedTest do
   unrelated async tests.
 
       mix test --only distributed test/orca_hub/cluster/code_sync_distributed_test.exs
+
+  On a host that also runs a live OrcaHub node, run it with a THROWAWAY
+  cookie so the test VM cannot join the real fleet — a running hub reconciles
+  its published code generation onto anything that connects to it
+  (`OrcaHub.Cluster.CodePush`), and this VM does become a real distributed
+  node. Either of these isolates it; see `cookie_args/0` for why the second
+  needs that flag to be the only one:
+
+      HOME=$(mktemp -d) bin/test --only distributed <this file>
+      ERL_AFLAGS="-setcookie $(openssl rand -hex 16)" bin/test --only distributed <this file>
   """
   use ExUnit.Case, async: false
 
@@ -115,11 +125,32 @@ defmodule OrcaHub.Cluster.CodeSyncDistributedTest do
   end
 
   # Never inspected/printed anywhere — the cookie must not reach a log.
+  #
+  # `:peer` spawns a fresh `erl`, which inherits our ENVIRONMENT (and so any
+  # `-setcookie` in ERL_AFLAGS/ERL_FLAGS/ERL_ZFLAGS) but not our argv. Adding
+  # our own `-setcookie` on top of an inherited one gives the peer TWO arity-1
+  # `-setcookie` options, and OTP's `auth:init_cookie/0` treats any combination
+  # other than exactly one as if none were given — silently falling back to
+  # `$HOME/.erlang.cookie`. That is worse than a broken handshake: it hands the
+  # peer the host's REAL cluster cookie, defeating the throwaway-cookie
+  # isolation this file must be runnable under on a box that also runs a live
+  # node (see the moduledoc). So when the environment already carries one, let
+  # the peer inherit it instead of duplicating it.
   defp cookie_args do
-    case Node.get_cookie() do
-      :nocookie -> []
-      cookie -> [~c"-setcookie", Atom.to_charlist(cookie)]
+    if cookie_in_env?() do
+      []
+    else
+      case Node.get_cookie() do
+        :nocookie -> []
+        cookie -> [~c"-setcookie", Atom.to_charlist(cookie)]
+      end
     end
+  end
+
+  defp cookie_in_env? do
+    Enum.any?(~w(ERL_AFLAGS ERL_FLAGS ERL_ZFLAGS), fn var ->
+      String.contains?(System.get_env(var) || "", "-setcookie")
+    end)
   end
 
   defp remote_md5(node, mod) do
