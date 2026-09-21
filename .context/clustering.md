@@ -232,7 +232,15 @@ Agent nodes are intentionally limited:
 - **No mailbox polling** — the `EmailInbox*` children are hub-only, so inbound email is ingested on the hub and the resulting trigger execution routes out to the owning agent
 - **No upstream MCP connections** — `MCP.UpstreamClient` is hub-only
 - **No dialing out** — `NodeDialer` is hub-only; an agent waits to be dialed
-- **No web UI** — the Endpoint runs but is gated to `/mcp`, `/healthz`, and `/api/version`
+- **No web UI** — the Endpoint runs but is gated to `/mcp`, `/healthz`,
+  `/api/version`, and `/api/drain` (`agent_mode_allowed?/1` in `endpoint.ex`)
+- **Drain check degrades to `unknown`, never to "safe"** — `/api/drain`
+  (`OrcaHub.DrainStatus`) answers "is this instance safe to restart?" by
+  counting active sessions + non-terminal jobs with `runner_node == node()`.
+  On an agent that query is an `HubRPC`/erpc hop, so if the hub is down it
+  returns HTTP 503 `state: "unknown"`, `safe_to_restart: false` — the deploy
+  script treats that as a refusal. Never report "all clear" because nothing
+  was visible.
 - **No agent presence cleanup** — hub handles stale `.agents/` file cleanup on boot
 
 ### `db_node` is a legacy-multi-hub-only mechanism (ORCAHUB3-74)

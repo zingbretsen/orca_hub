@@ -78,6 +78,7 @@ defmodule OrcaHubWeb.Endpoint do
 
   plug :healthz
   plug :version
+  plug :drain
 
   plug Plug.Session, @session_options
   plug OrcaHubWeb.Router
@@ -106,6 +107,28 @@ defmodule OrcaHubWeb.Endpoint do
 
   defp version(conn, _opts), do: conn
 
+  # Restart readiness for THIS instance — "is anything in flight on this
+  # node right now?". Unauthenticated for the same reason as `version/2`:
+  # the deploy script polls it over plain localhost HTTP (directly for the
+  # local instance, over ssh for mini/gb10) before restarting a systemd
+  # agent, and has no bearer token to present.
+  #
+  # 200 when the question was answered, 503 when it could NOT be (hub
+  # unreachable from an agent node, DB down, ...) — see
+  # `OrcaHub.DrainStatus`. The status code and the `safe_to_restart`
+  # boolean agree: an unanswerable check is a refusal, never a green light.
+  defp drain(%{request_path: "/api/drain"} = conn, _opts) do
+    report = OrcaHub.DrainStatus.report()
+    status = if report.state == "ok", do: 200, else: 503
+
+    conn
+    |> Plug.Conn.put_resp_content_type("application/json")
+    |> Plug.Conn.send_resp(status, Jason.encode!(report))
+    |> Plug.Conn.halt()
+  end
+
+  defp drain(conn, _opts), do: conn
+
   defp agent_mode_gate(conn, _opts) do
     if OrcaHub.Mode.agent?() and not agent_mode_allowed?(conn.path_info) do
       conn
@@ -123,5 +146,9 @@ defmodule OrcaHubWeb.Endpoint do
   defp agent_mode_allowed?(["healthz"]), do: true
   # Deploy script polls this over plain HTTP; see `version/2` above.
   defp agent_mode_allowed?(["api", "version"]), do: true
+  # Deploy script's pre-restart drain check; see `drain/2` above. Agent
+  # nodes are exactly the instances this gates, so it MUST be allow-listed
+  # here or it 404s on the three hosts that matter.
+  defp agent_mode_allowed?(["api", "drain"]), do: true
   defp agent_mode_allowed?(_path_info), do: false
 end
