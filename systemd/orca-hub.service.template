@@ -32,8 +32,25 @@ MemoryMax=3G
 # ReadWritePaths=...) is deferred — the app writes to ~/.claude, project
 # directories, and other paths that need careful enumeration first.
 NoNewPrivileges=yes
-PrivateTmp=yes
 PrivateDevices=yes
+
+# DELIBERATELY NOT SET: PrivateTmp=yes (removed 2026-09-21). Do not re-add it
+# as "hardening" — it was weighed and rejected:
+#   * It guards nothing that matters here. This unit runs as an ordinary
+#     login user with no ProtectHome, so the process already has full
+#     read/write access to ~/.ssh, ~/.kube and every checkout on the box.
+#     Isolating /tmp locks the least valuable door in a house whose front
+#     door is standing open.
+#   * It actively breaks two things. Agent sessions run inside THIS unit's
+#     process tree, so every /tmp path an agent reports to a human is wrong:
+#     it really resolves under /tmp/systemd-private-*/tmp/ and does not
+#     exist at the path the human was told to look at. And a deploy driven
+#     from inside a session writes its build artifact into that private
+#     /tmp, which is torn down with the deploy's process tree — the artifact
+#     cannot outlive the deploy that produced it.
+# NoNewPrivileges=yes above STAYS: it is load-bearing, and the
+# `ssh localhost 'sudo -n systemctl restart orca-hub'` escape it forces is
+# already built and documented (deploy-orca-hub.sh, Step 7).
 
 [Install]
 WantedBy=multi-user.target

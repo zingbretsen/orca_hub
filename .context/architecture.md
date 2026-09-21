@@ -652,7 +652,7 @@ graph TB
   MCP `content` block list into the plain text a `run_elixir` snippet
   actually sees, writing image/audio bytes to
   `<session_directory>/.agents/media/<session_id>/` (somewhere the model's
-  `Read` tool can reach — the app's own `$TMPDIR` is `PrivateTmp`/pod-local)
+  `Read` tool can reach — the app's own `$TMPDIR` is pod-local/ephemeral)
   rather than inlining base64. `PlaywrightUpload` rewrites LOCAL file paths
   in playwright-mcp's `paths` arg into pod-side paths via an upload sidecar,
   since playwright reads that arg from its OWN pod's filesystem.

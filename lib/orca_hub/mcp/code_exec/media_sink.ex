@@ -7,8 +7,8 @@ defmodule OrcaHub.MCP.CodeExec.MediaSink do
   Media is written under the session's own project directory —
   `<session_directory>/.agents/media/<sanitized_orca_session_id>/` — so a
   human can actually find the file: the app process's own `$TMPDIR` is not a
-  reliable place to look (the local systemd service runs with
-  `PrivateTmp=yes`, and each k3s pod has its own ephemeral `/tmp`), and the
+  reliable place to look (it need not be `/tmp` at all, each k3s pod has its
+  own ephemeral `/tmp`, and files left there get aged out), and the
   project directory is a filesystem location the model's `Read` tool can
   already reach. When the session's directory can't be resolved (no
   `orca_session_id`, session lookup fails, or the session has no directory /

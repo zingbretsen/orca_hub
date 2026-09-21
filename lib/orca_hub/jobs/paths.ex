@@ -5,10 +5,15 @@ defmodule OrcaHub.Jobs.Paths do
 
   ## Why not /tmp
 
-  The `orca-hub` systemd unit runs `PrivateTmp=yes` — a restart gives the
-  process a brand-new, empty `/tmp`. Anything written there for a
-  long-running detached job would look "gone" to a resumed watcher even
-  though the OS process itself is still running untouched. Anything written
+  `/tmp` is not durable enough for a detached job's bookkeeping: a k3s pod
+  gets its own ephemeral `/tmp` that dies with the pod, `systemd-tmpfiles`
+  ages files out from under a job that outlives its window, and a reboot
+  clears it. Anything written there for a long-running detached job can
+  therefore look "gone" to a resumed watcher even though the OS process
+  itself is still running untouched. (It used to be strictly worse: the
+  `orca-hub` unit set `PrivateTmp=yes` until 2026-09-21, so a mere service
+  restart handed the process a brand-new, empty `/tmp` — see
+  `systemd/orca-hub.service.template` for why that was dropped.) Anything written
   under the release/build directory is just as bad for a different reason:
   `~/homelab/scripts/deploy-orca-hub.sh` extracts EVERY deploy into a new
   `<sha>/` directory and flips a symlink — that directory isn't guaranteed
