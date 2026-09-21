@@ -82,13 +82,6 @@ graph TB
         Deltas["Backend.Deltas<br>(normalized orca_delta)"]
     end
 
-    subgraph Deploys["Project Deploys (durable Jobs + TTL lease)"]
-        DeploysMod["Deploys<br>(compose, lease, launch)"]
-        DeployRegistry["Deploys.Registry<br>(targets + flag allow-list)"]
-        DeployLeases["Deploys.Leases<br>(partial unique index)"]
-        LeaseReaper["Deploys.LeaseReaper<br>(hub only)"]
-    end
-
     subgraph MemSub["Agent Memory"]
         MemoryClient["MemoryClient<br>(hub-only HTTP)"]
         MemoryExtraction["MemoryExtraction<br>(+ finalize_self)"]
@@ -267,10 +260,6 @@ graph TB
     EmailIngest -->|"routed payload (Cluster.rpc)"| TriggerExecutor
 
     MCPTools -->|"jobs tool surface"| Jobs
-    MCPTools -->|"start_deploy / in_flight_deploys /<br>deploy_status (orchestrator only)"| DeploysMod
-    DeploysMod --> DeployRegistry & DeployLeases
-    DeploysMod -->|"launches as a normal job"| Jobs
-    LeaseReaper -.->|"job_finished -> release"| DeployLeases
     Jobs --> JobLauncher
     JobLauncher -->|"spawns, then lets go"| DetachedProc
     JobSupervisor --> JobWatcher
@@ -430,26 +419,6 @@ graph TB
   streams back live through `OrcaHub.Backend.Deltas` (see
   `.context/message-flow.md`). Full pipeline, wire contract and invariants in
   `.context/voice-mode.md`.
-- **Project deploys** (`lib/orca_hub/deploys.ex`, `deploys/{registry,leases,
-  lease_reaper,log_parser}.ex`, `mcp/tools/deploys.ex`): runs a project's
-  deploy script as an ordinary detached `Jobs` job under a mutually-exclusive
-  TTL lease. `Registry` owns WHAT may run (a checked-in target map, deep-merged
-  with `:deploy_targets` config) and validates arguments as an EXACT-MATCH flag
-  allow-list — defence against shell injection on an LLM-reachable production
-  trigger, not a model of each script's semantics. `Deploys` is the only thing
-  that composes a command, takes a lease and launches, in an order chosen so
-  nothing that can fail cheaply happens after the lease is taken and every
-  failure after `acquire` releases it. A deploy is the most host-specific
-  action in the system, so its target is PINNED to a node and an offline node
-  is a refusal (`{:error, :node_unavailable}`, no lease taken), never a
-  fallback. The subtle part is the cgroup escape: `deploy-orca-hub.sh` restarts
-  the very systemd unit that launched it and `setsid` does not leave a cgroup,
-  so the command is rewritten to run the real work over
-  `ssh localhost` (landing in `user.slice`) with `job.pid`/`pgid` rebound to
-  the remote pid afterwards. Three orchestrator-only MCP tools (`start_deploy`,
-  `in_flight_deploys`, `deploy_status`) return refusals as RESULTS
-  (`{"ok": false, …}`), never `isError` envelopes. Design in
-  `.context/deploy-jobs-design.md`.
 - **Project directory moves** (`lib/orca_hub/projects/directory_move.ex`,
   `move_side_effects.ex`): genuinely moves a project's directory on its owning
   node — with its own budget/timeout for the filesystem half — and carries the

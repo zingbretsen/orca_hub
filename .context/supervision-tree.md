@@ -47,7 +47,6 @@ graph TB
     App --> TerminalSupervisor["OrcaHub.TerminalSupervisor\n(DynamicSupervisor)"]
     App --> JobSupervisor["OrcaHub.JobSupervisor\n(DynamicSupervisor)"]
     App --> JobResumer["OrcaHub.JobResumer"]
-    App --> LeaseReaper["OrcaHub.Deploys.LeaseReaper\n(hub only)"]
     App --> LoginSupervisor["OrcaHub.LoginSupervisor\n(DynamicSupervisor)"]
     App --> BackendInstallerSupervisor["OrcaHub.BackendInstallerSupervisor\n(DynamicSupervisor)"]
     App --> MCPSupervisor["DynamicSupervisor\n(MCPSupervisor)"]
@@ -90,7 +89,7 @@ graph TB
 Agent nodes omit `Telemetry`, `Repo`, `MCP.UpstreamClient`, `Scheduler`,
 `TriggerLoader`, `SessionHeartbeat`, `ChurnSampler`, `MemoryExtractionSweep`,
 `Issues.IndexSweep` (and the capped `Issues.Indexer` task supervisor),
-`PiModelSync`, `Deploys.LeaseReaper`,
+`PiModelSync`,
 `ClusterNodeTracker`, `NodeDialer`, and the `EmailInbox*` children. All database operations are
 proxied to the hub node via `HubRPC`. Everything else — including `Streaming.WarmPool`,
 `ForkGate`, `TerminalSupervisor`, `JobSupervisor`/`JobResumer`,
@@ -212,18 +211,6 @@ graph TB
   exist — it never creates a provider — and it never writes an empty list, so
   a gateway that has been down for a week is invisible on disk and shows up
   only as `models_refresh_error`.
-- **`OrcaHub.Deploys.LeaseReaper`** (hub only): releases a deploy lease when
-  its job ends. Hub-only for `MemoryExtractionSweep`'s reason — the
-  `deploy_leases` table is the hub's and releasing is a pure DB write
-  whichever node ran the deploy, so one reaper serves the cluster. It has two
-  mechanisms because one of them is guaranteed to be missing: it subscribes to
-  `"job:<id>"` for each deploy job it learns about (through a cluster-wide
-  `"deploys"` broadcast, so a deploy started on an AGENT node still reaches
-  it) and releases on `{:job_finished, …}`; and it runs a BOOT SWEEP, because
-  a deploy of OrcaHub itself restarts this very process mid-flight and it
-  comes back with an empty subscription set. There is deliberately no lease
-  RENEWER — it would die with the same restart it exists to survive, which is
-  why the lease has a TTL instead. See `.context/data-model.md`.
 - **`OrcaHub.ForkGate`**: serializes forked pi children's FIRST turns, one
   FIFO per parent session — child N+1's first prompt goes out only after
   child N's first `result` event lands. A correctness mechanism, not an

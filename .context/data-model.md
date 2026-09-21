@@ -19,8 +19,6 @@ erDiagram
     Session ||--o| DiscordChannel : "bound to"
     Session }o--o{ UpstreamServer : "via SessionUpstreamServer"
 
-    Job ||--o| DeployLease : "holds a target's mutex while it runs"
-
     Session ||--o{ ChurnSample : "sampled every 120s while running"
     Session ||--o| AlertSubscription : "watches, as orchestrator"
     Session ||--o{ ApiToken : "optionally pinned to"
@@ -413,18 +411,6 @@ erDiagram
         boolean enabled
     }
 
-    DeployLease {
-        binary_id id PK
-        string target "deploy-registry target name; the mutex KEY"
-        binary_id job_id "the Jobs row actually running the deploy; plain field"
-        binary_id session_id "who started it; plain field"
-        string runner_node
-        utc_datetime acquired_at
-        utc_datetime expires_at "TTL, not a lock — the holder is allowed to die"
-        utc_datetime released_at "NULL while held; partial UNIQUE (target) WHERE NULL"
-        string note
-    }
-
     TTSConfigEntry {
         binary_id id PK
         string kind "tts_provider|tts_model"
@@ -440,7 +426,6 @@ erDiagram
 - **`ClusterNode` (`nodes` table), `NodeCredential`, `UpstreamSecret`, `Skill`, `PiConfigEntry`, `TTSConfigEntry`, and `ASRConfigEntry` are not linked by Ecto foreign keys** to the entities above — the first three are matched by name string (`ClusterNode.name` against `Session.runner_node` / `Project.node`; `NodeCredential.node_name` against `ClusterNode.name`), and `Skill`/`PiConfigEntry` are global hub-managed config fanned out to every node's disk by `SkillSync`/`PiConfigSync` (see `.context/supervision-tree.md`). They're drawn standalone in the diagram for that reason. `TTSConfigEntry` borrows `PiConfigEntry`'s exact `kind`/`name`/`spec`/`enabled` shape but is never materialized to disk — `OrcaHub.TTSConfig.resolve/0` reads it at request time in `TTSController`, and any blank/absent `spec` key falls back to that one field's env var, so a partially-filled row is legitimate. `ASRConfigEntry` (`asr_config_entries`, `OrcaHub.ASRConfig`) is the voice-mode sibling of that pattern — same four columns, same PER-FIELD "DB else `ASR_*` env else hardcoded" resolution on every ASR call, but only ONE kind (`asr_provider`): the GB10 sync lane is pinned to `large-v3-turbo`, so there is no model catalog to choose from. Its own table rather than a shared one, and deliberately unseeded, so an empty table means "use the env vars", not "transcription is unconfigured". See `.context/voice-mode.md`.
 - **`File` / `FileShare` / `ArtifactAsset` are the cross-node file store** (`OrcaHub.Files`, see `.context/architecture.md`). Metadata lives in Postgres; the bytes live behind `OrcaHub.ObjectStore` under `object_key` and never enter the DB. Visibility is creator + same project + an explicit `FileShare`; deleting is narrower (creator or same project only — a share never grants delete rights). One `FileShare` grants to EXACTLY ONE of a session or a project, and both columns are plain fields rather than FKs so a later session/project deletion never needs to touch the table. `ArtifactAsset` is the opposite — both sides are real FKs that cascade, since the row is meaningless once either side is gone.
 - **`Job` is deliberately association-free**: `session_id` is a plain field, and `runner_node`/`directory` pin it to the node that launched it. The row is a durable record of a DETACHED OS process that outlives the session, the runner, and OrcaHub itself — see `OrcaHub.Jobs`. `progress_kind` and friends are declared (and re-declarable mid-flight) BY the job; OrcaHub never infers a progress metric and never adjudicates "stalled", it only surfaces `progress_updated_at` age.
-- **`DeployLease` is a TTL LEASE, not a lock** (`deploy_leases`, `OrcaHub.Deploys.Leases`), the one-deploy-at-a-time mutex for project deploys run as Jobs. The holder is expected to die — `deploy-orca-hub.sh` restarts the very hub that launched it — so there is deliberately no renewer process and a lock would wedge the target forever. Exclusion is the partial unique index `deploy_leases_one_live_per_target` (`UNIQUE (target) WHERE released_at IS NULL`), never application code: `acquire/2` INSERTs and lets Postgres adjudicate, and a loser gets `{:error, :held, lease}`. Expiry is REAPING, not overwriting — stealing an expired lease sets its `released_at` (with ` [expired]` on the note) in the same transaction as the insert, so the target is never momentarily unowned and "who held this, and how did it end" stays answerable. Liveness is a conjunction this table only half-owns: `released_at IS NULL AND expires_at > now` is the backstop, while the authoritative answer is the linked `job_id`'s status — callers cross-check and report the disagreements (`stale_lease`, `lease_expired_job_running`). `OrcaHub.Deploys.LeaseReaper` (hub-only) releases on the job's finish broadcast, plus a boot sweep for the completions it missed because the deploy restarted the hub.
 - **`SessionInteraction`** captures direct session→session messaging edges (e.g. via `send_message_to_session`), distinct from `Session.parent_session_id`, which captures spawn/parent-child lineage instead — except an orchestrator-spawns-orchestrator handoff (`start_session` with `orchestrator: true`), which links the new session as the caller's SIBLING (not a child) and instead records a `kind: "handoff"` `SessionInteraction` so that spawn edge isn't lost.
 - **`PiConfigEntry.models_from` is opt-in dynamic model resolution** for `kind: "provider"` rows, consumed by `OrcaHub.PiModelSync` (hub-only, hourly): it refreshes that row's `models` array from the gateway's `/v1/models`. It is a COLUMN rather than a `spec` key on purpose — `spec` is written verbatim into every node's `~/.pi/agent/models.json`, so anything stashed there would be clutter pi never reads and one more field for its schema validation to trip over. `nil` (the default, and what every pre-existing row keeps) means "not managed": the hand-authored list is left alone. `models_refreshed_at`/`models_refresh_error` are the only way an operator sees a gateway that has been unreachable for a week, since the never-write-an-empty-list rule makes that failure silent on disk. `PiModelSync` only ever REFRESHES existing provider rows — it never creates one, so deleting every provider leaves an empty `models.json` and an empty model picker.
 - **`env_allowlist`** on both `Project` and `ClusterNode` are unioned (deduped), not one overriding the other — see `.context/clustering.md`.

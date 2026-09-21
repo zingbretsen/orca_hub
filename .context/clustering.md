@@ -148,7 +148,6 @@ sequenceDiagram
 | **Issues.IndexSweep** | Yes | No | 600s pgvector issue-index reconciliation, ≤20 issues + ≤400 chunks per tick; two nodes sweeping one table would duplicate the work and race each other's upserts |
 | **Issues.IndexTaskSupervisor** | Yes | No | Capped (`max_children`) supervisor for write-hook reindexes; overflow is dropped and reconciled by the sweep |
 | **PiModelSync** | Yes | No | Hourly refresh of opted-in pi providers' model lists from the LLM gateway; only the hub owns the DB, and agent pods can't reach the gateway |
-| **Deploys.LeaseReaper** | Yes | No | Releases a deploy lease when its job ends (+ boot sweep); the lease table is the hub's, so one reaper serves the cluster |
 | **Streaming.WarmPool** | Yes | Yes | Per-node warm-port admission control (streaming engine) |
 | **ForkGate** | Yes | Yes | Serializes forked pi children's first turns; a fork child runs on its parent's node |
 | **TerminalSupervisor** | Yes | Yes | Both nodes run terminal PTYs |
@@ -197,7 +196,7 @@ scheduled?" is answerable from the log rather than by inference.
 ### Key Modules
 
 - **`OrcaHub.Mode`**: Returns `:hub` or `:agent` based on `ORCA_MODE` env var (default: `:hub`). `hub_node/0` returns self on hub, discovers hub via `:erpc` on agent.
-- **`OrcaHub.HubRPC`**: Transparent proxy — calls locally on hub, forwards via `:erpc.call/5` on agent. Wraps every context that touches the DB (Sessions, Projects, Issues, Triggers, Terminals, Jobs, Artifacts, Skills, ApiTokens, AlertSubscriptions, DeployLeases, …) — roughly 280 delegating functions.
+- **`OrcaHub.HubRPC`**: Transparent proxy — calls locally on hub, forwards via `:erpc.call/5` on agent. Wraps every context that touches the DB (Sessions, Projects, Issues, Triggers, Terminals, Jobs, Artifacts, Skills, ApiTokens, AlertSubscriptions, …) — roughly 270 delegating functions.
 - **`OrcaHub.Cluster`**: Routing layer used by LiveViews and other callers. Queries go through HubRPC (single DB), actions route to the correct runner node via `rpc/5`.
 
 ### Node Routing
