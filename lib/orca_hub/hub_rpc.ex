@@ -808,4 +808,37 @@ defmodule OrcaHub.HubRPC do
 
   def file_deletable?(file, session_id, project_id),
     do: call(OrcaHub.Files, :deletable?, [file, session_id, project_id])
+
+  # -------------------------------------------------------------------
+  # Deploy leases (one deploy at a time per target — see
+  # OrcaHub.Deploys.Leases and .context/deploy-jobs-design.md §2.1). The
+  # partial unique index that does the excluding lives in the hub's DB, so
+  # routing every acquire/release through here is what makes the lease a
+  # CLUSTER-WIDE mutex rather than a per-node one. Callers on an agent node
+  # must pass their own :runner_node — node() on the far side is the hub.
+  # -------------------------------------------------------------------
+
+  def acquire_deploy_lease(target, attrs \\ %{}),
+    do: call(OrcaHub.Deploys.Leases, :acquire, [target, attrs])
+
+  def release_deploy_lease(lease_id, job_id),
+    do: call(OrcaHub.Deploys.Leases, :release, [lease_id, job_id])
+
+  def release_deploy_lease_for_job(job_id),
+    do: call(OrcaHub.Deploys.Leases, :release_for_job, [job_id])
+
+  def renew_deploy_lease(lease_id, ttl_seconds),
+    do: call(OrcaHub.Deploys.Leases, :renew, [lease_id, ttl_seconds])
+
+  def reap_expired_deploy_leases(target),
+    do: call(OrcaHub.Deploys.Leases, :reap_expired, [target])
+
+  def get_deploy_lease(id), do: call(OrcaHub.Deploys.Leases, :get_lease, [id])
+
+  def get_live_deploy_lease(target), do: call(OrcaHub.Deploys.Leases, :get_live, [target])
+
+  def list_live_deploy_leases, do: call(OrcaHub.Deploys.Leases, :list_live, [])
+
+  def list_deploy_leases_for_target(target, opts \\ %{}),
+    do: call(OrcaHub.Deploys.Leases, :list_for_target, [target, opts])
 end
