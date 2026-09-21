@@ -1,0 +1,30 @@
+# Toolchain pin for this checkout, kept in lockstep with the Dockerfile's
+# ELIXIR_VERSION / OTP_VERSION ARGs. Change both together or neither.
+#
+# WHY THIS FILE EXISTS
+#
+# The fleet's beams are built by the Dockerfile (and by `mix release` on the
+# standalone hosts). Hot code loading — OrcaHub.Cluster.CodeSync pushing
+# recompiled .beam files onto running nodes — only works when the compiler
+# here is not NEWER than the runtime there: OTP guarantees old-compiler-to-new-
+# runtime, not the reverse.
+#
+# On 2026-09-21 this host had silently drifted to OTP 27.3.4.13 (erts-15.2.7.9)
+# while every running node was on erts-15.2.2 — i.e. the unsupported direction,
+# with nothing anywhere to notice it. OTP 27.2.3, the Dockerfile's pin, is
+# exactly erts-15.2.2. Hence the pin.
+#
+# CodeSync.compatible?/1 refuses a push across an ERTS mismatch regardless, so
+# this file is the fix and that check is the backstop. Neither replaces the
+# other: the pin stops the drift, the check catches the case where someone
+# built somewhere else.
+#
+# NOTE: elixir is not currently a mise-managed tool on this host (the system
+# /usr/bin/elixir is already 1.18.3, matching the Dockerfile), so there is no
+# elixir shim and this line is presently a no-op that mise will WARN about
+# ("specified ... but not installed"). It is here so the version is recorded
+# in one place and so a future `mise install` picks up the right one — not to
+# be silently deleted because of the warning.
+[tools]
+erlang = "27.2.3"
+elixir = "1.18.3"
