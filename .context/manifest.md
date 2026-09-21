@@ -1,18 +1,18 @@
 # OrcaHub — project operating manifest
 
-Hand-maintained map of the codebase plus the invariants that bite. Keep it
-under 6 KiB: it is the ONLY `.context/` file inlined into Claude/Codex
-startup prompts (`SharedPrompts.context_manifest_prompt/1`). The detailed
-docs it points at stay on disk — `Read` them on demand, never inline them.
+Hand-maintained map plus the invariants that bite. Keep it under 6 KiB: the
+ONLY `.context/` file inlined into Claude/Codex startup prompts
+(`SharedPrompts.context_manifest_prompt/1`). The docs it points at stay on
+disk — `Read` them on demand.
 
 ## Topic map (read the file when the task touches the area)
 
 - `.context/architecture.md` — module map: web layer (LiveViews, MCP.Plug,
   API controllers), core contexts, backends, streaming/WarmPool, CodeExec,
-  files/artifacts, Discord/email bridges, data-flow summary.
+  files/artifacts, Discord/email bridges.
 - `.context/session-lifecycle.md` — SessionRunner GenStatem states
-  (`ready/idle/running/error`; `waiting`/`compacting` are overlaid statuses),
-  idle teardown, evict_warm, kill-switch downgrade, rebake on flag change.
+  (`ready/idle/running/error`; `waiting`/`compacting` overlaid), idle
+  teardown, evict_warm, kill-switch downgrade, rebake on flag change.
 - `.context/message-flow.md` — engine resolution (kill switch > session
   column > node env > streaming), one-shot vs streaming sequences, backend
   spawn/normalize call order, interrupt/steer/queue semantics.
@@ -21,17 +21,20 @@ docs it points at stay on disk — `Read` them on demand, never inline them.
 - `.context/supervision-tree.md` — hub vs agent children, registries,
   hub-only GenServers (schedulers, sweeps, syncs), Discord children.
 - `.context/clustering.md` — hub+agent topology, HubRPC/erpc, node routing,
-  NodePolicy (isolation, env scrub), discovery, what agents cannot do.
+  NodePolicy (isolation, env scrub), what agents cannot do.
 - `.context/triggers.md` — scheduled/webhook/email triggers, executor flow,
   reuse_session, archive_on_complete, per-trigger tool restrictions.
 - `.context/terminals.md` — PTY terminals, PubSub topics, multi-client
   pairing, cluster routing.
-- `.context/push-payload.md` — turn-end payload contract, on two wires: the
-  `session_events` channel (always) and Gotify (opt-in, off by default).
-- `.context/voice-mode.md` — voice mode phases 1-2c: capture/VAD/ASR pipeline,
-  the OVS1 wire contract, ASRConfig, browser traps, asset packaging, assistant
-  deltas, streaming TTS, the global voice bar, and voice-driven interaction
-  (client-owned focus, `ui_action`, inserts, spoken ordinals).
+- `.context/push-payload.md` — turn-end payload contract, on two wires:
+  `session_events` (always) and Gotify (opt-in, off by default).
+- `.context/code-deploy.md` — the two deploy paths: BEAM hot code generations
+  (publish/reconcile, circuit breaker, ERTS + provenance gates,
+  `HotLoadGate` refuse categories, drift/stamp reporting) vs a full release.
+- `.context/voice-mode.md` — phases 1-2c: capture/VAD/ASR pipeline, the OVS1
+  wire contract, ASRConfig, browser traps, asset packaging, assistant deltas,
+  streaming TTS, the voice bar, voice-driven interaction (client-owned focus,
+  `ui_action`, inserts, spoken ordinals).
 - Specs at repo root: `backend_abstraction_spec.md`, `issues_spec.md`,
   `pi_fork_spec.md`, `docs/api.md` (Agent Runs API).
 
@@ -64,13 +67,13 @@ docs it points at stay on disk — `Read` them on demand, never inline them.
   ScheduleWakeup/subagent/messaging tools die with the warm port — use
   `schedule_heartbeat`, `start_session`, `send_message_to_session`.
 - **Memory lives in the memory service only** (`remember`/`recall`); every
-  injection persists a `memory_injected` system event. Archiving a root or
-  orchestrator session auto-dispatches memory extraction.
+  injection persists a `memory_injected` system event. Archiving a
+  root/orchestrator session auto-dispatches memory extraction.
 - **Artifacts render in `<iframe sandbox="allow-scripts">`** — never
   `allow-same-origin`, never server-rendered HEEx. The sandbox attribute is
-  the security boundary; this decision is settled.
+  the boundary; settled.
 - **Markdown rendering is unsanitized** (earmark, retired, raw HTML passes
-  through) — a known open security item; do not "fix" by swapping engines
+  through) — a known open security item; don't "fix" by swapping engines
   without a product decision.
 - **Issues are durable work items**: `commits`/`attempts` are frozen at
   close; call `close_issue` with only `id` first to harvest evidence. Defect
@@ -83,8 +86,11 @@ docs it points at stay on disk — `Read` them on demand, never inline them.
   `:queue` (never `:interrupt`), and the channel refuses a join (one voice
   owner, node unavailable) instead of re-routing. The voice bar is STICKY in
   the app header, so every internal link must live-navigate (`<.link
-  navigate>`) or the mic/channel dies. See `.context/voice-mode.md`.
-- **Six prod instances** (3 k3s deployments via Flux GitOps, `mini`,
-  `gb10` arm64, local systemd); deploy only through
-  `~/homelab/scripts/deploy-orca-hub.sh`, verify with
-  `verify-orca-deploy.sh`. Never `kubectl edit` Flux-managed resources.
+  navigate>`) or the mic/channel dies.
+- **Two deploy paths, six prod instances** (3 k3s via Flux GitOps, `mini`,
+  `gb10` arm64, local systemd). Full: `~/homelab/scripts/deploy-orca-hub.sh`,
+  verify `verify-orca-deploy.sh` — the ONLY path for dependency, supervision,
+  config and migration changes, anything `HotLoadGate` refuses, and the
+  machinery itself. Fast: a published code generation, durable in
+  the DB, hot-loaded onto every node and re-applied by the hub at boot. Never
+  `kubectl edit` Flux-managed resources.
