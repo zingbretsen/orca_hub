@@ -35,15 +35,40 @@ defmodule OrcaHub.SessionResumerTest do
   end
 
   describe "enabled?/0 — ORCA_AUTO_RESUME toggle" do
-    test "defaults to enabled when unset" do
+    # config/test.exs pins :auto_resume to false for the whole suite (the
+    # ambient 30s tick resumes fixture sessions against the shared dev DB —
+    # see the comment there), so these two tests set the key themselves and
+    # RESTORE it rather than deleting it. A bare delete_env/2 here would
+    # silently re-enable the resumer for every test that ran afterwards.
+    setup do
+      previous = Application.fetch_env(:orca_hub, :auto_resume)
+
+      on_exit(fn ->
+        case previous do
+          {:ok, value} -> Application.put_env(:orca_hub, :auto_resume, value)
+          :error -> Application.delete_env(:orca_hub, :auto_resume)
+        end
+      end)
+
+      :ok
+    end
+
+    test "defaults to enabled when the key is absent entirely" do
+      Application.delete_env(:orca_hub, :auto_resume)
+
       assert SessionResumer.enabled?()
     end
 
     test "reads the :auto_resume application env" do
       Application.put_env(:orca_hub, :auto_resume, false)
-      on_exit(fn -> Application.delete_env(:orca_hub, :auto_resume) end)
 
       refute SessionResumer.enabled?()
+    end
+
+    test "is enabled when the env says so" do
+      Application.put_env(:orca_hub, :auto_resume, true)
+
+      assert SessionResumer.enabled?()
     end
   end
 

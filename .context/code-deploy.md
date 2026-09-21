@@ -28,6 +28,8 @@ the map:
 - `lib/orca_hub/cluster/code_stamp.ex` — what a node is ACTUALLY running
 - `lib/orca_hub/cluster/fleet_status.ex` — the drift view
 - `lib/orca_hub/code_generations.ex` (+ `code_generations/`) — persistence
+- `lib/orca_hub/code_generations/provenance.ex` — who published a row, and
+  whether an applying node trusts it
 
 ## Topology: the hub is the only fan-out origin
 
@@ -68,6 +70,48 @@ because `BuildInfo` is excluded from every payload); a node whose image is
 newer is skipped, and if the HUB's image is newer the whole reconcile is
 abandoned and the generation reported `:stale`. Superseding it is an
 explicit operator action (`supersede/1`), never inferred.
+
+## Publish provenance: the row itself has to be trusted
+
+The ERTS/compile-provenance checks below prove the BEAMS are what they claim.
+A separate question is whether the generation ROW should be acted on at all,
+and nothing in the beams answers it.
+
+The local systemd production instance and `bin/test` read the SAME database
+here (`DB_NAME=orca_hub_dev`). `mix test` publishes generations for real —
+`code_push_test.exs` legitimately exercises the publish path with SYNTHETIC
+modules compiled in-test — and those rows normally die with the Ecto sandbox
+transaction. Rows have been observed escaping it (a GenServer tick landing in
+an `async: false` test's shared-sandbox window). `:code_reconcile_enabled`
+false keeps the TEST node inert; it says nothing about what a production hub
+does with a row the suite left behind, and those beams are fabricated.
+
+So `CodeGenerations.publish/2` stamps every row with
+`Provenance.current/0` — `"<format>:<runtime>:<compile env>"`, e.g.
+`"1:release:prod"` or `"1:mix:test"`. The env half is captured at COMPILE
+time (`@compile_env Mix.env()`), so code compiled by `mix test` says `test`
+and cannot say anything else; the field is set on the STRUCT and never cast,
+so no attrs map can claim a provenance the publishing code does not have.
+
+Trust is an ALLOWLIST (`prod`, `dev`) and it FAILS CLOSED: a `nil` marker —
+every row predating the column — and any marker this version cannot parse are
+refusals, not grandfathered passes. `dev` is trusted and `test` is not
+because a dev publish is someone typing `publish_code_generation`, while a
+test publish is an automatic side effect of running the suite.
+
+Enforced at exactly two points, which between them cover every apply path:
+`breaker_decision/1` (boot — refuses BEFORE spending apply budget, and
+QUARANTINEs, so `current/0` stops reporting a target nothing will load) and
+`reconcile_one/3` (the single funnel for boot fan-out, `nodeup`, on-demand
+reconciles and post-publish fan-out — reports `:refused` per node).
+`purge_orphaned/1` refuses too, for a sharper reason: "orphaned" means
+"absent from the generation", so purging against a test generation would
+unload every real module on the node. Refusals log at ERROR and show up in
+`code_generation_status` and the fleet basis label.
+
+The test bypass is `config :orca_hub, :trust_test_code_generations, true` in
+`config/test.exs` ONLY. It is read by whoever is APPLYING, so it cannot
+travel with the row — production never sets it.
 
 ## Circuit breaker
 

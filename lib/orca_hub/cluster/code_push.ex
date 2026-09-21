@@ -159,6 +159,52 @@ defmodule OrcaHub.Cluster.CodePush do
   without a migration is ever the thing being shipped, use the slow deploy
   path.
 
+  ## Publish provenance: a row the DATABASE cannot vouch for
+
+  Everything above concerns beams that are what they claim to be. A
+  separate question is whether the generation ROW should be acted on at
+  all, and it is not answerable from the beams.
+
+  The local systemd production instance and `bin/test` read the SAME
+  database on this homelab, and `mix test` publishes generations for real —
+  the tests below this module legitimately exercise the publish path with
+  synthetic modules compiled in-test. Those rows normally die with the Ecto
+  sandbox transaction, but rows have been observed ESCAPING it (a GenServer
+  tick landing inside an `async: false` test's shared-sandbox window).
+  `:code_reconcile_enabled` being false under `mix test` keeps the test node
+  inert; it says nothing about what a production hub does with a row the
+  suite left behind, and that row's beams are fabricated modules.
+
+  So every generation is stamped at insert time with
+  `OrcaHub.CodeGenerations.Provenance.current/0` — what KIND of process
+  published it, keyed on the publishing code's COMPILE-TIME `Mix.env()` —
+  and this loop refuses to apply one whose stamp it does not trust. The
+  check is an allowlist and it fails closed: a missing marker (every row
+  predating the column) and an unparseable one are both refusals, not
+  grandfathered passes.
+
+  It is enforced at exactly two points, which between them cover every
+  apply path:
+
+    * `breaker_decision/1`, so the BOOT path refuses before it spends a
+      unit of the apply budget or schedules a health confirmation; the
+      generation is quarantined, which is also what makes `current/0` fall
+      through to nil so status stops claiming the fleet is converging on
+      something nothing will ever load.
+    * `reconcile_one/3`, the single funnel every node push passes through —
+      boot fan-out, `nodeup`, on-demand `reconcile_all/0`/`reconcile_node/1`
+      and the post-publish fan-out alike. It reports `:refused` per node
+      rather than failing silently.
+
+  `do_purge_orphaned/1` carries the same refusal, for a sharper reason than
+  the other two: "orphaned" means "resident but absent from the generation",
+  so purging against a generation of synthetic test modules would classify
+  every REAL module on the node as an orphan and unload the lot.
+
+  A refusal is logged at ERROR and appears in `status/0` and the fleet view.
+  A generation nothing will apply, reported as the current one, is its own
+  failure mode.
+
   ## Circuit breaker
 
   This is the sharpest risk in the design and the mechanism deserves to be
@@ -213,6 +259,7 @@ defmodule OrcaHub.Cluster.CodePush do
 
   alias OrcaHub.Cluster.{BeamTransport, CodeStamp, HotLoadGate}
   alias OrcaHub.CodeGenerations
+  alias OrcaHub.CodeGenerations.Provenance
 
   @name __MODULE__
 
@@ -632,12 +679,23 @@ defmodule OrcaHub.Cluster.CodePush do
        enabled: enabled?(),
        generation: CodeGenerations.summarize(generation),
        latest: CodeGenerations.summarize(CodeGenerations.latest()),
+       # Rendered loudly by the operator surface: a generation this node
+       # will never apply must not read as the thing the fleet is
+       # converging on. nil when there is no generation at all.
+       generation_refusal: generation && provenance_refusal(generation),
        applied_generation_id: state.applied_generation_id,
        health_window_ms: health_window_ms(),
        max_apply_attempts: @max_apply_attempts,
        connected_nodes: Enum.map(Node.list(), &to_string/1),
        last_reconcile: state.last
      }, state}
+  end
+
+  defp provenance_refusal(generation) do
+    case Provenance.verify(generation.provenance) do
+      :ok -> nil
+      {:error, reason} -> Provenance.describe_refusal(reason)
+    end
   end
 
   # ------------------------------------------------------------------
@@ -672,12 +730,25 @@ defmodule OrcaHub.Cluster.CodePush do
   # The circuit breaker's decision function. Kept separate from the code
   # that acts on it so the policy is readable — and testable — on its own.
   defp breaker_decision(generation) do
+    provenance = Provenance.verify(generation.provenance)
+
     cond do
       generation.status == "quarantined" ->
         {:skip, "it is quarantined (exhausted its apply budget without ever proving healthy)"}
 
       generation.status == "superseded" ->
         {:skip, "it has been superseded"}
+
+      # Provenance, before the budget: an untrusted generation must not
+      # spend an apply attempt or schedule a health confirmation on its way
+      # to being refused. Quarantine rather than skip — a row this node will
+      # never apply should stop being reported as the fleet's target.
+      match?({:error, _}, provenance) ->
+        {:error, reason} = provenance
+
+        {:quarantine,
+         "its publish provenance is not trusted on this node — " <>
+           Provenance.describe_refusal(reason)}
 
       # The budget is spent, and the generation still has not proven healthy.
       # Quarantine rather than merely skipping: a generation that is silently
@@ -825,7 +896,8 @@ defmodule OrcaHub.Cluster.CodePush do
   defp stamp_node(_generation, _target, _result), do: :ok
 
   defp reconcile_one(generation, target, opts) do
-    with :ok <- check_erts(generation, target),
+    with :ok <- check_provenance(generation),
+         :ok <- check_erts(generation, target),
          :ok <- check_not_newer(generation, target, opts) do
       manifest = CodeGenerations.manifest(generation.id)
 
@@ -871,6 +943,27 @@ defmodule OrcaHub.Cluster.CodePush do
 
       {:error, reason} ->
         %{status: :error, reason: "push failed: #{BeamTransport.describe_error(reason)}"}
+    end
+  end
+
+  # The last line of defence, on the ONE path every node push funnels
+  # through. `breaker_decision/1` already refuses on the boot path, but
+  # `nodeup` and the on-demand reconciles never consult the breaker — and
+  # the whole point of the provenance stamp is that a row nobody here wrote
+  # may be sitting in a shared database. Refusing per node keeps the reason
+  # in `status/0` instead of turning it into a silent no-op.
+  defp check_provenance(generation) do
+    case Provenance.verify(generation.provenance) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        %{
+          status: :refused,
+          reason:
+            "REFUSED: generation #{generation.id} (#{generation.base_sha}) will not be " <>
+              "applied anywhere — #{Provenance.describe_refusal(reason)}"
+        }
     end
   end
 
@@ -1028,23 +1121,41 @@ defmodule OrcaHub.Cluster.CodePush do
         {:error, :no_generation}
 
       generation ->
-        results =
-          generation
-          |> orphaned_modules(target)
-          |> Enum.map(fn mod -> {mod, BeamTransport.unload(target, mod)} end)
+        # Same refusal as an apply, and for a sharper reason: "orphaned"
+        # means "resident but absent from the generation", so running this
+        # against a generation of synthetic test modules would classify
+        # every REAL module on the node as an orphan and unload the lot.
+        with :ok <- Provenance.verify(generation.provenance) do
+          purge_against(generation, target)
+        else
+          {:error, reason} ->
+            Logger.error(
+              "CodePush: REFUSED to purge orphans on #{target} against generation " <>
+                "#{generation.id} — #{Provenance.describe_refusal(reason)}"
+            )
 
-        {:ok,
-         %{
-           node: to_string(target),
-           purged: for({m, {:ok, :purged}} <- results, do: to_string(m)),
-           deleted_not_purged: for({m, {:ok, :deleted_not_purged}} <- results, do: to_string(m)),
-           wedged: for({m, {:error, :wedged}} <- results, do: to_string(m)),
-           errors:
-             for {m, {:error, reason}} <- results, reason != :wedged do
-               "#{m}: #{BeamTransport.describe_error(reason)}"
-             end
-         }}
+            {:error, {:untrusted_generation, Provenance.describe_refusal(reason)}}
+        end
     end
+  end
+
+  defp purge_against(generation, target) do
+    results =
+      generation
+      |> orphaned_modules(target)
+      |> Enum.map(fn mod -> {mod, BeamTransport.unload(target, mod)} end)
+
+    {:ok,
+     %{
+       node: to_string(target),
+       purged: for({m, {:ok, :purged}} <- results, do: to_string(m)),
+       deleted_not_purged: for({m, {:ok, :deleted_not_purged}} <- results, do: to_string(m)),
+       wedged: for({m, {:error, :wedged}} <- results, do: to_string(m)),
+       errors:
+         for {m, {:error, reason}} <- results, reason != :wedged do
+           "#{m}: #{BeamTransport.describe_error(reason)}"
+         end
+     }}
   end
 
   defp log_node_result(target, %{status: :in_sync}),
@@ -1052,6 +1163,9 @@ defmodule OrcaHub.Cluster.CodePush do
 
   defp log_node_result(target, %{status: :reconciled, pushed: n}),
     do: Logger.info("CodePush: reconciled #{target} — #{n} modules loaded.")
+
+  defp log_node_result(target, %{status: :refused, reason: reason}),
+    do: Logger.error("CodePush: #{target} — #{reason}")
 
   defp log_node_result(target, %{status: status, reason: reason}),
     do: Logger.warning("CodePush: #{target} #{status} — #{reason}")

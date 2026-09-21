@@ -34,7 +34,7 @@ defmodule OrcaHub.CodeGenerations do
 
   import Ecto.Query
 
-  alias OrcaHub.CodeGenerations.{CodeGeneration, CodeGenerationModule}
+  alias OrcaHub.CodeGenerations.{CodeGeneration, CodeGenerationModule, Provenance}
   alias OrcaHub.Repo
 
   @default_keep 5
@@ -55,6 +55,13 @@ defmodule OrcaHub.CodeGenerations do
   a half-written generation is indistinguishable from a complete one at
   read time, and reconciling a node toward a truncated module set would
   quietly load a partial build.
+
+  The row is stamped with `OrcaHub.CodeGenerations.Provenance.current/0` —
+  what KIND of process published it. That stamp is put on the STRUCT and
+  the field is not castable, so it describes the code calling this function
+  and cannot be supplied (or faked) through `attrs`. An applying node
+  refuses a generation whose stamp it does not trust; see that module for
+  why a shared database makes this necessary.
   """
   def publish(attrs, entries) when is_map(attrs) and is_list(entries) do
     gen_attrs =
@@ -64,7 +71,7 @@ defmodule OrcaHub.CodeGenerations do
 
     Repo.transaction(fn ->
       generation =
-        %CodeGeneration{}
+        %CodeGeneration{provenance: Provenance.current()}
         |> CodeGeneration.changeset(gen_attrs)
         |> Repo.insert!()
 
@@ -290,6 +297,8 @@ defmodule OrcaHub.CodeGenerations do
       proven_healthy_at: g.proven_healthy_at,
       published_by: g.published_by,
       published_from_node: g.published_from_node,
+      provenance: g.provenance,
+      provenance_trusted: Provenance.trusted?(g.provenance),
       erts_version: g.erts_version,
       otp_release: g.otp_release,
       elixir_version: g.elixir_version,

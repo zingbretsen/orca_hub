@@ -251,6 +251,13 @@ defmodule OrcaHub.MCP.Tools.CodePush do
         {:error, :no_generation} ->
           error("There is no current code generation to compare against.")
 
+        {:error, {:untrusted_generation, explanation}} ->
+          error(
+            "REFUSED: the current code generation's publish provenance is not trusted, so it " <>
+              "cannot be used to decide what is orphaned — every real module on the node " <>
+              "would qualify. #{explanation}"
+          )
+
         other ->
           error("Unexpected result: #{inspect(other)}")
       end
@@ -394,7 +401,7 @@ defmodule OrcaHub.MCP.Tools.CodePush do
   defp render_status(%{generation: generation} = status) do
     """
     Current code generation
-    #{generation_lines(generation)}
+    #{generation_lines(generation)}#{refusal_banner(status[:generation_refusal])}
     Reconciliation enabled on the hub: #{status.enabled}
     Health window: #{status.health_window_ms}ms   Apply budget: #{generation.apply_attempts}/#{status.max_apply_attempts}
     Connected nodes: #{format_nodes(status.connected_nodes)}
@@ -411,9 +418,22 @@ defmodule OrcaHub.MCP.Tools.CodePush do
       status:    #{g.status}#{healthy_suffix(g)}
       modules:   #{g.module_count} (#{g.total_bytes} bytes)
       toolchain: ERTS #{g.erts_version}, OTP #{g.otp_release}, Elixir #{g.elixir_version}, compiler #{g.compiler_version || "unrecorded"}
-      published: #{g.created_at} by #{g.published_by || "unknown"} from #{g.published_from_node || "unknown"}#{forced_lines(g)}#{notes_line(g)}
+      published: #{g.created_at} by #{g.published_by || "unknown"} from #{g.published_from_node || "unknown"}
+      provenance: #{g.provenance || "NONE"}#{provenance_suffix(g)}#{forced_lines(g)}#{notes_line(g)}
     """
   end
+
+  # A generation nothing will ever apply must not read like a healthy one —
+  # see OrcaHub.CodeGenerations.Provenance.
+  defp provenance_suffix(%{provenance_trusted: false}),
+    do: "   *** NOT TRUSTED — this generation will NOT be applied to any node ***"
+
+  defp provenance_suffix(_), do: ""
+
+  defp refusal_banner(nil), do: ""
+
+  defp refusal_banner(explanation),
+    do: "\n  !! THIS GENERATION IS REFUSED AND WILL NEVER BE APPLIED: #{explanation}\n"
 
   defp healthy_suffix(%{status: "healthy", proven_healthy_at: at}) when not is_nil(at),
     do: " (proven healthy at #{at})"

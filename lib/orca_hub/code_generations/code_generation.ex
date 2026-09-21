@@ -7,9 +7,16 @@ defmodule OrcaHub.CodeGenerations.CodeGeneration do
   keeping them apart when reading the schema:
 
     * **Provenance** (`base_sha`, `dirty`, `published_by`,
-      `published_from_node`) — where these beams came from. `dirty: true` is
-      the load-bearing one: it is the only durable record that the fleet may
-      be running code that exists in no commit.
+      `published_from_node`, `provenance`) — where these beams came from.
+      `dirty: true` is the load-bearing one for auditing: it is the only
+      durable record that the fleet may be running code that exists in no
+      commit. `provenance` is the load-bearing one for SAFETY — it records
+      what kind of process published the row (release/mix, and the
+      compile-time `Mix.env()`), and an applying node refuses anything whose
+      marker it does not trust. Unlike every other field here it is NOT
+      castable: `OrcaHub.CodeGenerations.publish/2` stamps it from
+      `OrcaHub.CodeGenerations.Provenance.current/0`, so no attrs map can
+      claim a provenance the publishing code does not actually have.
     * **Toolchain** (`erts_version`, `otp_release`, `elixir_version`) — what
       produced them, so a node on a different ERTS can be SKIPPED rather
       than handed beams it cannot load.
@@ -48,6 +55,11 @@ defmodule OrcaHub.CodeGenerations.CodeGeneration do
     field :dirty, :boolean, default: false
     field :published_by, :string
     field :published_from_node, :string
+
+    # Set by OrcaHub.CodeGenerations.publish/2 on the struct, never cast —
+    # see OrcaHub.CodeGenerations.Provenance. A nil or unrecognised value is
+    # refused at apply time rather than trusted.
+    field :provenance, :string
 
     field :erts_version, :string
     field :otp_release, :string
@@ -99,7 +111,7 @@ defmodule OrcaHub.CodeGenerations.CodeGeneration do
       :forced_reasons,
       :notes
     ])
-    |> validate_required([:base_sha, :erts_version])
+    |> validate_required([:base_sha, :erts_version, :provenance])
     |> validate_inclusion(:status, @statuses)
     |> validate_number(:apply_attempts, greater_than_or_equal_to: 0)
   end

@@ -109,3 +109,33 @@ config :orca_hub, :code_reconcile_enabled, false
 # Short health window so circuit-breaker tests don't each pay 30s of real
 # wall-clock waiting for a generation to be marked healthy.
 config :orca_hub, :code_push_health_window_ms, 150
+
+# THE TEST BYPASS for the publish-provenance guard, and the only place it is
+# ever set. Every generation is stamped with the compile-time Mix.env() of
+# the code that published it (OrcaHub.CodeGenerations.Provenance); an
+# applying node refuses any generation stamped "test", because this database
+# is shared with the local systemd PRODUCTION instance and a row escaping the
+# test sandbox would otherwise be a live node hot-loading modules that only
+# ever existed inside a test.
+#
+# The feature's own tests legitimately publish AND apply generations, so the
+# TEST NODE opts into trusting test provenance here. The switch is read by
+# whoever is APPLYING, so it cannot travel with the row: a production
+# instance never sets it and refuses that row no matter who wrote it. Tests
+# asserting the refusal flip this off for themselves.
+config :orca_hub, :trust_test_code_generations, true
+
+# OrcaHub.SessionResumer (and OrcaHub.JobResumer, which shares the flag)
+# schedule a :check tick on boot. mix test boots the full application against
+# the SHARED DEV DB, and the suite creates hundreds of non-archived
+# `status: "running"` sessions via fixtures — indistinguishable, to the
+# resumer's query, from real orphans left by a deploy. A tick that lands
+# inside an async: false test's shared-sandbox window resumes those fixtures
+# for real: it starts runners and WRITES message rows that outlive the
+# rollback. That is the flake behind session_heartbeat_job_wake_test's
+# "a job still in verifying does not wake anything" failures.
+#
+# Both resumers' logic is driven directly by their tests
+# (SessionResumer.resume_session/1, JobResumer.resume_jobs/0), so nothing
+# depends on the ambient timer.
+config :orca_hub, :auto_resume, false

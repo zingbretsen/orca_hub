@@ -113,6 +113,29 @@ defmodule OrcaHub.Cluster.FleetStatusTest do
       assert FleetStatus.report().basis.label =~ "(dirty)"
     end
 
+    test "a generation this node will REFUSE says so in the basis label" do
+      # The drift it describes is still worth seeing, but the label must not
+      # let an operator read it as the thing the fleet is converging on —
+      # see OrcaHub.CodeGenerations.Provenance.
+      previous = Application.fetch_env(:orca_hub, :trust_test_code_generations)
+      Application.put_env(:orca_hub, :trust_test_code_generations, false)
+
+      on_exit(fn ->
+        case previous do
+          {:ok, value} -> Application.put_env(:orca_hub, :trust_test_code_generations, value)
+          :error -> Application.delete_env(:orca_hub, :trust_test_code_generations)
+        end
+      end)
+
+      publish!([entry(unique_module("FSTest.Untrusted"), "def v, do: 1")])
+
+      report = FleetStatus.report()
+
+      assert report.basis.kind == :generation
+      assert report.basis.label =~ "REFUSED, untrusted publish provenance"
+      refute report.generation.provenance_trusted
+    end
+
     test "with nothing published it falls back to this node's build, and names it" do
       report = FleetStatus.report(ebin: CodeSync.default_ebin_dir())
 

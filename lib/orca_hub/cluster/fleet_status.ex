@@ -62,6 +62,7 @@ defmodule OrcaHub.Cluster.FleetStatus do
   alias OrcaHub.Cluster
   alias OrcaHub.Cluster.{BeamTransport, CodeStamp, CodeSync}
   alias OrcaHub.CodeGenerations
+  alias OrcaHub.CodeGenerations.Provenance
 
   @type basis :: %{kind: :generation | :local_ebin, label: String.t()}
 
@@ -124,9 +125,20 @@ defmodule OrcaHub.Cluster.FleetStatus do
       |> CodeGenerations.manifest()
       |> Enum.map(fn {mod, md5} -> %{module: String.to_atom(mod), md5: md5} end)
 
+    # An untrusted generation is still the comparison BASIS — the operator
+    # needs to see the drift it describes — but the label has to say plainly
+    # that nothing will ever be applied from it. See
+    # OrcaHub.CodeGenerations.Provenance.
+    untrusted =
+      if Provenance.trusted?(generation.provenance),
+        do: "",
+        else: " — REFUSED, untrusted publish provenance (#{generation.provenance || "none"})"
+
     {%{
        kind: :generation,
-       label: "generation #{short(generation.base_sha)}#{if generation.dirty, do: " (dirty)"}"
+       label:
+         "generation #{short(generation.base_sha)}" <>
+           "#{if generation.dirty, do: " (dirty)"}#{untrusted}"
      }, entries}
   end
 

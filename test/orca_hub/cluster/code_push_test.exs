@@ -20,7 +20,7 @@ defmodule OrcaHub.Cluster.CodePushTest do
 
   alias OrcaHub.Cluster.{BeamTransport, CodePush, CodeStamp}
   alias OrcaHub.CodeGenerations
-  alias OrcaHub.CodeGenerations.CodeGeneration
+  alias OrcaHub.CodeGenerations.{CodeGeneration, Provenance}
 
   @erts List.to_string(:erlang.system_info(:version))
 
@@ -88,6 +88,33 @@ defmodule OrcaHub.Cluster.CodePushTest do
 
     Repo.update_all(from(g in CodeGeneration, where: g.id == ^generation.id),
       set: [inserted_at: at]
+    )
+
+    CodeGenerations.get(generation.id)
+  end
+
+  # Makes this node look like a PRODUCTION instance as far as the publish-
+  # provenance guard is concerned: it no longer trusts generations stamped
+  # by a test run. config/test.exs opts the suite in; these tests opt back
+  # out so the production behaviour is what actually gets exercised.
+  defp distrust_test_provenance do
+    previous = Application.fetch_env(:orca_hub, :trust_test_code_generations)
+    Application.put_env(:orca_hub, :trust_test_code_generations, false)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:orca_hub, :trust_test_code_generations, value)
+        :error -> Application.delete_env(:orca_hub, :trust_test_code_generations)
+      end
+    end)
+  end
+
+  # Rewrites the stored marker, standing in for a row this code did not
+  # write — an older generation from before the column existed, or one an
+  # escaped transaction left behind.
+  defp set_provenance(generation, marker) do
+    Repo.update_all(from(g in CodeGeneration, where: g.id == ^generation.id),
+      set: [provenance: marker]
     )
 
     CodeGenerations.get(generation.id)
@@ -432,6 +459,167 @@ defmodule OrcaHub.Cluster.CodePushTest do
 
       assert {:error, :no_generation} = GenServer.call(pid, {:reconcile_node, node(), []})
       assert {:error, :no_generation} = GenServer.call(pid, {:supersede, nil})
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # Publish provenance: a row the shared database cannot vouch for
+  # ------------------------------------------------------------------
+
+  describe "publish provenance" do
+    test "every publish is stamped with the publishing code's compile-time env" do
+      generation = publish!([entry(unique_module("CPTest.Prov.Stamp"), "def v, do: 1")])
+
+      assert generation.provenance == Provenance.current()
+      assert {:ok, %{env: "test"}} = Provenance.parse(generation.provenance)
+    end
+
+    test "the stamp cannot be forged through the attrs map" do
+      generation =
+        publish!([entry(unique_module("CPTest.Prov.Forge"), "def v, do: 1")], %{
+          provenance: "1:release:prod"
+        })
+
+      # The attrs value is simply not cast — the row describes the code that
+      # actually ran, which is this test run.
+      assert generation.provenance == Provenance.current()
+      refute generation.provenance == "1:release:prod"
+    end
+
+    test "boot QUARANTINES a test-published generation instead of applying it" do
+      distrust_test_provenance()
+
+      name = unique_module("CPTest.Prov.Boot")
+      v2 = entry(name, "def v, do: 2")
+      _v1 = entry(name, "def v, do: 1")
+
+      generation = publish!([v2]) |> newer_than_this_node()
+
+      _pid = start_reconciler()
+
+      # THE hazard: synthetic in-test modules never reach a live node.
+      assert v2.module.v() == 1
+      # No budget was spent on its way to being refused, and it is out of
+      # the way for good rather than being silently re-refused every boot.
+      refreshed = CodeGenerations.get(generation.id)
+      assert refreshed.status == "quarantined"
+      assert refreshed.apply_attempts == 0
+      assert refreshed.notes =~ "TEST RUN"
+      assert CodeGenerations.current() == nil
+    end
+
+    test "an on-demand reconcile REFUSES it too — the boot path is not the only guard" do
+      # Publishing after the reconciler is up is exactly the nodeup /
+      # reconcile_node shape: no boot pass ever looked at this generation.
+      pid = start_idle_reconciler()
+      distrust_test_provenance()
+
+      name = unique_module("CPTest.Prov.OnDemand")
+      v2 = entry(name, "def v, do: 2")
+      _v1 = entry(name, "def v, do: 1")
+
+      publish!([v2]) |> newer_than_this_node()
+
+      assert %{status: :refused, reason: reason} =
+               GenServer.call(pid, {:reconcile_node, node(), []})
+
+      assert reason =~ "REFUSED"
+      assert reason =~ "TEST RUN"
+      assert v2.module.v() == 1
+    end
+
+    test "a refused node is NOT stamped — it is still running its own code" do
+      CodeStamp.clear()
+      on_exit(&CodeStamp.clear/0)
+
+      pid = start_idle_reconciler()
+      distrust_test_provenance()
+
+      publish!([entry(unique_module("CPTest.Prov.NoStamp"), "def v, do: 1")])
+      |> newer_than_this_node()
+
+      assert %{status: :refused} = GenServer.call(pid, {:reconcile_node, node(), []})
+      assert {:ok, nil} = CodeStamp.read(node())
+    end
+
+    test "a generation with NO provenance is refused, not grandfathered" do
+      pid = start_idle_reconciler()
+
+      name = unique_module("CPTest.Prov.Legacy")
+      v2 = entry(name, "def v, do: 2")
+      _v1 = entry(name, "def v, do: 1")
+
+      # A row from before the column existed. The test bypass is still ON
+      # here, which is the point: trusting test runs does not extend to
+      # trusting a row that proves nothing about itself.
+      publish!([v2]) |> newer_than_this_node() |> set_provenance(nil)
+
+      assert %{status: :refused, reason: reason} =
+               GenServer.call(pid, {:reconcile_node, node(), []})
+
+      assert reason =~ "NO publish provenance"
+      assert v2.module.v() == 1
+    end
+
+    test "a marker in an unrecognised format is refused, not guessed at" do
+      pid = start_idle_reconciler()
+
+      name = unique_module("CPTest.Prov.Unparseable")
+      v2 = entry(name, "def v, do: 2")
+      _v1 = entry(name, "def v, do: 1")
+
+      publish!([v2]) |> newer_than_this_node() |> set_provenance("99:future:format:v2")
+
+      assert %{status: :refused, reason: reason} =
+               GenServer.call(pid, {:reconcile_node, node(), []})
+
+      assert reason =~ "not in a format this node understands"
+      assert v2.module.v() == 1
+    end
+
+    test "status/0 reports the refusal loudly rather than showing a healthy-looking target" do
+      pid = start_idle_reconciler()
+      distrust_test_provenance()
+
+      publish!([entry(unique_module("CPTest.Prov.Status"), "def v, do: 1")])
+      |> newer_than_this_node()
+
+      status = GenServer.call(pid, :status)
+
+      assert status.generation_refusal =~ "TEST RUN"
+      assert status.generation.provenance == Provenance.current()
+      refute status.generation.provenance_trusted
+    end
+
+    test "purge_orphaned REFUSES rather than treating real modules as orphans" do
+      pid = start_idle_reconciler()
+      distrust_test_provenance()
+
+      publish!([entry(unique_module("CPTest.Prov.Purge"), "def v, do: 1")])
+      |> newer_than_this_node()
+
+      # "Orphaned" means "resident but absent from the generation", so a
+      # generation of synthetic test modules would classify every REAL
+      # module on this node as an orphan. The refusal happens before the
+      # orphan set is ever computed.
+      assert {:error, {:untrusted_generation, explanation}} =
+               GenServer.call(pid, {:purge_orphaned, node()})
+
+      assert explanation =~ "TEST RUN"
+    end
+
+    test "a genuine production-shaped marker is applied normally" do
+      distrust_test_provenance()
+
+      name = unique_module("CPTest.Prov.Trusted")
+      v2 = entry(name, "def v, do: 2")
+      _v1 = entry(name, "def v, do: 1")
+
+      publish!([v2]) |> newer_than_this_node() |> set_provenance("1:release:prod")
+
+      _pid = start_reconciler()
+
+      assert v2.module.v() == 2
     end
   end
 
