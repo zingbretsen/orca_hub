@@ -1,0 +1,62 @@
+Deploying SHA: 01a1b00
+
+==============================================================
+>>> Step 1/7 — Pushing current branch to origin
+==============================================================
+Everything up-to-date
+
+==============================================================
+>>> Step 2/7 — Building image + extracting release artifact(s) (linux/amd64,linux/arm64)
+==============================================================
+#1 [internal] load build definition from Dockerfile
+linux_amd64: bin/orca_hub is an ELF 64-bit LSB executable, x86-64 — OK
+linux_arm64: bin/orca_hub is an ELF 64-bit LSB executable, ARM aarch64 — OK
+
+==============================================================
+>>> Step 3/7 — Updating k3s manifests for Flux
+==============================================================
+Waiting for k8s orca-hub (https://orca.lab.ingbretsenhome.com/api/version) to report sha=01a1b00 (timeout 180s)...
+  OK: k8s orca-hub (https://orca.lab.ingbretsenhome.com/api/version) -> sha=01a1b00
+Waiting for k8s orca-agent-discord (kubectl exec, port 4010) to report sha=01a1b00 (timeout 180s)...
+  OK: k8s orca-agent-discord (kubectl exec, port 4010) -> sha=01a1b00
+Waiting for k8s orca-agent-dell (kubectl exec, port 4020) to report sha=01a1b00 (timeout 180s)...
+  OK: k8s orca-agent-dell (kubectl exec, port 4020) -> sha=01a1b00
+
+==============================================================
+>>> Step 4/7 — Installing per-host env files (sops-decrypt)
+==============================================================
+Installed /home/zach/orca-hub-releases/.env
+
+==============================================================
+>>> Step 5/7 — Installing release on mini + restarting its systemd service
+==============================================================
+mini updated and service restarted.
+Waiting for mini (zach@mini, http://127.0.0.1:4001/api/version) to report sha=01a1b00 (timeout 60s)...
+  OK: mini (zach@mini, http://127.0.0.1:4001/api/version) -> sha=01a1b00
+
+==============================================================
+>>> Step 6/7 — Installing arm64 release on gb10 + restarting its systemd service
+==============================================================
+gb10: zach@192.168.1.77 (unit: orca-hub, releases dir: /home/zach/orca-hub-releases)
+gb10 updated and service restarted.
+Waiting for gb10 (zach@192.168.1.77, http://127.0.0.1:4001/api/version) to report sha=01a1b00 (timeout 60s)...
+  TIMEOUT: gb10 (zach@192.168.1.77, http://127.0.0.1:4001/api/version) still reports sha='4dc631d' after 60s (want 01a1b00)
+WARNING: gb10 did not report sha=01a1b00 after restart — check it manually.
+
+==============================================================
+>>> Step 7/7 — Installing release locally + restarting systemd service: orca-hub
+==============================================================
+Service restarted. Recent status:
+
+==============================================================
+>>> Deploy complete
+==============================================================
+Summary:
+  SHA: 01a1b00
+  [x] Pushed current branch to origin
+  [x] Built (linux/amd64,linux/arm64) image + extracted release artifact(s)
+  [x] Installed release on mini + restarted (orca-hub)
+  [!] gb10 host update FAILED — see warning above
+  [x] Installed release locally + restarted systemd service (orca-hub)
+
+Done.

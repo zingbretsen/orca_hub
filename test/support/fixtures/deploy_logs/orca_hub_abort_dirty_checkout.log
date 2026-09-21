@@ -1,0 +1,4 @@
+ERROR: /home/zach/orca_hub has uncommitted changes.
+The deploy tags images/commits manifests with the current git SHA — a dirty
+tree means that SHA wouldn't actually describe what gets built and shipped.
+Commit or stash your changes, or pass --allow-dirty to deploy anyway.

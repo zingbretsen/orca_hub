@@ -1,0 +1,30 @@
+Deploying SHA: 4dc631d
+
+==============================================================
+>>> Step 1/7 — Pushing current branch to origin
+==============================================================
+Everything up-to-date
+
+--- SKIPPED: Step 2/7 — docker buildx builds + artifact extraction (--skip-build) ---
+
+==============================================================
+>>> Step 3/7 — Updating k3s manifests for Flux
+==============================================================
+WARNING: image tag cleanup failed — continuing.
+Waiting for k8s orca-hub (https://orca.lab.ingbretsenhome.com/api/version) to report sha=4dc631d (timeout 180s)...
+  TIMEOUT: k8s orca-hub (https://orca.lab.ingbretsenhome.com/api/version) still reports sha='dc6d8cc' after 180s (want 4dc631d)
+WARNING: k8s orca-hub did not report sha=4dc631d in time — check Flux/rollout status manually.
+
+==============================================================
+>>> Step 4/7 — Installing per-host env files (sops-decrypt)
+==============================================================
+Installed /home/zach/orca-hub-releases/.env
+
+--- SKIPPED: Step 5/7 — install release on mini + restart (--skip-mini) ---
+
+--- SKIPPED: Step 6/7 — install arm64 release on gb10 + restart (--skip-arm64 or --skip-gb10) ---
+
+==============================================================
+>>> Step 7/7 — Installing release locally + restarting systemd service: orca-hub
+==============================================================
+ERROR: no artifact available (Step 2 was skipped with --skip-build) — cannot install locally.
