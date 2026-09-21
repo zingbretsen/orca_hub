@@ -96,3 +96,16 @@ config :orca_hub, job_kill_grace_ms: 300
 # `sh -c echo` measures 2-26ms. Tests get production's own margin instead; the
 # one test that needs a SHORT bound sets it for itself.
 config :orca_hub, job_progress_command_timeout_ms: 5_000
+
+# OrcaHub.Cluster.CodePush's boot reconcile reads the stored code generation
+# out of the SHARED DEV DB and hot-loads its beams into whatever node is
+# running — which under `mix test` is the test node itself. A generation left
+# in the dev DB by real use would therefore swap the code out from under the
+# suite mid-run. The entire loop is gated on this (nodeup handling included),
+# not just the boot pass. Tests drive CodePush by starting their own instance
+# with monitor_nodes: false and calling into it directly.
+config :orca_hub, :code_reconcile_enabled, false
+
+# Short health window so circuit-breaker tests don't each pay 30s of real
+# wall-clock waiting for a generation to be marked healthy.
+config :orca_hub, :code_push_health_window_ms, 150

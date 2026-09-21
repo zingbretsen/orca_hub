@@ -47,6 +47,7 @@ defmodule OrcaHub.MCP.Tools do
 
   alias OrcaHub.MCP.Tools.{
     Artifacts,
+    CodePush,
     Databases,
     Discord,
     Files,
@@ -81,7 +82,10 @@ defmodule OrcaHub.MCP.Tools do
     PhxAgents,
     Notify,
     Jobs,
-    Probes
+    Probes,
+    # Orchestrator-only (absent from @regular_session_tools): publishing a
+    # code generation reconciles the whole fleet's running code.
+    CodePush
   ]
 
   # Tools visible to regular (non-orchestrator) connections. Orchestrator

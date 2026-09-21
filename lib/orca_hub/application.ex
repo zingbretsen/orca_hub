@@ -141,6 +141,13 @@ defmodule OrcaHub.Application do
       OrcaHub.EmailInboxSupervisor,
       OrcaHub.EmailInboxLoader,
       OrcaHub.ClusterNodeTracker,
+      # The code RECONCILIATION loop: owns the hub's durable desired code
+      # generation, applies it to this hub on boot, and reconciles every node
+      # that connects. Hub-only and deliberately a single process — that is
+      # what makes two concurrent hot deploys impossible by construction, so
+      # there is no lock here and none should be added. See
+      # OrcaHub.Cluster.CodePush, especially its circuit-breaker section.
+      OrcaHub.Cluster.CodePush,
       # Dials out to every `nodes` row flagged `dial: true` — see
       # OrcaHub.NodeDialer moduledoc. Hub-only: agents never dial out on
       # their own.

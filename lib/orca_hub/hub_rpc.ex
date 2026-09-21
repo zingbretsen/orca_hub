@@ -808,4 +808,38 @@ defmodule OrcaHub.HubRPC do
 
   def file_deletable?(file, session_id, project_id),
     do: call(OrcaHub.Files, :deletable?, [file, session_id, project_id])
+
+  # -------------------------------------------------------------------
+  # Code generations / reconciliation (OrcaHub.Cluster.CodePush)
+  #
+  # The hub owns both the generation tables and the single GenServer that
+  # serializes code push, so an agent reaches BOTH through here rather than
+  # touching OrcaHub.Repo or starting a CodePush of its own. An agent's only
+  # active role is collecting a payload from its own checkout — see
+  # OrcaHub.Cluster.CodePush.collect_payload/1, which runs locally and
+  # deliberately does no pushing (with `connect_all false`, an agent's
+  # Node.list/0 is just the hub, so it could not fan out even if it tried).
+  #
+  # `publish` moves a ~7.6 MiB payload and then reconciles every connected
+  # node, so it gets a minutes-long budget instead of the default #{@timeout}ms.
+  # -------------------------------------------------------------------
+
+  @code_publish_timeout :timer.minutes(5)
+
+  def publish_code_generation(payload, opts \\ []),
+    do: call(OrcaHub.Cluster.CodePush, :publish, [payload, opts], timeout: @code_publish_timeout)
+
+  def code_push_status, do: call(OrcaHub.Cluster.CodePush, :status, [])
+
+  def supersede_code_generation(note),
+    do: call(OrcaHub.Cluster.CodePush, :supersede, [note], timeout: 60_000)
+
+  def reconcile_code_all,
+    do: call(OrcaHub.Cluster.CodePush, :reconcile_all, [], timeout: @code_publish_timeout)
+
+  def reconcile_code_node(target),
+    do: call(OrcaHub.Cluster.CodePush, :reconcile_node, [target], timeout: :timer.minutes(2))
+
+  def list_code_generations(limit \\ 20),
+    do: call(OrcaHub.CodeGenerations, :list, [limit])
 end
