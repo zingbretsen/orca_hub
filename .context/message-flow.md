@@ -141,6 +141,34 @@ can't cancel in-flight work), `:interrupt`, or auto-steer. See
 `.context/session-lifecycle.md` for the `downgrade`/`evict_warm` state
 transitions this engine adds on top of the four core GenStatem states.
 
+## Assistant Deltas (live, unpersisted)
+
+Alongside the persisted event stream above, each backend also streams PARTIAL
+assistant text as it is written. The three native shapes (Claude's raw
+Anthropic `stream_event` frames, Codex's `item/agentMessage/delta` JSON-RPC
+notifications, pi's `message_update`/`assistantMessageEvent`) are normalized by
+each adapter's `normalize/2` into ONE kind — `"orca_delta"` — and
+`SessionRunner` turns those into the `{:assistant_*, payload}` PubSub tuples
+the UI and streaming TTS consume (`OrcaHub.Backend.Deltas`,
+`assets/js/tts_stream.js`).
+
+Four invariants make this safe to ignore from the persistence side:
+
+- **Never persisted.** Deltas are broadcast-only — they never reach
+  `messages`, never append to the runner's accumulator, and never influence
+  `turn_result`. The persisted `assistant` event that follows is still the
+  single source of truth; a client that joined mid-turn just renders that.
+- **`stream_id` correlates the two.** It MUST equal the `message.id` of the
+  persisted `assistant` event for the same API message, so the client can swap
+  its live bubble for the real render. Claude gets that id free from
+  `message_start`; Codex and pi mint a UUID per assistant message and stamp it
+  into the normalized `assistant` event too.
+- **Text blocks only.** `tool_use`/`thinking` blocks still get a
+  `block_start`/`block_stop` pair (so the UI can show a "running …" chip) but
+  never their payload.
+- **Best effort.** A backend that cannot stream emits nothing rather than
+  faking deltas out of a completed message.
+
 ## Fork Spawns (pi)
 
 A spawn carrying `fork_from_parent` (v1: pi only) does NOT send its first

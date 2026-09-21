@@ -29,8 +29,11 @@ graph TB
         ArtifactCtrl["ArtifactController<br>(/artifacts/:id/raw|download)"]
         FileDownloadCtrl["FileDownloadController<br>(chunked, node-routed)"]
         ApiRunCtrl["ApiRunController<br>(/api/v1/runs)"]
-        SessionApiCtrl["SessionApiController<br>(GET /api/v1/sessions(/:id))"]
+        SessionApiCtrl["SessionApiController<br>(GET /api/v1/sessions,<br>/recent, /:id, /:id/tail)"]
         A2ACtrl["A2AController<br>(/a2a, inbound JSON-RPC)"]
+        ApiSocket["ApiSocket (/api/v1/socket)<br>+ SessionEventsChannel<br>(scoped-token WS push)"]
+        UserSocket["UserSocket (/terminal_socket)<br>TerminalChannel + VoiceChannel"]
+        VoiceBar["VoiceBarLive<br>(sticky nested LV in the header)"]
     end
 
     subgraph Core["Core"]
@@ -66,6 +69,24 @@ graph TB
         ForkGate["ForkGate<br>(pi fork first-turn FIFO)"]
         ToolPolicy["ToolPolicy<br>(per-session MCP allow/deny)"]
         TTSConfig["TTSConfig<br>(provider/model, env fallback)"]
+        ASRConfig["ASRConfig<br>(one provider row, env fallback)"]
+        SessionEvents["SessionEvents<br>(turn-end fan-out, hub)"]
+        DirectoryMove["Projects.DirectoryMove<br>+ MoveSideEffects"]
+    end
+
+    subgraph Voice["Voice Mode (see .context/voice-mode.md)"]
+        VoiceChannel["VoiceChannel<br>(transport + effects)"]
+        VoiceSession["Voice.Session<br>(pure state machine)"]
+        VoiceASR["Voice.ASR<br>(GB10 sync lane)"]
+        VoiceIntent["Voice.Intent<br>(phonetic command matcher)"]
+        Deltas["Backend.Deltas<br>(normalized orca_delta)"]
+    end
+
+    subgraph Deploys["Project Deploys (durable Jobs + TTL lease)"]
+        DeploysMod["Deploys<br>(compose, lease, launch)"]
+        DeployRegistry["Deploys.Registry<br>(targets + flag allow-list)"]
+        DeployLeases["Deploys.Leases<br>(partial unique index)"]
+        LeaseReaper["Deploys.LeaseReaper<br>(hub only)"]
     end
 
     subgraph MemSub["Agent Memory"]
@@ -78,6 +99,7 @@ graph TB
     subgraph Sync["Hub-DB -> Node-Disk Sync (every node)"]
         SkillSync["SkillSync<br>(skills -> SKILL.md)"]
         PiConfigSync["PiConfigSync<br>(entries -> ~/.pi/agent)"]
+        PiModelSync["PiModelSync<br>(hub only, hourly:<br>gateway -> provider models)"]
         MemoryGitServer["MemoryGit.Server<br>(agent memory -> Gitea)"]
     end
 
@@ -170,6 +192,11 @@ graph TB
     Router -->|":api_authed pipeline"| ApiAuth
     ApiAuth --> TTSCtrl & ApiRunCtrl & SessionApiCtrl & A2ACtrl
     ApiAuth -->|"scoped token: hash lookup,<br>scope + session-pin check"| ApiTokens
+    ApiSocket -->|"same scoped token at CONNECT,<br>requires sessions:read"| ApiTokens
+    SessionEvents -->|"broadcast turn_end"| ApiSocket
+    SessionEvents -.->|"opt-in, per-node<br>ORCA_NOTIFY_ON_FINISH"| Gotify
+    UserSocket --> VoiceChannel
+    VoiceBar --> UserSocket
 
     SessionShow -->|send_message| SessionRunner
     SessionRunner -->|broadcast| PubSub
@@ -240,6 +267,10 @@ graph TB
     EmailIngest -->|"routed payload (Cluster.rpc)"| TriggerExecutor
 
     MCPTools -->|"jobs tool surface"| Jobs
+    MCPTools -->|"start_deploy / in_flight_deploys /<br>deploy_status (orchestrator only)"| DeploysMod
+    DeploysMod --> DeployRegistry & DeployLeases
+    DeploysMod -->|"launches as a normal job"| Jobs
+    LeaseReaper -.->|"job_finished -> release"| DeployLeases
     Jobs --> JobLauncher
     JobLauncher -->|"spawns, then lets go"| DetachedProc
     JobSupervisor --> JobWatcher
@@ -249,6 +280,7 @@ graph TB
 
     SkillSync --> Skills
     PiConfigSync --> PiConfig
+    PiModelSync -->|"refresh opted-in provider rows"| PiConfig
     PiConfigSync -.->|"evict idle pi warm ports"| WarmPool
     SessionRunner -.->|"idle transition triggers"| MemoryGitServer
     MemoryGitServer -.-> Gitea
@@ -288,6 +320,13 @@ graph TB
     TTSCtrl --> TTSConfig
     TTSConfig --> Repo
     TTSCtrl -.-> ElevenLabs
+
+    SessionRunner -.->|"turn end (idle/error),<br>via HubRPC"| SessionEvents
+    SessionRunner -->|"unpersisted delta broadcasts"| Deltas
+    VoiceChannel --> VoiceSession & VoiceASR & VoiceIntent
+    VoiceASR --> ASRConfig
+    VoiceASR -.-> ASRService["GB10 transcription<br>(POST /v1/transcribe/sync)"]
+    ProjectShow -->|"move directory"| DirectoryMove
 ```
 
 ## Subsystem Notes
@@ -338,11 +377,26 @@ graph TB
   validation + retry, and AG-UI-style caller-defined ("client"/frontend)
   tools posted back via `POST /api/v1/runs/:id/tool_result`.
 - **Read-only sessions API** (`lib/orca_hub_web/controllers/session_api_controller.ex`,
-  `GET /api/v1/sessions(/:id)`): a compact projection of
+  `GET /api/v1/sessions`, `/sessions/recent`, `/sessions/:id`,
+  `/sessions/:id/tail`): a compact projection of
   `Sessions.list_sessions/1` / `HubRPC.get_session/1` for
   bandwidth-constrained external clients (first consumer: a Wear OS watch
   companion). Deliberately thin — it never reimplements the query, only
-  narrows the fields.
+  narrows the fields. `/recent` is the activity-ordered feed and `/:id/tail`
+  the last-N-messages read the phone/watch apps poll instead of pulling a
+  whole session.
+- **Turn-end push** (`lib/orca_hub/session_events.ex`,
+  `lib/orca_hub_web/channels/{api_socket,session_events_channel}.ex`): every
+  genuine `running -> idle|error` transition that clears
+  `SessionRunner.turn_end_push_eligible?/2` (not a memory-extraction child,
+  not archived, and — by default — a root session rather than a worker, whose
+  turn end reports to its ORCHESTRATOR instead) fans one four-field payload
+  onto two wires from the HUB: the `session_events` channel ALWAYS, and Gotify
+  only when the runner's own node sets `ORCA_NOTIFY_ON_FINISH`. The socket
+  (`/api/v1/socket`) authenticates the same scoped `ApiToken` at CONNECT
+  rather than at join, requires `sessions:read`, refuses the legacy global
+  `ORCA_API_TOKEN` outright, and is kicked live on revocation via the
+  socket `id/1`. See `.context/push-payload.md` for the field contract.
 - **API auth** (`lib/orca_hub_web/plugs/api_auth.ex`, `lib/orca_hub/api_tokens.ex`):
   everything behind the `:api_authed` pipeline — `/api/tts`, `/api/v1/*`,
   `/a2a` — takes a bearer token. Two kinds are accepted, in order: a scoped,
@@ -365,6 +419,42 @@ graph TB
   long work survives idle teardown, WarmPool eviction, kill-switch
   downgrades, and deploys. The process is never a BEAM child; a disposable
   per-node `JobWatcher` only observes it. See `.context/supervision-tree.md`.
+- **Voice mode** (`lib/orca_hub_web/channels/voice_channel.ex`,
+  `lib/orca_hub/voice/{session,asr,intent}.ex`, `lib/orca_hub/asr_config.ex`,
+  `lib/orca_hub_web/live/voice_bar_live.ex`, `assets/js/voice/`): browser
+  capture + client-side VAD -> `VoiceChannel` -> `Voice.ASR` (the GB10 sync
+  lane, configured per-field by `ASRConfig`) -> `Voice.Intent` for spoken
+  commands, with the draft sent through the page's own composer. The bar is a
+  STICKY nested LiveView in the app header, so every internal link must
+  live-navigate or the mic and channel die with the page. Assistant text
+  streams back live through `OrcaHub.Backend.Deltas` (see
+  `.context/message-flow.md`). Full pipeline, wire contract and invariants in
+  `.context/voice-mode.md`.
+- **Project deploys** (`lib/orca_hub/deploys.ex`, `deploys/{registry,leases,
+  lease_reaper,log_parser}.ex`, `mcp/tools/deploys.ex`): runs a project's
+  deploy script as an ordinary detached `Jobs` job under a mutually-exclusive
+  TTL lease. `Registry` owns WHAT may run (a checked-in target map, deep-merged
+  with `:deploy_targets` config) and validates arguments as an EXACT-MATCH flag
+  allow-list — defence against shell injection on an LLM-reachable production
+  trigger, not a model of each script's semantics. `Deploys` is the only thing
+  that composes a command, takes a lease and launches, in an order chosen so
+  nothing that can fail cheaply happens after the lease is taken and every
+  failure after `acquire` releases it. A deploy is the most host-specific
+  action in the system, so its target is PINNED to a node and an offline node
+  is a refusal (`{:error, :node_unavailable}`, no lease taken), never a
+  fallback. The subtle part is the cgroup escape: `deploy-orca-hub.sh` restarts
+  the very systemd unit that launched it and `setsid` does not leave a cgroup,
+  so the command is rewritten to run the real work over
+  `ssh localhost` (landing in `user.slice`) with `job.pid`/`pgid` rebound to
+  the remote pid afterwards. Three orchestrator-only MCP tools (`start_deploy`,
+  `in_flight_deploys`, `deploy_status`) return refusals as RESULTS
+  (`{"ok": false, …}`), never `isError` envelopes. Design in
+  `.context/deploy-jobs-design.md`.
+- **Project directory moves** (`lib/orca_hub/projects/directory_move.ex`,
+  `move_side_effects.ex`): genuinely moves a project's directory on its owning
+  node — with its own budget/timeout for the filesystem half — and carries the
+  side effects (Claude's slug dir, the memory-service project slug) along,
+  surfaced in the UI as problems rather than success bullets when they warn.
 - **Artifacts** (`lib/orca_hub/artifacts.ex`, `ArtifactLive`,
   `ArtifactController`): agent-generated HTML/SVG/markdown persisted per
   project and rendered client-side in a sandboxed iframe, with a `data` map
@@ -412,6 +502,13 @@ graph TB
   optionally pinned to a `trusted_authserv_id`) and `EmailInbox.Ingest`
   normalizes the message into a payload that fires a matching `type: "email"`
   trigger. See `.context/triggers.md`.
+- **PiModelSync** (`lib/orca_hub/pi_model_sync.ex`, hub only): hourly, refreshes
+  the `models` array of every `pi_config_entries` provider row that opted in
+  with a `models_from` URL, from the local LLM gateway's `/v1/models`. It only
+  ever refreshes rows that ALREADY EXIST — it never creates a provider, so
+  deleting every provider row leaves an empty `models.json` and an empty model
+  picker with nothing to repair it. The resulting write fans out to every node
+  through the existing `{:pi_config_updated}` broadcast.
 - **SkillSync / PiConfigSync / MemoryGit** (every node): hub-DB-to-local-disk
   materializers and per-node agent-memory git snapshotting — see
   `.context/supervision-tree.md`. `MemoryGit.Server` no longer runs the
@@ -606,7 +703,11 @@ graph TB
   `churn_sampler/alert_evaluator.ex`, `sessions/churn.ex`, hub only): one
   120s sweep does two things. First it samples every non-archived `running`
   session's churn metrics into `churn_samples` and emits
-  `[:orca_hub, :churn, :sample]` for Grafana. Then `AlertEvaluator` — a
+  `[:orca_hub, :churn, :sample]` for Grafana — including, since 2026-09-19,
+  batched file-surgery evidence and the `SurgeryAlertPolicy` decision that
+  would have been made about it, which is the only durable trace a SUPPRESSED
+  alert leaves (and whose absence voids `churn_suspected` on every older row —
+  see `.context/data-model.md`). Then `AlertEvaluator` — a
   delivery-free, directly testable module — evaluates each enabled
   `alert_subscriptions` row (set by an orchestrator via `set_worker_alerts`)
   against a FRESHLY resolved watched set, and hands any rising-edge alerts to
@@ -617,6 +718,15 @@ graph TB
   ends alerting forever rather than degrading it — and "no alerts" is this
   system's normal baseline, so nothing looks wrong. Every contributor to
   `evaluate/3` must fail closed to a neutral value locally.
+  The watched `"churn"` condition has THREE drivers, not one: volumetric
+  churn; `Sessions.EditFailure` (ORCAHUB3-63 §1 — ≥2 `Edit`/`Write`/
+  `MultiEdit` failures on ONE path with no success between), suppressed by
+  nothing, because the population it exists to find is volumetrically
+  invisible and `SurgeryAlertPolicy`'s clauses cannot speak to a failing
+  editor call; and file surgery, the only driver that has to clear
+  `Sessions.SurgeryAlertPolicy` (~31% suppressed). Suppression lives in the
+  policy layer on purpose — making the MATCHER decline a path it could
+  resolve would arm a flood for whoever next improves it.
 - **ClusterNodeTracker** / **NodeDialer** (both hub only): the tracker records
   Erlang node connect/disconnect events into the `nodes` table backing
   `NodeLive`; the dialer actively connects to rows flagged `dial: true`.

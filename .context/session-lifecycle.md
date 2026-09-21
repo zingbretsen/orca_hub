@@ -88,6 +88,13 @@ stateDiagram-v2
   `.context/message-flow.md`.
 - Entering `idle` also nudges `OrcaHub.MemoryGit.Server` to snapshot this
   node's on-disk agent memory — a side effect of the transition, not a state.
+- **Turn-end push** is the other transition side effect: a `running` →
+  `idle`/`error` transition that clears `turn_end_push_eligible?/2` (not a
+  `kind: "memory_extraction"` child, not archived, and a ROOT session — a
+  worker reports to its orchestrator instead) fires `OrcaHub.SessionEvents`
+  once per turn end. It is fire-and-forget on a `Task.Supervisor` and may
+  never raise back into the transition: a failed notification must not become
+  a failed turn end. See `.context/push-payload.md`.
 - **Automatic memory extraction** (`OrcaHub.MemoryExtraction`) is deliberately
   NOT hooked into any SessionRunner state transition — `idle_teardown` and
   `evict_warm` were both considered and rejected (neither is a genuine
@@ -95,7 +102,16 @@ stateDiagram-v2
   about whether the conversation is actually done, and WarmPool pressure is
   pure capacity management). The only trigger today is
   `OrcaHub.Sessions.archive_session/2` (default on, `extract_memories: false`
-  opts out) plus an on-demand `extract_memories` MCP tool call. A future
+  opts out) plus an on-demand `extract_memories` MCP tool call. Note that a
+  USER-initiated archive doesn't go through `archive_session/2` alone:
+  `OrcaHub.Cluster.cascade_archive_session/3` (the `archive_session` tool and
+  both LiveViews' archive/undo/bulk actions) also archives every unarchived
+  descendant in the spawn subtree, resolving each one's own node — never
+  re-assigning across nodes — and skipping, without pruning the rest of that
+  branch, any descendant still `running`/`waiting`. The non-cascading paths
+  (empty-session auto-archive, the extraction child's self-archive,
+  `MemoryExtractionSweep`, `archive_on_complete` triggers) archive exactly one
+  session. A future
   scheduled sweep — not yet implemented — will call `dispatch/2`/
   `dispatch_many/2` for every session with new content past its watermark
   instead of a SessionRunner hook.

@@ -37,6 +37,8 @@ graph TB
     App --> SessionHeartbeat["OrcaHub.SessionHeartbeat\n(hub only)"]
     App --> ChurnSampler["OrcaHub.ChurnSampler\n(hub only)"]
     App --> IndexSweep["OrcaHub.Issues.IndexSweep\n(hub only)"]
+    App --> IndexTaskSup["Issues.Indexer\nIndexTaskSupervisor\n(capped, hub only)"]
+    App --> PiModelSync["OrcaHub.PiModelSync\n(hub only)"]
     App --> WarmPool["OrcaHub.Streaming.WarmPool"]
     App --> SessionSupervisor["OrcaHub.SessionSupervisor\n(DynamicSupervisor)"]
     App --> SessionResumer["OrcaHub.SessionResumer"]
@@ -45,6 +47,7 @@ graph TB
     App --> TerminalSupervisor["OrcaHub.TerminalSupervisor\n(DynamicSupervisor)"]
     App --> JobSupervisor["OrcaHub.JobSupervisor\n(DynamicSupervisor)"]
     App --> JobResumer["OrcaHub.JobResumer"]
+    App --> LeaseReaper["OrcaHub.Deploys.LeaseReaper\n(hub only)"]
     App --> LoginSupervisor["OrcaHub.LoginSupervisor\n(DynamicSupervisor)"]
     App --> BackendInstallerSupervisor["OrcaHub.BackendInstallerSupervisor\n(DynamicSupervisor)"]
     App --> MCPSupervisor["DynamicSupervisor\n(MCPSupervisor)"]
@@ -86,6 +89,8 @@ graph TB
 
 Agent nodes omit `Telemetry`, `Repo`, `MCP.UpstreamClient`, `Scheduler`,
 `TriggerLoader`, `SessionHeartbeat`, `ChurnSampler`, `MemoryExtractionSweep`,
+`Issues.IndexSweep` (and the capped `Issues.Indexer` task supervisor),
+`PiModelSync`, `Deploys.LeaseReaper`,
 `ClusterNodeTracker`, `NodeDialer`, and the `EmailInbox*` children. All database operations are
 proxied to the hub node via `HubRPC`. Everything else — including `Streaming.WarmPool`,
 `ForkGate`, `TerminalSupervisor`, `JobSupervisor`/`JobResumer`,
@@ -168,7 +173,11 @@ graph TB
 - **`OrcaHub.ChurnSampler`** (hub only): every 120s it samples each
   non-archived `running` session's churn metrics (`OrcaHub.Sessions.Churn`)
   into the `churn_samples` table and emits a `[:orca_hub, :churn, :sample]`
-  telemetry event for Grafana. Bolted onto the tail of the same sweep,
+  telemetry event for Grafana. Since 2026-09-19 that includes the QUALITATIVE
+  half — batched `Sessions.FileSurgery.fetch_many/2` evidence plus what
+  `Sessions.SurgeryAlertPolicy` would decide about alerting on it — which the
+  sampler previously never computed at all, voiding `churn_suspected` on every
+  older row (see `.context/data-model.md`). Bolted onto the tail of the same sweep,
   `ChurnSampler.AlertEvaluator` evaluates every enabled `alert_subscriptions`
   row and delivers rising-edge worker alerts to the subscribing orchestrator
   — see `.context/data-model.md`. Hub-only for the same reason as the
@@ -186,7 +195,35 @@ graph TB
   tick changes nothing and the next one retries the same candidate set
   (observable from outside via `Issues.Indexer.stale_count/0`). The bulk
   counterpart is `OrcaHub.Issues.Backfill` (`mix orca.reindex_issues`, or
-  `bin/orca_hub rpc` in prod), not a supervised child.
+  `bin/orca_hub rpc` in prod), not a supervised child. Sitting next to it is
+  the CAPPED `OrcaHub.Issues.IndexTaskSupervisor`
+  (`Issues.Indexer.task_supervisor_spec/0`, also hub-only) that every
+  write-hook `reindex_async/1` runs under: `max_children` is what stops a
+  loop closing 20 issues from becoming 20 simultaneous requests to the one
+  shared embedding box, and overflow is simply DROPPED — the sweep above is
+  what reconciles it.
+- **`OrcaHub.PiModelSync`** (hub only): hourly refresh of the `models` array
+  on every `pi_config_entries` row of `kind: "provider"` that opted in with a
+  `models_from` URL, resolved from the local LLM gateway's `/v1/models`. Three
+  reasons it is hub-only, not just `ChurnSampler`'s: only the hub owns the DB,
+  and agent pods cannot reach the gateway at all. The write fans out to every
+  node through the existing `{:pi_config_updated}` broadcast that
+  `PiConfigSync` already listens to. It only ever REFRESHES rows that already
+  exist — it never creates a provider — and it never writes an empty list, so
+  a gateway that has been down for a week is invisible on disk and shows up
+  only as `models_refresh_error`.
+- **`OrcaHub.Deploys.LeaseReaper`** (hub only): releases a deploy lease when
+  its job ends. Hub-only for `MemoryExtractionSweep`'s reason — the
+  `deploy_leases` table is the hub's and releasing is a pure DB write
+  whichever node ran the deploy, so one reaper serves the cluster. It has two
+  mechanisms because one of them is guaranteed to be missing: it subscribes to
+  `"job:<id>"` for each deploy job it learns about (through a cluster-wide
+  `"deploys"` broadcast, so a deploy started on an AGENT node still reaches
+  it) and releases on `{:job_finished, …}`; and it runs a BOOT SWEEP, because
+  a deploy of OrcaHub itself restarts this very process mid-flight and it
+  comes back with an empty subscription set. There is deliberately no lease
+  RENEWER — it would die with the same restart it exists to survive, which is
+  why the lease has a TTL instead. See `.context/data-model.md`.
 - **`OrcaHub.ForkGate`**: serializes forked pi children's FIRST turns, one
   FIFO per parent session — child N+1's first prompt goes out only after
   child N's first `result` event lands. A correctness mechanism, not an
