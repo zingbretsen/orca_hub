@@ -210,7 +210,26 @@ RUN su orca -c "mise use -g node@22" && \
 # to WenQuanYi Zen Hei, a Chinese font, because its font packs are likewise
 # all outside the prefer list.) 5MB buys a correct sans/serif/mono split,
 # which is the difference between a screenshot you can trust for visual
-# verification and one you can't. Regenerate with the --dry-run command above when
+# verification and one you can't.
+#
+# WHY IT WENT MISSING, since this is a trap worth not re-walking: nothing here
+# asks for fonts implicitly, but `libcairo2`/`libpango-1.0-0` Depend on
+# `fontconfig`/`libfontconfig1`, and `fontconfig-config` in turn Depends on
+# the ALTERNATIVES group `fonts-dejavu-core | ttf-bitstream-vera |
+# fonts-liberation | ...`. apt satisfies an OR-dependency with the first
+# alternative UNLESS another one is already in the transaction — so naming
+# `fonts-liberation` explicitly (as upstream's list does) is precisely what
+# suppresses DejaVu. Install the libs alone and you get DejaVu free and
+# correct; add fonts-liberation and you silently lose it. Hence both.
+#
+# Corollary for anyone debugging a browser that lays out NO text at all
+# (empty innerText, keystrokes not landing): that symptom does not come from
+# an apt-installed image, because fontconfig + a font arrive transitively and
+# unavoidably via the pango/cairo chain above — verified by building the
+# 16-library list alone and getting correct layout. It comes from the
+# `apt-get download` + `dpkg -x` + LD_LIBRARY_PATH workaround, which resolves
+# no dependencies and so ships neither fontconfig's config nor any font.
+# Regenerate with the --dry-run command above when
 # bumping PLAYWRIGHT_VERSION and re-apply that same filter; a NEW lib*
 # package appearing upstream is the one thing this list can't learn on its
 # own, and the symptom would be a "missing shared libraries" launch error.
