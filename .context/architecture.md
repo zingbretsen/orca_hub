@@ -653,9 +653,15 @@ graph TB
   actually sees, writing image/audio bytes to
   `<session_directory>/.agents/media/<session_id>/` (somewhere the model's
   `Read` tool can reach — the app's own `$TMPDIR` is pod-local/ephemeral)
-  rather than inlining base64. `PlaywrightUpload` rewrites LOCAL file paths
-  in playwright-mcp's `paths` arg into pod-side paths via an upload sidecar,
-  since playwright reads that arg from its OWN pod's filesystem.
+  rather than inlining base64. `PlaywrightUpload` is VESTIGIAL: it rewrote
+  LOCAL file paths in an upstream browser server's `paths` arg into pod-side
+  paths via an upload sidecar, for a `playwright-mcp` pod deleted from the
+  cluster on 2026-08-29 (homelab `0471dfc`); `screenshot_artifact` stopped
+  using that upstream on 2026-09-07 (`7ed0447`). There is no in-cluster
+  browser pod and no `playwright__*` MCP tooling today — each node runs its
+  own Playwright CLI instead (baked into the agent image, commit `0461243`)
+  — so this module and the dispatcher's branches into it no-op. Removing
+  them is an open cleanup, not a bug.
 - **TTS config** (`lib/orca_hub/tts_config.ex`): the ElevenLabs/local
   provider, its URL/language, and the model catalog are DB-backed
   (`tts_config_entries`, managed in `/settings`) and resolved per request by
