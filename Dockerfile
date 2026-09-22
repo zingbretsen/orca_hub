@@ -181,6 +181,77 @@ RUN su orca -c "mise use -g node@22" && \
     su orca -c "mise reshim" && \
     rm -rf /home/orca/.local/share/mise/installs/node/*/include
 
+# === Playwright (Chromium only) ===
+#
+# Sessions run as `orca` with no root and no apt. Playwright's bundled
+# Chromium links against ~20 shared libraries that bookworm-slim doesn't
+# ship, and the documented fix (`npx playwright install-deps`) is apt-get
+# under the hood — so it can only happen HERE, at build time. Without this,
+# every front-end session either gives up on browser verification or spends
+# half an hour `apt-get download`ing .debs, `dpkg -x`ing them into /tmp and
+# hand-rolling LD_LIBRARY_PATH (observed twice on dell-agent, 2026-09-22).
+#
+# The package list below is upstream's own, captured from
+#   npx playwright@<ver> install-deps --dry-run chromium
+# MINUS `xvfb` and the CJK/Thai font packs (fonts-unifont,
+# fonts-ipafont-gothic, fonts-wqy-zenhei, fonts-tlwg-loma-otf,
+# xfonts-scalable, fonts-freefont-ttf). Measured on bookworm-slim: upstream's
+# full list adds 436MB, this one adds 63MB — the delta is almost entirely an
+# X server we can't use (nothing here runs headed) and font coverage for
+# scripts we don't render.
+#
+# fonts-dejavu-core is the one ADDITION to upstream's list, and it is not
+# cosmetic: Debian's 60-latin.conf resolves sans-serif by preferring
+# "Noto Sans", then "DejaVu Sans", then Verdana/Arial. With none of those
+# installed, fontconfig falls back alphabetically and EVERY generic family —
+# sans-serif, serif, system-ui, "Segoe UI" — lands on Liberation Mono, so
+# screenshots of a normal UI come back in a monospace face. (Measured: this
+# also afflicts upstream's own full list, which resolves sans-serif AND serif
+# to WenQuanYi Zen Hei, a Chinese font, because its font packs are likewise
+# all outside the prefer list.) 5MB buys a correct sans/serif/mono split,
+# which is the difference between a screenshot you can trust for visual
+# verification and one you can't. Regenerate with the --dry-run command above when
+# bumping PLAYWRIGHT_VERSION and re-apply that same filter; a NEW lib*
+# package appearing upstream is the one thing this list can't learn on its
+# own, and the symptom would be a "missing shared libraries" launch error.
+#
+# Kept as its own RUN, after the node/codex/pi layer, so it's purely
+# additive: nothing above it re-builds, and bumping the version below
+# re-does only this layer.
+ARG PLAYWRIGHT_VERSION=1.63.0
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends \
+      libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 \
+      libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 \
+      libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
+      libxfixes3 libxkbcommon0 libxrandr2 libfontconfig1 libfreetype6 \
+      fonts-liberation fonts-noto-color-emoji fonts-dejavu-core && \
+    apt-get clean && rm -f /var/lib/apt/lists/*_*
+
+# Browsers live OUTSIDE $HOME, in a dir owned by orca. Two reasons for the
+# ownership, both load-bearing:
+#   1. the baked browsers are shared by every session instead of each one
+#      re-downloading ~150MB into its own ~/.cache/ms-playwright;
+#   2. Playwright pins an exact Chromium build per release, so a session
+#      running `npx playwright@latest` AFTER upstream moves past the version
+#      pinned above finds no matching build. Because this dir is writable by
+#      orca, that degrades to a one-off `npx playwright install chromium`
+#      that SUCCEEDS (the apt deps above are the part it couldn't fix
+#      itself) rather than to the EACCES dead end a root-owned dir gives.
+# `playwright install chromium` installs both the full browser and the
+# headless shell (what `playwright screenshot` and headless:true actually
+# launch). Dropping to `chromium-headless-shell` alone saves ~600MB if image
+# size ever needs to come down; nobody here needs firefox or webkit.
+# `playwright` is also installed globally so `npx playwright ...` resolves it
+# from PATH — matching the baked browsers with no download at all — while an
+# explicit `npx -y playwright@latest ...` still works via the fallback above.
+RUN install -d -o orca -g orca /opt/ms-playwright && \
+    su orca -c "npm install -g playwright@${PLAYWRIGHT_VERSION}" && \
+    su orca -c "playwright install chromium" && \
+    su orca -c "npm cache clean --force" && \
+    su orca -c "mise reshim"
+
 WORKDIR /app
 
 ENV MIX_ENV=prod
