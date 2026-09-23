@@ -72,22 +72,31 @@ defmodule OrcaHub.Backend.Codex do
   end
 
   # ── Models ───────────────────────────────────────────────────────────
-  # Codex model ids are passthrough strings — codex-cli 0.142.5 has no
-  # queryable model enum (spec §7). This is a small default list, not a
-  # hardcoded enum: the UI also offers free-text entry for any other id.
-  # Current recommended set per the Codex models docs (July 2026): the
-  # gpt-5.6 family (sol/terra/luna) plus gpt-5.5 and gpt-5.3-codex-spark
-  # (spark id is now canonical lowercase). `gpt-5-codex` is legacy — all
-  # legacy Codex models sunset 2026-07-23 — so it's no longer listed.
+  # Codex model ids are passthrough strings — codex-cli 0.156.1 (current as
+  # of this list's last update) has no queryable model enum (spec §7). This
+  # is a small default list, not a hardcoded enum: the UI also offers
+  # free-text entry for any other id.
+  # Current recommended set per the Codex models docs (learn.chatgpt.com/docs
+  # /models + /deprecations, September 2026): the new gpt-6 family
+  # (astra/sol/luna, announced 2026-09-22) plus the still-current gpt-5.6
+  # family (sol/terra/luna) and gpt-5.5 (retires from Codex 2026-10-14, not
+  # yet retired). All seven ids verified working with `codex exec -m <id>`
+  # against codex-cli 0.156.1. `gpt-5.3-codex-spark` was dropped: OpenAI
+  # deprecated it 2026-09-14, and it now empirically 400s ("not supported
+  # when using Codex with a ChatGPT account") — same rejection shape a
+  # deliberately bogus model id produces, confirming the CLI actually
+  # enforces this rather than silently falling back.
 
   @impl true
   def models do
     [
+      {"gpt-6-astra", "GPT-6 Astra"},
+      {"gpt-6-sol", "GPT-6 Sol"},
+      {"gpt-6-luna", "GPT-6 Luna"},
       {"gpt-5.6-sol", "GPT-5.6 Sol"},
       {"gpt-5.6-terra", "GPT-5.6 Terra"},
       {"gpt-5.6-luna", "GPT-5.6 Luna"},
-      {"gpt-5.5", "GPT-5.5"},
-      {"gpt-5.3-codex-spark", "GPT-5.3 Codex Spark"}
+      {"gpt-5.5", "GPT-5.5"}
     ]
   end
 
