@@ -87,9 +87,23 @@ defmodule OrcaHub.Cluster.CodePush do
   **A payload is only ever the output of a compile this code performed or
   verified — never whatever happened to be on disk.**
 
-  `collect_payload/1` therefore runs `MIX_ENV=prod mix compile` in the
-  checkout itself rather than trusting a pre-existing `_build/prod`, and
-  then checks what it got.
+  `collect_payload/1` therefore compiles the checkout itself rather than
+  trusting a pre-existing `_build/prod`, and then checks what it got.
+
+  By default the compile runs INSIDE THE RELEASE TOOLCHAIN, not on the host:
+  a `docker buildx build --target beams-export` against the Dockerfile's
+  `beams` stage — the same `hexpm/elixir` image and the same
+  `MIX_LOCK_SHA`-keyed deps/_build cache mounts that built the running
+  releases. The host's own Erlang/Elixir are never involved, so a host that
+  drifted off the pin cannot contaminate a payload. The stage exports the
+  ebin plus a `toolchain.txt` naming the container's ERTS, OTP, Elixir and
+  compiler, and those — not this node's — are what the generation records.
+  The container's ERTS and Elixir must EQUAL this node's (a release built
+  from that same image) or the publish refuses outright: a Dockerfile whose
+  toolchain moved ahead of the running release describes a fleet that does
+  not exist yet, and that needs a full deploy, not a hot load.
+  `compile: :host` keeps the old `MIX_ENV=prod mix compile` in the checkout
+  for dev nodes and tests; it records this node's runtime.
 
   The check exists because compiling is not on its own sufficient. Mix
   decides whether to recompile from its own manifest, which tracks the
@@ -107,8 +121,12 @@ defmodule OrcaHub.Cluster.CodePush do
   What a beam DOES carry is its `compile_info` chunk, naming the Erlang
   compiler that produced it. So after compiling, every beam in the payload
   must agree on that version AND agree with the publishing runtime's own
-  compiler. A mismatch triggers one automatic `mix compile --force`; if the
-  payload is still not homogeneous after that, publishing REFUSES.
+  compiler. A mismatch triggers one automatic forced recompile (`mix compile
+  --force`, or the same build with `BEAMS_COMPILE_FLAGS=--force`); if the
+  payload is still not homogeneous after that, publishing REFUSES. The
+  container path needs this as much as the host did: its `_build` cache
+  mount is keyed on `mix.lock` alone, so an OTP patch bump in the Dockerfile
+  — or reverting one — lands on a cache holding the other toolchain's beams.
 
   The escalation is deliberately automatic rather than a flag: the day this
   matters is the day someone's toolchain quietly moved, which is precisely
@@ -276,6 +294,21 @@ defmodule OrcaHub.Cluster.CodePush do
 
   @env_hatch "ORCA_SKIP_CODE_RECONCILE"
 
+  # The container compile (`compile: :docker`). Same builder, target naming
+  # and build args as ~/homelab/scripts/deploy-orca-hub.sh: GIT_SHA is `git
+  # rev-parse --short HEAD` and MIX_LOCK_SHA the first 12 hex of mix.lock's sha256, so this
+  # build keys onto exactly the deps/_build cache mounts the last deploy of
+  # this lockfile warmed, and hands them back warm to the next one. A
+  # MIX_LOCK_SHA that differed from the deploy's would compile correctly
+  # against a cold cache — no error, just minutes.
+  @buildx_builder "orca"
+  @beams_target "beams-export"
+  # A warm build is seconds; a cold one (the cache mounts evicted, or a new
+  # mix.lock) re-fetches and recompiles every dep. The bound exists so a
+  # wedged build fails loudly instead of holding the caller forever.
+  @docker_build_timeout_s 20 * 60
+  @build_output_tail_lines 150
+
   # ------------------------------------------------------------------
   # Public API
   # ------------------------------------------------------------------
@@ -359,12 +392,37 @@ defmodule OrcaHub.Cluster.CodePush do
   Options:
 
     * `:dir` — the checkout (default: cwd)
-    * `:ebin` — beams to publish (default: `<dir>/_build/prod/lib/orca_hub/ebin`)
+    * `:compile` — how the beams are produced (see the payload-provenance
+      section of the moduledoc):
+        * `:docker` (default) — build the Dockerfile's `beams-export` target
+          on the `orca` buildx builder's amd64 node, with the checkout as
+          the build context, and publish its exported ebin. The recorded
+          ERTS/OTP/Elixir are the CONTAINER's.
+        * `:host` — `MIX_ENV=prod mix compile` in the checkout, with this
+          node's own Erlang/Elixir. For dev nodes and tests.
+        * `false` — compile nothing; publish `:ebin` as-is (still verified).
+    * `:ebin` — beams to publish with `compile: :host` / `false` (default:
+      `<dir>/_build/prod/lib/orca_hub/ebin`). Rejected with `:docker`, whose
+      beams come from the build's own export.
+    * `:force_compile` — go straight to a forced full recompile
+    * `:builder` — buildx builder for `:docker` (default `"orca"`)
+    * `:docker_runner` — `(argv, opts) -> {output, exit_status}` replacing
+      the real `docker` invocation, so tests never need Docker. `opts`
+      carries `:cd`, `:dest` (the export dir) and `:timeout_s`.
     * `:base` — git ref the change set is measured against, for the
       `OrcaHub.Cluster.HotLoadGate` classification. Resolved by the caller,
       since "what is the fleet currently running" is hub knowledge.
     * `:allow_dirty` — publish from a tree with uncommitted changes
     * `:force` — publish despite a `HotLoadGate` refusal
+
+  ## The build context is the checkout — including what is not committed
+
+  `:docker` sends the working tree, not a commit: `.dockerignore` drops
+  `_build`/`deps`/`.git`/`.env`, and the `beams` stage COPYs only `mix.exs`,
+  `mix.lock`, three `config/` files, `priv/` and `lib/`. So an uncommitted
+  edit reaches the compile exactly as it does with `:host`, and the dirty
+  rule below is what keeps that honest. The only git-IGNORED files under
+  those paths are `priv/static` asset outputs, which feed no beam.
 
   ## Dirty checkouts are refused
 
@@ -381,26 +439,49 @@ defmodule OrcaHub.Cluster.CodePush do
   """
   def collect_payload(opts \\ []) do
     dir = Keyword.get(opts, :dir, File.cwd!())
-    ebin = Keyword.get(opts, :ebin, Path.join(dir, "_build/prod/lib/orca_hub/ebin"))
 
-    with {:ok, base_sha} <- git_head(dir),
+    with {:ok, mode} <- compile_mode(opts),
+         {:ok, base_sha} <- git_head(dir),
          {:ok, dirty?} <- git_dirty?(dir),
          :ok <- check_dirty(dirty?, Keyword.get(opts, :allow_dirty, false)),
          {:ok, verdict} <- gate_verdict(dir, Keyword.get(opts, :base), opts),
-         {:ok, entries, compiler_version} <- build_payload(dir, ebin, opts) do
+         {:ok, built} <- build_payload(mode, dir, opts) do
       {:ok,
        %{
-         entries: BeamTransport.sanitize(entries),
+         entries: BeamTransport.sanitize(built.entries),
          base_sha: base_sha,
          dirty: dirty?,
-         erts_version: List.to_string(:erlang.system_info(:version)),
-         otp_release: List.to_string(:erlang.system_info(:otp_release)),
-         elixir_version: System.version(),
-         compiler_version: compiler_version,
+         erts_version: built.toolchain.erts_version,
+         otp_release: built.toolchain.otp_release,
+         elixir_version: built.toolchain.elixir_version,
+         compiler_version: built.compiler_version,
          published_from_node: to_string(node()),
          forced_reasons: forced_reasons(verdict),
-         ebin: ebin
+         compiled_by: to_string(mode),
+         ebin: built.ebin
        }}
+    end
+  end
+
+  defp compile_mode(opts) do
+    case Keyword.get(opts, :compile, :docker) do
+      mode when mode in [:docker, "docker", true] ->
+        if Keyword.has_key?(opts, :ebin),
+          do:
+            {:error,
+             {:invalid_option,
+              "ebin only applies with compile: host or none — a docker compile publishes " <>
+                "the beams its own build exported"}},
+          else: {:ok, :docker}
+
+      mode when mode in [:host, "host"] ->
+        {:ok, :host}
+
+      mode when mode in [false, :none, "none"] ->
+        {:ok, :none}
+
+      other ->
+        {:error, {:invalid_option, "unknown compile mode #{inspect(other)} (docker|host|none)"}}
     end
   end
 
@@ -408,31 +489,76 @@ defmodule OrcaHub.Cluster.CodePush do
   # Payload provenance: compile it, then prove what compiled it
   # ------------------------------------------------------------------
 
-  # Compiles the checkout and returns a payload only if every beam in it
-  # agrees on its compiler — see the payload-provenance section of the
-  # moduledoc for why a pre-existing _build cannot be trusted.
+  # Each mode reduces to a `compile.(force?)` returning the ebin to read and
+  # the toolchain that produced it; compile_and_verify/3 is shared, so the
+  # checks cannot differ between the host and container paths.
+  defp build_payload(:none, dir, opts) do
+    ebin = Keyword.get(opts, :ebin, Path.join(dir, "_build/prod/lib/orca_hub/ebin"))
+    compile = fn _force? -> {:ok, %{ebin: ebin, toolchain: local_toolchain()}} end
+    compile_and_verify(compile, false, false)
+  end
+
+  defp build_payload(:host, dir, opts) do
+    ebin = Keyword.get(opts, :ebin, Path.join(dir, "_build/prod/lib/orca_hub/ebin"))
+
+    compile = fn force? ->
+      args = if force?, do: ["compile", "--force"], else: ["compile"]
+      with :ok <- host_compile(dir, args), do: {:ok, %{ebin: ebin, toolchain: local_toolchain()}}
+    end
+
+    compile_and_verify(compile, Keyword.get(opts, :force_compile, false), true)
+  end
+
+  # The export lands in a private temp dir that is removed on EVERY exit —
+  # success, refusal, failed build or a raise — once the beams are in memory.
+  # `ebin` is reported as the build target, since that path no longer exists
+  # by the time anyone reads the payload.
+  defp build_payload(:docker, dir, opts) do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orca-code-push-#{System.os_time(:millisecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      File.mkdir_p!(root)
+
+      with {:ok, build_args} <- docker_build_args(dir) do
+        compile = &docker_compile(dir, root, build_args, &1, opts)
+
+        with {:ok, built} <-
+               compile_and_verify(compile, Keyword.get(opts, :force_compile, false), true) do
+          {:ok, %{built | ebin: "docker:#{@beams_target}"}}
+        end
+      end
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  # Compiles and returns a payload only if its toolchain is this node's and
+  # every beam agrees on its compiler — see the payload-provenance section of
+  # the moduledoc for why a pre-existing _build cannot be trusted.
   #
   # The escalation is deliberate: an ordinary publish pays a cheap
   # incremental compile, a tree poisoned by a toolchain change pays one
   # forced recompile automatically, and a tree that is still heterogeneous
   # after that refuses rather than shipping. Nobody has to know to pass a
-  # flag on the day it matters.
-  defp build_payload(dir, ebin, opts) do
-    with :ok <- maybe_compile(dir, opts) do
-      case verified_payload(ebin) do
-        {:ok, _entries, _version} = ok ->
-          ok
+  # flag on the day it matters. A toolchain mismatch is NOT escalated: no
+  # recompile changes which image the Dockerfile names.
+  defp compile_and_verify(compile, force?, recompilable?) do
+    with {:ok, built} <- compile.(force?),
+         :ok <- check_toolchain(built.toolchain) do
+      case verified_payload(built.ebin) do
+        {:ok, entries, version} ->
+          {:ok, Map.merge(built, %{entries: entries, compiler_version: version})}
 
-        {:error, {:mixed_payload, _} = reason} ->
-          if Keyword.get(opts, :compile, true) do
-            Logger.warning(
-              "CodePush: #{describe_provenance_error(reason)} — forcing a full recompile."
-            )
+        {:error, {:mixed_payload, _} = reason} when recompilable? and not force? ->
+          Logger.warning(
+            "CodePush: #{describe_provenance_error(reason)} — forcing a full recompile."
+          )
 
-            with :ok <- compile(dir, ["compile", "--force"]), do: verified_payload(ebin)
-          else
-            {:error, reason}
-          end
+          compile_and_verify(compile, true, recompilable?)
 
         {:error, _} = error ->
           error
@@ -440,15 +566,7 @@ defmodule OrcaHub.Cluster.CodePush do
     end
   end
 
-  defp maybe_compile(dir, opts) do
-    cond do
-      not Keyword.get(opts, :compile, true) -> :ok
-      Keyword.get(opts, :force_compile, false) -> compile(dir, ["compile", "--force"])
-      true -> compile(dir, ["compile"])
-    end
-  end
-
-  defp compile(dir, args) do
+  defp host_compile(dir, args) do
     case System.cmd("mix", args, cd: dir, env: compile_env(), stderr_to_stdout: true) do
       {_out, 0} -> :ok
       {out, code} -> {:error, {:compile_failed, code, String.trim(out)}}
@@ -462,13 +580,168 @@ defmodule OrcaHub.Cluster.CodePush do
   # `erl` boots the release's start.boot and dies with `cannot get bootfile`.
   # Reuses the port sanitizer, translated to System.cmd's string/nil form.
   @doc false
-  def compile_env do
-    [{~c"MIX_ENV", ~c"prod"}]
+  def compile_env, do: cmd_env([{~c"MIX_ENV", ~c"prod"}])
+
+  # The docker CLI gets the same scrub. It does not boot an erl, but it is a
+  # child of a release, and nothing of the release's runtime env is its
+  # business — least of all a MIX_ENV that would mean nothing inside the
+  # container anyway (the Dockerfile sets its own).
+  @doc false
+  def docker_env, do: cmd_env([])
+
+  defp cmd_env(extra) do
+    extra
     |> OrcaHub.Env.sanitized_env()
     |> Enum.map(fn
       {name, false} -> {List.to_string(name), nil}
       {name, value} -> {List.to_string(name), List.to_string(value)}
     end)
+  end
+
+  defp local_toolchain do
+    %{
+      erts_version: List.to_string(:erlang.system_info(:version)),
+      otp_release: List.to_string(:erlang.system_info(:otp_release)),
+      elixir_version: System.version(),
+      compiler_version: BeamTransport.local_compiler_version()
+    }
+  end
+
+  # The container must be the toolchain this node's release was built with.
+  # ERTS because the ERTS gate compares the GENERATION's recorded ERTS with
+  # every target, so recording a toolchain nothing runs would only move the
+  # refusal to reconcile time, node by node; Elixir because beams from one
+  # Elixir leaning on another's stdlib fail at call time, not load time.
+  # Trivially true for :host/:none, whose toolchain IS this node.
+  defp check_toolchain(toolchain) do
+    local = local_toolchain()
+
+    if toolchain.erts_version == local.erts_version and
+         toolchain.elixir_version == local.elixir_version,
+       do: :ok,
+       else: {:error, {:toolchain_mismatch, toolchain, local}}
+  end
+
+  # ------------------------------------------------------------------
+  # The container compile
+  # ------------------------------------------------------------------
+
+  @doc false
+  def docker_build_timeout_s, do: @docker_build_timeout_s
+
+  defp docker_build_args(dir) do
+    with {:ok, sha} <- git(["rev-parse", "--short", "HEAD"], dir) do
+      case File.read(Path.join(dir, "mix.lock")) do
+        {:ok, lock} ->
+          lock_sha =
+            :sha256 |> :crypto.hash(lock) |> Base.encode16(case: :lower) |> binary_part(0, 12)
+
+          {:ok, %{git_sha: String.trim(sha), mix_lock_sha: lock_sha}}
+
+        {:error, reason} ->
+          {:error,
+           {:docker_build_failed, :setup,
+            "cannot read #{Path.join(dir, "mix.lock")} to key the build cache: " <>
+              inspect(reason)}}
+      end
+    end
+  end
+
+  defp docker_compile(dir, root, build_args, force?, opts) do
+    dest = Path.join(root, if(force?, do: "forced", else: "incremental"))
+
+    argv =
+      [
+        "buildx",
+        "build",
+        "--builder",
+        Keyword.get(opts, :builder, @buildx_builder),
+        "--platform",
+        "linux/amd64",
+        "--progress=plain",
+        "--build-arg",
+        "GIT_SHA=#{build_args.git_sha}",
+        "--build-arg",
+        "MIX_LOCK_SHA=#{build_args.mix_lock_sha}"
+      ] ++
+        if(force?, do: ["--build-arg", "BEAMS_COMPILE_FLAGS=--force"], else: []) ++
+        ["--target", @beams_target, "--output", "type=local,dest=#{dest}", "."]
+
+    runner = Keyword.get(opts, :docker_runner, &run_docker/2)
+
+    case runner.(argv, cd: dir, dest: dest, timeout_s: @docker_build_timeout_s) do
+      {_out, 0} ->
+        with {:ok, toolchain} <- read_toolchain(dest),
+             do: {:ok, %{ebin: Path.join(dest, "ebin"), toolchain: toolchain}}
+
+      # coreutils `timeout`: 124 is the TERM at the deadline, 137 the KILL
+      # --kill-after sends when TERM was not enough.
+      {out, code} when code in [124, 137] ->
+        {:error, {:docker_build_failed, {:timeout, @docker_build_timeout_s}, output_tail(out)}}
+
+      {out, code} ->
+        {:error, {:docker_build_failed, code, output_tail(out)}}
+    end
+  end
+
+  # `timeout` rather than a bare `docker`: System.cmd has no deadline of its
+  # own, and killing the buildx CLIENT is what cancels the build on the
+  # BuildKit side.
+  @doc false
+  def run_docker(argv, opts) do
+    System.cmd(
+      "timeout",
+      ["--kill-after=30", to_string(Keyword.fetch!(opts, :timeout_s)), "docker" | argv],
+      cd: Keyword.fetch!(opts, :cd),
+      env: docker_env(),
+      stderr_to_stdout: true
+    )
+  rescue
+    e -> {"could not run docker: #{Exception.message(e)}", :exception}
+  end
+
+  # toolchain.txt is `key=value` lines written by the `beams` stage itself.
+  # A build that exported beams but no toolchain is refused: without it the
+  # generation would have to guess its ERTS, and guessing "this node's" is
+  # precisely what this path exists to stop doing.
+  defp read_toolchain(dest) do
+    path = Path.join(dest, "toolchain.txt")
+
+    with {:ok, body} <- File.read(path),
+         fields =
+           body
+           |> String.split("\n", trim: true)
+           |> Map.new(fn line ->
+             case String.split(line, "=", parts: 2) do
+               [k, v] -> {String.trim(k), String.trim(v)}
+               [k] -> {String.trim(k), ""}
+             end
+           end),
+         toolchain = %{
+           erts_version: fields["erts_version"],
+           otp_release: fields["otp_release"],
+           elixir_version: fields["elixir_version"],
+           compiler_version: fields["compiler_version"]
+         },
+         true <- Enum.all?(Map.values(toolchain), &(is_binary(&1) and &1 != "")) do
+      {:ok, toolchain}
+    else
+      _ ->
+        {:error,
+         {:docker_build_failed, :no_toolchain,
+          "the build exported no usable #{path} — cannot tell which ERTS built these beams"}}
+    end
+  end
+
+  defp output_tail(out) do
+    lines = String.split(out, "\n")
+    dropped = length(lines) - @build_output_tail_lines
+
+    if dropped > 0,
+      do:
+        "[… #{dropped} earlier lines omitted …]\n" <>
+          (lines |> Enum.take(-@build_output_tail_lines) |> Enum.join("\n")),
+      else: String.trim(out)
   end
 
   # Reads the payload and asserts every beam names the SAME compiler, and
@@ -502,6 +775,24 @@ defmodule OrcaHub.Cluster.CodePush do
     do:
       "the payload mixes beams from #{length(versions)} different Erlang compilers " <>
         "(#{Enum.join(versions, ", ")}) — part of _build is stale"
+
+  def describe_provenance_error({:docker_build_failed, {:timeout, secs}, out}),
+    do:
+      "the beams build (`docker buildx build --target #{@beams_target}`) was killed after " <>
+        "#{secs}s. Build output:\n#{out}"
+
+  def describe_provenance_error({:docker_build_failed, code, out}),
+    do:
+      "the beams build (`docker buildx build --target #{@beams_target}`) failed (#{code}):\n#{out}"
+
+  def describe_provenance_error({:toolchain_mismatch, container, local}),
+    do:
+      "the Dockerfile's toolchain (ERTS #{container.erts_version}, Elixir " <>
+        "#{container.elixir_version}) is not the one this node's release runs (ERTS " <>
+        "#{local.erts_version}, Elixir #{local.elixir_version}) — these beams were built for " <>
+        "a fleet that does not exist yet. A toolchain change ships with a full deploy"
+
+  def describe_provenance_error({:invalid_option, message}), do: message
 
   def describe_provenance_error(other), do: inspect(other)
 

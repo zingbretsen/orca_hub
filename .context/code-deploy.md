@@ -149,18 +149,44 @@ against the target and then passes `allow_erts_mismatch: true`. The two go
 together; skipping the local check without the generation check is a real
 hole.
 
+**The compile runs in the release toolchain.** `collect_payload/1`'s
+default (`compile: :docker`) builds the Dockerfile's `beams-export` target:
+`docker buildx build --builder orca --platform linux/amd64 --target
+beams-export --output type=local,dest=<tmp>` with the checkout as context and
+the deploy script's own build args (`GIT_SHA` = short HEAD, `MIX_LOCK_SHA` =
+12 hex of mix.lock's sha256). The `beams` stage branches off `source` before
+assets/rel and reuses the release RUN's `MIX_LOCK_SHA`-keyed deps/_build
+cache mounts, so it is warm after a deploy (~4 s for a small change) and
+leaves the cache warm for the next one; it exports `ebin/` plus
+`toolchain.txt` (container ERTS/OTP/Elixir/compiler). One platform suffices:
+beams are arch-independent and `:orca_hub` has no NIFs. The export dir is
+deleted on every exit. The generation records the CONTAINER's toolchain, and
+the container's ERTS and Elixir must equal the publishing node's (a release
+built from that image) or the publish refuses (`:toolchain_mismatch`) — a
+Dockerfile toolchain bump is a full deploy. `compile: :host` keeps the old
+host `MIX_ENV=prod mix compile` for dev nodes; tests inject `:docker_runner`
+and never need Docker. The docker CLI runs under coreutils `timeout` (20 min)
+with the same `OrcaHub.Env.sanitized_env/1` scrub as the host compile.
+Splitting the stage did not change the release: after the split, `--target
+artifact` and the runtime image built 100% CACHED against the previous
+deploy's keys.
+
 **Compile provenance.** A payload is only ever the output of a compile this
-code performed or verified. `collect_payload/1` runs `MIX_ENV=prod mix
-compile` in the checkout rather than trusting `_build/prod`, because Mix's
+code performed or verified. `collect_payload/1` compiles rather than
+trusting `_build/prod`, because Mix's
 manifest tracks the OTP RELEASE (`"27"`), not the full ERTS version — a host
 drifting between two 27.x patches keeps the same release, so `mix compile`
 does nothing and the tree stays a mix of two toolchains while looking freshly
 built. Nothing else can see that: `compatible?/1` compares live runtimes, and
 a `.beam` carries no ERTS stamp. What it DOES carry is its `compile_info`
 chunk, so every beam must name the same Erlang compiler, and that compiler
-must be the publishing runtime's; a mismatch escalates ONCE to
-`mix compile --force` automatically (the day this matters is the day nobody
-knows to pass a flag) and refuses if still heterogeneous.
+must be the publishing runtime's; a mismatch escalates ONCE to a forced
+recompile automatically (`mix compile --force`, or `BEAMS_COMPILE_FLAGS=--force`
+in the container — its `_build` mount is keyed on mix.lock only, so an OTP
+bump or revert can leave the other toolchain's beams there; the day this
+matters is the day nobody knows to pass a flag) and refuses if still
+heterogeneous. Release beams are STRIPPED (no `CInf` chunk), so this check
+only works on a fresh compile's output, never on a release's ebin.
 
 **`compile_info`'s `:version` is the COMPILER application's version, not
 ERTS.** Two OTP patch releases can ship the same compiler, so the check can
@@ -196,6 +222,16 @@ Differencing uses the module's COMPILE-TIME md5
 (`:erlang.get_module_info(mod, :md5)` / `:beam_lib.md5/1`), NOT `:erlang.md5`
 over the file bytes — the latter hashes the container (debug info, docs,
 padding) and differs for identical code, reporting everything as drifted.
+
+Even that md5 is not stable across two FULL compiles of identical source:
+every module with a HEEx template (~28 LiveViews/components) gets a new
+`Phoenix.LiveView.Engine` fingerprint — an md5 of the template's quoted AST,
+whose metadata carries compile-order counters — plus `BuildInfo`'s
+`@built_at`. Measured 2026-09-23: two `--force` container compiles of one
+tree disagreed on exactly those 29 modules, while an incremental compile on
+the deploy's own cache matched the release on 290/290. So a publish after
+any forced/cold compile ships those LiveViews as "drifted"; harmless (same
+code, clients just re-receive statics), but expect it in the report.
 
 ## The gate: refuse if unsure
 
@@ -287,6 +323,15 @@ does not forever refuse to restart itself.
 Operator surface: MCP `publish_code_generation`, `code_generation_status`,
 `supersede_code_generation`, `purge_orphaned_modules` (orchestrator-only),
 plus the Settings page drift view.
+
+**`publish_code_generation` is synchronous, and `run_elixir` is capped at
+30 s** (`CodeExec.Sandbox`, `@default_timeout_ms`): tool calls run IN the
+eval Task, which is `:brutal_kill`ed at the cap. When the origin is the
+caller's own node, `Cluster.rpc/5` is a plain `apply`, so the collect (and
+its `docker` child, via the closed port) dies with it; a publish already
+handed to the hub GenServer carries on, unreported. A warm publish fits
+(~4 s collect); a cold or forced build (~26 s compile alone) does not. Open
+item: make publish a job with a status read-back rather than raising the cap.
 
 ## Two known limits
 

@@ -52,6 +52,14 @@ defmodule OrcaHub.MCP.Tools.CodePushTest do
     assert publish["description"] =~ "Does NOT restart"
   end
 
+  test "publish compiles in the release toolchain by default and says so" do
+    [publish] = Enum.filter(CodePush.list(), &(&1["name"] == "publish_code_generation"))
+
+    assert publish["description"] =~ "beams-export"
+    assert publish["description"] =~ "RELEASE TOOLCHAIN"
+    assert publish["inputSchema"]["properties"]["compile"]["enum"] == ["docker", "host"]
+  end
+
   test "purge's description names it as destructive and states it never kills a process" do
     [purge] = Enum.filter(CodePush.list(), &(&1["name"] == "purge_orphaned_modules"))
 

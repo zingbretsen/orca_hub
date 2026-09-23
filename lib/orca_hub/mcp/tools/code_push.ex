@@ -11,11 +11,14 @@ defmodule OrcaHub.MCP.Tools.CodePush do
   split across two nodes on purpose.
 
   `publish_code_generation` has an ORIGIN — a node that owns a checkout and
-  has compiled it (`MIX_ENV=prod mix compile`). In practice that is the
-  local Debian systemd agent, not the hub pod, which has no checkout at
-  all. The tool routes `collect_payload/1` to that node via
-  `OrcaHub.Cluster.rpc/5`, then hands the resulting payload to the HUB,
-  which is the only node that may store a generation or fan it out.
+  compiles it: by default inside the release toolchain (the Dockerfile's
+  `beams-export` target on the `orca` buildx builder), or with
+  `compile: "host"` via `MIX_ENV=prod mix compile` on the node itself. In
+  practice that is the local Debian systemd agent, not the hub pod, which
+  has no checkout (and no Docker) at all. The tool routes
+  `collect_payload/1` to that node via `OrcaHub.Cluster.rpc/5`, then hands
+  the resulting payload to the HUB, which is the only node that may store a
+  generation or fan it out.
 
   That split is forced by the topology, not by taste. The cluster runs
   `-kernel connect_all false`, so an agent's `Node.list/0` contains only the
@@ -44,9 +47,12 @@ defmodule OrcaHub.MCP.Tools.CodePush do
 
   require Logger
 
-  # Collecting a payload reads ~277 beams (~7.6 MiB) off disk on the origin
-  # node and ships them back over distribution.
-  @collect_timeout :timer.minutes(3)
+  # Collecting a payload builds the beams on the origin node — normally a
+  # docker build, seconds when its cache is warm but bounded at
+  # CodePush.docker_build_timeout_s/0 when it is cold (possibly twice, if a
+  # stale cache forces the one automatic recompile) — then ships ~290 beams
+  # (~8 MiB) back over distribution. The margin covers the transfer.
+  @collect_timeout :timer.seconds(2 * OrcaHub.Cluster.CodePush.docker_build_timeout_s() + 120)
 
   def list do
     [
@@ -58,12 +64,18 @@ defmodule OrcaHub.MCP.Tools.CodePush do
             "a deploy: the generation is stored durably, so a node that connects later " <>
             "(an agent that was powered off, a pod that just restarted) is brought up to " <>
             "it automatically, and the hub applies it to itself on boot. The ORIGIN must " <>
-            "be a node that owns a checkout; publishing runs `MIX_ENV=prod mix compile` " <>
-            "there ITSELF rather than trusting whatever is already in " <>
-            "<directory>/_build/prod/lib/orca_hub/ebin, then verifies every beam in the " <>
-            "payload was produced by this node's own Erlang compiler — a stale artifact " <>
-            "from a different toolchain passes every runtime-level check while being " <>
-            "exactly the wrong bytes. REFUSES a dirty checkout (pass allow_dirty to override; the " <>
+            "be a node that owns a checkout and can reach Docker; publishing compiles it " <>
+            "ITSELF rather than trusting any existing _build — by default INSIDE THE " <>
+            "RELEASE TOOLCHAIN, via the Dockerfile's `beams-export` target on the `orca` " <>
+            "buildx builder (same image and deps cache that built the running releases; " <>
+            "seconds when warm, minutes when its cache is cold), so the host's own " <>
+            "Erlang/Elixir never touch the payload. The generation records the " <>
+            "container's ERTS/OTP/Elixir, and publishing REFUSES if that toolchain is not " <>
+            "the one the origin's release runs (a Dockerfile toolchain bump needs a full " <>
+            "deploy). Every beam must also name the origin runtime's Erlang compiler — a " <>
+            "stale artifact passes every runtime-level check while being exactly the " <>
+            "wrong bytes. NOTE: a cold build outlasts run_elixir's 30s cap. REFUSES a " <>
+            "dirty checkout (pass allow_dirty to override; the " <>
             "generation is then permanently marked dirty) and REFUSES a change set the " <>
             "hot-load safety gate rejects — dependency/config/migration/supervision-tree/" <>
             "defstruct changes need a real deploy (pass force to override; the " <>
@@ -92,10 +104,20 @@ defmodule OrcaHub.MCP.Tools.CodePush do
                   "generation — the hub image's SHA, i.e. whatever the fleet is actually " <>
                   "running now."
             },
+            "compile" => %{
+              "type" => "string",
+              "enum" => ["docker", "host"],
+              "description" =>
+                "How the beams are built. \"docker\" (default): the Dockerfile's " <>
+                  "beams-export target in the release toolchain. \"host\": " <>
+                  "`MIX_ENV=prod mix compile` in the checkout with the origin node's own " <>
+                  "Erlang/Elixir — for dev nodes; only safe when that toolchain IS the " <>
+                  "fleet's."
+            },
             "ebin" => %{
               "type" => "string",
               "description" =>
-                "Override the beam directory. Defaults to " <>
+                "Override the beam directory (compile: \"host\" only). Defaults to " <>
                   "<directory>/_build/prod/lib/orca_hub/ebin."
             },
             "allow_dirty" => %{
@@ -113,9 +135,10 @@ defmodule OrcaHub.MCP.Tools.CodePush do
             "force_compile" => %{
               "type" => "boolean",
               "description" =>
-                "Go straight to `mix compile --force` rather than an incremental compile. " <>
-                  "Rarely needed — a payload that disagrees with this node's compiler " <>
-                  "triggers a forced recompile automatically. Default false."
+                "Go straight to a forced full recompile (`mix compile --force`, in the " <>
+                  "container or on the host) rather than an incremental one. Rarely " <>
+                  "needed — a payload that disagrees with this node's compiler triggers " <>
+                  "a forced recompile automatically. Default false."
             },
             "notes" => %{
               "type" => "string",
@@ -297,6 +320,7 @@ defmodule OrcaHub.MCP.Tools.CodePush do
   defp collect(origin, directory, base, args) do
     opts =
       [dir: directory, base: base]
+      |> put_unless_nil(:compile, args["compile"])
       |> put_unless_nil(:ebin, args["ebin"])
       |> Keyword.put(:allow_dirty, args["allow_dirty"] == true)
       |> Keyword.put(:force, args["force"] == true)
@@ -328,13 +352,27 @@ defmodule OrcaHub.MCP.Tools.CodePush do
          "Refusing to publish — the checkout did not compile on #{origin}.\n\n" <>
            OrcaHub.Cluster.CodePush.describe_provenance_error(reason)}
 
+      {:error, {:docker_build_failed, _, _} = reason} ->
+        {:error,
+         "Refusing to publish — the beams could not be built on #{origin}.\n\n" <>
+           OrcaHub.Cluster.CodePush.describe_provenance_error(reason)}
+
+      {:error, {:toolchain_mismatch, _, _} = reason} ->
+        {:error,
+         "Refusing to publish — " <>
+           OrcaHub.Cluster.CodePush.describe_provenance_error(reason) <> "."}
+
+      {:error, {:invalid_option, message}} ->
+        {:error, "Refusing to publish — #{message}."}
+
       {:error, {:mixed_payload, _} = reason} ->
         {:error,
          "Refusing to publish — " <>
            OrcaHub.Cluster.CodePush.describe_provenance_error(reason) <>
-           ".\n\nA forced recompile was already attempted and did not resolve it. This is " <>
-           "usually a toolchain mismatch on #{origin}: check that its Erlang/Elixir match " <>
-           "the repo's pin before publishing."}
+           ".\n\nA forced recompile was already attempted and did not resolve it. With " <>
+           "compile: \"host\" this is usually #{origin}'s Erlang/Elixir drifting off the " <>
+           "repo's pin; with the default container build, it means the release #{origin} " <>
+           "runs was not built from the Dockerfile's current toolchain."}
 
       {:error, reason} ->
         {:error,

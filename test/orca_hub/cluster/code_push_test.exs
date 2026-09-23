@@ -971,10 +971,206 @@ defmodule OrcaHub.Cluster.CodePushTest do
     test "REFUSES when the checkout does not compile", %{dir: dir, ebin: ebin} do
       # The fixture repo has no mix.exs, so a real compile attempt fails.
       assert {:error, {:compile_failed, _, _} = reason} =
-               CodePush.collect_payload(dir: dir, ebin: ebin, base: nil)
+               CodePush.collect_payload(dir: dir, ebin: ebin, base: nil, compile: :host)
 
       assert CodePush.describe_provenance_error(reason) =~ "mix compile"
     end
+  end
+
+  # ------------------------------------------------------------------
+  # compile: :docker — the default. The runner is injected, so none of this
+  # needs Docker; what it pins is the argv the real build gets, and that the
+  # payload trusts the CONTAINER's toolchain.txt rather than this node.
+  # ------------------------------------------------------------------
+
+  describe "collect_payload/1 with the container compile" do
+    setup do
+      {:ok, repo} = git_fixture()
+      on_exit(fn -> File.rm_rf!(repo.dir) end)
+      repo
+    end
+
+    test "builds the beams-export target keyed exactly as the deploy script keys it", %{
+      dir: dir,
+      ebin: ebin,
+      sha: sha
+    } do
+      assert {:ok, payload} =
+               CodePush.collect_payload(
+                 dir: dir,
+                 base: nil,
+                 docker_runner: fake_build(ebin, toolchain_txt(otp_release: "99"))
+               )
+
+      assert_received {:build, argv, opts, dest}
+      assert opts[:cd] == dir
+
+      assert ["buildx", "build", "--builder", "orca", "--platform", "linux/amd64" | _] = argv
+      assert argv_value(argv, "--target") == "beams-export"
+      assert argv_value(argv, "--output") == "type=local,dest=#{dest}"
+      assert List.last(argv) == "."
+
+      {short, 0} = System.cmd("git", ["rev-parse", "--short", "HEAD"], cd: dir)
+      assert "GIT_SHA=#{String.trim(short)}" in argv
+
+      lock_sha =
+        :crypto.hash(:sha256, File.read!(Path.join(dir, "mix.lock")))
+        |> Base.encode16(case: :lower)
+        |> binary_part(0, 12)
+
+      assert "MIX_LOCK_SHA=#{lock_sha}" in argv
+      refute "BEAMS_COMPILE_FLAGS=--force" in argv
+
+      assert payload.base_sha == sha
+      assert payload.compiled_by == "docker"
+      assert payload.ebin == "docker:beams-export"
+      assert [%{module: _}] = payload.entries
+      # From the container's toolchain.txt, not this node's runtime.
+      assert payload.otp_release == "99"
+      assert payload.erts_version == @erts
+      assert payload.compiler_version == BeamTransport.local_compiler_version()
+
+      refute File.exists?(dest), "the export dir must not outlive the collect"
+    end
+
+    test "REFUSES a container toolchain that is not the one this node's release runs", %{
+      dir: dir,
+      ebin: ebin
+    } do
+      runner = fake_build(ebin, toolchain_txt(erts_version: "99.0.0"))
+
+      assert {:error, {:toolchain_mismatch, container, local} = reason} =
+               CodePush.collect_payload(dir: dir, base: nil, docker_runner: runner)
+
+      assert container.erts_version == "99.0.0"
+      assert local.erts_version == @erts
+      assert CodePush.describe_provenance_error(reason) =~ "full deploy"
+
+      # Not escalated to a forced recompile: no recompile changes the image.
+      assert_received {:build, _, _, dest}
+      refute_received {:build, _, _, _}
+      refute File.exists?(dest)
+    end
+
+    test "an Elixir mismatch refuses too", %{dir: dir, ebin: ebin} do
+      runner = fake_build(ebin, toolchain_txt(elixir_version: "9.9.9"))
+
+      assert {:error, {:toolchain_mismatch, _, _}} =
+               CodePush.collect_payload(dir: dir, base: nil, docker_runner: runner)
+    end
+
+    test "a stale cache escalates ONCE to a forced container build", %{dir: dir, ebin: ebin} do
+      good = File.read!(single_beam(ebin))
+      write_beam_with_foreign_compiler(ebin)
+      stale = File.read!(single_beam(ebin))
+      test_pid = self()
+
+      runner = fn argv, opts ->
+        forced? = "BEAMS_COMPILE_FLAGS=--force" in argv
+        send(test_pid, {:forced?, forced?})
+
+        write_export(
+          opts[:dest],
+          Path.basename(single_beam(ebin)),
+          if(forced?, do: good, else: stale)
+        )
+
+        {"ok", 0}
+      end
+
+      assert {:ok, payload} = CodePush.collect_payload(dir: dir, base: nil, docker_runner: runner)
+      assert payload.compiler_version == BeamTransport.local_compiler_version()
+      assert_received {:forced?, false}
+      assert_received {:forced?, true}
+    end
+
+    test "surfaces the build output when the build fails", %{dir: dir} do
+      out = Enum.map_join(1..400, "\n", &"line #{&1}")
+
+      assert {:error, {:docker_build_failed, 1, tail} = reason} =
+               CodePush.collect_payload(
+                 dir: dir,
+                 base: nil,
+                 docker_runner: fn _argv, _opts -> {out, 1} end
+               )
+
+      assert tail =~ "line 400"
+      refute tail =~ "line 100\n"
+      assert tail =~ "earlier lines omitted"
+      assert CodePush.describe_provenance_error(reason) =~ "beams-export"
+    end
+
+    test "reports a timeout as one", %{dir: dir} do
+      assert {:error, {:docker_build_failed, {:timeout, _}, _} = reason} =
+               CodePush.collect_payload(
+                 dir: dir,
+                 base: nil,
+                 docker_runner: fn _argv, _opts -> {"killed", 124} end
+               )
+
+      assert CodePush.describe_provenance_error(reason) =~ "killed after"
+    end
+
+    test "REFUSES an export with no toolchain.txt rather than guessing", %{dir: dir, ebin: ebin} do
+      runner = fn _argv, opts ->
+        File.mkdir_p!(Path.join(opts[:dest], "ebin"))
+        File.cp_r!(ebin, Path.join(opts[:dest], "ebin"))
+        {"ok", 0}
+      end
+
+      assert {:error, {:docker_build_failed, :no_toolchain, _}} =
+               CodePush.collect_payload(dir: dir, base: nil, docker_runner: runner)
+    end
+
+    test "rejects an ebin override, which only means something on the host", %{
+      dir: dir,
+      ebin: ebin
+    } do
+      assert {:error, {:invalid_option, message}} =
+               CodePush.collect_payload(dir: dir, ebin: ebin, base: nil, compile: :docker)
+
+      assert message =~ "host"
+    end
+  end
+
+  defp toolchain_txt(overrides) do
+    [
+      erts_version: @erts,
+      otp_release: List.to_string(:erlang.system_info(:otp_release)),
+      elixir_version: System.version(),
+      compiler_version: BeamTransport.local_compiler_version()
+    ]
+    |> Keyword.merge(overrides)
+    |> Enum.map_join("\n", fn {k, v} -> "#{k}=#{v}" end)
+  end
+
+  # Stands in for `docker buildx build --output type=local,dest=...`: writes
+  # the fixture's beams and the given toolchain.txt where the export would go.
+  defp fake_build(ebin, toolchain) do
+    test_pid = self()
+
+    fn argv, opts ->
+      send(test_pid, {:build, argv, opts, opts[:dest]})
+      File.mkdir_p!(Path.join(opts[:dest], "ebin"))
+      File.cp_r!(ebin, Path.join(opts[:dest], "ebin"))
+      File.write!(Path.join(opts[:dest], "toolchain.txt"), toolchain <> "\n")
+      {"#1 DONE 0.1s", 0}
+    end
+  end
+
+  defp write_export(dest, name, binary) do
+    File.mkdir_p!(Path.join(dest, "ebin"))
+    File.write!(Path.join([dest, "ebin", name]), binary)
+    File.write!(Path.join(dest, "toolchain.txt"), toolchain_txt([]))
+  end
+
+  defp single_beam(ebin) do
+    [file] = ebin |> File.ls!() |> Enum.filter(&String.ends_with?(&1, ".beam"))
+    Path.join(ebin, file)
+  end
+
+  defp argv_value(argv, flag) do
+    argv |> Enum.drop_while(&(&1 != flag)) |> Enum.at(1)
   end
 
   describe "BeamTransport.payload_compiler_version/1" do
@@ -1199,6 +1395,20 @@ defmodule OrcaHub.Cluster.CodePushTest do
         assert {var, nil} in env
       end
 
+      assert {"PATH", "/usr/local/bin:/usr/bin"} = List.keyfind(env, "PATH", 0)
+    end
+
+    test "docker_env/0 gets the same scrub, and no MIX_ENV of its own" do
+      root = "/home/zach/orca-hub-releases/63b8fb4"
+      System.put_env("RELEASE_ROOT", root)
+      System.put_env("BINDIR", "#{root}/erts-15.2.2/bin")
+      System.put_env("PATH", "#{root}/erts-15.2.2/bin:#{root}/bin:/usr/local/bin:/usr/bin")
+
+      env = CodePush.docker_env()
+
+      assert {"RELEASE_ROOT", nil} in env
+      assert {"BINDIR", nil} in env
+      refute List.keyfind(env, "MIX_ENV", 0) == {"MIX_ENV", "prod"}
       assert {"PATH", "/usr/local/bin:/usr/bin"} = List.keyfind(env, "PATH", 0)
     end
   end

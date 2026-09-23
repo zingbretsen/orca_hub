@@ -5,7 +5,12 @@ ARG ELIXIR_VERSION=1.18.3
 ARG OTP_VERSION=27.2.3
 ARG DEBIAN_CODENAME=bookworm
 
-FROM hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_CODENAME}-20260223 AS builder
+# Named `source` rather than `builder` because it now stops at `COPY lib lib`:
+# the `beams` stage below (hot code generations) and the `builder` stage (the
+# release) both branch off it. The instructions are the same ones, in the same
+# order, as when this was a single stage, so BuildKit's cache keys — and the
+# release/image bytes — are unchanged; a stage NAME is not part of any key.
+FROM hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_CODENAME}-20260223 AS source
 
 RUN apt-get update -y && \
     apt-get install -y build-essential git curl nodejs npm && \
@@ -90,6 +95,53 @@ COPY priv priv
 RUN echo "$GIT_SHA" > priv/git_sha
 
 COPY lib lib
+
+# === Hot code generation beams ===
+# What `OrcaHub.Cluster.CodePush.collect_payload/1` publishes: the compiled
+# :orca_hub ebin, produced by exactly the toolchain and deps that built the
+# running releases, instead of by whatever Erlang/Elixir the publishing host
+# has installed. Pulled out with
+#   docker buildx build --builder orca --platform linux/amd64 \
+#     --build-arg GIT_SHA=... --build-arg MIX_LOCK_SHA=... \
+#     --target beams-export --output type=local,dest=<dir> .
+# One platform is enough: beams are architecture-independent and :orca_hub
+# has no NIFs (its NIF-carrying deps are never part of a payload).
+#
+# Branches off `source` BEFORE assets/rel, so it never runs npm or the asset
+# pipeline — none of that feeds a beam. The cache mounts are the release
+# RUN's, same ids, so it shares that warm deps/_build: on a checkout the last
+# deploy already built this is a no-op compile, and the release build that
+# follows it gets the same courtesy back.
+#
+# Like the release RUN, the ebin is copied OUT of the cache-mounted /app/_build
+# inside the same RUN; cache-mount contents never reach a layer.
+# toolchain.txt records the runtime that did the compiling — beams carry their
+# compiler version but no ERTS stamp, so this is how the generation learns
+# which ERTS it was built for. BEAMS_COMPILE_FLAGS is how CodePush asks for
+# `--force` (it is empty otherwise, so the cache key is stable).
+FROM source AS beams
+ARG MIX_LOCK_SHA
+ARG BEAMS_COMPILE_FLAGS=""
+RUN --mount=type=cache,target=/app/deps,id=orca-deps-${MIX_LOCK_SHA},sharing=locked \
+    --mount=type=cache,target=/app/_build,id=orca-build-${MIX_LOCK_SHA},sharing=locked \
+    --mount=type=cache,target=/root/.hex,sharing=locked \
+    --mount=type=cache,target=/root/.cache/rebar3,sharing=locked \
+    mix compile $BEAMS_COMPILE_FLAGS && \
+    rm -rf /app/beams && mkdir -p /app/beams && \
+    cp -a /app/_build/prod/lib/orca_hub/ebin /app/beams/ebin && \
+    elixir -e 'Application.load(:compiler); IO.puts("erts_version=#{:erlang.system_info(:version)}\notp_release=#{:erlang.system_info(:otp_release)}\nelixir_version=#{System.version()}\ncompiler_version=#{Application.spec(:compiler, :vsn)}")' \
+      > /app/beams/toolchain.txt
+
+FROM scratch AS beams-export
+COPY --from=beams /app/beams /
+
+# === Release build ===
+# Both ARGs re-declared, in their original order: a build arg in scope is part
+# of every later RUN's environment, and so of its cache key. Dropping GIT_SHA
+# here would re-key `npm ci` and the release RUN below.
+FROM source AS builder
+ARG GIT_SHA
+ARG MIX_LOCK_SHA
 COPY assets assets
 COPY rel rel
 
