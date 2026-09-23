@@ -203,6 +203,16 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       refute html =~ "GPT-5.6 Sol"
     end
 
+    test "a session persisted with a since-removed model id still renders (no crash, no active highlight)",
+         %{conn: conn, claude_session: session} do
+      {:ok, session} = Sessions.update_session(session, %{model: "claude-opus-5"})
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert html =~ "claude-opus-5"
+      refute has_element?(view, "button.active[phx-value-model=claude-opus-5]")
+    end
+
     test "all three backends still offer free-text custom model entry", %{
       conn: conn,
       claude_session: claude_session,
