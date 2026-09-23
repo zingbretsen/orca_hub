@@ -64,7 +64,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
     {:ok, view, html} = live(conn, ~p"/sessions/new")
 
     # Defaults to Claude's model list before any backend selection.
-    assert html =~ "Opus 4.8"
+    assert html =~ "Opus 5.5"
     refute html =~ "GPT-5"
 
     html =
@@ -73,7 +73,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
       |> render_change()
 
     assert html =~ "GPT-5.6 Sol"
-    refute html =~ "Opus 4.8"
+    refute html =~ "Opus 5.5"
   end
 
   test "new-session form shows the orchestrator (MCP-dependent) toggle for mcp:true backends", %{
@@ -133,7 +133,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
       |> render_change()
 
     assert html =~ "glm-5p2 (fireworks)"
-    refute html =~ "Opus 4.8"
+    refute html =~ "Opus 5.5"
     refute html =~ "GPT-5.6 Sol"
   end
 end

@@ -1265,7 +1265,7 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert Sessions.get_session!(session_id).model == "claude-opus-5-5"
     end
 
-    test "the bare \"opus\" alias is still accepted now that both claude-opus-5-5 and claude-opus-4-8 exist",
+    test "the bare \"opus\" alias is still accepted now that claude-opus-5-5 exists",
          %{state: state} do
       result =
         with_fake_claude_on_path(fn ->

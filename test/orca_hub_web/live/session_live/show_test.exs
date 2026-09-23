@@ -163,7 +163,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
 
       assert html =~ "Fable 5.1"
-      assert html =~ "Opus 4.8"
+      assert html =~ "Opus 5.5"
       assert html =~ "Sonnet 5"
       assert html =~ "Haiku 4.5"
       refute html =~ "GPT-5"
@@ -173,7 +173,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}")
 
       assert html =~ "GPT-5.6 Sol"
-      refute html =~ "Opus 4.8"
+      refute html =~ "Opus 5.5"
       refute html =~ "Fable 5.1"
       refute html =~ "Haiku 4.5"
     end
@@ -199,18 +199,20 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       assert html =~ "glm-5p2 (fireworks)"
       assert html =~ "kimi-k2p6 (fireworks)"
-      refute html =~ "Opus 4.8"
+      refute html =~ "Opus 5.5"
       refute html =~ "GPT-5.6 Sol"
     end
 
-    test "a session persisted with a since-removed model id still renders (no crash, no active highlight)",
-         %{conn: conn, claude_session: session} do
-      {:ok, session} = Sessions.update_session(session, %{model: "claude-opus-5"})
+    for retired_model <- ["claude-opus-5", "claude-opus-4-8"] do
+      test "a session persisted with the since-removed #{retired_model} model id still renders (no crash, no active highlight)",
+           %{conn: conn, claude_session: session} do
+        {:ok, session} = Sessions.update_session(session, %{model: unquote(retired_model)})
 
-      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+        {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
 
-      assert html =~ "claude-opus-5"
-      refute has_element?(view, "button.active[phx-value-model=claude-opus-5]")
+        assert html =~ unquote(retired_model)
+        refute has_element?(view, "button.active[phx-value-model=#{unquote(retired_model)}]")
+      end
     end
 
     test "all three backends still offer free-text custom model entry", %{
@@ -860,7 +862,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       refute :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode
       assert html =~ "GPT-5.6 Sol"
-      refute html =~ "Opus 4.8"
+      refute html =~ "Opus 5.5"
     end
 
     test "selecting the current backend is a no-op", %{conn: conn, claude_session: session} do
@@ -978,7 +980,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       child: child,
       archived_grandchild: leaf
     } do
-      {:ok, child} = Sessions.update_session(child, %{model: "claude-opus-4-8"})
+      {:ok, child} = Sessions.update_session(child, %{model: "claude-opus-5-5"})
       assert is_nil(root.model)
       assert is_nil(leaf.model)
 
@@ -987,7 +989,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert has_element?(
                view,
                "#session-node-#{child.id} div",
-               "claude-opus-4-8"
+               "claude-opus-5-5"
              )
 
       # `leaf` (archived_grandchild) has no children of its own, so its node's
@@ -995,7 +997,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       # (root/child), whose subtree structurally nests every descendant's
       # markup and would trivially "contain" this text regardless of whether
       # the assertion logic were correct.
-      refute has_element?(view, "#session-node-#{leaf.id} div", "claude-opus-4-8")
+      refute has_element?(view, "#session-node-#{leaf.id} div", "claude-opus-5-5")
     end
 
     test "shows backend, runner node, and archived status on the secondary metadata line", %{
