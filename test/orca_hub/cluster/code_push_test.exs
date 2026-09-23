@@ -1168,6 +1168,41 @@ defmodule OrcaHub.Cluster.CodePushTest do
     out
   end
 
+  describe "compile_env/0" do
+    setup do
+      keys = ~w(RELEASE_ROOT RELEASE_NAME RELEASE_BOOT_SCRIPT BINDIR ROOTDIR PROGNAME PATH)
+      saved = Enum.map(keys, &{&1, System.get_env(&1)})
+
+      on_exit(fn ->
+        Enum.each(saved, fn
+          {k, nil} -> System.delete_env(k)
+          {k, v} -> System.put_env(k, v)
+        end)
+      end)
+    end
+
+    test "scrubs the release runtime env so the child mix does not boot start.boot" do
+      root = "/home/zach/orca-hub-releases/63b8fb4"
+      System.put_env("RELEASE_ROOT", root)
+      System.put_env("RELEASE_NAME", "orca_hub")
+      System.put_env("RELEASE_BOOT_SCRIPT", "start")
+      System.put_env("BINDIR", "#{root}/erts-15.2.2/bin")
+      System.put_env("ROOTDIR", root)
+      System.put_env("PROGNAME", "erl")
+      System.put_env("PATH", "#{root}/erts-15.2.2/bin:#{root}/bin:/usr/local/bin:/usr/bin")
+
+      env = CodePush.compile_env()
+
+      assert {"MIX_ENV", "prod"} in env
+
+      for var <- ~w(RELEASE_ROOT RELEASE_NAME RELEASE_BOOT_SCRIPT BINDIR ROOTDIR PROGNAME) do
+        assert {var, nil} in env
+      end
+
+      assert {"PATH", "/usr/local/bin:/usr/bin"} = List.keyfind(env, "PATH", 0)
+    end
+  end
+
   defp write_beam_with_foreign_compiler(ebin) do
     [file] = ebin |> File.ls!() |> Enum.filter(&String.ends_with?(&1, ".beam"))
     path = Path.join(ebin, file)

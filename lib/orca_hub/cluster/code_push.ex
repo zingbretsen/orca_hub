@@ -449,12 +449,26 @@ defmodule OrcaHub.Cluster.CodePush do
   end
 
   defp compile(dir, args) do
-    case System.cmd("mix", args, cd: dir, env: [{"MIX_ENV", "prod"}], stderr_to_stdout: true) do
+    case System.cmd("mix", args, cd: dir, env: compile_env(), stderr_to_stdout: true) do
       {_out, 0} -> :ok
       {out, code} -> {:error, {:compile_failed, code, String.trim(out)}}
     end
   rescue
     e -> {:error, {:compile_failed, :exception, Exception.message(e)}}
+  end
+
+  # The child `mix` must not inherit a release's runtime env: with the
+  # release's erts/bin first on PATH (plus BINDIR/ROOTDIR/RELEASE_*), its
+  # `erl` boots the release's start.boot and dies with `cannot get bootfile`.
+  # Reuses the port sanitizer, translated to System.cmd's string/nil form.
+  @doc false
+  def compile_env do
+    [{~c"MIX_ENV", ~c"prod"}]
+    |> OrcaHub.Env.sanitized_env()
+    |> Enum.map(fn
+      {name, false} -> {List.to_string(name), nil}
+      {name, value} -> {List.to_string(name), List.to_string(value)}
+    end)
   end
 
   # Reads the payload and asserts every beam names the SAME compiler, and
