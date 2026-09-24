@@ -61,4 +61,10 @@ defmodule OrcaHub.Skills do
   defp notify_change do
     Phoenix.PubSub.broadcast(OrcaHub.PubSub, "skills", {:skills_updated})
   end
+
+  # Marker for the first hot code generation (2026-09-23). Nothing calls it;
+  # it exists so the publish changes this module's compiled code — a comment
+  # alone leaves the beam md5 unchanged, and the reconcile diffs on that md5.
+  @doc false
+  def hot_load_probe, do: "first hot code generation"
 end
