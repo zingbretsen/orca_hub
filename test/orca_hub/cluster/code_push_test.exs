@@ -217,6 +217,68 @@ defmodule OrcaHub.Cluster.CodePushTest do
       assert loaded == [to_string(changed_v2.module)]
     end
 
+    test "loads COLD modules too, and reports them as cold rather than as changes" do
+      # The first real publish (base dd66454) loaded 1 module on five nodes
+      # and 257 on orca-agent-dell, which runs -mode interactive and idles
+      # with most modules unloaded. Loading those is CORRECT — an
+      # interactive node loads an unloaded module from its IMAGE on demand —
+      # but the report must say which loads corrected something and which
+      # only made the generation authoritative, so `changed` reads the same
+      # on every node.
+      pid = start_idle_reconciler()
+
+      dir = Path.join(System.tmp_dir!(), "code_push_cold_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      true = :code.add_pathz(to_charlist(dir))
+
+      on_exit(fn ->
+        :code.del_path(to_charlist(dir))
+        File.rm_rf!(dir)
+      end)
+
+      park_on_disk = fn on_disk ->
+        File.write!(Path.join(dir, "#{on_disk.module}.beam"), on_disk.binary)
+        :code.purge(on_disk.module)
+        true = :code.delete(on_disk.module)
+        :code.purge(on_disk.module)
+        refute :erlang.module_loaded(on_disk.module)
+      end
+
+      cold = for _ <- 1..3, do: entry(unique_module("CPTest.Cold"), "def v, do: :generation")
+      Enum.each(cold, park_on_disk)
+
+      # Not loaded, and the file a call would load is OLDER code.
+      stale_name = unique_module("CPTest.StaleOnDisk")
+      stale_v2 = entry(stale_name, "def v, do: :generation")
+      stale_v1 = entry(stale_name, "def v, do: :image")
+      park_on_disk.(stale_v1)
+
+      drift_name = unique_module("CPTest.ColdDrift")
+      drift_v2 = entry(drift_name, "def v, do: :generation")
+      _drift_v1 = entry(drift_name, "def v, do: :image")
+
+      publish!([drift_v2, stale_v2 | cold]) |> newer_than_this_node()
+
+      assert %{status: :reconciled} = result = GenServer.call(pid, {:reconcile_node, node(), []})
+
+      # Everything not identical was loaded — cold modules included.
+      assert result.pushed == 5
+      assert result.changed == 2
+      assert result.cold == 3
+
+      assert result.loaded_by_state == %{
+               drifted: 1,
+               absent: 0,
+               stale_on_disk: 1,
+               not_loaded: 3,
+               unknown: 0
+             }
+
+      # And each now runs the GENERATION's code — including the one whose
+      # disk copy would have run the image's version had it been skipped.
+      for e <- [drift_v2, stale_v2 | cold], do: assert(e.module.v() == :generation)
+    end
+
     test "errors cleanly when there is no generation to reconcile toward" do
       pid = start_idle_reconciler()
       assert {:error, :no_generation} = GenServer.call(pid, {:reconcile_node, node(), []})

@@ -529,23 +529,60 @@ defmodule OrcaHub.MCP.Tools.CodePush do
     """
   end
 
-  defp render_node(result, name \\ nil)
+  # Public only so the reconcile line an operator reads can be pinned by a
+  # test; not part of the tool surface.
+  @doc false
+  def render_node(result, name \\ nil)
 
-  defp render_node(%{status: :in_sync} = r, name),
+  def render_node(%{status: :in_sync} = r, name),
     do: "#{prefix(name)}in sync (#{r[:identical] || 0} modules identical)#{orphan_suffix(r)}"
 
-  defp render_node(%{status: :reconciled} = r, name),
-    do:
-      "#{prefix(name)}reconciled — #{r.pushed} module(s) loaded#{wedged_suffix(r)}#{orphan_suffix(r)}"
+  def render_node(%{status: :reconciled} = r, name),
+    do: "#{prefix(name)}reconciled — #{loaded_summary(r)}#{wedged_suffix(r)}#{orphan_suffix(r)}"
 
-  defp render_node(%{status: :partial} = r, name),
+  def render_node(%{status: :partial} = r, name),
     do:
-      "#{prefix(name)}PARTIAL — #{r.pushed} loaded, errors: #{Enum.join(r.errors, "; ")}#{wedged_suffix(r)}"
+      "#{prefix(name)}PARTIAL — #{loaded_summary(r)}, errors: #{Enum.join(r.errors, "; ")}#{wedged_suffix(r)}"
 
-  defp render_node(%{status: status, reason: reason}, name),
+  def render_node(%{status: status, reason: reason}, name),
     do: "#{prefix(name)}#{status} — #{reason}"
 
-  defp render_node(other, name), do: "#{prefix(name)}#{inspect(other)}"
+  def render_node(other, name), do: "#{prefix(name)}#{inspect(other)}"
+
+  # `changed` leads because it is the success criterion — one publish should
+  # show the same number on every node. `cold` is expected to vary (a fresh
+  # interactive node has hundreds) and says so, rather than inflating one
+  # alarming "N module(s) loaded" figure. See CodePush's moduledoc.
+  defp loaded_summary(%{changed: changed, cold: cold, loaded_by_state: by} = r) do
+    breakdown =
+      [
+        drifted: "drifted",
+        absent: "absent",
+        stale_on_disk: "stale on disk",
+        unknown: "unclassified"
+      ]
+      |> Enum.flat_map(fn {state, label} ->
+        case Map.get(by, state, 0) do
+          0 -> []
+          n -> ["#{n} #{label}"]
+        end
+      end)
+
+    changed_part =
+      "#{changed} changed module(s) loaded" <>
+        if(breakdown == [], do: "", else: " (#{Enum.join(breakdown, ", ")})")
+
+    cold_part =
+      if cold == 0,
+        do: "",
+        else:
+          "; +#{cold} cold module(s) loaded to make the generation authoritative " <>
+            "(same code already on disk, not loaded yet — expected on an idle/interactive node)"
+
+    "#{changed_part}#{cold_part} [#{r.pushed} total]"
+  end
+
+  defp loaded_summary(r), do: "#{r.pushed} module(s) loaded"
 
   # Orphans are reported on every reconcile but never acted on — removing
   # them is purge_orphaned_modules, a separate and destructive step.

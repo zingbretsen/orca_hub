@@ -72,6 +72,61 @@ defmodule OrcaHub.MCP.Tools.CodePushTest do
     assert purge["description"] =~ "deleted from source"
   end
 
+  describe "render_node/2: a reconcile line is checkable at a glance" do
+    test "changed modules lead; cold loads are named as expected, not folded into one count" do
+      # The shape orca-agent-dell produced on the first real publish: one
+      # module genuinely changed, 256 loaded only because that interactive
+      # node had not demanded them yet. Printed as "257 module(s) loaded"
+      # it read as an alarm next to five nodes reporting 1.
+      dell = %{
+        status: :reconciled,
+        pushed: 257,
+        changed: 1,
+        cold: 256,
+        loaded_by_state: %{drifted: 1, absent: 0, stale_on_disk: 0, not_loaded: 256, unknown: 0},
+        wedged: [],
+        orphaned: []
+      }
+
+      warm = %{
+        dell
+        | pushed: 1,
+          cold: 0,
+          loaded_by_state: %{dell.loaded_by_state | not_loaded: 0}
+      }
+
+      dell_line = CodePush.render_node(dell, "orca-dell")
+      warm_line = CodePush.render_node(warm, "orca-hub")
+
+      assert dell_line =~ "reconciled — 1 changed module(s) loaded (1 drifted)"
+      assert dell_line =~ "+256 cold module(s) loaded to make the generation authoritative"
+      assert dell_line =~ "[257 total]"
+
+      assert warm_line =~ "reconciled — 1 changed module(s) loaded (1 drifted)"
+      refute warm_line =~ "cold"
+    end
+
+    test "a stale-on-disk load is a CHANGE, named as such" do
+      line =
+        CodePush.render_node(%{
+          status: :reconciled,
+          pushed: 3,
+          changed: 3,
+          cold: 0,
+          loaded_by_state: %{drifted: 1, absent: 1, stale_on_disk: 1, not_loaded: 0, unknown: 0},
+          wedged: [],
+          orphaned: []
+        })
+
+      assert line =~ "3 changed module(s) loaded (1 drifted, 1 absent, 1 stale on disk)"
+    end
+
+    test "a result recorded before the changed/cold split still renders" do
+      assert CodePush.render_node(%{status: :reconciled, pushed: 4, wedged: [], orphaned: []}) =~
+               "reconciled — 4 module(s) loaded"
+    end
+  end
+
   test "publish_code_generation requires a directory" do
     assert %{"isError" => true, "content" => [%{"text" => text}]} =
              CodePush.call("publish_code_generation", %{}, %{})

@@ -141,6 +141,35 @@ defmodule OrcaHub.Cluster.CodePush do
   is the compile; this catches the case where that compile silently did
   nothing.
 
+  ## Cold modules are loaded, on purpose
+
+  A reconcile loads every module that is not `identical` on the target —
+  including `not_loaded` ("cold") ones that sit in the node's code path
+  unloaded. That is CORRECTNESS, not waste, and it was settled empirically
+  (2026-09-23, local `:peer` nodes on the release ERTS — see
+  `CodeSync.classify/3`):
+
+    * On a `-mode interactive` node — orca-agent-dell runs
+      `RELEASE_MODE=interactive` — calling an unloaded module loads it FROM
+      DISK, i.e. from the IMAGE. Skipping cold modules would leave the node
+      running a mix of generation and image code, and for any module the
+      generation changes, the OLD version. The first real publish (base
+      `dd66454`) loaded 257 modules there for exactly this reason.
+    * On an embedded node the boot script loads every module, so cold
+      modules essentially do not occur; when one does, it is `undef` until
+      something loads it. Loading it makes the generation's version the one
+      that exists.
+
+  Skipping only the cold modules whose on-disk md5 matches would be correct
+  today, but it would make "which code runs" depend on files the hub does
+  not control rather than on the generation. So the classification changes
+  only the REPORT: each result carries `changed` (drifted + absent +
+  stale_on_disk + unknown — loads that CORRECT something) and `cold`
+  (not_loaded — loads that make the generation authoritative), with
+  `loaded_by_state` for the breakdown. A publish's success criterion is that
+  `changed` is the same on every node; `cold` varies with how warm a node
+  is and is expected to be large on a fresh interactive node.
+
   ## Orphaned modules are REPORTED, never purged automatically
 
   Hot loading cannot un-load a module. A module deleted from source stays
@@ -1209,12 +1238,16 @@ defmodule OrcaHub.Cluster.CodePush do
       diff_entries =
         Enum.map(manifest, fn {mod, md5} -> %{module: String.to_atom(mod), md5: md5} end)
 
-      case BeamTransport.drift(diff_entries, target) do
-        {:ok, %{missing: missing, drifted: drifted} = report} ->
-          needed = missing ++ drifted
+      case BeamTransport.classify(diff_entries, target) do
+        {:ok, classified} ->
+          # EVERYTHING not identical is loaded, cold (`not_loaded`) modules
+          # included — see "Cold modules are loaded, on purpose" in the
+          # moduledoc. The classification only decides how each load is
+          # REPORTED, never whether it happens.
+          needed = Enum.flat_map(BeamTransport.load_states(), &Map.fetch!(classified, &1))
 
           generation
-          |> push_needed(target, needed, report)
+          |> push_needed(target, needed, classified)
           |> Map.put(:orphaned, orphaned_modules(generation, target) |> Enum.map(&to_string/1))
 
         {:error, reason} ->
@@ -1227,7 +1260,7 @@ defmodule OrcaHub.Cluster.CodePush do
     %{status: :in_sync, identical: length(report.identical), pushed: 0}
   end
 
-  defp push_needed(generation, target, needed, _report) do
+  defp push_needed(generation, target, needed, classified) do
     entries = generation.id |> CodeGenerations.fetch_beams(needed) |> BeamTransport.sanitize()
 
     # allow_erts_mismatch: true is NOT a weakening here. CodeSync's own gate
@@ -1237,9 +1270,16 @@ defmodule OrcaHub.Cluster.CodePush do
     # the right one. See OrcaHub.Cluster.BeamTransport's moduledoc.
     case BeamTransport.push(entries, target, allow_erts_mismatch: true) do
       {:ok, report} ->
+        by_state = loaded_by_state(report.loaded, classified)
+
         %{
           status: if(report.errors == [], do: :reconciled, else: :partial),
           pushed: length(report.loaded),
+          # The at-a-glance success criterion: `changed` should match across
+          # every node for one publish; `cold` legitimately varies by node.
+          changed: length(report.loaded) - by_state.not_loaded,
+          cold: by_state.not_loaded,
+          loaded_by_state: by_state,
           loaded: Enum.map(report.loaded, &to_string/1),
           wedged: Enum.map(report.wedged, &to_string/1),
           skipped_identical: length(report.skipped_identical),
@@ -1249,6 +1289,17 @@ defmodule OrcaHub.Cluster.CodePush do
       {:error, reason} ->
         %{status: :error, reason: "push failed: #{BeamTransport.describe_error(reason)}"}
     end
+  end
+
+  # How many of the modules that actually LOADED were in each
+  # CodeSync.classify/3 state beforehand. Wedged/errored modules are not
+  # counted: they did not load.
+  defp loaded_by_state(loaded, classified) do
+    loaded = MapSet.new(loaded)
+
+    Map.new(BeamTransport.load_states(), fn state ->
+      {state, Enum.count(Map.fetch!(classified, state), &MapSet.member?(loaded, &1))}
+    end)
   end
 
   # The last line of defence, on the ONE path every node push funnels
@@ -1466,8 +1517,12 @@ defmodule OrcaHub.Cluster.CodePush do
   defp log_node_result(target, %{status: :in_sync}),
     do: Logger.debug("CodePush: #{target} already in sync.")
 
-  defp log_node_result(target, %{status: :reconciled, pushed: n}),
-    do: Logger.info("CodePush: reconciled #{target} — #{n} modules loaded.")
+  defp log_node_result(target, %{status: :reconciled, pushed: n} = r),
+    do:
+      Logger.info(
+        "CodePush: reconciled #{target} — #{n} modules loaded " <>
+          "(#{Map.get(r, :changed, n)} changed, #{Map.get(r, :cold, 0)} cold)."
+      )
 
   defp log_node_result(target, %{status: :refused, reason: reason}),
     do: Logger.error("CodePush: #{target} — #{reason}")

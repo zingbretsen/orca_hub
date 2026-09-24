@@ -36,27 +36,27 @@ defmodule OrcaHub.Cluster.FleetStatus do
   `basis` is on the report so the UI can say which one it used. A drift
   count whose meaning depends on invisible state is not a drift count.
 
-  ## `missing` is three answers, not one
+  ## One vocabulary, shared with the reconciler
 
-  `CodeSync.drift/3` calls a module "missing" when the node raises on
-  `:erlang.get_module_info/2` — true for a module the node has never heard
-  of AND for one that is simply not loaded yet. Reporting the union as one
-  number implies a certainty that probe does not have.
+  Every module is classified by `CodeSync.classify/3` — the SAME function
+  `OrcaHub.Cluster.CodePush` uses to decide and report what it loads — into
+  `identical`, `drifted`, `stale_on_disk`, `not_loaded`, `absent` or
+  `unknown`. See that function for the probes and for the empirical
+  evidence behind the split. In short, "the md5 probe called it missing" is
+  four answers, not one:
 
-  So every module the md5 pass called missing gets a second, cheap
-  `:code.which/1` probe (`CodeSync.code_locations/3`) and lands in exactly
-  one of:
+    * `absent` — not on the node at all.
+    * `stale_on_disk` — not loaded, and the beam in the node's code path is
+      DIFFERENT code. On a node running `-mode interactive` (orca-agent-dell)
+      the next call loads that stale file. Out of date.
+    * `not_loaded` — not loaded, and the beam in the code path is the SAME
+      code as the basis ("cold"). Not out of date: whatever loads it loads
+      the right code. A reconcile still loads it — deliberately, see
+      `CodePush` — and reports it as cold, never as a change.
+    * `unknown` — a probe could not say. Counted and labelled as unknown,
+      never quietly merged into any of the above.
 
-    * `absent` — `:non_existing` there. Genuinely not on the node.
-    * `not_loaded` — in its code path, not currently loaded. NORMAL, not a
-      fault: a release in embedded mode loads on demand, so an idle node
-      legitimately reports hundreds of these and a busy node on the same
-      image reports none. It is never counted as out-of-date — see
-      `annotate/1`.
-    * `unknown` — the probe could not say. Counted and labelled as unknown,
-      never quietly merged into either of the above.
-
-  When the classification probe itself fails, every missing module is
+  When a classification probe itself fails, every missing module is
   `unknown` and `missing_classified?` is `false` — the UI is expected to
   render that as uncertainty rather than as a precise zero.
   """
@@ -160,6 +160,7 @@ defmodule OrcaHub.Cluster.FleetStatus do
       identical: 0,
       drifted: [],
       absent: [],
+      stale_on_disk: [],
       not_loaded: [],
       unknown: [],
       orphaned: [],
@@ -200,38 +201,9 @@ defmodule OrcaHub.Cluster.FleetStatus do
   defp drift(_target, [], _opts), do: %{}
 
   defp drift(target, entries, opts) do
-    case CodeSync.drift(entries, target, opts) do
-      {:ok, report} ->
-        %{drifted: report.drifted, identical: length(report.identical)}
-        |> Map.merge(classify_missing(target, report.missing, opts))
-
-      {:error, reason} ->
-        %{error: CodeSync.describe_error(reason)}
-    end
-  end
-
-  # See the moduledoc: the md5 pass cannot tell "absent" from "not loaded",
-  # so ask :code.which/1 and keep the three answers apart.
-  defp classify_missing(_target, [], _opts),
-    do: %{absent: [], not_loaded: [], unknown: [], missing_classified?: true}
-
-  defp classify_missing(target, missing, opts) do
-    case CodeSync.code_locations(target, missing, opts) do
-      {:ok, locations} ->
-        grouped = Enum.group_by(missing, &Map.get(locations, &1, :unknown))
-
-        %{
-          absent: Enum.sort(Map.get(grouped, :absent, [])),
-          not_loaded: Enum.sort(Map.get(grouped, :not_loaded, [])),
-          unknown: Enum.sort(Map.get(grouped, :unknown, [])),
-          missing_classified?: true
-        }
-
-      {:error, _reason} ->
-        # Everything the md5 pass called missing stays missing; we just
-        # cannot say WHY. Flagged so the UI can label the uncertainty
-        # instead of rendering a confident "0 absent".
-        %{absent: [], not_loaded: [], unknown: Enum.sort(missing), missing_classified?: false}
+    case CodeSync.classify(entries, target, opts) do
+      {:ok, classified} -> %{classified | identical: length(classified.identical)}
+      {:error, reason} -> %{error: CodeSync.describe_error(reason)}
     end
   end
 
@@ -269,20 +241,19 @@ defmodule OrcaHub.Cluster.FleetStatus do
   # A single field the UI can colour on, so "this node is wrong" does not
   # have to be reconstructed from five counts at a glance.
   #
-  # `not_loaded` is DELIBERATELY NOT part of this sum, and must never be
-  # added to it. On a release in embedded mode it is the NORMAL resting
-  # state, not a defect: an idle node has simply never demanded most of
-  # `Mix.Tasks.*`/`Inspect.*` into memory, so a freshly deployed, perfectly
-  # healthy node reports hundreds of them (253 of 289 measured on a real
-  # one), while a node serving traffic on the IDENTICAL image reports zero.
-  # A module in the code path will be loaded on demand from the code the
-  # node already has — there is nothing to push and nothing to fix, so
-  # counting it as "out of date" turns a working node red and sends an
-  # operator chasing a push that cannot change anything. Only `drifted`
-  # (running different code) and `absent` (not on the node at all) describe
-  # something a push would actually correct.
+  # `not_loaded` is DELIBERATELY NOT part of this sum: its on-disk beam IS
+  # the basis's code, so loading it — on demand, on a `-mode interactive`
+  # node like orca-agent-dell, which idles with ~250 of them — yields the
+  # right code. A reconcile loads these anyway to make the generation
+  # authoritative (see CodePush), but that is not a correction and must not
+  # turn a working node red.
+  #
+  # `stale_on_disk` IS part of it, and that is the half the old "not loaded
+  # is always healthy" rule got wrong: an unloaded module whose on-disk beam
+  # differs is exactly what an interactive node would load STALE on its
+  # next call.
   defp annotate(row) do
-    out_of_date = length(row.drifted) + length(row.absent)
+    out_of_date = length(row.drifted) + length(row.absent) + length(row.stale_on_disk)
 
     status =
       cond do

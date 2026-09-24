@@ -201,9 +201,10 @@ defmodule OrcaHub.Cluster.FleetStatusTest do
 
     test "a module present in the code path but not loaded is NOT_LOADED, not absent" do
       # The distinction the md5 probe cannot make on its own: this module is
-      # sitting in an ebin dir the node can reach, so a release in embedded
-      # mode would load it on demand — reporting it as 'absent' would send an
-      # operator chasing a push that isn't needed.
+      # sitting in an ebin dir the node can reach, and that file IS the
+      # basis's code, so whatever loads it (on demand, on an interactive
+      # node) loads the right code. Reporting it as 'absent' would misstate
+      # the node.
       dir = Path.join(System.tmp_dir!(), "fleet_status_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)
       on_exit(fn -> File.rm_rf!(dir) end)
@@ -222,10 +223,43 @@ defmodule OrcaHub.Cluster.FleetStatusTest do
 
       assert row.not_loaded == [e.module]
       assert row.absent == []
+      assert row.stale_on_disk == []
       assert row.missing_classified?
-      # And NOT out of date: the node has the code and will load it on
-      # demand. See the dedicated test below.
+      # And NOT out of date: the node has the right code on disk. See the
+      # dedicated test below.
       refute row.status == :out_of_date
+    end
+
+    test "an unloaded module whose on-disk beam DIFFERS is stale_on_disk and out of date" do
+      # The half of 'not loaded' the old always-healthy rule got wrong. On an
+      # interactive-mode node (orca-agent-dell) the next call would load
+      # THIS file — the image's code, not the basis's.
+      dir = Path.join(System.tmp_dir!(), "fleet_status_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      name = unique_module("FSTest.StaleOnDisk")
+      v2 = entry(name, "def v, do: 2")
+      v1 = entry(name, "def v, do: 1")
+      File.write!(Path.join(dir, "#{v1.module}.beam"), v1.binary)
+      :code.purge(v1.module)
+      :code.delete(v1.module)
+      :code.purge(v1.module)
+      true = :code.add_pathz(to_charlist(dir))
+      on_exit(fn -> :code.del_path(to_charlist(dir)) end)
+
+      refute :erlang.module_loaded(v1.module)
+      publish!([v2])
+
+      row = row_for(FleetStatus.report())
+
+      assert row.stale_on_disk == [v2.module]
+      assert row.not_loaded == []
+      assert row.absent == []
+      assert row.missing_classified?
+      assert row.status == :out_of_date
+      # Reporting did not load the stale file to find out.
+      refute :erlang.module_loaded(v1.module)
     end
 
     test "not_loaded is NOT out-of-date: a node with only unloaded modules is healthy" do
@@ -234,13 +268,16 @@ defmodule OrcaHub.Cluster.FleetStatusTest do
       # rendered OUT OF DATE purely for not having demanded most of
       # Mix.Tasks.*/Inspect.* into memory yet (253 of 289 measured on a real
       # idle node; a node serving traffic on the identical image reported
-      # zero). Nothing about that state is fixable by a push.
+      # zero). Its on-disk beams ARE the basis's code, so nothing about that
+      # state is wrong — a reconcile loads them anyway, reported as COLD
+      # rather than as changes (see CodePush's moduledoc).
       dir = Path.join(System.tmp_dir!(), "fleet_status_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)
       on_exit(fn -> File.rm_rf!(dir) end)
 
       # Many unloaded modules, zero drifted, zero absent — the shape of an
-      # idle embedded release.
+      # idle interactive-mode node (orca-agent-dell, RELEASE_MODE=interactive;
+      # an embedded release loads every module at boot).
       unloaded =
         for _ <- 1..25 do
           e = entry(unique_module("FSTest.Healthy"), "def v, do: 1")

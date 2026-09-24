@@ -274,8 +274,9 @@ not.
 
 ## Reporting: drift, stamps, and the two shas
 
-`CodeSync.drift/3` returns three categories against a payload: `missing`
-(the node has not loaded it), `drifted` (running md5 differs), `identical`.
+`CodeSync.drift/3` returns three raw categories against a payload: `missing`
+(the node has not loaded it), `drifted` (running md5 differs), `identical`;
+`classify/3` (below) refines `missing`.
 A reconcile adds a fourth, `orphaned` — modules a node still carries that the
 generation does not contain. Hot loading cannot un-load anything, so a module
 deleted from source stays resident and callable forever. Refusing the hot
@@ -284,14 +285,47 @@ constantly); removal is an explicit, destructive operator action,
 `purge_orphaned/1`, which never kills a process to do it. `BuildInfo` is
 excluded from the orphan set since it is in no generation by design.
 
-`missing` is three answers, not one. The md5 probe raises both for a module
-the node never heard of and for one merely not loaded yet, so
-`FleetStatus` re-probes with `:code.which/1` (`CodeSync.code_locations/3`)
-and lands each in exactly one of `absent` (`:non_existing` there),
-`not_loaded` (in the code path, not loaded), or `unknown` (the probe could
-not say — including `:preloaded`/`:cover_compiled`, and a failed probe, which
-also sets `missing_classified?` false so the UI renders uncertainty rather
-than a confident zero).
+**One vocabulary for "missing", used by both sides.** `CodeSync.classify/3`
+is the single classifier `FleetStatus` (reporting) and `CodePush`
+(reconciling) share. The md5 probe raises both for a module the node never
+heard of and for one merely not loaded, so a missing module is re-probed with
+`:code.which/1` and, if it is in the code path, `:beam_lib.md5/1` on that file
+(reads chunks, never loads it). Each lands in exactly one of: `absent` (not
+on the node), `stale_on_disk` (not loaded; the file a call would load is
+DIFFERENT code), `not_loaded` ("cold": not loaded; the file IS the desired
+code), or `unknown` (`:preloaded`/`:cover_compiled`, unreadable, or a failed
+probe — which also sets `missing_classified?` false so the UI renders
+uncertainty rather than a confident zero).
+
+**Cold modules are loaded, on purpose — settled empirically 2026-09-23**
+(local `:peer` nodes on the release ERTS, throwaway cookie; pinned by
+`code_sync_distributed_test.exs` and `code_sync_test.exs`):
+
+- `-mode interactive`: calling an unloaded module in the code path loads it
+  FROM DISK — the image. `orca-agent-dell` runs `RELEASE_MODE=interactive`
+  (an idle-RSS experiment in `~/homelab/k3s/apps/orca-agent-dell.yaml`),
+  which is why it alone idles with ~250 unloaded modules. Skipping them
+  would leave it running a mix of generation and image code — the OLD
+  version of anything the generation changed.
+- `-mode embedded` (every other node): the boot script `primLoad`s all
+  290/290 `:orca_hub` modules, and an unloaded module is `undef`
+  (`code:ensure_loaded/1` -> `{error, embedded}`), never loaded from disk.
+
+So a reconcile loads every non-`identical` module (`CodeSync.load_states/0`),
+cold ones included — that makes the generation, not whatever file sits on a
+node's disk, authoritative. The classification changes only the REPORT: each
+node result carries `changed` (drifted + absent + stale_on_disk + unknown —
+loads that corrected something) and `cold` (not_loaded), plus
+`loaded_by_state`; `code_generation_status` renders e.g. `1 changed module(s)
+loaded (1 drifted); +256 cold module(s) loaded to make the generation
+authoritative`. **A publish's success criterion: `changed` is the same on
+every node** (modulo gb10's HEEx fingerprint churn, above). `cold` varies
+with how warm a node is. The first real publish (`dd66454`) read "257
+loaded" on dell vs 1 elsewhere for exactly this reason.
+
+In `FleetStatus`, `stale_on_disk` counts toward `:out_of_date` (a call would
+run the wrong code); `not_loaded` does not (a call would run the right code),
+and is rendered neutral as "not loaded (cold)".
 
 `FleetStatus.report/1` names its comparison basis instead of assuming it:
 `:generation` when one is published, `:local_ebin` otherwise. It shows TWO

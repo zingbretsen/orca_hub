@@ -312,6 +312,67 @@ defmodule OrcaHub.Cluster.CodeSyncDistributedTest do
   # Cross-ERTS peer: the gate, against two real runtimes
   # -------------------------------------------------------------------
 
+  # -------------------------------------------------------------------
+  # Cold modules: why a reconcile loads them (CodePush moduledoc)
+  # -------------------------------------------------------------------
+
+  describe "an unloaded module in a peer's code path" do
+    # Only the IMAGE copy (v1) goes on the peer's disk; the payload is v2.
+    # This is a generation that changes a module the node has not loaded.
+    setup do
+      mod = unique_subject_name()
+      cleanup_subject(mod)
+      generation_v2 = compile_subject(mod, 2)
+      image_v1 = compile_subject(mod, 1)
+
+      dir = Path.join(System.tmp_dir!(), "cold_peer_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "#{mod}.beam"), image_v1.binary)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      %{mod: mod, generation_v2: generation_v2, dir: dir}
+    end
+
+    defp cold_peer(mode, dir),
+      do: start_peer(%{args: [~c"-mode", mode, ~c"-pa", String.to_charlist(dir)]})
+
+    test "INTERACTIVE (orca-agent-dell): a skipped module later runs the IMAGE's code",
+         %{mod: mod, generation_v2: v2, dir: dir} do
+      {:ok, peer} = cold_peer(~c"interactive", dir)
+      assert :erpc.call(peer, :code, :get_mode, []) == :interactive
+
+      assert {:ok, %{stale_on_disk: [^mod]}} = CodeSync.classify([v2], peer)
+      # Classifying read the file; it did not load it.
+      assert :erpc.call(peer, :code, :is_loaded, [mod]) == false
+
+      # What skipping it would mean: the next call loads v1 from disk.
+      assert :erpc.call(peer, mod, :version, []) == 1
+    end
+
+    test "EMBEDDED: an unloaded module is undef, never loaded from disk",
+         %{mod: mod, generation_v2: v2, dir: dir} do
+      {:ok, peer} = cold_peer(~c"embedded", dir)
+      assert :erpc.call(peer, :code, :get_mode, []) == :embedded
+
+      assert {:ok, %{stale_on_disk: [^mod]}} = CodeSync.classify([v2], peer)
+
+      assert {:error, :embedded} = :erpc.call(peer, :code, :ensure_loaded, [mod])
+      assert_raise ErlangError, fn -> :erpc.call(peer, mod, :version, []) end
+      assert :erpc.call(peer, :code, :is_loaded, [mod]) == false
+    end
+
+    test "pushing it makes the generation's version the one that runs, in either mode",
+         %{mod: mod, generation_v2: v2, dir: dir} do
+      for mode <- [~c"interactive", ~c"embedded"] do
+        {:ok, peer} = cold_peer(mode, dir)
+
+        assert {:ok, %{loaded: [^mod]}} = CodeSync.push([v2], peer)
+        assert :erpc.call(peer, mod, :version, []) == 2
+        assert {:ok, %{identical: [^mod]}} = CodeSync.classify([v2], peer)
+      end
+    end
+  end
+
   describe "pushing to a peer on a different ERTS" do
     setup do
       case alt_erl() do

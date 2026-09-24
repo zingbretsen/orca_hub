@@ -256,34 +256,155 @@ defmodule OrcaHub.Cluster.CodeSync do
     end
   end
 
+  @type classification :: %{
+          identical: [module()],
+          drifted: [module()],
+          stale_on_disk: [module()],
+          not_loaded: [module()],
+          absent: [module()],
+          unknown: [module()],
+          missing_classified?: boolean()
+        }
+
   @doc """
-  Why `target` reported each of `modules` as `missing` — the precision
-  `drift/3` cannot supply on its own.
+  Every payload module's state on `target_node`, in the ONE vocabulary that
+  both `OrcaHub.Cluster.FleetStatus` (reporting) and
+  `OrcaHub.Cluster.CodePush` (reconciling) use. Each module lands in exactly
+  one of:
 
-  `drift/3` learns "missing" by asking `:erlang.get_module_info/2`, which
-  raises for a module the node has not LOADED. That single answer covers
-  two very different situations, and an operator handed one number cannot
-  tell them apart:
+    * `identical` — loaded, running md5 equals the payload's.
+    * `drifted` — loaded, running md5 differs.
+    * `stale_on_disk` — NOT loaded, and the `.beam` in the node's code path
+      has a DIFFERENT md5. Out of date: on a node in interactive mode the
+      next call loads THAT file, i.e. the image's code, not the payload's.
+    * `not_loaded` — NOT loaded, and the `.beam` in the node's code path has
+      the SAME md5 as the payload. A "cold" module: whatever loads it will
+      load the desired code.
+    * `absent` — not loaded, and not in the code path at all.
+    * `unknown` — a probe could not say (see below).
 
-    * `:not_loaded` — the module sits in the node's code path and would be
-      loaded on demand. Under a release (embedded mode, everything in the
-      boot script is loaded up front) this is unusual and interesting; under
-      `mix` it is ordinary.
-    * `:absent` — `:code.which/1` says `:non_existing`. The node genuinely
-      does not have this module anywhere and never will without a push.
+  ## Why "not loaded" is not one answer
 
-  `:code.which/1` answers exactly this question and answers it in embedded
-  mode too, where it searches the release's code path rather than only what
-  is loaded. Anything it cannot classify — including a probe that fails —
-  comes back `:unknown` rather than being folded into either real answer.
+  `drift/3` learns "missing" from `:erlang.get_module_info/2`, which raises
+  both for a module the node has never heard of and for one it merely has
+  not loaded. `:code.which/1` separates those two, and for a module that IS
+  in the code path, `:beam_lib.md5/1` on the path it returns separates
+  "the file would load the right code" from "it would load stale code" —
+  WITHOUT loading anything (reading a beam's chunks does not touch the code
+  server; verified on a live node).
+
+  That second split is the one that matters, and it was established
+  empirically (2026-09-23, local `:peer` nodes on the release's ERTS):
+
+    * `-mode interactive` — calling an unloaded module in the code path
+      loads it FROM DISK on demand. `orca-agent-dell` runs this way
+      (`RELEASE_MODE=interactive`, an idle-RSS experiment), which is why it
+      showed ~257 unloaded modules. Skipping those during a reconcile would
+      leave it running a mix of generation and IMAGE code, and for a module
+      the generation changes, the OLD version.
+    * `-mode embedded` — the release boot script `primLoad`s every module
+      (290/290 `:orca_hub` modules resident after a real boot), and a call
+      to an unloaded module raises `undef`; `code:ensure_loaded/1` returns
+      `{error, embedded}`. So on an embedded node "not loaded" essentially
+      never happens, and when it does the module is uncallable, not stale.
+
+  A module is `unknown` when `:code.which/1` returns `:preloaded` or
+  `:cover_compiled` (not a file a payload can be compared against) or when
+  its beam cannot be read. If a whole probe fails, every missing module is
+  `unknown` and `missing_classified?` is `false`, so a caller can render
+  uncertainty rather than a confident zero. Transport failures of the md5
+  pass itself are returned as `{:error, _}`, exactly as `drift/3` does.
+  """
+  @spec classify([%{module: module(), md5: binary()}], node(), keyword()) ::
+          {:ok, classification()} | {:error, term()}
+  def classify(entries, target_node, opts \\ [])
+      when is_list(entries) and is_atom(target_node) do
+    with {:ok, report} <- drift(entries, target_node, opts) do
+      wanted = Map.new(entries, &{&1.module, &1.md5})
+
+      {:ok,
+       Map.merge(
+         %{identical: report.identical, drifted: report.drifted},
+         classify_missing(target_node, report.missing, wanted, opts)
+       )}
+    end
+  end
+
+  @doc """
+  The `classify/3` states a reconcile LOADS — every state but `identical`.
+
+  `not_loaded` is on this list deliberately: pushing a cold module makes the
+  generation, not whatever file sits in the node's code path, authoritative
+  there (and makes it callable at all on an embedded node, where an unloaded
+  module is `undef`). What distinguishes it from the rest is how the load
+  is REPORTED — as cold, not as a change.
+  """
+  @spec load_states() :: [atom()]
+  def load_states, do: [:drifted, :absent, :stale_on_disk, :not_loaded, :unknown]
+
+  defp classify_missing(_target, [], _wanted, _opts),
+    do: %{stale_on_disk: [], not_loaded: [], absent: [], unknown: [], missing_classified?: true}
+
+  defp classify_missing(target, missing, wanted, opts) do
+    with {:ok, locations} <- which_paths(target, missing, opts),
+         on_disk = for({mod, {:path, path}} <- locations, do: {mod, path}),
+         {:ok, disk} <- disk_md5s(target, on_disk, opts) do
+      grouped =
+        Enum.group_by(missing, fn mod ->
+          case Map.get(locations, mod, :unknown) do
+            :absent -> :absent
+            {:path, _} -> disk_verdict(Map.get(disk, mod), Map.fetch!(wanted, mod))
+            _ -> :unknown
+          end
+        end)
+
+      %{
+        stale_on_disk: Enum.sort(Map.get(grouped, :stale_on_disk, [])),
+        not_loaded: Enum.sort(Map.get(grouped, :not_loaded, [])),
+        absent: Enum.sort(Map.get(grouped, :absent, [])),
+        unknown: Enum.sort(Map.get(grouped, :unknown, [])),
+        missing_classified?: true
+      }
+    else
+      {:error, _reason} ->
+        # Everything the md5 pass called missing stays missing; we just
+        # cannot say WHY. Never folded into absent/not_loaded.
+        %{
+          stale_on_disk: [],
+          not_loaded: [],
+          absent: [],
+          unknown: Enum.sort(missing),
+          missing_classified?: false
+        }
+    end
+  end
+
+  defp disk_verdict(md5, md5) when is_binary(md5), do: :not_loaded
+  defp disk_verdict(md5, _wanted) when is_binary(md5), do: :stale_on_disk
+  defp disk_verdict(_unreadable, _wanted), do: :unknown
+
+  @doc """
+  Why `target` reported each of `modules` as `missing`, by `:code.which/1`
+  alone: `:not_loaded` (in the code path), `:absent` (`:non_existing`), or
+  `:unknown`. Coarser than `classify/3`, which additionally checks whether
+  the on-disk copy of a `:not_loaded` module matches the payload — prefer
+  that for anything that decides or reports drift.
   """
   @spec code_locations(node(), [module()], keyword()) ::
           {:ok, %{optional(module()) => :not_loaded | :absent | :unknown}} | {:error, term()}
-  def code_locations(target_node, modules, opts \\ [])
+  def code_locations(target_node, modules, opts \\ []) when is_atom(target_node) do
+    with {:ok, paths} <- which_paths(target_node, modules, opts) do
+      {:ok,
+       Map.new(paths, fn
+         {mod, {:path, _}} -> {mod, :not_loaded}
+         {mod, other} -> {mod, other}
+       end)}
+    end
+  end
 
-  def code_locations(_target_node, [], _opts), do: {:ok, %{}}
+  defp which_paths(_target_node, [], _opts), do: {:ok, %{}}
 
-  def code_locations(target_node, modules, opts) when is_atom(target_node) and is_list(modules) do
+  defp which_paths(target_node, modules, opts) when is_list(modules) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     deadline = System.monotonic_time(:millisecond) + timeout
 
@@ -292,25 +413,55 @@ defmodule OrcaHub.Cluster.CodeSync do
         {mod, :erpc.send_request(target_node, :code, :which, [mod])}
       end)
 
-    Enum.reduce_while(requests, {:ok, %{}}, fn {mod, request_id}, {:ok, acc} ->
-      case await_which(request_id, deadline) do
-        {:ok, location} -> {:cont, {:ok, Map.put(acc, mod, location)}}
-        {:error, _} = error -> {:halt, error}
-      end
+    collect(requests, deadline, fn
+      :non_existing -> :absent
+      path when is_list(path) -> {:path, path}
+      # :preloaded and :cover_compiled are atoms, not paths — the module is
+      # there but came from somewhere a push cannot be compared against.
+      _other -> :unknown
     end)
   catch
     kind, reason -> {:error, {:unreachable, target_node, {kind, reason}}}
   end
 
-  defp await_which(request_id, deadline) do
-    try do
-      case :erpc.receive_response(request_id, {:abs, deadline}) do
-        :non_existing -> {:ok, :absent}
-        path when is_list(path) -> {:ok, :not_loaded}
-        # :preloaded and :cover_compiled are atoms, not paths — the module
-        # is there but came from somewhere a push cannot be compared against.
-        other when is_atom(other) -> {:ok, :unknown}
+  # The compile-time md5 of each module's beam ON DISK on the target — the
+  # same md5 `get_module_info/2` would report once it is loaded — read with
+  # `:beam_lib.md5/1`, which parses the file's chunks and never loads it.
+  defp disk_md5s(_target_node, [], _opts), do: {:ok, %{}}
+
+  defp disk_md5s(target_node, mod_paths, opts) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    deadline = System.monotonic_time(:millisecond) + timeout
+
+    requests =
+      Enum.map(mod_paths, fn {mod, path} ->
+        {mod, :erpc.send_request(target_node, :beam_lib, :md5, [path])}
+      end)
+
+    collect(requests, deadline, fn
+      {:ok, {_mod, md5}} when is_binary(md5) -> md5
+      _unreadable -> :unreadable
+    end)
+  catch
+    kind, reason -> {:error, {:unreachable, target_node, {kind, reason}}}
+  end
+
+  # Collects pipelined erpc responses against ONE absolute deadline. A
+  # remote exception is a per-module `:unknown`; a transport failure aborts
+  # the whole probe — laundering it into a per-module answer would make an
+  # unreachable node look like one with every module absent.
+  defp collect(requests, deadline, interpret) do
+    Enum.reduce_while(requests, {:ok, %{}}, fn {mod, request_id}, {:ok, acc} ->
+      case await(request_id, deadline, interpret) do
+        {:ok, value} -> {:cont, {:ok, Map.put(acc, mod, value)}}
+        {:error, _} = error -> {:halt, error}
       end
+    end)
+  end
+
+  defp await(request_id, deadline, interpret) do
+    try do
+      {:ok, interpret.(:erpc.receive_response(request_id, {:abs, deadline}))}
     catch
       :error, {:erpc, :timeout} -> {:error, :timeout}
       :exit, {:erpc, :timeout} -> {:error, :timeout}

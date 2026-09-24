@@ -53,6 +53,8 @@ defmodule OrcaHub.Cluster.BeamTransport do
   defdelegate compatible?(target), to: CodeSync
   defdelegate drift(entries, target), to: CodeSync
   defdelegate drift(entries, target, opts), to: CodeSync
+  defdelegate classify(entries, target), to: CodeSync
+  defdelegate load_states(), to: CodeSync
   defdelegate push(entries, target, opts), to: CodeSync
 
   @doc """

@@ -61,6 +61,17 @@ defmodule OrcaHub.Cluster.CodeSyncTest do
     :"Elixir.OrcaHub.CodeSyncTestSubject#{System.unique_integer([:positive])}"
   end
 
+  # Writes `on_disk`'s beam into a code-path dir and unloads the module,
+  # so the node has it ON DISK but not LOADED — the state
+  # orca-agent-dell (-mode interactive) idles in for ~250 modules.
+  defp cold_on_disk(dir, on_disk) do
+    File.write!(Path.join(dir, "#{on_disk.module}.beam"), on_disk.binary)
+    :code.purge(on_disk.module)
+    true = :code.delete(on_disk.module)
+    :code.purge(on_disk.module)
+    refute :erlang.module_loaded(on_disk.module)
+  end
+
   defp cleanup_subject(mod) do
     on_exit(fn ->
       # Throwaway module, nothing real depends on it — hard purge is fine
@@ -473,6 +484,105 @@ defmodule OrcaHub.Cluster.CodeSyncTest do
       # :missing, a dead node would look like one that simply needs the
       # whole app pushed.
       assert {:error, _reason} = CodeSync.drift([entry], @nowhere, timeout: 1_000)
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # classify/3 — the vocabulary FleetStatus and CodePush share
+  # -------------------------------------------------------------------
+
+  describe "classify/3" do
+    setup do
+      dir =
+        Path.join(System.tmp_dir!(), "code_sync_classify_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      true = :code.add_pathz(to_charlist(dir))
+
+      on_exit(fn ->
+        :code.del_path(to_charlist(dir))
+        File.rm_rf(dir)
+      end)
+
+      %{dir: dir}
+    end
+
+    test "splits 'missing' by what the ON-DISK beam would load", %{dir: dir} do
+      [identical_mod, drifted_mod, cold_mod, stale_mod, absent_mod] =
+        mods = for _ <- 1..5, do: unique_subject_name()
+
+      Enum.each(mods, &cleanup_subject/1)
+
+      identical = compile_subject(identical_mod, 1)
+
+      drifted_v2 = compile_subject(drifted_mod, 2)
+      _drifted_v1 = compile_subject(drifted_mod, 1)
+      :code.soft_purge(drifted_mod)
+
+      # Cold: the file on disk IS the payload's code.
+      cold = compile_subject(cold_mod, 1)
+      cold_on_disk(dir, cold)
+
+      # Stale on disk: the payload is v2, the file on disk is v1.
+      stale_v2 = compile_subject(stale_mod, 2)
+      stale_v1 = compile_subject(stale_mod, 1)
+      :code.soft_purge(stale_mod)
+      cold_on_disk(dir, stale_v1)
+
+      absent = compile_subject(absent_mod, 1)
+      :code.purge(absent_mod)
+      true = :code.delete(absent_mod)
+      :code.purge(absent_mod)
+
+      assert {:ok, c} =
+               CodeSync.classify([identical, drifted_v2, cold, stale_v2, absent], node())
+
+      assert c.identical == [identical_mod]
+      assert c.drifted == [drifted_mod]
+      assert c.not_loaded == [cold_mod]
+      assert c.stale_on_disk == [stale_mod]
+      assert c.absent == [absent_mod]
+      assert c.unknown == []
+      assert c.missing_classified?
+
+      # Reading the on-disk md5 must not LOAD anything — classification is
+      # a probe, and loading a stale beam to find out it is stale would be
+      # the very bug it exists to report.
+      refute :erlang.module_loaded(cold_mod)
+      refute :erlang.module_loaded(stale_mod)
+    end
+
+    test "why stale_on_disk is out of date: an interactive node loads the DISK copy on demand",
+         %{dir: dir} do
+      # `mix test` runs in interactive mode, like orca-agent-dell. This pins
+      # the premise CodePush's "cold modules are loaded, on purpose" rests
+      # on: skip a not-loaded module and the next call runs whatever file is
+      # in the code path — the image's version, not the generation's.
+      mod = unique_subject_name()
+      cleanup_subject(mod)
+
+      generation_v2 = compile_subject(mod, 2)
+      image_v1 = compile_subject(mod, 1)
+      :code.soft_purge(mod)
+      cold_on_disk(dir, image_v1)
+
+      assert :code.get_mode() == :interactive
+      assert {:ok, %{stale_on_disk: [^mod]}} = CodeSync.classify([generation_v2], node())
+
+      assert mod.version() == 1, "the on-demand load ran the stale disk copy"
+    end
+
+    test "every non-identical state is one a reconcile loads" do
+      assert CodeSync.load_states() |> Enum.sort() ==
+               Enum.sort([:drifted, :absent, :stale_on_disk, :not_loaded, :unknown])
+    end
+
+    test "an unreachable node is an error, never a per-module answer" do
+      mod = unique_subject_name()
+      cleanup_subject(mod)
+      entry = compile_subject(mod, 1)
+
+      assert {:error, _} = CodeSync.classify([entry], @nowhere, timeout: 1_000)
     end
   end
 
