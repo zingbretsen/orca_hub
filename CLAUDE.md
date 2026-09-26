@@ -247,6 +247,11 @@ HPACK/QPACK DoS). Neither is a direct dep; both were fixed just by
 with security advisories" line in ordinary output is never noise — stop and read
 it.
 
+**Being current is not a durable state.** mint 1.10.0 was adopted on 2026-09-11
+specifically to clear two HIGH advisories, and by 2026-09-25 it had a fresh
+MEDIUM of its own (EEF-CVE-2026-82672, chunk-size response smuggling), fixed in
+1.10.1. A recent upgrade is not a reason to skip the audit.
+
 Note that the audit tally moves on its own: advisories get published, amended or
 withdrawn upstream between runs. cowlib's EEF-CVE-2026-43971 was listed on
 2026-09-11 and gone by 2026-09-18 with no change on our side. So a shrinking
@@ -279,8 +284,25 @@ Confirmed paths for this project's deps:
 | tz | **no CHANGELOG.md on `main`** (404) — use the tag diff. Its releases bundle the IANA database, so read the diff for a "Update included data set to <year><rev>" commit |
 | pgvector | `github.com/pgvector/pgvector-elixir` — has a CHANGELOG.md but no raw path advertised; `gh api repos/pgvector/pgvector-elixir/contents/CHANGELOG.md --jq '.content' \| base64 -d` reads it |
 
+**`mix hex.package diff <dep> <old>..<new>` beats both of the above** and should
+be the FIRST fallback when a changelog lookup disappoints — it diffs the actual
+published tarballs, so it sees things GitHub cannot:
+
+- the CHANGELOG.md *inside the tarball*, which can document a release that the
+  repo's `main` copy does not. phoenix_template 1.1.0 had no `main` changelog
+  entry AND no `v1.1.0` git tag (so both fallbacks below came up empty), yet its
+  tarball carried the full 1.1.0 section.
+- `hex_metadata.config`, which is where requirement changes actually live.
+  phoenix_template 1.1.0 silently raised its Elixir floor from `~> 1.9` to
+  `~> 1.16` — mentioned in no changelog text anywhere. That made our own
+  `elixir: "~> 1.15"` declaration unsatisfiable (fixed in 184b7a3). **Always skim
+  the hex_metadata hunk of the diff for requirement/floor changes**; a minor bump
+  can move them without saying so.
+
 That `gh api .../compare/v<old>...v<new>` trick is the general fallback for any
-dep with no changelog and no GitHub Releases. Reach for it whenever a changelog
+dep with no changelog and no GitHub Releases — but note a tag may not exist at
+all for a hex release (phoenix_template again), in which case it 404s and
+`hex.package diff` is the only option. Reach for it whenever a changelog
 lookup comes back EMPTY rather than concluding "no notable changes" — an absent
 entry usually means the changelog lags the release, not that the release was
 trivial. Two confirmed cases: `req` (main's CHANGELOG was on 0.8.0-rc and had no
@@ -406,10 +428,10 @@ agent output is allowed to render, which is a product decision rather than a
 dependency bump. Do not silently "upgrade past" this item on a future run;
 there is nothing to upgrade to.
 
-**Still deferred, re-checked 2026-09-18: phoenix_live_view 1.1 -> 1.2**
-(1.1.33 vs 1.2.12; raised with the user 2026-08-14, 08-21, 08-28 and 09-11,
-still not decided — do not keep re-deriving the analysis below, just
-re-raise it). Everything else is current. 1.2 needs `mix.exs`
+**Still deferred, re-checked 2026-09-25: phoenix_live_view 1.1 -> 1.2**
+(1.1.33 vs 1.2.12, unmoved; raised with the user 2026-08-14, 08-21, 08-28,
+09-11 and 09-18, still not decided — do not keep re-deriving the analysis
+below, just re-raise it). Everything else is current. 1.2 needs `mix.exs`
 `~> 1.1.0` -> `~> 1.2` and carries real breaking changes: the
 `Phoenix.Component` global-attribute list was realigned to MDN and the removed
 attributes are NOT enumerated in the changelog (fix per-site with
