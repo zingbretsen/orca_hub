@@ -24,7 +24,17 @@ defmodule OrcaHub.Terminals.Terminal do
 
   def changeset(terminal, attrs) do
     terminal
-    |> cast(attrs, [:name, :directory, :shell, :status, :runner_node, :cols, :rows, :project_id, :pinned_at])
+    |> cast(attrs, [
+      :name,
+      :directory,
+      :shell,
+      :status,
+      :runner_node,
+      :cols,
+      :rows,
+      :project_id,
+      :pinned_at
+    ])
     |> validate_required([:name, :directory])
     |> validate_inclusion(:status, ~w(stopped running dead))
   end

@@ -33,6 +33,7 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
     else
       activity_by_id = HubRPC.activity_metadata(Enum.map(sessions, & &1.id))
       commit_by_id = fetch_last_commits(sessions)
+
       file_surgery_by_id =
         OrcaHub.Sessions.FileSurgery.fetch_many(Enum.map(sessions, & &1.id), [])
 
@@ -42,7 +43,11 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
            |> Enum.map(&format_line(&1, activity_by_id, commit_by_id, file_surgery_by_id))
            |> Enum.join("\n"))
 
-      snapshot = Map.new(sessions, &{&1.id, snapshot_entry(&1, activity_by_id, commit_by_id, file_surgery_by_id)})
+      snapshot =
+        Map.new(
+          sessions,
+          &{&1.id, snapshot_entry(&1, activity_by_id, commit_by_id, file_surgery_by_id)}
+        )
 
       {digest, snapshot}
     end
@@ -104,7 +109,9 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
 
     name = session.title || "session #{String.slice(session.id, 0, 8)}"
 
-    churn = OrcaHub.Sessions.Churn.assess(activity, session, commit, DateTime.utc_now(), file_surgery)
+    churn =
+      OrcaHub.Sessions.Churn.assess(activity, session, commit, DateTime.utc_now(), file_surgery)
+
     pending_q = pending_question_marker(session)
 
     [
@@ -182,7 +189,10 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
     activity = Map.get(activity_by_id, session.id, %{})
     commit = Map.get(commit_by_id, session.id)
     file_surgery = Map.get(file_surgery_by_id, session.id)
-    churn = OrcaHub.Sessions.Churn.assess(activity, session, commit, DateTime.utc_now(), file_surgery)
+
+    churn =
+      OrcaHub.Sessions.Churn.assess(activity, session, commit, DateTime.utc_now(), file_surgery)
+
     pending_q = pending_question_marker(session)
 
     {session.status, session.progress_phase, session.progress_note,

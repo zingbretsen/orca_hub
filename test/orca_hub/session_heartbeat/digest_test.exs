@@ -110,7 +110,8 @@ defmodule OrcaHub.SessionHeartbeat.DigestTest do
       assert digest =~ "implementing (writing tests)"
       assert digest =~ "1msg/0tool (5m)"
 
-      assert {"running", "implementing", "writing tests", _last_activity_at, _churn_suspected, _pending_q} =
+      assert {"running", "implementing", "writing tests", _last_activity_at, _churn_suspected,
+              _pending_q} =
                snapshot[watched.id]
     end
 
@@ -218,7 +219,18 @@ defmodule OrcaHub.SessionHeartbeat.DigestTest do
       {:ok, _message} =
         Sessions.create_message(%{
           session_id: watched.id,
-          data: %{"type" => "assistant", "message" => %{"content" => [%{"type" => "tool_use", "name" => "Bash", "input" => %{"command" => "sed -i 's/foo/bar/' lib/orca_hub/test.ex"}}]}}
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "name" => "Bash",
+                  "input" => %{"command" => "sed -i 's/foo/bar/' lib/orca_hub/test.ex"}
+                }
+              ]
+            }
+          }
         })
 
       {digest, snapshot} = Digest.build("caller-id", [watched.id], false)
