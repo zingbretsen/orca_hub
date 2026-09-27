@@ -84,8 +84,10 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             "user it's ready.\n\n" <>
             "USER STATE: to make a checklist/form remember what the user ticked/typed " <>
             "across reloads, tabs, and devices — with zero JS — mark each input " <>
-            "`data-orca-persist=\"some-key\"`. It's restored on load (checkbox/radio -> " <>
-            "checked, everything else -> value) and written through automatically " <>
+            "`data-orca-persist=\"some-key\"`. It's restored on load (checkbox -> " <>
+            "checked; radio -> give every radio in a group the SAME key and a distinct " <>
+            "`value`, the key stores the selected value; everything else -> value) " <>
+            "and written through automatically " <>
             "(`change` immediately, `input` debounced ~300ms). For anything the " <>
             "declarative attribute can't express, call `window.orca.setState(patch)` " <>
             "with a flat JSON object yourself (shallow-merged into storage — existing " <>

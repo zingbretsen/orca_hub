@@ -18,54 +18,87 @@ defmodule OrcaHub.Artifacts.Render do
   # twice just re-sets the same .checked/.value, and setting those
   # programmatically never fires "change", so an incoming orca:data message
   # can never trigger a write-back loop.
+  #
+  # Radios are NOT checkboxes: every radio in a group shares ONE key, so the
+  # key stores the group's selected `value` (only the newly checked radio
+  # fires change/input, so unchecked radios never write) and restore checks
+  # the radio whose value matches. A legacy boolean left by the old
+  # checked-per-key shim is ignored for radios (ORCAHUB3-78/-69).
+  #
+  # Every write is echoed straight back (merge_user_state broadcasts to the
+  # writing LiveView too, which re-pushes orca:data), so a key this iframe
+  # wrote in the last second — or still has debounced — is skipped on
+  # restore: a stale echo arriving after the user's NEXT click/keystroke
+  # would otherwise revert it. Other viewers' changes still apply once the
+  # window passes.
   @persist_shim """
   (function() {
+    var ECHO_GRACE_MS = 1000;
+    var pendingPatch = {};
+    var debounceTimer = null;
+    var lastWriteAt = {};
     function valueOf(el) {
-      return (el.type === "checkbox" || el.type === "radio") ? el.checked : el.value;
+      if (el.type === "radio") return el.checked ? el.value : undefined;
+      return el.type === "checkbox" ? el.checked : el.value;
     }
     function applyValue(el, v) {
-      if (el.type === "checkbox" || el.type === "radio") {
+      if (el.type === "radio") {
+        if (typeof v === "string" || typeof v === "number") el.checked = String(v) === el.value;
+      } else if (el.type === "checkbox") {
         el.checked = !!v;
       } else {
         el.value = v;
       }
     }
-    function applyState(state) {
+    function recentlyWritten(key) {
+      return Object.prototype.hasOwnProperty.call(pendingPatch, key) ||
+        (lastWriteAt[key] !== undefined && Date.now() - lastWriteAt[key] < ECHO_GRACE_MS);
+    }
+    function applyState(state, isEcho) {
       state = state || {};
       document.querySelectorAll("[data-orca-persist]").forEach(function(el) {
         var key = el.getAttribute("data-orca-persist");
-        if (Object.prototype.hasOwnProperty.call(state, key)) applyValue(el, state[key]);
+        if (!Object.prototype.hasOwnProperty.call(state, key)) return;
+        if (isEcho && recentlyWritten(key)) return;
+        applyValue(el, state[key]);
       });
     }
-    var pendingPatch = {};
-    var debounceTimer = null;
+    function send(patch) {
+      var now = Date.now();
+      Object.keys(patch).forEach(function(key) { lastWriteAt[key] = now; });
+      window.orca.setState(patch);
+    }
     function flush() {
       if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
       if (Object.keys(pendingPatch).length === 0) return;
       var patch = pendingPatch;
       pendingPatch = {};
-      window.orca.setState(patch);
+      send(patch);
     }
     function wire(el) {
       var key = el.getAttribute("data-orca-persist");
       el.addEventListener("change", function() {
+        var v = valueOf(el);
+        if (v === undefined) return;
         var patch = {};
-        patch[key] = valueOf(el);
-        window.orca.setState(patch);
+        patch[key] = v;
+        send(patch);
       });
       el.addEventListener("input", function() {
-        pendingPatch[key] = valueOf(el);
+        var v = valueOf(el);
+        if (v === undefined) return;
+        pendingPatch[key] = v;
         if (debounceTimer) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(flush, 300);
       });
     }
     document.addEventListener("DOMContentLoaded", function() {
-      applyState(window.ORCA_DATA && window.ORCA_DATA._user_state);
+      applyState(window.ORCA_DATA && window.ORCA_DATA._user_state, false);
       document.querySelectorAll("[data-orca-persist]").forEach(wire);
     });
     window.addEventListener("pagehide", flush);
     window.addEventListener("message", function(e) {
-      if (e.data && e.data.type === "orca:data") applyState(e.data.data && e.data.data._user_state);
+      if (e.data && e.data.type === "orca:data") applyState(e.data.data && e.data.data._user_state, true);
     });
   })();
   """

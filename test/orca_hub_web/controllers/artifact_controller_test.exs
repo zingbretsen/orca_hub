@@ -97,52 +97,72 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
   @persist_shim_script "<script>" <>
                          """
                          (function() {
+                           var ECHO_GRACE_MS = 1000;
+                           var pendingPatch = {};
+                           var debounceTimer = null;
+                           var lastWriteAt = {};
                            function valueOf(el) {
-                             return (el.type === "checkbox" || el.type === "radio") ? el.checked : el.value;
+                             if (el.type === "radio") return el.checked ? el.value : undefined;
+                             return el.type === "checkbox" ? el.checked : el.value;
                            }
                            function applyValue(el, v) {
-                             if (el.type === "checkbox" || el.type === "radio") {
+                             if (el.type === "radio") {
+                               if (typeof v === "string" || typeof v === "number") el.checked = String(v) === el.value;
+                             } else if (el.type === "checkbox") {
                                el.checked = !!v;
                              } else {
                                el.value = v;
                              }
                            }
-                           function applyState(state) {
+                           function recentlyWritten(key) {
+                             return Object.prototype.hasOwnProperty.call(pendingPatch, key) ||
+                               (lastWriteAt[key] !== undefined && Date.now() - lastWriteAt[key] < ECHO_GRACE_MS);
+                           }
+                           function applyState(state, isEcho) {
                              state = state || {};
                              document.querySelectorAll("[data-orca-persist]").forEach(function(el) {
                                var key = el.getAttribute("data-orca-persist");
-                               if (Object.prototype.hasOwnProperty.call(state, key)) applyValue(el, state[key]);
+                               if (!Object.prototype.hasOwnProperty.call(state, key)) return;
+                               if (isEcho && recentlyWritten(key)) return;
+                               applyValue(el, state[key]);
                              });
                            }
-                           var pendingPatch = {};
-                           var debounceTimer = null;
+                           function send(patch) {
+                             var now = Date.now();
+                             Object.keys(patch).forEach(function(key) { lastWriteAt[key] = now; });
+                             window.orca.setState(patch);
+                           }
                            function flush() {
                              if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
                              if (Object.keys(pendingPatch).length === 0) return;
                              var patch = pendingPatch;
                              pendingPatch = {};
-                             window.orca.setState(patch);
+                             send(patch);
                            }
                            function wire(el) {
                              var key = el.getAttribute("data-orca-persist");
                              el.addEventListener("change", function() {
+                               var v = valueOf(el);
+                               if (v === undefined) return;
                                var patch = {};
-                               patch[key] = valueOf(el);
-                               window.orca.setState(patch);
+                               patch[key] = v;
+                               send(patch);
                              });
                              el.addEventListener("input", function() {
-                               pendingPatch[key] = valueOf(el);
+                               var v = valueOf(el);
+                               if (v === undefined) return;
+                               pendingPatch[key] = v;
                                if (debounceTimer) clearTimeout(debounceTimer);
                                debounceTimer = setTimeout(flush, 300);
                              });
                            }
                            document.addEventListener("DOMContentLoaded", function() {
-                             applyState(window.ORCA_DATA && window.ORCA_DATA._user_state);
+                             applyState(window.ORCA_DATA && window.ORCA_DATA._user_state, false);
                              document.querySelectorAll("[data-orca-persist]").forEach(wire);
                            });
                            window.addEventListener("pagehide", flush);
                            window.addEventListener("message", function(e) {
-                             if (e.data && e.data.type === "orca:data") applyState(e.data.data && e.data.data._user_state);
+                             if (e.data && e.data.type === "orca:data") applyState(e.data.data && e.data.data._user_state, true);
                            });
                          })();
                          """ <> "</script>"
@@ -372,6 +392,36 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
       assert conn.resp_body =~ ~s({type: "orca:send", payload: payload})
       assert conn.resp_body =~ "setState: function(patch)"
       assert conn.resp_body =~ "getState: function()"
+    end
+
+    # ORCAHUB3-78/-69: radios sharing one persist key used to store
+    # `el.checked` (always `true`) and restore it onto EVERY radio in the
+    # group, so the last radio in DOM order won and the selection could never
+    # change. Behaviour was verified in headless Chrome; this pins the shape.
+    test "persists a radio group by selected value, not by checked boolean", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "persist-shim-radio",
+          kind: "html",
+          content: ~s(<input type="radio" name="q" value="a" data-orca-persist="q">)
+        })
+
+      body = get(conn, ~p"/artifacts/#{artifact.id}/raw").resp_body
+
+      # write: the checked radio's value; an unchecked radio writes nothing
+      assert body =~ ~s{if (el.type === "radio") return el.checked ? el.value : undefined;}
+      assert body =~ "if (v === undefined) return;"
+      # restore: check only the radio whose value matches; legacy booleans are ignored
+      assert body =~
+               ~s{if (typeof v === "string" || typeof v === "number") el.checked = String(v) === el.value;}
+
+      # the self-echo of a just-written key never fights the current selection
+      assert body =~ "if (isEcho && recentlyWritten(key)) return;"
+      refute body =~ ~s{(el.type === "checkbox" || el.type === "radio")}
     end
 
     test "NOT injected for svg content", %{conn: conn, project: project} do
