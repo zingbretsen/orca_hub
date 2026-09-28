@@ -102,7 +102,7 @@ stateDiagram-v2
 
     stopped --> running: start_terminal<br>(TerminalSupervisor)
     running --> stopped: stop_terminal<br>(graceful shutdown)
-    running --> dead: PTY process exits<br>(non-zero or crash)
+    running --> dead: PTY process exits<br>(any exit code, incl. 0 —<br>e.g. user types `exit`)
     dead --> running: start_terminal<br>(restart)
     stopped --> [*]: delete_terminal
 

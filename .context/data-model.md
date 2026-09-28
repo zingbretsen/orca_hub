@@ -32,6 +32,7 @@ erDiagram
     Trigger }o--o| Session : "last_session (plain FK, no assoc)"
     Trigger ||--o{ Session : "spawned (session.trigger_id)"
     EmailInbox ||--o{ Trigger : "polled for (email_inbox_id)"
+    CodeGeneration ||--o{ CodeGenerationModule : "one beam per module"
 
     Project {
         binary_id id PK
@@ -418,6 +419,36 @@ erDiagram
         map spec "provider: provider/url/language, blank key = fall back to env"
         boolean enabled "provider: whole row off; model: the default-selection flag"
     }
+
+    CodeGeneration {
+        binary_id id PK
+        string base_sha
+        boolean dirty "true = fleet may run code that exists in no commit"
+        string published_by
+        string published_from_node
+        string provenance "stamped by publish/2, never cast; untrusted = refused at apply"
+        string erts_version "a node on a different ERTS is skipped"
+        string otp_release
+        string elixir_version
+        string compiler_version "read out of the beams themselves"
+        integer module_count
+        integer total_bytes
+        string status "pending|healthy|quarantined|superseded"
+        integer apply_attempts "circuit-breaker budget"
+        utc_datetime proven_healthy_at
+        utc_datetime superseded_at
+        array forced_reasons "HotLoadGate refusals overridden at publish"
+        string notes
+    }
+
+    CodeGenerationModule {
+        binary_id id PK
+        binary_id code_generation_id FK
+        string module
+        binary md5
+        binary beam "the compiled .beam bytes"
+        integer beam_bytes
+    }
 ```
 
 ## Notes
@@ -477,4 +508,12 @@ erDiagram
   The column is deliberately absent from the `Issue` Ecto schema; nothing
   reads it except `OrcaHub.Issues.Search`'s own query fragments, and a
   generated column can never be written.
+- **`CodeGeneration` / `CodeGenerationModule` are the hot-code-deploy desired
+  state** (`OrcaHub.CodeGenerations`): each published generation stores its
+  compiled beams IN Postgres, and the hub-only `OrcaHub.Cluster.CodePush`
+  reconciles every connected node toward the newest non-terminal row
+  (`quarantined`/`superseded` are never applied again). `provenance` is
+  stamped by `CodeGenerations.publish/2` and deliberately not castable. Full
+  design — circuit breaker, ERTS/provenance gates, `HotLoadGate` — in
+  `.context/code-deploy.md`.
 - Issue tool surface: `OrcaHub.MCP.Tools.Issues` (`lib/orca_hub/mcp/tools/issues.ex`); full design in `issues_spec.md`.

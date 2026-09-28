@@ -34,6 +34,7 @@ graph TB
         ApiSocket["ApiSocket (/api/v1/socket)<br>+ SessionEventsChannel<br>(scoped-token WS push)"]
         UserSocket["UserSocket (/terminal_socket)<br>TerminalChannel + VoiceChannel"]
         VoiceBar["VoiceBarLive<br>(sticky nested LV in the header)"]
+        EndpointPlugs["Endpoint plugs:<br>/api/version (BuildInfo + CodeStamp)<br>/api/drain (DrainStatus)<br>(agent-allowed, unauthenticated)"]
     end
 
     subgraph Core["Core"]
@@ -123,6 +124,15 @@ graph TB
         BackendAuth["BackendAuth /<br>NodeCredentials"]
     end
 
+    subgraph HotDeploy["Hot Code Deploy (see .context/code-deploy.md)"]
+        CodePush["Cluster.CodePush<br>(hub only, reconciliation loop)"]
+        CodeGenerations["CodeGenerations<br>(desired generation, beams in DB)"]
+        CodeSync["Cluster.CodeSync /<br>BeamTransport"]
+        HotLoadGate["HotLoadGate<br>(is this diff hot-loadable?)"]
+        FleetStatus["Cluster.FleetStatus<br>(Settings drift view)"]
+        CodePushTools["MCP.Tools.CodePush<br>(publish / status / supersede /<br>purge / reconcile)"]
+    end
+
     subgraph Streaming["Streaming Engine"]
         StreamingMod["Streaming<br>(kill switch, warm cap)"]
         WarmPool["Streaming.WarmPool"]
@@ -182,6 +192,7 @@ graph TB
     Router --> TriggerLive & QueueLive & UsageLive & DashboardLive & SettingsLive & NodeLive & TerminalLive & CommandPalette
     Router --> PiConfigLive & SkillLive & ArtifactLive
     Router --> MCPPlug & WebhookCtrl & ArtifactCtrl & FileDownloadCtrl
+    Endpoint --> EndpointPlugs
     Router -->|":api_authed pipeline"| ApiAuth
     ApiAuth --> TTSCtrl & ApiRunCtrl & SessionApiCtrl & A2ACtrl
     ApiAuth -->|"scoped token: hash lookup,<br>scope + session-pin check"| ApiTokens
@@ -241,6 +252,13 @@ graph TB
     MCPTools -->|persist via| HubRPC
     UpstreamClient --> UpstreamServers & Secrets
     UpstreamClient --> ExtMCPServers
+
+    CodePushTools -->|"publish: collect_payload on origin,<br>store + fan out on hub"| CodePush
+    CodePush -->|"gate verdict at publish"| HotLoadGate
+    CodePush --> CodeGenerations
+    CodeGenerations --> Repo
+    CodePush -->|"boot + nodeup + on demand"| CodeSync
+    FleetStatus -->|reads desired state| CodeGenerations
 
     Scheduler --> TriggerExecutor
     WebhookCtrl -->|async via TaskSupervisor| TriggerExecutor
@@ -705,6 +723,22 @@ graph TB
 - **ClusterNodeTracker** / **NodeDialer** (both hub only): the tracker records
   Erlang node connect/disconnect events into the `nodes` table backing
   `NodeLive`; the dialer actively connects to rows flagged `dial: true`.
+
+- **Hot code deploy** (`lib/orca_hub/cluster/code_push.ex`,
+  `code_generations.ex`, `cluster/code_sync.ex`, `cluster/beam_transport.ex`,
+  `cluster/fleet_status.ex`, `mcp/tools/code_push.ex`): the FAST deploy path
+  alongside a full release. A published generation's beams live in Postgres
+  (`code_generations` + `code_generation_modules`); the hub-only
+  `Cluster.CodePush` GenServer applies it to the hub on boot and reconciles
+  every node on `nodeup`, with a circuit breaker, ERTS/provenance gates, and a
+  never-downgrade rule against a newer image. `FleetStatus` feeds the
+  Settings page's drift view. Full design in `.context/code-deploy.md`.
+- **`/api/version` + `/api/drain`** (plugs in `endpoint.ex`, not router
+  routes; both on the agent-mode allow-list): `version` reports
+  `BuildInfo` (image sha/build time) plus the live code stamp, `drain`
+  (`OrcaHub.DrainStatus`) answers "safe to restart?" by counting this node's
+  active sessions + non-terminal jobs (`?ignore=` excludes the caller's own
+  session) and degrades to HTTP 503 `unknown`, never to "safe".
 
 ## Data Flow Summary
 

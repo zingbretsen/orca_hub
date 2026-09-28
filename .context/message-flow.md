@@ -135,9 +135,12 @@ A turn arriving while the state machine is `:running` either steers the live
 turn in place (`encode_steer_turn/2`, currently only `pi`) or sends a
 `control_request` interrupt over the same port (not a process-level SIGINT —
 the port survives) and queues the new prompt. Which of those a caller gets is
-selectable per send: `send_message_to_session` takes a delivery mode —
-`:queue` (the default, and what `TriggerExecutor` uses so an overlapping fire
-can't cancel in-flight work), `:interrupt`, or auto-steer. See
+selectable per send: `send_message_to_session` takes a `delivery` of
+`"queue"` (the tool's default, and what `TriggerExecutor` uses so an
+overlapping fire can't cancel in-flight work — the message is held until the
+target's turn ends) or `"interrupt"` (delivered immediately; on a
+steering-capable backend that steers rather than interrupts). Note
+`Cluster.send_message/4` itself defaults to `:interrupt` — the UI send path. See
 `.context/session-lifecycle.md` for the `downgrade`/`evict_warm` state
 transitions this engine adds on top of the four core GenStatem states.
 

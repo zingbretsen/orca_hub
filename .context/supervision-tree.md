@@ -61,6 +61,7 @@ graph TB
     App --> EmailInboxSupervisor["OrcaHub.EmailInboxSupervisor\n(DynamicSupervisor, hub only)"]
     App --> EmailInboxLoader["OrcaHub.EmailInboxLoader\n(hub only)"]
     App --> ClusterNodeTracker["OrcaHub.ClusterNodeTracker\n(hub only)"]
+    App --> CodePush["OrcaHub.Cluster.CodePush\n(hub only)"]
     App --> NodeDialer["OrcaHub.NodeDialer\n(hub only)"]
     App --> Endpoint["OrcaHubWeb.Endpoint"]
     App -.->|"DISCORD_BOT=true"| DiscordBot["OrcaHub.Discord.Bot\n(nostrum)"]
@@ -90,7 +91,7 @@ Agent nodes omit `Telemetry`, `Repo`, `MCP.UpstreamClient`, `Scheduler`,
 `TriggerLoader`, `SessionHeartbeat`, `ChurnSampler`, `MemoryExtractionSweep`,
 `Issues.IndexSweep` (and the capped `Issues.Indexer` task supervisor),
 `PiModelSync`,
-`ClusterNodeTracker`, `NodeDialer`, and the `EmailInbox*` children. All database operations are
+`ClusterNodeTracker`, `Cluster.CodePush`, `NodeDialer`, and the `EmailInbox*` children. All database operations are
 proxied to the hub node via `HubRPC`. Everything else — including `Streaming.WarmPool`,
 `ForkGate`, `TerminalSupervisor`, `JobSupervisor`/`JobResumer`,
 `LoginSupervisor`, `SkillSync`/`PiConfigSync`/`MemoryGit.Server`, and the
@@ -267,6 +268,14 @@ graph TB
 - **`OrcaHub.ClusterNodeTracker`** (hub only): tracks Erlang node
   connect/disconnect events into the `nodes` table backing the Nodes UI —
   see `.context/clustering.md`.
+- **`OrcaHub.Cluster.CodePush`** (hub only): the hot-code RECONCILIATION
+  loop. Owns the durable desired code generation (`code_generations`),
+  applies it to the hub itself on boot, and reconciles every node on
+  `nodeup` (after a settle delay) or on demand. Deliberately ONE hub-only
+  GenServer with no lock: being the only publisher/applier is what makes two
+  concurrent hot deploys impossible by construction. Carries the circuit
+  breaker that quarantines a generation which never proves healthy — see
+  `.context/code-deploy.md`.
 - **`OrcaHub.NodeDialer`** (hub only): dials out every 5s to each `nodes` row
   flagged `dial: true` — see `.context/clustering.md`.
 - **`OrcaHub.Discord.Bot`**: conditionally-started Nostrum gateway consumer;

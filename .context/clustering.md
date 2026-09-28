@@ -167,6 +167,7 @@ sequenceDiagram
 | **TriggerLoader** | Yes | No | Syncs triggers into scheduler on boot |
 | **EmailInboxSupervisor** + Registry + **EmailInboxLoader** | Yes | No | IMAP polling is hub-only: credentials + UID watermark are hub state |
 | **ClusterNodeTracker** | Yes | No | Tracks node connect/disconnect into the `nodes` table |
+| **Cluster.CodePush** | Yes | No | Hot-code reconciliation loop; a single hub-only process is what makes concurrent hot deploys impossible — see `.context/code-deploy.md` |
 | **NodeDialer** | Yes | No | Dials `nodes` rows flagged `dial: true`; agents never dial out |
 | **PubSub** | Yes | Yes | Auto-distributes via `:pg` |
 | **Task.Supervisor** | Yes | Yes | Async work (archival, background fan-out) |
@@ -232,6 +233,8 @@ Agent nodes are intentionally limited:
 - **No mailbox polling** — the `EmailInbox*` children are hub-only, so inbound email is ingested on the hub and the resulting trigger execution routes out to the owning agent
 - **No upstream MCP connections** — `MCP.UpstreamClient` is hub-only
 - **No dialing out** — `NodeDialer` is hub-only; an agent waits to be dialed
+- **No publishing/applying code generations** — `Cluster.CodePush` is
+  hub-only; an agent only receives the beams the hub pushes on `nodeup`
 - **No web UI** — the Endpoint runs but is gated to `/mcp`, `/healthz`,
   `/api/version`, and `/api/drain` (`agent_mode_allowed?/1` in `endpoint.ex`)
 - **Drain check degrades to `unknown`, never to "safe"** — `/api/drain`
