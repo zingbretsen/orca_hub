@@ -1230,7 +1230,7 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
             "start_session",
             %{
               "prompt" => "hi",
-              "model" => "claude-sonnet-5",
+              "model" => "claude-sonnet-5-5",
               "notify_on_completion" => false
             },
             state
@@ -1241,7 +1241,7 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       session_id = session_id_from!(text)
       on_exit(fn -> stop_if_alive(session_id) end)
 
-      assert Sessions.get_session!(session_id).model == "claude-sonnet-5"
+      assert Sessions.get_session!(session_id).model == "claude-sonnet-5-5"
     end
 
     test "the claude-opus-5-5 model id is accepted", %{state: state} do

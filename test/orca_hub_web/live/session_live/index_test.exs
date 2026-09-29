@@ -53,11 +53,11 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
     {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
 
     {:ok, _} =
-      ClusterNodes.update_node(n, %{default_backend: "claude", default_model: "claude-sonnet-5"})
+      ClusterNodes.update_node(n, %{default_backend: "claude", default_model: "claude-sonnet-5-5"})
 
     {:ok, _view, html} = live(conn, ~p"/sessions/new")
 
-    assert html =~ ~s(value="claude-sonnet-5")
+    assert html =~ ~s(value="claude-sonnet-5-5")
   end
 
   test "new-session form scopes the model datalist to the selected backend", %{conn: conn} do

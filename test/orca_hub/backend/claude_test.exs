@@ -375,7 +375,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - Do not Read or Glob a different project's directory; delegate with `Tools.start_session(...)` using that project's `directory` instead.
     - Always pass a concise `title` when calling `Tools.start_session(...)` — you already know the subtask, and it's free. Sessions no longer auto-generate a good title on their own.
     - Spawning another orchestrator (`orchestrator: true`) is a handoff to a peer, not a child — you get no `[Session lifecycle]` callback from it and it's not in your `watch_children` set, so hand off the remaining context in the prompt; watch it explicitly via `Tools.schedule_heartbeat(...)`'s `watch_session_ids` if you need to track it.
-    - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
+    - Use exact model ids (e.g. `claude-sonnet-5-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `Tools.list_issues(...)` (kind: "feature_request", directory: "/home/zach/orca_hub") first — if it's already tracked, add what you found with `Tools.append_issue_note(...)` instead of filing a duplicate with `Tools.create_issue(...)` (kind: "feature_request", directory: "/home/zach/orca_hub", ...). Once a fix has shipped AND been verified, close it with `Tools.close_issue(...)` (outcome: "resolved", resolution: ...) — call close_issue with just `id` first to read back the harvested evidence and synthesize `resolution` from that, not from memory.
     - Scheduled heartbeats do NOT survive a restart of your own host (e.g. a deploy) — re-call `Tools.schedule_heartbeat(...)` as your first action after waking from one.
@@ -436,7 +436,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
     - Do not Read or Glob a different project's directory; delegate with `mcp__orca__start_session` using that project's `directory` instead.
     - Always pass a concise `title` when calling `mcp__orca__start_session` — you already know the subtask, and it's free. Sessions no longer auto-generate a good title on their own.
     - Spawning another orchestrator (`orchestrator: true`) is a handoff to a peer, not a child — you get no `[Session lifecycle]` callback from it and it's not in your `watch_children` set, so hand off the remaining context in the prompt; watch it explicitly via `mcp__orca__schedule_heartbeat`'s `watch_session_ids` if you need to track it.
-    - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
+    - Use exact model ids (e.g. `claude-sonnet-5-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with `mcp__orca__list_issues` (kind: "feature_request", directory: "/home/zach/orca_hub") first — if it's already tracked, add what you found with `mcp__orca__append_issue_note` instead of filing a duplicate with `mcp__orca__create_issue` (kind: "feature_request", directory: "/home/zach/orca_hub", ...). Once a fix has shipped AND been verified, close it with `mcp__orca__close_issue` (outcome: "resolved", resolution: ...) — call close_issue with just `id` first to read back the harvested evidence and synthesize `resolution` from that, not from memory.
     - Scheduled heartbeats do NOT survive a restart of your own host (e.g. a deploy) — re-call `mcp__orca__schedule_heartbeat` as your first action after waking from one.

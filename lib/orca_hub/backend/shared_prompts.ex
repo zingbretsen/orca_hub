@@ -498,7 +498,7 @@ defmodule OrcaHub.Backend.SharedPrompts do
     - Do not Read or Glob a different project's directory; delegate with #{start_session_ref} using that project's `directory` instead.
     - Always pass a concise `title` when calling #{start_session_ref} — you already know the subtask, and it's free. Sessions no longer auto-generate a good title on their own.
     - Spawning another orchestrator (`orchestrator: true`) is a handoff to a peer, not a child — you get no `[Session lifecycle]` callback from it and it's not in your `watch_children` set, so hand off the remaining context in the prompt; watch it explicitly via #{heartbeat_ref}'s `watch_session_ids` if you need to track it.
-    - Use exact model ids (e.g. `claude-sonnet-5`, not `sonnet-5`).
+    - Use exact model ids (e.g. `claude-sonnet-5-5`, not `sonnet-5`).
     - Archive finished children, and have workers report back with commit SHAs and test results.
     - Hit platform friction (missing tool, awkward workflow, confusing error)? Check the backlog with #{list_issues_ref} (kind: "feature_request", directory: "#{@orca_hub_directory}") first — if it's already tracked, add what you found with #{append_issue_note_ref} instead of filing a duplicate with #{create_issue_ref} (kind: "feature_request", directory: "#{@orca_hub_directory}", ...). Once a fix has shipped AND been verified, close it with #{close_issue_ref} (outcome: "resolved", resolution: ...) — call close_issue with just `id` first to read back the harvested evidence and synthesize `resolution` from that, not from memory.
     - Scheduled heartbeats do NOT survive a restart of your own host (e.g. a deploy) — re-call #{heartbeat_ref} as your first action after waking from one.

@@ -164,7 +164,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       assert html =~ "Fable 5.1"
       assert html =~ "Opus 5.5"
-      assert html =~ "Sonnet 5"
+      assert html =~ "Sonnet 5.5"
       assert html =~ "Haiku 4.5"
       refute html =~ "GPT-5"
     end
@@ -203,7 +203,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       refute html =~ "GPT-5.6 Sol"
     end
 
-    for retired_model <- ["claude-opus-5", "claude-opus-4-8"] do
+    for retired_model <- ["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5"] do
       test "a session persisted with the since-removed #{retired_model} model id still renders (no crash, no active highlight)",
            %{conn: conn, claude_session: session} do
         {:ok, session} = Sessions.update_session(session, %{model: unquote(retired_model)})

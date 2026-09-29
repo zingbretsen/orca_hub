@@ -268,7 +268,7 @@ defmodule OrcaHubWeb.NodeLive.ShowTest do
 
       {:ok, _view, html} = live(conn, ~p"/nodes/#{n.id}")
 
-      assert html =~ "claude-sonnet-5"
+      assert html =~ "claude-sonnet-5-5"
     end
 
     test "updating default_model persists", %{conn: conn} do
@@ -277,9 +277,9 @@ defmodule OrcaHubWeb.NodeLive.ShowTest do
 
       {:ok, view, _html} = live(conn, ~p"/nodes/#{n.id}")
 
-      render_change(view, "update_default_model", %{"default_model" => "claude-sonnet-5"})
+      render_change(view, "update_default_model", %{"default_model" => "claude-sonnet-5-5"})
 
-      assert ClusterNodes.get_by_name(n.name).default_model == "claude-sonnet-5"
+      assert ClusterNodes.get_by_name(n.name).default_model == "claude-sonnet-5-5"
     end
 
     test "default model renders as free text when the default backend is codex", %{conn: conn} do

@@ -1858,7 +1858,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   # hardcoded enum, and never applied to other backends (Codex/pi model ids
   # legitimately range far beyond any static picker list). Catches exactly
   # the incident this exists for: an alias like "sonnet-5" that matches
-  # neither a full model id (e.g. "claude-sonnet-5") nor a bare tier alias
+  # neither a full model id (e.g. "claude-sonnet-5-5") nor a bare tier alias
   # (e.g. "sonnet") — start_session used to accept it and the CLI died ~2s
   # later with only "status: error" to go on.
   defp validate_model(model, _backend, _runner_node) when model in [nil, ""], do: {:ok, nil}

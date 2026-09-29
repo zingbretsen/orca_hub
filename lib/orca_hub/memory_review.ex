@@ -43,7 +43,7 @@ defmodule OrcaHub.MemoryReview do
   `OrcaHub.Sessions.Session`) — a trigger-spawned session always falls back
   to the owning project's/node's configured default backend/model
   (`OrcaHub.NodePolicy`, applied in `Sessions.create_session/1`). There is
-  currently no way to pin these two triggers to `claude`/`claude-sonnet-5`
+  currently no way to pin these two triggers to `claude`/`claude-sonnet-5-5`
   specifically short of setting that as the orca_hub project's or node's
   own default — `ensure_triggers!/0` does not attempt to change either.
 
