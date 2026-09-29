@@ -1,21 +1,42 @@
 #!/bin/bash
 #
-# Install the orca-hub systemd service
+# Render and install the orca-hub systemd unit. Nothing else.
 #
-# Usage: ./install.sh [--user USER] [--dir DIR] [--no-build]
+# Usage: ./install.sh [--user USER] [--dry-run]
 #
-# Defaults:
-#   USER: current user
-#   DIR:  parent directory of this script's location (i.e., the orca_hub repo root)
-#   BUILD: on (build the prod release); pass --no-build to skip
+# What it does:
+#   - Renders systemd/orca-hub.service.template ({{USER}}, {{HOME}}) into
+#     /etc/systemd/system/orca-hub.service as a REAL file. If the existing
+#     destination is a symlink (e.g. into a checkout), it is replaced, never
+#     written through.
+#   - Pre-flights the env file the unit actually reads,
+#     $HOME/orca-hub-releases/.env (SECRET_KEY_BASE; DATABASE_URL unless
+#     ORCA_MODE=agent; PHX_HOST warning). Values are never printed.
+#   - Warns if $HOME/orca-hub-releases/current/bin/orca_hub is not executable.
+#   - Runs `sudo systemctl daemon-reload`.
+#
+# What it does NOT do:
+#   - Build or compile anything. Releases and the .env file are installed by
+#     ~/homelab/scripts/deploy-orca-hub.sh (not in this repo).
+#   - Restart, start, or enable the service. Next-step commands are printed.
+#
+# --dry-run prints the rendered unit and a diff against the installed unit,
+# changes nothing, and never calls sudo.
+#
+# sudo: the NOPASSWD rule in scripts/orca-hub.sudoers covers only
+# start/stop/status/restart, NOT daemon-reload or install/rm, so this is an
+# interactive-sudo script.
+#
+# Options:
+#   --user USER   User to run the service as (default: current user)
+#   --dry-run     Show what would be installed; change nothing
+#   -h, --help    Show this help
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ORCA_HUB_DIR="$(dirname "$SCRIPT_DIR")"
 USER="$(whoami)"
-HOME_DIR="$(eval echo ~"$USER")"
-BUILD=true
+DRY_RUN=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -24,23 +45,18 @@ while [[ $# -gt 0 ]]; do
             USER="$2"
             shift 2
             ;;
-        --dir)
-            ORCA_HUB_DIR="$2"
-            shift 2
-            ;;
-        --no-build)
-            BUILD=false
+        --dry-run)
+            DRY_RUN=true
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--user USER] [--dir DIR] [--no-build]"
+            echo "Usage: $0 [--user USER] [--dry-run]"
             echo ""
-            echo "Install the orca-hub systemd service."
+            echo "Render and install the orca-hub systemd unit (no build)."
             echo ""
             echo "Options:"
             echo "  --user USER     User to run the service as (default: current user)"
-            echo "  --dir DIR       OrcaHub directory (default: repo root)"
-            echo "  --no-build      Skip building the prod release (build is on by default)"
+            echo "  --dry-run       Print the rendered unit and diff vs installed; change nothing"
             exit 0
             ;;
         *)
@@ -50,18 +66,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+HOME_DIR="$(eval echo ~"$USER")"
 TEMPLATE="$SCRIPT_DIR/orca-hub.service.template"
 DEST="/etc/systemd/system/orca-hub.service"
-RELEASE_BIN="$ORCA_HUB_DIR/_build/prod/rel/orca_hub/bin/orca_hub"
-ENV_FILE="$ORCA_HUB_DIR/.env"
+RELEASES_DIR="$HOME_DIR/orca-hub-releases"
+RELEASE_BIN="$RELEASES_DIR/current/bin/orca_hub"
+ENV_FILE="$RELEASES_DIR/.env"
 
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "Error: Template file not found: $TEMPLATE"
-    exit 1
-fi
-
-if [[ ! -d "$ORCA_HUB_DIR" ]]; then
-    echo "Error: OrcaHub directory not found: $ORCA_HUB_DIR"
     exit 1
 fi
 
@@ -71,7 +84,7 @@ env_value() {
     local key="$1"
     grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" "$ENV_FILE" 2>/dev/null \
         | tail -n1 \
-        | sed -E "s/^[[:space:]]*(export[[:space:]]+)?${key}=//"
+        | sed -E "s/^[[:space:]]*(export[[:space:]]+)?${key}=//" || true
 }
 
 # True if KEY is assigned a non-empty value in the .env file.
@@ -81,7 +94,7 @@ has_env() {
     grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}=[^[:space:]]" "$ENV_FILE" 2>/dev/null
 }
 
-# Validate the runtime environment (.env) before touching system state or building.
+# Validate the env file the unit reads (EnvironmentFile in the template).
 # These are RUNTIME requirements from config/runtime.exs (prod):
 #   - SECRET_KEY_BASE: always required
 #   - DATABASE_URL:    required unless ORCA_MODE=agent
@@ -92,11 +105,9 @@ preflight_env() {
     echo "  Env file: $ENV_FILE"
 
     if [[ ! -f "$ENV_FILE" ]]; then
-        echo "Error: .env file not found at: $ENV_FILE" >&2
-        echo "" >&2
-        echo "Create it with at least the production runtime variables:" >&2
-        echo "  SECRET_KEY_BASE=<generate via: mix phx.gen.secret>" >&2
-        echo "  DATABASE_URL=ecto://USER:PASS@HOST/DATABASE   # hub mode only" >&2
+        echo "Error: env file not found at: $ENV_FILE" >&2
+        echo "  The deploy script's env step (~/homelab/scripts/deploy-orca-hub.sh) writes it." >&2
+        echo "  Run the deploy script, then re-run this installer." >&2
         exit 1
     fi
 
@@ -110,7 +121,6 @@ preflight_env() {
         echo "  SECRET_KEY_BASE: present"
     else
         echo "Error: SECRET_KEY_BASE is missing or empty in $ENV_FILE" >&2
-        echo "  Generate one with: (cd \"$ORCA_HUB_DIR\" && mix phx.gen.secret)" >&2
         missing=1
     fi
 
@@ -121,7 +131,6 @@ preflight_env() {
         echo "  DATABASE_URL: present"
     else
         echo "Error: DATABASE_URL is missing or empty in $ENV_FILE (required in hub mode)" >&2
-        echo "  Expected format: ecto://USER:PASS@HOST/DATABASE" >&2
         missing=1
     fi
 
@@ -134,98 +143,76 @@ preflight_env() {
 
     if [[ "$missing" -ne 0 ]]; then
         echo "" >&2
-        echo "Pre-flight failed: fix the missing variable(s) above and re-run." >&2
+        echo "Pre-flight failed: fix the missing variable(s) above (via the deploy script's env step) and re-run." >&2
         exit 1
     fi
 
     echo "  Pre-flight OK."
 }
 
-# Ensure the Elixir/Erlang toolchain is available before attempting a build.
-check_build_tools() {
-    local tool missing=0
-    for tool in mix elixir erl; do
-        if ! command -v "$tool" >/dev/null 2>&1; then
-            echo "Error: '$tool' was not found on PATH." >&2
-            missing=1
-        fi
-    done
-    if [[ "$missing" -ne 0 ]]; then
-        echo "" >&2
-        echo "Elixir/Erlang must be installed and on PATH to build the release." >&2
-        echo "If you manage versions with asdf, make sure its shims are on PATH" >&2
-        echo "(e.g. add \`. \"\$HOME/.asdf/asdf.sh\"\` to your shell profile)," >&2
-        echo "or re-run with --no-build to skip building." >&2
-        exit 1
-    fi
-}
-
-# Build the production OTP release (MIX_ENV=prod).
-build_release() {
-    check_build_tools
-    echo ""
-    echo "Building production release (MIX_ENV=prod)..."
-    echo "  Directory: $ORCA_HUB_DIR"
-    (
-        cd "$ORCA_HUB_DIR"
-        MIX_ENV=prod mix deps.get --only prod
-        MIX_ENV=prod mix assets.deploy
-        MIX_ENV=prod mix release --overwrite
-    )
-    echo "  Build complete."
+# Render the template.
+render() {
+    sed \
+        -e "s|{{USER}}|$USER|g" \
+        -e "s|{{HOME}}|$HOME_DIR|g" \
+        "$TEMPLATE"
 }
 
 echo "Installing orca-hub.service..."
 echo "  User: $USER"
-echo "  Directory: $ORCA_HUB_DIR"
 echo "  Home: $HOME_DIR"
+echo "  Dest: $DEST"
 
-# Validate runtime env up front so a misconfigured deploy fails here rather than
+# Validate runtime env up front so a misconfigured host fails here rather than
 # in a systemd crash-loop after install.
 preflight_env
 
-# Build the prod release (default on; --no-build to skip).
-if [[ "$BUILD" == "true" ]]; then
-    build_release
-else
+if [[ ! -x "$RELEASE_BIN" ]]; then
     echo ""
-    echo "Skipping build (--no-build)."
+    echo "WARNING: release binary is not executable / not found at:"
+    echo "  $RELEASE_BIN"
+    echo "  Run ~/homelab/scripts/deploy-orca-hub.sh to install a release."
 fi
 
-# Generate the service file from template
-SERVICE_CONTENT=$(sed \
-    -e "s|{{USER}}|$USER|g" \
-    -e "s|{{ORCA_HUB_DIR}}|$ORCA_HUB_DIR|g" \
-    -e "s|{{HOME}}|$HOME_DIR|g" \
-    "$TEMPLATE")
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
+render > "$TMP"
 
-# Install to systemd (requires sudo)
-echo "$SERVICE_CONTENT" | sudo tee "$DEST" > /dev/null
+if [[ "$DRY_RUN" == "true" ]]; then
+    echo ""
+    echo "=== Rendered unit (dry run) ==="
+    cat "$TMP"
+    echo "=== End rendered unit ==="
+    echo ""
+    if [[ -L "$DEST" ]]; then
+        echo "Note: $DEST is a symlink -> $(readlink -f "$DEST"); a real install would replace it with a real file."
+    fi
+    if [[ -e "$DEST" ]]; then
+        echo "Diff vs currently installed ($DEST), installed -> rendered:"
+        diff -u "$DEST" "$TMP" && echo "  (no differences)" || true
+    else
+        echo "No unit currently installed at $DEST."
+    fi
+    echo ""
+    echo "Dry run: no changes made."
+    exit 0
+fi
+
+# Replace any symlink with a real file: writing through it would clobber its
+# target (e.g. a file in a git checkout).
+if [[ -L "$DEST" ]]; then
+    echo ""
+    echo "Replacing symlink $DEST -> $(readlink "$DEST") with a real file."
+    sudo rm -f "$DEST"
+fi
+
+sudo install -m 0644 -o root -g root "$TMP" "$DEST"
 
 echo "Reloading systemd daemon..."
 sudo systemctl daemon-reload
 
 echo ""
-if [[ ! -x "$RELEASE_BIN" ]]; then
-    echo "WARNING: release binary not found at:"
-    echo "  $RELEASE_BIN"
-    echo ""
-    if [[ "$BUILD" == "true" ]]; then
-        echo "The build step ran but the binary is still missing — review the build output above."
-    else
-        echo "Build was skipped (--no-build). Build it before starting the service:"
-        echo "  cd $ORCA_HUB_DIR"
-        echo "  MIX_ENV=prod mix deps.get --only prod"
-        echo "  MIX_ENV=prod mix assets.deploy"
-        echo "  MIX_ENV=prod mix release --overwrite"
-    fi
-    echo ""
-fi
-
-echo "Done! You can now:"
+echo "Done. The service was NOT restarted or enabled. Next steps:"
+echo "  sudo systemctl restart orca-hub  # Pick up the new unit"
 echo "  sudo systemctl enable orca-hub   # Enable on boot"
-echo "  sudo systemctl start orca-hub    # Start the service"
 echo "  sudo systemctl status orca-hub   # Check status"
-echo ""
-echo "After rebuilding the release, restart with:"
-echo "  sudo systemctl restart orca-hub"
