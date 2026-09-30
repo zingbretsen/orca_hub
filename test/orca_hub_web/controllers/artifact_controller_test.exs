@@ -455,6 +455,52 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
     end
   end
 
+  describe "sandbox response headers (ORCAHUB3-75)" do
+    test "every kind is served with CSP `sandbox allow-scripts` and nosniff", %{
+      conn: conn,
+      project: project
+    } do
+      for {kind, content} <- [
+            {"html", "<html><body><h1>Hi</h1></body></html>"},
+            {"svg", ~s(<svg xmlns="http://www.w3.org/2000/svg"><circle r="5"/></svg>)},
+            {"markdown", "# Hi"}
+          ] do
+        {:ok, artifact} =
+          Artifacts.save_artifact(%{
+            project_id: project.id,
+            name: "sandboxed-#{kind}",
+            kind: kind,
+            content: content
+          })
+
+        conn = get(build_conn(), ~p"/artifacts/#{artifact.id}/raw")
+
+        assert conn.status == 200
+        assert get_resp_header(conn, "content-security-policy") == ["sandbox allow-scripts"]
+        assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+      end
+
+      _ = conn
+    end
+
+    # The CSP tokens must grant EXACTLY what the viewer iframes grant, so a
+    # direct navigation behaves like the framed artifact — and neither may
+    # ever grant allow-same-origin.
+    test "the raw CSP's sandbox tokens match every viewer iframe's sandbox attribute" do
+      for template <- [
+            "lib/orca_hub_web/live/artifact_live/show.html.heex",
+            "lib/orca_hub_web/live/session_live/show.ex"
+          ] do
+        attrs =
+          Regex.scan(~r/sandbox="([^"]*)"/, File.read!(template), capture: :all_but_first)
+          |> List.flatten()
+
+        assert attrs != [], "no sandbox attribute found in #{template}"
+        assert Enum.all?(attrs, &(&1 == "allow-scripts")), "#{template}: #{inspect(attrs)}"
+      end
+    end
+  end
+
   describe "GET /artifacts/:id/download" do
     test "404 for an unknown id", %{conn: conn} do
       conn = get(conn, ~p"/artifacts/#{Ecto.UUID.generate()}/download")
@@ -481,6 +527,9 @@ defmodule OrcaHubWeb.ArtifactControllerTest do
       assert Plug.Conn.get_resp_header(download_conn, "content-disposition") == [
                "attachment; filename=\"my-dashboard.html\""
              ]
+
+      assert Plug.Conn.get_resp_header(download_conn, "content-security-policy") == ["sandbox"]
+      assert Plug.Conn.get_resp_header(download_conn, "x-content-type-options") == ["nosniff"]
     end
 
     test "svg download uses image/svg+xml and a .svg filename", %{conn: conn, project: project} do

@@ -112,6 +112,12 @@ defmodule OrcaHubWeb.FileDownloadController do
         "content-disposition",
         "attachment; filename=\"#{download_filename(requested_path)}\""
       )
+      # Defense in depth (ORCAHUB3-75): these are agent-writable working-
+      # directory bytes on the authenticated origin. `attachment` already
+      # stops rendering; if anything ever serves them inline, an opaque,
+      # script-less sandbox and no MIME sniffing keep them inert.
+      |> put_resp_header("content-security-policy", "sandbox")
+      |> put_resp_header("x-content-type-options", "nosniff")
       |> send_chunked(200)
 
     stream_chunks(conn, node, resolved_path, 0, size)

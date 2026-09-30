@@ -53,6 +53,10 @@ defmodule OrcaHubWeb.FileDownloadControllerTest do
 
       assert get_resp_header(conn, "content-disposition") |> hd() ==
                "attachment; filename=\"notes.txt\""
+
+      # ORCAHUB3-75: agent-writable bytes on the app origin stay inert.
+      assert get_resp_header(conn, "content-security-policy") == ["sandbox"]
+      assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
     end
 
     test "downloads a non-editable (binary) file — the whole point of ORCAHUB3-76", %{

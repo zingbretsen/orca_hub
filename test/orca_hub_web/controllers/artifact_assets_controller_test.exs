@@ -79,6 +79,42 @@ defmodule OrcaHubWeb.ArtifactAssetsControllerTest do
     assert conn.resp_body == "fake png bytes"
   end
 
+  test "ORCAHUB3-75: served with a script-less CSP sandbox and nosniff", %{
+    conn: conn,
+    artifact: artifact
+  } do
+    conn = get(conn, ~p"/artifacts/#{artifact.id}/assets/hero.png")
+
+    assert conn.status == 200
+    assert get_resp_header(conn, "content-security-policy") == ["sandbox"]
+    assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+  end
+
+  test "ORCAHUB3-75: an uploader-chosen text/html asset is still sandboxed", %{
+    conn: conn,
+    artifact: artifact
+  } do
+    {:ok, html_file} =
+      Files.create_file(
+        %{
+          project_id: artifact.project_id,
+          session_id: artifact.session_id,
+          name: "evil.html",
+          content_type: "text/html"
+        },
+        "<script>fetch('/api/v1/sessions')</script>"
+      )
+
+    {:ok, _} = Artifacts.attach_asset(artifact, html_file, "evil.html")
+
+    conn = get(conn, ~p"/artifacts/#{artifact.id}/assets/evil.html")
+
+    assert conn.status == 200
+    assert get_resp_header(conn, "content-type") |> hd() =~ "text/html"
+    assert get_resp_header(conn, "content-security-policy") == ["sandbox"]
+    assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+  end
+
   test "404 for an unknown asset name on a real artifact", %{conn: conn, artifact: artifact} do
     conn = get(conn, ~p"/artifacts/#{artifact.id}/assets/nope.png")
     assert conn.status == 404

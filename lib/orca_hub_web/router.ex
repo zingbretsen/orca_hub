@@ -19,7 +19,8 @@ defmodule OrcaHubWeb.Router do
     plug OrcaHubWeb.Plugs.ApiAuth
   end
 
-  # Deliberately minimal: no session/CSRF/layout machinery, no CSP — see
+  # Deliberately minimal: no session/CSRF/layout machinery; the controller
+  # sets its own `CSP: sandbox` per route — see the
   # OrcaHubWeb.ArtifactController moduledoc. Just enough to get query params
   # (the `?v=` cache-buster) parsed.
   pipeline :artifact_raw do
