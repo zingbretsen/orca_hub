@@ -384,5 +384,48 @@ defmodule OrcaHub.MemoryExtractionTest do
       assert prompt =~ "lowercase kebab-case"
       assert prompt =~ "homelab-postgres (7)"
     end
+
+    test "defaults to saving nothing and drops the old capture-liberally policy" do
+      source = %{id: "src-1", directory: "/tmp/p", title: nil}
+      prompt = MemoryExtraction.build_prompt("/tmp/p/x.md", [], [], source)
+
+      assert prompt =~ "Default to saving NOTHING"
+      assert prompt =~ "Save a candidate only if ALL of these hold"
+      assert prompt =~ "Never save task progress"
+      refute prompt =~ "LIBERAL"
+    end
+
+    test "requires a recall check and a repo grep before every remember" do
+      source = %{id: "src-1", directory: "/tmp/proj", title: nil}
+      prompt = MemoryExtraction.build_prompt("/tmp/proj/x.md", [], [], source)
+
+      assert prompt =~ "Pre-check before every save"
+      assert prompt =~ ~s|`Tools.recall(%{"query" => <candidate>, "limit" => 5})`|
+      assert prompt =~ "REPLACE its text"
+      assert prompt =~ "grep /tmp/proj for the candidate's key"
+      assert prompt =~ "CLAUDE.md, AGENTS.md, `.context/`, README/docs and moduledocs"
+      # The transcript itself lives under .agents/ and would match every grep.
+      assert prompt =~ "--exclude-dir={.agents,"
+      assert prompt =~ "If the repo already says it, skip the"
+    end
+
+    test "defines the importance scale, preference rule, scope default, and form" do
+      source = %{id: "src-1", directory: "/tmp/p", title: nil}
+      prompt = MemoryExtraction.build_prompt("/tmp/p/x.md", [], [], source)
+
+      assert prompt =~ "importance 5 = a rule Zach stated, or a"
+      assert prompt =~ "`preference` ONLY when Zach himself stated it"
+      assert prompt =~ ~s(visibility "project" by default)
+      assert prompt =~ "total <= 400"
+    end
+
+    test "requires a per-candidate summary of what was checked and the outcome" do
+      source = %{id: "src-1", directory: "/tmp/p", title: nil}
+      prompt = MemoryExtraction.build_prompt("/tmp/p/x.md", [], [], source)
+
+      assert prompt =~ "lists EVERY candidate you considered"
+      assert prompt =~ "saved (new memory id)"
+      assert prompt =~ "or skipped, with the rule or check"
+    end
   end
 end

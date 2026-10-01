@@ -7,7 +7,10 @@ defmodule OrcaHub.MCP.Tools.Memory do
 
   `remember`/`recall` are the everyday pair: `remember` for a durable fact,
   preference, procedure, or decision worth reusing across FUTURE sessions
-  (never task progress — that's `report_progress`/issue notes); `recall`
+  (never task progress — that's `report_progress`/issue notes; its
+  description tells callers to default to not saving and to check `recall`
+  and the repo docs first, the same bar as `OrcaHub.MemoryExtraction`'s
+  prompt); `recall`
   before starting unfamiliar work, to check whether a relevant memory
   already exists. `update_memory`/`retire_memory`/`verify_memory`/
   `verify_memories`/`merge_memories`/`flag_memory`/`find_duplicate_memories`/
@@ -37,34 +40,43 @@ defmodule OrcaHub.MCP.Tools.Memory do
       %{
         "name" => "remember",
         "description" =>
-          "Save a durable memory — a fact, preference, procedure, or decision worth " <>
-            "reusing across FUTURE sessions (e.g. \"the deploy script lives at X\", \"the " <>
-            "user prefers Y\", \"we chose Z because W\"). Do NOT use this for task " <>
-            "progress, TODOs, or anything ephemeral to the current turn — use " <>
-            "report_progress or issue notes for that instead. The response includes " <>
-            "`near_duplicates`: if one of those is really the same fact, call " <>
-            "update_memory on it instead of creating a duplicate.",
+          "Save a durable memory for FUTURE sessions. Default to NOT saving: every memory " <>
+            "costs context wherever it is recalled. First `recall` the candidate — if a hit " <>
+            "covers it, update_memory that one (replace its text, never append) or skip — " <>
+            "and grep the repo (CLAUDE.md, AGENTS.md, .context/, docs, moduledocs) for its " <>
+            "key identifier; if the repo already says it, or you just wrote it there, skip. " <>
+            "Never save task progress, plans, open bugs, deploy status, or infrastructure " <>
+            "snapshots — use report_progress or issues. If the response's `near_duplicates` " <>
+            "holds the same fact, update_memory that one instead.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
             "text" => %{
               "type" => "string",
-              "description" => "The memory itself. Atomic — one fact per memory, 1-4 sentences."
+              "description" =>
+                "One fact per memory. Lead with the rule or fact in one imperative " <>
+                  "sentence, <= ~400 chars, no incident narrative or line numbers; must make " <>
+                  "sense to a reader who never saw this session."
             },
             "kind" => %{
               "type" => "string",
               "enum" => @kinds,
-              "description" => "What kind of memory this is."
+              "description" =>
+                "What kind of memory this is. `preference` ONLY for something Zach himself stated."
             },
             "hook" => %{
               "type" => "string",
               "description" =>
-                "Optional one-line summary (<= 120 chars). Defaults to text's first sentence."
+                "Optional one-line summary of the text (<= 120 chars). Defaults to text's " <>
+                  "first sentence."
             },
             "tags" => %{"type" => "array", "items" => %{"type" => "string"}},
             "importance" => %{
               "type" => "integer",
-              "description" => "1-5, default 3."
+              "description" =>
+                "1-5, default 3. 5 = a rule Zach stated, or a data-loss/safety trap; 4 = " <>
+                  "non-obvious and costly to get wrong; 3 = default; 1-2 = nice to know. " <>
+                  "When unsure, go lower."
             },
             "pinned" => %{
               "type" => "boolean",
@@ -76,7 +88,8 @@ defmodule OrcaHub.MCP.Tools.Memory do
               "enum" => @visibilities,
               "description" =>
                 "\"project\" (default, recallable only in this project), \"global\" " <>
-                  "(any project of this app), or \"shared\" (any app)."
+                  "(any project of this app), or \"shared\" (any app). Use \"global\" only " <>
+                  "for Zach's cross-project rules that apply in every project."
             },
             "source" => %{
               "type" => "object",

@@ -25,6 +25,13 @@ defmodule OrcaHub.MemoryExtraction do
   message feed when the child finishes. It never raises to its callers:
   every failure is caught, logged, and returned as `{:error, _}`.
 
+  The save policy itself is `build_prompt/4`'s "What to save": default to
+  saving nothing, and before any `remember` run a `recall` check and a repo
+  grep (CLAUDE.md, AGENTS.md, `.context/`, docs, moduledocs), reporting per
+  candidate what was checked and why it was saved or skipped. A 2026-10-01
+  audit kept only 27% of extraction-created memories under the earlier
+  capture-liberally policy.
+
   ## Scope (`in_scope?/1`)
 
   By default: `orchestrator == true` OR `parent_session_id == nil` (a root,
@@ -608,16 +615,70 @@ defmodule OrcaHub.MemoryExtraction do
 
     ## What to save
 
-    Call `Tools.remember(...)` for any durable fact, preference, procedure, \
-    decision, or notable episode that would help a future session — NEVER task \
-    progress, TODOs, or anything ephemeral to this one conversation. Be \
-    CONSERVATIVE about merging into or retiring an existing memory (only do so \
-    when you're confident it's genuinely the same fact) and LIBERAL about \
-    capturing genuinely new durable facts. If something is already covered by \
-    an existing hook above, call `Tools.update_memory(...)` on it to enrich or \
-    re-confirm instead of creating a duplicate. Give every memory 1-3 `tags`, \
-    lowercase kebab-case, preferring an existing tag above over inventing a \
-    near-duplicate. Every `Tools.remember(...)` call you make MUST include \
+    Default to saving NOTHING. Most sessions produce zero or one memory worth \
+    keeping; a memory costs context in every future session it is recalled into. \
+    Save a candidate only if ALL of these hold:
+
+    1. A future session would act differently because of it, and would get it \
+    wrong without it.
+    2. It is NOT already findable where it belongs: this repo's code comments, \
+    moduledocs, CLAUDE.md, AGENTS.md, `.context/*.md`, README/docs, a skill, the \
+    standing system prompt, or an existing memory. If this session just wrote \
+    the knowledge into one of those, do not also save it.
+    3. It stays true after the work is finished. Never save task progress, plans, \
+    TODOs, issue sequencing, open defects ("still broken", "until then", \
+    "has never fired"), handoffs ("handed off to session X"), deploy or rollout \
+    status ("shipped", "deployed at <sha>", "not yet done"), current rankings or \
+    "next step" calls. Open defects and plans belong in issues. If a fix exists, \
+    the memory is the lesson, not the bug.
+    4. It is not a snapshot of mutable infrastructure (ports, model lists, \
+    container names, systemd hardening, file line numbers) unless it names the \
+    file or endpoint that is authoritative so a reader can re-check it.
+    5. It is not generic knowledge (a web lookup, a language/framework fact, a \
+    platitude like "verify before trusting") unless it carries a trigger and an \
+    action specific to Zach's projects.
+
+    ## Pre-check before every save
+
+    Run both checks for EACH candidate that passes the rules above, before any \
+    `Tools.remember(...)` call:
+
+    a. Memory check: call `Tools.recall(%{"query" => <candidate>, "limit" => 5})` \
+    and compare the hits, and the existing hooks above, against the candidate. \
+    If one already covers it, either call `Tools.update_memory(...)` on that \
+    memory to REPLACE its text with the corrected, shorter version (never append \
+    "CORRECTED"/"UPDATE" paragraphs), or skip the candidate. Never create a \
+    second memory for the same fact.
+    b. Repo check: grep #{source_session.directory} for the candidate's key \
+    identifier (a module, function, file, flag, command, or distinctive phrase), \
+    covering CLAUDE.md, AGENTS.md, `.context/`, README/docs and moduledocs — e.g. \
+    `grep -rnI --exclude-dir={.agents,.git,deps,_build,node_modules} -- \
+    '<identifier>' #{source_session.directory} | head -20` (`.agents/` holds this \
+    transcript, so it must be excluded). If the repo already says it, skip the \
+    candidate.
+
+    Only a candidate that passes both checks gets a `Tools.remember(...)` call.
+
+    ## Form, kind, importance, scope
+
+    Form: lead with the rule or fact in one imperative sentence, total <= 400 \
+    characters, no incident narrative, no "on <date> during <issue>" preamble, \
+    no worker letters ("worker B"), no line numbers. It must make sense to a \
+    reader who never saw this session. The `hook` must summarise the `text`.
+
+    Kind and importance: `preference` ONLY when Zach himself stated it in the \
+    transcript (quote him briefly). importance 5 = a rule Zach stated, or a \
+    data-loss/safety trap; 4 = non-obvious and costly to get wrong; 3 = default; \
+    1-2 = nice to know. When unsure, go lower.
+
+    Scope: visibility "project" by default. Use "global" only for Zach's \
+    cross-project preferences and rules that genuinely apply in every project. \
+    If the fact is about a DIFFERENT system than this session's project (another \
+    repo, homelab infra, a household matter), do not save it here; mention it in \
+    your summary instead.
+
+    Give every memory 1-3 `tags`, lowercase kebab-case, preferring an existing \
+    tag above over inventing a near-duplicate. Every `Tools.remember(...)` call you make MUST include \
     `"created_by" => "extraction"` and `"source" => %{"session_id" => \
     "#{source_session.id}", "url" => "/sessions/#{source_session.id}#feed-<uuid>"}` \
     — `<uuid>` is the `[msg:<uuid>]` marker of whichever transcript line best \
@@ -631,8 +692,14 @@ defmodule OrcaHub.MemoryExtraction do
     confidence) from "the assistant merely asserted this" (lower confidence) \
     and set each memory's `importance`/tone accordingly.
 
-    When you're done — including if you decide there's nothing worth saving — \
-    end your turn with a one-paragraph summary of what you saved and why.
+    ## When you're done
+
+    End your turn with a summary that lists EVERY candidate you considered — \
+    including when nothing was saved. For each: its gist in one line; what you \
+    checked (the recall query and whether a hit covered it, the grep and \
+    whether the repo already says it); and the outcome — saved (new memory id), \
+    updated (existing memory id), or skipped, with the rule or check that \
+    decided it.
     """
     |> String.trim()
   end

@@ -67,6 +67,23 @@ defmodule OrcaHub.MCP.Tools.MemoryTest do
       [remember | _] = MemoryTool.list()
       assert remember["inputSchema"]["required"] == ["text", "kind"]
     end
+
+    test "remember's description defaults to not saving and requires recall + repo checks" do
+      [remember | _] = MemoryTool.list()
+      desc = remember["description"]
+      props = remember["inputSchema"]["properties"]
+
+      assert desc =~ "Default to NOT saving"
+      assert desc =~ "First `recall` the candidate"
+      assert desc =~ "grep the repo (CLAUDE.md, AGENTS.md, .context/, docs, moduledocs)"
+      # Loaded into every session's tool list — keep it short.
+      assert String.length(desc) < 700
+
+      assert props["kind"]["description"] =~ "`preference` ONLY for something Zach himself stated"
+      assert props["importance"]["description"] =~ "5 = a rule Zach stated"
+      assert props["text"]["description"] =~ "<= ~400 chars"
+      assert props["visibility"]["description"] =~ "\"project\" (default"
+    end
   end
 
   describe "with_calling_session — linked session no longer exists" do

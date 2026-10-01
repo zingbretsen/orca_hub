@@ -282,11 +282,16 @@ defmodule OrcaHub.MemoryReview do
        suspicious" if it's otherwise a clear duplicate. When you merge: keep the \
        MORE SPECIFIC of the two texts (don't average them into something \
        vaguer), take the UNION of their `tags` and `source` references, and pass \
-       `"created_by" => "consolidation"`.
-    2. When two memories CONTRADICT each other, do NOT merge them — flag BOTH \
+       `"created_by" => "consolidation"`. The merged `text` is a clean rewrite: \
+       never append "ADDITIONAL SPECIFICS", "PROVENANCE" or "CORRECTED" sections \
+       to it.
+    2. Before merging duplicates, re-verify the premise they share (grep/git/curl \
+       against reality). If that shared premise is stale, do not merge — flag \
+       both with a note naming the evidence.
+    3. When two memories CONTRADICT each other, do NOT merge them — flag BOTH \
        with `flag_memory`, each note naming the OTHER memory's id and describing \
        the conflict in one sentence.
-    3. Flag importance inflation: a memory with `importance: 5` that is not a \
+    4. Flag importance inflation: a memory with `importance: 5` that is not a \
        standing rule Zach himself explicitly stated (a preference/decision/fact \
        he actually asserted — not something the assistant merely inferred or \
        asserted on its own) should be flagged with a note proposing a lower \
@@ -295,9 +300,9 @@ defmodule OrcaHub.MemoryReview do
        directly in a conversation. It does NOT include a rule the assistant \
        generalized from an incident Zach merely observed happen — flag those \
        too, even if the underlying observation is real.
-    4. Never touch a PINNED memory except to flag it — never merge a pinned \
+    5. Never touch a PINNED memory except to flag it — never merge a pinned \
        memory into anything, not even as a source.
-    5. When genuinely unsure whether two memories are the same claim, do NOT \
+    6. When genuinely unsure whether two memories are the same claim, do NOT \
        merge — list the pair in the artifact's "skipped but suspicious" section \
        with your reasoning instead, for a human to decide later.
 
@@ -403,6 +408,12 @@ defmodule OrcaHub.MemoryReview do
       check can settle (e.g. a subjective preference, or something outside this \
       project's own directory). Leave it untouched and list it separately in \
       the artifact — do not verify or flag a claim you didn't actually check.
+
+    Treat a high `times_recalled` on a redundant memory (repo docs or another \
+    memory already say it) or a global-but-niche one (global visibility, but \
+    only useful in one project) as a COST, not a keep signal: flag it, rather \
+    than verifying it, with a note proposing a narrower scope or retirement, \
+    even if its claim checks out.
 
     Never rewrite a memory's text under any classification.
 

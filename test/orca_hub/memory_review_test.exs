@@ -78,6 +78,14 @@ defmodule OrcaHub.MemoryReviewTest do
       assert prompt =~ "the MORE SPECIFIC source project"
     end
 
+    test "merged text is a clean rewrite, and a shared premise is re-verified before merging" do
+      prompt = MemoryReview.consolidate_prompt()
+      assert prompt =~ "The merged `text` is a clean rewrite"
+      assert prompt =~ "never append \"ADDITIONAL SPECIFICS\", \"PROVENANCE\" or \"CORRECTED\""
+      assert prompt =~ "re-verify the premise they share"
+      assert prompt =~ "If that shared premise is stale, do not merge"
+    end
+
     test "importance-inflation rule counts CLAUDE.md/AGENTS.md/conversation as explicit, but not an agent-generalized rule from an observed incident" do
       prompt = MemoryReview.consolidate_prompt()
       assert prompt =~ "\"Explicitly stated by Zach\" INCLUDES the content of"
@@ -148,6 +156,13 @@ defmodule OrcaHub.MemoryReviewTest do
       assert prompt =~ "grep"
       assert prompt =~ "git cat-file -e"
       assert prompt =~ "curl -sI"
+    end
+
+    test "treats a high times_recalled on a redundant or global-but-niche memory as a cost" do
+      prompt = MemoryReview.verify_prompt()
+      assert prompt =~ "Treat a high `times_recalled` on a redundant memory"
+      assert prompt =~ "global-but-niche"
+      assert prompt =~ "as a COST, not a keep signal"
     end
 
     test "instructs saving a dated markdown artifact and a 3-line summary" do
