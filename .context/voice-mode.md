@@ -385,11 +385,12 @@ Invariants that bite:
   which dispatches a REAL bubbling `input` event — and that bubbling `input` is
   precisely what makes the `#`/`##` autocomplete open as if typed. Adding a
   dedicated event for inserts would bypass the thing that makes them work.
-- **Ordinals are THREE tokens** (`orca third item`), and that is not cosmetic:
+- **Ordinals are THREE tokens** (`orca select third`), and that is not cosmetic:
   `phonetic("orcasecond") == phonetic("orcascend")`, so bare ordinals stole 30
-  positive SEND clips from the corpus. A TRUNCATED `orca ninth` therefore
-  resolves to **`:send`**, not to the 9th item — which is why §8.3.10's help
-  panel must teach the full phrase. `orca newline` and `orca new line` reduce to
+  positive SEND clips from the corpus (ORCAHUB3-103 moved them behind "select").
+  A bare `orca ninth` therefore resolves to **`:send`**, not to the 9th item,
+  and a truncated `orca select` selects the THIRD row — which is why §8.3.10's
+  help panel must teach the full phrase. `orca newline` and `orca new line` reduce to
   the same target once spaces are removed, so no alias entry is needed.
 - **The draft is untouchable while focus is `palette`** — no appends, no
   clears, no inserts. A spoken `:send` there is ignored; `:cancel` only closes

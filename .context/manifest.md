@@ -50,8 +50,8 @@ disk — `Read` them on demand.
   caps ANY single argv/env string at 128 KiB (`MAX_ARG_STRLEN`, E2BIG);
   `SessionRunner.check_spawn_spec_sizes!/2` fails loudly before
   `Port.open`. Never grow a prompt fragment without checking that guard.
-- **pi's prompt must be a pure function of its flags** (prefix caching for
-  forks); per-session bytes ride `ORCA_IDENTITY`. Claude/Codex prompts are
+- **pi's prompt must be a pure function of its flags** (a forked child shares
+  its parent's prefix cache; byte-identity is needed only parent-to-fork); per-session bytes ride `ORCA_IDENTITY`. Claude/Codex prompts are
   byte-pinned by goldens in `test/support/fixtures/prompt_goldens/` —
   regenerate only for intentional prompt changes.
 - **Hub owns the DB.** Agent nodes reach it only through `HubRPC` (erpc).

@@ -336,7 +336,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           "Peek at another session's recent activity WITHOUT interrupting it — unlike " <>
             "send_message_to_session, this does not send a message or touch the live agent " <>
             "process. Returns the session's current status plus its last assistant text " <>
-            "message (truncated to ~2KB by default; pass full_last_message to get it in " <>
+            "message (truncated to ~800 bytes by default; pass full_last_message to get it in " <>
             "full), a compact list of its most recent tool calls (name + truncated " <>
             "input), self-reported progress (phase/note from report_progress, if any), " <>
             "activity metadata (message/tool-call counts over the last 5/15/30 minutes, " <>
