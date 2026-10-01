@@ -24,7 +24,12 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
     :asr_auto_gain_control,
     :asr_release_mic_during_playback,
     :asr_vocabulary,
-    :asr_draft_context
+    :asr_draft_context,
+    :asr_cleanup_enabled,
+    :asr_cleanup_url,
+    :asr_cleanup_models,
+    :asr_cleanup_timeout_ms,
+    :asr_cleanup_glossary
   ]
 
   setup do
@@ -49,6 +54,11 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
     Application.put_env(:orca_hub, :asr_release_mic_during_playback, "false")
     Application.put_env(:orca_hub, :asr_vocabulary, "EnvTerm, Other Env Term")
     Application.put_env(:orca_hub, :asr_draft_context, "true")
+    Application.put_env(:orca_hub, :asr_cleanup_enabled, "true")
+    Application.put_env(:orca_hub, :asr_cleanup_url, "http://env-router.test:8082")
+    Application.put_env(:orca_hub, :asr_cleanup_models, "env-model-a,env-model-b")
+    Application.put_env(:orca_hub, :asr_cleanup_timeout_ms, "3333")
+    Application.put_env(:orca_hub, :asr_cleanup_glossary, "EnvGlossaryTerm, Another")
 
     :ok
   end
@@ -67,6 +77,11 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
       "release_mic_during_playback" => "",
       "vocabulary" => "",
       "draft_context" => "",
+      "cleanup_enabled" => "",
+      "cleanup_url" => "",
+      "cleanup_models" => "",
+      "cleanup_timeout_ms" => "",
+      "cleanup_glossary" => "",
       "enabled" => "true"
     }
 
@@ -124,6 +139,19 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
       assert html =~ "at most 400 characters"
     end
 
+    test "renders the dictation cleanup fields with their env defaults", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/settings")
+
+      assert html =~ "Dictation cleanup"
+      assert html =~ "ASR_CLEANUP_ENABLED (true)"
+      assert html =~ "http://env-router.test:8082"
+      # the list is shown the way it is typed
+      assert html =~ "env-model-a, env-model-b"
+      assert html =~ "3333"
+      assert html =~ "EnvGlossaryTerm, Another"
+      assert html =~ "never loads a model"
+    end
+
     test "there is no model catalog on this lane", %{conn: conn} do
       {:ok, _view, html} = live(conn, ~p"/settings")
 
@@ -154,8 +182,44 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
                auto_gain_control: true,
                release_mic_during_playback: false,
                vocabulary: "EnvTerm, Other Env Term",
-               draft_context: true
+               draft_context: true,
+               cleanup_enabled: true,
+               cleanup_url: "http://env-router.test:8082",
+               cleanup_models: ["env-model-a", "env-model-b"],
+               cleanup_timeout_ms: 3333,
+               cleanup_glossary: "EnvGlossaryTerm, Another"
              }
+    end
+
+    test "the dictation cleanup fields save, and pre-fill on the next render", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      html =
+        submit(view, %{
+          "cleanup_enabled" => "false",
+          "cleanup_url" => "http://db-router.test:8082",
+          "cleanup_models" => "nemotron-3.5-lightning, gemma-4-26B-A4B",
+          "cleanup_timeout_ms" => "2500",
+          "cleanup_glossary" => "DbGlossaryTerm"
+        })
+
+      resolved = ASRConfig.resolve()
+      assert resolved.cleanup_enabled == false
+      assert resolved.cleanup_url == "http://db-router.test:8082"
+      assert resolved.cleanup_models == ["nemotron-3.5-lightning", "gemma-4-26B-A4B"]
+      assert resolved.cleanup_timeout_ms == 2500
+      assert resolved.cleanup_glossary == "DbGlossaryTerm"
+      assert html =~ "nemotron-3.5-lightning, gemma-4-26B-A4B"
+      assert html =~ "DbGlossaryTerm"
+    end
+
+    test "a cleanup URL without a scheme is reported and nothing is written", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      html = submit(view, %{"cleanup_url" => "192.168.1.77:8082"})
+
+      assert html =~ "cleanup_url must start with http:// or https://"
+      assert ASRConfig.resolve().cleanup_url == "http://env-router.test:8082"
     end
 
     test "a constraint set to false in the UI is what the voice channel hands the browser",

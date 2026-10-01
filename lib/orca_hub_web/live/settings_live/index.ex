@@ -602,8 +602,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
            "ASR settings saved — in effect on the next transcription. " <>
              "The microphone settings are the exception: switch voice mode off and " <>
              "on again, since the three capture constraints are read when the mic is " <>
-             "armed, and the release-during-playback behaviour and the Whisper prompt " <>
-             "are read at join."
+             "armed, and the release-during-playback behaviour, the Whisper prompt " <>
+             "and the dictation cleanup settings are read at join."
          )}
 
       {:error, changeset} ->
@@ -864,6 +864,11 @@ defmodule OrcaHubWeb.SettingsLive.Index do
             "release_mic_during_playback" => spec["release_mic_during_playback"] || "",
             "vocabulary" => spec["vocabulary"] || "",
             "draft_context" => spec["draft_context"] || "",
+            "cleanup_enabled" => spec["cleanup_enabled"] || "",
+            "cleanup_url" => spec["cleanup_url"] || "",
+            "cleanup_models" => spec["cleanup_models"] || "",
+            "cleanup_timeout_ms" => spec["cleanup_timeout_ms"] || "",
+            "cleanup_glossary" => spec["cleanup_glossary"] || "",
             "enabled" => to_string(if(entry, do: entry.enabled, else: true))
           },
           as: :asr
@@ -909,6 +914,22 @@ defmodule OrcaHubWeb.SettingsLive.Index do
       {"false — vocabulary only", "false"}
     ]
   end
+
+  @doc """
+  Options for `cleanup_enabled` (ORCAHUB3-120) — the same tri-state shape,
+  labelled by what each state does to the draft.
+  """
+  def asr_cleanup_enabled_options(env_default, env_var) do
+    [
+      {"Inherit from #{env_var} (#{env_default})", ""},
+      {"true — clean the draft with an already-loaded model", "true"},
+      {"false — keep the raw transcription", "false"}
+    ]
+  end
+
+  @doc "A model preference list as the placeholder shows it."
+  def asr_cleanup_models_text(models) when is_list(models), do: Enum.join(models, ", ")
+  def asr_cleanup_models_text(models), do: to_string(models)
 
   defp form_value(form, field, fallback) do
     case Phoenix.HTML.Form.input_value(form, field) do

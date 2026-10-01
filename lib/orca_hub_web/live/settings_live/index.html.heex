@@ -1300,6 +1300,81 @@
       field — until then it is ignored. A change takes effect on the next <strong>join</strong>.
     </p>
 
+    <div class="divider text-xs text-base-content/50 mt-4 mb-0">
+      Dictation cleanup
+    </div>
+
+    <div class="flex gap-2">
+      <div class="flex-1">
+        <.input
+          field={@asr_form[:cleanup_enabled]}
+          type="select"
+          label="Clean up the dictated draft"
+          options={
+            asr_cleanup_enabled_options(
+              @asr_env_defaults.cleanup_enabled,
+              "ASR_CLEANUP_ENABLED"
+            )
+          }
+        />
+      </div>
+      <div class="w-40">
+        <.input
+          field={@asr_form[:cleanup_timeout_ms]}
+          type="text"
+          label="Timeout (ms)"
+          placeholder={to_string(@asr_env_defaults.cleanup_timeout_ms)}
+          phx-debounce="blur"
+        />
+      </div>
+    </div>
+
+    <div class="flex gap-2">
+      <div class="flex-1">
+        <.input
+          field={@asr_form[:cleanup_url]}
+          type="text"
+          label="LLM router URL"
+          placeholder={@asr_env_defaults.cleanup_url}
+          phx-debounce="blur"
+        />
+      </div>
+      <div class="flex-1">
+        <.input
+          field={@asr_form[:cleanup_models]}
+          type="text"
+          label="Models, in order of preference"
+          placeholder={asr_cleanup_models_text(@asr_env_defaults.cleanup_models)}
+          phx-debounce="blur"
+        />
+      </div>
+    </div>
+
+    <.input
+      field={@asr_form[:cleanup_glossary]}
+      type="textarea"
+      label="Cleanup glossary"
+      placeholder={@asr_env_defaults.cleanup_glossary}
+      rows="3"
+      phx-debounce="blur"
+    />
+
+    <p class="text-xs text-base-content/50 -mt-1">
+      Every couple of utterances (or after a pause) the oldest raw segments of the draft are sent,
+      with the cleaned text before them as context only, to a fast LLM on the GB10. It rejoins
+      sentences split at pauses, fixes misheard terms and formats dictated lists, and its reply
+      replaces exactly those segments — unless a guard decides it dropped or invented content, in
+      which case the raw text stays. It <strong>never loads a model</strong>: it uses the first
+      model in the list that the router already has loaded, and if none is, it leaves the raw text.
+      So the URL must be the llama router itself, not the AI gateway, which loads models on demand.
+      The timeout covers the whole call; a slower reply is dropped and the raw text stays. The
+      glossary is the term list the model is told to spell exactly (notes in parentheses are
+      allowed; <code>none</code>
+      sends no glossary). It is separate from the Whisper vocabulary above, and the default is
+      the benchmarked one: any other glossary is an unmeasured prompt. A change takes effect on the
+      next <strong>join</strong>.
+    </p>
+
     <.input
       field={@asr_form[:enabled]}
       type="checkbox"

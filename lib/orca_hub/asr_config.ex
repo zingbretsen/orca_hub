@@ -17,7 +17,7 @@ defmodule OrcaHub.ASRConfig do
 
   ## Resolution: DB wins, else env, else hardcoded — PER FIELD
 
-  `resolve/0` decides twelve fields independently. For each one it takes the
+  `resolve/0` decides seventeen fields independently. For each one it takes the
   first usable of:
 
     1. the DB value (the `"asr_provider"` row's `spec`),
@@ -115,6 +115,29 @@ defmodule OrcaHub.ASRConfig do
   takes effect once the transcription service supports it; until then the
   lane silently ignores it.
 
+  ## Dictation cleanup: the `cleanup_*` fields (ORCAHUB3-120)
+
+  `OrcaHub.Voice.Cleanup` rewrites the oldest raw segments of a dictation
+  draft with a fast LLM on the GB10. `cleanup_enabled` (default TRUE)
+  switches it, `cleanup_url` is the llama ROUTER root (default
+  `http://192.168.1.77:8082` — never the ai.lab gateway, which loads models
+  on demand), `cleanup_models` the ORDERED preference list (default
+  `gemma-4-26B-A4B, nemotron-3.5-lightning`; stored and typed as a
+  comma-separated string, resolved to a list), `cleanup_timeout_ms` the
+  budget for the whole call (default 3000), and `cleanup_glossary` the term
+  list in the prompt's glossary sentence (default: the benchmarked list,
+  under which the prompt is byte-identical to the benchmarked one; `none`
+  drops the sentence). The cleaner only ever uses a model that is ALREADY
+  loaded — the first one in the list — and otherwise leaves the raw text.
+
+  The glossary is deliberately a separate list from `vocabulary`: that one
+  biases Whisper, this one instructs an LLM and carries notes in
+  parentheses, and the two defaults are each the measured one for their
+  consumer. The defaults live in `OrcaHub.Voice.Cleanup`.
+
+  Consumers read these with `Map.get(config, key, default)`: during a
+  rolling deploy an older hub may answer the config RPC without them.
+
   ## No cache, deliberately
 
   `resolve/0` queries inside the call. Voice traffic is very low QPS, and a
@@ -166,6 +189,14 @@ defmodule OrcaHub.ASRConfig do
                         "Chatterbox, Claude, Codex, MCP, Darling Court, Keene"
   @default_draft_context true
 
+  # ORCAHUB3-120. The values are the benchmarked ones and live with their
+  # consumer, so the prompt-identity test and this table cannot drift.
+  @default_cleanup_enabled true
+  @default_cleanup_url OrcaHub.Voice.Cleanup.default_url()
+  @default_cleanup_models OrcaHub.Voice.Cleanup.default_models()
+  @default_cleanup_timeout_ms OrcaHub.Voice.Cleanup.default_timeout_ms()
+  @default_cleanup_glossary OrcaHub.Voice.Cleanup.default_glossary()
+
   @doc "The PubSub topic mutations broadcast on."
   def topic, do: @topic
 
@@ -176,8 +207,10 @@ defmodule OrcaHub.ASRConfig do
   The effective ASR config: `%{url:, path:, language:, timeout_ms:,
   warmup_timeout_ms:, threshold:, echo_cancellation:, noise_suppression:,
   auto_gain_control:, release_mic_during_playback:, vocabulary:,
-  draft_context:}`, each field resolved DB → env → hardcoded
-  independently, with the numeric and boolean fields returned TYPED.
+  draft_context:, cleanup_enabled:, cleanup_url:, cleanup_models:,
+  cleanup_timeout_ms:, cleanup_glossary:}`, each field resolved DB → env →
+  hardcoded independently, with the numeric, boolean and list fields
+  returned TYPED.
 
   A DB read failure degrades to env-only rather than failing the call —
   transcribing against the env config is strictly better than dropping the
@@ -227,6 +260,29 @@ defmodule OrcaHub.ASRConfig do
       draft_context:
         pick_boolean(spec["draft_context"], :asr_draft_context, @default_draft_context)
     }
+    |> Map.merge(cleanup_fields(spec))
+  end
+
+  defp cleanup_fields(spec) do
+    %{
+      cleanup_enabled:
+        pick_boolean(spec["cleanup_enabled"], :asr_cleanup_enabled, @default_cleanup_enabled),
+      cleanup_url: pick(spec["cleanup_url"], :asr_cleanup_url, @default_cleanup_url),
+      cleanup_models:
+        pick_parsed(
+          spec["cleanup_models"],
+          :asr_cleanup_models,
+          @default_cleanup_models,
+          &model_list/1
+        ),
+      cleanup_timeout_ms:
+        pick_integer(
+          spec["cleanup_timeout_ms"],
+          :asr_cleanup_timeout_ms,
+          @default_cleanup_timeout_ms
+        ),
+      cleanup_glossary: pick_cleanup_glossary(spec["cleanup_glossary"])
+    }
   end
 
   @doc """
@@ -275,6 +331,7 @@ defmodule OrcaHub.ASRConfig do
       vocabulary: pick_vocabulary(nil),
       draft_context: pick_boolean(nil, :asr_draft_context, @default_draft_context)
     }
+    |> Map.merge(cleanup_fields(%{}))
   end
 
   defp pick(db_value, env_key, default) do
@@ -287,6 +344,25 @@ defmodule OrcaHub.ASRConfig do
     vocabulary = pick(db_value, :asr_vocabulary, @default_vocabulary)
     if String.downcase(vocabulary) == "none", do: "", else: vocabulary
   end
+
+  # Same `none` spelling as the vocabulary, for the same reason.
+  defp pick_cleanup_glossary(db_value) do
+    glossary = pick(db_value, :asr_cleanup_glossary, @default_cleanup_glossary)
+    if String.downcase(glossary) == "none", do: "", else: glossary
+  end
+
+  # Model ids hold no commas or spaces, so either separates them. A list
+  # that parses to nothing (a stray ",") is a config mistake, not "no
+  # models" — `cleanup_enabled` is how to turn the cleaner off.
+  defp model_list(raw) when is_binary(raw) do
+    case OrcaHub.Voice.Cleanup.parse_models(raw) do
+      [] -> :error
+      models -> {:ok, models}
+    end
+  end
+
+  defp model_list([_ | _] = models), do: {:ok, Enum.map(models, &to_string/1)}
+  defp model_list(_), do: :error
 
   defp pick_integer(db_value, env_key, default),
     do: pick_parsed(db_value, env_key, default, &positive_integer/1)
@@ -384,15 +460,19 @@ defmodule OrcaHub.ASRConfig do
   Upserts the single provider row. `attrs` carries `url`/`path`/`language`/
   `timeout_ms`/`warmup_timeout_ms`/`threshold`/`echo_cancellation`/
   `noise_suppression`/`auto_gain_control`/`release_mic_during_playback`/
-  `vocabulary`/`draft_context` (string or atom keys); a blank value is
-  stored as-is and read back as "fall back to env for this field".
+  `vocabulary`/`draft_context`/`cleanup_enabled`/`cleanup_url`/
+  `cleanup_models`/`cleanup_timeout_ms`/`cleanup_glossary` (string or atom
+  keys); a blank value is stored as-is and read back as "fall back to env
+  for this field".
   """
   def put_provider(attrs) do
     spec =
       Map.new(
         ~w(url path language timeout_ms warmup_timeout_ms threshold
            echo_cancellation noise_suppression auto_gain_control
-           release_mic_during_playback vocabulary draft_context)a,
+           release_mic_during_playback vocabulary draft_context
+           cleanup_enabled cleanup_url cleanup_models cleanup_timeout_ms
+           cleanup_glossary)a,
         fn key -> {to_string(key), fetch(attrs, key)} end
       )
 

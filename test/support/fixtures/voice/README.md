@@ -124,3 +124,52 @@ It printed `# thr=0.85 TP 184/190 wrong 0 miss 6 FP 0/154`, which agrees with
 
 The committed JSON is that stdout re-dumped with `ensure_ascii=False`, which
 only affects how non-ASCII transcript characters are escaped, never a value.
+
+---
+
+# Voice cleanup guard + prompt — reference output for `OrcaHub.Voice.Cleanup`
+
+Two fixtures from the ORCAHUB3-120 benchmark at `~/voice-cleanup-bench/`
+(outside the repo; `REPORT.md` there is the write-up). Both pin the Elixir
+side to what was MEASURED, not to a re-statement of it.
+
+## `cleanup_system_prompt.txt`
+
+A byte-for-byte copy of `results/final_system_prompt.txt` — the FINAL-v4,
+plain-content (mode A) system prompt, i.e. `prompts.system_prompt("v4", "A")`
+plus the one trailing newline the results copy was written with.
+`cleanup_test.exs` pins its sha256 (`c6395cd8…a7a1cf`) and asserts
+`Cleanup.system_prompt() <> "\n"` equals it. Change it only together with a
+re-run of the bench.
+
+## `cleanup_guard_parity.json`
+
+The acceptance fixture for `test/orca_hub/voice/cleanup/guard_test.exs`: every
+DISTINCT `(case, output)` pair the bench recorded — all three models
+(qwen2.5-3b, gemma-4-26B-A4B, nemotron-3.5-lightning), every prompt version
+and output mode, latency reps and the held-out set — so it covers the bad
+outputs (answers, context echoes, content loss, path corruption) as well as
+the good ones. 552 unique pairs from 3,209 recorded outputs.
+
+Each row carries the reference's decision (`accept`), the first failing rule
+(`reason`, in the order `missing_content`, `novel`, `too_long`, `protected`)
+and every feature it was computed from, plus the manual good/bad verdict
+counts from `guard.py`'s own population, so the test can reproduce the
+report's headline (24/2,525 good rejected = 1.0%, 78/109 bad caught = 72%).
+
+Produced by `gen_cleanup_guard_parity.py` (next to this file), which does NOT
+re-implement the guard: it loads `guard.py` and `score.py` from the bench by
+path and calls their own functions (`guard_features`, `protected_ok`, `FINAL`,
+`norm_tokens`), copying only the two `score_row` lines for `g_novel`/`g_len`.
+It also asserts that its recomputation agrees with `FINAL` on every row of
+`guard.py`'s population. Output was stripped by the bench (`lib.py`
+`extract()`: `str.strip()`), and no recorded output was quoted or fenced.
+
+```bash
+python3 test/support/fixtures/voice/gen_cleanup_guard_parity.py \
+  > test/support/fixtures/voice/cleanup_guard_parity.json
+```
+
+It printed `{'unique_pairs': 552, 'recorded_outputs': 3209, 'accepted_pairs':
+494, 'rejected_pairs': 58, 'verdict_good': 2525, 'verdict_bad': 109,
+'good_rejected': 24, 'bad_caught': 78}`.

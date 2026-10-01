@@ -26,8 +26,21 @@ defmodule OrcaHub.ASRConfigTest do
     :asr_auto_gain_control,
     :asr_release_mic_during_playback,
     :asr_vocabulary,
-    :asr_draft_context
+    :asr_draft_context,
+    :asr_cleanup_enabled,
+    :asr_cleanup_url,
+    :asr_cleanup_models,
+    :asr_cleanup_timeout_ms,
+    :asr_cleanup_glossary
   ]
+
+  # The benchmarked defaults (ORCAHUB3-120), spelled out rather than read
+  # from OrcaHub.Voice.Cleanup so a change to either side fails here.
+  @default_cleanup_glossary "OrcaHub, GB10, Elixir, Phoenix, LiveView, Flux, k3s, kubectl, " <>
+                              "Nemotron, Qwen, Gemma, Whisper, Parakeet, Postgres, pgvector, " <>
+                              "Authelia, Traefik, Codex, Claude, Opus, Sonnet, Haiku, Fable, " <>
+                              "pi (a coding-agent backend, always lowercase), MCP, run_elixir, " <>
+                              "Darling Court, Keene"
 
   @default_vocabulary "OrcaHub, GB10, Elixir, Phoenix LiveView, GenServer, Ecto, Flux, k3s, " <>
                         "kubectl, Traefik, Postgres, pgvector, Nemotron, Qwen, Gemma, Whisper, " <>
@@ -45,7 +58,12 @@ defmodule OrcaHub.ASRConfigTest do
     auto_gain_control: true,
     release_mic_during_playback: false,
     vocabulary: @default_vocabulary,
-    draft_context: true
+    draft_context: true,
+    cleanup_enabled: true,
+    cleanup_url: "http://192.168.1.77:8082",
+    cleanup_models: ["gemma-4-26B-A4B", "nemotron-3.5-lightning"],
+    cleanup_timeout_ms: 3000,
+    cleanup_glossary: @default_cleanup_glossary
   }
 
   # The four booleans deliberately do NOT all match their defaults here: a
@@ -66,8 +84,23 @@ defmodule OrcaHub.ASRConfigTest do
     release_mic_during_playback: true,
     vocabulary: "EnvTerm, Other Env Term",
     # default TRUE, so env exercises "false" — the same `||` trap as above
-    draft_context: false
+    draft_context: false,
+    # default TRUE too
+    cleanup_enabled: false,
+    cleanup_url: "http://env-router.example:8082",
+    cleanup_models: ["env-model-a", "env-model-b"],
+    cleanup_timeout_ms: 1234,
+    cleanup_glossary: "EnvGlossary, Other (a note, with a comma)"
   }
+
+  # The fields a test that predates the cleanup_* fields does not set.
+  @cleanup_from_env Map.take(@from_env, [
+                      :cleanup_enabled,
+                      :cleanup_url,
+                      :cleanup_models,
+                      :cleanup_timeout_ms,
+                      :cleanup_glossary
+                    ])
 
   setup do
     # Snapshot and restore rather than delete-on-exit: config/runtime.exs
@@ -94,6 +127,16 @@ defmodule OrcaHub.ASRConfigTest do
     Application.put_env(:orca_hub, :asr_release_mic_during_playback, "true")
     Application.put_env(:orca_hub, :asr_vocabulary, "EnvTerm, Other Env Term")
     Application.put_env(:orca_hub, :asr_draft_context, "false")
+    Application.put_env(:orca_hub, :asr_cleanup_enabled, "false")
+    Application.put_env(:orca_hub, :asr_cleanup_url, "http://env-router.example:8082")
+    Application.put_env(:orca_hub, :asr_cleanup_models, "env-model-a, env-model-b")
+    Application.put_env(:orca_hub, :asr_cleanup_timeout_ms, "1234")
+
+    Application.put_env(
+      :orca_hub,
+      :asr_cleanup_glossary,
+      "EnvGlossary, Other (a note, with a comma)"
+    )
 
     :ok
   end
@@ -186,20 +229,21 @@ defmodule OrcaHub.ASRConfigTest do
         draft_context: "true"
       })
 
-      assert ASRConfig.resolve() == %{
-               url: "http://db.example:8000",
-               path: "/db/transcribe",
-               language: "fr",
-               timeout_ms: 7000,
-               warmup_timeout_ms: 50_000,
-               threshold: 0.7,
-               echo_cancellation: true,
-               noise_suppression: false,
-               auto_gain_control: true,
-               release_mic_during_playback: false,
-               vocabulary: "DbTerm",
-               draft_context: true
-             }
+      assert ASRConfig.resolve() ==
+               Map.merge(@cleanup_from_env, %{
+                 url: "http://db.example:8000",
+                 path: "/db/transcribe",
+                 language: "fr",
+                 timeout_ms: 7000,
+                 warmup_timeout_ms: 50_000,
+                 threshold: 0.7,
+                 echo_cancellation: true,
+                 noise_suppression: false,
+                 auto_gain_control: true,
+                 release_mic_during_playback: false,
+                 vocabulary: "DbTerm",
+                 draft_context: true
+               })
     end
 
     test "a whitespace-only DB field falls back to env like a blank one" do
@@ -516,6 +560,106 @@ defmodule OrcaHub.ASRConfigTest do
 
       assert {:error, changeset} = ASRConfig.put_provider(%{draft_context: "yes"})
       assert ~s(draft_context must be "true" or "false") in errors_on(changeset).spec
+    end
+  end
+
+  describe "the dictation cleanup fields (ORCAHUB3-120)" do
+    test "default to the benchmarked config with nothing configured" do
+      Enum.each(@env_keys, &Application.delete_env(:orca_hub, &1))
+
+      resolved = ASRConfig.resolve()
+
+      assert Map.take(resolved, Map.keys(@cleanup_from_env)) == %{
+               cleanup_enabled: true,
+               cleanup_url: "http://192.168.1.77:8082",
+               cleanup_models: ["gemma-4-26B-A4B", "nemotron-3.5-lightning"],
+               cleanup_timeout_ms: 3000,
+               cleanup_glossary: @default_cleanup_glossary
+             }
+
+      # ...and under that default glossary the prompt is the benchmarked one.
+      assert OrcaHub.Voice.Cleanup.system_prompt(resolved.cleanup_glossary) ==
+               OrcaHub.Voice.Cleanup.system_prompt()
+    end
+
+    test "env overrides each one, and a DB value wins over env per field" do
+      assert Map.take(ASRConfig.resolve(), Map.keys(@cleanup_from_env)) == @cleanup_from_env
+
+      put_provider!(%{
+        cleanup_enabled: "true",
+        cleanup_url: "http://db-router.example:8082",
+        cleanup_models: "nemotron-3.5-lightning,\n gemma-4-26B-A4B",
+        cleanup_timeout_ms: "2500",
+        cleanup_glossary: "DbTerm"
+      })
+
+      assert Map.take(ASRConfig.resolve(), Map.keys(@cleanup_from_env)) == %{
+               cleanup_enabled: true,
+               cleanup_url: "http://db-router.example:8082",
+               cleanup_models: ["nemotron-3.5-lightning", "gemma-4-26B-A4B"],
+               cleanup_timeout_ms: 2500,
+               cleanup_glossary: "DbTerm"
+             }
+
+      put_provider!(%{cleanup_timeout_ms: "2500"})
+      resolved = ASRConfig.resolve()
+      assert resolved.cleanup_timeout_ms == 2500
+      assert resolved.cleanup_models == ["env-model-a", "env-model-b"]
+      assert resolved.cleanup_enabled == false
+    end
+
+    test "a DB `false` survives resolution — the `||` trap on a default-TRUE switch" do
+      Application.delete_env(:orca_hub, :asr_cleanup_enabled)
+      assert ASRConfig.resolve().cleanup_enabled == true
+
+      put_provider!(%{cleanup_enabled: "false"})
+      assert ASRConfig.resolve().cleanup_enabled == false
+    end
+
+    test "`none` (any case) sends no glossary, since blank inherits" do
+      put_provider!(%{cleanup_glossary: "NONE"})
+      assert ASRConfig.resolve().cleanup_glossary == ""
+
+      Application.put_env(:orca_hub, :asr_cleanup_glossary, "none")
+      assert ASRConfig.env_defaults().cleanup_glossary == ""
+    end
+
+    test "a model list that parses to nothing falls through with a warning" do
+      Application.put_env(:orca_hub, :asr_cleanup_models, " , ")
+
+      log =
+        capture_log(fn ->
+          assert ASRConfig.resolve().cleanup_models == [
+                   "gemma-4-26B-A4B",
+                   "nemotron-3.5-lightning"
+                 ]
+        end)
+
+      assert log =~ "asr_cleanup_models"
+    end
+
+    test "a disabled row reverts them to env like every other field" do
+      put_provider!(%{cleanup_url: "http://db-router.example:8082"}, enabled: false)
+      assert ASRConfig.resolve().cleanup_url == "http://env-router.example:8082"
+    end
+
+    test "rejects bad values at save time" do
+      assert {:error, cs} = ASRConfig.put_provider(%{cleanup_enabled: "yes"})
+      assert ~s(cleanup_enabled must be "true" or "false") in errors_on(cs).spec
+
+      assert {:error, cs} = ASRConfig.put_provider(%{cleanup_url: "192.168.1.77:8082"})
+      assert "cleanup_url must start with http:// or https://" in errors_on(cs).spec
+
+      assert {:error, cs} = ASRConfig.put_provider(%{cleanup_timeout_ms: "0"})
+
+      assert "cleanup_timeout_ms must be a positive whole number of milliseconds" in errors_on(cs).spec
+
+      assert {:error, cs} = ASRConfig.put_provider(%{cleanup_models: " ,, "})
+      assert "cleanup_models must be a comma-separated list of model ids" in errors_on(cs).spec
+
+      too_long = String.duplicate("x", Entry.max_cleanup_glossary_chars() + 1)
+      assert {:error, cs} = ASRConfig.put_provider(%{cleanup_glossary: too_long})
+      assert "cleanup_glossary must be at most 1000 characters" in errors_on(cs).spec
     end
   end
 

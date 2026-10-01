@@ -264,6 +264,19 @@ config :orca_hub,
 config :orca_hub, :asr_vocabulary, System.get_env("ASR_VOCABULARY")
 config :orca_hub, :asr_draft_context, System.get_env("ASR_DRAFT_CONTEXT") || "true"
 
+# Rolling LLM cleanup of the dictation draft (OrcaHub.Voice.Cleanup,
+# ORCAHUB3-120). Unset = the benchmarked defaults in that module: enabled,
+# the llama ROUTER at http://192.168.1.77:8082 (never the ai.lab gateway,
+# which loads models on demand), models "gemma-4-26B-A4B,
+# nemotron-3.5-lightning" in preference order — only an ALREADY-loaded one
+# is ever used — a 3000 ms budget, and the benchmarked glossary ("none" = no
+# glossary sentence).
+config :orca_hub, :asr_cleanup_enabled, System.get_env("ASR_CLEANUP_ENABLED")
+config :orca_hub, :asr_cleanup_url, System.get_env("ASR_CLEANUP_URL")
+config :orca_hub, :asr_cleanup_models, System.get_env("ASR_CLEANUP_MODELS")
+config :orca_hub, :asr_cleanup_timeout_ms, System.get_env("ASR_CLEANUP_TIMEOUT_MS")
+config :orca_hub, :asr_cleanup_glossary, System.get_env("ASR_CLEANUP_GLOSSARY")
+
 config :orca_hub, :elevenlabs_api_key, System.get_env("ELEVENLABS_API_KEY")
 
 config :orca_hub,

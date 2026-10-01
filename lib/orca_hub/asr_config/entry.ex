@@ -15,7 +15,9 @@ defmodule OrcaHub.ASRConfig.Entry do
       "timeout_ms" => ..., "warmup_timeout_ms" => ..., "threshold" => ...,
       "echo_cancellation" => ..., "noise_suppression" => ...,
       "auto_gain_control" => ..., "release_mic_during_playback" => ...,
-      "vocabulary" => ..., "draft_context" => ...}`.
+      "vocabulary" => ..., "draft_context" => ..., "cleanup_enabled" => ...,
+      "cleanup_url" => ..., "cleanup_models" => ...,
+      "cleanup_timeout_ms" => ..., "cleanup_glossary" => ...}`.
       Any key may be blank or absent, in which
       case that ONE field falls back to its `ASR_*` env var — see
       `OrcaHub.ASRConfig.resolve/0`. `enabled: false` disables the whole row,
@@ -36,13 +38,16 @@ defmodule OrcaHub.ASRConfig.Entry do
 
   `vocabulary` is capped at `OrcaHub.Voice.Prompt.max_vocabulary_chars/0`
   so the Whisper prompt always keeps room for the draft tail after it.
+  `cleanup_glossary` is capped at `max_cleanup_glossary_chars/0` and
+  `cleanup_models` (a comma-separated id list) must name at least one id.
 
   ## The booleans are TRI-STATE, not checkboxes
 
   `echo_cancellation`/`noise_suppression`/`auto_gain_control` (the
   `getUserMedia` constraints the browser mic is opened with),
-  `release_mic_during_playback` (ORCAHUB3-105) and `draft_context` (the
-  Whisper prompt's draft tail) all need three states, not
+  `release_mic_during_playback` (ORCAHUB3-105), `draft_context` (the
+  Whisper prompt's draft tail) and `cleanup_enabled` (ORCAHUB3-120) all
+  need three states, not
   two: `"true"`, `"false"`, and BLANK meaning "inherit this one from its env
   var". A checkbox cannot express the third, so the Settings UI renders them
   as selects and they are stored as the strings `"true"`/`"false"`/`""` like
@@ -59,6 +64,10 @@ defmodule OrcaHub.ASRConfig.Entry do
 
   @kinds ~w(asr_provider)
 
+  # The glossary rides every cleanup call's system prompt; the default is
+  # ~330 characters.
+  @max_cleanup_glossary_chars 1_000
+
   schema "asr_config_entries" do
     field :kind, :string
     field :name, :string
@@ -70,6 +79,9 @@ defmodule OrcaHub.ASRConfig.Entry do
 
   @doc "The config surfaces an entry can target, as strings."
   def kinds, do: @kinds
+
+  @doc "The cap on `cleanup_glossary`, in characters."
+  def max_cleanup_glossary_chars, do: @max_cleanup_glossary_chars
 
   def changeset(entry, attrs) do
     entry
@@ -101,17 +113,55 @@ defmodule OrcaHub.ASRConfig.Entry do
       |> validate_boolean(spec["release_mic_during_playback"], "release_mic_during_playback")
       |> validate_boolean(spec["draft_context"], "draft_context")
       |> validate_vocabulary(spec["vocabulary"])
+      |> validate_boolean(spec["cleanup_enabled"], "cleanup_enabled")
+      |> validate_url(spec["cleanup_url"], "cleanup_url")
+      |> validate_positive_integer(spec["cleanup_timeout_ms"], "cleanup_timeout_ms")
+      |> validate_models(spec["cleanup_models"])
+      |> validate_cleanup_glossary(spec["cleanup_glossary"])
     else
       add_error(changeset, :spec, "must be a map")
     end
   end
 
-  defp validate_url(changeset, value) do
+  defp validate_url(changeset, value, field \\ "url") do
     cond do
       blank?(value) -> changeset
-      not is_binary(value) -> add_error(changeset, :spec, "url must be a string")
+      not is_binary(value) -> add_error(changeset, :spec, "#{field} must be a string")
       String.starts_with?(String.trim(value), ["http://", "https://"]) -> changeset
-      true -> add_error(changeset, :spec, "url must start with http:// or https://")
+      true -> add_error(changeset, :spec, "#{field} must start with http:// or https://")
+    end
+  end
+
+  defp validate_models(changeset, value) do
+    cond do
+      blank?(value) ->
+        changeset
+
+      is_binary(value) and OrcaHub.Voice.Cleanup.parse_models(value) != [] ->
+        changeset
+
+      true ->
+        add_error(changeset, :spec, "cleanup_models must be a comma-separated list of model ids")
+    end
+  end
+
+  defp validate_cleanup_glossary(changeset, value) do
+    cond do
+      blank?(value) ->
+        changeset
+
+      not is_binary(value) ->
+        add_error(changeset, :spec, "cleanup_glossary must be a string")
+
+      String.length(String.trim(value)) <= @max_cleanup_glossary_chars ->
+        changeset
+
+      true ->
+        add_error(
+          changeset,
+          :spec,
+          "cleanup_glossary must be at most #{@max_cleanup_glossary_chars} characters"
+        )
     end
   end
 
