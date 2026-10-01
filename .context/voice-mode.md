@@ -35,9 +35,12 @@ ordinary `state` snapshot -> the hook's draft sink. See "Rolling cleanup".
   short-segment hold/merge, `seq`-ordered result application, and the
   cleanup span bookkeeping. Returns `{state, effects}`; no sockets, tasks,
   timers or HTTP.
-- `voice/cleanup.ex` + `voice/cleanup/guard.ex` — the cleanup call (model
-  choice, the benchmarked prompt, the acceptance guard); synchronous, never
-  raises. Injected into the channel via app env `:voice_cleanup`.
+- `voice/cleanup.ex` — `clean/2`, the LLM cleanup call behind ORCAHUB3-120:
+  picks an ALREADY-loaded model, sends the benchmarked prompt, guards the
+  reply. Synchronous, never raises. Injected into the channel via app env
+  `:voice_cleanup`.
+- `voice/cleanup/guard.ex` — the acceptance guard, a parity port of
+  `~/voice-cleanup-bench/guard.py` `FINAL`.
 - `voice/asr.ex` — HTTP client for the GB10 sync lane; wraps PCM in a 44-byte
   WAV header, re-enforces the 0.8 s floor / 20 s cap, never raises.
 - `voice/intent.ex` — terminal-position phonetic matcher, a port of SPIKE 2b's
@@ -248,6 +251,11 @@ alone (agent-mode nodes 404 every page route; port-4001 LAN instances fail
 unrestricted. The URL is a config knob; two other valid targets and one DNS
 trap (`gb10.lab.ingbretsenhome.com` is the debian Traefik wildcard, NOT the
 GB10) are in spec §8 — read it before changing it.
+
+The cleanup call (ORCAHUB3-120) also runs in that channel process, so the same
+pod needs the llama router: VERIFIED 2026-10-01 from inside the k3s `orca-hub`
+pod, `GET http://192.168.1.77:8082/v1/models` -> 200 in 2.6 ms, with
+gemma-4-26B-A4B and nemotron-3.5-lightning both `loaded` at the time.
 
 ## Phase 2 / 2b (landed, `113fa91`)
 
@@ -466,8 +474,11 @@ hub may answer the config RPC without them; fixed at JOIN like `threshold`):
 `gemma-4-26B-A4B, nemotron-3.5-lightning`, stored comma-separated),
 `cleanup_timeout_ms` (3000, the WHOLE call incl. a <= 500 ms model listing),
 `cleanup_glossary` (the prompt's glossary sentence; default = the benchmarked
-list, `none` drops it). The glossary is NOT `vocabulary`: that one biases
-Whisper, this one instructs an LLM, and each default is the measured one.
+list, `none` drops it). Env: `ASR_CLEANUP_ENABLED/_URL/_MODELS/_TIMEOUT_MS/
+_GLOSSARY`. The glossary is NOT `vocabulary`: that one biases Whisper, this
+one instructs an LLM and carries parenthetical notes ("pi (a coding-agent
+backend, always lowercase)"), and each default is the measured one for its
+consumer.
 
 **Model side** (`Voice.Cleanup`): `{:ok, text, meta} | {:rejected, reason,
 meta} | {:skip, reason, meta}`, `meta` always has `:model`, `:latency_ms`.
@@ -478,17 +489,34 @@ Callers branch on those three tags only, never on a reason atom.
   load on some endpoints), take the first `cleanup_models` id whose
   `status.value == "loaded"`, else skip. Chat goes to the router directly
   (autoload off: an unloaded model is an instant 400 -> skip, never a retry).
-  Never point it at the ai.lab gateway — its ENSURE_MODELS path loads.
-- The prompt with the default glossary is BYTE-IDENTICAL to the bench's
-  FINAL-v4 plain-content prompt (pinned by `cleanup_test.exs`). Plain
-  content, temperature 0, `enable_thinking: false` (nemotron ~5 s with it);
-  no tool call / json_schema (measured pure overhead).
-- The guard (`Cleanup.Guard`, parity-tested against the bench's `guard.py`):
-  missing content words <= max(1, 10%) after glossary credit, novel words
-  <= 25%, length <= 1.6x, protected identifiers (paths, snake_case, numbers,
-  URLs) verbatim. It catches catastrophes (answers, echoes, wholesale
-  replacement), not one-word meaning changes — the model choice is the real
-  protection.
+  Never point it at the ai.lab gateway — its ENSURE_MODELS path loads on
+  demand and LRU-evicts. (Its `/v1/models` reports no residency, which reads
+  here as "nothing loaded" — the safe failure.)
+- **The prompt is the benchmarked one, byte for byte.** Under the default
+  glossary `Cleanup.system_prompt/0` equals the bench's
+  `results/final_system_prompt.txt` (FINAL-v4, plain content: gemma p50
+  0.59 s / p95 1.31 s, 0 answered, 0 context echo, 0 content loss on 98
+  cases + 10/10 held out), sha256-pinned in `cleanup_test.exs`. User message
+  `<context>…</context>\n<raw>…</raw>`, temperature 0,
+  `enable_thinking: false` (nemotron ~5 s with it), no tool call /
+  json_schema (measured pure overhead). A custom glossary is an UNMEASURED
+  prompt; changing any prompt text means re-running the bench
+  (`run_matrix.py`, already-loaded models only).
+- **The guard is a backstop, and parity is its acceptance test.** Accept
+  only if missing raw content words <= max(1, 10%) after crediting 2 per
+  introduced glossary term, novel words <= 25%, length <= 1.6x, protected
+  identifiers (paths, snake_case, CONST_CASE, decimals, h:mm, URLs) verbatim.
+  `guard_test.exs` replays all 552 distinct bench outputs (3,209 recorded,
+  good AND bad) and matches decision, reason and every feature exactly:
+  1.0% false reject (24/2525), 72% bad caught (78/109). It cannot see
+  one-word meaning changes ("the hub" -> "OrcaHub") — the model/prompt
+  choice and short batches are the protection there. Never "fix" a parity
+  row.
+- Bounds the bench measured inside: context cut to its last 400 chars on a
+  word boundary (bench max 349); `max_tokens` ~2x the raw's tokens + 64 (a
+  reply cut off by it is `:truncated`). Beyond the bench: a wrapping code
+  fence/quote pair is stripped, and a reply echoing `<raw>`/`<context>` is
+  rejected (`:tag_echo`).
 
 **Session side** — invariants that bite:
 
