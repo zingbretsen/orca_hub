@@ -12,7 +12,12 @@ defmodule OrcaHub.Voice.ASR do
     OpenAI-compatible; `/v1/audio/transcriptions` 404s on that box, and the
     `ai.lab.ingbretsenhome.com` gateway fronts only TTS.
   - `multipart/form-data` ONLY — anything else is a 415. Fields: `file` (the
-    WAV) plus `language`. The lane accepts at most FOUR form fields.
+    WAV), `language`, and `initial_prompt` when there is one (never on the
+    warm-up ping). The lane accepts at most FOUR form fields — more is a 400.
+  - `initial_prompt` is the Whisper context built by `OrcaHub.Voice.Prompt`
+    (domain vocabulary, then the tail of the draft). It takes effect once the
+    transcription service supports the field; until then the lane silently
+    ignores it, so sending it early is harmless.
   - A 200 body is EXACTLY five fields: `text`, `language`, `duration`,
     `model`, `elapsed_seconds`. There are no segments, no word timestamps and
     **no confidence fields** — do not model any.
@@ -95,6 +100,8 @@ defmodule OrcaHub.Voice.ASR do
     * `:language` — overrides `config.language`
     * `:filename` — the multipart filename, default `"segment.wav"`
     * `:sample_rate` — WAV header rate, default 16000
+    * `:initial_prompt` — Whisper context; sent as its own form field only
+      when non-blank
 
   Returns `{:ok, result}` or `{:error, reason}`. Both length guards refuse
   BEFORE any network call.
@@ -115,8 +122,9 @@ defmodule OrcaHub.Voice.ASR do
         timeout = Keyword.get(opts, :timeout_ms) || config.timeout_ms
         filename = Keyword.get(opts, :filename, @default_filename)
         language = Keyword.get(opts, :language) || config.language
+        prompt = Keyword.get(opts, :initial_prompt)
 
-        case post_wav(wav, config, language, filename, timeout) do
+        case post_wav(wav, config, language, filename, timeout, prompt) do
           {:ok, %{body: body}} -> decode_ok(body)
           other -> other
         end
@@ -143,7 +151,7 @@ defmodule OrcaHub.Voice.ASR do
     wav = wav_from_pcm16(:binary.copy(<<0, 0>>, @sample_rate))
     started = System.monotonic_time(:millisecond)
 
-    case post_wav(wav, config, config.language, @warmup_filename, config.warmup_timeout_ms) do
+    case post_wav(wav, config, config.language, @warmup_filename, config.warmup_timeout_ms, nil) do
       {:ok, %{status: 200}} ->
         {:ok, %{elapsed_ms: System.monotonic_time(:millisecond) - started}}
 
@@ -230,15 +238,17 @@ defmodule OrcaHub.Voice.ASR do
     >>
   end
 
-  defp post_wav(wav, config, language, filename, timeout) do
+  # At most three form fields — the lane 400s over four.
+  defp post_wav(wav, config, language, filename, timeout, prompt) do
     url = String.trim_trailing(config.url, "/") <> config.path
 
     opts =
       [
-        form_multipart: [
-          file: {wav, filename: filename, content_type: "audio/wav"},
-          language: language
-        ],
+        form_multipart:
+          [
+            file: {wav, filename: filename, content_type: "audio/wav"},
+            language: language
+          ] ++ prompt_field(prompt),
         receive_timeout: timeout,
         # The lane is a single GPU thread on a FIFO (spec 6.1) — re-firing a
         # slow request against a saturated box is how you double the tail.
@@ -247,6 +257,12 @@ defmodule OrcaHub.Voice.ASR do
 
     url |> Req.post(opts) |> normalize()
   end
+
+  defp prompt_field(prompt) when is_binary(prompt) do
+    if String.trim(prompt) == "", do: [], else: [initial_prompt: prompt]
+  end
+
+  defp prompt_field(_), do: []
 
   defp normalize({:ok, %{status: 200} = resp}), do: {:ok, resp}
 

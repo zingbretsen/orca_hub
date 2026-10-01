@@ -158,6 +158,34 @@ defmodule OrcaHub.Voice.ASRTest do
                ASR.transcribe(pcm(), @config, language: "fr", filename: "utterance.wav")
     end
 
+    test "a non-blank initial_prompt rides as a third form field, within the lane's four" do
+      prompt = "OrcaHub, GB10, Darling Court. the café on Keene's main street"
+
+      Req.Test.stub(@stub, fn conn ->
+        conn = parse_multipart(conn)
+        assert Map.keys(conn.params) |> Enum.sort() == ["file", "initial_prompt", "language"]
+        # The lane 400s on MORE than four form fields.
+        assert map_size(conn.params) <= 4
+        assert conn.params["initial_prompt"] == prompt
+        assert conn.params["language"] == "en"
+        Req.Test.json(conn, ok_body())
+      end)
+
+      assert {:ok, _} = ASR.transcribe(pcm(), @config, initial_prompt: prompt)
+    end
+
+    test "a blank or nil initial_prompt sends no field at all" do
+      Req.Test.stub(@stub, fn conn ->
+        conn = parse_multipart(conn)
+        assert Map.keys(conn.params) |> Enum.sort() == ["file", "language"]
+        Req.Test.json(conn, ok_body())
+      end)
+
+      assert {:ok, _} = ASR.transcribe(pcm(), @config, initial_prompt: "")
+      assert {:ok, _} = ASR.transcribe(pcm(), @config, initial_prompt: "  \n")
+      assert {:ok, _} = ASR.transcribe(pcm(), @config, initial_prompt: nil)
+    end
+
     test "a trailing slash on the configured url does not double up the path" do
       Req.Test.stub(@stub, fn conn ->
         assert conn.request_path == "/v1/transcribe/sync"
@@ -313,6 +341,9 @@ defmodule OrcaHub.Voice.ASRTest do
         conn = parse_multipart(conn)
         assert conn.params["language"] == "en"
         assert %Plug.Upload{filename: "warmup.wav"} = conn.params["file"]
+        # Silence needs no context — and a prompt on silence is what Whisper
+        # is most likely to parrot back.
+        assert Map.keys(conn.params) |> Enum.sort() == ["file", "language"]
 
         # 16000 zero samples + a 44-byte header: over the 0.8 s floor, so the
         # lane accepts it rather than 413ing or hallucinating on a fragment.

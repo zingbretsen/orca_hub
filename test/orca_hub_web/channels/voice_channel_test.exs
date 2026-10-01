@@ -26,6 +26,7 @@ defmodule OrcaHubWeb.VoiceChannelTest do
   import Phoenix.ChannelTest
 
   alias OrcaHub.{Projects, Sessions}
+  alias OrcaHub.Voice.Dictation
   alias OrcaHubWeb.{UserSocket, VoiceChannel}
 
   @endpoint OrcaHubWeb.Endpoint
@@ -470,7 +471,10 @@ defmodule OrcaHubWeb.VoiceChannelTest do
 
       push(socket, "send_direct", %{})
 
-      assert_receive {:voice_send, sent_node, sent_id, "ship it", :queue}, 1_000
+      # The agent is told the text was dictated (the composer path gets the
+      # same note in SessionLive.Show); `sent` and the state keep it bare.
+      dictated = Dictation.prefix("ship it")
+      assert_receive {:voice_send, sent_node, sent_id, ^dictated, :queue}, 1_000
       assert sent_node == node()
       assert sent_id == session.id
       assert_push "sent", %{text: "ship it"}, 1_000
@@ -529,7 +533,8 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       push(socket, "send_now", %{})
       assert_push "send_request", %{text: "ship it"}, 1_000
 
-      assert_receive {:voice_send, _node, _id, "ship it", :queue}, 8_000
+      dictated = Dictation.prefix("ship it")
+      assert_receive {:voice_send, _node, _id, ^dictated, :queue}, 8_000
       assert_push "sent", %{text: "ship it"}, 1_000
     end
   end
@@ -724,6 +729,54 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       assert_push "state", %{draft: ^text, arming: nil}, 1_000
 
       refute_push "cancelled", _payload, 2_500
+    end
+  end
+
+  describe "the Whisper initial_prompt" do
+    test "a segment carries the configured vocabulary plus the draft; the warm-up carries none",
+         %{session: session} do
+      on_exit(fn -> OrcaHub.ASRConfig.delete_provider() end)
+
+      {:ok, _} =
+        OrcaHub.ASRConfig.put_provider(%{
+          vocabulary: "Darling Court, Keene",
+          draft_context: "true"
+        })
+
+      # Every request's form fields (minus the WAV) back to the test, keyed by
+      # the upload's filename so the warm-up is told apart from a segment.
+      test_pid = self()
+
+      Req.Test.stub(@stub, fn conn ->
+        parsers = Plug.Parsers.init(parsers: [:multipart], pass: ["*/*"], length: 50_000_000)
+        conn = Plug.Parsers.call(conn, parsers)
+        send(test_pid, {:asr_form, conn.params["file"].filename, Map.delete(conn.params, "file")})
+
+        Req.Test.json(conn, %{
+          "text" => "is framed",
+          "language" => "en",
+          "duration" => 2.4,
+          "model" => "large-v3-turbo",
+          "elapsed_seconds" => 0.61
+        })
+      end)
+
+      {_reply, socket} = join_warm!(session.id)
+
+      assert_receive {:asr_form, "warmup.wav", warmup}, 1_000
+      refute Map.has_key?(warmup, "initial_prompt")
+
+      push(socket, "draft_edit", %{"text" => "the house on Darling Court"})
+      assert_push "state", %{draft: "the house on Darling Court"}, 1_000
+
+      push(socket, "segment", {:binary, segment(1, 16_000)})
+
+      assert_receive {:asr_form, "segment.wav", form}, 2_000
+      assert form["initial_prompt"] == "Darling Court, Keene. the house on Darling Court"
+      # file + language + initial_prompt: within the lane's four-field limit.
+      assert map_size(form) + 1 <= 4
+
+      assert_push "state", %{draft: "the house on Darling Court is framed"}, 2_000
     end
   end
 end

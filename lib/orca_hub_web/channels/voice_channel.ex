@@ -52,7 +52,9 @@ defmodule OrcaHubWeb.VoiceChannel do
   because TTS resolves per REQUEST; a voice session instead resolves ONCE at
   join and again on `retry_warmup`, which is the natural "I changed the
   settings, try again" gesture. A config change therefore takes effect on
-  the next join or retry, not mid-utterance.
+  the next join or retry, not mid-utterance. `threshold`, `vocabulary` and
+  `draft_context` are the exception: they go into `Session.new/1` at join,
+  so a retry does not pick them up.
 
   The join reply also carries `audio_constraints` — the three
   `getUserMedia` capture constraints (ORCAHUB3-105), camelCased for the Web
@@ -112,7 +114,14 @@ defmodule OrcaHubWeb.VoiceChannel do
          {:ok, runner_node} <- resolve_node(session),
          :ok <- claim_voice(session_id) do
       config = resolve_config()
-      state = Session.new(threshold: config.threshold)
+      # `Map.get` for the two prompt fields: during a rolling deploy the
+      # hub answering `resolve_asr_config` can predate them.
+      state =
+        Session.new(
+          threshold: config.threshold,
+          vocabulary: Map.get(config, :vocabulary, ""),
+          draft_context: Map.get(config, :draft_context, true)
+        )
 
       socket =
         socket
@@ -309,12 +318,14 @@ defmodule OrcaHubWeb.VoiceChannel do
     socket
   end
 
-  defp run_effect({:dispatch, seq, pcm}, socket) do
+  # `asr_opts` carries the segment's Whisper `initial_prompt`, built by the
+  # state machine from the draft as of dispatch.
+  defp run_effect({:dispatch, seq, pcm, asr_opts}, socket) do
     config = socket.assigns.config
     channel = self()
 
     Task.start(fn ->
-      send(channel, {:asr_result, seq, guarded(fn -> ASR.transcribe(pcm, config) end)})
+      send(channel, {:asr_result, seq, guarded(fn -> ASR.transcribe(pcm, config, asr_opts) end)})
     end)
 
     socket
@@ -362,13 +373,18 @@ defmodule OrcaHubWeb.VoiceChannel do
     socket
   end
 
+  # The direct path (`send_direct`, or the no-composer deadline fallback).
+  # Every `{:send, _}` is a dictated draft, so the agent is told so here —
+  # the composer path gets the same note in `SessionLive.Show`. `text` stays
+  # bare in the session state (restore/undo).
   defp run_effect({:send, text}, socket) do
     %{runner_node: runner_node, session_id: session_id} = socket.assigns
     channel = self()
     sender = sender()
+    prompt = OrcaHub.Voice.Dictation.prefix(text)
 
     Task.start(fn ->
-      send(channel, {:send_result, sender.(runner_node, session_id, text, :queue)})
+      send(channel, {:send_result, sender.(runner_node, session_id, prompt, :queue)})
     end)
 
     socket

@@ -602,7 +602,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
            "ASR settings saved — in effect on the next transcription. " <>
              "The microphone settings are the exception: switch voice mode off and " <>
              "on again, since the three capture constraints are read when the mic is " <>
-             "armed and the release-during-playback behaviour is read at join."
+             "armed, and the release-during-playback behaviour and the Whisper prompt " <>
+             "are read at join."
          )}
 
       {:error, changeset} ->
@@ -861,6 +862,8 @@ defmodule OrcaHubWeb.SettingsLive.Index do
             "noise_suppression" => spec["noise_suppression"] || "",
             "auto_gain_control" => spec["auto_gain_control"] || "",
             "release_mic_during_playback" => spec["release_mic_during_playback"] || "",
+            "vocabulary" => spec["vocabulary"] || "",
+            "draft_context" => spec["draft_context"] || "",
             "enabled" => to_string(if(entry, do: entry.enabled, else: true))
           },
           as: :asr
@@ -892,6 +895,18 @@ defmodule OrcaHubWeb.SettingsLive.Index do
       {"Inherit from #{env_var} (#{env_default})", ""},
       {"true — stop the mic while the assistant speaks", "true"},
       {"false — only mute it (current behaviour)", "false"}
+    ]
+  end
+
+  @doc """
+  Options for `draft_context` — the same tri-state shape as
+  `asr_release_mic_options/2`, labelled by what each state sends.
+  """
+  def asr_draft_context_options(env_default, env_var) do
+    [
+      {"Inherit from #{env_var} (#{env_default})", ""},
+      {"true — vocabulary plus the end of the draft", "true"},
+      {"false — vocabulary only", "false"}
     ]
   end
 

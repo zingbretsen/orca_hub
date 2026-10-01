@@ -17,7 +17,7 @@ defmodule OrcaHub.ASRConfig do
 
   ## Resolution: DB wins, else env, else hardcoded — PER FIELD
 
-  `resolve/0` decides ten fields independently. For each one it takes the
+  `resolve/0` decides twelve fields independently. For each one it takes the
   first usable of:
 
     1. the DB value (the `"asr_provider"` row's `spec`),
@@ -103,6 +103,18 @@ defmodule OrcaHub.ASRConfig do
   JOIN reply carried — so a change lands on the next JOIN (voice off/on, a
   retarget, or a socket rejoin), and never mid-playback.
 
+  ## The Whisper prompt: `vocabulary` and `draft_context`
+
+  Every dispatched segment is posted with an `initial_prompt` built by
+  `OrcaHub.Voice.Prompt` — `vocabulary` first, then the tail of the current
+  draft. `vocabulary` is a free-text list of domain words Whisper should
+  spell right (at most `Prompt.max_vocabulary_chars/0`); a blank value
+  inherits like every other field, so the literal `none` is how to send no
+  vocabulary at all. `draft_context` (default TRUE) turns the draft tail
+  off. Both go into the voice session at JOIN, like `threshold`. The field
+  takes effect once the transcription service supports it; until then the
+  lane silently ignores it.
+
   ## No cache, deliberately
 
   `resolve/0` queries inside the call. Voice traffic is very low QPS, and a
@@ -146,6 +158,14 @@ defmodule OrcaHub.ASRConfig do
   # instrument that can tell whether it works is a human with a speaker.
   @default_release_mic_during_playback false
 
+  # Words Whisper otherwise mangles, in the order they matter most — an
+  # over-long list keeps its HEAD (`OrcaHub.Voice.Prompt`). No command phrase
+  # belongs here: biasing toward "orca send" would bias toward false sends.
+  @default_vocabulary "OrcaHub, GB10, Elixir, Phoenix LiveView, GenServer, Ecto, Flux, k3s, " <>
+                        "kubectl, Traefik, Postgres, pgvector, Nemotron, Qwen, Gemma, Whisper, " <>
+                        "Chatterbox, Claude, Codex, MCP, Darling Court, Keene"
+  @default_draft_context true
+
   @doc "The PubSub topic mutations broadcast on."
   def topic, do: @topic
 
@@ -155,7 +175,8 @@ defmodule OrcaHub.ASRConfig do
   @doc """
   The effective ASR config: `%{url:, path:, language:, timeout_ms:,
   warmup_timeout_ms:, threshold:, echo_cancellation:, noise_suppression:,
-  auto_gain_control:, release_mic_during_playback:}`, each field resolved DB → env → hardcoded
+  auto_gain_control:, release_mic_during_playback:, vocabulary:,
+  draft_context:}`, each field resolved DB → env → hardcoded
   independently, with the numeric and boolean fields returned TYPED.
 
   A DB read failure degrades to env-only rather than failing the call —
@@ -201,7 +222,10 @@ defmodule OrcaHub.ASRConfig do
           spec["release_mic_during_playback"],
           :asr_release_mic_during_playback,
           @default_release_mic_during_playback
-        )
+        ),
+      vocabulary: pick_vocabulary(spec["vocabulary"]),
+      draft_context:
+        pick_boolean(spec["draft_context"], :asr_draft_context, @default_draft_context)
     }
   end
 
@@ -247,12 +271,21 @@ defmodule OrcaHub.ASRConfig do
           nil,
           :asr_release_mic_during_playback,
           @default_release_mic_during_playback
-        )
+        ),
+      vocabulary: pick_vocabulary(nil),
+      draft_context: pick_boolean(nil, :asr_draft_context, @default_draft_context)
     }
   end
 
   defp pick(db_value, env_key, default) do
     blank_to_nil(db_value) || blank_to_nil(Application.get_env(:orca_hub, env_key)) || default
+  end
+
+  # Blank means "inherit", as everywhere here, so "no vocabulary at all"
+  # needs a spelling of its own: the literal `none`.
+  defp pick_vocabulary(db_value) do
+    vocabulary = pick(db_value, :asr_vocabulary, @default_vocabulary)
+    if String.downcase(vocabulary) == "none", do: "", else: vocabulary
   end
 
   defp pick_integer(db_value, env_key, default),
@@ -350,16 +383,16 @@ defmodule OrcaHub.ASRConfig do
   @doc """
   Upserts the single provider row. `attrs` carries `url`/`path`/`language`/
   `timeout_ms`/`warmup_timeout_ms`/`threshold`/`echo_cancellation`/
-  `noise_suppression`/`auto_gain_control`/`release_mic_during_playback`
-  (string or atom keys); a blank value is stored as-is and read back as
-  "fall back to env for this field".
+  `noise_suppression`/`auto_gain_control`/`release_mic_during_playback`/
+  `vocabulary`/`draft_context` (string or atom keys); a blank value is
+  stored as-is and read back as "fall back to env for this field".
   """
   def put_provider(attrs) do
     spec =
       Map.new(
         ~w(url path language timeout_ms warmup_timeout_ms threshold
            echo_cancellation noise_suppression auto_gain_control
-           release_mic_during_playback)a,
+           release_mic_during_playback vocabulary draft_context)a,
         fn key -> {to_string(key), fetch(attrs, key)} end
       )
 

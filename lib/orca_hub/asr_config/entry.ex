@@ -14,7 +14,8 @@ defmodule OrcaHub.ASRConfig.Entry do
       holds `%{"url" => ..., "path" => ..., "language" => ...,
       "timeout_ms" => ..., "warmup_timeout_ms" => ..., "threshold" => ...,
       "echo_cancellation" => ..., "noise_suppression" => ...,
-      "auto_gain_control" => ..., "release_mic_during_playback" => ...}`.
+      "auto_gain_control" => ..., "release_mic_during_playback" => ...,
+      "vocabulary" => ..., "draft_context" => ...}`.
       Any key may be blank or absent, in which
       case that ONE field falls back to its `ASR_*` env var — see
       `OrcaHub.ASRConfig.resolve/0`. `enabled: false` disables the whole row,
@@ -33,11 +34,15 @@ defmodule OrcaHub.ASRConfig.Entry do
   PARSE and are in range, so a bad value is rejected at save time rather
   than silently falling back to env forever.
 
-  ## The four browser-side booleans are TRI-STATE, not checkboxes
+  `vocabulary` is capped at `OrcaHub.Voice.Prompt.max_vocabulary_chars/0`
+  so the Whisper prompt always keeps room for the draft tail after it.
+
+  ## The booleans are TRI-STATE, not checkboxes
 
   `echo_cancellation`/`noise_suppression`/`auto_gain_control` (the
-  `getUserMedia` constraints the browser mic is opened with) and
-  `release_mic_during_playback` (ORCAHUB3-105) all need three states, not
+  `getUserMedia` constraints the browser mic is opened with),
+  `release_mic_during_playback` (ORCAHUB3-105) and `draft_context` (the
+  Whisper prompt's draft tail) all need three states, not
   two: `"true"`, `"false"`, and BLANK meaning "inherit this one from its env
   var". A checkbox cannot express the third, so the Settings UI renders them
   as selects and they are stored as the strings `"true"`/`"false"`/`""` like
@@ -94,6 +99,8 @@ defmodule OrcaHub.ASRConfig.Entry do
       |> validate_boolean(spec["noise_suppression"], "noise_suppression")
       |> validate_boolean(spec["auto_gain_control"], "auto_gain_control")
       |> validate_boolean(spec["release_mic_during_playback"], "release_mic_during_playback")
+      |> validate_boolean(spec["draft_context"], "draft_context")
+      |> validate_vocabulary(spec["vocabulary"])
     else
       add_error(changeset, :spec, "must be a map")
     end
@@ -144,6 +151,17 @@ defmodule OrcaHub.ASRConfig.Entry do
 
       true ->
         add_error(changeset, :spec, ~s(#{field} must be "true" or "false"))
+    end
+  end
+
+  defp validate_vocabulary(changeset, value) do
+    max = OrcaHub.Voice.Prompt.max_vocabulary_chars()
+
+    cond do
+      blank?(value) -> changeset
+      not is_binary(value) -> add_error(changeset, :spec, "vocabulary must be a string")
+      String.length(String.trim(value)) <= max -> changeset
+      true -> add_error(changeset, :spec, "vocabulary must be at most #{max} characters")
     end
   end
 

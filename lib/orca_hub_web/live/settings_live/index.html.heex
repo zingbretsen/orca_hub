@@ -1265,6 +1265,41 @@
       lines, which carry the measured re-acquire time.
     </p>
 
+    <div class="divider text-xs text-base-content/50 mt-4 mb-0">
+      Whisper prompt
+    </div>
+
+    <.input
+      field={@asr_form[:vocabulary]}
+      type="textarea"
+      label="Vocabulary"
+      placeholder={@asr_env_defaults.vocabulary}
+      rows="2"
+      phx-debounce="blur"
+    />
+
+    <.input
+      field={@asr_form[:draft_context]}
+      type="select"
+      label="Include the end of the draft"
+      options={
+        asr_draft_context_options(
+          @asr_env_defaults.draft_context,
+          "ASR_DRAFT_CONTEXT"
+        )
+      }
+    />
+
+    <p class="text-xs text-base-content/50 -mt-1">
+      Each utterance is sent with an <code>initial_prompt</code>: the vocabulary (words Whisper
+      should spell right, at most {OrcaHub.Voice.Prompt.max_vocabulary_chars()} characters;
+      <code>none</code>
+      sends none), then the last few hundred characters of the draft, so a sentence continues in
+      context. The draft is left out in the command palette and after a spoken <code>#</code>, where the
+      utterance is a search query. It takes effect once the transcription service supports the
+      field — until then it is ignored. A change takes effect on the next <strong>join</strong>.
+    </p>
+
     <.input
       field={@asr_form[:enabled]}
       type="checkbox"

@@ -24,8 +24,14 @@ defmodule OrcaHub.ASRConfigTest do
     :asr_echo_cancellation,
     :asr_noise_suppression,
     :asr_auto_gain_control,
-    :asr_release_mic_during_playback
+    :asr_release_mic_during_playback,
+    :asr_vocabulary,
+    :asr_draft_context
   ]
+
+  @default_vocabulary "OrcaHub, GB10, Elixir, Phoenix LiveView, GenServer, Ecto, Flux, k3s, " <>
+                        "kubectl, Traefik, Postgres, pgvector, Nemotron, Qwen, Gemma, Whisper, " <>
+                        "Chatterbox, Claude, Codex, MCP, Darling Court, Keene"
 
   @hardcoded %{
     url: "http://192.168.1.77:8000",
@@ -37,7 +43,9 @@ defmodule OrcaHub.ASRConfigTest do
     echo_cancellation: true,
     noise_suppression: true,
     auto_gain_control: true,
-    release_mic_during_playback: false
+    release_mic_during_playback: false,
+    vocabulary: @default_vocabulary,
+    draft_context: true
   }
 
   # The four booleans deliberately do NOT all match their defaults here: a
@@ -55,7 +63,10 @@ defmodule OrcaHub.ASRConfigTest do
     echo_cancellation: false,
     noise_suppression: true,
     auto_gain_control: false,
-    release_mic_during_playback: true
+    release_mic_during_playback: true,
+    vocabulary: "EnvTerm, Other Env Term",
+    # default TRUE, so env exercises "false" — the same `||` trap as above
+    draft_context: false
   }
 
   setup do
@@ -81,6 +92,8 @@ defmodule OrcaHub.ASRConfigTest do
     Application.put_env(:orca_hub, :asr_noise_suppression, "true")
     Application.put_env(:orca_hub, :asr_auto_gain_control, "false")
     Application.put_env(:orca_hub, :asr_release_mic_during_playback, "true")
+    Application.put_env(:orca_hub, :asr_vocabulary, "EnvTerm, Other Env Term")
+    Application.put_env(:orca_hub, :asr_draft_context, "false")
 
     :ok
   end
@@ -168,7 +181,9 @@ defmodule OrcaHub.ASRConfigTest do
         echo_cancellation: "true",
         noise_suppression: "false",
         auto_gain_control: "true",
-        release_mic_during_playback: "false"
+        release_mic_during_playback: "false",
+        vocabulary: "DbTerm",
+        draft_context: "true"
       })
 
       assert ASRConfig.resolve() == %{
@@ -181,7 +196,9 @@ defmodule OrcaHub.ASRConfigTest do
                echo_cancellation: true,
                noise_suppression: false,
                auto_gain_control: true,
-               release_mic_during_playback: false
+               release_mic_during_playback: false,
+               vocabulary: "DbTerm",
+               draft_context: true
              }
     end
 
@@ -448,6 +465,57 @@ defmodule OrcaHub.ASRConfigTest do
       put_provider!(%{release_mic_during_playback: "false"}, enabled: false)
 
       assert ASRConfig.resolve().release_mic_during_playback == true
+    end
+  end
+
+  describe "the Whisper prompt fields (vocabulary, draft_context)" do
+    test "default to the domain list and draft context ON with nothing configured" do
+      Enum.each(@env_keys, &Application.delete_env(:orca_hub, &1))
+
+      resolved = ASRConfig.resolve()
+      assert resolved.vocabulary == @default_vocabulary
+      assert resolved.draft_context == true
+      assert ASRConfig.env_defaults().vocabulary == @default_vocabulary
+
+      # The default fits the vocabulary cap, so it is never truncated.
+      assert String.length(@default_vocabulary) <= OrcaHub.Voice.Prompt.max_vocabulary_chars()
+    end
+
+    test "the default vocabulary holds no voice command phrase" do
+      Enum.each(@env_keys, &Application.delete_env(:orca_hub, &1))
+      vocabulary = String.downcase(ASRConfig.resolve().vocabulary)
+
+      for {_name, phrase} <- OrcaHub.Voice.Intent.command_vocab() do
+        refute vocabulary =~ String.downcase(phrase), "default vocabulary contains #{phrase}"
+      end
+    end
+
+    test "a DB value wins over env per field, and a blank one inherits" do
+      put_provider!(%{vocabulary: "Nemotron, Qwen"})
+      assert ASRConfig.resolve().vocabulary == "Nemotron, Qwen"
+      assert ASRConfig.resolve().draft_context == false
+
+      put_provider!(%{draft_context: "true"})
+      assert ASRConfig.resolve().vocabulary == "EnvTerm, Other Env Term"
+      assert ASRConfig.resolve().draft_context == true
+    end
+
+    test "`none` (any case) is how to send no vocabulary, since blank inherits" do
+      put_provider!(%{vocabulary: "None"})
+      assert ASRConfig.resolve().vocabulary == ""
+
+      Application.put_env(:orca_hub, :asr_vocabulary, "none")
+      assert ASRConfig.env_defaults().vocabulary == ""
+    end
+
+    test "rejects an over-long vocabulary and a non-boolean draft_context at save time" do
+      too_long = String.duplicate("x", OrcaHub.Voice.Prompt.max_vocabulary_chars() + 1)
+
+      assert {:error, changeset} = ASRConfig.put_provider(%{vocabulary: too_long})
+      assert "vocabulary must be at most 400 characters" in errors_on(changeset).spec
+
+      assert {:error, changeset} = ASRConfig.put_provider(%{draft_context: "yes"})
+      assert ~s(draft_context must be "true" or "false") in errors_on(changeset).spec
     end
   end
 

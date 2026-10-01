@@ -258,6 +258,12 @@ config :orca_hub,
        :asr_release_mic_during_playback,
        System.get_env("ASR_RELEASE_MIC_DURING_PLAYBACK") || "false"
 
+# The Whisper initial_prompt sent with each voice segment (OrcaHub.Voice.Prompt):
+# ASR_VOCABULARY leads it (unset = the default list in OrcaHub.ASRConfig,
+# "none" = no vocabulary), ASR_DRAFT_CONTEXT appends the tail of the draft.
+config :orca_hub, :asr_vocabulary, System.get_env("ASR_VOCABULARY")
+config :orca_hub, :asr_draft_context, System.get_env("ASR_DRAFT_CONTEXT") || "true"
+
 config :orca_hub, :elevenlabs_api_key, System.get_env("ELEVENLABS_API_KEY")
 
 config :orca_hub,

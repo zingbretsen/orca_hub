@@ -22,7 +22,9 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
     :asr_echo_cancellation,
     :asr_noise_suppression,
     :asr_auto_gain_control,
-    :asr_release_mic_during_playback
+    :asr_release_mic_during_playback,
+    :asr_vocabulary,
+    :asr_draft_context
   ]
 
   setup do
@@ -45,6 +47,8 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
     Application.put_env(:orca_hub, :asr_noise_suppression, "true")
     Application.put_env(:orca_hub, :asr_auto_gain_control, "true")
     Application.put_env(:orca_hub, :asr_release_mic_during_playback, "false")
+    Application.put_env(:orca_hub, :asr_vocabulary, "EnvTerm, Other Env Term")
+    Application.put_env(:orca_hub, :asr_draft_context, "true")
 
     :ok
   end
@@ -61,6 +65,8 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
       "noise_suppression" => "",
       "auto_gain_control" => "",
       "release_mic_during_playback" => "",
+      "vocabulary" => "",
+      "draft_context" => "",
       "enabled" => "true"
     }
 
@@ -107,6 +113,17 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
       assert html =~ "ASR_RELEASE_MIC_DURING_PLAYBACK (false)"
     end
 
+    test "renders the Whisper prompt fields with their env defaults", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/settings")
+
+      assert html =~ "Whisper prompt"
+      assert html =~ "Vocabulary"
+      # the env vocabulary is the textarea's placeholder
+      assert html =~ "EnvTerm, Other Env Term"
+      assert html =~ "ASR_DRAFT_CONTEXT (true)"
+      assert html =~ "at most 400 characters"
+    end
+
     test "there is no model catalog on this lane", %{conn: conn} do
       {:ok, _view, html} = live(conn, ~p"/settings")
 
@@ -135,7 +152,9 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
                echo_cancellation: true,
                noise_suppression: true,
                auto_gain_control: true,
-               release_mic_during_playback: false
+               release_mic_during_playback: false,
+               vocabulary: "EnvTerm, Other Env Term",
+               draft_context: true
              }
     end
 
@@ -166,6 +185,25 @@ defmodule OrcaHubWeb.SettingsLive.ASRTest do
                noiseSuppression: true,
                autoGainControl: true
              }
+    end
+
+    test "the Whisper prompt fields save, and pre-fill on the next render", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      html = submit(view, %{"vocabulary" => "Nemotron, Qwen", "draft_context" => "false"})
+
+      assert ASRConfig.resolve().vocabulary == "Nemotron, Qwen"
+      assert ASRConfig.resolve().draft_context == false
+      assert html =~ "Nemotron, Qwen"
+    end
+
+    test "an over-long vocabulary is reported and nothing is written", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/settings")
+
+      html = submit(view, %{"vocabulary" => String.duplicate("x", 401)})
+
+      assert html =~ "vocabulary must be at most 400 characters"
+      assert ASRConfig.get_provider_entry() == nil
     end
 
     test "leaving the release blank inherits it from env, off by default", %{conn: conn} do

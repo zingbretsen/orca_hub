@@ -13,8 +13,10 @@ defmodule OrcaHub.Voice.Session do
   makes an HTTP call. Every function takes a state and returns
   `{state, effects}`, where `effects` is a list the CHANNEL executes:
 
-    * `{:dispatch, seq, pcm}` — post this PCM to ASR (in a task), then feed
-      the answer back through `transcript/4` under the same `seq`
+    * `{:dispatch, seq, pcm, asr_opts}` — post this PCM to ASR (in a task)
+      with `asr_opts` as `ASR.transcribe/3`'s options, then feed the answer
+      back through `transcript/4` under the same `seq`. `asr_opts` carries
+      the `:initial_prompt` (see "The Whisper prompt" below)
     * `{:segment_result, map}` — push one `"segment_result"` event
     * `{:send_request, text}` — push one `"send_request"` event and let the
       CLIENT deliver it through the page's composer (spec §8.2, the single
@@ -118,6 +120,20 @@ defmodule OrcaHub.Voice.Session do
   palette queries all CANCEL an open one — the user kept talking, so it was
   not a confirmation — and never open one.
 
+  ## The Whisper prompt
+
+  Every `{:dispatch, …}` carries an `initial_prompt` built by
+  `OrcaHub.Voice.Prompt`: the configured `vocabulary`, then the tail of the
+  draft AS OF DISPATCH. Segments are transcribed concurrently and applied in
+  dispatch order, so an earlier segment still in flight is simply absent
+  from a later one's context — accepted, since the alternative is
+  serializing the lane. The draft tail is left out when the segment is not
+  dictation: in palette focus (it is a query or a command) and while
+  `pending_insert` is set (it is a `#`/`##` search query), and always when
+  `draft_context` is off. The draft never holds command text — every
+  command is stripped before anything is appended — so neither does the
+  prompt.
+
   ## A cancel is armed, and a cancel is undoable (spec §8.3.11, ORCAHUB3-99)
 
   A SPOKEN `:cancel` does not clear anything when it lands. It opens the same
@@ -179,7 +195,7 @@ defmodule OrcaHub.Voice.Session do
   """
 
   alias OrcaHub.Cluster
-  alias OrcaHub.Voice.{ASR, Intent}
+  alias OrcaHub.Voice.{ASR, Intent, Prompt}
 
   # Spec 5.1: the arming window — a send, or (§8.3.11) a cancel. The spec
   # calls it configurable; it is
@@ -212,7 +228,7 @@ defmodule OrcaHub.Voice.Session do
         }
 
   @type effect ::
-          {:dispatch, non_neg_integer(), binary()}
+          {:dispatch, non_neg_integer(), binary(), keyword()}
           | {:segment_result, map()}
           | {:send_request, String.t()}
           | {:send, String.t()}
@@ -228,6 +244,10 @@ defmodule OrcaHub.Voice.Session do
   @max_candidates 9
 
   defstruct threshold: Intent.default_threshold(),
+            # the Whisper prompt's two config inputs, fixed at join like
+            # `threshold` — see "The Whisper prompt" above
+            vocabulary: "",
+            draft_context: true,
             draft: "",
             muted: false,
             warm: false,
@@ -283,10 +303,18 @@ defmodule OrcaHub.Voice.Session do
 
     * `:threshold` — the `OrcaHub.Voice.Intent` matcher threshold, normally
       `ASRConfig.resolve/0`'s `:threshold`.
+    * `:vocabulary` — the domain words that lead every Whisper prompt,
+      normally `ASRConfig.resolve/0`'s `:vocabulary`. Default `""`.
+    * `:draft_context` — whether the prompt carries the draft's tail,
+      normally `ASRConfig.resolve/0`'s `:draft_context`. Default `true`.
   """
   @spec new(keyword()) :: %__MODULE__{}
   def new(opts \\ []) do
-    %__MODULE__{threshold: Keyword.get(opts, :threshold, Intent.default_threshold())}
+    %__MODULE__{
+      threshold: Keyword.get(opts, :threshold, Intent.default_threshold()),
+      vocabulary: Keyword.get(opts, :vocabulary, ""),
+      draft_context: Keyword.get(opts, :draft_context, true)
+    }
   end
 
   @doc "The arming window, in milliseconds."
@@ -614,8 +642,20 @@ defmodule OrcaHub.Voice.Session do
 
   defp dispatch(state, frame, merged_from, speech_at) do
     entry = %{seq: frame.seq, merged_from: merged_from, speech_at: speech_at}
-    {%{state | awaiting: state.awaiting ++ [entry]}, [{:dispatch, frame.seq, frame.pcm}]}
+    asr_opts = [initial_prompt: Prompt.build(state.vocabulary, prompt_context(state))]
+
+    {%{state | awaiting: state.awaiting ++ [entry]},
+     [{:dispatch, frame.seq, frame.pcm, asr_opts}]}
   end
+
+  # The draft text a segment's prompt may quote — only when the segment is
+  # dictation. In palette focus it is a query or a command, and with a
+  # `#`/`##` insert pending it is a search query; neither continues the
+  # draft, so quoting it would bias the transcript toward the wrong text.
+  defp prompt_context(%__MODULE__{draft_context: false}), do: ""
+  defp prompt_context(%__MODULE__{focus: "palette"}), do: ""
+  defp prompt_context(%__MODULE__{pending_insert: true}), do: ""
+  defp prompt_context(state), do: state.draft
 
   # Spec 3.2: never discard a short segment outright — hold it for a merge,
   # and only decide what to do with it when the hold expires.

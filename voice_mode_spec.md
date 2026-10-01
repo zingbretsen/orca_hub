@@ -703,10 +703,12 @@ The contract, measured (SPIKE 2):
   `language=en`. MAX 4 FORM FIELDS — more is a 400.
 - Clip <= 20s and upload <= 25 MiB, else 413. Server timeout 30s, surfaced as
   504.
-- `response_format` and `initial_prompt` are SILENTLY IGNORED. PROMPT BIASING
-  IS NOT AVAILABLE AS SHIPPED — do not design around it. (This is what forces
-  the section 5.1 matcher; see the biasing note below for what it would take
-  to change.)
+- `response_format` is SILENTLY IGNORED, and so is any field the lane does
+  not know. `initial_prompt` IS SENT by OrcaHub (2026-10-01, `Voice.Prompt`:
+  configured vocabulary, then the draft's tail, <= 700 chars) as a third form
+  field, and takes effect once the `transcription` service supports it;
+  until then it is ignored like `response_format`. Do not rely on it for
+  intent — the section 5.1 matcher stays (see the biasing note below).
 - Errors are `{"detail": "<string>"}` with no machine-readable code — switch
   on HTTP STATUS, not on the body.
 - `200` with `text: ""` is the NORMAL non-speech result, NOT an error.
@@ -722,9 +724,9 @@ The contract, measured (SPIKE 2):
   ("Orca cancel…" -> "or to cancel…") but the section 5.1.1 matcher absorbs it.
   webm/opus uploads are still accepted directly, so posting MediaRecorder
   output as-is remains valid; it is just not faster.
-- `initial_prompt` BIASING ON THE SYNC LANE IS STILL UNMEASURED. It is
-  silently ignored today (above), and testing it needs a ~5-line change to
-  `api.py` in the `transcription` repo. Worth doing: SPIKE 3 recommends it
+- `initial_prompt` BIASING ON THE SYNC LANE IS STILL UNMEASURED. OrcaHub
+  sends it (above); the lane honours it once the ~5-line `api.py` change in
+  the `transcription` repo deploys. Worth measuring: SPIKE 3 recommends it
   independently, it would likely target "or Cassand." directly, and it might
   make section 5.1.1's phonetic key unnecessary. **Keep the matcher
   regardless** — biasing changes the transcript distribution, it does not make
@@ -2110,8 +2112,9 @@ STILL OPEN — all three are human-in-the-loop or a small upstream change:
   artifacts of it. `spikes/voice/ACOUSTIC_TEST.md` part B, ~4 minutes; it is a
   phase 1 exit criterion.
 - Does `initial_prompt` biasing help on the sync lane? **STILL OPEN and
-  UNMEASURED** — it is ignored as shipped and needs a ~5-line `api.py` change
-  in the `transcription` repo. Recommended independently by SPIKE 3; it might
+  UNMEASURED** — OrcaHub now sends it (section 6); the lane ignores it until
+  a ~5-line `api.py` change in the `transcription` repo deploys. Recommended
+  independently by SPIKE 3; it might
   make the phonetic key unnecessary, but keep the matcher either way
   (section 6).
 

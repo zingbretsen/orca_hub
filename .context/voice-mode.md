@@ -12,8 +12,8 @@ and the invariants — phase 1 first, then "Phase 2 / 2b" at the bottom.
 ABSOLUTE 16 kHz index) -> Silero v5 via vad-web, 512-sample (32 ms) frames ->
 `speech_start`/`speech_end` (+500 ms pre-roll) -> the `Voice` hook pushes
 `"speech_start"` then `"segment"` (OVS1 binary) -> `VoiceChannel` ->
-`Voice.Session.segment_received/3` -> `{:dispatch, seq, pcm}` after
-merge/pad/drop -> `Voice.ASR.transcribe/2` in a `Task` ->
+`Voice.Session.segment_received/3` -> `{:dispatch, seq, pcm, asr_opts}` after
+merge/pad/drop -> `Voice.ASR.transcribe/3` in a `Task` ->
 `Voice.Session.transcript/4` in DISPATCH order -> `Voice.Intent` ->
 `nil | :send | :cancel | :stop | :pause` -> `{:send, draft}` (or, since
 §8.3.11, `{:cancelled, draft}`) after the 1500 ms arming window ->
@@ -32,6 +32,8 @@ with `Cluster.send_message(node, id, draft, :queue)`).
   WAV header, re-enforces the 0.8 s floor / 20 s cap, never raises.
 - `voice/intent.ex` — terminal-position phonetic matcher, a port of SPIKE 2b's
   `intent_ref.py` (`intent/2`, `strip_command/3`).
+- `voice/prompt.ex` — pure builder for the per-segment Whisper
+  `initial_prompt` (vocabulary, then the draft's tail).
 - `asr_config.ex` — hub-managed config, sibling of `TTSConfig`.
 - `assets/js/voice/*.js` — capture + resample, VAD, OVS1 encoding, channel
   client, asset URLs, the `Voice` hook (`wav.js` is offline verification only).
@@ -76,11 +78,23 @@ with `Cluster.send_message(node, id, draft, :queue)`).
 
 `ASRConfig.resolve/0` -> `%{url, path, language, timeout_ms,
 warmup_timeout_ms, threshold, echo_cancellation, noise_suppression,
-auto_gain_control, release_mic_during_playback}`, resolved PER FIELD: DB row (`asr_provider`) > `ASR_*` env >
+auto_gain_control, release_mic_during_playback, vocabulary, draft_context}`,
+resolved PER FIELD: DB row (`asr_provider`) > `ASR_*` env >
 default, no cache, deliberately. No `model` field — the lane offers none. The
 channel resolves at join and on `retry_warmup` (via `HubRPC`; agent nodes have
 no DB), so a change lands on the next join, not mid-utterance. `threshold`
 (0.85) is the matcher knob.
+
+`vocabulary` (a domain word list, <= 400 chars, `none` = empty since blank
+inherits) and `draft_context` (default `true`) build each segment's Whisper
+`initial_prompt` (`Voice.Prompt`): vocabulary, then the draft's tail as of
+dispatch, <= 700 chars total, the tail cut on a word boundary — Whisper keeps
+the prompt's END. Concurrent in-flight segments are absent from it (accepted).
+No draft tail in palette focus or with a `#`/`##` insert pending (those
+segments are queries); no command text ever (stripped before append); no
+prompt on the warm-up. Sent as a third form field (lane max four); it takes
+effect once the transcription service supports it — until then the lane
+ignores it. Fixed at join, like `threshold`.
 
 `echo_cancellation`/`noise_suppression`/`auto_gain_control` are the
 `getUserMedia` capture constraints (ORCAHUB3-105), all
@@ -259,6 +273,17 @@ phase -> section); here is the shape and the traps.
   `send_direct` and the server delivers as in phase 1. The target follows
   navigation on a page-session-id CHANGE only (an unconditional sync fights the
   picker); retarget is leave+join carrying the draft client-side.
+- **Dictated sends are flagged to the MODEL.** Both paths prefix
+  `OrcaHub.Voice.Dictation`'s one-line note (the wording lives there only):
+  the hook `requestSubmit`s the composer with its hidden `voice_dictated`
+  button as the SUBMITTER (LiveView serializes it, even across a deferred
+  upload; a typed send — `Autocomplete` dispatches a bare `submit` — never
+  carries it, and there is no set-then-reset field to leak), and
+  `VoiceChannel` prefixes every `{:send, _}`. It is prompt TEXT, not a system
+  prompt, so it is backend-agnostic and survives `:queue` batching; the user
+  bubble strips it (paragraph-anchored, so also behind a `[Message delivery
+  note]` header) and shows a "dictated" marker. A manual Send of dictated
+  text is NOT flagged — only a spoken send is.
 
 More invariants that bite:
 

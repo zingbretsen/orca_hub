@@ -36,7 +36,7 @@ defmodule OrcaHub.Voice.SessionTest do
   # Dispatches one long segment and feeds `text` back as its transcript.
   defp utterance(state, seq, text, now \\ @t0) do
     {state, dispatch} = Session.segment_received(state, frame(seq, 16_000), now)
-    assert [{:dispatch, ^seq, _pcm}] = dispatch
+    assert [{:dispatch, ^seq, _pcm, _asr_opts}] = dispatch
     Session.transcript(state, seq, {:ok, asr(text)}, now)
   end
 
@@ -157,7 +157,7 @@ defmodule OrcaHub.Voice.SessionTest do
       {state, _} = utterance(state, 1, "let's ship it")
 
       {state, dispatch} = Session.segment_received(state, frame(2, 16_000), @t0)
-      assert [{:dispatch, 2, _pcm}] = dispatch
+      assert [{:dispatch, 2, _pcm, _asr_opts}] = dispatch
 
       {state, []} = Session.speech_start(state)
 
@@ -189,7 +189,7 @@ defmodule OrcaHub.Voice.SessionTest do
       # case for every utterance, and it must not count as "resumed speech".
       {state, []} = Session.speech_start(state)
       {state, dispatch} = Session.segment_received(state, frame(2, 16_000), @t0)
-      assert [{:dispatch, 2, _pcm}] = dispatch
+      assert [{:dispatch, 2, _pcm, _asr_opts}] = dispatch
 
       {state, effects} = Session.transcript(state, 2, {:ok, asr("now orca send")}, @t0 + 500)
 
@@ -694,7 +694,7 @@ defmodule OrcaHub.Voice.SessionTest do
 
     test "a sub-50 ms server time is dropped even with text" do
       {state, dispatch} = Session.segment_received(Session.new(), frame(1, 16_000), @t0)
-      assert [{:dispatch, 1, _}] = dispatch
+      assert [{:dispatch, 1, _, _}] = dispatch
 
       {state, effects} =
         Session.transcript(state, 1, {:ok, asr("archives.", elapsed_seconds: 0.014)}, @t0)
@@ -747,7 +747,7 @@ defmodule OrcaHub.Voice.SessionTest do
       assert Session.snapshot(state, @t0).pending == 1
 
       {state, effects} = Session.segment_received(state, frame(2, 8_000), @t0 + 400)
-      assert [{:dispatch, 2, merged}] = effects
+      assert [{:dispatch, 2, merged, _asr_opts}] = effects
       # The PCM really is concatenated, not replaced.
       assert byte_size(merged) == 16_000 * 2
       assert state.held == nil
@@ -774,7 +774,7 @@ defmodule OrcaHub.Voice.SessionTest do
       assert {_state, []} = Session.tick(state, @t0 + 1499)
 
       {state, effects} = Session.tick(state, @t0 + 1500)
-      assert [{:dispatch, 1, _pcm}] = effects
+      assert [{:dispatch, 1, _pcm, _asr_opts}] = effects
       assert state.held == nil
     end
 
@@ -794,15 +794,15 @@ defmodule OrcaHub.Voice.SessionTest do
       {state, effects} = Session.segment_received(state, frame(1, 320_001), @t0)
 
       assert [%{seq: 1, action: "error", detail: "segment over 20 s cap"}] = results(effects)
-      refute Enum.any?(effects, &match?({:dispatch, _, _}, &1))
+      refute Enum.any?(effects, &match?({:dispatch, _, _, _}, &1))
       assert state.awaiting == []
     end
 
     test "exactly 0.8 s dispatches and exactly 20 s is still allowed" do
-      assert {_s, [{:dispatch, 1, _}]} =
+      assert {_s, [{:dispatch, 1, _, _}]} =
                Session.segment_received(Session.new(), frame(1, 12_800), @t0)
 
-      assert {_s, [{:dispatch, 2, _}]} =
+      assert {_s, [{:dispatch, 2, _, _}]} =
                Session.segment_received(Session.new(), frame(2, 320_000), @t0)
     end
   end
@@ -813,7 +813,7 @@ defmodule OrcaHub.Voice.SessionTest do
       {state, effects} = Session.segment_received(state, frame(1, 16_000), @t0)
 
       assert [%{seq: 1, action: "dropped_muted"}] = results(effects)
-      refute Enum.any?(effects, &match?({:dispatch, _, _}, &1))
+      refute Enum.any?(effects, &match?({:dispatch, _, _, _}, &1))
       assert Session.snapshot(state, @t0).muted == true
 
       {state, _} = Session.mic(state, false)
@@ -1337,6 +1337,110 @@ defmodule OrcaHub.Voice.SessionTest do
         refute Enum.any?(effects, &match?({:schedule_tick, _}, &1))
         refute Enum.any?(effects, &match?({:send_request, _}, &1))
       end
+    end
+  end
+
+  describe "the Whisper prompt on each dispatch" do
+    @vocab "OrcaHub, GB10, Darling Court"
+
+    # The `initial_prompt` a long segment would be dispatched with right now.
+    defp prompt_for(state, seq, now \\ @t0) do
+      {_state, effects} = Session.segment_received(state, frame(seq, 16_000), now)
+      assert [{:dispatch, ^seq, _pcm, asr_opts}] = effects
+      Keyword.fetch!(asr_opts, :initial_prompt)
+    end
+
+    test "vocabulary first, then the draft as of dispatch" do
+      {state, _} = utterance(Session.new(vocabulary: @vocab), 1, "Deploy the hub to mini")
+
+      assert prompt_for(state, 2) == "OrcaHub, GB10, Darling Court. Deploy the hub to mini"
+    end
+
+    test "an empty draft sends the vocabulary alone, and nothing at all sends \"\"" do
+      assert prompt_for(Session.new(vocabulary: @vocab), 1) == "OrcaHub, GB10, Darling Court."
+      assert prompt_for(Session.new(), 1) == ""
+    end
+
+    test "a hand-typed draft counts as context too" do
+      {state, _} = Session.draft_edit(Session.new(vocabulary: @vocab), "note for\nZach:")
+      assert prompt_for(state, 1) == "OrcaHub, GB10, Darling Court. note for Zach:"
+    end
+
+    test "a long draft contributes only its tail, bounded and word-aligned" do
+      draft = Enum.map_join(1..300, " ", &"word#{&1}")
+      {state, _} = Session.draft_edit(Session.new(vocabulary: @vocab), draft)
+
+      prompt = prompt_for(state, 1)
+      assert String.length(prompt) <= OrcaHub.Voice.Prompt.max_chars()
+      assert String.ends_with?(prompt, "word299 word300")
+
+      "OrcaHub, GB10, Darling Court. " <> tail = prompt
+      assert String.ends_with?(draft, " " <> tail)
+    end
+
+    test "the command words never reach it — they are stripped before the append" do
+      {state, _} = utterance(Session.new(vocabulary: @vocab), 1, "let's ship it orca send")
+      assert state.draft == "let's ship it"
+
+      prompt = prompt_for(state, 2, @t0 + 100)
+      assert prompt == "OrcaHub, GB10, Darling Court. let's ship it"
+      refute prompt =~ ~r/orca send/i
+    end
+
+    test "palette focus leaves the draft out: the segment is a query or a command" do
+      {state, _} = utterance(Session.new(vocabulary: @vocab), 1, "Deploy the hub")
+      state = focused(state, "palette", @candidates)
+
+      assert prompt_for(state, 2) == "OrcaHub, GB10, Darling Court."
+
+      # ...and it comes back with composer focus.
+      assert prompt_for(focused(state, "composer"), 2) ==
+               "OrcaHub, GB10, Darling Court. Deploy the hub"
+    end
+
+    test "a pending # insert leaves the draft out: the segment is a search query" do
+      {state, _} = utterance(Session.new(vocabulary: @vocab), 1, "look at")
+      {state, _} = utterance(state, 2, "orca hashtag", @t0 + 10)
+      assert state.pending_insert
+
+      assert prompt_for(state, 3, @t0 + 20) == "OrcaHub, GB10, Darling Court."
+
+      # Once the query has consumed the trigger, the draft is context again.
+      {state, _} = utterance(state, 3, "voice", @t0 + 20)
+      refute state.pending_insert
+      assert prompt_for(state, 4, @t0 + 30) == "OrcaHub, GB10, Darling Court. look at #voice"
+    end
+
+    test "a newline insert is NOT a query, so the draft still rides along" do
+      {state, _} = utterance(Session.new(vocabulary: @vocab), 1, "see the logs orca new line")
+      refute state.pending_insert
+
+      assert prompt_for(state, 2, @t0 + 10) == "OrcaHub, GB10, Darling Court. see the logs"
+    end
+
+    test "draft_context: false sends the vocabulary alone" do
+      state = Session.new(vocabulary: @vocab, draft_context: false)
+      {state, _} = utterance(state, 1, "Deploy the hub")
+
+      assert prompt_for(state, 2) == "OrcaHub, GB10, Darling Court."
+    end
+
+    test "an earlier segment still in flight is absent from a later one's context" do
+      # Accepted, not a bug: segments are transcribed concurrently and applied
+      # in dispatch order, so seq 2's prompt can only quote what had landed.
+      {state, _} = utterance(Session.new(vocabulary: @vocab), 1, "first")
+      {state, [{:dispatch, 2, _, _}]} = Session.segment_received(state, frame(2, 16_000), @t0)
+
+      assert prompt_for(state, 3) == "OrcaHub, GB10, Darling Court. first"
+    end
+
+    test "a held segment dispatched at hold expiry is prompted as of THAT moment" do
+      state = Session.new(vocabulary: @vocab)
+      {state, _} = Session.segment_received(state, frame(1, 9_600, flags: 0x2), @t0)
+      {state, _} = Session.draft_edit(state, "typed meanwhile")
+
+      {_state, [{:dispatch, 1, _pcm, asr_opts}]} = Session.tick(state, @t0 + 1500)
+      assert asr_opts[:initial_prompt] == "OrcaHub, GB10, Darling Court. typed meanwhile"
     end
   end
 end
