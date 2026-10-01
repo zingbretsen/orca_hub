@@ -89,6 +89,24 @@
     <:item title="Hide from queue when done">
       {if @trigger.archive_on_complete, do: "yes", else: "no"}
     </:item>
+    <:item :if={@trigger.type in ["scheduled", "once"]} title="Runs">
+      {Index.runs_text(@trigger)}
+    </:item>
+    <:item :if={@trigger.type == "scheduled"} title="Ends">
+      {cond do
+        @trigger.ends_at && @trigger.max_runs ->
+          "after #{@trigger.max_runs} runs or on #{Index.format_local(@trigger.ends_at)}, whichever comes first"
+
+        @trigger.ends_at ->
+          "on #{Index.format_local(@trigger.ends_at)}"
+
+        @trigger.max_runs ->
+          "after #{@trigger.max_runs} runs"
+
+        true ->
+          "never"
+      end}
+    </:item>
     <:item title="Last fired">
       {if @trigger.last_fired_at,
         do: Calendar.strftime(@trigger.last_fired_at, "%Y-%m-%d %H:%M UTC"),

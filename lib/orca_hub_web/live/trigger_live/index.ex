@@ -1,7 +1,7 @@
 defmodule OrcaHubWeb.TriggerLive.Index do
   use OrcaHubWeb, :live_view
 
-  alias OrcaHub.{Cluster, HubRPC, Triggers}
+  alias OrcaHub.{Cluster, HubRPC, TriggerExecutor, Triggers}
   alias OrcaHub.Triggers.{OneOff, Trigger}
   alias OrcaHubWeb.NodeFilter
 
@@ -31,6 +31,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
        editing_trigger: nil,
        trigger_type: "scheduled",
        schedule_mode: "daily",
+       ends_mode: "never",
        show_advanced: false,
        trigger_form: to_form(Triggers.change_trigger(%Trigger{})),
        email_inboxes: HubRPC.list_email_inboxes()
@@ -62,6 +63,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       editing_trigger: nil,
       trigger_type: "scheduled",
       schedule_mode: "daily",
+      ends_mode: "never",
       show_advanced: false,
       trigger_form: to_form(changeset)
     )
@@ -78,6 +80,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       editing_trigger: trigger,
       trigger_type: trigger.type,
       schedule_mode: detect_schedule_mode(trigger.cron_expression),
+      ends_mode: detect_ends_mode(trigger),
       # Auto-open the advanced section for a trigger that already uses any of
       # it — otherwise a configured restriction/script is invisible while
       # editing, and a save that omits those inputs looks like it dropped them.
@@ -104,6 +107,10 @@ defmodule OrcaHubWeb.TriggerLive.Index do
 
   def handle_event("set_schedule_mode", %{"mode" => mode}, socket) do
     {:noreply, assign(socket, schedule_mode: mode)}
+  end
+
+  def handle_event("set_ends_mode", %{"mode" => mode}, socket) do
+    {:noreply, assign(socket, ends_mode: mode)}
   end
 
   def handle_event("toggle_advanced", _params, socket) do
@@ -138,7 +145,9 @@ defmodule OrcaHubWeb.TriggerLive.Index do
 
     params =
       if socket.assigns.trigger_type == "scheduled" do
-        maybe_build_cron(params, socket.assigns.schedule_mode)
+        params
+        |> maybe_build_cron(socket.assigns.schedule_mode)
+        |> put_ends_params(socket.assigns.ends_mode)
       else
         params
       end
@@ -321,6 +330,52 @@ defmodule OrcaHubWeb.TriggerLive.Index do
 
   defp parse_run_at_param(params), do: params
 
+  # The "Ends" control (calendar-style): never / after N runs / on a date.
+  # Only the selected mode's value survives — the other end condition is
+  # cleared, so switching modes really replaces the old one. "On" a date
+  # means the END of that local day (OneOff.parse_end_date/1). An
+  # unparseable date or blank count falls through as nil for that field.
+  defp put_ends_params(params, "after") do
+    Map.merge(params, %{"max_runs" => blank_to_nil(params["max_runs"]), "ends_at" => nil})
+  end
+
+  defp put_ends_params(params, "on") do
+    ends_at =
+      case OneOff.parse_end_date(params["ends_on_local"] || "") do
+        {:ok, utc} -> utc
+        {:error, _} -> nil
+      end
+
+    params |> Map.delete("ends_on_local") |> Map.merge(%{"max_runs" => nil, "ends_at" => ends_at})
+  end
+
+  defp put_ends_params(params, _never) do
+    params |> Map.delete("ends_on_local") |> Map.merge(%{"max_runs" => nil, "ends_at" => nil})
+  end
+
+  defp blank_to_nil(value) when value in [nil, ""], do: nil
+  defp blank_to_nil(value), do: value
+
+  defp detect_ends_mode(%{ends_at: %DateTime{}}), do: "on"
+  defp detect_ends_mode(%{max_runs: max}) when is_integer(max), do: "after"
+  defp detect_ends_mode(_), do: "never"
+
+  @doc "The date input value (local date) for a form's ends_at — empty when unset."
+  def ends_on_local_value(form) do
+    case form[:ends_at].value do
+      %DateTime{} = ends_at -> ends_at |> OneOff.to_local() |> Calendar.strftime("%Y-%m-%d")
+      _ -> ""
+    end
+  end
+
+  @doc """
+  "N of M runs" / "N runs" — how far a trigger is through its run budget.
+  """
+  def runs_text(%{run_count: count, max_runs: max}) when is_integer(max),
+    do: "#{count || 0} of #{max} runs"
+
+  def runs_text(%{run_count: count}), do: "#{count || 0} runs"
+
   @doc """
   The datetime-local input value (local time, minute precision) for a
   form's run_at — empty when unset.
@@ -340,19 +395,31 @@ defmodule OrcaHubWeb.TriggerLive.Index do
 
   @doc """
   The status badge text for a trigger. A one-off reads "pending" until it
-  fires and "fired" after (the executor disables it in the same write), so
-  "disabled" only shows for one an operator switched off before it fired.
+  fires and "fired" after (the executor disables it in the same write); a
+  recurring trigger that hit an end condition reads "ended". "disabled"
+  means an operator switched it off.
   """
   def status_label(%{type: "once", enabled: true}), do: "pending"
   def status_label(%{type: "once", last_fired_at: %DateTime{}}), do: "fired"
   def status_label(%{enabled: true}), do: "active"
-  def status_label(_), do: "disabled"
+
+  def status_label(trigger), do: if(ended?(trigger), do: "ended", else: "disabled")
+
+  # A disabled trigger that stopped because an end condition was met (rather
+  # than an operator switching it off): max_runs reached, ends_at passed, or
+  # its last fire was the final one before ends_at.
+  defp ended?(trigger) do
+    TriggerExecutor.ended?(trigger, DateTime.utc_now()) or
+      (match?(%DateTime{}, trigger.last_fired_at) and
+         TriggerExecutor.last_fire?(trigger, trigger.last_fired_at))
+  end
 
   def status_class(trigger) do
     case status_label(trigger) do
       "active" -> "badge-success"
       "pending" -> "badge-warning"
       "fired" -> "badge-info"
+      "ended" -> "badge-info"
       _ -> "badge-ghost"
     end
   end

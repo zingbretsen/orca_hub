@@ -97,4 +97,49 @@ defmodule OrcaHubWeb.TriggerLive.OneOffTriggerTest do
     assert html =~ "fired"
     refute html =~ "Fire now"
   end
+
+  test "the Ends control sets max_runs or an end date, and show displays N of M runs",
+       %{conn: conn} do
+    project = project_fixture()
+    {:ok, view, _html} = live(conn, ~p"/triggers/new")
+    render_click(view, "set_schedule_mode", %{"mode" => "custom"})
+    render_click(view, "set_ends_mode", %{"mode" => "after"})
+
+    view
+    |> form("form[phx-submit=save_trigger]", %{
+      "trigger" => %{
+        "project_id" => project.id,
+        "name" => "ends-after-ui",
+        "prompt" => "p",
+        "cron_expression" => "0 9 * * *",
+        "max_runs" => "5"
+      }
+    })
+    |> render_submit()
+
+    trigger = Enum.find(Triggers.list_triggers(), &(&1.name == "ends-after-ui"))
+    assert trigger.max_runs == 5
+    assert trigger.ends_at == nil
+
+    {:ok, _view, html} = live(conn, ~p"/triggers/#{trigger.id}")
+    assert html =~ "0 of 5 runs"
+    assert html =~ "after 5 runs"
+
+    # Switching the edit form to "On date" replaces max_runs with an end date.
+    {:ok, view, _html} = live(conn, ~p"/triggers/#{trigger.id}/edit")
+    render_click(view, "set_ends_mode", %{"mode" => "on"})
+
+    view
+    |> form("form[phx-submit=save_trigger]", %{
+      "trigger" => %{"ends_on_local" => "2099-12-31"}
+    })
+    |> render_submit()
+
+    trigger = Triggers.get_trigger!(trigger.id)
+    assert trigger.max_runs == nil
+    assert trigger.ends_at == ~U[2100-01-01 04:59:59Z]
+
+    {:ok, _view, html} = live(conn, ~p"/triggers/#{trigger.id}")
+    assert html =~ "on 2099-12-31 23:59 EST"
+  end
 end

@@ -142,6 +142,18 @@ defmodule OrcaHub.Triggers.OneOff do
     end
   end
 
+  @doc """
+  Parse an "ends on" value. Like `parse_run_at/1`, except a bare date means
+  the END of that local day (23:59:59), the way a calendar app's "ends on
+  Dec 15" still includes Dec 15.
+  """
+  def parse_end_date(value) when is_binary(value) do
+    case Date.from_iso8601(String.trim(value)) do
+      {:ok, date} -> date |> NaiveDateTime.new!(~T[23:59:59]) |> local_to_utc()
+      {:error, _} -> parse_run_at(value)
+    end
+  end
+
   @doc "Interpret a naive local (`local_tz/0`) datetime as a UTC `DateTime`."
   def local_to_utc(%NaiveDateTime{} = naive) do
     case DateTime.from_naive(naive, @local_tz) do

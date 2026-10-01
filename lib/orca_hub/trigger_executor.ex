@@ -17,6 +17,13 @@ defmodule OrcaHub.TriggerExecutor do
         Logger.info("Trigger #{trigger_id} is disabled, skipping")
         :ok
 
+      ended?(trigger, DateTime.utc_now()) ->
+        # Already past an end condition (e.g. ends_at passed between fires,
+        # or an ended trigger was re-enabled): disable, don't fire, don't count.
+        Logger.info("Trigger #{trigger.name} (#{trigger_id}) has ended, disabling")
+        HubRPC.update_trigger(trigger, %{enabled: false})
+        :ok
+
       not Cluster.node_available?(runner_node) ->
         Logger.warning(
           "Trigger #{trigger.name} (#{trigger_id}) skipped: node #{inspect(runner_node)} is not currently connected"
@@ -129,33 +136,80 @@ defmodule OrcaHub.TriggerExecutor do
       {:error, Exception.message(e)}
   end
 
-  # A one-off trigger is disabled in the SAME write that stamps last_fired_at,
-  # BEFORE the prompt is sent — so once a session exists for it, no later
-  # sweep can fire it again. The trade-off is deliberate: a crash in the
-  # narrow window between this write and send_message loses the reminder
+  # Counts the fire (run_count + 1) and, when this was the LAST fire allowed
+  # by the trigger's end conditions (a once trigger, max_runs reached, or the
+  # next cron fire would land after ends_at), disables it — all in the SAME
+  # write that stamps last_fired_at, BEFORE the prompt is sent, so no later
+  # sweep/cron tick can fire it again. The trade-off is deliberate: a crash
+  # in the narrow window between this write and send_message loses that fire
   # (visible as fired, with a session that never got a prompt) rather than
-  # risking a duplicate fire. A skipped fire (node unavailable) never
-  # reaches here, so the trigger stays enabled and the next sweep retries.
-  # If that write FAILS for a one-off, raise (contained by execute/1's rescue)
+  # risking a duplicate. A skipped fire (node unavailable) never reaches
+  # here, so it is not counted and the trigger stays enabled.
+  #
+  # If a DISABLING write fails, raise (contained by execute/1's rescue)
   # instead of sending: a still-enabled one-off that got its prompt would be
   # re-fired by every sweep.
   defp record_fire(trigger, session_id) do
-    attrs = %{
-      last_fired_at: DateTime.utc_now() |> DateTime.truncate(:second),
-      last_session_id: session_id
-    }
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    run_count = (trigger.run_count || 0) + 1
+    last_fire? = last_fire?(%{trigger | run_count: run_count}, now)
 
-    case {trigger.type, HubRPC.update_trigger(trigger, disable_if_once(attrs, trigger))} do
-      {"once", {:error, changeset}} ->
-        raise "could not disable one-off trigger after firing: #{inspect(changeset.errors)}"
+    attrs =
+      %{last_fired_at: now, last_session_id: session_id, run_count: run_count}
+      |> then(&if(last_fire?, do: Map.put(&1, :enabled, false), else: &1))
+
+    case HubRPC.update_trigger(trigger, attrs) do
+      {:error, changeset} when last_fire? ->
+        raise "could not disable trigger after its last fire: #{inspect(changeset.errors)}"
 
       _ ->
         :ok
     end
   end
 
-  defp disable_if_once(attrs, %{type: "once"}), do: Map.put(attrs, :enabled, false)
-  defp disable_if_once(attrs, _trigger), do: attrs
+  @doc """
+  Whether `trigger` has already passed an end condition at `now` — its
+  run_count has reached max_runs, or `now` is after ends_at — so it must
+  not fire again.
+  """
+  def ended?(trigger, now) do
+    max_runs_reached?(trigger) or
+      (match?(%DateTime{}, trigger.ends_at) and DateTime.compare(now, trigger.ends_at) == :gt)
+  end
+
+  @doc """
+  Whether a trigger whose `run_count` already includes the fire happening at
+  `now` should be disabled by it: a one-off, max_runs reached, or (for a
+  cron trigger) its next scheduled fire would land after ends_at.
+  """
+  def last_fire?(%{type: "once"}, _now), do: true
+
+  def last_fire?(trigger, now) do
+    max_runs_reached?(trigger) or next_fire_after_ends_at?(trigger, now)
+  end
+
+  defp max_runs_reached?(%{max_runs: max, run_count: count})
+       when is_integer(max) and is_integer(count),
+       do: count >= max
+
+  defp max_runs_reached?(_), do: false
+
+  # Quantum runs with no timezone configured, so cron expressions are UTC.
+  defp next_fire_after_ends_at?(%{ends_at: %DateTime{} = ends_at, cron_expression: cron}, now)
+       when is_binary(cron) do
+    with {:ok, expr} <- Crontab.CronExpression.Parser.parse(cron),
+         {:ok, next} <-
+           Crontab.Scheduler.get_next_run_date(
+             expr,
+             now |> DateTime.add(1, :second) |> DateTime.to_naive()
+           ) do
+      DateTime.compare(DateTime.from_naive!(next, "Etc/UTC"), ends_at) == :gt
+    else
+      _ -> false
+    end
+  end
+
+  defp next_fire_after_ends_at?(_trigger, _now), do: false
 
   @doc """
   Backwards-compatible alias for `execute_payload/2`.

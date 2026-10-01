@@ -135,6 +135,37 @@
           placeholder="0 9 * * 1  (Mondays at 9am)"
         />
       </div>
+
+      <label class="label mt-2"><span class="label-text">Ends</span></label>
+      <div class="flex flex-wrap gap-2 mb-3">
+        <button
+          :for={{mode, label} <- [{"never", "Never"}, {"after", "After"}, {"on", "On date"}]}
+          type="button"
+          phx-click="set_ends_mode"
+          phx-value-mode={mode}
+          class={["btn btn-sm", if(@ends_mode == mode, do: "btn-primary", else: "btn-ghost")]}
+        >
+          {label}
+        </button>
+      </div>
+
+      <div :if={@ends_mode == "after"} class="flex items-center gap-2 text-sm">
+        <span>After</span>
+        <.input field={@trigger_form[:max_runs]} type="number" min="1" class="input w-24" />
+        <span>runs</span>
+      </div>
+
+      <div :if={@ends_mode == "on"} class="flex items-center gap-2 text-sm">
+        <span>On</span>
+        <.input
+          name="trigger[ends_on_local]"
+          id="trigger_ends_on_local"
+          type="date"
+          value={ends_on_local_value(@trigger_form)}
+          errors={Enum.map(@trigger_form[:ends_at].errors, &translate_error/1)}
+        />
+        <span class="text-base-content/60">(through the end of that day, America/New_York)</span>
+      </div>
     </div>
 
     <div
@@ -433,6 +464,13 @@
     <:col :let={trigger} label="Source" class="w-1/5">
       <span :if={trigger.type == "scheduled"} class="font-mono text-xs truncate">
         {trigger.cron_expression}
+      </span>
+      <span
+        :if={trigger.type == "scheduled" && (trigger.max_runs || trigger.ends_at)}
+        class="text-xs text-base-content/60 truncate"
+      >
+        · {if trigger.max_runs, do: runs_text(trigger)}{if trigger.max_runs && trigger.ends_at,
+          do: ", "}{if trigger.ends_at, do: "ends #{format_local(trigger.ends_at)}"}
       </span>
       <span :if={trigger.type == "once"} class="text-xs truncate">
         once at {format_local(trigger.run_at)}

@@ -19,6 +19,16 @@ defmodule OrcaHub.Triggers.Trigger do
     # the trigger in the same write that stamps last_fired_at, which is what
     # makes it fire once.
     field :run_at, :utc_datetime
+    # Calendar-style end conditions ("ends after N runs" / "ends on date"),
+    # enforced by OrcaHub.TriggerExecutor.execute/1 — i.e. for scheduled and
+    # once triggers (webhook/email fires go through execute_payload/2 and are
+    # not counted). run_count counts SUCCESSFUL fires only; a skipped fire
+    # (node unavailable) doesn't count. The trigger auto-disables when
+    # run_count reaches max_runs, or when its next fire would land after
+    # ends_at. nil = never ends. A once trigger is max_runs 1 (forced below).
+    field :max_runs, :integer
+    field :run_count, :integer, default: 0
+    field :ends_at, :utc_datetime
     field :webhook_secret, :string
     field :reuse_session, :boolean, default: false
     field :archive_on_complete, :boolean, default: false
@@ -89,6 +99,9 @@ defmodule OrcaHub.Triggers.Trigger do
       :type,
       :cron_expression,
       :run_at,
+      :max_runs,
+      :run_count,
+      :ends_at,
       :webhook_secret,
       :reuse_session,
       :archive_on_complete,
@@ -110,6 +123,9 @@ defmodule OrcaHub.Triggers.Trigger do
     |> validate_required([:name, :prompt, :project_id, :type])
     |> validate_inclusion(:type, types())
     |> validate_setup_timeout()
+    |> validate_number(:max_runs, greater_than: 0)
+    |> validate_number(:run_count, greater_than_or_equal_to: 0)
+    |> validate_future(:ends_at)
     |> maybe_generate_webhook_secret()
     |> validate_by_type()
     |> foreign_key_constraint(:project_id)
@@ -158,7 +174,9 @@ defmodule OrcaHub.Triggers.Trigger do
       "once" ->
         changeset
         |> validate_required([:run_at])
-        |> validate_run_at_in_future()
+        |> validate_future(:run_at)
+        |> put_change(:max_runs, 1)
+        |> reset_run_count_on_reschedule()
 
       "webhook" ->
         changeset
@@ -190,21 +208,30 @@ defmodule OrcaHub.Triggers.Trigger do
     end
   end
 
-  # Only a run_at being SET (create, or an edit that moves it) must be in the
-  # future — the executor's own post-fire update leaves a past run_at in place
-  # and must still validate. Re-enabling a fired trigger without moving run_at
-  # is allowed and fires it again on the next sweep.
-  defp validate_run_at_in_future(changeset) do
-    case get_change(changeset, :run_at) do
-      %DateTime{} = run_at ->
-        if DateTime.compare(run_at, DateTime.utc_now()) == :gt do
+  # Only a run_at/ends_at being SET (create, or an edit that moves it) must be
+  # in the future — the executor's own post-fire update leaves a past value in
+  # place and must still validate.
+  defp validate_future(changeset, field) do
+    case get_change(changeset, field) do
+      %DateTime{} = value ->
+        if DateTime.compare(value, DateTime.utc_now()) == :gt do
           changeset
         else
-          add_error(changeset, :run_at, "must be in the future")
+          add_error(changeset, field, "must be in the future")
         end
 
       _ ->
         changeset
+    end
+  end
+
+  # Moving an already-fired one-off's run_at reschedules it: clear its count
+  # so it can fire again (re-enabling WITHOUT moving run_at leaves it ended).
+  defp reset_run_count_on_reschedule(changeset) do
+    if changeset.data.id && get_change(changeset, :run_at) do
+      put_change(changeset, :run_count, 0)
+    else
+      changeset
     end
   end
 

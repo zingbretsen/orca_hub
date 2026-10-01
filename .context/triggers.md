@@ -108,8 +108,8 @@ sequenceDiagram
 
 | Type | Fires from | Type-specific fields |
 |---|---|---|
-| `scheduled` | Quantum cron on the hub | `cron_expression` (5–7 fields) |
-| `once` | `OneOffTriggerSweep` poll on the hub | `run_at` (UTC, must be in the future when set) |
+| `scheduled` | Quantum cron on the hub (UTC) | `cron_expression` (5–7 fields); optional end conditions `max_runs` / `ends_at` |
+| `once` | `OneOffTriggerSweep` poll on the hub | `run_at` (UTC, must be in the future when set); `max_runs` forced to 1 |
 | `webhook` | `POST /api/webhooks/:secret` | `webhook_secret` (auto-generated) |
 | `email` | `EmailInbox.Poller` IMAP poll on the hub | `email_inbox_id`, `sender_allowlist` (must be non-empty), optional `to_address` / `subject_pattern` |
 
@@ -128,6 +128,33 @@ MemoryReview` uses this to set it `false` on its own two scheduled triggers
 by `TriggerLoader` on hub boot) — an automated review pass must never itself
 be memory-extracted. See that module's moduledoc for the pass rules
 (propose, never retire/rewrite).
+
+## End conditions (`max_runs`, `ends_at`, `run_count`)
+
+Calendar-style "ends after N runs" / "ends on date", enforced in
+`TriggerExecutor.execute/1` — so for `scheduled` and `once` triggers only
+(webhook/email fires go through `execute_payload/2` and are neither counted
+nor ended). nil = never ends.
+
+- `run_count` counts SUCCESSFUL fires only; it is bumped in the same write
+  that stamps `last_fired_at`. A skipped fire (node unavailable, disabled)
+  never reaches that write, so it doesn't count. A manual "Fire now" counts.
+- That same write also sets `enabled: false` when this fire is the LAST one
+  (`TriggerExecutor.last_fire?/2`): a `once` trigger, `run_count` reaching
+  `max_runs`, or the cron's next fire (computed with `Crontab.Scheduler`,
+  UTC — Quantum has no timezone configured) landing after `ends_at`.
+  Disabling goes through `Triggers.update_trigger/2`, which unschedules the
+  Quantum job.
+- Before firing, `TriggerExecutor.ended?/2` refuses (and disables, without
+  counting) a trigger already past an end condition — e.g. `ends_at` moved
+  into the past by an edit, or an ended trigger that was re-enabled. To
+  extend an ended trigger, raise `max_runs` / move `ends_at`.
+- `ends_at` must be in the future when set. A bare date (MCP `ends_at`, the
+  form's "On date") means the END of that America/New_York day
+  (`OneOff.parse_end_date/1`).
+- UI: the form's "Ends" control (never / after N runs / on date) keeps only
+  the selected condition; Show displays "N of M runs" and the end; a
+  disabled trigger that hit an end condition badges as `ended`.
 
 ## One-off triggers (`once`) and durability
 
@@ -154,9 +181,11 @@ boot and every 30s after, calling `TriggerExecutor.execute/1` serially:
   on the first sweep after boot.
 - **Node unavailable**: the normal skip path (never re-routed) leaves the
   trigger enabled, so the periodic sweep retries it until the node is back.
-- "Fire now" on a pending one-off fires it early and likewise disables it.
-  Re-enabling a fired one-off without moving `run_at` fires it again on the
-  next sweep. The UI badge reads `pending` / `fired` instead of
+- A one-off is just `max_runs: 1` on the end-condition machinery above
+  (forced by the changeset). "Fire now" on a pending one-off fires it early
+  and likewise disables it. Moving a fired one-off's `run_at` resets
+  `run_count` to 0 so it can fire again; re-enabling WITHOUT moving it does
+  not (it is ended, and the next sweep just re-disables it). The UI badge reads `pending` / `fired` instead of
   `active` / `disabled`.
 
 Reminders reach the user through the spawned session itself — the prompt

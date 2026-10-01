@@ -62,6 +62,16 @@ defmodule OrcaHub.Triggers.OneOffTest do
     end
   end
 
+  describe "parse_end_date/1" do
+    test "a bare date means the end of that local day" do
+      assert OneOff.parse_end_date("2026-12-31") == {:ok, ~U[2027-01-01 04:59:59Z]}
+    end
+
+    test "a full datetime parses like run_at" do
+      assert OneOff.parse_end_date("2026-12-31T12:00") == {:ok, ~U[2026-12-31 17:00:00Z]}
+    end
+  end
+
   describe "resolve/2" do
     test "delay is relative to now" do
       assert OneOff.resolve(%{"delay" => "2.5 months"}, @now) ==
@@ -117,6 +127,52 @@ defmodule OrcaHub.Triggers.OneOffTest do
 
       cs = Trigger.changeset(existing, %{enabled: false, last_fired_at: DateTime.utc_now()})
       assert cs.valid?
+    end
+  end
+
+  describe "Trigger.changeset/2 end conditions" do
+    defp sched(extra) do
+      Map.merge(
+        %{name: "r", prompt: "p", project_id: Ecto.UUID.generate(), cron_expression: "0 9 * * *"},
+        extra
+      )
+    end
+
+    test "max_runs must be positive" do
+      assert %{max_runs: [_]} = errors_on(Trigger.changeset(%Trigger{}, sched(%{max_runs: 0})))
+      assert Trigger.changeset(%Trigger{}, sched(%{max_runs: 3})).valid?
+    end
+
+    test "ends_at must be in the future when set" do
+      cs = Trigger.changeset(%Trigger{}, sched(%{ends_at: ~U[2020-01-01 00:00:00Z]}))
+      assert %{ends_at: ["must be in the future"]} = errors_on(cs)
+    end
+
+    test "a once trigger is always max_runs 1" do
+      future = DateTime.add(DateTime.utc_now(), 3600, :second)
+      cs = Trigger.changeset(%Trigger{}, attrs(%{run_at: future, max_runs: 5}))
+      assert Ecto.Changeset.get_field(cs, :max_runs) == 1
+    end
+
+    test "moving a fired one-off's run_at resets its run_count" do
+      fired = %Trigger{
+        id: Ecto.UUID.generate(),
+        type: "once",
+        name: "r",
+        prompt: "p",
+        project_id: Ecto.UUID.generate(),
+        run_at: ~U[2020-01-01 00:00:00Z],
+        run_count: 1,
+        max_runs: 1,
+        enabled: false
+      }
+
+      future = DateTime.add(DateTime.utc_now(), 3600, :second)
+      cs = Trigger.changeset(fired, %{run_at: future, enabled: true})
+      assert Ecto.Changeset.get_field(cs, :run_count) == 0
+
+      cs = Trigger.changeset(fired, %{enabled: true})
+      assert Ecto.Changeset.get_field(cs, :run_count) == 1
     end
   end
 end

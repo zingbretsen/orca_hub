@@ -12,7 +12,7 @@ defmodule OrcaHub.MCP.Tools.Triggers do
       %{
         "name" => "create_scheduled_trigger",
         "description" =>
-          "Create a scheduled trigger that automatically runs a prompt on a cron schedule. The trigger will create (or reuse) a Claude Code session in the specified project's directory and send the prompt each time the cron schedule fires.",
+          "Create a scheduled trigger that automatically runs a prompt on a cron schedule. The trigger will create (or reuse) a Claude Code session in the specified project's directory and send the prompt each time the cron schedule fires. Like a calendar event, it can end: after N runs (max_runs) and/or on a date (ends_at) — it then disables itself. For a single run at a specific time, use create_one_off_trigger instead.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -49,6 +49,20 @@ defmodule OrcaHub.MCP.Tools.Triggers do
               "type" => "string",
               "description" =>
                 "Advanced: a raw cron expression (5-7 parts). Use this for schedules that don't fit the simple presets. Overrides the schedule parameter."
+            },
+            "max_runs" => %{
+              "type" => "integer",
+              "description" =>
+                "Ends after N runs: the trigger disables itself after its Nth successful " <>
+                  "fire. Omit for no limit. Skipped fires (node offline) don't count."
+            },
+            "ends_at" => %{
+              "type" => "string",
+              "description" =>
+                "Ends on a date: no fire happens after this time, and the trigger disables " <>
+                  "itself once its next fire would land after it. ISO8601; without an offset " <>
+                  "it is America/New_York local time, and a bare date (\"2026-12-31\") means " <>
+                  "the END of that day. Must be in the future. Omit for no end date."
             },
             "project_id" => %{
               "type" => "string",
@@ -186,7 +200,8 @@ defmodule OrcaHub.MCP.Tools.Triggers do
   end
 
   def call("create_scheduled_trigger", args, _state) do
-    with {:ok, project_id} <- resolve_project_id(args),
+    with {:ok, ends_at} <- resolve_ends_at(args),
+         {:ok, project_id} <- resolve_project_id(args),
          :ok <- check_project_node_allowed(project_id) do
       attrs =
         %{
@@ -195,7 +210,9 @@ defmodule OrcaHub.MCP.Tools.Triggers do
           cron_expression: build_cron(args),
           project_id: project_id,
           reuse_session: args["reuse_session"] || false,
-          archive_on_complete: args["archive_on_complete"] || false
+          archive_on_complete: args["archive_on_complete"] || false,
+          max_runs: args["max_runs"],
+          ends_at: ends_at
         }
         |> maybe_put_memory_extract(args)
 
@@ -203,7 +220,7 @@ defmodule OrcaHub.MCP.Tools.Triggers do
         {:ok, trigger} ->
           text(
             "Trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
-              "Schedule: #{trigger.cron_expression}"
+              "Schedule: #{trigger.cron_expression} (UTC)" <> ends_text(trigger)
           )
 
         {:error, changeset} ->
@@ -279,6 +296,29 @@ defmodule OrcaHub.MCP.Tools.Triggers do
     else
       {:error, message} -> error(message)
       other -> other
+    end
+  end
+
+  defp resolve_ends_at(%{"ends_at" => ends_at}) when is_binary(ends_at) and ends_at != "",
+    do: OneOff.parse_end_date(ends_at)
+
+  defp resolve_ends_at(_args), do: {:ok, nil}
+
+  defp ends_text(%{max_runs: nil, ends_at: nil}), do: ". Never ends."
+
+  defp ends_text(trigger) do
+    parts =
+      [
+        trigger.max_runs && "after #{trigger.max_runs} run(s)",
+        trigger.ends_at &&
+          "on #{DateTime.to_iso8601(trigger.ends_at)} " <>
+            "(#{Calendar.strftime(OneOff.to_local(trigger.ends_at), "%Y-%m-%d %H:%M %Z")})"
+      ]
+      |> Enum.reject(&(&1 in [nil, false]))
+
+    case parts do
+      [one] -> ". Ends #{one}."
+      _ -> ". Ends " <> Enum.join(parts, " or ") <> ", whichever comes first."
     end
   end
 

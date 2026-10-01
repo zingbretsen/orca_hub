@@ -301,4 +301,45 @@ defmodule OrcaHub.MCP.Tools.TriggersTest do
       refute Repo.get_by(Trigger, name: "oneoff-bad")
     end
   end
+
+  describe "create_scheduled_trigger — end conditions" do
+    test "accepts max_runs and a bare-date ends_at (end of that local day)" do
+      {:ok, project} =
+        Projects.create_project(%{
+          name: "ends-tool-project",
+          directory: "/tmp/ends-tool-project-#{System.unique_integer([:positive])}",
+          node: Atom.to_string(node())
+        })
+
+      result =
+        TriggersTool.call(
+          "create_scheduled_trigger",
+          %{
+            "name" => "sched-ends",
+            "prompt" => "hi",
+            "project_id" => project.id,
+            "max_runs" => 3,
+            "ends_at" => "2099-12-31"
+          },
+          %{}
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text =~ "after 3 run(s)"
+      trigger = Repo.get_by!(Trigger, name: "sched-ends")
+      assert trigger.max_runs == 3
+      assert trigger.ends_at == ~U[2100-01-01 04:59:59Z]
+    end
+
+    test "rejects an unparseable ends_at" do
+      result =
+        TriggersTool.call(
+          "create_scheduled_trigger",
+          %{"name" => "sched-bad-ends", "prompt" => "hi", "ends_at" => "someday"},
+          %{}
+        )
+
+      assert %{"isError" => true} = result
+    end
+  end
 end
