@@ -1,9 +1,9 @@
 # OrcaHub — project operating manifest
 
-Hand-maintained map plus the invariants that bite. Keep it under 6 KiB: the
+Hand-maintained map plus the invariants that bite. Keep under 6 KiB: the
 ONLY `.context/` file inlined into Claude/Codex startup prompts
 (`SharedPrompts.context_manifest_prompt/1`). The docs it points at stay on
-disk — `Read` them on demand.
+disk; `Read` on demand.
 
 ## Topic map (read the file when the task touches the area)
 
@@ -34,7 +34,7 @@ disk — `Read` them on demand.
 - `.context/voice-mode.md` — phases 1-2c: capture/VAD/ASR pipeline, the OVS1
   wire contract, ASRConfig, browser traps, asset packaging, assistant deltas,
   streaming TTS, the voice bar, voice-driven interaction (client-owned focus,
-  `ui_action`, inserts, spoken ordinals).
+  `ui_action`, inserts, ordinals).
 - Specs at repo root: `backend_abstraction_spec.md`, `issues_spec.md`,
   `pi_fork_spec.md`, `docs/api.md` (Agent Runs API).
 
@@ -43,17 +43,18 @@ disk — `Read` them on demand.
 - **Backends are pluggable behind `OrcaHub.Backend`** (claude/codex/pi).
   SessionRunner never branches on a backend name; UI and runner branch on
   the `Capabilities` struct. Non-Claude backends normalize onto Claude's
-  stream-json event shape and tool names, so rendering is backend-agnostic.
+  stream-json event shape and tool names (backend-agnostic rendering).
 - **System prompt delivery differs per backend**: Claude = one
   `--append-system-prompt` argv value; Codex = leading message on the first
   turn; pi = flags-only prompt + `ORCA_IDENTITY`/`ORCA_MEMORY` env. Linux
   caps ANY single argv/env string at 128 KiB (`MAX_ARG_STRLEN`, E2BIG);
   `SessionRunner.check_spawn_spec_sizes!/2` fails loudly before
-  `Port.open`. Never grow a prompt fragment without checking that guard.
-- **pi's prompt must be a pure function of its flags** (a forked child shares
-  its parent's prefix cache; byte-identity is needed only parent-to-fork); per-session bytes ride `ORCA_IDENTITY`. Claude/Codex prompts are
-  byte-pinned by goldens in `test/support/fixtures/prompt_goldens/` —
-  regenerate only for intentional prompt changes.
+  `Port.open`. Check that guard before growing any prompt fragment.
+- **pi's prompt must be a pure function of its flags** (byte-identical
+  parent-to-fork, for prefix caching); per-session bytes ride
+  `ORCA_IDENTITY`. Claude/Codex prompts are byte-pinned by goldens in
+  `test/support/fixtures/prompt_goldens/` — regenerate only for intentional
+  prompt changes.
 - **Hub owns the DB.** Agent nodes reach it only through `HubRPC` (erpc).
   Never re-route a session/trigger/terminal to another node when its
   assigned node is offline — surface "node unavailable" and skip.
@@ -61,7 +62,7 @@ disk — `Read` them on demand.
   never sort/compare timestamp structs with bare `Enum.sort_by`/`<` — pass
   `{:asc, DateTime}` style comparators or `NaiveDateTime.compare/2`.
 - **Messages are flexible maps** in `messages.data`; uploads land in the
-  session's working directory so the agent can `Read` them.
+  session's working dir so the agent can `Read` them.
 - **MCP surface is one `run_elixir` tool** (code-exec mode); every OrcaHub
   and upstream tool is a `Tools.*` function inside it. CLI-native
   ScheduleWakeup/subagent/messaging tools die with the warm port — use
@@ -70,11 +71,11 @@ disk — `Read` them on demand.
   injection persists a `memory_injected` system event. Archiving a
   root/orchestrator session auto-dispatches memory extraction.
 - **Artifacts render in `<iframe sandbox="allow-scripts">`** — never
-  `allow-same-origin`, never server-rendered HEEx. The sandbox attribute is
-  the boundary; settled.
+  `allow-same-origin`, never server-rendered HEEx. The sandbox is the
+  boundary; settled.
 - **Markdown rendering is unsanitized** (earmark, retired, raw HTML passes
-  through) — a known open security item; don't "fix" by swapping engines
-  without a product decision.
+  through) — known open security item; don't swap engines without a
+  product decision.
 - **Issues are durable work items**: `commits`/`attempts` are frozen at
   close; call `close_issue` with only `id` first to harvest evidence. Defect
   issues ship a `@tag :repro` test that the fixing commit un-tags.
@@ -91,6 +92,6 @@ disk — `Read` them on demand.
   `gb10` arm64, local systemd). Full: `~/homelab/scripts/deploy-orca-hub.sh`,
   verify `verify-orca-deploy.sh` — the ONLY path for dependency, supervision,
   config and migration changes, anything `HotLoadGate` refuses, and the
-  machinery itself. Fast: a published code generation, durable in
-  the DB, hot-loaded onto every node and re-applied by the hub at boot. Never
-  `kubectl edit` Flux-managed resources.
+  machinery itself. Fast: a published code generation, durable in the DB,
+  hot-loaded on every node, re-applied by the hub at boot. Never `kubectl
+  edit` Flux-managed resources.
