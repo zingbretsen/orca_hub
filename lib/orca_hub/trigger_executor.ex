@@ -328,6 +328,10 @@ defmodule OrcaHub.TriggerExecutor do
     }
     |> maybe_put_memory_extract(trigger)
     |> maybe_put_tool_policy(trigger)
+    # Backend/model pin: nil is omitted so Sessions.create_session/1 fills in
+    # the runner node's default; an explicit value wins over that default.
+    |> maybe_put(:backend, Map.get(trigger, :backend))
+    |> maybe_put(:model, Map.get(trigger, :model))
   end
 
   # `nil` (the common case — no per-trigger override) is left out entirely

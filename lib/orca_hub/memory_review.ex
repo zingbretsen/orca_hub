@@ -39,13 +39,20 @@ defmodule OrcaHub.MemoryReview do
 
   ## Backend/model
 
-  `OrcaHub.Triggers.Trigger` carries no `backend`/`model` fields (unlike
-  `OrcaHub.Sessions.Session`) — a trigger-spawned session always falls back
-  to the owning project's/node's configured default backend/model
-  (`OrcaHub.NodePolicy`, applied in `Sessions.create_session/1`). There is
-  currently no way to pin these two triggers to `claude`/`claude-sonnet-5-5`
-  specifically short of setting that as the orca_hub project's or node's
-  own default — `ensure_triggers!/0` does not attempt to change either.
+  Both triggers pin their spawned sessions to `claude` / `claude-opus-5-5`
+  (`@review_backend`/`@review_model`) via `Trigger.backend`/`Trigger.model`,
+  which `OrcaHub.TriggerExecutor.session_attrs/1` stamps onto every session
+  the trigger creates. An explicit value wins over the runner node's
+  configured default backend/model (`Sessions.create_session/1` only fills
+  in keys that are missing), so these passes run on Opus 5.5 regardless of
+  what the orca_hub project's node defaults to.
+
+  Because `ensure_triggers!/0` upserts by name on every hub boot, existing
+  trigger rows created before these fields existed pick up the pin on the
+  first boot after the deploy that adds them — no manual edit needed. The
+  same boot-time upsert also means a hand-edit of either trigger's
+  backend/model in the UI is reverted at the next hub boot; change the
+  module attributes instead.
 
   ## Boot wiring
 
@@ -71,6 +78,10 @@ defmodule OrcaHub.MemoryReview do
   @verify_name "memory-verify-weekly"
   @verify_cron "0 4 * * 0"
   @verify_default_cap 60
+
+  # Both passes run on Opus 5.5 — see "Backend/model" in the moduledoc.
+  @review_backend "claude"
+  @review_model "claude-opus-5-5"
 
   # The ENFORCED half of the "you may NEVER call X" paragraph both prompts
   # carry — stamped onto every session either trigger spawns as
@@ -140,6 +151,8 @@ defmodule OrcaHub.MemoryReview do
       # An automated review pass must never itself be memory-extracted.
       memory_extract: false,
       tool_denylist: @forbidden_memory_write_tools,
+      backend: @review_backend,
+      model: @review_model,
       enabled: true
     }
 

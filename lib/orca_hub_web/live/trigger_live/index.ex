@@ -425,6 +425,29 @@ defmodule OrcaHubWeb.TriggerLive.Index do
   end
 
   @doc """
+  Options for the trigger form's backend select — blank first, meaning
+  "inherit the runner node's default" (stored as nil, see `Trigger`).
+  """
+  def backend_options do
+    [
+      {"Default (node's default backend)", ""}
+      | Enum.map(OrcaHub.Backend.available(), fn {id, label} -> {label, id} end)
+    ]
+  end
+
+  @doc """
+  Datalist suggestions for the model input, keyed on the form's current
+  backend (blank = claude, the fallback default). The input itself stays
+  free text: pi's list is live (`pi --list-models`, a shell-out per call), so
+  it gets no suggestions here rather than one per form keystroke — pi ids are
+  typed as "provider/model".
+  """
+  def model_suggestions(backend) when backend in [nil, "", "claude", "codex"],
+    do: OrcaHub.Backend.models_for(if(backend in [nil, ""], do: nil, else: backend))
+
+  def model_suggestions(_backend), do: []
+
+  @doc """
   Renders a tool allow/deny list back into its textarea's text form, one
   entry per line. `nil`/`[]` (no restriction) render as an empty field.
   """

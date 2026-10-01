@@ -56,6 +56,24 @@ defmodule OrcaHub.Triggers.Trigger do
     # takes effect on the next session the trigger creates.
     field :tool_allowlist, {:array, :string}
     field :tool_denylist, {:array, :string}
+    # Per-trigger backend/model pin, stamped onto every session this trigger
+    # spawns (OrcaHub.TriggerExecutor.session_attrs/1). Same shape and
+    # semantics as sessions.backend/model, which is where they end up: nil
+    # (or a blank string, normalized to nil below so a form can submit ""
+    # for "inherit") means "use the default" — the runner node's configured
+    # default_backend/default_model, else "claude" + the CLI default — while
+    # an explicit value wins over that node default
+    # (Sessions.create_session/1 only fills in MISSING keys). `model` is a
+    # free-form id passed through to the backend (pi ids are
+    # "provider/model" strings), so only `backend` is validated.
+    #
+    # LIMITATION (same as memory_extract): these are stamped only on a
+    # session this trigger CREATES. A `reuse_session: true` trigger keeps
+    # messaging the session it made earlier, so changing these does NOT
+    # switch an already-running reused session's backend/model — the change
+    # takes effect on the next session the trigger creates.
+    field :backend, :string
+    field :model, :string
     # An operator-authored shell script run on the session's runner node, in
     # the session's directory, before the prompt is delivered — on EVERY
     # firing, including a reuse_session firing (it is a "gather current state
@@ -109,6 +127,8 @@ defmodule OrcaHub.Triggers.Trigger do
       :memory_extract,
       :tool_allowlist,
       :tool_denylist,
+      :backend,
+      :model,
       :setup_script,
       :setup_timeout_seconds,
       :project_id,
@@ -122,6 +142,8 @@ defmodule OrcaHub.Triggers.Trigger do
     ])
     |> validate_required([:name, :prompt, :project_id, :type])
     |> validate_inclusion(:type, types())
+    |> blank_to_nil([:backend, :model])
+    |> validate_inclusion(:backend, ~w(claude codex pi))
     |> validate_setup_timeout()
     |> validate_number(:max_runs, greater_than: 0)
     |> validate_number(:run_count, greater_than_or_equal_to: 0)
@@ -131,6 +153,24 @@ defmodule OrcaHub.Triggers.Trigger do
     |> foreign_key_constraint(:project_id)
     |> foreign_key_constraint(:email_inbox_id)
     |> unique_constraint(:webhook_secret)
+  end
+
+  # cast/3 already turns "" into nil, but not whitespace-only input — trim so
+  # "  " also means "inherit the default" rather than an invalid backend or a
+  # model id the CLI would reject at spawn.
+  defp blank_to_nil(changeset, fields) do
+    Enum.reduce(fields, changeset, fn field, acc ->
+      case get_change(acc, field) do
+        value when is_binary(value) ->
+          case String.trim(value) do
+            "" -> put_change(acc, field, nil)
+            trimmed -> put_change(acc, field, trimmed)
+          end
+
+        _ ->
+          acc
+      end
+    end)
   end
 
   # The setup script blocks the firing while it runs, so an unbounded (or

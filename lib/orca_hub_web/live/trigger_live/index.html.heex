@@ -279,6 +279,36 @@
         {"Never extract memories", "false"}
       ]}
     />
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <.input
+        field={@trigger_form[:backend]}
+        type="select"
+        label="Backend for spawned sessions"
+        options={backend_options()}
+      />
+      <div>
+        <.input
+          field={@trigger_form[:model]}
+          type="text"
+          label="Model for spawned sessions"
+          list="trigger-model-suggestions"
+          placeholder="Default (node's default model)"
+          autocomplete="off"
+        />
+        <datalist id="trigger-model-suggestions">
+          <option
+            :for={{id, label} <- model_suggestions(@trigger_form[:backend].value)}
+            value={id}
+          >
+            {label}
+          </option>
+        </datalist>
+      </div>
+    </div>
+    <p class="text-xs text-base-content/60 -mt-2">
+      Leave both blank to use the runner node's defaults. Applied to each session this trigger
+      creates — a reused session keeps the backend/model it started with.
+    </p>
     <p :if={@trigger_type == "email"} class="text-xs text-base-content/60 -mt-2">
       With <strong>Reuse previous session</strong>
       on, forwarded mail accumulates into one long-running session per trigger; with it off,

@@ -208,6 +208,23 @@ Same limitation as `memory_extract`: only a session the trigger CREATES is
 stamped, so editing the lists does not retroactively re-scope a session a
 `reuse_session: true` trigger is still reusing.
 
+## Per-trigger backend/model
+
+`Trigger.backend` / `model` (nullable strings) mirror `sessions.backend` /
+`model`; `TriggerExecutor.session_attrs/1` stamps them onto every session the
+trigger CREATES, omitting nil so `Sessions.create_session/1` fills in the
+runner node's `default_backend`/`default_model` as before. An explicit value
+WINS over that node default — `create_session` only fills missing/blank keys
+(and only applies the node's default model when the backend matches the
+node's). `backend` is validated against `claude`/`codex`/`pi`; `model` is
+free text passed through to the CLI (pi ids are `provider/model`). Blank
+strings normalize to nil, so the form's empty choice means "inherit".
+`OrcaHub.MemoryReview` pins its two triggers to `claude`/`claude-opus-5-5`
+(re-applied by its boot-time upsert, so a UI edit of those two reverts at the
+next hub boot). Same `reuse_session` limitation as the fields above. The form
+edits them in the main (always-visible) section, with a datalist of model
+ids for claude/codex — none for pi, whose list is a live shell-out.
+
 ## Where the operator sees all four fields
 
 Both lists plus `setup_script`/`setup_timeout_seconds` are edited in one

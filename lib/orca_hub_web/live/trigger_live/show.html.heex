@@ -112,6 +112,11 @@
         do: Calendar.strftime(@trigger.last_fired_at, "%Y-%m-%d %H:%M UTC"),
         else: "never"}
     </:item>
+    <:item :if={@trigger.backend || @trigger.model} title="Backend / model">
+      <span class="font-mono">
+        {@trigger.backend || "default"} / {@trigger.model || "default"}
+      </span>
+    </:item>
     <:item :if={tool_policy_set?(@trigger)} title="MCP tool restrictions">
       <div class="space-y-1 text-sm">
         <div :if={@trigger.tool_allowlist not in [nil, []]}>

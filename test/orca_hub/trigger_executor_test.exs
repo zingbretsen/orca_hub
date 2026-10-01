@@ -258,6 +258,79 @@ defmodule OrcaHub.TriggerExecutorTest do
       refute OrcaHub.ToolPolicy.allowed?(policy, "retire_memory")
       assert OrcaHub.ToolPolicy.allowed?(policy, "remember")
     end
+
+    test "OMITS a nil backend/model so the node/session default applies", %{
+      project: project,
+      trigger: trigger
+    } do
+      attrs = TriggerExecutor.session_attrs(%{trigger | project: project})
+
+      refute Map.has_key?(attrs, :backend)
+      refute Map.has_key?(attrs, :model)
+    end
+
+    test "stamps a pinned backend/model onto the session it creates", %{project: project} do
+      {:ok, trigger} =
+        Triggers.create_trigger(%{
+          name: "Pinned trigger",
+          prompt: "Review memories",
+          cron_expression: "0 3 * * *",
+          project_id: project.id,
+          backend: "claude",
+          model: "claude-opus-5-5"
+        })
+
+      attrs = TriggerExecutor.session_attrs(%{trigger | project: project})
+
+      assert attrs.backend == "claude"
+      assert attrs.model == "claude-opus-5-5"
+    end
+
+    test "a pinned backend/model wins over the runner node's defaults", %{project: project} do
+      node_name = "orca@trigger-pin-#{System.unique_integer([:positive])}"
+      {:ok, node} = OrcaHub.ClusterNodes.upsert_seen(node_name, "trigger-pin")
+
+      {:ok, _} =
+        OrcaHub.ClusterNodes.update_node(node, %{
+          default_backend: "codex",
+          default_model: "gpt-5.5"
+        })
+
+      {:ok, pinned} =
+        Triggers.create_trigger(%{
+          name: "Pinned trigger",
+          prompt: "Review memories",
+          cron_expression: "0 3 * * *",
+          project_id: project.id,
+          backend: "claude",
+          model: "claude-opus-5-5"
+        })
+
+      attrs =
+        TriggerExecutor.session_attrs(%{pinned | project: project})
+        |> Map.put(:runner_node, node_name)
+
+      {:ok, session} = Sessions.create_session(attrs)
+      assert session.backend == "claude"
+      assert session.model == "claude-opus-5-5"
+
+      # Control: an unpinned trigger on the same node inherits its defaults.
+      {:ok, unpinned} =
+        Triggers.create_trigger(%{
+          name: "Unpinned trigger",
+          prompt: "Review memories",
+          cron_expression: "0 3 * * *",
+          project_id: project.id
+        })
+
+      attrs =
+        TriggerExecutor.session_attrs(%{unpinned | project: project})
+        |> Map.put(:runner_node, node_name)
+
+      {:ok, session} = Sessions.create_session(attrs)
+      assert session.backend == "codex"
+      assert session.model == "gpt-5.5"
+    end
   end
 
   describe "setup-script prompt composition" do

@@ -193,6 +193,8 @@ defmodule OrcaHub.MemoryReviewTest do
         # Deliberately a denylist, not an allowlist — see the module's
         # @forbidden_memory_write_tools comment.
         assert trigger.tool_allowlist == nil
+        assert trigger.backend == "claude"
+        assert trigger.model == "claude-opus-5-5"
       end
 
       consolidate = Enum.find(triggers, &(&1.name == "memory-consolidate-nightly"))
@@ -241,6 +243,23 @@ defmodule OrcaHub.MemoryReviewTest do
 
       restored = OrcaHub.HubRPC.get_trigger!(drifted.id)
       assert restored.tool_denylist == ["retire_memory", "update_memory", "remember"]
+    end
+
+    test "pins a pre-existing trigger row to Opus 5.5 on the next run", %{
+      dir: dir,
+      project: project
+    } do
+      assert :ok = MemoryReview.ensure_triggers!(directory: dir)
+
+      # A row as it looked before the backend/model columns existed.
+      [drifted | _] = Triggers.list_triggers_for_project(project.id)
+      {:ok, _} = Triggers.update_trigger(drifted, %{backend: nil, model: nil})
+
+      assert :ok = MemoryReview.ensure_triggers!(directory: dir)
+
+      restored = OrcaHub.HubRPC.get_trigger!(drifted.id)
+      assert restored.backend == "claude"
+      assert restored.model == "claude-opus-5-5"
     end
 
     test "is idempotent — running it again never duplicates", %{dir: dir, project: project} do
