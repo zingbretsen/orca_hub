@@ -71,9 +71,13 @@ defmodule OrcaHub.Backend.SharedPrompts do
 
     slug = OrcaHub.AgentMemory.slugify(directory)
 
+    # The voice-dictation note would otherwise dominate a short dictated
+    # prompt's recall query and bias it toward speech-recognition memories.
+    {_dictated, query} = OrcaHub.Voice.Dictation.strip(prompt)
+
     task =
       Task.Supervisor.async_nolink(OrcaHub.TaskSupervisor, fn ->
-        fun.(slug, prompt, budget_tokens: 3000)
+        fun.(slug, query, budget_tokens: 3000)
       end)
 
     case Task.yield(task, 3_000) || Task.shutdown(task, :brutal_kill) do

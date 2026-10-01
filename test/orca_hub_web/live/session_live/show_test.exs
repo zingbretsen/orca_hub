@@ -23,8 +23,9 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
   import Phoenix.LiveViewTest
   import Ecto.Query
 
-  alias OrcaHub.{Repo, SessionSupervisor, Sessions}
+  alias OrcaHub.{Repo, SessionHeartbeat, SessionSupervisor, Sessions}
   alias OrcaHub.Sessions.Message
+  alias OrcaHub.Voice.Dictation
 
   setup do
     dir = Path.join(System.tmp_dir!(), "show_caps_#{System.unique_integer([:positive])}")
@@ -2337,6 +2338,55 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert_push_event(view, "voice-send-failed", %{reason: reason})
       assert reason =~ "not currently connected"
       refute_push_event(view, "clear-prompt", %{})
+    end
+
+    # Voice dictation flag: the hook `requestSubmit`s the composer with its
+    # hidden `voice_dictated` button as the SUBMITTER. Observed through the
+    # real `:queue` path — a running Claude session holds the message in
+    # SessionHeartbeat's queue, where `peek_message_queue/1` shows the exact
+    # text the agent will receive.
+    test "a voice submit (the hidden voice_dictated submitter) queues the text with the dictation note",
+         %{conn: conn, claude_session: session} do
+      view = composer_on_running_session(conn, session)
+
+      view
+      |> form(~s(form[data-voice-composer-for="#{session.id}"]), %{"prompt" => "check Nemo Tron"})
+      |> put_submitter("button[data-voice-dictated-submit]")
+      |> render_submit()
+
+      assert_push_event(view, "clear-prompt", %{})
+
+      assert %{messages: [queued]} = SessionHeartbeat.peek_message_queue(session.id)
+      assert queued == Dictation.prefix("check Nemo Tron")
+    end
+
+    test "a typed submit (no submitter) queues the text untouched", %{
+      conn: conn,
+      claude_session: session
+    } do
+      view = composer_on_running_session(conn, session)
+
+      view
+      |> form(~s(form[data-voice-composer-for="#{session.id}"]), %{"prompt" => "typed by hand"})
+      |> render_submit()
+
+      assert_push_event(view, "clear-prompt", %{})
+      assert %{messages: ["typed by hand"]} = SessionHeartbeat.peek_message_queue(session.id)
+    end
+
+    defp composer_on_running_session(conn, session) do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # After mount: the runner's init only stamps runner_node, so this
+      # sticks, and `:queue` delivery holds the message instead of spawning
+      # a CLI. Archiving drops the queued entry and its escalation timer.
+      {:ok, _} = Sessions.update_session(session, %{status: "running"})
+
+      on_exit(fn ->
+        Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session.id, {:status, :archived}})
+      end)
+
+      view
     end
   end
 

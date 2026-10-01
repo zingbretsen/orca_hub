@@ -53,6 +53,29 @@ defmodule OrcaHub.Backend.SharedPromptsTest do
     end
   end
 
+  describe "memory_context/2 recall query" do
+    setup do
+      test_pid = self()
+
+      Process.put(:orca_hub_memory_context_fun, fn _slug, query, _opts ->
+        send(test_pid, {:recall_query, query})
+        {:ok, nil}
+      end)
+
+      :ok
+    end
+
+    test "drops the voice-dictation note, which would otherwise dominate a short prompt" do
+      SharedPrompts.memory_context("/tmp/x", OrcaHub.Voice.Dictation.prefix("the Nemo Tron box"))
+      assert_receive {:recall_query, "the Nemo Tron box"}
+    end
+
+    test "passes a typed prompt through untouched" do
+      SharedPrompts.memory_context("/tmp/x", "typed prompt")
+      assert_receive {:recall_query, "typed prompt"}
+    end
+  end
+
   describe "record_memory_injection/2" do
     setup do
       test_pid = self()

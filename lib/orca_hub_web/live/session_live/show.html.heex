@@ -1772,6 +1772,21 @@
             >
               Send
             </.button>
+            <%!-- The voice bar's SUBMITTER: the hook calls
+          `requestSubmit(thisButton)`, so `voice_dictated=true` rides only that
+          one submission and `send_message` tells the agent the text was
+          dictated. Never clicked, never reset, and AFTER Send so Send stays the
+          form's default button. --%>
+            <button
+              type="submit"
+              name="voice_dictated"
+              value="true"
+              hidden
+              tabindex="-1"
+              aria-hidden="true"
+              data-voice-dictated-submit
+            >
+            </button>
           </.form>
         </div>
       </div>

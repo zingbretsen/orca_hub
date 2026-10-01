@@ -5,6 +5,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, MemoryExtraction, Projects, Sessions}
   alias OrcaHubWeb.{ArtifactSend, Markdown, MessageComponents, TreeComponents}
   alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Todos}
+  alias OrcaHub.Voice.Dictation
 
   import OrcaHubWeb.AskUserQuestionComponent
 
@@ -315,6 +316,19 @@ defmodule OrcaHubWeb.SessionLive.Show do
     |> put_flash(:error, message)
     |> push_event("voice-send-failed", %{reason: message})
   end
+
+  # A voice send submits the composer with its hidden `voice_dictated`
+  # button as the SUBMITTER, so only that one submission carries the param —
+  # a typed send (Enter, the Send button) never does, and there is no
+  # set-then-reset field to leak into one. The agent gets the
+  # `OrcaHub.Voice.Dictation` note; an attachment-only submit has no dictated
+  # text to misread, so it gets none.
+  defp maybe_mark_dictated(full_prompt, typed, %{"voice_dictated" => "true"})
+       when is_binary(full_prompt) do
+    if String.trim(typed) == "", do: full_prompt, else: Dictation.prefix(full_prompt)
+  end
+
+  defp maybe_mark_dictated(full_prompt, _typed, _params), do: full_prompt
 
   defp maybe_subscribe_sessions_topic(socket) do
     if connected?(socket) and not socket.assigns.sessions_topic_subscribed do
@@ -958,7 +972,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   @impl true
-  def handle_event("send_message", %{"prompt" => prompt}, socket) do
+  def handle_event("send_message", %{"prompt" => prompt} = params, socket) do
     Logger.info("send_message: prompt=#{inspect(String.trim(prompt))}")
 
     Logger.info(
@@ -999,6 +1013,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
         {"", att} -> "I've attached files to the session directory. Please review them.\n\n#{att}"
         {text, att} -> "#{text}\n\n#{att}"
       end
+
+    full_prompt = maybe_mark_dictated(full_prompt, prompt, params)
 
     if full_prompt do
       Cluster.send_message(

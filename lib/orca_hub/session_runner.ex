@@ -3117,6 +3117,9 @@ defmodule OrcaHub.SessionRunner do
   @doc false
   # Public for testing.
   def fallback_title(prompt) do
+    # A dictated first prompt leads with the voice note, which is not a title.
+    {_dictated, prompt} = OrcaHub.Voice.Dictation.strip(prompt)
+
     line =
       prompt
       |> String.split("\n")

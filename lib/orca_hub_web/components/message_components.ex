@@ -9,6 +9,7 @@ defmodule OrcaHubWeb.MessageComponents do
   import OrcaHubWeb.CoreComponents, only: [icon: 1]
 
   alias OrcaHub.MCP.CodeExec.Analyzer
+  alias OrcaHub.Voice.Dictation
   alias OrcaHubWeb.Markdown
 
   # Mirrors Sessions.list_messages_window/2's own copy of this list (and
@@ -330,6 +331,10 @@ defmodule OrcaHubWeb.MessageComponents do
       |> Enum.map_join("\n", & &1["text"])
       |> strip_leading_memory_block()
 
+    # Same display-only treatment for the voice-dictation note: it is there
+    # for the MODEL, so the bubble swaps it for a small "dictated" marker.
+    {dictated, text} = Dictation.strip(text)
+
     # Extract tool_result blocks
     tool_results =
       content_blocks
@@ -341,6 +346,7 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns =
       assigns
       |> assign(:text, text)
+      |> assign(:dictated, dictated)
       |> assign(:tool_results, tool_results)
       |> assign(:tool_use_result, tool_use_result)
 
@@ -355,7 +361,16 @@ defmodule OrcaHubWeb.MessageComponents do
     ~H"""
     <div :if={@text != "" || @attachments != []} class="chat chat-end">
       <div class="chat-header text-xs opacity-50 mb-1">
-        You <.timestamp value={@msg["timestamp"]} />
+        You
+        <span
+          :if={@dictated}
+          class="inline-flex items-center gap-0.5"
+          title="Dictated by voice — the agent was told to expect speech-recognition errors"
+          data-dictated
+        >
+          <.icon name="hero-microphone-micro" class="size-3" /> dictated
+        </span>
+        <.timestamp value={@msg["timestamp"]} />
       </div>
       <div class="chat-bubble chat-bubble-primary min-w-0 max-w-full">
         <div :for={{type, path} <- @attachments} class="mb-2">

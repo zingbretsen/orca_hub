@@ -39,4 +39,9 @@ defmodule OrcaHub.SessionRunnerFallbackTitleTest do
   test "empty prompt yields an empty title" do
     assert SessionRunner.fallback_title("") == ""
   end
+
+  test "a dictated prompt is titled by what was said, not by the voice note" do
+    prompt = OrcaHub.Voice.Dictation.prefix("Check the Nemo Tron config")
+    assert SessionRunner.fallback_title(prompt) == "Check the Nemo Tron config"
+  end
 end

@@ -54,6 +54,9 @@
  *    hooks, so `phx:clear-prompt` and `phx:voice-send-failed` reach the bar
  *    directly and the session page needs no bridging code. With no composer
  *    we push `send_direct` and the server delivers as it did in phase 1.
+ *    Either way the agent is told the text was DICTATED: the composer is
+ *    submitted with its hidden `voice_dictated` button as the submitter, and
+ *    the direct path is prefixed server-side (`OrcaHub.Voice.Dictation`).
  *
  * 6. UI CONTROL (§8.3, ORCAHUB3-87). Two new wire events, one each way:
  *
@@ -1224,7 +1227,12 @@ export const VoiceHook = {
     this._clearDraftTimer()
 
     try {
-      form.requestSubmit()
+      // The composer's hidden `voice_dictated` button as the SUBMITTER: its
+      // name/value ride THIS submission only (LiveView serializes the
+      // submitter, even across a deferred upload), so the agent is told the
+      // text was dictated and a later typed send cannot inherit the flag.
+      // A page without the button still sends, just unflagged.
+      form.requestSubmit(form.querySelector("[data-voice-dictated-submit]") || null)
     } catch (e) {
       this._pendingSend = null
       this.channel &&
