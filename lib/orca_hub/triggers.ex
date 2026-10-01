@@ -1,6 +1,6 @@
 defmodule OrcaHub.Triggers do
   @moduledoc """
-  Context for managing scheduled and webhook triggers.
+  Context for managing scheduled, one-off, webhook, and email triggers.
   """
 
   import Ecto.Query
@@ -16,6 +16,20 @@ defmodule OrcaHub.Triggers do
 
   def list_enabled_triggers do
     Repo.all(from t in Trigger, where: t.enabled == true, preload: [:project])
+  end
+
+  @doc """
+  Enabled `type: "once"` triggers whose `run_at` is at or before `now`, oldest
+  first — what `OrcaHub.OneOffTriggerSweep` fires. A fired one-off is
+  disabled by `OrcaHub.TriggerExecutor`, so it drops out of this set.
+  """
+  def list_due_one_off_triggers(now \\ DateTime.utc_now()) do
+    Repo.all(
+      from t in Trigger,
+        where: t.enabled == true and t.type == "once" and t.run_at <= ^now,
+        order_by: [asc: t.run_at],
+        select: t.id
+    )
   end
 
   @doc """

@@ -59,6 +59,10 @@ config :phoenix,
 # Tests call OrcaHub.SkillSync.sync/1 directly with an injected :home_dir.
 config :orca_hub, :skill_sync_enabled, false
 
+# OrcaHub.OneOffTriggerSweep's periodic poll would fire due one-off triggers
+# out of the shared dev DB; tests call OneOffTriggerSweep.sweep/1 directly.
+config :orca_hub, :one_off_trigger_sweep_enabled, false
+
 # Same hazard for OrcaHub.PiConfigSync, which writes ~/.pi/agent/models.json,
 # settings.json, extensions/, prompts/, and themes/. The ENTIRE GenServer loop
 # is gated on this (not just the boot sync), so a live {:pi_config_updated}

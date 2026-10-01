@@ -4,6 +4,7 @@
 flowchart TB
     subgraph Sources["Trigger Sources (trigger.type)"]
         Cron["scheduled:\nQuantum Scheduler\n(cron expression)"]
+        Once["once:\nOneOffTriggerSweep\n(run_at, DB-polled)"]
         Webhook["webhook:\nPOST /api/webhooks/:secret"]
         Email["email:\nEmailInbox.Poller (IMAP)\n-> Security -> Ingest"]
     end
@@ -28,6 +29,7 @@ flowchart TB
     end
 
     Cron --> ExecuteCron
+    Once --> ExecuteCron
     Webhook -->|"async via TaskSupervisor\nCluster.rpc to owning node\npayload appended to prompt"| ExecutePayload
     Email -->|"matched by sender_allowlist\n+ optional to_address / subject_pattern"| ExecutePayload
 
@@ -63,8 +65,8 @@ the in-flight turn to end rather than interrupting and cancelling it.
 Triggers are fully compatible with remote agent nodes. Node routing is
 derived from the trigger's associated project (`trigger → project → project.node`).
 
-- **Scheduling** is hub-only: `Quantum Scheduler` and `TriggerLoader` only
-  run on the hub node (see `Application.hub_children/1`). Because of that,
+- **Scheduling** is hub-only: `Quantum Scheduler`, `TriggerLoader` and
+  `OneOffTriggerSweep` only run on the hub node (see `Application.hub_children/1`). Because of that,
   the scheduler is pinned to `run_strategy: Quantum.RunStrategy.Local` in
   `config/config.exs` — Quantum's default `{Random, :cluster}` routes each
   firing to a random connected node, and any agent node it picks has no
@@ -107,6 +109,7 @@ sequenceDiagram
 | Type | Fires from | Type-specific fields |
 |---|---|---|
 | `scheduled` | Quantum cron on the hub | `cron_expression` (5–7 fields) |
+| `once` | `OneOffTriggerSweep` poll on the hub | `run_at` (UTC, must be in the future when set) |
 | `webhook` | `POST /api/webhooks/:secret` | `webhook_secret` (auto-generated) |
 | `email` | `EmailInbox.Poller` IMAP poll on the hub | `email_inbox_id`, `sender_allowlist` (must be non-empty), optional `to_address` / `subject_pattern` |
 
@@ -125,6 +128,40 @@ MemoryReview` uses this to set it `false` on its own two scheduled triggers
 by `TriggerLoader` on hub boot) — an automated review pass must never itself
 be memory-extracted. See that module's moduledoc for the pass rules
 (propose, never retire/rewrite).
+
+## One-off triggers (`once`) and durability
+
+A one-off fires once at `run_at` — e.g. "remind me in 2.5 months". Created
+via the `create_one_off_trigger` MCP tool (`run_at` ISO8601, naive input =
+America/New_York local; or `delay` like `"2.5 months"`/`"4h"`, months a
+fixed 30 days — `OrcaHub.Triggers.OneOff`) or the trigger form's "One-off"
+type (a datetime-local input, also New York time).
+
+The DB row is the ONLY source of truth — there is deliberately no Quantum
+job for a `once` trigger (`Scheduler.sync_triggers/0` registers
+`type == "scheduled"` only), since a months-out timer will see many
+deploys. `OrcaHub.OneOffTriggerSweep` (hub-only, a single process) polls
+`Triggers.list_due_one_off_triggers/1` (enabled, `run_at <= now`) 5s after
+boot and every 30s after, calling `TriggerExecutor.execute/1` serially:
+
+- **Exactly once**: `execute/1` disables a `once` trigger in the SAME write
+  that stamps `last_fired_at`/`last_session_id`, before the prompt is sent,
+  so it drops out of the due set. If that write fails it raises instead of
+  sending. Trade-off: a crash between that write and `send_message` loses
+  the fire (visible as "fired" with an unprompted session) rather than
+  risking a duplicate.
+- **Late, not never**: a `run_at` that passed while the hub was down fires
+  on the first sweep after boot.
+- **Node unavailable**: the normal skip path (never re-routed) leaves the
+  trigger enabled, so the periodic sweep retries it until the node is back.
+- "Fire now" on a pending one-off fires it early and likewise disables it.
+  Re-enabling a fired one-off without moving `run_at` fires it again on the
+  next sweep. The UI badge reads `pending` / `fired` instead of
+  `active` / `disabled`.
+
+Reminders reach the user through the spawned session itself — the prompt
+should tell it to call `send_notification` (or `send_discord_message`); no
+separate delivery mechanism exists.
 
 ## Per-trigger tool restrictions
 

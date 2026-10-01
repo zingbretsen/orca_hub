@@ -2,7 +2,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
   use OrcaHubWeb, :live_view
 
   alias OrcaHub.{Cluster, HubRPC, Triggers}
-  alias OrcaHub.Triggers.Trigger
+  alias OrcaHub.Triggers.{OneOff, Trigger}
   alias OrcaHubWeb.NodeFilter
 
   @impl true
@@ -118,6 +118,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       |> Map.put("type", socket.assigns.trigger_type)
       |> parse_sender_allowlist_param()
       |> parse_tool_list_params()
+      |> parse_run_at_param()
 
     changeset = Triggers.change_trigger(trigger, params)
 
@@ -133,6 +134,7 @@ defmodule OrcaHubWeb.TriggerLive.Index do
       |> Map.put("type", socket.assigns.trigger_type)
       |> parse_sender_allowlist_param()
       |> parse_tool_list_params()
+      |> parse_run_at_param()
 
     params =
       if socket.assigns.trigger_type == "scheduled" do
@@ -300,6 +302,59 @@ defmodule OrcaHubWeb.TriggerLive.Index do
           acc
       end
     end)
+  end
+
+  # A one-off's fire time is entered in a datetime-local input
+  # ("2026-12-15T09:00", no zone) as LOCAL time — America/New_York, the same
+  # convention as the create_one_off_trigger MCP tool (OneOff.parse_run_at/1)
+  # — and converted to the UTC run_at column here. A blank or unparseable
+  # value becomes a nil run_at so the changeset reports it as required.
+  defp parse_run_at_param(%{"run_at_local" => local} = params) when is_binary(local) do
+    run_at =
+      case OneOff.parse_run_at(local) do
+        {:ok, utc} -> utc
+        {:error, _} -> nil
+      end
+
+    params |> Map.delete("run_at_local") |> Map.put("run_at", run_at)
+  end
+
+  defp parse_run_at_param(params), do: params
+
+  @doc """
+  The datetime-local input value (local time, minute precision) for a
+  form's run_at — empty when unset.
+  """
+  def run_at_local_value(form) do
+    case form[:run_at].value do
+      %DateTime{} = run_at -> run_at |> OneOff.to_local() |> Calendar.strftime("%Y-%m-%dT%H:%M")
+      _ -> ""
+    end
+  end
+
+  @doc "A UTC timestamp rendered in the user's local zone, e.g. for run_at."
+  def format_local(%DateTime{} = dt),
+    do: dt |> OneOff.to_local() |> Calendar.strftime("%Y-%m-%d %H:%M %Z")
+
+  def format_local(_), do: ""
+
+  @doc """
+  The status badge text for a trigger. A one-off reads "pending" until it
+  fires and "fired" after (the executor disables it in the same write), so
+  "disabled" only shows for one an operator switched off before it fired.
+  """
+  def status_label(%{type: "once", enabled: true}), do: "pending"
+  def status_label(%{type: "once", last_fired_at: %DateTime{}}), do: "fired"
+  def status_label(%{enabled: true}), do: "active"
+  def status_label(_), do: "disabled"
+
+  def status_class(trigger) do
+    case status_label(trigger) do
+      "active" -> "badge-success"
+      "pending" -> "badge-warning"
+      "fired" -> "badge-info"
+      _ -> "badge-ghost"
+    end
   end
 
   @doc """

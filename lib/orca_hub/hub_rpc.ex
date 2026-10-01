@@ -274,6 +274,10 @@ defmodule OrcaHub.HubRPC do
 
   def list_triggers, do: call(OrcaHub.Triggers, :list_triggers, [])
   def get_trigger!(id), do: call(OrcaHub.Triggers, :get_trigger!, [id])
+
+  def list_due_one_off_triggers(now),
+    do: call(OrcaHub.Triggers, :list_due_one_off_triggers, [now])
+
   def create_trigger(attrs), do: call(OrcaHub.Triggers, :create_trigger, [attrs])
 
   def update_trigger(trigger, attrs),

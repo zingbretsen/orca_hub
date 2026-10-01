@@ -29,10 +29,7 @@ defmodule OrcaHub.TriggerExecutor do
 
         session_id = resolve_session(trigger)
 
-        HubRPC.update_trigger(trigger, %{
-          last_fired_at: DateTime.utc_now() |> DateTime.truncate(:second),
-          last_session_id: session_id
-        })
+        record_fire(trigger, session_id)
 
         unless Cluster.session_alive?(runner_node, session_id) do
           session = HubRPC.get_session(session_id)
@@ -131,6 +128,34 @@ defmodule OrcaHub.TriggerExecutor do
       Logger.error("Payload trigger #{trigger_id} execution failed: #{Exception.message(e)}")
       {:error, Exception.message(e)}
   end
+
+  # A one-off trigger is disabled in the SAME write that stamps last_fired_at,
+  # BEFORE the prompt is sent — so once a session exists for it, no later
+  # sweep can fire it again. The trade-off is deliberate: a crash in the
+  # narrow window between this write and send_message loses the reminder
+  # (visible as fired, with a session that never got a prompt) rather than
+  # risking a duplicate fire. A skipped fire (node unavailable) never
+  # reaches here, so the trigger stays enabled and the next sweep retries.
+  # If that write FAILS for a one-off, raise (contained by execute/1's rescue)
+  # instead of sending: a still-enabled one-off that got its prompt would be
+  # re-fired by every sweep.
+  defp record_fire(trigger, session_id) do
+    attrs = %{
+      last_fired_at: DateTime.utc_now() |> DateTime.truncate(:second),
+      last_session_id: session_id
+    }
+
+    case {trigger.type, HubRPC.update_trigger(trigger, disable_if_once(attrs, trigger))} do
+      {"once", {:error, changeset}} ->
+        raise "could not disable one-off trigger after firing: #{inspect(changeset.errors)}"
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp disable_if_once(attrs, %{type: "once"}), do: Map.put(attrs, :enabled, false)
+  defp disable_if_once(attrs, _trigger), do: attrs
 
   @doc """
   Backwards-compatible alias for `execute_payload/2`.

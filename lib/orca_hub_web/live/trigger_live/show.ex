@@ -2,6 +2,7 @@ defmodule OrcaHubWeb.TriggerLive.Show do
   use OrcaHubWeb, :live_view
 
   alias OrcaHub.{Cluster, HubRPC}
+  alias OrcaHubWeb.TriggerLive.Index
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do

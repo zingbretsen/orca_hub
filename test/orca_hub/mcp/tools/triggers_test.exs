@@ -215,4 +215,90 @@ defmodule OrcaHub.MCP.Tools.TriggersTest do
       assert trigger.project_id == project.id
     end
   end
+
+  describe "create_one_off_trigger" do
+    setup do
+      {:ok, project} =
+        Projects.create_project(%{
+          name: "one-off-tool-project",
+          directory: "/tmp/one-off-tool-project-#{System.unique_integer([:positive])}",
+          node: Atom.to_string(node())
+        })
+
+      %{project: project}
+    end
+
+    test "is listed with run_at/delay args and the notify hint" do
+      tool = Enum.find(TriggersTool.list(), &(&1["name"] == "create_one_off_trigger"))
+      assert tool
+      props = tool["inputSchema"]["properties"]
+      assert Map.has_key?(props, "run_at")
+      assert Map.has_key?(props, "delay")
+      assert Map.has_key?(props, "directory")
+      assert tool["description"] =~ "send_notification"
+    end
+
+    test "a delay creates a once trigger and returns the resolved run_at", %{project: project} do
+      before = DateTime.utc_now()
+
+      result =
+        TriggersTool.call(
+          "create_one_off_trigger",
+          %{
+            "name" => "oneoff-delay",
+            "prompt" => "remind me",
+            "delay" => "2.5 months",
+            "directory" => project.directory
+          },
+          %{}
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      trigger = Repo.get_by!(Trigger, name: "oneoff-delay")
+      assert trigger.type == "once"
+      assert trigger.enabled
+      assert trigger.project_id == project.id
+      assert trigger.cron_expression == nil
+
+      expected = DateTime.add(before, 75 * 86_400, :second)
+      assert abs(DateTime.diff(trigger.run_at, expected)) <= 5
+      assert text =~ DateTime.to_iso8601(trigger.run_at)
+    end
+
+    test "a naive run_at is New York local time", %{project: project} do
+      result =
+        TriggersTool.call(
+          "create_one_off_trigger",
+          %{
+            "name" => "oneoff-run-at",
+            "prompt" => "remind me",
+            "run_at" => "2099-12-15T09:00",
+            "project_id" => project.id,
+            "memory_extract" => false
+          },
+          %{}
+        )
+
+      assert %{"isError" => false} = result
+      trigger = Repo.get_by!(Trigger, name: "oneoff-run-at")
+      assert trigger.run_at == ~U[2099-12-15 14:00:00Z]
+      assert trigger.memory_extract == false
+    end
+
+    test "refuses a past run_at, a bad delay, and missing timing", %{project: project} do
+      base = %{"name" => "oneoff-bad", "prompt" => "p", "project_id" => project.id}
+
+      for extra <- [
+            %{"run_at" => "2020-01-01T00:00:00Z"},
+            %{"delay" => "whenever"},
+            %{},
+            %{"delay" => "1d", "run_at" => "2099-01-01"}
+          ] do
+        assert %{"isError" => true} =
+                 TriggersTool.call("create_one_off_trigger", Map.merge(base, extra), %{})
+      end
+
+      refute Repo.get_by(Trigger, name: "oneoff-bad")
+    end
+  end
 end

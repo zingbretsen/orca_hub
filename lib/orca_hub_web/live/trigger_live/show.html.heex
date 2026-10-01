@@ -1,15 +1,12 @@
 <.header>
   <.link navigate={~p"/triggers"} class="text-sm opacity-70">&larr; Triggers</.link>
   <span class="ml-2">{@trigger.name}</span>
-  <span class={[
-    "badge badge-sm ml-1",
-    if(@trigger.enabled, do: "badge-success", else: "badge-ghost")
-  ]}>
-    {if @trigger.enabled, do: "active", else: "disabled"}
+  <span class={["badge badge-sm ml-1", Index.status_class(@trigger)]}>
+    {Index.status_label(@trigger)}
   </span>
   <:actions>
     <button
-      :if={@trigger.type == "scheduled"}
+      :if={@trigger.type == "scheduled" || (@trigger.type == "once" && @trigger.enabled)}
       phx-click="fire_trigger"
       class="btn btn-sm btn-ghost"
       title="Fire now"
@@ -59,6 +56,19 @@
     </:item>
     <:item :if={@trigger.type == "scheduled"} title="Cron expression">
       <span class="font-mono">{@trigger.cron_expression}</span>
+    </:item>
+    <:item :if={@trigger.type == "once"} title="Runs at">
+      {Index.format_local(@trigger.run_at)}
+      <span class="text-xs text-base-content/60">
+        ({Calendar.strftime(@trigger.run_at, "%Y-%m-%d %H:%M UTC")})
+      </span>
+    </:item>
+    <:item :if={@trigger.type == "once"} title="State">
+      {cond do
+        @trigger.enabled -> "pending — fires once, then disables itself"
+        @trigger.last_fired_at -> "fired"
+        true -> "disabled before firing"
+      end}
     </:item>
     <:item :if={@trigger.type == "webhook"} title="Webhook URL">
       <code class="bg-base-300 px-3 py-2 rounded text-xs break-all">{webhook_url(@trigger)}</code>

@@ -1,6 +1,9 @@
 defmodule OrcaHub.Scheduler do
   @moduledoc """
   Quantum scheduler for firing scheduled (cron) triggers.
+
+  One-off (`type: "once"`) triggers are NOT scheduled here — see
+  `OrcaHub.OneOffTriggerSweep`.
   """
 
   use Quantum, otp_app: :orca_hub
@@ -15,7 +18,9 @@ defmodule OrcaHub.Scheduler do
     jobs() |> Enum.each(fn {name, _job} -> delete_job(name) end)
 
     Triggers.list_enabled_triggers()
-    |> Enum.filter(& &1.cron_expression)
+    # Only cron triggers. A `once` trigger is fired by
+    # OrcaHub.OneOffTriggerSweep from its DB row, never from a Quantum job.
+    |> Enum.filter(&(&1.type == "scheduled" and &1.cron_expression))
     |> Enum.each(fn trigger ->
       try do
         schedule_trigger(trigger)

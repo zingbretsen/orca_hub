@@ -1,5 +1,5 @@
 defmodule OrcaHub.Triggers.Trigger do
-  @moduledoc "Schema for a scheduled, webhook, or inbound-email trigger."
+  @moduledoc "Schema for a scheduled, one-off, webhook, or inbound-email trigger."
 
   use Ecto.Schema
   import Ecto.Changeset
@@ -12,6 +12,13 @@ defmodule OrcaHub.Triggers.Trigger do
     field :prompt, :string
     field :type, :string, default: "scheduled"
     field :cron_expression, :string
+    # type: "once" only. The single UTC instant the trigger fires at. The DB
+    # row is the source of truth (OrcaHub.OneOffTriggerSweep polls for due,
+    # still-enabled ones), not an in-memory Quantum job — so a months-out
+    # reminder survives every deploy in between. TriggerExecutor disables
+    # the trigger in the same write that stamps last_fired_at, which is what
+    # makes it fire once.
+    field :run_at, :utc_datetime
     field :webhook_secret, :string
     field :reuse_session, :boolean, default: false
     field :archive_on_complete, :boolean, default: false
@@ -70,6 +77,10 @@ defmodule OrcaHub.Triggers.Trigger do
     timestamps()
   end
 
+  @types ["scheduled", "once", "webhook", "email"]
+
+  def types, do: @types
+
   def changeset(trigger, attrs) do
     trigger
     |> cast(attrs, [
@@ -77,6 +88,7 @@ defmodule OrcaHub.Triggers.Trigger do
       :prompt,
       :type,
       :cron_expression,
+      :run_at,
       :webhook_secret,
       :reuse_session,
       :archive_on_complete,
@@ -96,7 +108,7 @@ defmodule OrcaHub.Triggers.Trigger do
       :subject_pattern
     ])
     |> validate_required([:name, :prompt, :project_id, :type])
-    |> validate_inclusion(:type, ["scheduled", "webhook", "email"])
+    |> validate_inclusion(:type, types())
     |> validate_setup_timeout()
     |> maybe_generate_webhook_secret()
     |> validate_by_type()
@@ -143,6 +155,11 @@ defmodule OrcaHub.Triggers.Trigger do
         |> validate_required([:cron_expression])
         |> validate_cron_expression()
 
+      "once" ->
+        changeset
+        |> validate_required([:run_at])
+        |> validate_run_at_in_future()
+
       "webhook" ->
         changeset
 
@@ -170,6 +187,24 @@ defmodule OrcaHub.Triggers.Trigger do
         :sender_allowlist,
         "must contain at least one address or domain for an email trigger"
       )
+    end
+  end
+
+  # Only a run_at being SET (create, or an edit that moves it) must be in the
+  # future — the executor's own post-fire update leaves a past run_at in place
+  # and must still validate. Re-enabling a fired trigger without moving run_at
+  # is allowed and fires it again on the next sweep.
+  defp validate_run_at_in_future(changeset) do
+    case get_change(changeset, :run_at) do
+      %DateTime{} = run_at ->
+        if DateTime.compare(run_at, DateTime.utc_now()) == :gt do
+          changeset
+        else
+          add_error(changeset, :run_at, "must be in the future")
+        end
+
+      _ ->
+        changeset
     end
   end
 

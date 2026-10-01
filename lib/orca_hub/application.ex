@@ -133,6 +133,10 @@ defmodule OrcaHub.Application do
       OrcaHub.MCP.UpstreamClient,
       OrcaHub.Scheduler,
       OrcaHub.TriggerLoader,
+      # Fires due one-off (`type: "once"`) triggers from their DB rows — the
+      # durable counterpart to the Quantum scheduler above, hub-only for the
+      # same reason. See OrcaHub.OneOffTriggerSweep moduledoc.
+      OrcaHub.OneOffTriggerSweep,
       # Inbound email ingestion (OrcaHub.EmailInbox.*). Hub-only, like the
       # scheduler above: agent nodes must never poll a mailbox — an inbox's
       # credentials and its watermark are hub state, and two nodes polling

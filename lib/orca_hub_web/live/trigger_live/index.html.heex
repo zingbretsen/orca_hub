@@ -41,15 +41,31 @@
       <label class="label"><span class="label-text">Type</span></label>
       <div class="flex flex-wrap gap-2 mb-3">
         <button
-          :for={type <- ["scheduled", "webhook", "email"]}
+          :for={type <- ["scheduled", "once", "webhook", "email"]}
           type="button"
           phx-click="set_trigger_type"
           phx-value-type={type}
           class={["btn btn-sm", if(@trigger_type == type, do: "btn-primary", else: "btn-ghost")]}
         >
-          {String.capitalize(type)}
+          {if type == "once", do: "One-off", else: String.capitalize(type)}
         </button>
       </div>
+    </div>
+
+    <div :if={@trigger_type == "once"}>
+      <.input
+        name="trigger[run_at_local]"
+        id="trigger_run_at_local"
+        type="datetime-local"
+        label="Fire at (America/New_York)"
+        value={run_at_local_value(@trigger_form)}
+        errors={Enum.map(@trigger_form[:run_at].errors, &translate_error/1)}
+      />
+      <p class="text-xs text-base-content/60 mt-1">
+        Fires once, then disables itself. A fire time that passes while the hub is down fires
+        as soon as it is back up. For a reminder, tell the session to notify you
+        (e.g. "use send_notification to remind me to ...").
+      </p>
     </div>
 
     <div :if={@trigger_type == "scheduled"}>
@@ -403,11 +419,8 @@
         ]}>
           {trigger.type}
         </span>
-        <span class={[
-          "badge badge-xs",
-          if(trigger.enabled, do: "badge-success", else: "badge-ghost")
-        ]}>
-          {if trigger.enabled, do: "active", else: "disabled"}
+        <span class={["badge badge-xs", status_class(trigger)]}>
+          {status_label(trigger)}
         </span>
         <span
           :if={@clustered && Map.get(@node_map, trigger.id)}
@@ -420,6 +433,9 @@
     <:col :let={trigger} label="Source" class="w-1/5">
       <span :if={trigger.type == "scheduled"} class="font-mono text-xs truncate">
         {trigger.cron_expression}
+      </span>
+      <span :if={trigger.type == "once"} class="text-xs truncate">
+        once at {format_local(trigger.run_at)}
       </span>
       <span :if={trigger.type == "webhook"} class="font-mono text-xs truncate max-w-full">
         {webhook_url(trigger)}
@@ -442,7 +458,7 @@
     <:action :let={trigger}>
       <div class="flex items-center gap-1">
         <button
-          :if={trigger.type == "scheduled"}
+          :if={trigger.type == "scheduled" || (trigger.type == "once" && trigger.enabled)}
           phx-click="fire_trigger"
           phx-value-id={trigger.id}
           class="btn btn-xs btn-ghost"

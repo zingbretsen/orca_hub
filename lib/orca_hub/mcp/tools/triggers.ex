@@ -1,10 +1,11 @@
 defmodule OrcaHub.MCP.Tools.Triggers do
   @moduledoc """
-  MCP tools for creating scheduled and webhook triggers.
+  MCP tools for creating scheduled (cron), one-off, and webhook triggers.
   """
   import OrcaHub.MCP.Tools.Result
 
   alias OrcaHub.{Cluster, HubRPC, NodePolicy}
+  alias OrcaHub.Triggers.OneOff
 
   def list do
     [
@@ -80,6 +81,54 @@ defmodule OrcaHub.MCP.Tools.Triggers do
                   "normal default rule (orchestrator or root sessions only)."
             }
           },
+          "required" => ["name", "prompt"]
+        }
+      },
+      %{
+        "name" => "create_one_off_trigger",
+        "description" =>
+          "Schedule a prompt to run ONCE at a future time — e.g. a reminder (\"in 2.5 " <>
+            "months, remind me to cancel X if I'm not using it\") or a deferred check. " <>
+            "Pass exactly one of `run_at` or `delay`. When it fires, a Claude Code session " <>
+            "is created in the project's directory and sent the prompt; the trigger is then " <>
+            "disabled so it never fires again. Durable across restarts and deploys: a " <>
+            "trigger that comes due while the hub is down fires late, right after it comes " <>
+            "back. The spawned session talks to no one by default, so for a REMINDER, write " <>
+            "the prompt to tell the session to notify the user — e.g. \"Use send_notification " <>
+            "to remind Zach to ...\" (send_discord_message also works). Returns the " <>
+            "resolved run_at.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" =>
+            Map.merge(common_properties(), %{
+              "name" => %{
+                "type" => "string",
+                "description" =>
+                  "A short descriptive name (e.g. \"Cancel Google coach subscription\")"
+              },
+              "prompt" => %{
+                "type" => "string",
+                "description" =>
+                  "The prompt sent to the session when the trigger fires. For a reminder, " <>
+                    "include an instruction to notify the user via send_notification."
+              },
+              "run_at" => %{
+                "type" => "string",
+                "description" =>
+                  "Absolute fire time, ISO8601. With an offset (\"2026-12-15T09:00:00-05:00\", " <>
+                    "\"...Z\") it is used as-is; without one (\"2026-12-15T09:00\") it is " <>
+                    "local time in America/New_York; a bare date (\"2026-12-15\") means 09:00 " <>
+                    "local. Must be in the future. Use this OR delay."
+              },
+              "delay" => %{
+                "type" => "string",
+                "description" =>
+                  "Relative fire time from now: one or more <number><unit> parts, summed, " <>
+                    "fractions allowed — \"2.5 months\", \"3 days\", \"4h\", \"1 day 6 hours\", " <>
+                    "\"90m\". Units: s, m/min (minutes), h, d, w, mo/month (a fixed 30 days), " <>
+                    "y (365 days). Use this OR run_at."
+              }
+            }),
           "required" => ["name", "prompt"]
         }
       },
@@ -166,6 +215,41 @@ defmodule OrcaHub.MCP.Tools.Triggers do
     end
   end
 
+  def call("create_one_off_trigger", args, _state) do
+    with {:ok, run_at} <- OneOff.resolve(args),
+         {:ok, project_id} <- resolve_project_id(args),
+         :ok <- check_project_node_allowed(project_id) do
+      attrs =
+        %{
+          name: args["name"],
+          prompt: args["prompt"],
+          type: "once",
+          run_at: run_at,
+          project_id: project_id,
+          reuse_session: args["reuse_session"] || false,
+          archive_on_complete: args["archive_on_complete"] || false
+        }
+        |> maybe_put_memory_extract(args)
+
+      case HubRPC.create_trigger(attrs) do
+        {:ok, trigger} ->
+          local = OneOff.to_local(trigger.run_at)
+
+          text(
+            "One-off trigger \"#{trigger.name}\" created (id: #{trigger.id}). " <>
+              "Fires once at #{DateTime.to_iso8601(trigger.run_at)} " <>
+              "(#{Calendar.strftime(local, "%Y-%m-%d %H:%M %Z")})."
+          )
+
+        {:error, changeset} ->
+          error("Failed to create trigger: #{inspect(changeset.errors)}")
+      end
+    else
+      {:error, message} -> error(message)
+      other -> other
+    end
+  end
+
   def call("create_webhook_trigger", args, _state) do
     with {:ok, project_id} <- resolve_project_id(args),
          :ok <- check_project_node_allowed(project_id) do
@@ -196,6 +280,42 @@ defmodule OrcaHub.MCP.Tools.Triggers do
       {:error, message} -> error(message)
       other -> other
     end
+  end
+
+  # The optional args every create_*_trigger tool shares.
+  defp common_properties do
+    %{
+      "project_id" => %{
+        "type" => "string",
+        "description" =>
+          "The UUID of the project to run the trigger in. Either this or `directory` " <>
+            "is required; project_id wins if both are given. Use the list_projects " <>
+            "tool to look up a project's UUID."
+      },
+      "directory" => %{
+        "type" => "string",
+        "description" =>
+          "Alternative to project_id: the absolute directory of a registered project. " <>
+            "Resolved to that project's id the same way start_session resolves a " <>
+            "directory. Ignored if project_id is also given."
+      },
+      "reuse_session" => %{
+        "type" => "boolean",
+        "description" =>
+          "If true, reuse the last session instead of creating a new one each time. Default: false"
+      },
+      "archive_on_complete" => %{
+        "type" => "boolean",
+        "description" => "If true, archive the session once it completes. Default: false"
+      },
+      "memory_extract" => %{
+        "type" => "boolean",
+        "description" =>
+          "Override automatic memory extraction for every session this trigger " <>
+            "spawns: true forces it on, false forces it off. Omit to apply the " <>
+            "normal default rule (orchestrator or root sessions only)."
+      }
+    }
   end
 
   # project_id wins when both are given; a directory resolves the same way
