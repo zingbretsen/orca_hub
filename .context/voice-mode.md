@@ -20,14 +20,24 @@ merge/pad/drop -> `Voice.ASR.transcribe/3` in a `Task` ->
 `send_request` to the client (phase 1 delivered it server-side
 with `Cluster.send_message(node, id, draft, :queue)`).
 
+Since ORCAHUB3-120, alongside: every couple of RAW segments (or ~2 s idle)
+`Voice.Session` emits `{:cleanup, id, %{context, raw}}` -> `Voice.Cleanup.clean/2`
+in a `Task` (GB10 llama router, already-loaded model only) ->
+`Voice.Session.cleanup_result/4` replaces exactly those segments -> the
+ordinary `state` snapshot -> the hook's draft sink. See "Rolling cleanup".
+
 ## Module map
 
 - `channels/voice_channel.ex` — thin adapter: decodes OVS1 frames, runs ASR in
   a `Task`, owns both timers via one idempotent `:tick`, pushes events, holds
   the ownership claim, refuses to re-route.
 - `voice/session.ex` — the PURE state machine: draft, arming window,
-  short-segment hold/merge, `seq`-ordered result application. Returns `{state,
-  effects}`; no sockets, tasks, timers or HTTP.
+  short-segment hold/merge, `seq`-ordered result application, and the
+  cleanup span bookkeeping. Returns `{state, effects}`; no sockets, tasks,
+  timers or HTTP.
+- `voice/cleanup.ex` + `voice/cleanup/guard.ex` — the cleanup call (model
+  choice, the benchmarked prompt, the acceptance guard); synchronous, never
+  raises. Injected into the channel via app env `:voice_cleanup`.
 - `voice/asr.ex` — HTTP client for the GB10 sync lane; wraps PCM in a 44-byte
   WAV header, re-enforces the 0.8 s floor / 20 s cap, never raises.
 - `voice/intent.ex` — terminal-position phonetic matcher, a port of SPIKE 2b's
@@ -36,7 +46,8 @@ with `Cluster.send_message(node, id, draft, :queue)`).
   `initial_prompt` (vocabulary, then the draft's tail).
 - `asr_config.ex` — hub-managed config, sibling of `TTSConfig`.
 - `assets/js/voice/*.js` — capture + resample, VAD, OVS1 encoding, channel
-  client, asset URLs, the `Voice` hook (`wav.js` is offline verification only).
+  client, asset URLs, the `Voice` hook (`wav.js` is offline verification only),
+  `draft_sync.js` (the pure sink write rule + caret mapping).
 - `live/voice_bar_live.ex` — the GLOBAL voice bar (phase 2b, §8.2 /
   ORCAHUB3-88): one sticky nested LiveView `live_render`ed in the app header
   (`layouts.ex`, `container: {:div, class: "contents"}`), so the mic, the
@@ -78,7 +89,9 @@ with `Cluster.send_message(node, id, draft, :queue)`).
 
 `ASRConfig.resolve/0` -> `%{url, path, language, timeout_ms,
 warmup_timeout_ms, threshold, echo_cancellation, noise_suppression,
-auto_gain_control, release_mic_during_playback, vocabulary, draft_context}`,
+auto_gain_control, release_mic_during_playback, vocabulary, draft_context,
+cleanup_enabled, cleanup_url, cleanup_models, cleanup_timeout_ms,
+cleanup_glossary}`,
 resolved PER FIELD: DB row (`asr_provider`) > `ASR_*` env >
 default, no cache, deliberately. No `model` field — the lane offers none. The
 channel resolves at join and on `retry_warmup` (via `HubRPC`; agent nodes have
@@ -182,7 +195,10 @@ headless has no audio route to lose.
   explicit only (`"sent"`, §8.3.11's `"cancelled"` event, `clear-prompt`). It
   is NOT the `cancel` segment_result any more: since §8.3.11 that announces an
   armed countdown 1500 ms before the clear, and in palette focus it announces
-  no clear at all. The
+  no clear at all. Since ORCAHUB3-120 a snapshot also overwrites the box
+  ONLY if it still holds exactly what the hook last wrote (`_lastWrite`);
+  otherwise the user typed and the box is re-asserted as a `draft_edit` —
+  see "Rolling cleanup". The
   bar's OWN box is scratch space, not protected text: a draft carried across a
   retarget out-votes it, and it is cleared whenever it is not the sink.
 - **Join-time refusals, never workarounds**: no re-routing when the session's
@@ -435,3 +451,80 @@ EXIT CRITERIA still await a human** — `spikes/voice/ACOUSTIC_TEST.md` Part A
 (real-hardware AEC) and Part B (real-voice matcher, >= 95% TP / 0 FP at 0.85;
 the 96.8%/0.0% above is one synthetic voice, an upper bound). They gate phases
 3-4, not phase 2.
+
+## Rolling cleanup (ORCAHUB3-120, `3ab3cd1` + `0e0d831`)
+
+Per-utterance ASR leaves a full stop + capital at every pause, misheard domain
+terms and no list formatting. The oldest RAW dictation is periodically
+rewritten by a fast LLM on the GB10; the benchmark is
+`~/voice-cleanup-bench/REPORT.md` (outside the repo).
+
+**Config** (`cleanup_*`, read with `Map.get(config, key, default)` — an older
+hub may answer the config RPC without them; fixed at JOIN like `threshold`):
+`cleanup_enabled` (default true), `cleanup_url` (the llama ROUTER root,
+`http://192.168.1.77:8082`), `cleanup_models` (ordered, default
+`gemma-4-26B-A4B, nemotron-3.5-lightning`, stored comma-separated),
+`cleanup_timeout_ms` (3000, the WHOLE call incl. a <= 500 ms model listing),
+`cleanup_glossary` (the prompt's glossary sentence; default = the benchmarked
+list, `none` drops it). The glossary is NOT `vocabulary`: that one biases
+Whisper, this one instructs an LLM, and each default is the measured one.
+
+**Model side** (`Voice.Cleanup`): `{:ok, text, meta} | {:rejected, reason,
+meta} | {:skip, reason, meta}`, `meta` always has `:model`, `:latency_ms`.
+Callers branch on those three tags only, never on a reason atom.
+
+- **Never trigger a model load** (user decision; the router holds 2 and
+  LRU-evicts). `GET <router>/v1/models` with NO query string (a `?model=` can
+  load on some endpoints), take the first `cleanup_models` id whose
+  `status.value == "loaded"`, else skip. Chat goes to the router directly
+  (autoload off: an unloaded model is an instant 400 -> skip, never a retry).
+  Never point it at the ai.lab gateway — its ENSURE_MODELS path loads.
+- The prompt with the default glossary is BYTE-IDENTICAL to the bench's
+  FINAL-v4 plain-content prompt (pinned by `cleanup_test.exs`). Plain
+  content, temperature 0, `enable_thinking: false` (nemotron ~5 s with it);
+  no tool call / json_schema (measured pure overhead).
+- The guard (`Cleanup.Guard`, parity-tested against the bench's `guard.py`):
+  missing content words <= max(1, 10%) after glossary credit, novel words
+  <= 25%, length <= 1.6x, protected identifiers (paths, snake_case, numbers,
+  URLs) verbatim. It catches catastrophes (answers, echoes, wholesale
+  replacement), not one-word meaning changes — the model choice is the real
+  protection.
+
+**Session side** — invariants that bite:
+
+- **`draft` is still the source of truth**, computed exactly as before;
+  `spans` is a parallel partition (`:raw` | `:settled`, raw spans keep their
+  joining separator in `sep`). Only a contiguous run of `:raw` DICTATION spans
+  is ever sent. Inserts, the query a `#`/`##` consumes, cleaned text and
+  anything typed are `:settled` and end a run. Every draft writer keeps the
+  partition (a test replays every transition kind).
+- **Trigger**: oldest run at >= 2 segments, or closed by a settled span, or a
+  spoken SEND armed (flush, even 1 segment — usually lands inside the 1500 ms
+  window), or 2000 ms after the last applied transcript with nothing still on
+  its way to ASR. Batch <= 4 segments / ~80 words (the guard's budget is
+  proportional). Context = last ~400 chars before the batch, layout kept.
+- **ONE in flight** (shared GPU; also what keeps results in order). Never in
+  palette focus (a result landing there is dropped and its spans stay raw),
+  never while a send is pending.
+- **Apply only onto the exact spans sent** (same ids, still raw, same text);
+  segments that arrived meanwhile stay raw behind it. A `draft_edit` that
+  CHANGES the text, a cancel, a delivery, a restore and a send firing all
+  settle everything and mark the batch stale (its result is dropped; the slot
+  frees only when it answers or its deadline — timeout + 2 s — passes).
+  `rejected`/`skip`/lost settle the batch: no retry loop.
+- **The send never waits for a cleanup**, and a cleanup never touches the
+  arming window (it is not speech).
+- **`cleanup_enabled: false` = byte-for-byte the old behaviour**: no
+  `:cleanup` effect and no idle tick at all (`Session.new/1` defaults it off;
+  the channel passes the resolved value).
+- The Whisper `initial_prompt` quotes the draft, so it picks up cleaned text
+  for free.
+
+**Client side**: the server now REWRITES text the box already shows, so the
+hook writes a snapshot only into a sink still holding exactly what it last
+wrote; a differing box was typed in and is re-asserted as a `draft_edit`
+(the server then settles everything). A caret parked mid-text is mapped
+through the rewrite (common prefix/suffix). Debounce-wins and
+empty-never-empties are unchanged. Pure in `draft_sync.js`, pinned by
+`draft_sync.check.mjs` (`VoiceDraftSyncCheckTest`); `dictated_send` and
+`mic_release` checks map `./draft_sync` in their resolvers.
