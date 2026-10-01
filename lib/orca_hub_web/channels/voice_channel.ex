@@ -45,6 +45,16 @@ defmodule OrcaHubWeb.VoiceChannel do
   ASR results come back as `{:asr_result, seq, result}` and are applied in
   `seq` order by the state machine, which buffers out-of-order completions.
 
+  ## Rolling cleanup (ORCAHUB3-120)
+
+  `{:cleanup, id, %{context:, raw:}}` runs `OrcaHub.Voice.Cleanup.clean/2`
+  (or whatever `:voice_cleanup` names) in a `Task`, exactly like ASR, and
+  the answer comes back as `{:cleanup_result, id, result}`. Which raw
+  segments go, when, and whether an answer still applies is all
+  `Voice.Session`'s; the cleaned text reaches the browser in the ordinary
+  `"state"` snapshot. `cleanup_enabled` is fixed at join, so with it off no
+  `:cleanup` effect is ever produced.
+
   ## Config
 
   `HubRPC.resolve_asr_config/0` — ALWAYS through `HubRPC`, since an agent
@@ -114,13 +124,15 @@ defmodule OrcaHubWeb.VoiceChannel do
          {:ok, runner_node} <- resolve_node(session),
          :ok <- claim_voice(session_id) do
       config = resolve_config()
-      # `Map.get` for the two prompt fields: during a rolling deploy the
-      # hub answering `resolve_asr_config` can predate them.
+      # `Map.get` for the prompt and cleanup fields: during a rolling deploy
+      # the hub answering `resolve_asr_config` can predate them.
       state =
         Session.new(
           threshold: config.threshold,
           vocabulary: Map.get(config, :vocabulary, ""),
-          draft_context: Map.get(config, :draft_context, true)
+          draft_context: Map.get(config, :draft_context, true),
+          cleanup: Map.get(config, :cleanup_enabled, true),
+          cleanup_timeout_ms: Map.get(config, :cleanup_timeout_ms, 3000)
         )
 
       socket =
@@ -215,7 +227,7 @@ defmodule OrcaHubWeb.VoiceChannel do
   # whatever arrives, so a malformed payload degrades to composer focus with
   # no candidates rather than being dropped on the floor.
   def handle_in("ui_focus", payload, socket),
-    do: apply_state(socket, &Session.ui_focus(&1, payload["focus"], payload["candidates"]))
+    do: apply_state(socket, &Session.ui_focus(&1, payload["focus"], payload["candidates"], now()))
 
   # -- spec 8.2, the single send path ----------------------------------------
 
@@ -293,6 +305,13 @@ defmodule OrcaHubWeb.VoiceChannel do
     apply_state(socket, &Session.transcript(&1, seq, result, now()))
   end
 
+  # ORCAHUB3-120. `Session.cleanup_result/4` decides whether the answer still
+  # applies (same batch, untouched draft); this only logs what came back.
+  def handle_info({:cleanup_result, id, result}, socket) do
+    log_cleanup(socket.assigns.session_id, id, result)
+    apply_state(socket, &Session.cleanup_result(&1, id, result, now()))
+  end
+
   def handle_info(:tick, socket), do: apply_state(socket, &Session.tick(&1, now()))
 
   def handle_info({:send_result, result}, socket),
@@ -326,6 +345,31 @@ defmodule OrcaHubWeb.VoiceChannel do
 
     Task.start(fn ->
       send(channel, {:asr_result, seq, guarded(fn -> ASR.transcribe(pcm, config, asr_opts) end)})
+    end)
+
+    socket
+  end
+
+  # ORCAHUB3-120: one rolling-cleanup batch. `Voice.Session` keeps at most one
+  # in flight, so this never piles requests onto the shared GPU. `clean/2`
+  # promises never to raise; a task that crashes anyway answers `:skip`, so
+  # the batch settles and the slot frees instead of waiting out its deadline.
+  defp run_effect({:cleanup, id, input}, socket) do
+    config = socket.assigns.config
+    channel = self()
+    cleanup = cleanup_module()
+
+    Task.start(fn ->
+      result =
+        try do
+          cleanup.clean(input, config)
+        rescue
+          error -> {:skip, :crash, %{model: nil, latency_ms: 0, error: Exception.message(error)}}
+        catch
+          kind, reason -> {:skip, :crash, %{model: nil, latency_ms: 0, error: {kind, reason}}}
+        end
+
+      send(channel, {:cleanup_result, id, result})
     end)
 
     socket
@@ -407,6 +451,27 @@ defmodule OrcaHubWeb.VoiceChannel do
   # Defaults to the real cross-node delivery, which is ALWAYS `:queue` —
   # a spoken send must not cancel an in-flight turn (spec section 8).
   defp sender, do: Application.get_env(:orca_hub, :voice_sender, &Cluster.send_message/4)
+
+  # The cleanup implementation, injectable so a test can stand in for the
+  # GB10 router: `config :orca_hub, :voice_cleanup, Module` with `clean/2`.
+  defp cleanup_module, do: Application.get_env(:orca_hub, :voice_cleanup, OrcaHub.Voice.Cleanup)
+
+  defp log_cleanup(session_id, id, result) do
+    {outcome, reason, meta} =
+      case result do
+        {:ok, _text, meta} -> {:ok, nil, meta}
+        {kind, reason, meta} when kind in [:rejected, :skip] -> {kind, reason, meta}
+        other -> {:unexpected, other, %{}}
+      end
+
+    meta = if is_map(meta), do: meta, else: %{}
+
+    Logger.info(
+      "VoiceChannel: cleanup #{id} for #{session_id}: #{outcome}" <>
+        if(reason, do: " (#{inspect(reason)})", else: "") <>
+        " model=#{inspect(Map.get(meta, :model))} latency_ms=#{inspect(Map.get(meta, :latency_ms))}"
+    )
+  end
 
   # -- join helpers ----------------------------------------------------------
 

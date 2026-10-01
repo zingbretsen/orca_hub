@@ -32,6 +32,10 @@ defmodule OrcaHub.Voice.Session do
       §8.3.5); the BROWSER drives the palette, the autocomplete dropdown and
       live navigation, because none of them exist on this side of the wire
     * `{:schedule_tick, ms}` — call `tick/2` no later than `ms` from now
+    * `{:cleanup, id, %{context: ctx, raw: raw}}` — run
+      `OrcaHub.Voice.Cleanup.clean/2` (in a task) and feed the answer back
+      through `cleanup_result/4` under the same `id` (ORCAHUB3-120, see
+      "Rolling cleanup" below). Never emitted unless `cleanup: true`.
 
   `tick/2` is IDEMPOTENT and deadline-driven: it fires whatever deadlines
   have actually passed, so a duplicated or late `{:schedule_tick, _}` costs
@@ -192,6 +196,44 @@ defmodule OrcaHub.Voice.Session do
   means a visible error — a composer that was reported and then went silent
   is a bug, and silently double-delivering around it is how ORCAHUB3-86 got
   filed in the first place.
+
+  ## Rolling cleanup (ORCAHUB3-120)
+
+  Every utterance is transcribed on its own, so the draft collects a full
+  stop and a capital at every pause. With `cleanup: true` the oldest RAW
+  dictation is periodically handed to a fast LLM (`{:cleanup, …}`) and
+  replaced with its cleaned text.
+
+  `draft` stays the one source of truth, computed exactly as without
+  cleanup; `spans` is a parallel partition of it (`Enum.map_join(spans,
+  &(&1.sep <> &1.text)) == draft`, always). A span is `:raw` — one dictated
+  segment's appended text, its joining separator kept apart in `sep` — or
+  `:settled`: cleaned text, a cleanup that was rejected or skipped, an
+  insert, the query a `#`/`##` consumed, and anything TYPED. Only a
+  contiguous run of `:raw` spans is ever sent; every other span ends a run.
+
+  A batch is the first <= 4 segments / ~80 words of the OLDEST run, sent
+  with the draft text before it (its last ~400 characters, word boundary,
+  layout kept) as context only. It is dispatched when the run has >= 2
+  segments, when it is closed (a settled span follows it), when an armed
+  SEND is counting down (flush, even one segment), or after 2000 ms with no
+  transcript applied and nothing on its way to ASR. Never in palette focus,
+  never while a send is pending, and at most ONE at a time — the GPU is
+  shared, and one-at-a-time is also what keeps results in order.
+
+  A result applies only if its batch is still in the draft unchanged: the
+  same span ids, contiguous, still `:raw`, same text. Anything that rewrites
+  the draft wholesale — a `draft_edit` that changes the text, a cancel, a
+  delivery, a restore, and a send firing — settles every span and marks the
+  in-flight batch STALE: its result is dropped when it lands, and only then
+  is the slot free for the next one. Segments that arrived after dispatch
+  stay `:raw` behind the replacement. `{:rejected, …}` and `{:skip, …}` —
+  and an answer lost past the batch's deadline (the module's timeout + 2 s)
+  — settle the batch as it is, so a refusal is never retried. A result that
+  lands in palette focus is dropped and its spans stay raw, to be sent again
+  once focus is back. A cleanup is not speech, so it never touches the
+  arming window; the send fires with whatever the draft is at that moment
+  and is never delayed for a cleanup.
   """
 
   alias OrcaHub.Cluster
@@ -219,6 +261,21 @@ defmodule OrcaHub.Voice.Session do
   # its ring buffer, so it is worth dispatching even unmerged.
   @flag_padded 0x2
 
+  # ORCAHUB3-120, the rolling cleanup. A batch is dispatched at
+  # @cleanup_min_segments raw segments, or after @cleanup_idle_ms with no
+  # transcript applied; it carries at most @cleanup_max_segments segments /
+  # @cleanup_max_words words, because the acceptance guard's missing-word
+  # budget is a fraction of the batch and grows loose on long buffers.
+  @cleanup_min_segments 2
+  @cleanup_idle_ms 2000
+  @cleanup_max_segments 4
+  @cleanup_max_words 80
+  @cleanup_context_chars 400
+  # How long past the module's own timeout an in-flight batch may stay
+  # unanswered before the slot is reclaimed — the channel's task always
+  # answers, so this only matters if it somehow did not.
+  @cleanup_grace_ms 2000
+
   @type frame :: %{
           seq: non_neg_integer(),
           start_sample: non_neg_integer(),
@@ -236,6 +293,10 @@ defmodule OrcaHub.Voice.Session do
           | {:cancelled, String.t()}
           | {:ui_action, String.t(), map()}
           | {:schedule_tick, non_neg_integer()}
+          | {:cleanup, pos_integer(), %{context: String.t(), raw: String.t()}}
+
+  @type cleanup_result ::
+          {:ok, String.t(), map()} | {:rejected, atom(), map()} | {:skip, atom(), map()}
 
   @type focus :: String.t()
 
@@ -294,7 +355,20 @@ defmodule OrcaHub.Voice.Session do
             candidates: [],
             # spec §8.3.7: a `#`/`##` insert just landed, so the next
             # appended transcript concatenates with NO separator.
-            pending_insert: false
+            pending_insert: false,
+            # ORCAHUB3-120 — see "Rolling cleanup" above. Fixed at join.
+            cleanup: false,
+            cleanup_timeout_ms: 3000,
+            # the draft, partitioned: [%{kind: :raw | :settled, sep:, text:,
+            # id:}], `id` set on raw spans only
+            spans: [],
+            next_span_id: 1,
+            # the id of the last `{:cleanup, id, _}` emitted
+            cleanup_seq: 0,
+            # %{id:, span_ids:, raw:, until:, stale:} — the ONE batch out
+            cleanup_inflight: nil,
+            # monotonic ms of the last applied transcript, for the idle rule
+            last_applied_at: nil
 
   @doc """
   A fresh voice session.
@@ -307,13 +381,21 @@ defmodule OrcaHub.Voice.Session do
       normally `ASRConfig.resolve/0`'s `:vocabulary`. Default `""`.
     * `:draft_context` — whether the prompt carries the draft's tail,
       normally `ASRConfig.resolve/0`'s `:draft_context`. Default `true`.
+    * `:cleanup` — whether raw dictation is sent for LLM cleanup
+      (ORCAHUB3-120), normally `ASRConfig.resolve/0`'s `:cleanup_enabled`.
+      Default `false` here, so a session nobody configured behaves exactly as
+      before; the channel passes the resolved value.
+    * `:cleanup_timeout_ms` — the cleanup call's own timeout, used only to
+      bound how long an unanswered batch can hold the slot. Default 3000.
   """
   @spec new(keyword()) :: %__MODULE__{}
   def new(opts \\ []) do
     %__MODULE__{
       threshold: Keyword.get(opts, :threshold, Intent.default_threshold()),
       vocabulary: Keyword.get(opts, :vocabulary, ""),
-      draft_context: Keyword.get(opts, :draft_context, true)
+      draft_context: Keyword.get(opts, :draft_context, true),
+      cleanup: Keyword.get(opts, :cleanup, false) == true,
+      cleanup_timeout_ms: Keyword.get(opts, :cleanup_timeout_ms, 3000)
     }
   end
 
@@ -376,9 +458,12 @@ defmodule OrcaHub.Voice.Session do
 
   Deliberately does NOT touch the arming window. It is a report about the
   DOM, not speech, and §8.3's arming rules list only speech-driven events.
+
+  Leaving the palette may release a cleanup the palette was holding back
+  (ORCAHUB3-120), which is the only reason this takes `now`.
   """
-  @spec ui_focus(%__MODULE__{}, term(), term()) :: {%__MODULE__{}, [effect()]}
-  def ui_focus(state, focus, candidates) do
+  @spec ui_focus(%__MODULE__{}, term(), term(), integer()) :: {%__MODULE__{}, [effect()]}
+  def ui_focus(state, focus, candidates, now \\ System.monotonic_time(:millisecond)) do
     focus = if focus == "palette", do: "palette", else: "composer"
 
     candidates =
@@ -386,7 +471,7 @@ defmodule OrcaHub.Voice.Session do
       |> List.wrap()
       |> Enum.take(@max_candidates)
 
-    {%{state | focus: focus, candidates: candidates}, []}
+    maybe_cleanup(%{state | focus: focus, candidates: candidates}, now)
   end
 
   @doc """
@@ -394,10 +479,18 @@ defmodule OrcaHub.Voice.Session do
 
   Also clears `pending_insert` — the draft the spoken `#` was meant to
   attach to is not the draft any more (spec §8.3.7).
+
+  An edit that actually CHANGES the text makes the whole draft the user's
+  (ORCAHUB3-120): every span settles and an in-flight cleanup goes stale, so
+  its result can never land on text it was not computed from. Dictation
+  after the edit starts fresh raw spans. An edit that matches the server's
+  draft (the client echoing a snapshot back) leaves the spans alone.
   """
   @spec draft_edit(%__MODULE__{}, String.t()) :: {%__MODULE__{}, [effect()]}
-  def draft_edit(state, text) when is_binary(text),
-    do: {%{disarm(state) | draft: text, pending_insert: false}, []}
+  def draft_edit(state, text) when is_binary(text) do
+    state = if text == state.draft, do: state, else: reset_spans(state, text)
+    {%{disarm(state) | draft: text, pending_insert: false}, []}
+  end
 
   @doc """
   Clears the draft and any arming window, IMMEDIATELY.
@@ -433,7 +526,7 @@ defmodule OrcaHub.Voice.Session do
   @spec draft_delivered(%__MODULE__{}) :: {%__MODULE__{}, [effect()]}
   def draft_delivered(state) do
     {%{
-       disarm(state)
+       disarm(reset_spans(state, ""))
        | draft: "",
          send_pending: nil,
          sending: false,
@@ -456,7 +549,12 @@ defmodule OrcaHub.Voice.Session do
   def restore(%__MODULE__{last_cancelled_draft: text} = state)
       when is_binary(text) and text != "" do
     if state.draft == "" do
-      {%{disarm(state) | draft: text, last_cancelled_draft: nil, pending_insert: false}, []}
+      {%{
+         disarm(reset_spans(state, text))
+         | draft: text,
+           last_cancelled_draft: nil,
+           pending_insert: false
+       }, []}
     else
       {state, []}
     end
@@ -467,11 +565,11 @@ defmodule OrcaHub.Voice.Session do
   # The one place a draft is ever thrown away by a cancel. Remembers what it
   # threw away and says so, so no clearing path can forget to.
   defp clear_draft(%__MODULE__{draft: ""} = state),
-    do: {%{state | pending_insert: false}, []}
+    do: {%{reset_spans(state, "") | pending_insert: false}, []}
 
   defp clear_draft(%__MODULE__{draft: text} = state),
     do:
-      {%{state | draft: "", last_cancelled_draft: text, pending_insert: false},
+      {%{reset_spans(state, "") | draft: "", last_cancelled_draft: text, pending_insert: false},
        [{:cancelled, text}]}
 
   @doc """
@@ -506,8 +604,15 @@ defmodule OrcaHub.Voice.Session do
     # §8.3.7: a send clears `pending_insert`. The draft is final as of this
     # moment, so whatever the `#` was going to collect, it is not collecting
     # it any more — even on the paths where the draft survives the attempt.
-    {%{disarm(state) | sending: true, send_pending: pending, pending_insert: false},
-     [{:send_request, state.draft}, {:schedule_tick, @send_request_ms}]}
+    # The same reasoning settles every span and drops an in-flight cleanup
+    # (ORCAHUB3-120): the text has left, and a late cleanup must not rewrite
+    # the copy a failed send leaves behind.
+    {%{
+       disarm(reset_spans(state, state.draft))
+       | sending: true,
+         send_pending: pending,
+         pending_insert: false
+     }, [{:send_request, state.draft}, {:schedule_tick, @send_request_ms}]}
   end
 
   @doc """
@@ -573,7 +678,7 @@ defmodule OrcaHub.Voice.Session do
     text = text || state.draft
 
     {%{
-       disarm(state)
+       disarm(reset_spans(state, ""))
        | sending: false,
          draft: "",
          send_pending: nil,
@@ -695,7 +800,16 @@ defmodule OrcaHub.Voice.Session do
           {%__MODULE__{}, [effect()]}
   def transcript(state, seq, result, now) do
     if Enum.any?(state.awaiting, &(&1.seq == seq)) do
-      drain(%{state | buffered: Map.put(state.buffered, seq, result)}, now, [])
+      waiting = length(state.awaiting)
+      {state, effects} = drain(%{state | buffered: Map.put(state.buffered, seq, result)}, now, [])
+
+      # The idle clock restarts on every APPLIED transcript, whatever it
+      # turned out to be — a buffered out-of-order one has not been applied.
+      state =
+        if length(state.awaiting) < waiting, do: %{state | last_applied_at: now}, else: state
+
+      {state, cleanup_effects} = maybe_cleanup(state, now)
+      {state, effects ++ cleanup_effects}
     else
       {state, []}
     end
@@ -1030,10 +1144,13 @@ defmodule OrcaHub.Voice.Session do
         true -> state.draft <> " " <> text
       end
 
+    # An insert is never dictation, so it lands as a SETTLED span and ends
+    # whatever raw run precedes it (ORCAHUB3-120). The whitespace trim above
+    # can only ever eat into a settled span — raw text is trimmed on append.
     %{
-      state
+      disarm(state)
       | draft: draft,
-        arming_until: nil,
+        spans: resync_spans(state.spans, draft),
         pending_insert: String.trim_trailing(text) == text
     }
   end
@@ -1077,22 +1194,263 @@ defmodule OrcaHub.Voice.Session do
     # and the line after a spoken newline both keep their punctuation.
     text = if state.pending_insert, do: spoken_query(text), else: text
 
-    draft =
+    sep =
       cond do
-        text == "" -> state.draft
-        state.draft == "" -> text
-        state.pending_insert -> state.draft <> text
-        String.trim_trailing(state.draft) != state.draft -> state.draft <> text
-        true -> state.draft <> " " <> text
+        state.draft == "" -> ""
+        state.pending_insert -> ""
+        String.trim_trailing(state.draft) != state.draft -> ""
+        true -> " "
       end
+
+    state = if text == "", do: state, else: push_span(state, sep, text)
+
+    %{disarm(state) | pending_insert: state.pending_insert and text == ""}
+  end
+
+  # One appended transcript, as a span (ORCAHUB3-120). Dictation is RAW —
+  # the only text a cleanup may ever touch — except the segment that
+  # consumes a `#`/`##` trigger, which is a search query and is SETTLED so it
+  # is never sent, and closes the run before it.
+  defp push_span(state, sep, text) do
+    span =
+      if state.pending_insert,
+        do: %{kind: :settled, sep: sep, text: text, id: nil},
+        else: %{kind: :raw, sep: sep, text: text, id: state.next_span_id}
 
     %{
       state
-      | draft: draft,
-        arming_until: nil,
-        pending_insert: state.pending_insert and text == ""
+      | draft: state.draft <> sep <> text,
+        spans: state.spans ++ [span],
+        next_span_id: state.next_span_id + 1
     }
   end
+
+  # -- rolling cleanup (ORCAHUB3-120) ----------------------------------------
+
+  @doc """
+  The answer to `{:cleanup, id, _}` — `OrcaHub.Voice.Cleanup.clean/2`'s
+  return value, verbatim.
+
+  Ignored unless `id` is the batch in flight. A STALE batch (the draft was
+  rewritten after it went out) is dropped, and so is one that lands in
+  palette focus, whose spans stay raw and go again once focus is back.
+  Otherwise `{:ok, cleaned, _}` replaces the batch's spans with ONE settled
+  span — provided they are still in the draft exactly as sent — and
+  `{:rejected, _, _}` / `{:skip, _, _}` settle them as they are, so a
+  refusal is never retried. Either way the slot frees, and the next batch
+  may go out in the same transition.
+  """
+  @spec cleanup_result(%__MODULE__{}, pos_integer(), cleanup_result() | term(), integer()) ::
+          {%__MODULE__{}, [effect()]}
+  def cleanup_result(state, id, result, now \\ System.monotonic_time(:millisecond))
+
+  def cleanup_result(%__MODULE__{cleanup_inflight: %{id: id} = batch} = state, id, result, now) do
+    state = %{state | cleanup_inflight: nil}
+
+    state =
+      cond do
+        batch.stale -> state
+        state.focus == "palette" -> state
+        true -> apply_cleanup(state, batch, result)
+      end
+
+    maybe_cleanup(state, now)
+  end
+
+  def cleanup_result(state, _id, _result, _now), do: {state, []}
+
+  defp apply_cleanup(state, batch, result) do
+    case locate_batch(state.spans, batch) do
+      {:ok, before, spans, rest} ->
+        spans = before ++ replacement(spans, result) ++ rest
+        %{state | spans: spans, draft: spans_text(spans)}
+
+      :error ->
+        state
+    end
+  end
+
+  # The batch's first separator stays where it was, so the cleaned text joins
+  # the draft exactly as the raw text did.
+  defp replacement([first | _] = spans, {:ok, cleaned, _meta}) when is_binary(cleaned) do
+    case String.trim(cleaned) do
+      "" -> settle(spans)
+      text -> [%{kind: :settled, sep: first.sep, text: text, id: nil}]
+    end
+  end
+
+  defp replacement(spans, _rejected_or_skipped), do: settle(spans)
+
+  defp settle(spans), do: Enum.map(spans, &%{&1 | kind: :settled, id: nil})
+
+  # The batch as dispatched, or `:error` if any of it has moved, changed or
+  # settled since. Nothing short of the exact same raw spans gets replaced.
+  defp locate_batch(spans, %{span_ids: [first | _] = ids, raw: raw}) do
+    case Enum.find_index(spans, &(&1.id == first)) do
+      nil ->
+        :error
+
+      index ->
+        {before, from} = Enum.split(spans, index)
+        {batch, rest} = Enum.split(from, length(ids))
+
+        if Enum.map(batch, & &1.id) == ids and Enum.all?(batch, &(&1.kind == :raw)) and
+             run_text(batch) == raw,
+           do: {:ok, before, batch, rest},
+           else: :error
+    end
+  end
+
+  # Decides whether the next batch goes out NOW, later (a tick at the idle
+  # deadline), or not at all. Called after every transition that can make a
+  # batch due: a transcript, a cleanup result, a tick, and focus returning.
+  defp maybe_cleanup(%__MODULE__{cleanup: false} = state, _now), do: {state, []}
+
+  defp maybe_cleanup(%__MODULE__{cleanup_inflight: batch} = state, _now) when batch != nil,
+    do: {state, []}
+
+  defp maybe_cleanup(%__MODULE__{focus: "palette"} = state, _now), do: {state, []}
+
+  defp maybe_cleanup(%__MODULE__{send_pending: pending} = state, _now) when pending != nil,
+    do: {state, []}
+
+  defp maybe_cleanup(%__MODULE__{sending: true} = state, _now), do: {state, []}
+
+  defp maybe_cleanup(state, now) do
+    case oldest_run(state.spans) do
+      nil ->
+        {state, []}
+
+      {before, run, closed?} ->
+        cond do
+          closed? or length(run) >= @cleanup_min_segments or flushing?(state) ->
+            dispatch_cleanup(state, before, run, now)
+
+          # Something is still on its way to ASR and will land on this run.
+          state.awaiting != [] or state.held != nil ->
+            {state, []}
+
+          idle_wait(state, now) == 0 ->
+            dispatch_cleanup(state, before, run, now)
+
+          true ->
+            {state, [{:schedule_tick, idle_wait(state, now)}]}
+        end
+    end
+  end
+
+  # A spoken send is counting down: clean whatever raw tail is left, even one
+  # segment, so it usually lands before the window expires. The send itself
+  # never waits for it.
+  defp flushing?(state), do: is_integer(state.arming_until) and state.arming_kind == :send
+
+  defp idle_wait(%__MODULE__{last_applied_at: nil}, _now), do: 0
+  defp idle_wait(state, now), do: max(state.last_applied_at + @cleanup_idle_ms - now, 0)
+
+  defp dispatch_cleanup(state, before, run, now) do
+    batch = take_batch(run)
+    id = state.cleanup_seq + 1
+    raw = run_text(batch)
+    context = before |> spans_text() |> context_tail()
+    ttl = state.cleanup_timeout_ms + @cleanup_grace_ms
+
+    inflight = %{
+      id: id,
+      span_ids: Enum.map(batch, & &1.id),
+      raw: raw,
+      until: now + ttl,
+      stale: false
+    }
+
+    {%{state | cleanup_seq: id, cleanup_inflight: inflight},
+     [{:cleanup, id, %{context: context, raw: raw}}, {:schedule_tick, ttl}]}
+  end
+
+  # The first contiguous run of raw spans: what precedes it (all settled),
+  # the run, and whether anything FOLLOWS it — a closed run cannot grow, so
+  # there is no point waiting for it to.
+  defp oldest_run(spans) do
+    {before, from} = Enum.split_while(spans, &(&1.kind != :raw))
+
+    case Enum.split_while(from, &(&1.kind == :raw)) do
+      {[], _} -> nil
+      {run, after_run} -> {before, run, after_run != []}
+    end
+  end
+
+  # The batch cap: the guard's missing-word budget is a fraction of the
+  # batch, so a long one lets a dropped clause through. Always at least one.
+  defp take_batch([first | rest]) do
+    {batch, _words} =
+      Enum.reduce_while(rest, {[first], word_count(first.text)}, fn span, {acc, words} ->
+        words = words + word_count(span.text)
+
+        if length(acc) < @cleanup_max_segments and words <= @cleanup_max_words,
+          do: {:cont, {[span | acc], words}},
+          else: {:halt, {acc, words}}
+      end)
+
+    Enum.reverse(batch)
+  end
+
+  defp word_count(text), do: text |> String.split() |> length()
+
+  # The raw text of a run exactly as it sits in the draft, minus the run's
+  # own leading separator (which belongs to the join, not the dictation).
+  defp run_text([first | rest]), do: first.text <> spans_text(rest)
+
+  defp spans_text(spans), do: Enum.map_join(spans, &(&1.sep <> &1.text))
+
+  # The context the model sees: the LAST ~400 characters before the batch,
+  # cut on a word boundary. Unlike the Whisper prompt it keeps its layout —
+  # a trailing newline or a list item is exactly what tells the model how
+  # the raw text continues.
+  defp context_tail(text) do
+    if String.length(text) <= @cleanup_context_chars do
+      text
+    else
+      slice = String.slice(text, -(@cleanup_context_chars + 1), @cleanup_context_chars + 1)
+
+      case String.split(slice, ~r/\s/u, parts: 2) do
+        [_partial, rest] -> String.trim_leading(rest)
+        [_one_long_word] -> ""
+      end
+    end
+  end
+
+  # The whole draft becomes one settled span — it was rewritten by something
+  # other than dictation — and an in-flight batch can no longer be trusted
+  # to land on the text it was computed from.
+  defp reset_spans(state, text) do
+    spans = if text == "", do: [], else: [%{kind: :settled, sep: "", text: text, id: nil}]
+    %{state | spans: spans, cleanup_inflight: stale(state.cleanup_inflight)}
+  end
+
+  defp stale(nil), do: nil
+  defp stale(batch), do: %{batch | stale: true}
+
+  # `draft` was rewritten in place (an insert trimming trailing whitespace,
+  # then appending): keep every span that is still a verbatim prefix of it,
+  # and make whatever is left one settled span.
+  defp resync_spans(spans, draft) do
+    {kept, consumed} = keep_prefix(spans, draft, [], 0)
+
+    case binary_part(draft, consumed, byte_size(draft) - consumed) do
+      "" -> kept
+      rest -> kept ++ [%{kind: :settled, sep: "", text: rest, id: nil}]
+    end
+  end
+
+  defp keep_prefix([span | rest], draft, acc, pos) do
+    piece = span.sep <> span.text
+    size = byte_size(piece)
+
+    if pos + size <= byte_size(draft) and binary_part(draft, pos, size) == piece,
+      do: keep_prefix(rest, draft, [span | acc], pos + size),
+      else: {Enum.reverse(acc), pos}
+  end
+
+  defp keep_prefix([], _draft, acc, pos), do: {Enum.reverse(acc), pos}
 
   # -- timers ----------------------------------------------------------------
 
@@ -1107,8 +1465,21 @@ defmodule OrcaHub.Voice.Session do
     {state, hold_effects} = expire_hold(state, now)
     {state, arming_effects} = expire_arming(state, now)
     {state, request_effects} = expire_send_request(state, now)
-    {state, hold_effects ++ arming_effects ++ request_effects}
+    state = expire_cleanup(state, now)
+    {state, cleanup_effects} = maybe_cleanup(state, now)
+    {state, hold_effects ++ arming_effects ++ request_effects ++ cleanup_effects}
   end
+
+  # The channel's task always answers, but a lost answer must not wedge the
+  # one-at-a-time slot for the rest of the session. It counts as a skip, so
+  # the batch settles rather than going round again.
+  defp expire_cleanup(%__MODULE__{cleanup_inflight: %{until: until} = batch} = state, now)
+       when now >= until do
+    state = %{state | cleanup_inflight: nil}
+    if batch.stale, do: state, else: apply_cleanup(state, batch, {:skip, :lost, %{}})
+  end
+
+  defp expire_cleanup(state, _now), do: state
 
   defp expire_hold(%__MODULE__{held: nil} = state, _now), do: {state, []}
 

@@ -124,6 +124,7 @@ const RESOLVER = dataUrl(`
     "./channel": STUB_CHANNEL,
     "./sounds": STUB_SOUNDS,
     "./frame": pathToFileURL(join(HERE, "frame.js")).href,
+    "./draft_sync": pathToFileURL(join(HERE, "draft_sync.js")).href,
   })}
   export async function resolve(specifier, context, next) {
     const mapped = MAP[specifier]

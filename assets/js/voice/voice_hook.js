@@ -46,6 +46,13 @@
  *    `_writeDraft` + `draft_edit`, i.e. the ordinary sink path, so composer
  *    and server land on the same text.
  *
+ *    ORCAHUB3-120: the server's rolling cleanup REWRITES text already in the
+ *    box, asynchronously. A snapshot is therefore written only into a box
+ *    that still holds exactly what `_writeDraft` last put there
+ *    (`_lastWrite`); a box that differs was typed in, and its text goes back
+ *    up as a `draft_edit` instead. A caret parked mid-text is mapped through
+ *    the rewrite. The rule is pure in `draft_sync.js`.
+ *
  * 5. SEND (ORCAHUB3-86). The server asks (`send_request`); we answer. With a
  *    composer on the page we set its textarea and `requestSubmit()` it, so
  *    `SessionLive.Show.send_message` runs and staged uploads/attachment lines
@@ -144,6 +151,7 @@ import {
   MIN_SEGMENT_SAMPLES,
 } from "./frame"
 import { createVad, VAD_SETTINGS } from "./vad"
+import { draftSinkAction, mapCaret } from "./draft_sync"
 import * as Sounds from "./sounds"
 import { persistSoundsEnabled, soundsEnabled, VoiceSounds } from "./sounds"
 
@@ -326,6 +334,11 @@ export const VoiceHook = {
     this._applyingDraft = false
     this._pendingSend = null
     this._lastSink = null
+    // ORCAHUB3-120: `{el, text}` — what this hook last wrote into which sink.
+    // The server can now REWRITE text the box already shows (the rolling
+    // cleanup), so a server draft only overwrites a box that still holds
+    // exactly this; see `draft_sync.js`.
+    this._lastWrite = null
     // §8.3.11 (ORCAHUB3-99): the draft the last cancel threw away, as the
     // SINK held it. This copy outranks the server's, because a debounced
     // `draft_edit` may still have been in flight when the cancel landed —
@@ -1679,6 +1692,8 @@ export const VoiceHook = {
     if (!this.active || this.composerPresent) {
       this._hide(box)
       box.value = ""
+      // We emptied it, so that is what it holds as far as the sink rule cares.
+      if (this._lastWrite && this._lastWrite.el === box) this._lastWrite = { el: box, text: "" }
       return
     }
     if (box.value !== "" || document.activeElement === box) this._show(box)
@@ -1744,18 +1759,40 @@ export const VoiceHook = {
       }
     }
 
-    // Never clobber what the user is mid-way through typing: while a
-    // draft_edit is still debouncing, the local value is the newer truth.
-    if (this._timers.draft) return
-    // ...and never let a stale empty snapshot eat typed text either. An empty
-    // draft only reaches the sink through an EXPLICIT clear — "sent", a
-    // spoken "orca cancel", or the composer's own submit — each of which
-    // calls _writeDraft("") directly.
-    if (text === "" && el.value !== "") return
-
-    // Server-driven, so an append here is a freshly transcribed segment —
-    // follow it down rather than leaving the newest words below the fold.
-    this._writeDraft(text, { follow: true })
+    // `draft_sync.js` holds the rule (and `draft_sync.check.mjs` pins it):
+    //  - never clobber what the user is mid-way through typing: while a
+    //    draft_edit is still debouncing, the local value is the newer truth;
+    //  - never let a stale empty snapshot eat typed text either. An empty
+    //    draft only reaches the sink through an EXPLICIT clear — "sent", a
+    //    spoken "orca cancel", or the composer's own submit — each of which
+    //    calls _writeDraft("") directly;
+    //  - ORCAHUB3-120: the server can now REWRITE text the box already shows
+    //    (the rolling cleanup), so it only overwrites a box that still holds
+    //    exactly what we last wrote. Otherwise the user typed and the server
+    //    has not seen it yet — re-assert the box instead of overwriting it.
+    const last = this._lastWrite && this._lastWrite.el === el ? this._lastWrite.text : null
+    switch (
+      draftSinkAction({
+        value: el.value,
+        incoming: text,
+        lastWritten: last,
+        debouncing: !!this._timers.draft,
+      })
+    ) {
+      case "in_sync":
+        this._lastWrite = { el, text }
+        return
+      case "reassert":
+        this._pushDraftEdit(el.value)
+        return
+      case "write":
+        // Server-driven, so usually a freshly transcribed segment — follow it
+        // down rather than leaving the newest words below the fold.
+        this._writeDraft(text, { follow: true })
+        return
+      default:
+        return
+    }
   },
 
   /** Write the draft into whichever textarea the sink rule picked.
@@ -1777,9 +1814,14 @@ export const VoiceHook = {
    */
   _writeDraft(text, { follow = false } = {}) {
     const el = this._draftEl()
-    if (!el || el.value === text) return
+    if (!el) return
+    // Recorded even when nothing changes: it is what `_renderDraft` compares
+    // the box against to tell our text from the user's.
+    this._lastWrite = { el, text }
+    if (el.value === text) return
     // All sampled BEFORE the write: it moves the caret, and the browser then
     // scrolls that caret into view on a focused textarea all by itself.
+    const before = el.value
     const grew = text.length > el.value.length
     const editingMidText =
       document.activeElement === el &&
@@ -1796,10 +1838,12 @@ export const VoiceHook = {
       this._applyingDraft = false
     }
     if (caret) {
-      // The server only ever appends, so a mid-text offset still points at the
-      // same character. Restore scroll LAST — setting the range re-scrolls.
-      el.selectionStart = Math.min(caret.start, text.length)
-      el.selectionEnd = Math.min(caret.end, text.length)
+      // ORCAHUB3-120: the server no longer only appends — a cleanup can
+      // rewrite text before or around the caret — so the offset is mapped
+      // through the change rather than merely clamped. Restore scroll LAST —
+      // setting the range re-scrolls.
+      el.selectionStart = mapCaret(before, text, caret.start)
+      el.selectionEnd = mapCaret(before, text, caret.end)
       el.scrollTop = caret.scrollTop
       return
     }

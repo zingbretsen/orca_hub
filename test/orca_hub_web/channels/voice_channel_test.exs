@@ -1,3 +1,12 @@
+defmodule OrcaHubWeb.VoiceChannelTest.CleanupStub do
+  @moduledoc false
+  # Stands in for `OrcaHub.Voice.Cleanup` (ORCAHUB3-120) through the
+  # channel's `:voice_cleanup` seam: whatever 2-arity fun the test put in
+  # `:voice_cleanup_stub` answers, called from the channel's Task.
+  def clean(input, config),
+    do: Application.fetch_env!(:orca_hub, :voice_cleanup_stub).(input, config)
+end
+
 defmodule OrcaHubWeb.VoiceChannelTest do
   @moduledoc """
   The `voice:<session_id>` channel against the wire contract in
@@ -17,6 +26,10 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       injected call is a sharper check of what this channel does (right
       node, right session, right text, `:queue` and never `:interrupt`)
       than reading a row back out afterwards.
+    * CLEANUP (ORCAHUB3-120) — `:voice_cleanup`, the module the channel
+      calls `clean/2` on, is `CleanupStub` in every test, so nothing here
+      ever reaches the GB10 router. By default it reports the call and
+      answers `{:skip, …}`, which leaves the draft exactly as it was.
   """
   # async: false — VoiceChannel.join/3 resolves the session through HubRPC,
   # which goes via :erpc even for the local node, and both app-env seams
@@ -58,9 +71,18 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       :ok
     end)
 
+    Application.put_env(:orca_hub, :voice_cleanup, __MODULE__.CleanupStub)
+
+    stub_cleanup(fn input, _config ->
+      send(test_pid, {:cleanup_called, self(), input})
+      {:skip, :disabled, %{model: nil, latency_ms: 0}}
+    end)
+
     on_exit(fn ->
       Application.delete_env(:orca_hub, :asr_req_options)
       Application.delete_env(:orca_hub, :voice_sender)
+      Application.delete_env(:orca_hub, :voice_cleanup)
+      Application.delete_env(:orca_hub, :voice_cleanup_stub)
     end)
 
     dir = Path.join(System.tmp_dir!(), "voice_channel_test_#{System.unique_integer([:positive])}")
@@ -89,6 +111,8 @@ defmodule OrcaHubWeb.VoiceChannelTest do
   defp join(session_id) do
     subscribe_and_join(socket(UserSocket, nil, %{}), VoiceChannel, "voice:#{session_id}", %{})
   end
+
+  defp stub_cleanup(fun), do: Application.put_env(:orca_hub, :voice_cleanup_stub, fun)
 
   # Joins and waits out the warm-up ping's state push, so a test's own
   # assertions start from a known `listening` baseline. (The join REPLY
@@ -777,6 +801,128 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       assert map_size(form) + 1 <= 4
 
       assert_push "state", %{draft: "the house on Darling Court is framed"}, 2_000
+    end
+  end
+
+  # -- ORCAHUB3-120: the rolling cleanup -------------------------------------
+
+  # One dictated segment, transcribed and applied before the next is pushed,
+  # so the order of the ASR answers is never a race.
+  defp dictate!(socket, seq, text) do
+    stub_transcript(text)
+    push(socket, "segment", {:binary, segment(seq, 16_000)})
+    assert_push "segment_result", %{seq: ^seq, action: "appended"}, 2_000
+  end
+
+  describe "rolling cleanup (ORCAHUB3-120)" do
+    test "two dictated segments go out together and the cleaned text comes back as state",
+         %{session: session} do
+      test_pid = self()
+
+      stub_cleanup(fn input, config ->
+        send(test_pid, {:cleanup_called, self(), input, config})
+
+        {:ok, "So the thing is, it keeps disconnecting.",
+         %{model: "gemma-4-26B-A4B", latency_ms: 12}}
+      end)
+
+      {_reply, socket} = join_warm!(session.id)
+
+      dictate!(socket, 1, "So the thing is.")
+      refute_received {:cleanup_called, _, _, _}
+      dictate!(socket, 2, "It keeps disconnecting.")
+
+      assert_receive {:cleanup_called, _task,
+                      %{context: "", raw: "So the thing is. It keeps disconnecting."}, config},
+                     2_000
+
+      # The module gets the config the channel resolved at join.
+      assert config == socket.assigns.config
+
+      assert_push "state", %{draft: "So the thing is, it keeps disconnecting."}, 2_000
+    end
+
+    test "a spoken send carries the cleaned text when it lands inside the window",
+         %{session: session} do
+      stub_cleanup(fn _input, _config ->
+        {:ok, "Let's ship it.", %{model: "gemma-4-26B-A4B", latency_ms: 5}}
+      end)
+
+      {_reply, socket} = join_warm!(session.id)
+      push(socket, "composer", %{"present" => true})
+
+      # The setup's ASR stub: "let's ship it orca send" — one raw segment,
+      # flushed the moment the send arms.
+      push(socket, "segment", {:binary, segment(1, 16_000)})
+      assert_push "segment_result", %{seq: 1, action: "send"}, 2_000
+
+      assert_push "send_request", %{text: "Let's ship it."}, 3_000
+    end
+
+    test "a hand edit while a batch is out wins, and the late answer is dropped",
+         %{session: session} do
+      test_pid = self()
+
+      stub_cleanup(fn input, _config ->
+        send(test_pid, {:cleanup_called, self(), input})
+
+        receive do
+          {:release, reply} -> reply
+        after
+          5_000 -> {:skip, :timeout, %{model: nil, latency_ms: 5_000}}
+        end
+      end)
+
+      {_reply, socket} = join_warm!(session.id)
+      dictate!(socket, 1, "alpha.")
+      dictate!(socket, 2, "Beta.")
+      assert_receive {:cleanup_called, task, %{raw: "alpha. Beta."}}, 2_000
+
+      push(socket, "draft_edit", %{"text" => "alpha. Beta, typed"})
+      assert_push "state", %{draft: "alpha. Beta, typed"}, 1_000
+
+      send(task, {:release, {:ok, "Alpha, beta.", %{model: "gemma-4-26B-A4B", latency_ms: 9}}})
+
+      # The answer's own transition still pushes a snapshot — of the typed text.
+      assert_push "state", %{draft: "alpha. Beta, typed"}, 1_000
+      refute_push "state", %{draft: "Alpha, beta."}
+    end
+
+    test "a crashing cleanup settles its batch, frees the slot and leaves the channel up",
+         %{session: session} do
+      test_pid = self()
+
+      stub_cleanup(fn input, _config ->
+        send(test_pid, {:cleanup_called, self(), input})
+        raise "boom"
+      end)
+
+      {_reply, socket} = join_warm!(session.id)
+      dictate!(socket, 1, "alpha.")
+      dictate!(socket, 2, "Beta.")
+      assert_receive {:cleanup_called, _, %{raw: "alpha. Beta."}}, 2_000
+
+      dictate!(socket, 3, "gamma.")
+      dictate!(socket, 4, "Delta.")
+
+      assert_receive {:cleanup_called, _, %{context: "alpha. Beta.", raw: "gamma. Delta."}},
+                     2_000
+
+      assert Process.alive?(socket.channel_pid)
+    end
+
+    @tag timeout: 30_000
+    test "cleanup_enabled false: the module is never called", %{session: session} do
+      on_exit(fn -> OrcaHub.ASRConfig.delete_provider() end)
+      {:ok, _} = OrcaHub.ASRConfig.put_provider(%{cleanup_enabled: "false"})
+
+      {_reply, socket} = join_warm!(session.id)
+      dictate!(socket, 1, "alpha.")
+      dictate!(socket, 2, "Beta.")
+      assert_push "state", %{draft: "alpha. Beta."}, 1_000
+
+      # Past the 2 s idle deadline too.
+      refute_receive {:cleanup_called, _, _}, 2_500
     end
   end
 end

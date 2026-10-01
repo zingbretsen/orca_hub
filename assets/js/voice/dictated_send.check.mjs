@@ -43,6 +43,7 @@ const RESOLVER = dataUrl(`
       "export function soundsEnabled() { return false }; export function persistSoundsEnabled() {}; export class VoiceSounds {}",
     ),
     "./frame": pathToFileURL(join(HERE, "frame.js")).href,
+    "./draft_sync": pathToFileURL(join(HERE, "draft_sync.js")).href,
   })}
   export async function resolve(specifier, context, next) {
     const mapped = MAP[specifier]
