@@ -15,7 +15,7 @@ defmodule OrcaHub.MemoryExtractionFinalizeSelfTest do
   alias OrcaHub.{MemoryExtraction, Projects, Sessions}
 
   @fallback_backend "claude"
-  @fallback_model "claude-haiku-4-5-20251001"
+  @fallback_model "claude-sonnet-5-5"
   @claude_stub Path.expand("../support/fixtures/claude_stub_noop.sh", __DIR__)
 
   setup do

@@ -95,11 +95,11 @@ defmodule OrcaHub.MemoryExtraction do
   The extraction child's backend/model (`:memory_extraction_backend`/
   `:memory_extraction_model` app env, `MEMORY_EXTRACTION_BACKEND`/
   `MEMORY_EXTRACTION_MODEL` at runtime — see `config/runtime.exs`) may be
-  configured to something other than the Claude/Haiku default, e.g. a local
+  configured to something other than the Claude/Sonnet default, e.g. a local
   pi model. If that first turn errors out before making a single tool call
   (the "model isn't loaded"/HTTP 400 signature of a misconfigured or
   unavailable local endpoint), the archived failed attempt is retried
-  EXACTLY ONCE using the hardcoded Claude/Haiku default, logged loudly. A
+  EXACTLY ONCE using the hardcoded Claude/Sonnet default, logged loudly. A
   session already using the default backend/model pair is never retried
   again — since a retry always respawns with that exact pair, comparing the
   failed child's own `backend`/`model` columns against the fallback IS the
@@ -132,7 +132,7 @@ defmodule OrcaHub.MemoryExtraction do
   alias OrcaHub.{AgentMemory, Cluster, HubRPC, MemoryClient}
 
   @fallback_backend "claude"
-  @fallback_model "claude-haiku-4-5-20251001"
+  @fallback_model "claude-sonnet-5-5"
   @min_user_turns 2
   @min_chars 600
   @chunk_chars 12_000

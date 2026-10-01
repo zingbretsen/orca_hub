@@ -176,7 +176,8 @@ config :orca_hub,
        String.to_integer(System.get_env("EMBEDDING_DIMS") || "1024")
 
 # Backend/model for OrcaHub.MemoryExtraction's spawned child sessions.
-# Defaults to a cheap Claude model; MEMORY_EXTRACTION_BACKEND/_MODEL let
+# Defaults to Claude Sonnet 5.5 (Haiku 4.5 was the default until 2026-10-01,
+# but its extractions were low quality); MEMORY_EXTRACTION_BACKEND/_MODEL let
 # this point at e.g. a local pi model instead — MemoryExtraction's own
 # fallback (see its moduledoc) re-dispatches once with these defaults if
 # the configured backend errors on its very first turn.
@@ -186,7 +187,7 @@ config :orca_hub,
 
 config :orca_hub,
        :memory_extraction_model,
-       System.get_env("MEMORY_EXTRACTION_MODEL") || "claude-haiku-4-5-20251001"
+       System.get_env("MEMORY_EXTRACTION_MODEL") || "claude-sonnet-5-5"
 
 # Text-to-speech for POST /api/tts (OrcaHubWeb.TTSController).
 #
