@@ -448,5 +448,32 @@ console.log("\n10. the reading highlight in the voice view (app.css)")
 }
 
 // ======================================================================
+console.log("\n11. the page draws the seams the renderer writes into")
+{
+  // W2's half of the contract (SessionLive.Show's voice_view/1 and
+  // MessageComponents). If either container stops being hook-owned, the
+  // next patch strips the rail; if the bubble loses its id or marker, a tap
+  // finds no message and nothing reads.
+  const lib = join(HERE, "..", "..", "lib", "orca_hub_web")
+  const show = readFileSync(join(lib, "live", "session_live", "show.ex"), "utf8")
+  const msgs = readFileSync(join(lib, "components", "message_components.ex"), "utf8")
+
+  ok("#voice-rail exists and is hook-owned", /id="voice-rail"\s+phx-update="ignore"/.test(show))
+  ok("#voice-held exists and is hook-owned", /id="voice-held"\s+phx-update="ignore"/.test(show))
+  ok(
+    "both live inside #voice-view (so they only show in the voice view)",
+    /id="voice-view"[\s\S]*?id="voice-held"[\s\S]*?id="voice-rail"/.test(show)
+  )
+  ok(
+    "the assistant bubble keeps the id + marker tap-to-jump resolves",
+    /id=\{"tts-text-#\{@msg_id\}"\}[\s\S]{0,200}?data-tts-text/.test(msgs)
+  )
+  ok(
+    "...and the footer the rail's Play and ttsUpdateUI require",
+    /id=\{"tts-footer-#\{@msg_id\}"\}\s+data-tts-target=\{@msg_id\}/.test(msgs)
+  )
+}
+
+// ======================================================================
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
