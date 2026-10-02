@@ -26,7 +26,7 @@ graph TB
         ApiAuth["Plugs.ApiAuth<br>(scoped token, else ORCA_API_TOKEN)"]
         WebhookCtrl["WebhookController"]
         TTSCtrl["TTSController"]
-        ArtifactCtrl["ArtifactController<br>(/artifacts/:id/raw|download)"]
+        ArtifactCtrl["ArtifactController<br>(/artifacts/:id/raw|download|assets,<br>/api/artifacts/view/:token/*)"]
         FileDownloadCtrl["FileDownloadController<br>(chunked, node-routed)"]
         ApiRunCtrl["ApiRunController<br>(/api/v1/runs)"]
         SessionApiCtrl["SessionApiController<br>(GET /api/v1/sessions,<br>/recent, /:id, /:id/tail)"]
@@ -452,17 +452,43 @@ graph TB
   node — so a large artifact built/tested on disk across turns never has to
   round-trip through the agent's own context just to be saved (ORCAHUB3-56).
 - **Artifact assets** (`lib/orca_hub/artifacts/artifact_asset.ex`,
-  ORCAHUB3-72 slice 2): links an artifact to a file already in the
-  cross-node file store (below) under a name unique per artifact, so the
-  artifact's own HTML can reference it with a relative URL — e.g. `<img
-  src="assets/hero.png">` — which resolves because the artifact itself is
-  loaded via `src=/artifacts/:id/raw`. `attach_artifact_asset` requires the
-  file to already be visible to the calling session (`put_file`/
-  `share_file`) and the artifact to belong to the caller's project or have
-  been created by the caller; the asset is then served publicly at
-  `GET /artifacts/:id/assets/:name` on the same unauthenticated pipeline as
-  `/raw` (no visibility re-check there — an artifact asset is public at the
-  same route as the artifact's own content).
+  ORCAHUB3-72 slice 2, ORCAHUB3-128): links an artifact to a file already in
+  the cross-node file store (below) under a name unique per artifact, so the
+  artifact's own HTML can reference it with a relative URL, e.g. `<img
+  src="assets/hero.png">`. `attach_artifact_asset` requires the file to
+  already be visible to the calling session (`put_file`/`share_file`) and
+  the artifact to belong to the caller's project or have been created by the
+  caller. There is no visibility re-check when serving: an asset is exactly
+  as reachable as the artifact's own content.
+  **Signed capability URLs** (`OrcaHubWeb.ArtifactURL`): the viewer iframes
+  are `sandbox="allow-scripts"`, an opaque origin, so their `<img>`/
+  `<video>`/fetch requests are cross-site for cookie purposes and never carry
+  Authelia's SameSite=Lax cookie. On the original `/artifacts/:id/*` routes
+  forward-auth 302'd every asset to the login page (ORCAHUB3-79). So both
+  viewers (`ArtifactLive.Show`, `SessionLive.Show`'s split panel) load
+  `/api/artifacts/view/<token>/raw?v=<version>`, and the relative
+  `assets/<name>` resolves to `/api/artifacts/view/<token>/assets/<name>`,
+  with no HTML rewriting. `/api` is the prefix Authelia bypasses on this
+  host, so these routes authenticate themselves: the token in the path is a
+  `Phoenix.Token` scoped to ONE artifact id (its own salt), with `signed_at`
+  floored to the hour so URLs stay stable and browser-cacheable, and
+  `max_age` from `:artifact_url_max_age_seconds` (default 24h). A bad,
+  expired or other-artifact token gets the same bare 404 as a missing
+  artifact. These are OrcaHub-minted capabilities, not S3 presigning, so the
+  bucket stays private and the local adapter works too. Mint on the hub
+  (`HubRPC.artifact_raw_url/1`, `artifact_asset_url/2`, `artifact_urls/2`
+  return absolute URLs): its `secret_key_base` is the one that verifies
+  behind the public ingress, and its `Endpoint.url/0` is the public base.
+  The LiveViews mint the src into an assign on open and on a version bump,
+  never in the template, because a re-mint after the hour rolls over would
+  reload the iframe and wipe its state. Asset responses keep CSP `sandbox`
+  and nosniff, and the token route adds `Access-Control-Allow-Origin: *`
+  (opaque-origin fetch()/@font-face are CORS-mode; no cookie is involved)
+  and `Referrer-Policy: no-referrer`. Both asset routes answer single-range
+  HTTP Range with 206/416 (iOS Safari won't play `<video>` without it),
+  reading only that window via `ObjectStore.get_range/3`. The old
+  `/artifacts/:id/{raw,download,assets/:name}` routes stay, Authelia-gated,
+  with no app-level auth.
 - **File store** (`lib/orca_hub/files.ex`, `object_store.ex` +
   `object_store/{local,s3}.ex`, `mcp/tools/files.ex`, hub-owned): lets
   sessions on different nodes exchange files (`put_file`/`get_file`/
