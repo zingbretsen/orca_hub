@@ -65,6 +65,7 @@ defmodule OrcaHub.Backend do
             plan_mode: boolean,
             plan_mode_toggle: boolean,
             ask_user_question: boolean,
+            blocking_dialogs: boolean,
             session_stats: boolean,
             steering: boolean,
             streaming_deltas: boolean
@@ -100,6 +101,16 @@ defmodule OrcaHub.Backend do
               # write a meaningless "/plan" turn into their native protocol.
               plan_mode_toggle: false,
               ask_user_question: true,
+              # ORCAHUB3-60: whether this backend's interactive question
+              # BLOCKS the in-flight turn until it is answered or times out
+              # (pi's extension-UI dialogs), rather than ending the turn
+              # (Claude's AskUserQuestion). For such a backend a `"waiting"`
+              # status is always an overlay on a turn that is still in flight,
+              # like `"compacting"`. So anything that reads `"waiting"` as
+              # "the turn is over" (heartbeat delivery, SessionResumer,
+              # ForkGate, the stall alert) must treat it as `"running"`. The
+              # shared predicate is `Session.waiting_mid_turn?/1`.
+              blocking_dialogs: false,
               # pi-only (spec §12.3): whether this backend can report
               # token/cost/context-window session stats on demand (pi's
               # `get_session_stats` RPC command). Deliberately NOT the same

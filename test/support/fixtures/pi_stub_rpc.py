@@ -40,6 +40,23 @@ protocol's "events never have an id" rule — spec's docs/rpc.md):
                                         matching extension_ui_response,
                                         mirroring the real pi binary's
                                         documented blocking behavior.
+  - {"type":"prompt","message":"ask a question then time out"} -> (ORCAHUB3-60)
+                                        same opening as "ask a question", but
+                                        with DIFFERENT ids on the tool call
+                                        ("call-question-2") and the dialog
+                                        ("ui-req-2"), as the real binary has.
+                                        The dialog is never answered. The stub
+                                        blocks until a test-injected
+                                        {"type":"stub_dialog_timeout"} line,
+                                        which stands in for pi's internal
+                                        dialog timer (no wire signal of its
+                                        own, docs/rpc.md). It then emits the
+                                        question tool's tool_execution_end
+                                        and blocks AGAIN until
+                                        {"type":"stub_finish_turn"}, so a test
+                                        can observe the mid-turn state between
+                                        the timeout and the turn end. Then it
+                                        sends message_end{text} and agent_end.
   - {"type":"abort"}               -> {"type":"response","command":"abort",
                                         "success":true} (no further events —
                                         mirrors the codex stub's posture that a
@@ -216,6 +233,97 @@ def handle_ask_a_question(message):
     )
 
 
+def wait_for_stub_command(expected_type):
+    # Test-only control lines, written straight to this process's stdin by
+    # the test (never by OrcaHub). Anything else read while waiting is
+    # ignored, the same as the real binary leaves a queued steer unread while
+    # a dialog blocks the turn.
+    for line in sys.stdin:
+        try:
+            msg = json.loads(line) if line.strip() else {}
+        except ValueError:
+            continue
+        log_command(msg.get("type", ""))
+        if msg.get("type") == expected_type:
+            return
+
+
+def handle_ask_then_time_out(message):
+    send({"type": "response", "command": "prompt", "success": True})
+    send({"type": "agent_start"})
+
+    send(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "toolCall",
+                        "id": "call-question-2",
+                        "name": "question",
+                        "arguments": {"question": "Proceed?"},
+                    }
+                ],
+                "usage": {"input": 10, "output": 5, "cacheRead": 0, "cacheWrite": 0, "cost": {"total": 0.00001}},
+                "stopReason": "toolUse",
+            },
+        }
+    )
+
+    send(
+        {
+            "type": "extension_ui_request",
+            "id": "ui-req-2",
+            "method": "input",
+            "title": "Proceed?",
+            "placeholder": "Type your answer...",
+            "timeout": 600000,
+        }
+    )
+
+    wait_for_stub_command("stub_dialog_timeout")
+
+    send(
+        {
+            "type": "tool_execution_end",
+            "toolCallId": "call-question-2",
+            "toolName": "question",
+            "result": {"content": [{"type": "text", "text": "No answer (the question timed out)."}]},
+            "isError": False,
+        }
+    )
+
+    wait_for_stub_command("stub_finish_turn")
+
+    send(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Proceeding without an answer."}],
+                "usage": {"input": 5, "output": 5, "cacheRead": 0, "cacheWrite": 0, "cost": {"total": 0.00001}},
+                "stopReason": "stop",
+            },
+        }
+    )
+
+    send(
+        {
+            "type": "agent_end",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": message}]},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Proceeding without an answer."}],
+                    "usage": {"input": 5, "output": 5, "cacheRead": 0, "cacheWrite": 0, "cost": {"total": 0.00001}},
+                    "stopReason": "stop",
+                },
+            ],
+        }
+    )
+
+
 def handle_plan_toggle():
     # Live-verified against the real 0.80.3 binary (spec §12.4): a pure
     # extension command never starts an agent turn — just the
@@ -235,6 +343,10 @@ def handle_plan_toggle():
 def handle_prompt(message):
     if message == "ask a question":
         handle_ask_a_question(message)
+        return
+
+    if message == "ask a question then time out":
+        handle_ask_then_time_out(message)
         return
 
     if message == "/plan":

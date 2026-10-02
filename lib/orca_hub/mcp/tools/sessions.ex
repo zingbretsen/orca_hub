@@ -88,7 +88,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "status" => %{
               "type" => "string",
               "enum" => ["running", "idle", "waiting", "error", "ready"],
-              "description" => "Optional filter by session status"
+              "description" =>
+                "Optional filter by session status. \"waiting\" means blocked on an " <>
+                  "unanswered question: a Claude AskUserQuestion (the turn has ended), or a " <>
+                  "pi dialog (the turn is still in flight, blocked until it is answered or " <>
+                  "times out)."
             },
             "session_id" => %{
               "type" => "string",

@@ -78,7 +78,15 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   """
 
   alias OrcaHub.{AlertSubscriptions, Cluster, Sessions}
-  alias OrcaHub.Sessions.{Churn, ChurnDetail, EditFailure, FileSurgery, SurgeryAlertPolicy}
+
+  alias OrcaHub.Sessions.{
+    Churn,
+    ChurnDetail,
+    EditFailure,
+    FileSurgery,
+    Session,
+    SurgeryAlertPolicy
+  }
 
   @doc """
   Evaluates every enabled alert subscription and returns `{alerts,
@@ -343,9 +351,17 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   end
 
   defp stall?(session, activity) do
-    session.status == "running" and (activity[:messages_15m] || 0) == 0 and
+    turn_in_flight?(session) and (activity[:messages_15m] || 0) == 0 and
       (activity[:tool_calls_15m] || 0) == 0
   end
+
+  # ORCAHUB3-60: a pi turn blocked on a dialog now reads "waiting", but it is
+  # still the running turn it was before, so stall/no_commit_for see it
+  # exactly as they did. Letting "waiting" switch `stall` off here would be
+  # the stall/pending_question de-duplication by the back door, which the
+  # issue deliberately leaves for later.
+  defp turn_in_flight?(session),
+    do: session.status == "running" or Session.waiting_mid_turn?(session)
 
   # Only meaningful once progress has EVER been reported —
   # Churn.assess/4's minutes_since_progress_update is already nil when
@@ -359,7 +375,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   end
 
   defp no_commit_for?(session, activity, churn, minutes) do
-    session.status == "running" and (activity[:tool_calls_15m] || 0) > 0 and
+    turn_in_flight?(session) and (activity[:tool_calls_15m] || 0) > 0 and
       (is_nil(churn.minutes_since_last_commit) or churn.minutes_since_last_commit > minutes)
   end
 

@@ -24,7 +24,10 @@ defmodule OrcaHub.SessionResumer do
       retries it.
     - `waiting`/`compacting` sessions are never touched (`waiting` means
       blocked on user input by design; the DB query only ever selects
-      `running`).
+      `running`). The one exception is a MID-TURN `waiting`
+      (`Session.waiting_mid_turn?/1`, ORCAHUB3-60): a pi turn blocked on a
+      dialog was in flight like any `running` one, and its dialog died with
+      the node, so it is resumed exactly as if it still read `running`.
     - Defensive: re-checks `SessionSupervisor.session_alive?/1` per session
       right before resuming, in case this check ever runs late enough for a
       runner to already be alive (e.g. something else already resumed it).
@@ -42,6 +45,7 @@ defmodule OrcaHub.SessionResumer do
   require Logger
 
   alias OrcaHub.{Cluster, HubRPC, Mode, SessionSupervisor}
+  alias OrcaHub.Sessions.Session
 
   @initial_delay_ms 30_000
   @retry_delay_ms 15_000
@@ -104,8 +108,8 @@ defmodule OrcaHub.SessionResumer do
   node, but the status check here still guards against a stale/misused
   caller passing something else through.
   """
-  def resumable?(%{status: status}, alive?) when is_boolean(alive?) do
-    status == "running" and not alive?
+  def resumable?(%{status: status} = session, alive?) when is_boolean(alive?) do
+    (status == "running" or Session.waiting_mid_turn?(session)) and not alive?
   end
 
   # -------------------------------------------------------------------

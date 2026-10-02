@@ -32,6 +32,14 @@ defmodule OrcaHub.SessionResumerTest do
         refute SessionResumer.resumable?(%{status: status}, true)
       end
     end
+
+    # ORCAHUB3-60: a pi turn blocked on a dialog reads "waiting", but the turn
+    # was in flight when the node died, exactly like a "running" one.
+    test "a mid-turn waiting (pi dialog) is resumable like running; a claude waiting is not" do
+      assert SessionResumer.resumable?(%{status: "waiting", backend: "pi"}, false)
+      refute SessionResumer.resumable?(%{status: "waiting", backend: "pi"}, true)
+      refute SessionResumer.resumable?(%{status: "waiting", backend: "claude"}, false)
+    end
   end
 
   describe "enabled?/0 — ORCA_AUTO_RESUME toggle" do
@@ -107,6 +115,30 @@ defmodule OrcaHub.SessionResumerTest do
       result = Sessions.list_running_sessions_for_node(this_node)
 
       assert Enum.map(result, & &1.id) == [orphan.id]
+    end
+
+    test "includes a pi session parked in a mid-turn waiting (ORCAHUB3-60)", %{dir: dir} do
+      this_node = Atom.to_string(node())
+
+      {:ok, pi_waiting} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "pi",
+          status: "waiting",
+          runner_node: this_node
+        })
+
+      {:ok, _claude_waiting} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          status: "waiting",
+          runner_node: this_node
+        })
+
+      result = Sessions.list_running_sessions_for_node(this_node)
+
+      assert Enum.map(result, & &1.id) == [pi_waiting.id]
     end
   end
 

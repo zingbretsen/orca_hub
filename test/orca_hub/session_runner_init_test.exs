@@ -132,6 +132,36 @@ defmodule OrcaHub.SessionRunnerInitTest do
 
   # ORCAHUB3-60: init sweep clears orphaned pi dialogs after runner restart
   describe "init sweep for pi dialogs" do
+    # ORCAHUB3-60: the "waiting" a pi dialog overlays on a running turn cannot
+    # survive the runner that held the dialog. Init puts the row back to the
+    # orphaned-turn "running" shape (SessionResumer's input) instead of
+    # leaving it advertising a question nobody can answer.
+    test "restores a mid-turn waiting pi row to running, and leaves a claude waiting alone", %{
+      session: session
+    } do
+      {:ok, pi} = Sessions.update_session(session, %{backend: "pi", status: "waiting"})
+
+      feed_insert_at(
+        pi,
+        %{"type" => "pi_ui_request", "id" => "orphan-w", "method" => "input", "title" => "Q?"},
+        ~N[2026-01-01 00:00:00.000000]
+      )
+
+      {:ok, :idle, data} = SessionRunner.init(session_id: pi.id, session_data: pi)
+
+      assert Sessions.get_session!(pi.id).status == "running"
+      assert Sessions.pending_pi_ui_request(pi.id) == nil
+      assert data.pending_questions == nil
+
+      {:ok, claude} =
+        Sessions.create_session(%{directory: session.directory, status: "waiting"})
+
+      feed_insert_at(claude, feed_text_msg("hi"), ~N[2026-01-01 00:00:00.000000])
+      {:ok, :idle, _data} = SessionRunner.init(session_id: claude.id, session_data: claude)
+
+      assert Sessions.get_session!(claude.id).status == "waiting"
+    end
+
     test "clears orphaned pi_ui_request events that have no matching pi_ui_response", %{
       session: session
     } do

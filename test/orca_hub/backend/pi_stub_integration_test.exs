@@ -226,7 +226,8 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
     # land before answering, exactly like a real user would only see (and
     # only be able to answer) the dialog once it's actually pending.
     state = wait_until_message(session.id, "pi_ui_request")
-    assert state.status == :running
+    # Still mid-turn underneath, but blocked on the dialog (ORCAHUB3-60).
+    assert state.status == :waiting
 
     ui_request = Enum.find(state.messages, &(&1["type"] == "pi_ui_request"))
     assert ui_request["id"] == "ui-req-1"
@@ -262,6 +263,54 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
     # rather than writing anything else to a port that's since moved on.
     assert SessionRunner.answer_ui_request(session.id, "ui-req-1", %{"value" => "Red"}) ==
              {:error, :not_running}
+  end
+
+  # ORCAHUB3-60: a pi dialog blocks the turn MID-flight, so the runner never
+  # reaches the turn-end "waiting" branch Claude's AskUserQuestion takes. The
+  # session read "running" for the whole dialog, indistinguishable from work.
+  test "ORCAHUB3-60: a turn blocked on a dialog reads \"waiting\", then \"running\" once answered",
+       %{session: session} do
+    Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session.id}")
+
+    assert {:ok, _pid} = SessionSupervisor.start_session(session.id)
+    assert SessionRunner.send_message(session.id, "ask a question") == :ok
+    wait_until_message(session.id, "pi_ui_request")
+
+    # Every reader: the runner's own status, the persisted row
+    # (search_sessions, get_session_tail, digests, /sessions) and the broadcast.
+    assert SessionRunner.get_status(session.id).status == :waiting
+    assert Sessions.get_session!(session.id).status == "waiting"
+    assert_receive {:status, :waiting}
+    flush_status_broadcasts()
+
+    assert SessionRunner.answer_ui_request(session.id, "ui-req-1", %{"value" => "Blue"}) == :ok
+
+    # Back to "running" for the rest of the turn, then the normal turn end.
+    assert_receive {:status, :running}
+    assert_receive {:status, :idle}
+    assert Sessions.get_session!(session.id).status == "idle"
+  end
+
+  test "ORCAHUB3-60: a dialog that times out reverts to \"running\" and drops pending_question",
+       %{session: session} do
+    assert {:ok, _pid} = SessionSupervisor.start_session(session.id)
+    assert SessionRunner.send_message(session.id, "ask a question then time out") == :ok
+    wait_until_message(session.id, "pi_ui_request")
+
+    assert Sessions.get_session!(session.id).status == "waiting"
+    assert %{id: "ui-req-2"} = Sessions.pending_question(session.id)
+
+    # pi's own dialog timer fires. Nothing on the wire says so: the only
+    # evidence is the question tool finishing, and its toolCallId is NOT the
+    # dialog id.
+    stub_command(session.id, "stub_dialog_timeout")
+
+    assert eventually(fn -> Sessions.get_session!(session.id).status == "running" end)
+    assert SessionRunner.get_status(session.id).status == :running
+    assert Sessions.pending_question(session.id) == nil
+
+    stub_command(session.id, "stub_finish_turn")
+    assert eventually(fn -> Sessions.get_session!(session.id).status == "idle" end)
   end
 
   test "answer_ui_request/3 for an unknown request id no-ops while a DIFFERENT turn is running",
@@ -459,6 +508,33 @@ defmodule OrcaHub.Backend.PiStubIntegrationTest do
 
     log = log_path |> File.read!() |> String.split("\n", trim: true)
     assert Enum.count(log, &(&1 == "get_state")) == 2
+  end
+
+  # Writes a test-only control line (see pi_stub_rpc.py) straight onto the
+  # runner's port, i.e. into the stub's stdin.
+  defp stub_command(session_id, type) do
+    [{pid, _}] = Registry.lookup(OrcaHub.SessionRegistry, session_id)
+    {_state, data} = :sys.get_state(pid)
+    true = Port.command(data.port, Jason.encode!(%{"type" => type}) <> "\n")
+  end
+
+  defp flush_status_broadcasts do
+    receive do
+      {:status, _} -> flush_status_broadcasts()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp eventually(fun, attempts \\ 100) do
+    Enum.reduce_while(1..attempts, false, fn _, _ ->
+      if fun.() do
+        {:halt, true}
+      else
+        Process.sleep(50)
+        {:cont, false}
+      end
+    end)
   end
 
   defp tool_blocks(messages, msg_type, block_type) do

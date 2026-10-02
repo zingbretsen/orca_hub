@@ -1752,8 +1752,13 @@
               >
               </div>
             </div>
+            <%!-- A pi dialog shows "waiting" over a turn that is still in
+          flight (ORCAHUB3-60), so it keeps its stop button. --%>
             <button
-              :if={@status in [:running, :compacting]}
+              :if={
+                @status in [:running, :compacting] or
+                  (@status == :waiting and @pending_ui_request)
+              }
               type="button"
               phx-click="interrupt"
               class="btn btn-error btn-square"

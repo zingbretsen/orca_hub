@@ -86,13 +86,26 @@ defmodule OrcaHub.Sessions do
   matches `node_name` — candidates for `OrcaHub.SessionResumer`'s
   boot-time orphan sweep. Scoped to a single node by design (never-reassign
   rule): a node only ever resumes its own sessions.
+
+  Includes a mid-turn `"waiting"` (`Session.waiting_mid_turn?/1`,
+  ORCAHUB3-60): that turn was in flight too, and the dialog it was blocked
+  on died with the node.
   """
   def list_running_sessions_for_node(node_name) do
     Repo.all(
       from s in Session,
         where: is_nil(s.archived_at),
         where: s.runner_node == ^node_name,
-        where: s.status == "running"
+        where: ^turn_in_flight_condition()
+    )
+  end
+
+  # `status == "running"`, or a "waiting" that is an overlay on a running turn.
+  defp turn_in_flight_condition do
+    dynamic(
+      [s],
+      s.status == "running" or
+        (s.status == "waiting" and s.backend in ^Session.mid_turn_waiting_backends())
     )
   end
 
@@ -1916,14 +1929,15 @@ defmodule OrcaHub.Sessions do
   end
 
   @doc """
-  List all running (non-archived) sessions.
+  List all running (non-archived) sessions, including a turn blocked on a
+  mid-turn dialog (`Session.waiting_mid_turn?/1`), which is still running.
 
   Used by the churn sampler to determine which sessions to assess.
   """
   def list_running_sessions do
     from(s in Session,
       where: is_nil(s.archived_at),
-      where: s.status == "running"
+      where: ^turn_in_flight_condition()
     )
     |> Repo.all()
   end

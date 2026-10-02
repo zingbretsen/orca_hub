@@ -6,6 +6,8 @@ defmodule OrcaHub.Sessions.Session do
 
   @primary_key {:id, :binary_id, autogenerate: true}
 
+  @backends ~w(claude codex pi)
+
   @foreign_key_type :binary_id
 
   schema "sessions" do
@@ -161,7 +163,35 @@ defmodule OrcaHub.Sessions.Session do
     |> cast(attrs, [:tools], empty_values: [])
     |> validate_required([:directory])
     |> validate_inclusion(:status, ~w(ready idle running waiting error compacting))
-    |> validate_inclusion(:backend, ~w(claude codex pi))
+    |> validate_inclusion(:backend, @backends)
     |> validate_inclusion(:kind, ~w(session memory_extraction))
+  end
+
+  @doc """
+  Whether `session`'s `"waiting"` status sits on top of a turn that is still
+  IN FLIGHT (ORCAHUB3-60).
+
+  `"waiting"` means "an interactive question is pending". On a Claude
+  session that question has ended the turn. On a backend whose dialogs
+  block the turn (`Capabilities.blocking_dialogs`, i.e. pi) the turn is
+  still running: it is just stuck on the dialog until it is answered or
+  times out. Anything that reads `"waiting"` as "safe to deliver to /
+  resume / release behind" must treat these sessions as `"running"`.
+
+  Accepts any map with `:status` (`:backend` missing means Claude, as
+  everywhere else).
+  """
+  def waiting_mid_turn?(%{status: "waiting"} = session) do
+    OrcaHub.Backend.capabilities_for(Map.get(session, :backend)).blocking_dialogs
+  end
+
+  def waiting_mid_turn?(_session), do: false
+
+  @doc """
+  The `backend` column values whose `"waiting"` is always mid-turn: the
+  query-side twin of `waiting_mid_turn?/1`.
+  """
+  def mid_turn_waiting_backends do
+    Enum.filter(@backends, &OrcaHub.Backend.capabilities_for(&1).blocking_dialogs)
   end
 end

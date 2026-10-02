@@ -1924,6 +1924,37 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       refute html =~ ~s(phx-value-value=)
       assert html =~ ~s(value="true")
     end
+
+    # ORCAHUB3-60: a pi dialog now shows "waiting", but the turn under it is
+    # still in flight, so the stop button must not vanish the way it does for
+    # a turn-ending (Claude) "waiting".
+    test "a pi turn waiting on a dialog keeps its Interrupt button", %{
+      conn: conn,
+      pi_session: session
+    } do
+      {:ok, _runner} = SessionSupervisor.start_session(session.id)
+
+      derived_insert_at(
+        session,
+        %{"type" => "pi_ui_request", "id" => "req4", "method" => "input", "title" => "Q?"},
+        ~N[2026-01-01 00:00:00.000000]
+      )
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      send(view.pid, {:status, :waiting})
+
+      assert render(view) =~ ~s(title="Interrupt")
+    end
+
+    test "a turn-ending waiting with no dialog shows no Interrupt button", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      send(view.pid, {:status, :waiting})
+
+      refute render(view) =~ ~s(title="Interrupt")
+    end
   end
 
   # tts_rewrite_spec.md §5 (Option A): autoplay is driven by an explicit id

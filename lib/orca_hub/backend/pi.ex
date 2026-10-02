@@ -184,6 +184,10 @@ defmodule OrcaHub.Backend.Pi do
       # mechanism. The UI branches on this flag, not on which mechanism is
       # underneath (spec §12.3).
       ask_user_question: true,
+      # ORCAHUB3-60: a dialog blocks the turn mid-flight (pi waits on the
+      # extension_ui_response, or its own timeout), so SessionRunner overlays
+      # "waiting" on a turn that is still running. See Capabilities.
+      blocking_dialogs: true,
       # pi reports live token/cost/context-window stats via `get_session_stats`
       # (spec §12.3) — surfaced through a pi-appropriate stats display, kept
       # deliberately separate from `usage` (the Claude-API quota panel gate).
@@ -810,36 +814,31 @@ defmodule OrcaHub.Backend.Pi do
     # for that (already-moot) id correctly no-ops instead of writing a reply
     # pi has already stopped listening for.
     #
-    # ORCAHUB3-60: persist a resolution event if the dialog was pending.
-    # A dialog that times out produces no pi_ui_response, so we must persist
-    # one with resolution: "timeout" so pending_pi_ui_request/1 correctly falls.
+    # ORCAHUB3-60: that same evidence must reach the persisted projection, or
+    # pending_pi_ui_request/1 (get_session_tail, the alert, the UI card) keeps
+    # serving a dialog that is no longer answerable, and the session stays in
+    # the "waiting" overlay until turn end. So whenever this clause drops a
+    # pending dialog it also emits a `resolution: "timeout"` pi_ui_response.
+    # It must NOT compare `toolCallId` with the dialog id: they come from
+    # different id spaces (the LLM's tool call vs pi's extension-UI request
+    # uuid) and never match, which is how the timeout path used to persist
+    # nothing at all. An answered dialog was already removed from
+    # backend_state by encode_ui_response/3, so it never reaches the second
+    # branch here.
+    bs = Map.delete(ctx.backend_state, :pending_ui_request)
+
     case ctx.backend_state[:pending_ui_request] do
-      nil ->
-        # No pending dialog - just clear backend_state and continue
-        bs = Map.delete(ctx.backend_state, :pending_ui_request)
-        {[tool_result_event(id, content, is_error)], %{ctx | backend_state: bs}}
-
       %{id: dialog_id} ->
-        # We have a pending dialog. Check if this tool_execution_end corresponds
-        # to the dialog request (id == dialog_id) - pi sends tool_execution_end
-        # for the dialog tool when it times out.
-        if id == dialog_id do
-          # The pending dialog timed out - persist a resolution event
-          resolution_event = %{
-            "type" => "pi_ui_response",
-            "id" => dialog_id,
-            "resolution" => "timeout"
-          }
+        resolution_event = %{
+          "type" => "pi_ui_response",
+          "id" => dialog_id,
+          "resolution" => "timeout"
+        }
 
-          bs = Map.delete(ctx.backend_state, :pending_ui_request)
+        {[resolution_event, tool_result_event(id, content, is_error)], %{ctx | backend_state: bs}}
 
-          {[resolution_event, tool_result_event(id, content, is_error)],
-           %{ctx | backend_state: bs}}
-        else
-          # Different pending dialog - just clear backend_state and continue
-          bs = Map.delete(ctx.backend_state, :pending_ui_request)
-          {[tool_result_event(id, content, is_error)], %{ctx | backend_state: bs}}
-        end
+      _ ->
+        {[tool_result_event(id, content, is_error)], %{ctx | backend_state: bs}}
     end
   end
 

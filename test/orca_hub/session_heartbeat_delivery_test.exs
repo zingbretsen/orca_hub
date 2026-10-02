@@ -183,6 +183,32 @@ defmodule OrcaHub.SessionHeartbeatDeliveryTest do
 
       assert length(delivered) == 1
     end
+
+    # ORCAHUB3-60: a pi turn blocked on a dialog reads "waiting", but it is
+    # still the in-flight turn, so a heartbeat must queue exactly as it did
+    # when that same session read "running", and the {:status, :waiting}
+    # broadcast must not count as a turn end that flushes it.
+    test "queues for a pi turn parked in a mid-turn waiting, through its :waiting broadcast",
+         %{dir: dir} do
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "pi",
+          status: "waiting",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(session.id) end)
+      assert :ok = SessionHeartbeat.schedule(session.id, 30, "check on progress")
+      on_exit(fn -> SessionHeartbeat.cancel(session.id) end)
+
+      assert %{pending_delivery: %{queued_status: "waiting"}} = fire_now(session.id)
+
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session.id, {:status, :waiting}})
+
+      assert %{pending_delivery: %{queued_status: "waiting"}} = SessionHeartbeat.get(session.id)
+      assert Sessions.list_messages(session.id) == []
+    end
   end
 
   describe "a heartbeat fire while the session is already deliverable" do

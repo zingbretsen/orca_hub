@@ -285,6 +285,30 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
 
       assert {[], _edge_state} = AlertEvaluator.evaluate([subscription])
     end
+
+    # ORCAHUB3-60 moved a dialog-blocked pi turn from "running" to "waiting".
+    # It is still the same running turn, so `stall` must keep seeing it:
+    # silencing stall there would be the stall/pending_question de-dup by the
+    # back door, which the issue leaves out of scope.
+    test "still fires for a pi turn parked in a mid-turn waiting, but not a claude waiting" do
+      orchestrator_id = Ecto.UUID.generate()
+
+      pi_waiting =
+        plain_session("alert-stall-pi-waiting", %{status: "waiting", backend: "pi"})
+
+      claude_waiting =
+        plain_session("alert-stall-claude-waiting", %{status: "waiting", backend: "claude"})
+
+      subscription =
+        subscribe(orchestrator_id, %{
+          session_ids: [pi_waiting.id, claude_waiting.id],
+          conditions: %{"stall" => true}
+        })
+
+      assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
+      assert alert.session_id == pi_waiting.id
+      assert alert.condition == "stall"
+    end
   end
 
   describe "evaluate/3 — progress_stale condition" do

@@ -192,6 +192,7 @@ defmodule OrcaHub.ForkGate do
 
   alias OrcaHub.{Cluster, HubRPC}
   alias OrcaHub.ForkGate.ServingProfile
+  alias OrcaHub.Sessions.Session
 
   @sessions_topic "sessions"
 
@@ -540,16 +541,21 @@ defmodule OrcaHub.ForkGate do
     end
   end
 
-  # Only `running`/`compacting` are unambiguously mid-turn. Everything else —
-  # idle, ready, waiting, error, a torn-down or never-started runner, a row
+  # Only `running`/`compacting` are unambiguously mid-turn, plus a `waiting`
+  # that is an overlay on a running turn (ORCAHUB3-60, a pi turn blocked on a
+  # dialog: `Session.waiting_mid_turn?/1`). Everything else — idle, ready, a
+  # turn-ending waiting, error, a torn-down or never-started runner, a row
   # that no longer exists — means nothing is holding a slot, so the child is
   # released with ZERO added latency. Fails OPEN (release) on any lookup
   # error, matching this module's other best-effort HubRPC calls: a DB blip
   # must not strand a fan-out that a plain `send_message` would have run.
   defp parent_turn_in_flight?(parent_id) do
     case HubRPC.get_session(parent_id) do
-      %{status: status} -> status in ["running", "compacting"]
-      _ -> false
+      %{status: status} = parent ->
+        status in ["running", "compacting"] or Session.waiting_mid_turn?(parent)
+
+      _ ->
+        false
     end
   rescue
     error ->

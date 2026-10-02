@@ -205,8 +205,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
      # "pi_ui_response") rather than tracked as separate runner state, so a
      # page reload — even against a dead runner — still shows the pending
      # card. Kept independent of the AskUserQuestion wizard's status/aq_open
-     # dance: pi's dialog blocks the port directly, so the session status
-     # stays "running" the whole time (no "waiting" transition to key off).
+     # dance: pi's dialog blocks the port directly, and while the status now
+     # reads "waiting" for it (ORCAHUB3-60), that overlays a turn still in
+     # flight, so the card keys off this assign, not @status.
      # Targeted query (full history), same reasoning as @plan_mode above.
      |> assign(:pending_ui_request, HubRPC.pending_pi_ui_request(id))
      # spec §12.8 — header context-window meter (pi only, capability-gated on

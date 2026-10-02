@@ -598,6 +598,24 @@ defmodule OrcaHub.ForkGateTest do
       refute ForkGate.status(parent.id, server: gate).waiting_on_parent_turn
     end
 
+    # ORCAHUB3-60: a pi parent blocked on a dialog reads "waiting", but its
+    # turn still owns the slot, exactly as when it read "running".
+    test "a pi parent parked in a mid-turn waiting still holds the first child", %{
+      gate: gate,
+      parent: parent,
+      children: [c1, _, _]
+    } do
+      running(parent, "waiting")
+
+      assert enqueue(gate, parent, c1) == :ok
+      refute_receive {:delivered, _, _, _}, 200
+      assert ForkGate.status(parent.id, server: gate).waiting_on_parent_turn
+
+      finish_turn(parent, hit_usage(20_000))
+      assert_receive {:delivered, id1, _, _}
+      assert id1 == c1.id
+    end
+
     test "a parent whose turn CRASHES releases the first child instead of stranding the fan-out",
          %{gate: gate, parent: parent, children: [c1, _, _]} do
       running(parent)

@@ -49,18 +49,34 @@ stateDiagram-v2
 
 ## Notes
 
-- **`waiting`**: set when a turn completes with an unanswered interactive
-  question pending — Claude's built-in `AskUserQuestion`, or pi's `question`
-  tool, both gated by the same `ask_user_question` capability. The GenStatem
-  stays in `idle` (clean exit) or `running` (still-hung turn), but the
-  persisted/broadcast `status` shows `"waiting"` until a queued answer
-  resumes it. The answer can come from the UI's dialog modal or, for pi's
-  question/confirm/input dialogs, from another session via the
-  `answer_session_question` MCP tool — so an orchestrator can unblock a
-  worker without a human. A pending dialog is derived from the message
-  feed, not stored in a column; the runner clears every still-pending
-  dialog at turn end, on port exit, and on an init sweep after a runner
-  restart, so an orphaned dialog can't strand a session in `waiting`.
+- **`waiting`**: an unanswered interactive question is pending. Both
+  question mechanisms are gated by the same `ask_user_question` capability,
+  but they reach `waiting` in two different ways:
+  - Claude's built-in `AskUserQuestion` ENDS the turn. `"waiting"` is set
+    when the tool_use streams in, and it outlives the turn on an `idle`
+    GenStatem until the user's answer (a normal user turn) arrives.
+  - A pi dialog (`question` tool / `pi_ui_request`) BLOCKS the turn
+    (`Capabilities.blocking_dialogs`). `"waiting"` is overlaid on a
+    `running` GenStatem the way `"compacting"` is (ORCAHUB3-60), and it
+    reverts to `"running"` as soon as the last open dialog resolves:
+    answered, timed out, or a stale answer attempt proving it dead. Turn
+    end and port exit write their own status as usual.
+
+  Because a pi `"waiting"` is a turn still in flight,
+  `Session.waiting_mid_turn?/1` exists for the readers that treat
+  `"waiting"` as "turn over". Heartbeat delivery queues for it, as it does
+  for `running`. SessionResumer resumes it, and runner init puts an
+  orphaned one back to `"running"` after its sweep. ForkGate treats it as
+  a parent turn in flight, and the `stall`/`no_commit_for` alerts still see
+  it. The drain check and cascade-archive already count every `"waiting"`
+  as busy. A pi dialog is answered from the UI's modal or by another
+  session via `answer_session_question`, so an orchestrator can unblock a
+  worker without a human; a Claude question takes a normal user turn
+  (`send_message_to_session`). A pending pi dialog is derived from the
+  message feed, not stored in a column. The runner clears every
+  still-pending dialog at turn end, on port exit, on pi's own dialog
+  timeout, and in an init sweep after a runner restart, so an orphaned
+  dialog can't strand a session in `waiting`.
 - **`downgrade`**: the runtime kill switch (`Streaming.disable!/1`) forcing a
   warm streaming session back to the one-shot engine — `:graceful` finishes
   the in-flight turn first, `:interrupt` cuts it short immediately.

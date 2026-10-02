@@ -1510,7 +1510,7 @@ defmodule OrcaHub.Backend.PiTest do
     test "defensively drops backend_state.pending_ui_request (pi's own dialog timeout has no wire signal)" do
       c = %{ctx() | backend_state: %{pending_ui_request: %{id: "uuid-1", method: "select"}}}
 
-      {_events, out} =
+      {events, out} =
         Backend.normalize(
           %{
             "type" => "tool_execution_end",
@@ -1523,6 +1523,29 @@ defmodule OrcaHub.Backend.PiTest do
         )
 
       refute Map.has_key?(out.backend_state, :pending_ui_request)
+
+      # ORCAHUB3-60: the persisted projection falls with it, even though the
+      # tool call id ("call_1") and the dialog id ("uuid-1") never match.
+      assert [
+               %{"type" => "pi_ui_response", "id" => "uuid-1", "resolution" => "timeout"},
+               %{"type" => "user"}
+             ] = events
+    end
+
+    test "emits no resolution when no dialog was pending" do
+      {events, _out} =
+        Backend.normalize(
+          %{
+            "type" => "tool_execution_end",
+            "toolCallId" => "call_1",
+            "toolName" => "bash",
+            "result" => %{"content" => [%{"type" => "text", "text" => "ok"}]},
+            "isError" => false
+          },
+          ctx()
+        )
+
+      assert [%{"type" => "user"}] = events
     end
   end
 

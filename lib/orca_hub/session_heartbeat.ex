@@ -61,6 +61,7 @@ defmodule OrcaHub.SessionHeartbeat do
 
   alias OrcaHub.{Backend, Cluster, Jobs, JobWatcher}
   alias OrcaHub.SessionHeartbeat.Digest
+  alias OrcaHub.Sessions.Session
 
   @min_interval_seconds 30
 
@@ -75,7 +76,9 @@ defmodule OrcaHub.SessionHeartbeat do
   @delivery_max_attempts 3
 
   # Statuses `send_heartbeat/2` (and `deliver_or_queue/2`) will deliver to
-  # immediately.
+  # immediately. "waiting" only when the turn is over: a mid-turn "waiting"
+  # (ORCAHUB3-60, a pi turn blocked on a dialog) is a running turn, so it
+  # queues like "running" does. See deliverable?/1.
   @deliverable_statuses ["idle", "ready", "error", "waiting"]
 
   # ORCAHUB3-29 escape hatch: how long a `:queue`-delivered message batch may
@@ -88,6 +91,8 @@ defmodule OrcaHub.SessionHeartbeat do
   # Status broadcasts (atoms, as put on the "sessions" PubSub topic - see
   # `SessionRunner.broadcast/2` and `Sessions.archive_session/1`) that mark a
   # turn having ended - a good moment to flush a queued heartbeat delivery.
+  # `:waiting` is checked against the row first, for the same mid-turn reason
+  # as @deliverable_statuses above.
   @turn_end_statuses [:idle, :ready, :error, :waiting]
 
   # Job statuses that count as "finished" for wake purposes - anything NOT
@@ -319,7 +324,7 @@ defmodule OrcaHub.SessionHeartbeat do
           not is_nil(session.archived_at) ->
             {:reply, deliver_message_now(node, session_id, message), state}
 
-          session.status in @deliverable_statuses ->
+          deliverable?(session) ->
             {:reply, deliver_message_now(node, session_id, message), state}
 
           Backend.capabilities_for(session).steering ->
@@ -573,16 +578,37 @@ defmodule OrcaHub.SessionHeartbeat do
   end
 
   defp handle_status_broadcast(session_id, status, state) when status in @turn_end_statuses do
-    state =
-      state
-      |> flush_heartbeat_pending(session_id)
-      |> flush_standalone_job_watches(session_id)
-      |> flush_message_queue(session_id)
+    if status == :waiting and waiting_mid_turn?(session_id) do
+      {:noreply, state}
+    else
+      state =
+        state
+        |> flush_heartbeat_pending(session_id)
+        |> flush_standalone_job_watches(session_id)
+        |> flush_message_queue(session_id)
 
-    {:noreply, state}
+      {:noreply, state}
+    end
   end
 
   defp handle_status_broadcast(_session_id, _status, state), do: {:noreply, state}
+
+  defp deliverable?(session) do
+    session.status in @deliverable_statuses and not Session.waiting_mid_turn?(session)
+  end
+
+  # The broadcast carries no backend, so read the row (the runner persists
+  # the status before broadcasting it). A failed lookup flushes, as before.
+  defp waiting_mid_turn?(session_id) do
+    case Cluster.find_session(session_id) do
+      {_node, session} -> Session.waiting_mid_turn?(session)
+      nil -> false
+    end
+  rescue
+    _ -> false
+  catch
+    :exit, _ -> false
+  end
 
   defp flush_heartbeat_pending(state, session_id) do
     case Map.get(state.heartbeats, session_id) do
@@ -663,7 +689,7 @@ defmodule OrcaHub.SessionHeartbeat do
             GenServer.cast(self(), {:auto_cancel, session_id})
             :dropped
 
-          session.status in @deliverable_statuses ->
+          deliverable?(session) ->
             deliver_now(node, session_id, session, message)
             :delivered
 

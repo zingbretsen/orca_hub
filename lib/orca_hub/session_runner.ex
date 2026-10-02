@@ -23,6 +23,7 @@ defmodule OrcaHub.SessionRunner do
 
   alias OrcaHub.Backend.Deltas
   alias OrcaHub.Claude.StreamParser
+  alias OrcaHub.Sessions.Session
 
   defmodule StartFailure do
     @moduledoc false
@@ -384,12 +385,20 @@ defmodule OrcaHub.SessionRunner do
       end)
     end
 
+    # A mid-turn "waiting" (ORCAHUB3-60: a dialog blocking a turn, see
+    # Session.waiting_mid_turn?/1) cannot outlive the runner that held it: the
+    # dialog died with the port and the sweep above just closed it. Put the
+    # row back to the "running" it was before the dialog opened, i.e. the
+    # orphaned-turn shape SessionResumer already knows how to handle, instead
+    # of advertising a question nobody can answer.
+    mid_turn_waiting? = Session.waiting_mid_turn?(session)
+
     # If the session was persisted as "waiting" (an unanswered AskUserQuestion),
     # rebuild the pending questions from history so the UI can render them after
     # a runner restart. DB status — not message history — is the source of truth:
     # the synthetic is_error tool_result means history ALWAYS looks "unanswered".
     pending_questions =
-      if session.status == "waiting",
+      if session.status == "waiting" and not mid_turn_waiting?,
         do: AskUserQuestion.pending_questions(saved_messages),
         else: nil
 
@@ -397,6 +406,9 @@ defmodule OrcaHub.SessionRunner do
     # Set original_node only if not already set (preserves the first node that ran the session)
     current_node = Atom.to_string(node())
     node_updates = %{runner_node: current_node}
+
+    node_updates =
+      if mid_turn_waiting?, do: Map.put(node_updates, :status, "running"), else: node_updates
 
     node_updates =
       if session.original_node,
@@ -495,6 +507,10 @@ defmodule OrcaHub.SessionRunner do
       pending_rebake: false,
       req_counter: 0,
       turn_result: nil,
+      # ORCAHUB3-60: ids of the mid-turn dialogs (`pi_ui_request` events) still
+      # open in the turn in flight. Non-empty means the persisted status is
+      # the "waiting" overlay. See mark_dialog_open/2.
+      open_ui_requests: MapSet.new(),
       # Wall-clock start of the turn currently in flight (UTC, matches
       # session_interactions.inserted_at) — set at every transition into a
       # new turn by mark_turn_started/1. Used only to scope the redundant-
@@ -998,7 +1014,7 @@ defmodule OrcaHub.SessionRunner do
         end
 
         # ORCAHUB3-60: clear any pending pi dialogs before going cold.
-        data = clear_pi_dialogs_on_exit(data)
+        data = data |> clear_pi_dialogs_on_exit() |> forget_open_dialogs()
 
         next_state = if code == 0, do: :idle, else: :error
         {:next_state, next_state, %{data | port: nil}}
@@ -1721,7 +1737,7 @@ defmodule OrcaHub.SessionRunner do
       first_prompt = data.first_prompt || prompt
 
       {:next_state, :running,
-       %{
+       forget_open_dialogs(%{
          mark_turn_started(data)
          | port: port,
            framing: framing,
@@ -1730,7 +1746,7 @@ defmodule OrcaHub.SessionRunner do
            messages: data.messages ++ [user_event],
            first_prompt: first_prompt,
            pending_questions: nil
-       }, [{:reply, from, :ok}]}
+       }), [{:reply, from, :ok}]}
     rescue
       e ->
         rescue_turn_start(
@@ -1933,16 +1949,17 @@ defmodule OrcaHub.SessionRunner do
 
     first_prompt = data.first_prompt || prompt
 
-    base = %{
-      data
-      | buffer: "",
-        error_output: "",
-        messages: data.messages ++ [user_event],
-        first_prompt: first_prompt,
-        pending_questions: nil,
-        interrupting: false,
-        turn_result: nil
-    }
+    base =
+      forget_open_dialogs(%{
+        data
+        | buffer: "",
+          error_output: "",
+          messages: data.messages ++ [user_event],
+          first_prompt: first_prompt,
+          pending_questions: nil,
+          interrupting: false,
+          turn_result: nil
+      })
 
     try do
       data =
@@ -2158,7 +2175,11 @@ defmodule OrcaHub.SessionRunner do
     # here covers all four. The persisted `assistant` events for this turn have
     # already been broadcast by the time the `result` frame lands, so a client
     # that still holds a live bubble can swap it for the real render at once.
+    # The same goes for the turn's dialogs (ORCAHUB3-60): the backend's own
+    # turn-end sweep has resolved them, and every branch below writes its own
+    # status.
     data = %{data | backend_state: sweep_delta_streams(data.session_id, data.backend_state)}
+    data = forget_open_dialogs(data)
 
     decision =
       streaming_turn_decision(%{
@@ -2319,17 +2340,18 @@ defmodule OrcaHub.SessionRunner do
     # for that stream is this synthetic one.
     sweep_delta_streams(data.session_id, data.backend_state)
 
-    data = %{
-      data
-      | port: nil,
-        warming_up: false,
-        interrupting: false,
-        pending_prompts: [],
-        turn_result: nil,
-        # A fresh cold spawn always starts a stateful backend's FSM from
-        # scratch (on_open/1 again) — see spec §3.2.
-        backend_state: %{}
-    }
+    data =
+      forget_open_dialogs(%{
+        data
+        | port: nil,
+          warming_up: false,
+          interrupting: false,
+          pending_prompts: [],
+          turn_result: nil,
+          # A fresh cold spawn always starts a stateful backend's FSM from
+          # scratch (on_open/1 again) — see spec §3.2.
+          backend_state: %{}
+      })
 
     if state == :running do
       # Crash mid-turn: surface the failure; do NOT auto-resend (avoids duplicate
@@ -2590,7 +2612,7 @@ defmodule OrcaHub.SessionRunner do
     # the wire before it stops existing here.
     sweep_delta_streams(data.session_id, data.backend_state)
 
-    %{
+    forget_open_dialogs(%{
       data
       | port: nil,
         buffer: "",
@@ -2600,7 +2622,7 @@ defmodule OrcaHub.SessionRunner do
         # A fresh cold spawn always starts a stateful backend's FSM from
         # scratch (on_open/1 again) — see spec §3.2.
         backend_state: %{}
-    }
+    })
   end
 
   defp teardown_port(data), do: data
@@ -2622,9 +2644,14 @@ defmodule OrcaHub.SessionRunner do
   # An unanswered AskUserQuestion surfaces as the "waiting" status even though
   # the GenStatem state is :idle (clean exit) or :running (hung run). Shared
   # by state_snapshot/2 and get_status/1's per-state clauses so the two never
-  # drift on what "effective" status means.
+  # drift on what "effective" status means. A mid-turn dialog (ORCAHUB3-60)
+  # counts too, but only while :running: it cannot outlive the turn.
   defp effective_status(status, data) do
-    if data.pending_questions != nil, do: :waiting, else: status
+    cond do
+      data.pending_questions != nil -> :waiting
+      status == :running and MapSet.size(open_ui_requests(data)) > 0 -> :waiting
+      true -> status
+    end
   end
 
   defp state_snapshot(status, data) do
@@ -2997,11 +3024,74 @@ defmodule OrcaHub.SessionRunner do
     %{data | messages: data.messages ++ [event], turn_result: {:complete, event}}
   end
 
-  defp handle_stream_event(event, data) do
+  # ORCAHUB3-60: a mid-turn dialog opened (pi's extension-UI request — see
+  # Backend.Pi.handle_peer_request/2). The turn is blocked on it, so overlay
+  # "waiting" on the running turn, the way "compacting" is overlaid.
+  defp handle_stream_event(%{"type" => "pi_ui_request", "id" => id} = event, data)
+       when is_binary(id) do
+    data = persist_plain_event(event, data)
+    mark_dialog_open(id, data)
+  end
+
+  # ...and resolved, by ANY route: answered, timed out, turn end, or a stale
+  # answer attempt proving it dead. Once the last open one is gone, the turn
+  # is genuinely running again.
+  defp handle_stream_event(%{"type" => "pi_ui_response", "id" => id} = event, data)
+       when is_binary(id) do
+    data = persist_plain_event(event, data)
+    mark_dialog_closed(id, data)
+  end
+
+  defp handle_stream_event(event, data), do: persist_plain_event(event, data)
+
+  defp persist_plain_event(event, data) do
     event = stamp(event)
     persist_message(data, event)
     broadcast(data.session_id, {:event, event})
     %{data | messages: data.messages ++ [event]}
+  end
+
+  defp open_ui_requests(data), do: Map.get(data, :open_ui_requests, MapSet.new())
+
+  # Drops every tracked dialog without touching the persisted status. For
+  # paths where the turn itself is over (or a new one is starting): their own
+  # status write is the truth, so a stale id must not linger into the next
+  # turn and make effective_status/2 report a phantom "waiting".
+  defp forget_open_dialogs(data), do: Map.put(data, :open_ui_requests, MapSet.new())
+
+  defp mark_dialog_open(id, data) do
+    open = open_ui_requests(data)
+
+    if MapSet.size(open) == 0 and Map.get(data, :pending_questions) == nil do
+      update_session_status(data, %{status: "waiting"})
+      broadcast(data.session_id, {:status, :waiting})
+      AgentPresence.update_status(data.directory, data.session_id, "waiting")
+    end
+
+    Map.put(data, :open_ui_requests, MapSet.put(open, id))
+  end
+
+  defp mark_dialog_closed(id, data) do
+    open = open_ui_requests(data)
+
+    if MapSet.member?(open, id) do
+      remaining = MapSet.delete(open, id)
+
+      # A resolution that rides in with the turn's own `result` (agent_end's
+      # "turn_end" sweep) skips the revert: the turn-end transition is about
+      # to write the final status, and a "running" blip in between would
+      # look like a fresh turn to every status subscriber.
+      if MapSet.size(remaining) == 0 and Map.get(data, :pending_questions) == nil and
+           Map.get(data, :turn_result) == nil do
+        update_session_status(data, %{status: "running"})
+        broadcast(data.session_id, {:status, :running})
+        AgentPresence.update_status(data.directory, data.session_id, "running")
+      end
+
+      Map.put(data, :open_ui_requests, remaining)
+    else
+      data
+    end
   end
 
   # ORCAHUB3-114 — close out any delta stream still open in `backend_state`,
