@@ -68,7 +68,10 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             "already attached REPLACES it (identical bytes are detected and not " <>
             "re-uploaded); assets you don't mention stay attached. The result lists every " <>
             "attached asset's `ref` and a signed absolute `url` you can WebFetch to check " <>
-            "it. NOT possible from the sandbox: downloads (the iframe has no " <>
+            "it. That url is a capability: anyone holding it can read this artifact and " <>
+            "its assets, without logging in, for about a day. Share it deliberately, and " <>
+            "re-save or re-attach for a fresh one rather than storing it. NOT possible " <>
+            "from the sandbox: downloads (the iframe has no " <>
             "allow-downloads, and <a download> is ignored there, so the link just " <>
             "navigates the artifact's own frame to the file, replacing the artifact; a " <>
             "plain link to an asset does the same), new tabs/windows " <>
