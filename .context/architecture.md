@@ -455,11 +455,30 @@ graph TB
   ORCAHUB3-72 slice 2, ORCAHUB3-128): links an artifact to a file already in
   the cross-node file store (below) under a name unique per artifact, so the
   artifact's own HTML can reference it with a relative URL, e.g. `<img
-  src="assets/hero.png">`. `attach_artifact_asset` requires the file to
-  already be visible to the calling session (`put_file`/`share_file`) and
-  the artifact to belong to the caller's project or have been created by the
-  caller. There is no visibility re-check when serving: an asset is exactly
-  as reachable as the artifact's own content.
+  src="assets/hero.png">`. The artifact must belong to the caller's project
+  or have been created by the caller. A `file_id` must already be visible to
+  the calling session (`put_file`/`share_file`). There is no visibility
+  re-check when serving: an asset is exactly as reachable as the artifact's
+  own content.
+  **Tools** (`mcp/tools/artifacts.ex`): `save_artifact` takes `assets`
+  (asset name -> local path, confined to the session dir like
+  `content_path`, 50MB each). It validates every name/path/size first,
+  uploads them all (deleting earlier uploads if one fails), then saves and
+  attaches. An existing artifact gets its assets BEFORE its version-bumping
+  save, so viewers reload with every ref resolvable. Re-saving a name
+  replaces it, unmentioned names stay attached, and identical bytes are
+  reused, not re-uploaded. `attach_artifact_asset` takes `path` OR
+  `file_id` (exactly one). Both tools return each asset's relative `ref`
+  (`assets/<name>`) and its signed absolute `url` (minted on the hub via
+  `HubRPC.artifact_urls/2`), and every `raw_url` the artifact tools return
+  is the signed `/api/artifacts/view/<token>/raw` form, which an agent can
+  WebFetch. `put_file`'s confine/stat/cap and upload halves are public
+  helpers (`MCP.Tools.Files.confine_local_file/3`, `upload_local_file/4`)
+  shared by `content_path`, `assets` and `path`. `screenshot_artifact`
+  renders from a temp DIR (`index.html` plus `assets/<name>` fetched over
+  HubRPC, removed afterwards), so relative refs resolve under `file://`.
+  img/CSS/fonts work there, but a `fetch()` of an asset still fails under
+  `file://`.
   **Signed capability URLs** (`OrcaHubWeb.ArtifactURL`): the viewer iframes
   are `sandbox="allow-scripts"`, an opaque origin, so their `<img>`/
   `<video>`/fetch requests are cross-site for cookie purposes and never carry
@@ -489,9 +508,9 @@ graph TB
   reading only that window via `ObjectStore.get_range/3`. They cache by
   revalidation, not max-age (`ETag` = the file's sha256, `private,
   no-cache`, If-None-Match -> 304, If-Range checked against the ETag),
-  because re-attaching an asset name repoints the same URL at new bytes. The old
-  `/artifacts/:id/{raw,download,assets/:name}` routes stay, Authelia-gated,
-  with no app-level auth.
+  because re-attaching an asset name repoints the same URL at new bytes.
+  The old `/artifacts/:id/{raw,download,assets/:name}` routes stay,
+  Authelia-gated, with no app-level auth.
 - **File store** (`lib/orca_hub/files.ex`, `object_store.ex` +
   `object_store/{local,s3}.ex`, `mcp/tools/files.ex`, hub-owned): lets
   sessions on different nodes exchange files (`put_file`/`get_file`/
