@@ -31,6 +31,7 @@ import { dirname, join } from "node:path"
 
 import {
   draftIsBusy,
+  draftActivity,
   holdReleaseAction,
   ttsBarState,
   TTS_HOLD_MAX_AGE_MS,
@@ -176,6 +177,91 @@ console.log("\n3. when a held reply starts by itself (decision 2)")
 }
 
 // ======================================================================
+console.log("\n3b. the clock starts at the LAST DRAFT ACTIVITY (D10)")
+{
+  const now = 10_000_000
+  const heldLongAgo = { id: "m1", at: now - (TTS_HOLD_MAX_AGE_MS + 60_000) }
+
+  eq(
+    "held 3 min ago, but he dictated until just now: the send PLAYS",
+    holdReleaseAction({ held: heldLongAgo, now, draftBusy: false, lastDraftAt: now - 2_000 }),
+    "play"
+  )
+  eq(
+    "held 3 min ago and the draft was PARKED just as long: stays held",
+    holdReleaseAction({
+      held: heldLongAgo,
+      now,
+      draftBusy: false,
+      lastDraftAt: now - (TTS_HOLD_MAX_AGE_MS + 90_000),
+    }),
+    "hold"
+  )
+  eq(
+    "activity from BEFORE the hold does not make the hold younger (it is the later of the two)",
+    holdReleaseAction({
+      held: { id: "m1", at: now - (TTS_HOLD_MAX_AGE_MS + 1) },
+      now,
+      draftBusy: false,
+      lastDraftAt: now - (TTS_HOLD_MAX_AGE_MS + 30_000),
+    }),
+    "hold"
+  )
+  eq(
+    "a fresh hold with old activity is still fresh",
+    holdReleaseAction({ held: { id: "m1", at: now - 1_000 }, now, draftBusy: false, lastDraftAt: now - 600_000 }),
+    "play"
+  )
+  eq(
+    "the boundary is measured from the activity, strictly greater as before",
+    holdReleaseAction({ held: heldLongAgo, now, draftBusy: false, lastDraftAt: now - TTS_HOLD_MAX_AGE_MS }),
+    "play"
+  )
+  eq(
+    "one ms past it from the activity holds",
+    holdReleaseAction({ held: heldLongAgo, now, draftBusy: false, lastDraftAt: now - TTS_HOLD_MAX_AGE_MS - 1 }),
+    "hold"
+  )
+  eq(
+    "recent activity never overrides a box that still has text",
+    holdReleaseAction({ held: heldLongAgo, now, draftBusy: true, lastDraftAt: now - 10 }),
+    "hold"
+  )
+  eq(
+    "no activity recorded falls back to the hold's own age",
+    holdReleaseAction({ held: heldLongAgo, now, draftBusy: false, lastDraftAt: null }),
+    "hold"
+  )
+  eq(
+    "a non-numeric activity stamp is ignored, not trusted",
+    holdReleaseAction({ held: heldLongAgo, now, draftBusy: false, lastDraftAt: "just now" }),
+    "hold"
+  )
+}
+
+// ======================================================================
+console.log("\n3c. what counts as draft ACTIVITY (the D10 clock's input)")
+{
+  // Only `matches` and `.value` — the two things draftActivity reads.
+  const sinks = ["form[data-voice-composer-for] textarea", "[data-voice-bar-draft]"]
+  const el = (kind, value) => ({
+    value,
+    matches: (sel) => kind !== "other" && sel.split(",").map((x) => x.trim()).some((x) => sinks.includes(x)),
+  })
+
+  ok("typing into the composer counts", draftActivity(el("composer", "what about")) === true)
+  ok("dictation into the bar's own box counts", draftActivity(el("bar", "on /queue")) === true)
+  ok(
+    "an input that EMPTIES the sink does not — the send itself must not stamp the clock",
+    draftActivity(el("composer", "")) === false
+  )
+  ok("whitespace left behind is not activity", draftActivity(el("composer", "  \n")) === false)
+  ok("an input anywhere else on the page does not count", draftActivity(el("other", "search text")) === false)
+  ok("a target with no matches() (a text node, a window) does not count", draftActivity({ value: "x" }) === false)
+  ok("nothing at all does not count", draftActivity(null) === false)
+}
+
+// ======================================================================
 console.log("\n4. what the user sees (decision 1)")
 {
   const idle = ttsBarState({ playing: false, queued: 0, held: null })
@@ -233,13 +319,22 @@ console.log("\n5. app.js asks — both autoplay entry points, and only those")
       app
     )
   )
+  // ttsStart takes tap-to-jump's `{ startIndex }` and reads its chunks via
+  // ttsPrepare; both bodies are checked, and the signature is matched
+  // exactly so a rename fails HERE rather than the negative check below
+  // passing vacuously against a method it can no longer find.
+  const START_SIG = /ttsStart\(id, \{ startIndex = 0 \} = \{\}\)\s*\{/
+  const PREPARE_SIG = /ttsPrepare\(id\)\s*\{/
+  ok("ttsStart is where the check expects it", START_SIG.test(app))
+  ok("ttsPrepare is where the check expects it", PREPARE_SIG.test(app))
   ok(
     "MANUAL play does not consult it — ttsStart never asks (item 5)",
-    !/ttsStart\(id\)\s*\{[\s\S]{0,1200}?ttsDraftBusy/.test(app)
+    !new RegExp(START_SIG.source + "[\\s\\S]{0,1200}?ttsDraftBusy").test(app) &&
+      !new RegExp(PREPARE_SIG.source + "[\\s\\S]{0,1600}?ttsDraftBusy").test(app)
   )
   ok(
     "ttsStart clears a hold rather than leaving it advertised",
-    /ttsStart\(id\)\s*\{[\s\S]{0,1600}?this\.ttsHeld = null/.test(app)
+    new RegExp(START_SIG.source + "[\\s\\S]{0,600}?this\\.ttsHeld = null").test(app)
   )
   ok(
     "the hold itself never emits orca:tts-state, so no mute/release runs",
@@ -249,6 +344,19 @@ console.log("\n5. app.js asks — both autoplay entry points, and only those")
   ok(
     "a send is the release signal, via the composer's own clear-prompt push",
     /addEventListener\("phx:clear-prompt", this\._onComposerSent\)/.test(app)
+  )
+  ok(
+    "a CONFIRMED voice send releases it too — the composer-less /queue page never gets clear-prompt",
+    /addEventListener\("orca:voice-sent", this\._onComposerSent\)/.test(app)
+  )
+  ok(
+    "the release passes the D10 activity stamp to the rule",
+    /holdReleaseAction\(\{[\s\S]{0,300}?lastDraftAt: this\.ttsLastDraftAt/.test(app)
+  )
+  ok(
+    "the stamp comes from bubbling input events on the page, through draftActivity",
+    /addEventListener\("input", this\._onDraftInput, true\)/.test(app) &&
+      /_onDraftInput = \(e\) => \{\s*if \(draftActivity\(e\.target\)\) this\.ttsLastDraftAt = Date\.now\(\)/.test(app)
   )
   ok(
     "the rules are imported, not re-implemented here",

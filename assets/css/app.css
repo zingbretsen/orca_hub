@@ -292,3 +292,26 @@
   background-color: color-mix(in oklch, var(--color-primary) 15%, transparent);
   border-radius: 0.25rem;
 }
+
+/* The same highlight in the phone voice view (ORCAHUB3-113), which reads one
+   message at ~22 px, at arm's length, often in a car: there it is THE "where
+   am I" cue, not a hint. Measured headlessly at 390x844 in the dark theme,
+   25% on the dark chat bubble came out a dim navy barely apart from the
+   bubble itself; 40% plus full-contrast text matches the mockup's bright
+   current sentence and stays clear in the light theme too.
+
+   Spelled out FLAT rather than as `@variant voice-view { ... }` nested in the
+   rules above, deliberately: the unminified (dev) build keeps native CSS
+   nesting, and a nesting `&` cannot stand for a pseudo-element, so the nested
+   form silently matched nothing in dev while minification flattened it into
+   a working rule in prod. The selector and media query are the voice-view
+   variant's; change them together with it. */
+@media (max-width: 767px) {
+  html[data-voice-view][data-voice-layout] ::highlight(tts-reading) {
+    background-color: color-mix(in oklch, var(--color-primary) 40%, transparent);
+    color: var(--color-base-content);
+  }
+  html[data-voice-view][data-voice-layout] .tts-reading-fallback {
+    background-color: color-mix(in oklch, var(--color-primary) 25%, transparent);
+  }
+}

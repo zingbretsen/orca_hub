@@ -27,7 +27,12 @@ import { AssistantStreamMethods, ASSISTANT_STREAM_EVENT } from "./assistant_stre
 import {
   cleanTextForTTS, extractSpeakableFromElement, splitIntoChunksWithOffsets, resolveChunkRange, BLOCK_TAGS,
 } from "./tts_text"
-import { draftIsBusy, holdReleaseAction, ttsBarState, TTS_HOLD_MAX_AGE_MS } from "./tts_hold"
+import { draftIsBusy, draftActivity, holdReleaseAction, ttsBarState, TTS_HOLD_MAX_AGE_MS } from "./tts_hold"
+import {
+  ttsRailState, heldStripState, tapJumpTarget, caretAt, chunkIndexAt, hasJumpRanges,
+  RAIL_MARKUP, HELD_MARKUP, SEGMENT_CLASS, RAIL_ICON_PLAY, RAIL_ICON_PAUSE,
+} from "./tts_rail"
+import { voiceViewShowing } from "./voice_view_flag"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
@@ -175,8 +180,12 @@ const TTSMethods = {
     // because the user was writing, else null. Never a latch — the bar
     // always shows it (ttsRenderBar) and the stop button always drops it.
     this.ttsHeld = null
+    // ORCAHUB3-113 D10: when the user last put text into a draft sink — the
+    // hold's age is measured from here (see draftActivity in tts_hold.js).
+    this.ttsLastDraftAt = null
     this.ttsStreamMount()
     this.ttsHoldMount()
+    this.ttsVoiceViewMount()
 
     this.el.addEventListener("click", (e) => {
       const target = e.target.closest("[data-tts-target]")
@@ -185,6 +194,12 @@ const TTSMethods = {
       if (!action) return
       this.ttsHandleAction(target.dataset.ttsTarget, action)
     })
+
+    // Tap-to-jump (voice view only — see ttsTapJump). Bound to the feed
+    // element rather than `document` for the same reason the footer clicks
+    // above are, and one more: iOS Safari only dispatches `click` for a tap
+    // on plain text when some ancestor below <body> has a click listener.
+    this.el.addEventListener("click", (e) => this.ttsTapJump(e))
 
     // Explicit id from the server (SessionLive.Show / QueueLive push this on
     // turn-idle when autoplay is on) — NOT a DOM scan for "the last player".
@@ -288,6 +303,7 @@ const TTSMethods = {
     clearInterval(this._ttsStreamTimer)
     this.ttsStreams.clear()
     this.ttsHoldUnmount()
+    this.ttsVoiceViewUnmount()
   },
 
   ttsStreamEvent({ op, stream_id, text, block_type, name }) {
@@ -531,6 +547,20 @@ const TTSMethods = {
     // the session page — the same seam the Voice hook uses for `sent_ack`.
     this._onComposerSent = () => this.ttsHoldOnSend()
     window.addEventListener("phx:clear-prompt", this._onComposerSent)
+    // ...and a send the voice channel CONFIRMED (`"sent"`, both delivery
+    // paths). The composer-less pages need this one: on /queue a spoken send
+    // goes `send_direct` and no `clear-prompt` is ever pushed, so a reply
+    // held there waited for a press forever (01a1b00's gap). Where both fire
+    // for one send, the second finds `ttsHeld` already moved on and does
+    // nothing — see the identity check in ttsHoldOnSend.
+    window.addEventListener("orca:voice-sent", this._onComposerSent)
+
+    // D10's clock. Capture phase on `document`, so nothing between the
+    // textarea and here can hide a keystroke from it by stopping propagation.
+    this._onDraftInput = (e) => {
+      if (draftActivity(e.target)) this.ttsLastDraftAt = Date.now()
+    }
+    document.addEventListener("input", this._onDraftInput, true)
 
     this._onTtsBarClick = (e) => {
       const btn = e.target.closest && e.target.closest("[data-tts-bar-action]")
@@ -545,6 +575,8 @@ const TTSMethods = {
 
   ttsHoldUnmount() {
     window.removeEventListener("phx:clear-prompt", this._onComposerSent)
+    window.removeEventListener("orca:voice-sent", this._onComposerSent)
+    document.removeEventListener("input", this._onDraftInput, true)
     document.removeEventListener("click", this._onTtsBarClick)
     this.ttsHeld = null
     // The bar outlives this hook (it is sticky; we are not), so leaving it
@@ -580,18 +612,32 @@ const TTSMethods = {
         now: Date.now(),
         draftBusy: this.ttsDraftBusy(),
         maxAgeMs: TTS_HOLD_MAX_AGE_MS,
+        lastDraftAt: this.ttsLastDraftAt,
       })
       if (action !== "play") return
-      this.ttsHeld = null
-      this.ttsRenderBar()
-      this.ttsPlayById(held.id)
+      this.ttsPlayHeld()
     }, TTS_HOLD_SETTLE_MS)
   },
 
+  // The two things anyone can do with a held reply, wherever its control is
+  // drawn (the bar's transport, the voice view's held strip). Playing it is
+  // an EXPLICIT instruction and is obeyed whatever the composer holds
+  // (item 5) — the hold only ever governs autoplay.
+  ttsPlayHeld() {
+    if (!this.ttsHeld) return
+    const id = this.ttsHeld.id
+    this.ttsHeld = null
+    this.ttsRenderBar()
+    this.ttsPlayById(id)
+  },
+
+  ttsDismissHeld() {
+    this.ttsHeld = null
+    this.ttsRenderBar()
+  },
+
   // The bar's play/pause/stop. `held` is the only mode that is not plain
-  // transport: pressing play there is an EXPLICIT instruction and is obeyed
-  // whatever the composer holds (item 5) — the hold only ever governs
-  // autoplay.
+  // transport — see ttsPlayHeld.
   ttsBarAction(action) {
     const state = ttsBarState({
       playing: this.playing,
@@ -600,12 +646,8 @@ const TTSMethods = {
     })
 
     if (action === "stop") {
-      if (state.mode === "held") {
-        this.ttsHeld = null
-        this.ttsRenderBar()
-      } else {
-        this.ttsStop()
-      }
+      if (state.mode === "held") this.ttsDismissHeld()
+      else this.ttsStop()
       return
     }
 
@@ -613,12 +655,7 @@ const TTSMethods = {
 
     if (state.mode === "playing") this.ttsPause()
     else if (state.mode === "paused") this.ttsResumeOrStart(this.activeId)
-    else if (state.mode === "held") {
-      const id = this.ttsHeld.id
-      this.ttsHeld = null
-      this.ttsRenderBar()
-      this.ttsPlayById(id)
-    }
+    else if (state.mode === "held") this.ttsPlayHeld()
   },
 
   // The socket dropped and came back. `VoiceBarLive` is sticky against
@@ -632,7 +669,12 @@ const TTSMethods = {
     setTimeout(() => this.ttsRenderBar(), 300)
   },
 
+  // Every transport surface, not just the bar: the voice view's rail and held
+  // strip draw the same state, so they ride the same call sites (ttsEmitState
+  // and every hold transition) rather than growing a parallel set.
   ttsRenderBar() {
+    this.ttsRenderVoice()
+
     const bar = document.querySelector("[data-tts-bar]")
     if (!bar) return
 
@@ -662,6 +704,264 @@ const TTSMethods = {
       stop.title = state.stopTitle
       stop.setAttribute("aria-label", state.stopTitle)
     }
+  },
+
+  // --- the mobile voice view: rail, held strip, tap-to-jump (ORCAHUB3-113 C)
+  //
+  // The DECISIONS are in `tts_rail.js` (pure, node-checkable — see
+  // tts_rail.check.mjs); this is the wiring. The session page renders two
+  // EMPTY `phx-update="ignore"` containers inside `#voice-view`, `#voice-rail`
+  // and `#voice-held`, and everything in them is ours: a skeleton written
+  // once, then updated in place. They sit outside this hook's element, so
+  // their clicks are delegated on `document`, like the bar's.
+  //
+  // What the rail shows depends on the PAGE's state as well as the player's
+  // (a big Play for the message on screen in `reply`/`paging`), and the page
+  // publishes that on <html> (`data-voice-state`, `data-voice-current`).
+  // Those change with nothing in the player changing, hence the observer —
+  // the one place this listens for state it does not own.
+  ttsVoiceViewMount() {
+    this._onTtsVoiceClick = (e) => {
+      if (!e.target.closest) return
+      const rail = e.target.closest("[data-tts-rail-action]")
+      if (rail) {
+        e.preventDefault()
+        return this.ttsRailAction(rail.dataset.ttsRailAction)
+      }
+      const held = e.target.closest("[data-tts-held-action]")
+      if (held) {
+        e.preventDefault()
+        if (held.dataset.ttsHeldAction === "play") this.ttsPlayHeld()
+        else if (held.dataset.ttsHeldAction === "dismiss") this.ttsDismissHeld()
+      }
+    }
+    document.addEventListener("click", this._onTtsVoiceClick)
+
+    // D2: End (a USER toggle-off, not a dropped mic) closes the voice view
+    // and stops any reading in progress. Only from the view: on desktop the
+    // mic button is just a mic, and turning it off has never stopped a read.
+    this._onVoiceEnded = (e) => {
+      if (e.detail && e.detail.viewShowing) this.ttsStop()
+    }
+    window.addEventListener("orca:voice-ended", this._onVoiceEnded)
+
+    if (typeof MutationObserver !== "undefined") {
+      this._ttsVoiceObserver = new MutationObserver(() => this.ttsRenderVoice())
+      this._ttsVoiceObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-voice-state", "data-voice-current", "data-voice-view", "data-voice-layout"],
+      })
+    }
+
+    this.ttsRenderVoice()
+  },
+
+  ttsVoiceViewUnmount() {
+    document.removeEventListener("click", this._onTtsVoiceClick)
+    window.removeEventListener("orca:voice-ended", this._onVoiceEnded)
+    if (this._ttsVoiceObserver) this._ttsVoiceObserver.disconnect()
+    this._ttsVoiceObserver = null
+    // Same reasoning as ttsHoldUnmount: nothing in these may outlive the
+    // player it drives. (The containers normally leave with the page, but a
+    // dead Play is a worse failure than an empty box.)
+    for (const id of ["voice-rail", "voice-held"]) {
+      const host = document.getElementById(id)
+      if (host) host.replaceChildren()
+    }
+  },
+
+  ttsVoiceRailState() {
+    const html = document.documentElement
+    const currentId = html.dataset.voiceCurrent || null
+    return ttsRailState({
+      playing: this.playing,
+      queued: this.chunks ? this.chunks.length : 0,
+      currentIndex: this.currentIndex,
+      pageState: html.dataset.voiceState || null,
+      currentId,
+      currentReadable: !!currentId && this.ttsReadable(currentId),
+      held: this.ttsHeld,
+    })
+  },
+
+  // Would pressing play on this message read anything? It needs a footer
+  // (ttsUpdateUI stops a read whose footer is missing) and text that survives
+  // extraction and cleaning — a reply that is all fenced code speaks nothing,
+  // and a Play that does nothing is a dead control. Memoized on the bubble
+  // ELEMENT, because a persisted message's text never changes but this runs
+  // on every sentence advance.
+  ttsReadable(id) {
+    const bubble = document.getElementById(`tts-text-${id}`)
+    if (!bubble || !document.getElementById(`tts-footer-${id}`)) return false
+    const memo = this._ttsReadableMemo
+    if (memo && memo.el === bubble) return memo.readable
+    const readable = !!this.ttsPrepare(id)
+    this._ttsReadableMemo = { el: bubble, readable }
+    return readable
+  },
+
+  ttsRenderVoice() {
+    const railHost = document.getElementById("voice-rail")
+    if (railHost) this.ttsPaintRail(railHost, this.ttsVoiceRailState())
+    const heldHost = document.getElementById("voice-held")
+    if (heldHost) this.ttsPaintHeld(heldHost, heldStripState({ held: this.ttsHeld }))
+  },
+
+  // The skeleton goes in ONCE and is then updated in place. Re-writing it on
+  // every sentence advance would swap the buttons out from under a finger
+  // that is mid-tap, and the tap would land on a detached node. If the page
+  // ever re-creates the container, the missing root is noticed here and the
+  // skeleton simply goes back in.
+  ttsVoiceSkeleton(host, markup, selector) {
+    let root = host.querySelector(selector)
+    if (!root) {
+      host.innerHTML = markup
+      root = host.querySelector(selector)
+    }
+    return root
+  },
+
+  ttsPaintRail(host, state) {
+    const root = this.ttsVoiceSkeleton(host, RAIL_MARKUP, "[data-tts-rail]")
+    if (!root) return
+    root.classList.toggle("hidden", !state.visible)
+    root.classList.toggle("flex", state.visible)
+    if (!state.visible) return
+
+    const progress = root.querySelector("[data-tts-rail-progress]")
+    if (progress) progress.classList.toggle("hidden", !state.transport)
+    const label = root.querySelector("[data-tts-rail-label]")
+    if (label) label.textContent = state.label
+
+    const bar = root.querySelector("[data-tts-rail-segments]")
+    if (bar) {
+      if (bar.children.length !== state.segments.length) {
+        bar.replaceChildren(...state.segments.map(() => document.createElement("i")))
+      }
+      state.segments.forEach((s, i) => {
+        bar.children[i].className = SEGMENT_CLASS[s]
+      })
+    }
+
+    for (const action of ["prev", "next", "stop"]) {
+      const btn = root.querySelector(`[data-tts-rail-action='${action}']`)
+      if (!btn) continue
+      btn.classList.toggle("hidden", !state.transport)
+      if (action === "prev") btn.disabled = !state.prevEnabled
+      if (action === "next") btn.disabled = !state.nextEnabled
+    }
+
+    const toggle = root.querySelector("[data-tts-rail-action='toggle']")
+    if (toggle) {
+      toggle.title = state.toggleTitle
+      toggle.setAttribute("aria-label", state.toggleTitle)
+      toggle.classList.toggle("btn-warning", state.tone === "warning")
+      toggle.classList.toggle("btn-primary", state.tone !== "warning")
+      const icon = toggle.querySelector("[data-tts-rail-icon]")
+      // Compared first: swapping the SVG under a pressed button for an
+      // identical one is exactly the mid-tap churn the skeleton avoids.
+      if (icon && icon.dataset.icon !== state.icon) {
+        icon.innerHTML = state.icon === "pause" ? RAIL_ICON_PAUSE : RAIL_ICON_PLAY
+        icon.dataset.icon = state.icon
+      }
+      const text = toggle.querySelector("[data-tts-rail-toggle-label]")
+      if (text) text.textContent = state.toggleLabel
+    }
+  },
+
+  ttsPaintHeld(host, state) {
+    const root = this.ttsVoiceSkeleton(host, HELD_MARKUP, "[data-tts-held]")
+    if (!root) return
+    root.classList.toggle("hidden", !state.visible)
+    root.classList.toggle("flex", state.visible)
+    const label = root.querySelector("[data-tts-held-label]")
+    if (label) label.textContent = state.label
+  },
+
+  // Re-derives the state rather than trusting what was painted: the click is
+  // answered against what the player is doing NOW.
+  ttsRailAction(action) {
+    const state = this.ttsVoiceRailState()
+
+    if (action === "toggle") {
+      if (state.mode === "playing") this.ttsPause()
+      else if (state.mode === "paused") this.ttsResumeOrStart(this.activeId)
+      else if (state.mode === "ready") this.ttsHandleAction(state.readId, "toggle")
+      return
+    }
+
+    if (!state.transport) return
+    if (action === "prev") this.ttsPrev()
+    else if (action === "next") this.ttsNext()
+    else if (action === "stop") this.ttsStop()
+  },
+
+  // Tap-to-jump: in the voice view, a tap on the message text plays from the
+  // sentence under the finger — the mockup's "tap any sentence to jump
+  // there". Links, buttons and a text selection keep the tap (tapJumpTarget).
+  //
+  // Two cases. The message is the one already loaded and its chunks carry
+  // DOM ranges: jump within it. Otherwise — another message, nothing playing,
+  // or a reply that was read AS IT STREAMED, whose chunks never had ranges —
+  // read it fresh from its DOM and start at the tapped chunk.
+  ttsTapJump(e) {
+    const selection = typeof window.getSelection === "function" ? window.getSelection() : null
+    const id = tapJumpTarget({
+      target: e.target,
+      viewShowing: voiceViewShowing(),
+      selectionCollapsed: !selection || selection.isCollapsed,
+    })
+    if (!id) return
+
+    const caret = caretAt(document, e.clientX, e.clientY)
+    if (!caret) return
+    const locate = (spec) => this.ttsComparePoint(spec, caret)
+
+    if (this.ttsSameTarget(id) && hasJumpRanges(this.chunks, this.chunkRanges)) {
+      const index = chunkIndexAt(this.chunkRanges, locate)
+      if (index >= 0) this.ttsJumpTo(index)
+      return
+    }
+
+    const prepared = this.ttsPrepare(id)
+    if (!prepared) return
+    const index = chunkIndexAt(prepared.chunkRanges, locate)
+    if (index < 0) return
+    this.ttsStop()
+    this.ttsStart(id, { startIndex: index })
+  },
+
+  // Range.comparePoint for a caret against one chunk's range spec: -1 the
+  // caret is before it, 0 inside, 1 after. Null — "could not compare" — on
+  // any throw (a node detached by a patch since the chunks were built, an
+  // offset past the end of a text node that has since changed), which
+  // chunkIndexAt skips rather than guessing.
+  ttsComparePoint(spec, caret) {
+    try {
+      const range = document.createRange()
+      range.setStart(spec.startNode, spec.startOffset)
+      range.setEnd(spec.endNode, spec.endOffset)
+      return range.comparePoint(caret.node, caret.offset)
+    } catch (e) {
+      return null
+    }
+  },
+
+  // Moves the loaded message to chunk `index` and plays from it, playing or
+  // paused alike — a tap is an instruction to hear THAT sentence. Same
+  // teardown as ttsPrev/ttsNext; ttsPlayCurrentChunk's stale-index guard
+  // drops whatever fetch was in flight for the chunk being left.
+  ttsJumpTo(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.chunks.length) return
+    if (this.audio) { this.audio.pause(); this.audio = null }
+    this.ttsAwaitingChunk = false
+    this.currentIndex = index
+    if (!this.playing) {
+      this.playing = true
+      this.ttsEmitState()
+    }
+    this.ttsUpdateUI(this.activeId)
+    this.ttsPlayCurrentChunk()
   },
 
   // --- click delegation / transport -----------------------------------
@@ -705,7 +1005,7 @@ const TTSMethods = {
   // cleaning, not after — see that module's header comment for why: cleaning
   // drops/rewrites/shortens text, so a chunk offset computed on cleaned text
   // has no DOM position left to map back to for the read-aloud highlight.
-  // ttsExtractText therefore returns the RAW extraction, and ttsStart is
+  // ttsExtractText therefore returns the RAW extraction, and ttsPrepare is
   // where chunking, per-chunk cleaning and range resolution all happen.
   ttsExtractText(id) {
     // Locate the message's text bubble by id lookup — never by DOM
@@ -745,12 +1045,18 @@ const TTSMethods = {
   },
 
   // --- playback control (per-message state, keyed by this.activeId) ------
-  ttsStart(id) {
+  //
+  // The message's chunks and their highlight ranges, WITHOUT starting
+  // anything — or null when there is nothing to read. Split out of ttsStart
+  // so tap-to-jump can map a tap onto a message's chunks before deciding
+  // where to start it, and the voice view's rail can ask whether a Play
+  // would read anything at all (ttsReadable).
+  ttsPrepare(id) {
     const { text, spans } = this.ttsExtractText(id)
-    if (!text) return
+    if (!text) return null
 
     const rawChunks = splitIntoChunksWithOffsets(text)
-    if (rawChunks.length === 0) return
+    if (rawChunks.length === 0) return null
 
     // Clean each chunk on its way to synthesis (same order the streaming
     // path has always used) and resolve its range for the highlight — kept
@@ -768,7 +1074,17 @@ const TTSMethods = {
       chunks.push(cleaned)
       chunkRanges.push(resolveChunkRange(spans, rc.start, rc.end))
     }
-    if (chunks.length === 0) return
+    if (chunks.length === 0) return null
+    return { chunks, chunkRanges }
+  },
+
+  // `startIndex` is tap-to-jump's: start a message that is not the loaded
+  // one at the sentence that was tapped. Clamped, so a stale index (the
+  // message re-rendered between the tap and here) still starts somewhere.
+  ttsStart(id, { startIndex = 0 } = {}) {
+    const prepared = this.ttsPrepare(id)
+    if (!prepared) return
+    const { chunks, chunkRanges } = prepared
 
     // Whatever was being held, this read supersedes it — a manual press is
     // an explicit instruction, and a held reply that is now playing has no
@@ -779,7 +1095,9 @@ const TTSMethods = {
     this.activeNode = document.getElementById(`tts-footer-${id}`)
     this.chunks = chunks
     this.chunkRanges = chunkRanges
-    this.currentIndex = 0
+    this.currentIndex = Number.isInteger(startIndex)
+      ? Math.min(Math.max(startIndex, 0), chunks.length - 1)
+      : 0
     this.playing = true
     this.ttsEmitState()
     this.ttsUpdateUI(id)
@@ -1035,6 +1353,12 @@ const TTSMethods = {
   },
 
   ttsUpdateUI(id) {
+    // The rail's "Sentence n of N" moves with every index change, and every
+    // index change already comes through here (start, advance, prev/next,
+    // a failed chunk skipped, a streamed chunk arriving). First, because a
+    // streamed message has no footer and returns early below.
+    this.ttsRenderVoice()
+
     const footer = document.getElementById(`tts-footer-${id}`)
     if (!footer) {
       // A message being read AS IT STREAMS has no persisted footer yet —
