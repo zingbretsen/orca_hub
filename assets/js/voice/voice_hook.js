@@ -731,6 +731,10 @@ export const VoiceHook = {
         onSpeechEnd: (ev) => this._onSpeechEnd(ev),
         onMisfire: () => {
           this.metrics.misfires++
+          // The onset already went up as `speech_start`; without this the
+          // server would think the utterance is still in progress and hold
+          // the rolling cleanup back until it gives up on it (ORCAHUB3-120).
+          this.channel && this.channel.push("speech_misfire", {})
         },
         onError: (e) => this._showError(`VAD failure: ${e.message}`),
       })

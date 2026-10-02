@@ -1037,6 +1037,7 @@ The client ships RAW PCM; the SERVER wraps it in a 44-byte WAV header for the mu
 #### Client -> server JSON events
 
 - `"speech_start"` `{}` — VAD onset. Cancels an open arming window IMMEDIATELY (the arming chip must die on speech ONSET, not 600 ms later when the segment completes).
+- `"speech_misfire"` `{}` (ORCAHUB3-120) — the VAD rejected the onset it just announced (under `minSpeechMs`), so no `"segment"` will follow it. The server stops treating that utterance as in progress, which is what holds the rolling cleanup's idle rule off; nothing else changes. An older client never sends it, and the onset then lapses after 20 s.
 - `"mic"` `{muted: bool, reason: "tts" | "user"}` — the client's half-duplex state; the server mirrors it in `state.muted` and DROPS any `"segment"` that arrives while muted (defensive).
 - `"send_now"` `{}` — sends the current draft immediately, no arming window. No-op on an empty draft. Still served, but no longer pushed by the panel: the composer's own Send button submits through `SessionLive.Show`'s `send_message` (also `:queue`) instead.
 - `"cancel"` `{}` — clears the draft and any arming window.

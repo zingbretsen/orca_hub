@@ -216,10 +216,32 @@ defmodule OrcaHub.Voice.Session do
   with the draft text before it (its last ~400 characters, word boundary,
   layout kept) as context only. It is dispatched when the run has >= 2
   segments, when it is closed (a settled span follows it), when an armed
-  SEND is counting down (flush, even one segment), or after 2000 ms with no
-  transcript applied and nothing on its way to ASR. Never in palette focus,
-  never while a send is pending, and at most ONE at a time — the GPU is
-  shared, and one-at-a-time is also what keeps results in order.
+  SEND is counting down (flush, even one segment), or when the user has
+  really gone quiet: 2000 ms after the later of the last segment ARRIVAL
+  and the last applied transcript, with nothing on its way to ASR and no
+  utterance in progress. `speech_start/2` opens one (`speech_since`); the
+  next segment, a mute or a VAD misfire (`speech_misfire/2`) closes it, and
+  an onset nobody closed lapses after 20 s (the client force-ends a segment
+  at 18 s). Before this, a fragment > ~1.2 s after a pause > ~0.6 s was
+  cleaned ALONE, its pause-manufactured full stop frozen into the context.
+  Never in palette focus, never while a send is pending, and at most ONE at
+  a time — the GPU is shared, and one-at-a-time is also what keeps results
+  in order.
+
+  **The boundary join.** A batch boundary still freezes a full stop: once
+  a batch is cleaned its text is settled CONTEXT the model may not edit. So
+  whenever a DICTATED span (raw, cleaned, or settled by a refusal) starts
+  with a lowercase word — Whisper's continuation signal, since its prompt
+  carries the draft tail, and the cleanup prompt's too — and the dictated
+  span before it ends in a single `.` that a pause could have put there,
+  that `.` is dropped and the sentence joins. Never a `?`/`!`, an ellipsis,
+  an abbreviation (`etc.`, `Dr.`, `e.g.`), a number, version or dotted
+  token (`3.`, `v1.2.`, `foo.ex.`), an initial, or a list item; never
+  typed text, an insert or a `#` query (all `dictated: false`); never a
+  span in the batch in flight — that join waits until the batch answers,
+  and then lands on whatever it settled into. It runs wherever a batch can
+  go out (so the context and raw it sends are already joined), and only
+  with `cleanup: true`.
 
   A result applies only if its batch is still in the draft unchanged: the
   same span ids, contiguous, still `:raw`, same text. Anything that rewrites
@@ -275,6 +297,17 @@ defmodule OrcaHub.Voice.Session do
   # unanswered before the slot is reclaimed — the channel's task always
   # answers, so this only matters if it somehow did not.
   @cleanup_grace_ms 2000
+  # How long a `speech_start` nobody closed holds the idle rule off. The
+  # client force-ends a segment at 18 s, so a real utterance has arrived by
+  # then; anything older was a lost misfire or a dropped open segment.
+  @speech_max_ms 20_000
+
+  # The boundary join's guards: a full stop after one of these belongs to
+  # the word, not to a pause. (Dotted forms — `e.g.`, `a.m.` — are caught by
+  # their inner dot. "no" is left out: a segment ending in "No." is far more
+  # often a spoken "no." than a "No. 5" cut in half.)
+  @abbreviations ~w(etc vs mr mrs ms dr prof sr jr st mt inc ltd co corp
+                    approx cf al fig vol dept est misc ca eg ie)
 
   @type frame :: %{
           seq: non_neg_integer(),
@@ -360,15 +393,20 @@ defmodule OrcaHub.Voice.Session do
             cleanup: false,
             cleanup_timeout_ms: 3000,
             # the draft, partitioned: [%{kind: :raw | :settled, sep:, text:,
-            # id:}], `id` set on raw spans only
+            # id:, dictated:}], `id` set on raw spans only, `dictated` on
+            # spans whose text came from speech (raw, cleaned, refused)
             spans: [],
             next_span_id: 1,
             # the id of the last `{:cleanup, id, _}` emitted
             cleanup_seq: 0,
             # %{id:, span_ids:, raw:, until:, stale:} — the ONE batch out
             cleanup_inflight: nil,
-            # monotonic ms of the last applied transcript, for the idle rule
-            last_applied_at: nil
+            # monotonic ms of the last segment arrival or applied transcript,
+            # whichever is later — the idle rule's anchor
+            heard_at: nil,
+            # monotonic ms of a `speech_start` whose segment has not arrived
+            # yet: an utterance in progress, which holds the idle rule off
+            speech_since: nil
 
   @doc """
   A fresh voice session.
@@ -437,14 +475,39 @@ defmodule OrcaHub.Voice.Session do
   ~0.5 s, so an onset landing in that ~0.6-1.1 s gap would otherwise be
   forgotten by the time the `:send` result arrived and armed. See
   `armable?/2`.
-  """
-  @spec speech_start(%__MODULE__{}) :: {%__MODULE__{}, [effect()]}
-  def speech_start(state),
-    do: {%{disarm(state) | speech_starts: state.speech_starts + 1}, []}
 
-  @doc "Mirrors the client's half-duplex mic state."
-  @spec mic(%__MODULE__{}, boolean()) :: {%__MODULE__{}, [effect()]}
-  def mic(state, muted?), do: {%{state | muted: !!muted?}, []}
+  And it marks an utterance IN PROGRESS (`speech_since`), which holds the
+  rolling cleanup's idle rule off until that utterance's segment arrives
+  (ORCAHUB3-120) — an onset only defers a batch, so this never emits one.
+  With cleanup on it schedules the ONE tick that reclaims the onset if
+  nothing ever closes it; nothing else schedules for that, so a long
+  dictation cannot pile timers up.
+  """
+  @spec speech_start(%__MODULE__{}, integer()) :: {%__MODULE__{}, [effect()]}
+  def speech_start(state, now \\ System.monotonic_time(:millisecond)) do
+    state = %{disarm(state) | speech_starts: state.speech_starts + 1, speech_since: now}
+    {state, if(state.cleanup, do: [{:schedule_tick, @speech_max_ms}], else: [])}
+  end
+
+  @doc """
+  The VAD rejected the speech it announced with `speech_start` (shorter
+  than its 250 ms minimum), so no segment will follow: the utterance is no
+  longer in progress, and a cleanup it was holding back may go. Touches
+  nothing else — the onset already did whatever an onset does.
+  """
+  @spec speech_misfire(%__MODULE__{}, integer()) :: {%__MODULE__{}, [effect()]}
+  def speech_misfire(state, now \\ System.monotonic_time(:millisecond)),
+    do: maybe_cleanup(%{state | speech_since: nil}, now)
+
+  @doc """
+  Mirrors the client's half-duplex mic state. A mute drops the VAD's open
+  segment, so it also ends an utterance in progress.
+  """
+  @spec mic(%__MODULE__{}, boolean(), integer()) :: {%__MODULE__{}, [effect()]}
+  def mic(state, muted?, now \\ System.monotonic_time(:millisecond)) do
+    state = %{state | muted: !!muted?}
+    if muted?, do: maybe_cleanup(%{state | speech_since: nil}, now), else: {state, []}
+  end
 
   @doc """
   The client's `ui_focus` event (spec §8.3.5): what the user is looking at,
@@ -700,15 +763,20 @@ defmodule OrcaHub.Voice.Session do
   moduledoc and returns the resulting effects.
   """
   @spec segment_received(%__MODULE__{}, frame(), integer()) :: {%__MODULE__{}, [effect()]}
-  def segment_received(%__MODULE__{muted: true} = state, frame, _now) do
-    {state, [result_effect(frame.seq, "dropped_muted", detail: "mic muted")]}
-  end
-
   def segment_received(state, frame, now) do
-    case state.held do
-      nil -> classify(state, frame, [], now)
-      held -> merge_held(state, held, frame, now)
-    end
+    # Whatever happens to it next, the utterance it closes is over, and it
+    # restarts the idle clock (ORCAHUB3-120).
+    state = %{state | speech_since: nil, heard_at: now}
+
+    {state, effects} =
+      cond do
+        state.muted -> {state, [result_effect(frame.seq, "dropped_muted", detail: "mic muted")]}
+        state.held == nil -> classify(state, frame, [], now)
+        true -> merge_held(state, state.held, frame, now)
+      end
+
+    {state, cleanup_effects} = maybe_cleanup(state, now)
+    {state, effects ++ cleanup_effects}
   end
 
   # A held sub-floor segment plus the one that just arrived, concatenated.
@@ -806,7 +874,7 @@ defmodule OrcaHub.Voice.Session do
       # The idle clock restarts on every APPLIED transcript, whatever it
       # turned out to be — a buffered out-of-order one has not been applied.
       state =
-        if length(state.awaiting) < waiting, do: %{state | last_applied_at: now}, else: state
+        if length(state.awaiting) < waiting, do: %{state | heard_at: now}, else: state
 
       {state, cleanup_effects} = maybe_cleanup(state, now)
       {state, effects ++ cleanup_effects}
@@ -1214,8 +1282,8 @@ defmodule OrcaHub.Voice.Session do
   defp push_span(state, sep, text) do
     span =
       if state.pending_insert,
-        do: %{kind: :settled, sep: sep, text: text, id: nil},
-        else: %{kind: :raw, sep: sep, text: text, id: state.next_span_id}
+        do: %{kind: :settled, sep: sep, text: text, id: nil, dictated: false},
+        else: %{kind: :raw, sep: sep, text: text, id: state.next_span_id, dictated: true}
 
     %{
       state
@@ -1275,7 +1343,7 @@ defmodule OrcaHub.Voice.Session do
   defp replacement([first | _] = spans, {:ok, cleaned, _meta}) when is_binary(cleaned) do
     case String.trim(cleaned) do
       "" -> settle(spans)
-      text -> [%{kind: :settled, sep: first.sep, text: text, id: nil}]
+      text -> [%{kind: :settled, sep: first.sep, text: text, id: nil, dictated: true}]
     end
   end
 
@@ -1302,21 +1370,25 @@ defmodule OrcaHub.Voice.Session do
   end
 
   # Decides whether the next batch goes out NOW, later (a tick at the idle
-  # deadline), or not at all. Called after every transition that can make a
-  # batch due: a transcript, a cleanup result, a tick, and focus returning.
+  # deadline), or not at all — after joining whatever sentence boundaries
+  # have become joinable, so a batch never carries a full stop the join
+  # would have dropped. Called after every transition that can make a batch
+  # due or a boundary joinable: a segment, a transcript, a cleanup result, a
+  # tick, a misfire, a mute, and focus returning. The palette clause comes
+  # first because the draft is untouchable there, joins included.
   defp maybe_cleanup(%__MODULE__{cleanup: false} = state, _now), do: {state, []}
-
-  defp maybe_cleanup(%__MODULE__{cleanup_inflight: batch} = state, _now) when batch != nil,
-    do: {state, []}
-
   defp maybe_cleanup(%__MODULE__{focus: "palette"} = state, _now), do: {state, []}
+  defp maybe_cleanup(state, now), do: state |> join_boundaries() |> next_batch(now)
 
-  defp maybe_cleanup(%__MODULE__{send_pending: pending} = state, _now) when pending != nil,
+  defp next_batch(%__MODULE__{cleanup_inflight: batch} = state, _now) when batch != nil,
     do: {state, []}
 
-  defp maybe_cleanup(%__MODULE__{sending: true} = state, _now), do: {state, []}
+  defp next_batch(%__MODULE__{send_pending: pending} = state, _now) when pending != nil,
+    do: {state, []}
 
-  defp maybe_cleanup(state, now) do
+  defp next_batch(%__MODULE__{sending: true} = state, _now), do: {state, []}
+
+  defp next_batch(state, now) do
     case oldest_run(state.spans) do
       nil ->
         {state, []}
@@ -1328,6 +1400,12 @@ defmodule OrcaHub.Voice.Session do
 
           # Something is still on its way to ASR and will land on this run.
           state.awaiting != [] or state.held != nil ->
+            {state, []}
+
+          # The user is mid-utterance: its segment (or a misfire, or a mute)
+          # re-decides, and `speech_start/2` already scheduled the tick that
+          # reclaims an onset nobody closes.
+          speaking?(state, now) ->
             {state, []}
 
           idle_wait(state, now) == 0 ->
@@ -1344,8 +1422,76 @@ defmodule OrcaHub.Voice.Session do
   # never waits for it.
   defp flushing?(state), do: is_integer(state.arming_until) and state.arming_kind == :send
 
-  defp idle_wait(%__MODULE__{last_applied_at: nil}, _now), do: 0
-  defp idle_wait(state, now), do: max(state.last_applied_at + @cleanup_idle_ms - now, 0)
+  defp speaking?(%__MODULE__{speech_since: nil}, _now), do: false
+  defp speaking?(state, now), do: now < state.speech_since + @speech_max_ms
+
+  defp idle_wait(%__MODULE__{heard_at: nil}, _now), do: 0
+  defp idle_wait(state, now), do: max(state.heard_at + @cleanup_idle_ms - now, 0)
+
+  # The boundary join (see the moduledoc). One pass over adjacent spans;
+  # dropping a trailing `.` changes only the end of a span, never the start
+  # the next pair is judged on, so a single pass is a fixed point.
+  defp join_boundaries(state) do
+    locked = locked_span_ids(state.cleanup_inflight)
+    spans = join_pairs(state.spans, locked)
+
+    if spans == state.spans,
+      do: state,
+      else: %{state | spans: spans, draft: spans_text(spans)}
+  end
+
+  # The batch in flight must land on exactly the text it was sent, so its
+  # spans are never edited; a join onto one waits for its answer.
+  defp locked_span_ids(%{stale: false, span_ids: ids}), do: ids
+  defp locked_span_ids(_none_or_stale), do: []
+
+  defp join_pairs([prev, next | rest], locked) do
+    prev =
+      if joins?(prev, next, locked),
+        do: %{prev | text: binary_part(prev.text, 0, byte_size(prev.text) - 1)},
+        else: prev
+
+    [prev | join_pairs([next | rest], locked)]
+  end
+
+  defp join_pairs(spans, _locked), do: spans
+
+  defp joins?(prev, next, locked) do
+    prev.dictated and next.dictated and next.sep == " " and prev.id not in locked and
+      pause_period?(prev.text) and continues?(next.text)
+  end
+
+  # A single trailing `.` a pause could have put there — not one that
+  # belongs to the word before it, not an ellipsis, not a list item's.
+  defp pause_period?(text) do
+    String.ends_with?(text, ".") and not String.ends_with?(text, "..") and
+      not list_item?(text) and plain_word?(last_word(text))
+  end
+
+  # The last whitespace-delimited token, minus its final `.`.
+  defp last_word(text) do
+    token = text |> String.split() |> List.last("")
+    binary_part(token, 0, max(byte_size(token) - 1, 0))
+  end
+
+  defp plain_word?(word) do
+    letters = String.replace(word, ~r/^\P{L}+/u, "")
+
+    word != "" and not String.contains?(word, ".") and
+      not Regex.match?(~r/^v?[\d,]+$/iu, word) and
+      not Regex.match?(~r/^\p{L}$/u, letters) and
+      String.downcase(letters) not in @abbreviations
+  end
+
+  defp list_item?(text) do
+    line = text |> String.split("\n") |> List.last()
+    Regex.match?(~r/^\s*(?:\d+[.)]|[-*+•])\s/u, line)
+  end
+
+  # Starts with an ordinary lowercase word. A camelCase or code-shaped
+  # first token (`iPhone`, `run_elixir`) is a proper noun or an identifier
+  # that happens to start lowercase, not a continuation.
+  defp continues?(text), do: Regex.match?(~r/^\p{Ll}[\p{Ll}'’-]*(?:[\s,.;:!?]|$)/u, text)
 
   defp dispatch_cleanup(state, before, run, now) do
     batch = take_batch(run)
@@ -1422,7 +1568,11 @@ defmodule OrcaHub.Voice.Session do
   # other than dictation — and an in-flight batch can no longer be trusted
   # to land on the text it was computed from.
   defp reset_spans(state, text) do
-    spans = if text == "", do: [], else: [%{kind: :settled, sep: "", text: text, id: nil}]
+    spans =
+      if text == "",
+        do: [],
+        else: [%{kind: :settled, sep: "", text: text, id: nil, dictated: false}]
+
     %{state | spans: spans, cleanup_inflight: stale(state.cleanup_inflight)}
   end
 
@@ -1437,7 +1587,7 @@ defmodule OrcaHub.Voice.Session do
 
     case binary_part(draft, consumed, byte_size(draft) - consumed) do
       "" -> kept
-      rest -> kept ++ [%{kind: :settled, sep: "", text: rest, id: nil}]
+      rest -> kept ++ [%{kind: :settled, sep: "", text: rest, id: nil, dictated: false}]
     end
   end
 

@@ -80,7 +80,8 @@ ordinary `state` snapshot -> the hook's draft sink. See "Rolling cleanup".
   header.
 - Client -> server: `speech_start`, `mic`, `send_now`, `cancel`, `draft_edit`,
   `retry_warmup` + 2b's `sent_ack`, `send_failed`, `send_direct`, `composer`
-  + §8.3.11's `restore_draft`, `draft_delivered`.
+  + §8.3.11's `restore_draft`, `draft_delivered` + ORCAHUB3-120's
+  `speech_misfire` (the VAD dropped the onset it announced).
   Server -> client: `state` (the FULL snapshot, after every change),
   `segment_result` (one per segment, carrying its `action`), `sent` + 2b's
   `send_request` + §8.3.11's `cancelled`. Join errors:
@@ -529,9 +530,26 @@ Callers branch on those three tags only, never on a reason atom.
   partition (a test replays every transition kind).
 - **Trigger**: oldest run at >= 2 segments, or closed by a settled span, or a
   spoken SEND armed (flush, even 1 segment — usually lands inside the 1500 ms
-  window), or 2000 ms after the last applied transcript with nothing still on
-  its way to ASR. Batch <= 4 segments / ~80 words (the guard's budget is
-  proportional). Context = last ~400 chars before the batch, layout kept.
+  window), or IDLE: 2000 ms after the later of the last segment ARRIVAL and
+  the last applied transcript, nothing on its way to ASR, and NO utterance in
+  progress. `speech_start` opens one (`speech_since`); its segment, a mute,
+  or `speech_misfire` closes it; one 20 s tick per onset reclaims a lost one.
+  Measured why (927c0b4c): idle ran from the last apply only, so any fragment
+  over ~1.2 s after a pause over ~0.6 s went ALONE — onset :27.923, cleanup
+  of segment 1 at ~:29.16. Batch <= 4 segments / ~80 words (the guard's
+  budget is proportional). Context = last ~400 chars before the batch,
+  layout kept.
+- **Boundary join**: a batch's trailing `.` becomes settled context the model
+  may not edit, so a sentence continuing into the next batch kept it. Now a
+  DICTATED span (`dictated: true` — raw, cleaned, or refused) starting with a
+  plain lowercase word (Whisper continues lowercase off its draft-tail
+  prompt) drops a single trailing `.` from the dictated span before it. Not
+  `?`/`!`/`..`, abbreviations, numbers/versions/dotted tokens (`3.`,
+  `v1.2.`, `foo.ex.`), initials, list items, a camelCase/code first word;
+  never typed text, inserts or `#` queries; never a span of the batch IN
+  FLIGHT (that join waits for its answer, then lands on what it settled
+  into). Runs before every batch decision, so batches go out joined; not in
+  palette focus. Gated on `cleanup` like everything else here.
 - **ONE in flight** (shared GPU; also what keeps results in order). Never in
   palette focus (a result landing there is dropped and its spans stay raw),
   never while a send is pending.
@@ -544,8 +562,11 @@ Callers branch on those three tags only, never on a reason atom.
 - **The send never waits for a cleanup**, and a cleanup never touches the
   arming window (it is not speech).
 - **`cleanup_enabled: false` = byte-for-byte the old behaviour**: no
-  `:cleanup` effect and no idle tick at all (`Session.new/1` defaults it off;
-  the channel passes the resolved value).
+  `:cleanup` effect, no idle or onset tick, no boundary join
+  (`Session.new/1` defaults it off; the channel passes the resolved value).
+  The join stays behind this switch on purpose: it is the one kill switch
+  for every ORCAHUB3-120 rewrite of dictated text, and the join still runs
+  with cleanup ON but no model loaded.
 - The Whisper `initial_prompt` quotes the draft, so it picks up cleaned text
   for free.
 

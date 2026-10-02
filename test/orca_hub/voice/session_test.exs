@@ -1473,10 +1473,14 @@ defmodule OrcaHub.Voice.SessionTest do
         {state, e2} = utterance(state, 2, "Another thing.", @t0 + 10)
         {state, e3} = utterance(state, 3, "ship it orca send", @t0 + 20)
         {state, e4} = Session.tick(state, @t0 + 20 + 1500)
-        {_state, e5} = Session.tick(state, @t0 + 60_000)
+        {state, e5} = Session.tick(state, @t0 + 60_000)
+        {state, e6} = Session.speech_start(state, @t0 + 60_001)
+        {state, e7} = Session.speech_misfire(state, @t0 + 60_002)
+        {_state, e8} = Session.mic(state, true, @t0 + 60_003)
 
         assert [{:segment_result, _}] = e1
         assert [{:segment_result, _}] = e2
+        assert e6 ++ e7 ++ e8 == []
         all = e1 ++ e2 ++ e3 ++ e4 ++ e5
         assert cleanups(all) == []
 
@@ -1825,7 +1829,9 @@ defmodule OrcaHub.Voice.SessionTest do
       assert cleanups(effects) == []
 
       {state, effects} = Session.tick(state, @t0 + 10 + 5000)
-      assert [{2, %{context: "alpha. Beta.", raw: "gamma. Delta."}}] = cleanups(effects)
+      # "gamma." continues "Beta." (lowercase), a join that waited on the
+      # batch in flight and lands the moment it settles.
+      assert [{2, %{context: "alpha. Beta", raw: "gamma. Delta."}}] = cleanups(effects)
       assert kinds(state) == [:settled, :settled, :raw, :raw]
 
       # The lost answer turning up after all changes nothing.
@@ -1874,8 +1880,10 @@ defmodule OrcaHub.Voice.SessionTest do
 
     # The only adversarial dictation a human actually produced. Replayed with
     # an identity cleaner, every raw segment must be sent exactly ONCE, in
-    # order, with nothing skipped — and the draft must end up byte for byte
-    # what cleanup-off produces.
+    # order, with nothing skipped — and the draft must end up what
+    # cleanup-off produces, minus exactly the pause full stops the boundary
+    # join drops. It was recorded BEFORE Whisper got the draft tail as its
+    # prompt, and still starts a continuation lowercase 12 times.
     test "the ORCAHUB3-99 dictation: batches partition the speech exactly, in order" do
       segments =
         (@dictation_fixture |> File.read!() |> Jason.decode!())["segments"]
@@ -1891,6 +1899,9 @@ defmodule OrcaHub.Voice.SessionTest do
           utterance(state, n, text, @t0 + n * 1000)
         end)
 
+      # Cleanup off is byte for byte the old draft: no join.
+      assert off.draft == Enum.join(segments, " ")
+
       {on, sent} =
         segments
         |> Enum.with_index(1)
@@ -1902,12 +1913,375 @@ defmodule OrcaHub.Voice.SessionTest do
       {on, effects} = Session.tick(on, @t0 + 100_000)
       {on, sent} = answer_all(on, effects, sent, @t0 + 100_500)
 
-      assert on.draft == off.draft
+      # Segment i's full stop goes iff segment i + 1 starts lowercase. (No
+      # segment here ends in anything the guards protect.)
+      joined =
+        segments
+        |> Enum.chunk_every(2, 1, :discard)
+        |> Enum.map(fn [prev, next] ->
+          String.ends_with?(prev, ".") and next =~ ~r/^\p{Ll}/u
+        end)
+
+      assert Enum.count(joined, & &1) == 12
+
+      expected =
+        segments
+        |> Enum.zip(joined ++ [false])
+        |> Enum.map_join(" ", fn
+          {text, true} -> String.trim_trailing(text, ".")
+          {text, false} -> text
+        end)
+
+      assert on.draft == expected
+      assert on.draft =~ "The idea behind pie that if we're using local models,"
+
+      assert on.draft =~
+               "with pi we will likely be using one model for everything and it's local."
+
       assert kinds(on) |> Enum.uniq() == [:settled]
-      assert sent |> Enum.reverse() |> Enum.join(" ") == off.draft
+
+      # The batches partition the speech: every word once, in order. (A
+      # join that lands after a batch went out differs from it by that one
+      # full stop, so compare words.)
+      words = &(&1 |> String.replace(".", "") |> String.split())
+      assert sent |> Enum.reverse() |> Enum.join(" ") |> words.() == words.(off.draft)
       # Real dictation arrives one segment at a time and is answered at once,
       # so it goes in the 2-segment batches the trigger aims for.
       assert length(sent) >= 20
+    end
+  end
+
+  # One segment received at `received` and its transcript applied at
+  # `applied`, every effect of both returned.
+  defp heard(state, seq, text, received, applied) do
+    {state, effects} = Session.segment_received(state, frame(seq, 16_000), received)
+    assert [{:dispatch, ^seq, _pcm, _asr_opts}] = for({:dispatch, _, _, _} = d <- effects, do: d)
+    {state, more} = Session.transcript(state, seq, {:ok, asr(text)}, applied)
+    {state, effects ++ more}
+  end
+
+  # ORCAHUB3-120 follow-up: the idle rule must not elapse while the user is
+  # mid-utterance.
+  describe "rolling cleanup: the idle trigger and speech in progress" do
+    # Measured on the real page (session 927c0b4c, against 0855183):
+    # segment 1 applied at :27.16, segment 2's onset at :27.923, and the old
+    # rule cleaned segment 1 ALONE at ~:29.16 — three 1-segment batches,
+    # gemma returned each unchanged, and both pause full stops survived as
+    # settled context. Times are ms after segment 1's arrival.
+    test "the real-page scenario: three fragments, ~1.4 s pauses, an onset inside each gap" do
+      t = &(@t0 + &1)
+
+      {state, effects} = heard(cs(), 1, "to the OrcaHub Voice channel.", t.(0), t.(260))
+      assert cleanups(effects) == []
+
+      {state, [{:schedule_tick, 20_000}]} = Session.speech_start(state, t.(1023))
+      # The old deadline (applied + 2000) passes mid-utterance: nothing goes.
+      {state, effects} = Session.tick(state, t.(2260))
+      assert cleanups(effects) == []
+
+      {state, effects} =
+        heard(state, 2, "should send every segment to the GB10.", t.(3400), t.(3700))
+
+      raw1 = "to the OrcaHub Voice channel should send every segment to the GB10."
+      assert [{1, %{context: "", raw: ^raw1}}] = cleanups(effects)
+
+      # gemma returns it unchanged, as it did on the real page.
+      {state, []} = Session.cleanup_result(state, 1, ok(raw1), t.(4250))
+      {state, [{:schedule_tick, 20_000}]} = Session.speech_start(state, t.(5100))
+
+      {state, effects} =
+        heard(state, 3, "and then clean it up with Gemma or Nemotron.", t.(6800), t.(7100))
+
+      assert cleanups(effects) == []
+      assert {:schedule_tick, 2000} in effects
+
+      # The continuation joined onto the settled batch the moment it landed,
+      # so the context the model gets no longer ends in a full stop.
+      {state, effects} = Session.tick(state, t.(9100))
+
+      assert [
+               {2,
+                %{
+                  context: "to the OrcaHub Voice channel should send every segment to the GB10",
+                  raw: "and then clean it up with Gemma or Nemotron."
+                }}
+             ] = cleanups(effects)
+
+      {state, []} =
+        Session.cleanup_result(
+          state,
+          2,
+          ok("and then clean it up with Gemma or Nemotron."),
+          t.(9650)
+        )
+
+      assert state.draft ==
+               "to the OrcaHub Voice channel should send every segment to the GB10 " <>
+                 "and then clean it up with Gemma or Nemotron."
+
+      assert_partition(state)
+    end
+
+    test "idle counts from the later of the last segment's ARRIVAL and the last applied transcript" do
+      {state, _} = heard(cs(), 1, "Just one thought.", @t0 - 300, @t0)
+      {state, [{:schedule_tick, 20_000}]} = Session.speech_start(state, @t0 + 1500)
+
+      # The onset's utterance is too short and never merges: held, then dropped.
+      {state, [{:schedule_tick, 1500}]} =
+        Session.segment_received(state, frame(2, 4_000), @t0 + 2600)
+
+      {state, effects} = Session.tick(state, @t0 + 4100)
+      assert actions(effects) == ["dropped_short"]
+      assert cleanups(effects) == []
+      # 2000 ms after that segment ARRIVED, not after segment 1 was applied.
+      assert {:schedule_tick, 500} in effects
+
+      {state, effects} = Session.tick(state, @t0 + 4599)
+      assert effects == [{:schedule_tick, 1}]
+
+      {_state, effects} = Session.tick(state, @t0 + 4600)
+      assert [{1, %{raw: "Just one thought."}}] = cleanups(effects)
+    end
+
+    test "a misfire ends the utterance: an early one waits out the rest, an overdue one goes at once" do
+      {state, _} = heard(cs(), 1, "Just one thought.", @t0, @t0 + 300)
+
+      {state, [{:schedule_tick, 20_000}]} = Session.speech_start(state, @t0 + 1000)
+      {state, effects} = Session.speech_misfire(state, @t0 + 1600)
+      assert effects == [{:schedule_tick, 700}]
+
+      {state, [{:schedule_tick, 20_000}]} = Session.speech_start(state, @t0 + 2000)
+      # Mid-utterance at the deadline: nothing, not even another timer — the
+      # onset's own lapse tick is the only one.
+      {state, effects} = Session.tick(state, @t0 + 2300)
+      assert effects == []
+
+      {_state, effects} = Session.speech_misfire(state, @t0 + 2700)
+      assert [{1, %{raw: "Just one thought."}}] = cleanups(effects)
+    end
+
+    test "an onset nobody closes holds the idle rule off for at most 20 s" do
+      {state, _} = heard(cs(), 1, "Just one thought.", @t0, @t0)
+      {state, [{:schedule_tick, 20_000}]} = Session.speech_start(state, @t0 + 1000)
+
+      {state, effects} = Session.tick(state, @t0 + 2000)
+      assert effects == []
+
+      {state, effects} = Session.tick(state, @t0 + 20_999)
+      assert effects == []
+
+      {_state, effects} = Session.tick(state, @t0 + 21_000)
+      assert [{1, %{raw: "Just one thought."}}] = cleanups(effects)
+    end
+
+    test "a mute ends the utterance it cut off; an unmute changes nothing" do
+      {state, _} = heard(cs(), 1, "Just one thought.", @t0, @t0)
+      {state, [{:schedule_tick, 20_000}]} = Session.speech_start(state, @t0 + 1000)
+      {state, effects} = Session.tick(state, @t0 + 2500)
+      assert cleanups(effects) == []
+
+      {state, []} = Session.mic(state, false, @t0 + 2550)
+      {_state, effects} = Session.mic(state, true, @t0 + 2600)
+      assert [{1, %{raw: "Just one thought."}}] = cleanups(effects)
+    end
+
+    test "speech in progress never holds back the 2-segment rule or a closed run" do
+      {state, _} = heard(cs(), 1, "alpha.", @t0, @t0 + 300)
+      {state, _} = Session.segment_received(state, frame(2, 16_000), @t0 + 2000)
+      {state, [{:schedule_tick, 20_000}]} = Session.speech_start(state, @t0 + 2100)
+      {_state, effects} = Session.transcript(state, 2, {:ok, asr("Beta.")}, @t0 + 2400)
+      assert [{1, %{raw: "alpha. Beta."}}] = cleanups(effects)
+
+      {state, _} = Session.segment_received(cs(), frame(1, 16_000), @t0)
+      {state, [{:schedule_tick, 20_000}]} = Session.speech_start(state, @t0 + 100)
+
+      {_state, effects} =
+        Session.transcript(state, 1, {:ok, asr("see the logs orca new line")}, @t0 + 400)
+
+      assert [{1, %{raw: "see the logs"}}] = cleanups(effects)
+    end
+  end
+
+  # ORCAHUB3-120 follow-up: a batch boundary must not freeze a full stop a
+  # pause put mid-sentence.
+  describe "rolling cleanup: the boundary join" do
+    test "a lowercase continuation drops the pause full stop before it; the batch carries the join" do
+      {state, _} = utterance(cs(), 1, "to the OrcaHub Voice channel.")
+      {state, effects} = utterance(state, 2, "should send every segment.", @t0 + 10)
+
+      assert state.draft == "to the OrcaHub Voice channel should send every segment."
+
+      assert [{1, %{raw: "to the OrcaHub Voice channel should send every segment."}}] =
+               cleanups(effects)
+
+      assert_partition(state)
+    end
+
+    test "cleanup off: no join, the draft is byte for byte the old one" do
+      {state, _} = utterance(Session.new(), 1, "to the OrcaHub Voice channel.")
+      {state, _} = utterance(state, 2, "should send every segment.", @t0 + 10)
+      assert state.draft == "to the OrcaHub Voice channel. should send every segment."
+    end
+
+    test "the full stop stays when it belongs to the word before it, or is not a full stop" do
+      for prev <- [
+            "use a short name, e.g.",
+            "the lowercase one, i.e.",
+            "logs, traces, etc.",
+            "the sessions vs.",
+            "ask Dr.",
+            "talk to Mr.",
+            "around 9 a.m.",
+            "bump it to v1.2.",
+            "the value is 3.5.",
+            "that was step 3.",
+            "ship v2.",
+            "it costs 1,000.",
+            "and then...",
+            "wait..",
+            "edit lib/orca_hub/voice/session.ex.",
+            "see example.com.",
+            "signed John J.",
+            "- the first item.",
+            "1. Install the deps.",
+            "is it ready?",
+            "ship it!",
+            "a stray ."
+          ] do
+        {state, _} = utterance(cs(), 1, prev)
+        {state, _} = utterance(state, 2, "and then more.", @t0 + 10)
+        assert state.draft == prev <> " and then more.", "joined after #{inspect(prev)}"
+        assert_partition(state)
+      end
+    end
+
+    test "...and stays when what follows is not an ordinary lowercase word" do
+      for next <- [
+            "And then more.",
+            # (not "… works.": it scores 0.889 against "orca pause")
+            "iPhone builds fine.",
+            "run_elixir is the tool.",
+            "2 more things.",
+            ~s("quoted" words.)
+          ] do
+        {state, _} = utterance(cs(), 1, "to the GB10.")
+        {state, _} = utterance(state, 2, next, @t0 + 10)
+        assert state.draft == "to the GB10. " <> next, "joined before #{inspect(next)}"
+      end
+
+      for next <- ["cost-wise it's fine.", "it's fine.", "and so on"] do
+        {state, _} = utterance(cs(), 1, "to the GB10.")
+        {state, _} = utterance(state, 2, next, @t0 + 10)
+        assert state.draft == "to the GB10 " <> next
+      end
+    end
+
+    test "never onto typed text or an insert" do
+      {state, _} = Session.draft_edit(cs(), "Typed sentence.")
+      {state, _} = utterance(state, 1, "and dictated.")
+      assert state.draft == "Typed sentence. and dictated."
+
+      # Dictation the user then edited is the user's text.
+      {state, _} = utterance(cs(), 1, "Dictated one.")
+      {state, _} = Session.draft_edit(state, "Dictated one, edited.")
+      {state, _} = utterance(state, 2, "and two.", @t0 + 10)
+      assert state.draft == "Dictated one, edited. and two."
+
+      # A spoken newline sits between them.
+      {state, _} = utterance(cs(), 1, "see the logs.")
+      {state, _} = utterance(state, 2, "orca new line", @t0 + 10)
+      {state, _} = utterance(state, 3, "and the traces.", @t0 + 20)
+      assert state.draft == "see the logs.\nand the traces."
+      assert_partition(state)
+    end
+
+    test "cleaned text that starts lowercase joins onto the dictated text before it" do
+      {state, _} = utterance(cs(), 1, "First part.")
+      {state, _} = utterance(state, 2, "Is here.", @t0 + 10)
+      {state, _} = Session.cleanup_result(state, 1, ok("First part is here."), @t0 + 20)
+      {state, _} = utterance(state, 3, "And the second.", @t0 + 30)
+      {state, effects} = utterance(state, 4, "Part.", @t0 + 40)
+
+      assert [{2, %{context: "First part is here.", raw: "And the second. Part."}}] =
+               cleanups(effects)
+
+      {state, _} = Session.cleanup_result(state, 2, ok("and the second part."), @t0 + 50)
+      assert state.draft == "First part is here and the second part."
+      assert_partition(state)
+    end
+
+    test "a refused batch settles as dictation, so a continuation still joins onto it" do
+      {state, _} = utterance(cs(), 1, "alpha.")
+      {state, _} = utterance(state, 2, "Beta.", @t0 + 10)
+      {state, _} = Session.cleanup_result(state, 1, {:rejected, :novel_words, %{}}, @t0 + 20)
+      {state, _} = utterance(state, 3, "and gamma.", @t0 + 30)
+      assert state.draft == "alpha. Beta and gamma."
+      assert_partition(state)
+    end
+
+    test "race: a continuation landing while its predecessor is in flight waits, then joins the CLEANED text" do
+      {state, _} = utterance(cs(), 1, "alpha one.")
+      {state, effects} = utterance(state, 2, "Beta two.", @t0 + 10)
+      assert [{1, %{raw: "alpha one. Beta two."}}] = cleanups(effects)
+
+      {state, effects} = utterance(state, 3, "and gamma.", @t0 + 20)
+      # The batch out must land on exactly the text it was sent: no join yet.
+      assert state.draft == "alpha one. Beta two. and gamma."
+      assert cleanups(effects) == []
+      assert_partition(state)
+
+      {state, effects} = Session.cleanup_result(state, 1, ok("Alpha one, beta two."), @t0 + 600)
+      # The answer applied — the batch was not invalidated — and the join landed on it.
+      assert state.draft == "Alpha one, beta two and gamma."
+      assert kinds(state) == [:settled, :raw]
+      assert effects == [{:schedule_tick, 1420}]
+
+      {_state, effects} = Session.tick(state, @t0 + 2020)
+      assert [{2, %{context: "Alpha one, beta two", raw: "and gamma."}}] = cleanups(effects)
+    end
+
+    test "race: a continuation onto a raw span NOT in flight joins at once, leaving the batch out alone" do
+      {state, _} = utterance(cs(), 1, "alpha.")
+      {state, _} = utterance(state, 2, "Beta.", @t0 + 10)
+      {state, _} = utterance(state, 3, "Gamma.", @t0 + 20)
+      {state, effects} = utterance(state, 4, "and delta.", @t0 + 30)
+      assert state.draft == "alpha. Beta. Gamma and delta."
+      assert cleanups(effects) == []
+
+      {state, effects} = Session.cleanup_result(state, 1, ok("Alpha, beta."), @t0 + 600)
+      assert state.draft == "Alpha, beta. Gamma and delta."
+      assert [{2, %{context: "Alpha, beta.", raw: "Gamma and delta."}}] = cleanups(effects)
+    end
+
+    test "race: a typed edit while a join is pending — nothing is ever joined onto the user's text" do
+      {state, _} = utterance(cs(), 1, "alpha.")
+      {state, _} = utterance(state, 2, "Beta.", @t0 + 10)
+      {state, _} = utterance(state, 3, "and gamma.", @t0 + 20)
+      assert state.draft == "alpha. Beta. and gamma."
+
+      {state, []} = Session.draft_edit(state, "alpha. Beta. and gamma. Typed.")
+      {state, _} = Session.cleanup_result(state, 1, ok("Alpha, beta."), @t0 + 600)
+      assert state.draft == "alpha. Beta. and gamma. Typed."
+
+      {state, _} = utterance(state, 4, "and dictated.", @t0 + 700)
+      assert state.draft == "alpha. Beta. and gamma. Typed. and dictated."
+      assert_partition(state)
+    end
+
+    test "race: palette focus holds a pending join back; it lands, and rides the batch, on return" do
+      {state, _} = utterance(cs(), 1, "alpha.")
+      {state, _} = utterance(state, 2, "Beta.", @t0 + 10)
+      {state, _} = utterance(state, 3, "and gamma.", @t0 + 20)
+      {state, []} = Session.ui_focus(state, "palette", [], @t0 + 30)
+
+      {state, []} = Session.cleanup_result(state, 1, ok("Alpha, beta."), @t0 + 600)
+      # The draft is untouchable in palette focus — joins included.
+      assert state.draft == "alpha. Beta. and gamma."
+
+      {state, effects} = Session.ui_focus(state, "composer", [], @t0 + 700)
+      assert state.draft == "alpha. Beta and gamma."
+      assert [{2, %{raw: "alpha. Beta and gamma."}}] = cleanups(effects)
+      assert_partition(state)
     end
   end
 

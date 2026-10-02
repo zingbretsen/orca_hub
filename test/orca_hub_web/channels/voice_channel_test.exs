@@ -905,7 +905,9 @@ defmodule OrcaHubWeb.VoiceChannelTest do
       dictate!(socket, 3, "gamma.")
       dictate!(socket, 4, "Delta.")
 
-      assert_receive {:cleanup_called, _, %{context: "alpha. Beta.", raw: "gamma. Delta."}},
+      # The refused batch settled as it was, still DICTATED text, so the
+      # lowercase "gamma." joins onto it.
+      assert_receive {:cleanup_called, _, %{context: "alpha. Beta", raw: "gamma. Delta."}},
                      2_000
 
       assert Process.alive?(socket.channel_pid)
@@ -923,6 +925,28 @@ defmodule OrcaHubWeb.VoiceChannelTest do
 
       # Past the 2 s idle deadline too.
       refute_receive {:cleanup_called, _, _}, 2_500
+    end
+
+    @tag timeout: 30_000
+    test "an onset holds the idle cleanup off past its deadline; its misfire releases it",
+         %{session: session} do
+      test_pid = self()
+
+      stub_cleanup(fn input, _config ->
+        send(test_pid, {:cleanup_called, self(), input})
+        {:ok, input.raw, %{model: "gemma-4-26B-A4B", latency_ms: 1}}
+      end)
+
+      {_reply, socket} = join_warm!(session.id)
+      dictate!(socket, 1, "Just one thought.")
+      push(socket, "speech_start", %{})
+
+      # The idle tick fires 2 s after the transcript, mid-"utterance".
+      refute_receive {:cleanup_called, _, _}, 2_300
+
+      push(socket, "speech_misfire", %{})
+      assert_receive {:cleanup_called, _, %{raw: "Just one thought."}}, 1_000
+      assert Process.alive?(socket.channel_pid)
     end
   end
 end

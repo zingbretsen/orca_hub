@@ -192,11 +192,16 @@ defmodule OrcaHubWeb.VoiceChannel do
   end
 
   def handle_in("speech_start", _payload, socket),
-    do: apply_state(socket, &Session.speech_start/1)
+    do: apply_state(socket, &Session.speech_start(&1, now()))
+
+  # ORCAHUB3-120: the VAD rejected the onset it announced, so no segment
+  # follows it and the rolling cleanup's idle rule may stop waiting.
+  def handle_in("speech_misfire", _payload, socket),
+    do: apply_state(socket, &Session.speech_misfire(&1, now()))
 
   def handle_in("mic", payload, socket) do
     muted = payload["muted"] == true
-    apply_state(socket, &Session.mic(&1, muted))
+    apply_state(socket, &Session.mic(&1, muted, now()))
   end
 
   def handle_in("send_now", _payload, socket),
