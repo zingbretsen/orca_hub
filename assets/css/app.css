@@ -315,3 +315,129 @@
     background-color: color-mix(in oklch, var(--color-primary) 25%, transparent);
   }
 }
+
+/* ==== The session page's voice view (ORCAHUB3-113 phase C) ================
+   SessionLive.Show restyles itself into the phone voice view: one message
+   on screen, chosen by state (assets/js/voice_view.js). Most of it is
+   `voice-view:` utilities in the templates; this block is the part that is
+   not expressible as one: the per-STATE variants, and descendant rules for
+   markup this page does not own the classes of (the shared <.header>, the
+   feed's message bubbles, the Autocomplete textarea).
+
+   Which single message shows is NOT here: the VoiceView hook generates that
+   rule into a <style> in <head>, keyed on the current message's id
+   (currentStyleText in voice_view.js).
+
+   Every selector below carries the voice-view variant's own condition
+   (phone width + both <html> attributes), spelled out flat for the reason
+   given above the TTS highlight rules. Change them together with it. */
+
+/* The four view states, published by the VoiceView hook as
+   `html[data-voice-state]`. Strictly more specific than `voice-view:`, so
+   `voice-view:hidden voice-dictating:flex` on one element reads "hidden in
+   the voice view, except while dictating" whatever the source order. */
+@custom-variant voice-dictating {
+  @media (max-width: 767px) {
+    html[data-voice-view][data-voice-layout][data-voice-state="dictating"] & {
+      @slot;
+    }
+  }
+}
+@custom-variant voice-working {
+  @media (max-width: 767px) {
+    html[data-voice-view][data-voice-layout][data-voice-state="working"] & {
+      @slot;
+    }
+  }
+}
+@custom-variant voice-reply {
+  @media (max-width: 767px) {
+    html[data-voice-view][data-voice-layout][data-voice-state="reply"] & {
+      @slot;
+    }
+  }
+}
+@custom-variant voice-paging {
+  @media (max-width: 767px) {
+    html[data-voice-view][data-voice-layout][data-voice-state="paging"] & {
+      @slot;
+    }
+  }
+}
+
+@media (max-width: 767px) {
+  /* The page header (title, badges, every action). CoreComponents.header/1
+     takes no class, and it renders a bare <header> straight under the page
+     root, so it is hidden from here rather than by wrapping 900 lines. */
+  html[data-voice-view][data-voice-layout] #drop-target > header {
+    display: none;
+  }
+
+  /* The feed IS the screen: no card around it. */
+  html[data-voice-view][data-voice-layout] #message-feed {
+    background: transparent;
+    border-radius: 0;
+    padding: 0.25rem 0.75rem 1rem;
+  }
+
+  /* The one message on screen, large (the mockup's 22 px), bubble chrome
+     stripped: no fill, no tail, no indent, no grid. Block layout puts the
+     "You"/"Assistant" header above the text whichever side the bubble was
+     on. A live streaming bubble (assistant_stream.js) gets the same look. */
+  html[data-voice-view][data-voice-layout] #message-feed :is([data-voice-content], [data-assistant-stream]) {
+    display: block;
+  }
+  html[data-voice-view][data-voice-layout] #message-feed :is([data-voice-content], [data-assistant-stream]) > .chat-header {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.375rem;
+  }
+  html[data-voice-view][data-voice-layout] #message-feed :is([data-voice-content], [data-assistant-stream]) > .chat-bubble {
+    background: transparent;
+    color: var(--color-base-content);
+    padding: 0;
+    min-height: 0;
+    max-width: 100%;
+    width: auto;
+    border-radius: 0;
+    font-size: 22px;
+    line-height: 1.5;
+  }
+  html[data-voice-view][data-voice-layout] #message-feed :is([data-voice-content], [data-assistant-stream]) > .chat-bubble::before {
+    display: none;
+  }
+  /* Code stays monospace and scrolls sideways rather than wrapping at 22 px
+     (`.prose pre` already scrolls; this keeps it from inheriting the size). */
+  html[data-voice-view][data-voice-layout] #message-feed [data-voice-content] pre {
+    font-size: 0.75em;
+    line-height: 1.45;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  /* The per-message read-aloud buttons: the TTS rail (#voice-rail) is the
+     voice view's transport. display:none only, so TTSMethods' writes into
+     [data-tts-controls] still land. */
+  html[data-voice-view][data-voice-layout] #message-feed [data-voice-content] > .chat-footer {
+    display: none;
+  }
+
+  /* The draft. Only shown while dictating (`voice-dictating:` on
+     #prompt-wrapper); there it fills the middle of the screen at 24 px. The
+     flex basis, not `height`, sizes it, so the inline height Autocomplete's
+     autoresize leaves behind (0px if it ran while the box was hidden) is moot
+     here; the VoiceView hook re-runs that resize on the way out. */
+  html[data-voice-view][data-voice-layout][data-voice-state="dictating"] #prompt-input {
+    flex: 1 1 0%;
+    min-height: 0;
+    max-height: none;
+    font-size: 24px;
+    line-height: 1.45;
+    padding: 0.25rem 0.75rem;
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    outline: none;
+  }
+}
+/* ==== end: the session page's voice view ================================ */

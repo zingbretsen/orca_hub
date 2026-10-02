@@ -20,6 +20,13 @@ defmodule OrcaHubWeb.MessageComponents do
   attr :messages, :list, required: true
   attr :session_node, :atom, default: nil
 
+  # True only for subagent_block's recursive call. The mobile voice view
+  # (ORCAHUB3-113) pages through the conversation's TOP-LEVEL content —
+  # what you said and what the agent said back — so only the outermost feed
+  # marks its user/assistant bubbles with `data-voice-content`. A subagent's
+  # prompt and replies are internal working, the same as its tool calls.
+  attr :nested, :boolean, default: false
+
   def message_feed(assigns) do
     messages = Enum.reject(assigns.messages, &hidden_message?/1)
 
@@ -79,12 +86,13 @@ defmodule OrcaHubWeb.MessageComponents do
           <.orphaned_fragment_marker :if={orphaned_fragment?(msg, @known_tool_use_ids)} />
           <%= case msg["type"] do %>
             <% "user" -> %>
-              <.user_message msg={msg} session_node={@session_node} />
+              <.user_message msg={msg} session_node={@session_node} voice_marker={!@nested} />
             <% "assistant" -> %>
               <.assistant_message
                 msg={msg}
                 subagent_map={@subagent_map}
                 session_node={@session_node}
+                voice_marker={!@nested}
               />
             <% "result" -> %>
               <.result_message msg={msg} />
@@ -246,6 +254,182 @@ defmodule OrcaHubWeb.MessageComponents do
     |> Enum.map_join("\n", & &1["text"])
   end
 
+  # -- the mobile voice view's "agent working" facts (ORCAHUB3-113 D5) --
+  #
+  # No tool calls inline in the voice view: progress is the agent's latest
+  # text plus a short activity list — the current turn's last few top-level
+  # tool calls as one-liners (the running one first-class, finished ones
+  # checked), how many there have been, and how long the turn has run.
+  #
+  # "The current turn" is everything after the last top-level user PROMPT: a
+  # user message with text, not one that only carries tool results (the
+  # stream-json shape every backend normalizes onto delivers those as
+  # `type: "user"` too). Subagent messages (`parent_tool_use_id`) are the
+  # subagent's own working and never count; its Agent call does.
+  #
+  # Computed over the messages the page has LOADED (the windowed feed). When
+  # the prompt is outside the window, `complete: false`: the count is then a
+  # floor (rendered "N+") and there is no start time, so the client's clock
+  # falls back to when it first saw the turn running.
+  @voice_activity_shown 3
+
+  @doc false
+  def voice_turn(messages) do
+    top = Enum.filter(messages, &(is_map(&1) and is_nil(&1["parent_tool_use_id"])))
+
+    prompt_idx =
+      top
+      |> Enum.with_index()
+      |> Enum.reverse()
+      |> Enum.find_value(fn {msg, i} -> if user_prompt?(msg), do: i end)
+
+    {prompt, turn} =
+      if prompt_idx,
+        do: {Enum.at(top, prompt_idx), Enum.drop(top, prompt_idx + 1)},
+        else: {nil, top}
+
+    tool_uses =
+      for %{"type" => "assistant"} = msg <- turn,
+          %{"type" => "tool_use"} = block <- content_blocks(msg),
+          do: block
+
+    finished =
+      for %{"type" => "user"} = msg <- turn,
+          %{"type" => "tool_result", "tool_use_id" => id} <- content_blocks(msg),
+          into: MapSet.new(),
+          do: id
+
+    tools =
+      tool_uses
+      |> Enum.take(-@voice_activity_shown)
+      |> Enum.map(fn block ->
+        %{
+          id: block["id"],
+          name: block["name"] || "tool",
+          input: if(is_map(block["input"]), do: block["input"], else: %{}),
+          done: MapSet.member?(finished, block["id"])
+        }
+      end)
+
+    current = Enum.find(Enum.reverse(tools), &(!&1.done)) || List.last(tools)
+
+    %{
+      started_at: prompt && timestamp_ms(prompt["timestamp"]),
+      tools: tools,
+      count: length(tool_uses),
+      complete: prompt != nil,
+      current: current && short_tool_name(current.name)
+    }
+  end
+
+  defp user_prompt?(%{"type" => "user"} = msg) do
+    case get_in(msg, ["message", "content"]) do
+      text when is_binary(text) ->
+        String.trim(text) != ""
+
+      blocks when is_list(blocks) ->
+        Enum.any?(blocks, fn
+          %{"type" => "text", "text" => text} when is_binary(text) -> String.trim(text) != ""
+          _ -> false
+        end)
+
+      _ ->
+        false
+    end
+  end
+
+  defp user_prompt?(_), do: false
+
+  defp content_blocks(msg) do
+    case get_in(msg, ["message", "content"]) do
+      blocks when is_list(blocks) -> Enum.filter(blocks, &is_map/1)
+      _ -> []
+    end
+  end
+
+  # Epoch milliseconds for `data-turn-started-at`. A live event carries the
+  # runner's NaiveDateTime (UTC) and a DB row its `inserted_at`, also naive
+  # UTC; both are interpreted as UTC, never local time.
+  defp timestamp_ms(%NaiveDateTime{} = ts),
+    do: ts |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix(:millisecond)
+
+  defp timestamp_ms(%DateTime{} = ts), do: DateTime.to_unix(ts, :millisecond)
+
+  defp timestamp_ms(ts) when is_binary(ts) do
+    case DateTime.from_iso8601(ts) do
+      {:ok, dt, _offset} ->
+        DateTime.to_unix(dt, :millisecond)
+
+      _ ->
+        case NaiveDateTime.from_iso8601(ts) do
+          {:ok, naive} -> timestamp_ms(naive)
+          _ -> nil
+        end
+    end
+  end
+
+  defp timestamp_ms(_), do: nil
+
+  # One-liners have no room for the CLI's MCP namespacing:
+  # `mcp__orca__run_elixir` reads as `run_elixir`.
+  @doc false
+  def short_tool_name("mcp__" <> rest) do
+    case String.split(rest, "__", parts: 2) do
+      [_server, tool] when tool != "" -> tool
+      _ -> rest
+    end
+  end
+
+  def short_tool_name(name) when is_binary(name), do: name
+  def short_tool_name(_), do: "tool"
+
+  @doc false
+  def voice_tool_count(%{count: count, complete: complete}) do
+    n = if complete, do: "#{count}", else: "#{count}+"
+    "#{n} #{if count == 1 and complete, do: "tool", else: "tools"}"
+  end
+
+  # `#voice-activity` — the list itself. Rendered by SessionLive.Show's voice
+  # view and shown (CSS) only in its `working` state. The elapsed clock is a
+  # `phx-update="ignore"` span the VoiceView hook ticks once a second: a
+  # server-rendered clock would cost a patch per second per viewer.
+  attr :turn, :map, required: true
+  attr :class, :any, default: nil
+
+  def voice_activity(assigns) do
+    ~H"""
+    <div id="voice-activity" class={@class}>
+      <ol class="space-y-1">
+        <li
+          :for={tool <- @turn.tools}
+          class={[
+            "flex items-center gap-2 min-w-0 font-mono",
+            if(tool.done, do: "text-[13px] opacity-60", else: "text-[15px]")
+          ]}
+          data-voice-activity-item
+          data-done={to_string(tool.done)}
+        >
+          <span class="w-4 shrink-0 flex justify-center">
+            <.icon :if={tool.done} name="hero-check-micro" class="size-4 text-success" />
+            <span :if={!tool.done} class="loading loading-spinner loading-xs text-primary"></span>
+          </span>
+          <span class="shrink-0 font-semibold">{short_tool_name(tool.name)}</span>
+          <span class="min-w-0 truncate [&_*]:[font-size:inherit]">
+            <.tool_summary name={tool.name} input={tool.input} />
+          </span>
+        </li>
+      </ol>
+      <div class="mt-2 flex items-center justify-between text-xs opacity-60">
+        <span>
+          {if @turn.count > 0, do: "#{voice_tool_count(@turn)} so far", else: "No tools yet"}
+        </span>
+        <span id="voice-activity-elapsed" phx-update="ignore" class="tabular-nums" data-voice-elapsed>
+        </span>
+      </div>
+    </div>
+    """
+  end
+
   defp build_feed_items(messages) do
     messages
     |> Enum.chunk_by(&thinking_message?/1)
@@ -313,6 +497,8 @@ defmodule OrcaHubWeb.MessageComponents do
 
   attr :msg, :map, required: true
   attr :session_node, :atom, default: nil
+  # See message_feed/1's `nested`: top-level bubbles only.
+  attr :voice_marker, :boolean, default: false
 
   defp user_message(assigns) do
     raw_content = get_in(assigns.msg, ["message", "content"])
@@ -359,7 +545,12 @@ defmodule OrcaHubWeb.MessageComponents do
       |> assign(:attachments, attachments)
 
     ~H"""
-    <div :if={@text != "" || @attachments != []} class="chat chat-end">
+    <div
+      :if={@text != "" || @attachments != []}
+      class="chat chat-end"
+      data-voice-content={@voice_marker && "user"}
+      data-voice-msg={@voice_marker && tts_message_id(@msg)}
+    >
       <div class="chat-header text-xs opacity-50 mb-1">
         You
         <span
@@ -425,6 +616,8 @@ defmodule OrcaHubWeb.MessageComponents do
   attr :msg, :map, required: true
   attr :subagent_map, :map, default: %{}
   attr :session_node, :atom, default: nil
+  # See message_feed/1's `nested`: top-level bubbles only.
+  attr :voice_marker, :boolean, default: false
 
   defp assistant_message(assigns) do
     content_blocks = get_in(assigns.msg, ["message", "content"]) || []
@@ -449,7 +642,13 @@ defmodule OrcaHubWeb.MessageComponents do
       |> assign(:api_msg_id, api_message_id(assigns.msg))
 
     ~H"""
-    <div :if={@has_text} class="chat chat-start" data-message-id={@api_msg_id}>
+    <div
+      :if={@has_text}
+      class="chat chat-start"
+      data-message-id={@api_msg_id}
+      data-voice-content={@voice_marker && "assistant"}
+      data-voice-msg={@voice_marker && @msg_id}
+    >
       <div class="chat-header text-xs opacity-50 mb-1">
         <.icon name="hero-sparkles-micro" class="size-3" /> Assistant
         <.timestamp value={@msg["timestamp"]} />
@@ -653,7 +852,7 @@ defmodule OrcaHubWeb.MessageComponents do
           {@progress_text}
         </div>
         <div class="mt-2 ml-2 pl-3 border-l-2 border-warning/30">
-          <.message_feed messages={@real_messages} session_node={@session_node} />
+          <.message_feed messages={@real_messages} session_node={@session_node} nested />
         </div>
       </details>
     </div>

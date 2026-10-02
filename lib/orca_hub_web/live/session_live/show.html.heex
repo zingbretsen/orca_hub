@@ -961,7 +961,7 @@
   <%!-- Below `sm:` this switch lives in the header's actions row instead
        (see the `.join` in the <:actions> slot above) — one fewer full-width
        row between the header and the message feed on a phone. --%>
-  <div class="join mb-2 hidden sm:inline-flex">
+  <div class="join mb-2 hidden sm:inline-flex voice-view:hidden">
     <.link
       patch={~p"/sessions/#{@session.id}?view=conversation"}
       class={["btn btn-sm join-item", @view == :conversation && "btn-active"]}
@@ -1038,7 +1038,10 @@
     </div>
   </div>
 
-  <div :if={@commits != [] && @show_commits} class="mb-2 bg-base-200 rounded-lg px-3 py-2">
+  <div
+    :if={@commits != [] && @show_commits}
+    class="mb-2 bg-base-200 rounded-lg px-3 py-2 voice-view:hidden"
+  >
     <ul class="space-y-1">
       <li :for={commit <- @commits}>
         <button
@@ -1068,7 +1071,7 @@
 
   <div
     :if={@session_artifacts != [] && @show_artifacts}
-    class="mb-2 bg-base-200 rounded-lg px-3 py-2"
+    class="mb-2 bg-base-200 rounded-lg px-3 py-2 voice-view:hidden"
   >
     <ul class="space-y-1">
       <li :for={artifact <- @session_artifacts}>
@@ -1091,7 +1094,7 @@
   <div
     :if={tool_policy_restricted?(@session) && @show_tool_policy}
     id="tool-policy-panel"
-    class="mb-2 bg-base-200 rounded-lg px-3 py-2"
+    class="mb-2 bg-base-200 rounded-lg px-3 py-2 voice-view:hidden"
   >
     <% tool_policy = session_tool_policy(@session) %>
     <div class="text-xs text-base-content/50 mb-1">
@@ -1115,7 +1118,10 @@
     </p>
   </div>
 
-  <div :if={@memory_events != [] && @show_memories} class="mb-2 bg-base-200 rounded-lg px-3 py-2">
+  <div
+    :if={@memory_events != [] && @show_memories}
+    class="mb-2 bg-base-200 rounded-lg px-3 py-2 voice-view:hidden"
+  >
     <% memory_summary = memory_panel_summary(@memory_events) %>
     <div class="text-xs text-base-content/50 mb-1">
       {memory_summary.distinct_count} distinct {if memory_summary.distinct_count == 1,
@@ -1200,7 +1206,10 @@
     </div>
   </div>
 
-  <div :if={@todos != [] && @show_todos} class="mb-2 bg-base-200 rounded-lg px-3 py-2">
+  <div
+    :if={@todos != [] && @show_todos}
+    class="mb-2 bg-base-200 rounded-lg px-3 py-2 voice-view:hidden"
+  >
     <ul class="space-y-1">
       <li :for={todo <- @todos} class="flex items-start gap-2 text-sm">
         <.icon
@@ -1503,21 +1512,42 @@
       <.link
         :if={@prev_session_id}
         navigate={~p"/sessions/#{@prev_session_id}"}
-        class="hidden sm:flex items-center justify-center w-8 shrink-0 opacity-30 hover:opacity-70 transition-opacity"
+        class="hidden sm:flex voice-view:hidden items-center justify-center w-8 shrink-0 opacity-30 hover:opacity-70 transition-opacity"
         title="Previous session (newer)"
       >
         <.icon name="hero-chevron-left" class="size-6" />
       </.link>
-      <div :if={!@prev_session_id} class="hidden sm:block w-8 shrink-0"></div>
+      <div :if={!@prev_session_id} class="hidden sm:block voice-view:hidden w-8 shrink-0"></div>
 
       <%!-- Chat column --%>
       <div class="flex flex-col min-w-0 flex-1" data-resize-panel="left">
+        <%!-- The mobile voice view (ORCAHUB3-113): see voice_view/1 in show.ex.
+        `display: contents` in the view, so it must be a DIRECT child of this
+        column for its pieces to interleave with the feed and the composer. --%>
+        <.voice_view
+          turn={MessageComponents.voice_turn(@messages)}
+          status={@status}
+          suppressed={
+            voice_view_suppressed?(%{
+              node_unavailable: @node_unavailable,
+              capabilities: @capabilities,
+              plan_mode: @plan_mode,
+              pending_ui_request: @pending_ui_request,
+              status: @status,
+              aq_open: @aq_open,
+              pending_questions: @pending_questions
+            })
+          }
+        />
+        <%!-- In the voice view the feed shows ONE message (the hook's
+        generated <style>; assets/css/app.css enlarges it), and none at all
+        while dictating — the draft owns the screen then. --%>
         <div
           id="message-feed"
           phx-hook="ScrollToBottom"
           data-has-more={to_string(@has_more_messages)}
           data-loading-older={to_string(@loading_older_messages)}
-          class="flex-1 overflow-y-auto space-y-1 p-4 bg-base-200 rounded-lg text-sm"
+          class="flex-1 overflow-y-auto space-y-1 p-4 bg-base-200 rounded-lg text-sm voice-view:order-4 voice-dictating:hidden"
         >
           <MessageComponents.message_feed messages={@messages} session_node={@session_node} />
           <%!-- In-progress assistant bubble (voice_mode_spec.md §7.2 / C2).
@@ -1554,7 +1584,10 @@
           </div>
         </div>
 
-        <div class="mt-2 sm:mt-4 flex flex-col gap-2">
+        <%!-- In the voice view: last in the column, and while dictating it
+        takes the room the hidden feed gave up, so the textarea fills the
+        middle and the big Clear/Send row sits at the bottom. --%>
+        <div class="mt-2 sm:mt-4 flex flex-col gap-2 voice-view:order-7 voice-view:mt-0 voice-dictating:flex-1 voice-dictating:min-h-0">
           <%!-- Upload previews --%>
           <div :for={entry <- @uploads.image.entries} class="flex items-center gap-2 px-2">
             <.live_img_preview entry={entry} class="h-16 w-16 object-cover rounded" />
@@ -1614,7 +1647,7 @@
             :if={
               @capabilities.steering && (@pi_queue.steering != [] || @pi_queue.follow_up != [])
             }
-            class="flex flex-wrap items-center gap-1 px-2 pb-1 text-xs opacity-60"
+            class="flex flex-wrap items-center gap-1 px-2 pb-1 text-xs opacity-60 voice-view:hidden"
           >
             <.icon name="hero-clock-micro" class="size-3" />
             <span :for={msg <- @pi_queue.steering} class="badge badge-ghost badge-sm">
@@ -1630,7 +1663,7 @@
         get a hint that the message steers the turn in place instead. --%>
           <p
             :if={@capabilities.steering && @status == :running}
-            class="px-2 pb-1 text-[11px] opacity-50 italic"
+            class="px-2 pb-1 text-[11px] opacity-50 italic voice-view:hidden"
           >
             Sending now will steer the running turn instead of interrupting it.
           </p>
@@ -1655,11 +1688,14 @@
         so a voice send goes through the exact same `send_message` path a
         typed one does — uploads consumed, attachments appended,
         clear-prompt/voice-send-failed semantics intact. --%>
+          <%!-- In the voice view the form is a column: the textarea (shown only
+        while dictating) flexes into the middle, every small control is
+        hidden, and the big Clear/Send row at the end is the footer. --%>
           <.form
             for={%{}}
             phx-submit="send_message"
             phx-change="validate"
-            class="flex flex-wrap sm:flex-nowrap gap-2"
+            class="flex flex-wrap sm:flex-nowrap gap-2 voice-view:flex-col voice-view:flex-nowrap voice-dictating:flex-1 voice-dictating:min-h-0"
             data-voice-composer-for={@session.id}
             multipart
           >
@@ -1670,7 +1706,10 @@
             <button
               type="button"
               phx-click="toggle_tts"
-              class={["btn btn-ghost btn-square", @tts_autoplay && "text-primary"]}
+              class={[
+                "btn btn-ghost btn-square voice-view:hidden",
+                @tts_autoplay && "text-primary"
+              ]}
               title={if @tts_autoplay, do: "Disable TTS autoplay", else: "Enable TTS autoplay"}
             >
               <.icon name="hero-speaker-wave" class="size-5" />
@@ -1686,7 +1725,7 @@
               :if={Map.get(@capabilities, :streaming_deltas, true)}
               type="button"
               phx-click="toggle_tts_stream"
-              class={["btn btn-ghost btn-square", @tts_stream && "text-primary"]}
+              class={["btn btn-ghost btn-square voice-view:hidden", @tts_stream && "text-primary"]}
               title={
                 if @tts_stream,
                   do: "Stop speaking replies while they stream",
@@ -1695,7 +1734,7 @@
             >
               <.icon name="hero-bolt" class="size-5" />
             </button>
-            <div class="dropdown dropdown-top">
+            <div class="dropdown dropdown-top voice-view:hidden">
               <div tabindex="0" role="button" class="btn btn-ghost btn-square">
                 <.icon name="hero-plus" class="size-5" />
               </div>
@@ -1727,8 +1766,11 @@
                 </li>
               </ul>
             </div>
+            <%!-- Voice view: the textarea is THE draft (§8.2) and never leaves
+          the DOM — it is hidden outside `dictating` and flexes to fill the
+          screen inside it (sizes in assets/css/app.css). --%>
             <div
-              class="basis-full order-first sm:basis-auto sm:order-none flex-1 min-w-0 relative"
+              class="basis-full order-first sm:basis-auto sm:order-none flex-1 min-w-0 relative voice-view:hidden voice-dictating:flex voice-dictating:flex-col voice-dictating:flex-1 voice-dictating:min-h-0"
               id="prompt-wrapper"
               phx-update="ignore"
             >
@@ -1761,7 +1803,7 @@
               }
               type="button"
               phx-click="interrupt"
-              class="btn btn-error btn-square"
+              class="btn btn-error btn-square voice-view:hidden"
               title="Interrupt"
             >
               <.icon name="hero-stop" class="size-5" />
@@ -1772,7 +1814,7 @@
           phones; at `sm:` the flex-1 textarea already does that. --%>
             <.button
               type="submit"
-              class="btn btn-primary btn-soft ml-auto sm:ml-0"
+              class="btn btn-primary btn-soft ml-auto sm:ml-0 voice-view:hidden"
               disabled={@node_unavailable != nil}
             >
               Send
@@ -1792,6 +1834,37 @@
               data-voice-dictated-submit
             >
             </button>
+            <%!-- The voice view's footer while dictating (ORCAHUB3-113): the big
+          Clear and Send. Send is a real submit button of THIS form so a
+          voice-view send goes through `send_message` like every other one
+          (single send path, ORCAHUB3-86), and it carries `voice_dictated`
+          itself (C2) — whatever the user is sending from this screen was
+          dictated. It is AFTER the small Send, which therefore stays the
+          form's default button, and it has no `data-voice-dictated-submit`:
+          the bar hook's `requestSubmit` must keep finding the hidden one
+          above. Clear is the hook's own cancel path (armed/undoable,
+          §8.3.11), asked for through the whitelisted `orca:voice-action`;
+          it bubbles to `window`, where VoiceHook listens. --%>
+            <div class="hidden voice-dictating:flex order-last shrink-0 gap-3 pt-1 pb-2">
+              <button
+                type="button"
+                phx-click={JS.dispatch("orca:voice-action", detail: %{action: "cancel"})}
+                class="btn btn-lg h-16 px-5 rounded-2xl text-base font-normal"
+                data-voice-view-clear
+              >
+                Clear
+              </button>
+              <button
+                type="submit"
+                name="voice_dictated"
+                value="true"
+                class="btn btn-primary btn-lg h-16 flex-1 rounded-2xl text-xl"
+                disabled={@node_unavailable != nil}
+                data-voice-view-send
+              >
+                <.icon name="hero-paper-airplane" class="size-6" /> Send
+              </button>
+            </div>
           </.form>
         </div>
       </div>
@@ -2099,16 +2172,17 @@
       <.link
         :if={@next_session_id}
         navigate={~p"/sessions/#{@next_session_id}"}
-        class="hidden sm:flex items-center justify-center w-8 shrink-0 opacity-30 hover:opacity-70 transition-opacity"
+        class="hidden sm:flex voice-view:hidden items-center justify-center w-8 shrink-0 opacity-30 hover:opacity-70 transition-opacity"
         title="Next session (older)"
       >
         <.icon name="hero-chevron-right" class="size-6" />
       </.link>
-      <div :if={!@next_session_id} class="hidden sm:block w-8 shrink-0"></div>
+      <div :if={!@next_session_id} class="hidden sm:block voice-view:hidden w-8 shrink-0"></div>
     </div>
 
-    <%!-- Mobile file panel (modal) --%>
-    <div :if={@open_files != [] || @show_file_browser} class="lg:hidden">
+    <%!-- Mobile file panel (modal). Not in the voice view: a panel opened
+    before the mic went on would otherwise cover it. --%>
+    <div :if={@open_files != [] || @show_file_browser} class="lg:hidden voice-view:hidden">
       <input type="checkbox" id="file-panel-modal" class="modal-toggle" checked />
       <div class="modal modal-bottom" role="dialog">
         <div class="modal-box h-[80vh] max-h-[80vh] flex flex-col p-4">
@@ -2308,8 +2382,9 @@
       </div>
     </div>
 
-    <%!-- Mobile terminal panel (modal) --%>
-    <div :if={@show_terminal && @open_terminals != []} class="lg:hidden">
+    <%!-- Mobile terminal panel (modal). Hidden in the voice view, like the
+    file panel above. --%>
+    <div :if={@show_terminal && @open_terminals != []} class="lg:hidden voice-view:hidden">
       <input type="checkbox" id="terminal-panel-modal" class="modal-toggle" checked />
       <div class="modal modal-bottom" role="dialog">
         <div class="modal-box h-[80vh] max-h-[80vh] flex flex-col p-4">

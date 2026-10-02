@@ -331,6 +331,141 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp maybe_mark_dictated(full_prompt, _typed, _params), do: full_prompt
 
+  # -- the mobile voice view (ORCAHUB3-113 phase C) --
+  #
+  # Direction B: on a phone with voice mode on, THIS page restyles itself
+  # into a full-screen voice view — same document, same feed, same composer
+  # (voice_mode_spec.md §8.5). Everything that decides what is on screen is
+  # client-side (assets/js/voice_view.js, driven by the VoiceView hook); the
+  # server's share is the `#voice-view` element below, the content markers in
+  # MessageComponents, and the facts only it has: the session status,
+  # whether the view is suppressed, and the current turn's activity.
+
+  # C1: anything that needs a TAP answer suppresses the voice view, so the
+  # normal page — and the surface asking — shows instead. Each clause
+  # mirrors the render condition of that surface in show.html.heex, so
+  # "suppressed" means exactly "one of them is on screen": a question is
+  # never hidden behind the voice view, and the view never stands down for a
+  # question that is not actually showing. Node unavailable is in the set
+  # because sending is disabled, and talking-then-sending is all the voice
+  # view is for; the normal page explains why.
+  @doc false
+  def voice_view_suppressed?(%{} = a) do
+    caps = a.capabilities
+    ask? = !!caps.ask_user_question
+
+    a.node_unavailable != nil or
+      (!!caps.plan_mode and a.plan_mode == :review) or
+      (ask? and a.pending_ui_request != nil) or
+      (ask? and a.status == :waiting and !!a.aq_open and a.pending_questions != nil)
+  end
+
+  # `#voice-view` — the page half of the voice view, hook-driven. Hidden
+  # (`hidden`) everywhere except under the `voice-view:` variant, where it
+  # becomes `display: contents`: its children are then flex items of the
+  # chat column itself and interleave with the feed and the composer through
+  # `order` (pager 1, agent strip 2, held 3, feed 4, activity 5, rail 6,
+  # composer 7) without moving any of them in the DOM.
+  #
+  # Only `phx-update="ignore"` subtrees are ever written by the hook (the
+  # pager, the two clocks) or by the TTS rail (`#voice-held`,
+  # `#voice-rail`): a hook write anywhere else would be stripped by the next
+  # patch, and mid-turn this element is patched constantly.
+  attr :turn, :map, required: true
+  attr :status, :atom, required: true
+  attr :suppressed, :boolean, required: true
+
+  defp voice_view(assigns) do
+    assigns = assign(assigns, :running, assigns.status in [:running, :compacting, :waiting])
+
+    ~H"""
+    <div
+      id="voice-view"
+      phx-hook="VoiceView"
+      class="hidden voice-view:contents"
+      data-session-status={@status}
+      data-voice-suppressed={to_string(@suppressed)}
+      data-turn-started-at={@running && @turn.started_at}
+    >
+      <%!-- The pager: prev, "n of N", next, and Live while paged back. The
+      hook owns everything inside (label, disabled, which buttons show), and
+      un-hides the row only when there is a message to count — never while
+      dictating. --%>
+      <div id="voice-pager" phx-update="ignore" class="hidden voice-view:block voice-view:order-1">
+        <div data-voice-pager-row hidden class="flex items-center gap-1 px-1 pb-1">
+          <button
+            type="button"
+            data-voice-view-action="prev"
+            class="btn btn-ghost btn-circle"
+            aria-label="Previous message"
+            disabled
+          >
+            <.icon name="hero-chevron-left" class="size-6" />
+          </button>
+          <span
+            data-voice-pager-label
+            class="flex-1 min-w-0 truncate text-center text-sm tabular-nums opacity-70"
+          >
+          </span>
+          <button
+            type="button"
+            data-voice-view-action="next"
+            class="btn btn-ghost btn-circle"
+            aria-label="Next message"
+            disabled
+          >
+            <.icon name="hero-chevron-right" class="size-6" />
+          </button>
+          <button
+            type="button"
+            data-voice-view-action="live"
+            class="btn btn-primary rounded-full px-5"
+            hidden
+          >
+            Live
+          </button>
+        </div>
+      </div>
+
+      <%!-- D7: talking mid-turn, the draft takes the screen and the agent
+      drops to this one line. Rendered whenever the agent is working; shown
+      only while dictating. --%>
+      <div
+        :if={@running}
+        class="hidden voice-dictating:flex voice-view:order-2 items-center gap-2 mx-1 mb-2 px-3 py-2 rounded-lg bg-base-200 text-sm"
+        data-voice-agent-strip
+      >
+        <span class="loading loading-spinner loading-xs text-primary shrink-0"></span>
+        <span class="flex-1 min-w-0 truncate">
+          Agent working <span
+            id="voice-strip-elapsed"
+            phx-update="ignore"
+            class="tabular-nums"
+            data-voice-elapsed
+          ></span>{if @turn.current, do: ", #{@turn.current}"}
+        </span>
+        <span :if={@turn.count > 0} class="shrink-0 opacity-70">
+          {MessageComponents.voice_tool_count(@turn)}
+        </span>
+      </div>
+
+      <%!-- The TTS half (W3, TTSMethods) writes into these two and nothing
+      else. They stay EMPTY and unstyled here: an idle one collapses to 0 px.
+      --%>
+      <div id="voice-held" phx-update="ignore" class="hidden voice-view:block voice-view:order-3 mx-3">
+      </div>
+
+      <MessageComponents.voice_activity
+        turn={@turn}
+        class="hidden voice-working:block voice-view:order-5 mx-1 mt-2 px-3 pt-3 pb-2 border-t border-base-300"
+      />
+
+      <div id="voice-rail" phx-update="ignore" class="hidden voice-view:block voice-view:order-6">
+      </div>
+    </div>
+    """
+  end
+
   defp maybe_subscribe_sessions_topic(socket) do
     if connected?(socket) and not socket.assigns.sessions_topic_subscribed do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
