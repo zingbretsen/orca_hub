@@ -10,7 +10,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   alias OrcaHub.MCP.Tools.NodeArg
   alias OrcaHub.ForkGate
   alias OrcaHub.ForkGate.ServingProfile
-  alias OrcaHub.{Cluster, HubRPC, MemoryExtraction, NodePolicy, Probes}
+  alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, MemoryExtraction, NodePolicy, Probes}
+  alias OrcaHub.Sessions.Session
 
   # Time bound for AUTO-derived idempotency keys only (see
   # auto_idempotency_key/3) — belt-and-braces against a pathological hash
@@ -345,9 +346,12 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "input), self-reported progress (phase/note from report_progress, if any), " <>
             "activity metadata (message/tool-call counts over the last 5/15/30 minutes, " <>
             "last_activity_at), last_commit (git HEAD of its directory, if it's a repo), " <>
-            "churn (a server-side heuristic block with churn_suspected flag), and if a " <>
-            "pi session has a pending question/confirm/input dialog, a `pending_question` " <>
-            "object (id, method, title, message, options—options may be null). " <>
+            "churn (a server-side heuristic block with churn_suspected flag), and if the " <>
+            "session is blocked on an unanswered question, a `pending_question` object whose " <>
+            "`kind` and `answer_with` say how to answer it: \"pi_dialog\" (id, method, title, " <>
+            "message, options—options may be null; answer via answer_session_question) or " <>
+            "\"ask_user_question\" (a waiting Claude session's questions, read-only; answer " <>
+            "with a normal send_message_to_session message). " <>
             "Use this to tell \"making progress\" from \"stuck\" before deciding whether to " <>
             "interrupt a worker. " <>
             "If a queued message delivery is pending, a `queued_messages` key is included " <>
@@ -402,7 +406,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "option text (exact or case-insensitive unique-prefix match) or a 1-based index as a " <>
             "string; for method \"confirm\", pass \"yes\" or \"no\"; for free-text input, pass the " <>
             "text itself. Errors with a friendly message if there is no pending question for the " <>
-            "session.",
+            "session. Not for a Claude AskUserQuestion: that question already ended the turn, " <>
+            "so answer it with a normal message via send_message_to_session.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -560,48 +565,25 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     answer = args["answer"]
 
     case Cluster.find_session(session_id) do
-      {node, _session} ->
+      {node, session} ->
         if NodePolicy.cross_node_allowed?(node) do
           pending_request = HubRPC.pending_pi_ui_request(session_id)
 
-          if is_nil(pending_request) do
-            error(
-              "No pending question for session #{session_id}. " <>
-                "Call get_session_tail to check for pending questions."
-            )
-          else
-            request_id = pending_request["id"]
-            method = pending_request["method"]
-            options = pending_request["options"]
+          cond do
+            is_nil(pending_request) and not is_nil(ask_user_question_block(session, session_id)) ->
+              error(
+                "Session #{session_id} is waiting on a Claude AskUserQuestion, which already " <>
+                  "ended its turn: answer it with a normal message via send_message_to_session."
+              )
 
-            payload =
-              build_answer_payload(method, answer, options)
+            is_nil(pending_request) ->
+              error(
+                "No pending question for session #{session_id}. " <>
+                  "Call get_session_tail to check for pending questions."
+              )
 
-            case Cluster.answer_ui_request(node, session_id, request_id, payload) do
-              :ok ->
-                text(
-                  "Answered question #{request_id} for session #{session_id} " <>
-                    "(method: #{method})"
-                )
-
-              {:error, :not_running} ->
-                error(
-                  "Session #{session_id} has no runner (might have just started or crashed). " <>
-                    "Try again if the session is still active."
-                )
-
-              {:error, :not_pending} ->
-                error(
-                  "Session #{session_id} has no pending question #{request_id}. " <>
-                    "It may have been answered already or cleared."
-                )
-
-              {:error, reason} ->
-                error(
-                  "Failed to answer question #{request_id} for session #{session_id}: " <>
-                    "#{inspect(reason)}"
-                )
-            end
+            true ->
+              answer_pending_dialog(node, session_id, pending_request, answer)
           end
         else
           error(NodePolicy.denial_message(node))
@@ -768,21 +750,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           churn =
             OrcaHub.Sessions.Churn.assess(activity, session, last_commit_info, now, file_surgery)
 
-          # Include pending pi UI request if present
-          pending_request = HubRPC.pending_pi_ui_request(target_id)
-
-          pending_question =
-            if pending_request do
-              %{
-                "id" => pending_request["id"],
-                "method" => pending_request["method"],
-                "title" => pending_request["title"],
-                "message" => pending_request["message"],
-                "options" => pending_request["options"]
-              }
-            else
-              nil
-            end
+          pending_question = tail_pending_question(session, target_id)
 
           # Fetch queued message state for delivery observability (ORCAHUB3-43)
           queued_state = HubRPC.queued_message_state(target_id)
@@ -1927,6 +1895,95 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   end
 
   defp maybe_put_tool_calls_truncated(map, _false_or_nil, _limit, _total), do: map
+
+  # ORCAHUB3-60: the tail's `pending_question` block covers both question
+  # mechanisms. A pi dialog is live and blocks the turn, and
+  # answer_session_question answers it. A Claude AskUserQuestion has already
+  # ended the turn, so its block is read-only: the answer is a normal
+  # message. For Claude the "waiting" status decides, never the history,
+  # because the synthetic is_error tool_result makes every AskUserQuestion
+  # look unanswered.
+  defp tail_pending_question(session, target_id) do
+    case HubRPC.pending_pi_ui_request(target_id) do
+      %{} = request ->
+        %{
+          "kind" => "pi_dialog",
+          "id" => request["id"],
+          "method" => request["method"],
+          "title" => request["title"],
+          "message" => request["message"],
+          "options" => request["options"],
+          "answer_with" =>
+            "answer_session_question. The turn is blocked on this dialog until it is " <>
+              "answered or times out (~10 min)."
+        }
+
+      _ ->
+        ask_user_question_block(session, target_id)
+    end
+  end
+
+  defp ask_user_question_block(%{status: "waiting"} = session, target_id) do
+    if Backend.capabilities_for(session).ask_user_question and
+         not Session.waiting_mid_turn?(session) do
+      case HubRPC.pending_ask_user_question(target_id) do
+        %{tool_use_id: id, questions: questions} ->
+          %{
+            "kind" => "ask_user_question",
+            "id" => id,
+            "questions" =>
+              questions
+              |> AskUserQuestion.normalize_questions()
+              |> Enum.map(fn q ->
+                Map.update!(q, "options", &Enum.map(&1, fn o -> o["label"] end))
+              end),
+            "answer_with" =>
+              "send_message_to_session, as a normal message. Read-only: the question " <>
+                "already ended this session's turn, so answer_session_question does not apply."
+          }
+
+        _ ->
+          nil
+      end
+    end
+  end
+
+  defp ask_user_question_block(_session, _target_id), do: nil
+
+  defp answer_pending_dialog(node, session_id, pending_request, answer) do
+    request_id = pending_request["id"]
+    method = pending_request["method"]
+    options = pending_request["options"]
+
+    payload =
+      build_answer_payload(method, answer, options)
+
+    case Cluster.answer_ui_request(node, session_id, request_id, payload) do
+      :ok ->
+        text(
+          "Answered question #{request_id} for session #{session_id} " <>
+            "(method: #{method})"
+        )
+
+      {:error, :not_running} ->
+        error(
+          "Session #{session_id} has no runner (might have just started or crashed). " <>
+            "Try again if the session is still active."
+        )
+
+      {:error, :not_pending} ->
+        error(
+          "Session #{session_id} has no pending question #{request_id}. " <>
+            "It may have been answered already or cleared."
+        )
+
+      {:error, reason} ->
+        error(
+          "Failed to answer question #{request_id} for session #{session_id}: " <>
+            "#{inspect(reason)}"
+        )
+    end
+  end
 
   defp maybe_put_pending_question(map, nil), do: map
   defp maybe_put_pending_question(map, pending), do: Map.put(map, :pending_question, pending)

@@ -3384,6 +3384,101 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
 
       refute Map.has_key?(decoded, "pending_question")
     end
+
+    # ORCAHUB3-60: Claude is the larger affected population, but the block was
+    # pi-only. It is read-only for Claude: the question already ended the turn,
+    # so it is answered with a normal message, not answer_session_question.
+    test "surfaces a waiting claude session's AskUserQuestion, read-only", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "waiting"})
+      ask_user_question(target, "toolu_ask_1")
+
+      decoded = tail(target, state)
+
+      assert %{
+               "kind" => "ask_user_question",
+               "id" => "toolu_ask_1",
+               "questions" => [
+                 %{
+                   "header" => "Scope",
+                   "question" => "Ship the fix alone, or with the refactor?",
+                   "multiSelect" => false,
+                   "options" => ["Alone", "With the refactor"]
+                 }
+               ],
+               "answer_with" => answer_with
+             } = decoded["pending_question"]
+
+      assert answer_with =~ "send_message_to_session"
+      assert answer_with =~ "answer_session_question"
+    end
+
+    test "omits an old AskUserQuestion once the claude session is no longer waiting", %{
+      dir: dir,
+      state: state
+    } do
+      # History ALWAYS looks unanswered for Claude (the synthetic is_error
+      # tool_result), so status, not history, decides.
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "idle"})
+      ask_user_question(target, "toolu_ask_2")
+
+      refute Map.has_key?(tail(target, state), "pending_question")
+    end
+
+    test "answer_session_question on a waiting claude session points at send_message_to_session",
+         %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "waiting"})
+      ask_user_question(target, "toolu_ask_3")
+
+      result =
+        SessionsTool.call(
+          "answer_session_question",
+          %{"session_id" => target.id, "answer" => "Alone"},
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "send_message_to_session"
+    end
+
+    defp tail(target, state) do
+      result = SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      Jason.decode!(text)
+    end
+
+    defp ask_user_question(target, tool_use_id) do
+      Sessions.create_message(%{
+        session_id: target.id,
+        data: %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{
+                "type" => "tool_use",
+                "id" => tool_use_id,
+                "name" => "AskUserQuestion",
+                "input" => %{
+                  "questions" => [
+                    %{
+                      "header" => "Scope",
+                      "question" => "Ship the fix alone, or with the refactor?",
+                      "multiSelect" => false,
+                      "options" => [
+                        %{"label" => "Alone", "description" => "Smallest diff"},
+                        %{"label" => "With the refactor", "description" => "One review"}
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      })
+    end
   end
 
   describe "answer_session_question" do
