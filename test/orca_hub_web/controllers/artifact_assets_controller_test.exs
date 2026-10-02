@@ -75,7 +75,7 @@ defmodule OrcaHubWeb.ArtifactAssetsControllerTest do
 
     assert conn.status == 200
     assert get_resp_header(conn, "content-type") |> hd() =~ "image/png"
-    assert get_resp_header(conn, "cache-control") == ["private, max-age=3600"]
+    assert get_resp_header(conn, "cache-control") == ["private, no-cache"]
     assert conn.resp_body == "fake png bytes"
   end
 

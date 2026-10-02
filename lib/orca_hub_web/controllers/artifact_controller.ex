@@ -40,7 +40,9 @@ defmodule OrcaHubWeb.ArtifactController do
 
   Both asset routes answer single-range HTTP Range requests with 206 (iOS
   Safari won't play a `<video>` without it), reading only the requested
-  window from the object store.
+  window from the object store. They cache by revalidation (`ETag` = the
+  file's sha256, `Cache-Control: private, no-cache`), because re-attaching
+  an asset name repoints the same URL at new bytes.
   """
 
   use OrcaHubWeb, :controller
@@ -145,19 +147,58 @@ defmodule OrcaHubWeb.ArtifactController do
   # never the whole object. No Range header, several Range headers, a
   # multi-range or a malformed one all get the whole file as a 200 (a
   # server MAY ignore Range). A range starting at or past the end is a 416.
+  #
+  # Caching is revalidation, not max-age: re-attaching an asset name
+  # (save_artifact/attach_artifact_asset) repoints it at NEW bytes behind
+  # the same relative URL, so a max-age would show the old image for its
+  # whole lifetime. The ETag is the file's sha256, so a matching
+  # If-None-Match is a 304 straight from the asset row, with no object-store
+  # read. If-Range is honoured against the same ETag, so a resumed <video>
+  # never splices bytes from two different files.
   defp send_asset(conn, id, name) do
     case HubRPC.get_artifact_asset(id, name) do
       %{file: %{} = file} ->
-        size = file.size_bytes
+        etag = etag(file)
 
-        case requested_range(get_req_header(conn, "range"), size) do
-          :full -> send_full_asset(conn, file)
-          {first, last} -> send_partial_asset(conn, file, first, last)
-          :unsatisfiable -> send_unsatisfiable(conn, file)
+        if not_modified?(conn, etag) do
+          conn |> asset_headers(file) |> send_resp(304, "")
+        else
+          range = if if_range_matches?(conn, etag), do: get_req_header(conn, "range"), else: []
+
+          case requested_range(range, file.size_bytes) do
+            :full -> send_full_asset(conn, file)
+            {first, last} -> send_partial_asset(conn, file, first, last)
+            :unsatisfiable -> send_unsatisfiable(conn, file)
+          end
         end
 
       _ ->
         not_found(conn)
+    end
+  end
+
+  defp etag(file), do: ~s("#{file.sha256}")
+
+  # If-None-Match uses the weak comparison (RFC 9110 §13.1.2).
+  defp not_modified?(conn, etag) do
+    conn
+    |> get_req_header("if-none-match")
+    |> Enum.flat_map(&String.split(&1, ","))
+    |> Enum.map(&String.trim/1)
+    |> Enum.any?(&(&1 == "*" or strip_weak(&1) == etag))
+  end
+
+  defp strip_weak("W/" <> tag), do: tag
+  defp strip_weak(tag), do: tag
+
+  # If-Range uses the strong comparison (RFC 9110 §13.1.5). A date
+  # validator never matches, since no Last-Modified is ever sent, so it
+  # gets the whole file, which is always the safe answer.
+  defp if_range_matches?(conn, etag) do
+    case get_req_header(conn, "if-range") do
+      [] -> true
+      [validator] -> String.trim(validator) == etag
+      _ -> false
     end
   end
 
@@ -202,7 +243,8 @@ defmodule OrcaHubWeb.ArtifactController do
   defp asset_headers(conn, file) do
     conn
     |> put_resp_content_type(file.content_type || "application/octet-stream")
-    |> put_resp_header("cache-control", "private, max-age=3600")
+    |> put_resp_header("cache-control", "private, no-cache")
+    |> put_resp_header("etag", etag(file))
     |> put_resp_header("accept-ranges", "bytes")
     |> sandbox(@asset_sandbox)
   end

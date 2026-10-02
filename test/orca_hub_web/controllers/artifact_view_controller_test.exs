@@ -171,7 +171,7 @@ defmodule OrcaHubWeb.ArtifactViewControllerTest do
       assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
       assert get_resp_header(conn, "access-control-allow-origin") == ["*"]
       assert get_resp_header(conn, "referrer-policy") == ["no-referrer"]
-      assert get_resp_header(conn, "cache-control") == ["private, max-age=3600"]
+      assert get_resp_header(conn, "cache-control") == ["private, no-cache"]
       assert get_resp_header(conn, "accept-ranges") == ["bytes"]
     end
 
@@ -353,6 +353,88 @@ defmodule OrcaHubWeb.ArtifactViewControllerTest do
       assert conn.status == 206
       assert get_resp_header(conn, "access-control-allow-origin") == ["*"]
       assert get_resp_header(conn, "referrer-policy") == ["no-referrer"]
+    end
+  end
+
+  # Re-attaching an asset name repoints the same URL at new bytes, so assets
+  # cache by revalidation against the file's sha256, not by max-age.
+  describe "ETag revalidation on asset routes" do
+    setup %{artifact: artifact, token: token} do
+      {:ok,
+       paths: [
+         ~p"/api/artifacts/view/#{token}/assets/clip.mp4",
+         ~p"/artifacts/#{artifact.id}/assets/clip.mp4"
+       ],
+       etag: ~s("#{sha256(@video_bytes)}")}
+    end
+
+    defp sha256(bytes), do: :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+
+    defp with_headers(path, headers) do
+      headers
+      |> Enum.reduce(build_conn(), fn {k, v}, conn -> put_req_header(conn, k, v) end)
+      |> get(path)
+    end
+
+    test "200s, 206s and 416s carry the file's sha256 as a strong ETag", %{
+      paths: paths,
+      etag: etag
+    } do
+      for path <- paths, range <- [nil, "bytes=0-1", "bytes=5000-"] do
+        conn = with_headers(path, if(range, do: [{"range", range}], else: []))
+        assert get_resp_header(conn, "etag") == [etag], "#{path} #{range}"
+        assert get_resp_header(conn, "cache-control") == ["private, no-cache"]
+      end
+    end
+
+    test "a matching If-None-Match (exact, weak, in a list, or *) is an empty 304", %{
+      paths: paths,
+      etag: etag
+    } do
+      for path <- paths, inm <- [etag, "W/" <> etag, ~s("nope", #{etag}), "*"] do
+        conn = with_headers(path, [{"if-none-match", inm}])
+
+        assert conn.status == 304, "#{path} #{inm}"
+        assert conn.resp_body == ""
+        assert get_resp_header(conn, "etag") == [etag]
+        assert get_resp_header(conn, "content-security-policy") == ["sandbox"]
+      end
+    end
+
+    test "a stale If-None-Match gets the full body", %{paths: paths} do
+      for path <- paths do
+        conn = with_headers(path, [{"if-none-match", ~s("stale")}])
+        assert conn.status == 200
+        assert conn.resp_body == @video_bytes
+      end
+    end
+
+    test "re-attaching the name to new bytes changes the ETag, so the old one revalidates to a 200",
+         %{artifact: artifact, paths: paths, etag: old_etag} do
+      attach!(artifact, "clip.mp4", "video/mp4", "replacement bytes")
+
+      for path <- paths do
+        conn = with_headers(path, [{"if-none-match", old_etag}])
+
+        assert conn.status == 200
+        assert conn.resp_body == "replacement bytes"
+        assert get_resp_header(conn, "etag") == [~s("#{sha256("replacement bytes")}")]
+      end
+    end
+
+    test "If-Range: a matching ETag honours the Range, a stale one or a date gets the whole file",
+         %{paths: paths, etag: etag} do
+      for path <- paths do
+        conn = with_headers(path, [{"range", "bytes=0-1"}, {"if-range", etag}])
+        assert conn.status == 206
+        assert conn.resp_body == binary_part(@video_bytes, 0, 2)
+
+        for validator <- [~s("stale"), "W/" <> etag, "Fri, 02 Oct 2026 22:00:00 GMT"] do
+          conn = with_headers(path, [{"range", "bytes=0-1"}, {"if-range", validator}])
+          assert conn.status == 200, "#{path} #{validator}"
+          assert conn.resp_body == @video_bytes
+        end
+      end
     end
   end
 end

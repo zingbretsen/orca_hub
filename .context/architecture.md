@@ -486,7 +486,10 @@ graph TB
   (opaque-origin fetch()/@font-face are CORS-mode; no cookie is involved)
   and `Referrer-Policy: no-referrer`. Both asset routes answer single-range
   HTTP Range with 206/416 (iOS Safari won't play `<video>` without it),
-  reading only that window via `ObjectStore.get_range/3`. The old
+  reading only that window via `ObjectStore.get_range/3`. They cache by
+  revalidation, not max-age (`ETag` = the file's sha256, `private,
+  no-cache`, If-None-Match -> 304, If-Range checked against the ETag),
+  because re-attaching an asset name repoints the same URL at new bytes. The old
   `/artifacts/:id/{raw,download,assets/:name}` routes stay, Authelia-gated,
   with no app-level auth.
 - **File store** (`lib/orca_hub/files.ex`, `object_store.ex` +
