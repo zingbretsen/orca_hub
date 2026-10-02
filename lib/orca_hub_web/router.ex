@@ -102,6 +102,18 @@ defmodule OrcaHubWeb.Router do
     post "/webhooks/:secret", WebhookController, :create
   end
 
+  # Token-scoped twins of the /artifacts/:id/{raw,assets/:name} routes
+  # (ORCAHUB3-128). Under /api because Authelia bypasses `^/api/.*` on this
+  # host: the sandboxed viewer iframe is an opaque origin, so its <img>/
+  # <video>/fetch requests never carry the Authelia cookie. The signed
+  # token in the path IS the auth (OrcaHubWeb.ArtifactURL), so no ApiAuth
+  # bearer here: an <img> can't send a header.
+  scope "/api/artifacts/view", OrcaHubWeb do
+    pipe_through :artifact_raw
+    get "/:token/raw", ArtifactController, :view_raw
+    get "/:token/assets/:name", ArtifactController, :view_asset
+  end
+
   # /api/tts sits behind :api_authed (not the bare :api pipeline) because
   # Authelia bypasses `^/api/.*` at the ingress for this host — without
   # app-level auth here, this route had none at any layer and proxied

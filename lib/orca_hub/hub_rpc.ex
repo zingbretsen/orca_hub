@@ -268,6 +268,23 @@ defmodule OrcaHub.HubRPC do
   def get_artifact_asset(artifact_id, name),
     do: call(OrcaHub.Artifacts, :get_asset, [artifact_id, name])
 
+  # Signed capability URLs (OrcaHubWeb.ArtifactURL, ORCAHUB3-128) are always
+  # minted on the hub: its secret_key_base is the one that verifies them
+  # behind the public ingress, and its Endpoint.url/0 is the public base. An
+  # agent node's endpoint may have a different key and a LAN host. Only
+  # id + version cross the wire, never the artifact's content.
+
+  def artifact_raw_url(artifact),
+    do: call(OrcaHubWeb.ArtifactURL, :raw_url, [artifact_ref(artifact)])
+
+  def artifact_asset_url(artifact_id, name),
+    do: call(OrcaHubWeb.ArtifactURL, :asset_url, [artifact_id, name])
+
+  def artifact_urls(artifact, asset_names),
+    do: call(OrcaHubWeb.ArtifactURL, :urls, [artifact_ref(artifact), asset_names])
+
+  defp artifact_ref(%{id: id, version: version}), do: %{id: id, version: version}
+
   # -------------------------------------------------------------------
   # Triggers
   # -------------------------------------------------------------------

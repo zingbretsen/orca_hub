@@ -23,6 +23,7 @@ defmodule OrcaHubWeb.ArtifactController do
 
   alias OrcaHub.Artifacts.Render
   alias OrcaHub.HubRPC
+  alias OrcaHubWeb.ArtifactURL
 
   # Must match the viewer iframes' sandbox attribute exactly — never add
   # allow-same-origin.
@@ -34,15 +35,33 @@ defmodule OrcaHubWeb.ArtifactController do
 
   def raw(conn, %{"id" => id}) do
     case HubRPC.get_artifact(id) do
-      nil ->
-        not_found(conn)
-
-      artifact ->
-        conn
-        |> put_resp_content_type(Render.content_type(artifact.kind))
-        |> sandbox(@raw_sandbox)
-        |> send_resp(200, Render.body(artifact))
+      nil -> not_found(conn)
+      artifact -> send_raw(conn, artifact)
     end
+  end
+
+  # Token-scoped twin of raw/2 (ORCAHUB3-128): same bytes and headers. The
+  # token names the artifact, so there is no id in the path to check.
+  # `strict-origin-when-cross-origin` pins what the browser already does by
+  # default: the token-bearing URL goes out as a Referer only same-origin
+  # (the artifact's own asset requests), a cross-origin request (a CDN, a
+  # tile server that wants a Referer) sees only the origin.
+  def view_raw(conn, %{"token" => token}) do
+    with {:ok, id} <- ArtifactURL.verify(token),
+         %{} = artifact <- HubRPC.get_artifact(id) do
+      conn
+      |> put_resp_header("referrer-policy", "strict-origin-when-cross-origin")
+      |> send_raw(artifact)
+    else
+      _ -> not_found(conn)
+    end
+  end
+
+  defp send_raw(conn, artifact) do
+    conn
+    |> put_resp_content_type(Render.content_type(artifact.kind))
+    |> sandbox(@raw_sandbox)
+    |> send_resp(200, Render.body(artifact))
   end
 
   # Same body/content-type as raw/2 (so the downloaded file is byte-identical
@@ -72,6 +91,30 @@ defmodule OrcaHubWeb.ArtifactController do
   # check: an artifact asset is public at the same unauthenticated route as
   # the artifact's own content (see this controller's moduledoc).
   def asset(conn, %{"id" => id, "name" => name}) do
+    send_asset(conn, id, name)
+  end
+
+  # Token-scoped twin of asset/3 (ORCAHUB3-128) — what a relative
+  # `assets/<name>` resolves to inside an artifact loaded from view_raw/2.
+  # `Access-Control-Allow-Origin: *` because the opaque-origin iframe's
+  # fetch() and @font-face loads are CORS-mode requests; safe here because
+  # no cookie is involved and the URL itself is the capability.
+  # `no-referrer` so an asset that is itself a document (an HTML/SVG asset
+  # navigated to) never forwards the token-bearing URL.
+  def view_asset(conn, %{"token" => token, "name" => name}) do
+    case ArtifactURL.verify(token) do
+      {:ok, id} ->
+        conn
+        |> put_resp_header("access-control-allow-origin", "*")
+        |> put_resp_header("referrer-policy", "no-referrer")
+        |> send_asset(id, name)
+
+      :error ->
+        not_found(conn)
+    end
+  end
+
+  defp send_asset(conn, id, name) do
     with %{file: file} <- HubRPC.get_artifact_asset(id, name),
          {:ok, binary} <- HubRPC.fetch_file_binary(file) do
       conn
