@@ -99,6 +99,22 @@
 /* Use the data attribute for dark mode  */
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
+/* The mobile voice view (ORCAHUB3-113): applies only on a phone-width
+   viewport, while voice mode is on (`data-voice-view`, set by the Voice hook
+   from user intent) AND the current page draws a voice layout
+   (`data-voice-layout`, set by that page's own hook). Both live on <html>,
+   outside every LiveView root, so no patch can strip them. Every voice-view
+   style goes through this variant, so desktop and pages without a voice
+   layout can never be affected. The 767px bound is VOICE_VIEW_MEDIA in
+   assets/js/voice_view_flag.js; change both together. */
+@custom-variant voice-view {
+  @media (max-width: 767px) {
+    html[data-voice-view][data-voice-layout] & {
+      @slot;
+    }
+  }
+}
+
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
