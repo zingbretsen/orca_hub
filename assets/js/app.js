@@ -2155,6 +2155,10 @@ let Hooks = {
     // anything (nothing older, or one already in flight — either a
     // background prefetch or a prior "load_older_messages" still resolving).
     maybeLoadOlder() {
+      // ORCAHUB3-113: the phone voice view shows ONE message, so the feed
+      // always sits "near the top" — this would page in the whole history.
+      // The VoiceView hook's pager loads older messages itself, on purpose.
+      if (voiceViewShowing()) return
       const nearTopThreshold = 150
       const hasMore = this.el.dataset.hasMore === "true"
       const loading = this.el.dataset.loadingOlder === "true"
@@ -2221,6 +2225,11 @@ let Hooks = {
       this.assistantStreamReconcile()
     },
     scrollToBottom(smooth) {
+      // ORCAHUB3-113: in the phone voice view the VoiceView hook owns the
+      // feed's scroll (the one message on screen, from its top). Following
+      // to the bottom here — after every patch and every streamed delta —
+      // would fight it. It hands the feed back at the bottom on exit.
+      if (voiceViewShowing()) return
       this.el.scrollTo({
         top: this.el.scrollHeight,
         behavior: smooth ? "smooth" : "instant"
