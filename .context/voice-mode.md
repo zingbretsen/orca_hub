@@ -666,10 +666,18 @@ is still owed: headless has no audio route and no OS backgrounding.
 - **Header budgets.** Off the view the header is 48 px idle and 64 px armed at
   390x844, re-measured with `getBoundingClientRect` after phase C. In the view
   it is 68 px (118 with Resume). `<main>` drops to 8 px padding in the view
-  (`74b0819`), and the view fills 844 px with no page scroll. OPEN:
-  `#voice-tts-transport` on a NORMAL page at 390 wraps the header ("Reply
-  ready" mic off 76 px; mic on 92 px; §8.5.9). Re-measure if you touch the
-  header row.
+  (`74b0819`), and the view fills 844 px with no page scroll. The read-aloud
+  transport on a NORMAL page used to wrap the 390 px row (76/92 px, §8.5.9).
+  Since `c6753d9`, below `sm` the wordmark (`[data-header-wordmark]`) gives
+  way while the transport shows, and with voice on its label goes too (the
+  held state stays distinct by its warning tint). All six states measure
+  48/64 exactly. Anything that adds width to that row has to be re-measured
+  in those six states, plus the `sm` control.
+- **"Running" is the server's `data-turn-running`, never the status alone.**
+  A pi dialog's `waiting` is mid-turn. A Claude question's `waiting` has
+  ENDED the turn, so after it is dismissed the view is `reply`, not
+  `working` (`e42571e`, `voice_turn_running?/2`, built on
+  `Session.waiting_mid_turn?/1`).
 - **`#voice-view` is `display: contents`** and must stay a direct child of the
   chat column. Its pieces interleave with the feed and composer through
   `order` (pager 1 … composer 7), and nothing moves in the DOM.

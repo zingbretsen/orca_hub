@@ -2,7 +2,7 @@
 
 Status: DRAFT v0.7 — **phase 1 deployed (`d679c12`); phase 2 + 2b implemented
 at `113fa91`; phase 2c landed (`e3afb74`, §8.3); the ORCAHUB3-113 mobile voice
-view (§8.5) implemented and real-page verified at `74b0819`.**
+view (§8.5) implemented and real-page verified at `c6753d9`.**
 Phase 1 commits: A `f23b5b8`, B `0080399`, C `4a28f2b`, D `ef9f87a`+`f101886`,
 E `df935f1`, F `6f0e6d4`+`097806d`+`735b396`, integration fix `8d67708`, panel
 shrink §8.1 DOM change — see §12. Phase 1 EXIT CRITERIA PENDING —
@@ -1978,11 +1978,14 @@ fourth:
 - W1 `df8393d` + `e04451e`: the flag module, the Voice hook, the bar and the header.
 - W2 `297d97a` + `f720f78` + `7cf0132` + `8aaa2fa`: the session page, `voice_view.js`, the `VoiceView` hook.
 - W3 `8b669f0` + `8c15b6a`: the read-aloud rail, the held strip, tap-to-jump.
-- W4 `74b0819`: integration, and the real-page verification.
+- W4 `74b0819` + `e42571e` + `c6753d9`: integration fixes, and the real-page
+  verification.
 
 It was verified on the REAL page at 390x844 and 1280x900 on 2026-10-02 (§8.5.9),
-with the harness in `~/voice-verify-logs/v113/` (outside the repo). That covers
-the dev build (unminified CSS) at `8c15b6a` and the minified build at `74b0819`.
+with the harness in `~/voice-verify-logs/v113/` (outside the repo). Builds
+covered: the dev build (unminified CSS) at `8c15b6a` and `c6753d9`, and the
+minified build at `74b0819` and `c6753d9`. At `c6753d9` (minified) the full set
+passed: 111 checks, 0 failures.
 
 **Naming.** D1-D11 are Zach's decisions. The plan's own orchestrator calls are
 also numbered C1-C5, and code comments use those names ("C1 suppression",
@@ -2288,10 +2291,11 @@ while the dialog is up).
 Desktop 1280: the voice-view attributes change nothing. Every measured rect
 and the visible-element count are identical with the four attributes stripped.
 
-**OPEN (01a1b00 item 3): `#voice-tts-transport` does NOT fit the header at
-390.** Line 1 is the logo (142) + the cluster (60) + the mic (28) + 8 px gaps,
-which leaves 104 px free with the mic off. The `?` and the sounds toggle (2 ×
-28) take that to 32 px free with the mic on.
+**01a1b00 item 3: `#voice-tts-transport` in a NORMAL page's header at 390.
+Found wrapping, FIXED in `c6753d9`.** Line 1 is the logo (142) + the cluster
+(60) + the mic (28) + 8 px gaps, which leaves 104 px free with the mic off.
+The `?` and the sounds toggle (2 × 28) take that to 32 px free with the mic
+on. Measured BEFORE the fix (`74b0819`):
 
 | Mic | Transport | Bar width | Header | Budget |
 |---|---|---|---|---|
@@ -2300,10 +2304,24 @@ which leaves 104 px free with the mic off. The `?` and the sounds toggle (2 ×
 | on | "Playing" | 100 px | **92** | 64: wraps |
 | on | "Reply ready" (induced on the real hook) | 125 px | **92** | 64: wraps |
 
-Inside the voice view the transport is hidden, so the view is unaffected.
-Fixing it needs a design call: hide the wordmark below `sm` while the
-transport shows, or move the transport onto the strip line, or drop the label
-below `sm`.
+The fix (orchestrator decision, plain CSS in `app.css` below `sm`):
+
+- While the transport shows (`[data-tts-bar]:not(.hidden)`), the "OrcaHub"
+  wordmark (`[data-header-wordmark]`) gives way. The logo image stays.
+- With voice ON (the mic's `aria-pressed="true"`, which is VoiceBarLive's
+  `@voice_on`, the same assign that adds `?` and the sounds toggle), the
+  transport's text label goes too. A held reply stays distinct through the
+  play button's warning tint and keeps its title/aria text ("Reply ready —
+  held while you are writing…"), so §8.4's never-invisible rule holds.
+- With voice OFF the label stays.
+- `sm` and up are unchanged (verified at 640: both the wordmark and the label
+  are shown).
+
+AFTER, on both builds: every header is exact in all six states. Voice off:
+idle, playing and held all 48 px. Voice on: idle, playing and held all 64 px.
+Held with voice on was induced on the real hook, because autoplay fires only
+on an `:idle` turn end. Inside the voice view the transport is hidden, so the
+view was never affected.
 
 **Not verifiable headless** (a real-device check is still owed): real audio
 routing and the half-duplex mic release on a phone speaker; OS backgrounding
@@ -2425,7 +2443,7 @@ Phases 3, 4 and 5 keep their original numbers; only phase 2 was split, into 2,
 | C4 global voice bar + single send | 2b | §8.2 | ORCAHUB3-88, ORCAHUB3-86 | in progress |
 | C5 voice-driven interaction | 2c | §8.3 (design notes: §13) | ORCAHUB3-87 | in progress |
 | Autoplay hold + bar transport | 113 phase A | §8.4 (amended by §8.5.7) | ORCAHUB3-113 items 6/7 | landed |
-| Mobile voice view (flag, window events, page DOM, state rules, rail) | 113 phase C | §8.5 | ORCAHUB3-113 | real-page verified 2026-10-02 at `74b0819`; transport width open (§8.5.9) |
+| Mobile voice view (flag, window events, page DOM, state rules, rail) | 113 phase C | §8.5 | ORCAHUB3-113 | real-page verified 2026-10-02 at `c6753d9` (both builds) |
 
 Phase-1 contracts are unchanged and remain normative: §8.1 (wire + DOM),
 §5.1.1 (the matcher), §3.2 (the VAD settings). ORCAHUB3-113's own decisions
@@ -2501,9 +2519,13 @@ workers and the integration pass changed:
   AudioContext are what survive.
 
 §8.4 is amended in place: the D10 hold clock, and `orca:voice-sent` as a
-release. §8.5.9 records the measurements and the still-OPEN 01a1b00 item 3:
-`#voice-tts-transport` wraps the 390 px header in three of four states (76 px
-against 48, 92 against 64). §10.5 gains rows for §8.4 and §8.5.
+release. §8.5.5 records a correction: a Claude question's `waiting` has ENDED
+the turn, so it is not running (`data-turn-running`, server-side, `e42571e`).
+§8.5.9 records the measurements and 01a1b00 item 3. `#voice-tts-transport`
+wrapped the 390 px header in three of four states (76 px against 48, 92
+against 64). It was fixed in `c6753d9`: below `sm` the wordmark gives way while
+the transport shows, and the label goes with voice on. All six states now
+measure exactly 48 or 64. §10.5 gains rows for §8.4 and §8.5.
 
 **v0.6 (2026-09-18, phase 2c integration-verified)** — the contract survived
 contact with a real page, a fake mic and real speech; the amendments here are
