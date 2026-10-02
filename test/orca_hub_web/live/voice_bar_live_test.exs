@@ -780,5 +780,23 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
         assert token == "voice-view:hidden"
       end
     end
+
+    # Measured at 390x844: the shell's 24px top + bottom padding is 48px the
+    # view's one message, rail and big buttons cannot spare.
+    test "the shell's <main> drops its padding in the view, and only there", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/projects")
+      doc = Floki.parse_document!(html)
+
+      main = tokens(class_of(doc, "div.h-dvh > main"))
+      assert "voice-view:py-2" in main
+      assert "voice-view:px-2" in main
+      # Off the view (every page without a voice layout, and desktop) the
+      # padding is what it always was.
+      for token <- ~w(px-4 py-6 sm:px-6 sm:py-10 lg:px-8), do: assert(token in main)
+
+      for token <- main, token =~ "voice-view" do
+        assert token in ~w(voice-view:py-2 voice-view:px-2)
+      end
+    end
   end
 end

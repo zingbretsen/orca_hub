@@ -161,7 +161,11 @@ defmodule OrcaHubWeb.Layouts do
         )}
       </header>
 
-      <main class="@container flex-1 min-h-0 overflow-y-auto px-4 py-6 sm:px-6 sm:py-10 lg:px-8">
+      <%!-- ORCAHUB3-113: the page padding is 48px of height the phone voice
+           view (one message, the rail, the big buttons) cannot spare, so it
+           shrinks to 8px there. `voice-view:` only matches a page that draws a
+           voice layout, so every other page keeps its padding. --%>
+      <main class="@container flex-1 min-h-0 overflow-y-auto px-4 py-6 sm:px-6 sm:py-10 lg:px-8 voice-view:px-2 voice-view:py-2">
         <%!-- `full_height` is an optional assign a LiveView sets when its own
              root wants to fill the shell exactly (h-full). It's opt-in because
              a definite height also caps `position: sticky` ranges for pages
