@@ -21,6 +21,7 @@
 import "phoenix_html"
 import { TerminalHook } from "./terminal_hook"
 import { VoiceHook } from "./voice/voice_hook"
+import { VoiceViewHook } from "./voice_view_hook"
 import { createTtsStreamAccumulator, toolAnnouncement } from "./tts_stream"
 import { AssistantStreamMethods, ASSISTANT_STREAM_EVENT } from "./assistant_stream"
 import {
@@ -1134,6 +1135,12 @@ let Hooks = {
   // policy needs (§9 trap 2). Everything the bar displays comes over its own
   // channel, not from LiveView.
   Voice: VoiceHook,
+
+  // The session page's mobile voice view (ORCAHUB3-113 phase C), mounted on
+  // `#voice-view` in session_live/show.html.heex. It owns the page half of
+  // the view (which one message is on screen, the pager, the activity list);
+  // the bar half lives in VoiceHook above. See voice_view_hook.js.
+  VoiceView: VoiceViewHook,
 
   // Plays the audio the Settings page's "Speak sample" button pushes down as
   // a data URL. The bytes travel over the LiveView socket rather than being
