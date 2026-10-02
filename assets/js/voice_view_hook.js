@@ -201,13 +201,20 @@ export const VoiceViewHook = {
       hasMore: !!feed && feed.dataset.hasMore === "true",
       loading: !!feed && feed.dataset.loadingOlder === "true",
       status: this.el.dataset.sessionStatus || null,
+      // The server's answer, because `waiting` alone cannot say: a pi dialog
+      // is mid-turn, a Claude question has ended the turn
+      // (`Session.waiting_mid_turn?/1`; see RUNNING_STATUSES).
+      running:
+        "turnRunning" in this.el.dataset
+          ? this.el.dataset.turnRunning === "true"
+          : isRunning(this.el.dataset.sessionStatus || null),
       suppressed: this.el.dataset.voiceSuppressed === "true",
     }
   },
 
   _sync() {
     const page = this._read()
-    const running = isRunning(page.status)
+    const running = page.running
 
     // The clock's fallback start, for a turn whose opening message is not
     // in the loaded window (`data-turn-started-at` absent): when this page
@@ -251,6 +258,7 @@ export const VoiceViewHook = {
       ...page.facts,
       draftBusy: busy,
       status: page.status,
+      running: page.running,
       paging: this._paging,
       streamingId: page.streamingId,
     })
@@ -354,6 +362,7 @@ export const VoiceViewHook = {
       ...page.facts,
       draftBusy: draftIsBusy(document),
       status: page.status,
+      running: page.running,
       streamingId: page.streamingId,
     }
     const view = voiceViewState({ ...base, paging: this._paging })

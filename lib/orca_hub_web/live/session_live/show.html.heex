@@ -1527,6 +1527,7 @@
         <.voice_view
           turn={MessageComponents.voice_turn(@messages)}
           status={@status}
+          running={voice_turn_running?(@status, @session.backend)}
           suppressed={
             voice_view_suppressed?(%{
               node_unavailable: @node_unavailable,

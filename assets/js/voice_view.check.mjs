@@ -109,10 +109,10 @@ console.log("\n1. reading the feed (content markers -> facts)")
 // ======================================================================
 console.log("\n2. the state rules")
 {
-  eq("running covers running|compacting|waiting", RUNNING_STATUSES, ["running", "compacting", "waiting"])
+  eq("the status-only fallback is running|compacting", RUNNING_STATUSES, ["running", "compacting"])
   ok("idle is not running", !isRunning("idle"))
   ok("error is not running", !isRunning("error"))
-  ok("waiting IS running (a dialog over a turn still in flight)", isRunning("waiting"))
+  ok("waiting ALONE is not running (only the server can tell a mid-turn one)", !isRunning("waiting"))
   eq("the four states", VOICE_STATES, ["dictating", "working", "reply", "paging"])
 
   // rule 0
@@ -170,7 +170,33 @@ console.log("\n2. the state rules")
     { state: "working", current: "u3", running: true }
   )
   eq("compacting is working", state({ status: "compacting" }).state, "working")
-  eq("waiting is working", state({ status: "waiting" }).state, "working")
+
+  // The two `waiting`s (#voice-view[data-turn-running], computed server-side
+  // by Session.waiting_mid_turn?/1). A pi dialog overlays a turn still in
+  // flight; a Claude AskUserQuestion has ENDED the turn, so once its question
+  // is dismissed (C1 lifts) the view is the reply: Play, no clock.
+  eq(
+    "waiting mid-turn (pi dialog, running: true) is working",
+    voiceViewState({ ...feedFacts(ITEMS.slice(0, 5)), status: "waiting", running: true }),
+    { state: "working", current: "a3", running: true }
+  )
+  eq(
+    "waiting that ENDED the turn (Claude question, running: false) is reply",
+    voiceViewState({ ...feedFacts(ITEMS.slice(0, 5)), status: "waiting", running: false }),
+    { state: "reply", current: "a3", running: false }
+  )
+  ok(
+    "...and its clock does not run",
+    !clockRunning(voiceViewState({ ...feedFacts(ITEMS.slice(0, 5)), status: "waiting", running: false }))
+  )
+  ok(
+    "...while the mid-turn one's does",
+    clockRunning(voiceViewState({ ...feedFacts(ITEMS.slice(0, 5)), status: "waiting", running: true }))
+  )
+  eq("waiting with no running flag falls back to NOT running", state({ status: "waiting" }).state, "reply")
+  eq("running: false overrides a running status", state({ status: "running", running: false }).state, "reply")
+  eq("running: true overrides an idle status", state({ status: "idle", running: true }).state, "working")
+  eq("a non-boolean running is ignored (status decides)", state({ status: "running", running: "yes" }).state, "working")
   eq(
     "working with nothing loaded at all",
     voiceViewState({ status: "running" }),
@@ -415,6 +441,8 @@ console.log("\n9. the hook consults these rules (source check)")
   ok("clears it again", src.includes("setVoiceLayout(null"))
   ok("publishes html[data-voice-state]", src.includes("voiceState"))
   ok("publishes html[data-voice-current]", src.includes("voiceCurrent"))
+  ok("reads the server's #voice-view[data-turn-running]", src.includes("dataset.turnRunning"))
+  ok("passes it to the rules as `running`", /running:\s*page\.running/.test(src))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

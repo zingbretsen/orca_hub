@@ -360,6 +360,21 @@ defmodule OrcaHubWeb.SessionLive.Show do
       (ask? and a.status == :waiting and !!a.aq_open and a.pending_questions != nil)
   end
 
+  # Is the agent mid-turn? `running`/`compacting` always are. `waiting` is
+  # two different things (.context/session-lifecycle.md): a pi dialog is
+  # overlaid on a turn still in flight, but a Claude AskUserQuestion ENDS the
+  # turn, so once its question is dismissed (C1 lifts) the view must show
+  # the reply with Play, not a ticking "working". Only the backend's
+  # capabilities can tell them apart, so this is decided here and published
+  # as `data-turn-running`, never re-derived from the status in JS.
+  @doc false
+  def voice_turn_running?(status, _backend) when status in [:running, :compacting], do: true
+
+  def voice_turn_running?(:waiting, backend),
+    do: OrcaHub.Sessions.Session.waiting_mid_turn?(%{status: "waiting", backend: backend})
+
+  def voice_turn_running?(_status, _backend), do: false
+
   # `#voice-view` — the page half of the voice view, hook-driven. Hidden
   # (`hidden`) everywhere except under the `voice-view:` variant, where it
   # becomes `display: contents`: its children are then flex items of the
@@ -373,17 +388,18 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # patch, and mid-turn this element is patched constantly.
   attr :turn, :map, required: true
   attr :status, :atom, required: true
+  # voice_turn_running?/2 — the status alone cannot say (`waiting`).
+  attr :running, :boolean, required: true
   attr :suppressed, :boolean, required: true
 
   defp voice_view(assigns) do
-    assigns = assign(assigns, :running, assigns.status in [:running, :compacting, :waiting])
-
     ~H"""
     <div
       id="voice-view"
       phx-hook="VoiceView"
       class="hidden voice-view:contents"
       data-session-status={@status}
+      data-turn-running={to_string(@running)}
       data-voice-suppressed={to_string(@suppressed)}
       data-turn-started-at={@running && @turn.started_at}
     >

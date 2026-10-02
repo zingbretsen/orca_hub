@@ -2098,7 +2098,8 @@ clear, and the late edit would put the text back.
   column and interleave with the feed and the composer through `order`, with
   nothing moving in the DOM: pager 1, agent strip 2, `#voice-held` 3, feed 4,
   `#voice-activity` 5, `#voice-rail` 6, composer 7. It carries
-  `data-session-status`, `data-voice-suppressed` and `data-turn-started-at`.
+  `data-session-status`, `data-turn-running` (§8.5.5), `data-voice-suppressed`
+  and `data-turn-started-at`.
   It MUST stay a direct child of the chat column, or `display: contents`
   interleaves with the wrong parent.
 - **Only `phx-update="ignore"` subtrees are written by JS**: `#voice-pager`,
@@ -2135,8 +2136,19 @@ clear, and the late edit would put the text back.
 #### 8.5.5 State rules (`assets/js/voice_view.js`)
 
 The rules are pure and node-checked by `voice_view.check.mjs`, gated by
-`OrcaHubWeb.VoiceViewCheckTest`. "Running" means status `running`,
-`compacting` or `waiting`.
+`OrcaHubWeb.VoiceViewCheckTest`. "Running" is the SERVER's
+`#voice-view[data-turn-running]`, from `SessionLive.Show.voice_turn_running?/2`:
+status `running` or `compacting`, or a `waiting` that is MID-TURN
+(`Session.waiting_mid_turn?/1`, i.e. a pi dialog overlaid on a turn in flight).
+
+**CORRECTION (W4).** The plan counted every `waiting` as running. A Claude
+AskUserQuestion's `waiting` has ENDED the turn, so after its question was
+dismissed (C1 lifts) the view showed `working`, with a ticking clock and no
+Play, for a turn that was over. Telling the two apart needs the backend's
+capabilities, so it is decided server-side and never re-derived from the
+status in JS. `voiceViewState({running})` takes it as authoritative. Its
+status-only fallback (`RUNNING_STATUSES`) is now `running`/`compacting`
+alone. The agent strip and `data-turn-started-at` follow the same boolean.
 
 0. Suppressed (C1): no state at all, and the layout is removed.
 1. `paging` set, on a key still loaded: `paging`, current = that key. A paged
@@ -2257,11 +2269,11 @@ Suppressed, the hook drops `data-voice-layout`, `-state` and `-current`, and
 the normal page shows with the question. The mic and the flag stay on.
 Dismissing the surface lifts the suppression and the view returns.
 
-**Observation (2026-10-02, not changed):** after the wizard is DISMISSED
-without an answer, the session is still `waiting`, which counts as running.
-The view therefore shows `working` with a ticking clock and no Play, although
-the turn is over and waiting on the user. That is per the plan's
-running-status set. Whether it should read as `reply` is open.
+After a Claude question is DISMISSED without an answer, the session is still
+`waiting`, but its turn is over (`data-turn-running="false"`, §8.5.5). The
+view returns as `reply`: the latest content message, with Play and no clock.
+A pi dialog's `waiting` is mid-turn and stays `working` (and it is suppressed
+while the dialog is up).
 
 #### 8.5.9 Measured (getBoundingClientRect, 390x844, both builds)
 

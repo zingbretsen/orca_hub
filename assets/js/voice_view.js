@@ -20,12 +20,16 @@
  * flags) and hands the facts in; nothing in this file touches a document.
  */
 
-/* The statuses that mean "the agent is mid-turn". `waiting` is in the set
- * on purpose: a pi dialog overlays a turn still in flight (ORCAHUB3-60), and
- * a Claude AskUserQuestion is a turn paused on the user — neither is a
- * finished reply. (Both also SUPPRESS the view while their tap-answer modal
- * is up, C1; this only matters for the moments around it.) */
-export const RUNNING_STATUSES = ["running", "compacting", "waiting"]
+/* The statuses that ALWAYS mean "the agent is mid-turn". `waiting` is NOT
+ * here, because it means two different things. A pi dialog is overlaid on a
+ * turn still in flight (ORCAHUB3-60): running. A Claude AskUserQuestion ENDS
+ * the turn: not running, so after its question is dismissed (C1 lifts) the
+ * view shows the reply, with Play and no clock. Telling them apart needs the
+ * backend's capabilities, which only the server has (`Session.waiting_mid_turn?/1`),
+ * so the page publishes the answer as `#voice-view[data-turn-running]` and
+ * the hook passes it in as `running`. This set is the status-only fallback.
+ * (A pi dialog also SUPPRESSES the view while it is up, C1.) */
+export const RUNNING_STATUSES = ["running", "compacting"]
 
 export function isRunning(status) {
   return RUNNING_STATUSES.includes(status)
@@ -93,10 +97,15 @@ export function pagerSequence(contentIds, streamingKey) {
  *
  * A paging key that is no longer loaded (the window moved under it) falls
  * through rather than pinning the screen to nothing; the hook then drops it
- * so it cannot snap back if the element ever re-renders. */
+ * so it cannot snap back if the element ever re-renders.
+ *
+ * `running` (a boolean, the server's `data-turn-running`) is AUTHORITATIVE
+ * when given. Without it, `status` decides through RUNNING_STATUSES, which
+ * reads every `waiting` as a finished turn. */
 export function voiceViewState({
   draftBusy = false,
   status = null,
+  running: turnRunning = null,
   suppressed = false,
   paging = null,
   contentIds = [],
@@ -104,7 +113,7 @@ export function voiceViewState({
   lastUserId = null,
   lastAgentIdThisTurn = null,
 } = {}) {
-  const running = isRunning(status)
+  const running = typeof turnRunning === "boolean" ? turnRunning : isRunning(status)
   if (suppressed) return { state: null, current: null, running }
 
   const seq = pagerSequence(contentIds, streamingId)

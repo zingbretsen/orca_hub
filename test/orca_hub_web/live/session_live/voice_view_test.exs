@@ -406,6 +406,110 @@ defmodule OrcaHubWeb.SessionLive.VoiceViewTest do
       assert attr(view, "#voice-view", "data-voice-suppressed") == "true"
     end
 
+    # The two `waiting`s (W4 correction, voice_mode_spec.md §8.5.5). A Claude
+    # question ENDS the turn: once its wizard is dismissed, C1 lifts and the
+    # view must be the reply (Play, no clock), not "working".
+    test "a Claude AskUserQuestion's waiting is NOT a running turn", %{
+      conn: conn,
+      session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      send(view.pid, event(user("u1", "pick one", ~N[2026-10-02 12:00:00])))
+
+      send(
+        view.pid,
+        event(
+          assistant("q1", [
+            %{
+              "type" => "tool_use",
+              "id" => "aq1",
+              "name" => "AskUserQuestion",
+              "input" => %{"questions" => [%{"header" => "Which approach?"}]}
+            }
+          ])
+        )
+      )
+
+      send(view.pid, {:status, :waiting})
+      _ = render(view)
+
+      assert attr(view, "#voice-view", "data-session-status") == "waiting"
+      assert attr(view, "#voice-view", "data-turn-running") == "false"
+      assert attr(view, "#voice-view", "data-voice-suppressed") == "true"
+
+      render_click(view, "aq_cancel", %{})
+
+      assert attr(view, "#voice-view", "data-voice-suppressed") == "false"
+      assert attr(view, "#voice-view", "data-turn-running") == "false"
+      assert attr(view, "#voice-view", "data-turn-started-at") == nil
+      refute has_element?(view, "[data-voice-agent-strip]")
+    end
+
+    # ...while a pi dialog is overlaid on a turn still in flight.
+    test "a pi dialog's waiting IS a running turn", %{conn: conn, dir: dir} do
+      {:ok, session} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "pi",
+          code_exec: false,
+          orchestrator: false,
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn ->
+        if SessionSupervisor.session_alive?(session.id),
+          do: SessionSupervisor.stop_session(session.id)
+      end)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      send(view.pid, event(user("u1", "deploy it", ~N[2026-10-02 12:00:00])))
+      send(view.pid, {:status, :running})
+      _ = render(view)
+      assert attr(view, "#voice-view", "data-turn-running") == "true"
+
+      send(
+        view.pid,
+        event(%{
+          "type" => "pi_ui_request",
+          "id" => "req1",
+          "method" => "confirm",
+          "title" => "Ok?"
+        })
+      )
+
+      send(view.pid, {:status, :waiting})
+      _ = render(view)
+
+      assert attr(view, "#voice-view", "data-session-status") == "waiting"
+      assert attr(view, "#voice-view", "data-turn-running") == "true"
+      assert attr(view, "#voice-view", "data-voice-suppressed") == "true"
+
+      assert attr(view, "#voice-view", "data-turn-started-at") ==
+               to_string(DateTime.to_unix(~U[2026-10-02 12:00:00Z], :millisecond))
+
+      assert has_element?(view, "[data-voice-agent-strip]")
+    end
+
+    test "voice_turn_running?/2: running/compacting always, waiting only mid-turn" do
+      running? = &OrcaHubWeb.SessionLive.Show.voice_turn_running?/2
+
+      for backend <- ["claude", "pi", "codex", nil] do
+        assert running?.(:running, backend)
+        assert running?.(:compacting, backend)
+
+        for status <- [:idle, :ready, :error] do
+          refute running?.(status, backend)
+        end
+      end
+
+      refute running?.(:waiting, "claude")
+      # A missing backend means Claude, as everywhere else.
+      refute running?.(:waiting, nil)
+      assert running?.(:waiting, "pi")
+    end
+
     test "voice_view_suppressed?/1 mirrors each surface's own render condition" do
       base = %{
         node_unavailable: nil,
