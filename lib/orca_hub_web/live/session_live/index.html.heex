@@ -161,6 +161,7 @@
             class="size-3 ml-0.5"
           />
         </span>
+        <.pending_question_badge session={session} pending_questions={@pending_questions} />
         <span :if={session.orchestrator} class="badge badge-secondary badge-sm">
           orchestrator
         </span>
@@ -272,6 +273,7 @@
               class="size-3 ml-0.5"
             />
           </span>
+          <.pending_question_badge session={session} pending_questions={@pending_questions} />
           <span :if={session.orchestrator} class="badge badge-secondary badge-sm">
             orchestrator
           </span>

@@ -59,7 +59,8 @@ defmodule OrcaHubWeb.SessionLive.Index do
        heartbeat_session_ids: heartbeat_session_ids,
        selected_sessions: MapSet.new(),
        worktree_fetch_pending: MapSet.new(),
-       show_background: show_background
+       show_background: show_background,
+       pending_questions: load_pending_questions(filtered_sessions)
      )
      |> kick_worktree_fetches(worktree_fetches_needed)}
   end
@@ -194,7 +195,8 @@ defmodule OrcaHubWeb.SessionLive.Index do
        grouped_sessions: grouped_sessions,
        node_map: node_map,
        heartbeat_session_ids: heartbeat_session_ids,
-       selected_sessions: MapSet.new()
+       selected_sessions: MapSet.new(),
+       pending_questions: load_pending_questions(tagged_sessions)
      )
      |> kick_worktree_fetches(worktree_fetches_needed)}
   end
@@ -286,7 +288,8 @@ defmodule OrcaHubWeb.SessionLive.Index do
          |> assign(undo_archive_sessions: [])
          |> assign(
            grouped_sessions: grouped_sessions,
-           node_map: node_map
+           node_map: node_map,
+           pending_questions: load_pending_questions(tagged_sessions)
          )
          |> kick_worktree_fetches(worktree_fetches_needed)}
     end
@@ -585,9 +588,50 @@ defmodule OrcaHubWeb.SessionLive.Index do
       grouped_sessions: grouped_sessions,
       node_map: node_map,
       clustered: clustered,
-      heartbeat_session_ids: heartbeat_session_ids
+      heartbeat_session_ids: heartbeat_session_ids,
+      pending_questions: load_pending_questions(tagged_sessions)
     )
     |> kick_worktree_fetches(worktree_fetches_needed)
+  end
+
+  # ORCAHUB3-60: `session_id => tooltip` for every listed session blocked on
+  # an unanswered question, i.e. every "waiting" one (both question
+  # mechanisms persist it). Only a pi dialog costs a query, one batched
+  # lookup for its question text, and those are short-lived: a dialog
+  # resolves or times out within minutes. A Claude AskUserQuestion can sit
+  # unanswered for days, and this runs on every "sessions" broadcast, so it
+  # gets a fixed hint rather than a per-row history lookup.
+  defp load_pending_questions(tagged_sessions) do
+    waiting = for {_node, %{status: "waiting"} = session} <- tagged_sessions, do: session
+    dialog_ids = for session <- waiting, Session.waiting_mid_turn?(session), do: session.id
+
+    dialogs =
+      if dialog_ids == [] do
+        %{}
+      else
+        try do
+          HubRPC.pending_questions_for(dialog_ids)
+        rescue
+          _ -> %{}
+        catch
+          :exit, _ -> %{}
+        end
+      end
+
+    Map.new(waiting, fn session ->
+      {session.id, pending_question_hint(session, Map.get(dialogs, session.id))}
+    end)
+  end
+
+  defp pending_question_hint(session, dialog) do
+    if Session.waiting_mid_turn?(session) do
+      question = dialog && (dialog.title || dialog.message)
+
+      "Blocked mid-turn on a dialog until it is answered or times out" <>
+        if(question, do: ": #{question}", else: "")
+    else
+      "Asked a question (AskUserQuestion) and ended its turn; answer it with a normal message"
+    end
   end
 
   # Returns `{grouped_sessions, projects_needing_worktree_fetch}` —
@@ -932,4 +976,23 @@ defmodule OrcaHubWeb.SessionLive.Index do
   end
 
   def error_hint(_session), do: nil
+
+  # ORCAHUB3-60: the "needs an answer" marker beside the status badge — the
+  # tooltip says what was asked (pi) or how it is answered (Claude). See
+  # load_pending_questions/1.
+  attr :session, :map, required: true
+  attr :pending_questions, :map, required: true
+
+  defp pending_question_badge(assigns) do
+    ~H"""
+    <span
+      :if={Map.has_key?(@pending_questions, @session.id)}
+      id={"pending-question-#{@session.id}"}
+      class="badge badge-info badge-outline badge-sm gap-0.5 cursor-help"
+      title={@pending_questions[@session.id]}
+    >
+      <.icon name="hero-question-mark-circle-micro" class="size-3" /> question
+    </span>
+    """
+  end
 end

@@ -20,7 +20,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
 
   import Phoenix.LiveViewTest
 
-  alias OrcaHub.{ClusterNodes, Projects}
+  alias OrcaHub.{ClusterNodes, Projects, Sessions}
 
   test "new-session form shows the backend picker and defaults to \"claude\"", %{conn: conn} do
     {:ok, project} =
@@ -135,5 +135,94 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
     assert html =~ "glm-5p2 (fireworks)"
     refute html =~ "Opus 5.5"
     refute html =~ "GPT-5.6 Sol"
+  end
+
+  # ORCAHUB3-60: `/sessions` marks a session that is blocked on an unanswered
+  # question, so a human can spot a stalled worker without opening it. A pi
+  # dialog carries its question text in the tooltip. A Claude AskUserQuestion
+  # carries a hint on how it is answered (a normal message, not the dialog
+  # path).
+  describe "pending-question indicator" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "orca-idx-pq-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, project} = Projects.create_project(%{name: "Pending Questions", directory: dir})
+
+      %{dir: dir, project: project}
+    end
+
+    defp pq_session(%{dir: dir, project: project}, attrs) do
+      {:ok, session} =
+        Sessions.create_session(Map.merge(%{directory: dir, project_id: project.id}, attrs))
+
+      session
+    end
+
+    defp open_dialog(session, title) do
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: %{
+            "type" => "pi_ui_request",
+            "id" => "dlg-1",
+            "method" => "input",
+            "title" => title
+          }
+        })
+    end
+
+    defp indicator(session), do: "#pending-question-#{session.id}"
+
+    test "marks a pi session blocked on a dialog, with the question in the tooltip", ctx do
+      pi = pq_session(ctx, %{title: "Pi Worker", backend: "pi", status: "waiting"})
+      open_dialog(pi, "Proceed with the migration?")
+      busy = pq_session(ctx, %{title: "Busy Worker", backend: "pi", status: "running"})
+
+      {:ok, view, _html} = live(ctx.conn, ~p"/sessions")
+
+      assert has_element?(view, indicator(pi))
+      assert render(element(view, indicator(pi))) =~ "Proceed with the migration?"
+      refute has_element?(view, indicator(busy))
+    end
+
+    test "marks a claude session waiting on an AskUserQuestion, saying how it is answered",
+         ctx do
+      claude = pq_session(ctx, %{title: "Claude Worker", backend: "claude", status: "waiting"})
+
+      {:ok, view, _html} = live(ctx.conn, ~p"/sessions")
+
+      assert has_element?(view, indicator(claude))
+      assert render(element(view, indicator(claude))) =~ "AskUserQuestion"
+    end
+
+    test "appears when a running pi session blocks on a dialog, and clears when it resolves",
+         ctx do
+      pi = pq_session(ctx, %{title: "Pi Worker", backend: "pi", status: "running"})
+
+      {:ok, view, _html} = live(ctx.conn, ~p"/sessions")
+      refute has_element?(view, indicator(pi))
+
+      # What SessionRunner does when the dialog opens: persist the request,
+      # then the "waiting" status, then broadcast it on the aggregate topic.
+      open_dialog(pi, "Which branch?")
+      {:ok, pi} = Sessions.update_session(pi, %{status: "waiting"})
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {pi.id, {:status, :waiting}})
+
+      assert render(element(view, indicator(pi))) =~ "Which branch?"
+
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: pi.id,
+          data: %{"type" => "pi_ui_response", "id" => "dlg-1", "answer" => %{"value" => "main"}}
+        })
+
+      {:ok, pi} = Sessions.update_session(pi, %{status: "running"})
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {pi.id, {:status, :running}})
+
+      render(view)
+      refute has_element?(view, indicator(pi))
+    end
   end
 end
