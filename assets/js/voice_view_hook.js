@@ -181,10 +181,15 @@ export const VoiceViewHook = {
       : []
     const facts = feedFacts(items)
 
-    // The newest live bubble, if any (assistant_stream.js parks them in the
-    // ignored `#assistant-stream-slot`). Keyed `stream:<id>` so it can never
-    // collide with a persisted message's tts id.
-    const bubbles = document.querySelectorAll("#assistant-stream-slot [data-assistant-stream]")
+    // The newest live bubble that has TEXT (assistant_stream.js parks them in
+    // the ignored `#assistant-stream-slot`). A bubble exists from the
+    // stream's `start`, before any text, and tool calls stream into it as
+    // chips — counting that would put an empty header, or a tool call (D5:
+    // none inline), on screen in place of the agent's last words. Keyed
+    // `stream:<id>` so it can never collide with a persisted message's id.
+    const bubbles = Array.from(
+      document.querySelectorAll("#assistant-stream-slot [data-assistant-stream]")
+    ).filter((b) => Array.from(b.querySelectorAll("[data-stream-block]")).some((d) => d.textContent.trim()))
     const bubble = bubbles.length ? bubbles[bubbles.length - 1] : null
     const streamingId = bubble ? `stream:${bubble.dataset.assistantStream}` : null
 

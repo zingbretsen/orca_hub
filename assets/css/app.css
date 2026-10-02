@@ -421,6 +421,12 @@
   html[data-voice-view][data-voice-layout] #message-feed [data-voice-content] > .chat-footer {
     display: none;
   }
+  /* A live bubble's tool-call chips ("Bash…"): D5, no tool calls inline —
+     #voice-activity is where the working agent's tools show. Only its text
+     blocks remain. */
+  html[data-voice-view][data-voice-layout] #message-feed [data-assistant-stream] [data-stream-body] > :not([data-stream-block]) {
+    display: none;
+  }
 
   /* The draft. Only shown while dictating (`voice-dictating:` on
      #prompt-wrapper); there it fills the middle of the screen at 24 px. The
