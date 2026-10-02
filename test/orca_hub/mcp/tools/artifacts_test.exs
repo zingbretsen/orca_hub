@@ -28,6 +28,17 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
 
   defp decode(%{"content" => [%{"text" => body}]}), do: Jason.decode!(body)
 
+  # The tools hand agents the signed absolute capability URL (ORCAHUB3-128),
+  # not the Authelia-gated /artifacts/:id/raw: its token must name exactly
+  # this artifact.
+  defp assert_signed_raw_url(url, artifact_id, version) do
+    assert %URI{scheme: scheme, host: host, path: path, query: query} = URI.parse(url)
+    assert scheme in ["http", "https"] and is_binary(host)
+    assert query == "v=#{version}"
+    assert ["", "api", "artifacts", "view", token, "raw"] = String.split(path, "/")
+    assert OrcaHubWeb.ArtifactURL.verify(token) == {:ok, artifact_id}
+  end
+
   describe "list/0" do
     test "exposes all four tools with expected required args" do
       tools = ArtifactsTool.list()
@@ -57,7 +68,7 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
       assert body["kind"] == "html"
       assert body["version"] == 1
       assert body["opened"] == true
-      assert body["raw_url"] == "/artifacts/#{body["id"]}/raw?v=1"
+      assert_signed_raw_url(body["raw_url"], body["id"], 1)
 
       artifact = Artifacts.get_artifact(body["id"])
       assert artifact.project_id == project.id
@@ -544,7 +555,8 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
       assert %{"isError" => true, "content" => [%{"text" => msg}]} = result
       assert msg =~ "isn't available"
       assert msg =~ "npx playwright install chromium"
-      assert msg =~ "/artifacts/#{artifact.id}/raw?v=#{artifact.version}"
+      [url] = Regex.run(~r{https?://\S+/raw\?v=\d+}, msg)
+      assert_signed_raw_url(url, artifact.id, artifact.version)
     end
 
     test "saves one real screenshot file per viewport under .agents/media/<session-id>/, " <>

@@ -299,6 +299,18 @@ defmodule OrcaHub.MCP.Tools.ArtifactAssetsTest do
     path
   end
 
+  # GETs the path of an absolute URL a tool returned through the real
+  # router, so the URL contract between the tools and the token routes is
+  # exercised end to end.
+  defp fetch_url(url) do
+    %URI{path: path} = URI.parse(url)
+
+    conn =
+      Phoenix.ConnTest.dispatch(Phoenix.ConnTest.build_conn(), OrcaHubWeb.Endpoint, :get, path)
+
+    {conn.status, conn.resp_body}
+  end
+
   defp project_file_count(project) do
     OrcaHub.Repo.aggregate(
       from(f in OrcaHub.Files.File, where: f.project_id == ^project.id),
@@ -348,7 +360,11 @@ defmodule OrcaHub.MCP.Tools.ArtifactAssetsTest do
       assert hero["size_bytes"] == byte_size("png bytes")
       assert hero["unchanged"] == false
       assert hero["usage"] == ~s(<img src="assets/hero.png">)
-      assert is_binary(hero["url"]) and hero["url"] =~ "hero.png"
+      # The signed url really serves the bytes (via the Authelia-bypassed
+      # /api token route), so an agent can WebFetch it to verify.
+      assert fetch_url(hero["url"]) == {200, "png bytes"}
+      assert fetch_url(data["url"]) == {200, ~s({"a":1})}
+      assert body["raw_url"] =~ "/api/artifacts/view/"
       assert data["name"] == "data.json"
       assert data["usage"] == ~s[fetch("assets/data.json")]
 
@@ -588,7 +604,7 @@ defmodule OrcaHub.MCP.Tools.ArtifactAssetsTest do
       assert body["ref"] == "assets/clip.mp4"
       assert body["path"] == "media/clip.mp4"
       assert body["usage"] == ~s(<video src="assets/clip.mp4" controls playsinline></video>)
-      assert is_binary(body["url"])
+      assert fetch_url(body["url"]) == {200, "mp4 bytes"}
 
       {file, "mp4 bytes"} = asset_bytes(artifact, "clip.mp4")
       assert body["file_id"] == file.id

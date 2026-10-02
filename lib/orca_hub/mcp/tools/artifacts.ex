@@ -721,17 +721,18 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
 
   defp save_result(artifact, save, staged) do
     attached = artifact |> HubRPC.list_artifact_assets() |> Enum.map(& &1.name)
+    urls = HubRPC.artifact_urls(artifact, attached)
 
     %{
       id: artifact.id,
       name: artifact.name,
       kind: artifact.kind,
       version: artifact.version,
-      raw_url: raw_url(artifact),
+      raw_url: urls.raw_url,
       opened: save.open?
     }
     |> maybe_put(:content_path, save.source)
-    |> maybe_put(:assets, asset_entries(artifact, attached, staged))
+    |> maybe_put(:assets, asset_entries(attached, urls.asset_urls, staged))
     |> put_warnings(save, attached)
   end
 
@@ -739,13 +740,13 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
   # so the result is the complete list of refs the content can use. Ones
   # from this call also say where they came from and whether the bytes
   # were already attached (`unchanged`, no upload).
-  defp asset_entries(_artifact, [], _staged), do: nil
+  defp asset_entries([], _urls, _staged), do: nil
 
-  defp asset_entries(artifact, attached, staged) do
+  defp asset_entries(attached, urls, staged) do
     by_name = Map.new(staged, &{&1.name, &1})
 
     Enum.map(attached, fn name ->
-      entry = asset_entry(artifact, name)
+      entry = asset_entry(name, Map.fetch!(urls, name))
 
       case by_name do
         %{^name => item} ->
@@ -808,13 +809,11 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     )
   end
 
-  defp asset_entry(artifact, name) do
-    %{
-      name: name,
-      ref: "assets/#{name}",
-      url: asset_url(artifact, name),
-      usage: asset_usage(name)
-    }
+  # `ref` is what the content uses; `url` is the signed absolute capability
+  # URL (`OrcaHubWeb.ArtifactURL`, minted on the hub) an agent can WebFetch
+  # to check the asset is really served.
+  defp asset_entry(name, url) do
+    %{name: name, ref: "assets/#{name}", url: url, usage: asset_usage(name)}
   end
 
   defp asset_usage(name) do
@@ -1187,8 +1186,8 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
   end
 
   defp attach_result(artifact, asset, file, source) do
-    artifact
-    |> asset_entry(asset.name)
+    asset.name
+    |> asset_entry(HubRPC.artifact_asset_url(artifact.id, asset.name))
     |> Map.merge(%{artifact_id: artifact.id, file_id: file.id, size_bytes: file.size_bytes})
     |> maybe_put(:path, source[:path])
   end
@@ -1301,8 +1300,8 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     }
   end
 
-  # PLACEHOLDERS until ORCAHUB3-128's signed capability URLs land: both get
-  # replaced by the signed absolute forms.
-  defp raw_url(artifact), do: "/artifacts/#{artifact.id}/raw?v=#{artifact.version}"
-  defp asset_url(artifact, name), do: "/artifacts/#{artifact.id}/assets/#{name}"
+  # The signed absolute capability URL (`OrcaHubWeb.ArtifactURL`), minted on
+  # the hub: the one URL an agent can actually fetch, since the old
+  # /artifacts/:id/raw sits behind Authelia.
+  defp raw_url(artifact), do: HubRPC.artifact_raw_url(artifact)
 end
