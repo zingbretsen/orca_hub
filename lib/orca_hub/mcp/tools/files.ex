@@ -160,8 +160,8 @@ defmodule OrcaHub.MCP.Tools.Files do
   end
 
   def call("put_file", args, state) do
-    with_calling_session(state, fn session_id, session ->
-      put_file(session_id, session, args)
+    with_calling_session(state, fn _session_id, session ->
+      put_file(session, args)
     end)
   end
 
@@ -207,70 +207,95 @@ defmodule OrcaHub.MCP.Tools.Files do
   # are read, let alone shipped to the hub.
   # -------------------------------------------------------------------
 
-  defp put_file(session_id, session, args) do
-    case PathConfinement.confine(session.directory, args["path"]) do
-      {:ok, resolved} ->
-        put_confined_file(session_id, session, resolved, args)
+  defp put_file(session, args) do
+    path = args["path"]
 
-      {:error, :outside_root} ->
-        error(
-          "Path #{inspect(args["path"])} is outside this session's working directory " <>
-            "(after resolving `..` and symlinks)."
-        )
+    with {:ok, resolved, _size} <- confine_local_file(session.directory, path, "Path"),
+         {:ok, file} <-
+           upload_local_file(session, resolved, args["name"], args["content_type"]) do
+      text(
+        "Stored file #{file.id} (#{file.name}, #{file.size_bytes} bytes, sha256 " <>
+          "#{file.sha256}). Another session can retrieve it with " <>
+          "get_file(file_id: #{inspect(file.id)}); share it with a specific session or " <>
+          "project first via share_file if it isn't already visible to them."
+      )
+    else
+      {:error, message} -> error(message)
     end
   end
 
-  defp put_confined_file(session_id, session, resolved, args) do
+  @doc """
+  put_file's path rules, shared with every other tool that takes a local
+  path (`OrcaHub.MCP.Tools.Artifacts`: save_artifact's `content_path` and
+  `assets`, attach_artifact_asset's `path`) so they all refuse the same
+  things: confines `path` to `directory` by REALPATH (`..`, outside
+  absolute paths and escaping symlinks are refused), then requires a
+  regular file within the 50MB per-file cap. Reads no bytes. `label` names
+  the argument in error messages. Returns `{:ok, resolved, size}` or
+  `{:error, message}`.
+  """
+  def confine_local_file(directory, path, label) do
+    case PathConfinement.confine(directory, path) do
+      {:ok, resolved} ->
+        stat_local_file(resolved, path, label)
+
+      {:error, :outside_root} ->
+        {:error,
+         "#{label} #{inspect(path)} is outside this session's working directory " <>
+           "(after resolving `..` and symlinks)."}
+    end
+  end
+
+  defp stat_local_file(resolved, path, label) do
     case File.stat(resolved) do
       {:ok, %File.Stat{type: :regular, size: size}} ->
         if size > Files.max_file_bytes() do
-          error(
-            "File is #{size} bytes, exceeding the #{Files.max_file_bytes()}-byte (50MB) " <>
-              "per-file cap."
-          )
+          {:error,
+           "#{label} #{inspect(path)} is #{size} bytes, exceeding the " <>
+             "#{Files.max_file_bytes()}-byte (50MB) per-file cap."}
         else
-          store_file(session_id, session, resolved, args)
+          {:ok, resolved, size}
         end
 
       {:ok, _not_regular} ->
-        error("#{inspect(args["path"])} is not a regular file.")
+        {:error, "#{label} #{inspect(path)} is not a regular file."}
 
       {:error, reason} ->
-        error("Could not read #{inspect(args["path"])}: #{:file.format_error(reason)}")
+        {:error, "Could not read #{label} #{inspect(path)}: #{:file.format_error(reason)}"}
     end
   end
 
-  defp store_file(session_id, session, resolved, args) do
-    name = args["name"] || Path.basename(resolved)
-    content_type = args["content_type"] || MIME.from_path(resolved)
-    binary = File.read!(resolved)
-
+  @doc """
+  put_file's upload half: reads an already-confined `resolved` path (see
+  `confine_local_file/3`) HERE on this node and stores it through
+  `HubRPC.create_file/2`, owned by `session` and its project. `name`
+  defaults to the basename, `content_type` to a guess from the extension.
+  Returns `{:ok, file}` or `{:error, message}`.
+  """
+  def upload_local_file(session, resolved, name \\ nil, content_type \\ nil) do
     attrs = %{
       project_id: session.project_id,
-      session_id: session_id,
-      name: name,
-      content_type: content_type
+      session_id: session.id,
+      name: name || Path.basename(resolved),
+      content_type: content_type || MIME.from_path(resolved)
     }
 
-    case HubRPC.create_file(attrs, binary) do
+    case HubRPC.create_file(attrs, File.read!(resolved)) do
       {:ok, file} ->
-        text(
-          "Stored file #{file.id} (#{file.name}, #{file.size_bytes} bytes, sha256 " <>
-            "#{file.sha256}). Another session can retrieve it with " <>
-            "get_file(file_id: #{inspect(file.id)}); share it with a specific session or " <>
-            "project first via share_file if it isn't already visible to them."
-        )
+        {:ok, file}
 
       {:error, :too_large} ->
-        error("File exceeds the #{Files.max_file_bytes()}-byte (50MB) per-file cap.")
+        {:error, "File exceeds the #{Files.max_file_bytes()}-byte (50MB) per-file cap."}
 
       {:error, :quota_exceeded} ->
-        error(
-          "This project has exceeded its #{Files.project_quota_bytes()}-byte file store quota."
-        )
+        {:error,
+         "This project has exceeded its #{Files.project_quota_bytes()}-byte file store quota."}
 
-      {:error, changeset} ->
-        error("Failed to store file: #{inspect(changeset_errors(changeset))}")
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:error, "Failed to store file: #{inspect(changeset_errors(changeset))}"}
+
+      {:error, reason} ->
+        {:error, "Failed to store file: #{inspect(reason)}"}
     end
   end
 
