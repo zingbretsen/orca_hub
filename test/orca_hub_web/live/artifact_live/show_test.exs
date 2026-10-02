@@ -39,10 +39,17 @@ defmodule OrcaHubWeb.ArtifactLive.ShowTest do
     {:ok, project: project, artifact: artifact}
   end
 
-  test "renders the sandboxed iframe pointed at the raw url", %{conn: conn, artifact: artifact} do
-    {:ok, _view, html} = live(conn, ~p"/artifacts/#{artifact.id}")
+  # ORCAHUB3-128: the iframe loads the token-scoped /api route, never the
+  # Authelia-gated /artifacts/:id/raw — the opaque-origin iframe's own asset
+  # requests can't carry the Authelia cookie.
+  test "renders the sandboxed iframe pointed at the token-scoped raw url", %{
+    conn: conn,
+    artifact: artifact
+  } do
+    {:ok, view, html} = live(conn, ~p"/artifacts/#{artifact.id}")
 
-    assert html =~ "/artifacts/#{artifact.id}/raw?v=#{artifact.version}"
+    assert {:ok, artifact.id} == view |> iframe_src() |> src_token(artifact.version)
+    refute html =~ "/artifacts/#{artifact.id}/raw"
     assert html =~ ~s(sandbox="allow-scripts")
     refute html =~ "allow-same-origin"
     assert html =~ artifact.name
@@ -84,8 +91,51 @@ defmodule OrcaHubWeb.ArtifactLive.ShowTest do
         content: "<p>updated</p>"
       })
 
-    html = render(view)
-    assert html =~ "/artifacts/#{artifact.id}/raw?v=#{updated.version}"
+    assert {:ok, artifact.id} == view |> iframe_src() |> src_token(updated.version)
+  end
+
+  # The src is an assign minted on a version bump, not recomputed per
+  # render: a re-mint after the token's hour bucket rolls over would change
+  # it and reload the iframe. Changing max_age changes what a fresh mint
+  # produces (it's embedded in the token), which makes a re-mint visible.
+  test "the iframe src is re-minted only on a version bump", %{
+    conn: conn,
+    project: project,
+    artifact: artifact
+  } do
+    {:ok, view, _html} = live(conn, ~p"/artifacts/#{artifact.id}")
+    original = iframe_src(view)
+
+    Application.put_env(:orca_hub, :artifact_url_max_age_seconds, 7200)
+    on_exit(fn -> Application.delete_env(:orca_hub, :artifact_url_max_age_seconds) end)
+    refute OrcaHubWeb.ArtifactURL.raw_path(artifact) == original
+
+    send(view.pid, {:artifact_updated, artifact})
+    send(view.pid, {:artifact_data_updated, artifact})
+    assert iframe_src(view) == original
+
+    {:ok, updated} =
+      Artifacts.save_artifact(%{
+        project_id: project.id,
+        name: artifact.name,
+        content: "<p>updated</p>"
+      })
+
+    src = iframe_src(view)
+    refute src == original
+    assert src == OrcaHubWeb.ArtifactURL.raw_path(updated)
+  end
+
+  defp iframe_src(view) do
+    [_, src] =
+      Regex.run(~r/src="([^"]+)"/, view |> element("#artifact-fullscreen-frame") |> render())
+
+    src
+  end
+
+  defp src_token(src, version) do
+    [_, token] = Regex.run(~r{\A/api/artifacts/view/([^/]+)/raw\?v=#{version}\z}, src)
+    OrcaHubWeb.ArtifactURL.verify(token)
   end
 
   describe "orca.send bidirectional bridge (Phase 3)" do

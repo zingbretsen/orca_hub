@@ -17,6 +17,30 @@ defmodule OrcaHubWeb.ArtifactController do
   inline scripts keep loading. Keep `@raw_sandbox` in lockstep with the
   viewer iframes' `sandbox` attribute (ArtifactLive.Show,
   SessionLive.Show).
+
+  ## Two route families, same bytes
+
+    * `/artifacts/:id/{raw,download,assets/:name}`: no app-level auth;
+      Authelia forward-auth at the ingress covers them. Kept for backward
+      compatibility and for the download button.
+    * `/api/artifacts/view/:token/{raw,assets/:name}` (ORCAHUB3-128): what
+      both viewer iframes load. The iframe is an opaque origin, so its
+      `<img>`/`<video>`/fetch requests are cross-site for cookie purposes
+      and never carry Authelia's SameSite=Lax cookie. On the `/artifacts`
+      routes forward-auth 302'd every asset to the login page
+      (ORCAHUB3-79). Authelia bypasses `^/api/.*` on this host, so these
+      routes authenticate themselves: the signed, artifact-scoped token in
+      the path is the credential (`OrcaHubWeb.ArtifactURL`). A relative
+      `assets/<name>` inside the artifact resolves under the same token, so
+      no HTML is rewritten. An invalid, expired, tampered or other-artifact
+      token gets the same bare 404 as a missing artifact. Asset responses
+      add `Access-Control-Allow-Origin: *` (opaque-origin fetch()/@font-face
+      are CORS-mode; no cookie is involved) and `Referrer-Policy:
+      no-referrer`.
+
+  Both asset routes answer single-range HTTP Range requests with 206 (iOS
+  Safari won't play a `<video>` without it), reading only the requested
+  window from the object store.
   """
 
   use OrcaHubWeb, :controller
@@ -86,10 +110,11 @@ defmodule OrcaHubWeb.ArtifactController do
 
   # Serves an asset attached via the attach_artifact_asset MCP tool
   # (ORCAHUB3-72 slice 2) — the artifact's own HTML loads it as a relative
-  # URL (e.g. <img src="assets/hero.png">), which resolves here because the
-  # artifact itself is loaded from src=/artifacts/:id/raw. No visibility
-  # check: an artifact asset is public at the same unauthenticated route as
-  # the artifact's own content (see this controller's moduledoc).
+  # URL (e.g. <img src="assets/hero.png">), which resolves here when the
+  # artifact itself was loaded from /artifacts/:id/raw (the viewers now use
+  # the token route, view_asset/3 below). No visibility check: an artifact
+  # asset is exactly as reachable as the artifact's own content (see this
+  # controller's moduledoc).
   def asset(conn, %{"id" => id, "name" => name}) do
     send_asset(conn, id, name)
   end
@@ -114,18 +139,99 @@ defmodule OrcaHubWeb.ArtifactController do
     end
   end
 
+  # HTTP Range (RFC 9110 §14) on both asset routes: iOS Safari won't play a
+  # <video> unless byte ranges come back as 206. A single range reads only
+  # that window from the object store (ObjectStore.get_range/3 via HubRPC),
+  # never the whole object. No Range header, several Range headers, a
+  # multi-range or a malformed one all get the whole file as a 200 (a
+  # server MAY ignore Range). A range starting at or past the end is a 416.
   defp send_asset(conn, id, name) do
-    with %{file: file} <- HubRPC.get_artifact_asset(id, name),
-         {:ok, binary} <- HubRPC.fetch_file_binary(file) do
-      conn
-      |> put_resp_content_type(file.content_type || "application/octet-stream")
-      |> put_resp_header("cache-control", "private, max-age=3600")
-      |> sandbox(@asset_sandbox)
-      |> send_resp(200, binary)
-    else
+    case HubRPC.get_artifact_asset(id, name) do
+      %{file: %{} = file} ->
+        size = file.size_bytes
+
+        case requested_range(get_req_header(conn, "range"), size) do
+          :full -> send_full_asset(conn, file)
+          {first, last} -> send_partial_asset(conn, file, first, last)
+          :unsatisfiable -> send_unsatisfiable(conn, file)
+        end
+
+      _ ->
+        not_found(conn)
+    end
+  end
+
+  defp send_full_asset(conn, file) do
+    case HubRPC.fetch_file_binary(file) do
+      {:ok, binary} -> conn |> asset_headers(file) |> send_resp(200, binary)
       _ -> not_found(conn)
     end
   end
+
+  defp send_partial_asset(conn, file, first, last) do
+    case HubRPC.fetch_file_binary_range(file, first, last - first + 1) do
+      # Content-Range from the bytes actually read, in case the stored
+      # object is shorter than its size_bytes says.
+      {:ok, data} when byte_size(data) > 0 ->
+        conn
+        |> asset_headers(file)
+        |> put_resp_header(
+          "content-range",
+          "bytes #{first}-#{first + byte_size(data) - 1}/#{file.size_bytes}"
+        )
+        |> send_resp(206, data)
+
+      {:ok, _empty} ->
+        send_unsatisfiable(conn, file)
+
+      {:error, :range_not_satisfiable} ->
+        send_unsatisfiable(conn, file)
+
+      _ ->
+        not_found(conn)
+    end
+  end
+
+  defp send_unsatisfiable(conn, file) do
+    conn
+    |> asset_headers(file)
+    |> put_resp_header("content-range", "bytes */#{file.size_bytes}")
+    |> send_resp(416, "")
+  end
+
+  defp asset_headers(conn, file) do
+    conn
+    |> put_resp_content_type(file.content_type || "application/octet-stream")
+    |> put_resp_header("cache-control", "private, max-age=3600")
+    |> put_resp_header("accept-ranges", "bytes")
+    |> sandbox(@asset_sandbox)
+  end
+
+  # `{first, last}` (inclusive, clamped to the file), `:unsatisfiable`, or
+  # `:full`. An empty file has no satisfiable byte range to answer with, so
+  # it is always served whole.
+  defp requested_range([header], size) when size > 0 do
+    case Regex.run(~r/\Abytes=(\d*)-(\d*)\z/, String.trim(header)) do
+      [_, "", ""] -> :full
+      [_, "", suffix] -> suffix_range(String.to_integer(suffix), size)
+      [_, first, last] -> bounded_range(String.to_integer(first), parse_last(last), size)
+      nil -> :full
+    end
+  end
+
+  defp requested_range(_headers, _size), do: :full
+
+  defp suffix_range(0, _size), do: :unsatisfiable
+  defp suffix_range(n, size), do: {max(size - n, 0), size - 1}
+
+  defp parse_last(""), do: nil
+  defp parse_last(last), do: String.to_integer(last)
+
+  # last < first is a syntactically invalid range: ignored, not a 416.
+  defp bounded_range(first, last, _size) when is_integer(last) and last < first, do: :full
+  defp bounded_range(first, _last, size) when first >= size, do: :unsatisfiable
+  defp bounded_range(first, nil, size), do: {first, size - 1}
+  defp bounded_range(first, last, size), do: {first, min(last, size - 1)}
 
   defp sandbox(conn, csp) do
     conn

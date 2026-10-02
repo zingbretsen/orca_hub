@@ -40,4 +40,29 @@ defmodule OrcaHub.ObjectStore.LocalTest do
   test "delete/1 on a missing key is still :ok (idempotent)" do
     assert :ok = Local.delete("never/existed/at/all.txt")
   end
+
+  describe "get_range/3" do
+    setup do
+      :ok = Local.put("proj1/file3/range.bin", "0123456789", "application/octet-stream")
+      :ok
+    end
+
+    test "reads exactly the requested window" do
+      assert {:ok, "234"} = Local.get_range("proj1/file3/range.bin", 2, 3)
+      assert {:ok, "0"} = Local.get_range("proj1/file3/range.bin", 0, 1)
+    end
+
+    test "a window running past the end is a short read" do
+      assert {:ok, "89"} = Local.get_range("proj1/file3/range.bin", 8, 100)
+    end
+
+    test "an offset at or past the end is range_not_satisfiable" do
+      assert {:error, :range_not_satisfiable} = Local.get_range("proj1/file3/range.bin", 10, 1)
+      assert {:error, :range_not_satisfiable} = Local.get_range("proj1/file3/range.bin", 50, 1)
+    end
+
+    test "a missing key is an error" do
+      assert {:error, :enoent} = Local.get_range("nope/nope/nope.bin", 0, 1)
+    end
+  end
 end

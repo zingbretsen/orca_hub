@@ -34,6 +34,21 @@ defmodule OrcaHub.ObjectStore.S3Test do
   end
 
   @tag :s3
+  test "get_range/3 reads just the requested window, short at the end, 416 past it" do
+    if System.get_env("ORCA_S3_ENDPOINT") do
+      key = "s3_test/#{System.unique_integer([:positive])}/range.bin"
+
+      assert :ok = OrcaHub.ObjectStore.S3.put(key, "0123456789", "application/octet-stream")
+      assert {:ok, "234"} = OrcaHub.ObjectStore.S3.get_range(key, 2, 3)
+      assert {:ok, "89"} = OrcaHub.ObjectStore.S3.get_range(key, 8, 100)
+      assert {:error, :range_not_satisfiable} = OrcaHub.ObjectStore.S3.get_range(key, 10, 1)
+      assert :ok = OrcaHub.ObjectStore.S3.delete(key)
+    else
+      :ok
+    end
+  end
+
+  @tag :s3
   test "get/1 returns exact bytes for a .gz object that isn't really gzip" do
     if System.get_env("ORCA_S3_ENDPOINT") do
       key = "s3_test/#{System.unique_integer([:positive])}/notreally.gz"

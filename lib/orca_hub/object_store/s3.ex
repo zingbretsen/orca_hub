@@ -36,6 +36,34 @@ defmodule OrcaHub.ObjectStore.S3 do
     end
   end
 
+  # A plain S3 ranged GET. Same decode_body/raw reasoning as get/1. A 200
+  # instead of a 206 means the server ignored the Range header and sent the
+  # whole object, so slice it here; the caller still gets just its window.
+  @impl true
+  def get_range(object_key, offset, length) do
+    range = "bytes=#{offset}-#{offset + length - 1}"
+
+    case Req.get(request(),
+           url: url(object_key),
+           headers: [{"range", range}],
+           decode_body: false,
+           raw: true
+         ) do
+      {:ok, %{status: 206, body: body}} -> {:ok, body}
+      {:ok, %{status: 200, body: body}} -> slice(body, offset, length)
+      {:ok, %{status: 416}} -> {:error, :range_not_satisfiable}
+      {:ok, %{status: 404}} -> {:error, :not_found}
+      {:ok, %{status: status, body: body}} -> {:error, {:s3_error, status, body}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp slice(body, offset, _length) when offset >= byte_size(body),
+    do: {:error, :range_not_satisfiable}
+
+  defp slice(body, offset, length),
+    do: {:ok, binary_part(body, offset, min(length, byte_size(body) - offset))}
+
   @impl true
   def delete(object_key) do
     case Req.delete(request(), url: url(object_key)) do

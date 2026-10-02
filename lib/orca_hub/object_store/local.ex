@@ -24,6 +24,21 @@ defmodule OrcaHub.ObjectStore.Local do
   end
 
   @impl true
+  def get_range(object_key, offset, length) do
+    with {:ok, fd} <- :file.open(object_path(object_key), [:read, :raw, :binary]) do
+      try do
+        case :file.pread(fd, offset, length) do
+          {:ok, data} -> {:ok, data}
+          :eof -> {:error, :range_not_satisfiable}
+          {:error, reason} -> {:error, reason}
+        end
+      after
+        :file.close(fd)
+      end
+    end
+  end
+
+  @impl true
   def delete(object_key) do
     case File.rm(object_path(object_key)) do
       :ok -> :ok

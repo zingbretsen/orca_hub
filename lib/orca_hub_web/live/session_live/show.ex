@@ -3,7 +3,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
   require Logger
 
   alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, MemoryExtraction, Projects, Sessions}
-  alias OrcaHubWeb.{ArtifactSend, Markdown, MessageComponents, TreeComponents}
+  alias OrcaHubWeb.{ArtifactSend, ArtifactURL, Markdown, MessageComponents, TreeComponents}
   alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Todos}
   alias OrcaHub.Voice.Dictation
 
@@ -2642,16 +2642,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   def handle_info({:artifact_updated, artifact}, socket) do
-    open_files =
-      Enum.map(socket.assigns.open_files, fn
-        %{kind: :artifact, artifact_id: id} = tab when id == artifact.id ->
-          %{tab | artifact: artifact}
-
-        tab ->
-          tab
-      end)
-
-    {:noreply, assign(socket, :open_files, open_files)}
+    {:noreply,
+     assign(socket, :open_files, refresh_artifact_tabs(socket.assigns.open_files, artifact))}
   end
 
   # Keeps the header Artifacts button (count badge + dropdown) fresh when the
@@ -2675,18 +2667,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # artifact_id, so this is broadcast even when no matching tab is open (the
   # hook simply has nothing to catch it).
   def handle_info({:artifact_data_updated, artifact}, socket) do
-    open_files =
-      Enum.map(socket.assigns.open_files, fn
-        %{kind: :artifact, artifact_id: id} = tab when id == artifact.id ->
-          %{tab | artifact: artifact}
-
-        tab ->
-          tab
-      end)
-
     {:noreply,
      socket
-     |> assign(:open_files, open_files)
+     |> assign(:open_files, refresh_artifact_tabs(socket.assigns.open_files, artifact))
      |> push_event("artifact_data_updated", %{artifact_id: artifact.id, data: artifact.data})}
   end
 
@@ -3123,6 +3106,27 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
+  # Swaps a refreshed artifact into its open tab. The tab's iframe `src`
+  # (the token-scoped OrcaHubWeb.ArtifactURL.raw_path/1, minted in
+  # open_artifact_tab/2) is re-minted only on a version bump: a fresh mint
+  # after the token's hour bucket rolls over would otherwise change `src`
+  # on an unrelated re-render and reload the iframe, wiping its in-page
+  # state.
+  defp refresh_artifact_tabs(open_files, artifact) do
+    Enum.map(open_files, fn
+      %{kind: :artifact, artifact_id: id} = tab when id == artifact.id ->
+        src =
+          if artifact.version != tab.artifact.version,
+            do: ArtifactURL.raw_path(artifact),
+            else: tab.src
+
+        %{tab | artifact: artifact, src: src}
+
+      tab ->
+        tab
+    end)
+  end
+
   defp open_artifact_tab(socket, artifact_id) do
     path = "artifact:#{artifact_id}"
 
@@ -3141,6 +3145,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
               path: path,
               artifact_id: artifact.id,
               artifact: artifact,
+              src: ArtifactURL.raw_path(artifact),
               read_only: true
             }
 
@@ -3185,7 +3190,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # Shared by the desktop and mobile split-panel templates (both are always
   # present in the DOM simultaneously, toggled by responsive CSS classes —
   # not conditionally rendered — so `variant` keeps their iframe ids from
-  # colliding). `?v=<version>` busts the iframe's cache so a live-reload
+  # colliding). `@tab.src` is the token-scoped raw URL (ORCAHUB3-128) — the
+  # sandboxed iframe's own asset requests never carry the Authelia cookie,
+  # so it loads from /api/artifacts/view/<token>/raw. Its `?v=<version>`
+  # busts the iframe's cache so a live-reload
   # (handle_info({:artifact_updated, ...})) actually re-fetches instead of
   # serving the old cached document.
   defp artifact_tab_panel(assigns) do
@@ -3230,7 +3238,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
         </button>
         <iframe
           id={"artifact-iframe-#{@variant}-#{@tab.artifact_id}"}
-          src={~p"/artifacts/#{@tab.artifact_id}/raw?v=#{@tab.artifact.version}"}
+          src={@tab.src}
           sandbox="allow-scripts"
           title={@tab.artifact.name}
           phx-hook="ArtifactData"

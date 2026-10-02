@@ -817,6 +817,9 @@ defmodule OrcaHub.HubRPC do
   def get_file(id), do: call(OrcaHub.Files, :get_file, [id])
   def fetch_file_binary(file), do: call(OrcaHub.Files, :get_binary, [file])
 
+  def fetch_file_binary_range(file, offset, length),
+    do: call(OrcaHub.Files, :get_binary_range, [file, offset, length])
+
   def fetch_visible_file_binary(id, context),
     do: call(OrcaHub.Files, :fetch_visible_binary, [id, context])
 

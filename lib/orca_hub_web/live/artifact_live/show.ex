@@ -11,7 +11,7 @@ defmodule OrcaHubWeb.ArtifactLive.Show do
   require Logger
 
   alias OrcaHub.{Cluster, HubRPC, NodePolicy}
-  alias OrcaHubWeb.ArtifactSend
+  alias OrcaHubWeb.{ArtifactSend, ArtifactURL}
 
   @viewports %{"mobile" => 375, "tablet" => 768, "full" => nil}
 
@@ -34,6 +34,7 @@ defmodule OrcaHubWeb.ArtifactLive.Show do
         {:ok,
          socket
          |> assign(:artifact, artifact)
+         |> assign(:raw_src, ArtifactURL.raw_path(artifact))
          |> assign(:project, project)
          |> assign(:project_node, project && Cluster.project_node_for(project))
          |> assign(:viewport, "full")
@@ -137,8 +138,17 @@ defmodule OrcaHubWeb.ArtifactLive.Show do
     end
   end
 
+  # The iframe src is re-minted only on a version bump. It's an assign, not
+  # computed in the template, because a fresh mint after the token's hour
+  # bucket rolls over would change `src` and reload the iframe, wiping its
+  # in-page state (see OrcaHubWeb.ArtifactURL.raw_path/1).
   @impl true
   def handle_info({:artifact_updated, artifact}, socket) do
+    socket =
+      if artifact.version != socket.assigns.artifact.version,
+        do: assign(socket, :raw_src, ArtifactURL.raw_path(artifact)),
+        else: socket
+
     {:noreply, assign(socket, :artifact, artifact)}
   end
 
@@ -154,8 +164,6 @@ defmodule OrcaHubWeb.ArtifactLive.Show do
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   defp viewport_width(viewport), do: @viewports[viewport]
-
-  defp raw_src(artifact), do: ~p"/artifacts/#{artifact.id}/raw?v=#{artifact.version}"
 
   defp start_edit_session(socket, instruction) do
     project = socket.assigns.project

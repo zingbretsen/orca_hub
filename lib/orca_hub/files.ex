@@ -151,6 +151,14 @@ defmodule OrcaHub.Files do
   def get_binary(%File{} = file), do: ObjectStore.get(file.object_key)
 
   @doc """
+  `length` bytes of `file` from byte `offset`, with the same no-visibility-
+  check contract as `get_binary/1` (backs HTTP Range on artifact assets).
+  See `OrcaHub.ObjectStore.get_range/3` for short reads and errors.
+  """
+  def get_binary_range(%File{} = file, offset, length),
+    do: ObjectStore.get_range(file.object_key, offset, length)
+
+  @doc """
   Visibility check (invariant 4): creator, same project, or explicitly
   shared with the caller's session or project.
   """

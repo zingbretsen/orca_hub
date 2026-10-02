@@ -68,7 +68,15 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
 
       html = render(view)
       assert html =~ "artifact-iframe-desktop-#{artifact.id}"
-      assert html =~ "/artifacts/#{artifact.id}/raw?v=#{artifact.version}"
+
+      # ORCAHUB3-128: token-scoped /api src (both the desktop and the mobile
+      # panel), never the Authelia-gated /artifacts/:id/raw.
+      for variant <- ["desktop", "mobile"] do
+        assert {:ok, artifact.id} ==
+                 view |> iframe_src(variant, artifact) |> src_token(artifact.version)
+      end
+
+      refute html =~ "/artifacts/#{artifact.id}/raw"
       assert html =~ ~s(sandbox="allow-scripts")
       refute html =~ "allow-same-origin"
       assert html =~ artifact.name
@@ -190,10 +198,56 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
 
       assert updated.version == artifact.version + 1
 
-      html = render(view)
-      assert html =~ "/artifacts/#{artifact.id}/raw?v=#{updated.version}"
-      refute html =~ "/artifacts/#{artifact.id}/raw?v=#{artifact.version}\""
+      assert {:ok, artifact.id} ==
+               view |> iframe_src("desktop", artifact) |> src_token(updated.version)
     end
+
+    # Same reasoning as ArtifactLive.ShowTest's twin: the tab's src is
+    # minted on open and on a version bump only, and changing max_age makes
+    # a fresh mint distinguishable from the stored one.
+    test "the tab's iframe src is re-minted only on a version bump", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{session.id}",
+        {:open_artifact, artifact.id, "split"}
+      )
+
+      original = iframe_src(view, "desktop", artifact)
+
+      Application.put_env(:orca_hub, :artifact_url_max_age_seconds, 7200)
+      on_exit(fn -> Application.delete_env(:orca_hub, :artifact_url_max_age_seconds) end)
+      refute OrcaHubWeb.ArtifactURL.raw_path(artifact) == original
+
+      send(view.pid, {:artifact_updated, artifact})
+      send(view.pid, {:artifact_data_updated, artifact})
+      assert iframe_src(view, "desktop", artifact) == original
+
+      {:ok, updated} =
+        Artifacts.save_artifact(%{
+          project_id: artifact.project_id,
+          name: artifact.name,
+          content: "<p>updated</p>"
+        })
+
+      assert iframe_src(view, "desktop", updated) == OrcaHubWeb.ArtifactURL.raw_path(updated)
+    end
+  end
+
+  defp iframe_src(view, variant, artifact) do
+    html = view |> element("#artifact-iframe-#{variant}-#{artifact.id}") |> render()
+    [_, src] = Regex.run(~r/src="([^"]+)"/, html)
+    src
+  end
+
+  defp src_token(src, version) do
+    [_, token] = Regex.run(~r{\A/api/artifacts/view/([^/]+)/raw\?v=#{version}\z}, src)
+    OrcaHubWeb.ArtifactURL.verify(token)
   end
 
   describe "{:artifact_saved, artifact} broadcast (header button + dropdown)" do
