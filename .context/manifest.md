@@ -33,8 +33,8 @@ disk; `Read` on demand.
   `HotLoadGate` refuse categories, drift/stamp reporting) vs a full release.
 - `.context/voice-mode.md` — phases 1-2c: capture/VAD/ASR pipeline, the OVS1
   wire contract, ASRConfig, browser traps, asset packaging, assistant deltas,
-  streaming TTS, the voice bar, voice-driven interaction (client-owned focus,
-  `ui_action`, inserts, ordinals).
+  streaming TTS, the voice bar, voice-driven interaction (focus, `ui_action`,
+  inserts, ordinals), the phone voice view (113 phase C).
 - Specs at repo root: `backend_abstraction_spec.md`, `issues_spec.md`,
   `pi_fork_spec.md`, `docs/api.md` (Agent Runs API).
 
