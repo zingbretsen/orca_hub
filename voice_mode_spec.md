@@ -1,8 +1,8 @@
-# Voice Mode — Design Spec (DRAFT, v0.5)
+# Voice Mode — Design Spec (DRAFT, v0.7)
 
-Status: DRAFT v0.5 — **phase 1 deployed (`d679c12`); phase 2 + 2b implemented
-at `113fa91`; phase 2c (voice navigation + spoken composer control sequences)
-next.**
+Status: DRAFT v0.7 — **phase 1 deployed (`d679c12`); phase 2 + 2b implemented
+at `113fa91`; phase 2c landed (`e3afb74`, §8.3); the ORCAHUB3-113 mobile voice
+view (§8.5) implemented and real-page verified at `74b0819`.**
 Phase 1 commits: A `f23b5b8`, B `0080399`, C `4a28f2b`, D `ef9f87a`+`f101886`,
 E `df935f1`, F `6f0e6d4`+`097806d`+`735b396`, integration fix `8d67708`, panel
 shrink §8.1 DOM change — see §12. Phase 1 EXIT CRITERIA PENDING —
@@ -1961,6 +1961,352 @@ the release/re-acquire cycle — item 7 REDUCES how often 105's machinery runs.
 When the held reply is eventually played, it goes through `ttsStart` and the
 release fires exactly as it does for any manual play (`0bf68b2`).
 
+**AMENDED by §8.5.7 (phase C):** decision 3's window is now measured from the
+LATER of the hold and the last draft activity (D10), and the voice channel's
+confirmed send (`orca:voice-sent`) releases a hold as well as
+`phx:clear-prompt`. That closes the composer-less `/queue` gap, where a spoken
+send goes `send_direct` and no `clear-prompt` is ever pushed.
+
+### 8.5 The mobile voice view (ORCAHUB3-113 phase C)
+
+NORMATIVE. This folds in the plan pinned on ORCAHUB3-113 (spec v1,
+2026-10-02, design artifacts `orcahub3-113-voice-view` and
+`orcahub3-113-voice-screen-directions`), with the corrections that building and
+verifying it forced. Built by three parallel workers and integrated by a
+fourth:
+
+- W1 `df8393d` + `e04451e`: the flag module, the Voice hook, the bar and the header.
+- W2 `297d97a` + `f720f78` + `7cf0132` + `8aaa2fa`: the session page, `voice_view.js`, the `VoiceView` hook.
+- W3 `8b669f0` + `8c15b6a`: the read-aloud rail, the held strip, tap-to-jump.
+- W4 `74b0819`: integration, and the real-page verification.
+
+It was verified on the REAL page at 390x844 and 1280x900 on 2026-10-02 (§8.5.9),
+with the harness in `~/voice-verify-logs/v113/` (outside the repo). That covers
+the dev build (unminified CSS) at `8c15b6a` and the minified build at `74b0819`.
+
+**Naming.** D1-D11 are Zach's decisions. The plan's own orchestrator calls are
+also numbered C1-C5, and code comments use those names ("C1 suppression",
+"C5 retarget"). Inside this section C1-C5 mean THOSE calls, not §10.5's
+contracts C1-C5.
+
+#### 8.5.1 What it is
+
+The phone gets a full-screen voice mode. **The session page restyles itself**
+(D1, direction B); there is no overlay, no new route and no second copy of
+anything. The feed on screen is the real `#message-feed`, the draft is the real
+composer textarea (§8.2's one draft, single send path ORCAHUB3-86), and Send is
+the real form. Below 768 px, the view IS the mic being on (D2). The mic button
+opens it, and End (the same button) closes it, turns the mic off and stops any
+reading (D2). Desktop is unchanged.
+
+The decisions:
+
+- **D3: one message on screen, chosen by state.** Dictating shows only the
+  draft. While the agent works, it shows the agent's progress. Otherwise it
+  shows the latest content message.
+- **D4: prev/next step through CONTENT messages only** (user text, assistant
+  text). Tool calls and results, thinking and system events are not in the
+  sequence.
+- **D5: no tool calls inline.** Progress is the agent's latest text plus an
+  activity list: the current tool, the previous two, a count and elapsed time.
+- **D6: paging back freezes the screen.** Live, starting to talk, or sending
+  returns to live.
+- **D7: a non-empty draft takes the screen even mid-turn.** The agent drops to
+  a one-line strip.
+- **D8: if the OS kills the mic, the view STAYS** with a big "Tap to resume". A
+  deliberate release during playback (ORCAHUB3-105) is not a failure and shows
+  nothing.
+- **D9: footers carry controls and live state only, never hint text.** A state
+  with no controls has no footer.
+- **D10: the hold-age clock runs from the LAST DRAFT ACTIVITY.**
+- **D11: one global flag, and each page draws its own voice layout.** Pages
+  without a layout show the normal page plus the bar, with the mic still on.
+
+The calls (veto-able, not discussed with Zach):
+
+- **C1: anything that needs a TAP answer suppresses the view**, and the normal
+  page shows (§8.5.8).
+- **C2: the big Send submits with the `voice_dictated` submitter.**
+- **C3 is NOT in v1:** raw-vs-cleaned grey text needs a mirror layer over the
+  textarea.
+- **C4 is NOT in v1:** no stop-the-agent control.
+- **C5: a MANUAL picker retarget live-navigates to that session's page**, on a
+  phone in voice mode only.
+
+#### 8.5.2 The flag: facts on `<html>`
+
+`<html>` is outside every LiveView root, so no patch can strip what is written
+there. That is why the whole contract lives on it. The shared names are in
+`assets/js/voice_view_flag.js`: `VOICE_VIEW_MEDIA = "(max-width: 767px)"`,
+`setVoiceView`, `setVoiceLayout`, `setVoiceMic`, `voiceMicState`,
+`voiceViewShowing`, `pickNavigates`.
+
+| Attribute | Writer | Meaning |
+|---|---|---|
+| `data-voice-view="on"` | the Voice hook (`_syncViewFlags`) | `this.active`: user INTENT. Never `_micLive()`, so the view survives an OS kill (D8). Never VoiceBarLive's `voice_on`, which resets on a socket remount (ORCAHUB3-91). Cleared on toggle-off and in `destroyed()`. |
+| `data-voice-layout="session"` | the page's `VoiceView` hook | This page draws a voice layout. Set on mount unless suppressed (C1); removed on destroy, on suppression, and by a navigation to a page without one (D11). |
+| `data-voice-mic` | the Voice hook | `live`, `released`, `starting`, `stopped`, or absent with voice off. |
+| `data-voice-state` | the `VoiceView` hook | `dictating`, `working`, `reply` or `paging` (§8.5.5). |
+| `data-voice-current` | the `VoiceView` hook | The tts message id on screen. Absent while dictating, for a live bubble, or with no message. |
+
+The view shows exactly when all three of `data-voice-view`,
+`data-voice-layout` and the media query hold. The CSS spelling is the
+`voice-view` custom variant in `app.css`. The JS spelling is
+`voiceViewShowing()`. Change both together.
+
+**CORRECTIONS from implementation:**
+
+- **`data-voice-layout`, `-state` and `-current` are published whenever the
+  session page is mounted and not suppressed**, mic on or off, on desktop too.
+  They are inert there: every consumer gates on the variant or on
+  `voiceViewShowing()`. The plan read as if the layout appeared with the mic.
+  It does not, and it does not need to.
+- **`data-voice-mic` has a FOURTH state, `starting`.** It covers joining the
+  channel, arming, a pending 250 ms coalesced repair, a running reconcile and a
+  re-acquire. `stopped` means voice is on, nothing is capturing and nothing is
+  trying to: only a tap can help. Without `starting`, "Tap to resume" flashed on
+  every toggle-on and every screen unlock. `released` outranks `live`, which
+  outranks `starting`.
+
+#### 8.5.3 Window events (the seam between page, bar and TTS)
+
+Every event is a `CustomEvent` on `window`. The page's controls cannot reach the
+Voice hook any other way, because its click listener is bound to
+`#voice-panel`.
+
+| Event | From -> to | Meaning |
+|---|---|---|
+| `orca:voice-ended {viewShowing}` | hook -> TTSMethods | A USER toggle-off, sent only from `_toggle` and never from `destroyed()`. `viewShowing` is read BEFORE the teardown. With it true, reading stops (D2). Desktop toggle-off has never stopped a read and still does not. |
+| `orca:voice-sent {sessionId}` | hook -> TTSMethods | The channel's confirmed `"sent"`, on BOTH delivery paths including `send_direct`. Releases a hold (§8.5.7). |
+| `orca:voice-speech-start` | hook -> page | A VAD onset while not muted. Returns a paged-back view to live (D6). |
+| `orca:voice-action {action: "cancel"}` | page -> hook | A WHITELIST of one. It runs the hook's own cancel path (armed/undoable, §8.3.11). Anything else is ignored, so a page can never drive the mic, the toggle or a send. |
+
+`_cancel()` FLUSHES a still-debouncing `draft_edit` before pushing `cancel`. The
+server only clears, and only answers, a draft it holds. Without the flush, a
+Clear pressed within 300 ms of typing would reach a server with nothing to
+clear, and the late edit would put the text back.
+
+#### 8.5.4 The session page's DOM
+
+- **Content markers (W2).** Top-level user bubbles (`.chat.chat-end`) and
+  assistant bubbles with text (`.chat.chat-start`) carry
+  `data-voice-content="user"|"assistant"` and `data-voice-msg={tts_message_id}`.
+  Nested subagent feeds pass `nested` to `message_feed/1` and never mark
+  theirs.
+- **`#voice-view`** (`SessionLive.Show.voice_view/1`, `phx-hook="VoiceView"`)
+  is `hidden voice-view:contents`. Its children become flex items of the chat
+  column and interleave with the feed and the composer through `order`, with
+  nothing moving in the DOM: pager 1, agent strip 2, `#voice-held` 3, feed 4,
+  `#voice-activity` 5, `#voice-rail` 6, composer 7. It carries
+  `data-session-status`, `data-voice-suppressed` and `data-turn-started-at`.
+  It MUST stay a direct child of the chat column, or `display: contents`
+  interleaves with the wrong parent.
+- **Only `phx-update="ignore"` subtrees are written by JS**: `#voice-pager`,
+  the two `[data-voice-elapsed]` clocks, `#voice-held` and `#voice-rail`.
+  Mid-turn this element is patched constantly.
+- **One message on screen is a generated `<style>` in `<head>`**
+  (`currentStyleText` in `voice_view.js`), one per hook INSTANCE so two session
+  pages crossing in a live navigation cannot remove each other's. It is never a
+  class or attribute on feed nodes: the next patch would strip it.
+- **The composer textarea never leaves the DOM.** It is hidden outside
+  `dictating`, and in `dictating` it flexes to fill the screen at 24 px. Leaving
+  the view re-runs Autocomplete's autoresize by hand, because a dictated write
+  into a hidden box leaves an inline `height: 0px`.
+- **The big Clear and Send live INSIDE the composer form** (shown only while
+  dictating). Send is a real `type="submit"` with `name="voice_dictated"
+  value="true"` (C2). It comes after the small Send, which stays the form's
+  default button, and it has no `data-voice-dictated-submit`, so the bar's
+  `requestSubmit` keeps finding the hidden one. Clear is
+  `JS.dispatch("orca:voice-action", detail: %{action: "cancel"})`.
+- **`ScrollToBottom` stands down while `voiceViewShowing()`.** Its
+  follow-to-bottom would fight the view, and its near-the-top
+  `load_older_messages` would page in the whole history: one short element
+  always sits "near the top". The `VoiceView` hook scrolls the current message
+  to its top, and hands the feed back at the bottom on exit.
+- **Everything else on the page is `voice-view:hidden`**: the page header, the
+  side panels, the session prev/next links, the mobile file and terminal
+  modals, the composer extras and the small Send. A live bubble's tool-call
+  chips are hidden too (D5).
+- **The shell's `<main>` is `voice-view:px-2 voice-view:py-2`** (W4,
+  `74b0819`). Its normal 24 px top and bottom padding cost the view 48 px. The
+  rail now ends at y=836 instead of 820, and the dictation box is 676 px tall
+  instead of 644, with no page scroll in either state.
+
+#### 8.5.5 State rules (`assets/js/voice_view.js`)
+
+The rules are pure and node-checked by `voice_view.check.mjs`, gated by
+`OrcaHubWeb.VoiceViewCheckTest`. "Running" means status `running`,
+`compacting` or `waiting`.
+
+0. Suppressed (C1): no state at all, and the layout is removed.
+1. `paging` set, on a key still loaded: `paging`, current = that key. A paged
+   key that leaves the window falls through, and is dropped so it cannot snap
+   back.
+2. The draft holds text: `dictating`, no current message. The agent strip
+   shows while running (D7). The held strip shows if a reply is held.
+3. Running: `working`. Current = the live bubble, else this turn's latest
+   assistant content, else the user's just-sent message.
+4. Otherwise: `reply`, current = the latest content message.
+
+- **The pager** counts "n of N" over the LOADED content messages, plus the live
+  bubble keyed `stream:<id>`. A bubble counts only once a text block in it has
+  text (`8aaa2fa`): it exists from the stream's start, before any text, and
+  tool calls stream into it as chips. Prev at the oldest loaded message pushes
+  the existing `load_older_messages` (only with `data-has-more="true"` and
+  nothing in flight), freezes on the anchor, then steps once the page lands.
+  If the fetched page held no content message, it fetches again. A next that
+  lands where live would be IS live. The pager is hidden while dictating, and
+  Live shows only while paging.
+- **Return to live** on: Live, `orca:voice-speech-start`, `phx:clear-prompt`,
+  or the draft going from EMPTY to non-empty. Editing an existing draft does not
+  count, and neither does a reply arriving, or paging back mid-turn would be
+  impossible.
+- **The elapsed clock** ticks once a second, only in `working`, or in
+  `dictating` while the agent runs. It counts from `data-turn-started-at`, the
+  last top-level user prompt's timestamp from `MessageComponents.voice_turn/1`.
+  If that prompt is outside the loaded window, it counts from when the page
+  first saw the turn running, and the tool count renders as "N+".
+- **Activity** comes from `voice_turn/1`: the current turn's last three
+  top-level tool calls, each done or running, with MCP names shortened
+  (`mcp__orca__run_elixir` reads as `run_elixir`).
+
+#### 8.5.6 The bar in the view (W1)
+
+- **End is THE mic button** (`data-voice-action="toggle"`), restyled to a red
+  pill with an "End" label that is `display:none` everywhere else. It is the
+  same element, the same listener and the same autoplay gesture. A
+  page-rendered End would sit outside `#voice-panel`, and the hook would never
+  hear it.
+- **In the view, End ALWAYS ends, in one press.** ORCAHUB3-91's "this press
+  repairs a stopped mic instead" applies OFF the view only. A button labelled
+  End that re-armed the mic would be a lie on the biggest label on the screen.
+- **Resume** (`data-voice-action="resume"`, bar-rendered, its OWN action) runs
+  `_resume()`. With a channel that means `_reconcileMic()`, under the tap's
+  gesture. When the join itself had failed, it re-runs `_connect()`. It never
+  reaches `_teardown`, so it can never turn voice off. It shows only while
+  `html[data-voice-mic="stopped"]`, as a pure-CSS arbitrary variant.
+- **Hidden in the view:** `?`, the sounds toggle, `#voice-tts-transport` (the
+  page rail takes over), the logo and the control cluster. The picker unclamps
+  into the screen's title. It is still the same `<select>`, so tapping the
+  title retargets. The strip keeps its own full-width line.
+- **C5.** `set_target` (the picker and ONLY the picker) pushes `voice-picked`.
+  Auto-follow (`voice-target`) never does, so a page moving the target can
+  never navigate the page. The hook navigates only when
+  `pickNavigates({flagOn, mediaMatches, pageSessionId, pickedId})` says so. It
+  clicks a hidden `<.link navigate>` (`data-voice-retarget-nav`), never
+  `window.location`. Push events are dispatched after the patch that carried
+  them, so the anchor already names the new session.
+- **CORRECTION: "the channel survives a C5 navigation" means the Capture, the
+  AudioContext and the VAD survive.** The `voice:<id>` channel itself is LEFT
+  and a new one JOINED for the new target, which is §8.2's retarget, by
+  design. Verified: same hook object, same `Capture` and `AudioContext`
+  (`running`), the new channel joined on `voice:<S2>`, and a `window` marker
+  intact, so there was no reload.
+
+#### 8.5.7 Read-aloud in the view (W3)
+
+The decisions live in `assets/js/tts_rail.js` (pure, `tts_rail.check.mjs`,
+gated by `OrcaHubWeb.TtsRailCheckTest`). The DOM writes are in app.js
+`TTSMethods`.
+
+- **The rail (`#voice-rail`).** While anything is queued it is a transport for
+  WHATEVER is being read, not necessarily the message on screen, so paging
+  while a reply reads keeps the pause. It shows "Sentence n of N", a segmented
+  bar capped at 24 segments, prev, a big Pause/Play (amber while reading),
+  next and stop. With nothing queued, it shows a lone big Play in `reply` or
+  `paging` only, and only when the message on screen has a footer and
+  speakable text, and is not the held reply. In every other state it is hidden
+  (D9). The skeleton is written once and updated in place, so a button is
+  never swapped out from under a finger mid-tap.
+- **The held strip (`#voice-held`):** "Reply ready, held while you talk", with
+  Play and dismiss. It is the same `ttsHeld` as the bar's "Reply ready",
+  through the same `ttsPlayHeld` and `ttsDismissHeld`.
+- **Tap-to-jump.** A tap on the text in the voice view plays from the sentence
+  under the finger. The tap is mapped through
+  `caretPositionFromPoint`/`caretRangeFromPoint` and a `Range.comparePoint`
+  against the chunk ranges. If the message is not the one loaded (or was read
+  as it streamed, without ranges), it is prepared fresh (`ttsPrepare`) and
+  started at the tapped chunk. Links, buttons and a text selection keep the
+  tap.
+- **D10, and the release.** `holdReleaseAction` ages the hold from
+  `max(held.at, lastDraftAt)`. `draftActivity` counts only a bubbling `input`
+  that LEAVES text in a draft sink. Dictation counts. The send's own clear
+  does not, or every send would read as fresh activity and defeat the
+  parked-draft window. `orca:voice-sent` releases a hold as well as
+  `phx:clear-prompt`, and where both fire the second is a no-op.
+- **The highlight** is stronger in the view: 40% primary with
+  full-contrast text, at ~22 px, arm's length, often in a car. It is written
+  FLAT. A nested `@variant voice-view { … }` inside the `::highlight()` rule
+  was DEAD in the dev (unminified) build: native CSS nesting cannot make `&`
+  stand for a pseudo-element. Minification flattened it into a working rule in
+  prod. The `@custom-variant` utilities themselves (`voice-view:`,
+  `voice-dictating:` …) compile to nested `@media { html[…] & {…} }` in dev and
+  flat rules when minified, and both apply in Chrome (W4 verified both builds).
+
+#### 8.5.8 Suppression (C1)
+
+`SessionLive.Show.voice_view_suppressed?/1` is true when any of these surfaces
+is on screen. Each clause mirrors that surface's own render condition:
+
+- `node_unavailable`;
+- plan review (`plan_mode == :review`, plan-mode backends);
+- a pi dialog (`pending_ui_request` with `ask_user_question` capability);
+- the AskUserQuestion wizard open (`:waiting`, `aq_open`, `pending_questions`).
+
+Suppressed, the hook drops `data-voice-layout`, `-state` and `-current`, and
+the normal page shows with the question. The mic and the flag stay on.
+Dismissing the surface lifts the suppression and the view returns.
+
+**Observation (2026-10-02, not changed):** after the wizard is DISMISSED
+without an answer, the session is still `waiting`, which counts as running.
+The view therefore shows `working` with a ticking clock and no Play, although
+the turn is over and waiting on the user. That is per the plan's
+running-status set. Whether it should read as `reply` is open.
+
+#### 8.5.9 Measured (getBoundingClientRect, 390x844, both builds)
+
+| State | Header |
+|---|---|
+| Voice view | 68 px |
+| Voice view, mic killed, with the big Resume | 118 px (W1) |
+| The same, with the strip's denied-mic banner + Retry also up | 189 px |
+| Off the view, idle | 48 px, unchanged |
+| Off the view, armed (`/sessions`, and S3 suppressed) | 64 px, unchanged |
+
+Desktop 1280: the voice-view attributes change nothing. Every measured rect
+and the visible-element count are identical with the four attributes stripped.
+
+**OPEN (01a1b00 item 3): `#voice-tts-transport` does NOT fit the header at
+390.** Line 1 is the logo (142) + the cluster (60) + the mic (28) + 8 px gaps,
+which leaves 104 px free with the mic off. The `?` and the sounds toggle (2 ×
+28) take that to 32 px free with the mic on.
+
+| Mic | Transport | Bar width | Header | Budget |
+|---|---|---|---|---|
+| off | "Playing" | 100 px | 48 | 48: fits, flush |
+| off | "Reply ready" | 125 px | **76** | 48: wraps |
+| on | "Playing" | 100 px | **92** | 64: wraps |
+| on | "Reply ready" (induced on the real hook) | 125 px | **92** | 64: wraps |
+
+Inside the voice view the transport is hidden, so the view is unaffected.
+Fixing it needs a design call: hide the wordmark below `sm` while the
+transport shows, or move the transport onto the strip line, or drop the label
+below `sm`.
+
+**Not verifiable headless** (a real-device check is still owed): real audio
+routing and the half-duplex mic release on a phone speaker; OS backgrounding
+and screen lock (simulated with a stopped track plus a refusing
+`getUserMedia`); iOS Safari's tap/click and caret APIs; true touch input
+(clicks were CDP mouse events).
+
+#### 8.5.10 Out of scope in v1
+
+- C3's grey raw-vs-cleaned text;
+- C4's stop-the-agent control;
+- a voice layout on any other page (the Queue page is the natural second, D11);
+- a desktop voice view;
+- spoken stop/pause (phase 3).
+
 ## 9. Known traps
 
 1. **`getUserMedia` requires a SECURE CONTEXT.**
@@ -2066,9 +2412,13 @@ Phases 3, 4 and 5 keep their original numbers; only phase 2 was split, into 2,
 | C3 streaming TTS producer | 2 | §7.3 | — | in progress |
 | C4 global voice bar + single send | 2b | §8.2 | ORCAHUB3-88, ORCAHUB3-86 | in progress |
 | C5 voice-driven interaction | 2c | §8.3 (design notes: §13) | ORCAHUB3-87 | in progress |
+| Autoplay hold + bar transport | 113 phase A | §8.4 (amended by §8.5.7) | ORCAHUB3-113 items 6/7 | landed |
+| Mobile voice view (flag, window events, page DOM, state rules, rail) | 113 phase C | §8.5 | ORCAHUB3-113 | real-page verified 2026-10-02 at `74b0819`; transport width open (§8.5.9) |
 
 Phase-1 contracts are unchanged and remain normative: §8.1 (wire + DOM),
-§5.1.1 (the matcher), §3.2 (the VAD settings).
+§5.1.1 (the matcher), §3.2 (the VAD settings). ORCAHUB3-113's own decisions
+and calls (D1-D11, C1-C5) are named in §8.5. Its C1-C5 are not this table's
+C1-C5.
 
 ## 11. Open questions for the finalizing orchestrator
 
@@ -2120,6 +2470,28 @@ STILL OPEN — all three are human-in-the-loop or a small upstream change:
   (section 6).
 
 ## 12. Changelog
+
+**v0.7 (2026-10-02, ORCAHUB3-113 phase C: the mobile voice view)** — §8.5
+NEW and NORMATIVE. It folds in the plan pinned on the issue (D1-D11, the calls
+C1-C5, the flag/event/DOM contracts, the state rules) with what three parallel
+workers and the integration pass changed:
+
+- `data-voice-mic` grew a `starting` state, so Resume never flashes.
+- End always ends inside the view.
+- Resume is its own action, and re-runs the join when the join failed.
+- The voice view's cancel flushes a debouncing `draft_edit` first.
+- The layout, state and current attributes are published whenever the page is
+  mounted, and are inert off the view.
+- A live bubble counts only once it has text, and its tool chips are hidden.
+- `ScrollToBottom` stands down while the view shows.
+- `<main>` drops its padding in the view (`74b0819`).
+- A C5 retarget re-joins the channel by design; the Capture and the
+  AudioContext are what survive.
+
+§8.4 is amended in place: the D10 hold clock, and `orca:voice-sent` as a
+release. §8.5.9 records the measurements and the still-OPEN 01a1b00 item 3:
+`#voice-tts-transport` wraps the 390 px header in three of four states (76 px
+against 48, 92 against 64). §10.5 gains rows for §8.4 and §8.5.
 
 **v0.6 (2026-09-18, phase 2c integration-verified)** — the contract survived
 contact with a real page, a fake mic and real speech; the amendments here are
