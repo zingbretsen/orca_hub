@@ -799,4 +799,45 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       end
     end
   end
+
+  # Measured at 390x844: #voice-tts-transport wrapped the header row in three
+  # of four states (76 px against 48, 92 against 64). Below `sm` the wordmark
+  # gives way while it shows, and with voice on so does its text label. The
+  # rules are plain CSS on markup the layout and the bar render; these pin
+  # both halves of that seam (the measurement itself is browser-only).
+  describe "the read-aloud transport fits the header row below sm" do
+    @app_css Path.expand("../../../assets/css/app.css", __DIR__)
+
+    test "the wordmark is its own element, the logo image is not inside it", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/projects")
+      doc = Floki.parse_document!(html)
+
+      assert [{"span", _, ["OrcaHub"]}] =
+               Floki.find(doc, "div.h-dvh > header > a[href='/'] > [data-header-wordmark]")
+
+      assert [_img] = Floki.find(doc, "div.h-dvh > header > a[href='/'] > img")
+    end
+
+    test "app.css hides the wordmark while the transport shows, and the label while voice is on" do
+      css = File.read!(@app_css)
+
+      [_, block] = String.split(css, "@media (width < 40rem) {", parts: 2)
+
+      assert block =~
+               "body:has(#voice-tts-transport [data-tts-bar]:not(.hidden)) [data-header-wordmark]"
+
+      assert block =~
+               ~s|body:has([data-voice-action="toggle"][aria-pressed="true"]) #voice-tts-transport [data-tts-bar-label]|
+    end
+
+    test "the transport's label and toggle still carry what those rules key on", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/projects")
+      doc = Floki.parse_document!(html)
+
+      assert [_] =
+               Floki.find(doc, "#voice-tts-transport [data-tts-bar].hidden [data-tts-bar-label]")
+
+      assert [_] = Floki.find(doc, ~s([data-voice-action="toggle"][aria-pressed="false"]))
+    end
+  end
 end

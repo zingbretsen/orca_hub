@@ -87,8 +87,12 @@ defmodule OrcaHubWeb.Layouts do
            utilities match nothing, so the header renders exactly as it did
            before. --%>
       <header class="flex flex-wrap items-center gap-x-2 gap-y-0 px-4 py-2 sm:px-6 lg:px-8 shrink-0">
+        <%!-- `data-header-wordmark`: below `sm` the text gives way while the
+             read-aloud transport is in this row (app.css, next to the TTS
+             highlight rules), or the row wraps past §8.2's 48/64 px. --%>
         <.link navigate={~p"/"} class="flex items-center gap-2 font-semibold voice-view:hidden">
-          <img src={~p"/images/logo.png"} alt="OrcaHub" class="h-8 w-auto" /> OrcaHub
+          <img src={~p"/images/logo.png"} alt="OrcaHub" class="h-8 w-auto" />
+          <span data-header-wordmark>OrcaHub</span>
         </.link>
 
         <nav class="hidden md:flex items-center gap-1 ml-4 mr-auto">

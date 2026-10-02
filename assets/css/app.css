@@ -316,6 +316,30 @@
   }
 }
 
+/* The read-aloud transport (#voice-tts-transport, §8.4) in the header row of
+   a NORMAL page below `sm`. Measured at 390x844, it wrapped the row in three
+   of four states: "Reply ready" with voice off took the header to 76 px
+   (48 budget), and either label with voice on took it to 92 (64 budget).
+   Two space-makers, both only while it would otherwise not fit:
+   - the "OrcaHub" wordmark gives way while the transport shows (the logo
+     image stays);
+   - with voice ON (the mic's aria-pressed IS VoiceBarLive's @voice_on, the
+     same assign that adds "?" and the sounds toggle to this row) the
+     transport's text label goes too. A held reply stays visibly distinct
+     through the play button's warning tint and keeps its title/aria text,
+     so a hold is never invisible (§8.4).
+   Plain CSS keyed on state other code already writes: [data-tts-bar]'s
+   `hidden` class (TTSMethods.ttsRenderBar) and aria-pressed (the server). `sm`
+   and up are unchanged. */
+@media (width < 40rem) {
+  body:has(#voice-tts-transport [data-tts-bar]:not(.hidden)) [data-header-wordmark] {
+    display: none;
+  }
+  body:has([data-voice-action="toggle"][aria-pressed="true"]) #voice-tts-transport [data-tts-bar-label] {
+    display: none;
+  }
+}
+
 /* ==== The session page's voice view (ORCAHUB3-113 phase C) ================
    SessionLive.Show restyles itself into the phone voice view: one message
    on screen, chosen by state (assets/js/voice_view.js). Most of it is
