@@ -9,7 +9,7 @@ defmodule OrcaHub.BackendTest do
   MCP tool access.
   """
 
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias OrcaHub.Backend
   alias OrcaHub.Backend.Capabilities

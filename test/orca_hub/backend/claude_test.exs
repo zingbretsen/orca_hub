@@ -18,7 +18,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
   # async: true is fine — DataCase gives each test its own sandboxed
   # connection, and spawn_spec/2's DB reads (scoped MCP servers) use fresh
   # UUIDs per test so there's no shared state to race on.
-  use OrcaHub.DataCase, async: true
+  use OrcaHub.DataCase, async: false
 
   alias OrcaHub.Backend.Claude, as: Backend
   alias OrcaHub.Claude.Config

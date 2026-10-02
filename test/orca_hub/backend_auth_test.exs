@@ -1,7 +1,7 @@
 defmodule OrcaHub.BackendAuthTest do
   # Uses only tmp-dir fixtures (never a real ~/.codex or ~/.pi/agent), so
   # this is safe to run async alongside everything else.
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias OrcaHub.BackendAuth
 

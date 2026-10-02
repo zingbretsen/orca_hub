@@ -21,7 +21,7 @@ defmodule OrcaHub.Backend.CodexTest do
   # exercising it needs a checked-out sandboxed connection now. Every other
   # test in this file is unaffected: DataCase only adds an unused sandbox
   # connection for tests that don't touch the DB.
-  use OrcaHub.DataCase, async: true
+  use OrcaHub.DataCase, async: false
 
   alias OrcaHub.Backend.Codex, as: Backend
   alias OrcaHub.PromptGolden
