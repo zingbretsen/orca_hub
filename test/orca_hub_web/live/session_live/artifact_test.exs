@@ -82,6 +82,29 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
       assert html =~ artifact.name
     end
 
+    # The desktop column and the mobile modal are both in the DOM, hidden by
+    # CSS only, and a display:none iframe still loads and runs its scripts —
+    # so every view of an artifact fetched and executed it twice.
+    @tag :repro
+    test "ORCAHUB3-130: an open artifact tab renders one loading iframe, not one per desktop/mobile panel",
+         %{conn: conn, session: session, artifact: artifact} do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        "session:#{session.id}",
+        {:open_artifact, artifact.id, "split"}
+      )
+
+      loading_iframes =
+        view
+        |> render()
+        |> Floki.parse_document!()
+        |> Floki.find(~s(iframe[data-artifact-id="#{artifact.id}"][src]))
+
+      assert length(loading_iframes) == 1
+    end
+
     test "the tab panel includes a download link pointed at the download route", %{
       conn: conn,
       session: session,
