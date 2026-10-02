@@ -139,6 +139,27 @@
  *    - The VAD is never fed from a track that is not genuinely live: frames
  *      are dropped for the whole release, and `_reacquireMic` declares
  *      success only on `Capture.live()` — never on a timer.
+ *
+ * 10. THE MOBILE VOICE VIEW (ORCAHUB3-113 phase C). A page that draws a voice
+ *    layout restyles itself full-screen while voice is on, on a phone. This
+ *    hook owns two of the three facts that turn it on (`voice_view_flag.js`):
+ *
+ *    - `html[data-voice-view]` mirrors `this.active` — USER INTENT. Never
+ *      `_micLive()`: an OS-killed mic keeps the view up with a "Tap to
+ *      resume" (D8). Never VoiceBarLive's `voice_on`: that resets on a socket
+ *      remount (ORCAHUB3-91) while the user's intent has not changed.
+ *    - `html[data-voice-mic]` is `voiceMicState()` of our own fields, synced
+ *      wherever the strip's mic line is (`_renderMic`) plus the transitions
+ *      that line never had to show (joining, arming, a pending repair).
+ *
+ *    The view's own controls are page-rendered and cannot reach this hook
+ *    except through window events, so the seam is four of them:
+ *    `orca:voice-ended {viewShowing}` (a USER toggle-off), `orca:voice-sent`
+ *    (the channel's confirmed `"sent"`), `orca:voice-speech-start` (VAD
+ *    onset, unmuted) out; `orca:voice-action {action: "cancel"}` in, which is
+ *    a whitelist of exactly one. End and Resume are NOT page buttons: they
+ *    are bar-rendered inside `#voice-panel`, because only clicks inside
+ *    `this.el` reach `_onClick`, and the mic press is the autoplay gesture.
  */
 
 import { Capture, secureContextProblem, FRAME_SAMPLES } from "./capture"
@@ -154,6 +175,19 @@ import { createVad, VAD_SETTINGS } from "./vad"
 import { draftSinkAction, mapCaret } from "./draft_sync"
 import * as Sounds from "./sounds"
 import { persistSoundsEnabled, soundsEnabled, VoiceSounds } from "./sounds"
+// With its extension, unlike the siblings above: the node check scripts that
+// load this hook resolve its stubbed siblings through a specifier map, and an
+// extensionless path to a module they do NOT stub would not resolve in node.
+// esbuild accepts either spelling.
+import {
+  pickNavigates,
+  setVoiceMic,
+  setVoiceView,
+  voiceMicState,
+  voiceViewFlagOn,
+  voiceViewMediaMatches,
+  voiceViewShowing,
+} from "../voice_view_flag.js"
 
 const DRAFT_DEBOUNCE_MS = 300
 const LOG_LIMIT = 50
@@ -353,8 +387,15 @@ export const VoiceHook = {
     // microphone; the next one turns voice off as usual. Cleared whenever the
     // microphone is actually capturing again.
     this._repairAttempted = false
+    // ORCAHUB3-113: two in-progress states the strip's mic line never had to
+    // name, but `data-voice-mic` does — without them a channel join or a
+    // repair would read as "stopped" and flash the voice view's "Tap to
+    // resume" on every toggle-on and every screen unlock.
+    this._connecting = false
+    this._reconciling = false
 
     this._bindSounds()
+    this._bindVoiceView()
     this._bindDom()
     this._bindWindow()
     this._observeBody()
@@ -404,6 +445,15 @@ export const VoiceHook = {
     })
   },
 
+  /** C5: VoiceBarLive pushes `voice-picked` from its `set_target` handler —
+   * the picker, and ONLY the picker. Auto-follow travels through
+   * `voice-target`, which pushes nothing, so the page moving the target can
+   * never navigate the page. LiveView dispatches push events after the patch
+   * they rode in on, so by now the retarget anchor already points at `id`. */
+  _bindVoiceView() {
+    this.handleEvent("voice-picked", ({ session_id }) => this._onPicked(session_id))
+  },
+
   /** The bar re-rendered: the target may have changed (picker or page), and
    * the strip may have just been inserted. */
   updated() {
@@ -445,6 +495,11 @@ export const VoiceHook = {
     // the cap by a timer whose only job is to repair a page that is gone.
     this._clearMuteWatchdog()
     if (this.sounds) this.sounds.destroy()
+    // `_teardown` already cleared both through `_renderMic`; said again here
+    // because <html> outlives every hook and nothing else would ever take a
+    // stale voice view down.
+    setVoiceView(false)
+    setVoiceMic(null)
     if (window.__orcaVoice === this) delete window.__orcaVoice
   },
 
@@ -453,6 +508,11 @@ export const VoiceHook = {
   /** The mic button: the user gesture that satisfies the autoplay policy. */
   async _toggle() {
     if (this.active) {
+      // ORCAHUB3-113: read BEFORE anything below clears the flag — it says
+      // whether this press was the voice view's End, which also has to stop
+      // a reply being read (D2). Off voice view it is false and changes
+      // nothing.
+      const viewShowing = voiceViewShowing()
       // ORCAHUB3-91: voice is on but the microphone has stopped (the screen
       // was off), and the strip the user is reading says "tap the mic to
       // resume" — so REPAIR on this press instead of switching voice off.
@@ -464,18 +524,27 @@ export const VoiceHook = {
       // so, and there is nothing to repair — so the press does the ordinary
       // thing and switches voice off. Without this guard every reply would
       // silently spend the one repair press the user gets.
-      if (!this._micReleased && !this._micLive() && !this._repairAttempted) {
+      //
+      // ORCAHUB3-113: NOT in the voice view. There this button reads "End",
+      // and the repair has its own control (the bar's Resume, D8) — an End
+      // that re-armed the microphone instead of ending would be a lie on the
+      // biggest label on the screen.
+      if (!viewShowing && !this._micReleased && !this._micLive() && !this._repairAttempted) {
         this._repairAttempted = true
         return this._reconcileMic()
       }
       this._teardown()
       this.active = false
       this.pushEvent("voice-on", { on: false })
+      // A USER toggle-off, and the only place this event is sent from:
+      // `destroyed()` is a page reload, not a decision to stop listening.
+      this._emit("orca:voice-ended", { viewShowing })
       return
     }
 
     this.active = true
     this.pushEvent("voice-on", { on: true })
+    this._syncViewFlags()
 
     // Trap 1: no secure context means navigator.mediaDevices is simply
     // absent, with no error thrown. Say so loudly before anything else
@@ -542,7 +611,20 @@ export const VoiceHook = {
   // ------------------------------------------------------------------ channel
 
   async _connect() {
-    if (!(await this._joinChannel(""))) return
+    this._connecting = true
+    this._syncViewFlags()
+    let joined = false
+    try {
+      joined = await this._joinChannel("")
+    } finally {
+      this._connecting = false
+    }
+    if (!joined) {
+      // Voice is on and nothing will arm: that IS "stopped", and the voice
+      // view's Resume is the way to try again.
+      this._syncViewFlags()
+      return
+    }
     // Joining IS arming on the server (it fires the ASR warm-up
     // immediately); arm the browser half right away too, never on first
     // speech — SPIKE 1 measured 499-809 ms of VAD session init.
@@ -587,6 +669,11 @@ export const VoiceHook = {
         // so no `"sent"` is ever pushed back.
         this.sounds.sent()
         this.sounds.startWaiting()
+        // ORCAHUB3-113: the same confirmed delivery, for the page. It is the
+        // only send signal that exists on BOTH paths — `phx:clear-prompt`
+        // needs a composer, and a `send_direct` from a composer-less page
+        // (/queue) produces none — so the TTS hold release listens here too.
+        this._emit("orca:voice-sent", { sessionId: this.target })
       },
     })
     let reply
@@ -750,6 +837,10 @@ export const VoiceHook = {
       )
     } finally {
       this._arming = false
+      // ORCAHUB3-113: an arm that gave up (permission, a context that needs a
+      // gesture) has to leave "starting" too, or the voice view would wait
+      // for a microphone nothing is still trying to open.
+      this._syncViewFlags()
     }
   },
 
@@ -795,6 +886,8 @@ export const VoiceHook = {
       this._timers.reconcile = null
       this._reconcileMic()
     }, 250)
+    // A repair is now owed and on its way: "starting", not "stopped".
+    this._syncViewFlags()
   },
 
   /** Put the capture pipeline back into the state the UI claims it is in.
@@ -835,32 +928,41 @@ export const VoiceHook = {
       return
     }
 
-    if (this.capture.ctx && this.capture.ctx.state === "suspended") {
-      try {
-        await this.capture.resume()
-      } catch (_e) {
-        /* needs a gesture — the mic button and the "Start listening" fallback
-           are both still there, and `_arm` now repairs rather than refuse */
+    // ORCAHUB3-113: the awaits below leave the mic neither live nor arming
+    // for a moment; `_reconciling` keeps `data-voice-mic` on "starting"
+    // through them rather than flashing the voice view's Resume.
+    this._reconciling = true
+    try {
+      if (this.capture.ctx && this.capture.ctx.state === "suspended") {
+        try {
+          await this.capture.resume()
+        } catch (_e) {
+          /* needs a gesture — the mic button and the "Start listening" fallback
+             are both still there, and `_arm` now repairs rather than refuse */
+        }
       }
-    }
 
-    if (this.capture.live()) {
-      this._hide(this._el('[data-voice-action="start"]'))
-      this._renderStatus()
+      if (this.capture.live()) {
+        this._hide(this._el('[data-voice-action="start"]'))
+        this._renderStatus()
+        this._renderMic()
+        return
+      }
+
+      this.armed = false
+      if (this.vad) {
+        this.vad.destroy()
+        this.vad = null
+      }
+      const dead = this.capture
+      this.capture = null
       this._renderMic()
-      return
+      await dead.stop()
+      await this._arm()
+    } finally {
+      this._reconciling = false
+      this._syncViewFlags()
     }
-
-    this.armed = false
-    if (this.vad) {
-      this.vad.destroy()
-      this.vad = null
-    }
-    const dead = this.capture
-    this.capture = null
-    this._renderMic()
-    await dead.stop()
-    await this._arm()
   },
 
   // ------------------------------------------------------------------- audio
@@ -882,6 +984,10 @@ export const VoiceHook = {
     // completes. The server cancels it too; this is the local, zero-latency half.
     this._setArming(null)
     this.channel && this.channel.push("speech_start", {})
+    // ORCAHUB3-113 D6: talking takes a paged-back voice view back to live.
+    // Not while muted: the VAD is paused then, and an onset that slipped
+    // through would be the assistant's own voice, not the user's.
+    if (!this.muted) this._emit("orca:voice-speech-start", {})
   },
 
   async _onSpeechEnd({ audio, endSample, forced }) {
@@ -1643,6 +1749,11 @@ export const VoiceHook = {
     if (this.active !== this._serverVoiceOn()) {
       this.pushEvent("voice-on", { on: this.active })
     }
+    // ORCAHUB3-113: the voice view follows `this.active`, never the remounted
+    // bar's `voice_on: false`. <html> is outside every LiveView root, so the
+    // remount cannot have cleared it; this re-states it anyway, so the flag
+    // is provably derived from intent rather than surviving by accident.
+    this._syncViewFlags()
   },
 
   /** Re-read the page: which session it is showing, and whether it carries a
@@ -1871,6 +1982,10 @@ export const VoiceHook = {
   },
 
   _renderMic() {
+    // FIRST, ahead of the early return: the strip is absent whenever the bar
+    // thinks voice is off (and right after a remount), but <html> is always
+    // there and the voice view reads it, not the strip.
+    this._syncViewFlags()
     const el = this._el("[data-voice-mic]")
     if (!el) return
     const serverMuted = this.state && this.state.muted
@@ -1884,8 +1999,98 @@ export const VoiceHook = {
     else if (this._micLive()) el.textContent = "mic: listening"
     // ORCAHUB3-91: armed-but-not-live is the state that used to render as
     // "listening" while nothing was being captured.
-    else if (this.armed) el.textContent = "mic: stopped — tap the mic to resume"
+    //
+    // ORCAHUB3-113: in the voice view the mic button reads "End" and ENDS
+    // (see `_toggle`), so "tap the mic" would point at the wrong control; the
+    // big Resume right below says the rest.
+    else if (this.armed)
+      el.textContent = voiceViewShowing() ? "mic: stopped" : "mic: stopped — tap the mic to resume"
     else el.textContent = "mic: not armed"
+  },
+
+  /** ORCAHUB3-113: write `html[data-voice-view]` / `html[data-voice-mic]` from
+   * the hook's own fields. Idempotent and cheap (two attribute writes), so it
+   * is called wherever one of its inputs moves rather than tracked as a diff.
+   * Tolerates a fake `document` with no `documentElement` (the node checks
+   * drive slices of this hook against minimal fakes). */
+  _syncViewFlags() {
+    setVoiceView(this.active)
+    setVoiceMic(
+      voiceMicState({
+        active: this.active,
+        released: this._micReleased,
+        live: this._micLive(),
+        starting: !!(
+          this._connecting ||
+          this._arming ||
+          this._reconciling ||
+          this._reacquiring ||
+          (this._timers && this._timers.reconcile)
+        ),
+      })
+    )
+  },
+
+  /** D8's Resume, the voice view's bar-rendered "Tap to resume".
+   *
+   * The repair half of the mic button's press, WITHOUT the other half: it
+   * never turns voice off (it cannot reach `_teardown`) and never turns it on
+   * (it does nothing unless voice is already on). It is a click, so the
+   * `AudioContext.resume()` inside `_reconcileMic` runs under the gesture a
+   * phone needs after backgrounding. A failed join left no channel to repair
+   * a microphone for, so that case re-runs the toggle's own connect path. */
+  _resume() {
+    if (!this.active || this._micReleased) return
+    if (secureContextProblem()) return
+    if (!this.channel) return this._connect()
+    return this._reconcileMic()
+  },
+
+  /** The one cancel path, behind both `data-voice-action="cancel"` and the
+   * voice view's `orca:voice-action {action: "cancel"}` (its big Clear).
+   *
+   * §8.3.11: the sink is NOT emptied optimistically. The server answers
+   * every clearing cancel with `"cancelled"`, and that handler is the single
+   * place that captures the sink's text before wiping it — clearing here
+   * first would throw away the very copy the restore affordance depends on.
+   *
+   * A `draft_edit` still debouncing is FLUSHED first. The server only clears
+   * (and only answers) a draft it holds, so a Clear pressed within 300 ms of
+   * typing would otherwise reach a server that has nothing to clear, and the
+   * late edit would land after it and put the text back. */
+  _cancel() {
+    if (this._timers.draft) {
+      const el = this._draftEl()
+      this._pushDraftEdit(el ? el.value : "")
+    }
+    this._setArming(null)
+    this.channel && this.channel.push("cancel", {})
+  },
+
+  /** C5: a MANUAL picker retarget on a phone in voice mode shows the session
+   * being talked to. Live navigation through a hidden `<.link navigate>`
+   * (`data-voice-retarget-nav`), exactly like §8.3.9's nav anchors — never
+   * `window.location`, which would reload the document and take the mic,
+   * the AudioContext and the channel down with it. */
+  _onPicked(id) {
+    const go = pickNavigates({
+      flagOn: voiceViewFlagOn(),
+      mediaMatches: voiceViewMediaMatches(),
+      pageSessionId: document.body.dataset.voiceComposerFor || null,
+      pickedId: id || null,
+    })
+    if (!go) return
+    const anchor = this.el.querySelector(`[data-voice-retarget-nav="${esc(id)}"]`)
+    // A missing anchor is a no-op ON PURPOSE, as in `_uiNavigate`.
+    if (anchor) anchor.click()
+  },
+
+  /** A `CustomEvent` on `window` — the voice view's seam (see the header,
+   * item 10). Guarded because the node checks run slices of this hook against
+   * a `window` with no `dispatchEvent`. */
+  _emit(name, detail) {
+    if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return
+    window.dispatchEvent(new CustomEvent(name, { detail }))
   },
 
   /** §8.3.11: `kind` is "send" or "cancel" — the countdown belongs to either
@@ -2055,15 +2260,11 @@ export const VoiceHook = {
         // both are still pushed from elsewhere in this hook.
         if (action === "toggle") this._toggle()
         else if (action === "send") this.channel && this.channel.push("send_now", {})
-        else if (action === "cancel") {
-          // §8.3.11: the sink is NOT emptied optimistically any more. The
-          // server answers every clearing cancel with `"cancelled"`, and
-          // that handler is the single place that captures the sink's text
-          // before wiping it — clearing here first would throw away the very
-          // copy the restore affordance depends on.
-          this._setArming(null)
-          this.channel && this.channel.push("cancel", {})
-        } else if (action === "start") this._arm()
+        else if (action === "cancel") this._cancel()
+        // ORCAHUB3-113 D8: the voice view's Resume. A distinct action, never
+        // "toggle" — the toggle's second press turns voice OFF.
+        else if (action === "resume") this._resume()
+        else if (action === "start") this._arm()
         else if (action === "retry") this.channel && this.channel.push("retry_warmup", {})
         else if (action === "restore") {
           // It sits inside the <details> summary; a bare click would toggle
@@ -2110,6 +2311,7 @@ export const VoiceHook = {
    *   orca:tts-state         half-duplex, §8.1
    *   orca:composer-*        optional aliases, in case a future page wants to
    *                          report a send that is not a `clear-prompt`
+   *   orca:voice-action      ORCAHUB3-113 — the voice view's Clear (cancel only)
    *   visibilitychange       ORCAHUB3-91 — the screen came back on
    *   pageshow               ...and the bfcache restore that fires instead
    *
@@ -2137,6 +2339,13 @@ export const VoiceHook = {
         this._reconcileMic()
       }
     }
+    // ORCAHUB3-113: the voice view's page-rendered controls asking this hook
+    // to act. A WHITELIST, of one: anything else a page dispatches here is
+    // ignored, so the page can never drive the mic, the toggle or a send.
+    this._onVoiceAction = (e) => {
+      const action = e && e.detail && e.detail.action
+      if (action === "cancel") this._cancel()
+    }
 
     this._windowEvents = [
       ["orca:tts-state", this._onTtsState],
@@ -2149,6 +2358,7 @@ export const VoiceHook = {
       ["phx:page-loading-stop", this._onPageLoaded],
       ["visibilitychange", this._onVisible],
       ["pageshow", this._onVisible],
+      ["orca:voice-action", this._onVoiceAction],
     ]
     this._windowEvents.forEach(([name, fn]) => window.addEventListener(name, fn))
   },
@@ -2252,6 +2462,12 @@ export const VoiceHook = {
         this._playbackIdleSince === null ? null : Date.now() - this._playbackIdleSince,
       target: this.target,
       composerPresent: this.composerPresent,
+      // ORCAHUB3-113: the voice view as the page sees it — the flag this hook
+      // writes, whether the view is actually on screen, and the mic state
+      // that decides whether its Resume shows.
+      voiceView: voiceViewFlagOn(),
+      voiceViewShowing: voiceViewShowing(),
+      voiceMic: document.documentElement.dataset.voiceMic || null,
       asrBusy: this._asrBusy,
       frameSamples: FRAME_SAMPLES,
       vadSettings: VAD_SETTINGS,

@@ -75,6 +75,38 @@ export function voiceViewMediaMatches(win) {
   return !!(w && typeof w.matchMedia === "function" && w.matchMedia(VOICE_VIEW_MEDIA).matches)
 }
 
+/* `data-voice-mic`, derived — never latched. The inputs are the Voice hook's
+ * own fields, read at each transition that already re-renders the strip.
+ *
+ * The one distinction that matters is "stopped" versus "starting", because
+ * "stopped" puts a big "Tap to resume" over the voice view (D8): any state the
+ * hook is still working its way out of by itself — joining the channel,
+ * arming, the 250 ms coalesced repair, the repair itself, a release being
+ * handed back — is "starting", or that button would flash on every toggle-on
+ * and every screen unlock. "stopped" is what is left: voice is on, nothing is
+ * capturing, and nothing is trying to — only a tap can bring it back.
+ *
+ * `live` outranks `starting`: if audio is flowing, the mic is live, whatever
+ * else is in flight. `released` outranks both, because a deliberate release
+ * (ORCAHUB3-105) is not a failure and must never read as one. */
+export function voiceMicState({ active, released, live, starting } = {}) {
+  if (!active) return null
+  if (released) return "released"
+  if (live) return "live"
+  if (starting) return "starting"
+  return "stopped"
+}
+
+/* C5: after a MANUAL picker retarget, does the screen follow? Only in voice
+ * mode on a phone, and never to the page already on screen (that would be a
+ * pointless navigation that re-mounts the page under the user). Auto-follow
+ * never asks this at all: it is the PAGE moving the target, so the page is
+ * already the one being shown. */
+export function pickNavigates({ flagOn, mediaMatches, pageSessionId, pickedId } = {}) {
+  if (!flagOn || !mediaMatches || !pickedId) return false
+  return pageSessionId !== pickedId
+}
+
 /* Is the voice view actually on screen right now? Exactly the CSS variant's
  * condition, evaluated from JS: flag on, a page layout present, phone width.
  * A false here means the user is looking at a normal page (desktop, or a

@@ -615,4 +615,170 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       Phoenix.PubSub.broadcast(OrcaHub.PubSub, "session:#{session_id}", payload)
     end
   end
+
+  # ORCAHUB3-113 phase C. Everything the bar does for the mobile voice view is
+  # a `voice-view:` utility (the custom variant in app.css: phone width +
+  # html[data-voice-view] + html[data-voice-layout]), so what is pinnable here
+  # is the MARKUP: which element carries which variant, that the new controls
+  # are display:none by default, and the one server-side piece (C5's push).
+  # Whether the CSS then hides/restyles the right things at 390 px is a
+  # browser question — W4's real-page check — and the hook half is gated by
+  # `OrcaHubWeb.VoiceViewFlagCheckTest`.
+  describe "the mobile voice view (ORCAHUB3-113)" do
+    defp class_of(doc, selector) do
+      doc |> Floki.find(selector) |> Floki.attribute("class") |> List.first() || ""
+    end
+
+    defp tokens(class), do: String.split(class)
+
+    defp voice_view_bar(conn) do
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+      {bar, render_hook(bar, "voice-on", %{"on" => true})}
+    end
+
+    test "the mic button IS the End pill — same toggle element, restyled only in the view",
+         %{conn: conn} do
+      {_bar, html} = voice_view_bar(conn)
+      doc = Floki.parse_document!(html)
+
+      # Exactly one toggle: End is not a second button (the hook's click
+      # listener and the autoplay gesture both live on this one).
+      assert [_] = Floki.find(doc, "[data-voice-action='toggle']")
+
+      [label] = Floki.find(doc, "[data-voice-action='toggle'] [data-voice-end-label]")
+      assert Floki.text(label) =~ "End"
+      label_class = label |> Floki.attribute("class") |> List.first()
+
+      assert "hidden" in tokens(label_class),
+             "the End label must be display:none outside the voice view"
+
+      assert "voice-view:inline" in tokens(label_class)
+
+      # Every class the voice view added to the mic is behind the variant, so
+      # off the voice view the button renders exactly as before.
+      mic = class_of(doc, "[data-voice-action='toggle']")
+
+      for token <- tokens(mic),
+          token not in ~w(btn btn-ghost btn-sm btn-circle shrink-0 text-primary) do
+        assert String.starts_with?(token, "voice-view:"),
+               "the mic gained #{inspect(token)}, which applies OFF the voice view too"
+      end
+
+      assert "voice-view:text-error" in tokens(mic)
+    end
+
+    test "help, sounds and the read-aloud transport are hidden in the view", %{conn: conn} do
+      {_bar, html} = voice_view_bar(conn)
+      doc = Floki.parse_document!(html)
+
+      for selector <- ~w([data-voice-help-toggle] [data-voice-sounds-toggle] #voice-tts-transport) do
+        assert "voice-view:hidden" in tokens(class_of(doc, selector)),
+               "#{selector} must be voice-view:hidden"
+      end
+
+      # The transport is hidden on its WRAPPER: app.js owns (and toggles) the
+      # inner [data-tts-bar]'s `hidden` class, and the wrapper keeps the
+      # phx-update="ignore" the transport depends on.
+      refute class_of(doc, "[data-tts-bar]") =~ "voice-view:"
+      assert Floki.attribute(Floki.find(doc, "#voice-tts-transport"), "phx-update") == ["ignore"]
+    end
+
+    test "the picker becomes the title and the strip keeps its own line", %{conn: conn} do
+      {_bar, html} = voice_view_bar(conn)
+      doc = Floki.parse_document!(html)
+
+      assert "voice-view:contents" in tokens(class_of(doc, "#voice-bar-strip-row"))
+      assert "voice-view:flex-1" in tokens(class_of(doc, "form[phx-change='set_target']"))
+      assert "voice-view:basis-full" in tokens(class_of(doc, "#voice-strip"))
+
+      select = class_of(doc, "select[name='session_id']")
+      assert "voice-view:font-semibold" in tokens(select)
+      # §8.2's 16 px clamp is untouched off the voice view.
+      assert "h-4" in tokens(select)
+
+      # Everything the strip carries is still there in the view (status,
+      # arming, restore, errors, retry) — the restyle hides none of it.
+      for selector <-
+            ~w([data-voice-status] [data-voice-arming] [data-voice-error]) ++
+              ["[data-voice-action='restore']", "[data-voice-action='retry']"] do
+        assert [_] = Floki.find(doc, "#voice-strip " <> selector), "missing #{selector}"
+        refute class_of(doc, "#voice-strip " <> selector) =~ "voice-view:hidden"
+      end
+    end
+
+    test "Resume (D8) is its own action, display:none unless the view's mic is stopped",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+
+      # §8.2's idle budget: nothing but the mic while voice is off.
+      refute render(bar) =~ ~s(data-voice-action="resume")
+
+      doc = bar |> render_hook("voice-on", %{"on" => true}) |> Floki.parse_document!()
+
+      [resume] = Floki.find(doc, "#voice-panel [data-voice-action='resume']")
+      assert Floki.text(resume) =~ "Tap to resume"
+
+      class = resume |> Floki.attribute("class") |> List.first()
+      assert "hidden" in tokens(class)
+      # Shown only by the voice-view variant AND the hook-maintained
+      # html[data-voice-mic="stopped"] — never by a released mic.
+      assert "voice-view:[&:where(html[data-voice-mic=stopped]_*)]:inline-flex" in tokens(class)
+
+      # It must never be the toggle: the toggle's second press turns voice OFF.
+      assert Floki.find(doc, "[data-voice-action='toggle'] [data-voice-action='resume']") == []
+    end
+
+    test "C5: a MANUAL pick pushes voice-picked and points a live-nav anchor at it",
+         %{conn: conn} do
+      session = new_session(%{title: "picked in voice view"})
+      {bar, _html} = voice_view_bar(conn)
+
+      html =
+        render_change(form(bar, "form[phx-change='set_target']"), %{"session_id" => session.id})
+
+      assert_push_event(bar, "voice-picked", %{session_id: id})
+      assert id == session.id
+
+      [anchor] =
+        html
+        |> Floki.parse_document!()
+        |> Floki.find("[data-voice-retarget-nav='#{session.id}']")
+
+      # Live navigation, never a reload: a `<.link navigate>` renders
+      # data-phx-link="redirect", which LiveView's click listener routes
+      # through the socket so the sticky bar (and the mic) survive.
+      assert Floki.attribute(anchor, "href") == ["/sessions/#{session.id}"]
+      assert Floki.attribute(anchor, "data-phx-link") == ["redirect"]
+      assert "hidden" in tokens(anchor |> Floki.attribute("class") |> List.first())
+    end
+
+    test "C5: auto-follow from the page moves the target but never asks to navigate",
+         %{conn: conn} do
+      session = new_session(%{title: "followed, not picked"})
+      {bar, _html} = voice_view_bar(conn)
+
+      html = render_hook(bar, "voice-target", %{"session_id" => session.id})
+      assert html =~ ~s(data-target-session-id="#{session.id}")
+
+      refute_push_event(bar, "voice-picked", %{}, 200)
+    end
+
+    test "the rest of the header is hidden in the view, and only there", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/projects")
+      doc = Floki.parse_document!(html)
+
+      logo = class_of(doc, "div.h-dvh > header > a[href='/']")
+      assert "voice-view:hidden" in tokens(logo)
+
+      # The control cluster (search, burger, node filter, theme).
+      cluster = class_of(doc, "div.h-dvh > header > div.ml-auto")
+      assert "voice-view:hidden" in tokens(cluster)
+
+      for class <- [logo, cluster], token <- tokens(class), token =~ "voice-view" do
+        assert token == "voice-view:hidden"
+      end
+    end
+  end
 end

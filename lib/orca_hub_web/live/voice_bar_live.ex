@@ -62,6 +62,28 @@ defmodule OrcaHubWeb.VoiceBarLive do
     * `"refresh_sessions"` — the picker was focused; re-read the list rather
       than re-querying on every session status broadcast.
 
+  ## The mobile voice view (ORCAHUB3-113 phase C)
+
+  On a phone, a page that draws a voice layout turns full-screen while voice
+  is on. The bar's half of that is a RESTYLE, never a second set of controls:
+  everything below is a `voice-view:` utility (the custom variant in
+  `app.css`: phone width + `html[data-voice-view]` + `html[data-voice-layout]`),
+  so off the voice view — desktop, or any page without a layout — nothing
+  here renders any differently. In it:
+
+    * the mic button is the red "End" pill — the same `toggle` element, so
+      the same gesture and the same click listener;
+    * "?", the sounds toggle and `#voice-tts-transport` are hidden (the page
+      rail takes over the transport), and so is the rest of the header
+      (`OrcaHubWeb.Layouts`);
+    * the picker is the screen's title, the strip keeps its own line;
+    * a big "Tap to resume" (D8) shows while `html[data-voice-mic="stopped"]`.
+
+  One server-side piece: `set_target` (the picker, a MANUAL choice) pushes
+  `voice-picked`, which the hook answers on a phone in voice mode by
+  live-navigating to that session (C5). `voice-target` (auto-follow) never
+  pushes it.
+
   ## The target session's turn state (ORCAHUB3-93)
 
   The waiting tick has to follow the TARGET session's turn, not whatever page
@@ -212,8 +234,20 @@ defmodule OrcaHubWeb.VoiceBarLive do
 
   def handle_event("set_target", %{"session_id" => ""}, socket), do: {:noreply, socket}
 
+  # The picker — and only the picker — also pushes `voice-picked`
+  # (ORCAHUB3-113 C5): on a phone in voice mode the hook follows a MANUAL
+  # retarget onto that session's page. Auto-follow arrives as `voice-target`
+  # above and deliberately pushes nothing, so a page moving the target can
+  # never navigate the page. Whether to navigate at all (voice view flag,
+  # phone width, not already there) is the client's call; this only says
+  # that the user chose.
   def handle_event("set_target", %{"session_id" => id}, socket) do
-    {:noreply, socket |> assign(:target_session_id, id) |> ensure_listed(id) |> watch_turn(id)}
+    {:noreply,
+     socket
+     |> assign(:target_session_id, id)
+     |> ensure_listed(id)
+     |> watch_turn(id)
+     |> push_event("voice-picked", %{session_id: id})}
   end
 
   def handle_event("refresh_sessions", _params, socket) do
@@ -300,22 +334,39 @@ defmodule OrcaHubWeb.VoiceBarLive do
       <%!-- The mic is ALWAYS rendered and always clickable: it is the user
            gesture (sticky activation) that lets the hook resume a suspended
            AudioContext at all — spec §9 trap 2. A bar that renders its mic
-           only once voice is already on cannot be turned on. --%>
+           only once voice is already on cannot be turned on.
+
+           ORCAHUB3-113 D2: in the mobile voice view this SAME element is the
+           red "End" pill — same `data-voice-action="toggle"`, same click
+           listener, purely a `voice-view:` restyle plus a label that is
+           display:none everywhere else. A second, page-rendered End would sit
+           outside `#voice-panel`, where the hook's click listener never
+           hears it. --%>
       <button
         type="button"
         data-voice-action="toggle"
         aria-pressed={to_string(@voice_on)}
-        class={["btn btn-ghost btn-sm btn-circle shrink-0", @voice_on && "text-primary"]}
+        class={[
+          "btn btn-ghost btn-sm btn-circle shrink-0",
+          @voice_on && "text-primary",
+          "voice-view:w-auto voice-view:gap-1.5 voice-view:pl-2.5 voice-view:pr-3.5 voice-view:h-9",
+          "voice-view:bg-error/15 voice-view:text-error voice-view:font-semibold"
+        ]}
         title={if @voice_on, do: "Turn off voice mode", else: "Turn on voice mode"}
       >
         <.icon name="hero-microphone" class="size-5" />
+        <span data-voice-end-label class="hidden voice-view:inline">End</span>
       </button>
 
       <%!-- §8.3.10's help trigger. It is a SIBLING of the mic in the same
            header flex row, so it costs width and exactly zero height, and it
            only exists while voice is on — §8.2's idle budget is "the mic
            button and nothing else", and the vocabulary is unusable until the
-           channel is joined anyway. --%>
+           channel is joined anyway.
+
+           Hidden in the voice view (ORCAHUB3-113), as are the sounds toggle
+           and the transport below: that header is End, the session title and
+           the strip, nothing else. "orca help" still opens the panel. --%>
       <button
         :if={@voice_on}
         type="button"
@@ -323,7 +374,10 @@ defmodule OrcaHubWeb.VoiceBarLive do
         aria-expanded={to_string(@help_open)}
         aria-controls="voice-help"
         data-voice-help-toggle
-        class={["btn btn-ghost btn-sm btn-circle shrink-0", @help_open && "text-primary"]}
+        class={[
+          "btn btn-ghost btn-sm btn-circle shrink-0 voice-view:hidden",
+          @help_open && "text-primary"
+        ]}
         title="What can I say?"
       >
         <.icon name="hero-question-mark-circle" class="size-5" />
@@ -339,7 +393,10 @@ defmodule OrcaHubWeb.VoiceBarLive do
         phx-click="toggle_sounds"
         aria-pressed={to_string(@sounds_on)}
         data-voice-sounds-toggle
-        class={["btn btn-ghost btn-sm btn-circle shrink-0", @sounds_on && "text-primary"]}
+        class={[
+          "btn btn-ghost btn-sm btn-circle shrink-0 voice-view:hidden",
+          @sounds_on && "text-primary"
+        ]}
         title={
           if @sounds_on,
             do: "Sounds on: a chime when a spoken message is sent, a tick while it is answered",
@@ -370,8 +427,13 @@ defmodule OrcaHubWeb.VoiceBarLive do
 
            Item 7's HELD state renders here too ("Reply ready"): an autoplay
            that declines to start while the user is writing must never be
-           silent, so the thing that did not speak is always one tap away. --%>
-      <div id="voice-tts-transport" phx-update="ignore" class="contents">
+           silent, so the thing that did not speak is always one tap away.
+
+           ORCAHUB3-113: hidden in the voice view, whose page rail
+           (`#voice-rail`) and held strip (`#voice-held`) carry both jobs at
+           full size. Hidden on THIS wrapper rather than on `[data-tts-bar]`,
+           whose `hidden` class app.js owns and toggles. --%>
+      <div id="voice-tts-transport" phx-update="ignore" class="contents voice-view:hidden">
         <div data-tts-bar class="hidden items-center gap-0.5 shrink-0">
           <span
             data-tts-bar-label
@@ -410,6 +472,23 @@ defmodule OrcaHubWeb.VoiceBarLive do
         aria-hidden="true"
       >
         {path}
+      </.link>
+
+      <%!-- ORCAHUB3-113 C5: the same trick for the picker. After a MANUAL
+           retarget (`set_target` pushes `voice-picked`) on a phone in voice
+           mode, the hook clicks this so the screen shows the session being
+           talked to. It always points at the CURRENT target; push events are
+           dispatched after the patch that carried them, so by the time the
+           hook hears `voice-picked` this already names the new session. --%>
+      <.link
+        :if={@voice_on && @target_session_id}
+        navigate={~p"/sessions/#{@target_session_id}"}
+        data-voice-retarget-nav={@target_session_id}
+        class="hidden"
+        tabindex="-1"
+        aria-hidden="true"
+      >
+        session
       </.link>
 
       <%!-- §8.3.10's panel. Two things keep it inside §8.2's budget: while
@@ -477,20 +556,36 @@ defmodule OrcaHubWeb.VoiceBarLive do
 
       <%!-- The second line, and the ONLY thing voice mode costs vertically.
            `basis-full` wraps it below the header row; the header's `gap-y-0`
-           keeps the wrap itself free. --%>
+           keeps the wrap itself free.
+
+           ORCAHUB3-113: in the voice view this row DISSOLVES
+           (`voice-view:contents`), the same `display: contents` trick that
+           puts the bar in the header at all. Its two children become header
+           items: the picker grows into the session title on the End pill's
+           line, and `#voice-strip` takes the full-width line below. --%>
       <div
         :if={@voice_on}
         id="voice-bar-strip-row"
-        class="basis-full w-full min-w-0 flex items-center gap-2 text-xs"
+        class="basis-full w-full min-w-0 flex items-center gap-2 text-xs voice-view:contents"
       >
         <%!-- Height-clamped on purpose: a stock `select-xs` is 24px and would
-             blow §8.2's 16px budget on its own. --%>
-        <form phx-change="set_target" class="shrink-0 flex">
+             blow §8.2's 16px budget on its own. The voice view has no such
+             budget (the whole screen is voice), so there it unclamps into
+             the screen's title — still the same <select>, so tapping the
+             title IS retargeting. --%>
+        <form
+          phx-change="set_target"
+          class="shrink-0 flex voice-view:flex-1 voice-view:min-w-0"
+        >
           <select
             name="session_id"
             phx-focus="refresh_sessions"
             aria-label="Voice target session"
-            class="select select-ghost h-4 min-h-0 py-0 pl-1 pr-5 text-[11px] leading-none max-w-[9rem] border-0 focus:outline-none"
+            class={[
+              "select select-ghost h-4 min-h-0 py-0 pl-1 pr-5 text-[11px] leading-none max-w-[9rem] border-0 focus:outline-none",
+              "voice-view:h-9 voice-view:w-full voice-view:max-w-none voice-view:pr-7",
+              "voice-view:text-[15px] voice-view:font-semibold"
+            ]}
           >
             <option :if={is_nil(@target_session_id)} value="">pick a session…</option>
             <option
@@ -507,7 +602,11 @@ defmodule OrcaHubWeb.VoiceBarLive do
              contract: same `data-voice-*` selectors, same hidden-by-default
              children, same native <details> log. phx-update="ignore" is what
              lets the hook write here without LiveView patching it back. --%>
-        <div id="voice-strip" phx-update="ignore" class="min-w-0 flex-1 flex flex-col gap-1">
+        <div
+          id="voice-strip"
+          phx-update="ignore"
+          class="min-w-0 flex-1 flex flex-col gap-1 voice-view:basis-full"
+        >
           <%!-- §9 trap 1: no secure context means navigator.mediaDevices is
                simply absent, with no error thrown. The hook fills this in. --%>
           <div data-voice-banner class="hidden alert alert-error py-1 text-xs"></div>
@@ -586,6 +685,30 @@ defmodule OrcaHubWeb.VoiceBarLive do
           </button>
         </div>
       </div>
+
+      <%!-- ORCAHUB3-113 D8: the voice view's "Tap to resume". When the OS
+           takes the microphone (a phone backgrounded), the view STAYS — it
+           follows the user's intent, not the mic — and this is how the mic
+           comes back. Display:none everywhere except the voice view with
+           `html[data-voice-mic="stopped"]`; a deliberate release during
+           playback ("released", ORCAHUB3-105) is not a failure and shows
+           nothing. Pure CSS off two <html> attributes the hook maintains, so
+           no LiveView patch can fight it.
+
+           Bar-rendered inside `#voice-panel` because the hook's click
+           listener is bound there. Its own action, never "toggle": the
+           toggle's second press turns voice OFF, and Resume must never. --%>
+      <button
+        :if={@voice_on}
+        type="button"
+        data-voice-action="resume"
+        class={[
+          "hidden btn btn-warning btn-lg basis-full w-full mt-2 gap-2",
+          "voice-view:[&:where(html[data-voice-mic=stopped]_*)]:inline-flex"
+        ]}
+      >
+        <.icon name="hero-microphone" class="size-6" /> Tap to resume
+      </button>
     </div>
     """
   end

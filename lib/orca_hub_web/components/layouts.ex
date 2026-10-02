@@ -77,9 +77,17 @@ defmodule OrcaHubWeb.Layouts do
            line while voice mode is on, and a row gap would charge that wrap
            8px it does not have to spare (voice_mode_spec.md §8.2's 16px
            budget). Nothing else in this header wraps, so `gap-x-2` is the
-           old `gap-2` exactly. --%>
+           old `gap-2` exactly.
+
+           ORCAHUB3-113: in the mobile voice view (the `voice-view:` variant,
+           app.css) the header is the voice bar's controls and nothing else,
+           so the logo and the control cluster are `voice-view:hidden`. The
+           desktop nav needs no rule: it is `hidden md:flex`, already gone at
+           every width the variant applies to. Off the voice view these
+           utilities match nothing, so the header renders exactly as it did
+           before. --%>
       <header class="flex flex-wrap items-center gap-x-2 gap-y-0 px-4 py-2 sm:px-6 lg:px-8 shrink-0">
-        <.link navigate={~p"/"} class="flex items-center gap-2 font-semibold">
+        <.link navigate={~p"/"} class="flex items-center gap-2 font-semibold voice-view:hidden">
           <img src={~p"/images/logo.png"} alt="OrcaHub" class="h-8 w-auto" /> OrcaHub
         </.link>
 
@@ -91,7 +99,7 @@ defmodule OrcaHubWeb.Layouts do
           <.settings_nav_dropdown links={@settings_menu_links} />
         </nav>
 
-        <div class="flex items-center gap-1 sm:gap-2 ml-auto">
+        <div class="flex items-center gap-1 sm:gap-2 ml-auto voice-view:hidden">
           <.node_filter_opener
             :if={assigns[:node_filter_visible]}
             filter={assigns[:node_filter] || :all}
