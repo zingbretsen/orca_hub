@@ -170,8 +170,9 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             "data" => %{
               "type" => "object",
               "description" =>
-                "Optional live-data snapshot, a JSON object, served to the page as " <>
-                  "`window.ORCA_DATA`. Seeds a new artifact's data; on an existing one it " <>
+                "Optional live-data snapshot, a JSON object, served to an html page as " <>
+                  "`window.ORCA_DATA`; svg and markdown pages never see it. Seeds a new " <>
+                  "artifact's data; on an existing one it " <>
                   "REPLACES the stored snapshot, like update_artifact_data. Omit it to keep " <>
                   "the stored data. save_artifact never writes the reserved `_user_state` " <>
                   "key: the stored user state is kept, and a `_user_state` key here is " <>
@@ -853,8 +854,19 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
   end
 
   defp save_warnings(save, attached) do
-    user_state_warnings(save.data) ++ content_warnings(save.content, attached)
+    unrendered_data_warnings(save) ++
+      user_state_warnings(save.data) ++ content_warnings(save.content, attached)
   end
+
+  # Render.body/1 injects window.ORCA_DATA into html pages only.
+  defp unrendered_data_warnings(%{data: data, kind: kind}) when is_map(data) and kind != "html" do
+    [
+      "`data` was stored (visible via get_artifact), but a #{kind} page never " <>
+        "receives it: only kind html gets window.ORCA_DATA."
+    ]
+  end
+
+  defp unrendered_data_warnings(_save), do: []
 
   defp user_state_warnings(%{"_user_state" => _}) do
     [

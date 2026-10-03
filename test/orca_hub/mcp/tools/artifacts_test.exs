@@ -305,6 +305,24 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
       assert Artifacts.get_artifact_by_name(project.id, "bad-data") == nil
     end
 
+    test "`data` on an svg or markdown artifact is stored, with a warning that the page never sees it",
+         %{state: state} do
+      for kind <- ["svg", "markdown"] do
+        result = save(state, %{"name" => "data-#{kind}", "kind" => kind, "data" => %{"n" => 1}})
+
+        assert %{"isError" => false} = result
+        body = decode(result)
+        assert Artifacts.get_artifact(body["id"]).data == %{"n" => 1}
+        assert [warning] = body["warnings"]
+        assert warning =~ "`data` was stored (visible via get_artifact)"
+        assert warning =~ "a #{kind} page never receives it"
+      end
+
+      # No data, no warning: svg/markdown results still carry no warnings key.
+      body = save(state, %{"name" => "plain-svg", "kind" => "svg"}) |> decode()
+      refute Map.has_key?(body, "warnings")
+    end
+
     test "list/0 documents `data` as an object in save_artifact's schema and LIVE DATA text" do
       tool = Enum.find(ArtifactsTool.list(), &(&1["name"] == "save_artifact"))
       assert tool["inputSchema"]["properties"]["data"]["type"] == "object"
