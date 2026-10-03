@@ -857,8 +857,59 @@
         />
       </div>
 
+      <%!-- Preview a selected image/video (ORCAHUB3-77), never text-loaded --%>
+      <div
+        :if={@selected_file && @file_media && @new_file_name == nil}
+        class="flex flex-col h-full min-h-0"
+      >
+        <div class="flex items-center justify-between mb-3 shrink-0">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="font-mono text-sm text-base-content/70 truncate">{@selected_file}</span>
+            <button phx-click="deselect_file" class="btn btn-ghost btn-xs">&times;</button>
+            <button
+              type="button"
+              phx-click={JS.dispatch("phx:copy", to: "#file-link-url-media")}
+              class="btn btn-ghost btn-xs"
+              title="Copy file path"
+            >
+              <.icon name="hero-clipboard-micro" class="size-3" />
+            </button>
+            <input
+              type="hidden"
+              id="file-link-url-media"
+              value={file_disk_path(@project, @selected_file)}
+              phx-hook="Copy"
+            />
+          </div>
+          <.link
+            href={
+              FilePreview.download_url(
+                ~p"/projects/#{@project.id}/files/download",
+                @selected_file
+              )
+            }
+            download
+            class="btn btn-sm btn-ghost gap-1 shrink-0"
+            title="Download file"
+          >
+            <.icon name="hero-arrow-down-tray-micro" class="size-3" /> Download
+          </.link>
+        </div>
+        <div class="flex-1 min-h-0 bg-base-200 rounded-lg p-4">
+          <FilePreview.media_preview
+            id="project-file-media"
+            kind={@file_media.kind}
+            src={@file_media.src}
+            path={@selected_file}
+          />
+        </div>
+      </div>
+
       <%!-- View selected non-markdown file (raw display) --%>
-      <div :if={@selected_file && !@file_editing && @new_file_name == nil && @file_blocks == []}>
+      <div :if={
+        @selected_file && !@file_media && !@file_editing && @new_file_name == nil &&
+          @file_blocks == []
+      }>
         <div class="flex items-center justify-between mb-3">
           <div class="flex items-center gap-2">
             <span class="font-mono text-sm text-base-content/70">{@selected_file}</span>

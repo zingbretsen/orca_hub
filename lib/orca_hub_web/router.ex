@@ -85,7 +85,8 @@ defmodule OrcaHubWeb.Router do
     # through the project id. On the :browser pipeline (not the
     # unauthenticated `:artifact_raw` one) so Authelia keeps covering it —
     # this reads arbitrary files out of a project/session working
-    # directory, unlike a published artifact.
+    # directory, unlike a published artifact. `?disposition=inline` is the
+    # file viewers' image/video preview variant (ORCAHUB3-77).
     get "/projects/:id/files/download", FileDownloadController, :project
     get "/sessions/:id/files/download", FileDownloadController, :session
   end

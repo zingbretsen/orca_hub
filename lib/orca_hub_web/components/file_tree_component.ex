@@ -6,6 +6,7 @@ defmodule OrcaHubWeb.FileTreeComponent do
   use OrcaHubWeb, :live_component
 
   alias OrcaHub.{Cluster, Projects}
+  alias OrcaHubWeb.FilePreview
 
   @impl true
   def update(%{reload: true}, socket) do
@@ -203,14 +204,22 @@ defmodule OrcaHubWeb.FileTreeComponent do
   attr :target, :any, required: true
   attr :download_base, :string, required: true
 
+  # A file is selectable when the viewer can show it: as text (editable) or
+  # as an image/video preview (ORCAHUB3-77). Anything else is download-only.
   defp file_tree_node(%{node: %{type: :file}} = assigns) do
-    assigns = assign(assigns, :editable, Projects.editable_file?(assigns.node.name))
+    assigns =
+      assign(
+        assigns,
+        :selectable,
+        Projects.editable_file?(assigns.node.name) or
+          FilePreview.media_kind(assigns.node.name) != nil
+      )
 
     ~H"""
     <li>
       <div class="flex items-center gap-0.5 group/file-row">
         <button
-          :if={@editable}
+          :if={@selectable}
           phx-click="select_file"
           phx-value-path={@node.path}
           phx-target={@target}
@@ -219,16 +228,16 @@ defmodule OrcaHubWeb.FileTreeComponent do
           <span class="font-mono text-xs truncate">{@node.name}</span>
         </button>
         <span
-          :if={!@editable}
+          :if={!@selectable}
           class="flex-1 min-w-0 font-mono text-xs truncate px-2 py-1 text-base-content/60"
-          title="Not editable — download only"
+          title="No preview — download only"
         >
           {@node.name}
         </span>
         <a
-          href={download_href(@download_base, @node.path)}
+          href={FilePreview.download_url(@download_base, @node.path)}
           download
-          data-file-tree-primary={!@editable}
+          data-file-tree-primary={!@selectable}
           class="btn btn-ghost btn-xs shrink-0 opacity-0 group-hover/file-row:opacity-100 focus:opacity-100"
           title="Download"
         >
@@ -269,8 +278,6 @@ defmodule OrcaHubWeb.FileTreeComponent do
     </li>
     """
   end
-
-  defp download_href(base, path), do: "#{base}?#{URI.encode_query(%{"path" => path})}"
 
   defp load_root_tree(target_node, project, opts) do
     show_hidden = Keyword.get(opts, :show_hidden, false)

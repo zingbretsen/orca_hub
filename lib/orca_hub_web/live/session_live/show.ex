@@ -3,7 +3,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
   require Logger
 
   alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, MemoryExtraction, Projects, Sessions}
-  alias OrcaHubWeb.{ArtifactSend, ArtifactURL, Markdown, MessageComponents, TreeComponents}
+
+  alias OrcaHubWeb.{
+    ArtifactSend,
+    ArtifactURL,
+    FilePreview,
+    Markdown,
+    MessageComponents,
+    TreeComponents
+  }
+
   alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Todos}
   alias OrcaHub.Voice.Dictation
 
@@ -2248,6 +2257,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:show_mobile_actions, false)}
   end
 
+  # A clickable file path in the message feed (MessageComponents' Read/
+  # Write/Edit tool details).
+  def handle_event("open_file", %{"path" => path}, socket) when is_binary(path) do
+    {:noreply, open_file_tab(socket, path)}
+  end
+
   def handle_event("switch_tab", %{"path" => path}, socket) do
     tab = Enum.find(socket.assigns.open_files, &(&1.path == path))
 
@@ -2468,6 +2483,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # flashes an error prefixed with `error_label`. Shared by the save_file,
   # save_block, and delete_block events.
   defp save_file_and_update(socket, path, content, blocks, success_assigns, error_label) do
+    if text_tab?(Enum.find(socket.assigns.open_files, &(&1.path == path))) do
+      do_save_file_and_update(socket, path, content, blocks, success_assigns, error_label)
+    else
+      # Only a text tab is ever saved — never an artifact or media tab
+      # (ORCAHUB3-77), whose "content" isn't the file's bytes.
+      {:noreply, socket}
+    end
+  end
+
+  defp do_save_file_and_update(socket, path, content, blocks, success_assigns, error_label) do
     dir = socket.assigns.session.directory
     project = %Projects.Project{directory: dir}
     session_node = socket.assigns[:session_node] || node()
@@ -3215,17 +3240,66 @@ defmodule OrcaHubWeb.SessionLive.Show do
   defp parse_panel_layout("mobile"), do: :mobile
   defp parse_panel_layout(_), do: nil
 
-  # Does an open artifact's iframe render in this file-panel shell
-  # (ORCAHUB3-130)? Both shells are in the DOM, hidden by CSS only, and a
-  # display:none iframe still loads and runs its scripts — so only the shell
-  # the browser shows gets one. An unknown layout (nil) renders both: a
-  # client too old to report it degrades to a duplicate, not a blank panel.
-  defp artifact_in_shell?(nil, _shell), do: true
-  defp artifact_in_shell?(layout, shell), do: layout == shell
+  # Does an open artifact's iframe, or a media tab's <img>/<video>, render
+  # in this file-panel shell (ORCAHUB3-130, ORCAHUB3-77)? Both shells are in
+  # the DOM, hidden by CSS only, and a display:none iframe still loads and
+  # runs its scripts (an <img> still loads, a <video> still fetches its
+  # metadata) — so only the shell the browser shows gets one. An unknown
+  # layout (nil) renders both: a client too old to report it degrades to a
+  # duplicate, not a blank panel. No tab is open on the dead render, so it
+  # never loads anything there.
+  defp embed_in_shell?(nil, _shell), do: true
+  defp embed_in_shell?(layout, shell), do: layout == shell
+
+  # A media tab (ORCAHUB3-77), shared by the desktop and mobile shells like
+  # artifact_tab_panel/1 below and rendered in only one of them, per
+  # embed_in_shell?/2. The download link is the plain attachment route;
+  # a path outside the session directory has neither (see open_media_tab/4).
+  attr :tab, :map, required: true
+  attr :variant, :string, required: true
+
+  defp media_tab_panel(assigns) do
+    ~H"""
+    <div class="flex flex-col h-full min-h-0">
+      <div class="flex items-center justify-between gap-2 mb-3 shrink-0">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="font-mono text-xs text-base-content/70 truncate">{@tab.path}</span>
+          <span :if={@tab.read_only} class="badge badge-xs badge-ghost">read-only</span>
+        </div>
+        <.link
+          :if={!@tab.read_only}
+          href={FilePreview.download_url(@tab.download_base, @tab.path)}
+          download
+          class="btn btn-xs btn-ghost gap-1 shrink-0"
+          title="Download file"
+        >
+          <.icon name="hero-arrow-down-tray-micro" class="size-3" /> Download
+        </.link>
+      </div>
+      <div class="flex-1 min-h-0">
+        <FilePreview.media_preview
+          :if={@tab.media != :none}
+          id={"media-#{@variant}-#{:erlang.phash2(@tab.path)}"}
+          kind={@tab.media}
+          src={@tab.src}
+          path={@tab.path}
+        />
+        <div
+          :if={@tab.media == :none}
+          id={"media-#{@variant}-#{:erlang.phash2(@tab.path)}"}
+          class="text-sm text-base-content/60 p-8 text-center"
+          data-media-unavailable
+        >
+          This file isn't text and has no preview{if !@tab.read_only, do: " — download it instead"}.
+        </div>
+      </div>
+    </div>
+    """
+  end
 
   # Shared by the desktop and mobile split-panel templates. Both shells are
   # always in the DOM (toggled by responsive CSS classes), but this renders
-  # in only one of them, per artifact_in_shell?/2; `variant` keeps the ids
+  # in only one of them, per embed_in_shell?/2; `variant` keeps the ids
   # distinct and says which shell holds the iframe. `@tab.src` is the
   # token-scoped raw URL (ORCAHUB3-128) — the sandboxed iframe's own asset
   # requests never carry the Authelia cookie, so it loads from
@@ -3292,11 +3366,61 @@ defmodule OrcaHubWeb.SessionLive.Show do
     dir = socket.assigns.session.directory
     {path, read_only} = normalize_file_path(path, dir)
 
-    case Enum.find(socket.assigns.open_files, &(&1.path == path)) do
-      nil -> open_new_file_tab(socket, path, line, read_only)
-      tab -> switch_to_loaded_tab(socket, tab, path, line)
+    case {Enum.find(socket.assigns.open_files, &(&1.path == path)), FilePreview.media_kind(path)} do
+      {nil, nil} -> open_new_file_tab(socket, path, line, read_only)
+      {nil, media} -> open_media_tab(socket, path, media, read_only)
+      {tab, _media} -> switch_to_loaded_tab(socket, tab, path, line)
     end
   end
+
+  # Whether a tab holds a text file (loaded content, editable) rather than
+  # an artifact or media tab.
+  defp text_tab?(%{kind: _}), do: false
+  defp text_tab?(%{}), do: true
+  defp text_tab?(nil), do: false
+
+  # An image/video file opens as a preview tab (ORCAHUB3-77), from the file
+  # tree, a feed path or open_file alike: its bytes are never loaded here,
+  # the browser fetches them from the inline download route. `media:
+  # :none` is a file that turned out to be binary when text-loaded (see
+  # open_new_file_tab/4) — no preview, download only. A path outside the
+  # session directory (`read_only`) gets no src at all: the download route
+  # confines to the directory, so there is nothing it could serve.
+  defp open_media_tab(socket, path, media, read_only) do
+    download_base = ~p"/sessions/#{socket.assigns.session.id}/files/download"
+    session_node = socket.assigns[:session_node] || node()
+    full_path = if read_only, do: path, else: Path.join(socket.assigns.session.directory, path)
+    mtime = if read_only, do: nil, else: remote_file_mtime(session_node, full_path)
+
+    tab = %{
+      kind: :media,
+      media: media,
+      path: path,
+      read_only: read_only,
+      download_base: download_base,
+      src: media_src(media, read_only, download_base, path, mtime)
+    }
+
+    socket
+    |> assign(:open_files, socket.assigns.open_files ++ [tab])
+    |> assign(:active_file_tab, path)
+    |> assign(:file_editing, false)
+    |> assign(:editing_block, nil)
+    |> assign(:show_file_browser, false)
+    |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, path, mtime))
+    |> assign(:scroll_to_line, nil)
+    |> assign(:scroll_to_block, nil)
+  end
+
+  defp media_tab_icon(%{media: :image}), do: "hero-photo-micro"
+  defp media_tab_icon(%{media: :video}), do: "hero-film-micro"
+  defp media_tab_icon(_tab), do: "hero-document-micro"
+
+  defp media_src(:none, _read_only, _base, _path, _mtime), do: nil
+  defp media_src(_media, true, _base, _path, _mtime), do: nil
+
+  defp media_src(_media, false, base, path, mtime),
+    do: FilePreview.inline_url(base, path, FilePreview.version(mtime))
 
   # Normalize a file path against the project directory.
   # Absolute paths inside the project are made relative; absolute paths
@@ -3333,25 +3457,31 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     case load_file_content(session_node, dir, path, read_only) do
       {:ok, content} ->
-        blocks = if Projects.markdown_file?(path), do: Markdown.split_blocks(content), else: []
-        tab = %{path: path, content: content, blocks: blocks, read_only: read_only}
-        full_path = if read_only, do: path, else: Path.join(dir, path)
-        mtime = remote_file_mtime(session_node, full_path)
+        # Not text (a PDF, an archive): rendering invalid UTF-8 would crash
+        # the view, so it gets a download-only tab instead (ORCAHUB3-77).
+        if String.valid?(content) do
+          blocks = if Projects.markdown_file?(path), do: Markdown.split_blocks(content), else: []
+          tab = %{path: path, content: content, blocks: blocks, read_only: read_only}
+          full_path = if read_only, do: path, else: Path.join(dir, path)
+          mtime = remote_file_mtime(session_node, full_path)
 
-        block_idx =
-          if line && Projects.markdown_file?(path),
-            do: MarkdownBlocks.line_to_block_index(content, line),
-            else: nil
+          block_idx =
+            if line && Projects.markdown_file?(path),
+              do: MarkdownBlocks.line_to_block_index(content, line),
+              else: nil
 
-        socket
-        |> assign(:open_files, socket.assigns.open_files ++ [tab])
-        |> assign(:active_file_tab, path)
-        |> assign(:file_editing, false)
-        |> assign(:editing_block, nil)
-        |> assign(:show_file_browser, false)
-        |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, path, mtime))
-        |> assign(:scroll_to_line, line)
-        |> assign(:scroll_to_block, block_idx)
+          socket
+          |> assign(:open_files, socket.assigns.open_files ++ [tab])
+          |> assign(:active_file_tab, path)
+          |> assign(:file_editing, false)
+          |> assign(:editing_block, nil)
+          |> assign(:show_file_browser, false)
+          |> assign(:file_mtimes, Map.put(socket.assigns.file_mtimes, path, mtime))
+          |> assign(:scroll_to_line, line)
+          |> assign(:scroll_to_block, block_idx)
+        else
+          open_media_tab(socket, path, :none, read_only)
+        end
 
       {:error, reason} ->
         put_flash(socket, :error, "Could not open file: #{inspect(reason)}")
@@ -3389,6 +3519,22 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # no on-disk file to stat.
   defp refresh_tab(%{kind: :artifact} = tab, mtimes, _dir, _project), do: {tab, mtimes}
 
+  # A media tab is never text-loaded: a changed mtime only re-versions its
+  # src, so the browser re-fetches an overwritten screenshot or video.
+  defp refresh_tab(%{kind: :media, src: src} = tab, mtimes, _dir, _project) when is_nil(src),
+    do: {tab, mtimes}
+
+  defp refresh_tab(%{kind: :media} = tab, mtimes, dir, _project) do
+    current_mtime = file_mtime(Path.join(dir, tab.path))
+
+    if current_mtime != Map.get(mtimes, tab.path) && current_mtime != nil do
+      src = media_src(tab.media, false, tab.download_base, tab.path, current_mtime)
+      {%{tab | src: src}, Map.put(mtimes, tab.path, current_mtime)}
+    else
+      {tab, mtimes}
+    end
+  end
+
   # Reloads a single open file tab if its on-disk mtime has changed.
   defp refresh_tab(tab, mtimes, dir, project) do
     full_path = if tab.read_only, do: tab.path, else: Path.join(dir, tab.path)
@@ -3408,10 +3554,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     case result do
       {:ok, content} ->
-        blocks =
-          if Projects.markdown_file?(tab.path), do: Markdown.split_blocks(content), else: []
+        if String.valid?(content) do
+          blocks =
+            if Projects.markdown_file?(tab.path), do: Markdown.split_blocks(content), else: []
 
-        {%{tab | content: content, blocks: blocks}, Map.put(mtimes, tab.path, current_mtime)}
+          {%{tab | content: content, blocks: blocks}, Map.put(mtimes, tab.path, current_mtime)}
+        else
+          # Overwritten with binary bytes: keep the last text rather than
+          # crash the view rendering them (and don't re-read every poll).
+          {tab, Map.put(mtimes, tab.path, current_mtime)}
+        end
 
       {:error, _} ->
         {tab, mtimes}

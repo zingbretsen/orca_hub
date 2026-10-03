@@ -5,7 +5,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   alias OrcaHub.{AgentMemory, Cluster, ConfigFile, HubRPC, Projects, Triggers}
   alias OrcaHub.Projects.Project
   alias OrcaHub.Triggers.Trigger
-  alias OrcaHubWeb.{BlockEditor, Markdown, StructuredEditor}
+  alias OrcaHubWeb.{BlockEditor, FilePreview, Markdown, StructuredEditor}
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -44,6 +44,9 @@ defmodule OrcaHubWeb.ProjectLive.Show do
        show_worktree_form: false,
        selected_file: nil,
        file_content: nil,
+       # %{kind: :image | :video, src: inline url} when selected_file is
+       # previewed instead of text-loaded (ORCAHUB3-77).
+       file_media: nil,
        file_editing: false,
        file_blocks: [],
        editing_block: nil,
@@ -109,24 +112,29 @@ defmodule OrcaHubWeb.ProjectLive.Show do
         path ->
           project = socket.assigns.project
 
-          case rpc(socket.assigns.project_node, Projects, :load_file, [project, path]) do
-            {:ok, content} ->
-              blocks = project_file_blocks(path, content)
+          if media = FilePreview.media_kind(path) do
+            select_media_file(socket, path, media)
+          else
+            case rpc(socket.assigns.project_node, Projects, :load_file, [project, path]) do
+              {:ok, content} ->
+                blocks = project_file_blocks(path, content)
 
-              assign(socket,
-                selected_file: path,
-                file_content: content,
-                file_blocks: blocks,
-                file_editing: false,
-                editing_block: nil,
-                file_view_mode: :structured,
-                structured_editing: nil,
-                structured_edit_value: "",
-                new_file_name: nil
-              )
+                assign(socket,
+                  selected_file: path,
+                  file_media: nil,
+                  file_content: content,
+                  file_blocks: blocks,
+                  file_editing: false,
+                  editing_block: nil,
+                  file_view_mode: :structured,
+                  structured_editing: nil,
+                  structured_edit_value: "",
+                  new_file_name: nil
+                )
 
-            {:error, _} ->
-              put_flash(socket, :error, "Failed to load #{path}")
+              {:error, _} ->
+                put_flash(socket, :error, "Failed to load #{path}")
+            end
           end
       end
 
@@ -278,6 +286,11 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     end
   end
 
+  # A previewed image/video is never edited or saved (ORCAHUB3-77): it was
+  # never text-loaded, so there's no content to edit.
+  def handle_event("edit_file", _params, %{assigns: %{file_media: %{}}} = socket),
+    do: {:noreply, socket}
+
   def handle_event("edit_file", _params, socket) do
     {:noreply, assign(socket, file_editing: true)}
   end
@@ -289,6 +302,13 @@ defmodule OrcaHubWeb.ProjectLive.Show do
       {:noreply, assign(socket, file_editing: false)}
     end
   end
+
+  def handle_event(
+        "save_file",
+        _params,
+        %{assigns: %{file_media: %{}, new_file_name: nil}} = socket
+      ),
+      do: {:noreply, socket}
 
   def handle_event("save_file", params, socket) do
     content = params["content"]
@@ -317,6 +337,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
              file_editing: false,
              editing_block: nil,
              selected_file: path,
+             file_media: nil,
              new_file_name: nil
            )}
 
@@ -330,6 +351,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     {:noreply,
      assign(socket,
        selected_file: nil,
+       file_media: nil,
        new_file_name: "",
        file_content: "",
        file_editing: true
@@ -340,6 +362,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     {:noreply,
      assign(socket,
        selected_file: nil,
+       file_media: nil,
        file_content: nil,
        file_editing: false,
        file_blocks: [],
@@ -1121,6 +1144,50 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
   @impl true
   def handle_info({:file_selected, path}, socket) do
+    case FilePreview.media_kind(path) do
+      nil -> select_text_file(socket, path)
+      media -> {:noreply, select_media_file(socket, path, media)}
+    end
+  end
+
+  def handle_info({_session_id, _payload}, socket) do
+    project = HubRPC.get_project!(socket.assigns.project.id)
+    {:noreply, assign(socket, project: project)}
+  end
+
+  # An image/video is previewed, never text-loaded (ORCAHUB3-77): the
+  # browser fetches it from the inline download route, versioned by mtime
+  # so re-selecting an overwritten file re-fetches it.
+  defp select_media_file(socket, path, media) do
+    project = socket.assigns.project
+
+    mtime =
+      case rpc(socket.assigns.project_node, File, :stat, [Path.join(project.directory, path)]) do
+        {:ok, %File.Stat{mtime: mtime}} -> mtime
+        _ -> nil
+      end
+
+    src =
+      FilePreview.inline_url(
+        ~p"/projects/#{project.id}/files/download",
+        path,
+        FilePreview.version(mtime)
+      )
+
+    assign(socket,
+      selected_file: path,
+      file_media: %{kind: media, src: src},
+      file_content: nil,
+      file_blocks: [],
+      file_editing: false,
+      editing_block: nil,
+      structured_editing: nil,
+      structured_edit_value: "",
+      new_file_name: nil
+    )
+  end
+
+  defp select_text_file(socket, path) do
     project = socket.assigns.project
 
     case rpc(socket.assigns.project_node, Projects, :load_file, [project, path]) do
@@ -1130,6 +1197,7 @@ defmodule OrcaHubWeb.ProjectLive.Show do
         {:noreply,
          assign(socket,
            selected_file: path,
+           file_media: nil,
            file_content: content,
            file_blocks: blocks,
            file_editing: false,
@@ -1140,11 +1208,6 @@ defmodule OrcaHubWeb.ProjectLive.Show do
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "Failed to load #{path}")}
     end
-  end
-
-  def handle_info({_session_id, _payload}, socket) do
-    project = HubRPC.get_project!(socket.assigns.project.id)
-    {:noreply, assign(socket, project: project)}
   end
 
   defp file_disk_path(project, path) do
