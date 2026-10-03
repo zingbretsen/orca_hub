@@ -451,6 +451,16 @@ graph TB
   an alternative to `content`, read directly on the session's own runner
   node — so a large artifact built/tested on disk across turns never has to
   round-trip through the agent's own context just to be saved (ORCAHUB3-56).
+  `save_artifact` also takes an optional `data` object (ORCAHUB3-132), so
+  the initial `window.ORCA_DATA` needs no separate `update_artifact_data`
+  call. It seeds a new row and REPLACES an existing row's payload, the same
+  as `update_artifact_data`, and a save without `data` leaves the stored data
+  alone. A save never writes the reserved `_user_state` key: the hub
+  (`Artifacts.save_artifact/1`) drops one from `data` and carries the row's
+  own over, and the tool warns. Open viewers pick up the new data through
+  the save's version bump, which reloads the iframe. Every artifact tool
+  also names any argument outside its own `inputSchema` (derived from
+  `list/0`): a `warnings` entry on success, a note appended on error.
 - **Artifact assets** (`lib/orca_hub/artifacts/artifact_asset.ex`,
   ORCAHUB3-72 slice 2, ORCAHUB3-128): links an artifact to a file already in
   the cross-node file store (below) under a name unique per artifact, so the

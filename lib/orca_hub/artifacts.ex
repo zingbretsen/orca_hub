@@ -41,6 +41,12 @@ defmodule OrcaHub.Artifacts do
   `"artifact:<artifact_id>"`, and `{:artifact_saved, artifact}` on
   `"session:<session_id>"` when `attrs` has a `session_id`, after a
   successful save.
+
+  An optional `:data` map seeds `data` on insert and REPLACES the stored
+  payload on update, like `update_artifact_data/2`. Without `:data`, an
+  update leaves the stored data untouched. Either way, a save never writes
+  the reserved `"_user_state"` key: one in `:data` is dropped, and the
+  existing row's is carried over (see `merge_user_state/2`).
   """
   def save_artifact(attrs) do
     project_id = Map.get(attrs, :project_id)
@@ -48,6 +54,8 @@ defmodule OrcaHub.Artifacts do
 
     existing =
       if project_id && name, do: Repo.get_by(Artifact, project_id: project_id, name: name)
+
+    attrs = carry_user_state(attrs, existing)
 
     existing
     |> case do
@@ -64,6 +72,15 @@ defmodule OrcaHub.Artifacts do
     end
     |> broadcast_on_save()
   end
+
+  # Same read-then-write as update_artifact_data/2: a merge_user_state/2
+  # landing between the read above and this save's UPDATE is lost.
+  defp carry_user_state(%{data: data} = attrs, existing) when is_map(data) do
+    payload = Map.delete(data, "_user_state")
+    %{attrs | data: if(existing, do: preserve_user_state(existing, payload), else: payload)}
+  end
+
+  defp carry_user_state(attrs, _existing), do: attrs
 
   @doc """
   Replace an artifact's `data` map in place — backs the `update_artifact_data`

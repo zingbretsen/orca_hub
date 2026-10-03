@@ -81,12 +81,15 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             "Saving under a `name` that already exists in this project UPDATES that " <>
             "artifact in place (and bumps its version) rather than creating a new one — " <>
             "reuse the same name to iterate on one artifact across turns/sessions.\n\n" <>
-            "LIVE DATA: if this artifact shows numbers that will change later (a dashboard, " <>
-            "a report, a live counter), don't re-save the whole document to refresh them — " <>
-            "call update_artifact_data instead, which pushes a new `data` snapshot into the " <>
-            "SAME artifact without reloading/rewriting its HTML. Your HTML must read " <>
-            "`window.ORCA_DATA` on load for the initial snapshot, and listen for live " <>
-            "updates with `window.addEventListener(\"message\", (e) => { if (e.data?.type " <>
+            "LIVE DATA: an artifact carries a `data` snapshot (a JSON object). Seed it in " <>
+            "this same call with the `data` argument, no separate update_artifact_data call " <>
+            "needed. A re-save with `data` replaces the stored snapshot; one without it " <>
+            "keeps it. If the numbers change later (a dashboard, a report, a live counter), " <>
+            "don't re-save the whole document to refresh them — call update_artifact_data " <>
+            "instead, which pushes a new `data` snapshot into the SAME artifact without " <>
+            "reloading/rewriting its HTML. Your HTML must read `window.ORCA_DATA` on load " <>
+            "for the initial snapshot, and listen for live updates with " <>
+            "`window.addEventListener(\"message\", (e) => { if (e.data?.type " <>
             "=== \"orca:data\") /* e.data.data is the new snapshot */ })`. The iframe's " <>
             "sandbox has an opaque origin (no `allow-same-origin`), so `fetch()` from " <>
             "inside it can't reach this host's app or API. Apart from reading the " <>
@@ -118,8 +121,9 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             "keys not in `patch` are left alone; a key set to `null` deletes it) and " <>
             "`window.orca.getState()` to read the current state back synchronously. " <>
             "State lives under the reserved `_user_state` key in this artifact's `data` " <>
-            "(visible via get_artifact) and survives re-saving this artifact's content, " <>
-            "but is lost if you rename it (a rename is a different artifact row). It's " <>
+            "(visible via get_artifact) and survives re-saving this artifact (save_artifact " <>
+            "never writes it, even with `data`), but is lost if you rename it (a rename " <>
+            "is a different artifact row). It's " <>
             "shared by every viewer of this artifact, not scoped per user. There's no " <>
             "dedicated reset tool — call update_artifact_data with " <>
             "`data: {\"_user_state\": {}}` to clear it. Writing state never wakes this " <>
@@ -162,6 +166,16 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
                   "`.`, `_`, `-` only). Paths follow `content_path`'s rules. Everything is " <>
                   "checked before anything is saved. An existing name is replaced; names " <>
                   "not listed stay attached."
+            },
+            "data" => %{
+              "type" => "object",
+              "description" =>
+                "Optional live-data snapshot, a JSON object, served to the page as " <>
+                  "`window.ORCA_DATA`. Seeds a new artifact's data; on an existing one it " <>
+                  "REPLACES the stored snapshot, like update_artifact_data. Omit it to keep " <>
+                  "the stored data. save_artifact never writes the reserved `_user_state` " <>
+                  "key: the stored user state is kept, and a `_user_state` key here is " <>
+                  "ignored with a warning."
             },
             "kind" => %{
               "type" => "string",
@@ -245,7 +259,8 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             "its HTML — use this to refresh the numbers behind a dashboard/report you already " <>
             "shipped with save_artifact (e.g. re-run \"top memory consumers\" a week later and " <>
             "push the new numbers into the SAME artifact), instead of re-saving the whole " <>
-            "document. Does not bump the artifact's version. Delivered to any already-open " <>
+            "document (the first snapshot can ride save_artifact's own `data` argument). " <>
+            "Does not bump the artifact's version. Delivered to any already-open " <>
             "viewer live via `postMessage` (see save_artifact's description for the " <>
             "ORCA_DATA/postMessage contract your artifact's HTML must implement to receive " <>
             "it) — no reload, no page refresh.",
@@ -354,7 +369,18 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     ]
   end
 
-  def call("save_artifact", args, state) do
+  # Any argument that isn't a property of the tool's own inputSchema (from
+  # list/0, the one source of truth) would otherwise be dropped silently, and
+  # a misspelling (`contents`, `contentPath`) is often why a call failed. So
+  # every result names them: a `warnings` entry on success, a note appended
+  # to the message on error (ORCAHUB3-132).
+  def call(tool, args, state) do
+    tool
+    |> run(args, state)
+    |> note_unknown_args(tool, unknown_args(tool, args))
+  end
+
+  defp run("save_artifact", args, state) do
     kind = normalize_kind(args["kind"])
     open? = Map.get(args, "open", true)
     mode = normalize_mode(args["mode"])
@@ -367,6 +393,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
         name: args["name"],
         kind: kind,
         content: content,
+        data: args["data"],
         source: source,
         specs: specs,
         open?: open?,
@@ -377,7 +404,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     end
   end
 
-  def call("open_artifact", args, state) do
+  defp run("open_artifact", args, state) do
     mode = normalize_mode(args["mode"])
 
     case resolve_artifact(args, state) do
@@ -386,7 +413,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     end
   end
 
-  def call("list_artifacts", _args, state) do
+  defp run("list_artifacts", _args, state) do
     with_project(state, fn project_id ->
       artifacts =
         project_id
@@ -397,7 +424,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     end)
   end
 
-  def call("get_artifact", args, state) do
+  defp run("get_artifact", args, state) do
     case resolve_artifact(args, state) do
       {:ok, artifact} ->
         text(
@@ -418,7 +445,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     end
   end
 
-  def call("update_artifact_data", args, state) do
+  defp run("update_artifact_data", args, state) do
     data = args["data"]
 
     cond do
@@ -433,7 +460,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     end
   end
 
-  def call("screenshot_artifact", args, state) do
+  defp run("screenshot_artifact", args, state) do
     viewports = normalize_viewports(args["viewports"])
 
     case resolve_artifact(args, state) do
@@ -442,7 +469,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     end
   end
 
-  def call("attach_artifact_asset", args, state) do
+  defp run("attach_artifact_asset", args, state) do
     cond do
       not present?(args["artifact_id"]) ->
         error("attach_artifact_asset requires a non-empty `artifact_id` string argument.")
@@ -457,6 +484,59 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
         do_attach_artifact_asset(args, state)
     end
   end
+
+  # ── unknown arguments ─────────────────────────────────────────────────
+
+  defp unknown_args(tool, args) when is_map(args) do
+    known = schema_properties(tool)
+    args |> Map.keys() |> Enum.reject(&Map.has_key?(known, &1)) |> Enum.sort()
+  end
+
+  defp unknown_args(_tool, _args), do: []
+
+  defp schema_properties(tool) do
+    case Enum.find(list(), &(&1["name"] == tool)) do
+      %{"inputSchema" => %{"properties" => properties}} -> properties
+      _ -> %{}
+    end
+  end
+
+  defp note_unknown_args(result, _tool, []), do: result
+
+  defp note_unknown_args(%{"content" => [%{"text" => text} = part]} = result, tool, unknown) do
+    note = unknown_args_note(tool, unknown)
+
+    text =
+      case {result["isError"], Jason.decode(text)} do
+        {true, _} ->
+          text <> " " <> note
+
+        {_, {:ok, %{} = body}} ->
+          body |> Map.update("warnings", [note], &[note | &1]) |> Jason.encode!()
+
+        _ ->
+          text
+      end
+
+    %{result | "content" => [%{part | "text" => text}]}
+  end
+
+  defp note_unknown_args(result, _tool, _unknown), do: result
+
+  defp unknown_args_note(tool, unknown) do
+    names = Enum.map_join(unknown, ", ", &arg_label/1)
+    known = tool |> schema_properties() |> Map.keys() |> Enum.sort()
+
+    takes =
+      if known == [],
+        do: "#{tool} takes no arguments.",
+        else: "#{tool} takes: #{Enum.map_join(known, ", ", &arg_label/1)}."
+
+    "Ignored unknown argument#{if length(unknown) > 1, do: "s"} #{names}. #{takes}"
+  end
+
+  defp arg_label(name) when is_binary(name), do: "`#{name}`"
+  defp arg_label(name), do: inspect(name)
 
   # ── save_artifact ─────────────────────────────────────────────────────
   #
@@ -481,6 +561,9 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
 
       kind not in @kinds ->
         {:error, "save_artifact `kind` must be one of: #{Enum.join(@kinds, ", ")}."}
+
+      not (is_nil(args["data"]) or is_map(args["data"])) ->
+        {:error, "save_artifact `data` must be a JSON object. Nothing was saved."}
 
       true ->
         validate_assets_arg(args["assets"])
@@ -689,7 +772,9 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
       content: save.content
     }
 
-    case HubRPC.save_artifact(attrs) do
+    # Without `data` the stored data is left alone. With it, the hub drops
+    # any `_user_state` here and keeps the row's own (Artifacts.save_artifact/1).
+    case attrs |> maybe_put(:data, save.data) |> HubRPC.save_artifact() do
       {:ok, artifact} ->
         {:ok, artifact}
 
@@ -761,20 +846,34 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     end)
   end
 
-  defp put_warnings(result, %{kind: "html", content: content}, attached) do
+  defp put_warnings(result, %{kind: "html", content: content} = save, attached) do
     Map.put(
       result,
       :warnings,
-      HtmlValidator.validate(content) ++ content_warnings(content, attached)
+      HtmlValidator.validate(content) ++ save_warnings(save, attached)
     )
   end
 
   defp put_warnings(result, save, attached) do
-    case content_warnings(save.content, attached) do
+    case save_warnings(save, attached) do
       [] -> result
       warnings -> Map.put(result, :warnings, warnings)
     end
   end
+
+  defp save_warnings(save, attached) do
+    user_state_warnings(save.data) ++ content_warnings(save.content, attached)
+  end
+
+  defp user_state_warnings(%{"_user_state" => _}) do
+    [
+      "Ignored `data._user_state`: save_artifact never writes user state, the stored " <>
+        "one is kept. To reset it, call update_artifact_data with " <>
+        "`data: {\"_user_state\": {}}`."
+    ]
+  end
+
+  defp user_state_warnings(_data), do: []
 
   # Non-fatal lint for the two asset mistakes an agent can't see from the
   # result alone: inlined base64 media (what `assets` exists to replace)

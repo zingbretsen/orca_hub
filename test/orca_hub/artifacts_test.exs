@@ -148,6 +148,45 @@ defmodule OrcaHub.ArtifactsTest do
       assert resaved.content == "v2"
       assert resaved.data == %{"_user_state" => %{"done" => true}}
     end
+
+    test "`data` seeds a new artifact, minus any _user_state (ORCAHUB3-132)", %{
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "seeded",
+          content: "x",
+          data: %{"n" => 1, "_user_state" => %{"forged" => true}}
+        })
+
+      assert artifact.data == %{"n" => 1}
+    end
+
+    test "`data` on an update replaces the payload and carries the row's _user_state over", %{
+      project: project
+    } do
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "re",
+          content: "x",
+          data: %{"a" => 1}
+        })
+
+      {:ok, _} = Artifacts.merge_user_state(artifact, %{"done" => true})
+
+      {:ok, resaved} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "re",
+          content: "y",
+          data: %{"b" => 2, "_user_state" => %{}}
+        })
+
+      assert resaved.version == 2
+      assert resaved.data == %{"b" => 2, "_user_state" => %{"done" => true}}
+    end
   end
 
   describe "update_artifact_data/2" do

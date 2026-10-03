@@ -39,6 +39,21 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
     assert OrcaHubWeb.ArtifactURL.verify(token) == {:ok, artifact_id}
   end
 
+  defp save(state, args) do
+    ArtifactsTool.call("save_artifact", Map.merge(%{"content" => "<p>x</p>"}, args), state)
+  end
+
+  # GETs the signed raw_url a tool returned through the real router: the
+  # exact bytes the viewer iframe loads.
+  defp fetch_raw(url) do
+    %URI{path: path} = URI.parse(url)
+
+    conn =
+      Phoenix.ConnTest.dispatch(Phoenix.ConnTest.build_conn(), OrcaHubWeb.Endpoint, :get, path)
+
+    {conn.status, conn.resp_body}
+  end
+
   describe "list/0" do
     test "exposes all four tools with expected required args" do
       tools = ArtifactsTool.list()
@@ -190,7 +205,6 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
   end
 
   describe "save_artifact `data` (ORCAHUB3-132)" do
-    @tag :repro
     test "ORCAHUB3-132: a `data` argument seeds the artifact's data instead of being dropped", %{
       state: state
     } do
@@ -205,6 +219,178 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
       %{"id" => id} = decode(result)
 
       assert Artifacts.get_artifact(id).data == %{"rows" => [1, 2]}
+    end
+
+    test "the seeded data is what the served page gets as window.ORCA_DATA", %{state: state} do
+      body =
+        save(state, %{
+          "name" => "seeded-page",
+          "content" => "<html><head></head><body></body></html>",
+          "data" => %{"rows" => [1, 2]}
+        })
+        |> decode()
+
+      assert body["warnings"] == []
+      assert {200, html} = fetch_raw(body["raw_url"])
+      assert html =~ ~s(<script>window.ORCA_DATA = {"rows":[1,2]};</script>)
+    end
+
+    test "a re-save with `data` replaces the payload, keeps _user_state, and reloads viewers",
+         %{state: state} do
+      %{"id" => id} =
+        save(state, %{"name" => "dash", "data" => %{"a" => 1, "b" => 2}}) |> decode()
+
+      {:ok, _} = Artifacts.merge_user_state(id, %{"ticked" => true})
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "artifact:#{id}")
+
+      body = save(state, %{"name" => "dash", "data" => %{"a" => 9}}) |> decode()
+
+      assert body["version"] == 2
+      expected = %{"a" => 9, "_user_state" => %{"ticked" => true}}
+      assert Artifacts.get_artifact(id).data == expected
+      # The version bump is what reloads an open viewer, which then renders
+      # the new data: no separate orca:data push.
+      assert_receive {:artifact_updated, %{id: ^id, version: 2, data: ^expected}}
+      assert {200, html} = fetch_raw(body["raw_url"])
+      assert html =~ ~s(window.ORCA_DATA = {"_user_state":{"ticked":true},"a":9};)
+    end
+
+    test "a re-save without `data` leaves the stored data untouched", %{state: state} do
+      %{"id" => id} = save(state, %{"name" => "keep", "data" => %{"a" => 1}}) |> decode()
+      {:ok, _} = Artifacts.merge_user_state(id, %{"ticked" => true})
+
+      body = save(state, %{"name" => "keep", "content" => "<p>v2</p>"}) |> decode()
+
+      assert body["version"] == 2
+      artifact = Artifacts.get_artifact(id)
+      assert artifact.content == "<p>v2</p>"
+      assert artifact.data == %{"a" => 1, "_user_state" => %{"ticked" => true}}
+    end
+
+    test "a `_user_state` key in `data` is dropped with a warning, on create and on update", %{
+      state: state
+    } do
+      body =
+        save(state, %{"name" => "st", "data" => %{"a" => 1, "_user_state" => %{"x" => 1}}})
+        |> decode()
+
+      assert Artifacts.get_artifact(body["id"]).data == %{"a" => 1}
+      assert [warning] = body["warnings"]
+      assert warning =~ "Ignored `data._user_state`"
+      assert warning =~ ~s(update_artifact_data with `data: {"_user_state": {}}`)
+
+      {:ok, _} = Artifacts.merge_user_state(body["id"], %{"kept" => true})
+
+      body =
+        save(state, %{"name" => "st", "data" => %{"a" => 2, "_user_state" => %{}}}) |> decode()
+
+      assert Artifacts.get_artifact(body["id"]).data ==
+               %{"a" => 2, "_user_state" => %{"kept" => true}}
+
+      assert [warning] = body["warnings"]
+      assert warning =~ "Ignored `data._user_state`"
+    end
+
+    test "a non-object `data` is an error and nothing is saved", %{
+      project: project,
+      state: state
+    } do
+      for bad <- ["{\"a\": 1}", [1, 2], 3] do
+        assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+                 save(state, %{"name" => "bad-data", "data" => bad})
+
+        assert msg =~ "`data` must be a JSON object"
+      end
+
+      assert Artifacts.get_artifact_by_name(project.id, "bad-data") == nil
+    end
+
+    test "list/0 documents `data` as an object in save_artifact's schema and LIVE DATA text" do
+      tool = Enum.find(ArtifactsTool.list(), &(&1["name"] == "save_artifact"))
+      assert tool["inputSchema"]["properties"]["data"]["type"] == "object"
+      assert tool["description"] =~ "Seed it in this same call with the `data` argument"
+    end
+  end
+
+  describe "unknown arguments (ORCAHUB3-132)" do
+    test "a successful save_artifact names the unknown argument in its warnings", %{state: state} do
+      body =
+        ArtifactsTool.call(
+          "save_artifact",
+          %{"name" => "typo", "content" => "<p>x</p>", "initial_data" => %{}},
+          state
+        )
+        |> decode()
+
+      assert [note] = body["warnings"]
+      assert note =~ "Ignored unknown argument `initial_data`."
+      assert note =~ "save_artifact takes: `assets`, `content`, `content_path`, `data`, `kind`"
+    end
+
+    test "the note is merged into save_artifact's existing warnings", %{state: state} do
+      body =
+        ArtifactsTool.call(
+          "save_artifact",
+          %{"name" => "typo2", "content" => "<div><span>oops</div>", "colour" => "red"},
+          state
+        )
+        |> decode()
+
+      assert [note | rest] = body["warnings"]
+      assert note =~ "`colour`"
+      assert Enum.any?(rest, &(&1 =~ "span"))
+    end
+
+    test "an error names the misspelled argument that likely caused it", %{state: state} do
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               ArtifactsTool.call(
+                 "save_artifact",
+                 %{"name" => "typo3", "contents" => "<p>x</p>", "contentPath" => "a.html"},
+                 state
+               )
+
+      assert msg =~ "save_artifact requires exactly one of `content` or `content_path`."
+      assert msg =~ "Ignored unknown arguments `contentPath`, `contents`."
+    end
+
+    test "every artifact tool reports arguments outside its own inputSchema", %{state: state} do
+      %{"id" => id} =
+        ArtifactsTool.call("save_artifact", %{"name" => "any", "content" => "x"}, state)
+        |> decode()
+
+      calls = [
+        {"open_artifact", %{"artifact_id" => id}},
+        {"list_artifacts", %{}},
+        {"get_artifact", %{"artifact_id" => id}},
+        {"update_artifact_data", %{"artifact_id" => id, "data" => %{}}},
+        {"screenshot_artifact", %{"artifact_id" => Ecto.UUID.generate()}},
+        {"attach_artifact_asset", %{}}
+      ]
+
+      for {tool, args} <- calls do
+        result = ArtifactsTool.call(tool, Map.put(args, "bogus", 1), state)
+
+        message =
+          case result do
+            %{"isError" => true, "content" => [%{"text" => msg}]} -> msg
+            ok -> ok |> decode() |> Map.fetch!("warnings") |> Enum.join(" ")
+          end
+
+        assert message =~ "Ignored unknown argument `bogus`.", "#{tool}: #{message}"
+      end
+
+      assert ArtifactsTool.call("list_artifacts", %{"x" => 1}, state)
+             |> decode()
+             |> Map.fetch!("warnings") == [
+               "Ignored unknown argument `x`. list_artifacts takes no arguments."
+             ]
+    end
+
+    test "no warnings key is added when every argument is known", %{state: state} do
+      ArtifactsTool.call("save_artifact", %{"name" => "clean", "content" => "x"}, state)
+
+      body = ArtifactsTool.call("get_artifact", %{"name" => "clean"}, state) |> decode()
+      refute Map.has_key?(body, "warnings")
     end
   end
 
