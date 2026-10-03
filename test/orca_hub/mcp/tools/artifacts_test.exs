@@ -583,7 +583,9 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
       body = ArtifactsTool.call("get_artifact", %{"name" => "keyset"}, state) |> decode()
 
       assert Map.keys(body) |> Enum.sort() ==
-               Enum.sort(~w(id name kind version content data raw_url updated_at))
+               Enum.sort(~w(id name kind version content data raw_url assets updated_at))
+
+      assert_signed_raw_url(body["raw_url"], body["id"], 1)
     end
 
     test "returns an empty data map for a freshly-saved artifact", %{state: state} do
@@ -591,6 +593,13 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
 
       body = ArtifactsTool.call("get_artifact", %{"name" => "no-data-yet"}, state) |> decode()
       assert body["data"] == %{}
+    end
+
+    test "returns `assets: []` for an artifact with no assets (ORCAHUB3-131)", %{state: state} do
+      ArtifactsTool.call("save_artifact", %{"name" => "bare", "content" => "x"}, state)
+
+      body = ArtifactsTool.call("get_artifact", %{"name" => "bare"}, state) |> decode()
+      assert body["assets"] == []
     end
 
     test "round-trips a populated _user_state through data", %{state: state} do

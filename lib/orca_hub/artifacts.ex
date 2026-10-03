@@ -353,12 +353,17 @@ defmodule OrcaHub.Artifacts do
     |> String.replace(~r/[^A-Za-z0-9._-]/, "_")
   end
 
-  @doc "Every asset attached to `artifact`, alphabetical by name."
+  @doc """
+  Every asset attached to `artifact`, alphabetical by name, each preloaded
+  with its `:file` (one batched query, not one per asset) so a caller can
+  report content types and sizes without a `get_asset/2` round-trip each.
+  """
   def list_assets(%Artifact{} = artifact) do
     Repo.all(
       from a in ArtifactAsset,
         where: a.artifact_id == ^artifact.id,
-        order_by: [asc: a.name]
+        order_by: [asc: a.name],
+        preload: [:file]
     )
   end
 

@@ -480,7 +480,12 @@ graph TB
   reused, not re-uploaded. `attach_artifact_asset` takes `path` OR
   `file_id` (exactly one). Both tools return each asset's relative `ref`
   (`assets/<name>`) and its signed absolute `url` (minted on the hub via
-  `HubRPC.artifact_urls/2`), and every `raw_url` the artifact tools return
+  `HubRPC.artifact_urls/2`). `get_artifact` is the read-only way to a fresh
+  url (ORCAHUB3-131): it always returns `assets` (`[]` when none), each with
+  `ref`, `url`, `content_type` and `size_bytes`, from one
+  `Artifacts.list_assets/1` call (`:file` preloaded in one batched query)
+  plus one `artifact_urls/2` call. `list_artifacts` returns no assets. Every
+  `raw_url` the artifact tools return
   is the signed `/api/artifacts/view/<token>/raw` form, which an agent can
   WebFetch. `put_file`'s confine/stat/cap and upload halves are public
   helpers (`MCP.Tools.Files.confine_local_file/3`, `upload_local_file/4`)

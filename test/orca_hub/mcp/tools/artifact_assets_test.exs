@@ -669,6 +669,74 @@ defmodule OrcaHub.MCP.Tools.ArtifactAssetsTest do
     end
   end
 
+  describe "get_artifact `assets` (ORCAHUB3-131)" do
+    test "lists every attached asset with ref, content_type, size_bytes and a fresh signed url",
+         %{artifact: artifact, asset_file: file, session: session, state: state} do
+      write!(session.directory, "media/clip.mp4", "mp4 bytes")
+
+      ArtifactsTool.call(
+        "attach_artifact_asset",
+        %{"artifact_id" => artifact.id, "path" => "media/clip.mp4"},
+        state
+      )
+
+      ArtifactsTool.call(
+        "attach_artifact_asset",
+        %{"artifact_id" => artifact.id, "file_id" => file.id},
+        state
+      )
+
+      body = ArtifactsTool.call("get_artifact", %{"artifact_id" => artifact.id}, state) |> json()
+
+      assert [clip, hero] = body["assets"]
+
+      assert Map.delete(clip, "url") == %{
+               "name" => "clip.mp4",
+               "ref" => "assets/clip.mp4",
+               "usage" => ~s(<video src="assets/clip.mp4" controls playsinline></video>),
+               "content_type" => "video/mp4",
+               "size_bytes" => byte_size("mp4 bytes")
+             }
+
+      assert hero["name"] == "hero.png"
+      assert hero["ref"] == "assets/hero.png"
+      assert hero["content_type"] == file.content_type
+      assert hero["size_bytes"] == byte_size("fake png bytes")
+
+      for {asset, bytes} <- [{clip, "mp4 bytes"}, {hero, "fake png bytes"}] do
+        # Absolute, and its token is scoped to exactly this artifact.
+        assert %URI{scheme: scheme, host: host, path: path} = URI.parse(asset["url"])
+        assert scheme in ["http", "https"] and is_binary(host)
+        name = asset["name"]
+        assert ["", "api", "artifacts", "view", token, "assets", ^name] = String.split(path, "/")
+        assert OrcaHubWeb.ArtifactURL.verify(token) == {:ok, artifact.id}
+        assert fetch_url(asset["url"]) == {200, bytes}
+      end
+    end
+
+    test "list_assets/1 preloads each asset's file in the one call", %{
+      artifact: artifact,
+      asset_file: file,
+      state: state
+    } do
+      ArtifactsTool.call(
+        "attach_artifact_asset",
+        %{"artifact_id" => artifact.id, "file_id" => file.id},
+        state
+      )
+
+      assert [%{file: %Files.File{id: file_id}}] = Artifacts.list_assets(artifact)
+      assert file_id == file.id
+    end
+
+    test "the descriptions point at get_artifact for a fresh url" do
+      tools = Map.new(ArtifactsTool.list(), &{&1["name"], &1["description"]})
+      assert tools["get_artifact"] =~ "a fresh signed absolute `url`"
+      assert tools["save_artifact"] =~ "call get_artifact for a fresh one"
+      refute tools["save_artifact"] =~ "re-save or re-attach for a fresh one"
+    end
+  end
+
   describe "render_screenshots/5 with assets (ORCAHUB3-128)" do
     test "renders from a temp dir with index.html + assets/<name>, then removes the dir", %{
       artifact: artifact,

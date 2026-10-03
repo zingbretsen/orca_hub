@@ -70,7 +70,7 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
             "attached asset's `ref` and a signed absolute `url` you can WebFetch to check " <>
             "it. That url is a capability: anyone holding it can read this artifact and " <>
             "its assets, without logging in, for about a day. Share it deliberately, and " <>
-            "re-save or re-attach for a fresh one rather than storing it. NOT possible " <>
+            "call get_artifact for a fresh one rather than storing it. NOT possible " <>
             "from the sandbox: downloads (the iframe has no " <>
             "allow-downloads, and <a download> is ignored there, so the link just " <>
             "navigates the artifact's own frame to the file, replacing the artifact; a " <>
@@ -233,7 +233,12 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
         "description" =>
           "Fetch an artifact's full content by name (within this session's project) or by " <>
             "artifact_id, so it can be inspected or iterated on (e.g. from a later " <>
-            "session). The returned `data` includes the reserved `_user_state` key if " <>
+            "session). It also returns `assets`: every attached asset's `ref` (the " <>
+            "assets/<name> the content uses), content_type, size_bytes, and a fresh " <>
+            "signed absolute `url`. That url is a capability: anyone holding it can read " <>
+            "this artifact and its assets, without logging in, for about a day, so share " <>
+            "it deliberately and call get_artifact again rather than storing it. " <>
+            "The returned `data` includes the reserved `_user_state` key if " <>
             "the user has ticked/typed anything into a `data-orca-persist` field or " <>
             "called `window.orca.setState` (see save_artifact's description) — read it " <>
             "here to see what the user has persisted, or reset it via " <>
@@ -426,22 +431,8 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
 
   defp run("get_artifact", args, state) do
     case resolve_artifact(args, state) do
-      {:ok, artifact} ->
-        text(
-          Jason.encode!(%{
-            id: artifact.id,
-            name: artifact.name,
-            kind: artifact.kind,
-            version: artifact.version,
-            content: artifact.content,
-            data: artifact.data,
-            raw_url: raw_url(artifact),
-            updated_at: artifact.updated_at
-          })
-        )
-
-      {:error, message} ->
-        error(message)
+      {:ok, artifact} -> text(Jason.encode!(get_result(artifact)))
+      {:error, message} -> error(message)
     end
   end
 
@@ -960,6 +951,37 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
       "session:#{session_id}",
       {:open_artifact, artifact_id, mode}
     )
+  end
+
+  # ── get_artifact ──────────────────────────────────────────────────────
+  #
+  # The read-only way to a fresh asset url (ORCAHUB3-131): the assets come
+  # from one RPC with their files preloaded, and the raw url plus every
+  # asset url from one more, the same artifact_urls/2 hop as save_result/3.
+
+  defp get_result(artifact) do
+    assets = HubRPC.list_artifact_assets(artifact)
+    urls = HubRPC.artifact_urls(artifact, Enum.map(assets, & &1.name))
+
+    %{
+      id: artifact.id,
+      name: artifact.name,
+      kind: artifact.kind,
+      version: artifact.version,
+      content: artifact.content,
+      data: artifact.data,
+      raw_url: urls.raw_url,
+      assets:
+        Enum.map(assets, fn asset ->
+          asset.name
+          |> asset_entry(Map.fetch!(urls.asset_urls, asset.name))
+          |> Map.merge(%{
+            content_type: asset.file.content_type,
+            size_bytes: asset.file.size_bytes
+          })
+        end),
+      updated_at: artifact.updated_at
+    }
   end
 
   # ── update_artifact_data ──────────────────────────────────────────────
