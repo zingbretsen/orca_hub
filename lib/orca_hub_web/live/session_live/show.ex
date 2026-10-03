@@ -132,6 +132,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:tts_stream, false)
      |> assign(:open_files, [])
      |> assign(:active_file_tab, nil)
+     # Which file-panel shell the browser shows, :desktop | :mobile | nil
+     # (unknown) — an open artifact renders in that shell only, see
+     # artifact_in_shell?/2 (ORCAHUB3-130).
+     |> assign(:panel_layout, connect_panel_layout(socket))
      |> assign(:subscribed_artifact_ids, MapSet.new())
      |> assign(:file_editing, false)
      |> assign(:file_edit_mode, false)
@@ -2227,6 +2231,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   # -- File panel events --
 
+  # PanelLayout hook: the viewport crossed the `lg` breakpoint, so the other
+  # shell is now on screen. An open artifact's iframe moves there (and
+  # reloads, being a new element); its stored `tab.src` is reused as is.
+  def handle_event("panel_layout", params, socket) do
+    case parse_panel_layout(params["layout"]) do
+      nil -> {:noreply, socket}
+      layout -> {:noreply, assign(socket, :panel_layout, layout)}
+    end
+  end
+
   def handle_event("toggle_file_browser", _params, socket) do
     {:noreply,
      socket
@@ -3187,15 +3201,37 @@ defmodule OrcaHubWeb.SessionLive.Show do
     end
   end
 
-  # Shared by the desktop and mobile split-panel templates (both are always
-  # present in the DOM simultaneously, toggled by responsive CSS classes —
-  # not conditionally rendered — so `variant` keeps their iframe ids from
-  # colliding). `@tab.src` is the token-scoped raw URL (ORCAHUB3-128) — the
-  # sandboxed iframe's own asset requests never carry the Authelia cookie,
-  # so it loads from /api/artifacts/view/<token>/raw. Its `?v=<version>`
-  # busts the iframe's cache so a live-reload
-  # (handle_info({:artifact_updated, ...})) actually re-fetches instead of
-  # serving the old cached document.
+  # The browser's file-panel layout from the `panel_layout` connect param
+  # (assets/js/panel_layout.js, sent on every join). nil on the dead render
+  # and for a stale client whose JS predates the param.
+  defp connect_panel_layout(socket) do
+    case get_connect_params(socket) do
+      %{"panel_layout" => layout} -> parse_panel_layout(layout)
+      _ -> nil
+    end
+  end
+
+  defp parse_panel_layout("desktop"), do: :desktop
+  defp parse_panel_layout("mobile"), do: :mobile
+  defp parse_panel_layout(_), do: nil
+
+  # Does an open artifact's iframe render in this file-panel shell
+  # (ORCAHUB3-130)? Both shells are in the DOM, hidden by CSS only, and a
+  # display:none iframe still loads and runs its scripts — so only the shell
+  # the browser shows gets one. An unknown layout (nil) renders both: a
+  # client too old to report it degrades to a duplicate, not a blank panel.
+  defp artifact_in_shell?(nil, _shell), do: true
+  defp artifact_in_shell?(layout, shell), do: layout == shell
+
+  # Shared by the desktop and mobile split-panel templates. Both shells are
+  # always in the DOM (toggled by responsive CSS classes), but this renders
+  # in only one of them, per artifact_in_shell?/2; `variant` keeps the ids
+  # distinct and says which shell holds the iframe. `@tab.src` is the
+  # token-scoped raw URL (ORCAHUB3-128) — the sandboxed iframe's own asset
+  # requests never carry the Authelia cookie, so it loads from
+  # /api/artifacts/view/<token>/raw. Its `?v=<version>` busts the iframe's
+  # cache so a live-reload (handle_info({:artifact_updated, ...})) actually
+  # re-fetches instead of serving the old cached document.
   defp artifact_tab_panel(assigns) do
     ~H"""
     <div class="flex flex-col h-full min-h-0">

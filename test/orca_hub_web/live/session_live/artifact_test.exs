@@ -57,52 +57,43 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
       session: session,
       artifact: artifact
     } do
-      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
-      refute html =~ "artifact-iframe-desktop-#{artifact.id}"
+      # One shell per layout (ORCAHUB3-130); each must carry the same src.
+      for layout <- ["desktop", "mobile"] do
+        {:ok, view, html} = live(with_layout(conn, layout), ~p"/sessions/#{session.id}")
+        refute html =~ "artifact-iframe-#{layout}-#{artifact.id}"
 
-      Phoenix.PubSub.broadcast(
-        OrcaHub.PubSub,
-        "session:#{session.id}",
-        {:open_artifact, artifact.id, "split"}
-      )
+        broadcast_open(session, artifact)
 
-      html = render(view)
-      assert html =~ "artifact-iframe-desktop-#{artifact.id}"
+        html = render(view)
+        assert html =~ "artifact-iframe-#{layout}-#{artifact.id}"
 
-      # ORCAHUB3-128: token-scoped /api src (both the desktop and the mobile
-      # panel), never the Authelia-gated /artifacts/:id/raw.
-      for variant <- ["desktop", "mobile"] do
+        # ORCAHUB3-128: token-scoped /api src, never the Authelia-gated
+        # /artifacts/:id/raw.
         assert {:ok, artifact.id} ==
-                 view |> iframe_src(variant, artifact) |> src_token(artifact.version)
-      end
+                 view |> iframe_src(layout, artifact) |> src_token(artifact.version)
 
-      refute html =~ "/artifacts/#{artifact.id}/raw"
-      assert html =~ ~s(sandbox="allow-scripts")
-      refute html =~ "allow-same-origin"
-      assert html =~ artifact.name
+        refute html =~ "/artifacts/#{artifact.id}/raw"
+        assert html =~ ~s(sandbox="allow-scripts")
+        refute html =~ "allow-same-origin"
+        assert html =~ artifact.name
+      end
     end
 
     # The desktop column and the mobile modal are both in the DOM, hidden by
     # CSS only, and a display:none iframe still loads and runs its scripts —
-    # so every view of an artifact fetched and executed it twice.
-    @tag :repro
-    test "ORCAHUB3-130: an open artifact tab renders one loading iframe, not one per desktop/mobile panel",
-         %{conn: conn, session: session, artifact: artifact} do
-      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+    # so every view of an artifact fetched and executed it twice. The client
+    # reports which shell is on screen (the panel_layout connect param), and
+    # only that one gets the iframe.
+    for layout <- ["desktop", "mobile"] do
+      @layout layout
+      test "ORCAHUB3-130: an open artifact tab renders one loading iframe, not one per desktop/mobile panel (#{layout} layout)",
+           %{conn: conn, session: session, artifact: artifact} do
+        {:ok, view, _html} = live(with_layout(conn, @layout), ~p"/sessions/#{session.id}")
 
-      Phoenix.PubSub.broadcast(
-        OrcaHub.PubSub,
-        "session:#{session.id}",
-        {:open_artifact, artifact.id, "split"}
-      )
+        broadcast_open(session, artifact)
 
-      loading_iframes =
-        view
-        |> render()
-        |> Floki.parse_document!()
-        |> Floki.find(~s(iframe[data-artifact-id="#{artifact.id}"][src]))
-
-      assert length(loading_iframes) == 1
+        assert loading_iframe_ids(view, artifact) == ["artifact-iframe-#{@layout}-#{artifact.id}"]
+      end
     end
 
     test "the tab panel includes a download link pointed at the download route", %{
@@ -202,7 +193,7 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
       session: session,
       artifact: artifact
     } do
-      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      {:ok, view, _html} = live(with_layout(conn, "desktop"), ~p"/sessions/#{session.id}")
 
       Phoenix.PubSub.broadcast(
         OrcaHub.PubSub,
@@ -233,7 +224,7 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
       session: session,
       artifact: artifact
     } do
-      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      {:ok, view, _html} = live(with_layout(conn, "desktop"), ~p"/sessions/#{session.id}")
 
       Phoenix.PubSub.broadcast(
         OrcaHub.PubSub,
@@ -260,6 +251,108 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
 
       assert iframe_src(view, "desktop", updated) == OrcaHubWeb.ArtifactURL.raw_path(updated)
     end
+  end
+
+  describe "panel layout (ORCAHUB3-130)" do
+    test "a breakpoint crossing moves the iframe to the other shell, src unchanged", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(with_layout(conn, "desktop"), ~p"/sessions/#{session.id}")
+      broadcast_open(session, artifact)
+      original = iframe_src(view, "desktop", artifact)
+
+      # A fresh mint now differs from the stored src, so the asserts below
+      # prove the crossing reuses `tab.src` rather than minting in render.
+      Application.put_env(:orca_hub, :artifact_url_max_age_seconds, 7200)
+      on_exit(fn -> Application.delete_env(:orca_hub, :artifact_url_max_age_seconds) end)
+      refute OrcaHubWeb.ArtifactURL.raw_path(artifact) == original
+
+      push_layout(view, "mobile")
+      assert loading_iframe_ids(view, artifact) == ["artifact-iframe-mobile-#{artifact.id}"]
+      assert iframe_src(view, "mobile", artifact) == original
+      assert has_element?(view, "#artifact-fs-wrapper-mobile-#{artifact.id}")
+      refute has_element?(view, "#artifact-fs-wrapper-desktop-#{artifact.id}")
+
+      push_layout(view, "desktop")
+      assert loading_iframe_ids(view, artifact) == ["artifact-iframe-desktop-#{artifact.id}"]
+      assert iframe_src(view, "desktop", artifact) == original
+    end
+
+    test "the layout is tracked while the panel is closed", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(with_layout(conn, "desktop"), ~p"/sessions/#{session.id}")
+      assert has_element?(view, ~s(#panel-layout[phx-hook="PanelLayout"]))
+
+      push_layout(view, "mobile")
+      assert has_element?(view, ~s(#panel-layout[data-panel-layout="mobile"]))
+
+      broadcast_open(session, artifact)
+      assert loading_iframe_ids(view, artifact) == ["artifact-iframe-mobile-#{artifact.id}"]
+    end
+
+    test "an invalid layout event is ignored", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      {:ok, view, _html} = live(with_layout(conn, "mobile"), ~p"/sessions/#{session.id}")
+      broadcast_open(session, artifact)
+
+      view |> element("#panel-layout") |> render_hook("panel_layout", %{"layout" => "tablet"})
+      view |> element("#panel-layout") |> render_hook("panel_layout", %{})
+
+      assert loading_iframe_ids(view, artifact) == ["artifact-iframe-mobile-#{artifact.id}"]
+    end
+
+    # nil = unknown: a stale-JS client that predates the param (or sends
+    # garbage) degrades to the old duplicate, never to a blank panel.
+    test "an unknown layout renders the iframe in both shells", %{
+      conn: conn,
+      session: session,
+      artifact: artifact
+    } do
+      for conn <- [conn, put_connect_params(conn, %{"panel_layout" => "tablet"})] do
+        {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+        refute has_element?(view, "#panel-layout[data-panel-layout]")
+
+        broadcast_open(session, artifact)
+
+        assert loading_iframe_ids(view, artifact) == [
+                 "artifact-iframe-desktop-#{artifact.id}",
+                 "artifact-iframe-mobile-#{artifact.id}"
+               ]
+
+        assert iframe_src(view, "desktop", artifact) == iframe_src(view, "mobile", artifact)
+      end
+    end
+  end
+
+  defp with_layout(conn, layout), do: put_connect_params(conn, %{"panel_layout" => layout})
+
+  defp push_layout(view, layout) do
+    view |> element("#panel-layout") |> render_hook("panel_layout", %{"layout" => layout})
+  end
+
+  defp broadcast_open(session, artifact) do
+    Phoenix.PubSub.broadcast(
+      OrcaHub.PubSub,
+      "session:#{session.id}",
+      {:open_artifact, artifact.id, "split"}
+    )
+  end
+
+  # The iframes that would load: every one for this artifact with a src.
+  defp loading_iframe_ids(view, artifact) do
+    view
+    |> render()
+    |> Floki.parse_document!()
+    |> Floki.find(~s(iframe[data-artifact-id="#{artifact.id}"][src]))
+    |> Enum.flat_map(&Floki.attribute(&1, "id"))
   end
 
   defp iframe_src(view, variant, artifact) do

@@ -33,6 +33,7 @@ import {
   RAIL_MARKUP, HELD_MARKUP, SEGMENT_CLASS, RAIL_ICON_PLAY, RAIL_ICON_PAUSE,
 } from "./tts_rail"
 import { voiceViewShowing } from "./voice_view_flag"
+import { PanelLayoutHook, panelLayout } from "./panel_layout"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
@@ -1466,6 +1467,12 @@ let Hooks = {
   // the bar half lives in VoiceHook above. See voice_view_hook.js.
   VoiceView: VoiceViewHook,
 
+  // Tells the session page which file-panel shell (desktop column or phone
+  // modal) is on screen when the viewport crosses the `lg` breakpoint, so an
+  // open artifact's iframe renders in that shell only (ORCAHUB3-130). Mounted
+  // on `#panel-layout` in session_live/show.html.heex. See panel_layout.js.
+  PanelLayout: PanelLayoutHook,
+
   // Plays the audio the Settings page's "Speak sample" button pushes down as
   // a data URL. The bytes travel over the LiveView socket rather than being
   // fetched by the browser because the sample has to reflect the CURRENT,
@@ -2486,7 +2493,9 @@ let Hooks = {
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
-  params: {_csrf_token: csrfToken},
+  // A function, so it's evaluated on every join: a reconnect after a resize
+  // sends the CURRENT panel layout (panel_layout.js, ORCAHUB3-130).
+  params: () => ({_csrf_token: csrfToken, panel_layout: panelLayout()}),
   hooks: Hooks,
   dom: {
     // Preserve the user-toggled `open` state on <details> elements across

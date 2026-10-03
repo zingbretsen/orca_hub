@@ -17,6 +17,11 @@
     </div>
   </div>
 
+  <%!-- Reports `lg` breakpoint crossings so an open artifact renders in the
+  file-panel shell on screen only (ORCAHUB3-130). Always rendered, panel open
+  or not. --%>
+  <div id="panel-layout" phx-hook="PanelLayout" data-panel-layout={@panel_layout} hidden></div>
+
   <div :if={@node_unavailable} class="alert alert-warning mb-2">
     <.icon name="hero-signal-slash" class="size-5" />
     <span>{@node_unavailable_message} Actions are disabled until it reconnects.</span>
@@ -2030,7 +2035,11 @@
           <div class="flex-1 min-w-0 overflow-y-auto bg-base-200 rounded-lg p-4">
             <%= if tab = Enum.find(@open_files, & &1.path == @active_file_tab) do %>
               <%= if tab[:kind] == :artifact do %>
-                <.artifact_tab_panel tab={tab} variant="desktop" />
+                <.artifact_tab_panel
+                  :if={artifact_in_shell?(@panel_layout, :desktop)}
+                  tab={tab}
+                  variant="desktop"
+                />
               <% else %>
                 <%!-- File header --%>
                 <div class="flex items-center justify-between mb-3">
@@ -2252,7 +2261,11 @@
             <div class="flex-1 min-w-0 overflow-y-auto bg-base-200 rounded-lg p-3">
               <%= if tab = Enum.find(@open_files, & &1.path == @active_file_tab) do %>
                 <%= if tab[:kind] == :artifact do %>
-                  <.artifact_tab_panel tab={tab} variant="mobile" />
+                  <.artifact_tab_panel
+                    :if={artifact_in_shell?(@panel_layout, :mobile)}
+                    tab={tab}
+                    variant="mobile"
+                  />
                 <% else %>
                   <div class="flex items-center justify-between mb-2">
                     <div class="flex items-center gap-2 min-w-0">
