@@ -189,6 +189,25 @@ defmodule OrcaHub.MCP.Tools.ArtifactsTest do
     end
   end
 
+  describe "save_artifact `data` (ORCAHUB3-132)" do
+    @tag :repro
+    test "ORCAHUB3-132: a `data` argument seeds the artifact's data instead of being dropped", %{
+      state: state
+    } do
+      result =
+        ArtifactsTool.call(
+          "save_artifact",
+          %{"name" => "seeded", "content" => "<p>x</p>", "data" => %{"rows" => [1, 2]}},
+          state
+        )
+
+      assert %{"isError" => false} = result
+      %{"id" => id} = decode(result)
+
+      assert Artifacts.get_artifact(id).data == %{"rows" => [1, 2]}
+    end
+  end
+
   describe "save_artifact — content_path (ORCAHUB3-56)" do
     test "reads content from a file inside the session directory and saves it", %{
       dir: dir,
