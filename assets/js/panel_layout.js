@@ -20,12 +20,14 @@
  * fakes; production callers omit it. */
 
 /* Mirrors the CSS `lg:` breakpoint used by the two file-panel shells in
- * session_live/show.html.heex: Tailwind v4's default `--breakpoint-lg`, which
- * it compiles to exactly this query (assets/css/app.css doesn't override it).
- * The range syntax is deliberate, not a stylistic copy of `(min-width:
- * 64rem)`: a browser too old to parse it matches NEITHER the CSS `lg:` rules
- * nor this, so both agree on "mobile". Change both together. */
-export const PANEL_LAYOUT_MEDIA = "(width >= 64rem)"
+ * session_live/show.html.heex: Tailwind v4's default `--breakpoint-lg`
+ * (assets/css/app.css doesn't override it). The prod build (`tailwind
+ * --minify`, mix assets.deploy) lowers `lg:` to exactly this query; the dev
+ * build emits the equivalent range form `(width >= 64rem)`. min-width is the
+ * form every browser parses, so it agrees with what prod ships even where
+ * range syntax isn't supported (a mismatch there blanks the visible panel).
+ * Change both together. */
+export const PANEL_LAYOUT_MEDIA = "(min-width: 64rem)"
 
 function layoutOf(mql) {
   return mql.matches ? "desktop" : "mobile"

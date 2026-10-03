@@ -9,8 +9,9 @@
 //
 // It drives the REAL module against a fake matchMedia: the layout the join
 // params report, and the hook's push/reconcile/teardown. What it cannot see is
-// a browser's actual media evaluation; the breakpoint itself is pinned by
-// source checks against the CSS and the template it mirrors.
+// a browser's actual media evaluation, or the compiled CSS (a build artifact,
+// not in git); the breakpoint is pinned by its literal plus source checks
+// against the CSS and the template it mirrors.
 
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
@@ -84,7 +85,9 @@ function mountHook(win, serverLayout) {
 // ======================================================================
 console.log("\n1. the breakpoint mirrors the shells' CSS `lg:`")
 {
-  eq("Tailwind v4's default lg, as it compiles it", PANEL_LAYOUT_MEDIA, "(width >= 64rem)")
+  // The prod (minified) build's form of `lg:`; dev emits `(width >= 64rem)`,
+  // which only browsers with range syntax parse.
+  eq("Tailwind v4's default lg, as the prod build compiles it", PANEL_LAYOUT_MEDIA, "(min-width: 64rem)")
 
   const css = readFileSync(join(HERE, "../css/app.css"), "utf8")
   ok("app.css does not redefine the lg breakpoint", !/--breakpoint-lg\s*:/.test(css))
