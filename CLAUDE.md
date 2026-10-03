@@ -276,7 +276,7 @@ Confirmed paths for this project's deps:
 | req | `github.com/wojtekmach/req` /CHANGELOG.md |
 | swoosh | `github.com/swoosh/swoosh` /CHANGELOG.md |
 | ex_json_schema | **no changelog** — diff tags instead: `gh api repos/jonasschmidt/ex_json_schema/compare/v<old>...v<new> --jq '.commits[].commit.message'` |
-| dns_cluster | `github.com/phoenixframework/dns_cluster` /CHANGELOG.md, but **it lags** — the file stopped at 0.2.0 while 0.3.0 was published. Use the tag diff. |
+| dns_cluster | `github.com/phoenixframework/dns_cluster` /CHANGELOG.md. It lagged once (stopped at 0.2.0 while 0.3.0 was out) but has since caught up — 0.3.0 and 0.3.1 are both documented in the tarball. Use `hex.package diff`. |
 | telemetry_metrics, phoenix_pubsub | `github.com/beam-telemetry/telemetry_metrics`, `github.com/phoenixframework/phoenix_pubsub` /CHANGELOG.md |
 | mint | `github.com/elixir-mint/mint` /CHANGELOG.md |
 | dotenvy | `mix hex.info dotenvy` prints a tag-pinned `Changelog:` link |
@@ -363,6 +363,19 @@ the suite nor the boot smoke covers it, so verify the changed path directly —
 here, starting a `DNSCluster` by hand with a live query and a short `:interval`
 and confirming it survives several poll ticks.
 
+**An additive-looking changelog does not mean the refactor was
+behaviour-preserving — in a 0.x release, the "housekeeping" commit is where the
+regression hides.** dns_cluster 0.3.0 was assessed here on 2026-08-28 as safe
+because its new `:srv` support was opt-in and every default was untouched, which
+was all true. What that reading missed was a "Housekeeping for less complexity
+and more readability" commit in the same release, which broke `{basename,
+query}` tuple queries outright — `discover_ips/1` started passing the whole
+tuple to `resolver.lookup/2` where the hostname belonged. Nothing in the
+changelog said so; 0.3.1 quietly fixed it. The lesson is not "don't trust
+dns_cluster" but: when a 0.x diff contains a refactor of the module's core
+loop, read THAT hunk, not just the feature bullets — and prefer exercising the
+behaviour over reasoning about the summary.
+
 **Verifying the app actually boots.** The test suite uses `ConnTest`/
 `LiveViewTest`, which bypass the HTTP adapter entirely — so it does NOT cover
 bandit / thousand_island / websock_adapter / plug. After upgrading any of those,
@@ -428,10 +441,10 @@ agent output is allowed to render, which is a product decision rather than a
 dependency bump. Do not silently "upgrade past" this item on a future run;
 there is nothing to upgrade to.
 
-**Still deferred, re-checked 2026-09-25: phoenix_live_view 1.1 -> 1.2**
-(1.1.33 vs 1.2.12, unmoved; raised with the user 2026-08-14, 08-21, 08-28,
-09-11 and 09-18, still not decided — do not keep re-deriving the analysis
-below, just re-raise it). Everything else is current. 1.2 needs `mix.exs`
+**Still deferred, re-checked 2026-10-02: phoenix_live_view 1.1 -> 1.2**
+(1.1.33 vs 1.2.12, unmoved for three weeks; raised with the user 2026-08-14,
+08-21, 08-28, 09-11, 09-18 and 09-25, still not decided — do not keep
+re-deriving the analysis below, just re-raise it). Everything else is current. 1.2 needs `mix.exs`
 `~> 1.1.0` -> `~> 1.2` and carries real breaking changes: the
 `Phoenix.Component` global-attribute list was realigned to MDN and the removed
 attributes are NOT enumerated in the changelog (fix per-site with
