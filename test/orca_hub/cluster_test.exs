@@ -11,6 +11,8 @@ defmodule OrcaHub.ClusterTest do
   """
   use OrcaHub.DataCase, async: true
 
+  import OrcaHub.MemoryExtractionStub
+
   alias OrcaHub.Cluster
   alias OrcaHub.{ClusterNodes, Projects, Sessions, Terminals}
   alias OrcaHub.Sessions.Session
@@ -393,38 +395,26 @@ defmodule OrcaHub.ClusterTest do
     end
 
     test "extract_memories: false skips dispatch for the root and every cascaded descendant", %{
-      root: root
+      root: root,
+      child: child,
+      grandchild: grandchild
     } do
-      test_pid = self()
-
-      Application.put_env(:orca_hub, :memory_extraction_dispatch_fun, fn session, opts ->
-        send(test_pid, {:dispatched, session.id, opts})
-        {:ok, :dispatched}
-      end)
-
-      on_exit(fn -> Application.delete_env(:orca_hub, :memory_extraction_dispatch_fun) end)
+      stub_memory_extraction_dispatch([root, child, grandchild])
 
       assert {:ok, _} = Cluster.cascade_archive_session(node(), root, extract_memories: false)
 
-      refute_receive {:dispatched, _, _}, 200
+      refute_receive {:memory_extraction_dispatched, _, _}, 200
     end
 
     test "extract_memories: true (the default) dispatches for the root and every cascaded descendant",
          %{root: root, child: child, grandchild: grandchild} do
-      test_pid = self()
-
-      Application.put_env(:orca_hub, :memory_extraction_dispatch_fun, fn session, opts ->
-        send(test_pid, {:dispatched, session.id, opts})
-        {:ok, :dispatched}
-      end)
-
-      on_exit(fn -> Application.delete_env(:orca_hub, :memory_extraction_dispatch_fun) end)
+      stub_memory_extraction_dispatch([root, child, grandchild])
 
       assert {:ok, _} = Cluster.cascade_archive_session(node(), root)
 
       dispatched_ids =
         for _ <- 1..3 do
-          assert_receive {:dispatched, id, _opts}, 500
+          assert_receive {:memory_extraction_dispatched, id, _opts}, 500
           id
         end
 

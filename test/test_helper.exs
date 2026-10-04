@@ -21,3 +21,9 @@
 #   mix test --only s3          # the s3-only pass, needs ORCA_S3_* set
 ExUnit.start(exclude: [:distributed, :repro, :s3])
 Ecto.Adapters.SQL.Sandbox.mode(OrcaHub.Repo, :manual)
+
+# Per-session memory-extraction dispatch hooks (ORCAHUB3-133). Test-only: prod
+# never starts this registry, so dispatch always goes to the real
+# MemoryExtraction.dispatch/2 there. Stub with
+# OrcaHub.MemoryExtractionStub.stub_memory_extraction_dispatch/1.
+{:ok, _} = OrcaHub.MemoryExtraction.DispatchHooks.start_link()

@@ -10,7 +10,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   alias OrcaHub.MCP.Tools.NodeArg
   alias OrcaHub.ForkGate
   alias OrcaHub.ForkGate.ServingProfile
-  alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, MemoryExtraction, NodePolicy, Probes}
+  alias OrcaHub.{AskUserQuestion, Backend, Cluster, HubRPC, NodePolicy, Probes}
+  alias OrcaHub.MemoryExtraction.DispatchHooks
   alias OrcaHub.Sessions.Session
 
   # Time bound for AUTO-derived idempotency keys only (see
@@ -1009,12 +1010,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     case Cluster.find_session(target_id) do
       {node, session} ->
         if NodePolicy.cross_node_allowed?(node) do
-          dispatch_fun =
-            Application.get_env(
-              :orca_hub,
-              :memory_extraction_dispatch_fun,
-              &MemoryExtraction.dispatch/2
-            )
+          dispatch_fun = DispatchHooks.dispatch_fun(session.id)
 
           case dispatch_fun.(session, force: true, trigger: :manual) do
             {:ok, :dispatched} ->

@@ -174,17 +174,11 @@ defmodule OrcaHub.Sessions do
     result
   end
 
-  # Test seam (mirrors OrcaHub.Backend.SharedPrompts.memory_context_block/2's
-  # `:memory_context_fun` pattern): stub via `:orca_hub,
-  # :memory_extraction_dispatch_fun` to observe/control dispatch without a
+  # Test seam: tests stub dispatch per session id via
+  # OrcaHub.MemoryExtraction.DispatchHooks to observe/control it without a
   # running memory service or a real child spawn.
   defp dispatch_memory_extraction_async(session, opts) do
-    dispatch_fun =
-      Application.get_env(
-        :orca_hub,
-        :memory_extraction_dispatch_fun,
-        &OrcaHub.MemoryExtraction.dispatch/2
-      )
+    dispatch_fun = OrcaHub.MemoryExtraction.DispatchHooks.dispatch_fun(session.id)
 
     Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn -> dispatch_fun.(session, opts) end)
   end

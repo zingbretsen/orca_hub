@@ -4,6 +4,8 @@ defmodule OrcaHub.SessionRunnerTest do
   # checked-out sandbox connection like any other DB-touching test.
   use OrcaHub.DataCase, async: true
 
+  import OrcaHub.MemoryExtractionStub
+
   alias OrcaHub.{HubRPC, Projects, Sessions, SessionRunner}
 
   setup do
@@ -238,23 +240,9 @@ defmodule OrcaHub.SessionRunnerTest do
   describe "idle_teardown / evict_warm — no memory extraction dispatch" do
     setup %{project: project} do
       session = create_session(project, %{})
-      test_pid = self()
-
-      # NOTE: :memory_extraction_dispatch_fun is GLOBAL application env, but this
-      # case is `async: true` — so while this hook is installed, ANY concurrently
-      # running test that archives a session also invokes it and sends a message
-      # here. Every assertion below must therefore pin the session id (`^session_id`)
-      # rather than matching `_`; a wildcard refute_receive trips on a foreign
-      # session's dispatch and fails at random (seen 2026-09-11 with a stray
-      # `trigger: :archive` dispatch from another test).
-      Application.put_env(:orca_hub, :memory_extraction_dispatch_fun, fn dispatched_session,
-                                                                         opts ->
-        send(test_pid, {:memory_extraction_dispatched, dispatched_session.id, opts})
-        {:ok, :dispatched}
-      end)
-
-      on_exit(fn -> Application.delete_env(:orca_hub, :memory_extraction_dispatch_fun) end)
-
+      # Per-session, so a concurrent test's archive can't reach this one
+      # (ORCAHUB3-133; this used to be a global app env hook).
+      stub_memory_extraction_dispatch(session)
       %{session: session}
     end
 

@@ -2,6 +2,7 @@ defmodule OrcaHub.SessionsTest do
   use OrcaHub.DataCase
 
   import Ecto.Query
+  import OrcaHub.MemoryExtractionStub
 
   alias OrcaHub.{Projects, Repo, Sessions}
   alias OrcaHub.Sessions.{Message, Session}
@@ -2019,21 +2020,13 @@ defmodule OrcaHub.SessionsTest do
   end
 
   describe "archive_session/2 — memory extraction dispatch" do
-    setup do
-      test_pid = self()
-
-      Application.put_env(:orca_hub, :memory_extraction_dispatch_fun, fn session, opts ->
-        send(test_pid, {:memory_extraction_dispatched, session.id, opts})
-        {:ok, :dispatched}
-      end)
-
-      on_exit(fn -> Application.delete_env(:orca_hub, :memory_extraction_dispatch_fun) end)
-
-      :ok
+    setup %{project: project} do
+      session = create_session(project)
+      stub_memory_extraction_dispatch(session)
+      %{session: session}
     end
 
-    test "dispatches by default (extract_memories: true is implicit)", %{project: project} do
-      session = create_session(project)
+    test "dispatches by default (extract_memories: true is implicit)", %{session: session} do
       {:ok, _} = Sessions.archive_session(session)
 
       assert_receive {:memory_extraction_dispatched, session_id, opts}, 500
@@ -2041,22 +2034,19 @@ defmodule OrcaHub.SessionsTest do
       assert opts[:trigger] == :archive
     end
 
-    test "dispatches when extract_memories: true is passed explicitly", %{project: project} do
-      session = create_session(project)
+    test "dispatches when extract_memories: true is passed explicitly", %{session: session} do
       {:ok, _} = Sessions.archive_session(session, extract_memories: true)
 
       assert_receive {:memory_extraction_dispatched, _session_id, _opts}, 500
     end
 
-    test "does NOT dispatch when extract_memories: false", %{project: project} do
-      session = create_session(project)
+    test "does NOT dispatch when extract_memories: false", %{session: session} do
       {:ok, _} = Sessions.archive_session(session, extract_memories: false)
 
       refute_receive {:memory_extraction_dispatched, _, _}, 200
     end
 
-    test "still archives the session even when extraction is skipped", %{project: project} do
-      session = create_session(project)
+    test "still archives the session even when extraction is skipped", %{session: session} do
       {:ok, archived} = Sessions.archive_session(session, extract_memories: false)
       refute is_nil(archived.archived_at)
     end
