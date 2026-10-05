@@ -27,7 +27,7 @@ graph TB
         WebhookCtrl["WebhookController"]
         TTSCtrl["TTSController"]
         ArtifactCtrl["ArtifactController<br>(/artifacts/:id/raw|download|assets,<br>/api/artifacts/view/:token/*)"]
-        FileDownloadCtrl["FileDownloadController<br>(chunked, node-routed)"]
+        FileDownloadCtrl["FileDownloadController<br>(chunked, node-routed;<br>?disposition=inline media previews)"]
         ApiRunCtrl["ApiRunController<br>(/api/v1/runs)"]
         SessionApiCtrl["SessionApiController<br>(GET /api/v1/sessions,<br>/recent, /:id, /:id/tail)"]
         A2ACtrl["A2AController<br>(/a2a, inbound JSON-RPC)"]
@@ -80,6 +80,9 @@ graph TB
         VoiceSession["Voice.Session<br>(pure state machine)"]
         VoiceASR["Voice.ASR<br>(GB10 sync lane)"]
         VoiceIntent["Voice.Intent<br>(phonetic command matcher)"]
+        VoiceCleanup["Voice.Cleanup<br>(rolling LLM draft cleanup)"]
+        VoicePrompt["Voice.Prompt<br>(Whisper initial_prompt)"]
+        VoiceDictation["Voice.Dictation<br>(dictated-send note)"]
         Deltas["Backend.Deltas<br>(normalized orca_delta)"]
     end
 
@@ -166,6 +169,7 @@ graph TB
         MCPSupervisor["MCPSupervisor<br>(DynamicSupervisor)"]
         Scheduler["Quantum Scheduler<br>(hub only, RunStrategy.Local)"]
         TriggerLoader["TriggerLoader<br>(hub only)"]
+        OneOffSweep["OneOffTriggerSweep<br>(hub only, 30s DB poll)"]
         TriggerExecutor["TriggerExecutor"]
         TaskSupervisor["Task.Supervisor"]
         ClusterNodeTracker["ClusterNodeTracker<br>(hub only)"]
@@ -260,7 +264,9 @@ graph TB
     CodePush -->|"boot + nodeup + on demand"| CodeSync
     FleetStatus -->|reads desired state| CodeGenerations
 
+    TriggerLoader -->|"sync_triggers on boot"| Scheduler
     Scheduler --> TriggerExecutor
+    OneOffSweep -->|"due type: once rows"| TriggerExecutor
     WebhookCtrl -->|async via TaskSupervisor| TriggerExecutor
     TriggerExecutor --> SessionSupervisor
     SessionSupervisor --> SessionRunner
@@ -331,7 +337,10 @@ graph TB
     SessionRunner -.->|"turn end (idle/error),<br>via HubRPC"| SessionEvents
     SessionRunner -->|"unpersisted delta broadcasts"| Deltas
     VoiceChannel --> VoiceSession & VoiceASR & VoiceIntent
-    VoiceASR --> ASRConfig
+    VoiceChannel -->|"task per cleanup effect"| VoiceCleanup
+    VoiceSession --> VoicePrompt
+    VoiceChannel & SessionShow -->|"prefix a dictated send"| VoiceDictation
+    VoiceChannel -->|"HubRPC.resolve_asr_config at join;<br>the map is passed to ASR + Cleanup"| ASRConfig
     VoiceASR -.-> ASRService["GB10 transcription<br>(POST /v1/transcribe/sync)"]
     ProjectShow -->|"move directory"| DirectoryMove
 ```
@@ -427,11 +436,18 @@ graph TB
   downgrades, and deploys. The process is never a BEAM child; a disposable
   per-node `JobWatcher` only observes it. See `.context/supervision-tree.md`.
 - **Voice mode** (`lib/orca_hub_web/channels/voice_channel.ex`,
-  `lib/orca_hub/voice/{session,asr,intent}.ex`, `lib/orca_hub/asr_config.ex`,
-  `lib/orca_hub_web/live/voice_bar_live.ex`, `assets/js/voice/`): browser
-  capture + client-side VAD -> `VoiceChannel` -> `Voice.ASR` (the GB10 sync
-  lane, configured per-field by `ASRConfig`) -> `Voice.Intent` for spoken
-  commands, with the draft sent through the page's own composer. The bar is a
+  `lib/orca_hub/voice/{session,asr,intent,prompt,cleanup,dictation}.ex`,
+  `lib/orca_hub/asr_config.ex`, `lib/orca_hub_web/live/voice_bar_live.ex`,
+  `assets/js/voice/`): browser capture + client-side VAD -> `VoiceChannel` ->
+  `Voice.ASR` (the GB10 sync lane, configured per-field by `ASRConfig`, fed a
+  per-segment Whisper `initial_prompt` by `Voice.Prompt`) -> `Voice.Intent`
+  for spoken commands, with the draft sent through the page's own composer.
+  `Voice.Cleanup` (ORCAHUB3-120, `cleanup_enabled`, default on) is a rolling
+  LLM cleanup of the dictation draft, run as a channel task; a dictated send
+  carries `Voice.Dictation`'s one-line prompt prefix so the agent reads the
+  text as a transcript, and the bubble shows a "dictated" marker instead.
+  Below 768 px with the mic on, the same session page restyles into the
+  phone voice view (ORCAHUB3-113 phase C). The bar is a
   STICKY nested LiveView in the app header, so every internal link must
   live-navigate or the mic and channel die with the page. Assistant text
   streams back live through `OrcaHub.Backend.Deltas` (see
@@ -815,7 +831,8 @@ graph TB
    code-exec mode — through the `CodeExec` sandbox layer first.
 5. Four non-UI entry points create or message sessions, and all of them
    ultimately go through `SessionSupervisor` → `SessionRunner` like a manual
-   send: `TriggerExecutor` (cron via `Scheduler`, webhook via
-   `WebhookController`, or inbound email via `EmailInbox.Poller`/`Ingest`),
+   send: `TriggerExecutor` (cron via `Scheduler`, one-off `type: "once"` via
+   `OneOffTriggerSweep`, webhook via `WebhookController`, or inbound email
+   via `EmailInbox.Poller`/`Ingest`),
    the Discord `Bridge`, the Agent Runs API (`ApiRunController`), and the
    inbound A2A server (`A2AController`).

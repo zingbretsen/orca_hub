@@ -58,6 +58,7 @@ graph TB
     App --> UpstreamClient["OrcaHub.MCP.UpstreamClient\n(hub only)"]
     App --> Scheduler["OrcaHub.Scheduler\n(Quantum, hub only)"]
     App --> TriggerLoader["OrcaHub.TriggerLoader\n(hub only)"]
+    App --> OneOffTriggerSweep["OrcaHub.OneOffTriggerSweep\n(hub only, 30s poll)"]
     App --> EmailInboxSupervisor["OrcaHub.EmailInboxSupervisor\n(DynamicSupervisor, hub only)"]
     App --> EmailInboxLoader["OrcaHub.EmailInboxLoader\n(hub only)"]
     App --> ClusterNodeTracker["OrcaHub.ClusterNodeTracker\n(hub only)"]
@@ -82,13 +83,15 @@ graph TB
 
     JW1 -.->|"polls sentinel/pid\n(process is NOT a child)"| DetachedProc["Detached OS process\n(setsid, own pgid)"]
     UpstreamClient -->|connects to| ExtMCP["External MCP\nServers"]
-    Scheduler -->|fires| TriggerLoader
+    TriggerLoader -->|"sync_triggers on boot"| Scheduler
+    Scheduler -->|"fires cron jobs"| TriggerExecutor["TriggerExecutor\n(plain module, not a process)"]
+    OneOffTriggerSweep -->|"fires due type: once rows"| TriggerExecutor
 ```
 
 ## Agent Mode (ORCA_MODE=agent)
 
 Agent nodes omit `Telemetry`, `Repo`, `MCP.UpstreamClient`, `Scheduler`,
-`TriggerLoader`, `SessionHeartbeat`, `ChurnSampler`, `MemoryExtractionSweep`,
+`TriggerLoader`, `OneOffTriggerSweep`, `SessionHeartbeat`, `ChurnSampler`, `MemoryExtractionSweep`,
 `Issues.IndexSweep` (and the capped `Issues.Indexer` task supervisor),
 `PiModelSync`,
 `ClusterNodeTracker`, `Cluster.CodePush`, `NodeDialer`, and the `EmailInbox*` children. All database operations are
@@ -258,6 +261,14 @@ graph TB
   over the on-disk agent memory stores (`~/.claude/projects/<slug>/memory/**`,
   `~/.codex/memories`), pushing to Gitea. Triggered by `SessionRunner` idle
   transitions; soft-degrades on a missing `git`/unreachable Gitea.
+- **`OrcaHub.OneOffTriggerSweep`** (hub only): fires due one-off (`type:
+  "once"`) triggers. The DB row is the only source of truth (no Quantum job
+  to lose across deploys), so it polls `Triggers.list_due_one_off_triggers/1`
+  5s after boot and every 30s after, handing each id to
+  `TriggerExecutor.execute/1` serially. Exactly-once comes from the executor
+  disabling the trigger in the same write that stamps `last_fired_at`; a
+  single hub-only process is what keeps two sweeps from firing one row
+  concurrently. See `.context/triggers.md`.
 - **`OrcaHub.EmailInboxSupervisor`** / **`EmailInboxRegistry`** /
   **`OrcaHub.EmailInboxLoader`** (hub only): one `EmailInbox.Poller` per
   enabled `email_inboxes` row, IMAP-polling for messages that fire `type:

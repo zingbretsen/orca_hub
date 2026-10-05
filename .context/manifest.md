@@ -22,8 +22,8 @@ disk; `Read` on demand.
   hub-only GenServers (schedulers, sweeps, syncs), Discord children.
 - `.context/clustering.md` — hub+agent topology, HubRPC/erpc, node routing,
   NodePolicy (isolation, env scrub), what agents cannot do.
-- `.context/triggers.md` — scheduled/webhook/email triggers, executor flow,
-  reuse_session, archive_on_complete, per-trigger tool restrictions.
+- `.context/triggers.md` — scheduled/once/webhook/email triggers, executor
+  flow, end conditions, reuse_session, per-trigger tools/backend/model.
 - `.context/terminals.md` — PTY terminals, PubSub topics, multi-client
   pairing, cluster routing.
 - `.context/push-payload.md` — turn-end payload contract, on two wires:

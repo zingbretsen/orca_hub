@@ -129,8 +129,12 @@ erDiagram
         binary_id id PK
         string name
         string prompt
-        string type "scheduled|webhook|email"
+        string type "scheduled|once|webhook|email"
         string cron_expression
+        utc_datetime run_at "once only; DB-polled by OneOffTriggerSweep"
+        integer max_runs "nil = never ends; forced to 1 for once"
+        integer run_count "SUCCESSFUL scheduled/once fires only"
+        utc_datetime ends_at "auto-disables when the next fire lands after it"
         string webhook_secret "auto-generated"
         boolean reuse_session
         boolean archive_on_complete
@@ -138,6 +142,8 @@ erDiagram
         boolean memory_extract "stamped onto each session it CREATES; overrides the default scope rule"
         array tool_allowlist "stamped onto each session it CREATES; nil/[] = no restriction"
         array tool_denylist "stamped onto each session it CREATES; deny-all is the single glob *"
+        string backend "claude|codex|pi; nil = runner node's default"
+        string model "free text; explicit value beats the node default"
         string setup_script "shell script run on the runner node before every firing"
         integer setup_timeout_seconds "default 120; timeout kills the whole process group"
         array sender_allowlist "email only; must be non-empty"
@@ -408,7 +414,7 @@ erDiagram
         binary_id id PK
         string kind "asr_provider — the only kind; no model catalog"
         string name
-        map spec "url/language/timeouts/threshold; blank key = fall back to ASR_* env"
+        map spec "url/language/timeouts/threshold, mic constraints, vocabulary, cleanup_*; blank key = fall back to ASR_* env"
         boolean enabled
     }
 

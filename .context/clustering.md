@@ -58,6 +58,7 @@ graph TB
         PS["Phoenix.PubSub<br/>(auto-distributes via :pg)"]
         Sched["Quantum Scheduler"]
         TL["TriggerLoader"]
+        OOS["OneOffTriggerSweep"]
         EP["Phoenix Endpoint<br/>(web UI)"]
         MCP["MCP.Server + UpstreamClient"]
 
@@ -66,7 +67,9 @@ graph TB
         Runners -->|broadcast| PS
         Runners -->|persist via HubRPC| Repo
         TE["TriggerExecutor"]
-        Sched -->|fire triggers| TE
+        TL -->|sync on boot| Sched
+        Sched -->|fire cron triggers| TE
+        OOS -->|fire due one-offs| TE
         TE --> SS
         EP -->|LiveView| PS
     end
@@ -165,6 +168,7 @@ sequenceDiagram
 | **MCP.UpstreamClient** | Yes | No | Upstream MCP connections hub-only |
 | **Quantum Scheduler** | Yes | No | Cron triggers fire on hub only — and must be pinned `run_strategy: Quantum.RunStrategy.Local`, see below |
 | **TriggerLoader** | Yes | No | Syncs triggers into scheduler on boot |
+| **OneOffTriggerSweep** | Yes | No | 30s DB poll that fires due `type: "once"` triggers; a single hub process so two sweeps can't fire one row twice |
 | **EmailInboxSupervisor** + Registry + **EmailInboxLoader** | Yes | No | IMAP polling is hub-only: credentials + UID watermark are hub state |
 | **ClusterNodeTracker** | Yes | No | Tracks node connect/disconnect into the `nodes` table |
 | **Cluster.CodePush** | Yes | No | Hot-code reconciliation loop; a single hub-only process is what makes concurrent hot deploys impossible — see `.context/code-deploy.md` |
@@ -197,7 +201,7 @@ scheduled?" is answerable from the log rather than by inference.
 ### Key Modules
 
 - **`OrcaHub.Mode`**: Returns `:hub` or `:agent` based on `ORCA_MODE` env var (default: `:hub`). `hub_node/0` returns self on hub, discovers hub via `:erpc` on agent.
-- **`OrcaHub.HubRPC`**: Transparent proxy — calls locally on hub, forwards via `:erpc.call/5` on agent. Wraps every context that touches the DB (Sessions, Projects, Issues, Triggers, Terminals, Jobs, Artifacts, Skills, ApiTokens, AlertSubscriptions, …) — roughly 270 delegating functions.
+- **`OrcaHub.HubRPC`**: Transparent proxy — calls locally on hub, forwards via `:erpc.call/5` on agent. Wraps every context that touches the DB (Sessions, Projects, Issues, Triggers, Terminals, Jobs, Artifacts, Skills, ApiTokens, AlertSubscriptions, …) — roughly 280 delegating functions.
 - **`OrcaHub.Cluster`**: Routing layer used by LiveViews and other callers. Queries go through HubRPC (single DB), actions route to the correct runner node via `rpc/5`.
 
 ### Node Routing
@@ -229,7 +233,7 @@ long-archived legacy data, not a live session to adopt.
 Agent nodes are intentionally limited:
 
 - **No direct DB access** — all reads/writes go through HubRPC to the hub
-- **No trigger scheduling** — cron jobs only fire on the hub (but execution routes to the correct agent)
+- **No trigger scheduling** — cron jobs and one-off (`type: "once"`) sweeps only fire on the hub (but execution routes to the correct agent)
 - **No mailbox polling** — the `EmailInbox*` children are hub-only, so inbound email is ingested on the hub and the resulting trigger execution routes out to the owning agent
 - **No upstream MCP connections** — `MCP.UpstreamClient` is hub-only
 - **No dialing out** — `NodeDialer` is hub-only; an agent waits to be dialed
