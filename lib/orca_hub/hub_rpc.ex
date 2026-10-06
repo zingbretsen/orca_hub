@@ -486,6 +486,47 @@ defmodule OrcaHub.HubRPC do
     end
   end
 
+  # ORCAHUB3-139: per-item queued-message controls on the session page.
+  # Through tolerant_call/4, so an older hub that lacks these returns an
+  # error (or `[]` for the list) instead of raising in the LiveView.
+  def list_queued_messages(session_id) do
+    case tolerant_call(OrcaHub.SessionHeartbeat, :list_queued_messages, [session_id]) do
+      items when is_list(items) -> items
+      {:error, _} -> []
+    end
+  end
+
+  def remove_queued_message(session_id, message_id),
+    do: tolerant_call(OrcaHub.SessionHeartbeat, :remove_queued_message, [session_id, message_id])
+
+  # Delivers inside the hub's GenServer call (up to its 15s budget), so the
+  # erpc budget sits above that.
+  def send_queued_message_now(session_id, message_id),
+    do:
+      tolerant_call(
+        OrcaHub.SessionHeartbeat,
+        :send_queued_message_now,
+        [session_id, message_id],
+        timeout: 20_000
+      )
+
+  # call/4, but erpc-level failures come back as `{:error, _}` instead of
+  # raising (rpc_undef/rpc_timeout in `Cluster.rpc/5`'s shapes): an older hub
+  # without `mod.fun/arity`, a hub that didn't answer in time, or no hub
+  # connection. An exception raised by the remote function itself still
+  # propagates.
+  defp tolerant_call(mod, fun, args, opts \\ []) do
+    call(mod, fun, args, opts)
+  rescue
+    e in ErlangError ->
+      case e.original do
+        {:exception, :undef, _stacktrace} -> {:error, {:rpc_undef, {mod, fun, length(args)}}}
+        {:erpc, :timeout} -> {:error, {:rpc_timeout, {mod, fun, length(args)}}}
+        {:erpc, :noconnection} -> {:error, :hub_unavailable}
+        _ -> reraise e, __STACKTRACE__
+      end
+  end
+
   # -------------------------------------------------------------------
   # Alert Subscriptions (ORCAHUB3-44 Phase 2 — condition-based worker
   # alerts; see OrcaHub.AlertSubscriptions, OrcaHub.ChurnSampler.AlertEvaluator)
