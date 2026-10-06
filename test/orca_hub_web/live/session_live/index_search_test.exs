@@ -8,6 +8,7 @@ defmodule OrcaHubWeb.SessionLive.IndexSearchTest do
 
   defp search(view, q) do
     view |> form("#session-search-form", %{"q" => q}) |> render_change()
+    render_async(view)
   end
 
   test "search renders ranked results with snippets, links and mark highlights", %{conn: conn} do
@@ -54,6 +55,39 @@ defmodule OrcaHubWeb.SessionLive.IndexSearchTest do
     html = search(view, "")
     refute has_element?(view, "#session-search-results")
     assert html =~ "grouped one"
+  end
+
+  test "archived sessions are searchable and show the archived badge", %{conn: conn} do
+    {:ok, s} = Sessions.create_session(%{directory: "/tmp/ss-live", title: "Old archived one"})
+    {:ok, s} = Sessions.archive_session(s)
+    Stub.install({:ok, %{"results" => [Stub.result(s.id)]}})
+
+    {:ok, view, _} = live(conn, ~p"/sessions")
+    html = search(view, "needle")
+    assert html =~ "Old archived one"
+    assert has_element?(view, "#search-result-#{s.id} .badge", "archived")
+  end
+
+  test "queries shorter than 3 characters do not search", %{conn: conn} do
+    Stub.install({:ok, %{"results" => []}})
+    {:ok, view, _} = live(conn, ~p"/sessions")
+    search(view, "ab")
+    refute_received {:session_search_params, _}
+    refute has_element?(view, "#session-search-results")
+  end
+
+  test "a stale result for an earlier query is dropped", %{conn: conn} do
+    {:ok, s} = Sessions.create_session(%{directory: "/tmp/ss-live", title: "stale hit"})
+    Stub.install({:ok, %{"results" => [Stub.result(s.id)]}})
+
+    {:ok, view, _} = live(conn, ~p"/sessions")
+    view |> form("#session-search-form", %{"q" => "first query"}) |> render_change()
+    # the user clears the box before the async result lands
+    view |> form("#session-search-form", %{"q" => ""}) |> render_change()
+    render_async(view)
+
+    refute has_element?(view, "#session-search-results")
+    refute has_element?(view, "#search-result-#{s.id}")
   end
 
   test "shows a notice when results are degraded to keyword-only", %{conn: conn} do

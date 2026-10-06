@@ -16,6 +16,15 @@ defmodule OrcaHub.SessionSearch.Indexer do
   no in-process state to lose. Posts are idempotent upserts keyed by message
   id, so the rescan after a crash between POST and cursor write is harmless.
 
+  The keyset predicate is the row-value form `(inserted_at, id) > (?, ?)` so
+  Postgres turns it into an `Index Cond` on `messages_inserted_at_id_index`
+  (the `OR` spelling is a BitmapOr over everything after the cursor).
+
+  Any writer that inserts messages with an EXPLICIT `inserted_at` (a
+  historical import such as `ClaudeImport`) lands behind the cursor and the
+  sweep never sees it: such writers MUST enqueue `reindex_session/1` for each
+  session they touched (asynchronously, under `OrcaHub.TaskSupervisor`).
+
   Messages with `inserted_at` newer than `settle_seconds` (30) are not
   scanned yet: `inserted_at` is assigned before commit, so a slow transaction
   could otherwise land a row BEHIND the cursor and never be seen.
@@ -30,7 +39,12 @@ defmodule OrcaHub.SessionSearch.Indexer do
   those (one bad doc must not wedge the sweep) and each is recorded in
   `session_search_failures`. Every tick first retries failures older than
   `retry_backoff_seconds` (900), at most `@max_attempts` (5) times; after
-  that the row stays as an inspectable dead letter and is no longer retried.
+  that the row stays as an inspectable dead letter and is no longer retried
+  (`redrive_dead_letters/0` resets them). If `errors` covers EVERY doc of a
+  batch of 2+ docs (a lone rejected doc is just a bad doc) the failure is systemic, not per-doc (ES read-only block, rejected
+  executions, ...): the tick is an error and the cursor is HELD, nothing is
+  recorded. memory-service answers systemic item failures with 503, handled
+  as any other error.
   A 400 for the WHOLE request (e.g. unknown `fields`) is a transport-level
   error here: loud, cursor held, retried with backoff.
 
@@ -40,15 +54,21 @@ defmodule OrcaHub.SessionSearch.Indexer do
   `behind_interval_ms` 10 s between ticks while behind, `idle_interval_ms`
   60 s once caught up, doubling up to 5 min after errors. App env keys
   `:session_search_*` (set from `SESSION_SEARCH_*` env in runtime.exs).
-  Runs only when `MemoryClient.enabled?/0` AND `SESSION_SEARCH_INDEXING` is
-  not `false`; re-checked every tick.
+  Runs only when `MemoryClient.enabled?/0` AND the `:session_search_indexing`
+  app env is not `false`; re-checked every tick. NOTE: the `SESSION_SEARCH_*`
+  OS env vars are read once at boot by runtime.exs, so flipping the kill
+  switch via the environment needs a restart; only `Application.put_env/3`
+  (e.g. from a remote shell) takes effect live. `batch_size` is clamped to
+  100 (memory-service rejects more) and a batch is capped at ~4 MB of text.
 
   ## Observability
 
   Each tick logs and emits
   `[:orca_hub, :session_search, :tick]` with measurements `docs`, `errors`
-  (per-doc), `unembedded` (chunks indexed without a vector — the embedder is
-  down; memory-service backfills them) and `lag_seconds` (age of the cursor),
+  (per-doc), `dead_letters` (failure rows out of retries), `unembedded` (chunks indexed without a vector — the embedder is
+  down; memory-service backfills them via the manual
+  `Release.backfill_collection_embeddings/1` task, so they stay keyword-only
+  until someone runs it) and `lag_seconds` (age of the cursor),
   metadata `%{result: :ok | :error, caught_up: boolean}`.
   """
 
@@ -65,6 +85,8 @@ defmodule OrcaHub.SessionSearch.Indexer do
   @retry_limit 50
   @max_error_backoff_ms 300_000
   @initial_delay_ms 20_000
+  @max_batch 100
+  @max_batch_bytes 4_000_000
   @text_path "$.message.content[*] ? (@.type == \"text\")"
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -80,7 +102,12 @@ defmodule OrcaHub.SessionSearch.Indexer do
   defp kill_switch_on?,
     do: Application.get_env(:orca_hub, :session_search_indexing, true) != false
 
-  defp batch_size, do: Application.get_env(:orca_hub, :session_search_batch_size, 100)
+  defp batch_size do
+    :orca_hub |> Application.get_env(:session_search_batch_size, @max_batch) |> clamp_batch()
+  end
+
+  defp clamp_batch(n) when is_integer(n), do: n |> max(1) |> min(@max_batch)
+  defp clamp_batch(_), do: @max_batch
   defp behind_ms, do: Application.get_env(:orca_hub, :session_search_behind_interval_ms, 10_000)
   defp idle_ms, do: Application.get_env(:orca_hub, :session_search_idle_interval_ms, 60_000)
   defp settle_seconds, do: Application.get_env(:orca_hub, :session_search_settle_seconds, 30)
@@ -165,14 +192,16 @@ defmodule OrcaHub.SessionSearch.Indexer do
   end
 
   defp sweep_page(name, opts) do
-    size = Keyword.get(opts, :batch_size, batch_size())
-    scan_limit = size * 4
+    size = opts |> Keyword.get(:batch_size, batch_size()) |> clamp_batch()
+    # Window barely above the batch: the cursor only moves to the batch's last
+    # doc, so a wide scan would be re-read every tick.
+    scan_limit = size + 50
     cursor = Repo.get(Cursor, name)
 
     rows = scan(cursor, scan_limit, opts)
     pairs = for {m, s} <- rows, {:ok, doc} <- [Extractor.extract(m, s)], do: {doc, m}
     exhausted = length(rows) < scan_limit
-    {batch, rest} = Enum.split(pairs, size)
+    {batch, rest} = split_batch(pairs, size)
 
     target =
       cond do
@@ -190,15 +219,50 @@ defmodule OrcaHub.SessionSearch.Indexer do
     else
       case post(Enum.map(batch, &elem(&1, 0)), opts) do
         {:ok, resp} ->
-          errors = record_errors(resp, Enum.map(batch, &elem(&1, 0)))
-          advance(name, target, length(batch) - errors)
-          {:ok, %{base | errors: errors, unembedded: unembedded(resp)}}
+          docs = Enum.map(batch, &elem(&1, 0))
+
+          if all_rejected?(resp, docs) do
+            {:error, {:all_rejected, Enum.take(List.wrap(resp["errors"]), 3)}}
+          else
+            errors = record_errors(resp, docs)
+            advance(name, target, length(batch) - errors)
+            {:ok, %{base | errors: errors, unembedded: unembedded(resp)}}
+          end
 
         {:error, _} = error ->
           error
       end
     end
   end
+
+  # Up to `size` docs, but never more than ~4 MB of text (a 413 from the
+  # service would wedge the sweep forever); always at least one doc.
+  defp split_batch(pairs, size) do
+    {taken, _bytes} =
+      pairs
+      |> Enum.take(size)
+      |> Enum.reduce_while({[], 0}, fn {doc, _} = pair, {acc, bytes} ->
+        bytes = bytes + byte_size(doc["text"] || "")
+
+        if acc != [] and bytes > @max_batch_bytes,
+          do: {:halt, {acc, bytes}},
+          else: {:cont, {[pair | acc], bytes}}
+      end)
+
+    taken = Enum.reverse(taken)
+    {taken, Enum.drop(pairs, length(taken))}
+  end
+
+  defp all_rejected?(%{"errors" => [_ | _] = errors}, docs) do
+    ids = MapSet.new(docs, & &1["id"])
+
+    rejected =
+      errors |> Enum.map(& &1["id"]) |> Enum.filter(&MapSet.member?(ids, &1)) |> MapSet.new()
+
+    length(docs) > 1 and MapSet.equal?(rejected, ids)
+  end
+
+  defp all_rejected?(_, _), do: false
 
   defp scan(cursor, limit, opts) do
     cutoff =
@@ -229,7 +293,15 @@ defmodule OrcaHub.SessionSearch.Indexer do
 
   defp after_cursor(q, %Cursor{last_inserted_at: ts, last_message_id: id})
        when not is_nil(ts) and not is_nil(id) do
-    from [m] in q, where: m.inserted_at > ^ts or (m.inserted_at == ^ts and m.id > ^id)
+    from [m] in q,
+      where:
+        fragment(
+          "(?, ?) > (?, ?)",
+          m.inserted_at,
+          m.id,
+          type(^ts, :naive_datetime_usec),
+          type(^id, :binary_id)
+        )
   end
 
   defp after_cursor(q, _), do: q
@@ -270,9 +342,9 @@ defmodule OrcaHub.SessionSearch.Indexer do
     sessions = Map.new(docs, &{&1["id"], &1["group_id"]})
     now = NaiveDateTime.utc_now()
 
-    errors
-    |> Enum.filter(&Map.has_key?(sessions, &1["id"]))
-    |> Enum.each(fn %{"id" => id} = e ->
+    in_batch = Enum.filter(errors, &Map.has_key?(sessions, &1["id"]))
+
+    Enum.each(in_batch, fn %{"id" => id} = e ->
       Repo.insert!(
         %Failure{message_id: id, session_id: sessions[id], reason: reason_text(e), attempts: 1},
         on_conflict: [set: [reason: reason_text(e), updated_at: now], inc: [attempts: 1]],
@@ -284,7 +356,7 @@ defmodule OrcaHub.SessionSearch.Indexer do
       "SessionSearch.Indexer: #{length(errors)} doc(s) rejected, recorded for retry: #{inspect(Enum.take(errors, 3))}"
     )
 
-    length(errors)
+    length(in_batch)
   end
 
   defp record_errors(_resp, _docs), do: 0
@@ -354,6 +426,25 @@ defmodule OrcaHub.SessionSearch.Indexer do
   end
 
   @doc """
+  Number of failure rows that exhausted their retries (dead letters).
+  """
+  def dead_letter_count do
+    Repo.aggregate(from(f in Failure, where: f.attempts >= ^@max_attempts), :count)
+  end
+
+  @doc """
+  Resets every dead letter (`attempts` -> 0) so the retry pass picks them up
+  again, e.g. after an ES incident. Returns the number of rows reset.
+  """
+  def redrive_dead_letters do
+    {n, _} =
+      from(f in Failure, where: f.attempts >= ^@max_attempts)
+      |> Repo.update_all(set: [attempts: 0, updated_at: NaiveDateTime.utc_now()])
+
+    n
+  end
+
+  @doc """
   Hard-delete hook (`Sessions.delete_session/1`): drops the session's retry
   rows and, when indexing is on, asks memory-service to delete the session's
   docs — fire-and-forget under `OrcaHub.TaskSupervisor`, so a memory-service
@@ -382,6 +473,29 @@ defmodule OrcaHub.SessionSearch.Indexer do
   end
 
   # -- manual full reindex of one session -----------------------------------
+
+  @doc """
+  Fire-and-forget `reindex_session/1` under `OrcaHub.TaskSupervisor` (a no-op
+  when indexing is disabled). The hook for writers that insert messages with
+  an explicit `inserted_at` behind the sweep cursor — see the moduledoc.
+  """
+  def enqueue_reindex(session_id) do
+    if enabled?() do
+      Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+        case reindex_session(session_id) do
+          {:ok, _n} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "SessionSearch: reindex of session #{session_id} failed - #{inspect(reason, limit: 5)}"
+            )
+        end
+      end)
+    end
+
+    :ok
+  end
 
   @doc """
   Re-posts every indexable message of one session (cursor untouched), in
@@ -437,6 +551,7 @@ defmodule OrcaHub.SessionSearch.Indexer do
         docs: stats.docs,
         errors: stats.errors,
         unembedded: stats.unembedded,
+        dead_letters: dead_letter_count(),
         lag_seconds: lag || 0
       },
       %{result: result, caught_up: not stats.behind}

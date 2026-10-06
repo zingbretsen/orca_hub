@@ -54,13 +54,14 @@
     name="q"
     value={@search_query}
     placeholder="Search conversations..."
-    phx-debounce="400"
+    phx-debounce="800"
     autocomplete="off"
     class="input input-bordered input-sm w-full"
   />
 </form>
 
 <div :if={@search_active} id="session-search-results" class="mt-4">
+  <div :if={@search_loading} class="text-xs text-base-content/50 mb-2">Searching...</div>
   <div :if={@search_error} class="alert alert-warning text-sm">
     {@search_error}
   </div>
@@ -68,7 +69,7 @@
     Semantic search is unavailable; showing keyword matches only.
   </div>
   <div
-    :if={!@search_error && @search_results == []}
+    :if={!@search_error && !@search_loading && @search_results == []}
     class="text-sm text-base-content/50 p-4 text-center"
   >
     No sessions match "{@search_query}".

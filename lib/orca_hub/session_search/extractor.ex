@@ -19,7 +19,8 @@ defmodule OrcaHub.SessionSearch.Extractor do
   / rate_limit / cli_error / pi_* events, empty text, subagent traffic
   (`parent_tool_use_id` set: the parent's own text carries the outcome), and
   Claude's `isMeta` / `isSynthetic` user rows (slash-command and skill
-  template expansions, not what anyone said). `isCompactSummary` rows are
+  template expansions, not what anyone said) and user text made only of
+  `<command-*>`/`<local-command-*>` echo tags. `isCompactSummary` rows are
   kept — they are a model-written summary of the session.
 
   Background sessions (`kind != "session"`, e.g. `memory_extraction`) are
@@ -41,7 +42,8 @@ defmodule OrcaHub.SessionSearch.Extractor do
       when is_map(data) do
     with {:ok, role, text} <- role_and_text(data),
          text = text |> String.trim() |> String.slice(0, @max_chars),
-         true <- text != "" do
+         true <- text != "",
+         false <- role == "user" and command_echo_only?(text) do
       {:ok,
        %{
          "id" => message.id,
@@ -55,6 +57,13 @@ defmodule OrcaHub.SessionSearch.Extractor do
   end
 
   def extract(_message, _session), do: :skip
+
+  # Slash-command echoes (`<command-name>/exit</command-name>`,
+  # `<local-command-stdout>…`) that are not flagged isMeta carry no
+  # conversation; a user text made only of such tags is noise.
+  @command_tag ~r/<(command-[a-z-]+|local-command-[a-z-]+)>.*?<\/\1>/s
+  defp command_echo_only?(text),
+    do: text |> String.replace(@command_tag, "") |> String.trim() == ""
 
   @doc "Whether the session's messages are indexed at all."
   def indexable_session?(%Session{kind: "session"}), do: true

@@ -69,7 +69,10 @@ defmodule OrcaHub.ClaudeImport do
           else
             try do
               case import_session(target_node, file, session_id, project, verbose) do
-                {:ok, _session} ->
+                {:ok, session} ->
+                  # Imported messages carry historical inserted_at values, behind
+                  # the search indexer's cursor: enqueue them explicitly.
+                  OrcaHub.SessionSearch.Indexer.enqueue_reindex(session.id)
                   %{acc | sessions_imported: acc.sessions_imported + 1}
 
                 {:error, reason} ->

@@ -22,6 +22,10 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   # caller-supplied idempotency_key stays unbounded.
   @auto_idempotency_window_seconds 15 * 60
 
+  # Search.search runs on the hub: memory-service search budget (20s) plus the
+  # session join, so the erpc leg from an agent node outlasts it.
+  @conversation_search_erpc_timeout 30_000
+
   def list do
     [
       %{
@@ -94,8 +98,9 @@ defmodule OrcaHub.MCP.Tools.Sessions do
                   "(user prompts and assistant replies, not tool output). Results are " <>
                   "ranked by relevance (not recency), one per session, each with up to 3 " <>
                   "short \"snippets\" where matches are wrapped in **bold**. Directory " <>
-                  "scoping, all_projects, status, and archive/background filters still " <>
-                  "apply; the title-only \"query\" param is ignored when this is set. " <>
+                  "scoping, all_projects and status still apply. ARCHIVED sessions are " <>
+                  "INCLUDED by default in this mode (most past conversations are archived); " <>
+                  "pass include_archived: false to exclude them or archived_only: true; the title-only \"query\" param is ignored when this is set. " <>
                   "Returns an error if the search service is unavailable."
             },
             "status" => %{
@@ -804,8 +809,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     base = [
       limit: limit,
       status: args["status"],
-      include_archived: args["include_archived"] || false,
+      # Unlike the title search, archived sessions are searchable by default:
+      # nearly all past conversations are archived.
+      include_archived: Map.get(args, "include_archived") != false,
       archived_only: args["archived_only"] || false,
+      parent_session_id: args["parent_session_id"],
       include_background: args["include_background"] || false
     ]
 
@@ -818,13 +826,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
     with {:ok, extra} <- scope,
          {:ok, %{results: results, degraded: degraded}} <-
-           HubRPC.call(OrcaHub.SessionSearch.Search, :search, [cq, base ++ extra]) do
+           HubRPC.call(OrcaHub.SessionSearch.Search, :search, [cq, base ++ extra],
+             timeout: @conversation_search_erpc_timeout
+           ) do
       results =
         results
-        |> Enum.filter(fn r ->
-          is_nil(args["parent_session_id"]) or
-            r.session.parent_session_id == args["parent_session_id"]
-        end)
         |> then(fn rs ->
           sessions = scope_to_local_node_if_isolated(Enum.map(rs, & &1.session))
           ids = MapSet.new(sessions, & &1.id)
@@ -2242,15 +2248,23 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     end
   end
 
+  # Slice BEFORE swapping the STX/ETX markers for `**`, and close a highlight
+  # the cut left open, so the snippet never ends in a dangling `**`.
   defp format_snippet(snippet) do
-    text =
+    cut =
       snippet.text
-      |> OrcaHub.SessionSearch.Search.highlight_plain({"**", "**"})
       |> String.replace(~r/\s+/, " ")
       |> String.trim()
       |> String.slice(0, 300)
 
-    %{role: snippet.role, text: text}
+    open = cut |> String.graphemes() |> Enum.count(&(&1 == <<2>>))
+    close = cut |> String.graphemes() |> Enum.count(&(&1 == <<3>>))
+    cut = if open > close, do: cut <> <<3>>, else: cut
+
+    %{
+      role: snippet.role,
+      text: OrcaHub.SessionSearch.Search.highlight_plain(cut, {"**", "**"})
+    }
   end
 
   defp resolve_search_directory(%{"directory" => dir}, _state) when not is_nil(dir), do: dir

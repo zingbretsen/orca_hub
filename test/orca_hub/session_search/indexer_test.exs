@@ -2,6 +2,7 @@ defmodule OrcaHub.SessionSearch.IndexerTest do
   # The dev DB is shared with real data, so every sweep here is scoped to the
   # test's own sessions (`:session_ids`) and uses its own cursor name.
   use OrcaHub.DataCase, async: false
+  import Ecto.Query
 
   alias OrcaHub.Repo
   alias OrcaHub.SessionSearch.{Cursor, Failure, Indexer}
@@ -190,9 +191,80 @@ defmodule OrcaHub.SessionSearch.IndexerTest do
 
   test "a failure row whose message vanished is dropped", ctx do
     Repo.insert!(%Failure{message_id: Ecto.UUID.generate(), session_id: ctx.s1.id, reason: "x"})
-    {_, _} = Repo.update_all(Failure, set: [updated_at: ~N[2020-01-01 00:00:00.000000]])
+
+    {_, _} =
+      from(f in Failure, where: f.session_id == ^ctx.s1.id)
+      |> Repo.update_all(set: [updated_at: ~N[2020-01-01 00:00:00.000000]])
+
     Indexer.run_tick(opts(ctx, retry_backoff_seconds: 0))
     assert Repo.all(Failure) |> Enum.filter(&(&1.session_id == ctx.s1.id)) == []
+  end
+
+  test "messages sharing inserted_at across a batch boundary are neither lost nor repeated",
+       ctx do
+    ts = ~N[2026-02-01 00:00:00.000000]
+
+    for t <- ["tie a", "tie b", "tie c", "tie d", "tie e"] do
+      Repo.insert!(%Message{
+        session_id: ctx.s1.id,
+        inserted_at: ts,
+        updated_at: ts,
+        data: %{"type" => "user", "message" => %{"content" => t}}
+      })
+    end
+
+    o = opts(ctx, batch_size: 2)
+    for _ <- 1..4, do: Indexer.run_tick(o)
+
+    assert posted(ctx) |> List.flatten() |> Enum.sort() ==
+             ["tie a", "tie b", "tie c", "tie d", "tie e"]
+
+    assert cursor(ctx).indexed_total == 5
+  end
+
+  test "an all-docs-rejected batch is a systemic error: cursor held, nothing recorded", ctx do
+    seed(ctx.s1, 2)
+
+    reject_all = fn docs ->
+      {:ok,
+       %{
+         "indexed" => 0,
+         "errors" => Enum.map(docs, &%{"id" => &1["id"], "reason" => "cluster_block"})
+       }}
+    end
+
+    assert {:error, {:all_rejected, _}} = Indexer.run_tick(opts(ctx, respond: reject_all))
+    assert cursor(ctx) == nil
+    assert Repo.all(Failure) |> Enum.filter(&(&1.session_id == ctx.s1.id)) == []
+    assert {:ok, %{docs: 2}} = Indexer.run_tick(opts(ctx))
+  end
+
+  test "redrive_dead_letters/0 resets exhausted failures and dead_letters is counted", ctx do
+    Repo.insert!(%Failure{
+      message_id: Ecto.UUID.generate(),
+      session_id: ctx.s1.id,
+      reason: "x",
+      attempts: Indexer.max_attempts()
+    })
+
+    before = Indexer.dead_letter_count()
+    assert before >= 1
+    assert Indexer.redrive_dead_letters() >= 1
+    assert Indexer.dead_letter_count() == 0
+  end
+
+  test "batch_size is clamped to 100", ctx do
+    seed(ctx.s1, 3)
+    assert {:ok, %{docs: 3}} = Indexer.run_tick(opts(ctx, batch_size: 100_000))
+  end
+
+  test "a batch is capped by cumulative bytes", ctx do
+    # the extractor caps one doc at 200k chars, so 4 MB is ~20 docs
+    big = String.duplicate("x", 199_000)
+    for i <- 1..22, do: put_msg(ctx.s1, i, big <> " #{i}")
+
+    assert {:ok, %{docs: 20, behind: true}} = Indexer.run_tick(opts(ctx, batch_size: 100))
+    assert {:ok, %{docs: 2}} = Indexer.run_tick(opts(ctx, batch_size: 100))
   end
 
   test "reindex_session/2 re-posts a session without touching the cursor", ctx do

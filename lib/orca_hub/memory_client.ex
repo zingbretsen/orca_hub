@@ -110,6 +110,17 @@ defmodule OrcaHub.MemoryClient do
   """
   def index_session_messages(docs), do: HubRPC.memory_index_session_messages(docs)
 
+  # Search gets a 20s HTTP budget (memory-service falls back to BM25 at ~10s
+  # when the embedder hangs, so "degraded" must be able to reach us); the erpc
+  # leg from an agent node sits a little above that. Same pattern as
+  # HubRPC's @issue_search_erpc_timeout, passed here so hub_rpc.ex stays put.
+  @session_search_timeout 20_000
+  @session_search_erpc_timeout 25_000
+  # One ingest POST embeds up to 100 docs (4 embed batches, per-chunk fallback,
+  # bulk, prune) — far over the 10s default. The indexer runs on the hub, so
+  # there is no erpc leg.
+  @session_index_timeout 120_000
+
   @doc """
   POST /v1/collections/session-messages/search — hybrid search collapsed to one
   result per session. `params` carries `"query"`, `"limit"`, `"snippets"` and
@@ -117,7 +128,11 @@ defmodule OrcaHub.MemoryClient do
   in STX (U+0002) / ETX (U+0003): renderers must HTML-escape the whole string
   FIRST and only then swap the markers for `<mark>`/`</mark>`.
   """
-  def search_session_messages(params), do: HubRPC.memory_search_session_messages(params)
+  def search_session_messages(params),
+    do:
+      HubRPC.call(OrcaHub.MemoryClient, :search_session_messages_impl, [params],
+        timeout: @session_search_erpc_timeout
+      )
 
   @doc "DELETE /v1/collections/session-messages/groups/:session_id — `{:ok, %{\"deleted\" => n}}`."
   def delete_session_messages(session_id), do: HubRPC.memory_delete_session_messages(session_id)
@@ -310,13 +325,21 @@ defmodule OrcaHub.MemoryClient do
   # indexer's own cursor/tick already provides the retry.
   def index_session_messages_impl(docs) do
     with_enabled(fn ->
-      do_request(:post, @session_messages <> "/docs", json: %{"docs" => docs}, retry: false)
+      do_request(:post, @session_messages <> "/docs",
+        json: %{"docs" => docs},
+        retry: false,
+        receive_timeout: @session_index_timeout
+      )
     end)
   end
 
   def search_session_messages_impl(params) do
     with_enabled(fn ->
-      do_request(:post, @session_messages <> "/search", json: params, retry: false)
+      do_request(:post, @session_messages <> "/search",
+        json: params,
+        retry: false,
+        receive_timeout: @session_search_timeout
+      )
     end)
   end
 

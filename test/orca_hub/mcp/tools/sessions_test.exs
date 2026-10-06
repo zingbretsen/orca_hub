@@ -1408,6 +1408,65 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert Enum.map(out["results"], & &1["id"]) == [running.id]
     end
 
+    test "archived sessions are included by default; include_archived: false pushes down",
+         %{dir: dir, state: state} do
+      {:ok, live} = Sessions.create_session(%{directory: dir, status: "idle"})
+      {:ok, old} = Sessions.create_session(%{directory: dir, status: "idle"})
+      {:ok, old} = Sessions.archive_session(old)
+
+      SearchStub.install(
+        {:ok, %{"results" => [SearchStub.result(old.id), SearchStub.result(live.id)]}}
+      )
+
+      out = Jason.decode!(search_text(%{"conversation_query" => "x", "directory" => dir}, state))
+      assert Enum.map(out["results"], & &1["id"]) == [old.id, live.id]
+      assert hd(out["results"])["archived"] == true
+
+      out =
+        Jason.decode!(
+          search_text(
+            %{"conversation_query" => "x", "directory" => dir, "include_archived" => false},
+            state
+          )
+        )
+
+      assert Enum.map(out["results"], & &1["id"]) == [live.id]
+      # the unarchived-id filter was sent to the service, not applied by oversampling
+      assert_received {:session_search_params, %{"filters" => %{"group_ids" => ids}}}
+      assert live.id in ids
+      refute old.id in ids
+    end
+
+    test "parent_session_id filters results", %{dir: dir, state: state} do
+      {:ok, parent} = Sessions.create_session(%{directory: dir})
+      {:ok, child} = Sessions.create_session(%{directory: dir, parent_session_id: parent.id})
+      {:ok, other} = Sessions.create_session(%{directory: dir})
+
+      SearchStub.install(
+        {:ok, %{"results" => [SearchStub.result(other.id), SearchStub.result(child.id)]}}
+      )
+
+      out =
+        Jason.decode!(
+          search_text(
+            %{"conversation_query" => "x", "directory" => dir, "parent_session_id" => parent.id},
+            state
+          )
+        )
+
+      assert Enum.map(out["results"], & &1["id"]) == [child.id]
+    end
+
+    test "a snippet cut at 300 chars never ends in a dangling **", %{dir: dir, state: state} do
+      {:ok, s} = Sessions.create_session(%{directory: dir})
+      long = String.duplicate("a", 295) <> "\u0002needle words\u0003 tail"
+      SearchStub.install({:ok, %{"results" => [SearchStub.result(s.id, highlight: long)]}})
+
+      out = Jason.decode!(search_text(%{"conversation_query" => "x", "directory" => dir}, state))
+      [%{"snippets" => [%{"text" => text}]}] = out["results"]
+      assert length(String.split(text, "**")) |> rem(2) == 1
+    end
+
     test "surfaces a service error as a tool error", %{dir: dir, state: state} do
       SearchStub.install({:error, :disabled})
 

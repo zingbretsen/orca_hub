@@ -10,8 +10,12 @@ defmodule OrcaHub.SessionSearch.Search do
   Filters the index knows about (`:project_id`, `:directory`, `:backend`,
   `:node`, `:role`, `:since`, `:until`) are pushed down to the service. Filters
   only Postgres knows (`:status`, archived state, `:kind`) are applied after the
-  join, so the service is asked for more groups than `:limit` (oversampling) so
-  a page still fills. Ids with no `sessions` row (deleted sessions not yet
+  join. Rather than guess with oversampling, those filters are PUSHED DOWN
+  whenever the matching set is small: the candidate session ids are read from
+  Postgres first (at most 500 of them) and sent as `group_ids`, which makes
+  the service's page exact. Only when the candidate set is larger (e.g.
+  `:archived_only` against thousands of archived sessions) does it fall back
+  to asking for `limit * 3` groups and filtering after the join. Ids with no `sessions` row (deleted sessions not yet
   purged from the index) are dropped.
 
   Returns `{:ok, %{results: [result], degraded: nil | String.t()}}` or
@@ -33,14 +37,16 @@ defmodule OrcaHub.SessionSearch.Search do
   @stx <<2>>
   @etx <<3>>
   @default_limit 10
-  @max_service_limit 100
+  # memory-service silently clamps `limit` to 50; stay aligned with it.
+  @max_service_limit 50
   @oversample 3
+  @max_push_ids 500
 
   @doc """
   Options: `:limit` (default #{@default_limit}), `:snippets` (default 3),
   `:project_id`, `:directory`, `:backend`, `:node`, `:role`, `:since`,
   `:until` (DateTime or ISO-8601 string), and the Postgres-side `:status`,
-  `:include_archived`, `:archived_only`, `:include_background`, `:session_ids`
+  `:parent_session_id`, `:include_archived`, `:archived_only`, `:include_background`, `:session_ids`
   (restrict to these sessions; also pushed down as `group_ids`).
   """
   def search(query, opts \\ [])
@@ -52,27 +58,34 @@ defmodule OrcaHub.SessionSearch.Search do
     if String.trim(query) == "" do
       {:ok, %{results: [], degraded: nil}}
     else
-      params = %{
-        "query" => query,
-        "limit" => service_limit(limit, opts),
-        "snippets" => opts[:snippets] || 3,
-        "filters" => filters(opts)
-      }
-
-      case safe_call(params) do
-        {:ok, %{"results" => results} = body} when is_list(results) ->
-          {:ok, %{results: to_results(results, opts, limit), degraded: body["degraded"]}}
-
-        {:ok, other} ->
-          {:error, {:unexpected_response, other}}
-
-        {:error, reason} ->
-          {:error, reason}
+      case plan(opts, limit) do
+        :empty -> {:ok, %{results: [], degraded: nil}}
+        {service_limit, opts} -> call_service(query, opts, limit, service_limit)
       end
     end
   end
 
   def search(_query, _opts), do: {:error, :invalid_query}
+
+  defp call_service(query, opts, limit, service_limit) do
+    params = %{
+      "query" => query,
+      "limit" => service_limit,
+      "snippets" => opts[:snippets] || 3,
+      "filters" => filters(opts)
+    }
+
+    case safe_call(params) do
+      {:ok, %{"results" => results} = body} when is_list(results) ->
+        {:ok, %{results: to_results(results, opts, limit), degraded: body["degraded"]}}
+
+      {:ok, other} ->
+        {:error, {:unexpected_response, other}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   @doc "Human-readable text for an `{:error, reason}` from `search/2`."
   def error_message(:disabled), do: "Session search is not configured (memory-service disabled)."
@@ -119,16 +132,42 @@ defmodule OrcaHub.SessionSearch.Search do
     kind, reason -> {:error, {kind, reason}}
   end
 
-  defp post_filtered?(opts) do
+  # Filters only Postgres knows (`:status`, archive state, `:parent_session_id`).
+  # The index only holds `kind = "session"` docs, so `:include_background` needs
+  # no push-down.
+  defp pg_filtered?(opts) do
     opts[:status] != nil or opts[:archived_only] == true or opts[:include_archived] != true or
-      opts[:include_background] != true
+      opts[:parent_session_id] != nil
   end
 
-  # Archived and background sessions are hidden by default, so a post-filter is
-  # nearly always active; oversample whenever one is.
-  defp service_limit(limit, opts) do
-    wanted = if post_filtered?(opts), do: limit * @oversample, else: limit
-    wanted |> max(limit) |> min(@max_service_limit)
+  # -> :empty | {service_limit, opts}. With a small candidate set the Postgres
+  # filters are pushed down as `group_ids` (exact page, no oversampling);
+  # otherwise fall back to oversampling + the post-join filter.
+  defp plan(opts, limit) do
+    if pg_filtered?(opts) do
+      ids =
+        from(s in Session, select: s.id, limit: ^(@max_push_ids + 1))
+        |> post_filter(opts)
+        |> restrict_ids(opts[:session_ids])
+        |> Repo.all()
+
+      cond do
+        ids == [] -> :empty
+        length(ids) > @max_push_ids -> {oversampled(limit), opts}
+        true -> {min(limit, @max_service_limit), Map.put(opts, :session_ids, ids)}
+      end
+    else
+      {min(limit, @max_service_limit), opts}
+    end
+  end
+
+  defp oversampled(limit), do: min(limit * @oversample, @max_service_limit) |> max(1)
+
+  defp restrict_ids(q, nil), do: q
+
+  defp restrict_ids(q, ids) do
+    uuids = for id <- ids, {:ok, u} <- [Ecto.UUID.cast(id)], do: u
+    where(q, [s], s.id in ^uuids)
   end
 
   defp filters(opts) do
@@ -202,6 +241,18 @@ defmodule OrcaHub.SessionSearch.Search do
     end)
     |> then(fn q ->
       if opts[:include_background], do: q, else: where(q, [s], s.kind == "session")
+    end)
+    |> then(fn q ->
+      case opts[:parent_session_id] do
+        nil ->
+          q
+
+        pid ->
+          case Ecto.UUID.cast(pid) do
+            {:ok, uuid} -> where(q, [s], s.parent_session_id == ^uuid)
+            :error -> where(q, [s], false)
+          end
+      end
     end)
     |> then(fn q ->
       case opts[:status] do

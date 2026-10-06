@@ -1,6 +1,11 @@
 defmodule OrcaHubWeb.SessionLive.Index do
   use OrcaHubWeb, :live_view
 
+  # Conversation search: ignore queries shorter than this, and give the hub
+  # call an erpc budget above memory-service's 20s search timeout.
+  @search_min_chars 3
+  @search_erpc_timeout 30_000
+
   alias OrcaHub.Backend.Cache
   alias OrcaHub.{Cluster, HubRPC, Projects, SessionHeartbeat}
   alias OrcaHub.Sessions.Session
@@ -62,6 +67,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
        show_background: show_background,
        search_query: "",
        search_active: false,
+       search_loading: false,
        search_results: nil,
        search_error: nil,
        search_degraded: nil,
@@ -181,7 +187,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
   def handle_event("search", %{"q" => q}, socket) do
     q = String.trim(q)
 
-    if q == "" do
+    if String.length(q) < @search_min_chars do
       {:noreply, clear_search(socket)}
     else
       {:noreply, run_search(socket, q)}
@@ -518,6 +524,18 @@ defmodule OrcaHubWeb.SessionLive.Index do
   # basename label until the node comes back. Then re-derives the groups so
   # the real branch label (or confirmed fallback) actually reaches the page.
   @impl true
+  # Only the latest query's result counts: a slow earlier search that lands
+  # after the user typed on (or cleared the box) is dropped.
+  def handle_async(:search, {:ok, {q, result}}, %{assigns: %{search_query: q}} = socket) do
+    {:noreply, apply_search_result(socket, result)}
+  end
+
+  def handle_async(:search, {:ok, _stale}, socket), do: {:noreply, socket}
+
+  def handle_async(:search, {:exit, reason}, socket) do
+    {:noreply, apply_search_result(socket, {:error, {:exit, reason}})}
+  end
+
   def handle_async({:worktree_list, project_id}, async_result, socket) do
     value =
       case async_result do
@@ -543,39 +561,50 @@ defmodule OrcaHubWeb.SessionLive.Index do
     assign(socket,
       search_query: "",
       search_active: false,
+      search_loading: false,
       search_results: nil,
       search_error: nil,
       search_degraded: nil
     )
   end
 
+  # Archived sessions are included: ~97% of real sessions are archived, and
+  # finding past conversations is the point of the search.
   defp run_search(socket, q) do
-    opts = [limit: 20, include_background: socket.assigns.show_background]
+    opts = [limit: 20, include_archived: true, include_background: socket.assigns.show_background]
 
-    socket = assign(socket, search_query: q, search_active: true)
+    socket
+    |> assign(search_query: q, search_active: true, search_loading: true)
+    |> start_async(:search, fn ->
+      result =
+        try do
+          HubRPC.call(OrcaHub.SessionSearch.Search, :search, [q, opts],
+            timeout: @search_erpc_timeout
+          )
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        end
 
-    result =
-      try do
-        HubRPC.call(OrcaHub.SessionSearch.Search, :search, [q, opts])
-      catch
-        kind, reason -> {:error, {kind, reason}}
-      end
+      {q, result}
+    end)
+  end
 
-    case result do
-      {:ok, %{results: results, degraded: degraded}} ->
-        assign(socket,
-          search_results: results,
-          search_error: nil,
-          search_degraded: degraded
-        )
+  defp apply_search_result(socket, {:ok, %{results: results, degraded: degraded}}) do
+    assign(socket,
+      search_loading: false,
+      search_results: results,
+      search_error: nil,
+      search_degraded: degraded
+    )
+  end
 
-      {:error, reason} ->
-        assign(socket,
-          search_results: [],
-          search_error: OrcaHub.SessionSearch.Search.error_message(reason),
-          search_degraded: nil
-        )
-    end
+  defp apply_search_result(socket, {:error, reason}) do
+    assign(socket,
+      search_loading: false,
+      search_results: [],
+      search_error: OrcaHub.SessionSearch.Search.error_message(reason),
+      search_degraded: nil
+    )
   end
 
   defp selected_backend(form) do

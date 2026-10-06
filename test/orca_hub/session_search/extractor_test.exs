@@ -142,6 +142,20 @@ defmodule OrcaHub.SessionSearch.ExtractorTest do
     end
   end
 
+  test "user text that is only slash-command echo tags is skipped" do
+    echo = "<command-name>/exit</command-name>\n<command-message>exit</command-message>"
+    assert :skip = Extractor.extract(user(echo), session())
+
+    assert :skip =
+             Extractor.extract(
+               user("<local-command-stdout>bye</local-command-stdout>"),
+               session()
+             )
+
+    assert {:ok, %{"text" => t}} = Extractor.extract(user("#{echo}\nplease continue"), session())
+    assert t =~ "please continue"
+  end
+
   test "subagent traffic, isMeta and isSynthetic rows are skipped; compact summaries kept" do
     assert :skip =
              Extractor.extract(

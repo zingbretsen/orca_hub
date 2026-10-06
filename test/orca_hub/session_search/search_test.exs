@@ -79,41 +79,76 @@ defmodule OrcaHub.SessionSearch.SearchTest do
              Search.search("x")
   end
 
-  test "post-filters archived, background and status, oversampling the service limit" do
+  test "pushes Postgres-only filters down as group_ids instead of oversampling" do
     live = session(%{status: "idle"})
+    running = session(%{status: "running"})
 
     archived =
       session(%{status: "idle", archived_at: DateTime.utc_now() |> DateTime.truncate(:second)})
 
     bg = session(%{kind: "memory_extraction", status: "idle"})
-    running = session(%{status: "running"})
+    scope = [session_ids: [live.id, running.id, archived.id, bg.id]]
 
     ids = [archived.id, bg.id, running.id, live.id]
     Stub.install({:ok, %{"results" => Enum.map(ids, &Stub.result/1)}})
 
-    assert {:ok, %{results: rs}} = Search.search("x", limit: 2)
-    assert_received {:session_search_params, %{"limit" => 6}}
+    assert {:ok, %{results: rs}} = Search.search("x", [limit: 2] ++ scope)
+    assert_received {:session_search_params, %{"limit" => 2, "filters" => %{"group_ids" => g}}}
+    assert Enum.sort(g) == Enum.sort([live.id, running.id])
     assert Enum.map(rs, & &1.session.id) == [running.id, live.id]
 
-    assert {:ok, %{results: [only]}} = Search.search("x", limit: 2, status: "idle")
+    assert {:ok, %{results: [only]}} = Search.search("x", [limit: 2, status: "idle"] ++ scope)
+    assert_received {:session_search_params, %{"filters" => %{"group_ids" => [gid]}}}
+    assert gid == live.id
     assert only.session.id == live.id
 
-    assert {:ok, %{results: [a]}} = Search.search("x", archived_only: true)
+    assert {:ok, %{results: [a]}} = Search.search("x", [archived_only: true] ++ scope)
     assert a.session.id == archived.id
 
     assert {:ok, %{results: all}} =
-             Search.search("x", include_archived: true, include_background: true)
+             Search.search("x", [include_archived: true, include_background: true] ++ scope)
 
     assert length(all) == 4
   end
 
-  test "oversample is capped at 100 and limit is honoured after the join" do
-    s = session()
-    Stub.install({:ok, %{"results" => [Stub.result(s.id), Stub.result(s.id)]}})
-    assert {:ok, %{results: [_]}} = Search.search("x", limit: 1)
-    Search.search("x", limit: 80)
-    assert_received {:session_search_params, %{"limit" => 3}}
-    assert_received {:session_search_params, %{"limit" => 100}}
+  test "include_archived keeps archived hits and sends no oversampling" do
+    archived = session(%{archived_at: DateTime.utc_now() |> DateTime.truncate(:second)})
+    Stub.install({:ok, %{"results" => [Stub.result(archived.id)]}})
+
+    assert {:ok, %{results: [r]}} = Search.search("x", limit: 5, include_archived: true)
+    assert r.session.id == archived.id
+    assert_received {:session_search_params, %{"limit" => 5, "filters" => filters}}
+    refute Map.has_key?(filters, "group_ids")
+  end
+
+  test "parent_session_id is pushed down" do
+    parent = session()
+    child = session(%{parent_session_id: parent.id})
+    other = session()
+    Stub.install({:ok, %{"results" => [Stub.result(child.id)]}})
+
+    assert {:ok, %{results: [r]}} =
+             Search.search("x",
+               parent_session_id: parent.id,
+               include_archived: true,
+               session_ids: [child.id, other.id]
+             )
+
+    assert r.session.id == child.id
+    assert_received {:session_search_params, %{"filters" => %{"group_ids" => [gid]}}}
+    assert gid == child.id
+  end
+
+  test "no candidate session means no service call" do
+    Stub.install({:ok, %{"results" => []}})
+    assert {:ok, %{results: []}} = Search.search("x", session_ids: [Ecto.UUID.generate()])
+    refute_received {:session_search_params, _}
+  end
+
+  test "service limit is capped at 50 (memory-service's own clamp)" do
+    Stub.install({:ok, %{"results" => []}})
+    Search.search("x", limit: 80, include_archived: true)
+    assert_received {:session_search_params, %{"limit" => 50}}
   end
 
   test "blank query short-circuits without calling the service" do

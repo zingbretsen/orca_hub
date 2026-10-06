@@ -102,6 +102,51 @@ defmodule OrcaHub.ClaudeImportTest do
     assert second.inserted_at == ~N[2026-01-01 12:00:01.456000]
   end
 
+  test "an import enqueues a search reindex of each imported session", %{
+    claude_home: claude_home
+  } do
+    stub = OrcaHub.ClaudeImportReindexStub
+    test_pid = self()
+
+    Application.put_env(:orca_hub, :memory_service_url, "https://memory.example.com/")
+    Application.put_env(:orca_hub, :memory_service_token, "t")
+    Application.put_env(:orca_hub, :memory_service_req_options, plug: {Req.Test, stub})
+
+    on_exit(fn ->
+      Application.put_env(:orca_hub, :memory_service_url, nil)
+      Application.put_env(:orca_hub, :memory_service_token, nil)
+      Application.delete_env(:orca_hub, :memory_service_req_options)
+    end)
+
+    Req.Test.stub(stub, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      send(test_pid, {:reindexed, Jason.decode!(body)})
+      Req.Test.json(conn, %{"indexed" => 1, "errors" => []})
+    end)
+
+    Req.Test.set_req_test_to_shared(%{})
+
+    session_id = Ecto.UUID.generate()
+    project_segment = "claudeimportreindex#{System.unique_integer([:positive])}"
+
+    write_transcript!(claude_home, project_segment, session_id, [
+      %{
+        "type" => "user",
+        "cwd" => "/#{project_segment}",
+        "timestamp" => "2026-01-01T12:00:00.123Z",
+        "message" => %{"role" => "user", "content" => "imported words"}
+      }
+    ])
+
+    assert %{sessions_imported: 1} = ClaudeImport.import_all([])
+    session = Repo.get_by!(Session, claude_session_id: session_id)
+
+    assert_receive {:reindexed, %{"docs" => [%{"text" => "imported words", "group_id" => gid}]}},
+                   2_000
+
+    assert gid == session.id
+  end
+
   test "falls back to distinct usec-precision timestamps for messages without one", %{
     claude_home: claude_home
   } do
