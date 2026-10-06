@@ -103,6 +103,26 @@ defmodule OrcaHub.MemoryClient do
     do: HubRPC.memory_context(project_slug, prompt, opts)
 
   @doc """
+  POST /v1/collections/session-messages/docs — idempotent upsert of up to 100
+  session-message docs (`%{"id", "group_id", "text", "fields"}`). Returns
+  `{:ok, %{"indexed", "chunks", "embedded", "errors"}}`; per-doc failures come
+  back inside `"errors"` with an HTTP 200, so callers must inspect them.
+  """
+  def index_session_messages(docs), do: HubRPC.memory_index_session_messages(docs)
+
+  @doc """
+  POST /v1/collections/session-messages/search — hybrid search collapsed to one
+  result per session. `params` carries `"query"`, `"limit"`, `"snippets"` and
+  `"filters"`. Highlights in the response are PLAIN TEXT with matches wrapped
+  in STX (U+0002) / ETX (U+0003): renderers must HTML-escape the whole string
+  FIRST and only then swap the markers for `<mark>`/`</mark>`.
+  """
+  def search_session_messages(params), do: HubRPC.memory_search_session_messages(params)
+
+  @doc "DELETE /v1/collections/session-messages/groups/:session_id — `{:ok, %{\"deleted\" => n}}`."
+  def delete_session_messages(session_id), do: HubRPC.memory_delete_session_messages(session_id)
+
+  @doc """
   Merges two `GET /v1/memories` queries into the memories THIS session
   created — directly (`session_id == session_id`) and via extraction
   (`source.session_id == session_id`, filtered client-side the same way
@@ -282,6 +302,34 @@ defmodule OrcaHub.MemoryClient do
   defp extract_memories_list(%{"memories" => memories}) when is_list(memories), do: memories
   defp extract_memories_list(memories) when is_list(memories), do: memories
   defp extract_memories_list(_), do: []
+
+  @session_messages "/v1/collections/session-messages"
+
+  # retry: false is explicit (it is already the POST/DELETE default) — a retried
+  # bulk POST against a struggling memory-service is load amplification, and the
+  # indexer's own cursor/tick already provides the retry.
+  def index_session_messages_impl(docs) do
+    with_enabled(fn ->
+      do_request(:post, @session_messages <> "/docs", json: %{"docs" => docs}, retry: false)
+    end)
+  end
+
+  def search_session_messages_impl(params) do
+    with_enabled(fn ->
+      do_request(:post, @session_messages <> "/search", json: params, retry: false)
+    end)
+  end
+
+  def delete_session_messages_impl(session_id) do
+    with_enabled(fn ->
+      do_request(
+        :delete,
+        @session_messages <>
+          "/groups/#{URI.encode(to_string(session_id), &URI.char_unreserved?/1)}",
+        retry: false
+      )
+    end)
+  end
 
   def tags_impl(params) do
     with_enabled(fn -> do_request(:get, "/v1/tags", params: params) end)

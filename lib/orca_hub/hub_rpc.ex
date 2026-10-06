@@ -594,6 +594,15 @@ defmodule OrcaHub.HubRPC do
   def memory_duplicates(params),
     do: call(OrcaHub.MemoryClient, :duplicates_impl, [params], timeout: @duplicates_erpc_timeout)
 
+  def memory_index_session_messages(docs),
+    do: call(OrcaHub.MemoryClient, :index_session_messages_impl, [docs])
+
+  def memory_search_session_messages(params),
+    do: call(OrcaHub.MemoryClient, :search_session_messages_impl, [params])
+
+  def memory_delete_session_messages(session_id),
+    do: call(OrcaHub.MemoryClient, :delete_session_messages_impl, [session_id])
+
   def memory_list(params), do: call(OrcaHub.MemoryClient, :list_impl, [params])
   def memory_tags(params), do: call(OrcaHub.MemoryClient, :tags_impl, [params])
 
