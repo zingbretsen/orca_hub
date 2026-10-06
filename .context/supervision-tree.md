@@ -37,6 +37,7 @@ graph TB
     App --> SessionHeartbeat["OrcaHub.SessionHeartbeat\n(hub only)"]
     App --> ChurnSampler["OrcaHub.ChurnSampler\n(hub only)"]
     App --> IndexSweep["OrcaHub.Issues.IndexSweep\n(hub only)"]
+    App --> SessionSearchIndexer["OrcaHub.SessionSearch.Indexer\n(hub only)"]
     App --> IndexTaskSup["Issues.Indexer\nIndexTaskSupervisor\n(capped, hub only)"]
     App --> PiModelSync["OrcaHub.PiModelSync\n(hub only)"]
     App --> WarmPool["OrcaHub.Streaming.WarmPool"]
@@ -92,7 +93,7 @@ graph TB
 
 Agent nodes omit `Telemetry`, `Repo`, `MCP.UpstreamClient`, `Scheduler`,
 `TriggerLoader`, `OneOffTriggerSweep`, `SessionHeartbeat`, `ChurnSampler`, `MemoryExtractionSweep`,
-`Issues.IndexSweep` (and the capped `Issues.Indexer` task supervisor),
+`SessionSearch.Indexer`, `Issues.IndexSweep` (and the capped `Issues.Indexer` task supervisor),
 `PiModelSync`,
 `ClusterNodeTracker`, `Cluster.CodePush`, `NodeDialer`, and the `EmailInbox*` children. All database operations are
 proxied to the hub node via `HubRPC`. Everything else — including `Streaming.WarmPool`,
@@ -187,6 +188,20 @@ graph TB
   heartbeat: two nodes sweeping would double-sample and double-alert. Each
   sweep is wrapped in `rescue`/log, so one bad session can't kill the timer
   loop.
+- **`OrcaHub.SessionSearch.Indexer`** (hub only): pushes session conversation
+  text (user prompts minus the `<orca-memory>` block, assistant text blocks)
+  to memory-service's `session-messages` collection via `MemoryClient`. Sweeps
+  `messages` in `(inserted_at, id)` order from the durable
+  `session_search_cursors` row, <=100 docs per tick, 10 s apart while behind /
+  60 s idle, advancing the cursor only after a 200; the first deploy's
+  backfill is the same sweep from a NULL cursor. Per-doc `errors` land in
+  `session_search_failures` and are retried with backoff (cap 5). Idles
+  unless memory-service is configured; `SESSION_SEARCH_INDEXING=false` is
+  the kill switch. Hub-only because it reads every node's messages and owns
+  one cursor. `Sessions.delete_session/1` (hard delete only; archiving keeps
+  sessions searchable) calls `Indexer.on_session_deleted/1`, which fires a
+  best-effort `delete_session_messages` and clears the session's failure
+  rows.
 - **`OrcaHub.Issues.IndexSweep`** (hub only): every 600s it reindexes at most
   20 issues whose pgvector index is behind their content
   (`issues.indexed_at`), stopping early at 400 embedded chunks — "20 issues"

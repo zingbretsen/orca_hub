@@ -357,6 +357,7 @@ defmodule OrcaHub.Sessions do
 
     with {:ok, deleted} <- result do
       Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {deleted.id, {:status, :deleted}})
+      OrcaHub.SessionSearch.Indexer.on_session_deleted(deleted.id)
     end
 
     result

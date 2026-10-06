@@ -836,3 +836,29 @@ graph TB
    via `EmailInbox.Poller`/`Ingest`),
    the Discord `Bridge`, the Agent Runs API (`ApiRunController`), and the
    inbound A2A server (`A2AController`).
+
+## Session search ingest (ORCAHUB3-137)
+
+`OrcaHub.SessionSearch.*` is OrcaHub's half of session search; the search
+engine itself lives in memory-service (`session-messages` collection,
+`agent-session-messages` alias — OrcaHub holds no ES credentials).
+
+- `Extractor` (pure): `messages` row + session -> contract doc
+  (`id`, `group_id` = session id, `text`, `fields` role/backend/node/
+  project_id/directory/inserted_at) or `:skip`. Indexes user prompts (leading
+  `<orca-memory>` block stripped; dictation notes and `[Session lifecycle]`
+  messages kept) and assistant TEXT blocks; skips tool_use/tool_result/
+  thinking/system/result events, empty text, subagent traffic
+  (`parent_tool_use_id`), `isMeta`/`isSynthetic` rows, and whole sessions of
+  background `kind`s. All backends share this path (they normalize onto
+  Claude's shape).
+- `Indexer` (hub-only GenServer): durable-cursor sweep + failure retries, see
+  `.context/supervision-tree.md` and the module doc. Telemetry
+  `[:orca_hub, :session_search, :tick]` (docs, errors, unembedded,
+  lag_seconds).
+- `MemoryClient.index_session_messages/1`, `search_session_messages/1`,
+  `delete_session_messages/1` (via `HubRPC`, `retry: false`). Search
+  highlights are plain text with STX/ETX match markers: HTML-escape the whole
+  string first, then swap markers for `<mark>`.
+- Pace/kill switch env: `SESSION_SEARCH_INDEXING`, `SESSION_SEARCH_BATCH_SIZE`,
+  `SESSION_SEARCH_BEHIND_INTERVAL_MS`, `SESSION_SEARCH_IDLE_INTERVAL_MS`.

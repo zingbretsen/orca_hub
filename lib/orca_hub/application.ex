@@ -96,6 +96,12 @@ defmodule OrcaHub.Application do
       # by a restart landing before SessionRunner's self-archive hook ran.
       # See OrcaHub.MemoryExtractionSweep moduledoc.
       OrcaHub.MemoryExtractionSweep,
+      # Hub-only: pushes conversation text (and, from a NULL cursor, all
+      # history) into memory-service's `session-messages` collection. Hub-only
+      # because it reads every node's messages from the DB and keeps one
+      # durable cursor; idles unless memory-service is configured and
+      # SESSION_SEARCH_INDEXING isn't false. See OrcaHub.SessionSearch.Indexer.
+      OrcaHub.SessionSearch.Indexer,
       # Serializes forked pi children's first turns (pi_fork_spec.md §6).
       # Runs on hub + agent — a fork child runs wherever its parent does.
       OrcaHub.ForkGate,

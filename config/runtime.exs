@@ -151,6 +151,25 @@ config :orca_hub,
 config :orca_hub, :memory_service_url, System.get_env("MEMORY_SERVICE_URL")
 config :orca_hub, :memory_service_token, System.get_env("MEMORY_SERVICE_TOKEN")
 
+# Session-search indexing (OrcaHub.SessionSearch.Indexer, hub-only): pushes
+# conversation text to memory-service's `session-messages` collection. Needs
+# the two vars above; SESSION_SEARCH_INDEXING=false is the kill switch. Pace
+# knobs default (in the Indexer) to 100 docs per tick, 10 s between ticks
+# while behind, 60 s once caught up — gentle on the GB10 embedder during the
+# first-deploy backfill.
+config :orca_hub,
+       :session_search_indexing,
+       String.downcase(System.get_env("SESSION_SEARCH_INDEXING", "true")) not in ~w(false 0 off no)
+
+for {env, key} <- [
+      {"SESSION_SEARCH_BATCH_SIZE", :session_search_batch_size},
+      {"SESSION_SEARCH_BEHIND_INTERVAL_MS", :session_search_behind_interval_ms},
+      {"SESSION_SEARCH_IDLE_INTERVAL_MS", :session_search_idle_interval_ms}
+    ],
+    value = System.get_env(env) do
+  config :orca_hub, key, String.to_integer(value)
+end
+
 # Public base URL for the (separately built) memory-service dashboard, used
 # only to link a memory hook shown in a session's Memories panel to
 # "<base>/memories/<id>" — that path is the agreed convention with the
