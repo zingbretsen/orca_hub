@@ -151,6 +151,14 @@
  *    - `html[data-voice-mic]` is `voiceMicState()` of our own fields, synced
  *      wherever the strip's mic line is (`_renderMic`) plus the transitions
  *      that line never had to show (joining, arming, a pending repair).
+ *    - `html[data-voice-pill]` (ORCAHUB3-140) is `voicePillState()`: the mic
+ *      state plus speech, transcription and errors, which the End pill shows
+ *      through CSS. Synced from the same `_syncViewFlags`, which is also
+ *      called on VAD onset/end, the in-flight count and error show/hide.
+ *    - `html[data-voice-events]` (ORCAHUB3-140) is the voice view's events
+ *      popover, opened by the bar's `data-voice-action="events"` button. It
+ *      is ours, not the `<details>`' persisted open state: the view never
+ *      opens on a log the user left open on a normal page.
  *
  *    The view's own controls are page-rendered and cannot reach this hook
  *    except through window events, so the seam is four of them:
@@ -182,8 +190,11 @@ import { persistSoundsEnabled, soundsEnabled, VoiceSounds } from "./sounds"
 import {
   pickNavigates,
   setVoiceMic,
+  setVoicePill,
   setVoiceView,
   voiceMicState,
+  voicePillState,
+  VOICE_PILL_SAY,
   voiceViewFlagOn,
   voiceViewMediaMatches,
   voiceViewShowing,
@@ -393,6 +404,16 @@ export const VoiceHook = {
     // resume" on every toggle-on and every screen unlock.
     this._connecting = false
     this._reconciling = false
+    // ORCAHUB3-140: the VAD's current utterance, onset to end (or misfire),
+    // for the End pill's "speech" state. Nothing else reads it.
+    this._speaking = false
+    // ORCAHUB3-140: the error text the last failed arm put up, so the next
+    // arm that works can take exactly that down (`_clearArmError`).
+    this._armError = null
+    // ORCAHUB3-140: the voice view's events popover. `details.open` from
+    // before the popover opened it, so closing puts the desktop log back
+    // the way the user left it.
+    this._eventsWasOpen = null
 
     this._bindSounds()
     this._bindVoiceView()
@@ -500,6 +521,8 @@ export const VoiceHook = {
     // stale voice view down.
     setVoiceView(false)
     setVoiceMic(null)
+    setVoicePill(null)
+    this._setEventsOpen(false)
     if (window.__orcaVoice === this) delete window.__orcaVoice
   },
 
@@ -595,6 +618,7 @@ export const VoiceHook = {
     this._micReleased = false
     this._reacquiring = false
     this._playbackIdleSince = null
+    this._speaking = false
     if (this.channel) {
       this.channel.leave()
       this.channel = null
@@ -818,6 +842,7 @@ export const VoiceHook = {
         onSpeechEnd: (ev) => this._onSpeechEnd(ev),
         onMisfire: () => {
           this.metrics.misfires++
+          this._setSpeaking(false)
           // The onset already went up as `speech_start`; without this the
           // server would think the utterance is still in progress and hold
           // the rolling cleanup back until it gives up on it (ORCAHUB3-120).
@@ -828,13 +853,14 @@ export const VoiceHook = {
       this.metrics.vadInitMs = +(performance.now() - t0).toFixed(1)
 
       this.armed = true
+      this._clearArmError()
       this._renderMic()
     } catch (e) {
-      this._showError(
+      this._armError =
         e && e.name === "NotAllowedError"
           ? "Microphone permission was denied — voice mode cannot listen."
           : `Could not start the microphone: ${e && e.message ? e.message : e}`
-      )
+      this._showError(this._armError)
     } finally {
       this._arming = false
       // ORCAHUB3-113: an arm that gave up (permission, a context that needs a
@@ -987,10 +1013,21 @@ export const VoiceHook = {
     // ORCAHUB3-113 D6: talking takes a paged-back voice view back to live.
     // Not while muted: the VAD is paused then, and an onset that slipped
     // through would be the assistant's own voice, not the user's.
-    if (!this.muted) this._emit("orca:voice-speech-start", {})
+    if (!this.muted) {
+      this._setSpeaking(true)
+      this._emit("orca:voice-speech-start", {})
+    }
+  },
+
+  /** ORCAHUB3-140: the End pill's "speech" state, onset to end. */
+  _setSpeaking(on) {
+    if (this._speaking === on) return
+    this._speaking = on
+    this._syncViewFlags()
   },
 
   async _onSpeechEnd({ audio, endSample, forced }) {
+    this._setSpeaking(false)
     if (this.muted) return
     let samples = audio
     let startSample = endSample - audio.length
@@ -1065,6 +1102,8 @@ export const VoiceHook = {
       }
       if (playing) this._armMuteWatchdog()
       else this._clearMuteWatchdog()
+      // A paused VAD sends no end for the utterance it was in.
+      if (playing) this._speaking = false
       this.channel && this.channel.push("mic", { muted: playing, reason: "tts" })
       this._renderMic()
     }
@@ -1327,6 +1366,8 @@ export const VoiceHook = {
     if (busy === this._asrBusy) return
     this._asrBusy = busy
     window.dispatchEvent(new CustomEvent("orca:voice-asr-busy", { detail: { busy } }))
+    // ORCAHUB3-140: the End pill's "transcribing".
+    this._syncViewFlags()
   },
 
   // --------------------------------------------------------------- the send
@@ -1986,17 +2027,17 @@ export const VoiceHook = {
     // thinks voice is off (and right after a remount), but <html> is always
     // there and the voice view reads it, not the strip.
     this._syncViewFlags()
-    const el = this._el("[data-voice-mic]")
-    if (!el) return
+    if (!this._el("[data-voice-mic]")) return
     const serverMuted = this.state && this.state.muted
+    let text
     // ORCAHUB3-105 §9 FIRST, ahead of the mute: during a release the mic is
     // not merely muted, and — critically — it is not the "stopped, tap to
     // resume" failure two branches down either. Saying so is what stops
     // every single reply looking like a microphone fault.
-    if (this._reacquiring) el.textContent = "mic: taking the microphone back…"
-    else if (this._micReleased) el.textContent = "mic released (TTS playing)"
-    else if (this.muted || serverMuted) el.textContent = "mic muted (TTS playing)"
-    else if (this._micLive()) el.textContent = "mic: listening"
+    if (this._reacquiring) text = "mic: taking the microphone back…"
+    else if (this._micReleased) text = "mic released (TTS playing)"
+    else if (this.muted || serverMuted) text = "mic muted (TTS playing)"
+    else if (this._micLive()) text = "mic: listening"
     // ORCAHUB3-91: armed-but-not-live is the state that used to render as
     // "listening" while nothing was being captured.
     //
@@ -2004,8 +2045,11 @@ export const VoiceHook = {
     // (see `_toggle`), so "tap the mic" would point at the wrong control; the
     // big Resume right below says the rest.
     else if (this.armed)
-      el.textContent = voiceViewShowing() ? "mic: stopped" : "mic: stopped — tap the mic to resume"
-    else el.textContent = "mic: not armed"
+      text = voiceViewShowing() ? "mic: stopped" : "mic: stopped — tap the mic to resume"
+    else text = "mic: not armed"
+    // ORCAHUB3-140: the summary row's copy, and the voice view's events
+    // popover header, which shows the same line the view hides.
+    this._setAllText("[data-voice-mic]", text)
   },
 
   /** ORCAHUB3-113: write `html[data-voice-view]` / `html[data-voice-mic]` from
@@ -2015,20 +2059,91 @@ export const VoiceHook = {
    * drive slices of this hook against minimal fakes). */
   _syncViewFlags() {
     setVoiceView(this.active)
-    setVoiceMic(
-      voiceMicState({
-        active: this.active,
-        released: this._micReleased,
-        live: this._micLive(),
-        starting: !!(
-          this._connecting ||
-          this._arming ||
-          this._reconciling ||
-          this._reacquiring ||
-          (this._timers && this._timers.reconcile)
-        ),
-      })
-    )
+    const mic = voiceMicState({
+      active: this.active,
+      released: this._micReleased,
+      live: this._micLive(),
+      starting: !!(
+        this._connecting ||
+        this._arming ||
+        this._reconciling ||
+        this._reacquiring ||
+        (this._timers && this._timers.reconcile)
+      ),
+    })
+    setVoiceMic(mic)
+    this._syncPill(mic)
+    // The popover's trigger lives in the armed bar; voice off takes it away.
+    if (!this.active) this._setEventsOpen(false)
+  },
+
+  /** ORCAHUB3-140: `html[data-voice-pill]`, the End pill's look, and the
+   * hook-owned sr-only text the pill's accessible name ends with. The error
+   * and banner are read off the strip itself, because what the user can see
+   * there is exactly what the pill has to agree with. */
+  _syncPill(mic) {
+    const state = this.state || {}
+    const pill = voicePillState({
+      mic,
+      muted: !!(this.muted || state.muted),
+      speaking: this._speaking,
+      transcribing: this._inFlight > 0 || state.status === "transcribing" || state.pending > 0,
+      warming: state.status === "warming",
+      error: this._visible("[data-voice-error]") || this._visible("[data-voice-banner]"),
+    })
+    setVoicePill(pill)
+    const say = this._el("[data-voice-pill-say]")
+    if (say) say.textContent = pill ? VOICE_PILL_SAY[pill] : ""
+  },
+
+  /** ORCAHUB3-140: an arm that worked takes down the error the last failed
+   * one left (the mic coming back after "Tap to resume" used to leave
+   * "permission was denied" on screen under a live mic, which the End pill
+   * would now show as an error). Only that exact text, and never while the
+   * server is reporting an error of its own. */
+  _clearArmError() {
+    const text = this._armError
+    this._armError = null
+    if (!text || (this.state && this.state.error)) return
+    const el = this._el("[data-voice-error]")
+    if (el && el.textContent === text) this._hideError()
+  },
+
+  _visible(selector) {
+    const el = this._el(selector)
+    return !!(el && !el.classList.contains("hidden"))
+  },
+
+  /** ORCAHUB3-140: the voice view's events popover. The log is inside the
+   * strip's `<details>`, whose content only renders while it is open, so
+   * opening the popover opens it too, and closing puts back what was there
+   * before (`_bindLogToggle` does not persist either move). */
+  _toggleEvents() {
+    this._setEventsOpen(!this._eventsOpen())
+  },
+
+  _eventsOpen() {
+    const html = typeof document !== "undefined" && document.documentElement
+    return !!(html && html.dataset && html.dataset.voiceEvents)
+  },
+
+  _setEventsOpen(open) {
+    const html = typeof document !== "undefined" && document.documentElement
+    if (!html || !html.dataset) return
+    const details = this._el("[data-voice-log-details]")
+    if (open) {
+      if (!details || this._eventsOpen()) return
+      this._eventsWasOpen = !!details.open
+      html.dataset.voiceEvents = "open"
+      details.open = true
+    } else {
+      if (!this._eventsOpen()) return
+      delete html.dataset.voiceEvents
+      if (details && this._eventsWasOpen === false) details.open = false
+      this._eventsWasOpen = null
+    }
+    const trigger = this._el("[data-voice-events-toggle]")
+    if (trigger && trigger.setAttribute) trigger.setAttribute("aria-expanded", String(!!open))
   },
 
   /** D8's Resume, the voice view's bar-rendered "Tap to resume".
@@ -2217,8 +2332,13 @@ export const VoiceHook = {
   },
 
   _setStatusText(text) {
-    const el = this._el("[data-voice-status]")
-    if (el) el.textContent = text
+    this._setAllText("[data-voice-status]", text)
+  },
+
+  /** The status and mic lines have two copies since ORCAHUB3-140: the
+   * summary row, and the voice view's events popover header. */
+  _setAllText(selector, text) {
+    for (const el of this.el.querySelectorAll(selector)) el.textContent = text
   },
 
   _showBanner(text) {
@@ -2226,6 +2346,7 @@ export const VoiceHook = {
     if (!el) return
     el.textContent = text
     this._show(el)
+    this._syncViewFlags()
   },
 
   _showError(text) {
@@ -2234,10 +2355,12 @@ export const VoiceHook = {
     el.textContent = text
     el.title = "Click to retry the transcription warm-up"
     this._show(el)
+    this._syncViewFlags()
   },
 
   _hideError() {
     this._hide(this._el("[data-voice-error]"))
+    this._syncViewFlags()
   },
 
   _show(el) {
@@ -2265,6 +2388,9 @@ export const VoiceHook = {
         // "toggle" — the toggle's second press turns voice OFF.
         else if (action === "resume") this._resume()
         else if (action === "start") this._arm()
+        // ORCAHUB3-140: the voice view's events button, and the popover's
+        // own close and "What can I say?" (which also opens the help).
+        else if (action === "events") this._toggleEvents()
         else if (action === "retry") this.channel && this.channel.push("retry_warmup", {})
         else if (action === "restore") {
           // It sits inside the <details> summary; a bare click would toggle
@@ -2418,6 +2544,9 @@ export const VoiceHook = {
       /* private mode / storage disabled — default closed is fine */
     }
     details.addEventListener("toggle", () => {
+      // ORCAHUB3-140: the voice view's popover opens and closes the
+      // <details> for its own reasons; neither is the user's desktop choice.
+      if (this._eventsOpen() || voiceViewShowing()) return
       try {
         window.localStorage.setItem(LOG_OPEN_KEY, details.open ? "1" : "0")
       } catch (_e) {
@@ -2468,6 +2597,9 @@ export const VoiceHook = {
       voiceView: voiceViewFlagOn(),
       voiceViewShowing: voiceViewShowing(),
       voiceMic: document.documentElement.dataset.voiceMic || null,
+      // ORCAHUB3-140: the End pill's state and the events popover.
+      voicePill: document.documentElement.dataset.voicePill || null,
+      voiceEvents: this._eventsOpen(),
       asrBusy: this._asrBusy,
       frameSamples: FRAME_SAMPLES,
       vadSettings: VAD_SETTINGS,

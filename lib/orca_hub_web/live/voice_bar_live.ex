@@ -45,6 +45,8 @@ defmodule OrcaHubWeb.VoiceBarLive do
   It costs nothing vertically: collapsed it is not in the DOM at all, and open
   it is `position: fixed`, i.e. out of the header's flow. Both the trigger and
   the panel exist only while voice is on, exactly like §8.3.9's nav anchors.
+  In the phone voice view the "?" is hidden, and the events popover's "What
+  can I say?" opens the panel instead (ORCAHUB3-140).
 
   ## Who owns what
 
@@ -72,11 +74,23 @@ defmodule OrcaHubWeb.VoiceBarLive do
   here renders any differently. In it:
 
     * the mic button is the red "End" pill — the same `toggle` element, so
-      the same gesture and the same click listener;
+      the same gesture and the same click listener. Since ORCAHUB3-140 it
+      also shows the listening state (starting, listening, speech,
+      transcribing, muted for playback, stopped, error) from the hook's
+      `html[data-voice-pill]`, through CSS in `app.css`;
     * "?", the sounds toggle and `#voice-tts-transport` are hidden (the page
       rail takes over the transport), and so is the rest of the header
       (`OrcaHubWeb.Layouts`);
-    * the picker is the screen's title, the strip keeps its own line;
+    * ONE header line (ORCAHUB3-140): End, the picker as the screen's
+      title, then two small buttons. One is auto-read (the page's
+      `toggle_tts`, reached through a window event, styled off the page's
+      `#voice-view[data-tts-autoplay]`). The other is "events", which opens
+      the hook's log as a popover (`html[data-voice-events]`) with "What can
+      I say?" in its header;
+    * the strip still takes the line below, but its summary row is hidden,
+      so that line is empty until something must be seen there: the arming
+      countdown or "restore draft" (enlarged), the banner, an error and its
+      Retry, or "Start listening";
     * a big "Tap to resume" (D8) shows while `html[data-voice-mic="stopped"]`.
 
   One server-side piece: `set_target` (the picker, a MANUAL choice) pushes
@@ -341,7 +355,18 @@ defmodule OrcaHubWeb.VoiceBarLive do
            listener, purely a `voice-view:` restyle plus a label that is
            display:none everywhere else. A second, page-rendered End would sit
            outside `#voice-panel`, where the hook's click listener never
-           hears it. --%>
+           hears it.
+
+           ORCAHUB3-140: the pill also SHOWS the listening state, from
+           `html[data-voice-pill]` (the hook) through app.css's "voice view
+           header" block: a halo that pulses while listening and strengthens
+           on speech, animated dots while transcribing, grey with a speaker while
+           a reply plays, dashed when stopped, solid red on an error. The
+           three extra icons are display:none except under their state's
+           rule, and `#voice-pill-say` is the hook's sr-only state text, so
+           the accessible name reads "End voice mode (listening)". Off the
+           voice view all four are display:none, so the desktop mic is the
+           bare icon it always was. --%>
       <button
         type="button"
         data-voice-action="toggle"
@@ -355,7 +380,17 @@ defmodule OrcaHubWeb.VoiceBarLive do
         title={if @voice_on, do: "Turn off voice mode", else: "Turn on voice mode"}
       >
         <.icon name="hero-microphone" class="size-5" />
+        <span data-voice-pill-icon="busy" class="hidden loading loading-dots loading-sm"></span>
+        <span data-voice-pill-icon="muted" class="hidden hero-speaker-wave size-5"></span>
+        <span data-voice-pill-icon="error" class="hidden hero-exclamation-triangle size-5"></span>
         <span data-voice-end-label class="hidden voice-view:inline">End</span>
+        <span
+          id="voice-pill-say"
+          phx-update="ignore"
+          data-voice-pill-say
+          class="hidden voice-view:inline sr-only"
+        >
+        </span>
       </button>
 
       <%!-- §8.3.10's help trigger. It is a SIBLING of the mic in the same
@@ -365,8 +400,10 @@ defmodule OrcaHubWeb.VoiceBarLive do
            channel is joined anyway.
 
            Hidden in the voice view (ORCAHUB3-113), as are the sounds toggle
-           and the transport below: that header is End, the session title and
-           the strip, nothing else. "orca help" still opens the panel. --%>
+           and the transport below: that header is End, the session title,
+           the autoplay toggle and the events button (ORCAHUB3-140), nothing
+           else. The events popover's "What can I say?" and "orca help" both
+           still open the panel. --%>
       <button
         :if={@voice_on}
         type="button"
@@ -560,9 +597,18 @@ defmodule OrcaHubWeb.VoiceBarLive do
 
            ORCAHUB3-113: in the voice view this row DISSOLVES
            (`voice-view:contents`), the same `display: contents` trick that
-           puts the bar in the header at all. Its two children become header
+           puts the bar in the header at all. Its children become header
            items: the picker grows into the session title on the End pill's
-           line, and `#voice-strip` takes the full-width line below. --%>
+           line, followed by the autoplay and events buttons (ORCAHUB3-140),
+           and `#voice-strip` takes the full-width line below.
+
+           ORCAHUB3-140: that line is EMPTY in the steady state, so the voice
+           view's chrome is one line. `#voice-strip`'s summary row is hidden
+           there (the pill carries its state), and app.css brings back only
+           what must be seen while it is showing: the arming countdown and
+           "restore draft" at full size, the banner, the error and its Retry,
+           and "Start listening". With all of them hidden the strip is a
+           zero-height line, which the header's `gap-y-0` keeps free. --%>
       <div
         :if={@voice_on}
         id="voice-bar-strip-row"
@@ -597,6 +643,53 @@ defmodule OrcaHubWeb.VoiceBarLive do
             </option>
           </select>
         </form>
+
+        <%!-- ORCAHUB3-140: the voice view's auto-read toggle, the composer's
+             speaker button (`toggle_tts`, hidden in the view) brought up to
+             the header row. Display:none everywhere else.
+
+             The state belongs to the PAGE: SessionLive.Show's
+             `:tts_autoplay`, persisted in localStorage `orca:tts-autoplay`.
+             This sticky bar never holds a copy. A click dispatches
+             `orca:tts-autoplay-toggle` on window, where the page's TTS hook
+             (TTSMethods in app.js) pushes `toggle_tts` to its own LiveView,
+             and the look follows the page's server-rendered
+             `#voice-view[data-tts-autoplay]` through a `:has()` rule in
+             app.css. The two halves swap by that rule too, sr-only text and
+             all, so the accessible name says "on" or "off" with no patch of
+             this LiveView involved. --%>
+        <button
+          type="button"
+          data-voice-autoplay-toggle
+          phx-click={JS.dispatch("orca:tts-autoplay-toggle")}
+          class="hidden voice-view:inline-flex btn btn-ghost btn-sm btn-circle shrink-0"
+          title="Read each reply aloud when it finishes"
+        >
+          <span data-autoplay="off" class="hero-speaker-x-mark size-5"></span>
+          <span data-autoplay="off" class="sr-only">Auto-read replies: off</span>
+          <span data-autoplay="on" class="hero-speaker-wave size-5"></span>
+          <span data-autoplay="on" class="sr-only">Auto-read replies: on</span>
+        </button>
+
+        <%!-- ORCAHUB3-140: the voice view's "events", a small button where
+             the strip's "events >" summary used to need a line of its own.
+             It opens the hook's log as a popover (`_toggleEvents`, keyed on
+             `html[data-voice-events]`), so it is a `data-voice-action` inside
+             `#voice-panel`, and `phx-update="ignore"` lets the hook keep its
+             `aria-expanded` true across this LiveView's patches. --%>
+        <span id="voice-events-toggle" phx-update="ignore" class="hidden voice-view:contents">
+          <button
+            type="button"
+            data-voice-action="events"
+            data-voice-events-toggle
+            aria-expanded="false"
+            aria-controls="voice-events"
+            class="btn btn-ghost btn-sm btn-circle shrink-0"
+            title="Voice events"
+          >
+            <.icon name="hero-queue-list" class="size-5" />
+          </button>
+        </span>
 
         <%!-- Everything below is the hook's, verbatim from §8.1's DOM
              contract: same `data-voice-*` selectors, same hidden-by-default
@@ -658,11 +751,48 @@ defmodule OrcaHubWeb.VoiceBarLive do
                 />
               </span>
             </summary>
-            <ol
-              data-voice-log
-              class="mt-1 text-[11px] leading-snug opacity-60 max-h-24 overflow-y-auto"
-            >
-            </ol>
+            <%!-- ORCAHUB3-140: a plain block off the voice view, so the log
+                 renders exactly as before. In the view it is the events
+                 popover (`position: fixed`, app.css) while
+                 `html[data-voice-events]` is set and display:none otherwise,
+                 whatever the <details>' own remembered open state. Its header
+                 is display:none off the view: the title, the status and mic
+                 lines the view's hidden summary row would have shown (the
+                 hook writes every copy), "What can I say?" and a close. Both
+                 buttons are `data-voice-action="events"`, which closes the
+                 popover; the help button also opens the help panel. --%>
+            <div id="voice-events" data-voice-log-panel>
+              <div class="hidden voice-view:block mb-2">
+                <div class="flex items-center gap-2">
+                  <h2 class="font-semibold text-sm grow">Voice events</h2>
+                  <button
+                    type="button"
+                    phx-click="toggle_help"
+                    data-voice-action="events"
+                    class="btn btn-ghost btn-xs"
+                  >
+                    What can I say?
+                  </button>
+                  <button
+                    type="button"
+                    data-voice-action="events"
+                    aria-label="Close voice events"
+                    class="btn btn-ghost btn-xs btn-circle"
+                  >
+                    <.icon name="hero-x-mark" class="size-4" />
+                  </button>
+                </div>
+                <p class="flex flex-wrap gap-x-2 opacity-70">
+                  <span data-voice-status class="font-medium"></span>
+                  <span data-voice-mic></span>
+                </p>
+              </div>
+              <ol
+                data-voice-log
+                class="mt-1 text-[11px] leading-snug opacity-60 max-h-24 overflow-y-auto"
+              >
+              </ol>
+            </div>
           </details>
           <%!-- The bar's OWN draft sink, for pages with no composer bound to
                the target (e.g. /queue). The hook unhides it only then — when

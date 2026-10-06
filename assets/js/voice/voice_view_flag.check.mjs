@@ -41,6 +41,11 @@ const STUB_CAPTURE = dataUrl(`
       globalThis.__voiceStubs.captures.push(this)
     }
     async open() {
+      if (globalThis.__voiceStubs.openFails) {
+        // As the real one: a refused getUserMedia leaves no live track.
+        this.track.readyState = "ended"
+        const e = new Error("denied"); e.name = "NotAllowedError"; throw e
+      }
       const delay = globalThis.__voiceStubs.openDelayMs
       if (delay) await new Promise((r) => setTimeout(r, delay))
       return "running"
@@ -90,6 +95,7 @@ const STUB_CHANNEL = dataUrl(`
     }
     push(event, payload) { this.pushes.push([event, payload]) }
     pushSegment() {}
+    nextSeq() { return (this.seq = (this.seq || 0) + 1) }
     leave() { this.left = true }
     joined() { return !this.left }
   }
@@ -171,8 +177,17 @@ el.dataset.targetSessionId = TARGET
 const micEl = el.register("[data-voice-mic]", new FakeEl("span"))
 el.register("[data-voice-log]", new FakeEl("ul"))
 el.register("[data-voice-status]", new FakeEl("span"))
-el.register("[data-voice-error]", new FakeEl("span"))
-el.register("[data-voice-banner]", new FakeEl("span"))
+// Both start hidden, as the bar renders them: ORCAHUB3-140's pill reads an
+// error off whether the strip is SHOWING one.
+const errorEl = el.register("[data-voice-error]", new FakeEl("span"))
+errorEl.classList.add("hidden")
+el.register("[data-voice-banner]", new FakeEl("span")).classList.add("hidden")
+const pillSay = el.register("[data-voice-pill-say]", new FakeEl("span"))
+const details = el.register("[data-voice-log-details]", new FakeEl("details"))
+details.open = false
+const eventsBtn = el.register("[data-voice-events-toggle]", new FakeEl("button"))
+eventsBtn.attrs = {}
+eventsBtn.setAttribute = (k, v) => (eventsBtn.attrs[k] = v)
 el.register('[data-voice-action="start"]', new FakeEl("button"))
 el.register("[data-voice-arming]", new FakeEl("span"))
 el.register("[data-voice-arming-label]", new FakeEl("span"))
@@ -181,6 +196,8 @@ const toggleBtn = el.register('[data-voice-action="toggle"]', new FakeEl("button
 
 const windowListeners = new Map()
 const dispatched = []
+const persisted = []
+const LOG_OPEN_KEY = "orca:voice:log-open"
 let mediaMatches = false
 globalThis.window = {
   addEventListener: (n, fn) => windowListeners.set(n, fn),
@@ -194,7 +211,7 @@ globalThis.window = {
   matchMedia: (q) => ({ matches: mediaMatches && q === "(max-width: 767px)", media: q }),
   location: { origin: "http://localhost" },
   isSecureContext: true,
-  localStorage: { getItem: () => null, setItem: () => {} },
+  localStorage: { getItem: () => null, setItem: (k, v) => persisted.push([k, v]) },
 }
 globalThis.localStorage = window.localStorage
 globalThis.CustomEvent = class CustomEvent {
@@ -299,6 +316,9 @@ async function freshHook({ release = false, openDelayMs = 0, arm = true } = {}) 
   globalThis.__voiceStubs.stopDelayMs = 0
   globalThis.__voiceStubs.forceDead = false
   globalThis.__voiceStubs.joinFails = false
+  globalThis.__voiceStubs.openFails = false
+  errorEl.classList.add("hidden")
+  errorEl.textContent = ""
   globalThis.__voiceStubs.joinReply.release_mic_during_playback = release
   el.dataset.targetSessionId = TARGET
   toggleBtn.setAttribute = () => {}
@@ -382,6 +402,34 @@ console.log("\nA3. voiceMicState: only an UNATTENDED dead mic is \"stopped\"")
   eq("live outranks an arm in flight", S({ live: true, starting: true }), "live")
   eq("joining / arming / repairing", S({ starting: true }), "starting")
   eq("nothing capturing, nothing trying", S({}), "stopped")
+}
+
+console.log("\nA5. voicePillState (ORCAHUB3-140): the End pill's look, in priority order")
+{
+  const P = (o) => flag.voicePillState({ mic: "live", ...o })
+  eq("voice off: no attribute", flag.voicePillState({ mic: null, speaking: true }), null)
+  eq("capturing, nothing heard: listening", P({}), "listening")
+  eq("the VAD hears the user: speech", P({ speaking: true }), "speech")
+  eq("a segment with the ASR: transcribing", P({ transcribing: true }), "transcribing")
+  eq("speech outranks transcribing (talking on)", P({ speaking: true, transcribing: true }), "speech")
+  eq("a playback mute: muted", P({ muted: true, speaking: true }), "muted")
+  eq("a release reads the same as a mute", P({ mic: "released" }), "muted")
+  eq("joining / arming: starting", P({ mic: "starting" }), "starting")
+  eq("transcription still warming up: starting", P({ warming: true }), "starting")
+  eq("nothing capturing, nothing trying: stopped", P({ mic: "stopped", transcribing: true }), "stopped")
+  eq("a stopped mic outranks its error (Tap to resume is the remedy)", P({ mic: "stopped", error: true }), "stopped")
+  eq("any other error on screen outranks every live state", P({ error: true, speaking: true, muted: true }), "error")
+  ok(
+    "every state has words for the accessible name",
+    flag.VOICE_PILL_STATES.every((s) => typeof flag.VOICE_PILL_SAY[s] === "string")
+  )
+  const doc = fakeDoc()
+  for (const s of flag.VOICE_PILL_STATES) {
+    flag.setVoicePill(s, doc)
+    eq(`setVoicePill("${s}") is written as-is`, doc.documentElement.dataset.voicePill, s)
+  }
+  flag.setVoicePill("live", doc)
+  ok("an unknown pill state CLEARS rather than writing it", !("voicePill" in doc.documentElement.dataset))
 }
 
 console.log("\nA4. pickNavigates: phone + voice mode + a page that is not already it")
@@ -650,6 +698,144 @@ console.log("\nB7. C5 — a MANUAL pick navigates on a phone in voice mode, live
   el.unregister('[data-voice-retarget-nav="session-b"]')
   delete body.dataset.voiceComposerFor
   hook.destroyed()
+}
+
+console.log("\nB8. ORCAHUB3-140: the hook keeps html[data-voice-pill] and the pill's words current")
+{
+  const hook = await freshHook({ arm: false, openDelayMs: 30 })
+  ok("voice off: no pill state", !("voicePill" in html.dataset))
+  hook._toggle()
+  eq("the press: starting", html.dataset.voicePill, "starting")
+  eq("...and the sr-only words say so", pillSay.textContent, flag.VOICE_PILL_SAY.starting)
+  await settle(80)
+  eq("armed: listening", html.dataset.voicePill, "listening")
+  eq("...words: listening", pillSay.textContent, "voice mode (listening)")
+
+  hook._onSpeechStart()
+  eq("a VAD onset: speech", html.dataset.voicePill, "speech")
+  hook.vad.opts.onMisfire()
+  eq("a misfire ends it: listening", html.dataset.voicePill, "listening")
+  hook._onSpeechStart()
+  await hook._onSpeechEnd({ audio: new Float32Array(16000), endSample: 16000, forced: false })
+  eq("a segment out: transcribing", html.dataset.voicePill, "transcribing")
+  hook._onSegmentResult({ seq: 1, text: "hi", action: null })
+  eq("its result back: listening", html.dataset.voicePill, "listening")
+
+  hook._renderState({ status: "transcribing", draft: "", muted: false, pending: 1 })
+  eq("the server's own transcribing counts too", html.dataset.voicePill, "transcribing")
+  hook._renderState({ status: "listening", draft: "", muted: false, pending: 0 })
+  eq("...and its listening ends it", html.dataset.voicePill, "listening")
+
+  hook._onSpeechStart()
+  tts(true)
+  await settle()
+  eq("a reply playing: muted, and the open utterance is dropped", html.dataset.voicePill, "muted")
+  ok("...speaking cleared by the mute", hook._speaking === false)
+  tts(false)
+  await settle()
+  eq("playback over: listening", html.dataset.voicePill, "listening")
+
+  hook._showError("ASR warm-up failed")
+  eq("an error on screen: error", html.dataset.voicePill, "error")
+  hook._renderState({ status: "listening", draft: "", muted: false, pending: 0, error: null })
+  eq("the error cleared: listening", html.dataset.voicePill, "listening")
+
+  globalThis.__voiceStubs.forceDead = true
+  hook._onLiveness("the microphone stopped", false)
+  await settle(320)
+  eq("a dead mic: stopped", html.dataset.voicePill, "stopped")
+  eq("...words: stopped", pillSay.textContent, flag.VOICE_PILL_SAY.stopped)
+  globalThis.__voiceStubs.forceDead = false
+  click(hook, "resume")
+  await settle(80)
+  eq("resumed: listening again", html.dataset.voicePill, "listening")
+
+  await hook._toggle()
+  ok("voice off: the pill state is gone", !("voicePill" in html.dataset))
+  eq("...and the words are empty", pillSay.textContent, "")
+  hook.destroyed()
+}
+{
+  const hook = await freshHook({ release: true })
+  tts(true)
+  await settle()
+  eq("a deliberate release reads as muted too", html.dataset.voicePill, "muted")
+  hook.destroyed()
+  ok("destroyed() clears the pill state", !("voicePill" in html.dataset))
+}
+
+console.log("\nB10. ORCAHUB3-140: a re-arm that works takes down the failed arm's error")
+{
+  const hook = await freshHook({ arm: false })
+  globalThis.__voiceStubs.openFails = true
+  await hook._toggle()
+  await settle()
+  ok("a denied mic shows its error", !errorEl.classList.contains("hidden") && /permission was denied/.test(errorEl.textContent))
+  eq("...and the pill says stopped, not error", html.dataset.voicePill, "stopped")
+  globalThis.__voiceStubs.openFails = false
+  click(hook, "resume")
+  await settle(20)
+  eq("Resume brings the mic back: listening", html.dataset.voicePill, "listening")
+  ok("...and the stale permission error is gone", errorEl.classList.contains("hidden"))
+  hook.destroyed()
+}
+{
+  // A server-reported error is the server's to clear, never the arm's.
+  const hook = await freshHook({ arm: false })
+  globalThis.__voiceStubs.openFails = true
+  await hook._toggle()
+  await settle()
+  hook.state = { status: "error", error: "ASR warm-up failed", draft: "" }
+  globalThis.__voiceStubs.openFails = false
+  click(hook, "resume")
+  await settle(20)
+  ok("with the server reporting an error, the arm leaves the error box alone", !errorEl.classList.contains("hidden"))
+  hook.destroyed()
+}
+
+console.log("\nB9. ORCAHUB3-140: the events popover is the hook's, not the <details>' memory")
+{
+  const hook = await freshHook()
+  showLayout(true)
+  details.open = false
+  ok("closed by default", !("voiceEvents" in html.dataset))
+
+  click(hook, "events")
+  eq("the events button opens it", html.dataset.voiceEvents, "open")
+  ok("...opening the <details> so the log renders", details.open === true)
+  eq("...and the trigger says so", eventsBtn.attrs["aria-expanded"], "true")
+  details._listeners.get("toggle")()
+  ok("the <details> toggle is NOT persisted", !persisted.length)
+
+  click(hook, "events")
+  ok("a second press closes it", !("voiceEvents" in html.dataset))
+  ok("...putting the <details> back closed", details.open === false)
+  eq("...trigger collapsed", eventsBtn.attrs["aria-expanded"], "false")
+  details._listeners.get("toggle")()
+  ok("...still not persisted in the view", !persisted.length)
+
+  // A log the user left open on a normal page stays open behind it.
+  details.open = true
+  click(hook, "events")
+  click(hook, "events")
+  ok("a log that was open stays open after the popover closes", details.open === true)
+
+  click(hook, "events")
+  await hook._toggle()
+  ok("ending voice closes the popover", !("voiceEvents" in html.dataset))
+  hook.destroyed()
+  details.open = false
+}
+{
+  // Off the view the <details> is the desktop log, and its toggle persists
+  // exactly as before.
+  const hook = await freshHook()
+  details.open = true
+  details._listeners.get("toggle")()
+  eq("off the view the toggle persists as before", persisted.at(-1), [LOG_OPEN_KEY, "1"])
+  persisted.length = 0
+  hook.destroyed()
+  details.open = false
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

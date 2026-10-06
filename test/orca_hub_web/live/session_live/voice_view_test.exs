@@ -129,6 +129,35 @@ defmodule OrcaHubWeb.SessionLive.VoiceViewTest do
       assert has_element?(view, ~s(#voice-pager button[data-voice-view-action="live"][hidden]))
     end
 
+    # ORCAHUB3-140: the voice bar's auto-read toggle styles itself from this
+    # attribute (app.css, `:has()`), and its click arrives here as the page's
+    # own `toggle_tts`, pushed by the TTS hook from a window event. So the
+    # page's assign is the one source of truth, and localStorage follows it
+    # through the same persisted echo the composer button has always used.
+    test "ORCAHUB3-140: publishes :tts_autoplay, and toggle_tts flips it and persists", %{
+      conn: conn,
+      session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert attr(view, "#voice-view", "data-tts-autoplay") == "false"
+
+      # The TTS hook's mount-time hydration from localStorage.
+      render_hook(view, "tts_autoplay_init", %{"enabled" => true})
+      assert attr(view, "#voice-view", "data-tts-autoplay") == "true"
+
+      render_hook(view, "toggle_tts", %{})
+      assert attr(view, "#voice-view", "data-tts-autoplay") == "false"
+      assert_push_event(view, "tts_autoplay_persisted", %{enabled: false})
+
+      render_hook(view, "toggle_tts", %{})
+      assert attr(view, "#voice-view", "data-tts-autoplay") == "true"
+      assert_push_event(view, "tts_autoplay_persisted", %{enabled: true})
+
+      # The composer's own speaker button still reflects it, unchanged.
+      assert has_element?(view, ~s(button[phx-click="toggle_tts"].text-primary))
+    end
+
     test "is not rendered in the tree view (no feed, no composer to restyle)", %{
       conn: conn,
       session: session

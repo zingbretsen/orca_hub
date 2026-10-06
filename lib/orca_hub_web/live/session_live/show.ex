@@ -467,6 +467,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # voice_turn_running?/2 — the status alone cannot say (`waiting`).
   attr :running, :boolean, required: true
   attr :suppressed, :boolean, required: true
+  # ORCAHUB3-140: `:tts_autoplay`, published for the voice bar's auto-read
+  # toggle. The composer's speaker button is hidden in the view, and the bar
+  # is a different (sticky) LiveView, so it styles itself from this
+  # attribute through a `:has()` rule in app.css instead of keeping a copy.
+  attr :tts_autoplay, :boolean, required: true
 
   defp voice_view(assigns) do
     ~H"""
@@ -478,6 +483,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
       data-turn-running={to_string(@running)}
       data-voice-suppressed={to_string(@suppressed)}
       data-turn-started-at={@running && @turn.started_at}
+      data-tts-autoplay={to_string(@tts_autoplay)}
     >
       <%!-- The pager: prev, "n of N", next, and Live while paged back. The
       hook owns everything inside (label, disabled, which buttons show), and

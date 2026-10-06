@@ -588,6 +588,9 @@ full-screen voice view. It shows one message chosen by state, a big draft
 while dictating, an activity list while the agent works, a read-aloud rail,
 and the mic button as a red "End". It is the same document, the same feed,
 the same composer and the same form; nothing is copied. Desktop is unchanged.
+Since ORCAHUB3-140 its chrome is ONE header line: the End pill (which shows
+the listening state), the session title, an auto-read toggle and an events
+button.
 §8.5 of the spec is normative (D1-D11, C1-C5, the contracts, the state rules,
 the measurements). It was verified on the real page at 390x844 with the
 harness in `~/voice-verify-logs/v113/` (both CSS builds). A real-device check
@@ -598,22 +601,32 @@ is still owed: headless has no audio route and no OS backgrounding.
 - `assets/js/voice_view_flag.js`: THE shared seam. `VOICE_VIEW_MEDIA`,
   `setVoiceView`/`setVoiceLayout`/`setVoiceMic`, `voiceMicState` (`live` /
   `released` / `starting` / `stopped`), `voiceViewShowing()`, and
-  `pickNavigates` (C5). Imported by the Voice hook, the `VoiceView` hook, app.js
+  `pickNavigates` (C5). ORCAHUB3-140 adds `voicePillState` / `setVoicePill` /
+  `VOICE_PILL_SAY`: the End pill's state. Highest priority first: `stopped`,
+  `error`, `muted` (a reply playing, released or not), `starting`, `speech`,
+  `transcribing`, `listening`. Imported by the Voice hook, the `VoiceView` hook, app.js
   and `ScrollToBottom`. Checked by `voice/voice_view_flag.check.mjs`
   (`VoiceViewFlagCheckTest`).
 - `assets/css/app.css`: the `voice-view` custom variant (phone width +
   `html[data-voice-view][data-voice-layout]`), plus W2's `voice-dictating:` /
   `voice-working:` / `voice-reply:` / `voice-paging:` state variants, plus a
   delimited block of flat rules for markup the page does not own the classes
-  of (the shared `<.header>`, the bubbles, the textarea).
+  of (the shared `<.header>`, the bubbles, the textarea). A second delimited
+  block, "The voice view's header (ORCAHUB3-140)", restyles the bar: the
+  pill's look per `html[data-voice-pill]`, the auto-read toggle off the
+  page's `#voice-view[data-tts-autoplay]` (a `:has()` rule), the strip's line
+  emptied in the steady state, and the events popover.
 - `assets/js/voice/voice_hook.js` (the bar half): writes `data-voice-view`
-  from `this.active` and `data-voice-mic` in `_syncViewFlags`. Emits
+  from `this.active`, and `data-voice-mic` and `data-voice-pill` in
+  `_syncViewFlags` (also called on VAD onset/end, the in-flight count and
+  error show/hide). Owns the events popover (`data-voice-action="events"` ->
+  `_toggleEvents` -> `html[data-voice-events]`). Emits
   `orca:voice-ended {viewShowing}`, `orca:voice-sent` and
   `orca:voice-speech-start`, and listens for `orca:voice-action` (cancel
   only). Owns Resume (`_resume`) and the C5 `voice-picked` -> hidden
   `data-voice-retarget-nav` click. `VoiceBarLive` and `Layouts` are
-  `voice-view:` utilities only: End, Resume, the picker as title, the rest
-  hidden.
+  `voice-view:` utilities only: End, Resume, the picker as title, the
+  auto-read and events buttons, the rest hidden.
 - `assets/js/voice_view.js`: the pure state rules (`voiceViewState`, the
   pager, `stepPager`/`resolvePendingStep`, `pagingAfter`, `clockRunning`,
   `currentStyleText`). Checked by `voice_view.check.mjs`
@@ -665,7 +678,11 @@ is still owed: headless has no audio route and no OS backgrounding.
   in Chrome).
 - **Header budgets.** Off the view the header is 48 px idle and 64 px armed at
   390x844, re-measured with `getBoundingClientRect` after phase C. In the view
-  it is 68 px (118 with Resume). `<main>` drops to 8 px padding in the view
+  it is ONE 52 px line since ORCAHUB3-140 (68 before). `#voice-strip` still
+  takes the line below, but its summary row is hidden there, so that line is
+  0 px until something must show: the arming countdown or "restore draft"
+  (enlarged, 94 px total), the banner, an error and Retry, "Start listening",
+  and Resume after it. The 1280 desktop bar was re-measured unchanged. `<main>` drops to 8 px padding in the view
   (`74b0819`), and the view fills 844 px with no page scroll. The read-aloud
   transport on a NORMAL page used to wrap the 390 px row (76/92 px, §8.5.9).
   Since `c6753d9`, below `sm` the wordmark (`[data-header-wordmark]`) gives
@@ -698,3 +715,17 @@ is still owed: headless has no audio route and no OS backgrounding.
 - **The layout, state and current attributes are published whenever the
   session page is mounted** (desktop and mic off included) and are inert
   there. Gate on `voiceViewShowing()` or the variant, never on one attribute.
+- **Auto-read (autoplay) has ONE owner: the page.** The composer's speaker
+  button is hidden in the view; the bar's `[data-voice-autoplay-toggle]`
+  dispatches `orca:tts-autoplay-toggle` on window, `TTSMethods` pushes the
+  page's own `toggle_tts`, and the usual `tts_autoplay_persisted` echo writes
+  localStorage `orca:tts-autoplay`. The bar keeps no copy: its look comes from
+  `#voice-view[data-tts-autoplay]`, which `voice_view/1` renders from
+  `:tts_autoplay`. The streaming "bolt" (`toggle_tts_stream`) has no
+  voice-view control.
+- **The events popover is not the `<details>`' open state.** That state is
+  persisted for the desktop log, so the view would open covered by a log left
+  open elsewhere. The popover is `html[data-voice-events]` (the hook), which
+  opens the `<details>` only so its content renders and puts it back on close;
+  neither move is persisted. Its header repeats the status and mic lines the
+  view hides (the hook writes every `[data-voice-status]` / `[data-voice-mic]`).

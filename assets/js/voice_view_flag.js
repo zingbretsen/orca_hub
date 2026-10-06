@@ -97,6 +97,66 @@ export function voiceMicState({ active, released, live, starting } = {}) {
   return "stopped"
 }
 
+/* ORCAHUB3-140: the voice view's End pill shows the listening state itself,
+ * through `html[data-voice-pill]` and CSS (app.css), so no LiveView patch of
+ * the bar can fight it. Finer than `data-voice-mic`, which stays as it is
+ * because "Tap to resume" keys on it:
+ *
+ *   starting      voice on, mic or transcription not ready yet
+ *   listening     capturing, nothing heard
+ *   speech        the VAD hears the user right now
+ *   transcribing  a segment is with the ASR, nobody talking
+ *   muted         a reply is playing: the mic is muted or released
+ *   stopped       nothing capturing and nothing trying ("Tap to resume")
+ *   error         an error or banner is up in the strip
+ *
+ * Order matters. "stopped" outranks everything: a dead mic must never read
+ * as busy, and when an error explains WHY it died (permission denied), the
+ * remedy is still "Tap to resume", with the error itself spelled out right
+ * below. Any other error the strip is showing comes next. The playback mute
+ * outranks speech: VAD frames are dropped while it holds, so an onset then is
+ * the assistant's own voice. Speech outranks transcribing, because the user
+ * can go on talking while an earlier segment is still out. */
+export const VOICE_PILL_STATES = [
+  "starting",
+  "listening",
+  "speech",
+  "transcribing",
+  "muted",
+  "stopped",
+  "error",
+]
+
+export function voicePillState({ mic, muted, speaking, transcribing, warming, error } = {}) {
+  if (!mic) return null
+  if (mic === "stopped") return "stopped"
+  if (error) return "error"
+  if (mic === "released" || muted) return "muted"
+  if (mic === "starting" || warming) return "starting"
+  if (speaking) return "speech"
+  if (transcribing) return "transcribing"
+  return "listening"
+}
+
+/* The pill's accessible state, read after its visible "End" label. The bar
+ * renders the label; the hook writes this into a hook-owned sr-only span. */
+export const VOICE_PILL_SAY = {
+  starting: "voice mode (starting)",
+  listening: "voice mode (listening)",
+  speech: "voice mode (hearing you)",
+  transcribing: "voice mode (transcribing)",
+  muted: "voice mode (mic paused while the reply plays)",
+  stopped: "voice mode (microphone stopped)",
+  error: "voice mode (error)",
+}
+
+export function setVoicePill(state, doc) {
+  const html = root(doc)
+  if (!html) return
+  if (VOICE_PILL_STATES.includes(state)) html.dataset.voicePill = state
+  else delete html.dataset.voicePill
+}
+
 /* C5: after a MANUAL picker retarget, does the screen follow? Only in voice
  * mode on a phone, and never to the page already on screen (that would be a
  * pointless navigation that re-mounts the page under the user). Auto-follow

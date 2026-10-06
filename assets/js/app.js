@@ -244,6 +244,15 @@ const TTSMethods = {
       }
     })
 
+    // ORCAHUB3-140: the phone voice view's auto-read toggle is in the sticky
+    // voice bar, a different LiveView, so it cannot `phx-click` ours. It
+    // dispatches this window event instead, and the page's own `toggle_tts`
+    // does the rest: the assign, then the persisted echo above. The bar
+    // reads the result off the page's markup (`#voice-view[data-tts-autoplay]`)
+    // and holds no copy.
+    this._onAutoplayToggle = () => this.pushEvent("toggle_tts", {})
+    window.addEventListener("orca:tts-autoplay-toggle", this._onAutoplayToggle)
+
     // Same round-trip for "Speak while streaming" (C3).
     const storedStream = localStorage.getItem(TTS_STREAM_KEY) === "1"
     this.ttsStreamEnabled = storedStream
@@ -301,6 +310,7 @@ const TTSMethods = {
     this.ttsStop()
     window.removeEventListener(ASSISTANT_STREAM_EVENT, this._onAssistantStream)
     window.removeEventListener("orca:voice-asr-busy", this._onAsrBusy)
+    window.removeEventListener("orca:tts-autoplay-toggle", this._onAutoplayToggle)
     clearInterval(this._ttsStreamTimer)
     this.ttsStreams.clear()
     this.ttsHoldUnmount()

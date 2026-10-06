@@ -1544,6 +1544,7 @@
               pending_questions: @pending_questions
             })
           }
+          tts_autoplay={@tts_autoplay}
         />
         <%!-- In the voice view the feed shows ONE message (the hook's
         generated <style>; assets/css/app.css enlarges it), and none at all
@@ -1752,7 +1753,12 @@
             <%!-- The mic button moved to the header's voice bar (§8.2). It
           has to be one control for the whole app, not one per page: it is
           the user gesture that satisfies the autoplay policy (§9 trap 2),
-          and a per-page one could not arm a mic that outlives the page. --%>
+          and a per-page one could not arm a mic that outlives the page.
+
+          The speaker (autoplay) button is hidden in the voice view, where
+          the voice bar's own auto-read toggle drives this same `toggle_tts`
+          (ORCAHUB3-140, see voice_view/1's `tts_autoplay`). The bolt
+          (`toggle_tts_stream`) has no voice-view counterpart. --%>
             <button
               type="button"
               phx-click="toggle_tts"

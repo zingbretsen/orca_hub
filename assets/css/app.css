@@ -471,3 +471,194 @@
   }
 }
 /* ==== end: the session page's voice view ================================ */
+
+/* ==== The voice view's header (ORCAHUB3-140) ==============================
+   One line above the pager: the End pill, the session title, auto-read and
+   events. Everything here restyles markup VoiceBarLive already renders, keyed
+   on <html> attributes no LiveView patch can strip:
+
+     data-voice-pill    the pill's state, written by the Voice hook
+                        (voicePillState in voice_view_flag.js)
+     data-voice-events  the events popover, open (the Voice hook)
+
+   plus one page fact read through :has(): `#voice-view[data-tts-autoplay]`,
+   which SessionLive.Show renders from :tts_autoplay.
+
+   Spelled out flat, with the voice-view variant's own condition, for the
+   reason given above the TTS highlight rules. Unlayered, so these outrank
+   the utilities on the same elements (`hidden`, `voice-view:bg-error/15`)
+   without !important. */
+
+@keyframes voice-pill-halo {
+  0% {
+    box-shadow: 0 0 0 0 var(--voice-pill-halo);
+  }
+  100% {
+    box-shadow: 0 0 0 var(--voice-pill-spread) transparent;
+  }
+}
+@keyframes voice-pill-blink {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@media (max-width: 767px) {
+  /* -- The End pill. Its red "End" identity holds in every state but two:
+     muted (grey, a reply is playing) and error (solid red). -- */
+  html[data-voice-view][data-voice-layout] [data-voice-action="toggle"] {
+    --voice-pill-halo: color-mix(in oklch, var(--color-error) 40%, transparent);
+    --voice-pill-spread: 8px;
+    transition: background-color 0.2s, color 0.2s;
+  }
+
+  /* listening: a ring, which pulses outwards when motion is allowed. */
+  html[data-voice-view][data-voice-layout][data-voice-pill="listening"] [data-voice-action="toggle"] {
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--color-error) 25%, transparent);
+  }
+
+  /* speech: stronger everything. A brighter fill, and a faster, wider and
+     more opaque ring. */
+  html[data-voice-view][data-voice-layout][data-voice-pill="speech"] [data-voice-action="toggle"] {
+    --voice-pill-halo: color-mix(in oklch, var(--color-error) 70%, transparent);
+    --voice-pill-spread: 12px;
+    background-color: color-mix(in oklch, var(--color-error) 32%, transparent);
+    box-shadow: 0 0 0 5px color-mix(in oklch, var(--color-error) 50%, transparent);
+  }
+
+  /* transcribing: a steady ring, and animated dots in place of the mic
+     (dots, not a spinner: the working screen's tool list already spins). */
+  html[data-voice-view][data-voice-layout][data-voice-pill="transcribing"] [data-voice-action="toggle"] {
+    box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-error) 45%, transparent);
+  }
+
+  /* muted: a reply is playing, the mic is muted or released. Grey, and a
+     speaker in place of the mic. */
+  html[data-voice-view][data-voice-layout][data-voice-pill="muted"] [data-voice-action="toggle"] {
+    background-color: color-mix(in oklch, var(--color-base-content) 10%, transparent);
+    color: color-mix(in oklch, var(--color-base-content) 65%, transparent);
+  }
+
+  /* stopped: hollow and dashed. The big "Tap to resume" below says why. */
+  html[data-voice-view][data-voice-layout][data-voice-pill="stopped"] [data-voice-action="toggle"] {
+    background-color: transparent;
+    outline: 2px dashed color-mix(in oklch, var(--color-error) 60%, transparent);
+    outline-offset: -2px;
+  }
+  html[data-voice-view][data-voice-layout][data-voice-pill="stopped"] [data-voice-action="toggle"] > .hero-microphone {
+    opacity: 0.5;
+  }
+
+  /* error: solid red, a warning sign in place of the mic. */
+  html[data-voice-view][data-voice-layout][data-voice-pill="error"] [data-voice-action="toggle"] {
+    background-color: var(--color-error);
+    color: var(--color-error-content);
+  }
+
+  /* The icon swaps. The extra icons are `hidden` (display:none) everywhere
+     else, desktop included. */
+  html[data-voice-view][data-voice-layout]:is([data-voice-pill="transcribing"], [data-voice-pill="muted"], [data-voice-pill="error"]) [data-voice-action="toggle"] > .hero-microphone {
+    display: none;
+  }
+  html[data-voice-view][data-voice-layout][data-voice-pill="transcribing"] [data-voice-pill-icon="busy"],
+  html[data-voice-view][data-voice-layout][data-voice-pill="muted"] [data-voice-pill-icon="muted"],
+  html[data-voice-view][data-voice-layout][data-voice-pill="error"] [data-voice-pill-icon="error"] {
+    display: inline-block;
+  }
+
+  /* -- The auto-read toggle: off unless the page says autoplay is on. -- */
+  html[data-voice-view][data-voice-layout] [data-voice-autoplay-toggle] {
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
+  }
+  html[data-voice-view][data-voice-layout] [data-voice-autoplay-toggle] [data-autoplay="on"],
+  html[data-voice-view][data-voice-layout]:has(#voice-view[data-tts-autoplay="true"]) [data-voice-autoplay-toggle] [data-autoplay="off"] {
+    display: none;
+  }
+  html[data-voice-view][data-voice-layout]:has(#voice-view[data-tts-autoplay="true"]) [data-voice-autoplay-toggle] [data-autoplay="on"] {
+    display: inline-block;
+  }
+  html[data-voice-view][data-voice-layout]:has(#voice-view[data-tts-autoplay="true"]) [data-voice-autoplay-toggle] {
+    color: var(--color-primary);
+    background-color: color-mix(in oklch, var(--color-primary) 14%, transparent);
+  }
+
+  /* -- The events button reads as pressed while its popover is open. -- */
+  html[data-voice-view][data-voice-layout][data-voice-events] [data-voice-events-toggle] {
+    color: var(--color-primary);
+    background-color: color-mix(in oklch, var(--color-primary) 14%, transparent);
+  }
+
+  /* -- The strip's line: empty in the steady state. -- */
+
+  /* The summary row keeps only the arming countdown and "restore draft",
+     and only while one of them is showing. Its status and mic lines are the
+     pill's job here (and are copied into the events popover). */
+  html[data-voice-view][data-voice-layout] #voice-strip summary > :not([data-voice-arming], [data-voice-action="restore"]) {
+    display: none;
+  }
+  html[data-voice-view][data-voice-layout] #voice-strip summary:not(:has(> [data-voice-arming]:not(.hidden), > [data-voice-action="restore"]:not(.hidden))) {
+    display: none;
+  }
+  html[data-voice-view][data-voice-layout] #voice-strip summary {
+    height: auto;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 0.25rem 0 0.375rem;
+  }
+  /* Readable at arm's length while dictating. */
+  html[data-voice-view][data-voice-layout] #voice-strip summary > :is([data-voice-arming], [data-voice-action="restore"]) {
+    height: 2rem;
+    padding: 0 0.875rem;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    gap: 0.375rem;
+  }
+
+  /* The <details> itself, when it shows nothing, is not even a zero-height
+     item: the strip's `gap-1` would otherwise add 4px under an error. */
+  html[data-voice-view][data-voice-layout]:not([data-voice-events]) #voice-strip [data-voice-log-details]:not(:has([data-voice-arming]:not(.hidden), [data-voice-action="restore"]:not(.hidden))) {
+    display: none;
+  }
+
+  /* -- The events popover. Display:none in the view unless the hook opened
+     it, so a log left open on a normal page never covers the screen. Open,
+     it is out of flow like #voice-help, just under the header. -- */
+  html[data-voice-view][data-voice-layout]:not([data-voice-events]) #voice-strip [data-voice-log-panel] {
+    display: none;
+  }
+  html[data-voice-view][data-voice-layout][data-voice-events] #voice-strip [data-voice-log-panel] {
+    position: fixed;
+    z-index: 40;
+    top: 3.5rem;
+    left: 0.5rem;
+    right: 0.5rem;
+    max-height: 70vh;
+    overflow-y: auto;
+    padding: 0.75rem;
+    border: 1px solid var(--color-base-300);
+    border-radius: var(--radius-box);
+    background-color: var(--color-base-100);
+    box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.15), 0 8px 10px -6px rgb(0 0 0 / 0.15);
+    font-size: 0.75rem;
+  }
+  html[data-voice-view][data-voice-layout][data-voice-events] #voice-strip [data-voice-log-panel] > [data-voice-log] {
+    max-height: none;
+    overflow: visible;
+    opacity: 0.8;
+  }
+}
+
+/* The pill's motion, only for those who have not asked for less. Without
+   it the static rings above carry the same states. */
+@media (max-width: 767px) and (prefers-reduced-motion: no-preference) {
+  html[data-voice-view][data-voice-layout][data-voice-pill="listening"] [data-voice-action="toggle"] {
+    animation: voice-pill-halo 2s ease-out infinite;
+  }
+  html[data-voice-view][data-voice-layout][data-voice-pill="speech"] [data-voice-action="toggle"] {
+    animation: voice-pill-halo 0.8s ease-out infinite;
+  }
+  html[data-voice-view][data-voice-layout][data-voice-pill="starting"] [data-voice-action="toggle"] > .hero-microphone {
+    animation: voice-pill-blink 1.2s ease-in-out infinite;
+  }
+}
+/* ==== end: the voice view's header ======================================= */

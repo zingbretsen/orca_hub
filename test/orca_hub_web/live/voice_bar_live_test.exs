@@ -698,13 +698,203 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
       assert "h-4" in tokens(select)
 
       # Everything the strip carries is still there in the view (status,
-      # arming, restore, errors, retry) — the restyle hides none of it.
+      # arming, restore, errors, retry). ORCAHUB3-140 hides the summary
+      # row's status and mic lines there from app.css, never by a class, so
+      # the hook's writes still land and the desktop strip is untouched.
       for selector <-
-            ~w([data-voice-status] [data-voice-arming] [data-voice-error]) ++
+            ~w([data-voice-arming] [data-voice-error]) ++
               ["[data-voice-action='restore']", "[data-voice-action='retry']"] do
         assert [_] = Floki.find(doc, "#voice-strip " <> selector), "missing #{selector}"
         refute class_of(doc, "#voice-strip " <> selector) =~ "voice-view:hidden"
       end
+
+      for selector <- ~w([data-voice-status] [data-voice-mic]) do
+        assert [_] = Floki.find(doc, "#voice-strip summary " <> selector), "missing #{selector}"
+        refute class_of(doc, "#voice-strip summary " <> selector) =~ "voice-view:"
+      end
+    end
+
+    # ORCAHUB3-140: one header line. Desktop has to render exactly as before,
+    # so the pin is that every element this issue added to the bar is
+    # display:none off the voice view, and that the summary row, which the
+    # desktop strip still shows, kept its children, order and classes.
+    test "ORCAHUB3-140: every addition is display:none off the view; the summary row is as it was",
+         %{conn: conn} do
+      {_bar, html} = voice_view_bar(conn)
+      doc = Floki.parse_document!(html)
+
+      for selector <- ~w(
+            [data-voice-pill-icon=busy] [data-voice-pill-icon=muted]
+            [data-voice-pill-icon=error] #voice-pill-say
+            [data-voice-autoplay-toggle] #voice-events-toggle
+          ) do
+        assert [_] = Floki.find(doc, selector), "missing #{selector}"
+        assert "hidden" in tokens(class_of(doc, selector)), "#{selector} shows off the view"
+
+        for token <- tokens(class_of(doc, selector)),
+            token =~ ~r/^(voice-view:)?(inline|block|flex|contents|inline-flex)$/ do
+          assert String.starts_with?(token, "voice-view:"),
+                 "#{selector} has #{token}, which shows it off the view"
+        end
+      end
+
+      # The popover header lives in the log panel, display:none off the view.
+      [header | _] = Floki.find(doc, "#voice-events > div")
+      header_class = header |> Floki.attribute("class") |> List.first()
+      assert "hidden" in tokens(header_class)
+      assert "voice-view:block" in tokens(header_class)
+
+      [summary] = Floki.find(doc, "#voice-strip [data-voice-log-details] > summary")
+
+      assert summary |> Floki.attribute("class") |> List.first() ==
+               "flex items-center gap-2 list-none cursor-pointer h-4 leading-4"
+
+      kids =
+        for {tag, attrs, _} <- summary |> Floki.children() |> Enum.filter(&is_tuple/1) do
+          {tag, attrs |> Enum.into(%{}) |> Map.get("class")}
+        end
+
+      assert [
+               {"span", "hero-microphone size-4 shrink-0"},
+               {"span", "font-medium shrink-0"},
+               {"span", "opacity-60 truncate min-w-0 flex-1"},
+               {"span", "hidden badge badge-warning badge-xs shrink-0"},
+               {"button",
+                "hidden btn btn-xs btn-outline btn-warning h-4 min-h-0 px-1 leading-none shrink-0"},
+               {"span", "shrink-0 opacity-50 flex items-center gap-0.5"}
+             ] = kids
+
+      # The log keeps its classes, now inside the popover panel.
+      assert class_of(doc, "#voice-events > ol[data-voice-log]") ==
+               "mt-1 text-[11px] leading-snug opacity-60 max-h-24 overflow-y-auto"
+    end
+
+    test "ORCAHUB3-140: the End pill's state icons and accessible state are hook/CSS-owned",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+
+      # In the button from idle on (the pill is the mic), so they cost the
+      # idle bar nothing: every one is display:none.
+      idle = Floki.parse_document!(render(bar))
+
+      for icon <- ~w(busy muted error) do
+        assert [_] =
+                 Floki.find(idle, "[data-voice-action='toggle'] > [data-voice-pill-icon=#{icon}]")
+      end
+
+      # The state text is the hook's: phx-update="ignore", so the bar's
+      # patches cannot blank it, and sr-only in the view.
+      [say] = Floki.find(idle, "[data-voice-action='toggle'] > #voice-pill-say")
+      assert Floki.attribute(say, "phx-update") == ["ignore"]
+      assert Floki.attribute(say, "data-voice-pill-say") == [""]
+      assert "sr-only" in tokens(say |> Floki.attribute("class") |> List.first())
+
+      # The visible label stays "End": the pill's identity does not change.
+      assert Floki.text(Floki.find(idle, "[data-voice-end-label]")) == "End"
+    end
+
+    test "ORCAHUB3-140: the auto-read toggle is armed-only, view-only, and drives the PAGE",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+
+      refute render(bar) =~ "data-voice-autoplay-toggle"
+
+      doc = bar |> render_hook("voice-on", %{"on" => true}) |> Floki.parse_document!()
+      [toggle] = Floki.find(doc, "#voice-panel [data-voice-autoplay-toggle]")
+
+      # It never talks to this LiveView: a window event, heard by the page's
+      # TTS hook, which pushes the page's own toggle_tts.
+      [click] = Floki.attribute(toggle, "phx-click")
+      assert click =~ "orca:tts-autoplay-toggle"
+      assert click =~ "dispatch"
+
+      # Both halves are rendered; app.css shows one, keyed on the page's
+      # #voice-view[data-tts-autoplay]. Each carries its own sr-only state.
+      for half <- ~w(on off) do
+        assert [_icon, sr] = Floki.find([toggle], "[data-autoplay=#{half}]")
+        assert Floki.text(sr) == "Auto-read replies: #{half}"
+      end
+
+      # No server state of its own to go stale.
+      assert Floki.attribute(toggle, "aria-pressed") == []
+    end
+
+    test "ORCAHUB3-140: events is a hook action that opens the log as a popover",
+         %{conn: conn} do
+      {_bar, html} = voice_view_bar(conn)
+      doc = Floki.parse_document!(html)
+
+      [wrap] = Floki.find(doc, "#voice-panel #voice-events-toggle")
+      assert Floki.attribute(wrap, "phx-update") == ["ignore"]
+      assert "voice-view:contents" in tokens(class_of(doc, "#voice-events-toggle"))
+
+      [button] =
+        Floki.find([wrap], "button[data-voice-action='events'][data-voice-events-toggle]")
+
+      assert Floki.attribute(button, "aria-expanded") == ["false"]
+      assert Floki.attribute(button, "aria-controls") == ["voice-events"]
+
+      # The popover IS the hook's log: same <details>, same [data-voice-log].
+      assert [_] =
+               Floki.find(
+                 doc,
+                 "#voice-strip [data-voice-log-details] #voice-events [data-voice-log]"
+               )
+
+      # Its header repeats the status and mic lines the view hides, has a
+      # close, and "What can I say?" also opens the help.
+      assert [_] = Floki.find(doc, "#voice-events [data-voice-status]")
+      assert [_] = Floki.find(doc, "#voice-events [data-voice-mic]")
+      assert [_] = Floki.find(doc, "#voice-events button[aria-label='Close voice events']")
+
+      [help] = Floki.find(doc, "#voice-events button[phx-click='toggle_help']")
+      assert Floki.attribute(help, "data-voice-action") == ["events"]
+      assert Floki.text(help) =~ "What can I say?"
+
+      # ...and it is not the "?"'s hook seam, which `orca help` clicks.
+      assert Floki.attribute(help, "data-voice-help-toggle") == []
+      assert [_] = Floki.find(doc, "[data-voice-help-toggle]")
+    end
+
+    # The CSS half of ORCAHUB3-140. LiveViewTest cannot apply it, so pin
+    # that every rule keyed on the new attributes carries the voice-view
+    # variant's condition (phone width + both <html> attributes): one that
+    # did not would restyle desktop.
+    test "ORCAHUB3-140: app.css scopes every new header rule to the voice view" do
+      css = File.read!(Path.expand("../../../assets/css/app.css", __DIR__))
+      [_, block] = String.split(css, "/* ==== The voice view's header (ORCAHUB3-140)", parts: 2)
+      [block, _] = String.split(block, "/* ==== end: the voice view's header", parts: 2)
+
+      selectors =
+        block
+        |> String.split("\n")
+        |> Enum.filter(&String.match?(&1, ~r/^\s+html\[.*[{,]\s*$/))
+
+      assert length(selectors) > 20
+
+      for line <- selectors do
+        assert String.trim(line) =~ ~r/^html\[data-voice-view\]\[data-voice-layout\]/,
+               "not scoped to the voice view: #{line}"
+      end
+
+      for key <- [
+            ~s([data-voice-pill="listening"]),
+            ~s([data-voice-pill="speech"]),
+            ~s([data-voice-pill="transcribing"]),
+            ~s([data-voice-pill="muted"]),
+            ~s([data-voice-pill="stopped"]),
+            ~s([data-voice-pill="error"]),
+            ~s([data-voice-pill="starting"]),
+            ~s|:has(#voice-view[data-tts-autoplay="true"])|,
+            "[data-voice-events] #voice-strip [data-voice-log-panel]"
+          ] do
+        assert block =~ key, "app.css has no rule for #{key}"
+      end
+
+      assert block =~ "@media (max-width: 767px) {"
+      refute block =~ "@variant", "nested variants silently fail in the dev build (see app.css)"
     end
 
     test "Resume (D8) is its own action, display:none unless the view's mic is stopped",
