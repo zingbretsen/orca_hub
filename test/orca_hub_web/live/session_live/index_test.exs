@@ -35,7 +35,9 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
 
     {:ok, _view, _html} =
       view
-      |> form("form", session: %{"directory" => project.directory, "project_id" => project.id})
+      |> form("form[phx-submit=save]",
+        session: %{"directory" => project.directory, "project_id" => project.id}
+      )
       |> render_submit()
       |> follow_redirect(conn)
 
@@ -69,7 +71,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
 
     html =
       view
-      |> form("form", session: %{"backend" => "codex"})
+      |> form("form[phx-submit=save]", session: %{"backend" => "codex"})
       |> render_change()
 
     assert html =~ "GPT-5.6 Sol"
@@ -87,7 +89,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
     # Codex: also mcp: true -> still shown.
     html =
       view
-      |> form("form", session: %{"backend" => "codex"})
+      |> form("form[phx-submit=save]", session: %{"backend" => "codex"})
       |> render_change()
 
     assert html =~ "Orchestrator mode"
@@ -103,7 +105,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
 
     html =
       view
-      |> form("form", session: %{"backend" => "pi"})
+      |> form("form[phx-submit=save]", session: %{"backend" => "pi"})
       |> render_change()
 
     assert html =~ "Orchestrator mode"
@@ -129,7 +131,7 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
 
     html =
       view
-      |> form("form", session: %{"backend" => "pi"})
+      |> form("form[phx-submit=save]", session: %{"backend" => "pi"})
       |> render_change()
 
     assert html =~ "glm-5p2 (fireworks)"

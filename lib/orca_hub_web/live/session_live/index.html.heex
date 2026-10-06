@@ -48,12 +48,71 @@
   </label>
 </div>
 
-<div :if={@grouped_sessions == []} class="text-sm text-base-content/50 p-4 text-center">
+<form id="session-search-form" phx-change="search" phx-submit="search" class="mt-4">
+  <input
+    type="search"
+    name="q"
+    value={@search_query}
+    placeholder="Search conversations..."
+    phx-debounce="400"
+    autocomplete="off"
+    class="input input-bordered input-sm w-full"
+  />
+</form>
+
+<div :if={@search_active} id="session-search-results" class="mt-4">
+  <div :if={@search_error} class="alert alert-warning text-sm">
+    {@search_error}
+  </div>
+  <div :if={@search_degraded && !@search_error} class="alert alert-info text-sm mb-3">
+    Semantic search is unavailable; showing keyword matches only.
+  </div>
+  <div
+    :if={!@search_error && @search_results == []}
+    class="text-sm text-base-content/50 p-4 text-center"
+  >
+    No sessions match "{@search_query}".
+  </div>
+  <div
+    :for={r <- @search_results || []}
+    id={"search-result-#{r.session.id}"}
+    class="border-b border-base-300 py-3"
+  >
+    <div class="flex flex-wrap items-center gap-2">
+      <.link navigate={~p"/sessions/#{r.session.id}"} class="font-medium hover:underline">
+        {r.session.title || "Untitled session"}
+      </.link>
+      <span class="badge badge-sm badge-ghost">{r.session.status}</span>
+      <span :if={r.session.archived_at} class="badge badge-sm badge-outline">archived</span>
+      <span
+        class="text-xs text-base-content/50 ml-auto"
+        title={full_timestamp(r.session.updated_at)}
+      >
+        {time_ago(r.session.updated_at)}
+      </span>
+    </div>
+    <div class="text-xs text-base-content/50 font-mono truncate">{r.session.directory}</div>
+    <ul class="mt-1 space-y-1">
+      <li :for={snip <- r.snippets} class="text-sm text-base-content/80">
+        <span class="text-xs uppercase text-base-content/40 mr-1">{snip.role}</span>
+        {Phoenix.HTML.raw(OrcaHub.SessionSearch.Search.highlight_html(snip.text))}
+      </li>
+    </ul>
+  </div>
+</div>
+
+<div
+  :if={@grouped_sessions == [] && !@search_active}
+  class="text-sm text-base-content/50 p-4 text-center"
+>
   No sessions yet.
 </div>
 
 <details
-  :for={{{node_name, project}, main_sessions, worktree_groups} <- @grouped_sessions}
+  :for={
+    {{node_name, project}, main_sessions, worktree_groups} <-
+      if(@search_active, do: [], else: @grouped_sessions)
+  }
   class="mb-4 group"
   {if(main_sessions != [] || worktree_groups != [], do: [open: true], else: [])}
 >

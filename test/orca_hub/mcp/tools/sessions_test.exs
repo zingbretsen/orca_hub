@@ -1345,6 +1345,95 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
     end
   end
 
+  describe "search_sessions — conversation_query" do
+    alias OrcaHub.SessionSearchStub, as: SearchStub
+
+    defp search_text(args, state) do
+      %{"content" => [%{"text" => text}]} = SessionsTool.call("search_sessions", args, state)
+      text
+    end
+
+    test "ranks by the service, returns slim results with ** snippets, scopes to directory", %{
+      dir: dir,
+      state: state
+    } do
+      {:ok, a} = Sessions.create_session(%{directory: dir, title: "first", status: "idle"})
+      {:ok, b} = Sessions.create_session(%{directory: dir, title: "second", status: "idle"})
+
+      SearchStub.install(
+        {:ok,
+         %{
+           "results" => [
+             SearchStub.result(b.id, highlight: "say \u0002needle\u0003\n  twice"),
+             SearchStub.result(a.id)
+           ],
+           "degraded" => "bm25_only"
+         }}
+      )
+
+      out =
+        Jason.decode!(search_text(%{"conversation_query" => "needle", "directory" => dir}, state))
+
+      assert_received {:session_search_params,
+                       %{"query" => "needle", "filters" => %{"directory" => ^dir}}}
+
+      assert out["degraded"] == "bm25_only"
+      assert Enum.map(out["results"], & &1["id"]) == [b.id, a.id]
+      [first | _] = out["results"]
+      assert first["title"] == "second"
+      assert first["snippets"] == [%{"role" => "user", "text" => "say **needle** twice"}]
+
+      assert (Map.keys(first) -- ["node"]) |> Enum.sort() ==
+               ~w(archived directory id project score snippets status title updated_at)
+    end
+
+    test "all_projects sends no directory filter; status post-filters", %{dir: dir, state: state} do
+      {:ok, idle} = Sessions.create_session(%{directory: dir, status: "idle"})
+      {:ok, running} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      SearchStub.install(
+        {:ok, %{"results" => [SearchStub.result(idle.id), SearchStub.result(running.id)]}}
+      )
+
+      out =
+        Jason.decode!(
+          search_text(
+            %{"conversation_query" => "x", "all_projects" => true, "status" => "running"},
+            state
+          )
+        )
+
+      assert_received {:session_search_params, %{"filters" => filters}}
+      refute Map.has_key?(filters, "directory")
+      assert Enum.map(out["results"], & &1["id"]) == [running.id]
+    end
+
+    test "surfaces a service error as a tool error", %{dir: dir, state: state} do
+      SearchStub.install({:error, :disabled})
+
+      assert %{"isError" => true, "content" => [%{"text" => msg}]} =
+               SessionsTool.call(
+                 "search_sessions",
+                 %{"conversation_query" => "x", "directory" => dir},
+                 state
+               )
+
+      assert msg =~ "not configured"
+    end
+
+    test "without conversation_query the service is never called and the title filter works",
+         %{dir: dir, state: state} do
+      SearchStub.install({:ok, %{"results" => []}})
+      {:ok, s} = Sessions.create_session(%{directory: dir, title: "zebra-title"})
+
+      out =
+        Jason.decode!(search_text(%{"directory" => dir, "query" => "zebra-title"}, state))
+
+      assert Enum.map(out, & &1["id"]) == [s.id]
+      refute_received {:session_search_params, _}
+    end
+  end
+
   describe "get_session_tail" do
     test "returns status, last assistant text, and recent tool calls without touching the runner",
          %{dir: dir, state: state} do

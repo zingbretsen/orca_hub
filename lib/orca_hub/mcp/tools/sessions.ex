@@ -87,6 +87,17 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "description" =>
                 "Optional text to filter sessions by title. Case-insensitive partial match."
             },
+            "conversation_query" => %{
+              "type" => "string",
+              "description" =>
+                "Optional full-text + semantic search over what was SAID in sessions " <>
+                  "(user prompts and assistant replies, not tool output). Results are " <>
+                  "ranked by relevance (not recency), one per session, each with up to 3 " <>
+                  "short \"snippets\" where matches are wrapped in **bold**. Directory " <>
+                  "scoping, all_projects, status, and archive/background filters still " <>
+                  "apply; the title-only \"query\" param is ignored when this is set. " <>
+                  "Returns an error if the search service is unavailable."
+            },
             "status" => %{
               "type" => "string",
               "enum" => ["running", "idle", "waiting", "error", "ready"],
@@ -783,6 +794,61 @@ defmodule OrcaHub.MCP.Tools.Sessions do
 
       nil ->
         error("Session #{target_id} not found on any node.")
+    end
+  end
+
+  def call("search_sessions", %{"conversation_query" => cq} = args, state)
+      when is_binary(cq) and cq != "" do
+    limit = args["limit"] || 20
+
+    base = [
+      limit: limit,
+      status: args["status"],
+      include_archived: args["include_archived"] || false,
+      archived_only: args["archived_only"] || false,
+      include_background: args["include_background"] || false
+    ]
+
+    scope =
+      cond do
+        args["session_id"] -> {:ok, [session_ids: [args["session_id"]]]}
+        args["all_projects"] == true -> {:ok, []}
+        true -> with_directory_scope(args, state)
+      end
+
+    with {:ok, extra} <- scope,
+         {:ok, %{results: results, degraded: degraded}} <-
+           HubRPC.call(OrcaHub.SessionSearch.Search, :search, [cq, base ++ extra]) do
+      results =
+        results
+        |> Enum.filter(fn r ->
+          is_nil(args["parent_session_id"]) or
+            r.session.parent_session_id == args["parent_session_id"]
+        end)
+        |> then(fn rs ->
+          sessions = scope_to_local_node_if_isolated(Enum.map(rs, & &1.session))
+          ids = MapSet.new(sessions, & &1.id)
+          Enum.filter(rs, &MapSet.member?(ids, &1.session.id))
+        end)
+
+      clustered = Node.list() != []
+
+      out =
+        Enum.map(results, fn r ->
+          r.session
+          |> format_session_result(clustered, %{}, %{}, false)
+          |> Map.take([:id, :title, :status, :archived, :directory, :project, :updated_at, :node])
+          |> Map.put(:score, r.score)
+          |> Map.put(:snippets, Enum.map(r.snippets, &format_snippet/1))
+        end)
+
+      text(Jason.encode!(%{results: out, degraded: degraded}))
+    else
+      {:error, msg} when is_binary(msg) ->
+        error(msg)
+
+      {:error, reason} ->
+        error(OrcaHub.SessionSearch.Search.error_message(reason))
     end
   end
 
@@ -2161,6 +2227,30 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       directory ->
         HubRPC.search_sessions_by_directory(directory, search_opts)
     end
+  end
+
+  defp with_directory_scope(args, state) do
+    case resolve_search_directory(args, state) do
+      nil ->
+        {:error,
+         "Could not determine project directory. Provide a 'directory' parameter, " <>
+           "use 'all_projects: true' to search across all projects, " <>
+           "or ensure this MCP connection is linked to an OrcaHub session."}
+
+      directory ->
+        {:ok, [directory: directory]}
+    end
+  end
+
+  defp format_snippet(snippet) do
+    text =
+      snippet.text
+      |> OrcaHub.SessionSearch.Search.highlight_plain({"**", "**"})
+      |> String.replace(~r/\s+/, " ")
+      |> String.trim()
+      |> String.slice(0, 300)
+
+    %{role: snippet.role, text: text}
   end
 
   defp resolve_search_directory(%{"directory" => dir}, _state) when not is_nil(dir), do: dir

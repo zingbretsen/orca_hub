@@ -60,6 +60,11 @@ defmodule OrcaHubWeb.SessionLive.Index do
        selected_sessions: MapSet.new(),
        worktree_fetch_pending: MapSet.new(),
        show_background: show_background,
+       search_query: "",
+       search_active: false,
+       search_results: nil,
+       search_error: nil,
+       search_degraded: nil,
        pending_questions: load_pending_questions(filtered_sessions)
      )
      |> kick_worktree_fetches(worktree_fetches_needed)}
@@ -170,6 +175,16 @@ defmodule OrcaHubWeb.SessionLive.Index do
 
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Failed to create session")}
+    end
+  end
+
+  def handle_event("search", %{"q" => q}, socket) do
+    q = String.trim(q)
+
+    if q == "" do
+      {:noreply, clear_search(socket)}
+    else
+      {:noreply, run_search(socket, q)}
     end
   end
 
@@ -524,6 +539,45 @@ defmodule OrcaHubWeb.SessionLive.Index do
   # datalist and the MCP-dependent toggles (backend_abstraction_spec.md §7).
   # Blank/nil (form not yet touched, or the backend picker is hidden behind
   # a single-entry `available/0`) falls back to the changeset default.
+  defp clear_search(socket) do
+    assign(socket,
+      search_query: "",
+      search_active: false,
+      search_results: nil,
+      search_error: nil,
+      search_degraded: nil
+    )
+  end
+
+  defp run_search(socket, q) do
+    opts = [limit: 20, include_background: socket.assigns.show_background]
+
+    socket = assign(socket, search_query: q, search_active: true)
+
+    result =
+      try do
+        HubRPC.call(OrcaHub.SessionSearch.Search, :search, [q, opts])
+      catch
+        kind, reason -> {:error, {kind, reason}}
+      end
+
+    case result do
+      {:ok, %{results: results, degraded: degraded}} ->
+        assign(socket,
+          search_results: results,
+          search_error: nil,
+          search_degraded: degraded
+        )
+
+      {:error, reason} ->
+        assign(socket,
+          search_results: [],
+          search_error: OrcaHub.SessionSearch.Search.error_message(reason),
+          search_degraded: nil
+        )
+    end
+  end
+
   defp selected_backend(form) do
     case form[:backend].value do
       v when v in [nil, ""] -> "claude"
