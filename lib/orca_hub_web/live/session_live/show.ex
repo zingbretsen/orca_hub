@@ -125,6 +125,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
      # {:queue_update, ...} broadcast (SessionRunner's "queue_update"
      # system-event clause), never carried in @messages.
      |> assign(:pi_queue, %{steering: [], follow_up: []})
+     # ORCAHUB3-139 — messages queued behind the running turn (the
+     # composer's `:queue` sends, held by SessionHeartbeat on the hub for
+     # non-steering backends). Loaded once connected, then kept current by
+     # the {:message_queue, items} broadcast; maybe_subscribe/3 above
+     # subscribes first, so no change slips between the two.
+     |> assign_message_queue(
+       if(connected?(socket), do: HubRPC.list_queued_messages(id), else: [])
+     )
      |> assign(
        :page_title,
        session.title || (session.project && session.project.name) || session.directory
@@ -343,6 +351,61 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   defp maybe_mark_dictated(full_prompt, _typed, _params), do: full_prompt
+
+  # ORCAHUB3-139 — the queued-messages list keeps only what a row renders,
+  # never the full text: a queued prompt can be huge, and the start of it is
+  # all a row shows. The dictation note comes off so the row reads as what
+  # the user said; the stored message keeps it.
+  @queued_preview_chars 200
+  @queued_title_chars 1_000
+
+  defp assign_message_queue(socket, items) do
+    assign(socket, :message_queue, Enum.map(items, &queued_row/1))
+  end
+
+  defp queued_row(%{id: id, text: text}) do
+    {_dictated?, text} = Dictation.strip(text)
+    text = String.trim(text)
+
+    %{
+      id: id,
+      preview: text |> String.slice(0, @queued_preview_chars) |> String.replace(~r/\s+/, " "),
+      title: String.slice(text, 0, @queued_title_chars)
+    }
+  end
+
+  # The list itself follows the {:message_queue, _} broadcast; dropping the
+  # row on :ok just makes the click feel immediate. :not_found means the
+  # message left the queue first (flushed at turn end, or another tab), so
+  # re-read the list rather than trust what this page shows.
+  defp handle_queue_action(:ok, message_id, _verb, socket) do
+    {:noreply,
+     update(socket, :message_queue, &Enum.reject(&1, fn row -> row.id == message_id end))}
+  end
+
+  defp handle_queue_action({:error, :not_found}, _message_id, _verb, socket) do
+    {:noreply,
+     socket
+     |> put_flash(:info, "That message already left the queue.")
+     |> assign_message_queue(HubRPC.list_queued_messages(socket.assigns.session.id))}
+  end
+
+  defp handle_queue_action({:error, reason}, _message_id, verb, socket) do
+    {:noreply, put_flash(socket, :error, queue_action_error(reason, verb))}
+  end
+
+  defp queue_action_error({:rpc_undef, _}, verb),
+    do: "The hub is running an older release that can't #{verb} queued messages."
+
+  defp queue_action_error(:hub_unavailable, _verb), do: "The hub could not be reached."
+
+  defp queue_action_error(reason, "send") do
+    (Cluster.node_unavailable_message(reason) || "Failed to send message: #{inspect(reason)}.") <>
+      " It is still queued."
+  end
+
+  defp queue_action_error(reason, verb),
+    do: "Failed to #{verb} queued message: #{inspect(reason)}"
 
   # -- the mobile voice view (ORCAHUB3-113 phase C) --
   #
@@ -1267,6 +1330,21 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def handle_event("interrupt", _params, socket) do
     Cluster.interrupt(socket.assigns.session_node, socket.assigns.session.id)
     {:noreply, socket}
+  end
+
+  # ORCAHUB3-139 — one queued message, by id. Send now interrupts the turn
+  # with just this message; the rest stay queued. Stop ("interrupt" above)
+  # still ends the turn and so flushes the whole queue.
+  def handle_event("send_queued_now", %{"id" => message_id}, socket) do
+    socket.assigns.session.id
+    |> HubRPC.send_queued_message_now(message_id)
+    |> handle_queue_action(message_id, "send", socket)
+  end
+
+  def handle_event("remove_queued", %{"id" => message_id}, socket) do
+    socket.assigns.session.id
+    |> HubRPC.remove_queued_message(message_id)
+    |> handle_queue_action(message_id, "remove", socket)
   end
 
   # Backend-native plan-mode toggle (pi's `/plan`, spec §12.4/§12.8) — button
@@ -2806,6 +2884,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
   @impl true
   def handle_info({:queue_update, steering, follow_up}, socket) do
     {:noreply, assign(socket, :pi_queue, %{steering: steering, follow_up: follow_up})}
+  end
+
+  # ORCAHUB3-139 — SessionHeartbeat's queue for this session changed (see
+  # the :message_queue assign in mount/2). `items` is the whole queue.
+  @impl true
+  def handle_info({:message_queue, items}, socket) do
+    {:noreply, assign_message_queue(socket, items)}
   end
 
   @impl true

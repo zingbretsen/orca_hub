@@ -1664,6 +1664,50 @@
             </span>
           </div>
 
+          <%!-- ORCAHUB3-139 — messages queued behind the running turn
+        (SessionHeartbeat's `:queue` delivery, non-steering backends), one row
+        each. Send now interrupts the turn with that one message and leaves
+        the rest queued; Stop still ends the turn and flushes them all.
+        Transient (@message_queue), kept current by {:message_queue, _}. --%>
+          <div :if={@message_queue != []} id="message-queue" class="px-2 voice-view:hidden">
+            <div class="flex items-center gap-1 pb-1 text-xs opacity-60">
+              <.icon name="hero-clock-micro" class="size-3" />
+              Queued ({length(@message_queue)}): sends when the current turn ends
+            </div>
+            <ul class="flex flex-col gap-1">
+              <li
+                :for={row <- @message_queue}
+                id={"queued-message-#{row.id}"}
+                class="flex items-center gap-1 bg-base-200 rounded-lg pl-3 pr-1 py-1"
+              >
+                <span class="text-sm truncate flex-1 min-w-0" title={row.title}>
+                  {row.preview}
+                </span>
+                <button
+                  type="button"
+                  phx-click="send_queued_now"
+                  phx-value-id={row.id}
+                  phx-disable-with="Sending..."
+                  class="btn btn-ghost btn-xs"
+                  title="Interrupt the current turn and send this message now"
+                  disabled={@node_unavailable != nil}
+                >
+                  Send now
+                </button>
+                <button
+                  type="button"
+                  phx-click="remove_queued"
+                  phx-value-id={row.id}
+                  class="btn btn-ghost btn-xs btn-square"
+                  title="Remove from queue"
+                  aria-label="Remove queued message"
+                >
+                  <.icon name="hero-x-mark-micro" class="size-4" />
+                </button>
+              </li>
+            </ul>
+          </div>
+
           <%!-- spec §12.6 — the composer stays enabled while :running for every
         backend (queue+interrupt is the default); steering-capable backends
         get a hint that the message steers the turn in place instead. --%>

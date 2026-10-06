@@ -2387,7 +2387,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       assert_push_event(view, "clear-prompt", %{})
 
-      assert %{messages: [queued]} = SessionHeartbeat.peek_message_queue(session.id)
+      assert %{messages: [%{text: queued}]} = SessionHeartbeat.peek_message_queue(session.id)
       assert queued == Dictation.prefix("check Nemo Tron")
     end
 
@@ -2402,7 +2402,9 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       |> render_submit()
 
       assert_push_event(view, "clear-prompt", %{})
-      assert %{messages: ["typed by hand"]} = SessionHeartbeat.peek_message_queue(session.id)
+
+      assert %{messages: [%{text: "typed by hand"}]} =
+               SessionHeartbeat.peek_message_queue(session.id)
     end
 
     defp composer_on_running_session(conn, session) do
@@ -2418,6 +2420,194 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       end)
 
       view
+    end
+  end
+
+  # ORCAHUB3-139: the composer's `:queue` sends are listed one row each, with
+  # a Send now and a Remove per row. Same observation point as the voice-bar
+  # seams above: a running Claude session holds them in SessionHeartbeat.
+  describe "queued messages list" do
+    @claude_stub Path.expand("../../../support/fixtures/claude_stub_noop.sh", __DIR__)
+
+    setup do
+      # Send now and the turn-end flush both reach the runner, which then
+      # spawns a CLI: this stub just blocks on stdin.
+      Application.put_env(:orca_hub, :claude_executable, @claude_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :claude_executable) end)
+    end
+
+    defp queue_from_composer(view, session, prompts) do
+      for prompt <- prompts do
+        view
+        |> form(~s(form[data-voice-composer-for="#{session.id}"]), %{"prompt" => prompt})
+        |> render_submit()
+      end
+
+      SessionHeartbeat.list_queued_messages(session.id)
+    end
+
+    defp queued_rows(view) do
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#message-queue li")
+      |> Enum.map(&LazyHTML.text/1)
+      |> Enum.map(&(&1 |> String.split() |> Enum.join(" ")))
+    end
+
+    defp queued_button(view, item, action),
+      do: element(view, ~s(#queued-message-#{item.id} button[phx-click="#{action}"]))
+
+    test "nothing renders when nothing is queued", %{conn: conn, claude_session: session} do
+      view = composer_on_running_session(conn, session)
+      refute has_element?(view, "#message-queue")
+    end
+
+    test "one row per queued message, showing only the start of each", %{
+      conn: conn,
+      claude_session: session
+    } do
+      view = composer_on_running_session(conn, session)
+      # Longer than the hover title's slice too, so the tail never reaches
+      # the client at all.
+      long = "start of a long one\n\n" <> String.duplicate("x", 1200) <> "END-MARKER"
+
+      queue_from_composer(view, session, ["first one", long, "third one"])
+
+      assert render(view) =~ "Queued (3): sends when the current turn ends"
+      assert [first, second, third] = queued_rows(view)
+      assert first =~ "first one"
+      assert third =~ "third one"
+
+      # Truncated server-side (the CSS `truncate` handles the visible width),
+      # with newlines folded so the row stays one line.
+      assert second =~ "start of a long one x"
+      refute second =~ "END-MARKER"
+      refute render(view) =~ "END-MARKER"
+    end
+
+    test "a dictated message shows what was said, not the dictation note", %{
+      conn: conn,
+      claude_session: session
+    } do
+      view = composer_on_running_session(conn, session)
+
+      view
+      |> form(~s(form[data-voice-composer-for="#{session.id}"]), %{"prompt" => "check Nemo Tron"})
+      |> put_submitter("button[data-voice-dictated-submit]")
+      |> render_submit()
+
+      assert [row] = queued_rows(view)
+      assert row =~ "check Nemo Tron"
+      refute row =~ "Dictated via speech recognition"
+
+      # The queued message itself keeps the note for the agent.
+      assert [%{text: text}] = SessionHeartbeat.list_queued_messages(session.id)
+      assert text == Dictation.prefix("check Nemo Tron")
+    end
+
+    test "Remove takes out only that message", %{conn: conn, claude_session: session} do
+      view = composer_on_running_session(conn, session)
+      [first, second, third] = queue_from_composer(view, session, ["one", "two", "three"])
+
+      view |> queued_button(second, "remove_queued") |> render_click()
+
+      assert SessionHeartbeat.list_queued_messages(session.id) == [first, third]
+      assert [row_one, row_three] = queued_rows(view)
+      assert row_one =~ "one"
+      assert row_three =~ "three"
+    end
+
+    test "Send now sends only that message and leaves the rest queued", %{
+      conn: conn,
+      claude_session: session
+    } do
+      view = composer_on_running_session(conn, session)
+      [first, second, third] = queue_from_composer(view, session, ["one", "two", "three"])
+
+      view |> queued_button(second, "send_queued_now") |> render_click()
+
+      assert SessionHeartbeat.list_queued_messages(session.id) == [first, third]
+      assert [_, _] = queued_rows(view)
+      refute has_element?(view, "#queued-message-#{second.id}")
+
+      assert wait_for_user_text(session.id, "two"),
+             "expected the sent-now message to reach the session"
+
+      refute Enum.any?(user_texts(session.id), &(&1 in ["one", "three"]))
+    end
+
+    test "a click on a message that already left the queue says so and re-syncs", %{
+      conn: conn,
+      claude_session: session
+    } do
+      view = composer_on_running_session(conn, session)
+      [_item] = queue_from_composer(view, session, ["still here"])
+
+      html = render_click(view, "remove_queued", %{"id" => "already-gone"})
+      assert html =~ "That message already left the queue."
+
+      html = render_click(view, "send_queued_now", %{"id" => "already-gone"})
+      assert html =~ "That message already left the queue."
+      assert [row] = queued_rows(view)
+      assert row =~ "still here"
+    end
+
+    test "the turn-end flush (where Stop lands) sends everything and clears the list", %{
+      conn: conn,
+      claude_session: session
+    } do
+      view = composer_on_running_session(conn, session)
+      queue_from_composer(view, session, ["alpha", "beta"])
+      assert [_, _] = queued_rows(view)
+
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session.id, {:status, :idle}})
+
+      assert wait_for_user_text(session.id, "beta")
+      combined = Enum.find(user_texts(session.id), &(&1 =~ "beta"))
+      assert combined =~ "alpha"
+
+      refute has_element?(view, "#message-queue")
+    end
+
+    test "a queue that exists before the page opens is loaded on mount", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, _} = Sessions.update_session(session, %{status: "running"})
+
+      on_exit(fn ->
+        Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session.id, {:status, :archived}})
+      end)
+
+      assert {:queued, _} =
+               OrcaHub.Cluster.send_message(node(), session.id, "queued earlier", :queue)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assert [row] = queued_rows(view)
+      assert row =~ "queued earlier"
+    end
+
+    defp user_texts(session_id) do
+      session_id
+      |> Sessions.list_messages()
+      |> Enum.filter(&(&1.data["type"] == "user"))
+      |> Enum.map(&get_in(&1.data, ["message", "content", Access.at(0), "text"]))
+      |> Enum.reject(&is_nil/1)
+    end
+
+    defp wait_for_user_text(session_id, needle, attempts \\ 80) do
+      cond do
+        Enum.any?(user_texts(session_id), &(&1 =~ needle)) ->
+          true
+
+        attempts == 0 ->
+          false
+
+        true ->
+          Process.sleep(25)
+          wait_for_user_text(session_id, needle, attempts - 1)
+      end
     end
   end
 

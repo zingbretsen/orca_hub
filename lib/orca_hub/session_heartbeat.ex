@@ -26,6 +26,24 @@ defmodule OrcaHub.SessionHeartbeat do
   delivery instead, so `:queue` trades "might wait" for "might wait
   indefinitely," never the latter alone.
 
+  ### Per-item queue controls (ORCAHUB3-139)
+
+  Each queued message is its own item, `%{id, text, queued_at}`, so the
+  session page can list them and act on ONE: `remove_queued_message/2` drops
+  it, `send_queued_message_now/2` delivers just it as a plain `:interrupt`
+  send (the rest stay queued for the next turn end). `list_queued_messages/1`
+  reads them. Every change to a session's queue (enqueue, remove, send-now,
+  turn-end flush, escalation, archive/delete) is broadcast on
+  `"session:<id>"` as `{:message_queue, items}`, with `items` in
+  `list_queued_messages/1`'s shape (`[]` once the queue is gone).
+
+  The escalation timer is anchored to the OLDEST message still queued.
+  Removing or sending the head item re-arms it from the new head's own
+  `queued_at`, so a message left behind by Send now gets its full
+  `@queue_escalate_ms` instead of inheriting the removed message's earlier
+  deadline (and possibly interrupting the very turn Send now just started).
+  Arrivals behind the head never move it, as before.
+
   ## Job wakes (ORCAHUB3-26 item 1)
 
   A heartbeat's timer is a backstop, not the only way to fire. `schedule/4`
@@ -87,6 +105,12 @@ defmodule OrcaHub.SessionHeartbeat do
   # @idle_timeout_ms (15 min) - "generous enough that a normal turn finishes
   # first" is the same bar that constant was picked against.
   @queue_escalate_ms 15 * 60 * 1000
+
+  # send_queued_message_now/2 delivers inside the GenServer call, so the call
+  # needs headroom for a cold runner start (deliver_message/3's
+  # ensure_started) plus @delivery_max_attempts tries. HubRPC's erpc budget
+  # for it is set above this, so the GenServer call times out first.
+  @send_now_timeout 15_000
 
   # Status broadcasts (atoms, as put on the "sessions" PubSub topic - see
   # `SessionRunner.broadcast/2` and `Sessions.archive_session/1`) that mark a
@@ -179,6 +203,58 @@ defmodule OrcaHub.SessionHeartbeat do
   # escalation firing early instead of waiting out @queue_escalate_ms.
   def peek_message_queue(session_id) do
     GenServer.call(__MODULE__, {:peek_message_queue, session_id})
+  end
+
+  @doc """
+  The messages queued for `session_id` behind its running turn, oldest first,
+  as `[%{id, text, queued_at}]` (`[]` when nothing is queued). `text` is the
+  exact string the agent will receive, before the delivery annotation.
+
+  A read, like `queued_message_state/1` (its one write is the one-time
+  upgrade of an entry queued before ORCAHUB3-139, see `upgrade_queue/2`);
+  `[]` too if this GenServer is not running or doesn't answer in time.
+  """
+  def list_queued_messages(session_id) do
+    GenServer.call(__MODULE__, {:list_queued_messages, session_id})
+  catch
+    :exit, _ -> []
+  end
+
+  @doc """
+  Drops one queued message, leaving the rest of the batch queued. Removing
+  the last one deletes the batch and cancels its escalation timer; removing
+  the oldest re-anchors the escalation (see the moduledoc).
+
+  Returns `:ok`, or `{:error, :not_found}` when the message isn't queued any
+  more (already flushed at turn end, sent, or removed).
+  """
+  def remove_queued_message(session_id, message_id) do
+    GenServer.call(__MODULE__, {:remove_queued_message, session_id, message_id})
+  end
+
+  @doc """
+  Delivers ONE queued message now, as a plain `:interrupt` send: the running
+  turn is interrupted and this message (without the late-delivery
+  annotation, since nothing about it is late) starts the next one. The other
+  queued messages stay queued and flush when that next turn ends. A session
+  that went idle in the meantime just receives it as an ordinary send.
+
+  The message leaves the queue only once delivery succeeds, through
+  `deliver_message_now/3`'s retry handling. On `{:error, reason}` it stays
+  queued, so nothing typed is lost; the one cost is that an ambiguous
+  failure (the call timed out but may have landed) can deliver it twice.
+
+  Returns `:ok`, `{:error, :not_found}` when the message isn't queued any
+  more, or `{:error, reason}` when delivery failed.
+  """
+  def send_queued_message_now(session_id, message_id) do
+    GenServer.call(
+      __MODULE__,
+      {:send_queued_message_now, session_id, message_id},
+      @send_now_timeout
+    )
+  catch
+    :exit, {:timeout, _} -> {:error, :timeout}
   end
 
   @doc """
@@ -340,6 +416,48 @@ defmodule OrcaHub.SessionHeartbeat do
   @impl true
   def handle_call({:peek_message_queue, session_id}, _from, state) do
     {:reply, Map.get(state.message_queue, session_id), state}
+  end
+
+  @impl true
+  def handle_call({:list_queued_messages, session_id}, _from, state) do
+    state = upgrade_queue(state, session_id)
+    {:reply, queue_items(Map.get(state.message_queue, session_id)), state}
+  end
+
+  @impl true
+  def handle_call({:remove_queued_message, session_id, message_id}, _from, state) do
+    state = upgrade_queue(state, session_id)
+
+    case find_queued(state, session_id, message_id) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      _item ->
+        Logger.info("Removed queued message #{message_id} for session #{session_id}")
+        {:reply, :ok, drop_queued(state, session_id, message_id)}
+    end
+  end
+
+  # Deliver first, dequeue on success: the whole call runs inside this
+  # process, so no flush can interleave between the two, and a failed send
+  # leaves the message queued rather than losing it.
+  @impl true
+  def handle_call({:send_queued_message_now, session_id, message_id}, _from, state) do
+    state = upgrade_queue(state, session_id)
+
+    with %{text: text} <- find_queued(state, session_id, message_id),
+         {node, _session} <- Cluster.find_session(session_id) do
+      case deliver_message_now(node, session_id, text) do
+        :ok ->
+          Logger.info("Sent queued message #{message_id} for session #{session_id} now")
+          {:reply, :ok, drop_queued(state, session_id, message_id)}
+
+        {:error, _reason} = error ->
+          {:reply, error, state}
+      end
+    else
+      nil -> {:reply, {:error, :not_found}, state}
+    end
   end
 
   @impl true
@@ -507,6 +625,8 @@ defmodule OrcaHub.SessionHeartbeat do
   # different ref, and this is a silent no-op.
   @impl true
   def handle_info({:queue_escalate, session_id, ref}, state) do
+    state = upgrade_queue(state, session_id)
+
     case Map.get(state.message_queue, session_id) do
       %{escalate_ref: ^ref} = entry ->
         Logger.warning(
@@ -516,6 +636,7 @@ defmodule OrcaHub.SessionHeartbeat do
         )
 
         deliver_queued_messages(session_id, entry, :escalated_after_timeout)
+        broadcast_queue(session_id, nil)
         {:noreply, %{state | message_queue: Map.delete(state.message_queue, session_id)}}
 
       _ ->
@@ -649,8 +770,12 @@ defmodule OrcaHub.SessionHeartbeat do
       |> Map.new()
 
     case Map.get(state.message_queue, session_id) do
-      nil -> :ok
-      entry -> cancel_escalate(entry)
+      nil ->
+        :ok
+
+      entry ->
+        cancel_escalate(entry)
+        broadcast_queue(session_id, nil)
     end
 
     %{
@@ -920,28 +1045,108 @@ defmodule OrcaHub.SessionHeartbeat do
   # its escalation timer. The timer is anchored to the FIRST message in a
   # batch, not reset by later arrivals, so a chatty sender can't push the
   # deadline out indefinitely.
+  #
+  # Each message becomes an item, `%{id, text, queued_at}` (ORCAHUB3-139);
+  # the batch's own `queued_at` is the escalation anchor, always the head
+  # item's `queued_at`.
   defp enqueue_message(state, session_id, message, queued_status) do
+    state = upgrade_queue(state, session_id)
+    item = %{id: new_queued_message_id(), text: message, queued_at: DateTime.utc_now()}
+
+    entry =
+      case Map.get(state.message_queue, session_id) do
+        nil ->
+          arm_escalation(
+            %{messages: [item], queued_status: queued_status, queued_at: item.queued_at},
+            session_id
+          )
+
+        entry ->
+          %{entry | messages: entry.messages ++ [item]}
+      end
+
+    broadcast_queue(session_id, entry)
+    %{state | message_queue: Map.put(state.message_queue, session_id, entry)}
+  end
+
+  # Only unique among the items queued at once, but random rather than a
+  # counter: a session page can hold an id from before a hub restart (the
+  # queue is in-memory), and a restarted counter would hand that same id to
+  # a different message.
+  defp new_queued_message_id, do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+
+  # `escalate_ref` tags the timer's message so a superseded one is a no-op
+  # (see the :queue_escalate handler); `escalate_timer` is what
+  # cancel_escalate/1 actually cancels. Fires @queue_escalate_ms after the
+  # anchor, not after now, so a re-anchor onto a message that has already
+  # waited a while keeps its own original deadline.
+  defp arm_escalation(entry, session_id) do
+    elapsed_ms = DateTime.diff(DateTime.utc_now(), entry.queued_at, :millisecond)
+    ref = make_ref()
+
+    timer =
+      Process.send_after(
+        self(),
+        {:queue_escalate, session_id, ref},
+        max(@queue_escalate_ms - elapsed_ms, 0)
+      )
+
+    Map.merge(entry, %{escalate_ref: ref, escalate_timer: timer})
+  end
+
+  defp find_queued(state, session_id, message_id) do
     case Map.get(state.message_queue, session_id) do
-      nil ->
-        ref = make_ref()
-        Process.send_after(self(), {:queue_escalate, session_id, ref}, @queue_escalate_ms)
+      nil -> nil
+      entry -> Enum.find(entry.messages, &(&1.id == message_id))
+    end
+  end
 
-        entry = %{
-          messages: [message],
-          queued_status: queued_status,
-          queued_at: DateTime.utc_now(),
-          escalate_ref: ref
-        }
+  # Removes one item (the caller has already checked it is there). The last
+  # item takes the batch and its timer with it; the head item re-anchors the
+  # escalation onto the new head (see the moduledoc).
+  defp drop_queued(state, session_id, message_id) do
+    %{messages: [head | _] = messages} = entry = Map.fetch!(state.message_queue, session_id)
 
-        %{state | message_queue: Map.put(state.message_queue, session_id, entry)}
+    case Enum.reject(messages, &(&1.id == message_id)) do
+      [] ->
+        cancel_escalate(entry)
+        broadcast_queue(session_id, nil)
+        %{state | message_queue: Map.delete(state.message_queue, session_id)}
 
-      entry ->
-        entry = %{entry | messages: entry.messages ++ [message]}
+      [new_head | _] = remaining ->
+        entry =
+          if head.id == message_id do
+            cancel_escalate(entry)
+
+            arm_escalation(
+              %{entry | messages: remaining, queued_at: new_head.queued_at},
+              session_id
+            )
+          else
+            %{entry | messages: remaining}
+          end
+
+        broadcast_queue(session_id, entry)
         %{state | message_queue: Map.put(state.message_queue, session_id, entry)}
     end
   end
 
+  defp queue_items(nil), do: []
+  defp queue_items(entry), do: entry.messages
+
+  # Goes to the session's own topic, where SessionLive.Show listens; PubSub
+  # spans the cluster, so a page on any node sees it.
+  defp broadcast_queue(session_id, entry) do
+    Phoenix.PubSub.broadcast(
+      OrcaHub.PubSub,
+      "session:#{session_id}",
+      {:message_queue, queue_items(entry)}
+    )
+  end
+
   defp flush_message_queue(state, session_id) do
+    state = upgrade_queue(state, session_id)
+
     case Map.get(state.message_queue, session_id) do
       nil ->
         state
@@ -949,13 +1154,47 @@ defmodule OrcaHub.SessionHeartbeat do
       entry ->
         cancel_escalate(entry)
         deliver_queued_messages(session_id, entry, :turn_ended)
+        broadcast_queue(session_id, nil)
         %{state | message_queue: Map.delete(state.message_queue, session_id)}
     end
   end
 
-  defp cancel_escalate(%{escalate_ref: ref}) when is_reference(ref) do
-    Process.cancel_timer(ref)
+  defp cancel_escalate(%{escalate_timer: timer}) when is_reference(timer) do
+    Process.cancel_timer(timer)
     :ok
+  end
+
+  # A pre-ORCAHUB3-139 entry (see upgrade_queue/2) has no timer handle to
+  # cancel; its escalation message is still ref-guarded, as it always was.
+  defp cancel_escalate(_entry), do: :ok
+
+  # Hot-load compatibility. Entries queued by the code before ORCAHUB3-139
+  # hold plain-string messages and no `escalate_timer`, and a hot code load
+  # keeps them in this process's state: it swaps code, not terms (see
+  # .context/code-deploy.md, "The defstruct trap"; a plain map has the same
+  # hazard, and HotLoadGate can't see it). Crashing on one would lose every
+  # session's heartbeats with it, so each is upgraded in place, and STORED,
+  # the first time anything touches it: the ids it is given must stay put
+  # between a page's list and its click. Its original escalation timer keeps
+  # working, through its unchanged `escalate_ref`.
+  defp upgrade_queue(state, session_id) do
+    case Map.get(state.message_queue, session_id) do
+      %{messages: messages} = entry when not is_map_key(entry, :escalate_timer) ->
+        items =
+          Enum.map(messages, fn
+            text when is_binary(text) ->
+              %{id: new_queued_message_id(), text: text, queued_at: entry.queued_at}
+
+            item ->
+              item
+          end)
+
+        entry = Map.merge(entry, %{messages: items, escalate_timer: nil})
+        %{state | message_queue: Map.put(state.message_queue, session_id, entry)}
+
+      _current_or_none ->
+        state
+    end
   end
 
   # Re-checks the session fresh (mirrors flush_pending_delivery/2's own
@@ -968,7 +1207,7 @@ defmodule OrcaHub.SessionHeartbeat do
     case Cluster.find_session(session_id) do
       {node, session} ->
         if is_nil(session.archived_at) do
-          combined = Enum.join(entry.messages, "\n\n\n")
+          combined = Enum.map_join(entry.messages, "\n\n\n", & &1.text)
 
           annotated =
             annotate_queued_send_message(combined, entry.queued_status, delivered_because)

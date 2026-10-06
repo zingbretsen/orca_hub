@@ -598,7 +598,7 @@ defmodule OrcaHubWeb.SessionLive.VoiceViewTest do
       |> render_submit()
 
       assert_push_event(view, "clear-prompt", %{})
-      assert %{messages: [queued]} = SessionHeartbeat.peek_message_queue(session.id)
+      assert %{messages: [%{text: queued}]} = SessionHeartbeat.peek_message_queue(session.id)
       assert queued == Dictation.prefix("poll the version")
     end
   end
