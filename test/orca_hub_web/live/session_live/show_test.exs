@@ -166,6 +166,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert html =~ "Fable 5.1"
       assert html =~ "Opus 5.5"
       assert html =~ "Sonnet 5.5"
+      assert html =~ "Haiku 5.5"
       assert html =~ "Haiku 4.5"
       refute html =~ "GPT-5"
     end
@@ -177,6 +178,7 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       refute html =~ "Opus 5.5"
       refute html =~ "Fable 5.1"
       refute html =~ "Haiku 4.5"
+      refute html =~ "Haiku 5.5"
     end
 
     test "pi session offers the LIVE `pi --list-models` catalog, not other backends' models", %{
