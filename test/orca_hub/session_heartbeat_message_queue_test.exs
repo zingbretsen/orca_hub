@@ -635,12 +635,22 @@ defmodule OrcaHub.SessionHeartbeatMessageQueueTest do
       # Mid-turn: SIGINT, and the exit auto-resumes with the sent message.
       assert :ok = SessionHeartbeat.send_queued_message_now(session.id, second.id)
 
-      assert wait_until(fn ->
-               match?(
-                 {:running, %{port: p, pending_prompts: []}} when is_port(p) and p != first_port,
-                 runner_state(session)
-               )
-             end),
+      # 10s, not the helper's 2s default: alone among the waits in this file, this
+      # one needs a full kill-and-respawn round trip — SIGINT the first CLI, wait
+      # for the OS process to exit, then cold-open a fresh port. Under full-suite
+      # load (warm-pool contention) 2s is not always enough, and this timed out
+      # in 1 of 2 consecutive full runs on 2026-10-09 while passing in isolation.
+      # The asserted condition is unchanged; only the patience is.
+      assert wait_until(
+               fn ->
+                 match?(
+                   {:running, %{port: p, pending_prompts: []}}
+                   when is_port(p) and p != first_port,
+                   runner_state(session)
+                 )
+               end,
+               10_000
+             ),
              "expected the runner to auto-resume on a fresh port with the sent message"
 
       session_id = session.id
