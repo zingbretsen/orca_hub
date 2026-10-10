@@ -376,6 +376,49 @@ dns_cluster" but: when a 0.x diff contains a refactor of the module's core
 loop, read THAT hunk, not just the feature bullets — and prefer exercising the
 behaviour over reasoning about the summary.
 
+**The suite covers NEITHER side of the HTTP stack.** The server side is the
+`ConnTest`/`LiveViewTest` gap described just below. The client side is worse,
+because it is less obvious: every `Req` call in our tests runs through a
+`plug: {Req.Test, ...}` stub, which short-circuits the adapter — so req, finch,
+mint and hpax are never executed by `mix test` at all. A green 5000-test run
+says nothing whatsoever about an HTTP-client upgrade. After touching any of
+those four, call the real services we depend on and check the status codes:
+
+```
+hex.pm (HTTP/1 TLS, chunked) | gitea.lab (behind Traefik)
+ai.lab /v1/models (GB10)     | pgprov.lab
+```
+
+A 401 is a PASS for this purpose — no credentials are sent, so it proves the
+response was parsed. Force HTTP/2 separately with a pinned Finch pool
+(`pools: %{"https://host" => [protocols: [:http2], size: 1, count: 1]}`),
+since hpax's HPACK code never runs on an HTTP/1 default. And always re-check
+that `https://expired.badssl.com/` is still REJECTED — a client upgrade that
+silently stopped verifying certificates would otherwise look identical to a
+clean run. Prefer the homegrown lab services (the GB10 gateway especially) as
+canaries: a stricter parser trips on a slightly non-compliant server long
+before it trips on hex.pm.
+
+**Mint and Finch upgrades are coupled — do not let a cascade split them.**
+mint 1.11.0 stopped closing connections on a receive timeout, and finch 0.24.0
+is what keeps that safe: it closes HTTP/1 connections after request/response
+errors before returning them to the pool, "preventing stale response references
+from reaching subsequent requests after receive timeouts with Mint 1.11". So
+mint 1.11 WITH finch 0.23 is the dangerous pairing — responses crossing between
+requests — not merely a missed improvement. The resolver happened to move both
+together on 2026-10-09; if a `mix.exs` pin ever holds one back, that is a
+correctness problem, not a conservative choice. More generally: when a cascade
+brings up two halves of one stack, check whether one is fixing a hazard the
+other just introduced before assuming you can take them separately.
+
+**A patch release can carry the next minor's security fixes, so a minor bump
+may add no security value at all.** mint 1.10.2 exists specifically as a
+backport of 1.11.0's three CVE fixes "for users who can't upgrade to v1.11
+yet". We were already on 1.10.2, so taking 1.11.0 bought hardening and bug
+fixes, not CVE coverage — and its real risk profile was a long list of NEW
+strictness rejections. Read a minor's changelog for what it ADDS beyond the
+patch you are on, rather than assuming the higher number is the safer one.
+
 **Verifying the app actually boots.** The test suite uses `ConnTest`/
 `LiveViewTest`, which bypass the HTTP adapter entirely — so it does NOT cover
 bandit / thousand_island / websock_adapter / plug. After upgrading any of those,
@@ -441,9 +484,9 @@ agent output is allowed to render, which is a product decision rather than a
 dependency bump. Do not silently "upgrade past" this item on a future run;
 there is nothing to upgrade to.
 
-**Still deferred, re-checked 2026-10-02: phoenix_live_view 1.1 -> 1.2**
-(1.1.33 vs 1.2.12, unmoved for three weeks; raised with the user 2026-08-14,
-08-21, 08-28, 09-11, 09-18 and 09-25, still not decided — do not keep
+**Still deferred, re-checked 2026-10-09: phoenix_live_view 1.1 -> 1.2**
+(1.1.33 vs 1.2.12, unmoved for four weeks; raised with the user 2026-08-14,
+08-21, 08-28, 09-11, 09-18, 09-25 and 10-02, still not decided — do not keep
 re-deriving the analysis below, just re-raise it). Everything else is current. 1.2 needs `mix.exs`
 `~> 1.1.0` -> `~> 1.2` and carries real breaking changes: the
 `Phoenix.Component` global-attribute list was realigned to MDN and the removed
