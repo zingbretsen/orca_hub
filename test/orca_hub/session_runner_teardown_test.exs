@@ -55,7 +55,6 @@ defmodule OrcaHub.SessionRunnerTeardownTest do
     {:ok, session: session, dir: dir}
   end
 
-  @tag :repro
   test "ORCAHUB3-146: stopping a session kills every process its CLI started, setsid'd and reparented ones included",
        %{session: session, dir: dir} do
     {:ok, _pid} = SessionSupervisor.start_session(session.id)
@@ -76,7 +75,94 @@ defmodule OrcaHub.SessionRunnerTeardownTest do
     assert alive?(bystander), "a process the CLI did not start must survive teardown"
   end
 
+  test "a warm CLI's background work survives between turns, and evict_warm reaps it",
+       %{session: session, dir: dir} do
+    File.touch!(Path.join(dir, "orca-stub-turns"))
+    {:ok, _pid} = SessionSupervisor.start_session(session.id)
+    assert :ok = SessionRunner.send_message(session.id, "start some background work")
+
+    pids = await_descendants(dir)
+    assert wait_until(fn -> SessionRunner.get_state(session.id).status == :idle end)
+
+    # Warm and idle is not torn down: `run_in_background` work has to keep
+    # running across turns. Well past the test reap grace (200 ms).
+    Process.sleep(600)
+    assert Enum.all?(Map.values(pids), &alive?/1), "a warm CLI's children must not be reaped"
+
+    # The WarmPool LRU path (teardown_port/1, shared with idle teardown,
+    # rebake, the kill-switch downgrade and a backend switch).
+    assert :ok = SessionRunner.evict_warm(session.id)
+
+    assert_all_dead(pids)
+    assert SessionSupervisor.session_alive?(session.id)
+  end
+
+  test "a one-shot CLI that exits on its own has its leftovers reaped", %{
+    session: session,
+    dir: dir
+  } do
+    {:ok, session} = Sessions.update_session(session, %{streaming: false})
+    File.touch!(Path.join(dir, "orca-stub-exit"))
+    {:ok, _pid} = SessionSupervisor.start_session(session.id)
+    assert :ok = SessionRunner.send_message(session.id, "start some background work")
+
+    pids = await_descendants(dir)
+    assert_all_dead(pids)
+  end
+
+  # ORCAHUB3-139's kill-and-respawn: the interrupted CLI's spawn is reaped
+  # while its replacement is already running for the same session, so the
+  # reap must be per spawn, never per session.
+  test "reaping an interrupted one-shot CLI never touches the CLI that replaces it", %{
+    session: session,
+    dir: dir
+  } do
+    {:ok, session} = Sessions.update_session(session, %{streaming: false})
+    {:ok, _pid} = SessionSupervisor.start_session(session.id)
+    assert :ok = SessionRunner.send_message(session.id, "first turn")
+    first = await_descendants(dir)
+    on_exit(fn -> first |> Map.values() |> Enum.each(&kill_quietly/1) end)
+
+    # Mid-turn message: SIGINT, the CLI exits, and the runner auto-resumes on
+    # a fresh port whose stub overwrites every pid file.
+    assert :ok = SessionRunner.send_message(session.id, "sent mid-turn")
+
+    assert wait_until(
+             fn ->
+               now = recorded_pids(dir)
+               Enum.all?(@kinds, fn kind -> now[kind] not in [nil, first[kind]] end)
+             end,
+             10_000
+           ),
+           "expected the respawned CLI to record a fresh set of descendants"
+
+    second = recorded_pids(dir)
+
+    assert_all_dead(first)
+    Process.sleep(600)
+    assert Enum.all?(Map.values(second), &alive?/1), "the replacement CLI's tree must survive"
+  end
+
   # ── helpers ──────────────────────────────────────────────────────────
+
+  defp wait_until(fun, timeout_ms \\ 5_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    poll_until(fun, deadline)
+  end
+
+  defp poll_until(fun, deadline) do
+    cond do
+      fun.() ->
+        true
+
+      System.monotonic_time(:millisecond) > deadline ->
+        false
+
+      true ->
+        Process.sleep(25)
+        poll_until(fun, deadline)
+    end
+  end
 
   defp await_descendants(dir, timeout_ms \\ 10_000) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms

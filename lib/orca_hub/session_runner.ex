@@ -17,6 +17,7 @@ defmodule OrcaHub.SessionRunner do
     HubRPC,
     MemoryExtraction,
     MemoryGit,
+    ProcessIsolation,
     SessionHeartbeat,
     Streaming
   }
@@ -480,6 +481,12 @@ defmodule OrcaHub.SessionRunner do
       # :error toggle_plan_mode clauses below.
       plan_mode_pending: false,
       port: nil,
+      # ORCAHUB3-146: the current port's OrcaHub.ProcessIsolation.Spawn (its
+      # cgroup leaf / env marker), set beside `port` at every open and handed
+      # to ProcessIsolation.release/2 wherever the port goes away, so the
+      # CLI's whole process tree dies with it. Read with Map.get: state
+      # tests build `data` maps without it.
+      spawn: nil,
       # Decode layer for the current port (spec.framing at last spawn). :ndjson
       # until a port has been opened; re-set on every open_port*/1 call from
       # the resolved backend's spawn_spec/2 (see spec §3.2/§5).
@@ -941,6 +948,10 @@ defmodule OrcaHub.SessionRunner do
   def running(:info, {port, {:exit_status, code}}, %{port: port} = data) do
     Logger.info("Claude CLI exited (code #{code}) for session #{data.session_id}")
 
+    # The CLI is gone, so no grace: anything still running is an orphan the
+    # next turn's fresh CLI could never reach anyway.
+    data = release_spawn(data, grace_ms: 0)
+
     case data.pending_prompts do
       [_ | _] = prompts ->
         # Auto-resume with queued prompts bundled into a single message. One-shot's
@@ -957,7 +968,7 @@ defmodule OrcaHub.SessionRunner do
         # A queued answer/prompt resumes the run; we're no longer waiting on the user.
         data = resume_clears_waiting(data)
 
-        {new_port, framing} = open_port(combined_prompt, data)
+        {new_port, framing, spawn} = open_port(combined_prompt, data)
 
         {:keep_state,
          %{
@@ -968,7 +979,8 @@ defmodule OrcaHub.SessionRunner do
              error_output: "",
              pending_prompts: [],
              pending_questions: nil
-         }}
+         }
+         |> Map.put(:spawn, spawn)}
 
       [] ->
         {data, error_detail} = handle_cli_error(code, data)
@@ -1142,6 +1154,12 @@ defmodule OrcaHub.SessionRunner do
         _, _ -> :ok
       end
     end
+
+    # ...and the rest of its process tree (ORCAHUB3-146). This only runs for
+    # a crash or an internal stop: stop_session/archive kill the runner
+    # without terminate/3, and ProcessIsolation's monitor on this process
+    # reaps the spawn on that path instead.
+    release_spawn(data)
 
     # Runner is going away for good (not just an idle-timeout port teardown —
     # this fires on process exit) — let the backend clean up whatever
@@ -1721,7 +1739,7 @@ defmodule OrcaHub.SessionRunner do
     broadcast(data.session_id, {:event, user_event})
 
     try do
-      {port, framing} = open_port(prompt, data)
+      {port, framing, spawn} = open_port(prompt, data)
       session = db_call(data, :get_session!, [data.session_id])
       if session.archived_at, do: db_call(data, :unarchive_session, [session])
 
@@ -1746,7 +1764,8 @@ defmodule OrcaHub.SessionRunner do
            messages: data.messages ++ [user_event],
            first_prompt: first_prompt,
            pending_questions: nil
-       }), [{:reply, from, :ok}]}
+       })
+       |> Map.put(:spawn, spawn), [{:reply, from, :ok}]}
     rescue
       e ->
         rescue_turn_start(
@@ -1973,8 +1992,8 @@ defmodule OrcaHub.SessionRunner do
           # handshake is the on_open/1 leg above, not a warm-up turn) write the
           # real turn immediately.
           Streaming.WarmPool.request_slot(base.session_id, self(), Backend.name(base.backend))
-          {port, framing} = open_port_streaming(base)
-          base = run_on_open(%{base | port: port, framing: framing})
+          {port, framing, spawn} = open_port_streaming(base)
+          base = run_on_open(Map.put(%{base | port: port, framing: framing}, :spawn, spawn))
 
           # The warm-up turn exists purely to force the MCP handshake before
           # the real prompt is written (see the comment above) — with no MCP
@@ -2151,7 +2170,7 @@ defmodule OrcaHub.SessionRunner do
         # one-shot auto-resume combine).
         combined = Enum.join(prompts, "\n\n\n")
         data = resume_clears_waiting(data)
-        {new_port, framing} = open_port(combined, data)
+        {new_port, framing, spawn} = open_port(combined, data)
         session = db_call(data, :get_session!, [data.session_id])
         db_call(data, :update_session, [session, %{status: "running", error_detail: nil}])
         broadcast(data.session_id, {:status, :running})
@@ -2165,7 +2184,8 @@ defmodule OrcaHub.SessionRunner do
              buffer: "",
              error_output: "",
              pending_questions: nil
-         }}
+         }
+         |> Map.put(:spawn, spawn)}
     end
   end
 
@@ -2331,6 +2351,10 @@ defmodule OrcaHub.SessionRunner do
     # The warm process is gone — free its slot (idempotent).
     Streaming.WarmPool.release(data.session_id)
 
+    # ...and whatever it left running (ORCAHUB3-146). No grace: the CLI has
+    # already exited.
+    data = release_spawn(data, grace_ms: 0)
+
     # ORCAHUB3-60: clear any pending pi dialogs before going cold.
     # Scan for unanswered pi_ui_request events and persist stale resolutions.
     clear_pi_dialogs_on_exit(data)
@@ -2448,15 +2472,18 @@ defmodule OrcaHub.SessionRunner do
   # Spawn a warm streaming process via the resolved backend. Direct spawn — NO
   # `script -qc` PTY wrapper (the streaming protocol writes newline-delimited
   # JSON to stdin; a PTY runs canonical mode that would corrupt the framing).
-  # `Backend.Claude.spawn_spec/2` preserves this distinction per mode.
-  # Returns `{port, framing}` — the caller stores both on `data` (see spec
-  # §3.2/§5: `framing` picks the decode layer for this port's whole lifetime).
+  # `Backend.Claude.spawn_spec/2` preserves this distinction per mode. (The
+  # ProcessIsolation wrapper in open_backend_port/3 is not a PTY: it `exec`s
+  # the CLI in place on the same pipes.)
+  # Returns `{port, framing, spawn}` — the caller stores all three on `data`
+  # (see spec §3.2/§5: `framing` picks the decode layer for this port's whole
+  # lifetime; `spawn` is what release_spawn/2 reaps when the port goes away).
   defp open_port_streaming(data) do
     extra_env = call_prepare_session(data)
     spec = call_spawn_spec(data.backend, :streaming, data)
-    port = open_backend_port(spec, extra_env)
+    {port, spawn} = open_backend_port(spec, extra_env, data.session_id)
 
-    {port, spec.framing}
+    {port, spec.framing, spawn}
   end
 
   # Materializes per-session on-disk state (e.g. Codex's CODEX_HOME +
@@ -2604,6 +2631,13 @@ defmodule OrcaHub.SessionRunner do
       _, _ -> :ok
     end
 
+    # ORCAHUB3-146: Port.close only closes the CLI's stdin. Every teardown
+    # path funnels through here (idle teardown, evict_warm/WarmPool LRU,
+    # rebake, kill-switch downgrade, backend switch, turn-error teardown),
+    # so this is where the CLI's whole tree is handed to the reaper, which
+    # SIGKILLs whatever outlives a short grace.
+    data = release_spawn(data)
+
     # The warm process is gone — free its slot (idempotent).
     Streaming.WarmPool.release(data.session_id)
 
@@ -2626,6 +2660,14 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp teardown_port(data), do: data
+
+  # Hands the current port's spawn (if any) to OrcaHub.ProcessIsolation and
+  # forgets it. A cast: never blocks the runner. Map.get/Map.put because
+  # state tests build `data` maps without a :spawn key.
+  defp release_spawn(data, opts \\ []) do
+    ProcessIsolation.release(Map.get(data, :spawn), opts)
+    if Map.has_key?(data, :spawn), do: %{data | spawn: nil}, else: data
+  end
 
   # Arm the idle teardown timer only for a warm streaming process.
   defp idle_actions(%{engine: :streaming, port: port}) when not is_nil(port) do
@@ -2663,36 +2705,58 @@ defmodule OrcaHub.SessionRunner do
     }
   end
 
-  # Returns `{port, framing}` — see open_port_streaming/1.
+  # Returns `{port, framing, spawn}` — see open_port_streaming/1.
   defp open_port(prompt, data) do
     extra_env = call_prepare_session(data)
     spec = call_spawn_spec(data.backend, :one_shot, Map.put(data, :prompt, prompt))
+    {port, spawn} = open_backend_port(spec, extra_env, data.session_id)
 
-    {open_backend_port(spec, extra_env), spec.framing}
+    {port, spec.framing, spawn}
   end
 
   defp call_spawn_spec(backend, engine, data) do
     in_startup_stage(:backend_spawn_spec, fn -> backend.spawn_spec(engine, data) end)
   end
 
-  defp open_backend_port(spec, extra_env) do
-    env = spec.env ++ extra_env
+  # The one place every backend's CLI is spawned. ORCAHUB3-145/146: the spec
+  # is wrapped by OrcaHub.ProcessIsolation (own cgroup leaf with memory/pids
+  # limits where the unit delegates one, an inherited env marker always,
+  # raised oom_score_adj), and the wrapper `exec`s the CLI, so the port's
+  # os_pid is still the CLI's (send_sigint/1). The size guard runs on the
+  # wrapped argv/env: that is what execve actually receives. Returns
+  # `{port, spawn}`; a spawn whose port never opened is released here.
+  defp open_backend_port(spec, extra_env, session_id) do
+    spawn = ProcessIsolation.prepare(session_id)
 
-    in_startup_stage(:spawn_size_check, fn -> check_spawn_spec_sizes!(spec.args, env) end)
+    try do
+      {executable, args, env} =
+        ProcessIsolation.wrap(spawn, spec.executable, spec.args, spec.env ++ extra_env)
 
-    in_startup_stage(:port_open, fn ->
-      Port.open(
-        {:spawn_executable, spec.executable},
-        [
-          :binary,
-          :exit_status,
-          :stderr_to_stdout,
-          {:args, spec.args},
-          {:env, env}
-        ] ++
-          spec.port_opts
-      )
-    end)
+      in_startup_stage(:spawn_size_check, fn -> check_spawn_spec_sizes!(args, env) end)
+
+      port =
+        in_startup_stage(:port_open, fn ->
+          ProcessIsolation.ensure_executable!(spec.executable)
+
+          Port.open(
+            {:spawn_executable, executable},
+            [
+              :binary,
+              :exit_status,
+              :stderr_to_stdout,
+              {:args, args},
+              {:env, env}
+            ] ++
+              spec.port_opts
+          )
+        end)
+
+      {port, spawn}
+    rescue
+      e ->
+        ProcessIsolation.release(spawn, grace_ms: 0)
+        reraise e, __STACKTRACE__
+    end
   end
 
   # Linux rejects any SINGLE argv or "KEY=VALUE" environment string longer

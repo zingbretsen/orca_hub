@@ -52,6 +52,29 @@ config :orca_hub,
        :auto_resume,
        System.get_env("ORCA_AUTO_RESUME") not in ~w(0 false)
 
+# Agent CLI isolation (OrcaHub.ProcessIsolation, ORCAHUB3-145/146). Every
+# node kills each agent CLI's whole process tree when its port goes away.
+# Where the unit delegates its cgroup (Delegate=yes + DelegateSubgroup=beam,
+# systemd/orca-hub.service.template), each CLI spawn also runs in its own
+# cgroup leaf with these limits; elsewhere they are ignored. Sizes: bytes,
+# K/M/G/T, "max", or a percentage of the unit's own MemoryMax (host RAM when
+# it has none). Unset = the default in OrcaHub.ProcessIsolation.Limits.
+#   ORCA_AGENT_CGROUPS      auto | off (off = env-marker kill only)  [auto]
+#   ORCA_AGENTS_MEMORY_MAX  all agent CLI trees together             [80%]
+#   ORCA_AGENT_MEMORY_MAX   one CLI spawn's tree                     [60%]
+#   ORCA_AGENT_SWAP_MAX     swap per spawn, and for all agents       [0]
+#   ORCA_AGENT_PIDS_MAX     tasks (threads) per spawn                [8192]
+#   ORCA_BEAM_MEMORY_LOW    reclaim protection for the BEAM's cgroup [1G]
+# Never in test: bin/test must not touch a real cgroup tree.
+config :orca_hub, :agent_isolation,
+  cgroups:
+    if(config_env() == :test, do: "off", else: System.get_env("ORCA_AGENT_CGROUPS", "auto")),
+  agents_memory_max: System.get_env("ORCA_AGENTS_MEMORY_MAX"),
+  agent_memory_max: System.get_env("ORCA_AGENT_MEMORY_MAX"),
+  agent_swap_max: System.get_env("ORCA_AGENT_SWAP_MAX"),
+  agent_pids_max: System.get_env("ORCA_AGENT_PIDS_MAX"),
+  beam_memory_low: System.get_env("ORCA_BEAM_MEMORY_LOW")
+
 # Base64-encoded 32-byte key used by OrcaHub.Secrets to encrypt/decrypt
 # upstream-injection secrets at rest (AES-256-GCM). Also encrypts inbound
 # mailbox passwords (OrcaHub.EmailInboxes). Hub-only; raises a clear error at

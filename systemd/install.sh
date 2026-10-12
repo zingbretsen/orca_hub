@@ -2,13 +2,32 @@
 #
 # Render and install the orca-hub systemd unit. Nothing else.
 #
-# Usage: ./install.sh [--user USER] [--dry-run]
+# Usage: ./install.sh [--user USER] [--memory-max SIZE] [--memory-high SIZE]
+#                     [--memory-swap-max SIZE] [--dry-run]
 #
 # What it does:
-#   - Renders systemd/orca-hub.service.template ({{USER}}, {{HOME}}) into
+#   - Renders systemd/orca-hub.service.template ({{USER}}, {{HOME}},
+#     {{MEMORY_HIGH}}, {{MEMORY_MAX}}, {{MEMORY_SWAP_MAX}}) into
 #     /etc/systemd/system/orca-hub.service as a REAL file. If the existing
 #     destination is a symlink (e.g. into a checkout), it is replaced, never
 #     written through.
+#   - Resolves each memory limit, highest precedence first, from: its flag;
+#     the ORCA_UNIT_MEMORY_HIGH / ORCA_UNIT_MEMORY_MAX /
+#     ORCA_UNIT_MEMORY_SWAP_MAX environment variable; the value in the unit
+#     that is installed now; the default (MemoryHigh=infinity, MemoryMax=6G,
+#     MemorySwapMax=1G). Because the installed value wins over the default, a
+#     reinstall never silently reverts a host's tuning. The source of every
+#     value is printed.
+#
+#     These cap the WHOLE unit (BEAM + agent CLIs). Each agent CLI spawn also
+#     gets its own cgroup limits inside it (Delegate=yes + DelegateSubgroup=
+#     beam; ORCA_AGENT*_ in the .env, see config/runtime.exs). Suggested per
+#     host (ORCAHUB3-145): debian and mini (16G, shared with k3s/Postgres)
+#     --memory-max 6G --memory-swap-max 1G; gb10 (128G unified memory shared
+#     with GPU models) --memory-max 32G --memory-swap-max 2G. Keep
+#     --memory-high at infinity: a MemoryHigh far below MemoryMax stalls the
+#     whole service instead of OOM-killing the runaway.
+#   - Checks systemd >= 254 (DelegateSubgroup=).
 #   - Pre-flights the env file the unit actually reads,
 #     $HOME/orca-hub-releases/.env (SECRET_KEY_BASE; DATABASE_URL unless
 #     ORCA_MODE=agent; PHX_HOST warning). Values are never printed.
@@ -28,15 +47,21 @@
 # interactive-sudo script.
 #
 # Options:
-#   --user USER   User to run the service as (default: current user)
-#   --dry-run     Show what would be installed; change nothing
-#   -h, --help    Show this help
+#   --user USER             User to run the service as (default: current user)
+#   --memory-max SIZE       Unit MemoryMax= (e.g. 6G, 32G)
+#   --memory-high SIZE      Unit MemoryHigh= (default infinity; see above)
+#   --memory-swap-max SIZE  Unit MemorySwapMax= (e.g. 1G)
+#   --dry-run               Show what would be installed; change nothing
+#   -h, --help              Show this help
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USER="$(whoami)"
 DRY_RUN=false
+FLAG_MEMORY_HIGH=""
+FLAG_MEMORY_MAX=""
+FLAG_MEMORY_SWAP_MAX=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -45,18 +70,36 @@ while [[ $# -gt 0 ]]; do
             USER="$2"
             shift 2
             ;;
+        --memory-high)
+            FLAG_MEMORY_HIGH="$2"
+            shift 2
+            ;;
+        --memory-max)
+            FLAG_MEMORY_MAX="$2"
+            shift 2
+            ;;
+        --memory-swap-max)
+            FLAG_MEMORY_SWAP_MAX="$2"
+            shift 2
+            ;;
         --dry-run)
             DRY_RUN=true
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--user USER] [--dry-run]"
+            echo "Usage: $0 [--user USER] [--memory-max SIZE] [--memory-high SIZE] [--memory-swap-max SIZE] [--dry-run]"
             echo ""
             echo "Render and install the orca-hub systemd unit (no build)."
             echo ""
             echo "Options:"
-            echo "  --user USER     User to run the service as (default: current user)"
-            echo "  --dry-run       Print the rendered unit and diff vs installed; change nothing"
+            echo "  --user USER             User to run the service as (default: current user)"
+            echo "  --memory-max SIZE       Unit MemoryMax= (e.g. 6G; gb10 32G)"
+            echo "  --memory-high SIZE      Unit MemoryHigh= (default infinity: kill, don't stall)"
+            echo "  --memory-swap-max SIZE  Unit MemorySwapMax= (e.g. 1G; gb10 2G)"
+            echo "  --dry-run               Print the rendered unit and diff vs installed; change nothing"
+            echo ""
+            echo "A memory value comes from its flag, else ORCA_UNIT_MEMORY_HIGH/_MAX/_SWAP_MAX,"
+            echo "else the installed unit, else the default (infinity / 6G / 1G)."
             exit 0
             ;;
         *)
@@ -150,11 +193,77 @@ preflight_env() {
     echo "  Pre-flight OK."
 }
 
+# DelegateSubgroup= (the BEAM starts in orca-hub.service/beam) needs systemd
+# >= 254. Older systemd would refuse the unit outright.
+check_systemd_version() {
+    local version
+    version="$(systemctl --version | head -n1 | awk '{print $2}')"
+    version="${version%%[!0-9]*}"
+    if [[ -z "$version" || "$version" -lt 254 ]]; then
+        echo "Error: systemd ${version:-?} is too old for DelegateSubgroup= (needs >= 254)." >&2
+        exit 1
+    fi
+    echo "  systemd: $version (DelegateSubgroup= supported)"
+}
+
+# The value KEY= has in the unit installed now (through a symlink, too), if any.
+installed_value() {
+    local key="$1"
+    [[ -e "$DEST" ]] || return 0
+    grep -E "^[[:space:]]*${key}=" "$DEST" 2>/dev/null | tail -n1 \
+        | sed -E "s/^[[:space:]]*${key}=//; s/[[:space:]]+$//" || true
+}
+
+# systemd's own size syntax: bytes with an optional K/M/G/T suffix, a
+# percentage of physical memory, or infinity.
+valid_size() {
+    [[ "$1" =~ ^([0-9]+(\.[0-9]+)?[KMGT]?|[0-9]+(\.[0-9]+)?%|infinity)$ ]]
+}
+
+# resolve_size NAME FLAG_VALUE ENV_VAR DEFAULT -> sets RESOLVED + RESOLVED_FROM
+resolve_size() {
+    local key="$1" flag="$2" env_var="$3" default="$4" installed
+    installed="$(installed_value "$key")"
+    if [[ -n "$flag" ]]; then
+        RESOLVED="$flag"; RESOLVED_FROM="flag"
+    elif [[ -n "${!env_var:-}" ]]; then
+        RESOLVED="${!env_var}"; RESOLVED_FROM="\$$env_var"
+    elif [[ -n "$installed" ]]; then
+        RESOLVED="$installed"; RESOLVED_FROM="installed unit"
+    else
+        RESOLVED="$default"; RESOLVED_FROM="default"
+    fi
+    if ! valid_size "$RESOLVED"; then
+        echo "Error: $key=$RESOLVED (from $RESOLVED_FROM) is not a systemd size (e.g. 6G, 512M, 50%, infinity)." >&2
+        exit 1
+    fi
+    echo "  $key: $RESOLVED ($RESOLVED_FROM)"
+}
+
+resolve_memory_limits() {
+    echo ""
+    echo "Memory limits for the whole unit:"
+    resolve_size MemoryHigh "$FLAG_MEMORY_HIGH" ORCA_UNIT_MEMORY_HIGH infinity
+    MEMORY_HIGH="$RESOLVED"
+    resolve_size MemoryMax "$FLAG_MEMORY_MAX" ORCA_UNIT_MEMORY_MAX 6G
+    MEMORY_MAX="$RESOLVED"
+    resolve_size MemorySwapMax "$FLAG_MEMORY_SWAP_MAX" ORCA_UNIT_MEMORY_SWAP_MAX 1G
+    MEMORY_SWAP_MAX="$RESOLVED"
+    if [[ "$MEMORY_HIGH" != "infinity" ]]; then
+        echo "  WARNING: MemoryHigh=$MEMORY_HIGH throttles the whole service (BEAM included) once" >&2
+        echo "           it is crossed, instead of OOM-killing the runaway: that is the 11-hour" >&2
+        echo "           stall of ORCAHUB3-145. Pass --memory-high infinity unless you mean it." >&2
+    fi
+}
+
 # Render the template.
 render() {
     sed \
         -e "s|{{USER}}|$USER|g" \
         -e "s|{{HOME}}|$HOME_DIR|g" \
+        -e "s|{{MEMORY_HIGH}}|$MEMORY_HIGH|g" \
+        -e "s|{{MEMORY_MAX}}|$MEMORY_MAX|g" \
+        -e "s|{{MEMORY_SWAP_MAX}}|$MEMORY_SWAP_MAX|g" \
         "$TEMPLATE"
 }
 
@@ -162,6 +271,8 @@ echo "Installing orca-hub.service..."
 echo "  User: $USER"
 echo "  Home: $HOME_DIR"
 echo "  Dest: $DEST"
+check_systemd_version
+resolve_memory_limits
 
 # Validate runtime env up front so a misconfigured host fails here rather than
 # in a systemd crash-loop after install.

@@ -143,3 +143,9 @@ config :orca_hub, :trust_test_code_generations, true
 # (SessionResumer.resume_session/1, JobResumer.resume_jobs/0), so nothing
 # depends on the ambient timer.
 config :orca_hub, :auto_resume, false
+
+# OrcaHub.ProcessIsolation waits this long after a port closes before it
+# SIGKILLs what the CLI left behind (3 s in prod, for the CLI's own exit on
+# stdin EOF). Stub CLIs exit at once, and every teardown test waits on the
+# reap. config/runtime.exs keeps the cgroup path itself off in test.
+config :orca_hub, :agent_isolation, reap_grace_ms: 200

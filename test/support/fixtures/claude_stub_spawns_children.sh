@@ -13,11 +13,14 @@
 #           marker can still find it.
 #
 # Every pid file is written to a temp name and renamed, so a reader never
-# sees a half-written pid. If the session directory holds an
-# `orca-stub-turns` file, each stdin line is answered with a successful
-# stream-json `result` frame, so a streaming runner can finish its turns and
-# sit warm in :idle (the CLI's own argv is the real claude argv, so the mode
-# can't ride on it).
+# sees a half-written pid. The mode rides on a file in the session
+# directory, since the CLI's own argv is the real claude argv:
+#
+#   orca-stub-turns  answer each stdin line with a successful stream-json
+#                    `result` frame, so a streaming runner finishes its turns
+#                    and sits warm in :idle
+#   orca-stub-exit   exit 0 at once, the way a one-shot CLI ends its turn
+#   (neither)        block on stdin until the port closes
 dir="$PWD/orca-stub-pids"
 mkdir -p "$dir"
 
@@ -32,7 +35,12 @@ setsid sh -c 'sleep 300 & echo $! > "$1.tmp" && mv "$1.tmp" "$1"' sh "$dir/orpha
 
 record cli $$
 
-if [ -f "$PWD/orca-stub-turns" ]; then
+if [ -f "$PWD/orca-stub-exit" ]; then
+  # Not before every pid is on disk: the reap that follows this exit must
+  # not win the race against the backgrounded writers.
+  while [ ! -s "$dir/setsid" ] || [ ! -s "$dir/orphan" ]; do sleep 0.05; done
+  exit 0
+elif [ -f "$PWD/orca-stub-turns" ]; then
   while IFS= read -r _line; do
     printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"stub-146"}'
   done

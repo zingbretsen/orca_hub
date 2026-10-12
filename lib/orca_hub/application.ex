@@ -85,6 +85,13 @@ defmodule OrcaHub.Application do
       # every node through the existing {:pi_config_updated} broadcast.
       # See OrcaHub.PiModelSync moduledoc.
       OrcaHub.PiModelSync,
+      # Per-spawn agent CLI isolation and process-tree reaping (ORCAHUB3-145/
+      # 146): a delegated cgroup leaf per spawn when the unit allows it, an
+      # env-marker kill otherwise. Before SessionSupervisor so runners can
+      # register spawns at port-open, and so it outlives them at shutdown.
+      # Node-local on hub + agent. See OrcaHub.ProcessIsolation moduledoc.
+      {Registry, keys: :unique, name: OrcaHub.ProcessIsolation.Registry},
+      OrcaHub.ProcessIsolation,
       # Warm-process admission control — must start before SessionSupervisor so
       # streaming runners can request_slot at port-open.
       OrcaHub.Streaming.WarmPool,
@@ -184,6 +191,10 @@ defmodule OrcaHub.Application do
       # model catalog) — see OrcaHub.Backend.Cache.
       OrcaHub.Backend.Cache,
       {Task.Supervisor, name: OrcaHub.TaskSupervisor},
+      # Agent CLI isolation and reaping — see the matching hub_children/1
+      # comment above.
+      {Registry, keys: :unique, name: OrcaHub.ProcessIsolation.Registry},
+      OrcaHub.ProcessIsolation,
       # Warm-process admission control — must start before SessionSupervisor.
       OrcaHub.Streaming.WarmPool,
       OrcaHub.SessionSupervisor,
