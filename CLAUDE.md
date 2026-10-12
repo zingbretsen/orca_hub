@@ -223,7 +223,8 @@ rendered unit and a diff against the installed one without sudo.
   and `--memory-swap-max` (or `ORCA_UNIT_MEMORY_*`). With no flag a value is
   kept from the installed unit, so a reinstall never reverts a host's tuning.
   Suggested: debian and `mini` `--memory-max 6G --memory-swap-max 1G`, `gb10`
-  `--memory-max 32G --memory-swap-max 2G`, all `--memory-high infinity`. A
+  `--memory-max 30G --memory-swap-max 2G` (its current cap; GPU models hold
+  most of its 128G), all `--memory-high infinity`. A
   MemoryHigh far below MemoryMax is what stalled gb10 for 11 hours on
   2026-10-11 instead of OOM-killing the runaway. `--private-devices` is kept
   the same way, and an installed unit with no `PrivateDevices=` line counts as

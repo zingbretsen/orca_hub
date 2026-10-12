@@ -25,8 +25,8 @@
 #     gets its own cgroup limits inside it (Delegate=yes + DelegateSubgroup=
 #     beam; ORCA_AGENT*_ in the .env, see config/runtime.exs). Suggested per
 #     host (ORCAHUB3-145): debian and mini (16G, shared with k3s/Postgres)
-#     --memory-max 6G --memory-swap-max 1G; gb10 (128G unified memory shared
-#     with GPU models) --memory-max 32G --memory-swap-max 2G. Keep
+#     --memory-max 6G --memory-swap-max 1G; gb10 (128G unified memory, most
+#     of it held by GPU models) --memory-max 30G --memory-swap-max 2G. Keep
 #     --memory-high at infinity: a MemoryHigh far below MemoryMax stalls the
 #     whole service instead of OOM-killing the runaway.
 #   - Resolves PrivateDevices= the same way (--private-devices,
@@ -54,7 +54,7 @@
 #
 # Options:
 #   --user USER             User to run the service as (default: current user)
-#   --memory-max SIZE       Unit MemoryMax= (e.g. 6G, 32G)
+#   --memory-max SIZE       Unit MemoryMax= (e.g. 6G, 30G)
 #   --memory-high SIZE      Unit MemoryHigh= (default infinity; see above)
 #   --memory-swap-max SIZE  Unit MemorySwapMax= (e.g. 1G)
 #   --private-devices B     Unit PrivateDevices= (yes|no)
@@ -105,7 +105,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --user USER             User to run the service as (default: current user)"
-            echo "  --memory-max SIZE       Unit MemoryMax= (e.g. 6G; gb10 32G)"
+            echo "  --memory-max SIZE       Unit MemoryMax= (e.g. 6G; gb10 30G)"
             echo "  --memory-high SIZE      Unit MemoryHigh= (default infinity: kill, don't stall)"
             echo "  --memory-swap-max SIZE  Unit MemorySwapMax= (e.g. 1G; gb10 2G)"
             echo "  --private-devices B     Unit PrivateDevices= yes|no (gb10: no, for /dev/nvidia*)"
