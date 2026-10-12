@@ -12,14 +12,18 @@ flowchart TB
     subgraph Execution
         ExecuteCron["TriggerExecutor.execute/1"]
         ExecutePayload["TriggerExecutor.execute_payload/2\n(execute_webhook/2 delegates here)"]
-        EnabledCheck{"enabled?\nand node_available?"}
+        EnabledCheck{"enabled?"}
+        EndedCheck{"ended?\n(execute/1 only)"}
+        Disable["Disable, don't fire,\ndon't count"]
+        NodeCheck{"node_available?"}
         Skip["Log + skip\n(never re-route to another node)"]
         Resolve{"reuse_session?"}
         Reuse["Find last session\n(not archived, ready/idle/error)"]
         Create["Create new session\n(triggered: true, trigger_id)"]
-        Update["Update trigger\nlast_fired_at\nlast_session_id"]
+        Update["Update trigger\nlast_fired_at, last_session_id\n(execute/1: + run_count, last-fire disable)"]
         StartCheck{"session_alive?"}
         Start["SessionSupervisor.start_session"]
+        Setup["SetupScript.run on the runner node\n(via Cluster.rpc, output prepended)"]
         Send["Cluster.send_message(.., :queue)\n(trigger prompt + payload)"]
     end
 
@@ -36,20 +40,26 @@ flowchart TB
     ExecuteCron --> EnabledCheck
     ExecutePayload --> EnabledCheck
     EnabledCheck -->|no| Skip
-    EnabledCheck -->|yes| Resolve
+    EnabledCheck -->|"yes (execute/1)"| EndedCheck
+    EnabledCheck -->|"yes (payload)"| NodeCheck
+    EndedCheck -->|yes| Disable
+    EndedCheck -->|no| NodeCheck
+    NodeCheck -->|no| Skip
+    NodeCheck -->|yes| Resolve
     Resolve -->|yes + last session reusable| Reuse
     Resolve -->|no or no reusable session| Create
     Reuse --> Update
     Create --> Update
     Update --> StartCheck
-    StartCheck -->|not alive| Start --> Send
-    StartCheck -->|alive| Send
+    StartCheck -->|not alive| Start --> Setup
+    StartCheck -->|alive| Setup
+    Setup --> Send
 
     Send --> Archive
     Archive -->|yes| ArchiveTask
 ```
 
-Both entry points funnel into the same resolve → start → send path;
+Both entry points funnel into the same resolve → start → setup script → send path;
 `execute_webhook/2` is now just a thin alias for `execute_payload/2`, which
 also serves inbound email. Because `Cluster.rpc/5` runs the WHOLE body on the
 trigger's runner node, any filesystem work it does (e.g. writing email

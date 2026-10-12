@@ -62,7 +62,8 @@ graph TB
         A2ATasks["A2ATasks Context"]
         EmailInboxes["EmailInboxes Context"]
         AgentPresence["AgentPresence"]
-        SessionHeartbeat["SessionHeartbeat<br>(hub only)"]
+        SessionHeartbeat["SessionHeartbeat<br>(hub only: heartbeats,<br>:queue delivery, job wakes)"]
+        ProcessIsolation["ProcessIsolation<br>(per-spawn cgroup leaf<br>or env-marker reap)"]
         ChurnSampler["ChurnSampler + AlertEvaluator<br>(hub only, 120s sweep)"]
         AlertSubs["AlertSubscriptions Context"]
         Churn["Sessions.Churn<br>(+ ChurnDetail / FileSurgery)"]
@@ -91,6 +92,8 @@ graph TB
         MemoryExtraction["MemoryExtraction<br>(+ finalize_self)"]
         MemoryExtractionSweep["MemoryExtractionSweep<br>(hub only, boot backstop)"]
         MemoryReview["MemoryReview<br>(nightly + weekly triggers)"]
+        SessionSearchIndexer["SessionSearch.Indexer<br>(hub only, durable cursor)"]
+        SessionSearchSearch["SessionSearch.Search<br>(one result per session)"]
     end
 
     subgraph Sync["Hub-DB -> Node-Disk Sync (every node)"]
@@ -306,6 +309,8 @@ graph TB
     DiscordBridge --> SessionSupervisor
 
     SessionHeartbeat -.->|schedules| SessionRunner
+    Cluster -->|"send_message(.., :queue)<br>via HubRPC"| SessionHeartbeat
+    SessionRunner -->|"open_backend_port: wrap spawn;<br>release on port end"| ProcessIsolation
     ChurnSampler -->|"assess each running session"| Churn
     ChurnSampler -->|"persist samples + emit telemetry"| Sessions
     ChurnSampler -->|"reads watches"| AlertSubs
@@ -324,6 +329,9 @@ graph TB
     MemoryReview -->|"upserts 2 scheduled triggers"| Triggers
     MCPTools -->|"remember/recall/..."| MemoryClient
     MemoryClient --> MemoryService
+    SessionSearchIndexer -->|"index_session_messages"| MemoryClient
+    MCPTools & SessionIndex -->|"search_sessions conversation_query /<br>index search box"| SessionSearchSearch
+    SessionSearchSearch -->|"search_session_messages,<br>then join to sessions rows"| MemoryClient
     Embeddings -->|"HubRPC.embeddings_*"| EmbeddingService["Local embedding endpoint<br>(OpenAI-compatible /v1/embeddings)"]
     IssueChunker -.->|"chunks sized to the endpoint's n_ctx"| Embeddings
     BackendBehaviour -->|"memory block at cold port open<br>(SharedPrompts / pi ORCA_MEMORY)"| MemoryClient
@@ -768,9 +776,25 @@ graph TB
 - **ForkGate** (`lib/orca_hub/fork_gate.ex`): serializes forked pi children's
   first turns so concurrent same-prefix spawns don't each cold-prefill
   (`pi_fork_spec.md` §6).
-- **SessionHeartbeat** (hub only) / **SessionResumer**: heartbeat delivers
-  scheduled reminder messages into a session; resumer recovers sessions
+- **SessionHeartbeat** (hub only) / **SessionResumer**: SessionHeartbeat
+  holds every "pending, flushed at turn end" delivery, all in memory:
+  scheduled heartbeats, job wakes (`start_job`'s `wake_when_done`,
+  `schedule_heartbeat`'s `watch_job_ids`), and the `:queue`-delivery
+  message queue behind `send_message_to_session`, triggers and worker
+  alerts (per-item Remove / Send now on the session page, ORCAHUB3-139 —
+  see `.context/message-flow.md`). It also de-dupes the runner's
+  `[Session lifecycle]` parent notifications. The resumer recovers sessions
   stuck in `status: "running"` after a node restart or deploy.
+- **ProcessIsolation** (`lib/orca_hub/process_isolation.ex` +
+  `process_isolation/{cgroup,limits,marker}.ex`, every node, ORCAHUB3-145/
+  146): every agent CLI spawn goes through a `/bin/sh` wrapper that raises
+  its `oom_score_adj`, joins a per-spawn cgroup leaf (with memory/swap/pids
+  limits from `ORCA_AGENT*_` env) when the systemd unit delegates one, and
+  `exec`s the CLI. A port's end reaps the CLI's whole process tree: via
+  `cgroup.kill`, or by the spawn's `ORCA_AGENT_SPAWN_ID` env marker where
+  there is no delegated cgroup (k3s pods, `bin/test`). Jobs, terminals and
+  trigger setup scripts are spawned by the BEAM and never touched. See
+  `.context/session-lifecycle.md` and `.context/supervision-tree.md`.
 - **Churn sampling + worker alerts** (`lib/orca_hub/churn_sampler.ex`,
   `churn_sampler/alert_evaluator.ex`, `sessions/churn.ex`, hub only): one
   120s sweep does two things. First it samples every non-archived `running`
@@ -837,11 +861,35 @@ graph TB
    the Discord `Bridge`, the Agent Runs API (`ApiRunController`), and the
    inbound A2A server (`A2AController`).
 
-## Session search ingest (ORCAHUB3-137)
+## Session search (ORCAHUB3-137)
 
 `OrcaHub.SessionSearch.*` is OrcaHub's half of session search; the search
 engine itself lives in memory-service (`session-messages` collection,
 `agent-session-messages` alias — OrcaHub holds no ES credentials).
+
+Read half:
+
+- `Search.search/2` (via `HubRPC.call`): calls
+  `MemoryClient.search_session_messages/1`, then joins the returned
+  `group_id`s (= session ids) to `sessions` rows in ONE query, returning one
+  result per session (`session`, `score`, `legs`, `snippets`). Index-side
+  filters (project/directory/backend/node/role/since/until) are pushed down.
+  Postgres-only ones (status, archived, `kind`, parent) are pushed down too,
+  as `group_ids`, when the candidate set is at most 500 sessions; past that
+  it oversamples `limit * 3` and filters after the join. `degraded:
+  "bm25_only"` means the query embedding failed. Never raises;
+  `{:error, :disabled}` without memory-service.
+- Callers: `search_sessions`' `conversation_query` argument
+  (`mcp/tools/sessions.ex`) and the sessions index search box
+  (`SessionLive.Index`, run with `start_async/3`).
+- A hard `Sessions.delete_session/1` purges the session's docs; archiving
+  keeps them searchable. `Search` itself excludes archived sessions unless
+  told otherwise, but both callers include them by default, since most past
+  conversations are archived. The MCP tool also scopes to the caller's
+  directory unless given `all_projects`/`session_id`. `ClaudeImport`
+  enqueues a reindex for each session it imports.
+
+Ingest half:
 
 - `Extractor` (pure): `messages` row + session -> contract doc
   (`id`, `group_id` = session id, `text`, `fields` role/backend/node/

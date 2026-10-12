@@ -10,41 +10,39 @@ exposes `hub?()` / `agent?()` and discovers the hub node at runtime.
 
 ## Hub + Agent Topology
 
+The production fleet is ONE hub and five agents (see `CLAUDE.md`'s
+Deployment section). Manifests live in `~/homelab/k3s/apps/orca-*.yaml`.
+
 ```mermaid
 graph TB
-    subgraph K8s["Kubernetes Cluster"]
-        subgraph Node1["k8s Node: debian (hub)"]
-            OrcaA["OrcaHub Pod A<br/>orca@pod-ip-a<br/>ORCA_MODE=hub"]
-            DBA[(PostgreSQL)]
-            CLIA["Claude CLI"]
-            OrcaA --> DBA
-            OrcaA --> CLIA
-        end
-
-        subgraph Node2["k8s Node: nuc (agent)"]
-            OrcaB["OrcaHub Pod B<br/>orca@pod-ip-b<br/>ORCA_MODE=agent"]
-            CLIB["Claude CLI"]
-            OrcaB --> CLIB
-        end
-
-        HeadlessSvc["Headless Service<br/>(DNS discovery)"]
-        HeadlessSvc -.->|DNSPoll| OrcaA
-        HeadlessSvc -.->|DNSPoll| OrcaB
+    subgraph K8s["k3s (namespace lab)"]
+        Hub["orca-hub pod<br/>orca@orca-hub.lab.svc.cluster.local<br/>ORCA_MODE=hub, pod network"]
+        HubSvc["ClusterIP Service<br/>EPMD 4369 + pinned dist 9100<br/>(+ Authelia-gated Ingress for HTTP)"]
+        Discord["orca-agent-discord pod<br/>orca-discord@orca-agent-discord.lab<br/>ORCA_MODE=agent (DISCORD_BOT)"]
+        Dell["orca-agent-dell pod<br/>orca-dell@orca-agent-dell.lab<br/>ORCA_MODE=agent (isolated Dell work)"]
+        HubSvc --- Hub
     end
 
-    subgraph LAN["Local Network"]
-        Laptop["Laptop<br/>orca@192.168.x.x<br/>ORCA_MODE=hub"]
-        DBL[(PostgreSQL)]
-        CLIL["Claude CLI"]
-        Laptop --> DBL
-        Laptop --> CLIL
+    subgraph LAN["LAN hosts (systemd OTP releases)"]
+        Local["debian (local)<br/>debian@192.168.1.177<br/>ORCA_MODE=agent"]
+        Mini["mini<br/>orca@192.168.1.18<br/>ORCA_MODE=agent"]
+        GB10["gb10 (aarch64)<br/>gb10@192.168.1.77<br/>ORCA_MODE=agent"]
     end
 
-    OrcaA <-->|"Erlang Distribution<br/>EPMD 4369 + ports 9100-9105"| OrcaB
-    OrcaA <-->|"Erlang Distribution<br/>(static EPMD)"| Laptop
-    OrcaB <-->|"Erlang Distribution"| Laptop
-    OrcaB -.->|"HubRPC (erpc)<br/>all DB operations"| OrcaA
+    PG[("Shared PostgreSQL<br/>Docker Compose on the host,<br/>outside k3s")]
+
+    Hub --> PG
+    Discord -->|"dials IN: CLUSTER_NODES =<br/>hub Service DNS (static Epmd)"| HubSvc
+    Dell -->|"dials IN: CLUSTER_NODES =<br/>hub Service DNS (static Epmd)"| HubSvc
+    Hub -->|"dials OUT: NodeDialer,<br/>nodes rows with dial: true"| Local & Mini & GB10
+    Discord & Dell & Local & Mini & GB10 -.->|"HubRPC (erpc)<br/>all DB operations"| Hub
 ```
+
+Erlang distribution is bidirectional over whichever side opened the
+connection, so neither the dialed-in pods nor the dialed-out LAN agents need
+an inbound path of their own. Agents are not meshed with each other
+(`-kernel connect_all false` in `rel/vm.args.eex`): `Cluster.rpc/5` tries a
+direct `Node.connect/1` and otherwise relays the call through the hub.
 
 ## Hub Node Architecture
 
@@ -145,7 +143,7 @@ sequenceDiagram
 | **SessionSupervisor** | Yes | Yes | Both nodes run agent-CLI sessions |
 | **SessionRegistry** | Yes | Yes | Local registry per node |
 | **SessionResumer** | Yes | Yes | Resumes sessions orphaned in `status: "running"` on boot |
-| **SessionHeartbeat** | Yes | No | Hub-only scheduled heartbeat messages into sessions |
+| **SessionHeartbeat** | Yes | No | Hub-only, in-memory: scheduled heartbeats, the `:queue`-delivery message queue (`send_message_to_session`, triggers, worker alerts), job wakes |
 | **ChurnSampler** (+ `AlertEvaluator`) | Yes | No | 120s churn sampling + worker-alert delivery; two nodes sweeping would double-sample and double-alert |
 | **MemoryExtractionSweep** | Yes | No | Boot-time one-shot archive of orphaned `kind: "memory_extraction"` children; pure DB writes, so one sweep covers the cluster |
 | **Issues.IndexSweep** | Yes | No | 600s pgvector issue-index reconciliation, ≤20 issues + ≤400 chunks per tick; two nodes sweeping one table would duplicate the work and race each other's upserts |
@@ -321,11 +319,17 @@ stakes:
 
 ```mermaid
 graph LR
-    subgraph Strategies["libcluster topologies (run simultaneously)"]
-        DNS["DNSPoll Strategy<br/>CLUSTER_DNS_QUERY env var<br/>(k8s headless service)"]
-        EPMD["Epmd Strategy<br/>CLUSTER_NODES env var<br/>(static list for LAN nodes)"]
+    subgraph Strategies["libcluster topologies (config/runtime.exs, each env-gated)"]
+        DNS["DNSPoll Strategy<br/>CLUSTER_DNS_QUERY env var<br/>(supported, unset in prod)"]
+        EPMD["Epmd Strategy<br/>CLUSTER_NODES env var<br/>(static list)"]
     end
+    Dialer["OrcaHub.NodeDialer<br/>(hub only, nodes.dial = true,<br/>every 5s)"]
 
-    DNS -->|discovers| K8sPods["k8s Pods"]
-    EPMD -->|connects to| LaptopNode["Laptop / External Nodes"]
+    DNS -->|discovers| K8sPods["Pods behind a headless Service"]
+    EPMD -->|"agent pods dial the hub<br/>Service DNS name"| HubNode["Hub"]
+    Dialer -->|"hub dials out"| LanAgents["LAN systemd agents"]
 ```
+
+Day to day, the k3s agent pods join via `CLUSTER_NODES` and the hub reaches
+the LAN agents via `NodeDialer`. `CLUSTER_DNS_QUERY` (and the separate
+`DNSCluster` child, gated by `:dns_cluster_query`) is set nowhere in prod.

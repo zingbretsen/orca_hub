@@ -24,9 +24,11 @@ itself contains no CLI-specific logic.
 ## One-Shot Engine (fresh port per turn)
 
 Used when streaming is disabled for the session/node. Each turn opens a new
-port, streams NDJSON (or JSON-RPC, depending on the backend) to completion,
-and exits; a message sent while a turn is running interrupts it and queues
-the new prompt for auto-resume.
+port, streams NDJSON to completion (every backend's one-shot mode is
+NDJSON — `claude -p`, `codex exec --json`, pi), and exits; a message sent
+while a turn is running interrupts it (a process signal, since a one-shot
+`encode_interrupt/2` returns `:signal`) and queues the new prompt for
+auto-resume.
 
 ```mermaid
 sequenceDiagram
@@ -110,7 +112,7 @@ sequenceDiagram
     end
 
     Runner->>Backend: encode_user_turn(prompt)
-    Runner->>CLI: write to stdin (JSON-RPC framed, via JsonRpcFraming)
+    Runner->>CLI: write to stdin (spawn_spec framing: NDJSON for<br>Claude/pi, JSON-RPC for Codex app-server)
 
     loop Streamed frames
         CLI->>Runner: stdout frame
@@ -132,17 +134,33 @@ sequenceDiagram
 ```
 
 A turn arriving while the state machine is `:running` either steers the live
-turn in place (`encode_steer_turn/2`, currently only `pi`) or sends a
-`control_request` interrupt over the same port (not a process-level SIGINT —
-the port survives) and queues the new prompt. Which of those a caller gets is
-selectable per send: `send_message_to_session` takes a `delivery` of
-`"queue"` (the tool's default, and what `TriggerExecutor` uses so an
-overlapping fire can't cancel in-flight work — the message is held until the
-target's turn ends) or `"interrupt"` (delivered immediately; on a
-steering-capable backend that steers rather than interrupts). Note
+turn in place (`encode_steer_turn/2`, currently only `pi`) or sends the
+backend's in-band interrupt over the same port (`encode_interrupt/2`:
+Claude's `control_request`, Codex's `turn/interrupt`, pi's `abort` — not a
+process-level SIGINT, the port survives) and queues the new prompt. Which of
+those a caller gets is selectable per send: `send_message_to_session` takes
+a `delivery` of `"queue"` (the tool's default, and what `TriggerExecutor`
+uses so an overlapping fire can't cancel in-flight work — the message is
+held until the target's turn ends) or `"interrupt"` (delivered immediately;
+on a steering-capable backend that steers rather than interrupts). Note
 `Cluster.send_message/4` itself defaults to `:interrupt` — the UI send path. See
 `.context/session-lifecycle.md` for the `downgrade`/`evict_warm` state
 transitions this engine adds on top of the four core GenStatem states.
+
+`:queue` delivery is NOT held by the runner. `Cluster.send_message(_, _, _,
+:queue)` hands it to the hub-only `OrcaHub.SessionHeartbeat`
+(`deliver_or_queue/2`), which delivers at once if the target isn't mid-turn
+(a `waiting` with the turn over counts as not mid-turn) or its backend can
+steer (pi), and otherwise accumulates it in an in-memory per-session queue,
+flushed with a late-delivery annotation once the turn ends. The queue lives
+in that hub GenServer's state, so a hub restart drops it. A batch still queued 15 minutes after its OLDEST item arrived is
+force-delivered as a real `:interrupt`, so `:queue` can wait but never
+forever. Each queued item is `%{id, text, queued_at}` (ORCAHUB3-139):
+`SessionLive.Show` lists them from `{:message_queue, items}` broadcasts on
+`"session:<id>"` and offers per-item Remove / Send now
+(`remove_queued_message/2`, `send_queued_message_now/2`, via `HubRPC`). Send
+now delivers that one item as a plain `:interrupt`, and the escalation timer
+re-arms from the new head's `queued_at`.
 
 ## Assistant Deltas (live, unpersisted)
 

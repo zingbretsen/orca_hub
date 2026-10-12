@@ -180,8 +180,15 @@ graph TB
   victim under pressure. See `.context/message-flow.md`.
 - **`OrcaHub.SessionResumer`**: auto-resumes sessions orphaned in
   `status: "running"` after a node restart or deploy.
-- **`OrcaHub.SessionHeartbeat`** (hub only): manages periodic heartbeat
-  messages sessions schedule via MCP tools.
+- **`OrcaHub.SessionHeartbeat`** (hub only): the in-memory home of every
+  "pending, flushed at turn end" delivery: periodic heartbeats sessions
+  schedule via MCP tools, job wakes (`wake_when_done`/`watch_job_ids`), and
+  the `:queue`-delivery message queue behind `send_message_to_session`,
+  triggers and worker alerts (per-item list/remove/send-now since
+  ORCAHUB3-139). None of it is persisted, so a hub restart drops pending
+  heartbeats and queued messages. Hub-only so every node's sessions share
+  one queue, reached from agents via `HubRPC`. See
+  `.context/message-flow.md`.
 - **`OrcaHub.MemoryExtractionSweep`** (hub only): a single DELAYED ONE-SHOT
   check at boot, not a repeating timer — the backstop for
   `kind: "memory_extraction"` children orphaned by a restart landing between

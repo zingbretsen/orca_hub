@@ -50,7 +50,7 @@ erDiagram
         binary_id id PK
         string directory
         string claude_session_id "CLI/native resume ID"
-        string title "auto-generated"
+        string title "agent-set (start_session/report_progress title); else first-prompt truncation at turn end"
         string status "ready|idle|running|waiting|error|compacting"
         string model
         string backend "claude|codex|pi"
