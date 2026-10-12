@@ -225,7 +225,10 @@ rendered unit and a diff against the installed one without sudo.
   Suggested: debian and `mini` `--memory-max 6G --memory-swap-max 1G`, `gb10`
   `--memory-max 32G --memory-swap-max 2G`, all `--memory-high infinity`. A
   MemoryHigh far below MemoryMax is what stalled gb10 for 11 hours on
-  2026-10-11 instead of OOM-killing the runaway.
+  2026-10-11 instead of OOM-killing the runaway. `--private-devices` is kept
+  the same way, and an installed unit with no `PrivateDevices=` line counts as
+  `no`: gb10's unit has always run without it, and `yes` would hide
+  `/dev/nvidia*` from its agents.
 - **Agent isolation** (ORCAHUB3-146): the unit has `Delegate=yes` +
   `DelegateSubgroup=beam` (systemd >= 254; debian 257, `mini` 260, `gb10` 255).
   `OrcaHub.ProcessIsolation` then runs every agent CLI in its own cgroup leaf

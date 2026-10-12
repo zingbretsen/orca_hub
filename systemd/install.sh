@@ -3,11 +3,13 @@
 # Render and install the orca-hub systemd unit. Nothing else.
 #
 # Usage: ./install.sh [--user USER] [--memory-max SIZE] [--memory-high SIZE]
-#                     [--memory-swap-max SIZE] [--dry-run]
+#                     [--memory-swap-max SIZE] [--private-devices yes|no]
+#                     [--dry-run]
 #
 # What it does:
 #   - Renders systemd/orca-hub.service.template ({{USER}}, {{HOME}},
-#     {{MEMORY_HIGH}}, {{MEMORY_MAX}}, {{MEMORY_SWAP_MAX}}) into
+#     {{MEMORY_HIGH}}, {{MEMORY_MAX}}, {{MEMORY_SWAP_MAX}},
+#     {{PRIVATE_DEVICES}}) into
 #     /etc/systemd/system/orca-hub.service as a REAL file. If the existing
 #     destination is a symlink (e.g. into a checkout), it is replaced, never
 #     written through.
@@ -27,6 +29,10 @@
 #     with GPU models) --memory-max 32G --memory-swap-max 2G. Keep
 #     --memory-high at infinity: a MemoryHigh far below MemoryMax stalls the
 #     whole service instead of OOM-killing the runaway.
+#   - Resolves PrivateDevices= the same way (--private-devices,
+#     ORCA_UNIT_PRIVATE_DEVICES, installed unit, default yes). An installed
+#     unit WITHOUT the line counts as `no`: gb10's unit has always run
+#     without it, and `yes` would hide /dev/nvidia* from its agents.
 #   - Checks systemd >= 254 (DelegateSubgroup=).
 #   - Pre-flights the env file the unit actually reads,
 #     $HOME/orca-hub-releases/.env (SECRET_KEY_BASE; DATABASE_URL unless
@@ -51,6 +57,7 @@
 #   --memory-max SIZE       Unit MemoryMax= (e.g. 6G, 32G)
 #   --memory-high SIZE      Unit MemoryHigh= (default infinity; see above)
 #   --memory-swap-max SIZE  Unit MemorySwapMax= (e.g. 1G)
+#   --private-devices B     Unit PrivateDevices= (yes|no)
 #   --dry-run               Show what would be installed; change nothing
 #   -h, --help              Show this help
 
@@ -62,6 +69,7 @@ DRY_RUN=false
 FLAG_MEMORY_HIGH=""
 FLAG_MEMORY_MAX=""
 FLAG_MEMORY_SWAP_MAX=""
+FLAG_PRIVATE_DEVICES=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -82,12 +90,16 @@ while [[ $# -gt 0 ]]; do
             FLAG_MEMORY_SWAP_MAX="$2"
             shift 2
             ;;
+        --private-devices)
+            FLAG_PRIVATE_DEVICES="$2"
+            shift 2
+            ;;
         --dry-run)
             DRY_RUN=true
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--user USER] [--memory-max SIZE] [--memory-high SIZE] [--memory-swap-max SIZE] [--dry-run]"
+            echo "Usage: $0 [--user USER] [--memory-max SIZE] [--memory-high SIZE] [--memory-swap-max SIZE] [--private-devices yes|no] [--dry-run]"
             echo ""
             echo "Render and install the orca-hub systemd unit (no build)."
             echo ""
@@ -96,10 +108,12 @@ while [[ $# -gt 0 ]]; do
             echo "  --memory-max SIZE       Unit MemoryMax= (e.g. 6G; gb10 32G)"
             echo "  --memory-high SIZE      Unit MemoryHigh= (default infinity: kill, don't stall)"
             echo "  --memory-swap-max SIZE  Unit MemorySwapMax= (e.g. 1G; gb10 2G)"
+            echo "  --private-devices B     Unit PrivateDevices= yes|no (gb10: no, for /dev/nvidia*)"
             echo "  --dry-run               Print the rendered unit and diff vs installed; change nothing"
             echo ""
-            echo "A memory value comes from its flag, else ORCA_UNIT_MEMORY_HIGH/_MAX/_SWAP_MAX,"
-            echo "else the installed unit, else the default (infinity / 6G / 1G)."
+            echo "A value comes from its flag, else ORCA_UNIT_MEMORY_HIGH/_MAX/_SWAP_MAX or"
+            echo "ORCA_UNIT_PRIVATE_DEVICES, else the installed unit, else the default"
+            echo "(infinity / 6G / 1G / yes)."
             exit 0
             ;;
         *)
@@ -242,7 +256,7 @@ resolve_size() {
 
 resolve_memory_limits() {
     echo ""
-    echo "Memory limits for the whole unit:"
+    echo "Per-host settings (memory limits cover the whole unit):"
     resolve_size MemoryHigh "$FLAG_MEMORY_HIGH" ORCA_UNIT_MEMORY_HIGH infinity
     MEMORY_HIGH="$RESOLVED"
     resolve_size MemoryMax "$FLAG_MEMORY_MAX" ORCA_UNIT_MEMORY_MAX 6G
@@ -256,6 +270,31 @@ resolve_memory_limits() {
     fi
 }
 
+# PrivateDevices=: flag, env, installed unit (no line there = systemd's
+# default, `no`), default yes.
+resolve_private_devices() {
+    local installed
+    if [[ -n "$FLAG_PRIVATE_DEVICES" ]]; then
+        PRIVATE_DEVICES="$FLAG_PRIVATE_DEVICES"; RESOLVED_FROM="flag"
+    elif [[ -n "${ORCA_UNIT_PRIVATE_DEVICES:-}" ]]; then
+        PRIVATE_DEVICES="$ORCA_UNIT_PRIVATE_DEVICES"; RESOLVED_FROM="\$ORCA_UNIT_PRIVATE_DEVICES"
+    elif [[ -e "$DEST" ]]; then
+        installed="$(installed_value PrivateDevices)"
+        if [[ -n "$installed" ]]; then
+            PRIVATE_DEVICES="$installed"; RESOLVED_FROM="installed unit"
+        else
+            PRIVATE_DEVICES="no"; RESOLVED_FROM="installed unit has none"
+        fi
+    else
+        PRIVATE_DEVICES="yes"; RESOLVED_FROM="default"
+    fi
+    case "$PRIVATE_DEVICES" in
+        yes|no|true|false) ;;
+        *) echo "Error: PrivateDevices=$PRIVATE_DEVICES (from $RESOLVED_FROM) must be yes or no." >&2; exit 1 ;;
+    esac
+    echo "  PrivateDevices: $PRIVATE_DEVICES ($RESOLVED_FROM)"
+}
+
 # Render the template.
 render() {
     sed \
@@ -264,6 +303,7 @@ render() {
         -e "s|{{MEMORY_HIGH}}|$MEMORY_HIGH|g" \
         -e "s|{{MEMORY_MAX}}|$MEMORY_MAX|g" \
         -e "s|{{MEMORY_SWAP_MAX}}|$MEMORY_SWAP_MAX|g" \
+        -e "s|{{PRIVATE_DEVICES}}|$PRIVATE_DEVICES|g" \
         "$TEMPLATE"
 }
 
@@ -273,6 +313,7 @@ echo "  Home: $HOME_DIR"
 echo "  Dest: $DEST"
 check_systemd_version
 resolve_memory_limits
+resolve_private_devices
 
 # Validate runtime env up front so a misconfigured host fails here rather than
 # in a systemd crash-loop after install.

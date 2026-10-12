@@ -57,7 +57,10 @@ DelegateSubgroup=beam
 # ReadWritePaths=...) is deferred — the app writes to ~/.claude, project
 # directories, and other paths that need careful enumeration first.
 NoNewPrivileges=yes
-PrivateDevices=yes
+# Per host (install.sh --private-devices, kept from the installed unit by
+# default). `yes` hides hardware device nodes, GPUs included, from the BEAM
+# and every agent it runs; gb10's unit has always run without it.
+PrivateDevices={{PRIVATE_DEVICES}}
 
 # DELIBERATELY NOT SET: PrivateTmp=yes (removed 2026-09-21). Do not re-add it
 # as "hardening" — it was weighed and rejected:
