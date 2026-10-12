@@ -46,7 +46,7 @@ sequenceDiagram
     Runner->>Runner: If running: interrupt + queue prompt.<br>If idle/ready/error: start_running.
     Runner->>Backend: spawn_spec(:one_shot, ctx)
     Backend-->>Runner: {executable, args, env, port_opts, framing}
-    Runner->>CLI: open_port(spawn_spec)
+    Runner->>CLI: open_port(spawn_spec)<br>(through ProcessIsolation's sh wrapper:<br>cgroup leaf or env marker, then exec)
 
     loop Framed stream (ndjson or jsonrpc, per backend)
         CLI->>Runner: Port output (raw bytes)
@@ -99,7 +99,7 @@ sequenceDiagram
         Runner->>WarmPool: request_slot(session_id, pid, backend)
         WarmPool-->>Runner: admitted (evicts LRU idle/error victim if at cap)
         Runner->>Backend: spawn_spec(:streaming, ctx)
-        Runner->>CLI: open_port(spawn_spec)
+        Runner->>CLI: open_port(spawn_spec)<br>(ProcessIsolation-wrapped, as above)
         Runner->>Backend: on_open(ctx)<br>(e.g. Codex app-server "initialize" handshake)
         opt capabilities.warmup_turn
             Runner->>CLI: throwaway warmup turn

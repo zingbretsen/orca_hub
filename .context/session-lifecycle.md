@@ -40,8 +40,9 @@ stateDiagram-v2
         Streaming engine only: entering idle/error with a live
         port arms a 15-minute idle_teardown state_timeout.
         On fire (or on-demand evict_warm from WarmPool under
-        capacity pressure), the port is closed and its WarmPool
-        slot released — session stays idle/error but goes cold.
+        capacity pressure), the port is closed, the CLI's whole
+        process tree reaped, and its WarmPool slot released —
+        session stays idle/error but goes cold.
         Next message re-opens the port with --resume / a native
         resume id.
     end note
@@ -77,6 +78,25 @@ stateDiagram-v2
   still-pending dialog at turn end, on port exit, on pi's own dialog
   timeout, and in an init sweep after a runner restart, so an orphaned
   dialog can't strand a session in `waiting`.
+- **A port's end is its whole process tree's end (ORCAHUB3-146).** Every
+  agent CLI is spawned through `SessionRunner.open_backend_port/3`, which
+  hands the spec to `OrcaHub.ProcessIsolation`: a `/bin/sh` wrapper that
+  raises the CLI's `oom_score_adj` to 500, joins a per-spawn cgroup leaf
+  where the unit delegates one, and `exec`s the CLI (so the port's os_pid,
+  and SIGINT interrupts, are still the CLI's). The spawn rides in
+  `data.spawn` and goes to `ProcessIsolation.release/2` wherever the port
+  goes away: `teardown_port/1` (idle teardown, `evict_warm`, rebake,
+  kill-switch downgrade, backend switch, turn-error teardown), a one-shot or
+  streaming port exit (no grace), and `terminate/3`. `stop_session`/archive
+  kill the runner without `terminate/3` (it doesn't trap exits), so
+  ProcessIsolation also monitors every runner that prepared a spawn and
+  reaps on `:DOWN`. The reap is a cast: after a grace (3 s) it SIGKILLs the
+  leaf (`cgroup.kill`) and every process still carrying the spawn's
+  `ORCA_AGENT_SPAWN_ID`, then removes the leaf. Ids are per spawn, never
+  per session, so reaping an interrupted one-shot CLI can't touch its
+  replacement. A warm CLI's `run_in_background` work survives between
+  turns and dies with the port. start_job jobs, terminals and setup
+  scripts are spawned by the BEAM, carry no marker, and are never touched.
 - **`downgrade`**: the runtime kill switch (`Streaming.disable!/1`) forcing a
   warm streaming session back to the one-shot engine — `:graceful` finishes
   the in-flight turn first, `:interrupt` cuts it short immediately.

@@ -28,6 +28,7 @@ graph TB
         ViewersRegistry["SessionViewersRegistry\n(:duplicate)"]
         JobRegistry["JobRegistry\n(:unique)"]
         BackendInstallerRegistry["BackendInstallerRegistry\n(:unique)"]
+        ProcessIsolationRegistry["ProcessIsolation.Registry\n(:unique)"]
         EmailInboxRegistry["EmailInboxRegistry\n(:unique, hub only)"]
     end
     App --> Registries
@@ -40,6 +41,7 @@ graph TB
     App --> SessionSearchIndexer["OrcaHub.SessionSearch.Indexer\n(hub only)"]
     App --> IndexTaskSup["Issues.Indexer\nIndexTaskSupervisor\n(capped, hub only)"]
     App --> PiModelSync["OrcaHub.PiModelSync\n(hub only)"]
+    App --> ProcessIsolation["OrcaHub.ProcessIsolation"]
     App --> WarmPool["OrcaHub.Streaming.WarmPool"]
     App --> SessionSupervisor["OrcaHub.SessionSupervisor\n(DynamicSupervisor)"]
     App --> SessionResumer["OrcaHub.SessionResumer"]
@@ -96,7 +98,7 @@ Agent nodes omit `Telemetry`, `Repo`, `MCP.UpstreamClient`, `Scheduler`,
 `SessionSearch.Indexer`, `Issues.IndexSweep` (and the capped `Issues.Indexer` task supervisor),
 `PiModelSync`,
 `ClusterNodeTracker`, `Cluster.CodePush`, `NodeDialer`, and the `EmailInbox*` children. All database operations are
-proxied to the hub node via `HubRPC`. Everything else — including `Streaming.WarmPool`,
+proxied to the hub node via `HubRPC`. Everything else — including `ProcessIsolation`, `Streaming.WarmPool`,
 `ForkGate`, `TerminalSupervisor`, `JobSupervisor`/`JobResumer`,
 `LoginSupervisor`, `SkillSync`/`PiConfigSync`/`MemoryGit.Server`, and the
 `BackendInstaller*`/`MCP.CodeExec.*` children — runs on agent nodes too,
@@ -119,11 +121,13 @@ graph TB
         ViewersRegistry["SessionViewersRegistry\n(:duplicate)"]
         JobRegistry["JobRegistry\n(:unique)"]
         BackendInstallerRegistry["BackendInstallerRegistry\n(:unique)"]
+        ProcessIsolationRegistry["ProcessIsolation.Registry\n(:unique)"]
     end
     App --> Registries
 
     App --> BackendCache["OrcaHub.Backend.Cache"]
     App --> TaskSupervisor["Task.Supervisor"]
+    App --> ProcessIsolation["OrcaHub.ProcessIsolation"]
     App --> WarmPool["OrcaHub.Streaming.WarmPool"]
     App --> SessionSupervisor["OrcaHub.SessionSupervisor\n(DynamicSupervisor)"]
     App --> SessionResumer["OrcaHub.SessionResumer"]
@@ -155,6 +159,21 @@ graph TB
 
 ## Key Modules Added Since the Original One-Shot-Only Design
 
+- **`OrcaHub.ProcessIsolation`** (+ `ProcessIsolation.Registry`), node-local
+  on hub and agent: every agent CLI spawn's process tree, limited and killed
+  as a unit (ORCAHUB3-145/146). At boot it decides once per node: if the
+  BEAM runs in a delegated `beam` subgroup (systemd `Delegate=yes` +
+  `DelegateSubgroup=beam`), each spawn gets its own cgroup leaf under a
+  sibling `agents/` with memory.max / memory.swap.max / pids.max
+  (`ORCA_AGENT*_` env, `ProcessIsolation.Limits`), and teardown is
+  `cgroup.kill`; otherwise (k3s pods, units not yet reinstalled, `bin/test`)
+  teardown kills every process that inherited the spawn's
+  `ORCA_AGENT_SPAWN_ID`, with no limits. Starts before `SessionSupervisor`
+  so runners can register spawns at port-open and so it outlives them at
+  shutdown. Runners never wait on it: `release/2` is a cast, and it
+  monitors every runner that prepared a spawn, because `stop_session`
+  kills runners without `terminate/3`. A 60 s sweep (cgroup mode) kills and
+  removes leaves no live runner owns. See `.context/session-lifecycle.md`.
 - **`OrcaHub.Streaming.WarmPool`**: GenServer admission control for
   long-lived ("warm") streaming ports — caps concurrent warm processes per
   node (`ORCA_MAX_WARM_SESSIONS`, default 6) and evicts the LRU idle/error
@@ -245,7 +264,9 @@ graph TB
   supervision children: `Jobs.Launcher` starts them with `setsid` in their own
   process group, stdout/stderr to a durable log and the exit code to a
   sentinel file, so they survive idle teardown, WarmPool eviction, and OrcaHub
-  restarts entirely. The BEAM only ever OBSERVES one, via a disposable
+  restarts entirely. Session teardown's process-tree reap never reaches them
+  either: the BEAM launches them, so they carry no `ORCA_AGENT_SPAWN_ID` and
+  live in the BEAM's own cgroup, not an agent leaf. The BEAM only ever OBSERVES one, via a disposable
   `JobWatcher` polling the sentinel/pid/declared progress metric.
   `JobResumer` re-attaches watchers to this node's non-terminal jobs on boot —
   the job-subsystem analog of `SessionResumer`.

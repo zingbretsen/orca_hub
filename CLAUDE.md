@@ -209,6 +209,38 @@ restarting the service by hand from inside a session rather than via the script.
 `mini` and `gb10` need the identical NOPASSWD scope (same drop-in content) so the
 deploy script can restart them non-interactively over ssh too.
 
+### The systemd unit itself: `systemd/install.sh` (not the deploy script)
+
+The deploy script installs releases and `.env` files, never the unit. The unit
+is rendered from `systemd/orca-hub.service.template` by `systemd/install.sh`,
+run by hand ON each host (local, `mini`, `gb10`) with interactive sudo, since
+the NOPASSWD rule covers only start/stop/status/restart. It renders, runs
+`daemon-reload`, and never restarts; the new unit takes effect at the next
+`systemctl restart orca-hub` (or the next deploy). `--dry-run` prints the
+rendered unit and a diff against the installed one without sudo.
+
+- **Per-host memory limits** (ORCAHUB3-145): `--memory-max`, `--memory-high`
+  and `--memory-swap-max` (or `ORCA_UNIT_MEMORY_*`). With no flag a value is
+  kept from the installed unit, so a reinstall never reverts a host's tuning.
+  Suggested: debian and `mini` `--memory-max 6G --memory-swap-max 1G`, `gb10`
+  `--memory-max 32G --memory-swap-max 2G`, all `--memory-high infinity`. A
+  MemoryHigh far below MemoryMax is what stalled gb10 for 11 hours on
+  2026-10-11 instead of OOM-killing the runaway.
+- **Agent isolation** (ORCAHUB3-146): the unit has `Delegate=yes` +
+  `DelegateSubgroup=beam` (systemd >= 254; debian 257, `mini` 260, `gb10` 255).
+  `OrcaHub.ProcessIsolation` then runs every agent CLI in its own cgroup leaf
+  with per-spawn limits (`ORCA_AGENT*_` in the host's `.env`, see
+  `config/runtime.exs`) and `cgroup.kill`s it on teardown. Until a host's unit
+  is reinstalled, the same code falls back to killing agent trees by env
+  marker, with no limits. `journalctl -u orca-hub | grep process_isolation`
+  shows which mode a node booted in.
+- **debian's `/etc/systemd/system/orca-hub.service` is a symlink** into this
+  checkout: `systemd/orca-hub.service`, a gitignored file an older
+  `install.sh` rendered here. Editing it on debian changes debian's live unit
+  at the next daemon-reload. It is frozen at its pre-delegation content;
+  `install.sh` replaces the symlink with a real file, after which the
+  checkout's copy should be deleted.
+
 ### k3s reference
 
 - Deployment manifests live in `~/homelab/k3s/apps/orca-hub.yaml`, NOT in `k8s/` (which is a generic/standalone reference)

@@ -12,7 +12,7 @@ disk; `Read` on demand.
   files/artifacts, Discord/email bridges.
 - `.context/session-lifecycle.md` — SessionRunner GenStatem states
   (`ready/idle/running/error`; `waiting`/`compacting` overlaid), idle
-  teardown, evict_warm, kill-switch downgrade, rebake on flag change.
+  teardown, evict_warm, kill-switch downgrade, rebake, process-tree reap.
 - `.context/message-flow.md` — engine resolution (kill switch > session
   column > node env > streaming), one-shot vs streaming sequences, backend
   spawn/normalize call order, interrupt/steer/queue semantics.
