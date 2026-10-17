@@ -479,6 +479,38 @@ WebSocket path, open a raw `:gen_tcp` connection to `/live/websocket?vsn=2.0.0`
 with the `Upgrade: websocket` / `Sec-WebSocket-Key` headers and assert
 `101 Switching Protocols`.
 
+Bandit releases keep adding RFC-conformance REJECTIONS (1.13 alone added Host
+enforcement on HTTP/1.1 targets, WebSocket client-key validation, control bytes
+rejected in request targets, full HTTP/2 field validation). None of it is
+visible to the suite, so pair the happy path with negative probes over a raw
+socket — each should 400 while its legitimate twin still succeeds:
+
+```
+GET /healthz HTTP/1.1  with no Host header        -> 400   (with Host -> 200)
+GET /heal<0x01>thz     control byte in target     -> 400
+GET http://ev|il^host/healthz  bad absolute-form  -> 400   (valid authority -> 200)
+WebSocket upgrade with a malformed key            -> 400   (valid key -> 101)
+```
+
+Also fetch a 404 route: that runs `Phoenix.Endpoint.RenderErrors`, which is
+exactly what bandit 1.13.0's stale-conn check broke, so it is the cheapest
+regression check for this class of change.
+
+Worth knowing for any future host-header advisory: every URL we generate
+(notify deep links, webhook URLs, the A2A agent card, signed artifact
+capability URLs in `artifact_url.ex`) comes from `OrcaHubWeb.Endpoint.url()`,
+which resolves from the static `url: [host: ...]` config (PHX_HOST) — never
+from `conn.host`. And Bandit never negotiates HTTP/2 for us: the endpoint is
+`http:`-only, so there is no TLS and no ALPN, and TLS terminates at Traefik.
+
+**When a security fix lands in x.y.0, check whether x.y.1 exists before taking
+it.** bandit 1.13.0 carried the fixes for a HIGH and a MEDIUM, and also added a
+stale-conn check that broke valid Phoenix paths — `Plug.Parsers` errors
+rendered through `RenderErrors` (elixir-plug/plug#1331). 1.13.1, released the
+same day, reverts it. Taking the advisory's named "fixed version" literally
+would have traded a DoS for broken error pages. A point release hard on the
+heels of a security release is frequently a revert; read its changelog first.
+
 **OPEN SECURITY ITEM — earmark is retired and unfixable (found 2026-09-11).**
 `mix hex.audit` flags `earmark` 1.4.49 as RETIRED ("no longer maintained,
 migrate to MDEx") and VULNERABLE — EEF-CVE-2026-48591, stored XSS via
@@ -520,10 +552,10 @@ agent output is allowed to render, which is a product decision rather than a
 dependency bump. Do not silently "upgrade past" this item on a future run;
 there is nothing to upgrade to.
 
-**Still deferred, re-checked 2026-10-09: phoenix_live_view 1.1 -> 1.2**
-(1.1.33 vs 1.2.12, unmoved for four weeks; raised with the user 2026-08-14,
-08-21, 08-28, 09-11, 09-18, 09-25 and 10-02, still not decided — do not keep
-re-deriving the analysis below, just re-raise it). Everything else is current. 1.2 needs `mix.exs`
+**Still deferred, re-checked 2026-10-16: phoenix_live_view 1.1 -> 1.2**
+(1.1.33 vs 1.2.12, unmoved for five weeks; raised with the user 2026-08-14,
+08-21, 08-28, 09-11, 09-18, 09-25, 10-02 and 10-09, still not decided — do not
+keep re-deriving the analysis below, just re-raise it). Everything else is current. 1.2 needs `mix.exs`
 `~> 1.1.0` -> `~> 1.2` and carries real breaking changes: the
 `Phoenix.Component` global-attribute list was realigned to MDN and the removed
 attributes are NOT enumerated in the changelog (fix per-site with
