@@ -593,8 +593,9 @@ graph TB
   client for the external agent-memory service, reached from any node via
   new `HubRPC.memory_*` wrappers (same pattern as `OrcaHub.Notify`/
   `OrcaHub.Files`). Backs the `remember`/`recall`/`update_memory`/
-  `retire_memory`/`verify_memory`/`merge_memories`/`list_memories` MCP
-  tools (`OrcaHub.MCP.Tools.Memory`), visible to every session.
+  `retire_memory`/`verify_memory`/`verify_memories`/`merge_memories`/
+  `flag_memory`/`find_duplicate_memories`/`list_memories` MCP tools
+  (`OrcaHub.MCP.Tools.Memory`), visible to every session.
   `context_block/3` sits on the session-spawn path and always resolves to
   `{:ok, block_or_nil}` — a memory-service outage never blocks a spawn. The
   injection seam itself is per-backend: `maybe_prepend_memory/3` in

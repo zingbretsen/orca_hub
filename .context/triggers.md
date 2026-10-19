@@ -22,7 +22,7 @@ flowchart TB
         Create["Create new session\n(triggered: true, trigger_id)"]
         Update["Update trigger\nlast_fired_at, last_session_id\n(execute/1: + run_count, last-fire disable)"]
         StartCheck{"session_alive?"}
-        Start["SessionSupervisor.start_session"]
+        Start["Cluster.start_session\n(SessionSupervisor on the runner node)"]
         Setup["SetupScript.run on the runner node\n(via Cluster.rpc, output prepended)"]
         Send["Cluster.send_message(.., :queue)\n(trigger prompt + payload)"]
     end

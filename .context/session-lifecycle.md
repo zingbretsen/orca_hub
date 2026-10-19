@@ -4,9 +4,10 @@ SessionRunner is a GenStatem (`callback_mode: :state_functions`) with 4
 states: `ready`, `idle`, `running`, `error`. `"waiting"` and `"compacting"`
 are **not** separate GenStatem states — they're persisted `status` strings /
 broadcasts overlaid on `idle`/`running` (see notes below). Which engine
-drives a turn (one-shot vs streaming) is decided per-message by
-`resolve_engine/1` — see `.context/message-flow.md` — but both engines land
-on the same four states below.
+drives a turn (one-shot vs streaming) is decided once at runner init by
+`resolve_engine/1` and changed afterwards only by the runtime kill switch
+(see `.context/message-flow.md`), but both engines land on the same four
+states below.
 
 ```mermaid
 stateDiagram-v2

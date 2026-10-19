@@ -1,8 +1,9 @@
 # Message Flow
 
 `SessionRunner` supports two engines for driving the agent CLI. Which one a
-session uses is resolved fresh on every `send_message` (`resolve_engine/1`),
-in this precedence order:
+session uses is resolved ONCE, at runner init (`resolve_engine/1`, cached in
+`data.engine`; every `send_message` clause just pattern-matches on it), in
+this precedence order:
 
 1. **Runtime kill switch engaged** (`OrcaHub.Streaming.kill_engaged?/0`, a
    `:persistent_term` flag toggled per-node via `Streaming.disable!/1`) →
@@ -14,9 +15,18 @@ in this precedence order:
    `:one_shot` when the column is unset (`nil`).
 4. Otherwise → **`:streaming`** (the default).
 
-The same resolution function backs a `:reresolve_engine` cast so a live
-kill-switch toggle can re-decide already-running sessions without opening a
-new port. CLI spawn args, stdin encoding, and event normalization are all
+After init only the runtime kill switch moves it, through two messages
+`OrcaHub.Streaming` fans out to every live runner on the node.
+`disable!/1` sends a `{:downgrade, mode}` call that flips the runner to
+`:one_shot`: a warm idle port closes now, and a runner mid-turn converts
+when that turn's result lands (`:interrupt` cuts the turn short,
+`:graceful` lets it finish). `enable!/0` sends a `:reresolve_engine` cast
+that re-runs the same precedence from the `streaming` value cached at init,
+lazily, with no port opened. A changed `streaming` column or
+`ORCA_DISABLE_STREAMING` therefore reaches a live runner only when it next
+starts (a restart, or a stopped session started again).
+
+CLI spawn args, stdin encoding, and event normalization are all
 delegated to the session's `data.backend` adapter (`claude.ex` / `codex.ex` /
 `pi.ex`, implementing the `OrcaHub.Backend` behaviour) — `SessionRunner`
 itself contains no CLI-specific logic.
@@ -44,7 +54,7 @@ sequenceDiagram
     User->>LiveView: Type message + send
     LiveView->>LiveView: Handle uploads<br>(files saved to session directory)
     LiveView->>Runner: send_message(prompt)
-    Runner->>Runner: resolve_engine(session) == :one_shot
+    Runner->>Runner: data.engine == :one_shot<br>(resolved at init)
     Runner->>Runner: If running: interrupt + queue prompt.<br>If idle/ready/error: start_running.
     Runner->>Backend: spawn_spec(:one_shot, ctx)
     Backend-->>Runner: {executable, args, env, port_opts, framing}
@@ -95,7 +105,7 @@ sequenceDiagram
 
     User->>LiveView: Type message + send
     LiveView->>Runner: send_message(prompt)
-    Runner->>Runner: resolve_engine(session) == :streaming
+    Runner->>Runner: data.engine == :streaming<br>(resolved at init)
 
     alt Port cold (no warm process yet)
         Runner->>WarmPool: request_slot(session_id, pid, backend)
