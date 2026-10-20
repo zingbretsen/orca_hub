@@ -13,7 +13,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     TreeComponents
   }
 
-  alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Todos}
+  alias OrcaHubWeb.SessionLive.{MarkdownBlocks, PlanMode, Sidebar, Todos}
   alias OrcaHub.Voice.Dictation
 
   import OrcaHubWeb.AskUserQuestionComponent
@@ -1112,10 +1112,12 @@ defmodule OrcaHubWeb.SessionLive.Show do
   defp handle_context_stats_events(socket, _event), do: socket
 
   # Color thresholds for the header context meter (spec §12.8): normal below
-  # 60%, warning 60-84%, error 85%+.
-  defp context_meter_color(pct) when pct >= 85, do: "progress-error"
-  defp context_meter_color(pct) when pct >= 60, do: "progress-warning"
-  defp context_meter_color(_pct), do: "progress-primary"
+  # 60%, warning 60-84%, error 85%+. Public for SessionLive.Sidebar's copy
+  # of the meter.
+  @doc false
+  def context_meter_color(pct) when pct >= 85, do: "progress-error"
+  def context_meter_color(pct) when pct >= 60, do: "progress-warning"
+  def context_meter_color(_pct), do: "progress-primary"
 
   # -- Parentage helpers (ORCAHUB3-50) --
 
@@ -3754,16 +3756,6 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   # -- Commit helpers --
-
-  defp format_commit_date(iso_date) do
-    case DateTime.from_iso8601(iso_date) do
-      {:ok, dt, _} ->
-        Calendar.strftime(dt, "%b %d, %H:%M")
-
-      _ ->
-        iso_date
-    end
-  end
 
   # Fetched asynchronously, never inline: `Sessions.list_session_commits/2`
   # shells out to `git log --all --grep=...`, which is fast in most repos and

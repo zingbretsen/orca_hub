@@ -115,6 +115,17 @@
   }
 }
 
+/* The session page's `lg:` sidebar collapsed to its rail
+   (OrcaHubWeb.SessionLive.Sidebar). The aside says which preference applies
+   (`data-sidebar-context`: "panel" while a file or terminal panel shares the
+   row, else "chat"). <html> carries the user's toggles, applied before first
+   paint from localStorage by root.html.heex, so no patch or live navigation
+   can reset them. Beside the feed alone the sidebar is open unless
+   `data-session-sidebar="collapsed"`. Beside a panel it is a rail unless
+   `data-session-sidebar-panel="expanded"`, because three columns don't fit
+   at 1280px. */
+@custom-variant sidebar-collapsed (&:where(html[data-session-sidebar="collapsed"] [data-sidebar-context="chat"] *, html:not([data-session-sidebar-panel="expanded"]) [data-sidebar-context="panel"] *));
+
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
@@ -345,8 +356,8 @@
    on screen, chosen by state (assets/js/voice_view.js). Most of it is
    `voice-view:` utilities in the templates; this block is the part that is
    not expressible as one: the per-STATE variants, and descendant rules for
-   markup this page does not own the classes of (the shared <.header>, the
-   feed's message bubbles, the Autocomplete textarea).
+   markup this page does not own the classes of (the feed's message bubbles,
+   the Autocomplete textarea).
 
    Which single message shows is NOT here: the VoiceView hook generates that
    rule into a <style> in <head>, keyed on the current message's id
@@ -390,12 +401,8 @@
 }
 
 @media (max-width: 767px) {
-  /* The page header (title, badges, every action). CoreComponents.header/1
-     takes no class, and it renders a bare <header> straight under the page
-     root, so it is hidden from here rather than by wrapping 900 lines. */
-  html[data-voice-view][data-voice-layout] #drop-target > header {
-    display: none;
-  }
+  /* The page header (title, badges, every action) is hidden by a plain
+     `voice-view:hidden` on the <.header> in show.html.heex. */
 
   /* The feed IS the screen: no card around it. */
   html[data-voice-view][data-voice-layout] #message-feed {

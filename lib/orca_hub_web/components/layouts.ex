@@ -168,13 +168,25 @@ defmodule OrcaHubWeb.Layouts do
       <%!-- ORCAHUB3-113: the page padding is 48px of height the phone voice
            view (one message, the rail, the big buttons) cannot spare, so it
            shrinks to 8px there. `voice-view:` only matches a page that draws a
-           voice layout, so every other page keeps its padding. --%>
-      <main class="@container flex-1 min-h-0 overflow-y-auto px-4 py-6 sm:px-6 sm:py-10 lg:px-8 voice-view:px-2 voice-view:py-2">
+           voice layout, so every other page keeps its padding.
+
+           A `full_height` page (SessionLive.Show, the only one) also sheds
+           most of its vertical padding at `lg:`, where its sidebar holds the
+           chrome and the feed is meant to fill the window. --%>
+      <main class={[
+        "@container flex-1 min-h-0 overflow-y-auto px-4 py-6 sm:px-6 sm:py-10 lg:px-8 voice-view:px-2 voice-view:py-2",
+        assigns[:full_height] && "lg:py-3"
+      ]}>
         <%!-- `full_height` is an optional assign a LiveView sets when its own
              root wants to fill the shell exactly (h-full). It's opt-in because
              a definite height also caps `position: sticky` ranges for pages
-             that are taller than the viewport (e.g. /queue's sticky footer). --%>
-        <div class={["mx-auto max-w-5xl space-y-4", assigns[:full_height] && "h-full"]}>
+             that are taller than the viewport (e.g. /queue's sticky footer).
+             At `lg:` it also lifts the max-w-5xl cap: the session page lays
+             its sidebar and feed out across the whole window. --%>
+        <div class={[
+          "mx-auto max-w-5xl space-y-4",
+          assigns[:full_height] && "h-full lg:max-w-none"
+        ]}>
           {@inner_content}
         </div>
       </main>

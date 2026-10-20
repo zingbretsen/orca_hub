@@ -308,6 +308,7 @@ defmodule OrcaHubWeb.CoreComponents do
   @doc """
   Renders a header with title.
   """
+  attr :class, :any, default: nil, doc: "extra classes for the <header>, e.g. to hide it"
   slot :inner_block, required: true
   slot :subtitle
   slot :actions
@@ -316,7 +317,8 @@ defmodule OrcaHubWeb.CoreComponents do
     ~H"""
     <header class={[
       @actions != [] && "flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-6",
-      "pb-2 sm:pb-4"
+      "pb-2 sm:pb-4",
+      @class
     ]}>
       <div class="min-w-0">
         <h1 class="text-lg font-semibold leading-8">

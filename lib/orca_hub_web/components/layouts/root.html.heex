@@ -67,6 +67,34 @@
         window.addEventListener("phx:set-theme", (e) => setTheme(e.target.dataset.phxTheme));
       })();
     </script>
+    <script>
+      // The session page's `lg:` sidebar (SessionLive.Sidebar), collapsed or
+      // not. Same shape as the theme above: an attribute on <html>, outside
+      // every LiveView root, applied here before first paint so a collapsed
+      // sidebar never flashes open. Each state stores only its non-default
+      // value (the `sidebar-collapsed:` variant in app.css reads both).
+      (() => {
+        const states = {
+          chat: { key: "orca:session-sidebar", attr: "data-session-sidebar", value: "collapsed" },
+          panel: { key: "orca:session-sidebar-panel", attr: "data-session-sidebar-panel", value: "expanded" },
+        };
+        const root = document.documentElement;
+        const apply = (s, v) => (v === s.value ? root.setAttribute(s.attr, v) : root.removeAttribute(s.attr));
+        for (const s of Object.values(states)) apply(s, localStorage.getItem(s.key));
+        window.addEventListener("storage", (e) => {
+          for (const s of Object.values(states)) if (e.key === s.key) apply(s, e.newValue);
+        });
+        // Dispatched by the sidebar's collapse/expand buttons. Their aside's
+        // `data-sidebar-context` says which of the two states they flip.
+        window.addEventListener("orca:session-sidebar-toggle", (e) => {
+          const ctx = e.target.closest && e.target.closest("[data-sidebar-context]");
+          const s = states[ctx && ctx.dataset.sidebarContext] || states.chat;
+          const next = root.getAttribute(s.attr) === s.value ? null : s.value;
+          apply(s, next);
+          next ? localStorage.setItem(s.key, next) : localStorage.removeItem(s.key);
+        });
+      })();
+    </script>
   </head>
   <body>
     {@inner_content}

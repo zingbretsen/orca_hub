@@ -417,7 +417,15 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
         doc |> Floki.find("button[title='Artifacts'] .badge") |> Floki.text() |> String.trim()
 
       assert badge_count == "1"
-      assert doc |> Floki.find("button[phx-click='open_session_artifact']") |> length() == 1
+
+      # One row in each copy of the list: the panel stacked above the feed
+      # (below `lg:`) and the desktop sidebar's Artifacts section.
+      for scope <- ["#artifacts-panel", "#sidebar-artifacts-panel"] do
+        assert doc |> Floki.find("#{scope} button[phx-click='open_session_artifact']") |> length() ==
+                 1
+      end
+
+      assert doc |> Floki.find("button[phx-click='open_session_artifact']") |> length() == 2
     end
   end
 

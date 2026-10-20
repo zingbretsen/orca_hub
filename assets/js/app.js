@@ -2555,6 +2555,16 @@ window.addEventListener("click", (e) => {
   }
 }, true)
 
+// The session sidebar's pickers are inline <details> menus, not dropdowns (a
+// dropdown would be clipped by the sidebar's scroll box). Choosing an option
+// closes its menu, like data-close-dropdown-parent above. Removing `open` here
+// is a plain DOM change, so it can't fight the <details> preservation in
+// LiveSocket's onBeforeElUpdated the way a sticky JS command would.
+window.addEventListener("click", (e) => {
+  const option = e.target.closest("[data-close-details]")
+  if (option) option.closest("details")?.removeAttribute("open")
+})
+
 // On LiveView patch, close any flagged dropdown by blurring focused button and trigger.
 window.addEventListener("phx:update", () => {
   if (window.__closeDropdown) {

@@ -827,6 +827,12 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       for {value, _label} <- OrcaHub.Backend.available() do
         assert has_element?(view, "button[phx-click='set_backend'][phx-value-backend='#{value}']")
+
+        # The desktop sidebar's inline picker (SessionLive.Sidebar) lists it too.
+        assert has_element?(
+                 view,
+                 "#sidebar-agent-picker button[phx-click='set_backend'][phx-value-backend='#{value}']"
+               )
       end
     end
 
@@ -840,7 +846,9 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
       view
-      |> element("button[phx-click='set_backend'][phx-value-backend='codex']")
+      |> element(
+        "#sidebar-agent-picker button[phx-click='set_backend'][phx-value-backend='codex']"
+      )
       |> render_click()
 
       updated = Sessions.get_session!(session.id)
@@ -858,7 +866,9 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       html =
         view
-        |> element("button[phx-click='set_backend'][phx-value-backend='codex']")
+        |> element(
+          "#sidebar-agent-picker button[phx-click='set_backend'][phx-value-backend='codex']"
+        )
         |> render_click()
 
       refute :sys.get_state(view.pid).socket.assigns.capabilities.plan_mode
@@ -870,7 +880,9 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
       view
-      |> element("button[phx-click='set_backend'][phx-value-backend='claude']")
+      |> element(
+        "#sidebar-agent-picker button[phx-click='set_backend'][phx-value-backend='claude']"
+      )
       |> render_click()
 
       assert Sessions.get_session!(session.id).backend == "claude"
