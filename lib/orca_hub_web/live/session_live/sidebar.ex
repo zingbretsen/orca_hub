@@ -73,7 +73,7 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
   # `data-sidebar-context`, see the moduledoc.
   attr :side_panel_open, :boolean, required: true
   # The rail's open flyout (Show's "rail_flyout" event): nil or one of
-  # :tasks, :commits, :artifacts, :memories, :tool_policy, :archive.
+  # :tasks, :commits, :artifacts, :memories, :tool_policy.
   attr :rail_flyout, :atom, default: nil
 
   def sidebar(assigns) do
@@ -126,6 +126,8 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
         </div>
 
         <.title_block session={@session} status={@status} editing_title={@editing_title} />
+
+        <.archive_control session={@session} />
 
         <.meta
           session={@session}
@@ -245,11 +247,15 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
         />
 
         <%!-- `mt-auto` pins it to the bottom of a short sidebar; a tall one
-        just scrolls down to it. --%>
-        <div class="mt-auto flex flex-col">
+        just scrolls down to it. Only Stop lives here now: Archive moved up
+        to archive_control/1. --%>
+        <div
+          :if={@status in [:running, :waiting, :compacting] && !@session.archived_at}
+          class="mt-auto flex flex-col"
+        >
           <.heading>Danger zone</.heading>
           <ul class="menu menu-sm w-full p-0">
-            <li :if={@status in [:running, :waiting, :compacting] && !@session.archived_at}>
+            <li>
               <button
                 type="button"
                 phx-click="stop_session"
@@ -259,28 +265,6 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
                 <.icon name="hero-stop-circle" class="size-4" /> Stop session
               </button>
             </li>
-            <li :if={@session.archived_at}>
-              <button type="button" phx-click="unarchive">
-                <.icon name="hero-archive-box-arrow-down" class="size-4" /> Unarchive session
-              </button>
-            </li>
-            <%!-- A submenu, so archiving stays two clicks as it is in the
-            header's dropdown. --%>
-            <li :if={!@session.archived_at}>
-              <details id="sidebar-archive-menu">
-                <summary><.icon name="hero-archive-box" class="size-4" /> Archive</summary>
-                <ul>
-                  <li>
-                    <button type="button" phx-click="archive">Archive</button>
-                  </li>
-                  <li>
-                    <button type="button" phx-click="archive_without_extracting">
-                      Archive without extracting memories
-                    </button>
-                  </li>
-                </ul>
-              </details>
-            </li>
           </ul>
         </div>
       </div>
@@ -288,10 +272,67 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
     """
   end
 
+  # Archiving a finished session is the most frequent thing done on this
+  # page, so it is a real button under the title rather than a menu row at
+  # the bottom. One click archives, with memory extraction on as everywhere
+  # else, and the caret offers the variant without it. It is reversible
+  # (Unarchive here, Undo on the sessions page it navigates to), so there is
+  # no confirm. An archived session shows Unarchive in the same slot.
+  attr :session, :map, required: true
+
+  defp archive_control(assigns) do
+    ~H"""
+    <button
+      :if={@session.archived_at}
+      type="button"
+      id="sidebar-unarchive"
+      phx-click="unarchive"
+      class="btn btn-sm btn-soft btn-primary w-full"
+    >
+      <.icon name="hero-archive-box-arrow-down" class="size-4" /> Unarchive
+    </button>
+    <div :if={!@session.archived_at} id="sidebar-archive" class="flex w-full">
+      <button
+        type="button"
+        phx-click="archive"
+        class="btn btn-sm btn-soft btn-primary flex-1 rounded-r-none"
+      >
+        <.icon name="hero-archive-box" class="size-4" /> Archive
+      </button>
+      <%!-- A real dropdown, unlike the inline pickers further down: it opens
+      just below the top of the column and is narrower than it, so the
+      sidebar's scroll box has nothing to clip. --%>
+      <div class="dropdown dropdown-end">
+        <div
+          tabindex="0"
+          role="button"
+          class="btn btn-sm btn-soft btn-primary rounded-l-none border-l border-l-primary/25 px-2"
+          title="More archive options"
+          aria-label="More archive options"
+        >
+          <.icon name="hero-chevron-down-micro" class="size-4" />
+        </div>
+        <ul
+          tabindex="0"
+          class="dropdown-content menu menu-sm z-10 mt-1 w-60 rounded-box bg-base-200 p-1 shadow-lg"
+        >
+          <li>
+            <button type="button" phx-click="archive_without_extracting">
+              <.icon name="hero-archive-box-x-mark" class="size-4" />
+              Archive without extracting memories
+            </button>
+          </li>
+        </ul>
+      </div>
+    </div>
+    """
+  end
+
   # The collapsed sidebar: icon buttons for the everyday chrome, top to
-  # bottom: navigation and status, the panels, the tools, and stop/archive
-  # pinned to the bottom. The rarely used settings (orchestrator, memory
-  # extraction, attach/detach, copy, model) stay in the expanded sidebar.
+  # bottom: navigation and status, Archive (or Unarchive), the panels, the
+  # tools, and Stop pinned to the bottom. The rarely used settings
+  # (orchestrator, memory extraction, attach/detach, copy, model, archiving
+  # without extraction) stay in the expanded sidebar.
   #
   # A panel icon opens a flyout beside the rail rather than expanding the
   # sidebar, because the rail is the default beside an open file panel,
@@ -349,6 +390,27 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
         </span>
         <.session_step to={@prev_session_id} dir={:prev} />
         <.session_step to={@next_session_id} dir={:next} />
+
+        <%!-- One click, like the expanded sidebar's main Archive button (see
+        archive_control/1), and set apart from the ghost icons around it. --%>
+        <.rail_button
+          :if={!@session.archived_at}
+          id="rail-archive"
+          icon="hero-archive-box"
+          label="Archive"
+          prominent
+          class="my-1"
+          phx-click="archive"
+        />
+        <.rail_button
+          :if={@session.archived_at}
+          id="rail-unarchive"
+          icon="hero-archive-box-arrow-down"
+          label="Unarchive"
+          prominent
+          class="my-1"
+          phx-click="unarchive"
+        />
 
         <%!-- Panels: the same `:if`s as the expanded sections. --%>
         <.rail_divider :if={
@@ -453,34 +515,19 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
         />
 
         <%!-- Pinned to the bottom of a tall window; a short one scrolls down
-        to them like everything else. --%>
-        <div class="mt-auto flex flex-col items-center gap-1 pt-1">
+        to it like everything else. --%>
+        <div
+          :if={@status in [:running, :waiting, :compacting] && !@session.archived_at}
+          class="mt-auto flex flex-col items-center gap-1 pt-1"
+        >
           <.rail_divider />
           <.rail_button
-            :if={@status in [:running, :waiting, :compacting] && !@session.archived_at}
             id="rail-stop"
             icon="hero-stop-circle"
             label="Stop session"
             class="text-error"
             phx-click="stop_session"
             data-confirm="Stop this session? The Claude process will be terminated."
-          />
-          <.rail_button
-            :if={@session.archived_at}
-            id="rail-unarchive"
-            icon="hero-archive-box-arrow-down"
-            label="Unarchive session"
-            phx-click="unarchive"
-          />
-          <%!-- A flyout, so archiving stays two clicks, as everywhere else. --%>
-          <.rail_button
-            :if={!@session.archived_at}
-            id="rail-archive"
-            icon="hero-archive-box"
-            label="Archive"
-            active={@flyout == :archive}
-            phx-click="rail_flyout"
-            phx-value-panel="archive"
           />
         </div>
       </div>
@@ -502,12 +549,14 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
   end
 
   # One rail icon. `title` is the expanded row's label; active marks it
-  # `text-primary`, as the old header icons did.
+  # `text-primary`, as the old header icons did. `prominent` (Archive and
+  # Unarchive) swaps the ghost style for a soft primary square.
   attr :id, :string, required: true
   attr :icon, :string, required: true
   attr :icon_class, :any, default: nil
   attr :label, :string, required: true
   attr :active, :boolean, default: false
+  attr :prominent, :boolean, default: false
   attr :class, :any, default: nil
   attr :rest, :global
   # A count on the button's corner. It may hang 4px past the button and no
@@ -523,7 +572,8 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
       type="button"
       id={@id}
       class={[
-        "btn btn-ghost btn-sm btn-square relative shrink-0",
+        "btn btn-sm btn-square relative shrink-0",
+        if(@prominent, do: "btn-soft btn-primary", else: "btn-ghost"),
         @active && "text-primary",
         @class
       ]}
@@ -610,20 +660,6 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
             />
           <% :tool_policy -> %>
             <.tool_policy_details session={@session} compact />
-          <% :archive -> %>
-            <ul class="menu menu-sm w-full p-0">
-              <li>
-                <button type="button" phx-click="archive">
-                  <.icon name="hero-archive-box" class="size-4" /> Archive
-                </button>
-              </li>
-              <li>
-                <button type="button" phx-click="archive_without_extracting">
-                  <.icon name="hero-archive-box-x-mark" class="size-4" />
-                  Archive without extracting memories
-                </button>
-              </li>
-            </ul>
         <% end %>
       </div>
     </div>
@@ -637,8 +673,6 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
 
   defp flyout_meta(:tool_policy),
     do: {"rail-tool-policy", "hero-lock-closed", "Tool restrictions"}
-
-  defp flyout_meta(:archive), do: {"rail-archive", "hero-archive-box", "Archive"}
 
   attr :action, :atom, required: true, values: [:collapse, :expand]
   # Expanding with a flyout open closes it too: the flyout belongs to the

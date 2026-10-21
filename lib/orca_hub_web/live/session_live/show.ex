@@ -53,8 +53,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
     "commits" => :commits,
     "artifacts" => :artifacts,
     "memories" => :memories,
-    "tool_policy" => :tool_policy,
-    "archive" => :archive
+    "tool_policy" => :tool_policy
   }
 
   # Test seam only — lets tests assert against the real constant instead of

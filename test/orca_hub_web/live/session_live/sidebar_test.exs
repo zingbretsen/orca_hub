@@ -377,20 +377,88 @@ defmodule OrcaHubWeb.SessionLive.SidebarTest do
       refute has_element?(view, "#rail-flyout")
       assert has_element?(view, ~s([data-resize-panel="right"]), "rail-dashboard")
     end
+  end
 
-    test "archiving from the rail is two clicks, through its flyout", %{conn: conn, dir: dir} do
+  # Archiving a finished session is the most frequent action on the page:
+  # one click from either the expanded sidebar (top, under the title) or the
+  # rail (under prev/next), with the variant that skips memory extraction
+  # behind the expanded button's caret.
+  describe "archiving" do
+    test "the rail's Archive archives in one click", %{conn: conn, dir: dir} do
+      session = create_session(dir)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assert has_element?(view, ~s(#rail-archive.btn-soft[phx-click="archive"]))
+
+      {:error, {:live_redirect, %{to: path}}} =
+        view |> element("#rail-archive") |> render_click()
+
+      assert path =~ "/sessions?undo"
+      refute is_nil(Sessions.get_session!(session.id).archived_at)
+    end
+
+    test "the sidebar's split button sits under the title and archives in one click", %{
+      conn: conn,
+      dir: dir
+    } do
       session = create_session(dir)
 
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
-      view |> element("#rail-archive") |> render_click()
-      assert has_element?(view, "#rail-flyout button", "Archive without extracting memories")
+      # Near the top: after the title block, before the metadata.
+      sidebar = view |> element("#session-sidebar-body") |> render()
+      {archive_at, _} = :binary.match(sidebar, ~s(id="sidebar-archive"))
+      {title_at, _} = :binary.match(sidebar, ~s(phx-click="edit_title"))
+      {meta_at, _} = :binary.match(sidebar, ~s(id="sidebar-agent-picker"))
+      assert title_at < archive_at and archive_at < meta_at
+
+      # No longer a submenu in the Danger zone, which an idle session hides.
+      refute has_element?(view, "#sidebar-archive-menu")
+      refute has_element?(view, "#session-sidebar-body h2", "Danger zone")
 
       {:error, {:live_redirect, %{to: path}}} =
-        view |> element("#rail-flyout button[phx-click=archive]") |> render_click()
+        view |> element(~s(#sidebar-archive button[phx-click="archive"])) |> render_click()
 
-      assert path =~ "/sessions?"
+      assert path =~ "/sessions?undo"
       refute is_nil(Sessions.get_session!(session.id).archived_at)
+    end
+
+    test "the caret offers archiving without extracting memories", %{conn: conn, dir: dir} do
+      session = create_session(dir)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      assert has_element?(view, ~s(#sidebar-archive [aria-label="More archive options"]))
+
+      {:error, {:live_redirect, %{to: path}}} =
+        view
+        |> element(~s(#sidebar-archive button[phx-click="archive_without_extracting"]))
+        |> render_click()
+
+      assert path =~ "/sessions?undo"
+      refute is_nil(Sessions.get_session!(session.id).archived_at)
+    end
+
+    test "an archived session shows Unarchive in both slots, and it flips back", %{
+      conn: conn,
+      dir: dir
+    } do
+      session = create_session(dir)
+      {:ok, _} = Sessions.archive_session(session, extract_memories: false)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert has_element?(view, ~s(#sidebar-unarchive[phx-click="unarchive"]), "Unarchive")
+      assert has_element?(view, ~s(#rail-unarchive[phx-click="unarchive"][title="Unarchive"]))
+      refute has_element?(view, "#sidebar-archive")
+      refute has_element?(view, "#rail-archive")
+
+      view |> element("#sidebar-unarchive") |> render_click()
+
+      assert is_nil(Sessions.get_session!(session.id).archived_at)
+      assert has_element?(view, "#sidebar-archive")
+      assert has_element?(view, "#rail-archive")
+      refute has_element?(view, "#sidebar-unarchive")
+      refute has_element?(view, "#rail-unarchive")
     end
   end
 
