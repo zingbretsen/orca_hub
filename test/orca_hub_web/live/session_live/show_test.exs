@@ -347,7 +347,8 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       # ...and the panel appears once the async fetch lands.
       assert render_async(view) =~ ~s(title="Commits")
 
-      assert view |> element(~s(button[title="Commits"])) |> render_click() =~
+      # `header`: the collapsed sidebar rail has a Commits icon too.
+      assert view |> element(~s(header button[title="Commits"])) |> render_click() =~
                "Async panel subject"
     end
   end

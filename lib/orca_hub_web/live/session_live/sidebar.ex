@@ -12,10 +12,16 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
   actions" modal, and the panels stacked above the feed.
 
   Both layouts are in the DOM at once and CSS shows one of them. So every id
-  in here is `sidebar-`-prefixed, and no control reuses a `title` that the
-  header's icon buttons carry (tests select those by title). The panel state
-  itself (`show_todos`, `show_commits`, ...) is shared. A section opened here
-  is the same panel that stacks above the feed below `lg:`.
+  in here is `sidebar-` or `rail-` prefixed, and the expanded sidebar's rows
+  carry no `title` the header's icon buttons use. The collapsed rail's icons
+  do share the header's labels as tooltips, so tests that select a header
+  button by title scope it to `header`. The panel state itself
+  (`show_todos`, `show_commits`, ...) is shared. A section opened here is
+  the same panel that stacks above the feed below `lg:`.
+
+  The rail's panel icons open a flyout instead (`@rail_flyout`, one at a
+  time, see `rail/1`), so a panel can be read without expanding the sidebar
+  beside an open file panel.
 
   Collapsing is client-only: the toggle dispatches
   `orca:session-sidebar-toggle`, which root.html.heex handles by flipping an
@@ -66,6 +72,9 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
   # A file or terminal panel is beside the feed: the sidebar's
   # `data-sidebar-context`, see the moduledoc.
   attr :side_panel_open, :boolean, required: true
+  # The rail's open flyout (Show's "rail_flyout" event): nil or one of
+  # :tasks, :commits, :artifacts, :memories, :tool_policy, :archive.
+  attr :rail_flyout, :atom, default: nil
 
   def sidebar(assigns) do
     ~H"""
@@ -76,9 +85,24 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
       class="hidden lg:flex voice-view:hidden shrink-0 min-h-0"
     >
       <.rail
+        session={@session}
         status={@status}
+        capabilities={@capabilities}
         prev_session_id={@prev_session_id}
         next_session_id={@next_session_id}
+        todos={@todos}
+        commits={@commits}
+        expanded_commit={@expanded_commit}
+        commit_detail={@commit_detail}
+        artifacts={@artifacts}
+        memory_events={@memory_events}
+        created_memories={@created_memories}
+        heartbeat_info={@heartbeat_info}
+        show_heartbeat_modal={@show_heartbeat_modal}
+        show_mcp_modal={@show_mcp_modal}
+        files_open={@files_open}
+        show_terminal={@show_terminal}
+        flyout={@rail_flyout}
       />
 
       <%!-- Scrolls on its own: the feed beside it owns the page height. A
@@ -264,40 +288,362 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
     """
   end
 
-  # The collapsed sidebar: the re-open control first, then just enough to
-  # keep navigating (back, prev/next) and the status at a glance.
+  # The collapsed sidebar: icon buttons for the everyday chrome, top to
+  # bottom: navigation and status, the panels, the tools, and stop/archive
+  # pinned to the bottom. The rarely used settings (orchestrator, memory
+  # extraction, attach/detach, copy, model) stay in the expanded sidebar.
+  #
+  # A panel icon opens a flyout beside the rail rather than expanding the
+  # sidebar, because the rail is the default beside an open file panel,
+  # where expanding squeezes the row. The icon column scrolls when it
+  # outgrows a short window, so the flyout is its SIBLING: inside that
+  # scroll box it would be clipped. Both sit in one wrapper, which owns the
+  # click-away and Escape closes, so clicking another rail icon swaps the
+  # flyout instead of racing a close against an open.
+  attr :session, :map, required: true
   attr :status, :atom, required: true
+  attr :capabilities, :map, required: true
   attr :prev_session_id, :string, default: nil
   attr :next_session_id, :string, default: nil
+  attr :todos, :list, required: true
+  attr :commits, :list, required: true
+  attr :expanded_commit, :string, default: nil
+  attr :commit_detail, :map, default: nil
+  attr :artifacts, :list, required: true
+  attr :memory_events, :list, required: true
+  attr :created_memories, :any, required: true
+  attr :heartbeat_info, :map, default: nil
+  attr :show_heartbeat_modal, :boolean, required: true
+  attr :show_mcp_modal, :boolean, required: true
+  attr :files_open, :boolean, required: true
+  attr :show_terminal, :boolean, required: true
+  attr :flyout, :atom, default: nil
 
   defp rail(assigns) do
     ~H"""
     <div
       id="session-sidebar-rail"
-      class="hidden sidebar-collapsed:flex flex-col items-center gap-1 w-9"
+      class="hidden sidebar-collapsed:flex relative min-h-0"
+      phx-click-away={@flyout && JS.push("close_rail_flyout")}
+      phx-window-keydown={@flyout && "close_rail_flyout"}
+      phx-key="Escape"
     >
-      <.toggle_button action={:expand} />
-      <.link
-        navigate={~p"/sessions"}
-        class="btn btn-ghost btn-sm btn-square"
-        title="Back to sessions"
-        aria-label="Back to sessions"
+      <div
+        id="rail-icons"
+        class="flex flex-col items-center gap-1 w-13 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain [scrollbar-width:thin] pb-1"
       >
-        <.icon name="hero-arrow-left" class="size-4" />
-      </.link>
-      <span
-        class={["status status-lg my-2", status_dot_class(@status)]}
-        title={"Status: #{@status}"}
-        aria-label={"Status: #{@status}"}
-      >
-      </span>
-      <.session_step to={@prev_session_id} dir={:prev} />
-      <.session_step to={@next_session_id} dir={:next} />
+        <.toggle_button action={:expand} close_flyout={@flyout != nil} />
+        <.link
+          navigate={~p"/sessions"}
+          class="btn btn-ghost btn-sm btn-square shrink-0"
+          title="Back to sessions"
+          aria-label="Back to sessions"
+        >
+          <.icon name="hero-arrow-left" class="size-4" />
+        </.link>
+        <span
+          class={["status status-lg my-1.5 shrink-0", status_dot_class(@status)]}
+          title={"Status: #{@status}"}
+          aria-label={"Status: #{@status}"}
+        >
+        </span>
+        <.session_step to={@prev_session_id} dir={:prev} />
+        <.session_step to={@next_session_id} dir={:next} />
+
+        <%!-- Panels: the same `:if`s as the expanded sections. --%>
+        <.rail_divider :if={
+          @todos != [] or @commits != [] or @artifacts != [] or @memory_events != [] or
+            Show.tool_policy_restricted?(@session)
+        } />
+        <.rail_button
+          :if={@todos != []}
+          id="rail-tasks"
+          icon="hero-clipboard-document-check"
+          label="Tasks"
+          active={@flyout == :tasks}
+          phx-click="rail_flyout"
+          phx-value-panel="tasks"
+        >
+          <:badge>
+            {Enum.count(@todos, &(&1["status"] == "completed"))}/{length(@todos)}
+          </:badge>
+        </.rail_button>
+        <.rail_button
+          :if={@commits != []}
+          id="rail-commits"
+          icon="hero-code-bracket"
+          label="Commits"
+          active={@flyout == :commits}
+          phx-click="rail_flyout"
+          phx-value-panel="commits"
+        >
+          <:badge>{length(@commits)}</:badge>
+        </.rail_button>
+        <.rail_button
+          :if={@artifacts != []}
+          id="rail-artifacts"
+          icon="hero-sparkles"
+          label="Artifacts"
+          active={@flyout == :artifacts}
+          phx-click="rail_flyout"
+          phx-value-panel="artifacts"
+        >
+          <:badge>{length(@artifacts)}</:badge>
+        </.rail_button>
+        <.rail_button
+          :if={@memory_events != []}
+          id="rail-memories"
+          icon="hero-book-open"
+          label="Memories"
+          active={@flyout == :memories}
+          phx-click="rail_flyout"
+          phx-value-panel="memories"
+        >
+          <:badge>{Show.memory_panel_summary(@memory_events).distinct_count}</:badge>
+        </.rail_button>
+        <.rail_button
+          :if={Show.tool_policy_restricted?(@session)}
+          id="rail-tool-policy"
+          icon="hero-lock-closed"
+          icon_class="text-warning"
+          label="Tool restrictions"
+          active={@flyout == :tool_policy}
+          phx-click="rail_flyout"
+          phx-value-panel="tool_policy"
+        />
+
+        <.rail_divider />
+        <.rail_button
+          id="rail-files"
+          icon="hero-document-text"
+          label="Browse files"
+          active={@files_open}
+          phx-click="toggle_file_browser"
+        />
+        <.rail_button
+          id="rail-terminal"
+          icon="hero-command-line"
+          label="Open terminal"
+          active={@show_terminal}
+          phx-click="open_terminal"
+        />
+        <.rail_button
+          :if={@session.claude_session_id}
+          id="rail-resume"
+          icon="hero-play"
+          label="Resume in terminal"
+          phx-click="resume_in_terminal"
+        />
+        <.rail_button
+          id="rail-heartbeat"
+          icon="hero-heart"
+          label={if @heartbeat_info, do: "Heartbeat (active)", else: "Heartbeat"}
+          active={@show_heartbeat_modal}
+          phx-click="toggle_heartbeat_modal"
+        >
+          <:dot :if={@heartbeat_info} />
+        </.rail_button>
+        <.rail_button
+          :if={@capabilities.mcp}
+          id="rail-mcp"
+          icon="hero-server-stack"
+          label="MCP servers"
+          active={@show_mcp_modal}
+          phx-click="toggle_mcp_modal"
+        />
+
+        <%!-- Pinned to the bottom of a tall window; a short one scrolls down
+        to them like everything else. --%>
+        <div class="mt-auto flex flex-col items-center gap-1 pt-1">
+          <.rail_divider />
+          <.rail_button
+            :if={@status in [:running, :waiting, :compacting] && !@session.archived_at}
+            id="rail-stop"
+            icon="hero-stop-circle"
+            label="Stop session"
+            class="text-error"
+            phx-click="stop_session"
+            data-confirm="Stop this session? The Claude process will be terminated."
+          />
+          <.rail_button
+            :if={@session.archived_at}
+            id="rail-unarchive"
+            icon="hero-archive-box-arrow-down"
+            label="Unarchive session"
+            phx-click="unarchive"
+          />
+          <%!-- A flyout, so archiving stays two clicks, as everywhere else. --%>
+          <.rail_button
+            :if={!@session.archived_at}
+            id="rail-archive"
+            icon="hero-archive-box"
+            label="Archive"
+            active={@flyout == :archive}
+            phx-click="rail_flyout"
+            phx-value-panel="archive"
+          />
+        </div>
+      </div>
+
+      <.rail_flyout
+        :if={@flyout}
+        flyout={@flyout}
+        session={@session}
+        todos={@todos}
+        commits={@commits}
+        expanded_commit={@expanded_commit}
+        commit_detail={@commit_detail}
+        artifacts={@artifacts}
+        memory_events={@memory_events}
+        created_memories={@created_memories}
+      />
     </div>
     """
   end
 
+  # One rail icon. `title` is the expanded row's label; active marks it
+  # `text-primary`, as the old header icons did.
+  attr :id, :string, required: true
+  attr :icon, :string, required: true
+  attr :icon_class, :any, default: nil
+  attr :label, :string, required: true
+  attr :active, :boolean, default: false
+  attr :class, :any, default: nil
+  attr :rest, :global
+  # A count on the button's corner. It may hang 4px past the button and no
+  # further: the icon column clips what crosses its edge, and its 52px leaves
+  # 5px either side of a button once a thin scrollbar takes 10px.
+  slot :badge
+  # A bare status dot in the same corner (Heartbeat's "active").
+  slot :dot
+
+  defp rail_button(assigns) do
+    ~H"""
+    <button
+      type="button"
+      id={@id}
+      class={[
+        "btn btn-ghost btn-sm btn-square relative shrink-0",
+        @active && "text-primary",
+        @class
+      ]}
+      title={@label}
+      aria-label={@label}
+      {@rest}
+    >
+      <.icon name={@icon} class={["size-5", @icon_class]} />
+      <span
+        :if={@badge != []}
+        class="absolute -top-1 -right-1 badge badge-xs badge-primary px-1 text-[10px] leading-none tabular-nums"
+      >
+        {render_slot(@badge)}
+      </span>
+      <span :if={@dot != []} class="absolute top-0.5 right-0.5 status status-success"></span>
+    </button>
+    """
+  end
+
+  defp rail_divider(assigns) do
+    ~H"""
+    <div class="w-6 shrink-0 border-t border-base-300 my-1"></div>
+    """
+  end
+
+  # The flyout: one panel's list beside the rail, over the feed. Positioned
+  # by the RailFlyout hook (assets/js/app.js) level with the icon that opened
+  # it (`data-anchor`), clamped to the rail's height. `top-0` is where it sits
+  # until then.
+  attr :flyout, :atom, required: true
+  attr :session, :map, required: true
+  attr :todos, :list, required: true
+  attr :commits, :list, required: true
+  attr :expanded_commit, :string, default: nil
+  attr :commit_detail, :map, default: nil
+  attr :artifacts, :list, required: true
+  attr :memory_events, :list, required: true
+  attr :created_memories, :any, required: true
+
+  defp rail_flyout(assigns) do
+    {anchor, icon, label} = flyout_meta(assigns.flyout)
+    assigns = assign(assigns, anchor: anchor, icon: icon, label: label)
+
+    ~H"""
+    <div
+      id="rail-flyout"
+      phx-hook="RailFlyout"
+      data-anchor={@anchor}
+      role="dialog"
+      aria-label={@label}
+      class="absolute left-full top-0 ml-2 z-30 flex flex-col w-80 max-h-full rounded-box border border-base-300 bg-base-100 shadow-xl"
+    >
+      <div class="flex items-center gap-2 px-3 py-2 border-b border-base-300 shrink-0">
+        <.icon name={@icon} class="size-4" />
+        <span class="flex-1 text-sm font-semibold">{@label}</span>
+        <button
+          type="button"
+          phx-click="close_rail_flyout"
+          class="btn btn-ghost btn-xs btn-square"
+          aria-label="Close"
+          title="Close"
+        >
+          <.icon name="hero-x-mark-micro" class="size-4" />
+        </button>
+      </div>
+      <div class="min-h-0 overflow-y-auto overscroll-contain [scrollbar-width:thin] p-3">
+        <%= case @flyout do %>
+          <% :tasks -> %>
+            <.todo_list todos={@todos} compact />
+          <% :commits -> %>
+            <.commit_list
+              commits={@commits}
+              expanded_commit={@expanded_commit}
+              commit_detail={@commit_detail}
+              compact
+            />
+          <% :artifacts -> %>
+            <.artifact_list artifacts={@artifacts} compact />
+          <% :memories -> %>
+            <.memory_details
+              memory_events={@memory_events}
+              created_memories={@created_memories}
+              compact
+            />
+          <% :tool_policy -> %>
+            <.tool_policy_details session={@session} compact />
+          <% :archive -> %>
+            <ul class="menu menu-sm w-full p-0">
+              <li>
+                <button type="button" phx-click="archive">
+                  <.icon name="hero-archive-box" class="size-4" /> Archive
+                </button>
+              </li>
+              <li>
+                <button type="button" phx-click="archive_without_extracting">
+                  <.icon name="hero-archive-box-x-mark" class="size-4" />
+                  Archive without extracting memories
+                </button>
+              </li>
+            </ul>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  defp flyout_meta(:tasks), do: {"rail-tasks", "hero-clipboard-document-check", "Tasks"}
+  defp flyout_meta(:commits), do: {"rail-commits", "hero-code-bracket", "Commits"}
+  defp flyout_meta(:artifacts), do: {"rail-artifacts", "hero-sparkles", "Artifacts"}
+  defp flyout_meta(:memories), do: {"rail-memories", "hero-book-open", "Memories"}
+
+  defp flyout_meta(:tool_policy),
+    do: {"rail-tool-policy", "hero-lock-closed", "Tool restrictions"}
+
+  defp flyout_meta(:archive), do: {"rail-archive", "hero-archive-box", "Archive"}
+
   attr :action, :atom, required: true, values: [:collapse, :expand]
+  # Expanding with a flyout open closes it too: the flyout belongs to the
+  # rail and would otherwise reappear the next time the sidebar collapses.
+  attr :close_flyout, :boolean, default: false
 
   defp toggle_button(assigns) do
     assigns =
@@ -310,7 +656,11 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
     ~H"""
     <button
       type="button"
-      phx-click={JS.dispatch("orca:session-sidebar-toggle")}
+      phx-click={
+        if @close_flyout,
+          do: JS.dispatch("orca:session-sidebar-toggle") |> JS.push("close_rail_flyout"),
+          else: JS.dispatch("orca:session-sidebar-toggle")
+      }
       class="btn btn-ghost btn-sm btn-square"
       title={@label}
       aria-label={@label}

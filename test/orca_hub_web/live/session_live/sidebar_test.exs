@@ -239,6 +239,161 @@ defmodule OrcaHubWeb.SessionLive.SidebarTest do
     end
   end
 
+  describe "the collapsed rail" do
+    test "carries the everyday chrome as icons, titled with the expanded rows' labels", %{
+      conn: conn,
+      dir: dir
+    } do
+      session = create_session(dir, %{claude_session_id: "native-abc"})
+      put_todos(session)
+      put_memory_event(session)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      for {id, label} <- [
+            {"rail-tasks", "Tasks"},
+            {"rail-memories", "Memories"},
+            {"rail-files", "Browse files"},
+            {"rail-terminal", "Open terminal"},
+            {"rail-resume", "Resume in terminal"},
+            {"rail-heartbeat", "Heartbeat"},
+            {"rail-mcp", "MCP servers"},
+            {"rail-archive", "Archive"}
+          ] do
+        assert has_element?(view, ~s(#session-sidebar-rail button##{id}[title="#{label}"])),
+               "no rail icon #{id} titled #{inspect(label)}"
+      end
+
+      # Panels show only with content, with their count; the Tasks count is
+      # done/total, as the header's was.
+      assert has_element?(view, "#rail-tasks .badge", "1/2")
+      assert has_element?(view, "#rail-memories .badge", "1")
+      refute has_element?(view, "#rail-artifacts")
+      refute has_element?(view, "#rail-tool-policy")
+      # Idle: nothing to stop. Not archived: no unarchive.
+      refute has_element?(view, "#rail-stop")
+      refute has_element?(view, "#rail-unarchive")
+      # The rarely used settings stay in the expanded sidebar.
+      refute has_element?(view, "#session-sidebar-rail [phx-click=toggle_orchestrator]")
+      refute has_element?(view, "#session-sidebar-rail [phx-click=cycle_memory_extract]")
+    end
+
+    test "a tool icon fires the same event and lights up while its panel is open", %{
+      conn: conn,
+      dir: dir
+    } do
+      session = create_session(dir)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      refute has_element?(view, "#rail-files.text-primary")
+
+      view |> element("#rail-files") |> render_click()
+
+      assert has_element?(view, "#rail-files.text-primary")
+      assert has_element?(view, ~s(#session-sidebar[data-sidebar-context="panel"]))
+    end
+
+    test "a panel icon opens a flyout with that panel's list, one at a time", %{
+      conn: conn,
+      dir: dir
+    } do
+      session = create_session(dir)
+      put_todos(session)
+      put_memory_event(session)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      refute has_element?(view, "#rail-flyout")
+      refute has_element?(view, "#session-sidebar-rail[phx-click-away]")
+
+      view |> element("#rail-tasks") |> render_click()
+
+      assert has_element?(view, "#rail-flyout", "Check it in a browser")
+      assert has_element?(view, ~s(#rail-flyout[data-anchor="rail-tasks"]))
+      assert has_element?(view, "#rail-tasks.text-primary")
+      # Its own state: the expanded section and the stacked panel stay shut.
+      refute has_element?(view, "#sidebar-tasks-panel")
+      refute has_element?(view, "#todos-panel")
+      # While open, the rail closes it on a click outside or on Escape.
+      assert has_element?(view, "#session-sidebar-rail[phx-click-away]")
+      assert has_element?(view, ~s(#session-sidebar-rail[phx-window-keydown="close_rail_flyout"]))
+
+      # Another icon swaps it; the same icon again closes it.
+      view |> element("#rail-memories") |> render_click()
+      assert has_element?(view, "#rail-flyout", "a sidebar hook")
+      refute has_element?(view, "#rail-flyout", "Check it in a browser")
+
+      view |> element("#rail-memories") |> render_click()
+      refute has_element?(view, "#rail-flyout")
+
+      view |> element("#rail-tasks") |> render_click()
+      view |> element("#session-sidebar-rail") |> render_keydown(%{"key" => "Escape"})
+      refute has_element?(view, "#rail-flyout")
+
+      # Expanding the sidebar with a flyout open closes it as well.
+      view |> element("#rail-tasks") |> render_click()
+
+      assert has_element?(
+               view,
+               ~s(#rail-icons button[aria-label="Expand sidebar"][phx-click*="close_rail_flyout"])
+             )
+
+      render_click(view, "close_rail_flyout")
+      refute has_element?(view, "#rail-flyout")
+
+      # An unknown panel is ignored.
+      render_click(view, "rail_flyout", %{"panel" => "nope"})
+      refute has_element?(view, "#rail-flyout")
+    end
+
+    test "opening an artifact from its flyout opens the file panel and closes the flyout", %{
+      conn: conn,
+      dir: dir
+    } do
+      {:ok, project} =
+        Projects.create_project(%{name: "rail-artifacts", directory: dir, node: "n1@x"})
+
+      session = create_session(dir, %{project_id: project.id})
+
+      {:ok, artifact} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          session_id: session.id,
+          name: "rail-dashboard",
+          kind: "html",
+          content: "<p>hi</p>"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert has_element?(view, "#rail-artifacts .badge", "1")
+      view |> element("#rail-artifacts") |> render_click()
+
+      view
+      |> element(
+        ~s(#rail-flyout button[phx-click=open_session_artifact][phx-value-id="#{artifact.id}"])
+      )
+      |> render_click()
+
+      refute has_element?(view, "#rail-flyout")
+      assert has_element?(view, ~s([data-resize-panel="right"]), "rail-dashboard")
+    end
+
+    test "archiving from the rail is two clicks, through its flyout", %{conn: conn, dir: dir} do
+      session = create_session(dir)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      view |> element("#rail-archive") |> render_click()
+      assert has_element?(view, "#rail-flyout button", "Archive without extracting memories")
+
+      {:error, {:live_redirect, %{to: path}}} =
+        view |> element("#rail-flyout button[phx-click=archive]") |> render_click()
+
+      assert path =~ "/sessions?"
+      refute is_nil(Sessions.get_session!(session.id).archived_at)
+    end
+  end
+
   test "its context flips to \"panel\" while a file or terminal panel is open", %{
     conn: conn,
     dir: dir
@@ -315,6 +470,8 @@ defmodule OrcaHubWeb.SessionLive.SidebarTest do
     end
 
     render_click(view, "open_mobile_actions")
+    # A third copy of the artifact list, in the rail's flyout.
+    render_click(view, "rail_flyout", %{"panel" => "artifacts"})
 
     ids =
       view
@@ -326,6 +483,8 @@ defmodule OrcaHubWeb.SessionLive.SidebarTest do
     assert "sidebar-copy-session-id" in ids
     assert "sidebar-title-form" in ids
     assert "sidebar-tool-policy-panel" in ids
+    assert "rail-flyout" in ids
+    assert "rail-tool-policy" in ids
 
     duplicates = ids |> Enum.frequencies() |> Enum.filter(fn {_id, n} -> n > 1 end)
     assert duplicates == []

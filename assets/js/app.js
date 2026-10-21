@@ -1483,6 +1483,24 @@ let Hooks = {
   // on `#panel-layout` in session_live/show.html.heex. See panel_layout.js.
   PanelLayout: PanelLayoutHook,
 
+  // The session sidebar rail's flyout (SessionLive.Sidebar.rail_flyout/1):
+  // level with the icon that opened it (`data-anchor`), clamped so it stays
+  // inside the rail's height. Re-applied after every patch, because a patch
+  // drops the inline `top` the server never renders.
+  RailFlyout: {
+    mounted() { this.place() },
+    updated() { this.place() },
+    place() {
+      const anchor = document.getElementById(this.el.dataset.anchor)
+      const box = this.el.offsetParent
+      if (!anchor || !box) return
+      const a = anchor.getBoundingClientRect()
+      const b = box.getBoundingClientRect()
+      const max = Math.max(0, b.height - this.el.offsetHeight)
+      this.el.style.top = `${Math.min(Math.max(0, a.top - b.top), max)}px`
+    }
+  },
+
   // Plays the audio the Settings page's "Speak sample" button pushes down as
   // a data URL. The bytes travel over the LiveView socket rather than being
   // fetched by the browser because the sample has to reflect the CURRENT,

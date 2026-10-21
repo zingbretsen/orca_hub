@@ -372,7 +372,7 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
       {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
 
       assert html =~ "title=\"Artifacts\""
-      assert view |> element("button[title='Artifacts'] .badge") |> render() =~ "1"
+      assert view |> element("header button[title='Artifacts'] .badge") |> render() =~ "1"
 
       {:ok, second} =
         Artifacts.save_artifact(%{
@@ -384,9 +384,9 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
         })
 
       render(view)
-      assert view |> element("button[title='Artifacts'] .badge") |> render() =~ "2"
+      assert view |> element("header button[title='Artifacts'] .badge") |> render() =~ "2"
 
-      html = view |> element("button[title='Artifacts']") |> render_click()
+      html = view |> element("header button[title='Artifacts']") |> render_click()
       assert html =~ artifact.name
       assert html =~ second.name
     end
@@ -408,13 +408,16 @@ defmodule OrcaHubWeb.SessionLive.ArtifactTest do
 
       assert updated.version == artifact.version + 1
 
-      html = view |> element("button[title='Artifacts']") |> render_click()
+      html = view |> element("header button[title='Artifacts']") |> render_click()
       assert html =~ "v#{updated.version}"
 
       doc = Floki.parse_document!(html)
 
       badge_count =
-        doc |> Floki.find("button[title='Artifacts'] .badge") |> Floki.text() |> String.trim()
+        doc
+        |> Floki.find("header button[title='Artifacts'] .badge")
+        |> Floki.text()
+        |> String.trim()
 
       assert badge_count == "1"
 

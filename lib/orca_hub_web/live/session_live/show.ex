@@ -46,6 +46,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # See ensure_ancestor_messages_loaded/2 below.
   @task_event_subtypes ~w(task_started task_progress task_notification)
 
+  # The rail flyouts a "rail_flyout" event may open (SessionLive.Sidebar),
+  # by their phx-value-panel.
+  @rail_flyouts %{
+    "tasks" => :tasks,
+    "commits" => :commits,
+    "artifacts" => :artifacts,
+    "memories" => :memories,
+    "tool_policy" => :tool_policy,
+    "archive" => :archive
+  }
+
   # Test seam only — lets tests assert against the real constant instead of
   # a hardcoded copy that could silently drift from it.
   @doc false
@@ -205,6 +216,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
      # @memory_events (a cheap indexed DB query), this is a live call to the
      # external memory service. :not_loaded until then.
      |> assign(:created_memories, :not_loaded)
+     # The collapsed sidebar rail's open flyout (SessionLive.Sidebar.rail/1):
+     # nil, or the one panel it shows beside the rail. See "rail_flyout".
+     |> assign(:rail_flyout, nil)
      |> assign(:artifact_send_throttle, %{})
      |> assign(:show_terminal, false)
      |> assign(:open_terminals, [])
@@ -1502,18 +1516,38 @@ defmodule OrcaHubWeb.SessionLive.Show do
       |> assign(:show_memories, opening?)
       |> assign(:show_mobile_actions, false)
 
-    socket =
-      if opening? and socket.assigns.created_memories == :not_loaded do
-        socket |> assign(:created_memories, :loading) |> load_created_memories()
-      else
-        socket
-      end
+    socket = if opening?, do: ensure_created_memories(socket), else: socket
 
     {:noreply, socket}
   end
 
+  # The collapsed sidebar rail's flyouts: one at a time, and the icon that
+  # opened one closes it again. Their own state rather than the show_*
+  # panel toggles, so a flyout's click-away close never collapses a section
+  # the expanded sidebar (or, below `lg:`, the stacked panels) has open.
+  def handle_event("rail_flyout", %{"panel" => panel}, socket) do
+    case Map.fetch(@rail_flyouts, panel) do
+      {:ok, flyout} ->
+        flyout = if socket.assigns.rail_flyout == flyout, do: nil, else: flyout
+        socket = assign(socket, :rail_flyout, flyout)
+
+        {:noreply, if(flyout == :memories, do: ensure_created_memories(socket), else: socket)}
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("close_rail_flyout", _params, socket) do
+    {:noreply, assign(socket, :rail_flyout, nil)}
+  end
+
   def handle_event("open_session_artifact", %{"id" => artifact_id}, socket) do
-    {:noreply, socket |> open_artifact_tab(artifact_id) |> assign(:show_artifacts, false)}
+    {:noreply,
+     socket
+     |> open_artifact_tab(artifact_id)
+     |> assign(:show_artifacts, false)
+     |> assign(:rail_flyout, nil)}
   end
 
   # orca.send bidirectional bridge (Artifacts Phase 3): an artifact iframe's
@@ -3820,6 +3854,14 @@ defmodule OrcaHubWeb.SessionLive.Show do
   # first open, never on mount (unlike @memory_events, this is a live call
   # to the external memory service via OrcaHub.MemoryClient, which is
   # hub-routed and never raises — see handle_async(:created_memories, ...)).
+  # The Memories panel's "Created by this session" list, fetched the first
+  # time either the panel or the rail's Memories flyout opens.
+  defp ensure_created_memories(%{assigns: %{created_memories: :not_loaded}} = socket) do
+    socket |> assign(:created_memories, :loading) |> load_created_memories()
+  end
+
+  defp ensure_created_memories(socket), do: socket
+
   defp load_created_memories(socket) do
     session_id = socket.assigns.session.id
     slug = OrcaHub.AgentMemory.slugify(socket.assigns.session.directory)
