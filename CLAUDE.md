@@ -17,6 +17,14 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - Distributed tests are excluded by default — run them separately: `mix test --only distributed`
 - Repro tests are excluded by default too. A defect issue ships with a test that FAILS in the current unfixed state — executable proof the defect is real, and a free regression test once fixed. Tag it `@tag :repro`, start the test name with the issue key (e.g. `test "ORCAHUB3-24: an artifact with no data does not pre-seed a truthy window.ORCA_DATA"`), and put it in the file where it will permanently live — not a quarantine dir. Run them on demand with `mix test --only repro`; they are EXPECTED to be red, that is the point, so never add one to the flake list.
 - **The fixing commit removes the `@tag :repro` line in the same commit as the fix**, silently converting the repro into a normal regression test. A `:repro` tag left on a fixed defect means the test stops running.
+- Newly observed 2026-10-23 (one failure in three full runs at `eb4f3be`):
+  `OrcaHub.MCP.Tools.SessionsTest "an explicit sender_session_id overrides the
+  connection's own session id"` failing with `:delivery_failed`. Passes 167/167
+  in isolation. The path is `Cluster.send_message/4` over erpc with bounded
+  retries — no PubSub — so it looks like the target runner being briefly
+  undeliverable under full-suite concurrency rather than a logic bug. Not yet
+  root-caused; if it recurs, start at `SessionHeartbeat.deliver_with_retry/5`
+  and `@delivery_max_attempts`.
 - Confirmed known flake: `OrcaHub.TriggersTest "list_enabled_triggers/0"` (shared dev-DB leftover state). Two others flake intermittently across *repeated* runs under shared-dev-DB isolation gaps rather than every run — `NodeLive.IndexTest "load_nodes issues the same number of queries…"` and `PiStubIntegrationTest "a genuine turn error tears down the warm port…"` (being fixed at root separately as of 2026-08-09). Anything else failing is real — investigate, don't retry-until-green.
 - Tests run against the shared dev DB, not an isolated test DB — hub-boot GenServers write real rows; this is expected.
 - Don't trust this doc's flake list as-is before a deploy gate — establish the baseline empirically by running the full suite yourself (ideally more than once) against the SHA you're about to ship, since this file can silently drift out of date (it did for weeks before being corrected 2026-08-09), and a single clean run isn't guaranteed given the intermittent flakes above.
@@ -306,7 +314,7 @@ Confirmed paths for this project's deps:
 |---|---|
 | phoenix | **use the `v1.8` branch, not `main`** — `github.com/phoenixframework/phoenix/blob/v1.8/CHANGELOG.md`. `main`'s CHANGELOG covers only the next minor and just points at the release branch, so 1.8.x patch entries are invisible there. |
 | phoenix_live_view | `phoenix-live-view.hexdocs.pm/<version>/changelog.html` (hexdocs 301-redirects to this host) |
-| phoenix_live_dashboard / phoenix_live_reload / tailwind / esbuild | `github.com/phoenixframework/<dep>` /CHANGELOG.md |
+| phoenix_live_dashboard / phoenix_live_reload / tailwind / esbuild | `github.com/phoenixframework/<dep>` /CHANGELOG.md. **tailwind and esbuild are build-time tools `mix test` never runs** — verify them with `mix assets.build` and confirm `priv/static/assets/{css/app.css,js/app.js}` actually got rewritten. |
 | ecto, ecto_sql | `github.com/elixir-ecto/<dep>` /CHANGELOG.md (ecto is `master`, not `main`) |
 | bandit | `github.com/mtrudel/bandit` /CHANGELOG.md |
 | req | `github.com/wojtekmach/req` /CHANGELOG.md |
@@ -552,10 +560,10 @@ agent output is allowed to render, which is a product decision rather than a
 dependency bump. Do not silently "upgrade past" this item on a future run;
 there is nothing to upgrade to.
 
-**Still deferred, re-checked 2026-10-16: phoenix_live_view 1.1 -> 1.2**
-(1.1.33 vs 1.2.12, unmoved for five weeks; raised with the user 2026-08-14,
-08-21, 08-28, 09-11, 09-18, 09-25, 10-02 and 10-09, still not decided — do not
-keep re-deriving the analysis below, just re-raise it). Everything else is current. 1.2 needs `mix.exs`
+**Still deferred, re-checked 2026-10-23: phoenix_live_view 1.1 -> 1.2**
+(1.1.33 vs 1.2.13; raised with the user 2026-08-14, 08-21, 08-28, 09-11,
+09-18, 09-25, 10-02, 10-09 and 10-16, still not decided — do not keep
+re-deriving the analysis below, just re-raise it). Everything else is current. 1.2 needs `mix.exs`
 `~> 1.1.0` -> `~> 1.2` and carries real breaking changes: the
 `Phoenix.Component` global-attribute list was realigned to MDN and the removed
 attributes are NOT enumerated in the changelog (fix per-site with
