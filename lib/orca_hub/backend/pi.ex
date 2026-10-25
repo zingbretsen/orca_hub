@@ -1445,6 +1445,7 @@ defmodule OrcaHub.Backend.Pi do
       SharedPrompts.orchestrator_prompt(ctx.orchestrator, nil, code_exec),
       SharedPrompts.code_exec_prompt(code_exec),
       SharedPrompts.memory_prompt(code_exec),
+      SharedPrompts.response_style_prompt(),
       if(ctx.orchestrator, do: fork_timing_prompt()),
       if(Map.get(ctx, :commit_trailer, true), do: commit_trailer_flag_prompt()),
       if(!ctx.orchestrator, do: SharedPrompts.worker_practices_prompt(true, code_exec))

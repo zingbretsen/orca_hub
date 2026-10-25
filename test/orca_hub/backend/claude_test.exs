@@ -69,6 +69,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
         expected_orchestrator_prompt(ctx.orchestrator, ctx.session_id, code_exec),
         expected_code_exec_prompt(code_exec),
         expected_memory_prompt(code_exec),
+        expected_response_style_prompt(),
         if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true),
           do: expected_commit_trailer_prompt(ctx.session_id)
         ),
@@ -107,6 +108,19 @@ defmodule OrcaHub.Backend.ClaudeTest do
     durable facts, preferences, procedures, or decisions worth reusing across \
     sessions — not task progress or in-flight status. Call #{recall_ref} \
     before starting unfamiliar work.\
+    """
+    |> String.trim()
+  end
+
+  defp expected_response_style_prompt do
+    """
+    Write in the spirit of ASD-STE100 Simplified Technical English. This applies to everything you write for a reader: replies to the user, reports, briefs to other sessions, issue notes and commit messages.
+
+    - Keep sentences short and direct. In steps and instructions, aim for under 20 words per sentence.
+    - Put one action in each step. If a step needs "and then", split it.
+    - Choose one term for each thing and keep it. Never switch terms for variety. If you called it the heartbeat, do not later call it the timer or the poll.
+
+    Apply these rules most strictly to procedures and instructions. When you explain a cause or a tradeoff, keep the linking words (because, unless, so) — the goal is clarity, not a word count. Do not apply them to code, identifiers, quoted output, or text the user asked you to preserve.
     """
     |> String.trim()
   end
@@ -493,6 +507,7 @@ defmodule OrcaHub.Backend.ClaudeTest do
   defp expected_system_prompt_no_mcp(ctx) do
     [
       "Your OrcaHub session ID is #{ctx.session_id}.",
+      expected_response_style_prompt(),
       if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true),
         do: expected_commit_trailer_prompt(ctx.session_id)
       ),
@@ -1397,6 +1412,19 @@ defmodule OrcaHub.Backend.ClaudeTest do
     test "issue_key set but orchestrator: true omits the issue trailer (already omitted for orchestrators)" do
       ctx = ctx(%{issue_key: "ORCA-142", orchestrator: true})
       refute Backend.system_prompt(ctx) =~ "linked issue ("
+    end
+  end
+
+  describe "system_prompt/1 — response style fragment" do
+    @style "Write in the spirit of ASD-STE100"
+
+    test "present for workers and orchestrators" do
+      assert Backend.system_prompt(ctx()) =~ @style
+      assert Backend.system_prompt(ctx(%{orchestrator: true})) =~ @style
+    end
+
+    test "absent for an api_run session" do
+      refute Backend.system_prompt(ctx(%{api_run?: true})) =~ @style
     end
   end
 

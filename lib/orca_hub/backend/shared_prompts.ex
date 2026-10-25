@@ -227,6 +227,24 @@ defmodule OrcaHub.Backend.SharedPrompts do
     |> String.trim()
   end
 
+  @doc """
+  Response-style rules (ASD-STE100 in spirit) for every backend, orchestrator
+  and worker alike. Constant text, so pi's flags prompt stays a pure function
+  of its flags.
+  """
+  def response_style_prompt do
+    """
+    Write in the spirit of ASD-STE100 Simplified Technical English. This applies to everything you write for a reader: replies to the user, reports, briefs to other sessions, issue notes and commit messages.
+
+    - Keep sentences short and direct. In steps and instructions, aim for under 20 words per sentence.
+    - Put one action in each step. If a step needs "and then", split it.
+    - Choose one term for each thing and keep it. Never switch terms for variety. If you called it the heartbeat, do not later call it the timer or the poll.
+
+    Apply these rules most strictly to procedures and instructions. When you explain a cause or a tradeoff, keep the linking words (because, unless, so) — the goal is clarity, not a word count. Do not apply them to code, identifiers, quoted output, or text the user asked you to preserve.
+    """
+    |> String.trim()
+  end
+
   @doc "Teaches a code-exec session its collapsed tool surface, when enabled."
   def code_exec_prompt(false), do: nil
 

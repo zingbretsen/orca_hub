@@ -1229,6 +1229,15 @@ defmodule OrcaHub.Backend.CodexTest do
     end
   end
 
+  describe "system_prompt/1 — response style fragment" do
+    @style "Write in the spirit of ASD-STE100"
+
+    test "present for workers and orchestrators" do
+      assert Backend.system_prompt(ctx()) =~ @style
+      assert Backend.system_prompt(ctx(%{orchestrator: true})) =~ @style
+    end
+  end
+
   describe "system_prompt/1 — active_sessions_prompt (peer-awareness for orchestrators)" do
     test "an orchestrator with a peer in the same directory sees the richer listing, not the terse one-liner" do
       dir = "/tmp/codex_active_sessions_test_#{System.unique_integer([:positive])}"

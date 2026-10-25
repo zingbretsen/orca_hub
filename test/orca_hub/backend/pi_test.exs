@@ -1838,6 +1838,15 @@ defmodule OrcaHub.Backend.PiTest do
     end
   end
 
+  describe "system_prompt/1 — response style fragment" do
+    @style "Write in the spirit of ASD-STE100"
+
+    test "present for workers and orchestrators" do
+      assert Backend.system_prompt(ctx()) =~ @style
+      assert Backend.system_prompt(ctx(%{orchestrator: true})) =~ @style
+    end
+  end
+
   describe "system_prompt/1 — fork timing guidance (§6)" do
     test "orchestrators are told to make fork spawns the last action of a turn" do
       prompt = Backend.system_prompt(ctx(%{orchestrator: true}))

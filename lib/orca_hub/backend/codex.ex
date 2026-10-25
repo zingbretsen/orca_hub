@@ -838,6 +838,7 @@ defmodule OrcaHub.Backend.Codex do
       orchestrator_system_prompt(ctx.orchestrator, ctx.session_id, code_exec),
       SharedPrompts.code_exec_prompt(code_exec),
       SharedPrompts.memory_prompt(code_exec),
+      SharedPrompts.response_style_prompt(),
       if(!ctx.orchestrator && Map.get(ctx, :commit_trailer, true),
         do: SharedPrompts.commit_trailer_prompt(ctx.session_id)
       ),
