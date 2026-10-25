@@ -5,12 +5,13 @@ defmodule OrcaHubWeb.MessageComponents do
   blocks. Used by `OrcaHubWeb.SessionLive.Show`.
   """
   use Phoenix.Component
+  use OrcaHubWeb, :verified_routes
 
   import OrcaHubWeb.CoreComponents, only: [icon: 1]
 
   alias OrcaHub.MCP.CodeExec.Analyzer
   alias OrcaHub.Voice.Dictation
-  alias OrcaHubWeb.Markdown
+  alias OrcaHubWeb.{FilePreview, Markdown}
 
   # Mirrors Sessions.list_messages_window/2's own copy of this list (and
   # SessionLive.Show's) — a task_* system event is anchored under its
@@ -18,7 +19,11 @@ defmodule OrcaHubWeb.MessageComponents do
   @task_event_subtypes ~w(task_started task_progress task_notification)
 
   attr :messages, :list, required: true
-  attr :session_node, :atom, default: nil
+  # Images render as URLs onto the session image route (ORCAHUB3-148), so
+  # the feed needs the session's id, and its directory to know which paths
+  # that route would serve. Without them, no <img> renders at all.
+  attr :session_id, :string, default: nil
+  attr :session_directory, :string, default: nil
 
   # True only for subagent_block's recursive call. The mobile voice view
   # (ORCAHUB3-113) pages through the conversation's TOP-LEVEL content —
@@ -86,12 +91,18 @@ defmodule OrcaHubWeb.MessageComponents do
           <.orphaned_fragment_marker :if={orphaned_fragment?(msg, @known_tool_use_ids)} />
           <%= case msg["type"] do %>
             <% "user" -> %>
-              <.user_message msg={msg} session_node={@session_node} voice_marker={!@nested} />
+              <.user_message
+                msg={msg}
+                session_id={@session_id}
+                session_directory={@session_directory}
+                voice_marker={!@nested}
+              />
             <% "assistant" -> %>
               <.assistant_message
                 msg={msg}
                 subagent_map={@subagent_map}
-                session_node={@session_node}
+                session_id={@session_id}
+                session_directory={@session_directory}
                 voice_marker={!@nested}
               />
             <% "result" -> %>
@@ -183,18 +194,23 @@ defmodule OrcaHubWeb.MessageComponents do
     """
   end
 
-  defp hidden_message?(%{"type" => "system", "subtype" => "thinking_tokens"}), do: true
+  # Public so SessionLive.Show can keep these out of @messages entirely
+  # (ORCAHUB3-148): a running session sends a thinking_tokens tick about
+  # once a second, and appending one would re-render the whole feed for
+  # nothing.
+  @doc false
+  def hidden_message?(%{"type" => "system", "subtype" => "thinking_tokens"}), do: true
   # The pending pi extension-UI dialog card renders separately (session_live/
   # show.html.heex, driven off pending_ui_request) and the `question` tool's
   # own tool_use/tool_result already shows the call in-feed — the raw
   # `pi_ui_request` event would just be a redundant "waiting on you" line.
-  defp hidden_message?(%{"type" => "pi_ui_request"}), do: true
+  def hidden_message?(%{"type" => "pi_ui_request"}), do: true
   # Plan-mode state broadcasts (spec §12.4) persist for reconstruction
-  # (SessionLive.Show scans history for the last one) but fire on every
+  # (SessionLive.Show reads the last one from the DB) but fire on every
   # toggle AND every session_start/turn_end progress tick — rendering each as
   # a feed card would be noisy; the header badge already reflects the state.
-  defp hidden_message?(%{"type" => "pi_plan_mode"}), do: true
-  defp hidden_message?(_), do: false
+  def hidden_message?(%{"type" => "pi_plan_mode"}), do: true
+  def hidden_message?(_), do: false
 
   # Stable per-item DOM id — the anchor app.js's ScrollToBottom hook uses to
   # tell a prepend (older messages loaded above, see SessionLive.Show's
@@ -496,7 +512,8 @@ defmodule OrcaHubWeb.MessageComponents do
   end
 
   attr :msg, :map, required: true
-  attr :session_node, :atom, default: nil
+  attr :session_id, :string, default: nil
+  attr :session_directory, :string, default: nil
   # See message_feed/1's `nested`: top-level bubbles only.
   attr :voice_marker, :boolean, default: false
 
@@ -539,6 +556,17 @@ defmodule OrcaHubWeb.MessageComponents do
     # Extract attachments from text
     {display_text, attachments} = extract_attachments(text)
 
+    # An image the session image route wouldn't serve shows as a file chip
+    # rather than a broken <img>.
+    attachments =
+      Enum.map(attachments, fn {type, path} ->
+        src =
+          if type == :image,
+            do: feed_image_src(path, assigns.session_id, assigns.session_directory)
+
+        {if(src, do: :image, else: :file), path, src}
+      end)
+
     assigns =
       assigns
       |> assign(:text, display_text)
@@ -564,11 +592,14 @@ defmodule OrcaHubWeb.MessageComponents do
         <.timestamp value={@msg["timestamp"]} />
       </div>
       <div class="chat-bubble chat-bubble-primary min-w-0 max-w-full">
-        <div :for={{type, path} <- @attachments} class="mb-2">
+        <div :for={{type, path, src} <- @attachments} class="mb-2">
           <img
             :if={type == :image}
-            src={image_data_uri(path, @session_node)}
+            src={src}
+            alt={Path.basename(path)}
             class="max-w-xs max-h-48 rounded"
+            loading="lazy"
+            decoding="async"
           />
           <div
             :if={type == :file}
@@ -615,7 +646,8 @@ defmodule OrcaHubWeb.MessageComponents do
 
   attr :msg, :map, required: true
   attr :subagent_map, :map, default: %{}
-  attr :session_node, :atom, default: nil
+  attr :session_id, :string, default: nil
+  attr :session_directory, :string, default: nil
   # See message_feed/1's `nested`: top-level bubbles only.
   attr :voice_marker, :boolean, default: false
 
@@ -689,13 +721,18 @@ defmodule OrcaHubWeb.MessageComponents do
       </div>
     </div>
     <div :for={tool <- @tool_uses}>
-      <.tool_use_block tool={tool} session_node={@session_node} />
+      <.tool_use_block
+        tool={tool}
+        session_id={@session_id}
+        session_directory={@session_directory}
+      />
     </div>
     <div :for={agent <- @agent_tools}>
       <.subagent_block
         tool={agent}
         messages={Map.get(@subagent_map, agent["id"], [])}
-        session_node={@session_node}
+        session_id={@session_id}
+        session_directory={@session_directory}
       />
     </div>
     """
@@ -751,7 +788,8 @@ defmodule OrcaHubWeb.MessageComponents do
   end
 
   attr :tool, :map, required: true
-  attr :session_node, :atom, default: nil
+  attr :session_id, :string, default: nil
+  attr :session_directory, :string, default: nil
 
   defp tool_use_block(assigns) do
     assigns =
@@ -776,7 +814,12 @@ defmodule OrcaHubWeb.MessageComponents do
           />
         </summary>
         <div class="mt-1 ml-2 pl-3 border-l-2 border-info/20">
-          <.tool_detail name={@tool_name} input={@input} session_node={@session_node} />
+          <.tool_detail
+            name={@tool_name}
+            input={@input}
+            session_id={@session_id}
+            session_directory={@session_directory}
+          />
         </div>
       </details>
     </div>
@@ -785,7 +828,8 @@ defmodule OrcaHubWeb.MessageComponents do
 
   attr :tool, :map, required: true
   attr :messages, :list, required: true
-  attr :session_node, :atom, default: nil
+  attr :session_id, :string, default: nil
+  attr :session_directory, :string, default: nil
 
   defp subagent_block(assigns) do
     description = get_in(assigns.tool, ["input", "description"]) || "Subagent"
@@ -852,7 +896,12 @@ defmodule OrcaHubWeb.MessageComponents do
           {@progress_text}
         </div>
         <div class="mt-2 ml-2 pl-3 border-l-2 border-warning/30">
-          <.message_feed messages={@real_messages} session_node={@session_node} nested />
+          <.message_feed
+            messages={@real_messages}
+            session_id={@session_id}
+            session_directory={@session_directory}
+            nested
+          />
         </div>
       </details>
     </div>
@@ -1480,7 +1529,8 @@ defmodule OrcaHubWeb.MessageComponents do
 
   attr :name, :string, required: true
   attr :input, :map, required: true
-  attr :session_node, :atom, default: nil
+  attr :session_id, :string, default: nil
+  attr :session_directory, :string, default: nil
 
   defp tool_detail(%{name: "Bash", input: input} = assigns) do
     assigns = assign(assigns, :command, input["command"] || "")
@@ -1500,7 +1550,10 @@ defmodule OrcaHubWeb.MessageComponents do
     assigns =
       assigns
       |> assign(:path, path)
-      |> assign(:is_image, image_path?(path))
+      |> assign(:is_image, FilePreview.feed_image?(path))
+      # nil for an image the session image route won't serve (an agent
+      # Reading a /tmp screenshot, say): just the path then, no broken <img>.
+      |> assign(:src, feed_image_src(path, assigns.session_id, assigns.session_directory))
 
     ~H"""
     <div class="text-xs space-y-2">
@@ -1514,11 +1567,13 @@ defmodule OrcaHubWeb.MessageComponents do
       >
         {@path}
       </button>
-      <div :if={@is_image}>
+      <div :if={@src}>
         <img
-          src={image_data_uri(@path, @session_node)}
+          src={@src}
+          alt={Path.basename(@path)}
           class="max-w-md max-h-96 rounded border border-base-300"
           loading="lazy"
+          decoding="async"
         />
       </div>
     </div>
@@ -1721,40 +1776,25 @@ defmodule OrcaHubWeb.MessageComponents do
     {clean_text, attachments}
   end
 
-  defp image_path?(path) when is_binary(path) do
-    ext = path |> Path.extname() |> String.downcase()
-    ext in ~w(.png .jpg .jpeg .gif .webp .bmp .ico)
+  # The <img> src for an image in the feed (ORCAHUB3-148): a URL onto
+  # FileDownloadController.session_image/2, or nil when that route would
+  # refuse the path. These used to be `data:` URIs, which read and base64'd
+  # every photo on every render and OOM-killed the hub. Keep this pure: it
+  # runs on every feed render, so no File/rpc IO, and nothing that varies
+  # between renders (a changed src makes the browser fetch again).
+  defp feed_image_src(path, session_id, session_directory)
+       when is_binary(path) and is_binary(session_id) and is_binary(session_directory) do
+    if FilePreview.feed_image?(path) and under_directory?(path, session_directory),
+      do: ~p"/sessions/#{session_id}/files/image?#{[path: path]}"
   end
 
-  defp image_path?(_), do: false
+  defp feed_image_src(_path, _session_id, _session_directory), do: nil
 
-  defp image_data_uri(path, session_node) do
-    # Read file locally or via RPC for remote sessions
-    result =
-      if session_node == nil || session_node == node() do
-        File.read(path)
-      else
-        OrcaHub.Cluster.rpc(session_node, File, :read, [path])
-      end
-
-    case result do
-      {:ok, data} ->
-        mime = mime_for_path(path)
-        "data:#{mime};base64,#{Base.encode64(data)}"
-
-      {:error, _} ->
-        ""
-    end
-  end
-
-  defp mime_for_path(path) do
-    case path |> Path.extname() |> String.downcase() do
-      ".jpg" -> "image/jpeg"
-      ".jpeg" -> "image/jpeg"
-      ".png" -> "image/png"
-      ".gif" -> "image/gif"
-      ".webp" -> "image/webp"
-      _ -> "image/png"
-    end
+  # Lexical only, resolving a relative path against the directory the way
+  # the route does. The route's realpath confinement on the owning node is
+  # the real check; this just skips an <img> it would certainly refuse.
+  defp under_directory?(path, directory) do
+    root = Path.expand(directory)
+    String.starts_with?(Path.expand(path, root), String.trim_trailing(root, "/") <> "/")
   end
 end

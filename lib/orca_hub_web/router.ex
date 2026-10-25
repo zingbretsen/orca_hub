@@ -89,6 +89,9 @@ defmodule OrcaHubWeb.Router do
     # file viewers' image/video preview variant (ORCAHUB3-77).
     get "/projects/:id/files/download", FileDownloadController, :project
     get "/sessions/:id/files/download", FileDownloadController, :session
+    # The message feed's <img> src (ORCAHUB3-148): raster images from the
+    # session's own directory only, cacheable. Replaces inline `data:` URIs.
+    get "/sessions/:id/files/image", FileDownloadController, :session_image
   end
 
   scope "/artifacts", OrcaHubWeb do

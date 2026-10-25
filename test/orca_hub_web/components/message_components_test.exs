@@ -877,4 +877,154 @@ defmodule OrcaHubWeb.MessageComponentsTest do
       assert html =~ "Text part 2"
     end
   end
+
+  # ORCAHUB3-148: an inline `data:` URI made every render File.read (or
+  # rpc-read) and base64 every photo in the window, which OOM-killed the hub
+  # once a running session's per-second ticks re-rendered the feed. Images
+  # are now plain URLs onto FileDownloadController.session_image/2 — a pure
+  # function of (session id, path), with no IO at render time.
+  describe "feed images are session_image URLs, never data URIs" do
+    setup do
+      dir =
+        Path.join(System.tmp_dir!(), "msg_feed_images_#{System.unique_integer([:positive])}")
+
+      uploads = Path.join(dir, ".orca_uploads")
+      File.mkdir_p!(uploads)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, dir: dir, uploads: uploads, session_id: Ecto.UUID.generate()}
+    end
+
+    defp image_url(session_id, path),
+      do: "/sessions/#{session_id}/files/image?" <> URI.encode_query(%{"path" => path})
+
+    defp write_photo!(path) do
+      File.write!(path, <<0xFF, 0xD8, 0xFF, 0xE0>> <> :crypto.strong_rand_bytes(256))
+      path
+    end
+
+    defp attached_images_msg(paths) do
+      tags =
+        Enum.map_join(paths, "\n", &"[Attached image: #{&1} — use your Read tool to view it]")
+
+      %{
+        "type" => "user",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "text",
+              "text" =>
+                "I've attached files to the session directory. Please review them.\n\n" <> tags
+            }
+          ]
+        }
+      }
+    end
+
+    defp read_tool_msg(tool_id, path, extra \\ %{}) do
+      Map.merge(
+        %{
+          "type" => "assistant",
+          "message" => %{
+            "content" => [
+              %{
+                "type" => "tool_use",
+                "id" => tool_id,
+                "name" => "Read",
+                "input" => %{"file_path" => path}
+              }
+            ]
+          }
+        },
+        extra
+      )
+    end
+
+    defp render_feed(messages, ctx) do
+      render_component(&MessageComponents.message_feed/1, %{
+        messages: messages,
+        session_id: ctx.session_id,
+        session_directory: ctx.dir
+      })
+    end
+
+    test "ORCAHUB3-148: attached photos on disk render as route URLs, with no data URI", ctx do
+      paths = for i <- 1..3, do: write_photo!(Path.join(ctx.uploads, "upload_#{i}.jpg"))
+
+      html = render_feed([attached_images_msg(paths)], ctx)
+
+      refute html =~ "data:image"
+      assert length(Regex.scan(~r/<img\s/, html)) == 3
+
+      for path <- paths do
+        assert html =~ ~s(src="#{image_url(ctx.session_id, path)}")
+      end
+
+      assert html =~ ~s(loading="lazy")
+      assert html =~ ~s(decoding="async")
+    end
+
+    test "ORCAHUB3-148: a Read image inside the session dir renders the route URL, nested too",
+         ctx do
+      top = write_photo!(Path.join(ctx.dir, "shot.png"))
+      nested = write_photo!(Path.join(ctx.dir, "nested.webp"))
+
+      agent = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "toolu_agent",
+              "name" => "Agent",
+              "input" => %{"description" => "look at it"}
+            }
+          ]
+        }
+      }
+
+      messages = [
+        read_tool_msg("toolu_read_top", top),
+        agent,
+        read_tool_msg("toolu_read_nested", nested, %{"parent_tool_use_id" => "toolu_agent"})
+      ]
+
+      html = render_feed(messages, ctx)
+
+      refute html =~ "data:image"
+      assert html =~ ~s(src="#{image_url(ctx.session_id, top)}")
+      # Threaded through subagent_block's recursive message_feed.
+      assert html =~ ~s(src="#{image_url(ctx.session_id, nested)}")
+    end
+
+    test "ORCAHUB3-148: a Read image OUTSIDE the session dir shows its path, not a broken <img>",
+         ctx do
+      outside =
+        Path.join(System.tmp_dir!(), "outside_shot_#{System.unique_integer([:positive])}.png")
+
+      write_photo!(outside)
+      on_exit(fn -> File.rm(outside) end)
+
+      html = render_feed([read_tool_msg("toolu_read_outside", outside)], ctx)
+
+      refute html =~ "<img"
+      refute html =~ "data:image"
+      assert html =~ outside
+    end
+
+    test "ORCAHUB3-148: with no session id there is no <img> and no crash", ctx do
+      path = write_photo!(Path.join(ctx.uploads, "upload_1.jpg"))
+
+      html =
+        render_component(&MessageComponents.message_feed/1, %{
+          messages: [attached_images_msg([path]), read_tool_msg("toolu_read", path)],
+          session_node: nil
+        })
+
+      refute html =~ "<img"
+      refute html =~ "data:image"
+      # The attachment still shows, as a file chip.
+      assert html =~ "upload_1.jpg"
+    end
+  end
 end

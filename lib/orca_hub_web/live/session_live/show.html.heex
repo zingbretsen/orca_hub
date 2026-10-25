@@ -1469,7 +1469,11 @@ was. --%>
             data-loading-older={to_string(@loading_older_messages)}
             class="flex-1 overflow-y-auto space-y-1 p-4 bg-base-200 rounded-lg text-sm voice-view:order-4 voice-dictating:hidden"
           >
-            <MessageComponents.message_feed messages={@messages} session_node={@session_node} />
+            <MessageComponents.message_feed
+              messages={@messages}
+              session_id={@session.id}
+              session_directory={@session.directory}
+            />
             <%!-- In-progress assistant bubble (voice_mode_spec.md §7.2 / C2).
         Empty and server-rendered ONLY as an anchor: the feed hook's
         AssistantStream half appends `#stream-<stream_id>` here as deltas

@@ -1724,6 +1724,98 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
   end
 
+  # ORCAHUB3-148: the hub was OOM-killed by a session with phone photos
+  # attached. Every render inlined each photo as a `data:` URI (a full
+  # File.read/rpc read plus base64), and a running session's once-a-second
+  # `thinking_tokens` tick was appended to @messages, re-rendering the whole
+  # feed — so every tick re-read every photo, in every connected LiveView.
+  describe "attached photos (ORCAHUB3-148)" do
+    defp photo_image_url(session, path),
+      do: "/sessions/#{session.id}/files/image?" <> URI.encode_query(%{"path" => path})
+
+    defp seed_photo_messages(session, count) do
+      uploads = Path.join(session.directory, ".orca_uploads")
+      File.mkdir_p!(uploads)
+
+      for i <- 1..count do
+        path = Path.join(uploads, "upload_#{8150 + i}.jpg")
+        File.write!(path, <<0xFF, 0xD8, 0xFF, 0xE0>> <> :crypto.strong_rand_bytes(4096))
+
+        text =
+          "I've attached files to the session directory. Please review them.\n\n" <>
+            "[Attached image: #{path} — use your Read tool to view it]"
+
+        {:ok, _} =
+          Sessions.create_message(%{
+            session_id: session.id,
+            data: %{
+              "type" => "user",
+              "message" => %{"content" => [%{"type" => "text", "text" => text}]}
+            }
+          })
+
+        path
+      end
+    end
+
+    defp thinking_tokens_tick(i) do
+      %{
+        "type" => "system",
+        "subtype" => "thinking_tokens",
+        "tokens" => i * 100,
+        "timestamp" => NaiveDateTime.utc_now()
+      }
+    end
+
+    test "ORCAHUB3-148: the page renders attached photos as route URLs, never data URIs", %{
+      conn: conn,
+      claude_session: session
+    } do
+      paths = seed_photo_messages(session, 4)
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      for html <- [html, render(view)] do
+        refute html =~ "data:image"
+
+        for path <- paths do
+          assert html =~ ~s(src="#{photo_image_url(session, path)}")
+        end
+      end
+    end
+
+    test "ORCAHUB3-148: thinking_tokens ticks leave @messages untouched and never re-read a photo",
+         %{conn: conn, claude_session: session} do
+      paths = seed_photo_messages(session, 3)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      before = :sys.get_state(view.pid).socket.assigns.messages
+
+      # From here on, a render-time read of any photo would come back empty.
+      Enum.each(paths, &File.rm!/1)
+
+      for i <- 1..30 do
+        Phoenix.PubSub.broadcast(
+          OrcaHub.PubSub,
+          "session:#{session.id}",
+          {:event, thinking_tokens_tick(i)}
+        )
+      end
+
+      html = render(view)
+
+      # No assign change, so LiveView's change tracking never re-runs
+      # message_feed/1 for a tick.
+      assert :sys.get_state(view.pid).socket.assigns.messages == before
+
+      refute html =~ "data:image"
+
+      for path <- paths do
+        assert html =~ ~s(src="#{photo_image_url(session, path)}")
+      end
+    end
+  end
+
   describe "derived state survives outside the loaded window" do
     defp derived_text_msg(text) do
       %{"type" => "assistant", "message" => %{"content" => [%{"type" => "text", "text" => text}]}}

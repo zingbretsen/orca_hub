@@ -25,6 +25,13 @@ defmodule OrcaHubWeb.FilePreview do
                   image/bmp image/vnd.microsoft.icon image/svg+xml)
   @video_types ~w(video/mp4 video/webm video/ogg video/quicktime)
 
+  # The message feed's images (ORCAHUB3-148): the raster set
+  # `OrcaHubWeb.MessageComponents` has always shown inline, and the only
+  # types `FileDownloadController.session_image/2` will serve. No SVG — the
+  # feed never rendered one, so that route has no reason to serve one.
+  @feed_image_types ~w(image/png image/jpeg image/gif image/webp image/bmp
+                       image/vnd.microsoft.icon)
+
   @doc """
   `:image` or `:video` when a file viewer should preview `path` instead of
   loading it as text, otherwise `nil`.
@@ -43,6 +50,13 @@ defmodule OrcaHubWeb.FilePreview do
 
   @doc "Whether `mime` may be served `inline` by the file download routes."
   def inline_type?(mime), do: mime in @image_types or mime in @video_types
+
+  @doc """
+  Whether `path` is an image the message feed renders as an `<img>` (and
+  the session image route serves).
+  """
+  def feed_image?(path) when is_binary(path), do: MIME.from_path(path) in @feed_image_types
+  def feed_image?(_path), do: false
 
   @doc "The attachment URL for `path` under a `/files/download` route."
   def download_url(base, path), do: "#{base}?#{URI.encode_query(%{"path" => path})}"

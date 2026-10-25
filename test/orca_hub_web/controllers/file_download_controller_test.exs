@@ -564,6 +564,203 @@ defmodule OrcaHubWeb.FileDownloadControllerTest do
     end
   end
 
+  # ORCAHUB3-148: the message feed's <img> route, replacing the inline
+  # `data:` URIs whose per-render reads OOM-killed the hub. Narrower than
+  # `?disposition=inline`: raster images only, never an attachment fallback,
+  # and cacheable (a weak size+mtime ETag), so a re-mounted feed costs at
+  # most a body-less 304 instead of re-streaming every photo.
+  describe "GET /sessions/:id/files/image" do
+    setup %{dir: dir} do
+      uploads = Path.join(dir, ".orca_uploads")
+      File.mkdir_p!(uploads)
+      photo = <<0xFF, 0xD8, 0xFF, 0xE0>> <> :crypto.strong_rand_bytes(2048)
+      path = Path.join(uploads, "upload_8152.jpg")
+      File.write!(path, photo)
+      {:ok, photo: photo, photo_path: path}
+    end
+
+    test "ORCAHUB3-148: serves an image inside the session dir inline, with cache validators",
+         %{conn: conn, session: session, photo: photo, photo_path: path} do
+      conn = get(conn, image_path(session, path))
+
+      assert conn.status == 200
+      assert conn.resp_body == photo
+      assert get_resp_content_type(conn) == "image/jpeg"
+
+      assert get_resp_header(conn, "content-disposition") ==
+               ["inline; filename=\"upload_8152.jpg\""]
+
+      assert get_resp_header(conn, "content-security-policy") == ["sandbox"]
+      assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+      assert ["private, max-age=" <> _] = get_resp_header(conn, "cache-control")
+      assert [~s(W/") <> _ = etag] = get_resp_header(conn, "etag")
+
+      %File.Stat{size: size, mtime: mtime} = File.stat!(path, time: :posix)
+      assert etag == ~s(W/"#{size}-#{mtime}")
+    end
+
+    test "ORCAHUB3-148: a relative path resolves against the session dir", %{
+      conn: conn,
+      session: session,
+      photo: photo
+    } do
+      conn = get(conn, image_path(session, ".orca_uploads/upload_8152.jpg"))
+
+      assert conn.status == 200
+      assert conn.resp_body == photo
+    end
+
+    test "ORCAHUB3-148: a matching If-None-Match is a body-less 304", %{
+      conn: conn,
+      session: session,
+      photo_path: path
+    } do
+      [etag] = conn |> get(image_path(session, path)) |> get_resp_header("etag")
+
+      for header <- [etag, String.trim_leading(etag, "W/"), ~s(W/"nope", #{etag}), "*"] do
+        revalidated =
+          build_conn()
+          |> put_req_header("if-none-match", header)
+          |> get(image_path(session, path))
+
+        assert revalidated.status == 304, "If-None-Match: #{header}"
+        assert revalidated.resp_body == ""
+        assert get_resp_header(revalidated, "etag") == [etag]
+        assert ["private, max-age=" <> _] = get_resp_header(revalidated, "cache-control")
+      end
+    end
+
+    test "ORCAHUB3-148: a stale If-None-Match gets the new bytes", %{
+      conn: conn,
+      session: session,
+      photo_path: path
+    } do
+      [etag] = conn |> get(image_path(session, path)) |> get_resp_header("etag")
+      File.write!(path, <<0xFF, 0xD8, 0xFF, 0xE0, "a bigger, different photo">>)
+
+      conn =
+        build_conn()
+        |> put_req_header("if-none-match", etag)
+        |> get(image_path(session, path))
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "a bigger, different photo"
+      refute get_resp_header(conn, "etag") == [etag]
+    end
+
+    test "ORCAHUB3-148: 404 for an unknown session", %{conn: conn, photo_path: path} do
+      conn = get(conn, ~p"/sessions/#{Ecto.UUID.generate()}/files/image?#{[path: path]}")
+      assert conn.status == 404
+    end
+
+    test "ORCAHUB3-148: 400 when path is missing", %{conn: conn, session: session} do
+      assert get(conn, ~p"/sessions/#{session.id}/files/image").status == 400
+    end
+
+    test "ORCAHUB3-148: 404 for a missing image inside the dir", %{conn: conn, session: session} do
+      assert get(conn, image_path(session, "nope.png")).status == 404
+    end
+
+    test "ORCAHUB3-148: refuses `..` traversal out of the session dir (negative control)", %{
+      conn: conn,
+      dir: dir,
+      session: session
+    } do
+      secret =
+        Path.join(System.tmp_dir!(), "img_secret_#{System.unique_integer([:positive])}.png")
+
+      File.write!(secret, "top secret")
+      on_exit(fn -> File.rm(secret) end)
+
+      rel = Path.join("..", Path.basename(secret))
+      conn = get(conn, image_path(session, rel))
+
+      assert conn.status == 400
+      refute conn.resp_body =~ "top secret"
+      # sanity: prove the escape WOULD have worked without confinement
+      assert File.read!(Path.join(dir, rel)) == "top secret"
+    end
+
+    test "ORCAHUB3-148: refuses an absolute path outside the session dir (negative control)", %{
+      conn: conn,
+      session: session
+    } do
+      outside =
+        Path.join(System.tmp_dir!(), "img_outside_#{System.unique_integer([:positive])}.png")
+
+      File.write!(outside, "top secret")
+      on_exit(fn -> File.rm(outside) end)
+
+      conn = get(conn, image_path(session, outside))
+
+      assert conn.status == 400
+      refute conn.resp_body =~ "top secret"
+    end
+
+    test "ORCAHUB3-148: refuses a symlink escaping the session dir (negative control)", %{
+      conn: conn,
+      dir: dir,
+      session: session
+    } do
+      outside =
+        Path.join(System.tmp_dir!(), "img_target_#{System.unique_integer([:positive])}.png")
+
+      File.write!(outside, "top secret")
+      on_exit(fn -> File.rm(outside) end)
+      File.ln_s!(outside, Path.join(dir, "escape.png"))
+
+      conn = get(conn, image_path(session, "escape.png"))
+
+      assert conn.status == 400
+      refute conn.resp_body =~ "top secret"
+    end
+
+    for name <- [".env", "notes.txt", "page.html", "logo.svg", "clip.mp4"] do
+      test "ORCAHUB3-148: refuses a non-raster-image file inside the dir: #{name} (negative control)",
+           %{conn: conn, dir: dir, session: session} do
+        File.write!(Path.join(dir, unquote(name)), "SECRET=hunter2 <svg onload=alert(1)>")
+
+        conn = get(conn, image_path(session, unquote(name)))
+
+        assert conn.status == 400
+        refute conn.resp_body =~ "hunter2"
+      end
+    end
+
+    test "ORCAHUB3-148: refuses an image-named symlink to a non-image inside the dir (negative control)",
+         %{conn: conn, dir: dir, session: session} do
+      File.write!(Path.join(dir, ".env"), "SECRET=hunter2")
+      File.ln_s!(Path.join(dir, ".env"), Path.join(dir, "innocent.png"))
+
+      conn = get(conn, image_path(session, "innocent.png"))
+
+      assert conn.status == 400
+      refute conn.resp_body =~ "hunter2"
+    end
+
+    test "ORCAHUB3-148: refuses a directory named like an image (negative control)", %{
+      conn: conn,
+      dir: dir,
+      session: session
+    } do
+      File.mkdir_p!(Path.join(dir, "album.png"))
+      assert get(conn, image_path(session, "album.png")).status == 400
+    end
+
+    test "ORCAHUB3-148: 503 (not a crash) when the session has no assigned node", %{
+      conn: conn,
+      dir: dir,
+      project: project,
+      photo_path: path
+    } do
+      {:ok, unassigned} = Sessions.create_session(%{directory: dir, project_id: project.id})
+      assert get(conn, image_path(unassigned, path)).status == 503
+    end
+  end
+
+  defp image_path(session, path),
+    do: ~p"/sessions/#{session.id}/files/image?#{[path: path]}"
+
   defp inline_path(session, path),
     do: ~p"/sessions/#{session.id}/files/download?#{[path: path, disposition: "inline"]}"
 

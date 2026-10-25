@@ -684,6 +684,24 @@ defmodule OrcaHubWeb.SessionLive.Show do
     HubRPC.list_messages_window(id, limit: @window_size)
   end
 
+  # ORCAHUB3-148: an event the feed never renders stays out of @messages, so
+  # it changes no assign and LiveView re-renders nothing. A running session
+  # sends a thinking_tokens tick about once a second; appending each one
+  # re-ran message_feed/1 over the whole window, which is how a session
+  # with photos attached OOM-killed the hub. Nothing reads these types back
+  # out of @messages: pi plan mode and the pending pi dialog load from the
+  # DB at mount and then follow each live event directly (the other
+  # handle_info({:event, ...}) handlers still see every event).
+  defp append_feed_event(socket, event) do
+    if MessageComponents.hidden_message?(event) do
+      socket
+    else
+      socket
+      |> ensure_ancestor_messages_loaded(event)
+      |> then(&assign(&1, :messages, &1.assigns.messages ++ [event]))
+    end
+  end
+
   # A LIVE event can arrive whose subagent-anchor tool_use fell outside the
   # loaded window (see @window_size): the window is keyset-paginated over
   # TOP-LEVEL messages only, so a long-running session's Agent tool_use can
@@ -2833,8 +2851,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   @impl true
   def handle_info({:event, event}, socket) do
-    socket = ensure_ancestor_messages_loaded(socket, event)
-    socket = assign(socket, :messages, socket.assigns.messages ++ [event])
+    socket = append_feed_event(socket, event)
     socket = handle_plan_events(socket, event)
     socket = handle_todo_events(socket, event)
     socket = handle_memory_injected_events(socket, event)

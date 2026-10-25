@@ -42,6 +42,26 @@ defmodule OrcaHubWeb.FileDownloadController do
   `If-Range` request falls back to the whole-file 200, cap included.
   Downloads (`attachment`) ignore `Range` and advertise no `Accept-Ranges`,
   exactly as before, so a resumed download can't receive a clamped body.
+
+  ## Message-feed images (ORCAHUB3-148)
+
+  `GET /sessions/:id/files/image?path=...` (`session_image/2`) is what the
+  message feed's `<img>` tags point at. The feed used to inline every image
+  as a `data:` URI, which re-read and re-base64'd each photo on every
+  render and OOM-killed the hub. Same trusted root, node resolution,
+  owning-node confinement and chunked streaming as the downloads above,
+  but narrower: only `FilePreview.feed_image?/1` types (raster, no SVG),
+  checked on the requested path AND the resolved one (so `x.png` symlinked
+  to `.env` in the same directory is refused), always `inline`, never an
+  attachment fallback. No `Range`.
+
+  It is also cacheable. The URL is a pure function of (session, path), so
+  responses carry a weak `ETag` from size + mtime and a short
+  `Cache-Control: private, max-age`, and a matching `If-None-Match` gets a
+  body-less 304 for the price of one stat rpc. The ETag comes from
+  `stat_image/3`. A node still on older code without that export (mid
+  rolling deploy) is served through `stat_confined/3` with no ETag rather
+  than refused.
   """
   use OrcaHubWeb, :controller
 
@@ -57,6 +77,11 @@ defmodule OrcaHubWeb.FileDownloadController do
   # re-requesting constantly (8 rpc chunks per response), small enough that
   # a stalled or abandoned range doesn't hold much.
   @max_range_bytes 8 * 1024 * 1024
+  # How long a browser may reuse a feed image without asking. The URL can't
+  # carry a version (rendering it must not touch the file), so this bounds
+  # how stale an image overwritten in place can look; after it, the ETag
+  # makes each re-check a body-less 304.
+  @image_max_age 60
 
   # Raised when a read fails after the headers (and a content-length) are
   # already out. Returning normally would leave a keep-alive connection
@@ -86,6 +111,70 @@ defmodule OrcaHubWeb.FileDownloadController do
     end
   end
 
+  # The message feed's <img> route — see "Message-feed images" above.
+  def session_image(conn, %{"id" => id, "path" => path}) when is_binary(path) do
+    case HubRPC.get_session(id) do
+      nil ->
+        not_found(conn)
+
+      session ->
+        if FilePreview.feed_image?(path),
+          do: serve_image(conn, Cluster.runner_node_for(session), session.directory, path),
+          else: error_response(conn, :not_an_image)
+    end
+  end
+
+  def session_image(conn, _params), do: bad_request(conn, "Missing path parameter")
+
+  defp serve_image(conn, node, root, path) do
+    with {:ok, resolved, size, mtime} <- stat_image_on(node, root, path),
+         # Confinement follows symlinks, so check what will actually be served.
+         true <- FilePreview.feed_image?(resolved) || {:error, :not_an_image} do
+      etag = if mtime, do: ~s(W/"#{size}-#{mtime}")
+
+      conn =
+        conn
+        |> put_resp_header("cache-control", "private, max-age=#{@image_max_age}")
+        |> then(&if(etag, do: put_resp_header(&1, "etag", etag), else: &1))
+
+      if etag && etag_matches?(conn, etag) do
+        send_resp(conn, 304, "")
+      else
+        conn
+        |> put_file_headers(path, MIME.from_path(resolved), true)
+        |> serve_file(node, resolved, size, :none)
+      end
+    else
+      {:error, reason} -> error_response(conn, reason)
+    end
+  end
+
+  defp stat_image_on(node, root, path) do
+    case Cluster.rpc(node, __MODULE__, :stat_image, [root, path, @max_bytes]) do
+      {:error, {:rpc_undef, _}} ->
+        case Cluster.rpc(node, __MODULE__, :stat_confined, [root, path, @max_bytes]) do
+          {:ok, resolved, size} -> {:ok, resolved, size, nil}
+          other -> other
+        end
+
+      other ->
+        other
+    end
+  end
+
+  # If-None-Match uses the weak comparison (RFC 9110 §13.1.2): a `W/` prefix
+  # on either side doesn't matter, and `*` matches any current file.
+  defp etag_matches?(conn, etag) do
+    conn
+    |> get_req_header("if-none-match")
+    |> Enum.flat_map(&String.split(&1, ","))
+    |> Enum.map(&String.trim/1)
+    |> Enum.any?(&(&1 == "*" or opaque_tag(&1) == opaque_tag(etag)))
+  end
+
+  defp opaque_tag("W/" <> tag), do: tag
+  defp opaque_tag(tag), do: tag
+
   defp stream_download(conn, node, root, %{"path" => path} = params) when is_binary(path) do
     mime = MIME.from_path(path)
     inline? = params["disposition"] == "inline" and FilePreview.inline_type?(mime)
@@ -96,6 +185,7 @@ defmodule OrcaHubWeb.FileDownloadController do
       {:ok, resolved, size} ->
         conn
         |> put_file_headers(path, mime, inline?)
+        |> then(&if(inline?, do: put_resp_header(&1, "accept-ranges", "bytes"), else: &1))
         |> serve_file(node, resolved, size, range)
 
       {:error, reason} ->
@@ -157,11 +247,26 @@ defmodule OrcaHubWeb.FileDownloadController do
 
   @doc false
   def stat_confined(root, path, max_bytes) do
+    with {:ok, resolved, %File.Stat{size: size}} <- confined_stat(root, path, max_bytes),
+         do: {:ok, resolved, size}
+  end
+
+  # stat_confined/3 plus the mtime (POSIX seconds) for session_image/2's
+  # ETag. A separate export rather than a wider stat_confined/3 reply, so a
+  # hub on either side of this change still gets the shape it expects.
+  @doc false
+  def stat_image(root, path, max_bytes) do
+    with {:ok, resolved, %File.Stat{size: size, mtime: mtime}} <-
+           confined_stat(root, path, max_bytes),
+         do: {:ok, resolved, size, mtime}
+  end
+
+  defp confined_stat(root, path, max_bytes) do
     with {:ok, resolved} <- PathConfinement.confine(root, path),
-         {:ok, %File.Stat{type: :regular, size: size}} <- File.stat(resolved) do
+         {:ok, %File.Stat{type: :regular, size: size} = stat} <- File.stat(resolved, time: :posix) do
       if is_integer(max_bytes) and size > max_bytes,
         do: {:error, :too_large},
-        else: {:ok, resolved, size}
+        else: {:ok, resolved, stat}
     else
       {:ok, %File.Stat{}} -> {:error, :not_a_file}
       {:error, :outside_root} -> {:error, :outside_root}
@@ -210,7 +315,6 @@ defmodule OrcaHubWeb.FileDownloadController do
     # can't run its scripts.
     |> put_resp_header("content-security-policy", "sandbox")
     |> put_resp_header("x-content-type-options", "nosniff")
-    |> then(&if(inline?, do: put_resp_header(&1, "accept-ranges", "bytes"), else: &1))
   end
 
   # Headers go out with an exact content-length, then the body follows in
@@ -268,6 +372,7 @@ defmodule OrcaHubWeb.FileDownloadController do
   defp error_response(conn, :outside_root), do: bad_request(conn, "Invalid path")
   defp error_response(conn, :not_found), do: not_found(conn)
   defp error_response(conn, :not_a_file), do: bad_request(conn, "Not a downloadable file")
+  defp error_response(conn, :not_an_image), do: bad_request(conn, "Not an image")
   defp error_response(conn, :too_large), do: text_error(conn, 413, "File too large to download")
 
   defp error_response(conn, {:rpc_undef, _}),
