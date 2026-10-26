@@ -246,7 +246,8 @@ a save from a collapsed form leaves all four columns untouched rather than
 clearing them. `TriggerLive.Show` renders whichever of them are set.
 
 On the session side the resolved policy is READ-ONLY: `SessionLive.Show`
-gates a header toggle + panel on `ToolPolicy.restricted?/1`, so an
+gates its "Tool restrictions" toggle + panel (in the header below `lg:`, in
+`SessionLive.Sidebar` at `lg:` and up) on `ToolPolicy.restricted?/1`, so an
 unrestricted session (nil/`[]` on both lists) shows nothing at all. The
 `system`/`setup_script` feed event renders collapsed in
 `MessageComponents`, expanding to the script and its output — as escaped

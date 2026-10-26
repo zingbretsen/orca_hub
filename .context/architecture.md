@@ -5,7 +5,7 @@ graph TB
     subgraph Web["Web Layer"]
         Endpoint["OrcaHubWeb.Endpoint"]
         Router["Router"]
-        SessionShow["SessionLive.Show"]
+        SessionShow["SessionLive.Show<br>(+ SessionLive.Sidebar at lg+)"]
         SessionIndex["SessionLive.Index"]
         ProjectIndex["ProjectLive.Index"]
         ProjectShow["ProjectLive.Show"]
@@ -27,7 +27,7 @@ graph TB
         WebhookCtrl["WebhookController"]
         TTSCtrl["TTSController"]
         ArtifactCtrl["ArtifactController<br>(/artifacts/:id/raw|download|assets,<br>/api/artifacts/view/:token/*)"]
-        FileDownloadCtrl["FileDownloadController<br>(chunked, node-routed;<br>?disposition=inline media previews)"]
+        FileDownloadCtrl["FileDownloadController<br>(chunked, node-routed;<br>?disposition=inline media previews;<br>/sessions/:id/files/image feed images)"]
         ApiRunCtrl["ApiRunController<br>(/api/v1/runs)"]
         SessionApiCtrl["SessionApiController<br>(GET /api/v1/sessions,<br>/recent, /:id, /:id/tail)"]
         A2ACtrl["A2AController<br>(/a2a, inbound JSON-RPC)"]
@@ -570,6 +570,27 @@ graph TB
   (creator or same project only — a share never grants delete rights).
   Presigned direct-to-object-store transfer is a later slice, not v1; the
   artifact-asset integration shipped as slice 2, see above.
+- **Session page chrome and feed images** (`session_live/sidebar.ex`,
+  `message_components.ex`, `file_download_controller.ex`): at `lg:` and up,
+  `SessionLive.Show` moves its header chrome (title, status, pickers, every
+  header action, and the Tasks / Commits / Artifacts / Memories / Tool
+  restrictions panels) into `SessionLive.Sidebar`, a function-component
+  module, not a LiveView. It collapses to an icon rail with one panel
+  flyout at a time. Collapse state is client-only (localStorage via
+  `root.html.heex`). Both layouts are in the DOM and CSS shows one, so the
+  sidebar's ids are `sidebar-`/`rail-` prefixed, and the panel assigns
+  (`show_todos`, ...) are shared with the narrow layout. Feed `<img>` tags
+  point at `GET /sessions/:id/files/image` (`session_image/2`, ORCAHUB3-148,
+  Authelia-gated `:browser` scope). It reuses the download route's
+  server-side root and node resolution, owning-node confinement and
+  chunked rpc reads. It serves raster types only (`FilePreview.feed_image?/1`,
+  no SVG), checked on the requested AND the resolved path, always inline,
+  with a weak size+mtime `ETag`. Never go back to inline `data:` URIs: they
+  re-read and re-base64'd every photo on every render and OOM-killed the
+  hub. For the same reason, `SessionLive.Show` keeps hidden events
+  (`MessageComponents.hidden_message?/1`: `thinking_tokens`,
+  `pi_ui_request`, `pi_plan_mode`) out of `@messages`, so the per-second
+  thinking tick does not re-render the feed.
 - **Inbound email** (`lib/orca_hub/email_inbox/`, hub only): one
   `EmailInbox.Poller` per enabled inbox IMAP-polls for new mail;
   `EmailInbox.Security` authenticates the sender (`Authentication-Results`,

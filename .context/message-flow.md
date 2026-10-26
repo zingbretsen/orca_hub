@@ -298,6 +298,7 @@ env at port-open via `Backend.Pi`'s `orca_memory_json/1`) also persists a
 `memory_ids`/hooks/pinned+recalled counts/the raw block — so a human can see
 which memories a session actually loaded. `MessageComponents` renders it
 collapsed in the feed and strips the leading block back out of the user
-bubble's display text (never the stored data); `SessionLive.Show`'s header
-"Memories" toggle aggregates every such event for the session via
+bubble's display text (never the stored data); `SessionLive.Show`'s
+"Memories" panel (a header toggle below `lg:`, a `SessionLive.Sidebar`
+section at `lg:` and up) aggregates every such event for the session via
 `Sessions.list_memory_injected_events/1`.
