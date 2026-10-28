@@ -511,6 +511,26 @@ which resolves from the static `url: [host: ...]` config (PHX_HOST) — never
 from `conn.host`. And Bandit never negotiates HTTP/2 for us: the endpoint is
 `http:`-only, so there is no TLS and no ALPN, and TLS terminates at Traefik.
 
+**Do NOT let that h2 fact turn into "bandit advisories don't reach us."** On
+2026-10-26 Bandit shipped eleven CVEs at once (nine HIGH). Six were HTTP/2 and
+genuinely unreachable here; the other five were HTTP/1 and WebSocket — 1-byte
+chunked bodies amplifying memory, quadratic Content-Length parsing, 1-byte
+WebSocket continuation frames bypassing `max_fragmented_message_size`, chunk
+extensions accepting bare LF (request smuggling), and frames still reaching
+the WebSock after a server-initiated close. All five are reachable over
+exactly what we do serve. Sort a bandit advisory list by transport before
+concluding anything about exposure.
+
+**For a security finding, `mix.lock` is not the finish line — check what is
+actually RUNNING.** `curl -s 127.0.0.1:4001/api/version` gives the release
+SHA; `git show <sha>:mix.lock | grep '"<dep>":'` gives the version that SHA
+actually shipped, and `git rev-list --count <sha>..HEAD` how far behind it is.
+This matters because hot code push cannot help: `.context/code-deploy.md` is
+explicit that the slow path is the ONLY path for `mix.lock` changes, so a
+committed dependency fix does nothing on any of the six instances until a full
+release rebuild and deploy. Say so in the report rather than implying the fix
+is live.
+
 **When a security fix lands in x.y.0, check whether x.y.1 exists before taking
 it.** bandit 1.13.0 carried the fixes for a HIGH and a MEDIUM, and also added a
 stale-conn check that broke valid Phoenix paths — `Plug.Parsers` errors
