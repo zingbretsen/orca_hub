@@ -1728,23 +1728,57 @@ defmodule OrcaHubWeb.MessageComponents do
 
   @doc "Public (SessionLive.Show's Memories panel reuses it for injected-at times)."
   def timestamp(assigns) do
-    assigns = assign(assigns, :formatted, format_timestamp(assigns.value))
+    assigns =
+      assign(assigns, :parts, format_timestamp(assigns.value, DateTime.utc_now()))
 
     ~H"""
-    <time :if={@formatted} class="opacity-70">{@formatted}</time>
+    <time
+      :if={@parts}
+      class="opacity-70"
+      title={@parts.title}
+      datetime={@parts.datetime}
+    >
+      {@parts.text}
+    </time>
     """
   end
 
-  defp format_timestamp(%NaiveDateTime{} = ts) do
+  # `now` is injectable so tests do not depend on the clock. Only the year
+  # integers are compared, never the timestamp structs.
+  @doc false
+  def format_timestamp(%NaiveDateTime{} = ts, %DateTime{} = now) do
     utc = DateTime.from_naive!(ts, "Etc/UTC")
+    datetime = DateTime.to_iso8601(utc)
 
     case DateTime.shift_zone(utc, "America/New_York") do
-      {:ok, local} -> Calendar.strftime(local, "%-I:%M %p")
-      {:error, _} -> Calendar.strftime(utc, "%-I:%M %p UTC")
+      {:ok, local} ->
+        current_year =
+          case DateTime.shift_zone(now, "America/New_York") do
+            {:ok, now_local} -> now_local.year
+            {:error, _} -> now.year
+          end
+
+        pattern =
+          if local.year == current_year, do: "%b %-d, %-I:%M %p", else: "%b %-d, %Y, %-I:%M %p"
+
+        %{
+          text: Calendar.strftime(local, pattern),
+          title: Calendar.strftime(local, "%A, %B %-d, %Y %-I:%M:%S %p %Z"),
+          datetime: datetime
+        }
+
+      {:error, _} ->
+        pattern = if utc.year == now.year, do: "%b %-d, %-I:%M %p", else: "%b %-d, %Y, %-I:%M %p"
+
+        %{
+          text: Calendar.strftime(utc, pattern <> " UTC"),
+          title: Calendar.strftime(utc, "%A, %B %-d, %Y %-I:%M:%S %p UTC"),
+          datetime: datetime
+        }
     end
   end
 
-  defp format_timestamp(_), do: nil
+  def format_timestamp(_, _), do: nil
 
   defp format_duration(nil), do: "?"
   defp format_duration(ms) when ms < 1000, do: "#{ms}ms"
