@@ -32,6 +32,13 @@
     <button phx-click="archive_selected" class="btn btn-sm btn-error btn-soft">
       <.icon name="hero-archive-box" class="size-4" /> Archive Selected
     </button>
+    <button
+      phx-click="archive_selected_without_extracting"
+      title="Archive without extracting memories"
+      class="btn btn-sm btn-error btn-soft"
+    >
+      <.icon name="hero-archive-box-x-mark" class="size-4" /> Archive (no memories)
+    </button>
   </div>
   <label
     :if={MapSet.size(@selected_sessions) == 0}

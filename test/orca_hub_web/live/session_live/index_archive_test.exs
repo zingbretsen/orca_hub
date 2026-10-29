@@ -16,6 +16,8 @@ defmodule OrcaHubWeb.SessionLive.IndexArchiveTest do
 
   import Phoenix.LiveViewTest
 
+  import OrcaHub.MemoryExtractionStub
+
   alias OrcaHub.Sessions
 
   defp create!(attrs) do
@@ -116,5 +118,52 @@ defmodule OrcaHubWeb.SessionLive.IndexArchiveTest do
     refute is_nil(Sessions.get_session!(root.id).archived_at)
     refute is_nil(Sessions.get_session!(child.id).archived_at)
     refute is_nil(Sessions.get_session!(grandchild.id).archived_at)
+  end
+
+  describe "bulk archive and memory extraction" do
+    test "archive_selected_without_extracting archives the selection and its descendants without dispatching extraction",
+         %{conn: conn, root: root, child: child, grandchild: grandchild} do
+      stub_memory_extraction_dispatch([root, child, grandchild])
+      {:ok, view, _html} = live(conn, ~p"/sessions")
+
+      render_click(view, "toggle_session", %{"id" => root.id})
+      html = render_click(view, "archive_selected_without_extracting")
+
+      assert html =~ "Archived 3 session(s) without memory extraction"
+      refute is_nil(Sessions.get_session!(root.id).archived_at)
+      refute is_nil(Sessions.get_session!(child.id).archived_at)
+      refute is_nil(Sessions.get_session!(grandchild.id).archived_at)
+      refute_receive {:memory_extraction_dispatched, _, _}, 200
+    end
+
+    test "the no-memories button is rendered once a session is selected", %{
+      conn: conn,
+      root: root
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions")
+      render_click(view, "toggle_session", %{"id" => root.id})
+
+      assert has_element?(view, "button[phx-click=archive_selected_without_extracting]")
+    end
+
+    test "plain archive_selected still dispatches extraction for the root and every descendant",
+         %{conn: conn, root: root, child: child, grandchild: grandchild} do
+      stub_memory_extraction_dispatch([root, child, grandchild])
+      {:ok, view, _html} = live(conn, ~p"/sessions")
+
+      render_click(view, "toggle_session", %{"id" => root.id})
+      html = render_click(view, "archive_selected")
+
+      assert html =~ "Archived 3 session(s)"
+      refute html =~ "without memory extraction"
+
+      dispatched =
+        for _ <- 1..3 do
+          assert_receive {:memory_extraction_dispatched, id, _opts}, 500
+          id
+        end
+
+      assert Enum.sort(dispatched) == Enum.sort([root.id, child.id, grandchild.id])
+    end
   end
 end

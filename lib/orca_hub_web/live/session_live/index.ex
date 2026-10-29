@@ -433,6 +433,14 @@ defmodule OrcaHubWeb.SessionLive.Index do
   end
 
   def handle_event("archive_selected", _params, socket) do
+    archive_selected(socket, extract_memories: true)
+  end
+
+  def handle_event("archive_selected_without_extracting", _params, socket) do
+    archive_selected(socket, extract_memories: false)
+  end
+
+  defp archive_selected(socket, opts) do
     selected = socket.assigns.selected_sessions
     node_map = socket.assigns.node_map
 
@@ -453,7 +461,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
       Enum.reduce(roots, {[], []}, fn {session_id, node, session}, {archived_acc, skipped_acc} ->
         Cluster.stop_session(node, session_id)
 
-        case Cluster.cascade_archive_session(node, session) do
+        case Cluster.cascade_archive_session(node, session, opts) do
           {:ok, %{root: root, archived: archived, skipped: skipped}} ->
             {[root | archived] ++ archived_acc, skipped ++ skipped_acc}
 
@@ -473,10 +481,16 @@ defmodule OrcaHubWeb.SessionLive.Index do
     {grouped_sessions, worktree_fetches_needed} =
       group_sessions(tagged_sessions, socket.assigns.projects, clustered)
 
+    suffix =
+      if Keyword.fetch!(opts, :extract_memories), do: "", else: " without memory extraction"
+
     flash_message =
       case length(skipped_all) do
-        0 -> "Archived #{length(archived_all)} session(s)"
-        n -> "Archived #{length(archived_all)} session(s) (#{n} left unarchived — still running)"
+        0 ->
+          "Archived #{length(archived_all)} session(s)#{suffix}"
+
+        n ->
+          "Archived #{length(archived_all)} session(s)#{suffix} (#{n} left unarchived — still running)"
       end
 
     {:noreply,
