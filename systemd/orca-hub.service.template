@@ -13,7 +13,11 @@ EnvironmentFile={{HOME}}/orca-hub-releases/.env
 Environment="PATH={{HOME}}/.local/share/mise/shims:{{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PHX_SERVER=true"
 ExecStart={{HOME}}/orca-hub-releases/current/bin/orca_hub start
-Restart=on-failure
+# `always`, not `on-failure`: the BEAM exits 0 on SIGTERM, so on-failure never
+# restarted gb10 after the stray SIGTERM of 2026-10-29 (ORCAHUB3-150), and it
+# stayed down for 13 minutes. An explicit `systemctl stop`/`restart`, and so
+# the deploy script, is unaffected: systemd never restarts a unit it stopped.
+Restart=always
 RestartSec=5
 
 # Give the BEAM VM time to shut down gracefully

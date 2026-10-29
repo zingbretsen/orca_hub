@@ -246,6 +246,9 @@ rendered unit and a diff against the installed one without sudo.
   is reinstalled, the same code falls back to killing agent trees by env
   marker, with no limits. `journalctl -u orca-hub | grep process_isolation`
   shows which mode a node booted in.
+- **`Restart=always`** (ORCAHUB3-150): the BEAM exits 0 on SIGTERM, so
+  `on-failure` left gb10 down 13 minutes after a stray one. A host keeps
+  `on-failure` until its unit is reinstalled.
 - **debian's `/etc/systemd/system/orca-hub.service` is a symlink** into this
   checkout: `systemd/orca-hub.service`, a gitignored file an older
   `install.sh` rendered here. Editing it on debian changes debian's live unit
