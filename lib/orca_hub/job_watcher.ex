@@ -31,28 +31,44 @@ defmodule OrcaHub.JobWatcher do
 
   ## Cancel/timeout — empirically confirmed, not just reasoned about
 
-  Signaling the negative pgid (`kill -TERM -<pgid>`) kills the wrapper
-  script itself along with the job, which means the wrapper's own
-  sentinel-write step never runs. So a cancelled/timed-out job's sentinel
-  is NOT expected to appear — finalization here is driven by confirming the
-  process is gone after TERM-then-KILL-after-grace, not by waiting on a
-  sentinel a group-kill actively prevents from being written.
+  Signaling the process group (`OrcaHub.OSProcess.signal_group/2`, never an
+  external `kill`: see ORCAHUB3-150 there) kills the wrapper script itself
+  along with the job, which means the wrapper's own sentinel-write step
+  never runs. So a cancelled/timed-out job's sentinel is NOT expected to
+  appear — finalization here is driven by confirming the process is gone
+  after TERM-then-KILL-after-grace, not by waiting on a sentinel a
+  group-kill actively prevents from being written.
+
+  Confirming checks both the leader pid and every live member of the group
+  (zombies count as gone). While anything survives, KILL is re-sent, up to
+  `@default_confirm_kill_attempts` checks. A kill that never takes still
+  finalizes (so the job does not sit forever in a status nobody polls), but
+  with a `progress_note` saying the process may still be running. The
+  attempt counter rides in the `{:confirm_kill, attempt}` message, not the
+  state map, so a watcher hot-loaded mid-kill keeps a valid state.
   """
 
   use GenServer
   require Logger
 
-  alias OrcaHub.{HubRPC, Jobs.Launcher, Jobs.Paths, Jobs.Progress}
+  alias OrcaHub.{HubRPC, Jobs.Launcher, Jobs.Paths, Jobs.Progress, OSProcess}
 
   @default_poll_interval_ms 5_000
   @default_kill_grace_ms 5_000
-  @confirm_kill_delay_ms 1_000
+  @default_confirm_kill_delay_ms 1_000
+  @default_confirm_kill_attempts 3
 
   defp poll_interval_ms,
     do: Application.get_env(:orca_hub, :job_poll_interval_ms, @default_poll_interval_ms)
 
   defp kill_grace_ms,
     do: Application.get_env(:orca_hub, :job_kill_grace_ms, @default_kill_grace_ms)
+
+  defp confirm_kill_delay_ms,
+    do: Application.get_env(:orca_hub, :job_confirm_kill_delay_ms, @default_confirm_kill_delay_ms)
+
+  defp confirm_kill_attempts,
+    do: Application.get_env(:orca_hub, :job_confirm_kill_attempts, @default_confirm_kill_attempts)
 
   def child_spec(opts) do
     %{
@@ -127,8 +143,10 @@ defmodule OrcaHub.JobWatcher do
     guarded("force_kill", state, fn ->
       case HubRPC.get_job(state.job_id) do
         %{status: status} = job when status in ["running", "verifying"] ->
-          signal(job.pgid, "KILL")
-          Process.send_after(self(), :confirm_kill, @confirm_kill_delay_ms)
+          # Usually TERM already emptied the group, and a KILL to an empty
+          # group is an ESRCH warning about nothing.
+          if job_alive?(job), do: signal(job, "KILL")
+          Process.send_after(self(), {:confirm_kill, 1}, confirm_kill_delay_ms())
           {:noreply, state}
 
         _other ->
@@ -137,12 +155,15 @@ defmodule OrcaHub.JobWatcher do
     end)
   end
 
-  def handle_info(:confirm_kill, state) do
+  # The pre-ORCAHUB3-150 message, still in flight in a watcher that was
+  # mid-kill when this code was hot-loaded.
+  def handle_info(:confirm_kill, state), do: handle_info({:confirm_kill, 1}, state)
+
+  def handle_info({:confirm_kill, attempt}, state) when is_integer(attempt) do
     guarded("confirm_kill", state, fn ->
       case HubRPC.get_job(state.job_id) do
         %{status: status} = job when status in ["running", "verifying"] ->
-          finalize(job, state.killing, %{})
-          {:stop, :normal, state}
+          confirm_kill(job, attempt, state)
 
         _other ->
           {:stop, :normal, state}
@@ -277,19 +298,56 @@ defmodule OrcaHub.JobWatcher do
   # ── Cancel / timeout ────────────────────────────────────────────────
 
   defp begin_kill(job, state, terminal_status) do
-    signal(job.pgid, "TERM")
+    signal(job, "TERM")
     cancel_timer(state.kill_timer)
     timer = Process.send_after(self(), :force_kill, kill_grace_ms())
     %{state | killing: terminal_status, kill_timer: timer}
   end
 
-  defp signal(nil, _sig), do: :ok
+  defp confirm_kill(job, attempt, state) do
+    cond do
+      not job_alive?(job) ->
+        finalize(job, state.killing, %{})
+        {:stop, :normal, state}
 
-  defp signal(pgid, sig) when is_integer(pgid) do
-    System.cmd("kill", ["-#{sig}", "-#{pgid}"], stderr_to_stdout: true)
-    :ok
-  rescue
-    _ -> :ok
+      attempt < confirm_kill_attempts() ->
+        Logger.warning(
+          "[JobWatcher] job #{job.id} still alive after SIGKILL (pid #{inspect(job.pid)}, " <>
+            "pgid #{inspect(job.pgid)}, check #{attempt}), re-sending SIGKILL"
+        )
+
+        signal(job, "KILL")
+        Process.send_after(self(), {:confirm_kill, attempt + 1}, confirm_kill_delay_ms())
+        {:noreply, state}
+
+      true ->
+        note =
+          "Kill did not take: pid #{inspect(job.pid)} / process group #{inspect(job.pgid)} " <>
+            "was still alive after SIGTERM and #{attempt} SIGKILL(s), so the process may " <>
+            "still be running. Marked #{state.killing} anyway; on #{job.runner_node}, check " <>
+            "`ps -eo pid,pgid,stat,args | awk '$2 == #{inspect(job.pgid)}'`."
+
+        Logger.error("[JobWatcher] job #{job.id}: #{note}")
+        finalize(job, state.killing, %{progress_note: note})
+        {:stop, :normal, state}
+    end
+  end
+
+  defp job_alive?(job), do: OSProcess.alive?(job.pid) or OSProcess.group_alive?(job.pgid)
+
+  defp signal(job, sig) do
+    case OSProcess.signal_group(job.pgid, sig) do
+      :ok ->
+        :ok
+
+      {:error, reason} = error ->
+        Logger.warning(
+          "[JobWatcher] job #{job.id} SIG#{sig} to process group #{inspect(job.pgid)} " <>
+            "failed: #{inspect(reason)}"
+        )
+
+        error
+    end
   end
 
   # ── Progress sampling ───────────────────────────────────────────────
@@ -336,7 +394,9 @@ defmodule OrcaHub.JobWatcher do
 
   defp timed_out?(_job), do: false
 
-  defp pid_alive?(pid) when is_integer(pid), do: File.exists?("/proc/#{pid}")
+  # Zombie-aware: in a k3s pod the BEAM is PID 1 and never reaps the
+  # orphaned wrapper, so `/proc/<pid>` outlives the process.
+  defp pid_alive?(pid) when is_integer(pid), do: OSProcess.alive?(pid)
   defp pid_alive?(_pid), do: true
 
   defp present?(str), do: is_binary(str) and String.trim(str) != ""

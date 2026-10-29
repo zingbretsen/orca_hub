@@ -53,17 +53,18 @@ defmodule OrcaHub.ProcessIsolation.Marker do
     end
   end
 
-  @doc "Sends `signal` (`\"KILL\"`, `\"TERM\"`) to every pid, in one `kill`."
+  @doc """
+  Sends `signal` (`\"KILL\"`, `\"TERM\"`) to every pid, in one shell-builtin
+  `kill` (`OrcaHub.OSProcess`). The k3s images ship no `kill` binary, so the
+  old external call was a silent no-op there (ORCAHUB3-150). A pid that
+  exited since `find/2` fails harmlessly; the reap loop's re-scan is what
+  confirms the tree is gone.
+  """
   @spec signal([pos_integer()], String.t()) :: :ok
   def signal([], _signal), do: :ok
 
   def signal(pids, signal) do
-    System.cmd("kill", ["-#{signal}" | Enum.map(pids, &Integer.to_string/1)],
-      stderr_to_stdout: true
-    )
-
+    OrcaHub.OSProcess.signal_pids(pids, signal)
     :ok
-  rescue
-    _ -> :ok
   end
 end

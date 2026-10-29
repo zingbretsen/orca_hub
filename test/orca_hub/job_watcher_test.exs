@@ -8,7 +8,7 @@ defmodule OrcaHub.JobWatcherTest do
 
   use OrcaHub.DataCase, async: false
 
-  alias OrcaHub.{HubRPC, JobSupervisor, JobWatcher, Jobs}
+  alias OrcaHub.{FakeKill, HubRPC, JobSupervisor, JobWatcher, Jobs}
   alias OrcaHub.Jobs.Paths
 
   defp job_attrs(overrides) do
@@ -126,6 +126,60 @@ defmodule OrcaHub.JobWatcherTest do
 
       final = wait_for_status(job.id, ~w(cancelled succeeded failed))
       assert final.status == "cancelled"
+      refute File.exists?("/proc/#{job.pid}")
+    end
+
+    test "ORCAHUB3-150: cancel kills the job's process group without exec'ing an external kill" do
+      log = FakeKill.install!()
+      job = start_job!(%{command: "sleep 30"})
+      on_exit(fn -> reap_group(job.pgid) end)
+      on_exit(fn -> cleanup(job.id) end)
+
+      assert :ok = JobSupervisor.cancel_job(job.id)
+      final = wait_for_status(job.id, ~w(cancelled succeeded failed))
+
+      # procps 4.0.4 reads `kill -TERM -1997685` as option `-1` and signals
+      # every process the user owns. No external kill may run at all.
+      assert FakeKill.invocations(log) == []
+      assert final.status == "cancelled"
+      refute File.exists?("/proc/#{job.pid}")
+    end
+
+    @tag capture_log: true
+    test "a kill that never takes is retried, then finalized with a note saying so" do
+      Application.put_env(:orca_hub, :job_confirm_kill_delay_ms, 50)
+      on_exit(fn -> Application.delete_env(:orca_hub, :job_confirm_kill_delay_ms) end)
+
+      job = start_job!(%{command: "sleep 30"})
+      on_exit(fn -> reap_group(job.pgid) end)
+      on_exit(fn -> cleanup(job.id) end)
+
+      # Point the watcher at a group that can never exist (above pid_max), so
+      # every signal misses and the real process stays alive.
+      {:ok, _} = HubRPC.update_job(job, %{pgid: 1_073_741_823})
+
+      assert :ok = JobSupervisor.cancel_job(job.id)
+      final = wait_for_status(job.id, ~w(cancelled succeeded failed))
+
+      assert final.status == "cancelled"
+      assert final.progress_note =~ "Kill did not take"
+      assert File.exists?("/proc/#{job.pid}")
+    end
+
+    test "a bare :confirm_kill still in flight across a hot load is confirmed, not trusted" do
+      job = start_job!(%{command: "sleep 30"})
+      on_exit(fn -> reap_group(job.pgid) end)
+      on_exit(fn -> cleanup(job.id) end)
+
+      # The state an old-code watcher is in between :force_kill and its
+      # :confirm_kill, except that its SIGKILL never landed.
+      [{watcher, _}] = Registry.lookup(OrcaHub.JobRegistry, job.id)
+      :sys.replace_state(watcher, &%{&1 | killing: "cancelled"})
+      send(watcher, :confirm_kill)
+
+      final = wait_for_status(job.id, ~w(cancelled succeeded failed))
+      assert final.status == "cancelled"
+      assert final.progress_note == nil
       refute File.exists?("/proc/#{job.pid}")
     end
 
@@ -313,6 +367,14 @@ defmodule OrcaHub.JobWatcherTest do
       assert final.progress_note =~ "disappeared without writing an exit sentinel"
     end
   end
+
+  # Test cleanup for a job whose kill may not have landed. The shell builtin,
+  # `--`, and a positional pgid: never the external kill under test.
+  defp reap_group(pgid) when is_integer(pgid) and pgid > 1 do
+    System.cmd("/bin/sh", ["-c", ~s(kill -s KILL -- "-$1" 2>/dev/null; exit 0), "sh", "#{pgid}"])
+  end
+
+  defp reap_group(_pgid), do: :ok
 
   defp wait_until(fun, tries \\ 50) do
     if fun.() do

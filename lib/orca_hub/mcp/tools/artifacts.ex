@@ -22,11 +22,14 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
 
   import OrcaHub.MCP.Tools.Result
 
+  require Logger
+
   alias OrcaHub.Artifacts.HtmlValidator
   alias OrcaHub.Artifacts.Render
   alias OrcaHub.HubRPC
   alias OrcaHub.MCP.CodeExec.MediaSink
   alias OrcaHub.MCP.Tools.Files, as: FilesTool
+  alias OrcaHub.OSProcess
 
   @kinds ~w(html svg markdown)
   @modes ~w(split full)
@@ -1179,11 +1182,13 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
 
   # Runs via a raw Port (not System.cmd/Task) so a timeout can actually kill
   # the external process instead of merely abandoning the BEAM task awaiting
-  # it. Erlang already starts a :spawn_executable child as its own process
-  # group leader (pid == pgid), so a `kill -9 -<pid>` on timeout takes the
-  # whole tree with it (npx -> node -> chromium), not just the immediate
-  # child System.cmd would have reaped alone. Public + `@doc false` (not
-  # `defp`) purely so the timeout/kill path is directly testable.
+  # it. erl_child_setup setsid()s every :spawn_executable child, so the child
+  # leads its own session and process group (pid == pgid == sid), and a
+  # SIGKILL to that group on timeout takes the whole tree with it (npx ->
+  # node -> chromium), not just the immediate child System.cmd would have
+  # reaped alone. A descendant that setsid()s again escapes the group.
+  # Public + `@doc false` (not `defp`) purely so the timeout/kill path is
+  # directly testable.
   @doc false
   def run_bounded(cmd, args, timeout_ms \\ @screenshot_timeout_ms) do
     case System.find_executable(cmd) do
@@ -1227,12 +1232,20 @@ defmodule OrcaHub.MCP.Tools.Artifacts do
     end
   end
 
+  # Never an external `kill -9 -<pid>`: procps 4.0.4 reads the group as
+  # option `-1` and kills every process the user owns (ORCAHUB3-150).
   defp kill_process_group(nil), do: :ok
 
   defp kill_process_group(os_pid) do
-    System.cmd("kill", ["-9", "-#{os_pid}"], stderr_to_stdout: true)
-  rescue
-    _ -> :ok
+    case OSProcess.signal_group(os_pid, "KILL") do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Artifacts] SIGKILL to timed-out process group #{os_pid} failed: #{inspect(reason)}"
+        )
+    end
   end
 
   defp close_port(port) do

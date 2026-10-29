@@ -3230,9 +3230,11 @@ defmodule OrcaHub.SessionRunner do
   # reads (:session_id, :orchestrator, :directory, optionally :code_exec).
   def build_system_prompt(data), do: Backend.Claude.system_prompt(data)
 
+  # The shell builtin, not an external `kill`: the k3s images ship no `kill`
+  # binary, where System.cmd raised :enoent (ORCAHUB3-150).
   defp send_sigint(port) do
     case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} -> System.cmd("kill", ["-INT", "#{os_pid}"])
+      {:os_pid, os_pid} -> OrcaHub.OSProcess.signal_pids([os_pid], "INT")
       nil -> :noop
     end
   end
