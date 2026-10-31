@@ -17,6 +17,14 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
 - Distributed tests are excluded by default — run them separately: `mix test --only distributed`
 - Repro tests are excluded by default too. A defect issue ships with a test that FAILS in the current unfixed state — executable proof the defect is real, and a free regression test once fixed. Tag it `@tag :repro`, start the test name with the issue key (e.g. `test "ORCAHUB3-24: an artifact with no data does not pre-seed a truthy window.ORCA_DATA"`), and put it in the file where it will permanently live — not a quarantine dir. Run them on demand with `mix test --only repro`; they are EXPECTED to be red, that is the point, so never add one to the flake list.
 - **The fixing commit removes the `@tag :repro` line in the same commit as the fix**, silently converting the repro into a normal regression test. A `:repro` tag left on a fixed defect means the test stops running.
+- Newly observed 2026-10-30 (one failure in two full runs at `02e0115`):
+  `OrcaHub.SessionRunnerLifecycleNotifyTest "idle is still delivered when the
+  interaction predates turn start"` dying on a `DBConnection.OwnershipError` —
+  a spawned process (`:erlang`, so an erpc/Task) using the Repo without being
+  allowed on the sandbox connection. Passes 23/23 in isolation. Same
+  shared-dev-DB isolation class as the three below; the fix if it recurs is an
+  `Ecto.Adapters.SQL.Sandbox.allow/3` (or `:caller`) on whatever that path
+  spawns, not a retry.
 - Newly observed 2026-10-23 (one failure in three full runs at `eb4f3be`):
   `OrcaHub.MCP.Tools.SessionsTest "an explicit sender_session_id overrides the
   connection's own session id"` failing with `:delivery_failed`. Passes 167/167
@@ -523,6 +531,14 @@ extensions accepting bare LF (request smuggling), and frames still reaching
 the WebSock after a server-initiated close. All five are reachable over
 exactly what we do serve. Sort a bandit advisory list by transport before
 concluding anything about exposure.
+
+**`floki` is not test-only here.** It is easy to assume an HTML parser in an
+Elixir web app is only in the test stack (LiveViewTest uses `lazy_html` for
+us), but `OrcaHub.Artifacts.HtmlValidator.validate/1` calls
+`Floki.parse_document/1` at runtime on agent-supplied artifact HTML, via the
+MCP `save_artifact` tool. So a floki parsing/DoS fix — like 0.38.5's quadratic
+unbalanced-tag parsing — lands on a real hub code path, with the caveat that
+the submitter is an agent we run rather than an anonymous client.
 
 **For a security finding, `mix.lock` is not the finish line — check what is
 actually RUNNING.** `curl -s 127.0.0.1:4001/api/version` gives the release
