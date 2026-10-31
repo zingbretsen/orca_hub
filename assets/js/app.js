@@ -1728,10 +1728,67 @@ let Hooks = {
           }
         })
       })
+
+      this.touchStartHandler = (e) => { this.touchY = e.touches[0]?.clientY }
+      this.touchMoveHandler = (e) => this.guardTouchMove(e)
+      this.syncScrollLock()
+    },
+    updated() {
+      this.syncScrollLock()
     },
     destroyed() {
       window.removeEventListener("keydown", this.handler)
       document.removeEventListener("command-palette:toggle", this.toggleHandler)
+      this.setScrollLock(false)
+    },
+    // While the palette is open, a touch that drifts off a result row chains
+    // to the root document, which sits at scrollTop 0 behind the fixed
+    // overlay, so the browser's own pull-to-refresh reloads the page. Two
+    // layers, because they cover different engines:
+    // - `html.command-palette-open` (app.css) sets overscroll-behavior-y: none
+    //   on html and body, which disables it in Chrome/Android and Firefox;
+    // - iOS Safari ignores overscroll-behavior for pull-to-refresh (WebKit bug
+    //   275947), so a non-passive touchmove guard cancels every drag the
+    //   results list can't take itself. touchstart/touchend are never
+    //   cancelled, so taps still click.
+    // Driven by the DOM (the results list exists only while open), so mounted
+    // and updated can both call it. Add/remove are idempotent: the handlers
+    // are created once in mounted, and the DOM never registers the same
+    // listener twice. destroyed() always releases it, since a class or
+    // listener left behind by a navigation would block scrolling everywhere.
+    syncScrollLock() {
+      this.setScrollLock(!!this.el.querySelector("#command-palette-results"))
+    },
+    setScrollLock(on) {
+      document.documentElement.classList.toggle("command-palette-open", on)
+      if (on) {
+        document.addEventListener("touchstart", this.touchStartHandler, {capture: true, passive: true})
+        document.addEventListener("touchmove", this.touchMoveHandler, {capture: true, passive: false})
+      } else {
+        document.removeEventListener("touchstart", this.touchStartHandler, {capture: true})
+        document.removeEventListener("touchmove", this.touchMoveHandler, {capture: true})
+        this.touchY = null
+      }
+    },
+    guardTouchMove(e) {
+      const y = e.touches[0]?.clientY
+      const dy = y == null || this.touchY == null ? 0 : y - this.touchY
+      this.touchY = y
+      // Once a scroll has started the browser stops letting it be cancelled.
+      if (!e.cancelable || this.listTakesDrag(e.target, dy)) return
+      e.preventDefault()
+    },
+    // The results list, not the document, takes this drag: the touch began
+    // inside it, it overflows, and it isn't already at the edge the drag
+    // pushes against (the top while dragging down, the bottom while up).
+    listTakesDrag(target, dy) {
+      const list = this.el.querySelector("#command-palette-results")
+      if (!list || !(target instanceof Node) || !list.contains(target)) return false
+      const maxScroll = list.scrollHeight - list.clientHeight
+      if (maxScroll <= 0) return false
+      if (dy > 0) return list.scrollTop >= 1
+      if (dy < 0) return list.scrollTop + 1 < maxScroll
+      return true
     }
   },
   CopyToClipboard: {

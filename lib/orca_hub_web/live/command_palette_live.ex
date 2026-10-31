@@ -91,7 +91,7 @@ defmodule OrcaHubWeb.CommandPaletteLive do
           </div>
 
           <%!-- Results --%>
-          <div class="max-h-80 overflow-y-auto p-2" id="command-palette-results">
+          <div class="max-h-80 overflow-y-auto overscroll-contain p-2" id="command-palette-results">
             <%= if @results == [] do %>
               <div class="px-3 py-6 text-center text-sm opacity-50">No results found</div>
             <% else %>

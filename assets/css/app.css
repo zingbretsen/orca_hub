@@ -131,6 +131,17 @@
 
 /* This file is for your main application CSS */
 
+/* The Ctrl+K command palette is open: the CommandPalette hook (app.js) sets
+   this on <html>, outside every LiveView root, and its destroyed() always
+   clears it. Disables the browser's pull-to-refresh, which a touch drifting
+   off a result row otherwise chains into. Chrome/Android and Firefox honour
+   this; iOS Safari doesn't (WebKit bug 275947), which is what the hook's
+   touchmove guard is for. */
+html.command-palette-open,
+html.command-palette-open body {
+  overscroll-behavior-y: none;
+}
+
 /* File tree keyboard navigation highlight */
 #file-tree .file-tree-focused {
   background-color: oklch(50% 0 0 / 0.15);
