@@ -44,6 +44,15 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   issue: the DB-persisted piece is the subscription CONFIG, not this
   transient edge-tracking.
 
+  ## The `"churn"` condition only applies to some sessions
+
+  Churn is alerted on only for `Churn.alert_eligible?/1` sessions (pi
+  backend, or a Haiku model). On the more capable models it is almost always
+  a false alarm (user decision 2026-11-01), so for every other session the
+  whole condition, all three drivers, evaluates false. `stall`,
+  `pending_question`, `progress_stale` and `no_commit_for` still apply to
+  every session, and `ChurnSampler` keeps sampling all of them.
+
   ## Three signals feed the `"churn"` condition, and they are not equivalent
 
   `"churn"` is one subscribable condition with three independent drivers:
@@ -139,7 +148,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
         # threaded through both — nil here means "not needed yet", and
         # `build_message/5` fetches it only if no gate ever asked for it.
         churn_detail =
-          if surgery_gate_applies?(subscription.conditions || %{}, churn),
+          if surgery_gate_applies?(subscription.conditions || %{}, session, churn),
             do: ChurnDetail.fetch(session.id)
 
         # One bundle for everything a message/gate needs beyond `churn`
@@ -338,16 +347,18 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   # column is the RECORD, not the mechanism. Rows written before that date
   # carry a void `churn_suspected`; see `OrcaHub.Sessions.ChurnSample`.
   defp churn_alertable?(churn, session, churn_detail, edit_failure) do
-    churn.volumetric_churn_suspected or
-      not is_nil(edit_failure) or
-      (churn.file_surgery_suspected and
-         SurgeryAlertPolicy.alertable_for_session?(session, churn.file_surgery, churn_detail))
+    Churn.alert_eligible?(session) and
+      (churn.volumetric_churn_suspected or
+         not is_nil(edit_failure) or
+         (churn.file_surgery_suspected and
+            SurgeryAlertPolicy.alertable_for_session?(session, churn.file_surgery, churn_detail)))
   end
 
   # The gate (and so the pre-fetched ChurnDetail) is only relevant when the
   # "churn" condition is watched AND file surgery is the thing driving it.
-  defp surgery_gate_applies?(conditions, churn) do
-    Map.get(conditions, "churn") == true and churn.file_surgery_suspected
+  defp surgery_gate_applies?(conditions, session, churn) do
+    Map.get(conditions, "churn") == true and Churn.alert_eligible?(session) and
+      churn.file_surgery_suspected
   end
 
   defp stall?(session, activity) do

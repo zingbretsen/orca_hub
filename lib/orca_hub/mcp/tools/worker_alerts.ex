@@ -58,7 +58,8 @@ defmodule OrcaHub.MCP.Tools.WorkerAlerts do
                   "evaluated when present). \"pending_question\": true enables detection of a " <>
                   "worker blocked on a dialog (pi: pending pi question/confirm/input dialog; claude: " <>
                   "status=\"waiting\"). \"churn\" = the server-side rumination heuristic " <>
-                  "(high tool-call rate + high repetition + no fresh commit/progress). \"stall\" = " <>
+                  "(high tool-call rate + high repetition + no fresh commit/progress); only evaluated for " <>
+                  "pi-backend and Haiku-model sessions, never for other models. \"stall\" = " <>
                   "status running with zero messages AND zero tool calls in the last 15 minutes " <>
                   "(a hung turn — lifecycle notifications can't catch this since they only fire on " <>
                   "idle/error). \"progress_stale\": N = report_progress hasn't updated in N minutes " <>

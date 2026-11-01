@@ -10,6 +10,7 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
   """
 
   alias OrcaHub.{Cluster, HubRPC, Sessions}
+  alias OrcaHub.Sessions.Churn
 
   @error_detail_limit 160
 
@@ -110,7 +111,7 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
     name = session.title || "session #{String.slice(session.id, 0, 8)}"
 
     churn =
-      OrcaHub.Sessions.Churn.assess(activity, session, commit, DateTime.utc_now(), file_surgery)
+      Churn.assess(activity, session, commit, DateTime.utc_now(), file_surgery)
 
     pending_q = pending_question_marker(session)
 
@@ -119,7 +120,7 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
       format_phase(session),
       format_activity(activity),
       format_commit(commit),
-      format_churn(churn),
+      if(Churn.alert_eligible?(session), do: format_churn(churn), else: ""),
       pending_q,
       format_error(session)
     ]
@@ -191,11 +192,12 @@ defmodule OrcaHub.SessionHeartbeat.Digest do
     file_surgery = Map.get(file_surgery_by_id, session.id)
 
     churn =
-      OrcaHub.Sessions.Churn.assess(activity, session, commit, DateTime.utc_now(), file_surgery)
+      Churn.assess(activity, session, commit, DateTime.utc_now(), file_surgery)
 
     pending_q = pending_question_marker(session)
 
     {session.status, session.progress_phase, session.progress_note,
-     Map.get(activity, :last_activity_at), Map.get(churn, :churn_suspected), pending_q != ""}
+     Map.get(activity, :last_activity_at),
+     Churn.alert_eligible?(session) and Map.get(churn, :churn_suspected), pending_q != ""}
   end
 end

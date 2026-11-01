@@ -58,6 +58,20 @@ defmodule OrcaHub.Sessions.Churn do
   @churn_max_progress_age_minutes 15
 
   @doc """
+  Whether churn may be ALERTED on for this session: the pi backend (any
+  model) or a Haiku model (case-insensitive "haiku" substring, so future
+  versions match). Detection and sampling are unaffected; this only gates
+  what reaches an orchestrator. Accepts a session or any map with
+  `:backend`/`:model`.
+  """
+  def alert_eligible?(session) do
+    backend = Map.get(session, :backend)
+    model = Map.get(session, :model)
+
+    backend == "pi" or (is_binary(model) and String.contains?(String.downcase(model), "haiku"))
+  end
+
+  @doc """
   Assess whether a session appears to be exhibiting churn behavior.
 
   Returns a map with churn indicators and the computed `churn_suspected` flag.

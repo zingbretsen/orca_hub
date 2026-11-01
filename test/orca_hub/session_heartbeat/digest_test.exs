@@ -210,8 +210,42 @@ defmodule OrcaHub.SessionHeartbeat.DigestTest do
       assert map_size(snapshot2) == 2
     end
 
+    test "a session that is not alert-eligible gets no FILE SURGERY? marker" do
+      watched =
+        fixture_session(%{title: "opus worker", status: "running", model: "claude-opus-5-5"})
+
+      {:ok, _message} =
+        Sessions.create_message(%{
+          session_id: watched.id,
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "name" => "Bash",
+                  "input" => %{"command" => "sed -i 's/foo/bar/' lib/orca_hub/test.ex"}
+                }
+              ]
+            }
+          }
+        })
+
+      {digest, snapshot} = Digest.build("caller-id", [watched.id], false)
+
+      assert digest =~ "opus worker"
+      refute digest =~ "FILE SURGERY?"
+      refute digest =~ "CHURN?"
+      assert elem(snapshot[watched.id], 4) == false
+    end
+
     test "a session with file-surgery evidence renders in digest even when churn_suspected would be false" do
-      watched = fixture_session(%{title: "file-surgery worker", status: "running"})
+      watched =
+        fixture_session(%{
+          title: "file-surgery worker",
+          status: "running",
+          model: "claude-haiku-5-5"
+        })
 
       # Insert a message that will trigger file_surgery detection
       # The pattern matches a Bash tool_use with name="Bash" and input.command

@@ -19,7 +19,9 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
     System.cmd("git", ["add", "."], cd: dir)
     System.cmd("git", ["commit", "-m", "initial"], cd: dir, stderr_to_stdout: true)
 
-    {:ok, session} = Sessions.create_session(Map.merge(%{directory: dir}, attrs))
+    {:ok, session} =
+      Sessions.create_session(Map.merge(%{directory: dir, model: "claude-haiku-5-5"}, attrs))
+
     session
   end
 
@@ -28,7 +30,9 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf(dir) end)
 
-    {:ok, session} = Sessions.create_session(Map.merge(%{directory: dir}, attrs))
+    {:ok, session} =
+      Sessions.create_session(Map.merge(%{directory: dir, model: "claude-haiku-5-5"}, attrs))
+
     session
   end
 
@@ -203,7 +207,9 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       env: [{"GIT_COMMITTER_DATE", when_iso}, {"GIT_AUTHOR_DATE", when_iso}]
     )
 
-    {:ok, session} = Sessions.create_session(Map.merge(%{directory: dir}, attrs))
+    {:ok, session} =
+      Sessions.create_session(Map.merge(%{directory: dir, model: "claude-haiku-5-5"}, attrs))
+
     session
   end
 
@@ -238,6 +244,33 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       assert alert.message =~ "[Worker alert] churn"
       assert alert.message =~ session.id
       assert map_size(edge_state) == 1
+    end
+
+    test "never fires for a session that is not alert-eligible, while stall still does" do
+      orchestrator_id = Ecto.UUID.generate()
+
+      churning =
+        plain_session("alert-churn-opus", %{
+          status: "running",
+          model: "claude-opus-5-5",
+          progress_updated_at: DateTime.utc_now() |> DateTime.add(-20, :minute)
+        })
+
+      Enum.each(1..30, fn _ -> tool_use_message(churning.id, "Bash") end)
+
+      silent =
+        plain_session("alert-stall-opus", %{status: "running", model: "claude-opus-5-5"})
+
+      subscription =
+        subscribe(orchestrator_id, %{
+          watch_children: false,
+          session_ids: [churning.id, silent.id],
+          conditions: %{"churn" => true, "stall" => true}
+        })
+
+      assert {[alert], _edge_state} = AlertEvaluator.evaluate([subscription])
+      assert alert.session_id == silent.id
+      assert alert.condition == "stall"
     end
 
     test "does not fire when churn is not suspected" do

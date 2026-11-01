@@ -378,6 +378,7 @@ defmodule OrcaHub.SessionHeartbeatTest do
 
       {:ok, session} =
         Sessions.create_session(%{
+          model: "claude-haiku-5-5",
           directory: dir,
           status: "running",
           progress_updated_at: NaiveDateTime.utc_now() |> NaiveDateTime.add(-20, :minute)
@@ -462,6 +463,7 @@ defmodule OrcaHub.SessionHeartbeatTest do
 
       {:ok, session} =
         Sessions.create_session(%{
+          model: "claude-haiku-5-5",
           directory: dir,
           status: "running"
         })

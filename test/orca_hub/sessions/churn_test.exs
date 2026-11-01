@@ -4,6 +4,28 @@ defmodule OrcaHub.Sessions.ChurnTest do
   alias OrcaHub.Sessions.Churn
   alias OrcaHub.Sessions.FileSurgery
 
+  describe "alert_eligible?/1" do
+    test "pi sessions are eligible with any model" do
+      assert Churn.alert_eligible?(%{backend: "pi", model: "claude-opus-5-5"})
+      assert Churn.alert_eligible?(%{backend: "pi", model: nil})
+    end
+
+    test "haiku models are eligible on any backend, case-insensitively" do
+      assert Churn.alert_eligible?(%{backend: "claude", model: "claude-haiku-5-5"})
+      assert Churn.alert_eligible?(%{backend: "claude", model: "haiku"})
+      assert Churn.alert_eligible?(%{backend: "claude", model: "Claude-Haiku-9"})
+    end
+
+    test "other models and backends are not eligible" do
+      refute Churn.alert_eligible?(%{backend: "claude", model: "claude-opus-5-5"})
+      refute Churn.alert_eligible?(%{backend: "claude", model: "claude-sonnet-5-5"})
+      refute Churn.alert_eligible?(%{backend: "claude", model: nil})
+      refute Churn.alert_eligible?(%{backend: "codex", model: "gpt-5"})
+      refute Churn.alert_eligible?(%{backend: nil, model: nil})
+      refute Churn.alert_eligible?(%{})
+    end
+  end
+
   defp assistant_message(blocks) do
     %{data: %{"type" => "assistant", "message" => %{"content" => blocks}}}
   end
