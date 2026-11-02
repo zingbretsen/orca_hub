@@ -291,6 +291,7 @@ graph TB
     JobLauncher -->|"spawns, then lets go"| DetachedProc
     JobSupervisor --> JobWatcher
     JobWatcher -.->|"polls sentinel/pid/progress"| DetachedProc
+    JobWatcher -.->|"cancel/timeout: TERM, then KILL<br>to the pgid (OSProcess)"| DetachedProc
     JobWatcher -->|"writes observations"| Jobs
     JobResumer -.->|"re-attaches watchers on boot"| JobSupervisor
 
@@ -442,7 +443,24 @@ graph TB
   `job_resumer.ex`): durable records of DETACHED OS background processes so
   long work survives idle teardown, WarmPool eviction, kill-switch
   downgrades, and deploys. The process is never a BEAM child; a disposable
-  per-node `JobWatcher` only observes it. See `.context/supervision-tree.md`.
+  per-node `JobWatcher` observes it, and signals it only on cancel or
+  timeout: TERM to its process group, KILL after a grace, then up to 3
+  checks of the leader and the group, re-sending KILL while anything
+  survives, before it finalizes. A kill that never takes still finalizes, with a
+  `progress_note` saying so. See `.context/supervision-tree.md`.
+- **OS signals** (`lib/orca_hub/os_process.ex`, ORCAHUB3-150): every OS
+  signal the BEAM sends goes through `OrcaHub.OSProcess`, which runs the
+  `/bin/sh` BUILTIN `kill` with the pid as a positional argument. Never
+  `System.cmd("kill", ...)`: on gb10, procps parsed `-<pgid>` as option
+  `-1` and SIGTERMed every process the user owned, orca-hub included, and
+  the k3s images ship no `kill` binary at all. It refuses pids <= 1, the
+  BEAM's own pid or group, and any signal outside TERM/KILL/INT/HUP/0, and
+  returns `{:error, _}` for a kill that did not land. `alive?/1` and
+  `group_alive?/1` count zombies as gone, because in a k3s pod the BEAM is
+  PID 1 and never reaps orphans. Callers: `JobWatcher` (group cancel),
+  `ProcessIsolation.Marker` (env-marker reap), `SessionRunner`'s one-shot
+  SIGINT, and `screenshot_artifact`'s timeout kill. Trigger setup scripts
+  already used the builtin and are unchanged.
 - **Voice mode** (`lib/orca_hub_web/channels/voice_channel.ex`,
   `lib/orca_hub/voice/{session,asr,intent,prompt,cleanup,dictation}.ex`,
   `lib/orca_hub/asr_config.ex`, `lib/orca_hub_web/live/voice_bar_live.ex`,
@@ -845,6 +863,13 @@ graph TB
   `Sessions.SurgeryAlertPolicy` (~31% suppressed). Suppression lives in the
   policy layer on purpose — making the MATCHER decline a path it could
   resolve would arm a flood for whoever next improves it.
+  Since 2026-11-01 the whole `"churn"` condition, all three drivers, is
+  evaluated only for `Sessions.Churn.alert_eligible?/1` sessions: the pi
+  backend, or a model whose name contains "haiku". On the more capable
+  models churn is almost always a false alarm. The heartbeat digest's
+  `CHURN?`/`FILE SURGERY?` markers use the same gate. `stall`,
+  `pending_question`, `progress_stale` and `no_commit_for` still apply to
+  every session, and the sampler still samples every running session.
 - **ClusterNodeTracker** / **NodeDialer** (both hub only): the tracker records
   Erlang node connect/disconnect events into the `nodes` table backing
   `NodeLive`; the dialer actively connects to rows flagged `dial: true`.

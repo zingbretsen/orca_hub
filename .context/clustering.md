@@ -149,6 +149,8 @@ sequenceDiagram
 | **Issues.IndexSweep** | Yes | No | 600s pgvector issue-index reconciliation, ≤20 issues + ≤400 chunks per tick; two nodes sweeping one table would duplicate the work and race each other's upserts |
 | **Issues.IndexTaskSupervisor** | Yes | No | Capped (`max_children`) supervisor for write-hook reindexes; overflow is dropped and reconciled by the sweep |
 | **PiModelSync** | Yes | No | Hourly refresh of opted-in pi providers' model lists from the LLM gateway; only the hub owns the DB, and agent pods can't reach the gateway |
+| **SessionSearch.Indexer** | Yes | No | Pushes conversation text to memory-service's `session-messages` collection; reads every node's messages and owns one durable cursor |
+| **ProcessIsolation** + Registry | Yes | Yes | Per-spawn cgroup leaf (or env-marker reap) for every agent CLI on this node |
 | **Streaming.WarmPool** | Yes | Yes | Per-node warm-port admission control (streaming engine) |
 | **ForkGate** | Yes | Yes | Serializes forked pi children's first turns; a fork child runs on its parent's node |
 | **TerminalSupervisor** | Yes | Yes | Both nodes run terminal PTYs |

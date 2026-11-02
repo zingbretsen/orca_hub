@@ -168,7 +168,8 @@ graph TB
   (`ORCA_AGENT*_` env, `ProcessIsolation.Limits`), and teardown is
   `cgroup.kill`; otherwise (k3s pods, units not yet reinstalled, `bin/test`)
   teardown kills every process that inherited the spawn's
-  `ORCA_AGENT_SPAWN_ID`, with no limits. Starts before `SessionSupervisor`
+  `ORCA_AGENT_SPAWN_ID`, with no limits (through `OrcaHub.OSProcess`'s
+  shell builtin, since the k3s images ship no `kill` binary). Starts before `SessionSupervisor`
   so runners can register spawns at port-open and so it outlives them at
   shutdown. Runners never wait on it: `release/2` is a cast, and it
   monitors every runner that prepared a spawn, because `stop_session`
@@ -210,7 +211,9 @@ graph TB
   older row (see `.context/data-model.md`). Bolted onto the tail of the same sweep,
   `ChurnSampler.AlertEvaluator` evaluates every enabled `alert_subscriptions`
   row and delivers rising-edge worker alerts to the subscribing orchestrator
-  — see `.context/data-model.md`. Hub-only for the same reason as the
+  — see `.context/data-model.md`. Its `"churn"` condition applies only to
+  `Churn.alert_eligible?/1` sessions (pi backend or a Haiku model, since
+  2026-11-01); sampling still covers every running session. Hub-only for the same reason as the
   heartbeat: two nodes sweeping would double-sample and double-alert. Each
   sweep is wrapped in `rescue`/log, so one bad session can't kill the timer
   loop.
@@ -273,8 +276,11 @@ graph TB
   sentinel file, so they survive idle teardown, WarmPool eviction, and OrcaHub
   restarts entirely. Session teardown's process-tree reap never reaches them
   either: the BEAM launches them, so they carry no `ORCA_AGENT_SPAWN_ID` and
-  live in the BEAM's own cgroup, not an agent leaf. The BEAM only ever OBSERVES one, via a disposable
-  `JobWatcher` polling the sentinel/pid/declared progress metric.
+  live in the BEAM's own cgroup, not an agent leaf. The BEAM OBSERVES one, via a disposable
+  `JobWatcher` polling the sentinel/pid/declared progress metric, and
+  signals its process group only on cancel or timeout (TERM, then KILL,
+  through `OrcaHub.OSProcess`'s shell-builtin `kill`, never an external
+  `kill` binary — ORCAHUB3-150).
   `JobResumer` re-attaches watchers to this node's non-terminal jobs on boot —
   the job-subsystem analog of `SessionResumer`.
 - **`OrcaHub.LoginSupervisor`**: DynamicSupervisor for `LoginRunner` /
