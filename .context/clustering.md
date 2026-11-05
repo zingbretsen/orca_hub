@@ -155,6 +155,7 @@ sequenceDiagram
 | **ForkGate** | Yes | Yes | Serializes forked pi children's first turns; a fork child runs on its parent's node |
 | **TerminalSupervisor** | Yes | Yes | Both nodes run terminal PTYs |
 | **TerminalRegistry** | Yes | Yes | Local registry per node |
+| **TerminalSweep** | Yes | Yes | Once after boot, marks this node's own `running` terminal rows with no live runner `dead` |
 | **JobSupervisor** + **JobRegistry** | Yes | Yes | Watchers for detached jobs; jobs run on whichever node launched them |
 | **JobResumer** | Yes | Yes | Re-attaches watchers to this node's non-terminal jobs on boot |
 | **SessionViewersRegistry** | Yes | Yes | Tracks live viewers per session, local (`:duplicate` keys) |

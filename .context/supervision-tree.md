@@ -48,6 +48,7 @@ graph TB
     App --> MemoryExtractionSweep["OrcaHub.MemoryExtractionSweep\n(hub only)"]
     App --> ForkGate["OrcaHub.ForkGate"]
     App --> TerminalSupervisor["OrcaHub.TerminalSupervisor\n(DynamicSupervisor)"]
+    App --> TerminalSweep["OrcaHub.TerminalSweep\n(boot reconcile)"]
     App --> JobSupervisor["OrcaHub.JobSupervisor\n(DynamicSupervisor)"]
     App --> JobResumer["OrcaHub.JobResumer"]
     App --> LoginSupervisor["OrcaHub.LoginSupervisor\n(DynamicSupervisor)"]
@@ -99,7 +100,7 @@ Agent nodes omit `Telemetry`, `Repo`, `MCP.UpstreamClient`, `Scheduler`,
 `PiModelSync`,
 `ClusterNodeTracker`, `Cluster.CodePush`, `NodeDialer`, and the `EmailInbox*` children. All database operations are
 proxied to the hub node via `HubRPC`. Everything else — including `ProcessIsolation`, `Streaming.WarmPool`,
-`ForkGate`, `TerminalSupervisor`, `JobSupervisor`/`JobResumer`,
+`ForkGate`, `TerminalSupervisor`/`TerminalSweep`, `JobSupervisor`/`JobResumer`,
 `LoginSupervisor`, `SkillSync`/`PiConfigSync`/`MemoryGit.Server`, and the
 `BackendInstaller*`/`MCP.CodeExec.*` children — runs on agent nodes too,
 since sessions, terminals, jobs, backend installs, on-disk skill/pi-config
@@ -133,6 +134,7 @@ graph TB
     App --> SessionResumer["OrcaHub.SessionResumer"]
     App --> ForkGate["OrcaHub.ForkGate"]
     App --> TerminalSupervisor["OrcaHub.TerminalSupervisor\n(DynamicSupervisor)"]
+    App --> TerminalSweep["OrcaHub.TerminalSweep\n(boot reconcile)"]
     App --> JobSupervisor["OrcaHub.JobSupervisor\n(DynamicSupervisor)"]
     App --> JobResumer["OrcaHub.JobResumer"]
     App --> LoginSupervisor["OrcaHub.LoginSupervisor\n(DynamicSupervisor)"]
@@ -267,7 +269,9 @@ graph TB
   fork child runs wherever its parent does.
 - **`OrcaHub.TerminalSupervisor`** / **`TerminalRegistry`**: per-node
   DynamicSupervisor + Registry for `TerminalRunner` PTY processes — see
-  `.context/terminals.md`.
+  `.context/terminals.md`. **`OrcaHub.TerminalSweep`** (after it, hub +
+  agent) marks this node's own `running` terminal rows with no live runner
+  `dead`, once after boot.
 - **`OrcaHub.JobSupervisor`** / **`JobRegistry`** / **`OrcaHub.JobResumer`**:
   the Jobs subsystem (`OrcaHub.Jobs`) — durable records of DETACHED OS
   background processes. The processes themselves are deliberately NOT

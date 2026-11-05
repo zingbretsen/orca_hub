@@ -96,8 +96,9 @@ stateDiagram-v2
   `ORCA_AGENT_SPAWN_ID`, then removes the leaf. Ids are per spawn, never
   per session, so reaping an interrupted one-shot CLI can't touch its
   replacement. A warm CLI's `run_in_background` work survives between
-  turns and dies with the port. start_job jobs, terminals and setup
-  scripts are spawned by the BEAM, carry no marker, and are never touched.
+  turns and dies with the port. Web terminals use the same wrapper and
+  reaping (`.context/terminals.md`). start_job jobs and setup scripts are
+  spawned by the BEAM, carry no marker, and are never touched.
 - **`downgrade`**: the runtime kill switch (`Streaming.disable!/1`) forcing a
   warm streaming session back to the one-shot engine — `:graceful` finishes
   the in-flight turn first, `:interrupt` cuts it short immediately.

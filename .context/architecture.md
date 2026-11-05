@@ -832,9 +832,10 @@ graph TB
   limits from `ORCA_AGENT*_` env) when the systemd unit delegates one, and
   `exec`s the CLI. A port's end reaps the CLI's whole process tree: via
   `cgroup.kill`, or by the spawn's `ORCA_AGENT_SPAWN_ID` env marker where
-  there is no delegated cgroup (k3s pods, `bin/test`). Jobs, terminals and
-  trigger setup scripts are spawned by the BEAM and never touched. See
-  `.context/session-lifecycle.md` and `.context/supervision-tree.md`.
+  there is no delegated cgroup (k3s pods, `bin/test`). Web terminals go
+  through the same wrapper (`terminal-<id>` spawns; `.context/terminals.md`).
+  Jobs and trigger setup scripts are spawned by the BEAM and never touched.
+  See `.context/session-lifecycle.md` and `.context/supervision-tree.md`.
 - **Churn sampling + worker alerts** (`lib/orca_hub/churn_sampler.ex`,
   `churn_sampler/alert_evaluator.ex`, `sessions/churn.ex`, hub only): one
   120s sweep does two things. First it samples every non-archived `running`
