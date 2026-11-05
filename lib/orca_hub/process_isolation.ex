@@ -51,8 +51,13 @@ defmodule OrcaHub.ProcessIsolation do
   registered to a live runner nor already being reaped: what a crash of
   this server, or of the whole BEAM, can leave behind.
 
-  start_job jobs, terminals and setup scripts are spawned by the BEAM, not
-  by a CLI: they carry no marker, live in `beam/`, and are never touched.
+  Web terminals use the same path: `OrcaHub.TerminalRunner` prepares a
+  spawn for `"terminal-<terminal id>"` (that string is the `session_id`
+  field and the spawn id's prefix), so a shell gets the same leaf, limits,
+  marker and reaping as an agent CLI.
+
+  start_job jobs and setup scripts are spawned by the BEAM, not by a CLI:
+  they carry no marker, live in `beam/`, and are never touched.
   """
 
   use GenServer

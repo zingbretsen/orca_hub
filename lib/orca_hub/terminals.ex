@@ -60,7 +60,22 @@ defmodule OrcaHub.Terminals do
     |> Repo.update()
   end
 
-  def delete_terminal(%Terminal{} = terminal), do: Repo.delete(terminal)
+  @doc """
+  Deletes the row, then tells a runner still alive for it (on whatever node)
+  to stop and kill its shell — see `OrcaHub.TerminalRunner`'s teardown. The
+  runner's periodic row check is the fallback if this broadcast is missed.
+  """
+  def delete_terminal(%Terminal{} = terminal) do
+    with {:ok, deleted} <- Repo.delete(terminal) do
+      Phoenix.PubSub.broadcast(
+        OrcaHub.PubSub,
+        OrcaHub.TerminalRunner.control_topic(deleted.id),
+        {:terminal_deleted, deleted.id}
+      )
+
+      {:ok, deleted}
+    end
+  end
 
   def change_terminal(%Terminal{} = terminal, attrs \\ %{}) do
     Terminal.changeset(terminal, attrs)
