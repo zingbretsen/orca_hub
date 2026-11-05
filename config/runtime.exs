@@ -47,10 +47,15 @@ config :orca_hub,
        System.get_env("ORCA_DISABLE_CODE_EXEC") in ~w(1 true)
 
 # OrcaHub.SessionResumer's boot-time orphan-resume sweep — ON by default.
-# ORCA_AUTO_RESUME=false/0 disables it node-wide.
-config :orca_hub,
-       :auto_resume,
-       System.get_env("ORCA_AUTO_RESUME") not in ~w(0 false)
+# ORCA_AUTO_RESUME=false/0 disables it node-wide. Not in test: config/test.exs
+# pins it to false (see the comment there), and this file runs after it, so
+# setting it here unconditionally silently turned the resumers back on for
+# every test run.
+if config_env() != :test do
+  config :orca_hub,
+         :auto_resume,
+         System.get_env("ORCA_AUTO_RESUME") not in ~w(0 false)
+end
 
 # Agent CLI isolation (OrcaHub.ProcessIsolation, ORCAHUB3-145/146). Every
 # node kills each agent CLI's whole process tree when its port goes away.
