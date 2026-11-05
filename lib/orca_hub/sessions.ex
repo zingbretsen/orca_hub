@@ -590,7 +590,8 @@ defmodule OrcaHub.Sessions do
       where: fragment("? ->> 'type' = 'assistant'", m.data),
       where:
         fragment(
-          "EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(?->'message'->'content', '[]'::jsonb)) AS block WHERE block->>'type' = 'tool_use' AND block->>'id' = ?)",
+          "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE jsonb_typeof(?->'message'->'content') WHEN 'array' THEN ?->'message'->'content' ELSE '[]'::jsonb END) AS block WHERE block->>'type' = 'tool_use' AND block->>'id' = ?)",
+          m.data,
           m.data,
           ^tool_use_id
         ),
@@ -991,13 +992,20 @@ defmodule OrcaHub.Sessions do
   # (not just the matching block) since a message can carry several tool_use
   # blocks and callers need to pick the last matching one in content order
   # to match the full-history fold semantics they're mirroring.
+  #
+  # Every jsonb_array_elements over `message.content` in this module goes
+  # through `CASE jsonb_typeof(...) WHEN 'array'`: sessions imported by
+  # OrcaHub.ClaudeImport store a plain prompt's content as a STRING, and
+  # jsonb_array_elements on a scalar raises 22023 ("cannot extract elements
+  # from a scalar") — a COALESCE only covers a missing key.
   defp latest_message_with_tool_use(session_id, names) do
     from(m in Message,
       where: m.session_id == ^session_id,
       where: fragment("? ->> 'type' = 'assistant'", m.data),
       where:
         fragment(
-          "EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(?->'message'->'content', '[]'::jsonb)) AS block WHERE block->>'type' = 'tool_use' AND block->>'name' = ANY(?))",
+          "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE jsonb_typeof(?->'message'->'content') WHEN 'array' THEN ?->'message'->'content' ELSE '[]'::jsonb END) AS block WHERE block->>'type' = 'tool_use' AND block->>'name' = ANY(?))",
+          m.data,
           m.data,
           ^names
         ),
@@ -1019,7 +1027,8 @@ defmodule OrcaHub.Sessions do
         where: fragment("? ->> 'type' = 'user'", m.data),
         where:
           fragment(
-            "EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(?->'message'->'content', '[]'::jsonb)) AS block WHERE block->>'type' = 'tool_result' AND block->>'tool_use_id' = ? AND COALESCE(block->>'is_error', 'false') <> 'true')",
+            "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE jsonb_typeof(?->'message'->'content') WHEN 'array' THEN ?->'message'->'content' ELSE '[]'::jsonb END) AS block WHERE block->>'type' = 'tool_result' AND block->>'tool_use_id' = ? AND COALESCE(block->>'is_error', 'false') <> 'true')",
+            m.data,
             m.data,
             ^tool_use_id
           )
@@ -1294,7 +1303,8 @@ defmodule OrcaHub.Sessions do
       where: m.session_id in ^session_ids and fragment("? ->> 'type' = 'assistant'", m.data),
       inner_lateral_join:
         block in fragment(
-          "jsonb_array_elements(COALESCE(?->'message'->'content', '[]'::jsonb))",
+          "jsonb_array_elements(CASE jsonb_typeof(?->'message'->'content') WHEN 'array' THEN ?->'message'->'content' ELSE '[]'::jsonb END)",
+          m.data,
           m.data
         ),
       on: fragment("? ->> 'type' = 'tool_use' AND ? ->> 'name' = 'Agent'", block, block),
@@ -1679,7 +1689,8 @@ defmodule OrcaHub.Sessions do
         where: m.session_id in ^session_ids and fragment("? ->> 'type' = 'assistant'", m.data),
         inner_lateral_join:
           block in fragment(
-            "jsonb_array_elements(COALESCE(?->'message'->'content', '[]'::jsonb))",
+            "jsonb_array_elements(CASE jsonb_typeof(?->'message'->'content') WHEN 'array' THEN ?->'message'->'content' ELSE '[]'::jsonb END)",
+            m.data,
             m.data
           ),
         on: fragment("? ->> 'type' = 'tool_use'", block),

@@ -1584,6 +1584,54 @@ defmodule OrcaHub.SessionsTest do
       assert %{tool_use_id: "aq1"} = Sessions.pending_ask_user_question(session.id)
     end
 
+    # OrcaHub.ClaudeImport stores a plain prompt's `message.content` as a
+    # STRING. jsonb_array_elements over it raised 22023 ("cannot extract
+    # elements from a scalar"), a 500 on SessionLive.Show's mount.
+    test "content-block queries tolerate string message content (ClaudeImport shape)",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      ask = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "aq1",
+              "name" => "AskUserQuestion",
+              "input" => %{"questions" => [%{"header" => "Which approach?"}]}
+            }
+          ]
+        }
+      }
+
+      string_user = %{"type" => "user", "message" => %{"role" => "user", "content" => "hi"}}
+      string_assistant = %{"type" => "assistant", "message" => %{"content" => "plain reply"}}
+
+      derived_insert_at(session, string_assistant, base)
+      derived_insert_at(session, ask, NaiveDateTime.add(base, 1, :second))
+      derived_insert_at(session, string_user, NaiveDateTime.add(base, 2, :second))
+      derived_insert_at(session, string_assistant, NaiveDateTime.add(base, 3, :second))
+
+      assert %{tool_use_id: "aq1"} = Sessions.pending_ask_user_question(session.id)
+      assert Sessions.latest_plan_mode_tool_use_name(session.id) == nil
+      assert Sessions.latest_todos_input(session.id) == nil
+      assert Sessions.fetch_tool_use_message(session.id, "aq1")["type"] == "assistant"
+      assert Sessions.session_ids_with_subagents([session.id]) == %{}
+      assert %{tool_calls_30m: _} = Sessions.activity_metadata([session.id])[session.id]
+
+      answer = %{
+        "type" => "user",
+        "message" => %{
+          "content" => [%{"type" => "tool_result", "tool_use_id" => "aq1", "content" => "A"}]
+        }
+      }
+
+      derived_insert_at(session, answer, NaiveDateTime.add(base, 4, :second))
+      assert Sessions.pending_ask_user_question(session.id) == nil
+    end
+
     test "pending_pi_ui_request/1 finds a still-open request far outside a small window",
          %{project: project} do
       session = create_session(project)

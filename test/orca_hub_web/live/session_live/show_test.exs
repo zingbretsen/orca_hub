@@ -1923,6 +1923,48 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       assert assigns.aq_open
     end
 
+    # Sessions imported by OrcaHub.ClaudeImport store a user prompt's
+    # `message.content` as a plain STRING. The answered check used to run
+    # jsonb_array_elements over it, and Postgres raised 22023 ("cannot
+    # extract elements from a scalar"): an HTTP 500 on mount.
+    test "a pending AskUserQuestion still mounts when a user message has string content", %{
+      conn: conn,
+      claude_session: session
+    } do
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      ask = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "aq_str",
+              "name" => "AskUserQuestion",
+              "input" => %{"questions" => [%{"header" => "Which approach?"}]}
+            }
+          ]
+        }
+      }
+
+      string_prompt = %{
+        "type" => "user",
+        "message" => %{"role" => "user", "content" => "commit this"}
+      }
+
+      derived_insert_at(session, string_prompt, base)
+      derived_insert_at(session, ask, NaiveDateTime.add(base, 1, :second))
+      derived_insert_at(session, string_prompt, NaiveDateTime.add(base, 2, :second))
+      {:ok, _} = Sessions.update_session(session, %{status: "waiting"})
+
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      assert html =~ "commit this"
+      assert %{tool_use_id: "aq_str"} = assigns.pending_questions
+      assert assigns.aq_open
+    end
+
     test "context_percent reflects the last pi_session_stats even outside the window", %{
       conn: conn,
       pi_session: session
