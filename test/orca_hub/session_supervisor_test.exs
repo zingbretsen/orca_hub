@@ -12,8 +12,8 @@ defmodule OrcaHub.SessionSupervisorTest do
   per-session `CODEX_HOME` directory being removed on an explicit stop. That
   directory no longer exists (2026-07 migration to `-c` config overrides over
   the real `~/.codex` home — see `OrcaHub.Backend.Codex`); `cleanup_session/1`
-  is a no-op for every current backend, so both tests below now just assert
-  `stop_session/1` completes cleanly regardless.
+  is a no-op for every current backend, so the first two tests below now just
+  assert `stop_session/1` completes cleanly regardless.
   """
 
   # async: false — starts a real SessionRunner (GenStatem) child under the
@@ -81,6 +81,43 @@ defmodule OrcaHub.SessionSupervisorTest do
     assert {:ok, _pid} = SessionSupervisor.start_session(claude_session.id)
     assert SessionSupervisor.stop_session(claude_session.id) == :ok
     refute SessionSupervisor.session_alive?(claude_session.id)
+  end
+
+  # Under full-suite load the Registry partition handled the dead runner's
+  # EXIT after stop_session/1 returned, so a bare Registry.lookup/2 still saw
+  # it and api_run_controller_test's `refute session_alive?` flaked.
+  # Suspending the partitions holds that stale entry in place deterministically.
+  test "session_alive?/1 is false once stop_session/1 returns, even before the Registry drops the entry",
+       %{dir: dir} do
+    {:ok, claude_session} =
+      Sessions.create_session(%{
+        directory: dir,
+        backend: "claude",
+        model: nil,
+        code_exec: false,
+        orchestrator: false
+      })
+
+    assert {:ok, pid} = SessionSupervisor.start_session(claude_session.id)
+
+    partitions = registry_partitions()
+    Enum.each(partitions, &:sys.suspend/1)
+
+    try do
+      assert SessionSupervisor.stop_session(claude_session.id) == :ok
+      refute Process.alive?(pid)
+      assert [{^pid, _}] = Registry.lookup(OrcaHub.SessionRegistry, claude_session.id)
+      refute SessionSupervisor.session_alive?(claude_session.id)
+    after
+      Enum.each(partitions, &:sys.resume/1)
+    end
+  end
+
+  defp registry_partitions do
+    OrcaHub.SessionRegistry
+    |> Supervisor.which_children()
+    |> Enum.map(fn {_id, pid, _type, _modules} -> pid end)
+    |> Enum.filter(&is_pid/1)
   end
 
   defp wait_until(fun, attempts \\ 100)

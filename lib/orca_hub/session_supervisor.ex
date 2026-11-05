@@ -88,7 +88,16 @@ defmodule OrcaHub.SessionSupervisor do
     :ok
   end
 
+  # A Registry entry outlives its process: the partition removes it only when
+  # it handles the dead runner's EXIT, asynchronously and after
+  # `terminate_child/2` (or a crash) has already returned, so a bare
+  # `Registry.lookup/2` can still report a runner that is gone. Check the pid
+  # itself. A restart in that window is safe: `Registry.register/3` replaces a
+  # dead pid's entry, and the late EXIT cleanup only removes that dead pid.
   def session_alive?(session_id) do
-    Registry.lookup(OrcaHub.SessionRegistry, session_id) != []
+    case Registry.lookup(OrcaHub.SessionRegistry, session_id) do
+      [{pid, _}] -> Process.alive?(pid)
+      [] -> false
+    end
   end
 end
