@@ -17,17 +17,18 @@ defmodule OrcaHubWeb.ProjectLive.Show do
 
     {project_node, project} = find_project!(id)
 
-    commits = list_result(rpc(project_node, Projects, :git_log, [project]))
-    current_branch = string_result(rpc(project_node, Projects, :git_branch, [project]))
-    worktrees = list_result(rpc(project_node, Projects, :git_worktree_list, [project]))
-    branches = list_result(rpc(project_node, Projects, :git_branches, [project]))
+    node_reads = load_node_reads(project_node, project)
+    commits = list_result(node_reads.commits)
+    current_branch = string_result(node_reads.current_branch)
+    worktrees = list_result(node_reads.worktrees)
+    branches = list_result(node_reads.branches)
 
     node_unavailable = node_unavailable_reason(project_node)
 
     triggers = HubRPC.list_triggers_for_project(project.id)
     artifacts = HubRPC.list_artifacts_for_project(project.id)
 
-    agent_memory = load_agent_memory(project_node, project)
+    agent_memory = agent_memory_from(node_reads)
 
     {:ok,
      socket
@@ -1462,19 +1463,46 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   # `codex_memories_enabled?/1` stays eager: it's a single config-file read
   # (~1ms, not the expensive part) used to pick the right message once the
   # section IS expanded but the fetch comes back empty.
-  defp load_agent_memory(project_node, project) do
+  defp agent_memory_from(node_reads) do
     %{
-      claude:
-        agent_memory_result(
-          rpc(project_node, AgentMemory, :list_claude_memories, [project.directory])
-        ),
-      agents_md:
-        agent_memory_result(
-          rpc(project_node, AgentMemory, :list_agents_md_memories, [project.directory])
-        ),
+      claude: agent_memory_result(node_reads.claude),
+      agents_md: agent_memory_result(node_reads.agents_md),
       codex: :not_loaded,
-      codex_enabled: bool_result(rpc(project_node, AgentMemory, :codex_memories_enabled?, []))
+      codex_enabled: bool_result(node_reads.codex_enabled)
     }
+  end
+
+  # The git panels and the agent-memory section are seven independent
+  # reads on the project's node, one Cluster.rpc each, on both passes.
+  # Serially each one pays a round trip to a remote node; concurrently the
+  # mount waits for the slowest. A read that outlives the deadline degrades
+  # to the same {:error, _} shape an unreachable node gives.
+  @node_read_timeout 12_000
+
+  defp load_node_reads(project_node, project) do
+    dir = project.directory
+
+    reads = [
+      commits: {Projects, :git_log, [project]},
+      current_branch: {Projects, :git_branch, [project]},
+      worktrees: {Projects, :git_worktree_list, [project]},
+      branches: {Projects, :git_branches, [project]},
+      claude: {AgentMemory, :list_claude_memories, [dir]},
+      agents_md: {AgentMemory, :list_agents_md_memories, [dir]},
+      codex_enabled: {AgentMemory, :codex_memories_enabled?, []}
+    ]
+
+    reads
+    |> Task.async_stream(fn {_key, {mod, fun, args}} -> rpc(project_node, mod, fun, args) end,
+      max_concurrency: length(reads),
+      timeout: @node_read_timeout,
+      on_timeout: :kill_task
+    )
+    |> Enum.zip(reads)
+    |> Map.new(fn
+      {{:ok, result}, {key, _read}} -> {key, result}
+      {{:exit, reason}, {key, _read}} -> {key, {:error, {:node_read_failed, reason}}}
+    end)
   end
 
   # Normalizes rpc/5's {:error, ...} tuples (node offline/unassigned) down to

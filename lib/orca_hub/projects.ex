@@ -445,15 +445,37 @@ defmodule OrcaHub.Projects do
     end
   end
 
+  # The read-only git queries behind the project page panels. System.cmd has
+  # no deadline of its own, and a local Cluster.rpc is a plain apply with no
+  # timeout either, so coreutils `timeout` bounds them: a hung git (a stale
+  # lock, a dead network mount) must not hang the page mount. Kept below
+  # Cluster.rpc's 10 s default so a remote call returns this result instead
+  # of an rpc timeout.
+  @git_read_timeout_s 8
+
+  @doc false
+  def git_read(dir, args, timeout_s \\ @git_read_timeout_s) do
+    case System.cmd(
+           "timeout",
+           ["--kill-after=2", "#{timeout_s}", "git" | args],
+           cd: dir,
+           stderr_to_stdout: true
+         ) do
+      # 124: TERM at the deadline; 137: the KILL --kill-after sends.
+      {_output, code} when code in [124, 137] ->
+        {"git #{hd(args)} timed out after #{timeout_s}s", code}
+
+      result ->
+        result
+    end
+  end
+
   @doc """
   Returns recent git commits from the project directory.
   Returns a list of maps with :hash, :subject, :relative_date, and :author keys.
   """
   def git_log(%Project{directory: dir}, count \\ 20) do
-    case System.cmd("git", ["log", "--format=%h|%s|%ar|%an", "-n", "#{count}"],
-           cd: dir,
-           stderr_to_stdout: true
-         ) do
+    case git_read(dir, ["log", "--format=%h|%s|%ar|%an", "-n", "#{count}"]) do
       {output, 0} ->
         commits =
           output
@@ -479,7 +501,7 @@ defmodule OrcaHub.Projects do
 
   @doc "Returns the current git branch name."
   def git_branch(%Project{directory: dir}) do
-    case System.cmd("git", ["branch", "--show-current"], cd: dir, stderr_to_stdout: true) do
+    case git_read(dir, ["branch", "--show-current"]) do
       {output, 0} -> String.trim(output)
       _ -> nil
     end
@@ -487,10 +509,7 @@ defmodule OrcaHub.Projects do
 
   @doc "Returns list of local branch names."
   def git_branches(%Project{directory: dir}) do
-    case System.cmd("git", ["branch", "--format=%(refname:short)"],
-           cd: dir,
-           stderr_to_stdout: true
-         ) do
+    case git_read(dir, ["branch", "--format=%(refname:short)"]) do
       {output, 0} ->
         output |> String.split("\n", trim: true) |> Enum.map(&String.trim/1) |> Enum.sort()
 
@@ -541,17 +560,13 @@ defmodule OrcaHub.Projects do
   - `:error` - error message if git commands fail
   """
   def git_status(%Project{directory: dir}) do
-    with {porcelain, 0} <-
-           System.cmd("git", ["status", "--porcelain"], cd: dir, stderr_to_stdout: true) do
+    with {porcelain, 0} <- git_read(dir, ["status", "--porcelain"]) do
       lines = String.split(porcelain, "\n", trim: true)
       conflicts = Enum.any?(lines, fn line -> String.match?(line, ~r/^(U.|.U|DD|AA)/) end)
       clean = lines == []
 
       {ahead, behind} =
-        case System.cmd("git", ["rev-list", "--count", "--left-right", "@{upstream}...HEAD"],
-               cd: dir,
-               stderr_to_stdout: true
-             ) do
+        case git_read(dir, ["rev-list", "--count", "--left-right", "@{upstream}...HEAD"]) do
           {output, 0} ->
             case String.split(String.trim(output), "\t") do
               [behind_str, ahead_str] ->
@@ -574,7 +589,7 @@ defmodule OrcaHub.Projects do
 
   @doc "Lists git worktrees. Returns list of maps with :path, :branch, :head keys."
   def git_worktree_list(%Project{directory: dir}) do
-    case System.cmd("git", ["worktree", "list", "--porcelain"], cd: dir, stderr_to_stdout: true) do
+    case git_read(dir, ["worktree", "list", "--porcelain"]) do
       {output, 0} ->
         output
         |> String.split("\n\n", trim: true)

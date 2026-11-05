@@ -1145,8 +1145,6 @@
               </form>
             </div>
 
-            <% {claude_memory_frontmatter, claude_memory_blocks} =
-              split_body_blocks("claude_memory", memory.content) %>
             <div
               :if={
                 @claude_editing_filename != memory.filename &&
@@ -1154,6 +1152,8 @@
               }
               class="mt-3"
             >
+              <% {claude_memory_frontmatter, claude_memory_blocks} =
+                split_body_blocks("claude_memory", memory.content) %>
               <BlockEditor.block_editor
                 scope="claude_memory"
                 target_key={memory.filename}
