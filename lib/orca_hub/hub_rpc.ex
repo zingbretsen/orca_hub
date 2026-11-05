@@ -86,6 +86,8 @@ defmodule OrcaHub.HubRPC do
   def latest_todos_input(session_id),
     do: call(OrcaHub.Sessions, :latest_todos_input, [session_id])
 
+  def tool_use_state(session_id), do: call(OrcaHub.Sessions, :tool_use_state, [session_id])
+
   def pending_pi_ui_request(session_id),
     do: call(OrcaHub.Sessions, :pending_pi_ui_request, [session_id])
 

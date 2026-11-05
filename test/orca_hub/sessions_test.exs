@@ -1414,6 +1414,34 @@ defmodule OrcaHub.SessionsTest do
             derived_insert_at(session, text_msg("noise#{i}"), NaiveDateTime.add(base, i, :second))
     end
 
+    # Repo queries against `messages` issued by THIS process only (the
+    # telemetry handler runs in the caller), so other tests can't inflate it.
+    defp with_message_queries(fun) do
+      me = self()
+      ref = make_ref()
+
+      :telemetry.attach(
+        {ref, __MODULE__},
+        [:orca_hub, :repo, :query],
+        fn _event, _measurements, meta, _config ->
+          if self() == me and meta.query =~ ~s(FROM "messages"), do: send(me, {ref, :query})
+        end,
+        nil
+      )
+
+      result = fun.()
+      :telemetry.detach({ref, __MODULE__})
+      {result, count_messages(ref, 0)}
+    end
+
+    defp count_messages(ref, n) do
+      receive do
+        {^ref, :query} -> count_messages(ref, n + 1)
+      after
+        0 -> n
+      end
+    end
+
     test "latest_plan_mode_tool_use_name/1 finds an EnterPlanMode far outside a small window",
          %{project: project} do
       session = create_session(project)
@@ -1630,6 +1658,118 @@ defmodule OrcaHub.SessionsTest do
 
       derived_insert_at(session, answer, NaiveDateTime.add(base, 4, :second))
       assert Sessions.pending_ask_user_question(session.id) == nil
+    end
+
+    # The answered check only scans user rows at or after the question's own
+    # inserted_at; a tool_result that lands in the same microsecond must
+    # still count.
+    test "pending_ask_user_question/1 counts an answer sharing the question's timestamp",
+         %{project: project} do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      ask = %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "aq_tie",
+              "name" => "AskUserQuestion",
+              "input" => %{"questions" => [%{"header" => "Which approach?"}]}
+            }
+          ]
+        }
+      }
+
+      answer = %{
+        "type" => "user",
+        "message" => %{
+          "content" => [%{"type" => "tool_result", "tool_use_id" => "aq_tie", "content" => "A"}]
+        }
+      }
+
+      derived_noise(session, NaiveDateTime.add(base, -60, :second), 10)
+      derived_insert_at(session, ask, base)
+      assert %{tool_use_id: "aq_tie"} = Sessions.pending_ask_user_question(session.id)
+
+      derived_insert_at(session, answer, base)
+      assert Sessions.pending_ask_user_question(session.id) == nil
+    end
+
+    test "tool_use_state/1 is all nil for a session with no control tool_use", %{
+      project: project
+    } do
+      session = create_session(project)
+      derived_noise(session, ~N[2026-01-01 00:00:00.000000], 5)
+
+      assert Sessions.tool_use_state(session.id) == %{
+               plan_mode: nil,
+               todos: nil,
+               ask_user_question: nil
+             }
+    end
+
+    test "tool_use_state/1 matches the three single-purpose lookups, in one scan", %{
+      project: project
+    } do
+      session = create_session(project)
+      base = ~N[2026-01-01 00:00:00.000000]
+
+      tool_use = fn blocks -> %{"type" => "assistant", "message" => %{"content" => blocks}} end
+
+      todo = fn label ->
+        %{
+          "type" => "tool_use",
+          "name" => "TodoWrite",
+          "input" => %{"todos" => [%{"content" => label, "status" => "pending"}]}
+        }
+      end
+
+      ask = fn id ->
+        %{
+          "type" => "tool_use",
+          "id" => id,
+          "name" => "AskUserQuestion",
+          "input" => %{"questions" => [%{"header" => id}]}
+        }
+      end
+
+      at = &NaiveDateTime.add(base, &1, :second)
+
+      derived_insert_at(
+        session,
+        tool_use.([%{"type" => "tool_use", "name" => "EnterPlanMode"}]),
+        at.(0)
+      )
+
+      derived_insert_at(session, tool_use.([todo.("old")]), at.(1))
+      derived_insert_at(session, tool_use.([ask.("aq_old")]), at.(2))
+
+      derived_insert_at(
+        session,
+        tool_use.([%{"type" => "tool_use", "name" => "ExitPlanMode"}]),
+        at.(3)
+      )
+
+      # One message carrying two control tools, the later TodoWrite last.
+      derived_insert_at(session, tool_use.([ask.("aq_new"), todo.("a"), todo.("b")]), at.(4))
+      derived_noise(session, at.(4), 10)
+
+      expected = %{
+        plan_mode: Sessions.latest_plan_mode_tool_use_name(session.id),
+        todos: Sessions.latest_todos_input(session.id),
+        ask_user_question: Sessions.pending_ask_user_question(session.id)
+      }
+
+      assert expected.plan_mode == "ExitPlanMode"
+      assert [%{"content" => "b"}] = expected.todos
+      assert %{tool_use_id: "aq_new"} = expected.ask_user_question
+
+      {state, queries} = with_message_queries(fn -> Sessions.tool_use_state(session.id) end)
+      assert state == expected
+      # One scan, one primary-key fetch of the winning rows, one answered check.
+      assert queries == 3
     end
 
     test "pending_pi_ui_request/1 finds a still-open request far outside a small window",

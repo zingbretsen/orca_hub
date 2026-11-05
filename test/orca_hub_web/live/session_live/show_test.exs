@@ -2714,7 +2714,11 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
       combined = Enum.find(user_texts(session.id), &(&1 =~ "beta"))
       assert combined =~ "alpha"
 
-      refute has_element?(view, "#message-queue")
+      # SessionHeartbeat broadcasts the emptied queue only AFTER
+      # Cluster.send_message returns, and the runner persists the user
+      # message (what wait_for_user_text sees) well before that: ~100 ms
+      # under load. Wait for the list to go, rather than asserting in the gap.
+      assert wait_until_gone(view, "#message-queue")
     end
 
     test "a queue that exists before the page opens is loaded on mount", %{
@@ -2754,6 +2758,20 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
         true ->
           Process.sleep(25)
           wait_for_user_text(session_id, needle, attempts - 1)
+      end
+    end
+
+    defp wait_until_gone(view, selector, attempts \\ 80) do
+      cond do
+        not has_element?(view, selector) ->
+          true
+
+        attempts == 0 ->
+          false
+
+        true ->
+          Process.sleep(25)
+          wait_until_gone(view, selector, attempts - 1)
       end
     end
   end

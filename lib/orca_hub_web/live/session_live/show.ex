@@ -84,6 +84,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     {prev_session_id, next_session_id} = HubRPC.get_adjacent_session_ids(session)
 
+    # Plan mode, todos and the pending AskUserQuestion, from one pass over
+    # the session's full history (Sessions.tool_use_state/1) instead of three
+    # separate scans.
+    tool_state = HubRPC.tool_use_state(id)
+
     # Current orchestrator, if any (ORCAHUB3-50) — a session with no parent
     # is a normal, meaningful state, not something to render as absence.
     parent_session = session.parent_session_id && HubRPC.get_session(session.parent_session_id)
@@ -186,7 +191,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      # arbitrarily far back; kept correct thereafter by the incremental
      # handle_plan_events/2 and handle_pi_plan_events/2 clauses below, which
      # already react to each live event rather than rescanning @messages.
-     |> assign(:plan_mode, initial_plan_mode(id) || initial_pi_plan_mode(id))
+     |> assign(:plan_mode, initial_plan_mode(tool_state) || initial_pi_plan_mode(id))
      |> assign(:pending_plan_file, nil)
      |> assign(:plan_file_path, nil)
      |> assign(:plan_file_original_mtime, nil)
@@ -233,7 +238,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      # away). Meaningless at `sm:` and up, where they're always inline.
      |> assign(:show_meta, false)
      |> assign(:heartbeat_info, HubRPC.get_heartbeat(id))
-     |> assign_ask_user_question(runner_status.status, id)
+     |> assign_ask_user_question(runner_status.status, tool_state)
      # pi's extension-UI reply loop (spec §12.3): reconstructed purely from
      # message history (a "pi_ui_request" with no later matching
      # "pi_ui_response") rather than tracked as separate runner state, so a
@@ -259,7 +264,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:tree_has_subagents, %{})
      |> assign(:tree_compose, nil)
      |> assign(:sessions_topic_subscribed, false)
-     |> load_session_todos(id)
+     |> load_session_todos(tool_state)
      |> load_session_commits()
      |> allow_upload(:image,
        accept: ~w(.jpg .jpeg .png .gif .webp),
@@ -963,15 +968,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   defp own_tool_use_ids(_message), do: []
 
-  # Most recent EnterPlanMode/ExitPlanMode tool_use in FULL history (targeted
-  # query — see Sessions.latest_plan_mode_tool_use_name/1), mapped the same
-  # way PlanMode.detect/1 maps its full-history fold's final tool_use.
-  defp initial_plan_mode(id) do
-    case HubRPC.latest_plan_mode_tool_use_name(id) do
-      "EnterPlanMode" -> :planning
-      _ -> false
-    end
-  end
+  # Most recent EnterPlanMode/ExitPlanMode tool_use in FULL history (see
+  # Sessions.tool_use_state/1), mapped the same way PlanMode.detect/1 maps
+  # its full-history fold's final tool_use.
+  defp initial_plan_mode(%{plan_mode: "EnterPlanMode"}), do: :planning
+  defp initial_plan_mode(_tool_state), do: false
 
   defp initial_pi_plan_mode(id) do
     if HubRPC.latest_pi_plan_mode_enabled?(id), do: :planning, else: false
@@ -985,17 +986,17 @@ defmodule OrcaHubWeb.SessionLive.Show do
   end
 
   # Derive the pending AskUserQuestion from FULL history (targeted query —
-  # see Sessions.pending_ask_user_question/1, NOT @messages, which is only
-  # the windowed feed) and open the modal when the session is waiting on the
-  # user. Resets wizard page/selection state.
+  # see Sessions.tool_use_state/1, NOT @messages, which is only the windowed
+  # feed) and open the modal when the session is waiting on the user. Resets
+  # wizard page/selection state.
   #
   # Capability-gated (spec §7/§6.3(5)): backends without `AskUserQuestion`
   # (Codex) never emit that tool name, so `pending` is naturally always nil
   # for them — but the modal-open flag is gated explicitly too, so the
   # interactive wizard can never initiate off a foreign tool name.
-  defp assign_ask_user_question(socket, status, session_id) do
+  defp assign_ask_user_question(socket, status, tool_state) do
     pending =
-      case HubRPC.pending_ask_user_question(session_id) do
+      case tool_state.ask_user_question do
         nil ->
           nil
 
@@ -3889,13 +3890,13 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   # -- Todo helpers --
 
-  # Full-history targeted query (Sessions.latest_todos_input/1), NOT
-  # @messages (only the windowed feed — see @window_size): a session can go
-  # a long stretch without touching its todo list, so the deciding
-  # TodoWrite call may be well outside the window. handle_todo_events/2
-  # keeps this correct live, per-event, same as the other derived facts.
-  defp load_session_todos(socket, session_id) do
-    assign(socket, :todos, Todos.parse(HubRPC.latest_todos_input(session_id)))
+  # Full-history targeted query (Sessions.tool_use_state/1), NOT @messages
+  # (only the windowed feed — see @window_size): a session can go a long
+  # stretch without touching its todo list, so the deciding TodoWrite call
+  # may be well outside the window. handle_todo_events/2 keeps this correct
+  # live, per-event, same as the other derived facts.
+  defp load_session_todos(socket, tool_state) do
+    assign(socket, :todos, Todos.parse(tool_state.todos))
   end
 
   # -- Plan mode helpers --

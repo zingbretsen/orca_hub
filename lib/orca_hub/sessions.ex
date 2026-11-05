@@ -694,11 +694,11 @@ defmodule OrcaHub.Sessions do
   def pending_ask_user_question(session_id) do
     case latest_message_with_tool_use(session_id, ["AskUserQuestion"]) do
       nil -> nil
-      data -> extract_pending_ask_user_question(session_id, data)
+      {data, asked_at} -> extract_pending_ask_user_question(session_id, data, asked_at)
     end
   end
 
-  defp extract_pending_ask_user_question(session_id, data) do
+  defp extract_pending_ask_user_question(session_id, data, asked_at) do
     data
     |> get_in(["message", "content"])
     |> List.wrap()
@@ -707,7 +707,7 @@ defmodule OrcaHub.Sessions do
     |> case do
       %{"id" => id, "input" => %{"questions" => questions}}
       when is_binary(id) and is_list(questions) ->
-        if tool_use_answered?(session_id, id) do
+        if tool_use_answered?(session_id, id, asked_at) do
           nil
         else
           %{tool_use_id: id, questions: questions}
@@ -727,7 +727,7 @@ defmodule OrcaHub.Sessions do
   def latest_plan_mode_tool_use_name(session_id) do
     case latest_message_with_tool_use(session_id, ["EnterPlanMode", "ExitPlanMode"]) do
       nil -> nil
-      data -> last_tool_use_name(data, ["EnterPlanMode", "ExitPlanMode"])
+      {data, _inserted_at} -> last_tool_use_name(data, ["EnterPlanMode", "ExitPlanMode"])
     end
   end
 
@@ -752,20 +752,96 @@ defmodule OrcaHub.Sessions do
   """
   def latest_todos_input(session_id) do
     case latest_message_with_tool_use(session_id, ["TodoWrite"]) do
-      nil ->
-        nil
-
-      data ->
-        data
-        |> get_in(["message", "content"])
-        |> List.wrap()
-        |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use" && &1["name"] == "TodoWrite"))
-        |> List.last()
-        |> case do
-          nil -> nil
-          tool_use -> get_in(tool_use, ["input", "todos"])
-        end
+      nil -> nil
+      {data, _inserted_at} -> todos_input(data)
     end
+  end
+
+  defp todos_input(data) do
+    data
+    |> get_in(["message", "content"])
+    |> List.wrap()
+    |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use" && &1["name"] == "TodoWrite"))
+    |> List.last()
+    |> case do
+      nil -> nil
+      tool_use -> get_in(tool_use, ["input", "todos"])
+    end
+  end
+
+  @plan_mode_tools ~w(EnterPlanMode ExitPlanMode)
+  @tool_use_state_tools @plan_mode_tools ++ ~w(TodoWrite AskUserQuestion)
+
+  @doc """
+  `latest_plan_mode_tool_use_name/1`, `latest_todos_input/1` and
+  `pending_ask_user_question/1` from ONE pass over the session's assistant
+  messages instead of three. `SessionLive.Show`'s mount needs all three, and
+  each separate query detoasts and unnests every assistant row when its tool
+  never ran (the usual case for plan mode and AskUserQuestion): ~8-10 ms
+  each at 3,600 messages, paid on both the dead and the connected mount.
+
+  Returns `%{plan_mode:, todos:, ask_user_question:}`, each the value the
+  matching single-purpose function returns. The scan selects only ids, so
+  the sort behind `DISTINCT ON` never carries message bodies; the (at most
+  three) winning rows are then fetched by primary key.
+  """
+  def tool_use_state(session_id) do
+    latest =
+      from(m in Message,
+        inner_lateral_join:
+          block in fragment(
+            "jsonb_array_elements(CASE jsonb_typeof(?->'message'->'content') WHEN 'array' THEN ?->'message'->'content' ELSE '[]'::jsonb END)",
+            m.data,
+            m.data
+          ),
+        on:
+          fragment(
+            "? ->> 'type' = 'tool_use' AND ? ->> 'name' = ANY(?)",
+            block,
+            block,
+            ^@tool_use_state_tools
+          ),
+        where: m.session_id == ^session_id,
+        where: fragment("? ->> 'type' = 'assistant'", m.data),
+        distinct: [
+          asc:
+            fragment(
+              "CASE ? ->> 'name' WHEN 'TodoWrite' THEN 'todos' WHEN 'AskUserQuestion' THEN 'ask_user_question' ELSE 'plan_mode' END",
+              block
+            )
+        ],
+        order_by: [desc: m.inserted_at],
+        select:
+          {fragment(
+             "CASE ? ->> 'name' WHEN 'TodoWrite' THEN 'todos' WHEN 'AskUserQuestion' THEN 'ask_user_question' ELSE 'plan_mode' END",
+             block
+           ), m.id}
+      )
+      |> Repo.all()
+
+    rows =
+      case Enum.map(latest, &elem(&1, 1)) do
+        [] ->
+          %{}
+
+        ids ->
+          from(m in Message, where: m.id in ^ids, select: {m.id, {m.data, m.inserted_at}})
+          |> Repo.all()
+          |> Map.new()
+      end
+
+    by_group = Map.new(latest, fn {group, id} -> {group, rows[id]} end)
+
+    %{
+      plan_mode:
+        with({data, _} <- by_group["plan_mode"], do: last_tool_use_name(data, @plan_mode_tools)),
+      todos: with({data, _} <- by_group["todos"], do: todos_input(data)),
+      ask_user_question:
+        with(
+          {data, asked_at} <- by_group["ask_user_question"],
+          do: extract_pending_ask_user_question(session_id, data, asked_at)
+        )
+    }
   end
 
   @doc """
@@ -988,10 +1064,12 @@ defmodule OrcaHub.Sessions do
 
   # Latest assistant message containing a tool_use block whose name is in
   # `names`, or `nil` — the shared primitive behind the plan-mode/todos/
-  # AskUserQuestion targeted queries above. Returns the whole message `data`
-  # (not just the matching block) since a message can carry several tool_use
-  # blocks and callers need to pick the last matching one in content order
-  # to match the full-history fold semantics they're mirroring.
+  # AskUserQuestion targeted queries above. Returns `{data, inserted_at}`:
+  # the whole message `data` (not just the matching block) since a message
+  # can carry several tool_use blocks and callers need to pick the last
+  # matching one in content order to match the full-history fold semantics
+  # they're mirroring, and `inserted_at` so the AskUserQuestion answered
+  # check can start its scan there.
   #
   # Every jsonb_array_elements over `message.content` in this module goes
   # through `CASE jsonb_typeof(...) WHEN 'array'`: sessions imported by
@@ -1011,20 +1089,26 @@ defmodule OrcaHub.Sessions do
         ),
       order_by: [desc: m.inserted_at],
       limit: 1,
-      select: m.data
+      select: {m.data, m.inserted_at}
     )
     |> Repo.one()
   end
 
-  # Is there any NON-error tool_result for `tool_use_id` anywhere in the
-  # session's history? (The synthetic `is_error: true` result Claude's CLI
-  # always injects for AskUserQuestion under `-p` must not count — see
+  # Is there any NON-error tool_result for `tool_use_id` in the session's
+  # history at or after `asked_at` (the inserted_at of the message carrying
+  # the tool_use — a result can never precede its call, and `>=` keeps a
+  # same-microsecond tie)? The lower bound matters: the EXISTS has to detoast
+  # and unnest every user row it visits, and an AskUserQuestion is almost
+  # never really answered (see below), so without it this walked every user
+  # message in the session. (The synthetic `is_error: true` result Claude's
+  # CLI always injects for AskUserQuestion under `-p` must not count — see
   # OrcaHub.AskUserQuestion's moduledoc.)
-  defp tool_use_answered?(session_id, tool_use_id) do
+  defp tool_use_answered?(session_id, tool_use_id, asked_at) do
     Repo.exists?(
       from m in Message,
         where: m.session_id == ^session_id,
         where: fragment("? ->> 'type' = 'user'", m.data),
+        where: m.inserted_at >= ^asked_at,
         where:
           fragment(
             "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE jsonb_typeof(?->'message'->'content') WHEN 'array' THEN ?->'message'->'content' ELSE '[]'::jsonb END) AS block WHERE block->>'type' = 'tool_result' AND block->>'tool_use_id' = ? AND COALESCE(block->>'is_error', 'false') <> 'true')",
