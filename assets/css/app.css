@@ -91,11 +91,6 @@
   --noise: 0;
 }
 
-/* Add variants based on LiveView classes */
-@custom-variant phx-click-loading (.phx-click-loading&, .phx-click-loading &);
-@custom-variant phx-submit-loading (.phx-submit-loading&, .phx-submit-loading &);
-@custom-variant phx-change-loading (.phx-change-loading&, .phx-change-loading &);
-
 /* Use the data attribute for dark mode  */
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
@@ -378,8 +373,10 @@ html.command-palette-open body {
    (phone width + both <html> attributes), spelled out flat for the reason
    given above the TTS highlight rules. Change them together with it. */
 
-/* The four view states, published by the VoiceView hook as
-   `html[data-voice-state]`. Strictly more specific than `voice-view:`, so
+/* Variants for the view states the VoiceView hook publishes as
+   `html[data-voice-state]` (dictating, working, reply, paging). Only the two
+   that templates use are defined; add the others the same way when needed.
+   Strictly more specific than `voice-view:`, so
    `voice-view:hidden voice-dictating:flex` on one element reads "hidden in
    the voice view, except while dictating" whatever the source order. */
 @custom-variant voice-dictating {
@@ -392,20 +389,6 @@ html.command-palette-open body {
 @custom-variant voice-working {
   @media (max-width: 767px) {
     html[data-voice-view][data-voice-layout][data-voice-state="working"] & {
-      @slot;
-    }
-  }
-}
-@custom-variant voice-reply {
-  @media (max-width: 767px) {
-    html[data-voice-view][data-voice-layout][data-voice-state="reply"] & {
-      @slot;
-    }
-  }
-}
-@custom-variant voice-paging {
-  @media (max-width: 767px) {
-    html[data-voice-view][data-voice-layout][data-voice-state="paging"] & {
       @slot;
     }
   }
