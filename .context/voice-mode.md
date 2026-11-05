@@ -49,7 +49,7 @@ ordinary `state` snapshot -> the hook's draft sink. See "Rolling cleanup".
   `initial_prompt` (vocabulary, then the draft's tail).
 - `asr_config.ex` — hub-managed config, sibling of `TTSConfig`.
 - `assets/js/voice/*.js` — capture + resample, VAD, OVS1 encoding, channel
-  client, asset URLs, the `Voice` hook (`wav.js` is offline verification only),
+  client, asset URLs, the `Voice` hook,
   `draft_sync.js` (the pure sink write rule + caret mapping).
 - `live/voice_bar_live.ex` — the GLOBAL voice bar (phase 2b, §8.2 /
   ORCAHUB3-88): one sticky nested LiveView `live_render`ed in the app header
@@ -609,7 +609,7 @@ is still owed: headless has no audio route and no OS backgrounding.
   (`VoiceViewFlagCheckTest`).
 - `assets/css/app.css`: the `voice-view` custom variant (phone width +
   `html[data-voice-view][data-voice-layout]`), plus W2's `voice-dictating:` /
-  `voice-working:` / `voice-reply:` / `voice-paging:` state variants, plus a
+  `voice-working:` state variants (the only two states templates style), plus a
   delimited block of flat rules for markup the page does not own the classes
   of (the shared `<.header>`, the bubbles, the textarea). A second delimited
   block, "The voice view's header (ORCAHUB3-140)", restyles the bar: the
