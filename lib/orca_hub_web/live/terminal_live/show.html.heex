@@ -65,7 +65,8 @@
   :if={@terminal.status != "running"}
   class="mt-4 bg-base-200 rounded-lg p-8 text-center text-base-content/50"
 >
-  <p class="text-sm">Terminal is not running.</p>
+  <p :if={is_integer(@exit_code)} class="text-sm">Shell exited with code {@exit_code}.</p>
+  <p :if={!is_integer(@exit_code)} class="text-sm">Terminal is not running.</p>
   <button phx-click="start_terminal" class="btn btn-sm btn-success mt-3">
     <.icon name="hero-play-micro" class="size-4" /> Start Terminal
   </button>

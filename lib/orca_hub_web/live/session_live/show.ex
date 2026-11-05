@@ -227,6 +227,10 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:show_terminal, false)
      |> assign(:open_terminals, [])
      |> assign(:active_terminal_id, nil)
+     # Open tabs whose shell has exited or been stopped:
+     # %{terminal_id => %{status: "dead" | "stopped" | "deleted", code: int | nil}}.
+     # Fed by the Terminal hook's terminal_exited/terminal_status_changed.
+     |> assign(:exited_terminals, %{})
      |> assign(:show_mcp_modal, false)
      |> assign(:session_mcp_servers, HubRPC.list_servers_for_session(id))
      |> assign(:all_upstream_servers, HubRPC.list_upstream_servers())
@@ -2344,9 +2348,65 @@ defmodule OrcaHubWeb.SessionLive.Show do
         true -> socket.assigns.active_terminal_id
       end
 
-    socket = assign(socket, open_terminals: open, active_terminal_id: active)
+    socket =
+      assign(socket,
+        open_terminals: open,
+        active_terminal_id: active,
+        exited_terminals: Map.delete(socket.assigns.exited_terminals, id)
+      )
+
     socket = if open == [], do: assign(socket, show_terminal: false), else: socket
     {:noreply, socket}
+  end
+
+  # The Terminal hook pushes these to whichever LiveView hosts it (this page
+  # and TerminalLive.Show). Without them, Ctrl+D in the panel crashed this
+  # view with a FunctionClauseError and the page reloaded with an error.
+  def handle_event("terminal_exited", %{"terminal_id" => id} = params, socket) do
+    code = if is_integer(params["code"]), do: params["code"]
+    {:noreply, mark_terminal_exited(socket, id, "dead", code)}
+  end
+
+  def handle_event("terminal_status_changed", %{"terminal_id" => id, "status" => status}, socket) do
+    case status do
+      "running" ->
+        {:noreply,
+         assign(socket, :exited_terminals, Map.delete(socket.assigns.exited_terminals, id))}
+
+      status when status in ["stopped", "dead", "deleted"] ->
+        {:noreply, mark_terminal_exited(socket, id, status, nil)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("terminal_exited", _params, socket), do: {:noreply, socket}
+  def handle_event("terminal_status_changed", _params, socket), do: {:noreply, socket}
+
+  def handle_event("restart_terminal_tab", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.open_terminals, &(&1.id == id)) do
+      nil ->
+        {:noreply, socket}
+
+      terminal ->
+        case Cluster.start_terminal(Cluster.runner_node_for(terminal), id) do
+          {:ok, _pid} ->
+            {:noreply,
+             assign(socket, :exited_terminals, Map.delete(socket.assigns.exited_terminals, id))}
+
+          {:error, {:already_started, _pid}} ->
+            {:noreply,
+             assign(socket, :exited_terminals, Map.delete(socket.assigns.exited_terminals, id))}
+
+          {:error, reason} ->
+            message =
+              Cluster.node_unavailable_message(reason) ||
+                "Failed to restart terminal: #{inspect(reason)}"
+
+            {:noreply, put_flash(socket, :error, message)}
+        end
+    end
   end
 
   def handle_event("close_terminal_panel", _params, socket) do
@@ -2695,6 +2755,71 @@ defmodule OrcaHubWeb.SessionLive.Show do
           if(close_modal, do: false, else: socket.assigns.show_mobile_actions)
         )
     end
+  end
+
+  # Only tabs this page has open; an exit code already recorded is kept when
+  # the status broadcast that follows it arrives without one.
+  defp mark_terminal_exited(socket, id, status, code) do
+    if Enum.any?(socket.assigns.open_terminals, &(&1.id == id)) do
+      exited =
+        Map.update(socket.assigns.exited_terminals, id, %{status: status, code: code}, fn prev ->
+          %{status: status, code: code || prev.code}
+        end)
+
+      assign(socket, :exited_terminals, exited)
+    else
+      socket
+    end
+  end
+
+  attr :id, :string, required: true
+  attr :terminal_id, :string, required: true
+  attr :exit, :map, required: true
+  attr :active, :boolean, required: true
+
+  # The bar over an exited/stopped tab's xterm, which keeps its last output
+  # (and the hook's "[Process exited ...]" line) visible above it.
+  defp terminal_exit_bar(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      class={[
+        "absolute inset-x-0 bottom-0 z-10 flex items-center gap-2 px-3 py-2",
+        "bg-base-200/95 border-t border-base-300 text-xs",
+        !@active && "hidden"
+      ]}
+    >
+      <span class="flex-1 text-base-content/70">
+        <%= case @exit do %>
+          <% %{status: "dead", code: code} when is_integer(code) -> %>
+            Shell exited with code {code}.
+          <% %{status: "dead"} -> %>
+            Shell exited.
+          <% %{status: "deleted"} -> %>
+            Terminal was deleted.
+          <% _ -> %>
+            Terminal stopped.
+        <% end %>
+      </span>
+      <button
+        :if={@exit.status != "deleted"}
+        type="button"
+        phx-click="restart_terminal_tab"
+        phx-value-id={@terminal_id}
+        class="btn btn-xs btn-success"
+      >
+        <.icon name="hero-arrow-path-micro" class="size-3" /> Restart
+      </button>
+      <button
+        type="button"
+        phx-click="close_terminal_tab"
+        phx-value-id={@terminal_id}
+        class="btn btn-xs btn-ghost"
+      >
+        Close
+      </button>
+    </div>
+    """
   end
 
   defp build_terminal_attrs(name, session, session_node) do

@@ -1882,7 +1882,12 @@ was. --%>
                   term.id != @active_terminal_id && "btn-ghost"
                 ]}
               >
-                <span class="truncate max-w-24">{term.name}</span>
+                <span class={[
+                  "truncate max-w-24",
+                  Map.has_key?(@exited_terminals, term.id) && "line-through opacity-60"
+                ]}>
+                  {term.name}
+                </span>
                 <span
                   phx-click="close_terminal_tab"
                   phx-value-id={term.id}
@@ -1930,6 +1935,14 @@ was. --%>
               phx-update="ignore"
             >
             </div>
+            <.terminal_exit_bar
+              :for={term <- @open_terminals}
+              :if={Map.has_key?(@exited_terminals, term.id)}
+              id={"terminal-exited-#{term.id}"}
+              terminal_id={term.id}
+              exit={@exited_terminals[term.id]}
+              active={term.id == @active_terminal_id}
+            />
           </div>
         </div>
 
@@ -2441,7 +2454,12 @@ was. --%>
                     term.id != @active_terminal_id && "btn-ghost"
                   ]}
                 >
-                  <span class="truncate max-w-24">{term.name}</span>
+                  <span class={[
+                    "truncate max-w-24",
+                    Map.has_key?(@exited_terminals, term.id) && "line-through opacity-60"
+                  ]}>
+                    {term.name}
+                  </span>
                   <span
                     phx-click="close_terminal_tab"
                     phx-value-id={term.id}
@@ -2488,6 +2506,14 @@ was. --%>
                 phx-update="ignore"
               >
               </div>
+              <.terminal_exit_bar
+                :for={term <- @open_terminals}
+                :if={Map.has_key?(@exited_terminals, term.id)}
+                id={"mobile-terminal-exited-#{term.id}"}
+                terminal_id={term.id}
+                exit={@exited_terminals[term.id]}
+                active={term.id == @active_terminal_id}
+              />
             </div>
           </div>
           <label class="modal-backdrop" phx-click="close_terminal_panel"></label>

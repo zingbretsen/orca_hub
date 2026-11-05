@@ -116,6 +116,11 @@ export const TerminalHook = {
       })
       .receive("error", (resp) => {
         this.term.writeln(`\r\n[Connection error: ${resp.reason || "unknown"}]`)
+        // A deleted terminal never comes back; stop the channel's rejoin loop.
+        if (resp.reason === "not_found" && this.channel) {
+          this.channel.leave()
+          this.channel = null
+        }
       })
 
     // Server output -> xterm
@@ -124,12 +129,23 @@ export const TerminalHook = {
       this.term.write(bytes)
     })
 
+    // The hosting LiveView (TerminalLive.Show or the session page's panel)
+    // handles both events; the channel stays joined, so a restart of the
+    // same terminal streams into this xterm again.
     this.channel.on("exit", ({ code }) => {
+      this._exited = true
       this.term.writeln(`\r\n[Process exited with code ${code}]`)
       this.pushEvent("terminal_exited", { terminal_id: terminalId, code })
     })
 
     this.channel.on("status", ({ status }) => {
+      if (status === "running" && this._exited) {
+        this._exited = false
+        this.term.writeln("\r\n[Shell restarted]")
+      } else if ((status === "stopped" || status === "deleted") && !this._exited) {
+        this._exited = true
+        this.term.writeln(`\r\n[Terminal ${status}]`)
+      }
       this.pushEvent("terminal_status_changed", {
         terminal_id: terminalId,
         status,

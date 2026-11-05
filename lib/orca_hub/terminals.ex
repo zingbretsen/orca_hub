@@ -10,6 +10,17 @@ defmodule OrcaHub.Terminals do
     Repo.all(from t in Terminal, preload: [:project], order_by: [desc: t.updated_at])
   end
 
+  # A session with no project opens its terminal panel with a nil id; a bare
+  # `== ^nil` comparison raises in Ecto and crashed the session page.
+  def list_terminals_for_project(nil) do
+    Repo.all(
+      from t in Terminal,
+        where: is_nil(t.project_id),
+        preload: [:project],
+        order_by: [desc: t.updated_at]
+    )
+  end
+
   def list_terminals_for_project(project_id) do
     Repo.all(
       from t in Terminal,

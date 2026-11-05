@@ -13,6 +13,7 @@ defmodule OrcaHubWeb.TerminalLive.Show do
      |> assign(
        terminal: terminal,
        runner_node: n,
+       exit_code: nil,
        page_title: terminal.name
      )}
   end
@@ -24,8 +25,7 @@ defmodule OrcaHubWeb.TerminalLive.Show do
 
     case Cluster.start_terminal(n, terminal.id) do
       {:ok, _pid} ->
-        terminal = Cluster.get_terminal!(n, terminal.id)
-        {:noreply, assign(socket, terminal: terminal)}
+        {:noreply, refresh_terminal(socket)}
 
       {:error, {:already_started, _}} ->
         {:noreply, socket}
@@ -39,7 +39,7 @@ defmodule OrcaHubWeb.TerminalLive.Show do
     terminal = socket.assigns.terminal
     n = socket.assigns.runner_node
     Cluster.stop_terminal(n, terminal.id)
-    {:noreply, assign(socket, terminal: get_terminal_safe(n, terminal.id, terminal))}
+    {:noreply, refresh_terminal(socket)}
   end
 
   def handle_event("restart_terminal", _params, socket) do
@@ -59,16 +59,13 @@ defmodule OrcaHubWeb.TerminalLive.Show do
 
   # These events come from the JS hook via pushEvent when the
   # Channel receives exit/status messages from the TerminalRunner
-  def handle_event("terminal_exited", _params, socket) do
-    n = socket.assigns.runner_node
-    current = socket.assigns.terminal
-    {:noreply, assign(socket, terminal: get_terminal_safe(n, current.id, current))}
+  def handle_event("terminal_exited", params, socket) do
+    code = if is_integer(params["code"]), do: params["code"]
+    {:noreply, socket |> assign(exit_code: code) |> refresh_terminal()}
   end
 
   def handle_event("terminal_status_changed", _params, socket) do
-    n = socket.assigns.runner_node
-    current = socket.assigns.terminal
-    {:noreply, assign(socket, terminal: get_terminal_safe(n, current.id, current))}
+    {:noreply, refresh_terminal(socket)}
   end
 
   @impl true
@@ -82,10 +79,29 @@ defmodule OrcaHubWeb.TerminalLive.Show do
 
     case Cluster.start_terminal(n, terminal.id) do
       {:ok, _pid} ->
-        assign(socket, terminal: Cluster.get_terminal!(n, terminal.id))
+        refresh_terminal(socket)
 
       {:error, reason} ->
         put_flash(socket, :error, "Failed to restart: #{inspect(reason)}")
+    end
+  end
+
+  # A row deleted while this page is open (from the index, another tab)
+  # sends the user back to the list instead of crashing on the re-read.
+  defp refresh_terminal(socket) do
+    current = socket.assigns.terminal
+
+    case get_terminal_safe(socket.assigns.runner_node, current.id, current) do
+      :deleted ->
+        socket
+        |> put_flash(:info, "Terminal #{current.name} was deleted.")
+        |> push_navigate(to: ~p"/terminals")
+
+      %{status: "running"} = terminal ->
+        assign(socket, terminal: terminal, exit_code: nil)
+
+      terminal ->
+        assign(socket, terminal: terminal)
     end
   end
 
@@ -98,6 +114,8 @@ defmodule OrcaHubWeb.TerminalLive.Show do
       %OrcaHub.Terminals.Terminal{} = terminal -> terminal
       _ -> fallback
     end
+  rescue
+    Ecto.NoResultsError -> :deleted
   end
 
   # The hub+agent topology has ONE database — HubRPC.get_terminal!/1 already
